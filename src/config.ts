@@ -39,7 +39,7 @@ export const DEFAULT_ENV: Record<ProviderName, string[]> = {
 };
 
 export const DEFAULT_MODEL: Record<ProviderName, string> = {
-  gemini: "gemini-2.0-flash",
+  gemini: "gemini-2.5-flash",
   anthropic: "claude-3-5-sonnet-latest",
   openai: "gpt-4o-mini",
   mock: "mock-1",
@@ -110,6 +110,24 @@ function maskKey(k: string | null): string {
 function setValue(cfg: Record<string, unknown>, key: string, value: string): void {
   if (key === "maxTurns") cfg[key] = Number(value);
   else cfg[key] = value;
+}
+
+/** Merge multiple updates into the target config file (used by `jeoc setup`). Returns the path. */
+export function applyConfig(updates: Partial<JeocConfig>, scope?: "user" | "project"): string {
+  const target = writeTarget(scope);
+  const existing = (readJson(target) as Record<string, unknown>) ?? {};
+  for (const [k, v] of Object.entries(updates)) {
+    if (v !== undefined && v !== null) existing[k] = v;
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, JSON.stringify(existing, null, 2) + "\n");
+  return target;
+}
+
+export function maskApiKey(k: string | null): string {
+  if (!k) return "(none)";
+  if (k.length <= 8) return "****";
+  return `${k.slice(0, 4)}…${k.slice(-2)} (len ${k.length})`;
 }
 
 export function runConfig(argv: string[]): void {

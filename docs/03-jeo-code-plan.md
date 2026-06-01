@@ -65,6 +65,7 @@ jeo-code (이 레포)            # 리브랜드: jeoc / jeo-code / .jeoc
 - [x] **P3 MVP**: `jeoc ledger` 크로스-plan 원장 CLI(외부 의존성 0). E2E 검증 통과.
 - [x] **리브랜드 + autopilot 분기**: `gjc→jeoc`, `gajae-code→jeo-code`, `.gjc→.jeoc`. `jeoc autopilot`을 `/skill:autoresearch` 규율(평가기 고정·한 변경·keep/revert·append-only·수렴)로 강화. `bin/jeoc.ts`+`src/autopilot.ts`+`skills/autopilot/SKILL.md`+`docs/04`. E2E 검증 통과(래칫/회귀revert/gate/고정).
 - [x] **실제 코딩 에이전트 (v0.2.0)**: `jeoc agent` LLM turn loop(tool-calling: bash/read_file/write_file/list_dir) + `jeoc config` provider/model 설정. providers: gemini/anthropic/openai(real fetch) + mock(hermetic). gjc 구조를 subagent로 심층 분석해 `docs/05-07`에 반영. 설치→터미널 동작·실제 Gemini 호출(HTTP 429=인증/요청 정상, 쿼터만 0) 검증. 16/16 테스트 통과.
+- [x] **실 LLM 턴 검증 + 온보딩 (v0.2.1)**: Gemini `gemini-2.5-flash`로 실제 멀티턴 코딩 검증(write_file→bash python3→요약; `sum.py` 작성·실행 "5"). 기본 Gemini 모델을 쿼터 있는 `gemini-2.5-flash`로 변경. `jeoc setup`(provider/model 온보딩+키 감지) + `jeoc models [--live]`(레지스트리/실모델 37개) 추가. 19/19 테스트 통과.
 - [ ] **P1 스펙(소급/심화)**: `deep-interview`로 cleanup 회수율·크로스-plan 동시성 가설을 정식 스펙화 → `.gjc/specs/`.
 - [ ] **P2 합의 계획**: `ralplan`으로 원장 확장(steering/supersede) 합의 (pending 승인).
 - [ ] **P4 cleanup 루프**: 명시 cleanup 워크플로 + 스테일 회수율 측정.

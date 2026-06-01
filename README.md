@@ -11,7 +11,7 @@
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-green.svg"></a>
   <img alt="runtime" src="https://img.shields.io/badge/runtime-Bun-black?logo=bun">
   <img alt="deps" src="https://img.shields.io/badge/runtime%20deps-0-brightgreen">
-  <img alt="tests" src="https://img.shields.io/badge/tests-16%20passing-brightgreen">
+  <img alt="tests" src="https://img.shields.io/badge/tests-19%20passing-brightgreen">
 </p>
 
 ---
@@ -31,7 +31,7 @@ Requires [Bun](https://bun.sh) `>=1.0`. The CLI has **zero runtime dependencies*
 ```sh
 # A) global install from GitHub
 bun install -g github:akillness/jeo-code
-jeoc --version            # 0.2.0
+jeoc --version            # 0.2.1
 
 # B) from source (clone + link)
 git clone https://github.com/akillness/jeo-code
@@ -62,17 +62,21 @@ run tool calls → append results → repeat until done or max turns`. Tools: `b
 `write_file`, `list_dir`.
 
 ```sh
-# 1. configure provider + model (writes .jeoc/config.json)
-jeoc config set provider gemini
-jeoc config set model gemini-2.0-flash
-export GEMINI_API_KEY=...          # or: jeoc config set apiKey <key>
-jeoc config show                   # resolved config; api key masked
+# 1. one-shot onboarding (writes .jeoc/config.json, picks the provider default model)
+jeoc setup --provider gemini                 # default model: gemini-2.5-flash
+export GEMINI_API_KEY=...                     # or: jeoc config set apiKey <key>
+jeoc config show                              # resolved config; api key masked
+jeoc models --provider gemini --live          # list models your key can actually call
 
 # 2. run the agent on a task
 jeoc agent "add a hello() to util.ts and run the tests"
 jeoc agent "summarize this repo" --provider mock     # hermetic, no API key
 jeoc agent "anything" --dry                          # show resolved config, no call
 ```
+
+> Verified live: `jeoc agent` with Gemini `gemini-2.5-flash` wrote `sum.py` (an `add` fn),
+> ran it with `python3`, and reported `5` — a real multi-turn tool-calling session.
+> (Default Gemini model is `gemini-2.5-flash`; `gemini-2.0-flash` free tier is often 0-quota.)
 
 | Provider | Endpoint | Auth | Key env |
 | --- | --- | --- | --- |
@@ -137,7 +141,7 @@ Schema: [`ledger/schema.md`](ledger/schema.md).
 ## Develop & test
 
 ```sh
-bun test          # 16 end-to-end tests (agent loop, config, providers, autopilot ratchet, ledger)
+bun test          # 19 end-to-end tests (agent loop, config/setup/models, providers, autopilot, ledger)
 bun bin/jeoc.ts   # run the CLI from source
 ```
 

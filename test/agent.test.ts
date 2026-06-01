@@ -136,3 +136,22 @@ test("gemini parses functionCall into a toolCall", async () => {
   expect(res.toolCalls[0].name).toBe("bash");
   expect(res.toolCalls[0].args.cmd).toBe("ls");
 });
+
+// ── setup / models ──────────────────────────────────────────────────────────
+test("setup writes provider+model and defaults model when omitted", () => {
+  expect(run(["setup", "--provider", "gemini"]).out).toContain("gemini/gemini-2.5-flash");
+  expect(run(["config", "get", "provider"]).out.trim()).toBe("gemini");
+  expect(run(["config", "get", "model"]).out.trim()).toBe("gemini-2.5-flash");
+});
+
+test("setup respects an explicit model", () => {
+  run(["setup", "--provider", "openai", "--model", "gpt-4o"]);
+  expect(run(["config", "get", "model"]).out.trim()).toBe("gpt-4o");
+});
+
+test("models lists the known registry with the default marked", () => {
+  const r = run(["models", "--provider", "gemini"]);
+  expect(r.code).toBe(0);
+  expect(r.out).toContain("gemini-2.5-flash");
+  expect(r.out).toContain("(default)");
+});

@@ -13,8 +13,9 @@ import { runAutopilot } from "../src/autopilot.ts";
 import { runLedger } from "../src/ledger.ts";
 import { runConfig } from "../src/config.ts";
 import { runAgent } from "../src/agent.ts";
+import { runSetup, runModels } from "../src/setup.ts";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 
 function help(): void {
   console.log(
@@ -25,12 +26,15 @@ function help(): void {
       "",
       "Groups:",
       "  agent       Run the LLM coding-agent loop on a task",
+      "  setup       Configure provider + model (onboarding)",
+      "  models      List known/live models for a provider",
       "  config      Provider + model configuration (gemini/anthropic/openai/mock)",
       "  autopilot   Autonomous build loop (autopilot × autoresearch ratchet)",
       "  ledger      Cross-plan append-only ledger (ledger / review / cleanup)",
       "",
       "Examples:",
-      "  jeoc config set provider gemini && jeoc config show",
+      "  jeoc setup --provider gemini --model gemini-2.5-flash",
+      "  jeoc models --provider gemini --live",
       '  jeoc agent "add a hello() to util.ts and run the tests"',
       '  jeoc autopilot init --task "tune X" --eval "bash eval.sh" --goal min',
       '  jeoc ledger register G001 --title "..." && jeoc ledger status',
@@ -44,6 +48,12 @@ async function main(): Promise<void> {
     case "agent":
     case "chat":
       await runAgent(rest);
+      break;
+    case "setup":
+      runSetup(rest);
+      break;
+    case "models":
+      await runModels(rest);
       break;
     case "config":
     case "cfg":

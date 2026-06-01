@@ -175,11 +175,11 @@ export async function runAgent(argv: string[]): Promise<void> {
 
   const cfg = resolveConfig(overrides);
   if (flags.dry === "true") {
-    console.log(JSON.stringify({ provider: cfg.provider, model: cfg.model, hasApiKey: !!cfg.apiKey, apiKeySource: cfg.apiKeySource, maxTurns: cfg.maxTurns }, null, 2));
+    console.log(JSON.stringify({ provider: cfg.provider, model: cfg.model, authMode: cfg.authMode, hasApiKey: !!cfg.apiKey, hasOAuth: !!cfg.oauthToken, apiKeySource: cfg.apiKeySource, maxTurns: cfg.maxTurns }, null, 2));
     return;
   }
-  if (cfg.provider !== "mock" && !cfg.apiKey) {
-    console.error(`jeoc agent: provider '${cfg.provider}' needs an API key. Run \`jeoc config show\` for hints.`);
+  if (cfg.authMode === "none") {
+    console.error(`jeoc agent: provider '${cfg.provider}' has no credential. Run \`jeoc doctor\` or set a key/OAuth token (jeoc config show).`);
     process.exit(1);
   }
 

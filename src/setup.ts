@@ -19,10 +19,11 @@ export const KNOWN_MODELS: Record<ProviderName, string[]> = {
   gemini: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-flash-latest"],
   anthropic: ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"],
   openai: ["gpt-4o", "gpt-4o-mini", "o4-mini"],
+  ollama: ["qwen2.5:0.5b", "llama3.2:1b", "llama3.2", "qwen2.5-coder"],
   mock: ["mock-1"],
 };
 
-const PROVIDERS: ProviderName[] = ["gemini", "anthropic", "openai", "mock"];
+const PROVIDERS: ProviderName[] = ["gemini", "anthropic", "openai", "ollama", "mock"];
 
 function parseArgs(argv: string[]): { positionals: string[]; flags: Record<string, string> } {
   const positionals: string[] = [];
@@ -110,14 +111,32 @@ export async function runDoctor(argv: string[]): Promise<void> {
   console.log(`  runtime     bun ${bunVersion}`);
   console.log(`  provider    ${r.provider}`);
   console.log(`  model       ${r.model}${known ? "  [known]" : "  [custom]"}`);
+  console.log(`  authMode    ${r.authMode}`);
   console.log(`  apiKey      ${maskApiKey(r.apiKey)}  [source: ${r.apiKeySource}]`);
+  console.log(`  oauth       ${r.oauthToken ? "present" : "(none)"}`);
   console.log(`  apiKeyEnv   ${r.apiKeyEnv ?? envs.join("|") ?? "(none)"}`);
   console.log(`  maxTurns    ${r.maxTurns}`);
   console.log(`  configFile  ${r.configPath ?? "(none — using defaults)"}`);
 
-  let ok = r.provider === "mock" || !!r.apiKey;
+  let ok = r.authMode !== "none";
   if (!ok) {
-    console.log(`\n  FAIL no API key — export ${envs.join(" or ")}=... OR run: jeoc config set apiKey <key>`);
+    console.log(`\n  FAIL no credential — export ${envs.join(" or ")}=..., run jeoc auth login, OR jeoc config set apiKey <key>`);
+  }
+
+  if (r.provider === "ollama") {
+    const base = r.baseUrl ?? "http://localhost:11434";
+    try {
+      const res = await fetch(`${base}/api/tags`);
+      const tags = (await res.json()) as { models?: Array<{ name: string }> };
+      const names = (tags.models ?? []).map((m) => m.name);
+      console.log(`\n  ollama      server up at ${base} (${names.length} models)`);
+      const has = names.some((n) => n === r.model || n.startsWith(`${r.model}:`) || n.split(":")[0] === r.model);
+      console.log(`  model pull  ${has ? "available" : `MISSING — run: ollama pull ${r.model}`}`);
+      ok = ok && has;
+    } catch {
+      console.log(`\n  ollama      server NOT reachable at ${base} — start it: ollama serve`);
+      ok = false;
+    }
   }
 
   if (flags.live === "true") {

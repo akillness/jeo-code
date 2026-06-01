@@ -78,7 +78,7 @@ test("agent --dry reports resolved config without calling a provider", () => {
 test("agent errors clearly when a real provider has no key", () => {
   const r = run(["agent", "task", "--provider", "openai"], { OPENAI_API_KEY: "" });
   expect(r.code).not.toBe(0);
-  expect(r.err).toContain("API key");
+  expect(r.err).toContain("credential");
 });
 
 // ── provider request builders (stub fetch) ──────────────────────────────────
@@ -198,4 +198,56 @@ test("doctor fails real provider without an API key", () => {
   expect(r.code).not.toBe(0);
   expect(r.out).toContain("provider    gemini");
   expect(r.out).toContain("NOT READY");
+});
+
+// ── auth (OAuth) + ollama (local provider) ──────────────────────────────────
+test("auth login stores a masked oauth token and status reports it", () => {
+  const r = run(["auth", "login", "--provider", "anthropic", "--token", "oauth-tok-abcdef-123456"]);
+  expect(r.code).toBe(0);
+  expect(existsSync(join(dir, ".jeoc", "auth.json"))).toBe(true);
+  const st = run(["auth", "status"]);
+  expect(st.out).toContain("anthropic");
+  expect(st.out).not.toContain("oauth-tok-abcdef-123456"); // masked
+});
+
+test("oauth token makes a real provider keyless and drives Bearer auth", () => {
+  run(["auth", "login", "--provider", "anthropic", "--token", "oauth-tok-abcdef-123456"]);
+  // dry run shows authMode oauth without an api key
+  const dry = JSON.parse(run(["agent", "x", "--provider", "anthropic", "--dry"]).out);
+  expect(dry.authMode).toBe("oauth");
+  expect(dry.hasOAuth).toBe(true);
+});
+
+test("auth logout removes the stored token", () => {
+  run(["auth", "login", "--provider", "openai", "--token", "tok-zzz-aaaaaa-bbbbbb"]);
+  run(["auth", "logout", "--provider", "openai"]);
+  const dry = JSON.parse(run(["agent", "x", "--provider", "openai", "--dry"], { OPENAI_API_KEY: "" }).out);
+  expect(dry.authMode).toBe("none");
+});
+
+test("anthropic uses Authorization: Bearer when an oauth token is set", async () => {
+  const calls = stubFetch({ content: [{ type: "text", text: "ok" }] });
+  const c: ResolvedConfig = { provider: "anthropic", model: "claude-3-5-sonnet-latest", apiKey: null, apiKeySource: "none", oauthToken: "OToken", authMode: "oauth", configPath: null, maxTurns: 20 };
+  await callProvider(c, { system: "s", messages: baseMsgs, tools: [] });
+  const headers = calls[0].init.headers as Record<string, string>;
+  expect(headers.authorization).toBe("Bearer OToken");
+  expect(headers["x-api-key"]).toBeUndefined();
+  expect(headers["anthropic-beta"]).toBe("oauth-2025-04-20");
+});
+
+test("ollama is keyless and posts to /api/chat with tools, parsing tool_calls", async () => {
+  const calls = stubFetch({ message: { content: "", tool_calls: [{ function: { name: "bash", arguments: { cmd: "ls" } } }] } });
+  const c: ResolvedConfig = { provider: "ollama", model: "qwen2.5:0.5b", apiKey: null, apiKeySource: "none", oauthToken: null, authMode: "local", configPath: null, maxTurns: 20 };
+  const res = await callProvider(c, { system: "s", messages: baseMsgs, tools: [tool] });
+  expect(calls[0].url).toContain("http://localhost:11434/api/chat");
+  const body = JSON.parse(String(calls[0].init.body));
+  expect(body.stream).toBe(false);
+  expect(body.tools[0].function.name).toBe("bash");
+  expect(res.toolCalls[0].name).toBe("bash");
+  expect(res.toolCalls[0].args.cmd).toBe("ls");
+});
+
+test("agent allows ollama without any key (keyless local)", () => {
+  const dry = JSON.parse(run(["agent", "x", "--provider", "ollama", "--dry"]).out);
+  expect(dry.authMode).toBe("local");
 });

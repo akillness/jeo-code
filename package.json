@@ -1,6 +1,6 @@
 {
   "name": "jeo-code",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "jeoc — an autopilot×autoresearch ratchet CLI + cross-plan ledger (jeo-code, a gajae-code rebrand study). Zero runtime dependencies.",
   "type": "module",
   "bin": {

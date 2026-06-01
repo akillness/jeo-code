@@ -11,7 +11,7 @@
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-green.svg"></a>
   <img alt="runtime" src="https://img.shields.io/badge/runtime-Bun-black?logo=bun">
   <img alt="deps" src="https://img.shields.io/badge/runtime%20deps-0-brightgreen">
-  <img alt="tests" src="https://img.shields.io/badge/tests-23%20passing-brightgreen">
+  <img alt="tests" src="https://img.shields.io/badge/tests-29%20passing-brightgreen">
 </p>
 
 ---
@@ -31,7 +31,7 @@ Requires [Bun](https://bun.sh) `>=1.0`. The CLI has **zero runtime dependencies*
 ```sh
 # A) global install from GitHub
 bun install -g github:akillness/jeo-code
-jeoc --version            # 0.2.1
+jeoc --version            # 0.3.0
 
 # B) from source (clone + link)
 git clone https://github.com/akillness/jeo-code
@@ -80,16 +80,34 @@ jeoc agent "anything" --dry                          # show resolved config, no 
 > selected model available). `jeoc agent` with Gemini `gemini-2.5-flash` wrote
 > `live-check.txt` via `write_file`, read it back via `read_file`, and reported `jeoc-live-ok`.
 
-| Provider | Endpoint | Auth | Key env |
+| Provider | Endpoint | Auth | Credential |
 | --- | --- | --- | --- |
-| `gemini` | generativelanguage `:generateContent` | `?key=` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
-| `anthropic` | `/v1/messages` | `x-api-key` + `anthropic-version` | `ANTHROPIC_API_KEY` |
-| `openai` | `/v1/chat/completions` | `Bearer` | `OPENAI_API_KEY` |
+| `gemini` | generativelanguage `:generateContent` | `?key=` or `Bearer` (OAuth) | `GEMINI_API_KEY` / OAuth |
+| `anthropic` | `/v1/messages` | `x-api-key` or `Bearer`+oauth-beta | `ANTHROPIC_API_KEY` / OAuth |
+| `openai` | `/v1/chat/completions` | `Bearer` | `OPENAI_API_KEY` / OAuth |
+| `ollama` | `http://localhost:11434/api/chat` | none (local) | — (`ollama pull <model>`) |
 | `mock` | — (deterministic) | — | — (scriptable via `JEOC_MOCK_SCRIPT`) |
 
-Config resolves project (`.jeoc/config.json`) over user (`~/.jeoc/config.json`); API key from
-config or env. Implementation: [`src/agent.ts`](src/agent.ts), [`src/provider.ts`](src/provider.ts),
-[`src/config.ts`](src/config.ts). Design grounded in [docs/05](docs/05-provider-model-layer.md)–[07](docs/07-cli-config-session.md).
+### OAuth & local providers
+
+```sh
+# OAuth (Authorization: Bearer; takes precedence over API keys)
+jeoc auth login --provider anthropic --token "$(claude setup-token)"   # or any OAuth access token
+jeoc auth status          # masked per-provider token sources
+# Local, no key — runs fully offline via ollama
+jeoc setup --provider ollama && ollama pull qwen2.5:0.5b
+jeoc doctor               # checks ollama server + model pull → READY
+jeoc agent "create local.txt with made-locally" --provider ollama
+```
+
+> Verified live: a local `ollama`/`qwen2.5:0.5b` agent run emitted a real `write_file` tool
+> call that wrote a 12-byte file to disk — the full tool-calling loop runs offline.
+> See [docs/09-auth-oauth-local.md](docs/09-auth-oauth-local.md).
+
+Config resolves project (`.jeoc/config.json`) over user (`~/.jeoc/config.json`); credential
+precedence: OAuth > API key, keyless for `mock`/`ollama`. Implementation: [`src/agent.ts`](src/agent.ts),
+[`src/provider.ts`](src/provider.ts), [`src/config.ts`](src/config.ts), [`src/auth.ts`](src/auth.ts).
+Design grounded in [docs/05](docs/05-provider-model-layer.md)–[09](docs/09-auth-oauth-local.md).
 
 ## `jeoc autopilot` — autopilot × autoresearch ratchet
 
@@ -143,7 +161,7 @@ Schema: [`ledger/schema.md`](ledger/schema.md).
 ## Develop & test
 
 ```sh
-bun test          # 23 end-to-end tests (agent loop, config/setup/models/doctor, providers, autopilot, ledger)
+bun test          # 29 end-to-end tests (agent, auth/oauth, ollama, config/setup/models/doctor, providers, autopilot, ledger)
 bun bin/jeoc.ts   # run the CLI from source
 ```
 
@@ -167,6 +185,7 @@ bun bin/jeoc.ts   # run the CLI from source
 | [docs/06-agent-loop-tools.md](docs/06-agent-loop-tools.md) | gjc agent-core turn loop + tool 계약 → jeoc 최소 에이전트 루프 |
 | [docs/07-cli-config-session.md](docs/07-cli-config-session.md) | gjc CLI/config/session 조립 → jeoc config/agent 최소 설계 |
 | [docs/08-terminal-doctor-flow.md](docs/08-terminal-doctor-flow.md) | install→setup→doctor→agent terminal flow and provider/model readiness checks |
+| [docs/09-auth-oauth-local.md](docs/09-auth-oauth-local.md) | gjc 인증/auth-broker → jeoc OAuth(Bearer) + 로컬 provider(ollama) |
 
 > docs 01/02 describe the **real upstream gajae-code** (`gjc`) and intentionally keep its original names.
 

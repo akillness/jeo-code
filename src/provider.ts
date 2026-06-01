@@ -84,9 +84,13 @@ async function httpJson(url: string, init: RequestInit, provider: string): Promi
 
 // ── Google Gemini (generativelanguage v1beta) ───────────────────────────────
 async function gemini(cfg: ResolvedConfig, req: ProviderRequest): Promise<ProviderResponse> {
-  if (!cfg.apiKey) throw new Error("gemini: no API key (set GEMINI_API_KEY or `jeoc config set apiKey`)");
+  if (!cfg.apiKey && !cfg.oauthToken) throw new Error("gemini: no credential (set GEMINI_API_KEY, jeoc auth login, or jeoc config set apiKey)");
   const base = cfg.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta";
-  const url = `${base}/models/${cfg.model}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`;
+  const url = cfg.oauthToken
+    ? `${base}/models/${cfg.model}:generateContent`
+    : `${base}/models/${cfg.model}:generateContent?key=${encodeURIComponent(cfg.apiKey as string)}`;
+  const authHeaders: Record<string, string> = { "content-type": "application/json" };
+  if (cfg.oauthToken) authHeaders.authorization = `Bearer ${cfg.oauthToken}`;
   const contents: unknown[] = [];
   for (let i = 0; i < req.messages.length; i++) {
     const m = req.messages[i];
@@ -116,7 +120,7 @@ async function gemini(cfg: ResolvedConfig, req: ProviderRequest): Promise<Provid
   }
   const data = (await httpJson(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: authHeaders,
     body: JSON.stringify(body),
   }, "gemini")) as {
     candidates?: Array<{ content?: { parts?: Array<{ text?: string; functionCall?: { name: string; args: Record<string, unknown> } }> } }>;
@@ -133,7 +137,7 @@ async function gemini(cfg: ResolvedConfig, req: ProviderRequest): Promise<Provid
 
 // ── Anthropic Messages ──────────────────────────────────────────────────────
 async function anthropic(cfg: ResolvedConfig, req: ProviderRequest): Promise<ProviderResponse> {
-  if (!cfg.apiKey) throw new Error("anthropic: no API key (set ANTHROPIC_API_KEY or `jeoc config set apiKey`)");
+  if (!cfg.apiKey && !cfg.oauthToken) throw new Error("anthropic: no credential (set ANTHROPIC_API_KEY, jeoc auth login, or jeoc config set apiKey)");
   const base = cfg.baseUrl ?? "https://api.anthropic.com";
   const messages: unknown[] = [];
   for (let i = 0; i < req.messages.length; i++) {
@@ -169,11 +173,18 @@ async function anthropic(cfg: ResolvedConfig, req: ProviderRequest): Promise<Pro
   }
   const data = (await httpJson(`${base}/v1/messages`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": cfg.apiKey,
-      "anthropic-version": "2023-06-01",
-    },
+    headers: cfg.oauthToken
+      ? {
+          "content-type": "application/json",
+          authorization: `Bearer ${cfg.oauthToken}`,
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "oauth-2025-04-20",
+        }
+      : {
+          "content-type": "application/json",
+          "x-api-key": cfg.apiKey as string,
+          "anthropic-version": "2023-06-01",
+        },
     body: JSON.stringify(body),
   }, "anthropic")) as {
     content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>;
@@ -189,7 +200,8 @@ async function anthropic(cfg: ResolvedConfig, req: ProviderRequest): Promise<Pro
 
 // ── OpenAI Chat Completions ─────────────────────────────────────────────────
 async function openai(cfg: ResolvedConfig, req: ProviderRequest): Promise<ProviderResponse> {
-  if (!cfg.apiKey) throw new Error("openai: no API key (set OPENAI_API_KEY or `jeoc config set apiKey`)");
+  const cred = cfg.oauthToken ?? cfg.apiKey;
+  if (!cred) throw new Error("openai: no credential (set OPENAI_API_KEY, jeoc auth login, or jeoc config set apiKey)");
   const base = cfg.baseUrl ?? "https://api.openai.com";
   const messages: unknown[] = [{ role: "system", content: req.system }];
   for (const m of req.messages) {
@@ -211,7 +223,7 @@ async function openai(cfg: ResolvedConfig, req: ProviderRequest): Promise<Provid
   }
   const data = (await httpJson(`${base}/v1/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${cfg.apiKey}` },
+    headers: { "content-type": "application/json", authorization: `Bearer ${cred}` },
     body: JSON.stringify(body),
   }, "openai")) as {
     choices?: Array<{ message?: { content?: string; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> } }>;
@@ -229,6 +241,42 @@ async function openai(cfg: ResolvedConfig, req: ProviderRequest): Promise<Provid
   return { text: msg?.content ?? "", toolCalls };
 }
 
+// ── Ollama (local, OpenAI-incompatible native /api/chat) ─────────────────────
+async function ollama(cfg: ResolvedConfig, req: ProviderRequest): Promise<ProviderResponse> {
+  const base = cfg.baseUrl ?? "http://localhost:11434";
+  const messages: unknown[] = [{ role: "system", content: req.system }];
+  for (const m of req.messages) {
+    if (m.role === "tool") {
+      messages.push({ role: "tool", content: m.content });
+    } else if (m.role === "assistant" && m.toolCalls?.length) {
+      messages.push({
+        role: "assistant",
+        content: m.content || "",
+        tool_calls: m.toolCalls.map((tc) => ({ function: { name: tc.name, arguments: tc.args } })),
+      });
+    } else {
+      messages.push({ role: m.role, content: m.content });
+    }
+  }
+  const body: Record<string, unknown> = { model: cfg.model, messages, stream: false };
+  if (req.tools.length) {
+    body.tools = req.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
+  }
+  const data = (await httpJson(`${base}/api/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }, "ollama")) as {
+    message?: { content?: string; tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }> };
+  };
+  const msg = data.message;
+  const toolCalls: ToolCall[] = (msg?.tool_calls ?? []).map((tc, i) => ({
+    id: `ollama-${i}`,
+    name: tc.function.name,
+    args: tc.function.arguments ?? {},
+  }));
+  return { text: msg?.content ?? "", toolCalls };
+}
 export async function callProvider(cfg: ResolvedConfig, req: ProviderRequest): Promise<ProviderResponse> {
   switch (cfg.provider) {
     case "mock":
@@ -239,6 +287,8 @@ export async function callProvider(cfg: ResolvedConfig, req: ProviderRequest): P
       return anthropic(cfg, req);
     case "openai":
       return openai(cfg, req);
+    case "ollama":
+      return ollama(cfg, req);
     default:
       throw new Error(`unknown provider: ${cfg.provider}`);
   }

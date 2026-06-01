@@ -14,8 +14,9 @@ import { runLedger } from "../src/ledger.ts";
 import { runConfig } from "../src/config.ts";
 import { runAgent } from "../src/agent.ts";
 import { runSetup, runModels, runDoctor } from "../src/setup.ts";
+import { runAuth } from "../src/auth.ts";
 
-const VERSION = "0.2.1";
+const VERSION = "0.3.0";
 
 function help(): void {
   console.log(
@@ -29,7 +30,8 @@ function help(): void {
       "  setup       Configure provider + model (onboarding)",
       "  models      List known/live models for a provider",
       "  doctor      Verify terminal install + provider/model readiness",
-      "  config      Provider + model configuration (gemini/anthropic/openai/mock)",
+      "  auth        OAuth credential storage (login/status/logout)",
+      "  config      Provider + model config (gemini/anthropic/openai/ollama/mock)",
       "  autopilot   Autonomous build loop (autopilot × autoresearch ratchet)",
       "  ledger      Cross-plan append-only ledger (ledger / review / cleanup)",
       "",
@@ -58,6 +60,9 @@ async function main(): Promise<void> {
       break;
     case "doctor":
       await runDoctor(rest);
+      break;
+    case "auth":
+      runAuth(rest);
       break;
     case "config":
     case "cfg":

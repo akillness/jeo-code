@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
-export type ProviderName = "gemini" | "anthropic" | "openai" | "mock";
+export type ProviderName = "gemini" | "anthropic" | "openai" | "ollama" | "mock";
 
 export interface JeocConfig {
   provider: ProviderName;
@@ -25,7 +25,41 @@ export interface JeocConfig {
 export interface ResolvedConfig extends JeocConfig {
   apiKey: string | null;
   apiKeySource: "config" | "env" | "none";
+  oauthToken: string | null;
+  authMode: "apikey" | "oauth" | "none" | "local";
   configPath: string | null;
+}
+
+/** Providers that need no credential (local or deterministic). */
+export const KEYLESS_PROVIDERS: ProviderName[] = ["mock", "ollama"];
+
+/** OAuth bearer-token env var per provider (alternative to API key). */
+export const OAUTH_ENV: Record<ProviderName, string[]> = {
+  gemini: ["GEMINI_OAUTH_TOKEN"],
+  anthropic: ["ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
+  openai: ["OPENAI_OAUTH_TOKEN"],
+  ollama: [],
+  mock: [],
+};
+
+export const AUTH_STORE = path.join(os.homedir(), ".jeoc", "auth.json");
+
+/** Read a stored/env OAuth access token for a provider, if any. */
+export function readOAuthToken(provider: ProviderName): string | null {
+  for (const name of OAUTH_ENV[provider] ?? []) {
+    const v = process.env[name];
+    if (v && v.trim()) return v.trim();
+  }
+  if (fs.existsSync(AUTH_STORE)) {
+    try {
+      const store = JSON.parse(fs.readFileSync(AUTH_STORE, "utf8")) as Record<string, { token?: string }>;
+      const t = store[provider]?.token;
+      if (t && t.trim()) return t.trim();
+    } catch {
+      /* ignore malformed store */
+    }
+  }
+  return null;
 }
 
 const USER_CONFIG = path.join(os.homedir(), ".jeoc", "config.json");
@@ -35,6 +69,7 @@ export const DEFAULT_ENV: Record<ProviderName, string[]> = {
   gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
   anthropic: ["ANTHROPIC_API_KEY"],
   openai: ["OPENAI_API_KEY"],
+  ollama: [],
   mock: [],
 };
 
@@ -42,6 +77,7 @@ export const DEFAULT_MODEL: Record<ProviderName, string> = {
   gemini: "gemini-2.5-flash",
   anthropic: "claude-3-5-sonnet-latest",
   openai: "gpt-4o-mini",
+  ollama: "qwen2.5:0.5b",
   mock: "mock-1",
 };
 
@@ -101,7 +137,13 @@ export function resolveConfig(overrides?: Partial<JeocConfig>): ResolvedConfig {
       apiKeySource = "env";
     }
   }
-  return { ...cfg, apiKey, apiKeySource, configPath: sourcePath };
+  const oauthToken = readOAuthToken(cfg.provider);
+  let authMode: ResolvedConfig["authMode"];
+  if (KEYLESS_PROVIDERS.includes(cfg.provider)) authMode = "local";
+  else if (apiKey) authMode = "apikey";
+  else if (oauthToken) authMode = "oauth";
+  else authMode = "none";
+  return { ...cfg, apiKey, apiKeySource, oauthToken, authMode, configPath: sourcePath };
 }
 
 function maskKey(k: string | null): string {
@@ -162,7 +204,7 @@ export function runConfig(argv: string[]): void {
         const v = (r as Record<string, unknown>)[key];
         console.log(key === "apiKey" ? maskKey(r.apiKey) : String(v ?? "(unset)"));
       } else {
-        console.log(JSON.stringify({ ...r, apiKey: maskKey(r.apiKey) }, null, 2));
+        console.log(JSON.stringify({ ...r, apiKey: maskKey(r.apiKey), oauthToken: r.oauthToken ? maskKey(r.oauthToken) : null }, null, 2));
       }
       break;
     }
@@ -171,13 +213,15 @@ export function runConfig(argv: string[]): void {
       console.log("jeoc config (resolved)\n");
       console.log(`  provider    ${r.provider}`);
       console.log(`  model       ${r.model}`);
+      console.log(`  authMode    ${r.authMode}`);
       console.log(`  apiKey      ${maskKey(r.apiKey)}  [source: ${r.apiKeySource}]`);
+      console.log(`  oauth       ${r.oauthToken ? maskKey(r.oauthToken) : "(none)"}`);
       console.log(`  apiKeyEnv   ${r.apiKeyEnv ?? DEFAULT_ENV[r.provider]?.join("|") ?? "(none)"}`);
       console.log(`  maxTurns    ${r.maxTurns}`);
       console.log(`  configFile  ${r.configPath ?? "(none — using defaults)"}`);
-      if (r.provider !== "mock" && !r.apiKey) {
+      if (r.authMode === "none") {
         const envs = DEFAULT_ENV[r.provider].join(" or ");
-        console.log(`\n  ⚠️  no API key — set one of: export ${envs}=...  OR  jeoc config set apiKey <key>`);
+        console.log(`\n  ⚠️  no credential — export ${envs}=..., jeoc auth login, OR jeoc config set apiKey <key>`);
       }
       break;
     }

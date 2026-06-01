@@ -36,7 +36,7 @@ function writeEvalScripts() {
 test("version prints", () => {
   const r = run(["--version"]);
   expect(r.code).toBe(0);
-  expect(r.out.trim()).toBe("0.2.1");
+  expect(r.out.trim()).toBe("0.3.0");
 });
 
 test("autopilot loop ratchets to best and converges", () => {

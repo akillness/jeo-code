@@ -2,6 +2,7 @@ export * from "./agent/state";
 export * from "./agent/loop";
 export * from "./agent/tools";
 export * from "./commands/setup";
+export * from "./commands/auth";
 export * from "./commands/deep-interview";
 export * from "./commands/ralplan";
 export * from "./commands/team";

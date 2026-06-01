@@ -54,7 +54,6 @@ export async function runRalplanCommand(): Promise<void> {
     `Output ONLY the YAML. Do not include markdown wraps or code blocks.`;
 
   const messages = [
-    { role: "system" as const, systemPrompt, content: "" },
     { role: "user" as const, content: `Here is the crystallized spec (seed.yaml):\n\n${seedContent}` }
   ];
 

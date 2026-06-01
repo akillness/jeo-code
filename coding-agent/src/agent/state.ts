@@ -16,6 +16,8 @@ export interface Config {
   };
   /** Base URL for the local Ollama server (keyless). */
   ollamaBaseUrl?: string;
+  /** Base URL override for OpenAI-compatible providers (LM Studio, vLLM, llama-cpp-server, ...). */
+  openaiBaseUrl?: string;
   defaultModel: string;
   thinkingLevel?: "low" | "medium" | "high";
 }
@@ -54,6 +56,7 @@ function withEnvOverlay(cfg: Config): Config {
     ...cfg,
     oauth,
     ollamaBaseUrl: cfg.ollamaBaseUrl || process.env.OLLAMA_HOST || "http://localhost:11434",
+    openaiBaseUrl: cfg.openaiBaseUrl || process.env.OPENAI_BASE_URL,
   };
 }
 

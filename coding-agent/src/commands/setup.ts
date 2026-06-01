@@ -1,48 +1,142 @@
 import { createInterface } from "node:readline/promises";
 import { saveGlobalConfig, readGlobalConfig, type Config } from "../agent/state";
 
+type ProviderChoice = "anthropic" | "openai" | "gemini" | "ollama" | "lmstudio" | "openai-compatible";
+
+const DEFAULT_MODELS: Record<ProviderChoice, string> = {
+  anthropic: "claude-3-5-sonnet-20241022",
+  openai: "gpt-4o",
+  gemini: "gemini-2.0-flash",
+  ollama: "ollama/llama3.1:8b",
+  lmstudio: "openai/local-model",
+  "openai-compatible": "openai/local-model",
+};
+
+const DEFAULT_BASE_URLS: Partial<Record<ProviderChoice, string>> = {
+  ollama: "http://localhost:11434",
+  lmstudio: "http://localhost:1234/v1",
+  "openai-compatible": "http://localhost:8000/v1",
+};
+
+async function listOllamaModels(baseUrl: string): Promise<string[]> {
+  try {
+    const r = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(2000) });
+    if (!r.ok) return [];
+    const data = (await r.json()) as { models?: { name: string }[] };
+    return (data.models ?? []).map(m => m.name);
+  } catch {
+    return [];
+  }
+}
+
+async function listOpenAiCompatibleModels(baseUrl: string, apiKey?: string): Promise<string[]> {
+  try {
+    const r = await fetch(`${baseUrl}/models`, {
+      headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!r.ok) return [];
+    const data = (await r.json()) as { data?: { id: string }[] };
+    return (data.data ?? []).map(m => m.id);
+  } catch {
+    return [];
+  }
+}
+
 export async function runSetupCommand(): Promise<void> {
   const current = await readGlobalConfig();
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
 
   console.log("\n=== @jeo-code CLI Configuration (joc setup) ===");
-  console.log("Configure API keys, default models, and provider endpoints.\n");
+  console.log("Configure providers, API keys / OAuth tokens, and default model.\n");
 
-  const anthropic = await rl.question(
-    `Anthropic API Key [${current.providers.anthropic ? "********" : "None"}]: `
-  );
-  const openai = await rl.question(
-    `OpenAI API Key [${current.providers.openai ? "********" : "None"}]: `
-  );
-  const gemini = await rl.question(
-    `Gemini API Key [${current.providers.gemini ? "********" : "None"}]: `
-  );
+  console.log("Available provider types:");
+  console.log("  1) anthropic           — Claude (API key or OAuth bearer)");
+  console.log("  2) openai              — GPT (API key or OAuth bearer)");
+  console.log("  3) gemini              — Google AI Studio (API key or OAuth bearer)");
+  console.log("  4) ollama              — local Ollama (no auth)");
+  console.log("  5) lmstudio            — local LM Studio (OpenAI-compatible)");
+  console.log("  6) openai-compatible   — custom OpenAI-compatible (vLLM, llama-cpp-server, ...)");
+  console.log("  7) skip                — keep existing values, just change defaults\n");
 
-  const defaultModel = await rl.question(
-    `Default Model [${current.defaultModel || "claude-3-5-sonnet"}]: `
-  );
+  const sel = (await rl.question("Configure which provider? [1-7]: ")).trim();
+  const map: Record<string, ProviderChoice | "skip"> = {
+    "1": "anthropic", "2": "openai", "3": "gemini",
+    "4": "ollama",    "5": "lmstudio", "6": "openai-compatible",
+    "7": "skip",
+  };
+  const choice = map[sel] ?? "skip";
 
-  const thinkingLevel = await rl.question(
-    `Thinking Level (low, medium, high) [${current.thinkingLevel || "medium"}]: `
-  );
+  const next: Config = JSON.parse(JSON.stringify(current)) as Config;
+  next.providers = next.providers || {};
+  next.oauth = next.oauth || {};
+
+  if (choice === "anthropic" || choice === "openai" || choice === "gemini") {
+    const authMode = (await rl.question("Auth mode: (k)ey or (o)auth token? [k]: ")).trim().toLowerCase();
+    if (authMode === "o") {
+      const tok = await rl.question(`${choice} OAuth bearer token: `);
+      if (tok.trim()) next.oauth[choice] = tok.trim();
+    } else {
+      const key = await rl.question(`${choice} API key [${current.providers[choice] ? "********" : "None"}]: `);
+      if (key.trim()) next.providers[choice] = key.trim();
+    }
+    const dm = await rl.question(`Default model for ${choice} [${DEFAULT_MODELS[choice]}]: `);
+    next.defaultModel = dm.trim() || DEFAULT_MODELS[choice];
+  } else if (choice === "ollama") {
+    const url = await rl.question(`Ollama base URL [${current.ollamaBaseUrl || DEFAULT_BASE_URLS.ollama}]: `);
+    next.ollamaBaseUrl = url.trim() || current.ollamaBaseUrl || DEFAULT_BASE_URLS.ollama;
+    console.log(`Probing models at ${next.ollamaBaseUrl} …`);
+    const models = await listOllamaModels(next.ollamaBaseUrl!);
+    if (models.length) {
+      console.log("Detected local Ollama models:");
+      models.slice(0, 20).forEach((m, i) => console.log(`  - ${m}`));
+      const def = await rl.question(`Default model (ollama/<name>) [${"ollama/" + (models[0] ?? "llama3.1:8b")}]: `);
+      next.defaultModel = def.trim() || `ollama/${models[0] ?? "llama3.1:8b"}`;
+    } else {
+      console.log("  (no models detected — Ollama not reachable, defaulting to llama3.1:8b)");
+      const def = await rl.question(`Default model [${DEFAULT_MODELS.ollama}]: `);
+      next.defaultModel = def.trim() || DEFAULT_MODELS.ollama;
+    }
+  } else if (choice === "lmstudio" || choice === "openai-compatible") {
+    const dflt = DEFAULT_BASE_URLS[choice]!;
+    const url = (await rl.question(`Base URL [${dflt}]: `)).trim() || dflt;
+    const key = (await rl.question(`API key (optional, blank for none): `)).trim();
+    // Reuse the openai slot for compat (loop.ts treats OpenAI URL when openai key is set).
+    // To not collide, keep an explicit override field via env-style.
+    next.providers.openai = key || next.providers.openai;
+    process.env.OPENAI_BASE_URL = url; // session hint
+    console.log(`Probing models at ${url} …`);
+    const models = await listOpenAiCompatibleModels(url, key);
+    if (models.length) {
+      console.log("Detected models:");
+      models.slice(0, 20).forEach(m => console.log(`  - ${m}`));
+      const def = await rl.question(`Default model (openai/<name>) [openai/${models[0]}]: `);
+      next.defaultModel = def.trim() || `openai/${models[0]}`;
+    } else {
+      console.log("  (no models detected — endpoint not reachable yet)");
+      const def = await rl.question(`Default model [${DEFAULT_MODELS[choice]}]: `);
+      next.defaultModel = def.trim() || DEFAULT_MODELS[choice];
+    }
+    // Persist base URL by writing it to the config via a non-typed field — adopt a small extension.
+    (next as Config & { openaiBaseUrl?: string }).openaiBaseUrl = url;
+  }
+
+  const level = (await rl.question(`Thinking level (low/medium/high) [${current.thinkingLevel || "medium"}]: `)).trim();
+  next.thinkingLevel = (level || current.thinkingLevel || "medium") as "low" | "medium" | "high";
 
   rl.close();
 
-  const config: Config = {
-    providers: {
-      anthropic: anthropic.trim() || current.providers.anthropic,
-      openai: openai.trim() || current.providers.openai,
-      gemini: gemini.trim() || current.providers.gemini,
-    },
-    defaultModel: defaultModel.trim() || current.defaultModel || "claude-3-5-sonnet",
-    thinkingLevel: (thinkingLevel.trim() || current.thinkingLevel || "medium") as "low" | "medium" | "high",
-  };
+  // Drop empty oauth/providers to keep config tidy.
+  if (next.oauth && !next.oauth.anthropic && !next.oauth.openai && !next.oauth.gemini) delete next.oauth;
 
-  await saveGlobalConfig(config);
-  console.log("\n[SUCCESS] Global configuration successfully saved to ~/.joc/config.json");
-  console.log(`Default model: ${config.defaultModel}`);
-  console.log(`Configured providers: ${Object.keys(config.providers).filter(k => config.providers[k as keyof typeof config.providers]).join(", ") || "None"}\n`);
+  await saveGlobalConfig(next);
+  console.log("\n[SUCCESS] Configuration saved to ~/.joc/config.json");
+  console.log(`Default model: ${next.defaultModel}`);
+  const enabled: string[] = [];
+  if (next.providers.anthropic || next.oauth?.anthropic) enabled.push("anthropic");
+  if (next.providers.openai || next.oauth?.openai) enabled.push("openai");
+  if (next.providers.gemini || next.oauth?.gemini) enabled.push("gemini");
+  if (next.ollamaBaseUrl) enabled.push(`ollama(${next.ollamaBaseUrl})`);
+  if ((next as Config & { openaiBaseUrl?: string }).openaiBaseUrl) enabled.push(`openai-compatible(${(next as Config & { openaiBaseUrl?: string }).openaiBaseUrl})`);
+  console.log(`Enabled providers: ${enabled.join(", ") || "None"}\n`);
 }

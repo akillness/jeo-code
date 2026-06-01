@@ -40,7 +40,9 @@ export async function callLlm(
   // 3. Resolve credential: OAuth bearer token takes precedence over the API key.
   const oauthToken = config.oauth?.[provider];
   const apiKey = config.providers[provider];
-  if (!oauthToken && !apiKey) {
+  // OpenAI-compatible local servers may be keyless when openaiBaseUrl is set.
+  const isLocalOpenAi = provider === "openai" && !!config.openaiBaseUrl;
+  if (!oauthToken && !apiKey && !isLocalOpenAi) {
     throw new Error(
       `No credential for provider '${provider}'. Run 'joc setup', 'joc auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
     );
@@ -142,11 +144,15 @@ async function callOpenAi(
     payload.response_format = { type: "json_object" };
   }
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const base =
+    (await readGlobalConfig()).openaiBaseUrl ||
+    process.env.OPENAI_BASE_URL ||
+    "https://api.openai.com/v1";
+  const response = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      Authorization: `Bearer ${oauthToken ?? apiKey}`,
+      Authorization: `Bearer ${oauthToken ?? apiKey ?? "no-key"}`,
     },
     body: JSON.stringify(payload),
   });

@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { runSetupCommand } from "./commands/setup";
+import { runAuthCommand } from "./commands/auth";
 import { runDeepInterviewCommand } from "./commands/deep-interview";
 import { runRalplanCommand } from "./commands/ralplan";
 import { runTeamCommand } from "./commands/team";
@@ -27,6 +28,9 @@ async function runCli(): Promise<void> {
   switch (first) {
     case "setup":
       await runSetupCommand();
+      break;
+    case "auth":
+      await runAuthCommand(args);
       break;
     case "deep-interview":
       await runDeepInterviewCommand(args);
@@ -56,10 +60,14 @@ Usage:
   joc <command> [arguments]
 
 Commands:
-  setup            Configure LLM providers and default models interactively.
+  setup            Configure LLM providers (API key / OAuth / local) + default model.
+  auth [sub]       Manage OAuth bearer tokens. sub ∈ {login, logout, status}.
+                   Examples:  joc auth status
+                              joc auth login anthropic
+                              joc auth logout openai
   deep-interview   Execute Socratic requirements interview.
                    Locks mutating tools while ambiguity score > 20%.
-  ralplan          Create planning blueprint blueprint (Planner/Architect/Critic).
+  ralplan          Create planning blueprint (Planner/Architect/Critic).
   team             Execute the planning blueprint (Executor subagent tools).
   ultragoal        Verify goals and run acceptance checks.
 

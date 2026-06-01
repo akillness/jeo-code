@@ -1,93 +1,285 @@
 # @jeo-code Architectural Analysis & GJC Improvements
 
-This document outlines the architectural analysis of `gajae-code` (`gjc`) and details the structural design and improvements implemented in `@jeo-code/` to deliver a production-ready, highly dependable, and standard-compliant AI coding agent (`joc`).
+This document tracks the architectural analysis of `gajae-code` (`gjc`) and the design
+of `@jeo-code/` (`joc`) — a leaner, portable spec-first coding agent that re-implements
+GJC's core loop in pure TypeScript on Bun.
+
+> Updated continuously. Last refresh: 2026-06-02.
 
 ---
 
-## 1. Gajae-Code (`gjc`) Architectural Overview
+## 1. Gajae-Code (`gjc`) — Source-Level Inventory
 
-The `gajae-code` repository is structured as a Bun-powered monorepo with separate packages handling core runtime, LLM gateway, CLI TUI, native extensions, and statistical telemetry.
+`Yeachan-Heo/gajae-code` is a Bun + Rust + Python monorepo. We mapped it directly from
+the GitHub tree (`packages/`) to understand which complexity is *essential* (workflow
+contract) vs. *incidental* (TUI, native add-ons, monorepo scaffolding).
 
-### Core Package Map:
-- **`packages/gajae-code`**: Direct npm binary wrapper containing the `gjc` binary, delegating to `@gajae-code/coding-agent`.
-- **`packages/coding-agent`**: Main CLI coordinator, built-in tool definitions, session storage, tmux parallel execution engine, and embedded default skills.
-- **`packages/ai`**: LLM provider-model isolation boundary. Handles API serialization, token calculation, retry/overflow, and thinking/reasoning parameters.
-- **`packages/agent`**: Stateful agent loop. Transforms message arrays, handles token compression/compaction, triggers tool calling, and raises lifecycle events.
-- **`packages/tui`**: Custom Terminal UI layout engines. Implements autocomplete, Kitty sixel rendering, interactive text editors, and box layouts.
-- **`packages/natives` / Rust crates**: High-performance Native add-on (`n-api`). Provides AST-based code search, regex globbing, process PTY orchestration, custom shell interpreters (`brush`), text wrapping, and SIXEL rendering.
-- **`packages/stats`**: Observability telemetry collector and SQLite-backed dashboard server.
-- **`packages/swarm-extension`**: Optional multi-agent YAML/DAG runner.
+### 1.1 Package map (top-level)
 
----
+| Package | Responsibility | Essential? |
+|---|---|---|
+| `packages/gajae-code` | npm-published thin wrapper exporting the `gjc` bin | No — pure packaging |
+| `packages/coding-agent` | CLI entry, commands, skills, executor, tmux orchestration | **Yes** — workflow lives here |
+| `packages/ai` | Provider gateway, OAuth broker, model registry, transform layer | **Yes** — credential plumbing |
+| `packages/agent` | Stateful agent loop, message compaction, lifecycle events | Yes — but trivially shrinkable |
+| `packages/tui` | Custom layout engine, sixel rendering, autocomplete | No — TUI is replaceable with stream output |
+| `packages/natives` + `crates/` | Rust `n-api` add-ons: AST search, regex glob, PTY, sixel | No — pure-TS substitutes exist |
+| `packages/stats` | SQLite-backed observability dashboard | Optional |
+| `packages/swarm-extension` | Multi-agent DAG runner | Optional |
+| `packages/typescript-edit-benchmark` | Edit benchmark harness | No |
+| `packages/utils` | Shared CLI helpers (`@gajae-code/utils/cli`) | No |
 
-## 2. Core Workflow Flow Analysis
+### 1.2 `packages/coding-agent/src/commands/` (full list, 26 commands)
 
-The defining feature of `gjc` is its focused core pipeline:
-
-```text
-deep-interview ──> ralplan ──> team execution ──> ultragoal verification
+```
+acp.ts            agents.ts        auth-broker.ts       auth-gateway.ts
+codex-native-hook.ts                commit.ts            config.ts
+contribution-prep.ts                deep-interview.ts    grep.ts
+launch.ts          plugin.ts        ralplan.ts           read.ts
+session.ts         setup.ts         shell.ts             skills.ts
+ssh.ts             state.ts         stats.ts             team.ts
+ultragoal.ts       update.ts        web-search.ts        worktree.ts
 ```
 
-### Flow Step Primitives:
-1. **`deep-interview` (Requirements Phase)**:
-   - Removes ambiguity before any code changes are attempted.
-   - Computes an **Ambiguity Score** (target threshold: `≤ 20%`).
-   - **Mutation Guard**: While an interview is active (unresolved), the CLI strictly locks code-mutating tools (`edit`, `write`, `ast_edit`). The agent is only permitted to modify spec/plan folders (e.g. `.gjc/specs/`). This guarantees that implementation never gets ahead of requirements.
-2. **`ralplan` (Planning Phase)**:
-   - Builds a step-by-step sequence and criteria list before executing.
-   - Uses Planner, Architect, and Critic subagents in a review loop to refine the plan.
-3. **`team` (tmux Parallel Execution Phase)**:
-   - Coordinates parallel workers running in branch-isolated Git worktrees or custom tmux windows.
-4. **`ultragoal` (Durable Verification Phase)**:
-   - Continually measures execution progress against checkpoints and collects verifiable evidence.
+The core workflow surface is **4 commands**: `deep-interview`, `ralplan`, `team`,
+`ultragoal`. The rest is auxiliary (auth, sessions, ssh, plugins, stats, worktree,
+web-search, etc.). `@jeo-code/` deliberately ships only the core 4 + `setup` + `auth`,
+keeping the runtime surface area ~4× smaller than GJC.
+
+### 1.3 `packages/ai/src/providers/` — provider matrix
+
+GJC supports the following providers natively (file names below are evidence):
+
+| Provider | File(s) | Auth |
+|---|---|---|
+| Anthropic | `anthropic.ts`, `anthropic-messages-server*.ts` | API key + OAuth bearer (`anthropic-beta: oauth-2025-04-20`) |
+| OpenAI (Chat) | `openai-completions.ts`, `openai-chat-server*.ts` | API key + OAuth |
+| OpenAI (Responses) | `openai-responses*.ts`, `openai-codex-responses.ts` | OAuth (Codex CLI flow) |
+| Azure OpenAI | `azure-openai-responses.ts` | Azure AD bearer |
+| Google Gemini | `google.ts`, `google-auth.ts`, `google-gemini-cli.ts` | API key + `gcloud` OAuth |
+| Google Vertex | `google-vertex.ts` | Service-account OAuth |
+| Amazon Bedrock | `amazon-bedrock.ts`, `aws-sigv4.ts`, `aws-eventstream.ts` | AWS SigV4 |
+| Ollama | `ollama.ts` | Keyless, local |
+| GitHub Copilot | `github-copilot-headers.ts` | GitHub OAuth |
+| GitLab Duo | `gitlab-duo.ts` | GitLab OAuth |
+| Kimi | `kimi.ts` | API key |
+| Cursor | `cursor.ts` (+ `cursor/`) | OAuth |
+| `openai-anthropic-shim.ts` | Shim that lets OpenAI clients hit Anthropic | n/a |
+| `mock.ts`, `synthetic.ts` | Test fakes | n/a |
+
+OAuth machinery lives in `packages/ai/src/auth-broker/`:
+`client.ts`, `server.ts`, `refresher.ts`, `remote-store.ts`, `types.ts`,
+`wire-schemas.ts`. There is a **separate broker process** that owns refresh tokens and
+hands out short-lived bearers — heavyweight for a small CLI, but appropriate for a
+shared multi-tenant tool.
+
+### 1.4 Skills layout
+
+```
+packages/coding-agent/src/defaults/gjc/skills/
+  deep-interview/SKILL.md
+  ralplan/SKILL.md
+  team/SKILL.md
+  ultragoal/SKILL.md
+```
+
+Each command in `commands/*.ts` is a thin shell that calls
+`runNativeDeepInterviewCommand(this.argv, process.cwd())` (etc.) from
+`../gjc-runtime/<skill>-runtime`. The runtime layer does the real work; the command
+file just parses flags. This double layer exists because GJC also exposes skills as
+embeddable MCP-style modules.
 
 ---
 
-## 3. Structural Improvements in `@jeo-code/`
+## 2. The Core Workflow Contract
 
-While GJC is highly capable, the monorepo has significant complexities, heavy dependencies (such as custom Rust native addons), and tight coupling between TUI components and core execution logic.
+Stripped of GJC's incidental complexity, the contract `@jeo-code/` honors is:
 
-`@jeo-code/` improves upon `gjc` by implementing the following core changes:
+```
+deep-interview ──> ralplan ──> team ──> ultragoal
+   (clarify)      (plan)     (execute)   (verify)
+       │
+   [Mutation Lock active while ambiguity > 0.2]
+```
 
-| Improvement Domain | Gajae-Code (`gjc`) | `@jeo-code/` CLI (`joc`) |
-| --- | --- | --- |
-| **Dependency Weight** | Highly heavy, relies on native Rust addons (`@gajae-code/natives`) which complicates cross-platform compilation/installation. | Pure, highly-optimized TypeScript and Bun primitives. Uses standard AST parsers and system processes directly, making it extremely portable. |
-| **Model/Provider Setup** | Complex configuration merging cached files, remote registries, and environment overrides. | Unified, interactive `joc setup` onboarding that easily writes to `~/.joc/config.json`, storing API keys and default models explicitly. |
-| **TUI & Print Coupling** | Highly coupled TUI widgets. Running non-interactively still spins up heavy layout states. | Clear decoupling. A sleek, stream-oriented Print interface for one-off commands and a standard TUI layout built on standard ANSI terminals. |
-| **Mutation Locking** | Checked dynamically inside tool schemas. | Explicit, state-driven `MutationGuard` middleware that wraps tool registration, failing immediately with a clean error when active. |
-| **Core Flow Integration** | Skills are loaded as separate embedded Markdown/YAML specs. | State is preserved directly in a persistent SQLite database under `~/.joc/joc.db`, allowing seamless resumes and history navigation. |
+### 2.1 Ambiguity gate (deep-interview)
+
+- Three dimensions: Goal Clarity, Constraint Completeness, Success Definition.
+- Threshold: ambiguity ≤ 0.2 (20%) before the seed freezes.
+- Mutation guard: while interview is `active` and `current_phase !== "complete"`,
+  any tool that would write outside `.joc/` is rejected.
+
+### 2.2 Frozen seed
+
+YAML written to `.joc/seeds/seed-<slug>.yaml`. After freeze, the spec is immutable
+for the duration of the lineage — re-running deep-interview creates a new slug.
+
+### 2.3 Plan blueprint (ralplan)
+
+Single-shot Planner/Architect/Critic prompt over the seed. Output: YAML with `goal`
+and `steps:` list, persisted to `.joc/plans/plan-<slug>.yaml`.
+
+### 2.4 Executor loop (team)
+
+Per task: agentic JSON tool-call loop with `read`/`write`/`edit`/`bash`/`find`/
+`search`/`done`. Max 15 steps per task. Tasks executed sequentially against the
+plan's step list. Completed/pending state is checkpointed to
+`.joc/state/team-state.json` so a crashed run can resume mid-plan.
+
+### 2.5 Verification (ultragoal)
+
+Loads acceptance criteria from the seed, infers a verification command per
+criterion (defaults: `bun test`; criteria mentioning *"run"* or *"cli"* fall back
+to `bun run src/cli.ts --help`), and writes a verification matrix to
+`.joc/state/ultragoal-report.md`.
 
 ---
 
-## 4. `@jeo-code/` System Design
+## 3. Improvements Implemented in `@jeo-code/`
 
-The `@jeo-code/` workspace is organized for clean execution via Bun:
-
-- `.joc/`: Dedicated runtime directory (analogous to `.gjc/`) storing project state.
-- `.joc/seeds/`: Stores frozen specification files (`seed.yaml`) generated by `deep-interview`.
-- `.joc/plans/`: Stores plans generated by `ralplan`.
-- `.joc/state/`: Active workflow states.
-- `~/.joc/config.json`: User global configuration containing provider keys and default models.
-
-### Standard Verification Pipeline:
-We will write a fully functional CLI agent, set up Anthropic/Gemini/OpenAI model routing, embed Socratic ambiguity criteria, enforce mutation-blocking, and test the entire installation-to-execution workflow directly in the terminal.
+| Domain | GJC | joc |
+|---|---|---|
+| **Footprint** | 12+ packages, Rust crates, Python utils | 1 package, pure TypeScript, no native deps |
+| **Install** | `bun install -g gajae-code` (or workspace bootstrap) + native build | `./install.sh` → `bun install` + symlink to `~/.local/bin/joc` |
+| **Providers** | 14 backends with broker process | 5 backends inline: Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible (LM Studio / vLLM / llama-cpp-server) |
+| **OAuth** | Long-lived broker with refresh tokens | Bearer-token store in `~/.joc/config.json` (chmod 600), `joc auth login/logout/status`, env-overlay (`ANTHROPIC_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_OAUTH_TOKEN`, `GEMINI_OAUTH_TOKEN`) |
+| **Local models** | Ollama only | Ollama (`/api/chat`) + any OpenAI-compatible endpoint via `openaiBaseUrl` |
+| **Setup UX** | Multi-file merge (cached + remote + env) | Single interactive picker; live `/api/tags` and `/v1/models` probe to autodetect available models |
+| **Mutation Guard** | Tool-schema check inside provider | Process-level middleware (`assertMutationAllowed`) called by every write/edit/bash; checks the active deep-interview state and rejects writes outside `.joc/` with a precise error including the live ambiguity score |
+| **TUI coupling** | Heavy custom layout (Kitty sixel etc.) | Plain ANSI stream output; works on any terminal |
+| **State** | SQLite + session tables | Plain JSON files per skill under `.joc/state/<skill>-state.json` — trivially inspectable, no schema migrations |
 
 ---
 
-## 5. Provider Runtime: OAuth, Local Ollama, Model Routing (implemented)
+## 4. `@jeo-code/` — System Map
 
-Building on `joc setup`'s API-key config, the LLM gateway (`src/agent/loop.ts` + `src/agent/state.ts`) now mirrors `gjc`'s auth-broker breadth while staying dependency-free:
+```
+@jeo-code/
+├── coding-agent/
+│   ├── package.json        # bun bin: { joc: src/cli.ts }
+│   ├── src/
+│   │   ├── cli.ts          # arg dispatch
+│   │   ├── index.ts        # SDK re-exports
+│   │   ├── agent/
+│   │   │   ├── state.ts    # Config + workflow state + env overlay
+│   │   │   ├── loop.ts     # callLlm() → Anthropic/OpenAI/Gemini/Ollama
+│   │   │   └── tools.ts    # read/write/edit/bash/find/search + MutationGuard
+│   │   └── commands/
+│   │       ├── setup.ts          # Interactive provider/model picker
+│   │       ├── auth.ts           # OAuth login/logout/status
+│   │       ├── deep-interview.ts # Socratic loop + ambiguity scoring
+│   │       ├── ralplan.ts        # Planner/Architect/Critic
+│   │       ├── team.ts           # Executor tool loop
+│   │       └── ultragoal.ts      # Acceptance verification + report
+│   └── tsconfig.json
+├── install.sh
+├── docs/improvements.md    # this file
+└── README.md
+```
 
-| Capability | Detail |
-| --- | --- |
-| **Model routing** | Provider inferred from the model id: `ollama/*` → Ollama (local), `gpt*`/`o1`/`openai/*` → OpenAI, `gemini*`/`google/*` → Gemini, else Anthropic. `defaultModel` (or `JOC_DEFAULT_MODEL`) selects it. |
-| **OAuth (Bearer)** | `config.oauth.{anthropic,openai,gemini}` or env `*_OAUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN`. OAuth **takes precedence** over API keys. Anthropic sends `Authorization: Bearer` + `anthropic-beta: oauth-2025-04-20` (instead of `x-api-key`); Gemini drops `?key=` for a Bearer header; OpenAI uses the Bearer slot. |
-| **Local provider (Ollama)** | `ollama/<model>` calls `${ollamaBaseUrl}/api/chat` (default `http://localhost:11434`, or `OLLAMA_HOST`), **keyless**, fully offline. |
-| **Env overlay** | `readGlobalConfig` overlays env OAuth tokens + Ollama base over `~/.joc/config.json`, so credentials work with or without a saved config. |
+Runtime artefacts the agent creates inside any project:
 
-### Verification (this iteration)
-- `joc --version` runs from the new monorepo (`bun src/cli.ts`).
-- Real local inference through the new gateway: `callLlm([...], { model: "ollama/qwen2.5:0.5b" })` returned a live completion from a locally-pulled model — the offline path works end-to-end.
-- OAuth/key precedence and per-provider header shapes implemented in `callAnthropic` / `callOpenAi` / `callGemini`.
+```
+<project>/.joc/
+├── seeds/seed-<slug>.yaml        # frozen spec
+├── plans/plan-<slug>.yaml        # ralplan output
+└── state/
+    ├── deep-interview-state.json # active flag + ambiguity score (drives MutationGuard)
+    ├── ralplan-state.json
+    ├── team-state.json           # completed_tasks, pending_tasks
+    └── ultragoal-report.md       # final verification matrix
+```
 
-> Note: an earlier flat `jeoc` CLI prototype (single-file providers + `jeoc auth` PKCE flow) is preserved on the local `pre-reinit-flat-cli` branch; this section ports its provider/OAuth/local-Ollama capabilities onto the maintainer's `@jeo-code/coding-agent` (`joc`) monorepo base.
+Global config:
+
+```
+~/.joc/config.json  (chmod 600)
+{
+  "providers":   { "anthropic": "sk-...", "openai": "sk-...", "gemini": "..." },
+  "oauth":       { "anthropic": "<bearer>", "openai": "<bearer>", "gemini": "<bearer>" },
+  "ollamaBaseUrl":  "http://localhost:11434",
+  "openaiBaseUrl":  "http://localhost:1234/v1",   // LM Studio etc.
+  "defaultModel":   "openai/local-model",
+  "thinkingLevel":  "medium"
+}
+```
+
+Environment overlay (env fills gaps but never overrides on-disk values):
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
+`ANTHROPIC_OAUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN`,
+`OPENAI_OAUTH_TOKEN`, `GEMINI_OAUTH_TOKEN`,
+`OLLAMA_HOST`, `OPENAI_BASE_URL`, `JOC_DEFAULT_MODEL`.
+
+---
+
+## 5. Installation → first-run flow
+
+```bash
+# 1. Install
+./install.sh                       # bun install + symlink ~/.local/bin/joc
+
+# 2. Configure a provider (choose one)
+joc setup                          # interactive — pick a provider (1-6), key/OAuth/local URL
+joc auth login anthropic           # paste Claude OAuth bearer from console.anthropic.com
+joc auth login openai              # paste OpenAI session token
+joc auth login gemini              # paste gcloud access token
+# or local-only (no setup needed if Ollama is running):
+export OLLAMA_HOST=http://localhost:11434
+export JOC_DEFAULT_MODEL=ollama/llama3.1:8b
+
+# 3. Verify configuration
+joc auth status
+
+# 4. Run the spec-first loop
+joc deep-interview "build a CLI task manager with SQLite"
+joc ralplan
+joc team
+joc ultragoal
+```
+
+### Provider routing rule (`loop.ts`)
+
+| Model prefix / substring | Routed to |
+|---|---|
+| `ollama/<name>` | Ollama at `ollamaBaseUrl` |
+| `openai/<name>` or contains `gpt`/`o1` | OpenAI Chat Completions (or `openaiBaseUrl` for LM Studio / vLLM) |
+| contains `gemini` or `google/<name>` | Gemini `generativelanguage` API |
+| everything else | Anthropic Messages API |
+
+---
+
+## 6. Verified End-to-End Behaviour
+
+Tested on Bun `1.3.14` against a mock OpenAI-compatible server:
+
+| Step | Expected | Observed |
+|---|---|---|
+| `./install.sh` | symlink to `~/.local/bin/joc` | ✅ symlink created |
+| `joc --version` | prints `joc v0.1.0` | ✅ |
+| `joc --help` | shows 6 commands incl. `auth` | ✅ |
+| `joc auth status` | renders provider/key/oauth matrix + default model | ✅ |
+| **MutationGuard** while interview active | rejects writes outside `.joc/`, allows writes inside `.joc/` | ✅ |
+| **MutationGuard** after interview complete | allows writes everywhere | ✅ |
+| `joc deep-interview` against mock | writes `.joc/seeds/seed-<slug>.yaml` | ✅ |
+| `joc ralplan` | reads seed, writes `.joc/plans/plan-<slug>.yaml` | ✅ |
+| `joc team` | executor loop completes 3 tasks, writes `team-state.json` | ✅ |
+| `joc ultragoal` | parses acceptance criteria, runs verification, writes report | ✅ |
+| Loop credential resolution | OAuth bearer > API key, local OpenAI-compatible keyless | ✅ |
+
+---
+
+## 7. Known limitations / planned work
+
+- The deep-interview command uses `node:readline/promises`, which closes when stdin is
+  non-TTY and reaches EOF. Live terminals work; scripted stdin requires either a TTY
+  proxy (`script -q`) or an `--auto` mode that supplies clarifications from a YAML.
+  An `--auto answers.yaml` flag is the next logical addition.
+- The `team` command's task parser is a permissive line scan; structured YAML parsing
+  (e.g. `yaml` package) would strip the double-quote artefacts visible in current
+  output (`"Create src/tasks.py scaffold"`).
+- Anthropic OAuth uses the published `anthropic-beta: oauth-2025-04-20` header. When
+  Anthropic GA's the OAuth surface we should drop the beta header.
+- Token refresh is not yet automated. Bearer tokens must be re-pasted on expiry. A
+  refresher equivalent to GJC's `auth-broker/refresher.ts` is the next upgrade.
+- `ultragoal` infers verification commands heuristically. A dedicated `verify:` block
+  inside the seed (overrideable per criterion) would make verification deterministic.

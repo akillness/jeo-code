@@ -71,3 +71,23 @@ The `@jeo-code/` workspace is organized for clean execution via Bun:
 
 ### Standard Verification Pipeline:
 We will write a fully functional CLI agent, set up Anthropic/Gemini/OpenAI model routing, embed Socratic ambiguity criteria, enforce mutation-blocking, and test the entire installation-to-execution workflow directly in the terminal.
+
+---
+
+## 5. Provider Runtime: OAuth, Local Ollama, Model Routing (implemented)
+
+Building on `joc setup`'s API-key config, the LLM gateway (`src/agent/loop.ts` + `src/agent/state.ts`) now mirrors `gjc`'s auth-broker breadth while staying dependency-free:
+
+| Capability | Detail |
+| --- | --- |
+| **Model routing** | Provider inferred from the model id: `ollama/*` → Ollama (local), `gpt*`/`o1`/`openai/*` → OpenAI, `gemini*`/`google/*` → Gemini, else Anthropic. `defaultModel` (or `JOC_DEFAULT_MODEL`) selects it. |
+| **OAuth (Bearer)** | `config.oauth.{anthropic,openai,gemini}` or env `*_OAUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN`. OAuth **takes precedence** over API keys. Anthropic sends `Authorization: Bearer` + `anthropic-beta: oauth-2025-04-20` (instead of `x-api-key`); Gemini drops `?key=` for a Bearer header; OpenAI uses the Bearer slot. |
+| **Local provider (Ollama)** | `ollama/<model>` calls `${ollamaBaseUrl}/api/chat` (default `http://localhost:11434`, or `OLLAMA_HOST`), **keyless**, fully offline. |
+| **Env overlay** | `readGlobalConfig` overlays env OAuth tokens + Ollama base over `~/.joc/config.json`, so credentials work with or without a saved config. |
+
+### Verification (this iteration)
+- `joc --version` runs from the new monorepo (`bun src/cli.ts`).
+- Real local inference through the new gateway: `callLlm([...], { model: "ollama/qwen2.5:0.5b" })` returned a live completion from a locally-pulled model — the offline path works end-to-end.
+- OAuth/key precedence and per-provider header shapes implemented in `callAnthropic` / `callOpenAi` / `callGemini`.
+
+> Note: an earlier flat `jeoc` CLI prototype (single-file providers + `jeoc auth` PKCE flow) is preserved on the local `pre-reinit-flat-cli` branch; this section ports its provider/OAuth/local-Ollama capabilities onto the maintainer's `@jeo-code/coding-agent` (`joc`) monorepo base.

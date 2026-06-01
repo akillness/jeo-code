@@ -8,6 +8,14 @@ export interface Config {
     openai?: string;
     gemini?: string;
   };
+  /** OAuth bearer tokens (take precedence over API keys for the same provider). */
+  oauth?: {
+    anthropic?: string;
+    openai?: string;
+    gemini?: string;
+  };
+  /** Base URL for the local Ollama server (keyless). */
+  ollamaBaseUrl?: string;
   defaultModel: string;
   thinkingLevel?: "low" | "medium" | "high";
 }
@@ -30,13 +38,32 @@ export interface WorkflowState {
 const GLOBAL_CONFIG_DIR = path.join(os.homedir(), ".joc");
 const GLOBAL_CONFIG_PATH = path.join(GLOBAL_CONFIG_DIR, "config.json");
 
+function envOAuth(): NonNullable<Config["oauth"]> {
+  return {
+    anthropic: process.env.ANTHROPIC_OAUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN,
+    openai: process.env.OPENAI_OAUTH_TOKEN,
+    gemini: process.env.GEMINI_OAUTH_TOKEN,
+  };
+}
+
+/** Merge env-provided OAuth tokens / Ollama base over a config (env fills gaps only). */
+function withEnvOverlay(cfg: Config): Config {
+  const envTok = envOAuth();
+  const oauth = { ...envTok, ...(cfg.oauth ?? {}) };
+  return {
+    ...cfg,
+    oauth,
+    ollamaBaseUrl: cfg.ollamaBaseUrl || process.env.OLLAMA_HOST || "http://localhost:11434",
+  };
+}
+
 export async function readGlobalConfig(): Promise<Config> {
   try {
     const data = await fs.readFile(GLOBAL_CONFIG_PATH, "utf-8");
-    return JSON.parse(data) as Config;
+    return withEnvOverlay(JSON.parse(data) as Config);
   } catch {
     // Fallback to environment variables
-    return {
+    return withEnvOverlay({
       providers: {
         anthropic: process.env.ANTHROPIC_API_KEY,
         openai: process.env.OPENAI_API_KEY,
@@ -44,7 +71,7 @@ export async function readGlobalConfig(): Promise<Config> {
       },
       defaultModel: process.env.JOC_DEFAULT_MODEL || "claude-3-5-sonnet",
       thinkingLevel: "medium",
-    };
+    });
   }
 }
 

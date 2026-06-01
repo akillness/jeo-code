@@ -22,39 +22,48 @@ export async function callLlm(
   const temperature = options.temperature ?? 0.2;
   const maxTokens = options.maxTokens ?? 4000;
 
-  // 1. Determine provider from model name
-  let provider: "anthropic" | "openai" | "gemini" = "anthropic";
-  if (model.includes("gpt") || model.includes("o1") || model.startsWith("openai/")) {
+  // 1. Determine provider from model name (ollama = local, keyless)
+  let provider: "anthropic" | "openai" | "gemini" | "ollama" = "anthropic";
+  if (model.startsWith("ollama/")) {
+    provider = "ollama";
+  } else if (model.includes("gpt") || model.includes("o1") || model.startsWith("openai/")) {
     provider = "openai";
   } else if (model.includes("gemini") || model.startsWith("google/")) {
     provider = "gemini";
   }
 
-  // 2. Fetch appropriate key
+  // 2. Local provider needs no credentials.
+  if (provider === "ollama") {
+    return await callOllama(config.ollamaBaseUrl || "http://localhost:11434", model, messages, options, temperature, maxTokens);
+  }
+
+  // 3. Resolve credential: OAuth bearer token takes precedence over the API key.
+  const oauthToken = config.oauth?.[provider];
   const apiKey = config.providers[provider];
-  if (!apiKey) {
+  if (!oauthToken && !apiKey) {
     throw new Error(
-      `API Key for provider '${provider}' is not set. Run 'joc setup' or set the appropriate environment variable (${provider.toUpperCase()}_API_KEY).`
+      `No credential for provider '${provider}'. Run 'joc setup', 'joc auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
     );
   }
 
-  // 3. Make API call based on provider
+  // 4. Make API call based on provider
   if (provider === "anthropic") {
-    return await callAnthropic(apiKey, model, messages, options, temperature, maxTokens);
+    return await callAnthropic(apiKey, model, messages, options, temperature, maxTokens, oauthToken);
   } else if (provider === "openai") {
-    return await callOpenAi(apiKey, model, messages, options, temperature, maxTokens);
+    return await callOpenAi(apiKey, model, messages, options, temperature, maxTokens, oauthToken);
   } else {
-    return await callGemini(apiKey, model, messages, options, temperature, maxTokens);
+    return await callGemini(apiKey, model, messages, options, temperature, maxTokens, oauthToken);
   }
 }
 
 async function callAnthropic(
-  apiKey: string,
+  apiKey: string | undefined,
   model: string,
   messages: Message[],
   options: ChatOptions,
   temperature: number,
-  maxTokens: number
+  maxTokens: number,
+  oauthToken?: string
 ): Promise<string> {
   const resolvedModel = model.startsWith("anthropic/") ? model.slice(10) : model;
   const systemPrompt = options.systemPrompt || messages.find(m => m.role === "system")?.content;
@@ -76,11 +85,18 @@ async function callAnthropic(
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
+    headers: oauthToken
+      ? {
+          "content-type": "application/json",
+          authorization: `Bearer ${oauthToken}`,
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "oauth-2025-04-20",
+        }
+      : {
+          "content-type": "application/json",
+          "x-api-key": apiKey as string,
+          "anthropic-version": "2023-06-01",
+        },
     body: JSON.stringify(payload),
   });
 
@@ -94,12 +110,13 @@ async function callAnthropic(
 }
 
 async function callOpenAi(
-  apiKey: string,
+  apiKey: string | undefined,
   model: string,
   messages: Message[],
   options: ChatOptions,
   temperature: number,
-  maxTokens: number
+  maxTokens: number,
+  oauthToken?: string
 ): Promise<string> {
   const resolvedModel = model.startsWith("openai/") ? model.slice(7) : model;
   const systemPrompt = options.systemPrompt || messages.find(m => m.role === "system")?.content;
@@ -129,7 +146,7 @@ async function callOpenAi(
     method: "POST",
     headers: {
       "content-type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${oauthToken ?? apiKey}`,
     },
     body: JSON.stringify(payload),
   });
@@ -146,12 +163,13 @@ async function callOpenAi(
 }
 
 async function callGemini(
-  apiKey: string,
+  apiKey: string | undefined,
   model: string,
   messages: Message[],
   options: ChatOptions,
   temperature: number,
-  maxTokens: number
+  maxTokens: number,
+  oauthToken?: string
 ): Promise<string> {
   const resolvedModel = model.startsWith("google/") ? model.slice(7) : model;
   const systemPrompt = options.systemPrompt || messages.find(m => m.role === "system")?.content;
@@ -188,12 +206,13 @@ async function callGemini(
     };
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModelName}:generateContent?key=${apiKey}`;
+  const base = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModelName}:generateContent`;
+  const url = oauthToken ? base : `${base}?key=${apiKey}`;
   const response = await fetch(url, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
+    headers: oauthToken
+      ? { "content-type": "application/json", authorization: `Bearer ${oauthToken}` }
+      : { "content-type": "application/json" },
     body: JSON.stringify(payload),
   });
 
@@ -206,4 +225,43 @@ async function callGemini(
     candidates?: { content?: { parts?: { text?: string }[] } }[];
   };
   return result.candidates?.[0]?.content?.parts?.[0]?.text || "";
+}
+
+async function callOllama(
+  baseUrl: string,
+  model: string,
+  messages: Message[],
+  options: ChatOptions,
+  temperature: number,
+  maxTokens: number
+): Promise<string> {
+  const resolvedModel = model.startsWith("ollama/") ? model.slice(7) : model;
+  const systemPrompt = options.systemPrompt || messages.find(m => m.role === "system")?.content;
+  const chatMessages: { role: string; content: string }[] = [];
+  if (systemPrompt) chatMessages.push({ role: "system", content: systemPrompt });
+  for (const msg of messages) {
+    if (msg.role !== "system") chatMessages.push({ role: msg.role, content: msg.content });
+  }
+
+  const payload: Record<string, unknown> = {
+    model: resolvedModel,
+    messages: chatMessages,
+    stream: false,
+    options: { temperature, num_predict: maxTokens },
+  };
+  if (options.jsonMode) payload.format = "json";
+
+  const response = await fetch(`${baseUrl}/api/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Ollama request failed (HTTP ${response.status}) at ${baseUrl}: ${errorText}`);
+  }
+
+  const result = (await response.json()) as { message?: { content?: string } };
+  return result.message?.content || "";
 }

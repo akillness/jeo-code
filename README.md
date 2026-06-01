@@ -60,6 +60,19 @@ joc setup
 ```
 Configuration is stored securely under `~/.joc/config.json`.
 
+### Providers, OAuth & local models
+Model routing is inferred from the model id, and credentials resolve from `~/.joc/config.json` or env:
+
+| Provider | Model id example | Credential |
+| --- | --- | --- |
+| Anthropic | `claude-3-5-sonnet` | `ANTHROPIC_API_KEY` or OAuth (`ANTHROPIC_OAUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN`) |
+| OpenAI | `gpt-4o` | `OPENAI_API_KEY` or `OPENAI_OAUTH_TOKEN` |
+| Gemini | `gemini-2.5-flash` | `GEMINI_API_KEY` or `GEMINI_OAUTH_TOKEN` |
+| Ollama (local) | `ollama/qwen2.5:0.5b` | none — runs offline via `OLLAMA_HOST` (default `http://localhost:11434`) |
+
+- **OAuth tokens take precedence** over API keys (Anthropic uses `Authorization: Bearer` + `anthropic-beta: oauth`; Gemini drops `?key=`; OpenAI uses Bearer).
+- **Local/offline**: set the default model to `ollama/<model>` (e.g. `JOC_DEFAULT_MODEL=ollama/qwen2.5:0.5b`) after `ollama pull <model>` — no key required.
+
 ---
 
 ## 💻 Workflow Commands

@@ -87,8 +87,11 @@ export function loadMerged(): { cfg: JeocConfig; sourcePath: string | null } {
 
 export function resolveConfig(overrides?: Partial<JeocConfig>): ResolvedConfig {
   const { cfg: base, sourcePath } = loadMerged();
-  const cfg = { ...base, ...(overrides ?? {}) } as JeocConfig;
-  if (overrides?.provider && !overrides.model) cfg.model = DEFAULT_MODEL[cfg.provider] ?? cfg.model;
+  const cleanOverrides = Object.fromEntries(
+    Object.entries(overrides ?? {}).filter(([, value]) => value !== undefined),
+  ) as Partial<JeocConfig>;
+  const cfg = { ...base, ...cleanOverrides } as JeocConfig;
+  if (cleanOverrides.provider && !cleanOverrides.model) cfg.model = DEFAULT_MODEL[cfg.provider] ?? cfg.model;
   let apiKey: string | null = cfg.apiKey ?? null;
   let apiKeySource: ResolvedConfig["apiKeySource"] = apiKey ? "config" : "none";
   if (!apiKey) {

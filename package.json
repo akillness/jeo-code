@@ -21,7 +21,7 @@
   "scripts": {
     "jeoc": "bun bin/jeoc.ts",
     "test": "bun test",
-    "smoke": "bash test/smoke.sh"
+    "smoke": "bun test"
   },
   "keywords": [
     "jeoc",

@@ -12,6 +12,7 @@ import {
   DEFAULT_MODEL,
   type ProviderName,
 } from "./config.ts";
+import { callProvider } from "./provider.ts";
 
 /** Curated known models per provider (advisory; any model id still works). */
 export const KNOWN_MODELS: Record<ProviderName, string[]> = {
@@ -73,6 +74,87 @@ export async function runModels(argv: string[]): Promise<void> {
   console.log(`known models for '${provider}' (default: ${DEFAULT_MODEL[provider]}):`);
   for (const m of KNOWN_MODELS[provider] ?? []) console.log(`  ${m}${m === DEFAULT_MODEL[provider] ? "  (default)" : ""}`);
   if (provider === "gemini") console.log("\n  tip: `jeoc models --live` lists exactly what your key can call.");
+}
+
+export async function runDoctor(argv: string[]): Promise<void> {
+  const { flags } = parseArgs(argv);
+  if (flags.help === "true") {
+    console.log(
+      [
+        "jeoc doctor — verify terminal install + provider/model readiness",
+        "",
+        "  jeoc doctor [--provider P] [--model M] [--live] [--probe]",
+        "",
+        "--live   for gemini: list models available to the configured key",
+        "--probe  make a minimal provider call (use with mock for hermetic tests)",
+      ].join("\n"),
+    );
+    return;
+  }
+
+  const provider = flags.provider as ProviderName | undefined;
+  if (provider && !PROVIDERS.includes(provider)) {
+    console.error(`jeoc doctor: unknown provider '${provider}' (choose: ${PROVIDERS.join(", ")})`);
+    process.exit(1);
+  }
+
+  const overrides: { provider?: ProviderName; model?: string } = {};
+  if (provider) overrides.provider = provider;
+  if (flags.model) overrides.model = flags.model;
+  const r = resolveConfig(overrides);
+
+  const known = KNOWN_MODELS[r.provider]?.includes(r.model) ?? false;
+  const envs = DEFAULT_ENV[r.provider] ?? [];
+  const bunVersion = typeof Bun !== "undefined" ? Bun.version : "(not bun)";
+  console.log("jeoc doctor\n");
+  console.log(`  runtime     bun ${bunVersion}`);
+  console.log(`  provider    ${r.provider}`);
+  console.log(`  model       ${r.model}${known ? "  [known]" : "  [custom]"}`);
+  console.log(`  apiKey      ${maskApiKey(r.apiKey)}  [source: ${r.apiKeySource}]`);
+  console.log(`  apiKeyEnv   ${r.apiKeyEnv ?? envs.join("|") ?? "(none)"}`);
+  console.log(`  maxTurns    ${r.maxTurns}`);
+  console.log(`  configFile  ${r.configPath ?? "(none — using defaults)"}`);
+
+  let ok = r.provider === "mock" || !!r.apiKey;
+  if (!ok) {
+    console.log(`\n  FAIL no API key — export ${envs.join(" or ")}=... OR run: jeoc config set apiKey <key>`);
+  }
+
+  if (flags.live === "true") {
+    if (r.provider !== "gemini") {
+      console.log("\n  live model listing is currently implemented for gemini only");
+    } else if (!r.apiKey) {
+      console.log("\n  live model listing skipped: no Gemini API key");
+      ok = false;
+    } else {
+      try {
+        const live = await geminiListModels(r.apiKey);
+        console.log(`\n  liveModels  ${live.length}`);
+        console.log(`  selected    ${live.includes(r.model) ? "available" : "not listed"}`);
+        ok = ok && live.includes(r.model);
+      } catch (e) {
+        console.log(`\n  liveModels  error: ${(e as Error).message}`);
+        ok = false;
+      }
+    }
+  }
+
+  if (flags.probe === "true") {
+    try {
+      const res = await callProvider(r, {
+        system: "Reply with a short readiness acknowledgement.",
+        messages: [{ role: "user", content: "doctor probe" }],
+        tools: [],
+      });
+      console.log(`\n  probe       ok (${res.text.slice(0, 80) || "no text"})`);
+    } catch (e) {
+      console.log(`\n  probe       error: ${(e as Error).message}`);
+      ok = false;
+    }
+  }
+
+  console.log(`\n  status      ${ok ? "READY" : "NOT READY"}`);
+  if (!ok) process.exit(1);
 }
 
 export function runSetup(argv: string[]): void {

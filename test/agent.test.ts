@@ -106,6 +106,20 @@ test("gemini builder: endpoint + key query + functionDeclarations", async () => 
   expect(body.system_instruction.parts[0].text).toBe("s");
 });
 
+test("gemini builder groups consecutive tool results into one user content", async () => {
+  const calls = stubFetch({ candidates: [{ content: { parts: [{ text: "ok" }] } }] });
+  const messages: ChatMessage[] = [
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "", toolCalls: [{ id: "a", name: "bash", args: { cmd: "one" } }, { id: "b", name: "bash", args: { cmd: "two" } }] },
+    { role: "tool", content: "one", toolCallId: "a", toolName: "bash" },
+    { role: "tool", content: "two", toolCallId: "b", toolName: "bash" },
+  ];
+  await callProvider(cfg("gemini", "gemini-2.0-flash"), { system: "s", messages, tools: [tool] });
+  const body = JSON.parse(String(calls[0].init.body));
+  expect(body.contents[2].role).toBe("user");
+  expect(body.contents[2].parts).toHaveLength(2);
+});
+
 test("anthropic builder: /v1/messages + x-api-key + input_schema", async () => {
   const calls = stubFetch({ content: [{ type: "text", text: "ok" }] });
   const res = await callProvider(cfg("anthropic", "claude-3-5-sonnet-latest"), { system: "s", messages: baseMsgs, tools: [tool] });
@@ -116,6 +130,20 @@ test("anthropic builder: /v1/messages + x-api-key + input_schema", async () => {
   expect(headers["anthropic-version"]).toBe("2023-06-01");
   const body = JSON.parse(String(calls[0].init.body));
   expect(body.tools[0].input_schema).toBeDefined();
+});
+
+test("anthropic builder groups consecutive tool results into one user message", async () => {
+  const calls = stubFetch({ content: [{ type: "text", text: "ok" }] });
+  const messages: ChatMessage[] = [
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "", toolCalls: [{ id: "a", name: "bash", args: { cmd: "one" } }, { id: "b", name: "bash", args: { cmd: "two" } }] },
+    { role: "tool", content: "one", toolCallId: "a", toolName: "bash" },
+    { role: "tool", content: "two", toolCallId: "b", toolName: "bash" },
+  ];
+  await callProvider(cfg("anthropic", "claude-3-5-sonnet-latest"), { system: "s", messages, tools: [tool] });
+  const body = JSON.parse(String(calls[0].init.body));
+  expect(body.messages[2].role).toBe("user");
+  expect(body.messages[2].content).toHaveLength(2);
 });
 
 test("openai builder: /v1/chat/completions + Bearer + function tool", async () => {
@@ -154,4 +182,20 @@ test("models lists the known registry with the default marked", () => {
   expect(r.code).toBe(0);
   expect(r.out).toContain("gemini-2.5-flash");
   expect(r.out).toContain("(default)");
+});
+
+test("doctor verifies mock provider readiness and can probe", () => {
+  run(["setup", "--provider", "mock"]);
+  const r = run(["doctor", "--probe"]);
+  expect(r.code).toBe(0);
+  expect(r.out).toContain("provider    mock");
+  expect(r.out).toContain("probe       ok");
+  expect(r.out).toContain("status      READY");
+});
+
+test("doctor fails real provider without an API key", () => {
+  const r = run(["doctor", "--provider", "gemini"], { GEMINI_API_KEY: "", GOOGLE_API_KEY: "" });
+  expect(r.code).not.toBe(0);
+  expect(r.out).toContain("provider    gemini");
+  expect(r.out).toContain("NOT READY");
 });

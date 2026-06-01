@@ -11,7 +11,7 @@
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-green.svg"></a>
   <img alt="runtime" src="https://img.shields.io/badge/runtime-Bun-black?logo=bun">
   <img alt="deps" src="https://img.shields.io/badge/runtime%20deps-0-brightgreen">
-  <img alt="tests" src="https://img.shields.io/badge/tests-19%20passing-brightgreen">
+  <img alt="tests" src="https://img.shields.io/badge/tests-23%20passing-brightgreen">
 </p>
 
 ---
@@ -50,6 +50,7 @@ Uninstall: `bun rm -g jeo-code` (or `bun unlink` from the source dir).
 ```sh
 jeoc help                 # top-level usage
 jeoc agent help
+jeoc doctor
 jeoc config help
 jeoc autopilot help
 jeoc ledger help
@@ -66,6 +67,7 @@ run tool calls → append results → repeat until done or max turns`. Tools: `b
 jeoc setup --provider gemini                 # default model: gemini-2.5-flash
 export GEMINI_API_KEY=...                     # or: jeoc config set apiKey <key>
 jeoc config show                              # resolved config; api key masked
+jeoc doctor                                   # runtime + provider/model/key readiness
 jeoc models --provider gemini --live          # list models your key can actually call
 
 # 2. run the agent on a task
@@ -74,9 +76,9 @@ jeoc agent "summarize this repo" --provider mock     # hermetic, no API key
 jeoc agent "anything" --dry                          # show resolved config, no call
 ```
 
-> Verified live: `jeoc agent` with Gemini `gemini-2.5-flash` wrote `sum.py` (an `add` fn),
-> ran it with `python3`, and reported `5` — a real multi-turn tool-calling session.
-> (Default Gemini model is `gemini-2.5-flash`; `gemini-2.0-flash` free tier is often 0-quota.)
+> Verified live: `jeoc doctor --live` confirmed Gemini key/model readiness (`37` live models,
+> selected model available). `jeoc agent` with Gemini `gemini-2.5-flash` wrote
+> `live-check.txt` via `write_file`, read it back via `read_file`, and reported `jeoc-live-ok`.
 
 | Provider | Endpoint | Auth | Key env |
 | --- | --- | --- | --- |
@@ -141,13 +143,13 @@ Schema: [`ledger/schema.md`](ledger/schema.md).
 ## Develop & test
 
 ```sh
-bun test          # 19 end-to-end tests (agent loop, config/setup/models, providers, autopilot, ledger)
+bun test          # 23 end-to-end tests (agent loop, config/setup/models/doctor, providers, autopilot, ledger)
 bun bin/jeoc.ts   # run the CLI from source
 ```
 
 | Path | What |
 | --- | --- |
-| [`bin/jeoc.ts`](bin/jeoc.ts) | umbrella CLI (`autopilot` / `ledger`) |
+| [`bin/jeoc.ts`](bin/jeoc.ts) | umbrella CLI (`agent` / `setup` / `models` / `doctor` / `autopilot` / `ledger`) |
 | [`src/autopilot.ts`](src/autopilot.ts) | ratchet engine |
 | [`src/ledger.ts`](src/ledger.ts) | cross-plan ledger |
 | [`skills/autopilot/SKILL.md`](skills/autopilot/SKILL.md) | `/skill:autopilot` branch (jeoc) |
@@ -164,6 +166,7 @@ bun bin/jeoc.ts   # run the CLI from source
 | [docs/05-provider-model-layer.md](docs/05-provider-model-layer.md) | gjc provider/model 레이어 → jeoc 미러링 표면 (endpoint/auth/tool schema) |
 | [docs/06-agent-loop-tools.md](docs/06-agent-loop-tools.md) | gjc agent-core turn loop + tool 계약 → jeoc 최소 에이전트 루프 |
 | [docs/07-cli-config-session.md](docs/07-cli-config-session.md) | gjc CLI/config/session 조립 → jeoc config/agent 최소 설계 |
+| [docs/08-terminal-doctor-flow.md](docs/08-terminal-doctor-flow.md) | install→setup→doctor→agent terminal flow and provider/model readiness checks |
 
 > docs 01/02 describe the **real upstream gajae-code** (`gjc`) and intentionally keep its original names.
 

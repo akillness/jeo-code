@@ -13,7 +13,7 @@ import { runAutopilot } from "../src/autopilot.ts";
 import { runLedger } from "../src/ledger.ts";
 import { runConfig } from "../src/config.ts";
 import { runAgent } from "../src/agent.ts";
-import { runSetup, runModels } from "../src/setup.ts";
+import { runSetup, runModels, runDoctor } from "../src/setup.ts";
 
 const VERSION = "0.2.1";
 
@@ -28,6 +28,7 @@ function help(): void {
       "  agent       Run the LLM coding-agent loop on a task",
       "  setup       Configure provider + model (onboarding)",
       "  models      List known/live models for a provider",
+      "  doctor      Verify terminal install + provider/model readiness",
       "  config      Provider + model configuration (gemini/anthropic/openai/mock)",
       "  autopilot   Autonomous build loop (autopilot × autoresearch ratchet)",
       "  ledger      Cross-plan append-only ledger (ledger / review / cleanup)",
@@ -54,6 +55,9 @@ async function main(): Promise<void> {
       break;
     case "models":
       await runModels(rest);
+      break;
+    case "doctor":
+      await runDoctor(rest);
       break;
     case "config":
     case "cfg":

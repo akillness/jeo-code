@@ -87,18 +87,26 @@ async function gemini(cfg: ResolvedConfig, req: ProviderRequest): Promise<Provid
   if (!cfg.apiKey) throw new Error("gemini: no API key (set GEMINI_API_KEY or `jeoc config set apiKey`)");
   const base = cfg.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta";
   const url = `${base}/models/${cfg.model}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`;
-  const contents = req.messages.map((m) => {
+  const contents: unknown[] = [];
+  for (let i = 0; i < req.messages.length; i++) {
+    const m = req.messages[i];
     if (m.role === "tool") {
-      return {
-        role: "user",
-        parts: [{ functionResponse: { name: m.toolName ?? "tool", response: { result: m.content } } }],
-      };
+      const parts: unknown[] = [];
+      while (i < req.messages.length && req.messages[i].role === "tool") {
+        const tool = req.messages[i];
+        parts.push({ functionResponse: { name: tool.toolName ?? "tool", response: { result: tool.content } } });
+        i++;
+      }
+      i--;
+      contents.push({ role: "user", parts });
+      continue;
     }
     if (m.role === "assistant" && m.toolCalls?.length) {
-      return { role: "model", parts: m.toolCalls.map((tc) => ({ functionCall: { name: tc.name, args: tc.args } })) };
+      contents.push({ role: "model", parts: m.toolCalls.map((tc) => ({ functionCall: { name: tc.name, args: tc.args } })) });
+      continue;
     }
-    return { role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] };
-  });
+    contents.push({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] });
+  }
   const body: Record<string, unknown> = {
     system_instruction: { parts: [{ text: req.system }] },
     contents,
@@ -127,18 +135,29 @@ async function gemini(cfg: ResolvedConfig, req: ProviderRequest): Promise<Provid
 async function anthropic(cfg: ResolvedConfig, req: ProviderRequest): Promise<ProviderResponse> {
   if (!cfg.apiKey) throw new Error("anthropic: no API key (set ANTHROPIC_API_KEY or `jeoc config set apiKey`)");
   const base = cfg.baseUrl ?? "https://api.anthropic.com";
-  const messages = req.messages.map((m) => {
+  const messages: unknown[] = [];
+  for (let i = 0; i < req.messages.length; i++) {
+    const m = req.messages[i];
     if (m.role === "tool") {
-      return { role: "user", content: [{ type: "tool_result", tool_use_id: m.toolCallId, content: m.content }] };
+      const content: unknown[] = [];
+      while (i < req.messages.length && req.messages[i].role === "tool") {
+        const tool = req.messages[i];
+        content.push({ type: "tool_result", tool_use_id: tool.toolCallId, content: tool.content });
+        i++;
+      }
+      i--;
+      messages.push({ role: "user", content });
+      continue;
     }
     if (m.role === "assistant" && m.toolCalls?.length) {
       const blocks: unknown[] = [];
       if (m.content) blocks.push({ type: "text", text: m.content });
       for (const tc of m.toolCalls) blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.args });
-      return { role: "assistant", content: blocks };
+      messages.push({ role: "assistant", content: blocks });
+      continue;
     }
-    return { role: m.role, content: m.content };
-  });
+    messages.push({ role: m.role, content: m.content });
+  }
   const body: Record<string, unknown> = {
     model: cfg.model,
     max_tokens: 4096,

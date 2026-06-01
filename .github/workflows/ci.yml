@@ -23,5 +23,10 @@ jobs:
           echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
       - name: Run the installed CLI
         run: |
+          TMP_HOME="$(mktemp -d)"
+          export HOME="$TMP_HOME"
           jeoc --version
           jeoc help
+          jeoc setup --provider mock
+          jeoc doctor --probe
+          jeoc agent "installed cli smoke" --provider mock

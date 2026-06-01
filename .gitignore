@@ -2,3 +2,6 @@ node_modules/
 .joc/
 .DS_Store
 *.log
+.antigravitycli/
+.omc/
+.serena/

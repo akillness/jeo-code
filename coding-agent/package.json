@@ -1,0 +1,18 @@
+{
+  "name": "@jeo-code/coding-agent",
+  "version": "0.1.0",
+  "description": "Clean, highly optimized AI coding agent using spec-first loop",
+  "type": "module",
+  "main": "src/cli.ts",
+  "bin": {
+    "joc": "src/cli.ts"
+  },
+  "dependencies": {
+    "zod": "^3.24.1",
+    "chalk": "^5.3.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.14",
+    "typescript": "^5.6.3"
+  }
+}

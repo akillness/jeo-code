@@ -17,8 +17,11 @@ jobs:
           bun-version: latest
       - name: Run smoke suite
         run: bun test
-      - name: Smoke-install the CLI
+      - name: Link the CLI globally
         run: |
-          bun install -g .
+          bun link
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+      - name: Run the installed CLI
+        run: |
           jeoc --version
           jeoc help

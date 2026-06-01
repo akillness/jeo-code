@@ -1,0 +1,48 @@
+{
+  "name": "jeo-code",
+  "version": "0.1.0",
+  "description": "jeoc — an autopilot×autoresearch ratchet CLI + cross-plan ledger (jeo-code, a gajae-code rebrand study). Zero runtime dependencies.",
+  "type": "module",
+  "bin": {
+    "jeoc": "bin/jeoc.ts"
+  },
+  "files": [
+    "bin",
+    "src",
+    "ledger/schema.md",
+    "skills",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "scripts": {
+    "jeoc": "bun bin/jeoc.ts",
+    "test": "bun test",
+    "smoke": "bash test/smoke.sh"
+  },
+  "keywords": [
+    "jeoc",
+    "jeo-code",
+    "autopilot",
+    "autoresearch",
+    "ratchet",
+    "ledger",
+    "cli",
+    "bun",
+    "agent"
+  ],
+  "license": "MIT",
+  "author": "akillness",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akillness/jeo-code.git"
+  },
+  "homepage": "https://github.com/akillness/jeo-code#readme",
+  "bugs": {
+    "url": "https://github.com/akillness/jeo-code/issues"
+  },
+  "dependencies": {}
+}

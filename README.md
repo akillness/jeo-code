@@ -42,7 +42,7 @@ bun ledger/jeo-ledger.ts status            # 또는 --json
 
 plan은 review=CLEAR + 모든 goal=complete + sweep≥1 일 때만 `verified`. 원장은 append-only(`.jeo/ledger.jsonl`), 상태는 이벤트 폴딩으로 도출.
 
-- 스킬 진입점: [`skills/jeo/SKILL.md`](skills/jeo/SKILL.md) (GJC customDirectories로 `/skill:jeo` 노출)
+- 원장 CLI: [`ledger/jeo-ledger.ts`](ledger/jeo-ledger.ts) (Bun, 의존성 0)
 - 이벤트 스키마: [`ledger/schema.md`](ledger/schema.md)
 - 고정 계약: [`.ouroboros/seeds/seed_jeo-mvp.yaml`](.ouroboros/seeds/seed_jeo-mvp.yaml)
 - 검증: init→register→review→checkpoint→sweep→link→status E2E + 음성 케이스 통과 (verdict=verified)

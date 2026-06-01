@@ -40,17 +40,16 @@ gajae-code는 이 세 가지의 **부분집합**을 이미 가진다(ultragoal �
    - 검증: 2개 이상 동시 plan을 굴릴 때 ultragoal 단일 원장의 한계(스레드당 `/goal clear` 필요)가 마찰인지 측정.
 2. **cleanup을 명시 워크플로로 분리하면 회수율이 오르는가?**
    - 검증: 완료 게이트 내장 cleanup vs 분리 cleanup의 스테일 잔존율 비교.
-3. **GJC customDirectories에 무복사로 얹는 배포가 충분한가?**
-   - 검증: `~/.agents/skills/jeo`로 설치 시 `/skill:jeo` 노출 + RULES.md 연동 동작.
+3. **배포 형태: 독립 CLI가 충분한가, 아니면 GJC 스킬 표면이 필요한가?**
+   - 현 결정: 스킬 표면은 **제거**(사용자 지시). MVP는 독립 원장 CLI만. 향후 필요 시 별도 스킬 래퍼를 재도입할 수 있으나 기본은 CLI.
 
 ## 5. 제안 아키텍처 (얇은 레이어)
 
 ```text
 jeo-code (이 레포)
-├─ skills/jeo/SKILL.md         # GJC customDirectories로 노출되는 통합 진입점
-├─ ledger/                     # 크로스-plan 원장 스키마 + CLI (ultragoal ledger.jsonl 확장)
+├─ ledger/                     # 크로스-plan 원장 (CLI + 스키마)
 │   ├─ schema.md
-│   └─ jeo-ledger.ts (예정)
+│   └─ jeo-ledger.ts          # append-only 원장 CLI (Bun, 의존성 0)
 └─ docs/                       # 본 분석 (현재 단계)
 ```
 
@@ -60,7 +59,7 @@ jeo-code (이 레포)
 ## 6. 로드맵
 
 - [x] **P0 분석**: 아키텍처/표면 문서화, 레포 부트스트랩.
-- [x] **P3 MVP** (seed-first로 선행 실행): `.ouroboros/seeds/seed_jeo-mvp.yaml` 고정 → `skills/jeo/SKILL.md` + `ledger/jeo-ledger.ts`(외부 의존성 0) + `ledger/schema.md`. E2E 검증 통과(verdict=verified). 모호성이 이미 낮아 P1/P2를 생략하고 seed→execute→evaluate 레일로 직행.
+- [x] **P3 MVP** (seed-first로 선행 실행): `.ouroboros/seeds/seed_jeo-mvp.yaml` 고정 → `ledger/jeo-ledger.ts`(외부 의존성 0) + `ledger/schema.md`. E2E 검증 통과(verdict=verified). 모호성이 이미 낮아 P1/P2를 생략하고 seed→execute→evaluate 레일로 직행. (스킬 표면은 사용자 지시로 제거 — MVP는 CLI 단독.)
 - [ ] **P1 스펙(소급/심화)**: `deep-interview`로 cleanup 회수율·크로스-plan 동시성 가설을 정식 스펙화 → `.gjc/specs/`.
 - [ ] **P2 합의 계획**: `ralplan`으로 원장 확장(steering/supersede) 합의 (pending 승인).
 - [ ] **P4 cleanup 루프**: 명시 cleanup 워크플로 + 스테일 회수율 측정.
@@ -68,7 +67,7 @@ jeo-code (이 레포)
 
 ## 7. 즉시 다음 단계
 
-MVP 동작 확인됨. 다음은 P4(cleanup 회수율 측정)와 P1 가설의 정식 검증. GJC 세션에서 `skills/`를 customDirectories에 얹어 `/skill:jeo` 실사용 검증.
+MVP(CLI) 동작 확인됨. 다음은 P4(cleanup 회수율 측정)와 P1 가설의 정식 검증.
 
 ## 8. 참고
 

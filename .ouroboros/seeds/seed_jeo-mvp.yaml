@@ -1,15 +1,16 @@
 # jeo-code MVP seed — frozen contract
 # Derived from docs/03-jeo-code-plan.md (ambiguity already low: goal/constraints/acceptance concrete).
+# Steered: jeo skill surface removed per user direction; MVP scope is the ledger CLI only.
+
 goal: >
   Ship a minimal, runnable jeo-line integration layer over gajae-code: a cross-plan
-  append-only ledger CLI plus a GJC-loadable skill entrypoint, proving the
-  ledger / review / cleanup workflow that gajae-code only partially exposes.
+  append-only ledger CLI, proving the ledger / review / cleanup workflow that
+  gajae-code only partially exposes.
 
 constraints:
-  - "No GJC runtime reinvention — thin layer, deployable via GJC customDirectories"
+  - "No GJC runtime reinvention — thin CLI layer; ledger only (no bundled skill surface)"
   - "CLI runnable with Bun, zero external npm dependencies (stdlib fs only)"
   - "Ledger is append-only JSONL; state is always derived from events, never hand-edited"
-  - "skills/jeo/SKILL.md MUST carry frontmatter 'description' (GJC requireDescription)"
   - "Non-destructive: no edits to upstream gajae-code"
 
 acceptance_criteria:
@@ -18,4 +19,3 @@ acceptance_criteria:
   - "jeo status derives aggregate plan states from the event log"
   - "jeo status --json emits machine-readable aggregate"
   - "End-to-end smoke test passes: init -> register -> review -> checkpoint -> sweep -> status"
-  - "skills/jeo/SKILL.md loads under GJC (valid frontmatter description present)"

@@ -59,16 +59,16 @@ jeo-code (이 레포)
 
 ## 6. 로드맵
 
-- [x] **P0 분석** (현재): 아키텍처/표면 문서화, 레포 부트스트랩.
-- [ ] **P1 스펙**: `deep-interview`로 jeo 통합 워크플로 모호성 제거 → `.gjc/specs/`.
-- [ ] **P2 합의 계획**: `ralplan`으로 원장 스키마 + CLI 설계 합의 (pending 승인).
-- [ ] **P3 MVP**: `skills/jeo/SKILL.md` + 최소 원장 CLI, GJC customDirectories 배포 검증.
-- [ ] **P4 cleanup 루프**: 명시 cleanup 워크플로 + 회수율 측정.
+- [x] **P0 분석**: 아키텍처/표면 문서화, 레포 부트스트랩.
+- [x] **P3 MVP** (seed-first로 선행 실행): `.ouroboros/seeds/seed_jeo-mvp.yaml` 고정 → `skills/jeo/SKILL.md` + `ledger/jeo-ledger.ts`(외부 의존성 0) + `ledger/schema.md`. E2E 검증 통과(verdict=verified). 모호성이 이미 낮아 P1/P2를 생략하고 seed→execute→evaluate 레일로 직행.
+- [ ] **P1 스펙(소급/심화)**: `deep-interview`로 cleanup 회수율·크로스-plan 동시성 가설을 정식 스펙화 → `.gjc/specs/`.
+- [ ] **P2 합의 계획**: `ralplan`으로 원장 확장(steering/supersede) 합의 (pending 승인).
+- [ ] **P4 cleanup 루프**: 명시 cleanup 워크플로 + 스테일 회수율 측정.
 - [ ] **P5 통합 검증**: ultragoal quality-gate 동형의 jeo 완료 게이트.
 
 ## 7. 즉시 다음 단계
 
-P1 진입 전제: 본 분석 레포 커밋 + 원격 레포 생성. 그 다음 `deep-interview "jeo 통합 원장/리뷰/정리 워크플로"`로 스펙을 시작한다.
+MVP 동작 확인됨. 다음은 P4(cleanup 회수율 측정)와 P1 가설의 정식 검증. GJC 세션에서 `skills/`를 customDirectories에 얹어 `/skill:jeo` 실사용 검증.
 
 ## 8. 참고
 

@@ -1,0 +1,226 @@
+/**
+ * jeoc provider layer — unified chat+tool-calling across providers, mirroring
+ * gjc's @gajae-code/ai provider boundary. Real HTTP via global `fetch`
+ * (Gemini, Anthropic, OpenAI) + a deterministic `mock` provider for tests.
+ *
+ * Zero external dependencies.
+ */
+import type { ResolvedConfig } from "./config.ts";
+
+export interface ToolDef {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>; // JSON Schema (object)
+}
+export interface ToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+export interface ChatMessage {
+  role: "user" | "assistant" | "tool";
+  content: string;
+  toolCalls?: ToolCall[]; // assistant
+  toolCallId?: string; // tool
+  toolName?: string; // tool
+}
+export interface ProviderResponse {
+  text: string;
+  toolCalls: ToolCall[];
+}
+
+export interface ProviderRequest {
+  system: string;
+  messages: ChatMessage[];
+  tools: ToolDef[];
+}
+
+let mockCounter = 0;
+
+/** Deterministic mock. Scripted via env JEOC_MOCK_SCRIPT (JSON array of
+ *  { text?, toolCalls?: [{name,args}] }); each call consumes the next entry. */
+function mockProvider(req: ProviderRequest): ProviderResponse {
+  const script = process.env.JEOC_MOCK_SCRIPT;
+  if (script) {
+    let steps: Array<{ text?: string; toolCalls?: Array<{ name: string; args: Record<string, unknown> }> }>;
+    try {
+      steps = JSON.parse(script);
+    } catch {
+      throw new Error("mock: JEOC_MOCK_SCRIPT is not valid JSON");
+    }
+    const step = steps[Math.min(mockCounter, steps.length - 1)];
+    mockCounter++;
+    return {
+      text: step.text ?? "",
+      toolCalls: (step.toolCalls ?? []).map((t, i) => ({ id: `mock-${mockCounter}-${i}`, name: t.name, args: t.args })),
+    };
+  }
+  // Unscripted default: echo the last user message, no tools.
+  const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
+  return { text: `mock: ${lastUser?.content ?? ""}`, toolCalls: [] };
+}
+
+export function __resetMock(): void {
+  mockCounter = 0;
+}
+
+async function httpJson(url: string, init: RequestInit, provider: string): Promise<unknown> {
+  let res: Response;
+  try {
+    res = await fetch(url, init);
+  } catch (e) {
+    throw new Error(`${provider}: network error — ${(e as Error).message}`);
+  }
+  const body = await res.text();
+  if (!res.ok) {
+    throw new Error(`${provider}: HTTP ${res.status} — ${body.slice(0, 500)}`);
+  }
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new Error(`${provider}: non-JSON response — ${body.slice(0, 200)}`);
+  }
+}
+
+// ── Google Gemini (generativelanguage v1beta) ───────────────────────────────
+async function gemini(cfg: ResolvedConfig, req: ProviderRequest): Promise<ProviderResponse> {
+  if (!cfg.apiKey) throw new Error("gemini: no API key (set GEMINI_API_KEY or `jeoc config set apiKey`)");
+  const base = cfg.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta";
+  const url = `${base}/models/${cfg.model}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`;
+  const contents = req.messages.map((m) => {
+    if (m.role === "tool") {
+      return {
+        role: "user",
+        parts: [{ functionResponse: { name: m.toolName ?? "tool", response: { result: m.content } } }],
+      };
+    }
+    if (m.role === "assistant" && m.toolCalls?.length) {
+      return { role: "model", parts: m.toolCalls.map((tc) => ({ functionCall: { name: tc.name, args: tc.args } })) };
+    }
+    return { role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] };
+  });
+  const body: Record<string, unknown> = {
+    system_instruction: { parts: [{ text: req.system }] },
+    contents,
+  };
+  if (req.tools.length) {
+    body.tools = [{ functionDeclarations: req.tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }];
+  }
+  const data = (await httpJson(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }, "gemini")) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string; functionCall?: { name: string; args: Record<string, unknown> } }> } }>;
+  };
+  const parts = data.candidates?.[0]?.content?.parts ?? [];
+  let text = "";
+  const toolCalls: ToolCall[] = [];
+  parts.forEach((p, i) => {
+    if (p.text) text += p.text;
+    if (p.functionCall) toolCalls.push({ id: `gemini-${i}`, name: p.functionCall.name, args: p.functionCall.args ?? {} });
+  });
+  return { text, toolCalls };
+}
+
+// ── Anthropic Messages ──────────────────────────────────────────────────────
+async function anthropic(cfg: ResolvedConfig, req: ProviderRequest): Promise<ProviderResponse> {
+  if (!cfg.apiKey) throw new Error("anthropic: no API key (set ANTHROPIC_API_KEY or `jeoc config set apiKey`)");
+  const base = cfg.baseUrl ?? "https://api.anthropic.com";
+  const messages = req.messages.map((m) => {
+    if (m.role === "tool") {
+      return { role: "user", content: [{ type: "tool_result", tool_use_id: m.toolCallId, content: m.content }] };
+    }
+    if (m.role === "assistant" && m.toolCalls?.length) {
+      const blocks: unknown[] = [];
+      if (m.content) blocks.push({ type: "text", text: m.content });
+      for (const tc of m.toolCalls) blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.args });
+      return { role: "assistant", content: blocks };
+    }
+    return { role: m.role, content: m.content };
+  });
+  const body: Record<string, unknown> = {
+    model: cfg.model,
+    max_tokens: 4096,
+    system: req.system,
+    messages,
+  };
+  if (req.tools.length) {
+    body.tools = req.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+  }
+  const data = (await httpJson(`${base}/v1/messages`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": cfg.apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify(body),
+  }, "anthropic")) as {
+    content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>;
+  };
+  let text = "";
+  const toolCalls: ToolCall[] = [];
+  for (const block of data.content ?? []) {
+    if (block.type === "text" && block.text) text += block.text;
+    if (block.type === "tool_use") toolCalls.push({ id: block.id ?? `anthropic-${toolCalls.length}`, name: block.name ?? "", args: block.input ?? {} });
+  }
+  return { text, toolCalls };
+}
+
+// ── OpenAI Chat Completions ─────────────────────────────────────────────────
+async function openai(cfg: ResolvedConfig, req: ProviderRequest): Promise<ProviderResponse> {
+  if (!cfg.apiKey) throw new Error("openai: no API key (set OPENAI_API_KEY or `jeoc config set apiKey`)");
+  const base = cfg.baseUrl ?? "https://api.openai.com";
+  const messages: unknown[] = [{ role: "system", content: req.system }];
+  for (const m of req.messages) {
+    if (m.role === "tool") {
+      messages.push({ role: "tool", tool_call_id: m.toolCallId, content: m.content });
+    } else if (m.role === "assistant" && m.toolCalls?.length) {
+      messages.push({
+        role: "assistant",
+        content: m.content || null,
+        tool_calls: m.toolCalls.map((tc) => ({ id: tc.id, type: "function", function: { name: tc.name, arguments: JSON.stringify(tc.args) } })),
+      });
+    } else {
+      messages.push({ role: m.role, content: m.content });
+    }
+  }
+  const body: Record<string, unknown> = { model: cfg.model, messages };
+  if (req.tools.length) {
+    body.tools = req.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
+  }
+  const data = (await httpJson(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${cfg.apiKey}` },
+    body: JSON.stringify(body),
+  }, "openai")) as {
+    choices?: Array<{ message?: { content?: string; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> } }>;
+  };
+  const msg = data.choices?.[0]?.message;
+  const toolCalls: ToolCall[] = (msg?.tool_calls ?? []).map((tc) => {
+    let args: Record<string, unknown> = {};
+    try {
+      args = JSON.parse(tc.function.arguments || "{}");
+    } catch {
+      /* leave empty */
+    }
+    return { id: tc.id, name: tc.function.name, args };
+  });
+  return { text: msg?.content ?? "", toolCalls };
+}
+
+export async function callProvider(cfg: ResolvedConfig, req: ProviderRequest): Promise<ProviderResponse> {
+  switch (cfg.provider) {
+    case "mock":
+      return mockProvider(req);
+    case "gemini":
+      return gemini(cfg, req);
+    case "anthropic":
+      return anthropic(cfg, req);
+    case "openai":
+      return openai(cfg, req);
+    default:
+      throw new Error(`unknown provider: ${cfg.provider}`);
+  }
+}

@@ -137,7 +137,7 @@ Schema: [`ledger/schema.md`](ledger/schema.md).
 ## Develop & test
 
 ```sh
-bun test          # 16 end-to-end tests (agent loop, config, providers, autopilot ratchet, ledger)
+bun test          # 7 end-to-end smoke tests (autopilot ratchet, revert, gate, ledger)
 bun bin/jeoc.ts   # run the CLI from source
 ```
 

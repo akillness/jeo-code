@@ -1,0 +1,27 @@
+# jeoc-agent seed — frozen contract
+# Objective: make jeoc a REAL LLM coding agent with provider + model config,
+# mirroring gjc's core logic/flow, runnable from install -> terminal.
+
+goal: >
+  Turn `jeoc` into a working LLM coding agent. Add provider + model configuration
+  and an agent loop that calls a real provider (Google Gemini, Anthropic, OpenAI)
+  with a tool-calling turn loop (bash/read_file/write_file/list_dir), plus a
+  deterministic mock provider for hermetic tests. Runnable end-to-end from install
+  through `jeoc agent "<task>"` in a terminal.
+
+constraints:
+  - "Branding jeoc / jeo-code / .jeoc; zero external npm deps (Node/Bun stdlib + global fetch)"
+  - "Providers: gemini, anthropic, openai (real HTTP via fetch) + mock (hermetic, scriptable)"
+  - "Config in .jeoc/config.json (project) or ~/.jeoc/config.json (user); API key via config or env"
+  - "Env keys: GEMINI_API_KEY|GOOGLE_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY"
+  - "Agent loop mirrors gjc: messages+tools -> provider -> dispatch tool calls -> append results -> repeat until no tool call or max turns"
+  - "API keys never printed; config show masks secrets"
+
+acceptance_criteria:
+  - "jeoc config set/get/show round-trips provider+model and resolves api key (env or config), masking secrets"
+  - "jeoc agent runs a tool-calling loop: a tool call executes and its result feeds the next turn"
+  - "mock provider drives a deterministic tool-call-then-finish loop in a bun test (no network)"
+  - "Anthropic/OpenAI/Gemini request builders produce the correct endpoint, auth header/query, and tool schema"
+  - "Real provider call works when a valid key is present (Gemini), or fails with a clear actionable error"
+  - "Install -> terminal: bun link, then jeoc config show + jeoc agent (mock) run end-to-end"
+  - "gjc structure/flow documented in docs/05-07 and reflected in the implementation"

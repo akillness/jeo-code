@@ -64,6 +64,7 @@ jeo-code (이 레포)            # 리브랜드: jeoc / jeo-code / .jeoc
 - [x] **P0 분석**: 아키텍처/표면 문서화, 레포 부트스트랩.
 - [x] **P3 MVP**: `jeoc ledger` 크로스-plan 원장 CLI(외부 의존성 0). E2E 검증 통과.
 - [x] **리브랜드 + autopilot 분기**: `gjc→jeoc`, `gajae-code→jeo-code`, `.gjc→.jeoc`. `jeoc autopilot`을 `/skill:autoresearch` 규율(평가기 고정·한 변경·keep/revert·append-only·수렴)로 강화. `bin/jeoc.ts`+`src/autopilot.ts`+`skills/autopilot/SKILL.md`+`docs/04`. E2E 검증 통과(래칫/회귀revert/gate/고정).
+- [x] **실제 코딩 에이전트 (v0.2.0)**: `jeoc agent` LLM turn loop(tool-calling: bash/read_file/write_file/list_dir) + `jeoc config` provider/model 설정. providers: gemini/anthropic/openai(real fetch) + mock(hermetic). gjc 구조를 subagent로 심층 분석해 `docs/05-07`에 반영. 설치→터미널 동작·실제 Gemini 호출(HTTP 429=인증/요청 정상, 쿼터만 0) 검증. 16/16 테스트 통과.
 - [ ] **P1 스펙(소급/심화)**: `deep-interview`로 cleanup 회수율·크로스-plan 동시성 가설을 정식 스펙화 → `.gjc/specs/`.
 - [ ] **P2 합의 계획**: `ralplan`으로 원장 확장(steering/supersede) 합의 (pending 승인).
 - [ ] **P4 cleanup 루프**: 명시 cleanup 워크플로 + 스테일 회수율 측정.
@@ -71,7 +72,7 @@ jeo-code (이 레포)            # 리브랜드: jeoc / jeo-code / .jeoc
 
 ## 7. 즉시 다음 단계
 
-리브랜드 + autopilot 분기 동작 확인됨. 다음은 P4(cleanup 회수율)와 autopilot↔ledger 통합(autopilot 결과를 ledger checkpoint 증거로).
+실제 코딩 에이전트(v0.2.0) 동작 확인됨. 다음은 유효 쿼터 키로 실제 멀티턴 검증, P4(cleanup 회수율), autopilot↔ledger 통합.
 
 ## 8. 참고
 

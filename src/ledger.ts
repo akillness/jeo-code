@@ -1,28 +1,19 @@
-#!/usr/bin/env bun
 /**
- * jeo-ledger — cross-plan append-only ledger for the jeo-line workflow
- * (ledger / review / cleanup) layered over gajae-code.
+ * jeoc ledger — cross-plan append-only ledger (ledger / review / cleanup).
  *
- * Design (see ../ledger/schema.md):
- *  - Events are appended to .jeo/ledger.jsonl, one JSON object per line.
- *  - State is ALWAYS derived by folding the event log; the log is the source of truth.
- *  - Zero external dependencies: Node/Bun stdlib only.
+ * Rebranded from gjc/gajae-code → jeoc/jeo-code. State lives under .jeoc/.
+ *  - Events appended to .jeoc/ledger.jsonl (one JSON object per line).
+ *  - State is ALWAYS derived by folding the event log.
+ *  - Zero external dependencies (Node stdlib only).
  *
- * Usage:
- *   bun jeo-ledger.ts init
- *   bun jeo-ledger.ts register <planId> --title "..." [--brief "..."]
- *   bun jeo-ledger.ts review   <planId> --status CLEAR|WATCH|BLOCK --evidence "..."
- *   bun jeo-ledger.ts checkpoint <planId> --goal <goalId> --status complete|failed --evidence "..."
- *   bun jeo-ledger.ts sweep    <planId> --evidence "..."
- *   bun jeo-ledger.ts link     <planId> --pr <url>
- *   bun jeo-ledger.ts status   [--json]
+ * See ledger/schema.md for the event model.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const JEO_DIR = ".jeo";
-const LEDGER = path.join(JEO_DIR, "ledger.jsonl");
+const JEOC_DIR = ".jeoc";
+const LEDGER = path.join(JEOC_DIR, "ledger.jsonl");
 
 type EventType =
   | "plan_registered"
@@ -42,14 +33,12 @@ const REVIEW_STATUSES = ["CLEAR", "WATCH", "BLOCK"] as const;
 const CHECKPOINT_STATUSES = ["complete", "failed"] as const;
 
 function die(msg: string): never {
-  console.error(`jeo: ${msg}`);
+  console.error(`jeoc ledger: ${msg}`);
   process.exit(1);
 }
 
 function ensureInit(): void {
-  if (!fs.existsSync(LEDGER)) {
-    die(`no ledger found at ${LEDGER} — run: jeo init`);
-  }
+  if (!fs.existsSync(LEDGER)) die(`no ledger at ${LEDGER} — run: jeoc ledger init`);
 }
 
 function append(ev: Omit<LedgerEvent, "ts">): LedgerEvent {
@@ -74,7 +63,6 @@ function readEvents(): LedgerEvent[] {
     });
 }
 
-/** Parse `--flag value` pairs and bare positionals from argv slice. */
 function parseArgs(argv: string[]): { positionals: string[]; flags: Record<string, string> } {
   const positionals: string[] = [];
   const flags: Record<string, string> = {};
@@ -83,15 +71,12 @@ function parseArgs(argv: string[]): { positionals: string[]; flags: Record<strin
     if (a.startsWith("--")) {
       const key = a.slice(2);
       const next = argv[i + 1];
-      if (next === undefined || next.startsWith("--")) {
-        flags[key] = "true";
-      } else {
+      if (next === undefined || next.startsWith("--")) flags[key] = "true";
+      else {
         flags[key] = next;
         i++;
       }
-    } else {
-      positionals.push(a);
-    }
+    } else positionals.push(a);
   }
   return { positionals, flags };
 }
@@ -116,16 +101,14 @@ interface PlanState {
 function deriveState(events: LedgerEvent[]): Record<string, PlanState> {
   const plans: Record<string, PlanState> = {};
   const ensure = (id: string): PlanState => {
-    if (!plans[id]) {
-      plans[id] = { planId: id, title: id, goals: {}, swept: [], prs: [] };
-    }
+    if (!plans[id]) plans[id] = { planId: id, title: id, goals: {}, swept: [], prs: [] };
     return plans[id];
   };
   for (const ev of events) {
     const p = ensure(ev.planId);
     switch (ev.type) {
       case "plan_registered":
-        p.title = (ev.title as string) ?? id_fallback(ev.planId);
+        p.title = (ev.title as string) ?? ev.planId;
         if (ev.brief) p.brief = ev.brief as string;
         p.registeredAt = ev.ts;
         break;
@@ -150,29 +133,23 @@ function deriveState(events: LedgerEvent[]): Record<string, PlanState> {
   return plans;
 }
 
-function id_fallback(id: string): string {
-  return id;
-}
-
 /** A plan is "verified" when reviewed CLEAR, all goals complete, and swept at least once. */
 function planVerdict(p: PlanState): string {
   const goalList = Object.values(p.goals);
   const allComplete = goalList.length > 0 && goalList.every((g) => g.status === "complete");
-  const reviewClear = p.review?.status === "CLEAR";
-  const swept = p.swept.length > 0;
-  if (reviewClear && allComplete && swept) return "verified";
+  if (p.review?.status === "CLEAR" && allComplete && p.swept.length > 0) return "verified";
   if (p.review?.status === "BLOCK") return "blocked";
   if (goalList.some((g) => g.status === "failed")) return "failed";
   return "in_progress";
 }
 
 function cmdInit(): void {
-  fs.mkdirSync(JEO_DIR, { recursive: true });
+  fs.mkdirSync(JEOC_DIR, { recursive: true });
   if (!fs.existsSync(LEDGER)) {
     fs.writeFileSync(LEDGER, "");
-    console.log(`jeo: initialized ${LEDGER}`);
+    console.log(`jeoc ledger: initialized ${LEDGER}`);
   } else {
-    console.log(`jeo: ledger already exists at ${LEDGER}`);
+    console.log(`jeoc ledger: already exists at ${LEDGER}`);
   }
 }
 
@@ -192,26 +169,23 @@ function cmdStatus(flags: Record<string, string>): void {
     return;
   }
   if (list.length === 0) {
-    console.log("jeo: no plans registered yet");
+    console.log("jeoc ledger: no plans registered yet");
     return;
   }
-  console.log("jeo ledger status\n");
+  console.log("jeoc ledger status\n");
   for (const p of list) {
     const goalStr =
       Object.keys(p.goals).length === 0
         ? "—"
-        : Object.entries(p.goals)
-            .map(([g, s]) => `${g}:${s}`)
-            .join(" ");
+        : Object.entries(p.goals).map(([g, s]) => `${g}:${s}`).join(" ");
     console.log(`● ${p.planId}  [${p.verdict}]  ${p.title}`);
     console.log(`    review=${p.review}  goals=${goalStr}  sweeps=${p.sweeps}  prs=${p.prs.length}`);
   }
 }
 
-function main(): void {
-  const [, , cmd, ...rest] = process.argv;
+export function runLedger(argv: string[]): void {
+  const [cmd, ...rest] = argv;
   const { positionals, flags } = parseArgs(rest);
-
   switch (cmd) {
     case "init":
       cmdInit();
@@ -224,44 +198,42 @@ function main(): void {
         title: flags.title ?? planId,
         ...(flags.brief ? { brief: flags.brief } : {}),
       });
-      console.log(`jeo: registered ${planId} @ ${ev.ts}`);
+      console.log(`jeoc ledger: registered ${planId} @ ${ev.ts}`);
       break;
     }
     case "review": {
       const planId = requirePlanId(positionals);
       const status = (flags.status ?? "").toUpperCase();
-      if (!REVIEW_STATUSES.includes(status as (typeof REVIEW_STATUSES)[number])) {
+      if (!REVIEW_STATUSES.includes(status as (typeof REVIEW_STATUSES)[number]))
         die(`--status must be one of ${REVIEW_STATUSES.join("|")}`);
-      }
       if (!flags.evidence) die("review requires --evidence");
       append({ type: "plan_reviewed", planId, status, evidence: flags.evidence });
-      console.log(`jeo: reviewed ${planId} = ${status}`);
+      console.log(`jeoc ledger: reviewed ${planId} = ${status}`);
       break;
     }
     case "checkpoint": {
       const planId = requirePlanId(positionals);
       const status = (flags.status ?? "").toLowerCase();
-      if (!CHECKPOINT_STATUSES.includes(status as (typeof CHECKPOINT_STATUSES)[number])) {
+      if (!CHECKPOINT_STATUSES.includes(status as (typeof CHECKPOINT_STATUSES)[number]))
         die(`--status must be one of ${CHECKPOINT_STATUSES.join("|")}`);
-      }
       if (!flags.goal) die("checkpoint requires --goal");
       if (!flags.evidence) die("checkpoint requires --evidence");
       append({ type: "goal_checkpointed", planId, goal: flags.goal, status, evidence: flags.evidence });
-      console.log(`jeo: checkpoint ${planId}/${flags.goal} = ${status}`);
+      console.log(`jeoc ledger: checkpoint ${planId}/${flags.goal} = ${status}`);
       break;
     }
     case "sweep": {
       const planId = requirePlanId(positionals);
       if (!flags.evidence) die("sweep requires --evidence");
       append({ type: "cleanup_swept", planId, evidence: flags.evidence });
-      console.log(`jeo: swept ${planId}`);
+      console.log(`jeoc ledger: swept ${planId}`);
       break;
     }
     case "link": {
       const planId = requirePlanId(positionals);
       if (!flags.pr) die("link requires --pr");
       append({ type: "pr_linked", planId, pr: flags.pr });
-      console.log(`jeo: linked ${flags.pr} to ${planId}`);
+      console.log(`jeoc ledger: linked ${flags.pr} to ${planId}`);
       break;
     }
     case "status":
@@ -272,9 +244,8 @@ function main(): void {
     case "--help":
       console.log(
         [
-          "jeo-ledger — cross-plan append-only ledger (ledger/review/cleanup)",
+          "jeoc ledger — cross-plan append-only ledger (ledger/review/cleanup)",
           "",
-          "Commands:",
           "  init",
           "  register <planId> --title <t> [--brief <b>]",
           "  review <planId> --status CLEAR|WATCH|BLOCK --evidence <e>",
@@ -286,8 +257,8 @@ function main(): void {
       );
       break;
     default:
-      die(`unknown command: ${cmd} (try: help)`);
+      die(`unknown subcommand: ${cmd} (try: jeoc ledger help)`);
   }
 }
 
-main();
+if (import.meta.main) runLedger(process.argv.slice(2));

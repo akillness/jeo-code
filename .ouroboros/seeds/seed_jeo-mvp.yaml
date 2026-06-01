@@ -14,8 +14,8 @@ constraints:
   - "Non-destructive: no edits to upstream gajae-code"
 
 acceptance_criteria:
-  - "jeo init creates .jeo/ledger.jsonl"
+  - "jeoc ledger init creates .jeoc/ledger.jsonl"
   - "register / review / checkpoint / sweep / link each append one typed event"
-  - "jeo status derives aggregate plan states from the event log"
-  - "jeo status --json emits machine-readable aggregate"
+  - "jeoc ledger status derives aggregate plan states from the event log"
+  - "jeoc ledger status --json emits machine-readable aggregate"
   - "End-to-end smoke test passes: init -> register -> review -> checkpoint -> sweep -> status"

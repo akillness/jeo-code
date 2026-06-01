@@ -46,11 +46,14 @@ gajae-code는 이 세 가지의 **부분집합**을 이미 가진다(ultragoal �
 ## 5. 제안 아키텍처 (얇은 레이어)
 
 ```text
-jeo-code (이 레포)
-├─ ledger/                     # 크로스-plan 원장 (CLI + 스키마)
-│   ├─ schema.md
-│   └─ jeo-ledger.ts          # append-only 원장 CLI (Bun, 의존성 0)
-└─ docs/                       # 본 분석 (현재 단계)
+jeo-code (이 레포)            # 리브랜드: jeoc / jeo-code / .jeoc
+├─ bin/jeoc.ts                # umbrella CLI → autopilot / ledger
+├─ src/
+│   ├─ autopilot.ts          # autopilot × autoresearch 래칫 엔진
+│   └─ ledger.ts             # 크로스-plan append-only 원장 (의존성 0)
+├─ skills/autopilot/SKILL.md  # /skill:autopilot 분기 (jeoc 브랜드)
+├─ ledger/schema.md          # 원장 이벤트 스키마
+└─ docs/                      # 분석(01·02) + 방향성(03) + autopilot 설계(04)
 ```
 
 원장 스키마는 ultragoal `ledger.jsonl`(checkpoint/steering audit) 이벤트 모델을 상위 집계로 래핑:
@@ -59,7 +62,8 @@ jeo-code (이 레포)
 ## 6. 로드맵
 
 - [x] **P0 분석**: 아키텍처/표면 문서화, 레포 부트스트랩.
-- [x] **P3 MVP** (seed-first로 선행 실행): `.ouroboros/seeds/seed_jeo-mvp.yaml` 고정 → `ledger/jeo-ledger.ts`(외부 의존성 0) + `ledger/schema.md`. E2E 검증 통과(verdict=verified). 모호성이 이미 낮아 P1/P2를 생략하고 seed→execute→evaluate 레일로 직행. (스킬 표면은 사용자 지시로 제거 — MVP는 CLI 단독.)
+- [x] **P3 MVP**: `jeoc ledger` 크로스-plan 원장 CLI(외부 의존성 0). E2E 검증 통과.
+- [x] **리브랜드 + autopilot 분기**: `gjc→jeoc`, `gajae-code→jeo-code`, `.gjc→.jeoc`. `jeoc autopilot`을 `/skill:autoresearch` 규율(평가기 고정·한 변경·keep/revert·append-only·수렴)로 강화. `bin/jeoc.ts`+`src/autopilot.ts`+`skills/autopilot/SKILL.md`+`docs/04`. E2E 검증 통과(래칫/회귀revert/gate/고정).
 - [ ] **P1 스펙(소급/심화)**: `deep-interview`로 cleanup 회수율·크로스-plan 동시성 가설을 정식 스펙화 → `.gjc/specs/`.
 - [ ] **P2 합의 계획**: `ralplan`으로 원장 확장(steering/supersede) 합의 (pending 승인).
 - [ ] **P4 cleanup 루프**: 명시 cleanup 워크플로 + 스테일 회수율 측정.
@@ -67,7 +71,7 @@ jeo-code (이 레포)
 
 ## 7. 즉시 다음 단계
 
-MVP(CLI) 동작 확인됨. 다음은 P4(cleanup 회수율 측정)와 P1 가설의 정식 검증.
+리브랜드 + autopilot 분기 동작 확인됨. 다음은 P4(cleanup 회수율)와 autopilot↔ledger 통합(autopilot 결과를 ledger checkpoint 증거로).
 
 ## 8. 참고
 

@@ -1,0 +1,29 @@
+# jeoc-autopilot seed — frozen contract
+# Objective: rebrand gjc->jeoc, gajae-code->jeo-code; build an autopilot CLI that
+# applies autoresearch's improvements (frozen evaluator, one-change ratchet,
+# keep/revert by score, append-only log, baseline-first, convergence/stop).
+
+goal: >
+  Ship a working `jeoc` CLI whose `autopilot` subcommand runs the autopilot
+  end-to-end build loop hardened with autoresearch ratcheting discipline:
+  a frozen per-session evaluator, one bounded change per step, keep-if-improved /
+  revert-otherwise by numeric score (or gate), an append-only attempt log, a
+  mandatory baseline, and explicit convergence/stop conditions.
+
+constraints:
+  - "Branding: binary is `jeoc`, project is `jeo-code`, state dir is `.jeoc/`"
+  - "Runnable with Bun, zero external npm dependencies (Node stdlib only)"
+  - "Frozen evaluator: eval command + goal recorded at init, immutable for the session"
+  - "Append-only log (.jeoc/autopilot/log.jsonl); reverted attempts stay as evidence"
+  - "One change per step (ablation discipline); no destructive git ops unless operator opts in"
+  - "Do not falsify upstream analysis: docs 01/02 still describe the real gajae-code/gjc"
+
+acceptance_criteria:
+  - "jeoc autopilot init freezes session.json (task, eval, goal min|max|gate)"
+  - "jeoc autopilot baseline records baseline score from the frozen eval"
+  - "jeoc autopilot step keeps on improvement and reverts otherwise, logging the decision"
+  - "jeoc autopilot loop runs runner->eval->keep/revert autonomously until max or convergence"
+  - "jeoc autopilot status [--json] reports best/baseline/attempts/converged/recommendation"
+  - "jeoc ledger ... still works under the .jeoc brand (verdict=verified path)"
+  - "End-to-end smoke proves a decreasing-score eval converges and a regression is reverted"
+  - "skills/autopilot/SKILL.md documents the branch with valid frontmatter description"

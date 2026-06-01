@@ -1,6 +1,6 @@
-# jeo ledger — event schema
+# jeoc ledger — event schema
 
-The ledger is an **append-only JSONL** file at `.jeo/ledger.jsonl`. One JSON
+The ledger is an **append-only JSONL** file at `.jeoc/ledger.jsonl`. One JSON
 object per line. State is always derived by folding events in order; the log is
 the single source of truth and is never hand-edited.
 

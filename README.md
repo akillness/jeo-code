@@ -22,30 +22,46 @@ deep interview -> ralplan -> team execution -> ultragoal verification
 | [docs/01-architecture-analysis.md](docs/01-architecture-analysis.md) | 모노레포 패키지 경계, 런타임 플로우, 네이티브 레이어 |
 | [docs/02-workflow-skill-surface.md](docs/02-workflow-skill-surface.md) | 4 스킬 + 4 역할 에이전트, 스킬/룰 디스커버리, 도구 표면 |
 | [docs/03-jeo-code-plan.md](docs/03-jeo-code-plan.md) | jeo-code 차별화 방향, jeo 라인 통합, 로드맵 |
+| [docs/04-autopilot-autoresearch.md](docs/04-autopilot-autoresearch.md) | `jeoc autopilot` 설계: autopilot×autoresearch 래칫, 네이밍 맵 |
 
-## MVP — jeo ledger (P3, 동작 검증 완료)
+## `jeoc` CLI (동작 검증 완료)
 
-`ledger/review/cleanup`을 잇는 크로스-plan 원장 CLI (Bun, 외부 의존성 0). 루프:
+리브랜드: 바이너리 `jeoc`, 제품 `jeo-code`, 상태 `.jeoc/` (upstream `gjc`/`gajae-code`/`.gjc`의 리브랜드).
+umbrella CLI: [`bin/jeoc.ts`](bin/jeoc.ts) → `jeoc autopilot` / `jeoc ledger`. 외부 의존성 0 (Node stdlib).
+
+### `jeoc autopilot` — autopilot × autoresearch 래칫
+
+`/skill:autopilot`(end-to-end 빌드)에 `/skill:autoresearch`의 규율(평가기 고정 · 한 번에 한 변경 · 점수 기반 keep/revert · append-only 로그 · baseline 우선 · 수렴/중단)을 이식.
 
 ```text
-register → review(gate) → checkpoint → sweep(cleanup) → status
+init(평가기 고정) → baseline → [ mutate(한 변경) → eval → 개선? keep : revert → log ] → 수렴/중단
 ```
 
 ```sh
-bun ledger/jeo-ledger.ts init
-bun ledger/jeo-ledger.ts register G001 --title "..." --brief "..."
-bun ledger/jeo-ledger.ts review G001 --status CLEAR --evidence "..."
-bun ledger/jeo-ledger.ts checkpoint G001 --goal g1 --status complete --evidence "..."
-bun ledger/jeo-ledger.ts sweep G001 --evidence "..."
-bun ledger/jeo-ledger.ts status            # 또는 --json
+jeoc autopilot init --task "make tests green" --eval "bash eval.sh" --goal min --patience 3
+jeoc autopilot baseline
+jeoc autopilot loop --runner "bash mutate.sh" --max 20 --on-revert "git checkout -- ."
+jeoc autopilot status --json
 ```
 
-plan은 review=CLEAR + 모든 goal=complete + sweep≥1 일 때만 `verified`. 원장은 append-only(`.jeo/ledger.jsonl`), 상태는 이벤트 폴딩으로 도출.
+- eval 계약: min/max goal은 `score: <num>` 출력, gate goal은 exit code(0=pass).
+- 구현: [`src/autopilot.ts`](src/autopilot.ts) · 스킬 분기: [`skills/autopilot/SKILL.md`](skills/autopilot/SKILL.md) · 설계: [`docs/04-autopilot-autoresearch.md`](docs/04-autopilot-autoresearch.md)
+- 검증: baseline 10 → 5로 래칫 → plateau revert×3 → 수렴 중단(best=5). 회귀 revert·gate·평가기 고정 모두 통과.
 
-- 원장 CLI: [`ledger/jeo-ledger.ts`](ledger/jeo-ledger.ts) (Bun, 의존성 0)
-- 이벤트 스키마: [`ledger/schema.md`](ledger/schema.md)
-- 고정 계약: [`.ouroboros/seeds/seed_jeo-mvp.yaml`](.ouroboros/seeds/seed_jeo-mvp.yaml)
-- 검증: init→register→review→checkpoint→sweep→link→status E2E + 음성 케이스 통과 (verdict=verified)
+### `jeoc ledger` — 크로스-plan 원장 (ledger/review/cleanup)
+
+```sh
+jeoc ledger init
+jeoc ledger register G001 --title "..." --brief "..."
+jeoc ledger review G001 --status CLEAR --evidence "..."
+jeoc ledger checkpoint G001 --goal g1 --status complete --evidence "..."
+jeoc ledger sweep G001 --evidence "..."
+jeoc ledger status            # 또는 --json
+```
+
+plan은 review=CLEAR + 모든 goal=complete + sweep≥1 일 때만 `verified`. append-only(`.jeoc/ledger.jsonl`), 상태는 이벤트 폴딩으로 도출.
+
+- 구현: [`src/ledger.ts`](src/ledger.ts) · 스키마: [`ledger/schema.md`](ledger/schema.md) · 고정 계약: [`.ouroboros/seeds/`](.ouroboros/seeds/)
 
 ## 분석 1차 자료
 

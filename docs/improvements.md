@@ -848,3 +848,130 @@ mirrored by the doctor probe.
   (`@joc/cli`, `@joc/ai`, `@joc/auth`, `@joc/agent`, `@joc/commands`).
 - Real OAuth refresh broker in `src/auth/refresh.ts`.
 - `joc doctor --strict` exit-code flag for CI gating.
+
+---
+
+## 14. Ralph pass 7 — `joc mcp serve` MCP stdio server (Codex gap #5 closed)
+
+**Date:** 2026-06-02
+
+This pass makes joc itself an MCP server, so other agents (Claude
+Code, Claude Desktop, Cursor, etc.) can call joc subsystems as tools.
+gjc shipped an `auth-gateway/server` mainly as a credential broker;
+joc takes a small step further and exposes diagnostic + state tools
+through the standard MCP stdio JSON-RPC 2.0 transport — no external
+SDK required.
+
+### New surface
+
+```
+src/mcp/
+├── index.ts         # barrel
+├── protocol.ts      # JsonRpcRequest/Response, error codes, ToolDefinition/Result, ok/fail helpers
+├── server.ts        # stdio loop + JSON-RPC dispatcher (initialize/tools.list/tools.call/ping)
+└── tools.ts         # 4 read-only tools wrapping joc subsystems
+src/commands/mcp.ts  # 'joc mcp serve' / 'joc mcp tools' shell
+```
+
+`COMMANDS[]` entry: one line in `src/cli/runner.ts`.
+
+### Initial tool surface (read-only, safe to expose)
+
+| Tool | Purpose | Side effects |
+|---|---|---|
+| `joc_resolve_provider({model})` | Pure provider routing: `gemini-2.0-flash → gemini`, `openai/mock-1 → openai`, etc. | none |
+| `joc_credential_status({provider})` | Returns credential kind (`oauth`/`api_key`/`none`). **Does not** return the secret. | none |
+| `joc_config_snapshot()` | Default model + base URLs + redacted per-provider credential kind. | none |
+| `joc_doctor()` | Same probe used by the `joc doctor` CLI. May issue 1-token Anthropic probe and free GETs to OpenAI/Gemini/Ollama. | network reads only |
+
+Pipeline tools (`deep-interview`, `team`, `ultragoal`) are deliberately
+**not** in the initial surface — they write files and burn LLM credits,
+which is too heavy for an "MCP add this server" first-impression. A
+follow-up pass can add them behind an opt-in flag.
+
+### JSON-RPC protocol coverage
+
+- `initialize` → returns `protocolVersion: "2024-11-05"`, capabilities
+  `{tools:{}}`, `serverInfo: {name:"joc-mcp", version:"0.1.0"}`.
+- `notifications/initialized` → no response (notification, per spec).
+- `tools/list` → tool array with name/description/inputSchema.
+- `tools/call` → dispatches to the tool's handler; returns
+  `{content: [{type:"text", text:...}], isError?: boolean}`.
+- `ping` → empty result.
+- Unknown method → JSON-RPC error -32601 `METHOD_NOT_FOUND`.
+- Malformed JSON → -32700 `PARSE_ERROR`.
+- Malformed request → -32600 `INVALID_REQUEST`.
+
+The stdio loop is a hand-rolled `for await (chunk of process.stdin)`
+with a TextDecoder buffer split on newlines — Bun's primitives keep
+this under ~50 LOC and add zero npm dependencies.
+
+### Verification
+
+End-to-end JSON-RPC probe (8 requests piped to stdin):
+
+```
+=== MCP stdio probe ===
+joc-mcp v0.1.0 listening on stdio (4 tools)
+{"id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},...}}
+{"id":2,"result":{"tools":[ /* all 4, full schemas */ ]}}
+{"id":3,"result":{"content":[{"type":"text","text":"openai"}],"isError":false}}
+{"id":4,"result":{"content":[{"type":"text","text":"{\"provider\":\"gemini\",\"kind\":\"api_key\"}"}]}}
+{"id":5,"result":{"content":[{"type":"text","text":"{ defaultModel:..., credentials:{...} }"}]}}
+{"id":6,"result":{}}                                # ping
+{"id":7,"error":{"code":-32601,"message":"unknown method: unknown/method"}}
+```
+
+(`notifications/initialized` correctly produces no response — it's a
+notification, not a request, per MCP/JSON-RPC spec.)
+
+The wrapped `joc_doctor` MCP tool returns the same text the CLI
+produces, captured by intercepting `console.log` for the duration of
+`runDoctorCommand()`. Verified:
+
+```
+=== joc doctor ===
+Bun runtime:    v1.3.14
+Default model:  gemini-2.0-flash → gemini
+...
+  gemini     api_key          [  OK  ] 276ms   GET /v1beta/models 200
+```
+
+### What this delivers
+
+- **Claude Desktop / Claude Code integration.** Adding joc as an MCP
+  server is now `claude mcp add joc -- joc mcp serve` (or the
+  equivalent `claudeDesktopConfig.json` entry). Other agents can ask
+  joc to resolve providers, check credentials, or run the health probe
+  without shelling out to the binary or parsing CLI output.
+- **Zero dependencies.** No `@modelcontextprotocol/sdk` import — the
+  protocol implementation is ~30 lines of stdio plumbing. Bun's
+  built-in streams + `JSON.parse` cover everything the spec needs.
+- **Future-extensible.** Adding a tool is one entry in `TOOLS[]`:
+  name + description + inputSchema + async handler. Pipeline tools
+  (`joc_deep_interview`, `joc_team`, `joc_ultragoal`) can be added
+  later as a single PR without churning the dispatcher.
+- **Mirrors gjc's auth-gateway structure** at the high level (CLI
+  command exposing a server) without copying its credential-broker
+  details (which need OAuth refresh, deferred to pass 8+).
+
+### Module-size accounting (running tally)
+
+| File | Lines |
+|---|---|
+| `src/mcp/protocol.ts` | ~50 |
+| `src/mcp/server.ts` | ~90 |
+| `src/mcp/tools.ts` | ~85 |
+| `src/mcp/index.ts` | 3 |
+| `src/commands/mcp.ts` | ~20 |
+
+### Remaining queue (after pass 7)
+
+- **`joc doctor --strict`** flag — propagate FAIL of default provider
+  to a non-zero exit code (CI gating, single-line change).
+- **Real OAuth refresh broker** in `src/auth/refresh.ts`.
+- **Pipeline MCP tools** (`joc_deep_interview` / `joc_ralplan` /
+  `joc_team` / `joc_ultragoal`) — behind an opt-in flag because they
+  burn LLM credits and write seed/plan/report files.
+- **Workspace split** (gap #2) — `@joc/cli`, `@joc/ai`, `@joc/auth`,
+  `@joc/agent`, `@joc/commands`, `@joc/mcp`.

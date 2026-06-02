@@ -975,3 +975,77 @@ Default model:  gemini-2.0-flash → gemini
   burn LLM credits and write seed/plan/report files.
 - **Workspace split** (gap #2) — `@joc/cli`, `@joc/ai`, `@joc/auth`,
   `@joc/agent`, `@joc/commands`, `@joc/mcp`.
+
+## 15. `joc doctor --strict` + pipeline MCP tools (ralph pass 8)
+
+Two CI-shaped operability features so external orchestrators can drive
+joc deterministically.
+
+### Strict-mode doctor
+
+`joc doctor` now accepts `--strict`. The probe table prints as before;
+the verdict block stays informational; but when the **default model's**
+probe does not return `OK`, the process exits with code 1.
+
+This lets CI (or another agent) wedge a one-line gate at install time:
+
+```
+joc doctor --strict || exit 1
+```
+
+The other providers' statuses do not affect the exit code — only the
+provider that the configured `defaultModel` actually routes to. That
+mirrors the existing `[READY] / [NOT READY]` verdict logic.
+
+Verified live in this pass:
+
+| `defaultModel`              | resolves to | strict exit |
+|-----------------------------|-------------|-------------|
+| `gemini-2.0-flash` (creds)  | gemini      | 0           |
+| `claude-3-5-sonnet-…` (no)  | anthropic   | 1           |
+
+Non-default providers (e.g. OpenAI returning 401 with no key) still
+print `[ FAIL ]` in the table but do not influence the exit code — the
+goal is "can the agent actually call the default model?", not "are all
+providers configured?".
+
+### Pipeline MCP tools (opt-in)
+
+The read-only MCP surface stayed at four tools (resolve_provider,
+credential_status, config_snapshot, doctor) so that wiring joc into a
+client could not accidentally burn credits or scribble files.
+
+For agents that actually want to drive the full workflow, the MCP
+server now also publishes the four pipeline tools when launched with
+`JOC_MCP_PIPELINE=1`:
+
+- `joc_deep_interview({idea})` → `runDeepInterviewCommand`
+- `joc_ralplan()`              → `runRalplanCommand`
+- `joc_team()`                 → `runTeamCommand`
+- `joc_ultragoal()`            → `runUltragoalCommand`
+
+Each tool's `description` opens with `DANGER: …` so a calling LLM gets
+an explicit warning that the tool mutates the working tree and/or
+spends real API credits.
+
+Implementation is a thin `captureCommand(run)` wrapper that hijacks
+`console.log` to a string buffer, awaits the existing
+`run*Command()`, and returns the buffer as a single `text` content
+block. Same pattern as `joc_doctor`. No new logic in the command files
+themselves — the MCP layer just observes them.
+
+Verified live in this pass:
+
+```
+$ bun src/cli.ts mcp serve                       → 4 tools
+$ JOC_MCP_PIPELINE=1 bun src/cli.ts mcp serve    → 8 tools
+```
+
+### Remaining queue (carry forward)
+
+- **OAuth refresh broker** (`src/auth/refresh.ts`) — currently a
+  skeleton that returns `refresh_not_implemented`. Real refresh needs
+  per-provider token endpoints + retry-on-401 in each adapter.
+- **Workspace split** (gap #2) — `@joc/cli`, `@joc/ai`, `@joc/auth`,
+  `@joc/agent`, `@joc/commands`, `@joc/mcp`. Pure mechanical move now
+  that every subsystem already lives in its own folder.

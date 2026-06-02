@@ -114,7 +114,8 @@ function formatRow(provider: string, credKind: string, result: ProbeResult): str
   return `  ${provider.padEnd(10)} ${credKind.padEnd(16)} [${status}] ${latency.padEnd(7)} ${result.detail}`;
 }
 
-export async function runDoctorCommand(_args: string[] = []): Promise<void> {
+export async function runDoctorCommand(args: string[] = []): Promise<void> {
+  const strict = args.includes("--strict");
   const config = await readGlobalConfig();
   const defaultProvider = resolveProvider(config.defaultModel);
 
@@ -167,5 +168,9 @@ export async function runDoctorCommand(_args: string[] = []): Promise<void> {
     console.log(
       `[NOT READY] Default model '${config.defaultModel}' probe failed: ${defaultProbe?.result.detail ?? "unknown"}.`
     );
+  }
+
+  if (strict && defaultProbe?.result.status !== "ok") {
+    process.exit(1);
   }
 }

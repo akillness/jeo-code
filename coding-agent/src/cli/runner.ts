@@ -64,6 +64,15 @@ export const COMMANDS: readonly CommandSpec[] = [
       return args => m.runDoctorCommand(args);
     },
   },
+  {
+    name: "mcp",
+    summary: "Run joc as an MCP stdio server (subcommand: serve|tools).",
+    usage: "mcp [serve|tools]",
+    loader: async () => {
+      const m = await import("../commands/mcp");
+      return args => m.runMcpCommand(args);
+    },
+  },
 ];
 
 export function findCommand(name: string): CommandSpec | undefined {

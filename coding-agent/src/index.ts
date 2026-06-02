@@ -4,6 +4,7 @@ export * from "./agent/tools";
 export * from "./auth";
 export * from "./ai";
 export * from "./cli";
+export * from "./mcp";
 export * from "./commands/setup";
 export * from "./commands/auth";
 export * from "./commands/deep-interview";

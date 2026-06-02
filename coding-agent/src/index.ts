@@ -2,6 +2,7 @@ export * from "./agent/state";
 export * from "./agent/loop";
 export * from "./agent/tools";
 export * from "./auth";
+export * from "./ai";
 export * from "./commands/setup";
 export * from "./commands/auth";
 export * from "./commands/deep-interview";

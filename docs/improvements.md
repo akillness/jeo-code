@@ -496,3 +496,111 @@ The auth refactor is regression-free at both unit (probe) and integration
   `{apiKey, oauth}` tuple.
 - An MCP-style auth gateway (gjc's `auth-gateway/server`) can be added as
   `src/auth/gateway.ts` without churning the existing surface.
+
+---
+
+## 11. Ralph pass 4 — `src/ai/` carve-out (Codex gap #3 closed)
+
+**Date:** 2026-06-02
+
+`agent/loop.ts` had grown to ~275 lines holding four inline provider
+clients (`callAnthropic`, `callOpenAi`, `callGemini`, `callOllama`),
+provider routing logic, and credential consumption — exactly the
+"god module" pattern Codex flagged. This pass moved every byte of
+provider-specific HTTP into a dedicated `src/ai/` subsystem mirroring
+gjc's `model-manager` + provider adapter layout.
+
+### New surface
+
+```
+src/ai/
+├── index.ts                  # barrel
+├── types.ts                  # ProviderName, Message, CallOptions, ProviderAdapter
+├── model-manager.ts          # createModelManager() + resolveProvider()
+└── providers/
+    ├── anthropic.ts          # anthropicAdapter (OAuth bearer + anthropic-beta header)
+    ├── openai.ts             # openaiAdapter (jsonMode, baseUrl override, OAuth or API key)
+    ├── gemini.ts             # geminiAdapter (?key= query param fallback when no OAuth)
+    └── ollama.ts             # ollamaAdapter (no credential, OLLAMA_HOST aware)
+```
+
+### Refactored consumer
+
+`agent/loop.ts` collapsed from 275 lines to ~22 lines:
+
+```ts
+import { createModelManager, type Message as AiMessage } from "../ai";
+export type Message = AiMessage;
+export interface ChatOptions { /* model, systemPrompt, temperature, maxTokens, jsonMode */ }
+const manager = createModelManager();
+export async function callLlm(messages, options = {}) {
+  return manager.call(messages, options);
+}
+```
+
+All four CLI commands (`deep-interview`, `ralplan`, `team`, `ultragoal`)
+continue to import `{ callLlm }` from `../agent/loop` unchanged.
+
+### Verification
+
+**Unit probe** (`bun -e 'import { createModelManager, resolveProvider } from "./src/ai"'`):
+
+| Model string | `resolveProvider` result |
+|---|---|
+| `claude-3-5-sonnet` | `anthropic` |
+| `openai/mock-1` | `openai` |
+| `ollama/llama3` | `ollama` |
+| `gemini-2.0-flash` | `gemini` |
+
+**Direct manager call** against mock OpenAI server returned the expected
+`FINAL_SPEC` JSON payload — proving credential resolution → adapter
+dispatch → HTTP call → response parsing all flow through the new layer.
+
+**Full 4-stage E2E** against fresh mock at `http://localhost:18765/v1`:
+
+| Stage | Observed |
+|---|---|
+| `joc deep-interview "Build a CLI task manager with SQLite"` | Ambiguity 15% on round 1, wrote seed ✅ |
+| `joc ralplan` | Wrote plan with 3 steps ✅ |
+| `joc team` | Executor loop completed all 3 tasks ✅ |
+| `joc ultragoal` | Ran 3 acceptance checks, wrote report ✅ |
+
+(`ultragoal` correctly reports `DEGRADED 0/3` because the mock pipeline
+produces no real source code for `bun test` / `bun run src/cli.ts --help`
+to validate — that is the expected semantic outcome, not a regression.)
+
+### What this carve-out unlocks
+
+- **New providers as drop-in files.** Adding `togetherai.ts` or
+  `azure-openai.ts` is a single-file addition + one line in `ADAPTERS`.
+- **Per-call `baseUrl` override** is now a first-class `CallOptions`
+  field — useful for routing specific calls to different OpenAI-compat
+  endpoints (`vllm`, `lmstudio`, etc.) without mutating config.
+- **Testability.** `ProviderAdapter` is a 1-method interface; injecting
+  a fake adapter for unit tests no longer requires hijacking `fetch`.
+- **Credential decoupling.** Adapters receive a `Credential` tagged
+  union — they never read config files or env vars directly, so the
+  auth subsystem remains the single source of truth.
+
+### Module-size accounting (running tally)
+
+| File | Before pass 4 | After pass 4 |
+|---|---|---|
+| `src/agent/loop.ts` | 275 lines | 22 lines |
+| `src/ai/*` | — | 7 files, ~220 lines total |
+
+Net: code volume essentially unchanged, but each module now has one
+reason to change. The Codex review's gap #3 ("provider clients hide
+inside the agent loop") is closed.
+
+### Remaining queue
+
+- Gap #1 (lazy command loader / `src/cli/runner.ts`) — next pass.
+- Gap #2 (`packages/` workspace split) — deferred until after the
+  cli-runner refactor so the workspace boundaries follow the new
+  subsystem shapes.
+- Gap #5 (MCP stub) — independent; can land any time.
+- `joc doctor` and the real token-refresh broker — both have clean
+  insertion points now (`src/ai/model-manager.ts::createModelManager`
+  for doctor's connectivity probes, `src/auth/refresh.ts` for the
+  refresh broker).

@@ -1,0 +1,24 @@
+import type { Credential } from "../auth";
+
+export type ProviderName = "anthropic" | "openai" | "gemini" | "ollama";
+
+export interface Message {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface CallOptions {
+  model: string;
+  systemPrompt?: string;
+  temperature?: number;
+  maxTokens?: number;
+  jsonMode?: boolean;
+  /** Per-call base URL override (OpenAI-compat / Ollama). */
+  baseUrl?: string;
+}
+
+export interface ProviderAdapter {
+  readonly name: ProviderName;
+  /** Local providers ignore the credential argument; cloud adapters require it. */
+  call(messages: Message[], options: CallOptions, credential: Credential): Promise<string>;
+}

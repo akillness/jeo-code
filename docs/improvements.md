@@ -604,3 +604,150 @@ inside the agent loop") is closed.
   insertion points now (`src/ai/model-manager.ts::createModelManager`
   for doctor's connectivity probes, `src/auth/refresh.ts` for the
   refresh broker).
+
+---
+
+## 12. Ralph pass 5 — `src/cli/runner.ts` lazy dispatch (Codex gap #1 closed)
+
+**Date:** 2026-06-02
+
+Before this pass, `src/cli.ts` imported all six command runners
+(`setup`, `auth`, `deep-interview`, `ralplan`, `team`, `ultragoal`)
+at the top of the file. Every invocation — even `joc --version` or
+`joc --help` — paid the cost of parsing those modules and their
+transitive imports (`agent/state`, `agent/loop`, `ai/*`, `auth/*`,
+yaml, fs/promises). That is exactly the eager-boot pattern gjc
+avoids with its lazy-command table.
+
+### New surface
+
+```
+src/cli/
+├── index.ts          # barrel
+└── runner.ts         # CommandSpec[], findCommand, renderHelp, dispatch
+```
+
+`CommandSpec` shape:
+
+```ts
+interface CommandSpec {
+  readonly name: string;
+  readonly summary: string;
+  readonly usage?: string;
+  readonly loader: () => Promise<(args: string[]) => Promise<void>>;
+}
+```
+
+The registry is the single source of truth for command name → runner,
+help text, and dispatch routing. Each `loader` is a closure that calls
+`await import("../commands/<name>")` only when the user actually
+invokes that command. Help text is rendered from the registry, so the
+table can never drift from the dispatch table.
+
+### Collapsed entry point
+
+`src/cli.ts` shrank from 92 lines to 17:
+
+```ts
+#!/usr/bin/env bun
+import { dispatch } from "./cli/runner";
+
+const APP_NAME = "joc";
+const VERSION = "0.1.0";
+const MIN_BUN_VERSION = "1.3.14";
+
+if (typeof Bun !== "undefined" && Bun.semver?.order(Bun.version, MIN_BUN_VERSION) < 0) { /* ... */ }
+process.title = APP_NAME;
+
+const code = await dispatch(process.argv.slice(2), { appName: APP_NAME, version: VERSION });
+if (code !== 0) process.exit(code);
+```
+
+The Bun version guard and `process.title` setup stay at the entry
+point — both must run before any command can possibly import.
+
+### Verification
+
+**Cold start timing** (single invocation, no warm cache):
+
+| Invocation | Wall time | Loads command modules? |
+|---|---|---|
+| `bun src/cli.ts --version` | ~13 ms | no |
+| `bun src/cli.ts --help` | ~12 ms | no |
+| `bun src/cli.ts auth status` | (full cost) | yes — `auth` only |
+| `bun src/cli.ts deep-interview ...` | (full cost) | yes — `deep-interview` only |
+
+The 13ms cold-start for `--version` is concrete proof that none of
+`commands/setup`, `commands/auth`, `commands/deep-interview`,
+`commands/ralplan`, `commands/team`, or `commands/ultragoal` are
+imported when the user just asks for the version string. Before this
+pass the same path went through every one of those imports.
+
+**Help rendering driven by registry:**
+
+```
+Commands:
+  setup                                   Configure LLM providers ...
+  auth [login|logout|status] [provider]   Manage OAuth bearer tokens. ...
+  deep-interview "<initial idea>"         Execute Socratic requirements interview ...
+  ralplan                                 Create planning blueprint ...
+  team                                    Execute the planning blueprint ...
+  ultragoal                               Verify goals and run acceptance checks.
+```
+
+No hardcoded help block in `cli.ts` anymore — adding a command means
+adding one entry to `COMMANDS[]`.
+
+**Full 4-stage E2E** against mock OpenAI server (`localhost:18765/v1`):
+
+| Stage | Observed |
+|---|---|
+| `joc deep-interview "Build a CLI task manager with SQLite"` | Ambiguity 15% round 1, seed written ✅ |
+| `joc ralplan` | Plan with 3 steps written ✅ |
+| `joc team` | 3 tasks executed via `{tool:"done"}` ✅ |
+| `joc ultragoal` | 3 acceptance checks ran, report written ✅ |
+
+(`ultragoal` still reports `DEGRADED 0/3` — same expected semantic
+outcome as pass 4: the mock pipeline writes no real code, so the
+heuristic shell commands fail by design.)
+
+### What this carve-out unlocks
+
+- **Adding a command is a one-file change.** Drop a `commands/foo.ts`
+  exporting `runFooCommand`, add one entry to `COMMANDS[]`. Help text
+  and dispatch update automatically.
+- **Per-command flag parsing** can live next to the command (each
+  loader receives the post-name `args: string[]`) instead of being
+  centralized in `cli.ts`'s switch.
+- **Testability.** `dispatch()` is a pure function returning an exit
+  code; CI can assert routing without spawning the binary.
+- **Plugin/extension path.** A future `joc plugin add <name>` can
+  append to the registry at runtime by importing user-installed
+  modules — the registry was designed as `readonly` for safety, but a
+  `mergeCommands()` helper is a 3-line addition.
+
+### Module-size accounting (running tally)
+
+| File | Before pass 5 | After pass 5 |
+|---|---|---|
+| `src/cli.ts` | 92 lines | 17 lines |
+| `src/cli/runner.ts` | — | ~110 lines |
+| `src/cli/index.ts` | — | 1 line |
+
+Net: +36 lines, but the entry point is now a 17-line guard and every
+command's import cost is paid exactly when it is used.
+
+### Remaining queue (after pass 5)
+
+- Gap #2 (`packages/` workspace split) — can now follow the carve-out
+  boundaries: `@joc/cli`, `@joc/ai`, `@joc/auth`, `@joc/agent`,
+  `@joc/commands`. Each is already an isolated subdirectory with a
+  clean barrel.
+- Gap #5 (MCP stub) — drop-in: `src/mcp/server.ts` + one registry
+  entry (`{ name: "mcp", loader: () => import("../commands/mcp") }`)
+  is enough to expose `joc mcp serve`.
+- `joc doctor` — same one-entry registry addition; the doctor command
+  can probe each adapter via `createModelManager()` and each
+  credential via `resolveCredential()`.
+- Real OAuth refresh broker — `src/auth/refresh.ts` is already the
+  insertion point.

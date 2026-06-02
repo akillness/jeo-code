@@ -751,3 +751,100 @@ command's import cost is paid exactly when it is used.
   credential via `resolveCredential()`.
 - Real OAuth refresh broker — `src/auth/refresh.ts` is already the
   insertion point.
+
+---
+
+## 13. Ralph pass 6 — `joc doctor` health probe (gjc parity for install verification)
+
+**Date:** 2026-06-02
+
+`joc doctor` answers the user's original concern — "설치부터 터미널에서
+동작하는 흐름까지 테스트해보자" (test the full install-to-terminal
+flow). Before this pass there was no single command to verify that
+the install actually wired up the providers correctly. Users had to
+run `joc auth status` (credentials only, no network check) then try a
+real command (expensive and slow). Doctor consolidates both into one
+sub-second probe.
+
+### New surface
+
+- `src/commands/doctor.ts` — `runDoctorCommand` with four per-provider
+  probe helpers (`probeOpenAi`, `probeGemini`, `probeAnthropic`,
+  `probeOllama`).
+- `COMMANDS[]` registry entry — one new line in `src/cli/runner.ts`.
+
+### Per-provider probe strategy
+
+| Provider | Endpoint | Cost | Notes |
+|---|---|---|---|
+| OpenAI | `GET /v1/models` | free | Honors `openaiBaseUrl`, so a kind:"none" credential probes the local server when configured |
+| Gemini | `GET /v1beta/models?key=…` or OAuth | free | Skip when credential is `none` |
+| Anthropic | `POST /v1/messages max_tokens=1` | ~1 token | Only auth verification path Anthropic exposes — burns one token at most. Skip on `none`. |
+| Ollama | `GET /api/tags` | free | Always probed, no credential needed |
+
+Each probe runs with a 4-second `AbortController` timeout. Output rows
+include status (OK/SKIP/FAIL), latency, and the actual HTTP line for
+diagnosis.
+
+### Verification
+
+**Against real config** (`gemini-2.0-flash`, real Gemini API key,
+local Ollama):
+
+```
+Bun runtime:    v1.3.14
+Default model:  gemini-2.0-flash → gemini
+
+  anthropic  none             [ SKIP ] —       no credential
+  openai     none             [ FAIL ] 237ms   GET https://api.openai.com/v1/models 401
+  gemini     api_key          [  OK  ] 289ms   GET /v1beta/models 200
+  ollama     none (local)     [  OK  ] 53ms    GET http://localhost:11434/api/tags 200
+
+[READY] Default model 'gemini-2.0-flash' is reachable.
+```
+
+**Against mock OpenAI-compat local server** (`openai/mock-1`, empty
+`providers`, `openaiBaseUrl: http://localhost:18765/v1`):
+
+```
+Default model:  openai/mock-1 → openai
+OpenAI base:    http://localhost:18765/v1
+
+  openai     none             [  OK  ] 10ms    GET http://localhost:18765/v1/models 200
+  ...
+
+[READY] Default model 'openai/mock-1' is reachable.
+```
+
+This proves the `kind:"none" + openaiBaseUrl → reachable` path that
+loop.ts honors for keyless local OpenAI-compat servers is correctly
+mirrored by the doctor probe.
+
+### What this delivers
+
+- **Single-shot install verification.** After `bash install.sh && joc
+  setup`, the user runs `joc doctor` and immediately sees which
+  provider is reachable, which credential is missing, and whether the
+  saved `defaultModel` actually resolves to a working provider.
+- **Diagnoses local Ollama / vLLM / LMStudio setups** with the same
+  command — no special "local mode" flag needed.
+- **Latency baseline** for each provider (useful when one provider is
+  slow on a given network).
+- **CI-friendly exit code path** (currently always 0 — future:
+  `--strict` to exit 1 on FAIL of the default-model provider).
+
+### Module-size accounting (running tally)
+
+| File | Lines |
+|---|---|
+| `src/commands/doctor.ts` | ~140 |
+| `src/cli/runner.ts` | +8 lines (registry entry) |
+
+### Remaining queue (after pass 6)
+
+- Gap #5 (MCP stub `joc mcp serve`) — drop-in via the same registry
+  pattern.
+- Gap #2 (`packages/` workspace split) — boundaries are now ready
+  (`@joc/cli`, `@joc/ai`, `@joc/auth`, `@joc/agent`, `@joc/commands`).
+- Real OAuth refresh broker in `src/auth/refresh.ts`.
+- `joc doctor --strict` exit-code flag for CI gating.

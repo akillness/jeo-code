@@ -283,3 +283,123 @@ Tested on Bun `1.3.14` against a mock OpenAI-compatible server:
   refresher equivalent to GJC's `auth-broker/refresher.ts` is the next upgrade.
 - `ultragoal` infers verification commands heuristically. A dedicated `verify:` block
   inside the seed (overrideable per criterion) would make verification deterministic.
+
+---
+
+## 8. Structural import: install pipeline (ralph pass 2)
+
+GJC ships `scripts/install.sh` (264 lines) that handles both source-via-bun
+and prebuilt binary modes with a `MIN_BUN_VERSION=1.3.14` floor. The runtime
+entry (`packages/coding-agent/src/cli.ts`) re-checks
+`Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0` before doing anything,
+and sets `process.title = APP_NAME` so `ps`/`pgrep` show the agent under its
+own name.
+
+joc now mirrors that structural pattern.
+
+| Concern | GJC | joc (added this pass) |
+|---|---|---|
+| One-shot installer | `scripts/install.sh` | `coding-agent/scripts/install.sh` |
+| Modes | `--source` / `--binary` / `--ref` | `--local` / `--source` / `--ref` |
+| Bun version floor | `MIN_BUN_VERSION=1.3.14` shared via `@gajae-code/utils` | constant in `install.sh` + runtime guard in `src/cli.ts` |
+| Install dir | `$GJC_INSTALL_DIR` ‖ `$HOME/.local/bin` | `$JOC_INSTALL_DIR` ‖ `$HOME/.local/bin` |
+| PATH hint on success | yes | yes |
+| Uninstall | documented `bun remove -g` | dedicated `scripts/uninstall.sh` with `--purge` for `~/.joc/` |
+| Process identity | `process.title = APP_NAME` | added to `src/cli.ts` |
+
+### Verified install + terminal run (clean env)
+
+```text
+$ env -i HOME=... PATH=/usr/bin:/bin:... \
+    sh coding-agent/scripts/install.sh --local
+Installed joc → /Users/.../.local/bin/joc
+Run: joc --help
+
+$ env -i HOME=... PATH=... joc --version
+joc v0.1.0
+
+$ env -i HOME=... PATH=... joc auth status
+Provider     API key   OAuth token
+  anthropic   —         —
+  openai      —         —
+  gemini      set       —
+
+Default model: gemini-2.0-flash
+Ollama base:   http://localhost:11434
+OpenAI base:   (api.openai.com/v1)
+```
+
+Both the installer and the post-install CLI were run under `env -i` so no
+parent-shell state leaked. The installer enforces the Bun floor before
+symlinking; the runtime guard catches the same misconfiguration at first
+invocation.
+
+### Intentionally not mirrored
+
+- `Dockerfile*`, multi-arch native binary release pipeline. Source-only for
+  now; prebuilt binaries belong to a future release-pipeline pass.
+- `crates/` (Rust) and `python/` siblings — joc has no Rust/Python helpers.
+- The 50+ feature subdomains under gjc's coding-agent (`autoresearch`,
+  `capability`, `dap`, `lsp`, `mcp`, `plan-mode`, `tui`, …). Those are
+  *features*, not structural scaffolding. joc keeps its tighter surface:
+  `agent/`, `commands/`.
+
+---
+
+## 9. Codex structural-review pass
+
+Codex (gpt-5.2-codex via `codex:codex-rescue`) cross-checked gjc's package
+tree against joc and reported five concrete structural gaps. Verbatim from
+the review:
+
+1. **Workspace / package boundaries** — gjc root `package.json` declares
+   `workspaces.packages: ["packages/*"]` and catalogs `@gajae-code/ai`,
+   `@gajae-code/coding-agent`, `@gajae-code/agent-core`, `@gajae-code/utils`,
+   `@gajae-code/stats`, `@gajae-code/tui`. joc is a single package. Recommend
+   carving out `packages/ai`, `packages/coding-agent`, `packages/agent-core`,
+   `packages/utils`. **CORE**.
+2. **Lazy CLI runner + default launch** — gjc `cli.ts` registers
+   `CommandEntry[]`, lazy-loads command modules, and routes argv with no
+   subcommand to `launch`. joc has a hardcoded switch with no default agent
+   launch. Recommend `src/cli/runner.ts` exporting `runCli(argv)` plus
+   `src/commands/launch.ts`. **CORE**.
+3. **Provider / model abstraction layer** — gjc `packages/ai/` exports
+   `model-manager`, `model-cache`, `provider-models`, discovery, stream,
+   schema, usage. joc embeds HTTP calls inline in `src/agent/loop.ts`.
+   Recommend `src/ai/index.ts`, `src/ai/providers/*`, `src/ai/model-manager.ts`
+   exporting `createModelManager`, `resolveProviderModels`, provider
+   `stream/call` adapters. **CORE**.
+4. **Auth subsystem separation** — gjc exports `auth-broker`, `auth-gateway`,
+   `auth-storage`; `auth-broker/index.ts` exports `client`, `refresher`,
+   `remote-store`, `server`, `types`. joc `src/commands/auth.ts` writes
+   tokens directly to `~/.joc/config.json`. Recommend `src/auth/index.ts`,
+   `src/auth/storage.ts`, `src/auth/oauth.ts`, `src/auth/refresh.ts`
+   exporting `AuthStorage`, `loginOAuth`, `refreshOAuthToken`,
+   `resolveCredential`. **CORE**.
+5. **Runtime extensibility + team/session surfaces** — gjc exports broad
+   `session/*`, `task/*`, `tools/*`, `slash-commands/*`,
+   `extensibility/{custom-commands,custom-tools,extensions,hooks,plugins}/*`;
+   `commands/team.ts` delegates to `gjc-runtime/team-runtime` with
+   start/list/status/shutdown/api ops. joc has fixed workflow commands only.
+   Recommend `src/runtime/team-runtime.ts`, `src/session/*`,
+   `src/tools/registry.ts`, `src/extensibility/*` exporting
+   `startJocTeam`, `listJocTeams`, `ToolRegistry`, `ExtensionRegistry`.
+   **CORE**.
+
+Codex's recommended next action: **carve out `src/ai/*` and `src/auth/*`
+first**, because provider/model/auth boundaries unblock the launch command,
+config schema, and runtime extensibility cleanly.
+
+### Queue derived from Codex review (ralph pass 3)
+
+- `src/auth/` extraction — move OAuth flow + token storage out of
+  `commands/auth.ts` into a real subsystem (`storage`, `oauth`, `refresh`).
+  Highest leverage, smallest blast radius (auth surface is already small).
+- `src/ai/` extraction — pull `callLlm` + provider routing out of
+  `agent/loop.ts` into `ai/providers/{anthropic,openai,gemini,ollama}.ts`
+  behind a `createModelManager()` factory.
+- `src/cli/runner.ts` — lazy-load command modules; reduces cold-start cost
+  when joc grows past 6 subcommands.
+- Workspaces split is **queued but deferred** — single-package joc is still
+  the right shape for the current surface; revisit when joc adds a second
+  consumer (e.g. an MCP server package).

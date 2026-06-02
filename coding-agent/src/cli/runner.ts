@@ -56,6 +56,14 @@ export const COMMANDS: readonly CommandSpec[] = [
       return async () => m.runUltragoalCommand();
     },
   },
+  {
+    name: "doctor",
+    summary: "Probe provider connectivity + credentials. Reports if default model is reachable.",
+    loader: async () => {
+      const m = await import("../commands/doctor");
+      return args => m.runDoctorCommand(args);
+    },
+  },
 ];
 
 export function findCommand(name: string): CommandSpec | undefined {

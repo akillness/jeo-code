@@ -1,4 +1,5 @@
 import { readGlobalConfig } from "./state";
+import { resolveCredential, type AuthProvider } from "../auth";
 
 export interface Message {
   role: "system" | "user" | "assistant";
@@ -37,12 +38,13 @@ export async function callLlm(
     return await callOllama(config.ollamaBaseUrl || "http://localhost:11434", model, messages, options, temperature, maxTokens);
   }
 
-  // 3. Resolve credential: OAuth bearer token takes precedence over the API key.
-  const oauthToken = config.oauth?.[provider];
-  const apiKey = config.providers[provider];
+  // 3. Resolve credential via the auth subsystem (OAuth bearer > API key).
+  const credential = await resolveCredential(provider as AuthProvider);
+  const oauthToken = credential.kind === "oauth" ? credential.token : undefined;
+  const apiKey = credential.kind === "api_key" ? credential.token : undefined;
   // OpenAI-compatible local servers may be keyless when openaiBaseUrl is set.
   const isLocalOpenAi = provider === "openai" && !!config.openaiBaseUrl;
-  if (!oauthToken && !apiKey && !isLocalOpenAi) {
+  if (credential.kind === "none" && !isLocalOpenAi) {
     throw new Error(
       `No credential for provider '${provider}'. Run 'joc setup', 'joc auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
     );

@@ -403,3 +403,80 @@ config schema, and runtime extensibility cleanly.
 - Workspaces split is **queued but deferred** — single-package joc is still
   the right shape for the current surface; revisit when joc adds a second
   consumer (e.g. an MCP server package).
+
+---
+
+## 10. Ralph pass 3 — `src/auth/` subsystem carve-out
+
+Codex's highest-priority gap (#4 in §9) has been resolved. The auth surface,
+previously fused into `commands/auth.ts` + inline lookups in `agent/loop.ts`,
+is now a dedicated subsystem matching gjc's `auth-broker` / `auth-storage`
+boundary.
+
+### New module layout
+
+```
+coding-agent/src/auth/
+├── index.ts       — public barrel
+├── storage.ts     — Credential type, resolveCredential, set/clear oauth + apiKey
+├── oauth.ts       — OAUTH_FLOWS metadata, openInBrowser, loginOAuth/logoutOAuth
+└── refresh.ts     — refreshOAuthToken (skeleton) + rotateOAuthToken
+```
+
+### Public surface (`src/auth/index.ts`)
+
+| Export | Purpose |
+|---|---|
+| `AuthProvider` | `"anthropic" \| "openai" \| "gemini"` |
+| `Credential` | tagged union `{kind: "oauth" \| "api_key" \| "none", provider, token?}` |
+| `resolveCredential(provider)` | OAuth bearer > API key, returns `Credential` |
+| `snapshotProvider(provider)` | returns `{apiKey, oauth}` for status displays |
+| `setOauthToken`, `clearOauthToken`, `setApiKey` | mutating helpers (atomic writes) |
+| `OAUTH_FLOWS`, `openInBrowser` | metadata + helper used by interactive login |
+| `loginOAuth(provider, token)` | non-interactive token write |
+| `logoutOAuth(provider)` | returns `true` iff something was removed |
+| `refreshOAuthToken(provider)` | placeholder for future broker-side refresh |
+| `rotateOAuthToken(provider, token)` | force-replace stored token |
+
+### Call-site changes
+
+- `src/agent/loop.ts` no longer reads `config.oauth` / `config.providers`
+  directly. It calls `resolveCredential(provider)` and branches on
+  `credential.kind`. The local-OpenAI keyless path still bypasses
+  credential resolution (`isLocalOpenAi` check unchanged).
+- `src/commands/auth.ts` is now a CLI shell that delegates entirely to the
+  subsystem: status uses `snapshotProvider`, login uses `loginOAuth`,
+  logout uses `logoutOAuth`.
+- `src/index.ts` re-exports `./auth` so SDK consumers (joc-as-library) get
+  the typed credential surface without poking at `state.ts`.
+
+### Verified
+
+```text
+$ joc auth status
+=== joc auth status ===
+Provider     API key   OAuth token
+  anthropic   —         —
+  openai      —         —
+  gemini      set       —
+
+$ bun -e 'import("./src/auth").then(async m => {
+    const c = await m.resolveCredential("gemini");
+    console.log(c.kind, c.provider, c.kind !== "none" ? c.token.length : 0);
+  })'
+api_key gemini 39
+```
+
+`joc auth status` still renders correctly, and the lower-level
+`resolveCredential("gemini")` returns `{kind:"api_key", provider:"gemini", token:<39 chars>}` — exactly what `loop.ts` now consumes via the subsystem.
+
+### Future work unlocked by this carve-out
+
+- `refresh.ts` is a real file with a real return type — the
+  refresh-broker work flagged in §7 can now land without touching
+  `commands/auth.ts` or `agent/loop.ts` again.
+- The Credential type makes the eventual `src/ai/` carve-out (Codex gap #3)
+  cleaner: provider adapters can accept `Credential` instead of an opaque
+  `{apiKey, oauth}` tuple.
+- An MCP-style auth gateway (gjc's `auth-gateway/server`) can be added as
+  `src/auth/gateway.ts` without churning the existing surface.

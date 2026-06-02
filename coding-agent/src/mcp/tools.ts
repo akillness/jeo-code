@@ -85,3 +85,72 @@ export const TOOLS: ToolDefinition[] = [
     },
   },
 ];
+
+async function captureCommand(run: () => Promise<void>): Promise<string> {
+  const lines: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => {
+    lines.push(args.map(a => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+  };
+  try {
+    await run();
+  } finally {
+    console.log = originalLog;
+  }
+  return lines.join("\n");
+}
+
+const PIPELINE_TOOLS: ToolDefinition[] = [
+  {
+    name: "joc_deep_interview",
+    description: "DANGER: WRITES FILES + BURNS LLM CREDITS. Runs Socratic requirements interview. Writes .joc/spec.json. Requires default model credential.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        idea: { type: "string", description: "Initial product idea seed" },
+      },
+      required: ["idea"],
+    },
+    async handler(args) {
+      const idea = String(args.idea ?? "");
+      if (!idea) return textResult("error: 'idea' is required", true);
+      const { runDeepInterviewCommand } = await import("../commands/deep-interview");
+      const out = await captureCommand(() => runDeepInterviewCommand([idea]));
+      return textResult(out);
+    },
+  },
+  {
+    name: "joc_ralplan",
+    description: "DANGER: WRITES FILES + BURNS LLM CREDITS. Reads .joc/spec.json, writes .joc/plan.yaml via Planner/Architect/Critic.",
+    inputSchema: { type: "object", properties: {} },
+    async handler() {
+      const { runRalplanCommand } = await import("../commands/ralplan");
+      const out = await captureCommand(() => runRalplanCommand());
+      return textResult(out);
+    },
+  },
+  {
+    name: "joc_team",
+    description: "DANGER: WRITES FILES + EDITS CODE + BURNS LLM CREDITS. Executes .joc/plan.yaml via Executor subagent. Modifies the working tree.",
+    inputSchema: { type: "object", properties: {} },
+    async handler() {
+      const { runTeamCommand } = await import("../commands/team");
+      const out = await captureCommand(() => runTeamCommand());
+      return textResult(out);
+    },
+  },
+  {
+    name: "joc_ultragoal",
+    description: "DANGER: BURNS LLM CREDITS. Runs acceptance verification against .joc/spec.json + .joc/plan.yaml.",
+    inputSchema: { type: "object", properties: {} },
+    async handler() {
+      const { runUltragoalCommand } = await import("../commands/ultragoal");
+      const out = await captureCommand(() => runUltragoalCommand());
+      return textResult(out);
+    },
+  },
+];
+
+if (process.env.JOC_MCP_PIPELINE === "1") {
+  TOOLS.push(...PIPELINE_TOOLS);
+}

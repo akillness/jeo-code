@@ -470,6 +470,22 @@ api_key gemini 39
 `joc auth status` still renders correctly, and the lower-level
 `resolveCredential("gemini")` returns `{kind:"api_key", provider:"gemini", token:<39 chars>}` — exactly what `loop.ts` now consumes via the subsystem.
 
+### Full-pipeline mechanical verification (mock OpenAI server)
+
+After the carve-out, the entire 4-stage loop was re-run against a mocked
+OpenAI-compatible server at `http://localhost:18765/v1`. Every LLM call
+flows through `agent/loop.ts → resolveCredential() → callOpenAi`.
+
+| Stage | Observed |
+|---|---|
+| `joc deep-interview "build a CLI task manager with SQLite storage"` | Ambiguity 15% on round 1, wrote `.joc/seeds/seed-build-a-cli-task-manager.yaml` ✅ |
+| `joc ralplan` | Read seed, wrote `.joc/plans/plan-build-a-cli-task-manager.yaml` ✅ |
+| `joc team` | Executor loop completed 3 tasks via `{tool:"done"}` ✅ |
+| `joc ultragoal` | Parsed 3 acceptance criteria, ran heuristic verification, wrote `.joc/state/ultragoal-report.md` ✅ |
+
+The auth refactor is regression-free at both unit (probe) and integration
+(full pipeline) levels.
+
 ### Future work unlocked by this carve-out
 
 - `refresh.ts` is a real file with a real return type — the

@@ -8,6 +8,17 @@ import { runUltragoalCommand } from "./commands/ultragoal";
 
 const APP_NAME = "joc";
 const VERSION = "0.1.0";
+const MIN_BUN_VERSION = "1.3.14";
+
+// Runtime guard: fail fast if Bun is too old. Mirrors gjc's startup check
+// because every command relies on Bun.serve / Bun.semver / Bun.spawn APIs.
+if (typeof Bun !== "undefined" && Bun.semver?.order(Bun.version, MIN_BUN_VERSION) < 0) {
+  process.stderr.write(
+    `error: Bun >= ${MIN_BUN_VERSION} required (found v${Bun.version}). Upgrade: bun upgrade\n`,
+  );
+  process.exit(1);
+}
+process.title = APP_NAME;
 
 const argv = process.argv.slice(2);
 const first = argv[0];

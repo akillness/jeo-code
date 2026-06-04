@@ -4,7 +4,7 @@
 > agent and pipeline render like gjc — live tool calls, streaming text, a status
 > footer, and a slash-command palette — instead of scrolling raw `console.log`.
 
-**Status:** `planned` · **Last updated:** 2026-06-05 · **Tracking pass:** `docs/improvements.md` (pending §17+)
+**Status:** `in-progress` (M1+M2 shipped; M3 slash palette + M4 pipeline views pending) · **Last updated:** 2026-06-05 · **Tracking pass:** `docs/improvements.md §24`
 
 ---
 
@@ -108,3 +108,6 @@ joc launch --no-tui "say hi"                               # explicit fallback p
 
 ## 10. Changelog
 - 2026-06-05 — plan created.
+- 2026-06-05 — M1+M2 shipped: `src/tui/{terminal,renderer,app}.ts` + `src/tui/components/*`, wired into
+  `joc launch` behind `isTTY() && !--no-tui` with the stream fallback preserved. 11 TUI tests; full
+  suite 45/45; `docs/improvements.md §24`. Remaining: M3 (slash palette/autocomplete), M4 (pipeline/doctor views).

@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { runAgentLoop, executorSystemPrompt } from "../agent/engine";
+import { LaunchTui } from "../tui/app";
 import type { Message } from "../agent/loop";
 import { readGlobalConfig } from "../agent/state";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
@@ -17,11 +18,12 @@ interface LaunchFlags {
   resume: boolean;
   resumeId?: string;
   noSession: boolean;
+  noTui: boolean;
   message: string;
 }
 
 function parseFlags(args: string[]): LaunchFlags {
-  const flags: LaunchFlags = { list: false, resume: false, noSession: false, message: "" };
+  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, message: "" };
   const rest: string[] = [];
   const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (let i = 0; i < args.length; i++) {
@@ -30,6 +32,8 @@ function parseFlags(args: string[]): LaunchFlags {
       flags.list = true;
     } else if (a === "--no-session") {
       flags.noSession = true;
+    } else if (a === "--no-tui") {
+      flags.noTui = true;
     } else if (a === "--resume") {
       flags.resume = true;
       const next = args[i + 1];
@@ -108,21 +112,40 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
   }
 
-  const events = {
+  const streamEvents = {
     onToolResult: (tool: string, ok: boolean) => console.log(`  · ${tool} ${ok ? "ok" : "FAILED"}`),
     onError: (msg: string) => console.log(`  ! ${msg}`),
   };
 
   // Run one conversational turn: compact, persist user msg, run the loop, persist + return the reply.
-  const runTurn = async (userInput: string): Promise<{ done: boolean; steps: number; reply: string }> => {
+  // When `useTui`, a live TUI renders the turn and prints the final reply itself (rendered=true).
+  const runTurn = async (
+    userInput: string,
+    useTui: boolean
+  ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean }> => {
     await maybeCompact(history, { model: sessionModel });
     history.push({ role: "user", content: userInput });
     if (sessionId) await appendMessage(sessionId, { role: "user", content: userInput }, cwd);
-    const result = await runAgentLoop(history, { cwd, maxSteps: 25, model: sessionModel, events });
+
+    const tui = useTui ? new LaunchTui({ model: sessionModel || defaultModel, sessionId }) : null;
+    if (tui) tui.start();
+    let result;
+    try {
+      result = await runAgentLoop(history, {
+        cwd,
+        maxSteps: 25,
+        model: sessionModel,
+        events: tui ? tui.events() : streamEvents,
+      });
+    } catch (err) {
+      if (tui) tui.finish(`! ${(err as Error).message}`);
+      throw err;
+    }
     const reply = result.doneReason || `(reached the ${result.steps}-step limit without signaling done)`;
     if (sessionId) await appendMessage(sessionId, { role: "assistant", content: reply }, cwd);
     history.push({ role: "assistant", content: reply });
-    return { done: result.done, steps: result.steps, reply };
+    if (tui) tui.finish(reply);
+    return { done: result.done, steps: result.steps, reply, rendered: !!tui };
   };
 
   const joinedArgs = flags.message;
@@ -138,7 +161,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       return;
     }
     try {
-      const { reply } = await runTurn(messageContent);
+      const { reply } = await runTurn(messageContent, false);
       console.log(reply);
     } catch (err) {
       console.log(`! ${(err as Error).message}`);
@@ -151,8 +174,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   console.log(`Model: ${defaultModel}`);
   if (sessionId) console.log(`Session: ${sessionId}`);
   if (contextFiles.length > 0) console.log(`Project context: ${contextFiles.map(f => f.path).join(", ")}`);
-  console.log("Type your request. Slash commands: /help /clear /model <id> /sessions /exit");
+  console.log("Type your request. Slash commands: /help /clear /model <id> /sessions /exit" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
 
+  const useTui = LaunchTui.usable(flags.noTui);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
 
   try {
@@ -193,9 +217,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
 
       try {
-        const { done, steps, reply } = await runTurn(input);
-        console.log(`joc> ${reply}`);
-        if (!done) console.log(`(agent did not converge in ${steps} steps)`);
+        const { done, steps, reply, rendered } = await runTurn(input, useTui);
+        if (!rendered) {
+          console.log(`joc> ${reply}`);
+          if (!done) console.log(`(agent did not converge in ${steps} steps)`);
+        }
       } catch (err) {
         console.log(`! ${(err as Error).message}`);
       }

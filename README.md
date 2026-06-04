@@ -120,9 +120,11 @@ Model routing is inferred from the model id, and credentials resolve from `~/.jo
 Run `joc` with no subcommand to drop into the interactive coding agent (modeled
 on [`badlogic/pi-mono`](https://github.com/badlogic/pi-mono)) — it chats and
 calls tools (`read`/`write`/`edit`/`bash`/`find`/`search`) in a loop until your
-request is done. Sessions **persist** to `.joc/sessions/` (resumable), the prompt
-auto-loads **project context** (`JEO.md`/`AGENTS.md`/`.joc/context.md`/`CLAUDE.md`),
-and long conversations are **compacted** automatically:
+request is done. On a TTY it renders a **differential TUI** (live tool-call list +
+in-place status footer; `--no-tui` falls back to plain stream). Sessions **persist**
+to `.joc/sessions/` (resumable), the prompt auto-loads **project context**
+(`JEO.md`/`AGENTS.md`/`.joc/context.md`/`CLAUDE.md`), and long conversations are
+**compacted** automatically:
 ```bash
 joc                         # interactive REPL (/help /clear /model /sessions /exit)
 joc launch "add a /health route to server.ts and run the tests"   # one-shot
@@ -196,7 +198,8 @@ joc ultragoal
 │   │   ├── callback-server.ts # Local OAuth callback server
 │   │   ├── refresh.ts         # Per-provider token refresh dispatch
 │   │   └── flows/             # anthropic / openai / google OAuth flows
-│   └── mcp/                   # MCP protocol + tools + server
+│   ├── mcp/                   # MCP protocol + tools + server
+│   └── tui/                   # differential renderer + components + LaunchTui
 ├── scripts/                   # install.sh / uninstall.sh (bun install + bun link)
 ├── test/                      # oauth + engine/json + review-fixes + session/context/compaction tests
 ├── docs/improvements.md       # architectural analysis & ralph passes

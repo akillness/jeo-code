@@ -1905,3 +1905,18 @@ abort errors, so cancellation is not retried.
 with an abort error and the signal is confirmed to reach `fetch`; a fresh signal completes normally).
 Real Ollama `joc chat` regression clean. Files: `src/ai/types.ts`, `src/ai/model-manager.ts`,
 `src/ai/providers/{anthropic,openai,gemini,ollama}.ts`, `test/abort.test.ts`.
+
+---
+
+## 39. Ralph pass 32 — gjc-parity batch 15 (doctor: parallel probes + alias-aware verdict)
+
+**Date:** 2026-06-05 · gjc dimensions: **bun 설치/진단 성능**, **model** (bugfix).
+
+- **Performance**: `joc doctor` ran its 4 provider probes **sequentially** (up to ~4×4s on an
+  unreachable setup). Now `Promise.all` runs the cloud probes concurrently (order preserved).
+- **Bugfix**: doctor resolved the **raw** default model, so an aliased default (`fast`) showed
+  `fast → anthropic` and a wrong `[NOT READY]`. Now it expands the alias first
+  (`resolveModelId`) → `fast → ollama/qwen2.5:0.5b → ollama` → correct `[READY]`.
+
+**Verification:** `tsc` 0; `bun test` **77/77**. Real Ollama (default `fast`, no cloud creds): doctor
+renders all rows in ~0.26s and reports `[READY]` (was a false `[NOT READY]`). Files: `src/commands/doctor.ts`.

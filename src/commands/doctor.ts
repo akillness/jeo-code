@@ -1,6 +1,7 @@
 import { readGlobalConfig } from "../agent/state";
 import { resolveCredential, snapshotProvider, type AuthProvider, type Credential } from "../auth";
 import { resolveProvider } from "../ai";
+import { resolveModelId } from "../ai/model-registry";
 
 interface ProbeResult {
   status: "ok" | "fail" | "skipped";
@@ -117,13 +118,14 @@ function formatRow(provider: string, credKind: string, result: ProbeResult): str
 export async function runDoctorCommand(args: string[] = []): Promise<void> {
   const strict = args.includes("--strict");
   const config = await readGlobalConfig();
-  const defaultProvider = resolveProvider(config.defaultModel);
+  const resolvedModel = await resolveModelId(config.defaultModel);
+  const defaultProvider = resolveProvider(resolvedModel);
 
   console.log("");
   console.log(`=== ${APP_NAME} doctor ===`);
   console.log("");
   console.log(`Bun runtime:    v${Bun.version}`);
-  console.log(`Default model:  ${config.defaultModel} → ${defaultProvider}`);
+  console.log(`Default model:  ${config.defaultModel}${resolvedModel !== config.defaultModel ? ` → ${resolvedModel}` : ""} → ${defaultProvider}`);
   console.log(`Config:         ${process.env.HOME}/.joc/config.json`);
   if (config.openaiBaseUrl) console.log(`OpenAI base:    ${config.openaiBaseUrl}`);
   console.log(`Ollama base:    ${config.ollamaBaseUrl ?? "http://localhost:11434"}`);
@@ -135,20 +137,20 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
 
   const probes: { name: string; credKind: string; result: ProbeResult }[] = [];
 
-  for (const provider of ["anthropic", "openai", "gemini"] as AuthProvider[]) {
-    const credential = await resolveCredential(provider);
-    let result: ProbeResult;
-    if (provider === "openai") {
-      // OpenAI-compat local servers are reachable even with kind:"none"
-      result = await probeOpenAi(credential, config.openaiBaseUrl);
-    } else if (provider === "gemini") {
-      result = await probeGemini(credential);
-    } else {
-      result = await probeAnthropic(credential);
-    }
-    probes.push({ name: provider, credKind: credential.kind, result });
-  }
+  // Probe all providers concurrently (was sequential → up to ~Nx the slowest timeout).
+  const cloud = ["anthropic", "openai", "gemini"] as AuthProvider[];
+  const cloudProbes = await Promise.all(
+    cloud.map(async provider => {
+      const credential = await resolveCredential(provider);
+      let result: ProbeResult;
+      if (provider === "openai") result = await probeOpenAi(credential, config.openaiBaseUrl);
+      else if (provider === "gemini") result = await probeGemini(credential);
+      else result = await probeAnthropic(credential);
+      return { name: provider, credKind: credential.kind, result };
+    })
+  );
   const ollamaResult = await probeOllama(config.ollamaBaseUrl ?? "http://localhost:11434");
+  for (const p of cloudProbes) probes.push(p);
   probes.push({ name: "ollama", credKind: "none (local)", result: ollamaResult });
 
   for (const p of probes) console.log(formatRow(p.name, p.credKind, p.result));

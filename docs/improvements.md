@@ -1700,3 +1700,23 @@ the loop against real `ollama/qwen2.5:0.5b`. Files: `src/commands/{launch,resume
 `bin.txt`) — proving the lazy `await import("../commands/*")` loaders survive `--compile` (53 modules
 bundled). `scripts/smoke-test.sh` → "Smoke test passed". `bun run build` → working `dist/joc`.
 Files: `scripts/install.sh` (`--binary`), `scripts/smoke-test.sh`, `package.json` (`build`), `.gitignore`.
+
+---
+
+## 28. Ralph pass 21 — gjc-parity batch 4 (provider token streaming)
+
+**Date:** 2026-06-05 · gjc dimension: **provider**.
+
+- **`src/ai/sse.ts`**: `readLines` (NDJSON) + `readSse` (SSE `data:` payloads, skips `[DONE]`),
+  with cross-chunk line buffering via `TextDecoder`.
+- **Adapter `stream?()`** added to `ProviderAdapter`: **ollama** (NDJSON `/api/chat` stream) and
+  **openai** (SSE `chat/completions` deltas). Adapters refactored to share a request builder.
+- **`ModelManager.stream()`**: resolves provider/credential through the shared `resolveCall()`
+  (alias-expand + adapter-aware creds + retry) and yields the adapter's deltas; providers without
+  `stream` fall back to one chunk from `call()`.
+
+**Verification:** `tsc` 0; `bun test` **66/66** (+4 SSE: split-line reassembly, unterminated tail,
+`[DONE]` skip, split-payload). **Real Ollama**: `manager.stream(...)` against `ollama/qwen2.5:0.5b`
+yielded **9 chunks** → `"Hello! How can I help you today?"` (token streaming confirmed end-to-end).
+Files: `src/ai/{sse.ts,types.ts,model-manager.ts,providers/ollama.ts,providers/openai.ts}`.
+Note: the strict-JSON tool loop still uses blocking `call()`; `stream()` powers chat/TUI text (plan 01 §9).

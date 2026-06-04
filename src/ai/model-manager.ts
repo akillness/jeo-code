@@ -32,57 +32,78 @@ export function thinkingMaxTokens(level?: "low" | "medium" | "high"): number {
 
 export interface ModelManager {
   call(messages: Message[], options?: Partial<CallOptions>): Promise<string>;
+  stream(messages: Message[], options?: Partial<CallOptions>): AsyncIterable<string>;
   resolveProvider: typeof resolveProvider;
+}
+
+const ALIAS_DEFAULTS = { fast: "ollama/qwen2.5:0.5b", local: "ollama/qwen2.5:0.5b", sonnet: "claude-3-5-sonnet", gpt: "gpt-4o", flash: "gemini-2.5-flash" };
+
+interface Resolved {
+  adapter: ProviderAdapter;
+  callOptions: CallOptions;
+  credential: Credential;
+}
+
+async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
+  const config = await readGlobalConfig();
+  const aliases = { ...((config as { modelAliases?: Record<string, string> }).modelAliases ?? {}) };
+  const model = expandAlias(options.model ?? config.defaultModel, { ...ALIAS_DEFAULTS, ...aliases });
+  const provider = resolveProvider(model);
+  const adapter = ADAPTERS[provider];
+
+  const baseUrl =
+    options.baseUrl ??
+    (provider === "openai" ? config.openaiBaseUrl : undefined) ??
+    (provider === "ollama" ? config.ollamaBaseUrl : undefined);
+
+  const callOptions: CallOptions = {
+    model,
+    systemPrompt: options.systemPrompt,
+    temperature: options.temperature ?? 0.2,
+    maxTokens: options.maxTokens ?? thinkingMaxTokens(config.thinkingLevel),
+    jsonMode: options.jsonMode,
+    baseUrl,
+  };
+
+  if (provider === "ollama") {
+    return { adapter, callOptions, credential: { kind: "none", provider: "openai" } };
+  }
+
+  const credential = await resolveCredential(provider as AuthProvider);
+  let effective = credential;
+  if (effective.kind === "oauth" && OAUTH_FLOW_REGISTRY[provider as AuthProvider]?.verifiedEndToEnd === false) {
+    const apiKey = config.providers[provider as AuthProvider];
+    if (apiKey) {
+      effective = { kind: "api_key", provider: provider as AuthProvider, token: apiKey };
+    } else {
+      throw new Error(`Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'joc setup') to use ${model}.`);
+    }
+  }
+
+  const isLocalOpenAi = provider === "openai" && !!baseUrl;
+  if (effective.kind === "none" && !isLocalOpenAi) {
+    throw new Error(
+      `No credential for provider '${provider}'. Run 'joc setup', 'joc auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
+    );
+  }
+  return { adapter, callOptions, credential: effective };
 }
 
 export function createModelManager(): ModelManager {
   return {
     resolveProvider,
     async call(messages, options = {}) {
-      const config = await readGlobalConfig();
-      const aliases = { ...((config as { modelAliases?: Record<string, string> }).modelAliases ?? {}) };
-      const model = expandAlias(options.model ?? config.defaultModel, { fast: "ollama/qwen2.5:0.5b", local: "ollama/qwen2.5:0.5b", sonnet: "claude-3-5-sonnet", gpt: "gpt-4o", flash: "gemini-2.5-flash", ...aliases });
-      const provider = resolveProvider(model);
-      const adapter = ADAPTERS[provider];
-
-      const baseUrl =
-        options.baseUrl ??
-        (provider === "openai" ? config.openaiBaseUrl : undefined) ??
-        (provider === "ollama" ? config.ollamaBaseUrl : undefined);
-
-      const callOptions: CallOptions = {
-        model,
-        systemPrompt: options.systemPrompt,
-        temperature: options.temperature ?? 0.2,
-        maxTokens: options.maxTokens ?? thinkingMaxTokens(config.thinkingLevel),
-        jsonMode: options.jsonMode,
-        baseUrl,
-      };
-
-      // Local providers (ollama) do not require credentials.
-      if (provider === "ollama") {
-        const noneCred: Credential = { kind: "none", provider: "openai" };
-        return withRetry(() => adapter.call(messages, callOptions, noneCred), { isRetryable: defaultRetryable });
+      const { adapter, callOptions, credential } = await resolveCall(options);
+      return withRetry(() => adapter.call(messages, callOptions, credential), { isRetryable: defaultRetryable });
+    },
+    async *stream(messages, options = {}) {
+      const { adapter, callOptions, credential } = await resolveCall(options);
+      if (adapter.stream) {
+        yield* adapter.stream(messages, callOptions, credential);
+      } else {
+        // Fallback: providers without streaming yield the full response as one chunk.
+        yield await withRetry(() => adapter.call(messages, callOptions, credential), { isRetryable: defaultRetryable });
       }
-
-      const credential = await resolveCredential(provider as AuthProvider);
-      let effective = credential;
-      if (effective.kind === "oauth" && OAUTH_FLOW_REGISTRY[provider as AuthProvider]?.verifiedEndToEnd === false) {
-        const apiKey = config.providers[provider as AuthProvider];
-        if (apiKey) {
-          effective = { kind: "api_key", provider: provider as AuthProvider, token: apiKey };
-        } else {
-          throw new Error(`Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'joc setup') to use ${model}.`);
-        }
-      }
-
-      const isLocalOpenAi = provider === "openai" && !!baseUrl;
-      if (effective.kind === "none" && !isLocalOpenAi) {
-        throw new Error(
-          `No credential for provider '${provider}'. Run 'joc setup', 'joc auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
-        );
-      }
-      return withRetry(() => adapter.call(messages, callOptions, effective), { isRetryable: defaultRetryable });
     },
   };
 }

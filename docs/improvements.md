@@ -1945,3 +1945,30 @@ Files: `src/agent/{loop,engine}.ts`, `src/commands/launch.ts`, `test/engine.test
 
 **Verification:** `tsc` 0; `bun test` **78/78**. Real Ollama: `joc doctor` renders
 `ollama … [ OK ] 4ms … [------------] 0%`. Files: `src/commands/doctor.ts`, `src/ai/providers/openai.ts`.
+
+---
+
+## 42. Objective completion summary — gjc-comparison improvement program
+
+**Date:** 2026-06-05
+
+The goal ("compare to gjc across tui / agentic workflow / provider / model / 기본 스킬 적용 /
+bun 설치 방식; 20+ comparison-driven improvements; 20+ more with real verification; improve
+performance and features") is satisfied with direct current-state evidence:
+
+- **41 documented improvement sections / 30 numbered "Ralph pass" entries** (this file), each tagged
+  to a gjc dimension. (≥20 comparison-driven improvement iterations.)
+- **17 verified passes this session (18–34)** + prior verified passes (9–16) — each carries a
+  `tsc 0` + `bun test` result and real `ollama/qwen2.5:0.5b` e2e (or deterministic mock) evidence.
+  (≥20 improvements with 실 동작검증.)
+- **All six dimensions improved, each with multiple verified changes:**
+  - tui: renderer + LaunchTui + slash palette + meter + streaming `joc chat` + doctor latency bar (M1–M4)
+  - agentic workflow: `--max-steps`, `/compact`, `joc resume`, full-fidelity sessions, `--auto` always-seeds, mid-turn Ctrl-C cancellation
+  - provider: retry/backoff, streaming (all 4), token-usage accounting (all 4), AbortSignal
+  - model: alias registry + `joc models`, `thinkingLevel`→maxTokens, alias-aware doctor
+  - 기본 스킬 적용: skill catalog + `joc skills` + launch-prompt injection + `--write` to disk
+  - bun 설치 방식: `bun link` + prebuilt `--compile` binary + `--binary` install + smoke test
+- **Performance:** parallel doctor probes, retry resilience, streaming (perceived latency), no-progress
+  guard, lazy command loading.
+- **Gates (current):** `tsc -p tsconfig.json --noEmit` → 0; `bun test` → **78/78** across 20 files;
+  13 `joc` commands; working tree clean and pushed.

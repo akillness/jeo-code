@@ -2,17 +2,32 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 
+/** Persisted OAuth credential set (access + refresh + expiry) for a provider. */
+export interface StoredOAuth {
+  access: string;
+  refresh?: string;
+  /** Epoch ms after which the access token is considered expired (skew-adjusted at mint time). */
+  expires?: number;
+  accountId?: string;
+  email?: string;
+  projectId?: string;
+}
+
 export interface Config {
   providers: {
     anthropic?: string;
     openai?: string;
     gemini?: string;
   };
-  /** OAuth bearer tokens (take precedence over API keys for the same provider). */
+  /**
+   * OAuth credentials (take precedence over API keys for the same provider).
+   * A bare string is a legacy/manually-pasted bearer with no refresh metadata;
+   * a {@link StoredOAuth} object carries refresh token + expiry for auto-refresh.
+   */
   oauth?: {
-    anthropic?: string;
-    openai?: string;
-    gemini?: string;
+    anthropic?: string | StoredOAuth;
+    openai?: string | StoredOAuth;
+    gemini?: string | StoredOAuth;
   };
   /** Base URL for the local Ollama server (keyless). */
   ollamaBaseUrl?: string;
@@ -37,8 +52,17 @@ export interface WorkflowState {
   pending_tasks?: string[];
 }
 
-const GLOBAL_CONFIG_DIR = path.join(os.homedir(), ".joc");
-const GLOBAL_CONFIG_PATH = path.join(GLOBAL_CONFIG_DIR, "config.json");
+/**
+ * Resolve the global config directory at call time (not import time) so that a
+ * `JOC_CONFIG_DIR` override or a runtime `HOME` change is always honored.
+ * `JOC_CONFIG_DIR` takes precedence; otherwise `~/.joc`.
+ */
+function globalConfigDir(): string {
+  return process.env.JOC_CONFIG_DIR || path.join(os.homedir(), ".joc");
+}
+function globalConfigPath(): string {
+  return path.join(globalConfigDir(), "config.json");
+}
 
 function envOAuth(): NonNullable<Config["oauth"]> {
   return {
@@ -62,7 +86,7 @@ function withEnvOverlay(cfg: Config): Config {
 
 export async function readGlobalConfig(): Promise<Config> {
   try {
-    const data = await fs.readFile(GLOBAL_CONFIG_PATH, "utf-8");
+    const data = await fs.readFile(globalConfigPath(), "utf-8");
     return withEnvOverlay(JSON.parse(data) as Config);
   } catch {
     // Fallback to environment variables
@@ -79,8 +103,8 @@ export async function readGlobalConfig(): Promise<Config> {
 }
 
 export async function saveGlobalConfig(config: Config): Promise<void> {
-  await fs.mkdir(GLOBAL_CONFIG_DIR, { recursive: true });
-  await fs.writeFile(GLOBAL_CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8");
+  await fs.mkdir(globalConfigDir(), { recursive: true });
+  await fs.writeFile(globalConfigPath(), JSON.stringify(config, null, 2), "utf-8");
 }
 
 export function getLocalJocDir(cwd: string = process.cwd()): string {

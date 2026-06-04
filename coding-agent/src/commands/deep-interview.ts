@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { callLlm, type Message } from "../agent/loop";
+import { extractJsonObject } from "../agent/json";
 import {
   readWorkflowState,
   writeWorkflowState,
@@ -20,6 +21,8 @@ interface SocraticResponse {
 }
 
 export async function runDeepInterviewCommand(args: string[]): Promise<void> {
+  const auto = args.includes("--auto") || !process.stdin.isTTY;
+  const filteredArgs = args.filter(arg => arg !== "--auto");
   const cwd = process.cwd();
   const rl = createInterface({
     input: process.stdin,
@@ -29,16 +32,22 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
   // Check for active state
   let state = await readWorkflowState("deep-interview", cwd);
   if (state && state.active && state.current_phase !== "complete") {
-    const resume = await rl.question(
-      `\n[ALERT] An active requirements gathering session is already in progress (Ambiguity: ${((state.current_ambiguity ?? 1) * 100).toFixed(0)}%).\n` +
-      `Would you like to resume it? [Y/n]: `
-    );
-    if (resume.trim().toLowerCase() === "n") {
+    if (auto) {
       await clearWorkflowState("deep-interview", cwd);
       state = null;
       console.log("Cleared previous state. Starting fresh.");
     } else {
-      console.log("Resuming active Socratic interview session...");
+      const resume = await rl.question(
+        `\n[ALERT] An active requirements gathering session is already in progress (Ambiguity: ${((state.current_ambiguity ?? 1) * 100).toFixed(0)}%).\n` +
+        `Would you like to resume it? [Y/n]: `
+      );
+      if (resume.trim().toLowerCase() === "n") {
+        await clearWorkflowState("deep-interview", cwd);
+        state = null;
+        console.log("Cleared previous state. Starting fresh.");
+      } else {
+        console.log("Resuming active Socratic interview session...");
+      }
     }
   }
 
@@ -48,9 +57,15 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
     initialIdea = state.initial_idea ?? "";
   } else {
     // If we have CLI args, use them. Otherwise, prompt the user.
-    initialIdea = args.join(" ");
+    initialIdea = filteredArgs.join(" ");
     if (!initialIdea.trim()) {
-      initialIdea = await rl.question("\nEnter your initial project idea: ");
+      if (auto) {
+        console.log("Error: Initial project idea cannot be empty.");
+        rl.close();
+        return;
+      } else {
+        initialIdea = await rl.question("\nEnter your initial project idea: ");
+      }
     }
   }
 
@@ -124,15 +139,7 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
     
     try {
       const responseText = await callLlm(history, { jsonMode: true });
-      let parsed: SocraticResponse;
-      
-      try {
-        parsed = JSON.parse(responseText.trim()) as SocraticResponse;
-      } catch {
-        // Strip code fences if model returned markdown JSON
-        const cleanJson = responseText.replace(/```json|```/g, "").trim();
-        parsed = JSON.parse(cleanJson) as SocraticResponse;
-      }
+      const parsed = extractJsonObject<SocraticResponse>(responseText);
 
       ambiguity = parsed.ambiguityScore;
       state.current_ambiguity = ambiguity;
@@ -170,7 +177,12 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
       }
 
       console.log(`\nQuestion: ${parsed.nextQuestion}`);
-      const answer = await rl.question("\nYour Answer: ");
+      let answer = "";
+      if (auto) {
+        answer = "Use sensible, conventional defaults and proceed. Optimize for a minimal correct implementation.";
+      } else {
+        answer = await rl.question("\nYour Answer: ");
+      }
       
       history.push({ role: "assistant", content: responseText });
       history.push({ role: "user", content: answer });

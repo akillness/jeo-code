@@ -5,6 +5,7 @@ import {
   readWorkflowState,
   writeWorkflowState,
   getLocalJocDir,
+  type WorkflowState,
 } from "../agent/state";
 
 export async function runRalplanCommand(): Promise<void> {
@@ -32,7 +33,7 @@ export async function runRalplanCommand(): Promise<void> {
   }
 
   // Initialize ralplan state
-  let ralplanState = {
+  const ralplanState: WorkflowState = {
     active: true,
     current_phase: "planning",
     skill: "ralplan" as const,

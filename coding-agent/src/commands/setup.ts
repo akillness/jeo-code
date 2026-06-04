@@ -1,5 +1,13 @@
 import { createInterface } from "node:readline/promises";
 import { saveGlobalConfig, readGlobalConfig, type Config } from "../agent/state";
+import {
+  interactiveLogin,
+  getStoredOAuth,
+  OAUTH_FLOW_REGISTRY,
+  openInBrowser,
+  type AuthProvider,
+  type OAuthController,
+} from "../auth";
 
 type ProviderChoice = "anthropic" | "openai" | "gemini" | "ollama" | "lmstudio" | "openai-compatible";
 
@@ -72,13 +80,39 @@ export async function runSetupCommand(): Promise<void> {
   next.oauth = next.oauth || {};
 
   if (choice === "anthropic" || choice === "openai" || choice === "gemini") {
-    const authMode = (await rl.question("Auth mode: (k)ey or (o)auth token? [k]: ")).trim().toLowerCase();
-    if (authMode === "o") {
+    const authMode = (
+      await rl.question("Auth mode: (b)rowser OAuth login, (t)oken paste, or api (k)ey? [b]: ")
+    ).trim().toLowerCase();
+    if (authMode === "t") {
       const tok = await rl.question(`${choice} OAuth bearer token: `);
       if (tok.trim()) next.oauth[choice] = tok.trim();
-    } else {
+    } else if (authMode === "k") {
       const key = await rl.question(`${choice} API key [${current.providers[choice] ? "********" : "None"}]: `);
       if (key.trim()) next.providers[choice] = key.trim();
+    } else {
+      const flow = OAUTH_FLOW_REGISTRY[choice as AuthProvider];
+      if (!flow.verifiedEndToEnd && flow.note) console.log(`Note: ${flow.note}`);
+      const ctrl: OAuthController = {
+        onAuth: ({ url, instructions }) => {
+          console.log(`Opening browser:\n  ${url}\n`);
+          if (instructions) console.log(instructions + "\n");
+          void openInBrowser(url);
+        },
+        onProgress: msg => console.log(`  … ${msg}`),
+        onManualCodeInput: async () =>
+          (await rl.question("Paste redirect URL or code (or wait for the browser callback): ")).trim(),
+      };
+      try {
+        const { email } = await interactiveLogin(choice as AuthProvider, ctrl);
+        const stored = await getStoredOAuth(choice as AuthProvider);
+        if (stored) next.oauth[choice] = stored;
+        console.log(`[SUCCESS] OAuth login complete for ${choice}${email ? ` (${email})` : ""}.`);
+      } catch (err) {
+        console.log(`[FAILED] OAuth login: ${(err as Error).message}`);
+        console.log("Falling back — you can paste an API key instead.");
+        const key = await rl.question(`${choice} API key [skip]: `);
+        if (key.trim()) next.providers[choice] = key.trim();
+      }
     }
     const dm = await rl.question(`Default model for ${choice} [${DEFAULT_MODELS[choice]}]: `);
     next.defaultModel = dm.trim() || DEFAULT_MODELS[choice];

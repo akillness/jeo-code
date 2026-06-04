@@ -8,6 +8,7 @@ export interface ChatOptions {
   temperature?: number;
   maxTokens?: number;
   jsonMode?: boolean;
+  signal?: AbortSignal;
 }
 
 const manager = createModelManager();

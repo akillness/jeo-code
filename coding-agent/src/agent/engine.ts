@@ -88,6 +88,11 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   const ev = opts.events ?? {};
 
   let step = 1;
+  // No-progress guard: weak/local models often repeat the same tool call without
+  // ever emitting `done`. Stop after MAX_REPEAT identical consecutive calls.
+  const MAX_REPEAT = 3;
+  let lastSig = "";
+  let repeatCount = 0;
   while (step <= maxSteps) {
     ev.onStep?.(step);
 
@@ -120,6 +125,21 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
 
     if (invocation.tool === "done") {
       return { done: true, steps: step, doneReason: (invocation.arguments?.reason as string) ?? "" };
+    }
+
+    // Detect repeated identical tool calls (no forward progress).
+    const sig = `${invocation.tool}:${JSON.stringify(invocation.arguments ?? {})}`;
+    if (sig === lastSig) repeatCount++;
+    else {
+      repeatCount = 1;
+      lastSig = sig;
+    }
+    if (repeatCount >= MAX_REPEAT) {
+      return {
+        done: false,
+        steps: step,
+        doneReason: `Stopped: repeated the same '${invocation.tool}' call ${MAX_REPEAT}× with no new progress (the model never signaled done).`,
+      };
     }
 
     const handler = tools[invocation.tool];

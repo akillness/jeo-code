@@ -133,6 +133,31 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
 
   let round = 1;
   let ambiguity = 1.0;
+  let lastParsed: SocraticResponse | undefined;
+
+  const freezeSeed = async (parsed?: SocraticResponse): Promise<void> => {
+    const seedDir = path.join(getLocalJocDir(cwd), "seeds");
+    await fs.mkdir(seedDir, { recursive: true });
+    const seedPath = path.join(seedDir, `seed-${slug}.yaml`);
+    const constraints = parsed?.constraints?.length
+      ? parsed.constraints.map(c => `  - "${c}"`).join("\n")
+      : `  - "TypeScript / Bun runtime"`;
+    const criteria = parsed?.acceptance_criteria?.length
+      ? parsed.acceptance_criteria.map(a => `  - "${a}"`).join("\n")
+      : `  - "Runs successfully in the terminal"`;
+    const seedContent =
+      `# Frozen Specification Seed\n` +
+      `slug: ${slug}\n` +
+      `interview_id: ${interviewId}\n` +
+      `goal: "${parsed?.goal || initialIdea}"\n` +
+      `constraints:\n${constraints}\n\n` +
+      `acceptance_criteria:\n${criteria}\n`;
+    await fs.writeFile(seedPath, seedContent, "utf-8");
+    state!.current_phase = "complete";
+    state!.seed_path = seedPath;
+    await writeWorkflowState("deep-interview", state!, cwd);
+    console.log(`Saved frozen requirements spec seed to: ${seedPath}`);
+  };
 
   while (ambiguity > 0.2 && round <= 10) {
     console.log(`\n[Round ${round}] Analyzing requirements...`);
@@ -140,6 +165,7 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
     try {
       const responseText = await callLlm(history, { jsonMode: true });
       const parsed = extractJsonObject<SocraticResponse>(responseText);
+      lastParsed = parsed;
 
       ambiguity = parsed.ambiguityScore;
       state.current_ambiguity = ambiguity;
@@ -149,29 +175,7 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
 
       if (ambiguity <= 0.2) {
         console.log(`\n[SUCCESS] Ambiguity is <= 20%! Concluding requirements gather.`);
-        
-        const seedDir = path.join(getLocalJocDir(cwd), "seeds");
-        await fs.mkdir(seedDir, { recursive: true });
-        const seedPath = path.join(seedDir, `seed-${slug}.yaml`);
-
-        const seedContent = 
-          `# Frozen Specification Seed\n` +
-          `slug: ${slug}\n` +
-          `interview_id: ${interviewId}\n` +
-          `goal: "${parsed.goal || initialIdea}"\n` +
-          `constraints:\n` +
-          (parsed.constraints?.map(c => `  - "${c}"`).join("\n") || `  - "TypeScript / Bun runtime"\n`) +
-          `\n` +
-          `acceptance_criteria:\n` +
-          (parsed.acceptance_criteria?.map(a => `  - "${a}"`).join("\n") || `  - "Runs successfully in the terminal"\n`);
-
-        await fs.writeFile(seedPath, seedContent, "utf-8");
-        console.log(`Saved frozen requirements spec seed to: ${seedPath}`);
-
-        state.current_phase = "complete";
-        state.seed_path = seedPath;
-        await writeWorkflowState("deep-interview", state, cwd);
-        
+        await freezeSeed(parsed);
         console.log("\n[Handoff Ready] Requirement is crystallized. Next, run 'joc ralplan' to build a plan.");
         break;
       }
@@ -192,6 +196,14 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
       console.log(`\n[Error calling LLM]: ${error.message}`);
       break;
     }
+  }
+
+  // --auto must always yield a seed: if the gate wasn't reached within the round
+  // cap, freeze a best-effort seed from the last assessment so the pipeline proceeds.
+  if (state.current_phase !== "complete" && auto) {
+    console.log(`\n[AUTO] Ambiguity gate not reached in ${round - 1} rounds; freezing a best-effort seed.`);
+    await freezeSeed(lastParsed);
+    console.log("[Handoff Ready] Best-effort seed frozen. Next, run 'joc ralplan'.");
   }
 
   rl.close();

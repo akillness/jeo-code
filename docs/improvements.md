@@ -1779,3 +1779,20 @@ All passes verified with `tsc` 0 + `bun test` (now 68) + real `ollama/qwen2.5:0.
 **Verification:** `tsc` 0; `bun test` **69/69** (+1: mock-fetch SSE test asserts only `text_delta`
 events concatenate to `"Hello"`, ignoring `message_start`/`message_stop`). Real Ollama `manager.stream()`
 re-confirmed after the refactor. Files: `src/ai/providers/anthropic.ts`, `test/anthropic-stream.test.ts`.
+
+---
+
+## 32. Ralph pass 25 — gjc-parity batch 8 (--auto always yields a seed)
+
+**Date:** 2026-06-05 · gjc dimension: **agentic workflow** (pipeline robustness).
+
+A holistic real-Ollama pipeline run exposed a dead-end: `deep-interview --auto` with a weak local
+model (`ollama/qwen2.5:0.5b`) never reached ambiguity ≤ 20% within the round cap, so **no seed was
+frozen** and `ralplan`/`team` errored with "No crystallized requirements". Fix: extract a `freezeSeed()`
+helper and, in `--auto` mode, **freeze a best-effort seed from the last assessment** (or the initial
+idea) when the gate isn't reached — so the spec-first pipeline always proceeds non-interactively.
+
+**Verification:** `tsc` 0; `bun test` **69/69**. Real Ollama: `deep-interview "build a fib tool" --auto`
+→ "Best-effort seed frozen" → `seed-build-a-fib-tool.yaml` written → `ralplan` produced a plan →
+`ultragoal` ran (DEGRADED 0/1, expected for the tiny model). The full pipeline now completes end-to-end
+with a local model. Files: `src/commands/deep-interview.ts`.

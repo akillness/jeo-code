@@ -46,12 +46,22 @@ Continuously measures the execution status against the acceptance criteria, runn
 - **Bun Runtime** `v1.3.14+`
 
 ### Installation
-Run the automated installation script inside the workspace directory:
+Run the automated installer from the workspace root. It delegates to the
+canonical `coding-agent/scripts/install.sh` (single source of truth), which
+auto-installs Bun if missing, enforces the `v1.3.14+` floor, symlinks the `joc`
+binary to `~/.local/bin/joc`, and prints a PATH hint if needed:
 ```bash
 chmod +x ./install.sh
-./install.sh
+./install.sh                       # delegates to scripts/install.sh --local
+# advanced (clone + install a tag): sh coding-agent/scripts/install.sh --ref v0.1.0
 ```
-This installs local dependencies, configures permissions, and symlinks the `joc` binary to `~/.local/bin/joc`.
+Local dev without installing (run from `coding-agent/`):
+```bash
+bun run start --help               # = bun src/cli.ts --help
+bun run typecheck                  # tsc -p tsconfig.json --noEmit
+bun test                           # unit tests (oauth + engine/json)
+```
+Uninstall: `sh coding-agent/scripts/uninstall.sh [--purge]`.
 
 ### 🔑 Interactive Setup
 Setup your LLM provider API keys (Gemini, Anthropic, or OpenAI) and default model:

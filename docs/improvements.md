@@ -1307,3 +1307,54 @@ To ensure joc operates as a reliable, production-ready coding agent matching GJC
 | `joc ralplan` | ✅ PASSED | Plan written to `.joc/plans/plan-calculator.yaml` |
 | `joc team` | ✅ PASSED | Tasks executed through the shared engine |
 | `joc ultragoal` | ✅ PASSED | Criteria verified using `bun test` and report written |
+
+---
+
+## 19. Ralph pass 12 — One canonical bun installer + `bun run` scripts
+
+**Date:** 2026-06-04
+
+Pass 11 verified the *operation* flow; this pass hardens the *install* flow the
+README actually documents. There were **two** installers: the README-documented
+top-level `install.sh` (a 29-line shim that inlined `bun install` + `chmod` +
+symlink, with **no bun presence check, no version floor, no PATH hint**) and the
+canonical, gjc-mirrored `coding-agent/scripts/install.sh` (auto-installs bun,
+enforces `MIN_BUN_VERSION=1.3.14`, prints a PATH hint, supports
+`--local`/`--source`/`--ref`). The shim could silently leave a user with a
+broken `joc` (bun missing, or `~/.local/bin` not on PATH).
+
+### Change
+
+- **Single source of truth.** Top-level `install.sh` is now a ~13-line wrapper
+  that `exec sh "$SCRIPT_DIR/coding-agent/scripts/install.sh" --local "$@"`
+  (errors clearly if the canonical script is missing; forwards extra args so
+  `./install.sh --ref vX` still works). All install logic lives in one place.
+- **`bun run` scripts.** `coding-agent/package.json` gained
+  `start` (`bun src/cli.ts`), `typecheck` (`tsc -p tsconfig.json --noEmit`),
+  and `test` (`bun test`) so local dev/operation is first-class `bun run`.
+
+### Verification (clean isolated `HOME`, `~/.local/bin` deliberately off PATH)
+
+```text
+$ ./install.sh
+=== @jeo-code installer ===
+Installing bun (required runtime)...      ← auto-installed bun when missing
+Installed joc → /tmp/.../.local/bin/joc
+Add /tmp/.../.local/bin to PATH, then run: joc --help   ← PATH hint fired
+$ bun run typecheck      → tsc exit 0
+$ bun run start --version → joc v0.1.0
+# installed joc (via symlink), mock OpenAI server:
+$ joc --version / --help (launch, auth, doctor listed)  → ok
+$ joc deep-interview "build fib cli" --auto → ralplan → team → [SUCCESS]
+$ bun test  → 15/15 pass
+```
+
+The documented `./install.sh` now delivers exactly what the README claims:
+auto-bun, version floor, symlink, PATH hint — verified end-to-end through the
+installed binary, not just `bun src/cli.ts`.
+
+### Remaining queue (after pass 12)
+
+- Prebuilt single-file binary release (`bun build --compile`) so install needs
+  no source checkout — the install path is ready for it.
+- Workspace split (gap #2) — still deferred.

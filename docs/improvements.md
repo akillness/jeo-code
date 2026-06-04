@@ -1561,3 +1561,40 @@ $ joc launch "create hello.txt containing: hi from joc"
 This makes the coding agent usable with local/small models (the user's
 local-provider emphasis), not just frontier models that reliably emit `done`.
 Files: `src/agent/engine.ts`, `src/commands/launch.ts`, `test/engine.test.ts`.
+
+---
+
+## 23. Ralph pass 16 — bun-native install via `bun link`
+
+**Date:** 2026-06-05
+
+The installer used `bun install` for deps but registered the binary with a
+hand-rolled `ln -sf` into `~/.local/bin`. This pass switches the registration to
+the idiomatic bun mechanism — **`bun link`** — so the install is bun-native end
+to end (the bun analogue of `npm link`).
+
+`coding-agent/scripts/install.sh` now: `bun install` → `bun link` (registers the
+package in bun's global registry and exposes the `joc` bin at
+`${BUN_INSTALL:-~/.bun}/bin/joc`) → adds a compatibility symlink at
+`~/.local/bin/joc` → PATH hint if neither dir is on `PATH`. `uninstall.sh`
+removes both bins and unregisters from the bun global registry. README updated.
+
+### Verification (isolated `HOME` + `BUN_INSTALL`, real Bun 1.3.14)
+
+```text
+$ ./install.sh
+  Linked joc via 'bun link' → /tmp/.../.bun/bin/joc
+  Installed joc → /tmp/.../.local/bin/joc   (compat symlink → bun bin)
+$ which joc           → ~/.bun/bin/joc
+$ joc --version       → joc v0.1.0
+# real coding agent through the bun-linked binary (ollama/qwen2.5:0.5b):
+$ joc launch "create ok.txt containing: bunlink works"
+  · write ok ; · write ok ; Stopped: repeated … (no-progress guard)
+  → ok.txt == "bunlink works"
+$ sh scripts/uninstall.sh
+  Removed …/.local/bin/joc ; Removed …/.bun/bin/joc (bun link) ; Unregistered @jeo-code/coding-agent
+```
+
+`tsc -p tsconfig.json --noEmit` → 0; `bun test` → 34/34 (no source changes —
+installer/uninstaller/README only). Files: `coding-agent/scripts/install.sh`,
+`coding-agent/scripts/uninstall.sh`, `README.md`.

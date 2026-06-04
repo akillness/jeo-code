@@ -56,12 +56,19 @@ Real PKCE OAuth (`joc auth login`) with a local callback server and automatic to
 ### Installation
 Run the automated installer from the workspace root. It delegates to the
 canonical `coding-agent/scripts/install.sh` (single source of truth), which
-auto-installs Bun if missing, enforces the `v1.3.14+` floor, symlinks the `joc`
-binary to `~/.local/bin/joc`, and prints a PATH hint if needed:
+auto-installs Bun if missing, enforces the `v1.3.14+` floor, and registers the
+`joc` binary the **bun-native way via `bun link`** — exposing it in bun's global
+bin (`~/.bun/bin/joc`) and adding a compatibility symlink at `~/.local/bin/joc`.
+A PATH hint is printed if neither dir is on `PATH`:
 ```bash
 chmod +x ./install.sh
-./install.sh                       # delegates to scripts/install.sh --local
+./install.sh                       # bun install + bun link (delegates to scripts/install.sh --local)
 # advanced (clone + install a tag): sh coding-agent/scripts/install.sh --ref v0.1.0
+```
+Uninstall removes both the `bun link` bin and the compat symlink, and unregisters
+from bun's global registry:
+```bash
+sh coding-agent/scripts/uninstall.sh [--purge]   # --purge also removes ~/.joc/
 ```
 Local dev without installing (run from `coding-agent/`):
 ```bash

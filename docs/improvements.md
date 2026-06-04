@@ -1598,3 +1598,43 @@ $ sh scripts/uninstall.sh
 `tsc -p tsconfig.json --noEmit` → 0; `bun test` → 34/34 (no source changes —
 installer/uninstaller/README only). Files: `coding-agent/scripts/install.sh`,
 `coding-agent/scripts/uninstall.sh`, `README.md`.
+
+---
+
+## 24. Ralph pass 17 — repo flatten + TUI M1/M2 (gjc-style terminal UI)
+
+**Date:** 2026-06-05
+
+Two changes executed per `plan/` (autopilot + executor subagents):
+
+### Repo flatten
+Promoted `coding-agent/*` to the repo root and removed the `coding-agent/` nesting
+(54 tracked files via `git mv`, history preserved). Package renamed
+`@jeo-code/coding-agent` → `jeo-code`. Installer/uninstaller fixed (`install.sh` →
+`scripts/install.sh`; `--source` source dir = repo root; bun global pkg = `jeo-code`).
+README structure tree + `plan/*` paths un-nested. Verified: `bun install`, `tsc` 0,
+`bun test`, and a real `ollama/qwen2.5:0.5b` run through the flattened `bun link` install.
+*(All file references in §1–§23 above predate this flatten and read `coding-agent/src/...`;
+the code now lives at `src/...`.)*
+
+### TUI M1+M2 (plan 01)
+First real terminal UI, mined from pi-mono's `pi-tui` (differential rendering) and gjc's
+`packages/tui` interaction model — **no native/sixel deps**:
+- `src/tui/terminal.ts` — ANSI helpers (`cursorUp/Down`, `clearLine`, `clearToEnd`, `size`, `isTTY`, `truncate`).
+- `src/tui/renderer.ts` — `Renderer`: holds the previous frame, repaints **only changed rows**, clears
+  surplus rows on shrink, parks the cursor at the block top (injectable writer for tests).
+- `src/tui/components/*` — `Spinner`, `ToolList` (running→ok/FAILED), `StreamRegion` (width-wrap), `renderFooter` (`model · step N/25 · Ns`).
+- `src/tui/app.ts` — `LaunchTui`: maps the engine's `AgentLoopEvents` to a live frame (animated footer +
+  tool list), then **collapses to static output** (tool summary + reply) on turn end.
+- `src/commands/launch.ts` — interactive REPL uses the TUI when `isTTY() && !--no-tui`; one-shot/non-TTY/`--no-tui`
+  keep the existing `console.log` stream (byte-identical final reply). **`engine.ts` untouched.**
+
+### Verification
+- `tsc` 0; `bun test` → **45/45** (+11 TUI: renderer diff/shrink/truncate, components, LaunchTui live+finish).
+- Non-TTY plain path verified against real Ollama (`tui.txt` created); `--no-tui` accepted.
+- Interactive in-place rendering is unit-tested (fake writer asserts only changed rows repaint, cursor
+  hide/show, clear-on-finish); live visual pass deferred to a TTY session.
+
+Files: `src/tui/*` (new), `src/commands/launch.ts`, `test/tui-renderer.test.ts`,
+`test/tui-components.test.ts`, `test/tui-app.test.ts`. Remaining TUI: M3 slash palette/autocomplete,
+M4 pipeline/doctor views, token streaming (gated on provider streaming, plan 05).

@@ -23,6 +23,7 @@ export interface SessionSummary {
   cwd: string;
   messageCount: number;
   preview: string;
+  mtimeMs?: number;
 }
 
 export const SESSION_VERSION = 1;
@@ -96,13 +97,20 @@ export async function loadSession(
 
   for (const line of lines) {
     if (!line.trim()) continue;
-    const entry = JSON.parse(line);
-    if (entry && typeof entry === "object") {
-      if (entry.type === "session" && !header) {
-        header = entry as SessionHeader;
-      } else if (entry.type === "message") {
-        messages.push(entry.message);
+    try {
+      const entry = JSON.parse(line);
+      if (entry && typeof entry === "object") {
+        if (entry.type === "session" && !header) {
+          header = entry as SessionHeader;
+        } else if (entry.type === "message") {
+          messages.push(entry.message);
+        }
       }
+    } catch (err) {
+      if (!header) {
+        throw err;
+      }
+      continue;
     }
   }
 
@@ -131,6 +139,7 @@ export async function listSessions(cwd = process.cwd()): Promise<SessionSummary[
   for (const file of jsonlFiles) {
     try {
       const filePath = path.join(dir, file);
+      const stat = await fs.stat(filePath);
       const content = await fs.readFile(filePath, "utf8");
       const lines = content.split("\n");
       let header: SessionHeader | undefined;
@@ -139,16 +148,23 @@ export async function listSessions(cwd = process.cwd()): Promise<SessionSummary[
 
       for (const line of lines) {
         if (!line.trim()) continue;
-        const entry = JSON.parse(line);
-        if (entry && typeof entry === "object") {
-          if (entry.type === "session" && !header) {
-            header = entry as SessionHeader;
-          } else if (entry.type === "message") {
-            messageCount++;
-            if (!firstUserMessageContent && entry.message?.role === "user") {
-              firstUserMessageContent = entry.message.content;
+        try {
+          const entry = JSON.parse(line);
+          if (entry && typeof entry === "object") {
+            if (entry.type === "session" && !header) {
+              header = entry as SessionHeader;
+            } else if (entry.type === "message") {
+              messageCount++;
+              if (!firstUserMessageContent && entry.message?.role === "user") {
+                firstUserMessageContent = entry.message.content;
+              }
             }
           }
+        } catch (err) {
+          if (!header) {
+            throw err;
+          }
+          continue;
         }
       }
 
@@ -164,6 +180,7 @@ export async function listSessions(cwd = process.cwd()): Promise<SessionSummary[
         cwd: header.cwd,
         messageCount,
         preview,
+        mtimeMs: stat.mtimeMs,
       });
     } catch {
       // Tolerate malformed files (skip them)
@@ -171,7 +188,7 @@ export async function listSessions(cwd = process.cwd()): Promise<SessionSummary[
     }
   }
 
-  summaries.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  summaries.sort((a, b) => (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0));
   return summaries;
 }
 

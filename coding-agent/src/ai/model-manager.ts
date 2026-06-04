@@ -1,3 +1,4 @@
+import { OAUTH_FLOW_REGISTRY } from "../auth/flows";
 import { readGlobalConfig } from "../agent/state";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
 import { anthropicAdapter } from "./providers/anthropic";
@@ -55,13 +56,23 @@ export function createModelManager(): ModelManager {
       }
 
       const credential = await resolveCredential(provider as AuthProvider);
+      let effective = credential;
+      if (effective.kind === "oauth" && OAUTH_FLOW_REGISTRY[provider as AuthProvider]?.verifiedEndToEnd === false) {
+        const apiKey = config.providers[provider as AuthProvider];
+        if (apiKey) {
+          effective = { kind: "api_key", provider: provider as AuthProvider, token: apiKey };
+        } else {
+          throw new Error(`Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'joc setup') to use ${model}.`);
+        }
+      }
+
       const isLocalOpenAi = provider === "openai" && !!baseUrl;
-      if (credential.kind === "none" && !isLocalOpenAi) {
+      if (effective.kind === "none" && !isLocalOpenAi) {
         throw new Error(
           `No credential for provider '${provider}'. Run 'joc setup', 'joc auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
         );
       }
-      return adapter.call(messages, callOptions, credential);
+      return adapter.call(messages, callOptions, effective);
     },
   };
 }

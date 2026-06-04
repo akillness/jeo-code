@@ -23,18 +23,31 @@ interface LaunchFlags {
 function parseFlags(args: string[]): LaunchFlags {
   const flags: LaunchFlags = { list: false, resume: false, noSession: false, message: "" };
   const rest: string[] = [];
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === "--list") flags.list = true;
-    else if (a === "--no-session") flags.noSession = true;
-    else if (a === "--resume") {
+    if (a === "--list") {
+      flags.list = true;
+    } else if (a === "--no-session") {
+      flags.noSession = true;
+    } else if (a === "--resume") {
       flags.resume = true;
       const next = args[i + 1];
-      if (next && !next.startsWith("-")) {
+      if (next && UUID_REGEX.test(next)) {
         flags.resumeId = next;
         i++;
       }
-    } else rest.push(a);
+    } else if (a.startsWith("--resume=")) {
+      flags.resume = true;
+      const val = a.slice(9);
+      if (UUID_REGEX.test(val)) {
+        flags.resumeId = val;
+      } else {
+        rest.push(val);
+      }
+    } else {
+      rest.push(a);
+    }
   }
   flags.message = rest.join(" ").trim();
   return flags;
@@ -108,6 +121,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const result = await runAgentLoop(history, { cwd, maxSteps: 25, model: sessionModel, events });
     const reply = result.doneReason || "(agent stopped without a final message)";
     if (sessionId) await appendMessage(sessionId, { role: "assistant", content: reply }, cwd);
+    history.push({ role: "assistant", content: reply });
     return { done: result.done, steps: result.steps, reply };
   };
 

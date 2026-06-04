@@ -23,9 +23,13 @@ export function extractJsonObject<T = unknown>(text: string): T {
     /* fall through to brace scan */
   }
 
-  const candidate = firstBalancedObject(defenced) ?? firstBalancedObject(raw);
-  if (candidate) {
-    return JSON.parse(candidate) as T;
+  const parsedFromDefenced = findAndParseBalancedObject<T>(defenced);
+  if (parsedFromDefenced !== null) {
+    return parsedFromDefenced;
+  }
+  const parsedFromRaw = findAndParseBalancedObject<T>(raw);
+  if (parsedFromRaw !== null) {
+    return parsedFromRaw;
   }
   throw new Error(`No parseable JSON object found in model output: ${truncate(raw, 200)}`);
 }
@@ -39,14 +43,12 @@ export function tryExtractJsonObject<T = unknown>(text: string): T | null {
   }
 }
 
-/** Scan for the first brace-balanced object, ignoring braces inside strings. */
-function firstBalancedObject(text: string): string | null {
-  const start = text.indexOf("{");
-  if (start < 0) return null;
+/** Scan for a brace-balanced object starting at startIndex, ignoring braces inside strings. */
+function extractBalancedObject(text: string, startIndex: number): string | null {
   let depth = 0;
   let inString = false;
   let escaped = false;
-  for (let i = start; i < text.length; i++) {
+  for (let i = startIndex; i < text.length; i++) {
     const ch = text[i];
     if (inString) {
       if (escaped) escaped = false;
@@ -58,7 +60,23 @@ function firstBalancedObject(text: string): string | null {
     else if (ch === "{") depth++;
     else if (ch === "}") {
       depth--;
-      if (depth === 0) return text.slice(start, i + 1);
+      if (depth === 0) return text.slice(startIndex, i + 1);
+    }
+  }
+  return null;
+}
+
+function findAndParseBalancedObject<T>(text: string): T | null {
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "{") {
+      const candidate = extractBalancedObject(text, i);
+      if (candidate) {
+        try {
+          return JSON.parse(candidate) as T;
+        } catch {
+          // ignore, try next
+        }
+      }
     }
   }
   return null;

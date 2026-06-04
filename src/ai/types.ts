@@ -24,6 +24,8 @@ export interface CallOptions {
   baseUrl?: string;
   /** Optional sink for provider-reported token usage. */
   onUsage?: (usage: Usage) => void;
+  /** Abort in-flight provider requests (Ctrl-C / timeout / supersede). */
+  signal?: AbortSignal;
 }
 
 export interface ProviderAdapter {

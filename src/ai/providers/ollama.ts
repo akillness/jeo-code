@@ -24,7 +24,7 @@ export const ollamaAdapter: ProviderAdapter = {
   name: "ollama",
   async call(messages, options) {
     const { url, body } = ollamaRequest(messages, options, false);
-    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body });
+    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body, signal: options.signal });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Ollama request failed (HTTP ${response.status}) at ${url}: ${text}`);
@@ -35,7 +35,7 @@ export const ollamaAdapter: ProviderAdapter = {
   },
   async *stream(messages, options) {
     const { url, body } = ollamaRequest(messages, options, true);
-    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body });
+    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body, signal: options.signal });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Ollama stream failed (HTTP ${response.status}) at ${url}: ${text}`);

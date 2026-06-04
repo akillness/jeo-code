@@ -46,7 +46,7 @@ export const geminiAdapter: ProviderAdapter = {
   name: "gemini",
   async call(messages, options, credential) {
     const { url, headers, body } = geminiRequest(messages, options, credential, "generateContent");
-    const response = await fetch(url, { method: "POST", headers, body });
+    const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Gemini API request failed (HTTP ${response.status}): ${text}`);
@@ -59,7 +59,7 @@ export const geminiAdapter: ProviderAdapter = {
   },
   async *stream(messages, options, credential) {
     const { url, headers, body } = geminiRequest(messages, options, credential, "streamGenerateContent");
-    const response = await fetch(url, { method: "POST", headers, body });
+    const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Gemini stream failed (HTTP ${response.status}): ${text}`);

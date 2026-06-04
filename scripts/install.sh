@@ -13,11 +13,13 @@ MIN_BUN_VERSION="1.3.14"
 MODE=""
 REF=""
 SRC_DIR=""
+BINARY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --local)    MODE="local"; shift ;;
     --source)   MODE="source"; shift ;;
+    --binary)   BINARY=1; [ -z "$MODE" ] && MODE="local"; shift ;;
     --ref)      shift; REF="$1"; shift ;;
     --ref=*)    REF="${1#*=}"; shift ;;
     -r)         shift; REF="$1"; shift ;;
@@ -26,6 +28,7 @@ while [ $# -gt 0 ]; do
 joc installer
   --local         install from current clone (uses repo root of this script)
   --source        clone repo and install via bun (default)
+  --binary        compile a standalone binary (no bun needed at runtime)
   --ref <ref>     install specific tag/branch/commit
 Environment:
   JOC_INSTALL_DIR (default \$HOME/.local/bin)
@@ -118,6 +121,13 @@ install_link() {
   chmod +x "$INSTALL_DIR/joc" 2>/dev/null || true
 }
 
+install_binary() {
+  # Compile a standalone executable (no Bun needed at runtime).
+  mkdir -p "$INSTALL_DIR"
+  ( cd "$SRC_DIR" && bun build src/cli.ts --compile --outfile "$INSTALL_DIR/joc" >/dev/null )
+  chmod +x "$INSTALL_DIR/joc" 2>/dev/null || true
+}
+
 print_done() {
   echo ""
   [ -n "$LINKED" ] && echo "Linked joc via 'bun link' → $LINKED"
@@ -132,5 +142,9 @@ print_done() {
 require_bun
 resolve_source_dir
 install_deps
-install_link
+if [ "$BINARY" = "1" ]; then
+  install_binary
+else
+  install_link
+fi
 print_done

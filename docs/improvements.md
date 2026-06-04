@@ -1682,3 +1682,21 @@ and the agent ran on `ollama/qwen2.5:0.5b` (created `b1.txt`). `joc --help` list
 thinkingMaxTokens mapping). E2E: `joc resume` registered in help; `joc launch --max-steps 2` capped
 the loop against real `ollama/qwen2.5:0.5b`. Files: `src/commands/{launch,resume}.ts`,
 `src/cli/runner.ts`, `src/ai/model-manager.ts`.
+
+---
+
+## 27. Ralph pass 20 — gjc-parity batch 3 (prebuilt standalone binary)
+
+**Date:** 2026-06-05 · gjc dimension: **bun 설치 방식** (gjc ships prebuilt binaries).
+
+- **`bun build --compile`** single binary: `bun run build` → `dist/joc` (61 MB, embeds the Bun
+  runtime). New `scripts/install.sh --binary` mode compiles + installs a standalone `joc` that
+  needs **no Bun at runtime**. `dist/` gitignored.
+- **`scripts/smoke-test.sh`**: installs via `--binary` into a temp dir and asserts the binary runs
+  `joc --version` under `env -i PATH=/usr/bin:/bin` (no bun).
+
+**Verification (no bun on PATH):** the compiled binary runs `--version`, `--help`, `doctor`
+(`[OK]` ollama), `skills`, AND a **real agent turn** against `ollama/qwen2.5:0.5b` (created
+`bin.txt`) — proving the lazy `await import("../commands/*")` loaders survive `--compile` (53 modules
+bundled). `scripts/smoke-test.sh` → "Smoke test passed". `bun run build` → working `dist/joc`.
+Files: `scripts/install.sh` (`--binary`), `scripts/smoke-test.sh`, `package.json` (`build`), `.gitignore`.

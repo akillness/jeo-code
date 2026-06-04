@@ -1765,3 +1765,17 @@ case-insensitivity, non-slash empty, `isSlashAttempt` arg handling). Files:
 | **bun 설치 방식** | `bun link` (16); prebuilt `--compile` binary + `--binary` install + smoke test (20). |
 
 All passes verified with `tsc` 0 + `bun test` (now 68) + real `ollama/qwen2.5:0.5b` e2e where applicable.
+
+---
+
+## 31. Ralph pass 24 — gjc-parity batch 7 (anthropic streaming)
+
+**Date:** 2026-06-05 · gjc dimension: **provider** (streaming completeness).
+
+`anthropicAdapter.stream()` added: SSE `content_block_delta` / `text_delta` parsing via the shared
+`readSse`, refactored to share a payload builder with `call()`. All three primary providers
+(anthropic/openai/ollama) now stream; gemini falls back to one-chunk `call()`.
+
+**Verification:** `tsc` 0; `bun test` **69/69** (+1: mock-fetch SSE test asserts only `text_delta`
+events concatenate to `"Hello"`, ignoring `message_start`/`message_stop`). Real Ollama `manager.stream()`
+re-confirmed after the refactor. Files: `src/ai/providers/anthropic.ts`, `test/anthropic-stream.test.ts`.

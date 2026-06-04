@@ -65,7 +65,6 @@ overrides); local/offline works keylessly. Next: token streaming and more backen
 
 ## 8. Verification Steps
 ```bash
-cd coding-agent
 bun run typecheck && bun test test/stream.test.ts
 # real local: stream a short completion from ollama/qwen2.5:0.5b and assert non-empty chunked output
 joc doctor                                   # provider matrix + OAuth expiry, default model [READY]

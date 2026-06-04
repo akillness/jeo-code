@@ -14,14 +14,14 @@ binary and npm/Homebrew paths so non-bun users can install too.
 
 ## 2. Current State (cite evidence)
 - **Top-level shim** `install.sh` delegates to the canonical installer:
-  `exec sh coding-agent/scripts/install.sh --local "$@"`.
-- **Canonical installer** `coding-agent/scripts/install.sh`: `require_bun` (auto-installs Bun,
+  `exec sh scripts/install.sh --local "$@"`.
+- **Canonical installer** `scripts/install.sh`: `require_bun` (auto-installs Bun,
   enforces `MIN_BUN_VERSION=1.3.14`) → `bun install` (deps) → `bun link` (registers the package in
   bun's global registry and exposes `joc` at `${BUN_INSTALL:-~/.bun}/bin/joc`) → compat symlink at
   `${JOC_INSTALL_DIR:-~/.local/bin}/joc` → PATH hint. Modes: `--local` / `--source` / `--ref`.
-- **Uninstall** `coding-agent/scripts/uninstall.sh`: removes both bins, unregisters from the bun global
+- **Uninstall** `scripts/uninstall.sh`: removes both bins, unregisters from the bun global
   registry, `--purge` removes `~/.joc/`.
-- **Runtime guard**: `coding-agent/src/cli.ts` re-checks `Bun.semver.order(Bun.version, "1.3.14")` and
+- **Runtime guard**: `src/cli.ts` re-checks `Bun.semver.order(Bun.version, "1.3.14")` and
   sets `process.title`.
 - **bun scripts**: `package.json` → `start` / `typecheck` / `test`.
 - Verified end-to-end (passes 12, 16) incl. a real `ollama/qwen2.5:0.5b` run through the bun-linked binary.
@@ -40,7 +40,7 @@ binary and npm/Homebrew paths so non-bun users can install too.
 - Optional `packages/jeo-code/` thin wrapper exposing `bin: joc` for `bun install -g`/`npm i -g`.
 
 ## 5. Implementation Steps
-- **Slice 1 — build-binary script + `--binary` install mode** (`coding-agent/scripts/build-binary.sh`,
+- **Slice 1 — build-binary script + `--binary` install mode** (`scripts/build-binary.sh`,
   edit `scripts/install.sh`). → `executor`.
 - **Slice 2 — CI release smoke test** (a script that installs into a temp dir via each mode and runs `joc --version`). → `executor`.
 - **Slice 3 — thin npm wrapper package** (deferred until a publish target exists).
@@ -60,7 +60,6 @@ binary and npm/Homebrew paths so non-bun users can install too.
 
 ## 8. Verification Steps
 ```bash
-cd coding-agent
 bash scripts/build-binary.sh
 env -i HOME=/tmp/h PATH=/usr/bin:/bin dist/joc --version    # no bun on PATH
 sh scripts/install.sh --binary && joc --help

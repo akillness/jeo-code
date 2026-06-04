@@ -1,5 +1,5 @@
 {
-  "name": "@jeo-code/coding-agent",
+  "name": "jeo-code",
   "version": "0.1.0",
   "description": "Clean, highly optimized AI coding agent using spec-first loop",
   "type": "module",

@@ -32,6 +32,17 @@ export async function assertMutationAllowed(
   }
 }
 
+export async function assertBashAllowed(
+  cwd: string = process.cwd()
+): Promise<void> {
+  const deepInterviewState = await readWorkflowState("deep-interview", cwd);
+  if (deepInterviewState && deepInterviewState.active && deepInterviewState.current_phase !== "complete") {
+    throw new Error(
+      "[MutationGuard] bash is disabled during an active Socratic interview (ambiguity must reach <=20% first). Finish 'joc deep-interview'."
+    );
+  }
+}
+
 export async function readTool(
   filePath: string,
   lineRange?: string,
@@ -99,6 +110,14 @@ export async function editTool(
         const endLine = match[2] ? parseInt(match[2]) : startLine;
         const payload = match[3];
 
+        if (startLine < 1 || endLine < startLine || endLine > lines.length) {
+          return {
+            success: false,
+            output: "",
+            error: `Invalid edit range ${startLine}..${endLine}: out of bounds or reversed (file has ${lines.length} lines)`,
+          };
+        }
+
         lines.splice(startLine - 1, endLine - startLine + 1, payload);
         content = lines.join("\n");
         updated = true;
@@ -111,13 +130,49 @@ export async function editTool(
       if (searchMatch.length > 1) {
         const parts = searchMatch[1].split("=======");
         if (parts.length > 1) {
-          const searchVal = parts[0].trim();
+          let searchVal = parts[0];
+          if (searchVal.startsWith("\r\n")) {
+            searchVal = searchVal.slice(2);
+          } else if (searchVal.startsWith("\n")) {
+            searchVal = searchVal.slice(1);
+          }
+          if (searchVal.endsWith("\r\n")) {
+            searchVal = searchVal.slice(0, -2);
+          } else if (searchVal.endsWith("\n")) {
+            searchVal = searchVal.slice(0, -1);
+          }
+
+          if (searchVal === "") {
+            return {
+              success: false,
+              output: "",
+              error: "Failed to apply edit: Search block is empty.",
+            };
+          }
+
           const replaceParts = parts[1].split(">>>>>>>");
           if (replaceParts.length > 0) {
-            const replaceVal = replaceParts[0].trim();
+            let replaceVal = replaceParts[0];
+            if (replaceVal.startsWith("\r\n")) {
+              replaceVal = replaceVal.slice(2);
+            } else if (replaceVal.startsWith("\n")) {
+              replaceVal = replaceVal.slice(1);
+            }
+            if (replaceVal.endsWith("\r\n")) {
+              replaceVal = replaceVal.slice(0, -2);
+            } else if (replaceVal.endsWith("\n")) {
+              replaceVal = replaceVal.slice(0, -1);
+            }
+
             if (content.includes(searchVal)) {
               content = content.replace(searchVal, replaceVal);
               updated = true;
+            } else {
+              return {
+                success: false,
+                output: "",
+                error: "Failed to apply edit: Search block not found in file.",
+              };
             }
           }
         }
@@ -144,6 +199,7 @@ export async function bashTool(
   cwd: string = process.cwd()
 ): Promise<ToolResult> {
   try {
+    await assertBashAllowed(cwd);
     // Run the command using Bun's native spawn
     const proc = Bun.spawn(["bash", "-c", command], {
       cwd,
@@ -151,11 +207,35 @@ export async function bashTool(
       stderr: "pipe",
     });
 
+    let timedOut = false;
+    const TIMEOUT_MS = 120_000;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        proc.kill();
+      } catch {}
+    }, TIMEOUT_MS);
+
     await proc.exited;
+    clearTimeout(timer);
+
     const stdout = await new Response(proc.stdout).text();
     const stderr = await new Response(proc.stderr).text();
 
-    const output = [stdout, stderr].filter(Boolean).join("\n");
+    let output = [stdout, stderr].filter(Boolean).join("\n");
+    const MAX_OUTPUT = 100_000;
+    if (output.length > MAX_OUTPUT) {
+      output = output.slice(0, MAX_OUTPUT) + "\n…(output truncated at 100000 chars)";
+    }
+
+    if (timedOut) {
+      return {
+        success: false,
+        output,
+        error: "Command timed out after 120s and was killed",
+      };
+    }
+
     return {
       success: proc.exitCode === 0,
       output: output || "(no output)",
@@ -178,7 +258,12 @@ export async function findTool(
     await proc.exited;
     const stdout = await new Response(proc.stdout).text();
     const files = stdout.split("\n").filter(Boolean);
-    return { success: true, output: files.length > 0 ? files.join("\n") : "No matching files found." };
+    let output = files.length > 0 ? files.join("\n") : "No matching files found.";
+    const MAX_OUTPUT = 100_000;
+    if (output.length > MAX_OUTPUT) {
+      output = output.slice(0, MAX_OUTPUT) + "\n…(output truncated at 100000 chars)";
+    }
+    return { success: true, output };
   } catch (err: any) {
     return { success: false, output: "", error: err.message };
   }
@@ -196,7 +281,12 @@ export async function searchTool(
     });
     await proc.exited;
     const stdout = await new Response(proc.stdout).text();
-    return { success: true, output: stdout || "No matches found." };
+    let output = stdout || "No matches found.";
+    const MAX_OUTPUT = 100_000;
+    if (output.length > MAX_OUTPUT) {
+      output = output.slice(0, MAX_OUTPUT) + "\n…(output truncated at 100000 chars)";
+    }
+    return { success: true, output };
   } catch (err: any) {
     return { success: false, output: "", error: err.message };
   }

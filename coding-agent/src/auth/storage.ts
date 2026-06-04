@@ -16,6 +16,8 @@ export interface AuthSnapshot {
   oauthEmail?: string;
 }
 
+const inFlightRefresh = new Map<AuthProvider, Promise<any>>();
+
 function accessOf(stored: string | StoredOAuth | undefined): string | undefined {
   if (!stored) return undefined;
   return typeof stored === "string" ? stored : stored.access;
@@ -30,9 +32,18 @@ export async function resolveCredential(provider: AuthProvider): Promise<Credent
     // Auto-refresh refreshable credentials that are past their expiry.
     if (typeof stored !== "string" && stored.refresh && stored.expires && stored.expires <= Date.now()) {
       try {
-        // Dynamic import breaks the storage <-> flows cycle.
-        const { refreshOAuthToken } = await import("./refresh");
-        const result = await refreshOAuthToken(provider);
+        let refreshPromise = inFlightRefresh.get(provider);
+        if (!refreshPromise) {
+          refreshPromise = (async () => {
+            const { refreshOAuthToken } = await import("./refresh");
+            return refreshOAuthToken(provider);
+          })();
+          inFlightRefresh.set(provider, refreshPromise);
+          refreshPromise.finally(() => {
+            inFlightRefresh.delete(provider);
+          });
+        }
+        const result = await refreshPromise;
         if (result.refreshed && result.credential.kind === "oauth") {
           return result.credential;
         }

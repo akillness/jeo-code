@@ -103,8 +103,9 @@ export async function readGlobalConfig(): Promise<Config> {
 }
 
 export async function saveGlobalConfig(config: Config): Promise<void> {
-  await fs.mkdir(globalConfigDir(), { recursive: true });
-  await fs.writeFile(globalConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+  await fs.mkdir(globalConfigDir(), { recursive: true, mode: 0o700 });
+  await fs.writeFile(globalConfigPath(), JSON.stringify(config, null, 2), { encoding: "utf-8", mode: 0o600 });
+  await fs.chmod(globalConfigPath(), 0o600).catch(() => {}); // ensure mode even if file pre-existed
 }
 
 export function getLocalJocDir(cwd: string = process.cwd()): string {

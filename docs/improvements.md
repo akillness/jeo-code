@@ -1451,3 +1451,58 @@ $ joc launch --resume <uuid> "do the second task"
   assistant reply are stored — clean but lossy vs pi's full fidelity).
 - A `--compact-after N` flag and a `/compact` slash command.
 - Prebuilt `bun build --compile` binary; workspace split — still deferred.
+
+---
+
+## 21. Ralph pass 14 — architect review fixes (BLOCK → resolved)
+
+**Date:** 2026-06-04
+
+Two read-only `architect` subagents reviewed the auth subsystem and the agent
+core (passes 9–13) and both returned **BLOCK / REQUEST CHANGES** with concrete,
+file-cited findings. This pass fixes them (three parallel `executor` subagents
+over disjoint files) and adds regression tests. Verification re-run by the
+parent after each batch.
+
+### HIGH findings fixed
+
+| # | Finding | Fix | Evidence |
+|---|---|---|---|
+| H1 | openai/gemini OAuth (`verifiedEndToEnd:false`) tokens were sent to the bundled chat/generativelanguage adapters and **outranked a working API key** | `model-manager.ts`: adapter-aware selection — for non-verified OAuth flows, prefer the provider API key; if none, throw a clear compatibility error instead of a silent 401 | e2e: openai OAuth(BAD)+key(GOOD) → adapter used `GOOD`; gemini OAuth-only → "Set GEMINI_API_KEY" error |
+| H2 | `bashTool` **bypassed MutationGuard** — could mutate/delete files during an active deep-interview | `tools.ts`: `assertBashAllowed()` blanket-blocks bash while an interview is active (can't statically prove a command is read-only) | e2e: `bash "echo > pwned.txt"` during active interview → blocked, file not created |
+| H3 | `bashTool` had **no timeout / output cap** — a runaway command could hang the loop or exhaust memory | `tools.ts`: 120s kill-timeout + 100k output cap on bash; 100k cap on find/search | code-reviewed |
+
+### MEDIUM/LOW findings fixed
+
+- **Auth**: manual OAuth callback paste now requires a matching `state` (CSRF);
+  auto-refresh is **single-flight** per provider (no double-refresh of rotating
+  tokens); `~/.joc` is created `0700` and `config.json` written `0600` (secrets).
+- **Engine/tools**: failed-tool results now feed back **both** error + stdout/stderr
+  for self-repair; `editTool` rejects out-of-bounds/reversed ranges and **no
+  longer trims** search/replace payloads (indentation preserved).
+- **Sessions/launch**: `loadSession` tolerates a malformed/truncated tail line
+  (header still strict); `--resume` picks the latest by **file mtime** (activity,
+  not creation); `--resume` only consumes a following token as an id when it is a
+  UUID (so `joc launch --resume "fix the bug"` is a resume-latest one-shot), also
+  accepts `--resume=<id>`; the final natural-language reply is now pushed into
+  **live history** so interactive follow-ups see it (matches resumed sessions).
+- **json**: `extractJsonObject` iterates candidate `{` starts and returns the
+  first that parses, so a valid tool object after earlier prose braces is found.
+
+### Verification
+
+- `tsc -p tsconfig.json --noEmit` → 0.
+- `bun test` → **33/33 pass** (27 prior + 6 new in `test/review-fixes.test.ts`:
+  json scan-past-prose, editTool out-of-bounds reject + indentation-preserving
+  replace + empty-search reject, session malformed-tail tolerance).
+- e2e (mock server): H1/H2 confirmed as above.
+
+### Files touched
+
+`src/ai/model-manager.ts`, `src/auth/{storage,callback-server}.ts`,
+`src/agent/{state,tools,engine,json,session}.ts`, `src/commands/launch.ts`,
+`test/review-fixes.test.ts`.
+
+Both review verdicts (BLOCK) are resolved: incompatible OAuth no longer drives
+bundled adapters, and shell execution is guard-integrated, time-bounded, and
+output-capped.

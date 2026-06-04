@@ -158,7 +158,7 @@ export abstract class OAuthCallbackFlow {
               .then(input => {
                 const parsed = parseCallbackInput(input);
                 if (!parsed.code) return null;
-                if (expectedState && parsed.state && parsed.state !== expectedState) return null;
+                if (expectedState && parsed.state !== expectedState) return null; // reject missing OR mismatched state
                 return { code: parsed.code, state: parsed.state ?? "" } as CallbackResult;
               })
               .catch(() => null),

@@ -131,7 +131,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     } else {
       const res = await handler(invocation.arguments ?? {}, cwd);
       success = res.success;
-      output = res.success ? res.output : `Error: ${res.error ?? res.output}`;
+      output = res.success ? res.output : (res.error ? (res.output ? `${res.error}\n${res.output}` : res.error) : res.output);
     }
 
     ev.onToolResult?.(invocation.tool, success, output);

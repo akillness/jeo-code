@@ -72,6 +72,8 @@ export interface AgentLoopResult {
   done: boolean;
   steps: number;
   doneReason?: string;
+  /** Summed provider token usage across the turn's steps, when reported. */
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 function truncate(s: string, n: number): string {
@@ -89,6 +91,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   const ev = opts.events ?? {};
 
   let step = 1;
+  const acc = { inputTokens: 0, outputTokens: 0 };
+  let sawUsage = false;
+  const finish = (r: AgentLoopResult): AgentLoopResult => (sawUsage ? { ...r, usage: { ...acc } } : r);
   // No-progress guard: weak/local models often repeat the same tool call without
   // ever emitting `done`. Stop after MAX_REPEAT identical consecutive calls.
   const MAX_REPEAT = 3;
@@ -96,16 +101,21 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   let repeatCount = 0;
   while (step <= maxSteps) {
     if (opts.signal?.aborted) {
-      return { done: false, steps: step - 1, doneReason: "Cancelled." };
+      return finish({ done: false, steps: step - 1, doneReason: "Cancelled." });
     }
     ev.onStep?.(step);
 
     let responseText: string;
     try {
-      responseText = await callLlm(history, { jsonMode: true, model: opts.model, signal: opts.signal });
+      responseText = await callLlm(history, {
+        jsonMode: true,
+        model: opts.model,
+        signal: opts.signal,
+        onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
+      });
     } catch (err) {
       ev.onError?.((err as Error).message);
-      return { done: false, steps: step };
+      return finish({ done: false, steps: step });
     }
 
     let invocation: ToolInvocation;
@@ -128,7 +138,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     ev.onAssistant?.(responseText, invocation);
 
     if (invocation.tool === "done") {
-      return { done: true, steps: step, doneReason: (invocation.arguments?.reason as string) ?? "" };
+      return finish({ done: true, steps: step, doneReason: (invocation.arguments?.reason as string) ?? "" });
     }
 
     // Detect repeated identical tool calls (no forward progress).
@@ -139,11 +149,11 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       lastSig = sig;
     }
     if (repeatCount >= MAX_REPEAT) {
-      return {
+      return finish({
         done: false,
         steps: step,
         doneReason: `Stopped: repeated the same '${invocation.tool}' call ${MAX_REPEAT}× with no new progress (the model never signaled done).`,
-      };
+      });
     }
 
     const handler = tools[invocation.tool];
@@ -167,5 +177,5 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     step++;
   }
 
-  return { done: false, steps: maxSteps };
+  return finish({ done: false, steps: maxSteps });
 }

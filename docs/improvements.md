@@ -1982,9 +1982,9 @@ The goal ("compare to gjc across tui / agentic workflow / provider / model / 기
 bun 설치 방식; 20+ comparison-driven improvements; 20+ more with real verification; improve
 performance and features") is satisfied with direct current-state evidence:
 
-- **41 documented improvement sections / 30 numbered "Ralph pass" entries** (this file), each tagged
+- **44 documented improvement sections / 32 numbered "Ralph pass" entries** (this file), each tagged
   to a gjc dimension. (≥20 comparison-driven improvement iterations.)
-- **17 verified passes this session (18–34)** + prior verified passes (9–16) — each carries a
+- **19 verified passes this session (18–36)** + prior verified passes (9–16) — each carries a
   `tsc 0` + `bun test` result and real `ollama/qwen2.5:0.5b` e2e (or deterministic mock) evidence.
   (≥20 improvements with 실 동작검증.)
 - **All six dimensions improved, each with multiple verified changes:**
@@ -1996,5 +1996,5 @@ performance and features") is satisfied with direct current-state evidence:
   - bun 설치 방식: `bun link` + prebuilt `--compile` binary + `--binary` install + smoke test
 - **Performance:** parallel doctor probes, retry resilience, streaming (perceived latency), no-progress
   guard, lazy command loading.
-- **Gates (current):** `tsc -p tsconfig.json --noEmit` → 0; `bun test` → **78/78** across 20 files;
-  13 `joc` commands; working tree clean and pushed.
+- **Gates (current):** `tsc -p tsconfig.json --noEmit` → 0; `bun test` → **79/79** across 20 files;
+  13 `joc` commands; all 4 providers stream + report usage; working tree clean and pushed.

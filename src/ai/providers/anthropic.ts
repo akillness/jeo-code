@@ -32,7 +32,8 @@ export const anthropicAdapter: ProviderAdapter = {
       const text = await response.text();
       throw new Error(`Anthropic API request failed (HTTP ${response.status}): ${text}`);
     }
-    const result = (await response.json()) as { content: { type: string; text: string }[] };
+    const result = (await response.json()) as { content: { type: string; text: string }[]; usage?: { input_tokens?: number; output_tokens?: number } };
+    if (result.usage) options.onUsage?.({ inputTokens: result.usage.input_tokens, outputTokens: result.usage.output_tokens });
     return result.content.find(c => c.type === "text")?.text ?? "";
   },
   async *stream(messages, options, credential) {

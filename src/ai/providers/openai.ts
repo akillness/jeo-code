@@ -36,7 +36,8 @@ export const openaiAdapter: ProviderAdapter = {
       const text = await response.text();
       throw new Error(`OpenAI API request failed (HTTP ${response.status}): ${text}`);
     }
-    const result = (await response.json()) as { choices: { message: { content: string } }[] };
+    const result = (await response.json()) as { choices: { message: { content: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+    if (result.usage) options.onUsage?.({ inputTokens: result.usage.prompt_tokens, outputTokens: result.usage.completion_tokens });
     return result.choices[0]?.message?.content ?? "";
   },
   async *stream(messages, options, credential) {

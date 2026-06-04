@@ -1876,3 +1876,16 @@ All six dimensions now have multiple verified improvements; TUI + provider backl
 - **bun 설치 방식**: bun link + prebuilt `--compile` binary + smoke test.
 
 13 `joc` commands; **74 tests**; every pass verified with `tsc` 0 + `bun test` + real Ollama e2e where applicable.
+
+---
+
+## 37. Ralph pass 30 — gjc-parity batch 13 (usage accounting across all providers)
+
+**Date:** 2026-06-05 · gjc dimension: **provider**.
+
+Extended token-usage reporting (pass 27) to **openai** (`usage.prompt_tokens`/`completion_tokens`),
+**anthropic** (`usage.input_tokens`/`output_tokens`), and **gemini** (`usageMetadata`, pass 28) `call()`
+paths — so every provider feeds `onUsage`, not just ollama.
+
+**Verification:** `tsc` 0; `bun test` **76/76** (+2 mock-fetch: openai `call` → `{11,3}`, anthropic
+`call` → `{9,4}`). Files: `src/ai/providers/{openai,anthropic}.ts`, `test/usage.test.ts`.

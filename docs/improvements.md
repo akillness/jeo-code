@@ -1638,3 +1638,28 @@ First real terminal UI, mined from pi-mono's `pi-tui` (differential rendering) a
 Files: `src/tui/*` (new), `src/commands/launch.ts`, `test/tui-renderer.test.ts`,
 `test/tui-components.test.ts`, `test/tui-app.test.ts`. Remaining TUI: M3 slash palette/autocomplete,
 M4 pipeline/doctor views, token streaming (gated on provider streaming, plan 05).
+
+---
+
+## 25. Ralph pass 18 — gjc-parity batch 1 (model aliases, skills surface, retry)
+
+**Date:** 2026-06-05 · gjc dimensions: **model**, **기본 스킬 적용**, **provider**.
+
+Three standalone modules (executor subagents) + parent integration:
+- **Model aliases** (`src/ai/model-registry.ts`): built-in `fast`/`local`/`sonnet`/`gpt`/`flash`
+  + `config.modelAliases` (config wins); `expandAlias`/`resolveModelId`/`listAliases`.
+  `model-manager.call()` now expands the model id before routing. New `joc models` command
+  lists aliases + probes local Ollama (`/api/tags`) and OpenAI-compat (`/v1/models`).
+- **Skills surface** (`src/skills/catalog.ts`): gjc-style bundled workflow docs (launch,
+  deep-interview, ralplan, team, ultragoal). New `joc skills [name]` lists/details them, and
+  `skillsPromptSection()` is injected into the `joc launch` system prompt so the agent suggests
+  the right workflow command.
+- **Retry/backoff** (`src/util/retry.ts`): `withRetry` + `defaultRetryable` (429/5xx/network),
+  exponential+capped, injectable sleep. `model-manager` wraps every `adapter.call` in it.
+
+Config gained `modelAliases?: { [alias]: string }` (`state.ts`).
+
+**Verification:** `tsc` 0; `bun test` **60/60** (+15: model-registry, skills, retry).
+Real e2e (`JOC_CONFIG_DIR` + Ollama): `joc skills`/`joc skills deep-interview` render; `joc models`
+shows `fast → ollama/qwen2.5:0.5b → ollama` + live probe; default model `fast` **alias-expanded**
+and the agent ran on `ollama/qwen2.5:0.5b` (created `b1.txt`). `joc --help` lists `models` + `skills`.

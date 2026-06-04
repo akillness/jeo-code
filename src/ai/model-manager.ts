@@ -6,6 +6,8 @@ import { openaiAdapter } from "./providers/openai";
 import { geminiAdapter } from "./providers/gemini";
 import { ollamaAdapter } from "./providers/ollama";
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
+import { expandAlias } from "./model-registry";
+import { withRetry, defaultRetryable } from "../util/retry";
 
 const ADAPTERS: Record<ProviderName, ProviderAdapter> = {
   anthropic: anthropicAdapter,
@@ -31,7 +33,8 @@ export function createModelManager(): ModelManager {
     resolveProvider,
     async call(messages, options = {}) {
       const config = await readGlobalConfig();
-      const model = options.model ?? config.defaultModel;
+      const aliases = { ...((config as { modelAliases?: Record<string, string> }).modelAliases ?? {}) };
+      const model = expandAlias(options.model ?? config.defaultModel, { fast: "ollama/qwen2.5:0.5b", local: "ollama/qwen2.5:0.5b", sonnet: "claude-3-5-sonnet", gpt: "gpt-4o", flash: "gemini-2.5-flash", ...aliases });
       const provider = resolveProvider(model);
       const adapter = ADAPTERS[provider];
 
@@ -52,7 +55,7 @@ export function createModelManager(): ModelManager {
       // Local providers (ollama) do not require credentials.
       if (provider === "ollama") {
         const noneCred: Credential = { kind: "none", provider: "openai" };
-        return adapter.call(messages, callOptions, noneCred);
+        return withRetry(() => adapter.call(messages, callOptions, noneCred), { isRetryable: defaultRetryable });
       }
 
       const credential = await resolveCredential(provider as AuthProvider);
@@ -72,7 +75,7 @@ export function createModelManager(): ModelManager {
           `No credential for provider '${provider}'. Run 'joc setup', 'joc auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
         );
       }
-      return adapter.call(messages, callOptions, effective);
+      return withRetry(() => adapter.call(messages, callOptions, effective), { isRetryable: defaultRetryable });
     },
   };
 }

@@ -35,6 +35,8 @@ export interface Config {
   openaiBaseUrl?: string;
   defaultModel: string;
   thinkingLevel?: "low" | "medium" | "high";
+  /** Friendly model aliases, e.g. { fast: "ollama/qwen2.5:0.5b" }. Override built-ins. */
+  modelAliases?: { [alias: string]: string };
 }
 
 export interface WorkflowState {

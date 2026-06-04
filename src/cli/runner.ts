@@ -82,6 +82,23 @@ export const COMMANDS: readonly CommandSpec[] = [
       return args => m.runMcpCommand(args);
     },
   },
+  {
+    name: "models",
+    summary: "List model aliases + probe local/compatible models.",
+    loader: async () => {
+      const m = await import("../commands/models");
+      return args => m.runModelsCommand(args);
+    },
+  },
+  {
+    name: "skills",
+    summary: "List bundled workflow skills (joc skills <name> for details).",
+    usage: "skills [name]",
+    loader: async () => {
+      const m = await import("../commands/skills");
+      return args => m.runSkillsCommand(args);
+    },
+  },
 ];
 
 export function findCommand(name: string): CommandSpec | undefined {

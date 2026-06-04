@@ -70,7 +70,7 @@ Local dev without installing (from the repo root):
 ```bash
 bun run start --help     # = bun src/cli.ts --help
 bun run typecheck        # tsc -p tsconfig.json --noEmit
-bun test                 # unit tests (9 files)
+bun test                 # unit tests (20 files, 79 tests)
 ```
 
 ---
@@ -87,6 +87,10 @@ bun test                 # unit tests (9 files)
 | `joc ralplan` | Planner/Architect/Critic blueprint from the frozen seed. |
 | `joc team` | Per-task executor loop (shared tool engine) against the plan. |
 | `joc ultragoal` | Verify acceptance criteria and write a report. |
+| `joc models [name]` | List model aliases + probe local/OpenAI-compatible models for reachability. |
+| `joc skills [name]` | List bundled workflow skills; `joc skills <name>` prints details. |
+| `joc resume [id]` | Resume the latest interactive session (or a specific id). |
+| `joc chat "<msg>"` | Single-shot streaming chat (no tools) — renders the reply token-by-token. |
 | `joc mcp [serve\|tools]` | Run `joc` as an MCP stdio server (set `JOC_MCP_PIPELINE=1` to also expose the pipeline tools). |
 
 ---
@@ -106,6 +110,8 @@ hardened tool-call engine (`src/agent/engine.ts`). It calls `read` / `write` / `
 - **Compaction** — long conversations are summarized automatically to stay within the context window.
 - **No-progress guard** — if a (weak/local) model repeats the same tool call 3× without
   signalling done, the loop stops with a clear message instead of burning steps.
+- **Token usage** — each turn prints a `(N in / M out tokens)` footer; all four provider
+  adapters report usage in both blocking `call` and streaming modes.
 
 ```bash
 joc                                   # REPL — slash cmds: /help /clear /model /sessions /exit
@@ -190,7 +196,7 @@ jeo-code/
 │   ├── mcp/                   # MCP protocol + tools + stdio server
 │   └── tui/                   # differential renderer + components + LaunchTui
 ├── scripts/                   # install.sh / uninstall.sh (bun install + bun link)
-├── test/                      # 9 suites: oauth, engine, json, session, context-files, compaction, review-fixes, tui-*
+├── test/                      # 20 suites (79 tests): oauth, engine, json, session, context-files, compaction, streaming, tui-*
 ├── docs/improvements.md       # architectural analysis & changelog (ralph passes)
 ├── plan/                      # long-horizon work plans (TUI, features, install, model, provider)
 └── README.md

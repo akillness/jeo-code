@@ -97,18 +97,34 @@ install_deps() {
   ( cd "$SRC_DIR" && bun install --silent >/dev/null )
 }
 
-install_symlink() {
+install_link() {
+  BUN_BIN="${BUN_INSTALL:-$HOME/.bun}/bin"
+  # bun-native install: register the package globally and expose its `joc` bin
+  # in bun's global bin dir (idiomatic `bun link`, the bun analogue of npm link).
+  ( cd "$SRC_DIR" && bun link >/dev/null 2>&1 ) || true
+
+  LINKED=""
+  [ -e "$BUN_BIN/joc" ] && LINKED="$BUN_BIN/joc"
+
+  # Compatibility symlink in INSTALL_DIR (default ~/.local/bin) so the documented
+  # location keeps working even when bun's global bin is not on PATH.
   mkdir -p "$INSTALL_DIR"
-  ln -sf "$SRC_DIR/src/cli.ts" "$INSTALL_DIR/joc"
+  if [ -n "$LINKED" ]; then
+    ln -sf "$LINKED" "$INSTALL_DIR/joc"
+  else
+    # Fallback for older bun without bin exposure: link the entry directly.
+    ln -sf "$SRC_DIR/src/cli.ts" "$INSTALL_DIR/joc"
+  fi
   chmod +x "$INSTALL_DIR/joc" 2>/dev/null || true
 }
 
 print_done() {
   echo ""
+  [ -n "$LINKED" ] && echo "Linked joc via 'bun link' → $LINKED"
   echo "Installed joc → $INSTALL_DIR/joc"
   case ":$PATH:" in
-    *":$INSTALL_DIR:"*) echo "Run: joc --help" ;;
-    *) echo "Add $INSTALL_DIR to PATH, then run: joc --help" ;;
+    *":$INSTALL_DIR:"*|*":$BUN_BIN:"*) echo "Run: joc --help" ;;
+    *) echo "Add $INSTALL_DIR (or $BUN_BIN) to PATH, then run: joc --help" ;;
   esac
 }
 
@@ -116,5 +132,5 @@ print_done() {
 require_bun
 resolve_source_dir
 install_deps
-install_symlink
+install_link
 print_done

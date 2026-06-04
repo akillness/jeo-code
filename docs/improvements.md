@@ -1663,3 +1663,22 @@ Config gained `modelAliases?: { [alias]: string }` (`state.ts`).
 Real e2e (`JOC_CONFIG_DIR` + Ollama): `joc skills`/`joc skills deep-interview` render; `joc models`
 shows `fast → ollama/qwen2.5:0.5b → ollama` + live probe; default model `fast` **alias-expanded**
 and the agent ran on `ollama/qwen2.5:0.5b` (created `b1.txt`). `joc --help` lists `models` + `skills`.
+
+---
+
+## 26. Ralph pass 19 — gjc-parity batch 2 (workflow ergonomics + thinking level)
+
+**Date:** 2026-06-05 · gjc dimensions: **agentic workflow**, **model**.
+
+- **`--max-steps N`** flag for `joc launch` (`--max-steps 2` / `--max-steps=2`) — caps the
+  per-turn tool-loop budget (was hardcoded 25). Verified: a 2-step run stops at the 2-step limit.
+- **`/compact`** slash command — runs `maybeCompact(history, {maxMessages:1})` on demand and
+  reports removed count.
+- **`joc resume [id]`** top-level command — delegates to `launch --resume`, first-class session resume.
+- **`thinkingLevel` applied**: `model-manager.thinkingMaxTokens(level)` maps low/medium/high →
+  2000/4000/8000 default max-tokens (caller override still wins).
+
+**Verification:** `tsc` 0; `bun test` **62/62** (+2: `test/model-manager.test.ts` — routing stable,
+thinkingMaxTokens mapping). E2E: `joc resume` registered in help; `joc launch --max-steps 2` capped
+the loop against real `ollama/qwen2.5:0.5b`. Files: `src/commands/{launch,resume}.ts`,
+`src/cli/runner.ts`, `src/ai/model-manager.ts`.

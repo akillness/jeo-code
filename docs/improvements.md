@@ -1506,3 +1506,58 @@ parent after each batch.
 Both review verdicts (BLOCK) are resolved: incompatible OAuth no longer drives
 bundled adapters, and shell execution is guard-integrated, time-bounded, and
 output-capped.
+
+---
+
+## 22. Ralph pass 15 — real local-model run + no-progress guard
+
+**Date:** 2026-06-05
+
+Every prior verification used a mock OpenAI server. This pass ran the agent
+against a **real local model** (`ollama/qwen2.5:0.5b`, no API key) to prove the
+"local provider + model config + run as a coding agent" path end-to-end — and
+that real run surfaced a genuine bug.
+
+### Real end-to-end (no mock)
+
+```text
+$ ./install.sh                                   → ~/.local/bin/joc
+$ ~/.joc/config.json: defaultModel ollama/qwen2.5:0.5b
+$ joc doctor                                     → ollama [OK], [READY]
+$ joc launch "create hello.txt containing: hi from joc"
+  → wrote hello.txt == "hi from joc"  ✓ (real qwen2.5:0.5b drove the write tool)
+```
+
+The agent **worked** (correct file, session persisted), but the 0.5B model
+repeated the `write` tool **25 times** and never emitted `done` — ending with an
+unhelpful "agent stopped without a final message". Weak/local models frequently
+fail to signal completion, so the loop burned the entire step budget.
+
+### Fix — no-progress guard in `runAgentLoop` (`engine.ts`)
+
+Track the signature (`tool:JSON(args)`) of each tool call; if the **same call
+repeats 3× consecutively**, stop the loop and return a clear
+`doneReason`: *"Stopped: repeated the same 'write' call 3× with no new progress
+(the model never signaled done)."* `launch.ts` also replaced the vague
+step-limit fallback with `(reached the N-step limit without signaling done)`.
+
+### Re-verified against the real model
+
+```text
+$ joc launch "create hello.txt containing: hi from joc"
+  · write ok
+  · write ok
+  Stopped: repeated the same 'write' call 3× with no new progress…
+  → hello.txt == "hi from joc"          (2 writes, not 25)
+```
+
+### Verification
+
+- `tsc -p tsconfig.json --noEmit` → 0.
+- `bun test` → **34/34** (+1: weak-model no-progress guard stops ≤2 executions,
+  returns the stop reason, never reaches maxSteps).
+- Real `ollama/qwen2.5:0.5b` run confirms correct output + early stop.
+
+This makes the coding agent usable with local/small models (the user's
+local-provider emphasis), not just frontier models that reliably emit `done`.
+Files: `src/agent/engine.ts`, `src/commands/launch.ts`, `test/engine.test.ts`.

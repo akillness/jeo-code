@@ -94,3 +94,27 @@ test("runAgentLoop: invalid JSON is fed back to the model for repair", async () 
   expect(result.doneReason).toBe("recovered");
   expect(history.some(m => m.content.includes("not a valid tool call"))).toBe(true);
 });
+
+test("runAgentLoop: stops on repeated identical tool calls (weak-model no-progress guard)", async () => {
+  let calls = 0;
+  await mock.module("../src/agent/loop", () => ({
+    // Always emit the SAME write call, never `done` — simulates a weak local model.
+    callLlm: async () => {
+      calls++;
+      return JSON.stringify({ tool: "write", arguments: { filePath: "x.txt", content: "hi" } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history = [{ role: "system" as const, content: "sys" }];
+  let writes = 0;
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 25,
+    tools: { write: async () => { writes++; return { success: true, output: "wrote" }; } },
+  });
+  expect(result.done).toBe(false);
+  expect(result.doneReason).toContain("repeated the same 'write' call");
+  // Stops on the 3rd identical call → at most 2 executions, well under maxSteps.
+  expect(writes).toBeLessThanOrEqual(2);
+  expect(calls).toBeLessThan(25);
+});

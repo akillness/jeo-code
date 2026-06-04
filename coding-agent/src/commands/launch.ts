@@ -119,7 +119,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     history.push({ role: "user", content: userInput });
     if (sessionId) await appendMessage(sessionId, { role: "user", content: userInput }, cwd);
     const result = await runAgentLoop(history, { cwd, maxSteps: 25, model: sessionModel, events });
-    const reply = result.doneReason || "(agent stopped without a final message)";
+    const reply = result.doneReason || `(reached the ${result.steps}-step limit without signaling done)`;
     if (sessionId) await appendMessage(sessionId, { role: "assistant", content: reply }, cwd);
     history.push({ role: "assistant", content: reply });
     return { done: result.done, steps: result.steps, reply };

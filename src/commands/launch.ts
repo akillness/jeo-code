@@ -137,8 +137,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     useTui: boolean
   ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean }> => {
     await maybeCompact(history, { model: sessionModel });
+    const beforeLen = history.length;
     history.push({ role: "user", content: userInput });
-    if (sessionId) await appendMessage(sessionId, { role: "user", content: userInput }, cwd);
 
     const tui = useTui ? new LaunchTui({ model: sessionModel || defaultModel, sessionId }) : null;
     if (tui) tui.start();
@@ -155,8 +155,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       throw err;
     }
     const reply = result.doneReason || `(reached the ${result.steps}-step limit without signaling done)`;
-    if (sessionId) await appendMessage(sessionId, { role: "assistant", content: reply }, cwd);
+    // Full-fidelity persistence: append every message the engine added this turn
+    // (user prompt + intermediate tool-call/tool-result turns), then the final reply.
+    if (sessionId) {
+      for (const m of history.slice(beforeLen)) await appendMessage(sessionId, m, cwd);
+    }
     history.push({ role: "assistant", content: reply });
+    if (sessionId) await appendMessage(sessionId, { role: "assistant", content: reply }, cwd);
     if (tui) tui.finish(reply);
     return { done: result.done, steps: result.steps, reply, rendered: !!tui };
   };

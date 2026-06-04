@@ -1796,3 +1796,24 @@ idea) when the gate isn't reached — so the spec-first pipeline always proceeds
 → "Best-effort seed frozen" → `seed-build-a-fib-tool.yaml` written → `ralplan` produced a plan →
 `ultragoal` ran (DEGRADED 0/1, expected for the tiny model). The full pipeline now completes end-to-end
 with a local model. Files: `src/commands/deep-interview.ts`.
+
+---
+
+## 33. Ralph pass 26 — gjc-parity batch 9 (TUI M4 meter + streaming chat)
+
+**Date:** 2026-06-05 · gjc dimension: **tui** (completes the TUI backlog).
+
+- **Pipeline view (M4)**: `src/tui/components/meter.ts` — pure `meter(value,max,width)` →
+  `[####------] 40%` (clamped) + `stepMeter`. Wired into `deep-interview` so each round renders
+  `Ambiguity [####…] N%` instead of a bare number.
+- **Streaming token render**: new `joc chat "<message>"` — a single-shot, no-tools conversational
+  command that renders the reply **token-by-token** via `ModelManager.stream()` (complementary to
+  the strict-JSON tool loop in `joc launch`).
+
+**Verification:** `tsc` 0; `bun test` **71/71** (+2 meter: fill/clamp/percent, stepMeter). Real Ollama:
+`joc chat "say hello…"` streamed `"Hello! How can I assist you today?"`; `deep-interview … --auto` shows
+`Ambiguity [####################] 100%`. Files: `src/tui/components/meter.ts`, `src/commands/chat.ts`,
+`src/cli/runner.ts`, `src/commands/deep-interview.ts`, `test/meter.test.ts`.
+
+This closes the TUI dimension backlog (M1 renderer, M2 LaunchTui, M3 slash palette, M4 meter +
+streaming chat). 12 `joc` commands; **71 tests**.

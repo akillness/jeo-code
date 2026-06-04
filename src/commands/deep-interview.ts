@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { callLlm, type Message } from "../agent/loop";
 import { extractJsonObject } from "../agent/json";
+import { meter } from "../tui/components/meter";
 import {
   readWorkflowState,
   writeWorkflowState,
@@ -171,7 +172,7 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
       state.current_ambiguity = ambiguity;
       await writeWorkflowState("deep-interview", state, cwd);
 
-      console.log(`Ambiguity Score: ${Math.round(ambiguity * 100)}% (Assessment: ${parsed.assessment})`);
+      console.log(`Ambiguity ${meter(ambiguity)}  (Assessment: ${parsed.assessment})`);
 
       if (ambiguity <= 0.2) {
         console.log(`\n[SUCCESS] Ambiguity is <= 20%! Concluding requirements gather.`);

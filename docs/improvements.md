@@ -1735,3 +1735,33 @@ Resume reconstructs the full tool context, not just the conversation skeleton.
 **Verification:** `tsc` 0; `bun test` **66/66**. Real Ollama e2e (`--max-steps 2`): the session
 JSONL now holds **6 message entries** (3 user incl. tool-results + 3 assistant incl. tool-calls),
 vs 2 before. Files: `src/commands/launch.ts`.
+
+---
+
+## 30. Ralph pass 23 — gjc-parity batch 6 (slash-command palette, TUI M3 partial)
+
+**Date:** 2026-06-05 · gjc dimension: **tui** (interactive ergonomics).
+
+- **`src/tui/components/slash.ts`**: `matchSlash(input)` (prefix, case-insensitive) +
+  `isSlashAttempt(input)` + `SLASH_COMMANDS`.
+- **REPL wiring**: an unhandled `/typo` no longer gets sent to the model — `joc launch` now prints
+  `Did you mean: …?` suggestions (or `Unknown command`). Real UX fix for slash typos.
+
+**Verification:** `tsc` 0; `bun test` **68/68** (+2 slash: prefix-match incl. `/c`→`[/clear,/compact]`,
+case-insensitivity, non-slash empty, `isSlashAttempt` arg handling). Files:
+`src/tui/components/slash.ts`, `src/commands/launch.ts`.
+
+---
+
+### gjc-comparison status (this session, passes 18–23)
+
+| Dimension | Improvements landed (verified) |
+|---|---|
+| **tui** | M1+M2 (pass 17) renderer/components/LaunchTui; M3 partial — slash palette (pass 23). Remaining: M4 pipeline/doctor views, token render. |
+| **agentic workflow** | `--max-steps`, `/compact`, `joc resume` (19); full-fidelity sessions (22). |
+| **provider** | retry/backoff (18); token streaming `callStream` + ollama/openai SSE (21). |
+| **model** | alias registry + `joc models` (18); `thinkingLevel`→maxTokens (19). |
+| **기본 스킬 적용** | bundled skill catalog + `joc skills` + launch-prompt injection (18). |
+| **bun 설치 방식** | `bun link` (16); prebuilt `--compile` binary + `--binary` install + smoke test (20). |
+
+All passes verified with `tsc` 0 + `bun test` (now 68) + real `ollama/qwen2.5:0.5b` e2e where applicable.

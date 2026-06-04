@@ -1834,3 +1834,17 @@ threads `onUsage` through `resolveCall`. `joc chat` now prints a usage footer
 `{inputTokens:5,outputTokens:7,durationMs:2}`). Real Ollama: `joc chat "count to three"` →
 `(32 in / 34 out tokens · 80 tok/s)`. Files: `src/ai/types.ts`, `src/ai/providers/ollama.ts`,
 `src/ai/model-manager.ts`, `src/commands/chat.ts`, `test/usage.test.ts`.
+
+---
+
+## 35. Ralph pass 28 — gjc-parity batch 11 (gemini streaming; all 4 providers stream)
+
+**Date:** 2026-06-05 · gjc dimension: **provider**.
+
+`geminiAdapter.stream()` via `streamGenerateContent?alt=sse` (SSE), parsing `candidates[].content.parts`
+and reporting `usageMetadata` token counts; `call()` refactored to share a request builder and also
+report usage. **All four providers (anthropic/openai/gemini/ollama) now implement `stream()`.**
+
+**Verification:** `tsc` 0; `bun test` **73/73** (+1: mock-fetch SSE test — deltas concatenate to
+`"Hello"`, `usageMetadata`→`{inputTokens:4,outputTokens:2}`). Real Ollama `joc chat` streaming + usage
+re-confirmed (no regression). Files: `src/ai/providers/gemini.ts`, `test/gemini-stream.test.ts`.

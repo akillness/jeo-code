@@ -1848,3 +1848,31 @@ report usage. **All four providers (anthropic/openai/gemini/ollama) now implemen
 **Verification:** `tsc` 0; `bun test` **73/73** (+1: mock-fetch SSE test — deltas concatenate to
 `"Hello"`, `usageMetadata`→`{inputTokens:4,outputTokens:2}`). Real Ollama `joc chat` streaming + usage
 re-confirmed (no regression). Files: `src/ai/providers/gemini.ts`, `test/gemini-stream.test.ts`.
+
+---
+
+## 36. Ralph pass 29 — gjc-parity batch 12 (skills export to disk)
+
+**Date:** 2026-06-05 · gjc dimension: **기본 스킬 적용** (gjc bundles SKILL.md files).
+
+`joc skills --write [dir]` materializes the bundled skill catalog to `.joc/skills/<name>.md`
+(or a given dir) — the on-disk SKILL-doc form gjc ships, so other tools/agents can read joc's
+workflow skills as files.
+
+**Verification:** `tsc` 0; `bun test` **74/74** (+1: `--write` to a temp dir produces one `.md` per
+skill with the expected header/command). E2E: `joc skills --write` wrote 5 docs to `.joc/skills/`.
+Files: `src/commands/skills.ts`, `test/skills.test.ts`.
+
+---
+
+### gjc-comparison status update (passes 18–29, this session)
+
+All six dimensions now have multiple verified improvements; TUI + provider backlogs closed:
+- **tui**: M1–M4 (renderer, LaunchTui, slash palette, meter + streaming chat).
+- **agentic workflow**: max-steps, /compact, resume, full-fidelity sessions, --auto always-seeds.
+- **provider**: retry, streaming (all 4 providers), token-usage accounting.
+- **model**: alias registry + `joc models`, thinkingLevel.
+- **기본 스킬 적용**: catalog + `joc skills` + prompt injection + `--write` to disk.
+- **bun 설치 방식**: bun link + prebuilt `--compile` binary + smoke test.
+
+13 `joc` commands; **74 tests**; every pass verified with `tsc` 0 + `bun test` + real Ollama e2e where applicable.

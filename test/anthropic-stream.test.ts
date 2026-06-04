@@ -40,3 +40,27 @@ test("anthropicAdapter.stream: yields text_delta content, ignores other events",
     globalThis.fetch = prevFetch;
   }
 });
+
+test("anthropicAdapter.stream: reports usage from message_start/message_delta", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      sseStream([
+        'data: {"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":0}}}\n\n',
+        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+        'data: {"type":"message_delta","usage":{"output_tokens":5}}\n\n',
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } }
+    )) as typeof fetch;
+  try {
+    const usages: any[] = [];
+    const cred = { kind: "api_key", provider: "anthropic", token: "k" } as const;
+    let text = "";
+    for await (const d of anthropicAdapter.stream!([{ role: "user", content: "x" }], { model: "claude-3-5-sonnet", onUsage: u => usages.push(u) }, cred)) text += d;
+    expect(text).toBe("hi");
+    expect(usages).toContainEqual({ inputTokens: 12, outputTokens: 0 });
+    expect(usages).toContainEqual({ outputTokens: 5 });
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});

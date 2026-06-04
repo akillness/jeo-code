@@ -50,7 +50,12 @@ export const anthropicAdapter: ProviderAdapter = {
     }
     if (!response.body) return;
     for await (const data of readSse(response.body)) {
-      let evt: { type?: string; delta?: { type?: string; text?: string } };
+      let evt: {
+        type?: string;
+        delta?: { type?: string; text?: string };
+        message?: { usage?: { input_tokens?: number; output_tokens?: number } };
+        usage?: { output_tokens?: number };
+      };
       try {
         evt = JSON.parse(data);
       } catch {
@@ -58,6 +63,10 @@ export const anthropicAdapter: ProviderAdapter = {
       }
       if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta" && evt.delta.text) {
         yield evt.delta.text;
+      } else if (evt.type === "message_start" && evt.message?.usage) {
+        options.onUsage?.({ inputTokens: evt.message.usage.input_tokens, outputTokens: evt.message.usage.output_tokens });
+      } else if (evt.type === "message_delta" && evt.usage) {
+        options.onUsage?.({ outputTokens: evt.usage.output_tokens });
       }
     }
   },

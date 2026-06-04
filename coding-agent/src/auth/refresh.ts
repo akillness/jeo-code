@@ -1,4 +1,13 @@
-import { resolveCredential, setOauthToken, type AuthProvider, type Credential } from "./storage";
+import {
+  getStoredOAuth,
+  setOauthCredential,
+  resolveCredential,
+  snapshotProvider,
+  type AuthProvider,
+  type Credential,
+} from "./storage";
+import { OAUTH_FLOW_REGISTRY } from "./flows";
+import type { StoredOAuth } from "../agent/state";
 
 export interface RefreshResult {
   refreshed: boolean;
@@ -7,21 +16,45 @@ export interface RefreshResult {
 }
 
 /**
- * Placeholder refresher mirroring gjc's `auth-broker/refresher.ts` surface.
- * Today: returns the current credential and records why we did not refresh.
- * Tomorrow: per-provider refresh-token exchange against the provider's OAuth
- * token endpoint (Anthropic, OpenAI, Google) with persisted refresh tokens.
+ * Exchange the stored refresh token for a fresh access token via the provider's
+ * real OAuth token endpoint, persist it, and return the updated credential.
+ * Mirrors gjc's auth-broker refresher semantics (single source of truth).
  */
 export async function refreshOAuthToken(provider: AuthProvider): Promise<RefreshResult> {
-  const credential = await resolveCredential(provider);
-  if (credential.kind !== "oauth") {
-    return { refreshed: false, reason: "no_oauth_token", credential };
+  const stored = await getStoredOAuth(provider);
+  if (!stored) {
+    const snap = await snapshotProvider(provider);
+    const reason = snap.oauth ? "manual_token_no_refresh" : "no_oauth_token";
+    return { refreshed: false, reason, credential: await resolveCredential(provider) };
   }
-  // No refresh-token persistence yet → caller still uses the existing bearer.
-  return { refreshed: false, reason: "refresh_not_implemented", credential };
+  if (!stored.refresh) {
+    return {
+      refreshed: false,
+      reason: "no_refresh_token",
+      credential: { kind: "oauth", provider, token: stored.access },
+    };
+  }
+
+  const flow = OAUTH_FLOW_REGISTRY[provider];
+  const fresh = await flow.refresh(stored.refresh);
+  const next: StoredOAuth = {
+    access: fresh.access,
+    refresh: fresh.refresh || stored.refresh,
+    expires: fresh.expires,
+    accountId: fresh.accountId ?? stored.accountId,
+    email: fresh.email ?? stored.email,
+    projectId: fresh.projectId ?? stored.projectId,
+  };
+  await setOauthCredential(provider, next);
+  return {
+    refreshed: true,
+    reason: "refreshed",
+    credential: { kind: "oauth", provider, token: next.access },
+  };
 }
 
 /** Force-replace the stored OAuth token (used after a manual re-login). */
 export async function rotateOAuthToken(provider: AuthProvider, newToken: string): Promise<void> {
+  const { setOauthToken } = await import("./storage");
   await setOauthToken(provider, newToken);
 }

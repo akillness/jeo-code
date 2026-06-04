@@ -7,6 +7,15 @@ export interface CommandSpec {
 
 export const COMMANDS: readonly CommandSpec[] = [
   {
+    name: "launch",
+    summary: "Interactive coding agent (chat + tools). Default when no subcommand is given.",
+    usage: "launch [\"one-shot request\"]",
+    loader: async () => {
+      const m = await import("../commands/launch");
+      return args => m.runLaunchCommand(args);
+    },
+  },
+  {
     name: "setup",
     summary: "Configure LLM providers (API key / OAuth / local) + default model.",
     loader: async () => {
@@ -16,8 +25,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "auth",
-    summary: "Manage OAuth bearer tokens. sub ∈ {login, logout, status}.",
-    usage: "auth [login|logout|status] [provider]",
+    summary: "Real OAuth (PKCE) login + token storage with auto-refresh.",
+    usage: "auth [login|logout|refresh|status] [provider] [--token <bearer>]",
     loader: async () => {
       const m = await import("../commands/auth");
       return args => m.runAuthCommand(args);
@@ -114,7 +123,12 @@ export async function dispatch(argv: string[], ctx: DispatchContext): Promise<nu
     console.log(`${ctx.appName} v${ctx.version}`);
     return 0;
   }
-  if (!first || first === "--help" || first === "-h") {
+  if (!first) {
+    const run = await findCommand("launch")!.loader();
+    await run([]);
+    return 0;
+  }
+  if (first === "--help" || first === "-h") {
     console.log(renderHelp(ctx));
     return 0;
   }

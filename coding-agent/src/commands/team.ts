@@ -1,23 +1,10 @@
 import * as fs from "node:fs/promises";
-import * as path from "node:path";
-import { callLlm, type Message } from "../agent/loop";
 import {
   readWorkflowState,
   writeWorkflowState,
 } from "../agent/state";
-import {
-  readTool,
-  writeTool,
-  editTool,
-  bashTool,
-  findTool,
-  searchTool,
-} from "../agent/tools";
-
-interface ToolInvocation {
-  tool: "read" | "write" | "edit" | "bash" | "find" | "search" | "done";
-  arguments: Record<string, any>;
-}
+import { runAgentLoop, executorSystemPrompt } from "../agent/engine";
+import type { Message } from "../agent/loop";
 
 export async function runTeamCommand(): Promise<void> {
   const cwd = process.cwd();
@@ -49,9 +36,19 @@ export async function runTeamCommand(): Promise<void> {
   const lines = planContent.split("\n");
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed.startsWith("-") || trimmed.startsWith("task:")) {
-      const taskText = trimmed.replace(/^-\s*/, "").replace(/^task:\s*/, "").trim();
-      if (taskText) tasks.push(taskText);
+    if (trimmed.startsWith("- ")) {
+      let val = trimmed.slice(2).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      val = val.trim();
+      if (!val) {
+        continue;
+      }
+      if (val === "steps:" || val.startsWith("goal:")) {
+        continue;
+      }
+      tasks.push(val);
     }
   }
 
@@ -102,101 +99,25 @@ export async function runTeamCommand(): Promise<void> {
 }
 
 async function executeTaskWithAgent(task: string, cwd: string): Promise<boolean> {
-  const systemPrompt =
-    `You are the Executor Agent, a senior software developer.\n` +
-    `Your goal is to successfully execute the given programming task by calling tools.\n` +
-    `You have the following tools available:\n` +
-    `1. read (filePath, lineRange) - Read a file's contents\n` +
-    `2. write (filePath, content) - Write a new file or overwrite entirely\n` +
-    `3. edit (filePath, editBlock) - Edit an existing file using replacement blocks\n` +
-    `4. bash (command) - Run a terminal command (e.g. tests, lint)\n` +
-    `5. find (globPattern) - Find files matching a glob\n` +
-    `6. search (pattern, globPattern) - Grep for a pattern in files\n\n` +
-    `Provide your output strictly in JSON format. Choose exactly ONE tool call in each step.\n` +
-    `Format:\n` +
-    `{\n` +
-    `  "tool": "read" | "write" | "edit" | "bash" | "find" | "search" | "done",\n` +
-    `  "arguments": { ... }\n` +
-    `}\n` +
-    `When the task is fully and successfully implemented and verified, call the "done" tool.`;
-
   const history: Message[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: `Your task is: "${task}"` }
+    { role: "system", content: executorSystemPrompt() },
+    { role: "user", content: `Your task is: "${task}"` },
   ];
 
-  let step = 1;
-  const maxSteps = 15;
+  const result = await runAgentLoop(history, {
+    cwd,
+    maxSteps: 15,
+    events: {
+      onStep: step => console.log(`  └─ Step ${step}: Thinking...`),
+      onToolResult: (tool, ok) => console.log(`  └─ Tool [${tool}] → ${ok ? "Success" : "Failed"}`),
+      onError: msg => console.log(`  └─ Error in execution step: ${msg}`),
+    },
+  });
 
-  while (step <= maxSteps) {
-    console.log(`  └─ Step ${step}: Thinking...`);
-    try {
-      const responseText = await callLlm(history, { jsonMode: true });
-      let invocation: ToolInvocation;
-      
-      try {
-        invocation = JSON.parse(responseText.trim()) as ToolInvocation;
-      } catch {
-        const cleanJson = responseText.replace(/```json|```/g, "").trim();
-        invocation = JSON.parse(cleanJson) as ToolInvocation;
-      }
-
-      const toolName = invocation.tool;
-      const args = invocation.arguments;
-
-      if (toolName === "done") {
-        console.log("  └─ Executor completed the task successfully.");
-        return true;
-      }
-
-      console.log(`  └─ Calling tool [${toolName}] with args:`, JSON.stringify(args));
-
-      let resultOutput = "";
-      let success = false;
-
-      if (toolName === "read") {
-        const res = await readTool(args.filePath, args.lineRange, cwd);
-        resultOutput = res.success ? res.output : `Error: ${res.error}`;
-        success = res.success;
-      } else if (toolName === "write") {
-        const res = await writeTool(args.filePath, args.content, cwd);
-        resultOutput = res.success ? res.output : `Error: ${res.error}`;
-        success = res.success;
-      } else if (toolName === "edit") {
-        const res = await editTool(args.filePath, args.editBlock, cwd);
-        resultOutput = res.success ? res.output : `Error: ${res.error}`;
-        success = res.success;
-      } else if (toolName === "bash") {
-        const res = await bashTool(args.command, cwd);
-        resultOutput = res.success ? res.output : `Error: ${res.error}`;
-        success = res.success;
-      } else if (toolName === "find") {
-        const res = await findTool(args.globPattern, cwd);
-        resultOutput = res.success ? res.output : `Error: ${res.error}`;
-        success = res.success;
-      } else if (toolName === "search") {
-        const res = await searchTool(args.pattern, args.globPattern, cwd);
-        resultOutput = res.success ? res.output : `Error: ${res.error}`;
-        success = res.success;
-      } else {
-        resultOutput = `Unknown tool: ${toolName}`;
-      }
-
-      console.log(`  └─ Tool Result: ${success ? "Success" : "Failed"}`);
-
-      history.push({ role: "assistant", content: responseText });
-      history.push({
-        role: "user",
-        content: `Tool [${toolName}] result: ${resultOutput}`
-      });
-
-      step++;
-    } catch (err: any) {
-      console.log(`  └─ Error in execution step: ${err.message}`);
-      return false;
-    }
+  if (result.done) {
+    console.log("  └─ Executor completed the task successfully.");
+    return true;
   }
-
-  console.log(`  └─ Reached max steps (${maxSteps}) for task.`);
+  console.log(`  └─ Did not converge within ${result.steps} steps.`);
   return false;
 }

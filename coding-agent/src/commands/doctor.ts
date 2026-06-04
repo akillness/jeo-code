@@ -1,5 +1,5 @@
 import { readGlobalConfig } from "../agent/state";
-import { resolveCredential, type AuthProvider, type Credential } from "../auth";
+import { resolveCredential, snapshotProvider, type AuthProvider, type Credential } from "../auth";
 import { resolveProvider } from "../ai";
 
 interface ProbeResult {
@@ -154,6 +154,25 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   for (const p of probes) console.log(formatRow(p.name, p.credKind, p.result));
 
   console.log("");
+  // OAuth token health (expiry + auto-refresh capability)
+  const oauthLines: string[] = [];
+  for (const p of ["anthropic", "openai", "gemini"] as AuthProvider[]) {
+    const snap = await snapshotProvider(p);
+    if (!snap.oauth) continue;
+    let detail = snap.oauthHasRefresh ? "refreshable" : "manual (no refresh)";
+    if (snap.oauthExpires) {
+      const mins = Math.round((snap.oauthExpires - Date.now()) / 60000);
+      detail += mins <= 0 ? ", expired (auto-refresh on next call)" : `, expires in ${mins}m`;
+    }
+    if (snap.oauthEmail) detail += `, ${snap.oauthEmail}`;
+    oauthLines.push(`  ${p.padEnd(10)} ${detail}`);
+  }
+  if (oauthLines.length) {
+    console.log("OAuth tokens:");
+    for (const line of oauthLines) console.log(line);
+    console.log("");
+  }
+
 
   // Final verdict
   const defaultProbe = probes.find(p => p.name === defaultProvider);

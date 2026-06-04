@@ -70,12 +70,40 @@ Model routing is inferred from the model id, and credentials resolve from `~/.jo
 | Gemini | `gemini-2.5-flash` | `GEMINI_API_KEY` or `GEMINI_OAUTH_TOKEN` |
 | Ollama (local) | `ollama/qwen2.5:0.5b` | none — runs offline via `OLLAMA_HOST` (default `http://localhost:11434`) |
 
-- **OAuth tokens take precedence** over API keys (Anthropic uses `Authorization: Bearer` + `anthropic-beta: oauth`; Gemini drops `?key=`; OpenAI uses Bearer).
-- **Local/offline**: set the default model to `ollama/<model>` (e.g. `JOC_DEFAULT_MODEL=ollama/qwen2.5:0.5b`) after `ollama pull <model>` — no key required.
+- **Real OAuth (PKCE)**: `joc auth login <anthropic|openai|gemini>` runs a real
+  browser PKCE flow — it opens the provider's authorize URL, runs a local
+  callback server (Anthropic `:54545`, OpenAI `:1455`, Google `:8085`), exchanges
+  the code, and stores `access` + `refresh` + `expires`. Tokens **auto-refresh**
+  on the next call when expired; `joc auth refresh <provider>` forces it now.
+  On headless boxes, paste the redirect URL / code when prompted, or use
+  `joc auth login <provider> --token <bearer>` for a manual (non-refreshing) token.
+- **OAuth precedence & verification**: OAuth beats API keys for the same provider.
+  Anthropic OAuth is verified end-to-end with the bundled Messages adapter
+  (`Authorization: Bearer` + `anthropic-beta: oauth-2025-04-20`). OpenAI/Google
+  OAuth login+refresh work, but those tokens target the Codex / Cloud-Code-Assist
+  backends — the bundled chat/generativelanguage adapters prefer an API key
+  (the CLI warns you up front). Env bearers (`ANTHROPIC_OAUTH_TOKEN` /
+  `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_OAUTH_TOKEN`, `GEMINI_OAUTH_TOKEN`) still work.
+- **Local/offline**: set the default model to `ollama/<model>` (e.g. `JOC_DEFAULT_MODEL=ollama/qwen2.5:0.5b`) after `ollama pull <model>` — no key required. Any OpenAI-compatible server (LM Studio / vLLM / llama-cpp) works via `openaiBaseUrl`.
+- **Config location**: `~/.joc/config.json` by default; override with `JOC_CONFIG_DIR`. Verify everything with `joc doctor` (probes connectivity + shows OAuth token expiry).
 
 ---
 
 ## 💻 Workflow Commands
+
+### Interactive agent (default)
+Run `joc` with no subcommand to drop into the interactive coding agent — it
+chats and calls tools (`read`/`write`/`edit`/`bash`/`find`/`search`) in a loop
+until your request is done:
+```bash
+joc                         # interactive REPL (slash cmds: /help /clear /model <id> /exit)
+joc launch "add a /health route to server.ts and run the tests"   # one-shot
+echo "fix the failing test" | joc                                 # piped / non-TTY
+```
+
+For the disciplined spec-first pipeline, use the four workflow commands below.
+`joc deep-interview --auto` runs the interview non-interactively (CI/pipes) by
+supplying sensible default answers instead of blocking on stdin.
 
 ### Step 1: Crystallize Requirements
 ```bash
@@ -105,23 +133,41 @@ joc ultragoal
 ```text
 @jeo-code/
 ├── docs/
-│   └── improvements.md        # Architectural analysis and enhancements
+│   └── improvements.md            # Architectural analysis & ralph passes
 ├── coding-agent/
-│   ├── package.json           # Bun workspace package definitions
+│   ├── package.json               # Bun bin: { joc: src/cli.ts }
+│   ├── tsconfig.json              # strict typecheck config
 │   ├── src/
-│   │   ├── cli.ts             # Joc CLI executable bootstrap
-│   │   ├── index.ts           # Joc SDK entrypoint
+│   │   ├── cli.ts                 # Entry: Bun version guard + dispatch
+│   │   ├── index.ts               # SDK barrel
+│   │   ├── cli/
+│   │   │   └── runner.ts          # Lazy command registry + dispatch (bare joc → launch)
 │   │   ├── commands/
-│   │   │   ├── setup.ts       # Interactive provider configuration
-│   │   │   ├── deep-interview.ts # Socratic interview loop & Ambiguity scoring
-│   │   │   ├── ralplan.ts     # Architect-Planner-Critic plan generator
-│   │   │   ├── team.ts        # Agentic executor tool loop
-│   │   │   └── ultragoal.ts   # Checkpoint runner and report writer
-│   │   └── agent/
-│   │       ├── state.ts       # Local state (.joc/) and global config (~/.joc/)
-│   │       ├── loop.ts        # Gemini, Anthropic, and OpenAI API callers
-│   │       └── tools.ts       # Read, write, edit, bash tools & MutationGuard
-│   └── tsconfig.json
-├── install.sh                 # Global installation symlinker script
+│   │   │   ├── launch.ts          # Interactive coding agent (REPL / one-shot)
+│   │   │   ├── setup.ts           # Provider/model config (API key / browser OAuth / local)
+│   │   │   ├── auth.ts            # OAuth login/logout/refresh/status
+│   │   │   ├── deep-interview.ts  # Socratic interview + ambiguity gate (--auto)
+│   │   │   ├── ralplan.ts         # Planner/Architect/Critic plan generator
+│   │   │   ├── team.ts            # Per-task executor (runs on the shared engine)
+│   │   │   ├── ultragoal.ts       # Acceptance verification + report
+│   │   │   ├── doctor.ts          # Connectivity + credential health probe
+│   │   │   └── mcp.ts             # joc as an MCP stdio server
+│   │   ├── agent/
+│   │   │   ├── state.ts           # Config (~/.joc, JOC_CONFIG_DIR) + workflow state
+│   │   │   ├── loop.ts            # callLlm() → model-manager
+│   │   │   ├── engine.ts          # runAgentLoop() shared tool-call loop
+│   │   │   ├── json.ts            # Robust JSON-from-LLM extraction
+│   │   │   └── tools.ts           # read/write/edit/bash/find/search + MutationGuard
+│   │   ├── ai/                    # Provider adapters + model-manager
+│   │   ├── auth/                  # Credentials + real OAuth
+│   │   │   ├── storage.ts         # Credential resolution + auto-refresh
+│   │   │   ├── pkce.ts            # PKCE verifier/challenge
+│   │   │   ├── callback-server.ts # Local OAuth callback server
+│   │   │   ├── refresh.ts         # Per-provider token refresh dispatch
+│   │   │   └── flows/             # anthropic / openai / google OAuth flows
+│   │   └── mcp/                   # MCP protocol + tools + server
+│   ├── scripts/                   # install.sh / uninstall.sh
+│   └── test/                      # oauth + engine/json unit tests
+├── install.sh                     # Top-level installer shim
 └── README.md
 ```

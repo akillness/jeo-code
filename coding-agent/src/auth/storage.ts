@@ -1,4 +1,4 @@
-import { readGlobalConfig, saveGlobalConfig, type Config } from "../agent/state";
+import { readGlobalConfig, saveGlobalConfig, type Config, type StoredOAuth } from "../agent/state";
 
 export type AuthProvider = "anthropic" | "openai" | "gemini";
 
@@ -10,13 +10,40 @@ export type Credential =
 export interface AuthSnapshot {
   apiKey: string | undefined;
   oauth: string | undefined;
+  /** Present only when the stored OAuth is a refreshable {@link StoredOAuth}. */
+  oauthExpires?: number;
+  oauthHasRefresh?: boolean;
+  oauthEmail?: string;
+}
+
+function accessOf(stored: string | StoredOAuth | undefined): string | undefined {
+  if (!stored) return undefined;
+  return typeof stored === "string" ? stored : stored.access;
 }
 
 /** Single point of resolution: OAuth bearer beats API key when both exist. */
 export async function resolveCredential(provider: AuthProvider): Promise<Credential> {
   const cfg = await readGlobalConfig();
-  const oauth = cfg.oauth?.[provider];
-  if (oauth) return { kind: "oauth", provider, token: oauth };
+  const stored = cfg.oauth?.[provider];
+
+  if (stored) {
+    // Auto-refresh refreshable credentials that are past their expiry.
+    if (typeof stored !== "string" && stored.refresh && stored.expires && stored.expires <= Date.now()) {
+      try {
+        // Dynamic import breaks the storage <-> flows cycle.
+        const { refreshOAuthToken } = await import("./refresh");
+        const result = await refreshOAuthToken(provider);
+        if (result.refreshed && result.credential.kind === "oauth") {
+          return result.credential;
+        }
+      } catch {
+        // Fall through and use the (stale) access token; the provider call will surface a 401.
+      }
+    }
+    const token = accessOf(stored);
+    if (token) return { kind: "oauth", provider, token };
+  }
+
   const apiKey = cfg.providers[provider];
   if (apiKey) return { kind: "api_key", provider, token: apiKey };
   return { kind: "none", provider };
@@ -24,14 +51,38 @@ export async function resolveCredential(provider: AuthProvider): Promise<Credent
 
 export async function snapshotProvider(provider: AuthProvider): Promise<AuthSnapshot> {
   const cfg = await readGlobalConfig();
-  return { apiKey: cfg.providers[provider], oauth: cfg.oauth?.[provider] };
+  const stored = cfg.oauth?.[provider];
+  return {
+    apiKey: cfg.providers[provider],
+    oauth: accessOf(stored),
+    oauthExpires: typeof stored === "object" ? stored.expires : undefined,
+    oauthHasRefresh: typeof stored === "object" ? !!stored.refresh : false,
+    oauthEmail: typeof stored === "object" ? stored.email : undefined,
+  };
 }
 
+/** Read the full stored OAuth record (object form only). */
+export async function getStoredOAuth(provider: AuthProvider): Promise<StoredOAuth | undefined> {
+  const cfg = await readGlobalConfig();
+  const stored = cfg.oauth?.[provider];
+  return typeof stored === "object" ? stored : undefined;
+}
+
+/** Persist a plain bearer token (legacy / manual paste — no refresh metadata). */
 export async function setOauthToken(provider: AuthProvider, token: string): Promise<void> {
   const cfg = await readGlobalConfig();
   const next: Config = JSON.parse(JSON.stringify(cfg));
   next.oauth = next.oauth ?? {};
   next.oauth[provider] = token;
+  await saveGlobalConfig(next);
+}
+
+/** Persist a full OAuth credential set (access + refresh + expiry). */
+export async function setOauthCredential(provider: AuthProvider, cred: StoredOAuth): Promise<void> {
+  const cfg = await readGlobalConfig();
+  const next: Config = JSON.parse(JSON.stringify(cfg));
+  next.oauth = next.oauth ?? {};
+  next.oauth[provider] = cred;
   await saveGlobalConfig(next);
 }
 

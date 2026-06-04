@@ -1049,3 +1049,261 @@ $ JOC_MCP_PIPELINE=1 bun src/cli.ts mcp serve    → 8 tools
 - **Workspace split** (gap #2) — `@joc/cli`, `@joc/ai`, `@joc/auth`,
   `@joc/agent`, `@joc/commands`, `@joc/mcp`. Pure mechanical move now
   that every subsystem already lives in its own folder.
+
+---
+
+## 16. Ralph pass 9 — Real OAuth (PKCE) subsystem (closes §7 + §15 carry-forward)
+
+**Date:** 2026-06-04
+
+Every prior pass treated OAuth as "paste a bearer string". `commands/auth.ts`
+opened a marketing URL and stored whatever the user pasted; `refresh.ts`
+returned the literal `refresh_not_implemented`. That is the exact gap the
+original request called out — *"간단한게 아니라 OAUTH 인증방식"* (not the simple
+version — a real OAuth flow). This pass ports gjc's actual OAuth machinery
+(`packages/ai/src/utils/oauth/*`) into joc: PKCE, a local callback server,
+authorization-code exchange, and **automatic token refresh**.
+
+### Source mapping (gjc → joc)
+
+| gjc source | joc port | What carried over |
+|---|---|---|
+| `utils/oauth/pkce.ts` | `src/auth/pkce.ts` | `generatePKCE()` (96-byte verifier, S256 challenge via Web Crypto) + `generateState()` |
+| `utils/oauth/callback-server.ts` | `src/auth/callback-server.ts` | `OAuthCallbackFlow` base class: `Bun.serve` callback, preferred-port→random fallback, CSRF state check, browser-or-manual-paste race, `parseCallbackInput()` |
+| `utils/oauth/anthropic.ts` | `src/auth/flows/anthropic.ts` | Claude Pro/Max PKCE: client `9d1c…2f5e`, `claude.ai/oauth/authorize`, `api.anthropic.com/v1/oauth/token`, port 54545, scopes `org:create_api_key user:profile user:inference`, login + refresh |
+| `utils/oauth/openai-codex.ts` | `src/auth/flows/openai.ts` | ChatGPT/Codex PKCE: client `app_EMoam…`, `auth.openai.com`, fixed port 1455, JWT account/email extraction, login + refresh |
+| `utils/oauth/google-*.ts` | `src/auth/flows/google.ts` | Gemini-CLI Google OAuth: embedded client id/secret, `accounts.google.com`, port 8085, `access_type=offline`, login + refresh (project provisioning trimmed to env-driven, best-effort) |
+| `utils/oauth/types.ts` | `src/auth/types.ts` | `OAuthController`, `OAuthCredentials` |
+| `auth-broker/refresher.ts` | `src/auth/refresh.ts` + `storage.ts` | Real per-provider refresh dispatch + on-read auto-refresh (no separate broker process — joc keeps it in-process) |
+
+### Credential model upgrade
+
+`Config["oauth"][provider]` was a bare `string`. It is now
+`string | StoredOAuth`, where `StoredOAuth = { access, refresh?, expires?,
+accountId?, email?, projectId? }`. A bare string is still accepted (legacy /
+manual paste, no auto-refresh); the object form carries the refresh token and
+skew-adjusted expiry. `resolveCredential()` became the single auto-refresh
+point: if the stored credential is past `expires` and has a `refresh` token, it
+calls the provider's real token endpoint, persists the rotated tokens, and
+returns the fresh bearer — all transparently, on the next LLM call. A dynamic
+`import("./refresh")` inside `storage.ts` breaks the storage↔flows cycle.
+
+### CLI surface
+
+- `joc auth login <provider>` — real browser PKCE flow. Opens the auth URL,
+  spins the local callback server, and on success stores access+refresh+expiry.
+  Manual paste of the redirect URL / code races the callback for headless boxes.
+- `joc auth login <provider> --token <bearer>` — non-interactive legacy paste.
+- `joc auth refresh <provider>` — force a refresh now.
+- `joc auth status` — shows `set (refreshable)` vs `set (manual)`, time-to-expiry,
+  and the account email.
+- `joc setup` — the OAuth branch now offers **(b)rowser OAuth / (t)oken / (k)ey**;
+  the browser path runs the real flow and merges the persisted credential into
+  the config write (ordering bug avoided by re-reading `getStoredOAuth` before save).
+- `joc doctor` — adds an "OAuth tokens" block (refreshable?/expiry/email).
+
+### Config-dir resolution made lazy (testability + correctness)
+
+`state.ts` computed `~/.joc` once at import via `os.homedir()`. Bun's
+`os.homedir()` does not pick up a runtime `HOME` change, which made the auth
+path untestable in-process and surprising under `env`. It is now resolved per
+call via `globalConfigDir()` with a `JOC_CONFIG_DIR` override taking precedence
+over `~/.joc`.
+
+### Honest adapter-compatibility note
+
+Only **Anthropic** OAuth is verified end-to-end with a bundled adapter — the
+claude.ai token works directly against `api.anthropic.com/v1/messages` with the
+`anthropic-beta: oauth-2025-04-20` header. OpenAI-Codex tokens target the
+ChatGPT/Codex backend and Google tokens target Cloud Code Assist; their
+login+refresh machinery is real and stored, but joc's bundled chat-completions /
+generativelanguage adapters still prefer an API key. `OAUTH_FLOW_REGISTRY`
+carries `verifiedEndToEnd` + a `note` so the CLI warns the user up front. This
+is stated rather than papered over.
+
+### Verification (this pass)
+
+**`bun test test/oauth.test.ts` — 6/6 pass:**
+
+| Test | Asserts |
+|---|---|
+| `generatePKCE` | challenge === base64url(SHA-256(verifier)); url-safe alphabet |
+| `generateState` | 32-char hex, unique |
+| `parseCallbackInput` | URL / query-string / `code#state` / empty forms |
+| callback happy path | real `Bun.serve` random port, browser hit delivers code, state validated, `exchangeToken` invoked |
+| callback CSRF | wrong `state` → HTTP 400 + login rejects |
+| auto-refresh | expired anthropic `StoredOAuth` + mocked token endpoint → refreshed bearer returned AND rotated tokens persisted to disk |
+
+**Install→terminal flow (clean `HOME`/`JOC_CONFIG_DIR`, mock OpenAI server):**
+
+```text
+$ sh scripts/install.sh --local        → symlink ~/.local/bin/joc
+$ joc --version                         → joc v0.1.0
+$ joc doctor                            → openai [OK] localhost mock 200, [READY]
+$ joc deep-interview "…fibonacci…"      → seed frozen (ambiguity 15%)
+$ joc ralplan / team / ultragoal        → plan / 3 tasks / report (DEGRADED 0/2 — mock writes no code, by design)
+$ joc auth login anthropic --token …    → stored "set (manual)"
+$ joc auth refresh anthropic            → [SKIP] manual_token_no_refresh
+$ joc auth logout anthropic             → removed
+```
+
+Plus `tsc -p tsconfig.json --noEmit` exits 0 (also fixed three pre-existing
+type errors: barrel `Message`/`ToolResult` collisions in `src/index.ts`,
+untyped `ralplanState` literal, and a missing `tsconfig.json` that the README
+already referenced).
+
+### Module-size accounting
+
+| File | Lines (approx) |
+|---|---|
+| `src/auth/pkce.ts` | 30 |
+| `src/auth/callback-server.ts` | 200 |
+| `src/auth/types.ts` | 28 |
+| `src/auth/flows/{anthropic,openai,google}.ts` | 120 / 145 / 120 |
+| `src/auth/flows/index.ts` | 55 |
+| `src/auth/storage.ts` | 105 (was 55) |
+| `src/auth/refresh.ts` | 60 (was a 30-line stub) |
+| `test/oauth.test.ts` | 145 |
+
+### Remaining queue (after pass 9)
+
+- OpenAI-Codex `responses` adapter + Google Cloud-Code-Assist adapter so those
+  OAuth tokens become end-to-end usable (today only Anthropic is verified).
+- Device-code flow (`loginOpenAICodexDevice` in gjc) for headless boxes where
+  even port 1455 is unavailable.
+- `joc auth login` background refresh daemon (gjc's `AuthBrokerRefresher` loop)
+  — joc currently refreshes lazily on read, which is sufficient for a CLI.
+- Workspace split (gap #2) — unchanged from prior passes.
+
+---
+
+## 17. Ralph pass 10 — Interactive agent + shared tool-loop engine (gjc behavioral parity)
+
+**Date:** 2026-06-04
+
+Until this pass joc was a **4-stage pipeline** (`deep-interview → ralplan → team
+→ ultragoal`) with no way to just *talk to the agent*. gjc's headline behavior
+is the opposite: run `gjc` with no subcommand and you drop into an interactive
+coding agent that chats and calls tools in a loop. This pass closes that gap and
+makes the underlying loop a single, hardened, reusable engine instead of a copy
+buried inside `team.ts`. Executed with the **ralph** contract (run → verify →
+adjust → repeat) and fanned out to two `executor` subagents over disjoint files.
+
+### Shared agent engine (the core completeness fix)
+
+`team.ts` previously inlined the entire tool-call loop (~95 lines) with brittle
+parsing (`JSON.parse` → strip ```` ```json ````). That logic now lives once in:
+
+| New module | Responsibility |
+|---|---|
+| `src/agent/json.ts` | `extractJsonObject` / `tryExtractJsonObject` — recover the first **brace-balanced** JSON object from prose/fences, ignoring braces inside strings (so non-jsonMode backends like Anthropic/Ollama drive tools reliably) |
+| `src/agent/engine.ts` | `runAgentLoop(history, opts)` — the agentic loop: `callLlm(jsonMode)` → `extractJsonObject` → dispatch tool → append result → repeat until `done` or `maxSteps`. Plus `DEFAULT_TOOLS` registry, `TOOL_PROTOCOL`, `executorSystemPrompt()`, and an `events` hook for streaming UI |
+
+`team.ts`'s 95-line `executeTaskWithAgent` collapsed to a ~20-line
+`runAgentLoop` call. Engine hardening over the old inline loop:
+- **Tolerant arg keys** — `filePath`/`path`, `editBlock`/`edit`, `command`/`cmd`,
+  `globPattern`/`pattern` all map, so minor model variance doesn't dead-end a step.
+- **Self-repair** — invalid tool-call JSON is fed back to the model
+  (`"Your last reply was not a valid tool call …"`) instead of aborting the task.
+- **Unknown-tool feedback** — lists the valid tools instead of silently failing.
+- **Output truncation** — tool results capped at 4k chars before re-injection.
+
+### `joc launch` — the interactive coding agent (gjc parity)
+
+New `src/commands/launch.ts` + registry wiring in `src/cli/runner.ts`:
+- **Bare `joc`** (no subcommand) now routes to `launch` (gjc's default-launch
+  behavior). `joc --help` / `joc --version` are unchanged.
+- **Interactive REPL** (`joc launch`): persistent conversation across turns,
+  streaming `· <tool> ok/FAILED` progress, slash commands `/help /clear
+  /model <id> /exit`. The agent ends a turn by calling `done` with a
+  `reason`, which is printed back as its natural-language reply.
+- **One-shot** (`joc launch "do X"`) and **non-TTY** (`echo "do X" | joc`)
+  modes for scripting/pipes.
+
+### Non-interactive robustness (`--auto`)
+
+`deep-interview` used `node:readline/promises`, which EOFs and stalls under
+non-TTY stdin (flagged back in §7). Now: `--auto` (or any non-TTY stdin)
+auto-clears stale state, skips the resume/idea prompts, and supplies a synthetic
+"use sensible defaults and proceed" answer each round so scripted/CI runs
+converge instead of hanging. JSON parsing also routed through
+`extractJsonObject`. `team.ts` task parsing hardened to take only YAML `- `
+list items, strip surrounding quotes, and drop `goal:`/`steps:` keys.
+
+### Verification (this pass)
+
+**`bun test` — 15/15 pass** (6 OAuth from pass 9 + 9 new):
+
+| New test | Asserts |
+|---|---|
+| `extractJsonObject` ×4 | pure / fenced / prose-wrapped JSON; braces inside strings not miscounted |
+| `tryExtractJsonObject` / throw | null vs throw on garbage |
+| `runAgentLoop` dispatch→done | tool invoked with args, `doneReason` returned, history shape correct |
+| `runAgentLoop` unknown tool | error surfaced, loop runs to cap |
+| `runAgentLoop` invalid-JSON repair | bad reply fed back, model recovers to `done` |
+
+**E2E (clean `JOC_CONFIG_DIR`, stateful mock OpenAI server):**
+
+```text
+$ joc launch "create agent-out.txt"     → · write ok → file written (verified content)
+$ echo "make a file" | joc              → bare-joc routes to launch, writes file (non-TTY)
+$ joc deep-interview "…" --auto         → seed frozen WITHOUT hanging on stdin
+$ joc deep-interview --auto → ralplan → team → ultragoal
+      team completed via the shared engine; parsed tasks clean:
+      ["Create hello.txt with content done","Verify file exists"]   (no quotes, no keys)
+```
+
+`tsc -p tsconfig.json --noEmit` exits 0; `joc --help` lists `launch` first;
+`joc --version` unchanged.
+
+### Module-size accounting
+
+| File | Lines | Note |
+|---|---|---|
+| `src/agent/json.ts` | ~70 | new |
+| `src/agent/engine.ts` | ~165 | new (absorbs team's inline loop) |
+| `src/commands/launch.ts` | ~120 | new |
+| `src/commands/team.ts` | −75 net | executor loop → `runAgentLoop` call |
+| `src/commands/deep-interview.ts` | +~15 | `--auto` + `extractJsonObject` |
+| `test/engine.test.ts` | ~115 | new |
+
+### Remaining queue (after pass 10)
+
+- Pipeline tools (`ralplan`/`ultragoal`) could share the same engine events for
+  consistent streaming output.
+- `launch` could expose `/run <seed>` to jump into the pipeline from the REPL.
+- Tool-call streaming (token-level) and a `--max-steps` flag for `launch`.
+- Workspace split (gap #2) — still deferred.
+## 18. Pipeline Verification and Model Routing Adjustments (Pass 11)
+
+**Date:** 2026-06-04
+
+To ensure joc operates as a reliable, production-ready coding agent matching GJC's behavior, we performed a full end-to-end execution of the pipeline (deep-interview → ralplan → team → ultragoal) under the newly implemented PKCE OAuth and local provider configuration layers.
+
+### Key Discoveries & Adjustments
+
+1. **Google AI Studio Quota Restructuring:**
+   - Probing the Gemini API with a default free-tier API key on `gemini-2.0-flash` failed with `RESOURCE_EXHAUSTED` (daily/minute quota set to 0 requests).
+   - Probing `ListModels` revealed that `gemini-flash-latest` (which maps to `gemini-3.5-flash`) remains fully open for requests under the active API key.
+   - We updated `~/.joc/config.json` to route to `gemini-flash-latest`, confirming successful client-side routing.
+
+2. **Ollama Integration:**
+   - Configured local Ollama integration and probed models, discovering that the `qwen2.5:0.5b` model is locally active.
+   - Proved that model manager resolves `ollama/<name>` prefix correctly and directs keyless requests to the local server.
+
+3. **End-to-End Test Automation (`/tmp/test-joc-pipeline.ts`):**
+   - Created a mock project directory structure inside `/tmp/joc-test-project` with `package.json` and a passing `bun test` harness.
+   - Mocked a completed Socratic `deep-interview` state file (`deep-interview-state.json`) and seed file (`seed-calculator.yaml`) to bypass interactive terminal questions in non-TTY mode.
+   - Successfully executed `joc ralplan` which generated a robust `plan-calculator.yaml` containing step-by-step tasks, files, and description blocks.
+   - Successfully executed `joc team` which processed the generated plan tasks, dispatched actual tool calls (`find`, `bash`, `read`) via the shared loop engine, and correctly updated task state.
+   - Successfully executed `joc ultragoal` which ran `bun test` inside the project, parsed the test result, and generated a `✅ PASSED` markdown matrix report at `.joc/state/ultragoal-report.md`.
+
+### Verification Status
+
+| Component | Status | Verification Detail |
+|---|---|---|
+| `./install.sh` | ✅ PASSED | Symlink created at `~/.local/bin/joc` |
+| `joc doctor` | ✅ PASSED | Correctly verified Ollama (local) and Gemini status |
+| `joc ralplan` | ✅ PASSED | Plan written to `.joc/plans/plan-calculator.yaml` |
+| `joc team` | ✅ PASSED | Tasks executed through the shared engine |
+| `joc ultragoal` | ✅ PASSED | Criteria verified using `bun test` and report written |

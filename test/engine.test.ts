@@ -118,3 +118,23 @@ test("runAgentLoop: stops on repeated identical tool calls (weak-model no-progre
   expect(writes).toBeLessThanOrEqual(2);
   expect(calls).toBeLessThan(25);
 });
+
+test("runAgentLoop: an aborted signal stops before any tool call", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "write", arguments: {} }),
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const ac = new AbortController();
+  ac.abort();
+  let toolCalls = 0;
+  const history = [{ role: "system" as const, content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 5,
+    signal: ac.signal,
+    tools: { write: async () => { toolCalls++; return { success: true, output: "x" }; } },
+  });
+  expect(result.done).toBe(false);
+  expect(result.doneReason).toBe("Cancelled.");
+  expect(toolCalls).toBe(0);
+});

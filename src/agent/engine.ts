@@ -64,6 +64,7 @@ export interface AgentLoopOptions {
   maxSteps?: number;
   model?: string;
   tools?: Record<string, ToolHandler>;
+  signal?: AbortSignal;
   events?: AgentLoopEvents;
 }
 
@@ -94,11 +95,14 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   let lastSig = "";
   let repeatCount = 0;
   while (step <= maxSteps) {
+    if (opts.signal?.aborted) {
+      return { done: false, steps: step - 1, doneReason: "Cancelled." };
+    }
     ev.onStep?.(step);
 
     let responseText: string;
     try {
-      responseText = await callLlm(history, { jsonMode: true, model: opts.model });
+      responseText = await callLlm(history, { jsonMode: true, model: opts.model, signal: opts.signal });
     } catch (err) {
       ev.onError?.((err as Error).message);
       return { done: false, steps: step };

@@ -144,16 +144,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const tui = useTui ? new LaunchTui({ model: sessionModel || defaultModel, sessionId }) : null;
     if (tui) tui.start();
     let result;
+    const ac = new AbortController();
+    const onSigint = () => ac.abort();
+    process.once("SIGINT", onSigint);
     try {
       result = await runAgentLoop(history, {
         cwd,
         maxSteps: flags.maxSteps,
         model: sessionModel,
+        signal: ac.signal,
         events: tui ? tui.events() : streamEvents,
       });
     } catch (err) {
       if (tui) tui.finish(`! ${(err as Error).message}`);
       throw err;
+    } finally {
+      process.removeListener("SIGINT", onSigint);
     }
     const reply = result.doneReason || `(reached the ${result.steps}-step limit without signaling done)`;
     // Full-fidelity persistence: append every message the engine added this turn

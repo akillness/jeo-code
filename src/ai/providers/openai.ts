@@ -31,7 +31,7 @@ export const openaiAdapter: ProviderAdapter = {
   name: "openai",
   async call(messages, options, credential) {
     const { url, headers, body } = openaiRequest(messages, options, credential, false);
-    const response = await fetch(url, { method: "POST", headers, body });
+    const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`OpenAI API request failed (HTTP ${response.status}): ${text}`);
@@ -42,7 +42,7 @@ export const openaiAdapter: ProviderAdapter = {
   },
   async *stream(messages, options, credential) {
     const { url, headers, body } = openaiRequest(messages, options, credential, true);
-    const response = await fetch(url, { method: "POST", headers, body });
+    const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`OpenAI stream failed (HTTP ${response.status}): ${text}`);

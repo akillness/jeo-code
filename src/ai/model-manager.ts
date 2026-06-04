@@ -64,6 +64,7 @@ async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
     jsonMode: options.jsonMode,
     baseUrl,
     onUsage: options.onUsage,
+    signal: options.signal,
   };
 
   if (provider === "ollama") {

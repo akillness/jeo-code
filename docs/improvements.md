@@ -1889,3 +1889,19 @@ paths — so every provider feeds `onUsage`, not just ollama.
 
 **Verification:** `tsc` 0; `bun test` **76/76** (+2 mock-fetch: openai `call` → `{11,3}`, anthropic
 `call` → `{9,4}`). Files: `src/ai/providers/{openai,anthropic}.ts`, `test/usage.test.ts`.
+
+---
+
+## 38. Ralph pass 31 — gjc-parity batch 14 (request cancellation / AbortSignal)
+
+**Date:** 2026-06-05 · gjc dimension: **provider** / **agentic responsiveness**.
+
+`CallOptions.signal?: AbortSignal` threaded through `model-manager.resolveCall` into every adapter's
+`fetch` (anthropic/openai/gemini/ollama, both `call` and `stream`), so in-flight LLM requests can be
+cancelled (Ctrl-C / timeout / supersede) — gjc parity. `withRetry`'s `defaultRetryable` does not match
+abort errors, so cancellation is not retried.
+
+**Verification:** `tsc` 0; `bun test` **77/77** (+1: an aborted signal rejects `ollamaAdapter.call`
+with an abort error and the signal is confirmed to reach `fetch`; a fresh signal completes normally).
+Real Ollama `joc chat` regression clean. Files: `src/ai/types.ts`, `src/ai/model-manager.ts`,
+`src/ai/providers/{anthropic,openai,gemini,ollama}.ts`, `test/abort.test.ts`.

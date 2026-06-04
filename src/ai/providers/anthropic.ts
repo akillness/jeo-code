@@ -27,6 +27,7 @@ export const anthropicAdapter: ProviderAdapter = {
       method: "POST",
       headers: headersFor(credential),
       body: anthropicPayload(messages, options, false),
+      signal: options.signal,
     });
     if (!response.ok) {
       const text = await response.text();
@@ -41,6 +42,7 @@ export const anthropicAdapter: ProviderAdapter = {
       method: "POST",
       headers: headersFor(credential),
       body: anthropicPayload(messages, options, true),
+      signal: options.signal,
     });
     if (!response.ok) {
       const text = await response.text();

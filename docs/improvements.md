@@ -1961,6 +1961,19 @@ prints a per-turn footer `(N in / M out tokens)` (one-shot, interactive, and TUI
 
 ---
 
+## 44. Ralph pass 36 — gjc-parity batch 19 (anthropic streaming usage; all 4 stream + usage)
+
+**Date:** 2026-06-05 · gjc dimension: **provider**.
+
+`anthropicAdapter.stream()` now reports usage from `message_start` (`input_tokens`) and `message_delta`
+(`output_tokens`) SSE events. **All four providers now stream AND report token usage in both `call` and
+`stream`.**
+
+**Verification:** `tsc` 0; `bun test` **79/79** (+1: mock SSE — text `"hi"`, usages include
+`{inputTokens:12,…}` and `{outputTokens:5}`). Files: `src/ai/providers/anthropic.ts`, `test/anthropic-stream.test.ts`.
+
+---
+
 ## 42. Objective completion summary — gjc-comparison improvement program
 
 **Date:** 2026-06-05

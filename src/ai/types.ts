@@ -21,4 +21,6 @@ export interface ProviderAdapter {
   readonly name: ProviderName;
   /** Local providers ignore the credential argument; cloud adapters require it. */
   call(messages: Message[], options: CallOptions, credential: Credential): Promise<string>;
+  /** Optional token streaming. Yields text deltas; concatenation equals the `call()` result. */
+  stream?(messages: Message[], options: CallOptions, credential: Credential): AsyncIterable<string>;
 }

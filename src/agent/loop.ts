@@ -9,6 +9,7 @@ export interface ChatOptions {
   maxTokens?: number;
   jsonMode?: boolean;
   signal?: AbortSignal;
+  onUsage?: (usage: import("../ai/types").Usage) => void;
 }
 
 const manager = createModelManager();

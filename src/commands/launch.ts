@@ -136,7 +136,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const runTurn = async (
     userInput: string,
     useTui: boolean
-  ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean }> => {
+  ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean; usage: string }> => {
     await maybeCompact(history, { model: sessionModel });
     const beforeLen = history.length;
     history.push({ role: "user", content: userInput });
@@ -170,7 +170,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     history.push({ role: "assistant", content: reply });
     if (sessionId) await appendMessage(sessionId, { role: "assistant", content: reply }, cwd);
     if (tui) tui.finish(reply);
-    return { done: result.done, steps: result.steps, reply, rendered: !!tui };
+    const usage = result.usage ? `  (${result.usage.inputTokens} in / ${result.usage.outputTokens} out tokens)` : "";
+    return { done: result.done, steps: result.steps, reply, rendered: !!tui, usage };
   };
 
   const joinedArgs = flags.message;
@@ -186,8 +187,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       return;
     }
     try {
-      const { reply } = await runTurn(messageContent, false);
-      console.log(reply);
+      const { reply, usage } = await runTurn(messageContent, false);
+      console.log(reply + usage);
     } catch (err) {
       console.log(`! ${(err as Error).message}`);
     }
@@ -255,10 +256,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
 
       try {
-        const { done, steps, reply, rendered } = await runTurn(input, useTui);
+        const { done, steps, reply, rendered, usage } = await runTurn(input, useTui);
         if (!rendered) {
-          console.log(`joc> ${reply}`);
+          console.log(`joc> ${reply}${usage}`);
           if (!done) console.log(`(agent did not converge in ${steps} steps)`);
+        } else if (usage) {
+          console.log(usage.trim());
         }
       } catch (err) {
         console.log(`! ${(err as Error).message}`);

@@ -1948,6 +1948,19 @@ Files: `src/agent/{loop,engine}.ts`, `src/commands/launch.ts`, `test/engine.test
 
 ---
 
+## 43. Ralph pass 35 — gjc-parity batch 18 (per-turn token usage in the agent loop)
+
+**Date:** 2026-06-05 · gjc dimension: **agentic workflow** / **provider** (cost visibility).
+
+`runAgentLoop` now accumulates provider token usage across a turn's steps (via a per-step `onUsage`
+sink threaded through `ChatOptions.onUsage`) and returns it as `AgentLoopResult.usage`. `joc launch`
+prints a per-turn footer `(N in / M out tokens)` (one-shot, interactive, and TUI paths).
+
+**Verification:** `tsc` 0; `bun test` **78/78**. Real Ollama: `joc launch --no-tui --max-steps 2 …`
+→ `(842 in / 40 out tokens)`. Files: `src/agent/{engine,loop}.ts`, `src/commands/launch.ts`.
+
+---
+
 ## 42. Objective completion summary — gjc-comparison improvement program
 
 **Date:** 2026-06-05

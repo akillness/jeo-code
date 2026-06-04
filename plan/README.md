@@ -59,9 +59,9 @@ M7  Model registry      → plan 04       (discovery, aliases, cost/usage tracki
 
 ## Configuration conventions (stable contracts future work must honor)
 - **Global config**: `~/.joc/config.json` (override dir via `JOC_CONFIG_DIR`); dir `0700`, file `0600`.
-  Shape in `coding-agent/src/agent/state.ts:Config` (`providers`, `oauth`, `defaultModel`,
+  Shape in `src/agent/state.ts:Config` (`providers`, `oauth`, `defaultModel`,
   `ollamaBaseUrl`, `openaiBaseUrl`, `thinkingLevel`).
 - **Per-project runtime**: `<cwd>/.joc/` — `seeds/`, `plans/`, `state/`, `sessions/` (see plan 02).
-- **Bun-native**: deps + bin via `bun install` + `bun link`; entry `coding-agent/src/cli.ts`
-  (bin `joc`), lazy command registry `coding-agent/src/cli/runner.ts:COMMANDS`.
+- **Bun-native**: deps + bin via `bun install` + `bun link`; entry `src/cli.ts`
+  (bin `joc`), lazy command registry `src/cli/runner.ts:COMMANDS`.
 - **Env overlay** never overrides on-disk config (`state.ts:withEnvOverlay`).

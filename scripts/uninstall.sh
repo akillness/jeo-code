@@ -21,8 +21,8 @@ if [ -L "$BUN_BIN/joc" ] || [ -f "$BUN_BIN/joc" ]; then
   rm -f "$BUN_BIN/joc"
   echo "Removed $BUN_BIN/joc (bun link)"
 fi
-GLOBAL_PKG="${BUN_INSTALL:-$HOME/.bun}/install/global/node_modules/@jeo-code/coding-agent"
-[ -e "$GLOBAL_PKG" ] && rm -rf "$GLOBAL_PKG" && echo "Unregistered @jeo-code/coding-agent from bun global"
+GLOBAL_PKG="${BUN_INSTALL:-$HOME/.bun}/install/global/node_modules/jeo-code"
+[ -e "$GLOBAL_PKG" ] && rm -rf "$GLOBAL_PKG" && echo "Unregistered jeo-code from bun global"
 
 if [ "$PURGE" = "1" ]; then
   rm -rf "$HOME/.joc"

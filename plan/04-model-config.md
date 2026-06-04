@@ -57,7 +57,6 @@ make the chosen model reachable and verifiable. Next: a model registry with alia
 
 ## 8. Verification Steps
 ```bash
-cd coding-agent
 bun run typecheck && bun test test/model-registry.test.ts
 joc models                                  # lists aliases + local models
 JOC_CONFIG_DIR=/tmp/c joc doctor            # [READY] for the configured default

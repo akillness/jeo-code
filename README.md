@@ -55,7 +55,7 @@ Real PKCE OAuth (`joc auth login`) with a local callback server and automatic to
 
 ### Installation
 Run the automated installer from the workspace root. It delegates to the
-canonical `coding-agent/scripts/install.sh` (single source of truth), which
+canonical `scripts/install.sh` (single source of truth), which
 auto-installs Bun if missing, enforces the `v1.3.14+` floor, and registers the
 `joc` binary the **bun-native way via `bun link`** — exposing it in bun's global
 bin (`~/.bun/bin/joc`) and adding a compatibility symlink at `~/.local/bin/joc`.
@@ -63,20 +63,20 @@ A PATH hint is printed if neither dir is on `PATH`:
 ```bash
 chmod +x ./install.sh
 ./install.sh                       # bun install + bun link (delegates to scripts/install.sh --local)
-# advanced (clone + install a tag): sh coding-agent/scripts/install.sh --ref v0.1.0
+# advanced (clone + install a tag): sh scripts/install.sh --ref v0.1.0
 ```
 Uninstall removes both the `bun link` bin and the compat symlink, and unregisters
 from bun's global registry:
 ```bash
-sh coding-agent/scripts/uninstall.sh [--purge]   # --purge also removes ~/.joc/
+sh scripts/uninstall.sh [--purge]   # --purge also removes ~/.joc/
 ```
-Local dev without installing (run from `coding-agent/`):
+Local dev without installing (run from the repo root):
 ```bash
 bun run start --help               # = bun src/cli.ts --help
 bun run typecheck                  # tsc -p tsconfig.json --noEmit
 bun test                           # unit tests (oauth + engine/json)
 ```
-Uninstall: `sh coding-agent/scripts/uninstall.sh [--purge]`.
+Uninstall: `sh scripts/uninstall.sh [--purge]`.
 
 ### 🔑 Interactive Setup
 Setup your LLM provider API keys (Gemini, Anthropic, or OpenAI) and default model:
@@ -162,45 +162,44 @@ joc ultragoal
 
 ```text
 @jeo-code/
-├── docs/
-│   └── improvements.md            # Architectural analysis & ralph passes
-├── coding-agent/
-│   ├── package.json               # Bun bin: { joc: src/cli.ts }
-│   ├── tsconfig.json              # strict typecheck config
-│   ├── src/
-│   │   ├── cli.ts                 # Entry: Bun version guard + dispatch
-│   │   ├── index.ts               # SDK barrel
-│   │   ├── cli/
-│   │   │   └── runner.ts          # Lazy command registry + dispatch (bare joc → launch)
-│   │   ├── commands/
-│   │   │   ├── launch.ts          # Interactive coding agent (REPL / one-shot)
-│   │   │   ├── setup.ts           # Provider/model config (API key / browser OAuth / local)
-│   │   │   ├── auth.ts            # OAuth login/logout/refresh/status
-│   │   │   ├── deep-interview.ts  # Socratic interview + ambiguity gate (--auto)
-│   │   │   ├── ralplan.ts         # Planner/Architect/Critic plan generator
-│   │   │   ├── team.ts            # Per-task executor (runs on the shared engine)
-│   │   │   ├── ultragoal.ts       # Acceptance verification + report
-│   │   │   ├── doctor.ts          # Connectivity + credential health probe
-│   │   │   └── mcp.ts             # joc as an MCP stdio server
-│   │   ├── agent/
-│   │   │   ├── state.ts           # Config (~/.joc, JOC_CONFIG_DIR) + workflow state
-│   │   │   ├── loop.ts            # callLlm() → model-manager
-│   │   │   ├── engine.ts          # runAgentLoop() shared tool-call loop
-│   │   │   ├── json.ts            # Robust JSON-from-LLM extraction
-│   │   │   ├── tools.ts           # read/write/edit/bash/find/search + MutationGuard
-│   │   │   ├── session.ts         # pi-style append-only JSONL sessions (resume/list)
-│   │   │   ├── context-files.ts   # pi-style project-context loader (JEO.md/AGENTS.md/…)
-│   │   │   └── compaction.ts      # pi-style context compaction (summarize older turns)
-│   │   ├── ai/                    # Provider adapters + model-manager
-│   │   ├── auth/                  # Credentials + real OAuth
-│   │   │   ├── storage.ts         # Credential resolution + auto-refresh
-│   │   │   ├── pkce.ts            # PKCE verifier/challenge
-│   │   │   ├── callback-server.ts # Local OAuth callback server
-│   │   │   ├── refresh.ts         # Per-provider token refresh dispatch
-│   │   │   └── flows/             # anthropic / openai / google OAuth flows
-│   │   └── mcp/                   # MCP protocol + tools + server
-│   ├── scripts/                   # install.sh / uninstall.sh
-│   └── test/                      # oauth + engine/json unit tests
-├── install.sh                     # Top-level installer shim
+├── package.json               # Bun bin: { joc: src/cli.ts }
+├── tsconfig.json              # strict typecheck config
+├── install.sh                 # top-level installer shim → scripts/install.sh --local
+├── src/
+│   ├── cli.ts                 # Entry: Bun version guard + dispatch
+│   ├── index.ts               # SDK barrel
+│   ├── cli/
+│   │   └── runner.ts          # Lazy command registry + dispatch (bare joc → launch)
+│   ├── commands/
+│   │   ├── launch.ts          # Interactive coding agent (REPL / one-shot)
+│   │   ├── setup.ts           # Provider/model config (API key / browser OAuth / local)
+│   │   ├── auth.ts            # OAuth login/logout/refresh/status
+│   │   ├── deep-interview.ts  # Socratic interview + ambiguity gate (--auto)
+│   │   ├── ralplan.ts         # Planner/Architect/Critic plan generator
+│   │   ├── team.ts            # Per-task executor (runs on the shared engine)
+│   │   ├── ultragoal.ts       # Acceptance verification + report
+│   │   ├── doctor.ts          # Connectivity + credential health probe
+│   │   └── mcp.ts             # joc as an MCP stdio server
+│   ├── agent/
+│   │   ├── state.ts           # Config (~/.joc, JOC_CONFIG_DIR) + workflow state
+│   │   ├── loop.ts            # callLlm() → model-manager
+│   │   ├── engine.ts          # runAgentLoop() shared tool-call loop
+│   │   ├── json.ts            # Robust JSON-from-LLM extraction
+│   │   ├── tools.ts           # read/write/edit/bash/find/search + MutationGuard
+│   │   ├── session.ts         # pi-style append-only JSONL sessions (resume/list)
+│   │   ├── context-files.ts   # pi-style project-context loader (JEO.md/AGENTS.md/…)
+│   │   └── compaction.ts      # pi-style context compaction (summarize older turns)
+│   ├── ai/                    # Provider adapters + model-manager
+│   ├── auth/                  # Credentials + real OAuth
+│   │   ├── storage.ts         # Credential resolution + auto-refresh
+│   │   ├── pkce.ts            # PKCE verifier/challenge
+│   │   ├── callback-server.ts # Local OAuth callback server
+│   │   ├── refresh.ts         # Per-provider token refresh dispatch
+│   │   └── flows/             # anthropic / openai / google OAuth flows
+│   └── mcp/                   # MCP protocol + tools + server
+├── scripts/                   # install.sh / uninstall.sh (bun install + bun link)
+├── test/                      # oauth + engine/json + review-fixes + session/context/compaction tests
+├── docs/improvements.md       # architectural analysis & ralph passes
+├── plan/                      # long-horizon work plans (TUI, features, install, model, provider)
 └── README.md
 ```

@@ -61,7 +61,6 @@ lazy command registry (`runner.ts:COMMANDS`). Adding a command = one `commands/<
 
 ## 8. Verification Steps
 ```bash
-cd coding-agent
 bun run typecheck && bun test
 # e2e (ollama/qwen2.5:0.5b): joc launch one-shot creates a file; session round-trips via --resume
 joc deep-interview "x" --auto && joc ralplan && joc team && joc ultragoal   # pipeline still green

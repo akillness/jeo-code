@@ -87,10 +87,10 @@ resolve_source_dir() {
   else
     git clone --depth 1 "https://github.com/${REPO}.git" "$TMP" >/dev/null
   fi
-  if [ ! -d "$TMP/coding-agent" ]; then
-    echo "Expected coding-agent/ inside cloned repo"; exit 1
+  if [ ! -f "$TMP/src/cli.ts" ]; then
+    echo "Expected src/cli.ts inside cloned repo"; exit 1
   fi
-  SRC_DIR="$TMP/coding-agent"
+  SRC_DIR="$TMP"
 }
 
 install_deps() {

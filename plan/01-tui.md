@@ -23,7 +23,7 @@ Must degrade cleanly to today's plain-stream output on non-TTY / `--no-tui`.
   **0 `console.log`** — this is the seam a renderer plugs into.
 - `src/commands/launch.ts` builds an `events` object that just `console.log`s tool results;
   the REPL uses `node:readline/promises`.
-- Only dep relevant to UI is `chalk` (`coding-agent/package.json`); no TUI library.
+- Only dep relevant to UI is `chalk` (`package.json`); no TUI library.
 - `callLlm` (`src/agent/loop.ts`) is **blocking** (returns a full string) — there is no token
   stream yet (streaming is a provider concern; see plan 05 §M6, prerequisite for true streaming text).
 
@@ -37,7 +37,7 @@ Must degrade cleanly to today's plain-stream output on non-TTY / `--no-tui`.
   existing engine events. No native deps. `--no-tui` and non-TTY fall back to the current stream path.
 
 ## 4. Design & Architecture
-New package `coding-agent/src/tui/`:
+New package `src/tui/`:
 ```
 src/tui/
 ├── index.ts          # barrel
@@ -93,7 +93,6 @@ user input ─▶ runAgentLoop(history, { events })
 
 ## 8. Verification Steps
 ```bash
-cd coding-agent
 bun run typecheck
 bun test test/tui-renderer.test.ts test/tui-components.test.ts
 # TTY (manual): joc launch  → footer redraws in place; tool list updates live

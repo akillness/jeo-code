@@ -2,7 +2,7 @@
 set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-CANONICAL="$SCRIPT_DIR/coding-agent/scripts/install.sh"
+CANONICAL="$SCRIPT_DIR/scripts/install.sh"
 
 if [ ! -f "$CANONICAL" ]; then
     echo "Error: Canonical installer script not found at $CANONICAL" >&2

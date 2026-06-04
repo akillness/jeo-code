@@ -108,6 +108,15 @@ export const COMMANDS: readonly CommandSpec[] = [
       return args => m.runResumeCommand(args);
     },
   },
+  {
+    name: "chat",
+    summary: "Single-shot streaming chat (no tools) — renders the reply token-by-token.",
+    usage: "chat \"<message>\"",
+    loader: async () => {
+      const m = await import("../commands/chat");
+      return args => m.runChatCommand(args);
+    },
+  },
 ];
 
 export function findCommand(name: string): CommandSpec | undefined {

@@ -2,14 +2,16 @@
 
 > Stop prompting. Start specifying. Deliver with absolute confidence.
 
-`@jeo-code` is a lightweight, pure TypeScript coding agent CLI (`joc`) built for Bun. It implements the highly disciplined Ouroboros spec-first pipeline to guarantee that requirements are fully crystallized before a single line of codebase code is modified.
+`@jeo-code` is a lightweight, pure TypeScript coding agent CLI (`joc`) built for Bun. Run bare `joc` for an **interactive coding agent** (chat + tools), or use the disciplined Ouroboros **spec-first pipeline** to guarantee requirements are fully crystallized before a single line of codebase code is modified.
 
 ```text
+joc                      →  interactive coding agent (chat + read/write/edit/bash/find/search)
+
 joc deep-interview ──> joc ralplan ──> joc team ──> joc ultragoal
 (Socratic Interview)     (Blueprint)     (Execution)   (Verification)
         │
   [Mutation Lock]
-(Code edits blocked!)
+(Code edits blocked while ambiguity > 20%)
 ```
 
 ---
@@ -25,7 +27,7 @@ Instead of jumping straight to implementation, `@jeo-code` initiates a structure
 The interview loops interactively with the user until the **Ambiguity Score drops to ≤ 20%**. Once resolved, a frozen requirement seed is saved to `.joc/seeds/seed-[slug].yaml`.
 
 ### 2. Secure Codebase Mutation Guard (Strict Lock)
-To prevent the model from implementing incomplete or ambiguous features, the **MutationGuard middleware** dynamically blocks all codebase-modifying tools (`edit`, `write`, `ast_edit`) while a Socratic interview is active. 
+To prevent the model from implementing incomplete or ambiguous features, the **MutationGuard middleware** dynamically blocks codebase-modifying tools (`write`, `edit`) while a Socratic interview is active.
 - Only spec/planning modifications inside the `.joc/` runtime directory are permitted.
 - The lock dynamically releases once the Ambiguity Score falls to `≤ 20%` and requirements are successfully crystallized.
 
@@ -37,6 +39,12 @@ Expose the plan to parallel or sequential executor sessions. The executor uses a
 
 ### 5. Durable Checkpoint Verification (`joc ultragoal`)
 Continuously measures the execution status against the acceptance criteria, running tests via bash and producing a final report in `.joc/state/ultragoal-report.md`.
+
+### 6. Interactive Coding Agent (`joc launch` / bare `joc`)
+A shared, hardened tool-call engine (`src/agent/engine.ts`) powers both `team` and the interactive REPL. Run bare `joc` to chat with the agent — it calls `read`/`write`/`edit`/`bash`/`find`/`search` in a loop until your request is done. Supports one-shot (`joc launch "..."`) and piped/non-TTY use.
+
+### 7. Real OAuth + Local Providers (`joc auth`, `joc doctor`)
+Real PKCE OAuth (`joc auth login`) with a local callback server and automatic token refresh, plus API keys, Ollama, and any OpenAI-compatible endpoint. `joc doctor` probes connectivity, credentials, and OAuth token expiry. `joc mcp serve` exposes joc as an MCP stdio server.
 
 ---
 

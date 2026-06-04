@@ -2,6 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { runAgentLoop, executorSystemPrompt } from "../agent/engine";
 import { LaunchTui } from "../tui/app";
 import { skillsPromptSection } from "../skills/catalog";
+import { matchSlash, isSlashAttempt } from "../tui/components/slash";
 import type { Message } from "../agent/loop";
 import { readGlobalConfig } from "../agent/state";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
@@ -237,6 +238,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         } else {
           console.log(`Current model: ${sessionModel || defaultModel}`);
         }
+        continue;
+      }
+
+      // Unhandled slash attempt → suggest, don't send the typo to the model.
+      if (isSlashAttempt(input)) {
+        const m = matchSlash(input);
+        console.log(m.length ? `Did you mean: ${m.join("  ")} ?` : `Unknown command '${input}'. Try /help.`);
         continue;
       }
 

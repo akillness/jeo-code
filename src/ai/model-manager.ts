@@ -23,6 +23,13 @@ export function resolveProvider(model: string): ProviderName {
   return "anthropic";
 }
 
+/** Map the configured thinking level to a default max-token budget. */
+export function thinkingMaxTokens(level?: "low" | "medium" | "high"): number {
+  if (level === "low") return 2000;
+  if (level === "high") return 8000;
+  return 4000;
+}
+
 export interface ModelManager {
   call(messages: Message[], options?: Partial<CallOptions>): Promise<string>;
   resolveProvider: typeof resolveProvider;
@@ -47,7 +54,7 @@ export function createModelManager(): ModelManager {
         model,
         systemPrompt: options.systemPrompt,
         temperature: options.temperature ?? 0.2,
-        maxTokens: options.maxTokens ?? 4000,
+        maxTokens: options.maxTokens ?? thinkingMaxTokens(config.thinkingLevel),
         jsonMode: options.jsonMode,
         baseUrl,
       };

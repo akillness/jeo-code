@@ -99,6 +99,15 @@ export const COMMANDS: readonly CommandSpec[] = [
       return args => m.runSkillsCommand(args);
     },
   },
+  {
+    name: "resume",
+    summary: "Resume the latest interactive session (or 'joc resume <id>').",
+    usage: "resume [id]",
+    loader: async () => {
+      const m = await import("../commands/resume");
+      return args => m.runResumeCommand(args);
+    },
+  },
 ];
 
 export function findCommand(name: string): CommandSpec | undefined {

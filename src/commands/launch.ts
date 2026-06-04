@@ -20,11 +20,12 @@ interface LaunchFlags {
   resumeId?: string;
   noSession: boolean;
   noTui: boolean;
+  maxSteps: number;
   message: string;
 }
 
 function parseFlags(args: string[]): LaunchFlags {
-  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, message: "" };
+  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 25, message: "" };
   const rest: string[] = [];
   const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (let i = 0; i < args.length; i++) {
@@ -35,6 +36,15 @@ function parseFlags(args: string[]): LaunchFlags {
       flags.noSession = true;
     } else if (a === "--no-tui") {
       flags.noTui = true;
+    } else if (a === "--max-steps") {
+      const n = parseInt(args[i + 1] ?? "", 10);
+      if (Number.isFinite(n) && n > 0) {
+        flags.maxSteps = n;
+        i++;
+      }
+    } else if (a.startsWith("--max-steps=")) {
+      const n = parseInt(a.slice(12), 10);
+      if (Number.isFinite(n) && n > 0) flags.maxSteps = n;
     } else if (a === "--resume") {
       flags.resume = true;
       const next = args[i + 1];
@@ -136,7 +146,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     try {
       result = await runAgentLoop(history, {
         cwd,
-        maxSteps: 25,
+        maxSteps: flags.maxSteps,
         model: sessionModel,
         events: tui ? tui.events() : streamEvents,
       });
@@ -177,7 +187,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   console.log(`Model: ${defaultModel}`);
   if (sessionId) console.log(`Session: ${sessionId}`);
   if (contextFiles.length > 0) console.log(`Project context: ${contextFiles.map(f => f.path).join(", ")}`);
-  console.log("Type your request. Slash commands: /help /clear /model <id> /sessions /exit" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
+  console.log("Type your request. Slash commands: /help /clear /compact /model <id> /sessions /exit" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
 
   const useTui = LaunchTui.usable(flags.noTui);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -193,6 +203,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         console.log("  /clear          - Clear conversation history (keeps system prompt)");
         console.log("  /model [model]  - Set or display the session model");
         console.log("  /sessions       - List saved sessions");
+        console.log("  /compact        - Summarize older turns to free context");
         console.log("  /exit, /quit    - Exit the agent");
         console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .joc/sessions/.");
         continue;
@@ -200,6 +211,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (input === "/clear") {
         history.length = 1;
         console.log("(history cleared)");
+        continue;
+      }
+      if (input === "/compact") {
+        const res = await maybeCompact(history, { model: sessionModel, maxMessages: 1 });
+        console.log(res.compacted ? `(compacted ${res.removed} older messages)` : "(nothing to compact)");
         continue;
       }
       if (input === "/sessions") {

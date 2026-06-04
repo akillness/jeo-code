@@ -9,7 +9,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "launch",
     summary: "Interactive coding agent (chat + tools). Default when no subcommand is given.",
-    usage: "launch [\"one-shot request\"]",
+    usage: "launch [\"one-shot request\"] [--resume [id]] [--list]",
     loader: async () => {
       const m = await import("../commands/launch");
       return args => m.runLaunchCommand(args);

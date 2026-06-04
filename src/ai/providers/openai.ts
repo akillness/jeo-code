@@ -17,7 +17,10 @@ function openaiRequest(messages: Message[], options: CallOptions, credential: Cr
     temperature: options.temperature ?? 0.2,
     max_tokens: options.maxTokens ?? 4000,
   };
-  if (stream) payload.stream = true;
+  if (stream) {
+    payload.stream = true;
+    payload.stream_options = { include_usage: true };
+  }
   if (options.jsonMode) payload.response_format = { type: "json_object" };
   const base = (options.baseUrl ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
   return {
@@ -49,7 +52,7 @@ export const openaiAdapter: ProviderAdapter = {
     }
     if (!response.body) return;
     for await (const data of readSse(response.body)) {
-      let chunk: { choices?: { delta?: { content?: string } }[] };
+      let chunk: { choices?: { delta?: { content?: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
       try {
         chunk = JSON.parse(data);
       } catch {
@@ -57,6 +60,7 @@ export const openaiAdapter: ProviderAdapter = {
       }
       const delta = chunk.choices?.[0]?.delta?.content;
       if (delta) yield delta;
+      if (chunk.usage) options.onUsage?.({ inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens });
     }
   },
 };

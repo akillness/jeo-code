@@ -1920,3 +1920,28 @@ Real Ollama `joc chat` regression clean. Files: `src/ai/types.ts`, `src/ai/model
 
 **Verification:** `tsc` 0; `bun test` **77/77**. Real Ollama (default `fast`, no cloud creds): doctor
 renders all rows in ~0.26s and reports `[READY]` (was a false `[NOT READY]`). Files: `src/commands/doctor.ts`.
+
+---
+
+## 40. Ralph pass 33 — gjc-parity batch 16 (mid-turn cancellation)
+
+**Date:** 2026-06-05 · gjc dimension: **agentic workflow** (responsiveness).
+
+`AgentLoopOptions.signal` + `ChatOptions.signal` thread an `AbortSignal` from `runAgentLoop` →
+`callLlm` → adapters; the loop also checks `signal.aborted` between steps and returns `"Cancelled."`.
+`joc launch` installs a per-turn `SIGINT` handler so **Ctrl-C cancels the in-flight turn** (not the process).
+
+**Verification:** `tsc` 0; `bun test` **78/78** (+1: an aborted signal makes `runAgentLoop` return
+`Cancelled.` with **0 tool calls**). Real Ollama launch regression clean.
+Files: `src/agent/{loop,engine}.ts`, `src/commands/launch.ts`, `test/engine.test.ts`.
+
+## 41. Ralph pass 34 — gjc-parity batch 17 (doctor latency meter + openai stream usage)
+
+**Date:** 2026-06-05 · gjc dimensions: **tui**, **provider**.
+
+- `joc doctor` OK rows now show a latency meter (`[####--------] N%` vs a 2s baseline) via the M4
+  `meter` component.
+- OpenAI streaming requests `stream_options.include_usage` and reports the final-chunk `usage` via `onUsage`.
+
+**Verification:** `tsc` 0; `bun test` **78/78**. Real Ollama: `joc doctor` renders
+`ollama … [ OK ] 4ms … [------------] 0%`. Files: `src/commands/doctor.ts`, `src/ai/providers/openai.ts`.

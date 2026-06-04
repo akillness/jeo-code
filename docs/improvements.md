@@ -1720,3 +1720,18 @@ Files: `scripts/install.sh` (`--binary`), `scripts/smoke-test.sh`, `package.json
 yielded **9 chunks** → `"Hello! How can I help you today?"` (token streaming confirmed end-to-end).
 Files: `src/ai/{sse.ts,types.ts,model-manager.ts,providers/ollama.ts,providers/openai.ts}`.
 Note: the strict-JSON tool loop still uses blocking `call()`; `stream()` powers chat/TUI text (plan 01 §9).
+
+---
+
+## 29. Ralph pass 22 — gjc-parity batch 5 (full-fidelity sessions)
+
+**Date:** 2026-06-05 · gjc dimension: **agentic workflow**.
+
+`joc launch` previously persisted only the user prompt + final reply. Now (pi-mono parity) it
+persists **every message the engine adds during a turn** — the intermediate tool-call (`assistant`)
+and tool-result (`user`) turns — by appending `history.slice(beforeLen)` plus the final reply.
+Resume reconstructs the full tool context, not just the conversation skeleton.
+
+**Verification:** `tsc` 0; `bun test` **66/66**. Real Ollama e2e (`--max-steps 2`): the session
+JSONL now holds **6 message entries** (3 user incl. tool-results + 3 assistant incl. tool-calls),
+vs 2 before. Files: `src/commands/launch.ts`.

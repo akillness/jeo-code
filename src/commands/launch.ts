@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { runAgentLoop, executorSystemPrompt } from "../agent/engine";
 import { LaunchTui } from "../tui/app";
+import { skillsPromptSection } from "../skills/catalog";
 import type { Message } from "../agent/loop";
 import { readGlobalConfig } from "../agent/state";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
@@ -82,7 +83,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const contextFiles = await loadProjectContext(cwd);
   const baseSystemPrompt =
     executorSystemPrompt("joc, an interactive coding agent") +
-    "\nWhen you have finished the user's request, or need to reply to or ask the user something, call done with {\"reason\": <your natural-language reply to the user>}. The reason text is shown to the user as your message.";
+    "\nWhen you have finished the user's request, or need to reply to or ask the user something, call done with {\"reason\": <your natural-language reply to the user>}. The reason text is shown to the user as your message." +
+    "\n\nAvailable joc workflow skills (suggest the relevant command when the user's task fits one):\n" +
+    skillsPromptSection();
   const systemPrompt = withProjectContext(baseSystemPrompt, contextFiles);
 
   const history: Message[] = [{ role: "system", content: systemPrompt }];

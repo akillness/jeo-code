@@ -1,4 +1,9 @@
 import { test, expect } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { runSkillsCommand } from "../src/commands/skills";
+import { SKILLS } from "../src/skills/catalog";
 import {
   getSkill,
   skillNames,
@@ -48,4 +53,18 @@ test("skillsPromptSection contains every skill name", () => {
   expect(section).toContain("team");
   expect(section).toContain("ultragoal");
   expect(section).toContain("—");
+});
+
+test("runSkillsCommand --write: materializes one .md per skill", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-skills-"));
+  try {
+    await runSkillsCommand(["--write", dir]);
+    const files = (await fs.readdir(dir)).sort();
+    expect(files).toEqual(SKILLS.map(s => `${s.name}.md`).sort());
+    const sample = await fs.readFile(path.join(dir, "deep-interview.md"), "utf-8");
+    expect(sample).toContain("# deep-interview");
+    expect(sample).toContain("joc deep-interview");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });

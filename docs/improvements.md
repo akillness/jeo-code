@@ -1358,3 +1358,96 @@ installed binary, not just `bun src/cli.ts`.
 - Prebuilt single-file binary release (`bun build --compile`) so install needs
   no source checkout — the install path is ready for it.
 - Workspace split (gap #2) — still deferred.
+
+---
+
+## 20. Ralph pass 13 — pi-mono advantages: persistent sessions, project context, compaction
+
+**Date:** 2026-06-04
+
+Goal: build a **pi-based coding agent** by surveying `badlogic/pi-mono` (Mario
+Zechner's minimalist "anti-framework" agent — the engine behind OpenClaw) and
+porting its concrete advantages into joc, then verifying install → operation →
+coding-agent behavior on Bun.
+
+### Survey: pi-mono operation method
+
+`pi-mono` is a 4-package TS monorepo (`pi-ai`, `pi-agent-core`,
+`pi-coding-agent`, `pi-tui`) — structurally parallel to joc (`ai`, `agent`,
+`commands`). Key findings from its source:
+
+| pi-mono trait | Evidence | joc before this pass |
+|---|---|---|
+| **4 default tools** (`read, bash, edit, write`); `ls`/`grep`/`find` via bash | `core/system-prompt.ts` `selectedTools \|\| ["read","bash","edit","write"]` | 6 tools (superset — kept) |
+| Minimal system prompt (<1k tokens, "Be concise") | `system-prompt.ts` | verbose tool protocol (kept, works) |
+| **Append-only JSONL sessions**, resumable/branchable/shareable | `core/session-manager.ts` (`SessionHeader`+entries, v3, compaction entries) | in-memory only (lost on exit) |
+| **Context compaction** (summary + firstKeptEntryId) | `CompactionEntry` in session-manager | none (unbounded growth) |
+| **Project context files** loaded into prompt | `system-prompt.ts` `<project_context>` / `<project_instructions>` | none |
+| Event-stream agent loop | `agent/src/agent-loop.ts` (`EventStream<AgentEvent>`) | blocking loop (kept) |
+
+### Applied (the three highest-leverage pi advantages)
+
+Built as standalone modules by three parallel `executor` subagents, then
+integrated into `launch.ts` by the parent:
+
+1. **Persistent sessions** — `src/agent/session.ts`. pi's append-only JSONL
+   (`.joc/sessions/<id>.jsonl`: header line + one message per line).
+   `joc launch --list` lists sessions (newest first, preview + count);
+   `joc launch --resume [id]` seeds history from a saved session (latest if id
+   omitted); every turn's user + assistant messages are appended.
+2. **Project context** — `src/agent/context-files.ts`. pi's `contextFiles`:
+   loads the first-existing of `JEO.md` / `AGENTS.md` / `.joc/context.md` /
+   `CLAUDE.md` (truncated to 16k each) and wraps them in `<project_context>` /
+   `<project_instructions path=...>` appended to the system prompt.
+3. **Context compaction** — `src/agent/compaction.ts`. pi's compaction:
+   `maybeCompact(history)` summarizes the older portion via the LLM (preserving
+   the system message and the last `keepRecent`) when the body exceeds
+   `maxMessages` (defaults 40 / keep 12). Runs before each interactive turn so
+   long sessions don't blow the context window. No-op + non-mutating on failure.
+
+joc keeps its 6-tool superset and blocking loop (streaming/TUI deferred —
+that's pi-tui's whole package). The "pi-based" character is the persistent,
+self-compacting, project-context-aware session model.
+
+### Verification
+
+**`bun test` — 27/27 pass** (15 prior + 12 new across session/context/compaction):
+round-trip session JSONL, list sort + preview + count, resume, missing/malformed
+tolerance; context priority + truncation + `<project_instructions>` wrapping;
+compaction threshold/no-op, system-message preservation, in-place mutation, and
+non-mutation on `callLlm` failure. `tsc -p tsconfig.json --noEmit` exits 0.
+
+**Install → operation (clean HOME, mock OpenAI server, real Bun 1.3.14):**
+
+```text
+$ ./install.sh                 → Installed joc → ~/.local/bin/joc (PATH hint)
+$ joc --help                   → launch ["one-shot request"] [--resume [id]] [--list]
+# project with JEO.md present:
+$ joc launch "do the first task"
+  · write ok
+  Done. Project context JEO.md was loaded.      ← context reached the prompt
+$ joc launch --list
+  <uuid>  <ts>  (2 msgs)  do the first task       ← session persisted
+$ joc launch --resume <uuid> "do the second task"
+  Resumed session <uuid> (2 messages).            ← prior history seeded
+  → session file now has 4 message entries (2 turns)
+```
+
+### Module-size accounting
+
+| File | Lines | Note |
+|---|---|---|
+| `src/agent/session.ts` | ~175 | new (append-only JSONL sessions) |
+| `src/agent/context-files.ts` | ~55 | new (pi project context) |
+| `src/agent/compaction.ts` | ~70 | new (pi compaction) |
+| `src/commands/launch.ts` | ~210 | flags + sessions + context + compaction wired |
+| `test/{session,context-files,compaction}.test.ts` | ~250 | new |
+
+### Remaining queue (after pass 13)
+
+- Token streaming + a pi-tui-style differential renderer (the one pi advantage
+  intentionally deferred this pass).
+- Persist intermediate tool-call turns to sessions (currently only user + final
+  assistant reply are stored — clean but lossy vs pi's full fidelity).
+- A `--compact-after N` flag and a `/compact` slash command.
+- Prebuilt `bun build --compile` binary; workspace split — still deferred.

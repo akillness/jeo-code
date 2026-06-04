@@ -109,14 +109,19 @@ Model routing is inferred from the model id, and credentials resolve from `~/.jo
 
 ## 💻 Workflow Commands
 
-### Interactive agent (default)
-Run `joc` with no subcommand to drop into the interactive coding agent — it
-chats and calls tools (`read`/`write`/`edit`/`bash`/`find`/`search`) in a loop
-until your request is done:
+### Interactive agent (default) — pi-style
+Run `joc` with no subcommand to drop into the interactive coding agent (modeled
+on [`badlogic/pi-mono`](https://github.com/badlogic/pi-mono)) — it chats and
+calls tools (`read`/`write`/`edit`/`bash`/`find`/`search`) in a loop until your
+request is done. Sessions **persist** to `.joc/sessions/` (resumable), the prompt
+auto-loads **project context** (`JEO.md`/`AGENTS.md`/`.joc/context.md`/`CLAUDE.md`),
+and long conversations are **compacted** automatically:
 ```bash
-joc                         # interactive REPL (slash cmds: /help /clear /model <id> /exit)
+joc                         # interactive REPL (/help /clear /model /sessions /exit)
 joc launch "add a /health route to server.ts and run the tests"   # one-shot
 echo "fix the failing test" | joc                                 # piped / non-TTY
+joc launch --list           # list saved sessions (newest first)
+joc launch --resume         # resume the latest session (or --resume <id>)
 ```
 
 For the disciplined spec-first pipeline, use the four workflow commands below.
@@ -175,7 +180,10 @@ joc ultragoal
 │   │   │   ├── loop.ts            # callLlm() → model-manager
 │   │   │   ├── engine.ts          # runAgentLoop() shared tool-call loop
 │   │   │   ├── json.ts            # Robust JSON-from-LLM extraction
-│   │   │   └── tools.ts           # read/write/edit/bash/find/search + MutationGuard
+│   │   │   ├── tools.ts           # read/write/edit/bash/find/search + MutationGuard
+│   │   │   ├── session.ts         # pi-style append-only JSONL sessions (resume/list)
+│   │   │   ├── context-files.ts   # pi-style project-context loader (JEO.md/AGENTS.md/…)
+│   │   │   └── compaction.ts      # pi-style context compaction (summarize older turns)
 │   │   ├── ai/                    # Provider adapters + model-manager
 │   │   ├── auth/                  # Credentials + real OAuth
 │   │   │   ├── storage.ts         # Credential resolution + auto-refresh

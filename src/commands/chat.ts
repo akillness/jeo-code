@@ -17,8 +17,9 @@ export async function runChatCommand(args: string[] = []): Promise<void> {
   const manager = createModelManager();
   process.stdout.write("joc> ");
   let any = false;
+  let usage: { inputTokens?: number; outputTokens?: number; durationMs?: number } | undefined;
   try {
-    for await (const chunk of manager.stream([{ role: "user", content: message }])) {
+    for await (const chunk of manager.stream([{ role: "user", content: message }], { onUsage: u => { usage = u; } })) {
       process.stdout.write(chunk);
       any = true;
     }
@@ -29,4 +30,8 @@ export async function runChatCommand(args: string[] = []): Promise<void> {
     return;
   }
   process.stdout.write(any ? "\n" : "(no output)\n");
+  if (usage && (usage.inputTokens != null || usage.outputTokens != null)) {
+    const tps = usage.outputTokens && usage.durationMs ? ` · ${Math.round((usage.outputTokens / usage.durationMs) * 1000)} tok/s` : "";
+    console.log(`(${usage.inputTokens ?? "?"} in / ${usage.outputTokens ?? "?"} out tokens${tps})`);
+  }
 }

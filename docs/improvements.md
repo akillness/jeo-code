@@ -1817,3 +1817,20 @@ with a local model. Files: `src/commands/deep-interview.ts`.
 
 This closes the TUI dimension backlog (M1 renderer, M2 LaunchTui, M3 slash palette, M4 meter +
 streaming chat). 12 `joc` commands; **71 tests**.
+
+---
+
+## 34. Ralph pass 27 — gjc-parity batch 10 (token usage accounting)
+
+**Date:** 2026-06-05 · gjc dimension: **provider** / **performance visibility**.
+
+Added provider-reported token usage (gjc/pi surface cost/usage): `CallOptions.onUsage(Usage)`
+where `Usage = { inputTokens?, outputTokens?, durationMs? }`. The **ollama** adapter reports
+`prompt_eval_count` / `eval_count` / `total_duration` (both `call` and `stream`); `model-manager`
+threads `onUsage` through `resolveCall`. `joc chat` now prints a usage footer
+`(N in / M out tokens · X tok/s)`.
+
+**Verification:** `tsc` 0; `bun test` **72/72** (+1: mock-fetch test asserts `onUsage` fires with
+`{inputTokens:5,outputTokens:7,durationMs:2}`). Real Ollama: `joc chat "count to three"` →
+`(32 in / 34 out tokens · 80 tok/s)`. Files: `src/ai/types.ts`, `src/ai/providers/ollama.ts`,
+`src/ai/model-manager.ts`, `src/commands/chat.ts`, `test/usage.test.ts`.

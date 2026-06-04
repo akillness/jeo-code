@@ -7,6 +7,13 @@ export interface Message {
   content: string;
 }
 
+export interface Usage {
+  inputTokens?: number;
+  outputTokens?: number;
+  /** Generation duration in ms, when the provider reports it. */
+  durationMs?: number;
+}
+
 export interface CallOptions {
   model: string;
   systemPrompt?: string;
@@ -15,6 +22,8 @@ export interface CallOptions {
   jsonMode?: boolean;
   /** Per-call base URL override (OpenAI-compat / Ollama). */
   baseUrl?: string;
+  /** Optional sink for provider-reported token usage. */
+  onUsage?: (usage: Usage) => void;
 }
 
 export interface ProviderAdapter {

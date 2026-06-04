@@ -63,6 +63,7 @@ async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
     maxTokens: options.maxTokens ?? thinkingMaxTokens(config.thinkingLevel),
     jsonMode: options.jsonMode,
     baseUrl,
+    onUsage: options.onUsage,
   };
 
   if (provider === "ollama") {

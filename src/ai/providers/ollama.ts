@@ -29,7 +29,8 @@ export const ollamaAdapter: ProviderAdapter = {
       const text = await response.text();
       throw new Error(`Ollama request failed (HTTP ${response.status}) at ${url}: ${text}`);
     }
-    const result = (await response.json()) as { message?: { content?: string } };
+    const result = (await response.json()) as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number; total_duration?: number };
+    options.onUsage?.({ inputTokens: result.prompt_eval_count, outputTokens: result.eval_count, durationMs: result.total_duration ? Math.round(result.total_duration / 1e6) : undefined });
     return result.message?.content ?? "";
   },
   async *stream(messages, options) {
@@ -41,7 +42,7 @@ export const ollamaAdapter: ProviderAdapter = {
     }
     if (!response.body) return;
     for await (const line of readLines(response.body)) {
-      let chunk: { message?: { content?: string }; done?: boolean };
+      let chunk: { message?: { content?: string }; done?: boolean; prompt_eval_count?: number; eval_count?: number; total_duration?: number };
       try {
         chunk = JSON.parse(line);
       } catch {
@@ -49,7 +50,10 @@ export const ollamaAdapter: ProviderAdapter = {
       }
       const delta = chunk.message?.content;
       if (delta) yield delta;
-      if (chunk.done) break;
+      if (chunk.done) {
+        options.onUsage?.({ inputTokens: chunk.prompt_eval_count, outputTokens: chunk.eval_count, durationMs: chunk.total_duration ? Math.round(chunk.total_duration / 1e6) : undefined });
+        break;
+      }
     }
   },
 };

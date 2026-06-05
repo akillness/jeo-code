@@ -2132,3 +2132,85 @@ Files: `src/cli/runner.ts`, `test/cli-runner.test.ts`.
   diagnostics).
 - **Gates (current):** `tsc -p tsconfig.json --noEmit` → 0; `bun test` → **108/108 across 24
   files**; 13 `joc` commands intact.
+
+---
+
+# Ralph run 3 — reliability, tool reach, footprint (passes 52–59)
+
+> Started from the run-2 green baseline (`tsc` 0, `bun test` 108/108). This pass targeted retry
+> robustness, agent-tool reach, CLI ergonomics, and wiring the two **declared-but-unused**
+> dependencies (`zod`, `chalk`) into real features. End state: **`tsc` 0, `bun test` 118/118 across
+> 25 files.**
+
+## 52. Retry backoff gets equal jitter
+
+**Dimension: provider / reliability.** `withRetry` used a deterministic `base·2^n` schedule — N
+clients failing together retried in lockstep (thundering herd). Now uses **equal jitter** (wait lands
+in `[0.5×, 1×]` of the capped backoff) with an injectable `random` for tests. Existing schedule tests
+pin `random: () => 1` (max → old schedule); a new test pins `() => 0` (min).
+Files: `src/util/retry.ts`, `test/retry.test.ts`, `test/provider-errors.test.ts`.
+
+## 53. Honor the `Retry-After` header on 429/503
+
+**Dimension: provider / reliability.** `ProviderHttpError` now carries `retryAfterMs`; a new
+`parseRetryAfter` handles both delta-seconds and HTTP-date forms; `providerHttpError(provider,
+response, ctx)` builds the error from a `Response` (body + header) and replaces the 8 hand-written
+`throw new ProviderHttpError(...)` sites across the four adapters. `withRetry` honors `retryAfterMs`
+(capped at 30 s so a hostile header can't hang the CLI).
+Files: `src/ai/providers/errors.ts` + all 4 `providers/*.ts`, `src/util/retry.ts`, `test/provider-errors.test.ts`.
+
+## 54. `bash` tool timeout is configurable per-call
+
+The agent could not change the 120 s ceiling. `DEFAULT_TOOLS.bash` now forwards `a.timeoutMs`, and
+`TOOL_PROTOCOL` documents `bash {command, timeoutMs?}`.
+Files: `src/agent/engine.ts`, `test/tools-fs.test.ts`.
+
+## 55. `edit` tool gains insert + append modes
+
+**Dimension: agentic workflow.** Beyond `≔A..B` replace, the editor now supports `≔A+` (insert after
+line A; `≔0+` prepends) and `≔$` (append to EOF) — far easier for weak models than synthesizing a
+replace range. Removed dead `editLines`; documented the modes in `TOOL_PROTOCOL`.
+Files: `src/agent/tools.ts`, `src/agent/engine.ts`, `test/tools-fs.test.ts`.
+
+## 56. Per-command `--help`
+
+`joc <cmd> --help` now prints that command's usage + summary (via `renderCommandHelp`) instead of
+folding `--help` into the command's args. **Verify (real e2e):** `joc deep-interview --help` →
+`Usage: joc deep-interview "<initial idea>"`.
+Files: `src/cli/runner.ts`, `test/cli-runner.test.ts`.
+
+## 57. `joc models` shows per-provider credential status
+
+**Dimension: model / UX.** Adds a "Provider credentials" section (`API key` / `OAuth` / `none …`) via
+`resolveCredential`. **Verify (real e2e):** clean config → all three report `none (run 'joc setup' …)`,
+alongside the live Ollama model list.
+Files: `src/commands/models.ts`.
+
+## 58. zod config validation (wires the `zod` dep)
+
+**Dimension: robustness.** `readGlobalConfig` previously `JSON.parse`d + cast straight to `Config`; a
+wrong-typed field slipped through untyped. New `src/agent/config-schema.ts` (`ConfigSchema`,
+`parseConfig`) validates the on-disk config; on failure it writes a located warning
+(`defaultModel: Expected string, received number`) and falls back to env defaults instead of
+mis-parsing. Real config (`gemini-flash-latest`) validates cleanly.
+Files: `src/agent/config-schema.ts`, `src/agent/state.ts`, `test/config-schema.test.ts`.
+
+## 59. `chalk`-colored `joc doctor` (wires the `chalk` dep)
+
+**Dimension: tui.** Doctor status (`OK` green / `SKIP` yellow / `FAIL` red) and verdict
+(`[READY]`/`[NOT READY]`) are colorized. Respects TTY/`NO_COLOR` and stays plain in pipes and
+`--json`. **Verify (real e2e):** `FORCE_COLOR=1 joc doctor` emits ANSI; piped output and `--json` do
+not (JSON parses, `ready:true`).
+Files: `src/commands/doctor.ts`.
+
+---
+
+## Run-3 summary
+
+- **8 new verified passes (52–59)** across provider reliability, agent tooling, CLI/UX, and
+  robustness/footprint. Both previously-dead deps (`zod`, `chalk`) are now wired into real features.
+- **Real verification:** unit tests for every pass; real-CLI e2e for `doctor` color/json,
+  `models` credentials, and per-command help; real `ollama/qwen2.5:0.5b` launch regression (agent ran
+  `bash`, created the file, guards engaged cleanly).
+- **Gates (current):** `tsc -p tsconfig.json --noEmit` → 0; `bun test` → **118/118 across 25 files**;
+  13 `joc` commands intact.

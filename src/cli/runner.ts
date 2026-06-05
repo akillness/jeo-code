@@ -50,6 +50,15 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: "approve",
+    summary: "Approve a planning blueprint.",
+    usage: "approve <plan-path>",
+    loader: async () => {
+      const m = await import("../commands/approve");
+      return args => m.runApproveCommand(args);
+    },
+  },
+  {
     name: "team",
     summary: "Execute the planning blueprint (Executor subagent tools).",
     loader: async () => {
@@ -176,6 +185,16 @@ export function renderHelp(ctx: DispatchContext): string {
   return lines.join("\n");
 }
 
+export function renderCommandHelp(spec: CommandSpec, ctx: DispatchContext): string {
+  return [
+    "",
+    `Usage: ${ctx.appName} ${spec.usage ?? spec.name}`,
+    "",
+    spec.summary,
+    "",
+  ].join("\n");
+}
+
 export async function dispatch(argv: string[], ctx: DispatchContext): Promise<number> {
   const first = argv[0];
 
@@ -202,7 +221,14 @@ export async function dispatch(argv: string[], ctx: DispatchContext): Promise<nu
     return 1;
   }
 
+  // Per-command help: `joc <cmd> --help`.
+  const rest = argv.slice(1);
+  if (rest.includes("--help") || rest.includes("-h")) {
+    console.log(renderCommandHelp(spec, ctx));
+    return 0;
+  }
+
   const run = await spec.loader();
-  await run(argv.slice(1));
+  await run(rest);
   return 0;
 }

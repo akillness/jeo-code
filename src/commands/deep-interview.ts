@@ -202,9 +202,37 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
   // --auto must always yield a seed: if the gate wasn't reached within the round
   // cap, freeze a best-effort seed from the last assessment so the pipeline proceeds.
   if (state.current_phase !== "complete" && auto) {
-    console.log(`\n[AUTO] Ambiguity gate not reached in ${round - 1} rounds; freezing a best-effort seed.`);
-    await freezeSeed(lastParsed);
-    console.log("[Handoff Ready] Best-effort seed frozen. Next, run 'joc ralplan'.");
+    const currentAmbiguity = state.current_ambiguity ?? 1.0;
+    const threshold = state.threshold ?? 0.2;
+    if (currentAmbiguity > threshold) {
+      console.log(`\n[AUTO] Ambiguity gate not reached in ${round - 1} rounds (${(currentAmbiguity * 100).toFixed(0)}% > ${(threshold * 100).toFixed(0)}%); saving draft seed.`);
+      const seedDir = path.join(getLocalJocDir(cwd), "seeds");
+      await fs.mkdir(seedDir, { recursive: true });
+      const seedPath = path.join(seedDir, `seed-${slug}.draft.yaml`);
+      const constraints = lastParsed?.constraints?.length
+        ? lastParsed.constraints.map(c => `  - "${c}"`).join("\n")
+        : `  - "TypeScript / Bun runtime"`;
+      const criteria = lastParsed?.acceptance_criteria?.length
+        ? lastParsed.acceptance_criteria.map(a => `  - "${a}"`).join("\n")
+        : `  - "Runs successfully in the terminal"`;
+      const seedContent =
+        `# Draft Specification Seed\n` +
+        `slug: ${slug}\n` +
+        `interview_id: ${interviewId}\n` +
+        `goal: "${lastParsed?.goal || initialIdea}"\n` +
+        `constraints:\n${constraints}\n\n` +
+        `acceptance_criteria:\n${criteria}\n`;
+      await fs.writeFile(seedPath, seedContent, "utf-8");
+      
+      state.current_phase = "interviewing";
+      state.seed_path = seedPath;
+      await writeWorkflowState("deep-interview", state, cwd);
+      console.log(`Saved draft requirements spec seed to: ${seedPath}`);
+    } else {
+      console.log(`\n[AUTO] Ambiguity gate reached in ${round - 1} rounds; freezing a best-effort seed.`);
+      await freezeSeed(lastParsed);
+      console.log("[Handoff Ready] Best-effort seed frozen. Next, run 'joc ralplan'.");
+    }
   }
 
   rl.close();

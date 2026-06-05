@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { ProviderHttpError } from "../src/ai/providers/errors";
+import { ProviderHttpError, parseRetryAfter } from "../src/ai/providers/errors";
 import { defaultRetryable, withRetry } from "../src/util/retry";
 
 test("ProviderHttpError carries a numeric status and a descriptive message", () => {
@@ -42,4 +42,40 @@ test("withRetry actually retries a 503 ProviderHttpError then succeeds", async (
   expect(result).toBe("ok");
   expect(calls).toBe(3);
   expect(sleepCalls.length).toBe(2);
+});
+
+test("parseRetryAfter: delta-seconds and HTTP-date forms", () => {
+  expect(parseRetryAfter("5")).toBe(5000);
+  expect(parseRetryAfter("0")).toBe(0);
+  expect(parseRetryAfter(null)).toBeUndefined();
+  expect(parseRetryAfter("garbage")).toBeUndefined();
+  const future = new Date(Date.now() + 10_000).toUTCString();
+  const ms = parseRetryAfter(future)!;
+  expect(ms).toBeGreaterThan(8_000);
+  expect(ms).toBeLessThanOrEqual(10_000);
+});
+
+test("withRetry: equal jitter lands the wait in [0.5x, 1x] of the capped backoff", async () => {
+  const sleeps: number[] = [];
+  // random()=0 → minimum (0.5x); random()=1 → maximum (1x).
+  await withRetry(async () => { throw new Error("timeout"); }, {
+    retries: 2, baseDelayMs: 100, random: () => 0,
+    sleep: async ms => { sleeps.push(ms); },
+  }).catch(() => {});
+  expect(sleeps).toEqual([50]); // 100/2 + 0*(100/2)
+});
+
+test("withRetry: a Retry-After error overrides backoff (capped at 30s)", async () => {
+  const sleeps: number[] = [];
+  let calls = 0;
+  await withRetry(
+    async () => {
+      calls++;
+      if (calls === 1) throw new ProviderHttpError("OpenAI", 429, "slow down", undefined, 2000);
+      if (calls === 2) throw new ProviderHttpError("OpenAI", 429, "still", undefined, 99_000); // > cap
+      return "ok";
+    },
+    { retries: 5, baseDelayMs: 100, random: () => 1, sleep: async ms => { sleeps.push(ms); } }
+  );
+  expect(sleeps).toEqual([2000, 30000]); // honored, then capped at 30s
 });

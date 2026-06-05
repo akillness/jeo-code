@@ -8,13 +8,6 @@ export interface SkillDoc {
 
 export const SKILLS: SkillDoc[] = [
   {
-    name: "launch",
-    command: 'joc launch ["request"]',
-    summary: "Interactive coding agent (chat + read/write/edit/bash/find/search loop; sessions; TUI).",
-    whenToUse: "When you want an interactive session to chat, run commands, and edit code in a terminal UI.",
-    details: "Starts an interactive loop where you can prompt the agent to perform coding tasks.\nSupports commands, file exploration, refactoring, and general questions.\nKeeps track of session history and provides a rich TUI."
-  },
-  {
     name: "deep-interview",
     command: 'joc deep-interview "<idea>"',
     summary: "Socratic ambiguity gate, freezes a seed at ambiguity ≤ 20%; --auto for non-interactive.",

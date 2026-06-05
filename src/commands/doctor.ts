@@ -3,6 +3,7 @@ import { resolveCredential, snapshotProvider, type AuthProvider, type Credential
 import { resolveProvider } from "../ai";
 import { resolveModelId } from "../ai/model-registry";
 import { meter } from "../tui/components/meter";
+import chalk from "chalk";
 
 interface ProbeResult {
   status: "ok" | "fail" | "skipped";
@@ -107,6 +108,12 @@ async function probeOllama(baseUrl: string): Promise<ProbeResult> {
   }
 }
 
+function colorStatus(status: ProbeResult["status"], label: string): string {
+  if (status === "ok") return chalk.green(label);
+  if (status === "skipped") return chalk.yellow(label);
+  return chalk.red(label);
+}
+
 function formatRow(provider: string, credKind: string, result: ProbeResult): string {
   const status =
     result.status === "ok" ? "  OK  " :
@@ -115,7 +122,7 @@ function formatRow(provider: string, credKind: string, result: ProbeResult): str
   const latency = result.latencyMs !== undefined ? `${result.latencyMs}ms` : "—";
   // Visual latency bar (relative to a 2s baseline) for OK probes.
   const bar = result.status === "ok" && result.latencyMs !== undefined ? `  ${meter(result.latencyMs, 2000, 12)}` : "";
-  return `  ${provider.padEnd(10)} ${credKind.padEnd(16)} [${status}] ${latency.padEnd(7)} ${result.detail}${bar}`;
+  return `  ${provider.padEnd(10)} ${credKind.padEnd(16)} [${colorStatus(result.status, status)}] ${latency.padEnd(7)} ${result.detail}${bar}`;
 }
 
 export async function runDoctorCommand(args: string[] = []): Promise<void> {
@@ -212,15 +219,15 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
 
   // Final verdict
   if (ready) {
-    console.log(`[READY] Default model '${config.defaultModel}' is reachable.`);
+    console.log(`${chalk.green("[READY]")} Default model '${config.defaultModel}' is reachable.`);
   } else if (defaultProbe?.result.status === "skipped") {
     console.log(
-      `[NOT READY] Default model '${config.defaultModel}' resolves to '${defaultProvider}', ` +
+      `${chalk.red("[NOT READY]")} Default model '${config.defaultModel}' resolves to '${defaultProvider}', ` +
       `but no credential is configured. Run 'joc setup' or 'joc auth login ${defaultProvider}'.`
     );
   } else {
     console.log(
-      `[NOT READY] Default model '${config.defaultModel}' probe failed: ${defaultProbe?.result.detail ?? "unknown"}.`
+      `${chalk.red("[NOT READY]")} Default model '${config.defaultModel}' probe failed: ${defaultProbe?.result.detail ?? "unknown"}.`
     );
   }
 

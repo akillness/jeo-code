@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import { z } from "zod";
 import {
   readWorkflowState,
   writeWorkflowState,
@@ -18,6 +19,13 @@ export async function runTeamCommand(): Promise<void> {
     return;
   }
 
+  if (!planState.approved) {
+    console.log(
+      `[ERROR] Plan is not approved. Please approve the plan before executing.`
+    );
+    return;
+  }
+
   const planPath = planState.plan_path;
   console.log(`\n=== Starting Team Execution Stage ===`);
   console.log(`Reading plan from: ${planPath}`);
@@ -30,32 +38,21 @@ export async function runTeamCommand(): Promise<void> {
     return;
   }
 
-  // Parse tasks from plan YAML
-  // Simple YAML parser looking for task names or bullet points
-  const tasks: string[] = [];
-  const lines = planContent.split("\n");
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("- ")) {
-      let val = trimmed.slice(2).trim();
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-        val = val.slice(1, -1);
-      }
-      val = val.trim();
-      if (!val) {
-        continue;
-      }
-      if (val === "steps:" || val.startsWith("goal:")) {
-        continue;
-      }
-      tasks.push(val);
-    }
+  let rawPlan: any;
+  try {
+    rawPlan = parseYaml(planContent);
+  } catch (err: any) {
+    console.log(`[ERROR] Failed to parse plan YAML: ${err.message}`);
+    return;
   }
 
-  if (tasks.length === 0) {
-    // Fallback: parse by sections or treat entire content as a main task
-    tasks.push("Execute the steps outlined in the plan: " + planContent.slice(0, 150) + "...");
+  const parsed = PlanSchema.safeParse(rawPlan);
+  if (!parsed.success) {
+    console.log(`[ERROR] Plan validation failed: ${parsed.error.message}`);
+    return;
   }
+
+  const tasks = parsed.data.steps.map(step => step.name);
 
   console.log(`Loaded ${tasks.length} tasks for execution.`);
 
@@ -120,4 +117,144 @@ async function executeTaskWithAgent(task: string, cwd: string): Promise<boolean>
   }
   console.log(`  └─ Did not converge within ${result.steps} steps.`);
   return false;
+}
+export const StepSchema = z.object({
+  name: z.string(),
+}).passthrough();
+
+export const PlanSchema = z.object({
+  name: z.string(),
+  steps: z.array(StepSchema),
+}).passthrough();
+
+function parseValue(v: string): any {
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+    return v.slice(1, -1);
+  }
+  if (v === "true") return true;
+  if (v === "false") return false;
+  if (v === "null") return null;
+  if (v === "") return "";
+  if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+  return v;
+}
+
+export function parseYaml(yamlStr: string): any {
+  const lines = yamlStr.split(/\r?\n/).map(line => {
+    const commentIdx = line.indexOf('#');
+    const cleanLine = commentIdx !== -1 ? line.slice(0, commentIdx) : line;
+    return {
+      raw: cleanLine,
+      trimmed: cleanLine.trim(),
+      indent: cleanLine.length - cleanLine.trimStart().length
+    };
+  }).filter(l => l.trimmed !== '');
+
+  let idx = 0;
+
+  function parseBlock(baseIndent: number): any {
+    let result: any = null;
+    let isArray = false;
+
+    if (idx < lines.length) {
+      if (lines[idx].trimmed.startsWith('-')) {
+        isArray = true;
+        result = [];
+      } else {
+        result = {};
+      }
+    }
+
+    while (idx < lines.length) {
+      const line = lines[idx];
+      if (line.indent < baseIndent) {
+        break;
+      }
+
+      if (isArray) {
+        if (!line.trimmed.startsWith('-')) {
+          if (result.length > 0 && typeof result[result.length - 1] === 'object') {
+            const colonIdx = line.trimmed.indexOf(':');
+            if (colonIdx !== -1) {
+              const k = line.trimmed.slice(0, colonIdx).trim();
+              const rawVal = line.trimmed.slice(colonIdx + 1).trim();
+              if (rawVal === '') {
+                idx++;
+                result[result.length - 1][k] = parseBlock(line.indent + 1);
+                continue;
+              } else {
+                result[result.length - 1][k] = parseValue(rawVal);
+              }
+            } else {
+              throw new Error(`Invalid line inside array block: "${line.trimmed}"`);
+            }
+          } else {
+            throw new Error(`Invalid line in array: "${line.trimmed}"`);
+          }
+          idx++;
+          continue;
+        }
+
+        const rest = line.trimmed.slice(1).trim();
+        if (rest === '') {
+          idx++;
+          const nested = parseBlock(line.indent + 1);
+          result.push(nested);
+        } else if (rest.includes(':')) {
+          const colonIdx = rest.indexOf(':');
+          const k = rest.slice(0, colonIdx).trim();
+          const rawVal = rest.slice(colonIdx + 1).trim();
+          if (rawVal === '') {
+            idx++;
+            const nestedObj = { [k]: parseBlock(line.indent + 2) };
+            result.push(nestedObj);
+          } else {
+            const item: any = { [k]: parseValue(rawVal) };
+            result.push(item);
+            idx++;
+            while (idx < lines.length && !lines[idx].trimmed.startsWith('-') && lines[idx].indent >= line.indent + 2) {
+              const subLine = lines[idx];
+              const subColonIdx = subLine.trimmed.indexOf(':');
+              if (subColonIdx !== -1) {
+                const subK = subLine.trimmed.slice(0, subColonIdx).trim();
+                const rawSubVal = subLine.trimmed.slice(subColonIdx + 1).trim();
+                if (rawSubVal === '') {
+                  idx++;
+                  item[subK] = parseBlock(subLine.indent + 1);
+                } else {
+                  item[subK] = parseValue(rawSubVal);
+                  idx++;
+                }
+              } else {
+                throw new Error(`Invalid sub-line in block mapping: "${subLine.trimmed}"`);
+              }
+            }
+          }
+        } else {
+          result.push(parseValue(rest));
+          idx++;
+        }
+      } else {
+        const colonIdx = line.trimmed.indexOf(':');
+        if (colonIdx === -1) {
+          throw new Error(`Invalid line: "${line.trimmed}"`);
+        }
+
+        const k = line.trimmed.slice(0, colonIdx).trim();
+        const rawVal = line.trimmed.slice(colonIdx + 1).trim();
+
+        if (rawVal === '') {
+          idx++;
+          result[k] = parseBlock(line.indent + 1);
+        } else {
+          result[k] = parseValue(rawVal);
+          idx++;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  return parseBlock(0);
 }

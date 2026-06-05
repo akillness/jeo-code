@@ -1,6 +1,6 @@
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readLines } from "../sse";
-import { ProviderHttpError } from "./errors";
+import { providerHttpError } from "./errors";
 
 function ollamaRequest(messages: Message[], options: CallOptions, stream: boolean): { url: string; body: string } {
   const model = options.model.startsWith("ollama/") ? options.model.slice(7) : options.model;
@@ -26,10 +26,7 @@ export const ollamaAdapter: ProviderAdapter = {
   async call(messages, options) {
     const { url, body } = ollamaRequest(messages, options, false);
     const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body, signal: options.signal });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new ProviderHttpError("Ollama", response.status, text, `at ${url}`);
-    }
+    if (!response.ok) throw await providerHttpError("Ollama", response, `at ${url}`);
     const result = (await response.json()) as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number; total_duration?: number };
     options.onUsage?.({ inputTokens: result.prompt_eval_count, outputTokens: result.eval_count, durationMs: result.total_duration ? Math.round(result.total_duration / 1e6) : undefined });
     return result.message?.content ?? "";
@@ -37,10 +34,7 @@ export const ollamaAdapter: ProviderAdapter = {
   async *stream(messages, options) {
     const { url, body } = ollamaRequest(messages, options, true);
     const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body, signal: options.signal });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new ProviderHttpError("Ollama", response.status, text, `(stream) at ${url}`);
-    }
+    if (!response.ok) throw await providerHttpError("Ollama", response, `(stream) at ${url}`);
     if (!response.body) return;
     for await (const line of readLines(response.body)) {
       let chunk: { message?: { content?: string }; done?: boolean; prompt_eval_count?: number; eval_count?: number; total_duration?: number };

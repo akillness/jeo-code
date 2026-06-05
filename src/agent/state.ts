@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
+import { parseConfig } from "./config-schema";
 
 /** Persisted OAuth credential set (access + refresh + expiry) for a provider. */
 export interface StoredOAuth {
@@ -52,6 +53,7 @@ export interface WorkflowState {
   plan_path?: string;
   completed_tasks?: string[];
   pending_tasks?: string[];
+  approved?: boolean;
 }
 
 /**
@@ -87,22 +89,40 @@ function withEnvOverlay(cfg: Config): Config {
   };
 }
 
+function envDefaultConfig(): Config {
+  return {
+    providers: {
+      anthropic: process.env.ANTHROPIC_API_KEY,
+      openai: process.env.OPENAI_API_KEY,
+      gemini: process.env.GEMINI_API_KEY,
+    },
+    defaultModel: process.env.JOC_DEFAULT_MODEL || "claude-3-5-sonnet",
+    thinkingLevel: "medium",
+  };
+}
+
 export async function readGlobalConfig(): Promise<Config> {
+  let data: string;
   try {
-    const data = await fs.readFile(globalConfigPath(), "utf-8");
-    return withEnvOverlay(JSON.parse(data) as Config);
+    data = await fs.readFile(globalConfigPath(), "utf-8");
   } catch {
-    // Fallback to environment variables
-    return withEnvOverlay({
-      providers: {
-        anthropic: process.env.ANTHROPIC_API_KEY,
-        openai: process.env.OPENAI_API_KEY,
-        gemini: process.env.GEMINI_API_KEY,
-      },
-      defaultModel: process.env.JOC_DEFAULT_MODEL || "claude-3-5-sonnet",
-      thinkingLevel: "medium",
-    });
+    return withEnvOverlay(envDefaultConfig());
   }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data);
+  } catch {
+    process.stderr.write(`[joc] ${globalConfigPath()} is not valid JSON; using environment defaults.\n`);
+    return withEnvOverlay(envDefaultConfig());
+  }
+
+  const parsed = parseConfig(raw);
+  if (!parsed.ok) {
+    process.stderr.write(`[joc] ${globalConfigPath()} is invalid (${parsed.message}); using environment defaults.\n`);
+    return withEnvOverlay(envDefaultConfig());
+  }
+  return withEnvOverlay(parsed.config as Config);
 }
 
 export async function saveGlobalConfig(config: Config): Promise<void> {

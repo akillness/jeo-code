@@ -130,20 +130,35 @@ export async function editTool(
     const absPath = path.resolve(cwd, filePath);
     let content = await fs.readFile(absPath, "utf-8");
 
-    // Simple line-anchored edit parser for our Joc agent.
-    // Handles ≔A..B replace format or pure search-and-replace
+    // Line-anchored edit parser. Modes (payload follows the directive's newline):
+    //   ≔A..B   replace lines A..B          ≔A    replace line A
+    //   ≔A+     insert AFTER line A (A=0 prepends)
+    //   ≔$      append to end of file
+    // Falls back to <<<<<<< SEARCH / ======= / >>>>>>> substring replacement.
     const lines = content.split("\n");
-    const editLines = editBlock.split("\n");
 
     let updated = false;
-    // Simple patch format parser
-    if (editBlock.includes("≔")) {
-      const match = editBlock.match(/≔(\d+)(?:\.\.(\d+))?\n([\s\S]*)/);
-      if (match) {
-        const startLine = parseInt(match[1]);
-        const endLine = match[2] ? parseInt(match[2]) : startLine;
-        const payload = match[3];
-
+    if (editBlock.startsWith("≔")) {
+      const appendMatch = editBlock.match(/^≔\$\n?([\s\S]*)$/);
+      const insertMatch = editBlock.match(/^≔(\d+)\+\n?([\s\S]*)$/);
+      const replaceMatch = editBlock.match(/^≔(\d+)(?:\.\.(\d+))?\n([\s\S]*)$/);
+      if (appendMatch) {
+        const payload = appendMatch[1];
+        content = content === "" || content.endsWith("\n") ? content + payload : content + "\n" + payload;
+        updated = true;
+      } else if (insertMatch) {
+        const at = parseInt(insertMatch[1]); // insert AFTER line `at`; 0 prepends
+        const payload = insertMatch[2];
+        if (at < 0 || at > lines.length) {
+          return { success: false, output: "", error: `Invalid insert position ${at}: out of bounds (file has ${lines.length} lines)` };
+        }
+        lines.splice(at, 0, payload);
+        content = lines.join("\n");
+        updated = true;
+      } else if (replaceMatch) {
+        const startLine = parseInt(replaceMatch[1]);
+        const endLine = replaceMatch[2] ? parseInt(replaceMatch[2]) : startLine;
+        const payload = replaceMatch[3];
         if (startLine < 1 || endLine < startLine || endLine > lines.length) {
           return {
             success: false,
@@ -151,7 +166,6 @@ export async function editTool(
             error: `Invalid edit range ${startLine}..${endLine}: out of bounds or reversed (file has ${lines.length} lines)`,
           };
         }
-
         lines.splice(startLine - 1, endLine - startLine + 1, payload);
         content = lines.join("\n");
         updated = true;

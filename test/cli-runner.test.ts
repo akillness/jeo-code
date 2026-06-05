@@ -52,3 +52,20 @@ test("renderHelp lists every command", () => {
   expect(help).toContain("doctor");
   expect(help).toContain("ultragoal");
 });
+
+test("dispatch: per-command --help prints that command's usage without running it", async () => {
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => logs.push(a.join(" "));
+  let code: number;
+  try {
+    code = await dispatch(["deep-interview", "--help"], { appName: "joc", version: "0.0.0" });
+  } finally {
+    console.log = orig;
+  }
+  expect(code).toBe(0);
+  const text = logs.join("\n");
+  expect(text).toContain("Usage: joc deep-interview");
+  expect(text).toContain("Socratic"); // the command summary, not the global help
+  expect(text).not.toContain("Commands:"); // global help not printed
+});

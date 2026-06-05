@@ -28,6 +28,21 @@ test("parseConfig: rejects wrong types with a located message", () => {
   if (!r2.ok) expect(r2.message).toContain("thinkingLevel");
 });
 
+test("parseConfig: accepts a retry budget block (gjc parity)", () => {
+  const r = parseConfig({
+    defaultModel: "m",
+    retry: { requestMaxRetries: 4, streamMaxRetries: 100, maxRetries: 3, maxDelayMs: 300000 },
+  });
+  expect(r.ok).toBe(true);
+  if (r.ok) expect(r.config.retry?.requestMaxRetries).toBe(4);
+});
+
+test("parseConfig: rejects a negative retry budget", () => {
+  const r = parseConfig({ defaultModel: "m", retry: { requestMaxRetries: -1 } });
+  expect(r.ok).toBe(false);
+  if (!r.ok) expect(r.message).toContain("retry");
+});
+
 const origDir = process.env.JOC_CONFIG_DIR;
 afterEach(() => {
   if (origDir === undefined) delete process.env.JOC_CONFIG_DIR;

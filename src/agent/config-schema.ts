@@ -38,6 +38,19 @@ export const ConfigSchema = z
     defaultModel: z.string().min(1),
     thinkingLevel: z.enum(["low", "medium", "high"]).optional(),
     modelAliases: z.record(z.string()).optional(),
+    /**
+     * Provider retry budgets (gjc parity). `requestMaxRetries` counts retries
+     * (not the initial request) for a provider request; `maxDelayMs` caps backoff.
+     * `maxRetries`/`streamMaxRetries` are accepted for gjc-config compatibility.
+     */
+    retry: z
+      .object({
+        requestMaxRetries: z.number().int().min(0).optional(),
+        streamMaxRetries: z.number().int().min(0).optional(),
+        maxRetries: z.number().int().min(0).optional(),
+        maxDelayMs: z.number().int().min(0).optional(),
+      })
+      .optional(),
   })
   .passthrough();
 

@@ -7,7 +7,10 @@ export interface RetryOptions {
   onRetry?: (attempt: number, err: unknown) => void;
 }
 
-// Default retryable predicate: true for network errors (message contains 'fetch'/'network'/'ECONN'/'timeout') or an Error with a numeric `status` in {408,425,429,500,502,503,504}.
+// Default retryable predicate: true for transient network errors, transient/overload
+// keywords, or a transient HTTP status (408/425/429/500/502/503/504/529) found either on a
+// numeric `.status` field or embedded as "HTTP <code>" in the error message.
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 529]);
 export function defaultRetryable(err: unknown): boolean {
   if (!err) {
     return false;
@@ -27,17 +30,27 @@ export function defaultRetryable(err: unknown): boolean {
     lowerMessage.includes("fetch") ||
     lowerMessage.includes("network") ||
     lowerMessage.includes("econn") ||
-    lowerMessage.includes("timeout")
+    lowerMessage.includes("timeout") ||
+    lowerMessage.includes("overloaded") ||
+    lowerMessage.includes("rate limit") ||
+    lowerMessage.includes("rate_limit")
   ) {
     return true;
   }
 
-  if (typeof err === "object") {
+  // Numeric `.status` field (structured provider errors, fetch responses).
+  if (typeof err === "object" && err !== null) {
     const status = (err as any).status;
     const numericStatus = typeof status === "number" ? status : (typeof status === "string" ? Number(status) : NaN);
-    if (!isNaN(numericStatus) && [408, 425, 429, 500, 502, 503, 504].includes(numericStatus)) {
+    if (!isNaN(numericStatus) && RETRYABLE_STATUS.has(numericStatus)) {
       return true;
     }
+  }
+
+  // Fallback: a status embedded in the message, e.g. "... (HTTP 503): overloaded".
+  const httpMatch = lowerMessage.match(/http[\s/]*?(\d{3})/);
+  if (httpMatch && RETRYABLE_STATUS.has(Number(httpMatch[1]))) {
+    return true;
   }
 
   return false;

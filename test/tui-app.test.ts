@@ -7,6 +7,22 @@ test("LaunchTui.usable is false under a non-TTY test process", () => {
   expect(LaunchTui.usable(true)).toBe(false); // --no-tui always false
 });
 
+test("LaunchTui: footer step denominator reflects the configured maxSteps", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", maxSteps: 50, write: s => out.push(s) });
+  tui.start();
+  tui.events().onStep!(1);
+  expect(out.join("")).toContain("step 1/50");
+});
+
+test("LaunchTui: footer defaults to 25 steps when maxSteps is omitted", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
+  tui.start();
+  tui.events().onStep!(3);
+  expect(out.join("")).toContain("step 3/25");
+});
+
 test("LaunchTui: live region renders tool list + footer, finish collapses to static output", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", sessionId: "abcd1234efgh", write: s => out.push(s) });

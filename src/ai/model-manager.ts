@@ -6,7 +6,7 @@ import { openaiAdapter } from "./providers/openai";
 import { geminiAdapter } from "./providers/gemini";
 import { ollamaAdapter } from "./providers/ollama";
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
-import { expandAlias } from "./model-registry";
+import { expandAlias, resolveModelId } from "./model-registry";
 import { withRetry, defaultRetryable } from "../util/retry";
 
 const ADAPTERS: Record<ProviderName, ProviderAdapter> = {
@@ -17,9 +17,11 @@ const ADAPTERS: Record<ProviderName, ProviderAdapter> = {
 };
 
 export function resolveProvider(model: string): ProviderName {
-  if (model.startsWith("ollama/")) return "ollama";
-  if (model.includes("gpt") || model.includes("o1") || model.startsWith("openai/")) return "openai";
-  if (model.includes("gemini") || model.startsWith("google/")) return "gemini";
+  const m = (model ?? "").toLowerCase();
+  if (m.startsWith("ollama/")) return "ollama";
+  // OpenAI: explicit prefix, any GPT, or a reasoning model (o1/o3/o4-mini, o1-preview…).
+  if (m.startsWith("openai/") || m.includes("gpt") || /(^|\/)o\d/.test(m)) return "openai";
+  if (m.startsWith("google/") || m.includes("gemini")) return "gemini";
   return "anthropic";
 }
 
@@ -28,6 +30,12 @@ export function thinkingMaxTokens(level?: "low" | "medium" | "high"): number {
   if (level === "low") return 2000;
   if (level === "high") return 8000;
   return 4000;
+}
+
+/** Describe a model id: alias expansion + the provider it routes to. For `/model` + diagnostics. */
+export async function describeModel(input: string): Promise<{ input: string; resolved: string; provider: ProviderName }> {
+  const resolved = await resolveModelId(input);
+  return { input, resolved, provider: resolveProvider(resolved) };
 }
 
 export interface ModelManager {

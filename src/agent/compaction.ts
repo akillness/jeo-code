@@ -4,6 +4,8 @@ export interface CompactionOptions {
   maxMessages?: number;
   keepRecent?: number;
   model?: string;
+  /** User-initiated `/compact`: lower the trigger floor so it actually compacts a small history. */
+  force?: boolean;
 }
 
 export interface CompactionResult {
@@ -16,8 +18,8 @@ export async function maybeCompact(
   history: Message[],
   opts: CompactionOptions = {}
 ): Promise<CompactionResult> {
-  const maxMessages = opts.maxMessages ?? 40;
-  const keepRecent = opts.keepRecent ?? 12;
+  const maxMessages = opts.maxMessages ?? (opts.force ? 1 : 40);
+  const keepRecent = opts.keepRecent ?? (opts.force ? 4 : 12);
 
   const hasSystem = history.length > 0 && history[0].role === "system";
   const systemCount = hasSystem ? 1 : 0;

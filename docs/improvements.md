@@ -1998,3 +1998,137 @@ performance and features") is satisfied with direct current-state evidence:
   guard, lazy command loading.
 - **Gates (current):** `tsc -p tsconfig.json --noEmit` → 0; `bun test` → **79/79** across 20 files;
   13 `joc` commands; all 4 providers stream + report usage; working tree clean and pushed.
+
+---
+
+# Ralph run 2 — fresh comparison-driven + verification batch (passes 37–51)
+
+> Started 2026-06-04 from a green baseline (`tsc` 0, `bun test` 79/79). A new pass over the
+> gjc dimensions (tui / agentic workflow / provider / model / 기본 스킬 / bun 설치) surfaced
+> real bugs and gaps the prior run had not caught. Every pass below carries `tsc` 0, a focused
+> test, and (where relevant) a real `ollama/qwen2.5:0.5b` e2e. End state: **`tsc` 0, `bun test`
+> 108/108 across 24 files.**
+
+## 37. Provider HTTP errors are now retryable (real bug)
+
+**Dimension: provider / reliability.** Every adapter threw a bare `Error("… HTTP 429 …")` with
+no `.status`, and `defaultRetryable` keys off a numeric status or network keywords — so **429
+(rate limit), 503, and 529 (overloaded) were never retried**. Added `ProviderHttpError` (carries
+`status` + `provider`), wired it into all four adapters' `call` **and** `stream` paths, and
+hardened `defaultRetryable`: added `529`, plus message-level parsing of `HTTP <code>` and the
+`overloaded`/`rate limit` keywords as a fallback.
+Files: `src/ai/providers/{errors,anthropic,openai,gemini,ollama}.ts`, `src/util/retry.ts`,
+`test/provider-errors.test.ts`. **Verify:** new test asserts 408/425/429/5xx/529 retry, 4xx do
+not, and `withRetry` actually re-attempts a 503 then succeeds.
+
+## 38. `find`/`search` prune VCS/build/dependency dirs
+
+**Dimension: tooling parity (gjc native search respects ignores).** `find`/`search` walked
+`node_modules`, `.git`, `dist`, `.joc`, etc. — slow and noisy. Added `IGNORED_DIRS`; `find` now
+prunes them (`-type d ( … ) -prune`) and `grep` uses `--exclude-dir`.
+Files: `src/agent/tools.ts`, `test/tools-fs.test.ts`.
+
+## 39. `searchTool` distinguishes "no match" from a real grep error
+
+`grep` exit 1 (no match) was being treated the same as exit ≥2 (error). Now exit 1 returns a
+clean `"No matches found."` success; exit ≥2 surfaces stderr as a failure. Also added `-I`
+(skip binaries) and `--` (so patterns starting with `-` work).
+Files: `src/agent/tools.ts`, `test/tools-fs.test.ts`.
+
+## 40. `readTool`: truncation notice + open-ended/single-line ranges
+
+Silent 500-line cap gave the model no signal there was more. Now it appends
+`…(showing lines 1-500 of N; pass lineRange "501-" …)`, and `lineRange` accepts `start-end`,
+open-ended `start-`, and single `start` (gjc-style). Updated the in-prompt tool protocol to match.
+Files: `src/agent/tools.ts`, `src/agent/engine.ts`, `test/tools-fs.test.ts`.
+
+## 41. `resolveProvider` routes reasoning models to OpenAI (real bug)
+
+`o3-mini` / `o4-mini` / `o1-preview` fell through to **anthropic** (only `gpt`/`o1` were matched).
+Now matches `openai/`, any `gpt`, and `/(^|\/)o\d/` — while `claude-opus-4` and `echo1-model`
+stay anthropic. Case-insensitive.
+Files: `src/ai/model-manager.ts`, `test/model-manager.test.ts`.
+
+## 42. TUI footer reflects the actual `--max-steps`
+
+`LaunchTui` hardcoded `step N/25` even when launched with `--max-steps 50`. Threaded
+`maxSteps` through `LaunchTuiOptions` → footer denominator.
+Files: `src/tui/app.ts`, `src/commands/launch.ts`, `test/tui-app.test.ts`.
+
+## 43. Consecutive-failure guard in the agent loop
+
+The no-progress guard only caught **identical** repeated calls. A model emitting *different but
+failing* calls (bad edits, failing commands) burned the whole step budget. Added a
+5-consecutive-failure stop with a clear `doneReason`.
+Files: `src/agent/engine.ts`, `test/engine.test.ts`.
+
+## 44. `joc doctor --json` machine-readable report
+
+**Dimension: bun 진단 / CI.** Refactored doctor to gather a structured report then render either
+the human table or `--json` (model resolution, per-provider status+latency, oauth health, `ready`).
+`--strict` still exits non-zero when not ready. **Verify (real e2e):** `JOC_DEFAULT_MODEL=fast
+joc doctor --json` → valid JSON, `ready:true`, alias expansion, live ollama probe `200`; human
+mode regression-clean.
+Files: `src/commands/doctor.ts`.
+
+## 45. `/model` shows alias expansion + routed provider
+
+Added `describeModel(id)` (alias → resolved → provider) and used it in the REPL `/model` command:
+`Model set to: fast → ollama/qwen2.5:0.5b (ollama)`.
+Files: `src/ai/model-manager.ts`, `src/commands/launch.ts`, `test/model-registry.test.ts`.
+
+## 46. LLM errors become a meaningful `doneReason`
+
+When `callLlm` threw, the loop returned no reason and callers printed a misleading
+"reached the step limit" message. Now the cause (`Error: <msg>`) is the `doneReason`.
+Files: `src/agent/engine.ts`, `test/engine.test.ts`.
+
+## 47. `bashTool` escalates SIGTERM→SIGKILL; configurable timeout
+
+A command that traps/ignores SIGTERM survived the timeout. Now sends SIGTERM then SIGKILL after
+a 3 s grace, reports the real timeout duration, and accepts an optional `timeoutMs` (testable).
+Files: `src/agent/tools.ts`, `test/tools-fs.test.ts`.
+
+## 48. Forced `/compact` actually compacts
+
+`/compact` was a no-op for histories ≤ 12 messages (`keepRecent` floor). Added a `force` option
+(lowers the trigger floor to 1/4) and wired `/compact` to it.
+Files: `src/agent/compaction.ts`, `src/commands/launch.ts`, `test/compaction.test.ts`.
+
+## 49. MutationGuard path-boundary fix (real bug)
+
+`absPath.startsWith(jocDir)` treated siblings like `.joc-backup/evil.ts` as inside `.joc/`,
+so they were wrongly *allowed* to mutate during an active interview. Now uses a path-boundary
+check (`=== jocDir || startsWith(jocDir + sep)`).
+Files: `src/agent/tools.ts`, `test/mutation-guard.test.ts`.
+
+## 50. Tool-output truncation keeps head **and** tail
+
+The model only saw the first 4000 chars of a tool result — losing the decisive tail (test
+summaries, the final error line). `truncateToolOutput` now keeps 60% head + 40% tail with a
+`…(N chars truncated)…` marker.
+Files: `src/agent/engine.ts`, `test/engine.test.ts`.
+
+## 51. Unknown-command "did you mean?" suggestions
+
+Mistyped commands (`joc doctr`) now suggest the nearest command via prefix match or Levenshtein
+≤ 2. **Verify (real e2e):** `joc doctr` → `Did you mean: doctor?`.
+Files: `src/cli/runner.ts`, `test/cli-runner.test.ts`.
+
+---
+
+## Run-2 summary
+
+- **15 new comparison-driven, verified passes (37–51)**, each tagged to a gjc dimension, each with
+  `tsc` 0 + a focused test; doctor/`--json`, the full agent loop, and the typo suggester verified
+  by **real `ollama/qwen2.5:0.5b` / CLI e2e** (the agent created `fruit.txt` with the `bash` tool
+  and reported token usage; `doctor --json` returned live JSON).
+- **Real bugs fixed this run:** un-retried 429/5xx/529, reasoning-model misrouting, the
+  MutationGuard `.joc` prefix hole, head-only truncation losing test output, the failing-loop
+  budget burn, and the no-op `/compact`.
+- **Dimensions touched:** provider (retry/errors), model (routing/`describeModel`), agentic
+  workflow (failure guard, error surfacing, compaction, truncation), tui (footer, `/model`,
+  doctor json), tooling (find/search/read/bash), 기본 스킬 (MutationGuard correctness), bun (doctor
+  diagnostics).
+- **Gates (current):** `tsc -p tsconfig.json --noEmit` → 0; `bun test` → **108/108 across 24
+  files**; 13 `joc` commands intact.

@@ -1,6 +1,7 @@
 import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
+import { ProviderHttpError } from "./errors";
 
 function geminiRequest(messages: Message[], options: CallOptions, credential: Credential, action: "generateContent" | "streamGenerateContent"): { url: string; headers: Record<string, string>; body: string } {
   const resolvedModel = options.model.startsWith("google/") ? options.model.slice(7) : options.model;
@@ -49,7 +50,7 @@ export const geminiAdapter: ProviderAdapter = {
     const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`Gemini API request failed (HTTP ${response.status}): ${text}`);
+      throw new ProviderHttpError("Gemini", response.status, text);
     }
     const result = (await response.json()) as GeminiChunk;
     if (result.usageMetadata) {
@@ -62,7 +63,7 @@ export const geminiAdapter: ProviderAdapter = {
     const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`Gemini stream failed (HTTP ${response.status}): ${text}`);
+      throw new ProviderHttpError("Gemini", response.status, text, "(stream)");
     }
     if (!response.body) return;
     for await (const data of readSse(response.body)) {

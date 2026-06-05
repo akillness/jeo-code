@@ -40,3 +40,21 @@ test("resolveModelId and listAliases", async () => {
   expect(aliases.fast).toBe("ollama/qwen2.5:0.5b");
   expect(aliases.sonnet).toBe("claude-3-5-sonnet");
 });
+
+import { describeModel } from "../src/ai/model-manager";
+
+test("describeModel: expands aliases and reports the routed provider", async () => {
+  const fast = await describeModel("fast");
+  expect(fast.resolved).toBe("ollama/qwen2.5:0.5b");
+  expect(fast.provider).toBe("ollama");
+
+  const sonnet = await describeModel("sonnet");
+  expect(sonnet.resolved).toBe("claude-3-5-sonnet");
+  expect(sonnet.provider).toBe("anthropic");
+
+  // A concrete id passes through unchanged.
+  const direct = await describeModel("gpt-4o");
+  expect(direct.input).toBe("gpt-4o");
+  expect(direct.resolved).toBe("gpt-4o");
+  expect(direct.provider).toBe("openai");
+});

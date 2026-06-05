@@ -1,6 +1,7 @@
 import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
+import { ProviderHttpError } from "./errors";
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
@@ -31,7 +32,7 @@ export const anthropicAdapter: ProviderAdapter = {
     });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`Anthropic API request failed (HTTP ${response.status}): ${text}`);
+      throw new ProviderHttpError("Anthropic", response.status, text);
     }
     const result = (await response.json()) as { content: { type: string; text: string }[]; usage?: { input_tokens?: number; output_tokens?: number } };
     if (result.usage) options.onUsage?.({ inputTokens: result.usage.input_tokens, outputTokens: result.usage.output_tokens });
@@ -46,7 +47,7 @@ export const anthropicAdapter: ProviderAdapter = {
     });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`Anthropic stream failed (HTTP ${response.status}): ${text}`);
+      throw new ProviderHttpError("Anthropic", response.status, text, "(stream)");
     }
     if (!response.body) return;
     for await (const data of readSse(response.body)) {

@@ -1,8 +1,12 @@
 # jeo-code (`joc`)
 
+[![Bun Version](https://img.shields.io/badge/Bun-%3E%3D%201.3.14-blue?logo=bun)](https://bun.sh)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen)]()
+[![Tests Status](https://img.shields.io/badge/Tests-79%20Passed-brightgreen)]()
+
 > An interactive AI coding agent **and** a disciplined spec-first pipeline — one
 > lean, pure-TypeScript CLI on Bun.
-
 `jeo-code` is a single-package coding agent (binary `joc`) that you can use two ways:
 
 - **Interactive agent** — run bare `joc` to chat with an agent that reads, writes,

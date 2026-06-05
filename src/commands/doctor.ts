@@ -120,27 +120,14 @@ function formatRow(provider: string, credKind: string, result: ProbeResult): str
 
 export async function runDoctorCommand(args: string[] = []): Promise<void> {
   const strict = args.includes("--strict");
+  const json = args.includes("--json");
   const config = await readGlobalConfig();
   const resolvedModel = await resolveModelId(config.defaultModel);
   const defaultProvider = resolveProvider(resolvedModel);
+  const ollamaBase = config.ollamaBaseUrl ?? "http://localhost:11434";
 
-  console.log("");
-  console.log(`=== ${APP_NAME} doctor ===`);
-  console.log("");
-  console.log(`Bun runtime:    v${Bun.version}`);
-  console.log(`Default model:  ${config.defaultModel}${resolvedModel !== config.defaultModel ? ` → ${resolvedModel}` : ""} → ${defaultProvider}`);
-  console.log(`Config:         ${process.env.HOME}/.joc/config.json`);
-  if (config.openaiBaseUrl) console.log(`OpenAI base:    ${config.openaiBaseUrl}`);
-  console.log(`Ollama base:    ${config.ollamaBaseUrl ?? "http://localhost:11434"}`);
-  console.log("");
-
-  console.log("Provider connectivity:");
-  console.log(`  ${"Provider".padEnd(10)} ${"Credential".padEnd(16)} ${"Status".padEnd(8)} ${"Latency".padEnd(7)} Detail`);
-  console.log(`  ${"-".repeat(75)}`);
-
+  // --- Gather (probes run concurrently → ~1× the slowest timeout, not N×) ---
   const probes: { name: string; credKind: string; result: ProbeResult }[] = [];
-
-  // Probe all providers concurrently (was sequential → up to ~Nx the slowest timeout).
   const cloud = ["anthropic", "openai", "gemini"] as AuthProvider[];
   const cloudProbes = await Promise.all(
     cloud.map(async provider => {
@@ -152,36 +139,79 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
       return { name: provider, credKind: credential.kind, result };
     })
   );
-  const ollamaResult = await probeOllama(config.ollamaBaseUrl ?? "http://localhost:11434");
+  const ollamaResult = await probeOllama(ollamaBase);
   for (const p of cloudProbes) probes.push(p);
   probes.push({ name: "ollama", credKind: "none (local)", result: ollamaResult });
 
-  for (const p of probes) console.log(formatRow(p.name, p.credKind, p.result));
-
-  console.log("");
-  // OAuth token health (expiry + auto-refresh capability)
-  const oauthLines: string[] = [];
+  const oauthHealth: { provider: string; refreshable: boolean; expiresInMin?: number; email?: string }[] = [];
   for (const p of ["anthropic", "openai", "gemini"] as AuthProvider[]) {
     const snap = await snapshotProvider(p);
     if (!snap.oauth) continue;
-    let detail = snap.oauthHasRefresh ? "refreshable" : "manual (no refresh)";
-    if (snap.oauthExpires) {
-      const mins = Math.round((snap.oauthExpires - Date.now()) / 60000);
-      detail += mins <= 0 ? ", expired (auto-refresh on next call)" : `, expires in ${mins}m`;
-    }
-    if (snap.oauthEmail) detail += `, ${snap.oauthEmail}`;
-    oauthLines.push(`  ${p.padEnd(10)} ${detail}`);
+    oauthHealth.push({
+      provider: p,
+      refreshable: !!snap.oauthHasRefresh,
+      expiresInMin: snap.oauthExpires ? Math.round((snap.oauthExpires - Date.now()) / 60000) : undefined,
+      email: snap.oauthEmail,
+    });
   }
+
+  const defaultProbe = probes.find(p => p.name === defaultProvider);
+  const ready = defaultProbe?.result.status === "ok";
+
+  // --- JSON output mode (CI / scripting) ---
+  if (json) {
+    const report = {
+      app: APP_NAME,
+      bunVersion: Bun.version,
+      defaultModel: { configured: config.defaultModel, resolved: resolvedModel, provider: defaultProvider },
+      ollamaBaseUrl: ollamaBase,
+      openaiBaseUrl: config.openaiBaseUrl ?? null,
+      providers: probes.map(p => ({
+        name: p.name,
+        credential: p.credKind,
+        status: p.result.status,
+        latencyMs: p.result.latencyMs ?? null,
+        detail: p.result.detail,
+      })),
+      oauth: oauthHealth,
+      ready,
+    };
+    console.log(JSON.stringify(report, null, 2));
+    if (strict && !ready) process.exit(1);
+    return;
+  }
+
+  // --- Human output ---
+  console.log("");
+  console.log(`=== ${APP_NAME} doctor ===`);
+  console.log("");
+  console.log(`Bun runtime:    v${Bun.version}`);
+  console.log(`Default model:  ${config.defaultModel}${resolvedModel !== config.defaultModel ? ` → ${resolvedModel}` : ""} → ${defaultProvider}`);
+  console.log(`Config:         ${process.env.HOME}/.joc/config.json`);
+  if (config.openaiBaseUrl) console.log(`OpenAI base:    ${config.openaiBaseUrl}`);
+  console.log(`Ollama base:    ${ollamaBase}`);
+  console.log("");
+
+  console.log("Provider connectivity:");
+  console.log(`  ${"Provider".padEnd(10)} ${"Credential".padEnd(16)} ${"Status".padEnd(8)} ${"Latency".padEnd(7)} Detail`);
+  console.log(`  ${"-".repeat(75)}`);
+  for (const p of probes) console.log(formatRow(p.name, p.credKind, p.result));
+
+  console.log("");
+  const oauthLines = oauthHealth.map(o => {
+    let detail = o.refreshable ? "refreshable" : "manual (no refresh)";
+    if (o.expiresInMin !== undefined) detail += o.expiresInMin <= 0 ? ", expired (auto-refresh on next call)" : `, expires in ${o.expiresInMin}m`;
+    if (o.email) detail += `, ${o.email}`;
+    return `  ${o.provider.padEnd(10)} ${detail}`;
+  });
   if (oauthLines.length) {
     console.log("OAuth tokens:");
     for (const line of oauthLines) console.log(line);
     console.log("");
   }
 
-
   // Final verdict
-  const defaultProbe = probes.find(p => p.name === defaultProvider);
-  if (defaultProbe?.result.status === "ok") {
+  if (ready) {
     console.log(`[READY] Default model '${config.defaultModel}' is reachable.`);
   } else if (defaultProbe?.result.status === "skipped") {
     console.log(
@@ -194,7 +224,7 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
     );
   }
 
-  if (strict && defaultProbe?.result.status !== "ok") {
+  if (strict && !ready) {
     process.exit(1);
   }
 }

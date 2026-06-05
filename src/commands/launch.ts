@@ -5,6 +5,7 @@ import { skillsPromptSection } from "../skills/catalog";
 import { matchSlash, isSlashAttempt } from "../tui/components/slash";
 import type { Message } from "../agent/loop";
 import { readGlobalConfig } from "../agent/state";
+import { describeModel } from "../ai";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { maybeCompact } from "../agent/compaction";
 import {
@@ -141,7 +142,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const beforeLen = history.length;
     history.push({ role: "user", content: userInput });
 
-    const tui = useTui ? new LaunchTui({ model: sessionModel || defaultModel, sessionId }) : null;
+    const tui = useTui ? new LaunchTui({ model: sessionModel || defaultModel, sessionId, maxSteps: flags.maxSteps }) : null;
     if (tui) tui.start();
     let result;
     const ac = new AbortController();
@@ -227,7 +228,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
       if (input === "/compact") {
-        const res = await maybeCompact(history, { model: sessionModel, maxMessages: 1 });
+        const res = await maybeCompact(history, { model: sessionModel, force: true });
         console.log(res.compacted ? `(compacted ${res.removed} older messages)` : "(nothing to compact)");
         continue;
       }
@@ -239,12 +240,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       if (input.startsWith("/model") && (input === "/model" || input[6] === " ")) {
         const arg = input.substring(6).trim();
-        if (arg) {
-          sessionModel = arg;
-          console.log(`Model set to: ${sessionModel}`);
-        } else {
-          console.log(`Current model: ${sessionModel || defaultModel}`);
-        }
+        const label = arg || (sessionModel || defaultModel);
+        if (arg) sessionModel = arg;
+        const { resolved, provider } = await describeModel(label);
+        const expansion = resolved !== label ? ` → ${resolved}` : "";
+        console.log(`${arg ? "Model set to" : "Current model"}: ${label}${expansion} (${provider})`);
         continue;
       }
 

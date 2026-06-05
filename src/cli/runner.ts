@@ -126,6 +126,15 @@ export const COMMANDS: readonly CommandSpec[] = [
       return args => m.runChatCommand(args);
     },
   },
+  {
+    name: "evolve",
+    summary: "Preview the evolution TUI identity (ASCII art + track + meter per stage).",
+    usage: "evolve [--step N] [--max M] [--animate] [--no-color]",
+    loader: async () => {
+      const m = await import("../commands/evolve");
+      return args => m.runEvolveCommand(args);
+    },
+  },
 ];
 
 export function findCommand(name: string): CommandSpec | undefined {

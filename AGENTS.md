@@ -44,11 +44,11 @@ launch / 15 in team), and `AbortSignal` (Ctrl-C cancels the in-flight turn).
 | `src/agent/` | Tool engine (`engine.ts`), tools + MutationGuard (`tools.ts`), `loop.ts`, `json.ts`, `session.ts`, `compaction.ts`, `context-files.ts`, `state.ts` |
 | `src/ai/` | `model-manager.ts` (routing/credentials), `model-registry.ts` (aliases), `types.ts`, `sse.ts`, `providers/{anthropic,openai,gemini,ollama,errors}.ts` |
 | `src/auth/` | OAuth PKCE, callback-server, token storage + auto-refresh, `flows/{anthropic,openai,google}` |
-| `src/commands/` | `launch, setup, auth, deep-interview, ralplan, approve, team, ultragoal, doctor, mcp, models, skills, resume, chat` (14) |
-| `src/tui/` | `app.ts` (`LaunchTui`), `renderer.ts` (differential ANSI), `terminal.ts`, `components/` (footer, meter, tool-list, spinner, stream, slash) |
+| `src/commands/` | `launch, setup, auth, deep-interview, ralplan, approve, team, ultragoal, doctor, mcp, models, skills, resume, chat, evolve` (15) |
+| `src/tui/` | `app.ts` (`LaunchTui`), `renderer.ts` (differential ANSI), `terminal.ts`, `components/` (`evolution.ts` = canonical 5-stage model, footer, meter, ascii-art, tool-list, spinner, stream, slash) |
 | `src/mcp/` | MCP stdio server (`server.ts`, `tools.ts`, `protocol.ts`); set `JOC_MCP_PIPELINE=1` to expose pipeline tools |
 | `src/skills/` | `catalog.ts` — `SKILLS` docs + `skillsPromptSection()` injected into the launch prompt |
-| `test/` | 29 `bun:test` suites |
+| `test/` | 33 `bun:test` suites |
 | `scripts/` | `install.sh` (canonical), `uninstall.sh`, `smoke-test.sh` |
 | `plan/`, `docs/improvements.md` | Roadmap + ralph-pass changelog (changes are logged here) |
 

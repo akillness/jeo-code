@@ -111,6 +111,7 @@ bun test                 # unit tests (29 files, 135 tests)
 | `joc resume [id]` | Resume the latest interactive session (or a specific id). |
 | `joc chat "<msg>"` | Single-shot streaming chat (no tools) — renders the reply token-by-token. |
 | `joc mcp [serve\|tools]` | Run `joc` as an MCP stdio server (set `JOC_MCP_PIPELINE=1` to also expose the pipeline tools). |
+| `joc evolve [--step N] [--max M] [--animate] [--no-color]` | Preview the **evolution TUI** identity — the five ASCII-art stages with their evolution track and stage meter. |
 
 ---
 
@@ -122,6 +123,11 @@ hardened tool-call engine (`src/agent/engine.ts`). It calls `read` / `write` / `
 
 - **TUI** — on a TTY it renders a differential UI (live tool-call list + in-place status
   footer); `--no-tui`, piped input, and non-TTY fall back to a plain stream.
+- **Evolution TUI** — the live view evolves with the agent's progress through five stages
+  (**Primordial Cell → Double Helix → Tool User → AI Coding Agent → Singularity**). The ASCII
+  art, spinner, progress meter, and footer track all advance in lockstep from one canonical
+  stage model (`src/tui/components/evolution.ts`); `finish()` records `Evolved to: <stage>`.
+  Preview it any time with `joc evolve`.
 - **Sessions** — every turn is appended to `.joc/sessions/<id>.jsonl`; `joc launch --list`
   and `joc launch --resume [id]` resume past conversations.
 - **tmux orchestration (gjc parity)** — `joc --tmux` creates/attaches a leader session named

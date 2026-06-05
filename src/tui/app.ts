@@ -20,6 +20,8 @@ export interface LaunchTuiOptions {
   model: string;
   sessionId?: string;
   write?: (s: string) => void;
+  /** Step budget for this turn; drives the footer's `step N/M` denominator. */
+  maxSteps?: number;
 }
 
 export interface AgentEventsLike {
@@ -29,7 +31,7 @@ export interface AgentEventsLike {
   onError?(message: string): void;
 }
 
-const MAX_STEPS = 25;
+const DEFAULT_MAX_STEPS = 25;
 
 export class LaunchTui {
   private readonly renderer: Renderer;
@@ -45,7 +47,7 @@ export class LaunchTui {
   constructor(opts: LaunchTuiOptions) {
     this.write = opts.write ?? ((s: string) => process.stdout.write(s));
     this.renderer = new Renderer(this.write);
-    this.footer = { model: opts.model, sessionId: opts.sessionId, maxSteps: MAX_STEPS };
+    this.footer = { model: opts.model, sessionId: opts.sessionId, maxSteps: opts.maxSteps ?? DEFAULT_MAX_STEPS };
   }
 
   /** Whether a TUI should be used at all (TTY required). */

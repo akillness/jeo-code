@@ -1,5 +1,6 @@
 import { test, expect, mock } from "bun:test";
 import { extractJsonObject, tryExtractJsonObject } from "../src/agent/json";
+import { truncateToolOutput } from "../src/agent/engine";
 
 test("extractJsonObject: pure JSON", () => {
   expect(extractJsonObject('{"tool":"done","arguments":{"reason":"x"}}')).toEqual({
@@ -137,4 +138,48 @@ test("runAgentLoop: an aborted signal stops before any tool call", async () => {
   expect(result.done).toBe(false);
   expect(result.doneReason).toBe("Cancelled.");
   expect(toolCalls).toBe(0);
+});
+
+test("runAgentLoop: stops after 5 consecutive failing tool calls (distinct args)", async () => {
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    // Different args each turn → dodges the identical-call guard, exercises the failure guard.
+    callLlm: async () => JSON.stringify({ tool: "flaky", arguments: { n: ++turn } }),
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history = [{ role: "system" as const, content: "sys" }];
+  let calls = 0;
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 25,
+    tools: { flaky: async () => { calls++; return { success: false, output: "", error: "nope" }; } },
+  });
+  expect(result.done).toBe(false);
+  expect(result.doneReason).toContain("consecutive failing tool calls");
+  expect(calls).toBe(5);
+  expect(result.steps).toBe(5);
+});
+
+test("runAgentLoop: a thrown LLM error becomes the doneReason (not a step-limit message)", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => { throw new Error("HTTP 401: bad key"); },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history = [{ role: "system" as const, content: "sys" }];
+  const result = await runAgentLoop(history, { cwd: process.cwd(), maxSteps: 5 });
+  expect(result.done).toBe(false);
+  expect(result.doneReason).toContain("Error:");
+  expect(result.doneReason).toContain("HTTP 401");
+});
+
+test("truncateToolOutput: keeps head and tail (tail holds the decisive part)", () => {
+  const short = "all good";
+  expect(truncateToolOutput(short, 100)).toBe(short);
+
+  const body = "HEAD_MARKER" + "x".repeat(5000) + "TAIL_MARKER";
+  const out = truncateToolOutput(body, 1000);
+  expect(out.length).toBeLessThan(body.length);
+  expect(out).toContain("HEAD_MARKER");
+  expect(out).toContain("TAIL_MARKER"); // would be lost by a pure head-cut
+  expect(out).toContain("chars truncated");
 });

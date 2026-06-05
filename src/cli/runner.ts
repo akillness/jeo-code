@@ -123,6 +123,31 @@ export function findCommand(name: string): CommandSpec | undefined {
   return COMMANDS.find(c => c.name === name);
 }
 
+/** Levenshtein edit distance (small inputs; iterative two-row DP). */
+function editDistance(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  let cur = new Array<number>(n + 1);
+  for (let i = 1; i <= m; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, cur] = [cur, prev];
+  }
+  return prev[n];
+}
+
+/** Suggest near-miss command names for an unknown input (prefix match or ≤2 edits). */
+export function suggestCommands(name: string): string[] {
+  const q = name.toLowerCase();
+  if (!q) return [];
+  return COMMANDS.map(c => c.name).filter(n => n.startsWith(q) || editDistance(n, q) <= 2);
+}
+
 export interface DispatchContext {
   appName: string;
   version: string;
@@ -171,6 +196,8 @@ export async function dispatch(argv: string[], ctx: DispatchContext): Promise<nu
   const spec = findCommand(first);
   if (!spec) {
     console.log(`Unknown command: ${first}`);
+    const near = suggestCommands(first);
+    if (near.length) console.log(`Did you mean: ${near.join(", ")}?`);
     console.log(renderHelp(ctx));
     return 1;
   }

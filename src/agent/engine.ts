@@ -31,7 +31,7 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
 /** Tool-protocol description injected into the system prompt. */
 export const TOOL_PROTOCOL = [
   "You have these tools (call exactly ONE per step):",
-  "1. read   {filePath, lineRange?}      — read a file (optional \"start-end\")",
+  "1. read   {filePath, lineRange?}      — read a file (lineRange: \"start-end\", \"start-\", or \"start\")",
   "2. write  {filePath, content}         — create/overwrite a file",
   "3. edit   {filePath, editBlock}       — replace a line range: \u2254[line]..[line]\\n<new text>",
   "4. bash   {command}                   — run a shell command (tests, build, mkdir, ...)",
@@ -76,8 +76,16 @@ export interface AgentLoopResult {
   usage?: { inputTokens: number; outputTokens: number };
 }
 
-function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) + "\n…(truncated)" : s;
+/**
+ * Cap a tool result fed back to the model, keeping both ends: the head holds the
+ * start (e.g. a file's top / a command's invocation) and the tail holds what's
+ * usually decisive (test summaries, the final error). A pure head-cut loses that.
+ */
+export function truncateToolOutput(s: string, max = 4000): string {
+  if (s.length <= max) return s;
+  const head = Math.floor(max * 0.6);
+  const tail = max - head;
+  return `${s.slice(0, head)}\n…(${s.length - max} chars truncated)…\n${s.slice(s.length - tail)}`;
 }
 
 /**
@@ -97,6 +105,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // No-progress guard: weak/local models often repeat the same tool call without
   // ever emitting `done`. Stop after MAX_REPEAT identical consecutive calls.
   const MAX_REPEAT = 3;
+  // Consecutive-failure guard: a model that keeps emitting *different* but failing
+  // calls (bad edits, failing commands) would otherwise burn the whole step budget.
+  const MAX_FAILURES = 5;
+  let consecutiveFailures = 0;
   let lastSig = "";
   let repeatCount = 0;
   while (step <= maxSteps) {
@@ -114,8 +126,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
       });
     } catch (err) {
-      ev.onError?.((err as Error).message);
-      return finish({ done: false, steps: step });
+      const message = (err as Error).message;
+      ev.onError?.(message);
+      // Surface the real cause so callers don't print a misleading "step limit" message.
+      return finish({ done: false, steps: step, doneReason: `Error: ${message}` });
     }
 
     let invocation: ToolInvocation;
@@ -172,8 +186,18 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     history.push({ role: "assistant", content: responseText });
     history.push({
       role: "user",
-      content: `Tool [${invocation.tool}] result (${success ? "ok" : "fail"}):\n${truncate(output, 4000)}`,
+      content: `Tool [${invocation.tool}] result (${success ? "ok" : "fail"}):\n${truncateToolOutput(output)}`,
     });
+
+    if (success) {
+      consecutiveFailures = 0;
+    } else if (++consecutiveFailures >= MAX_FAILURES) {
+      return finish({
+        done: false,
+        steps: step,
+        doneReason: `Stopped: ${MAX_FAILURES} consecutive failing tool calls (last '${invocation.tool}'); the model could not recover.`,
+      });
+    }
     step++;
   }
 

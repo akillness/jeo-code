@@ -81,6 +81,7 @@ function withEnvOverlay(cfg: Config): Config {
   return {
     ...cfg,
     oauth,
+    defaultModel: process.env.JOC_DEFAULT_MODEL || cfg.defaultModel,
     ollamaBaseUrl: cfg.ollamaBaseUrl || process.env.OLLAMA_HOST || "http://localhost:11434",
     openaiBaseUrl: cfg.openaiBaseUrl || process.env.OPENAI_BASE_URL,
   };

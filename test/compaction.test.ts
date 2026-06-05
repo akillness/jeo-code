@@ -136,3 +136,17 @@ test("maybeCompact: callLlm throws/rejects", async () => {
   expect(result).toEqual({ compacted: false, removed: 0 });
   expect(history).toEqual(originalHistory);
 });
+
+test("maybeCompact: force lowers the trigger floor for a small history", async () => {
+  mockCallLlm = async () => "FORCED-SUMMARY";
+  // 1 system + 10 body. Default opts would NOT compact (body 10 <= maxMessages 40).
+  const noForce = await maybeCompact(makeHistory(10, true));
+  expect(noForce.compacted).toBe(false);
+
+  const history = makeHistory(10, true);
+  const result = await maybeCompact(history, { force: true });
+  expect(result.compacted).toBe(true);
+  expect(result.removed).toBe(6); // body 10 - keepRecent 4
+  expect(history.length).toBe(6); // system + summary + 4 recent
+  expect(history[1].content).toContain("FORCED-SUMMARY");
+});

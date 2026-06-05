@@ -9,6 +9,23 @@ export interface ToolResult {
 }
 
 /**
+ * Directories that pollute `find`/`search` results and waste time: VCS, build
+ * artifacts, dependency trees, and joc's own runtime dir. gjc's native search
+ * respects ignore files; this is the pure-TS equivalent.
+ */
+export const IGNORED_DIRS = [
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  "coverage",
+  ".next",
+  ".joc",
+  "vendor",
+  ".cache",
+];
+
+/**
  * Validates if codebase mutation tools are blocked due to an active Socratic interview.
  * Mutation is blocked only if deep-interview is active, not completed, and the file
  * is NOT under the `.joc/` directory (planning/spec files are allowed).
@@ -19,10 +36,12 @@ export async function assertMutationAllowed(
 ): Promise<void> {
   const deepInterviewState = await readWorkflowState("deep-interview", cwd);
   if (deepInterviewState && deepInterviewState.active && deepInterviewState.current_phase !== "complete") {
-    // Check if the target is NOT inside the local .joc folder
+    // Check if the target is NOT inside the local .joc folder. Use a path-boundary
+    // check (not bare startsWith) so siblings like ".joc-backup" aren't mistaken for ".joc/".
     const absPath = path.resolve(cwd, filePath);
     const jocDir = path.resolve(cwd, ".joc");
-    if (!absPath.startsWith(jocDir)) {
+    const insideJoc = absPath === jocDir || absPath.startsWith(jocDir + path.sep);
+    if (!insideJoc) {
       throw new Error(
         `[MutationGuard Blocked] Code mutation is strictly blocked during an active Socratic interview.\n` +
         `Current Ambiguity Score: ${((deepInterviewState.current_ambiguity ?? 1) * 100).toFixed(0)}% (must be <= 20% to unlock).\n` +
@@ -54,16 +73,31 @@ export async function readTool(
     const lines = content.split("\n");
 
     if (lineRange) {
-      const match = lineRange.match(/^(\d+)-(\d+)$/);
+      // Accept "start-end", open-ended "start-", or a single "start".
+      const match = lineRange.match(/^(\d+)(?:-(\d+)?)?$/);
       if (match) {
         const start = Math.max(1, parseInt(match[1]));
-        const end = Math.min(lines.length, parseInt(match[2]));
+        const hasRange = lineRange.includes("-");
+        const end = match[2]
+          ? Math.min(lines.length, parseInt(match[2]))
+          : hasRange
+            ? lines.length            // "start-" → to EOF
+            : Math.min(lines.length, start); // single line
+        if (end < start) {
+          return { success: false, output: "", error: `Invalid lineRange '${lineRange}': end < start (file has ${lines.length} lines)` };
+        }
         const sliced = lines.slice(start - 1, end).map((l, i) => `${start + i}|${l}`).join("\n");
         return { success: true, output: sliced };
       }
+      return { success: false, output: "", error: `Invalid lineRange '${lineRange}'. Use "start-end", "start-", or "start".` };
     }
 
-    const annotated = lines.map((l, i) => `${i + 1}|${l}`).slice(0, 500).join("\n");
+    const MAX_LINES = 500;
+    const annotated = lines.slice(0, MAX_LINES).map((l, i) => `${i + 1}|${l}`).join("\n");
+    if (lines.length > MAX_LINES) {
+      const notice = `\n…(showing lines 1-${MAX_LINES} of ${lines.length}; pass lineRange "${MAX_LINES + 1}-" to read the rest)`;
+      return { success: true, output: annotated + notice };
+    }
     return { success: true, output: annotated };
   } catch (err: any) {
     return { success: false, output: "", error: err.message };
@@ -196,7 +230,8 @@ export async function editTool(
 
 export async function bashTool(
   command: string,
-  cwd: string = process.cwd()
+  cwd: string = process.cwd(),
+  timeoutMs: number = 120_000
 ): Promise<ToolResult> {
   try {
     await assertBashAllowed(cwd);
@@ -208,16 +243,18 @@ export async function bashTool(
     });
 
     let timedOut = false;
-    const TIMEOUT_MS = 120_000;
+    const TIMEOUT_MS = timeoutMs;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => {
       timedOut = true;
-      try {
-        proc.kill();
-      } catch {}
+      // Graceful first (SIGTERM), then force-kill (SIGKILL) if it ignores it.
+      try { proc.kill(); } catch {}
+      killTimer = setTimeout(() => { try { proc.kill(9); } catch {} }, 3_000);
     }, TIMEOUT_MS);
 
     await proc.exited;
     clearTimeout(timer);
+    if (killTimer) clearTimeout(killTimer);
 
     const stdout = await new Response(proc.stdout).text();
     const stderr = await new Response(proc.stderr).text();
@@ -232,7 +269,7 @@ export async function bashTool(
       return {
         success: false,
         output,
-        error: "Command timed out after 120s and was killed",
+        error: `Command timed out after ${Math.round(TIMEOUT_MS / 1000)}s and was killed`,
       };
     }
 
@@ -251,10 +288,15 @@ export async function findTool(
   cwd: string = process.cwd()
 ): Promise<ToolResult> {
   try {
-    const proc = Bun.spawn(["find", ".", "-name", globPattern], {
-      cwd,
-      stdout: "pipe",
-    });
+    const pruneGroup: string[] = [];
+    for (let i = 0; i < IGNORED_DIRS.length; i++) {
+      if (i > 0) pruneGroup.push("-o");
+      pruneGroup.push("-name", IGNORED_DIRS[i]);
+    }
+    const proc = Bun.spawn(
+      ["find", ".", "-type", "d", "(", ...pruneGroup, ")", "-prune", "-o", "-name", globPattern, "-print"],
+      { cwd, stdout: "pipe", stderr: "pipe" },
+    );
     await proc.exited;
     const stdout = await new Response(proc.stdout).text();
     const files = stdout.split("\n").filter(Boolean);
@@ -275,12 +317,18 @@ export async function searchTool(
   cwd: string = process.cwd()
 ): Promise<ToolResult> {
   try {
-    const proc = Bun.spawn(["grep", "-rn", "--include", globPattern, pattern, "."], {
-      cwd,
-      stdout: "pipe",
-    });
+    const excludes = IGNORED_DIRS.map(d => `--exclude-dir=${d}`);
+    const proc = Bun.spawn(
+      ["grep", "-rnI", "--include", globPattern, ...excludes, "--", pattern, "."],
+      { cwd, stdout: "pipe", stderr: "pipe" },
+    );
     await proc.exited;
     const stdout = await new Response(proc.stdout).text();
+    const stderr = await new Response(proc.stderr).text();
+    // grep exit codes: 0 = match, 1 = no match (not an error), >=2 = a real error.
+    if (proc.exitCode !== null && proc.exitCode >= 2) {
+      return { success: false, output: stdout, error: stderr.trim() || `grep failed (exit ${proc.exitCode})` };
+    }
     let output = stdout || "No matches found.";
     const MAX_OUTPUT = 100_000;
     if (output.length > MAX_OUTPUT) {

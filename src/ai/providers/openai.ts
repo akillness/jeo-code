@@ -1,6 +1,7 @@
 import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
+import { ProviderHttpError } from "./errors";
 
 function openaiRequest(messages: Message[], options: CallOptions, credential: Credential, stream: boolean): { url: string; headers: Record<string, string>; body: string } {
   const resolvedModel = options.model.startsWith("openai/") ? options.model.slice(7) : options.model;
@@ -37,7 +38,7 @@ export const openaiAdapter: ProviderAdapter = {
     const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`OpenAI API request failed (HTTP ${response.status}): ${text}`);
+      throw new ProviderHttpError("OpenAI", response.status, text);
     }
     const result = (await response.json()) as { choices: { message: { content: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     if (result.usage) options.onUsage?.({ inputTokens: result.usage.prompt_tokens, outputTokens: result.usage.completion_tokens });
@@ -48,7 +49,7 @@ export const openaiAdapter: ProviderAdapter = {
     const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`OpenAI stream failed (HTTP ${response.status}): ${text}`);
+      throw new ProviderHttpError("OpenAI", response.status, text, "(stream)");
     }
     if (!response.body) return;
     for await (const data of readSse(response.body)) {

@@ -15,6 +15,7 @@ import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
 import { renderFooter, type FooterData } from "./components/footer";
+import { getEvolutionStage, renderAsciiArt } from "./components/ascii-art";
 
 export interface LaunchTuiOptions {
   model: string;

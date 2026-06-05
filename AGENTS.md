@@ -48,7 +48,7 @@ launch / 15 in team), and `AbortSignal` (Ctrl-C cancels the in-flight turn).
 | `src/tui/` | `app.ts` (`LaunchTui`), `renderer.ts` (differential ANSI), `terminal.ts`, `components/` (footer, meter, tool-list, spinner, stream, slash) |
 | `src/mcp/` | MCP stdio server (`server.ts`, `tools.ts`, `protocol.ts`); set `JOC_MCP_PIPELINE=1` to expose pipeline tools |
 | `src/skills/` | `catalog.ts` — `SKILLS` docs + `skillsPromptSection()` injected into the launch prompt |
-| `test/` | 27 `bun:test` suites |
+| `test/` | 29 `bun:test` suites |
 | `scripts/` | `install.sh` (canonical), `uninstall.sh`, `smoke-test.sh` |
 | `plan/`, `docs/improvements.md` | Roadmap + ralph-pass changelog (changes are logged here) |
 
@@ -58,7 +58,7 @@ launch / 15 in team), and `AbortSignal` (Ctrl-C cancels the in-flight turn).
 bun install                  # deps: zod (config validation), chalk (doctor colors)
 bun run start --help         # = bun src/cli.ts --help
 bun run typecheck            # tsc -p tsconfig.json --noEmit   (must be 0)
-bun test                     # full suite (27 files)
+bun test                     # full suite (29 files)
 bun test test/engine.test.ts # single suite
 bun run build                # bun build src/cli.ts --compile --outfile dist/joc
 ```
@@ -114,13 +114,20 @@ There is **no linter/formatter** configured — `bun run typecheck` + `bun test`
 ## Runtime/Tooling Preferences
 
 - **Bun only** (≥ `1.3.14`); not Node.js. Use `Bun.spawn`, `Bun.file`, `bun:test`, `bun build`.
-- **Package manager: Bun** (`bun install`, `bun.lock`). Install registers the bin the bun-native
-  way (`bun link` → `~/.bun/bin/joc` + `~/.local/bin/joc`):
+- **Package manager: Bun** (`bun install`, `bun.lock`). Install is a single bun global install
+  (gjc parity: `bun install -g gajae-code`), which exposes `joc` at `~/.bun/bin/joc` plus a
+  compatibility symlink at `~/.local/bin/joc`:
   ```bash
-  ./install.sh                       # = scripts/install.sh --local (dev)
-  sh scripts/install.sh --ref v0.1.0 # clone + install a tag (--binary for compiled bin)
-  sh scripts/uninstall.sh --purge    # remove bin + ~/.joc/
+  bun install -g jeo-code                     # npm registry (once published)
+  bun install -g github:akillness/jeo-code    # global install from GitHub today
+  sh scripts/install.sh --ref v0.1.0          # global install of a tag (--binary for a compiled bin)
+  ./install.sh                                # dev install from a clone (= scripts/install.sh --local, bun link)
+  sh scripts/uninstall.sh --purge            # remove bin + ~/.joc/
   ```
+- **Run entrypoints (gjc parity):** bare `joc` (current checkout), `joc --tmux`
+  (create/attach a `joc-<branch>` tmux leader), `joc --tmux --worktree <path>` (run in a
+  dedicated git worktree). `dispatch` routes a bare call or any leading `--flag` to `launch`;
+  `--worktree` is stripped from the inner tmux command since the session cwd is the worktree.
 - Runtime config: global `~/.joc/config.json` (dir `0700`, file `0600`; override dir with
   `JOC_CONFIG_DIR`); per-project `<cwd>/.joc/` (`seeds/`, `plans/`, `state/`, `sessions/`).
   Env: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `*_OAUTH_TOKEN`, `OLLAMA_HOST`,

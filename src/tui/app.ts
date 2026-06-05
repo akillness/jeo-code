@@ -15,7 +15,8 @@ import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
 import { renderFooter, type FooterData } from "./components/footer";
-import { getEvolutionStage, renderAsciiArt } from "./components/ascii-art";
+import { getEvolutionStage, renderAsciiArt, stageHeight } from "./components/ascii-art";
+import { evolutionTrack, stageIndexForStep } from "./components/evolution";
 
 export interface LaunchTuiOptions {
   model: string;
@@ -107,6 +108,9 @@ export class LaunchTui {
     this.write(showCursor());
     const finalLines = [...this.tools.render()];
     for (const line of this.stream.render(size().cols)) finalLines.push(line);
+    // Show how far the agent evolved this turn.
+    const reached = stageIndexForStep(this.footer.step ?? 0, this.footer.maxSteps ?? DEFAULT_MAX_STEPS);
+    finalLines.push(`Evolved to: ${evolutionTrack(reached)}`);
     finalLines.push(`joc> ${reply}`);
     console.log(finalLines.join("\n"));
   }
@@ -116,11 +120,14 @@ export class LaunchTui {
     const elapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
     const frame: string[] = [];
 
-    // Prepend evolutionary ASCII art
-    const stage = getEvolutionStage(this.footer.step || 0, this.footer.maxSteps);
-    for (const line of renderAsciiArt(stage)) {
+    // Prepend evolutionary ASCII art at a stable block height (no flicker as
+    // stages change), then the live evolution track.
+    const stepNow = this.footer.step || 0;
+    const stage = getEvolutionStage(stepNow, this.footer.maxSteps);
+    for (const line of renderAsciiArt(stage, { height: stageHeight() })) {
       frame.push(line);
     }
+    frame.push(evolutionTrack(stageIndexForStep(stepNow, this.footer.maxSteps ?? DEFAULT_MAX_STEPS)));
     frame.push(""); // spacing line
 
     for (const line of this.tools.render()) frame.push(line);

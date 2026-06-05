@@ -2265,3 +2265,39 @@ retry count. Wired a config-driven budget end to end.
   `withRetry` honors a resolved `requestMaxRetries=2` → 3 attempts). Note: concurrent in-progress
   TUI work (evolution-stage `meter`/`spinner`/ascii-art) is untracked by this pass and is the
   source of any `meter.test.ts` deltas.
+
+---
+
+## Evolution TUI — analysis & 20-pass improvement run (62–81)
+
+**Concept.** A coherent "evolution" identity for the joc TUI: as an agent works
+through its step budget, every animated surface evolves together through five
+stages — **Primordial Cell → Double Helix (DNA) → Tool User → AI Coding Agent →
+Singularity** — across the ASCII art, spinner, progress meter, and footer track.
+
+**Analysis of the seed.** The initial drop scattered stage logic across three
+files (`ascii-art.ts` step thresholds `0.25/0.5/0.75`, `spinner.ts` the same set
+duplicated, `meter.ts` a different `0.2/0.4/0.6/0.8` set), with no shared source
+of truth and broken `meter.test.ts`. The 20 passes below unify, harden, surface,
+and document it.
+
+### Batch A — Foundation (passes 62–65)
+
+- **62. Canonical `evolution.ts`.** New single source of truth:
+  `EVOLUTION_STAGE_COUNT`, `EVOLUTION_STAGE_NAMES/_COLORS/_SPINNER_FRAMES/_METER_GLYPHS`,
+  and the stage math `stageIndexForStep` (step 0 → primordial, then quartiles),
+  `stageIndexForRatio` (5 bands), `clampStageIndex`, `evolutionStageName`,
+  `evolutionTrack`. All guard non-finite / out-of-range inputs.
+- **63. Spinner → canonical.** `Spinner` now sources frames from
+  `EVOLUTION_SPINNER_FRAMES` via `stageIndexForStep`; added `setStage`/`reset` and
+  frame-count-shrink index safety.
+- **64. Meter → canonical.** `meter`/`stepMeter` evolve glyphs+color through the
+  same stages via `stageIndexForRatio`; `width<=0` and non-positive `total`
+  guarded. `meter.test.ts` rewritten to lock the evolutionary output (fixes the
+  2 prior failures).
+- **65. ASCII art → canonical.** `getEvolutionStage` delegates to
+  `stageIndexForStep` (removing the duplicated thresholds); added
+  `getStageByIndex`.
+- **Verify:** `tsc --noEmit` → 0; `bun test` → **150/150 across 30 files** (new
+  `test/evolution.test.ts`: tables aligned, stage math + guards, track render,
+  ascii↔canonical name sync, spinner shrink-safety).

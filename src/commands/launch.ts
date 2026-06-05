@@ -3,7 +3,7 @@ import { runAgentLoop, executorSystemPrompt } from "../agent/engine";
 import { LaunchTui } from "../tui/app";
 import { skillsPromptSection } from "../skills/catalog";
 import { matchSlash, isSlashAttempt } from "../tui/components/slash";
-import { EVOLUTION_STAGES, renderAsciiArt } from "../tui/components/ascii-art";
+import { EVOLUTION_STAGES, renderAsciiArt, animateAsciiArt } from "../tui/components/ascii-art";
 import type { Message } from "../agent/loop";
 import { readGlobalConfig } from "../agent/state";
 import { describeModel } from "../ai";
@@ -336,7 +336,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   // INTERACTIVE mode
   const welcomeStage = EVOLUTION_STAGES[0];
-  console.log(renderAsciiArt(welcomeStage).join("\n"));
+  await animateAsciiArt(welcomeStage);
   console.log(`\n=== joc launch — interactive coding agent (Evolution Stage: ${welcomeStage.name}) ===`);
   console.log(`Model: ${defaultModel}`);
   if (sessionId) console.log(`Session: ${sessionId}`);

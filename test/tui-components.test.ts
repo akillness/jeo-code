@@ -75,7 +75,7 @@ test("renderFooter includes model, step 2/25, 2s and omits step when undefined",
     maxSteps: 25,
     elapsedMs: 2000
   });
-  expect(footer1).toBe("m · step 2/25 · 2s");
+  expect(footer1).toBe("m · step 2/25 · 2s · evo 2/5 Double Helix (DNA)");
 
   const footer2 = renderFooter({
     model: "m",
@@ -91,5 +91,5 @@ test("renderFooter includes model, step 2/25, 2s and omits step when undefined",
     elapsedMs: 4000,
     sessionId: "1a2b3c4d5e6f"
   });
-  expect(footer3).toBe("claude (anthropic) · step 3/10 · 4s · 1a2b3c4d");
+  expect(footer3).toBe("claude (anthropic) · step 3/10 · 4s · 1a2b3c4d · evo 3/5 Tool User (Homo Habilis)");
 });

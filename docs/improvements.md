@@ -2317,3 +2317,18 @@ and document it.
 - **Verify:** `tsc --noEmit` → 0; `bun test` → **157/157 across 31 files** (new
   `test/ascii-art.test.ts`: height/width normalization, color-off no-ANSI, caption
   presence, injectable animate with/without delay).
+
+### Batch C — Footer & app integration (passes 70–73)
+
+- **70. `evolutionTrack()`.** Compact `●●●○○ <stage> [n/5]` renderer in
+  `evolution.ts` (active marker tinted; `color:false` for plain).
+- **71. Footer stage tag.** `renderFooter` appends `evo <n>/5 <stage>` derived
+  from `step`/`maxSteps` (opt-out via `showStage:false`); existing footer
+  assertions updated.
+- **72. Evolved-stage summary.** `LaunchTui.finish()` prints `Evolved to:
+  <track>` so the static scrollback records how far the turn evolved.
+- **73. Stage render cache.** `LaunchTui.draw()` caches the rendered art + track
+  per stage index, so the 120ms spinner tick reuses them instead of
+  re-rendering/re-coloring the block every frame.
+- **Verify:** `tsc --noEmit` → 0; `bun test` → **161/161 across 32 files** (new
+  `test/footer.test.ts`: stage tag presence/tracking/opt-out + segment order).

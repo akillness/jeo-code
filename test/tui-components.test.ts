@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { Spinner, ToolList, StreamRegion, renderFooter } from "../src/tui/components";
+const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 test("Spinner.next cycles and returns to the first frame after a full loop", () => {
   const spinner = new Spinner(["a", "b", "c"]);
@@ -24,27 +25,29 @@ test("ToolList start->render shows running, finish(ok=true)->ok, finish(ok=false
   
   const idx1 = list.start("read");
   expect(idx1).toBe(0);
-  expect(list.render()).toEqual(["  · read running"]);
+  expect(list.render().map(stripAnsi)).toEqual(["  · read running..."]);
 
   const idx2 = list.start("bash");
   expect(idx2).toBe(1);
-  expect(list.render()).toEqual([
-    "  · read running",
-    "  · bash running"
+  expect(list.render().map(stripAnsi)).toEqual([
+    "  · read running...",
+    "  · bash running..."
   ]);
 
   list.finish(idx1, true);
-  expect(list.render()).toEqual([
+  expect(list.render().map(stripAnsi)).toEqual([
     "  · read ok",
-    "  · bash running"
+    "  · bash running..."
   ]);
 
   list.finish(idx2, false);
-  expect(list.render()).toEqual([
+  expect(list.render().map(stripAnsi)).toEqual([
     "  · read ok",
     "  · bash FAILED"
   ]);
 
+  expect(list.currentTool()).toBeUndefined();
+  expect(list.stats()).toEqual({ running: 0, ok: 1, fail: 1, total: 2 });
   list.reset();
   expect(list.render()).toEqual([]);
 });
@@ -75,13 +78,13 @@ test("renderFooter includes model, step 2/25, 2s and omits step when undefined",
     maxSteps: 25,
     elapsedMs: 2000
   });
-  expect(footer1).toBe("m · step 2/25 · 2s · evo 2/5 Double Helix (DNA)");
+  expect(stripAnsi(footer1)).toBe("m · step 2/25 · 2s · \u25cf\u25cf\u25cb\u25cb\u25cb Double Helix (DNA) [2/5]");
 
   const footer2 = renderFooter({
     model: "m",
     elapsedMs: 2000
   });
-  expect(footer2).toBe("m · 2s");
+  expect(stripAnsi(footer2)).toBe("m · 2s");
 
   const footer3 = renderFooter({
     model: "claude",
@@ -91,5 +94,5 @@ test("renderFooter includes model, step 2/25, 2s and omits step when undefined",
     elapsedMs: 4000,
     sessionId: "1a2b3c4d5e6f"
   });
-  expect(footer3).toBe("claude (anthropic) · step 3/10 · 4s · 1a2b3c4d · evo 3/5 Tool User (Homo Habilis)");
+  expect(stripAnsi(footer3)).toBe("claude (anthropic) · step 3/10 · 4s · 1a2b3c4d · \u25cf\u25cf\u25cf\u25cb\u25cb Tool User (Homo Habilis) [3/5]");
 });

@@ -4,9 +4,26 @@ import { LaunchTui } from "../tui/app";
 import { skillsPromptSection } from "../skills/catalog";
 import { matchSlash, isSlashAttempt } from "../tui/components/slash";
 import { EVOLUTION_STAGES, renderAsciiArt, animateAsciiArt } from "../tui/components/ascii-art";
+import { getEvolutionTip } from "../tui/components/evolution";
+import chalk from "chalk";
 import type { Message } from "../agent/loop";
-import { readGlobalConfig } from "../agent/state";
-import { describeModel } from "../ai";
+import { readGlobalConfig, saveGlobalConfig } from "../agent/state";
+import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels } from "../ai";
+import type { ProviderModelsResult } from "../ai";
+
+import { listAliases } from "../ai/model-registry";
+
+import { SUBAGENT_ROLES, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps } from "../agent/subagents";
+import {
+  formatModelLine,
+  formatAliasLines,
+  formatProviderPanel,
+  formatAgentsPanel,
+  formatAgentDetail,
+  formatConfigPanel,
+  formatLiveModels,
+  liveModelKnown,
+} from "../tui/components/config-panel";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { maybeCompact } from "../agent/compaction";
 import * as path from "node:path";
@@ -240,6 +257,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const history: Message[] = [{ role: "system", content: systemPrompt }];
   let sessionModel: string | undefined = undefined;
+  // Session thinking-level override (`/thinking`); falls back to the config level.
+  let sessionThinking: "low" | "medium" | "high" | undefined = cfg.thinkingLevel;
+  // Cache of live, credential-validated models per provider (refreshed via `/models refresh`).
+  let liveModelsCache: ProviderModelsResult[] | null = null;
+  const getLiveModels = async (force = false): Promise<ProviderModelsResult[]> => {
+    if (force || !liveModelsCache) {
+      process.stdout.write("(fetching models from logged-in providers…)\n");
+      liveModelsCache = await discoverModels({ timeoutMs: 4000 });
+    }
+    return liveModelsCache;
+  };
 
   // pi-style session persistence: resume an existing session or create a new one.
   let sessionId: string | undefined;
@@ -266,8 +294,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   }
 
   const streamEvents = {
-    onToolResult: (tool: string, ok: boolean) => console.log(`  · ${tool} ${ok ? "ok" : "FAILED"}`),
-    onError: (msg: string) => console.log(`  ! ${msg}`),
+    onToolResult: (tool: string, ok: boolean) => console.log(`  └─ stream:${ok ? "complete" : "error"} tool ${tool}`),
+    onError: (msg: string) => console.log(`  └─ stream:error ${msg}`),
   };
 
   // Run one conversational turn: compact, persist user msg, run the loop, persist + return the reply.
@@ -280,7 +308,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const beforeLen = history.length;
     history.push({ role: "user", content: userInput });
 
-    const tui = useTui ? new LaunchTui({ model: sessionModel || defaultModel, sessionId, maxSteps: flags.maxSteps }) : null;
+    const activeModel = sessionModel || defaultModel;
+    const { provider: activeProvider } = await describeModel(activeModel);
+    const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: flags.maxSteps }) : null;
     if (tui) tui.start();
     let result;
     const ac = new AbortController();
@@ -291,6 +321,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         cwd,
         maxSteps: flags.maxSteps,
         model: sessionModel,
+        maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
         signal: ac.signal,
         events: tui ? tui.events() : streamEvents,
       });
@@ -338,10 +369,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const welcomeStage = EVOLUTION_STAGES[0];
   await animateAsciiArt(welcomeStage);
   console.log(`\n=== joc launch — interactive coding agent (Evolution Stage: ${welcomeStage.name}) ===`);
-  console.log(`Model: ${defaultModel}`);
+  const { provider: startProvider } = await describeModel(defaultModel);
+  console.log(`Model: ${defaultModel} (${startProvider})  ·  thinking: ${sessionThinking ?? "medium"}`);
   if (sessionId) console.log(`Session: ${sessionId}`);
   if (contextFiles.length > 0) console.log(`Project context: ${contextFiles.map(f => f.path).join(", ")}`);
-  console.log("Type your request. Slash commands: /help /clear /compact /model <id> /sessions /exit" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
+  console.log("Type your request. Slash commands: /help /model /models /provider /agents /config /thinking /sessions /compact /exit" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
 
   const useTui = LaunchTui.usable(flags.noTui);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -353,13 +385,21 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (input === "") continue;
       if (input === "/help") {
         console.log("Slash Commands:");
-        console.log("  /help           - Show this help message");
-        console.log("  /clear          - Clear conversation history (keeps system prompt)");
-        console.log("  /model [model]  - Set or display the session model");
-        console.log("  /sessions       - List saved sessions");
-        console.log("  /compact        - Summarize older turns to free context");
-        console.log("  /exit, /quit    - Exit the agent");
+        console.log("  /help               - Show this help message");
+        console.log("  /clear              - Clear conversation history (keeps system prompt)");
+        console.log("  /model [id]         - Set or display the session model (+ provider, credential)");
+        console.log("  /models [refresh]   - Live model list from logged-in providers (+ aliases)");
+        console.log("  /provider [name] [model] - Provider credentials, or switch + list that provider's live models");
+        console.log("  /agents [role] [model]   - List subagent roles, show one, or pin a role's model (saved)");
+        console.log("  /config             - Show the effective runtime configuration");
+        console.log("  /thinking [level]   - Show or set the thinking budget (low/medium/high)");
+        console.log("  /sessions           - List saved sessions");
+        console.log("  /evolve             - Simulate and view the agent's evolutionary gallery");
+        console.log("  /compact            - Summarize older turns to free context");
+        console.log("  /exit, /quit        - Exit the agent");
         console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .joc/sessions/.");
+        const tip = getEvolutionTip(history.length, flags.maxSteps);
+        console.log(`\n${chalk.cyan("Evolutionary Tip:")} ${tip}`);
         continue;
       }
       if (input === "/clear") {
@@ -378,13 +418,148 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         for (const s of sessions) console.log(`  ${s.id}  (${s.messageCount} msgs)  ${s.preview}`);
         continue;
       }
+      if (input === "/evolve") {
+        console.log("=== Initiating Evolutionary Simulation ===");
+        for (const stage of EVOLUTION_STAGES) {
+          console.log(`\nStage: ${stage.name}`);
+          await animateAsciiArt(stage, { delayMs: 40 });
+        }
+        console.log("\n=== Evolved to Singularity! ===");
+        continue;
+      }
+      if (input.startsWith("/models") && (input === "/models" || input[7] === " ")) {
+        const refresh = input.substring(7).trim().toLowerCase() === "refresh";
+        const cfgNow = await readGlobalConfig();
+        const def = sessionModel || cfgNow.defaultModel;
+        const { resolved, provider } = await describeModel(def);
+        console.log(`Default model: ${formatModelLine({ label: def, resolved, provider })}`);
+        console.log("Aliases:");
+        for (const line of formatAliasLines(await listAliases())) console.log(line);
+        const live = await getLiveModels(refresh);
+        console.log("Live models (logged-in providers):");
+        for (const line of formatLiveModels(live, { current: resolved })) console.log(line);
+        console.log("Refresh with: /models refresh");
+        continue;
+      }
+      if (input.startsWith("/provider") && (input === "/provider" || input[9] === " ")) {
+        const tokens = input.substring(9).trim().split(/\s+/).filter(Boolean);
+        const name = (tokens[0] ?? "").toLowerCase();
+        const explicitModel = tokens[1];
+        const cfgNow = await readGlobalConfig();
+        const statuses = await describeAllProviders(cfgNow);
+        if (!name) {
+          console.log("Providers (credential · base URL):");
+          for (const line of formatProviderPanel(statuses)) console.log(line);
+          console.log("Switch with: /provider <name> [model]  ·  list live models: /models");
+          continue;
+        }
+        const PROVIDER_DEFAULT: Record<string, string> = { anthropic: "sonnet", openai: "gpt", gemini: "flash", ollama: "fast" };
+        if (!(name in PROVIDER_DEFAULT)) {
+          console.log(`Unknown provider '${name}'. Known: ${statuses.map(s => s.name).join(", ")}.`);
+          continue;
+        }
+        const st = statuses.find(s => s.name === name);
+        if (st && !st.ready) {
+          console.log(`! ${name} is not logged in — run 'joc auth login' or set ${st.envVar ?? "the provider key"}. Switching anyway.`);
+        }
+        const target = explicitModel ?? PROVIDER_DEFAULT[name];
+        sessionModel = target;
+        const { resolved, provider } = await describeModel(target);
+        console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}`);
+        // Show the provider's live, credentialed catalog so the user can pick a concrete id.
+        const live = await getLiveModels();
+        const forProvider = live.filter(r => r.provider === name);
+        if (forProvider.length) {
+          console.log(`Live ${name} models:`);
+          for (const line of formatLiveModels(forProvider, { current: resolved })) console.log(line);
+        }
+        if (explicitModel && !liveModelKnown(live, target)) {
+          console.log(`  (note: '${target}' is not in ${name}'s live list — it may still work, or pick one above)`);
+        }
+        continue;
+      }
+      if (input.startsWith("/agents") && (input === "/agents" || input[7] === " ")) {
+        const tokens = input.substring(7).trim().split(/\s+/).filter(Boolean);
+        const roleArg = tokens[0];
+        const modelArg = tokens[1];
+        const cfgNow = await readGlobalConfig();
+        if (!roleArg) {
+          console.log("Subagent roles (used by 'joc team'):");
+          for (const line of formatAgentsPanel(SUBAGENT_ROLES, r => ({
+            model: resolveSubagentModel(r.id, cfgNow),
+            maxSteps: resolveSubagentMaxSteps(r.id, cfgNow),
+          }))) console.log(line);
+          console.log("Detail: /agents <role>  ·  set model: /agents <role> <model>");
+          continue;
+        }
+        const role = getSubagentRole(roleArg);
+        if (!role) {
+          console.log(`Unknown role '${roleArg}'. Known: ${SUBAGENT_ROLES.map(r => r.id).join(", ")}.`);
+          continue;
+        }
+        if (modelArg) {
+          // Persist a per-role model override to ~/.joc/config.json (consumed by 'joc team').
+          const next = { ...cfgNow, subagents: { ...(cfgNow.subagents ?? {}) } };
+          next.subagents[role.id] = { ...next.subagents[role.id], model: modelArg };
+          await saveGlobalConfig(next);
+          const { provider } = await describeModel(modelArg);
+          console.log(`${role.title} model set to ${modelArg} (${provider}) — saved to ~/.joc/config.json`);
+          const live = await getLiveModels();
+          if (!liveModelKnown(live, modelArg)) {
+            console.log(`  (note: '${modelArg}' is not in any live model list — verify it is valid for ${provider})`);
+          }
+          continue;
+        }
+        for (const line of formatAgentDetail(role, {
+          model: resolveSubagentModel(role.id, cfgNow),
+          maxSteps: resolveSubagentMaxSteps(role.id, cfgNow),
+        })) console.log(line);
+        continue;
+      }
+      if (input === "/config") {
+        const cfgNow = await readGlobalConfig();
+        const label = sessionModel || cfgNow.defaultModel;
+        const { resolved, provider } = await describeModel(label);
+        console.log("Effective runtime config:");
+        for (const line of formatConfigPanel({
+          model: label,
+          resolved,
+          provider,
+          thinkingLevel: sessionThinking ?? cfgNow.thinkingLevel ?? "medium",
+          ollamaBaseUrl: cfgNow.ollamaBaseUrl,
+          openaiBaseUrl: cfgNow.openaiBaseUrl,
+          requestMaxRetries: cfgNow.retry?.requestMaxRetries,
+          sessionId,
+        })) console.log(line);
+        continue;
+      }
+      if (input.startsWith("/thinking") && (input === "/thinking" || input[9] === " ")) {
+        const arg = input.substring(9).trim().toLowerCase();
+        if (!arg) {
+          console.log(`Thinking level: ${sessionThinking ?? "medium"} (~${thinkingMaxTokens(sessionThinking)} max tokens/step)`);
+          continue;
+        }
+        if (arg === "low" || arg === "medium" || arg === "high") {
+          sessionThinking = arg;
+          console.log(`Thinking set to ${arg} (~${thinkingMaxTokens(arg)} max tokens/step)`);
+        } else {
+          console.log(`Invalid level '${arg}'. Use: low | medium | high.`);
+        }
+        continue;
+      }
       if (input.startsWith("/model") && (input === "/model" || input[6] === " ")) {
         const arg = input.substring(6).trim();
         const label = arg || (sessionModel || defaultModel);
         if (arg) sessionModel = arg;
         const { resolved, provider } = await describeModel(label);
-        const expansion = resolved !== label ? ` → ${resolved}` : "";
-        console.log(`${arg ? "Model set to" : "Current model"}: ${label}${expansion} (${provider})`);
+        const statuses = await describeAllProviders();
+        const st = statuses.find(s => s.name === provider);
+        console.log(`${arg ? "Model set to" : "Current model"}: ${formatModelLine({ label, resolved, provider, ready: st?.ready })}`);
+        if (st && !st.ready) console.log(`  ! ${provider} has no credential — run 'joc setup' or set ${st.envVar ?? "the provider key"}.`);
+        // When a concrete id was set and we have a live catalog, flag unknown ids.
+        if (arg && liveModelsCache && resolved === label && !liveModelKnown(liveModelsCache, resolved)) {
+          console.log(`  (note: '${resolved}' is not in the live ${provider} catalog — run /models to see valid ids)`);
+        }
         continue;
       }
 

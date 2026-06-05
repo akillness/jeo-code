@@ -8,6 +8,18 @@ import {
   type AuthProvider,
   type OAuthController,
 } from "../auth";
+import {
+  normalizeBaseUrl,
+  chooseDefaultModel,
+  recommendedModelsFor,
+  buildSetupSummary,
+} from "./setup-helpers";
+
+/** Print a model choice's advisory warning + "did you mean" suggestions, if any. */
+function reportModelChoice(r: { warning?: string; suggestions: string[] }): void {
+  if (r.warning) console.log(`  ${r.warning}`);
+  if (r.suggestions.length) console.log(`  Did you mean: ${r.suggestions.join(", ")}?`);
+}
 
 type ProviderChoice = "anthropic" | "openai" | "gemini" | "ollama" | "lmstudio" | "openai-compatible";
 
@@ -114,11 +126,15 @@ export async function runSetupCommand(): Promise<void> {
         if (key.trim()) next.providers[choice] = key.trim();
       }
     }
-    const dm = await rl.question(`Default model for ${choice} [${DEFAULT_MODELS[choice]}]: `);
-    next.defaultModel = dm.trim() || DEFAULT_MODELS[choice];
+    console.log(`\nRecommended ${choice} models:`);
+    for (const m of recommendedModelsFor(choice)) console.log(`  - ${m}`);
+    const dm = await rl.question(`Default model for ${choice} [${recommendedModelsFor(choice)[0]?.split(" ")[0] ?? DEFAULT_MODELS[choice]}]: `);
+    const picked = chooseDefaultModel(dm, choice);
+    reportModelChoice(picked);
+    next.defaultModel = picked.model || DEFAULT_MODELS[choice];
   } else if (choice === "ollama") {
     const url = await rl.question(`Ollama base URL [${current.ollamaBaseUrl || DEFAULT_BASE_URLS.ollama}]: `);
-    next.ollamaBaseUrl = url.trim() || current.ollamaBaseUrl || DEFAULT_BASE_URLS.ollama;
+    next.ollamaBaseUrl = normalizeBaseUrl(url, current.ollamaBaseUrl || DEFAULT_BASE_URLS.ollama!);
     console.log(`Probing models at ${next.ollamaBaseUrl} …`);
     const models = await listOllamaModels(next.ollamaBaseUrl!);
     if (models.length) {
@@ -126,14 +142,16 @@ export async function runSetupCommand(): Promise<void> {
       models.slice(0, 20).forEach((m, i) => console.log(`  - ${m}`));
       const def = await rl.question(`Default model (ollama/<name>) [${"ollama/" + (models[0] ?? "llama3.1:8b")}]: `);
       next.defaultModel = def.trim() || `ollama/${models[0] ?? "llama3.1:8b"}`;
+      reportModelChoice(chooseDefaultModel(next.defaultModel, "ollama"));
     } else {
       console.log("  (no models detected — Ollama not reachable, defaulting to llama3.1:8b)");
-      const def = await rl.question(`Default model [${DEFAULT_MODELS.ollama}]: `);
-      next.defaultModel = def.trim() || DEFAULT_MODELS.ollama;
+      const picked = chooseDefaultModel(await rl.question(`Default model [${DEFAULT_MODELS.ollama}]: `), "ollama");
+      reportModelChoice(picked);
+      next.defaultModel = picked.model || DEFAULT_MODELS.ollama;
     }
   } else if (choice === "lmstudio" || choice === "openai-compatible") {
     const dflt = DEFAULT_BASE_URLS[choice]!;
-    const url = (await rl.question(`Base URL [${dflt}]: `)).trim() || dflt;
+    const url = normalizeBaseUrl(await rl.question(`Base URL [${dflt}]: `), dflt);
     const key = (await rl.question(`API key (optional, blank for none): `)).trim();
     // Reuse the openai slot for compat (loop.ts treats OpenAI URL when openai key is set).
     // To not collide, keep an explicit override field via env-style.
@@ -146,10 +164,12 @@ export async function runSetupCommand(): Promise<void> {
       models.slice(0, 20).forEach(m => console.log(`  - ${m}`));
       const def = await rl.question(`Default model (openai/<name>) [openai/${models[0]}]: `);
       next.defaultModel = def.trim() || `openai/${models[0]}`;
+      reportModelChoice(chooseDefaultModel(next.defaultModel, "openai"));
     } else {
       console.log("  (no models detected — endpoint not reachable yet)");
-      const def = await rl.question(`Default model [${DEFAULT_MODELS[choice]}]: `);
-      next.defaultModel = def.trim() || DEFAULT_MODELS[choice];
+      const picked = chooseDefaultModel(await rl.question(`Default model [${DEFAULT_MODELS[choice]}]: `), "openai");
+      reportModelChoice(picked);
+      next.defaultModel = picked.model || DEFAULT_MODELS[choice];
     }
     // Persist base URL by writing it to the config via a non-typed field — adopt a small extension.
     (next as Config & { openaiBaseUrl?: string }).openaiBaseUrl = url;
@@ -165,12 +185,6 @@ export async function runSetupCommand(): Promise<void> {
 
   await saveGlobalConfig(next);
   console.log("\n[SUCCESS] Configuration saved to ~/.joc/config.json");
-  console.log(`Default model: ${next.defaultModel}`);
-  const enabled: string[] = [];
-  if (next.providers.anthropic || next.oauth?.anthropic) enabled.push("anthropic");
-  if (next.providers.openai || next.oauth?.openai) enabled.push("openai");
-  if (next.providers.gemini || next.oauth?.gemini) enabled.push("gemini");
-  if (next.ollamaBaseUrl) enabled.push(`ollama(${next.ollamaBaseUrl})`);
-  if ((next as Config & { openaiBaseUrl?: string }).openaiBaseUrl) enabled.push(`openai-compatible(${(next as Config & { openaiBaseUrl?: string }).openaiBaseUrl})`);
-  console.log(`Enabled providers: ${enabled.join(", ") || "None"}\n`);
+  for (const line of buildSetupSummary(next)) console.log(line);
+  console.log("");
 }

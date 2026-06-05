@@ -1,7 +1,9 @@
 import { readGlobalConfig } from "../agent/state";
 import { listAliases, resolveModelId } from "../ai/model-registry";
 import { resolveProvider } from "../ai/model-manager";
-import { resolveCredential, type AuthProvider } from "../auth";
+import { describeAllProviders } from "../ai/provider-status";
+import { discoverModels } from "../ai/model-discovery";
+import { formatLiveModels } from "../tui/components/config-panel";
 
 async function probeOllama(baseUrl: string): Promise<string[]> {
   try {
@@ -34,7 +36,7 @@ export async function runModelsCommand(_args: string[] = []): Promise<void> {
   const aliases = await listAliases();
   console.log("\nAliases (use as the model id; config overrides built-ins):");
   for (const [alias, target] of Object.entries(aliases)) {
-    console.log(`  ${alias.padEnd(10)} → ${target}`);
+    console.log(`  ${alias.padEnd(10)} → ${target.padEnd(22)} (${resolveProvider(target)})`);
   }
 
   const ollamaBase = config.ollamaBaseUrl ?? "http://localhost:11434";
@@ -50,14 +52,14 @@ export async function runModelsCommand(_args: string[] = []): Promise<void> {
     else console.log("  (none reachable)");
   }
   console.log("\nProvider credentials:");
-  for (const p of ["anthropic", "openai", "gemini"] as AuthProvider[]) {
-    const cred = await resolveCredential(p);
-    const label =
-      cred.kind === "api_key" ? "API key" :
-      cred.kind === "oauth" ? "OAuth" :
-      "none (run 'joc setup' or 'joc auth login')";
-    console.log(`  ${p.padEnd(10)} ${label}`);
+  for (const status of await describeAllProviders(config)) {
+    const base = status.baseUrl ? `  [${status.baseUrl}]` : "";
+    console.log(`  ${status.name.padEnd(10)} ${status.ready ? "✓" : "·"} ${status.label}${base}`);
   }
+
+  console.log("\nLive models (logged-in providers):");
+  const live = await discoverModels({ config, timeoutMs: 4000 });
+  for (const line of formatLiveModels(live, { current: resolved, perProvider: 20 })) console.log(line);
 
   console.log("\nSet a default with 'joc setup' or JOC_DEFAULT_MODEL=<id>.");
 }

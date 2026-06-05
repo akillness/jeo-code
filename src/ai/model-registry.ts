@@ -1,4 +1,5 @@
 import { readGlobalConfig } from "../agent/state";
+import { findCatalogEntry } from "./model-catalog";
 
 export interface ModelAliases {
   [alias: string]: string;
@@ -34,4 +35,49 @@ export async function listAliases(): Promise<ModelAliases> {
   const config = await readGlobalConfig();
   const modelAliases = (config as any).modelAliases ?? {};
   return { ...BUILTIN_ALIASES, ...modelAliases };
+}
+
+/** Alias names (sorted) whose target resolves to `id`. Reverse of `expandAlias`. */
+export function aliasesFor(id: string, aliases: ModelAliases = BUILTIN_ALIASES): string[] {
+  return Object.entries(aliases)
+    .filter(([, target]) => target === id)
+    .map(([alias]) => alias)
+    .sort();
+}
+
+/** True when `input` is a defined alias (not a concrete model id). */
+export function isAlias(input: string, aliases: ModelAliases = BUILTIN_ALIASES): boolean {
+  return Object.prototype.hasOwnProperty.call(aliases, input);
+}
+
+export interface AliasDescription {
+  alias: string;
+  target: string;
+  isAlias: boolean;
+  /** True when the target is a known catalog model id. */
+  knownTarget: boolean;
+}
+
+/** Describe an alias: its target + whether the target is a known catalog model. */
+export function describeAlias(input: string, aliases: ModelAliases = BUILTIN_ALIASES): AliasDescription {
+  const defined = isAlias(input, aliases);
+  const target = defined ? aliases[input]! : input;
+  return { alias: input, target, isAlias: defined, knownTarget: !!findCatalogEntry(target) };
+}
+
+/**
+ * Validate an alias table: flag aliases whose target is not a known catalog
+ * model (advisory — uncatalogued targets still work, but a typo usually shows up
+ * here). Returns only the suspicious entries.
+ */
+export function validateAliases(aliases: ModelAliases): { alias: string; target: string }[] {
+  return Object.entries(aliases)
+    .filter(([, target]) => !findCatalogEntry(target))
+    .map(([alias, target]) => ({ alias, target }))
+    .sort((a, b) => a.alias.localeCompare(b.alias));
+}
+
+/** Async: reverse-alias lookup against the effective (builtin + config) table. */
+export async function effectiveAliasesFor(id: string): Promise<string[]> {
+  return aliasesFor(id, await listAliases());
 }

@@ -42,10 +42,10 @@ launch / 15 in team), and `AbortSignal` (Ctrl-C cancels the in-flight turn).
 | Path | Purpose |
 | --- | --- |
 | `src/agent/` | Tool engine (`engine.ts`), tools + MutationGuard (`tools.ts`), `loop.ts`, `json.ts`, `session.ts`, `compaction.ts`, `context-files.ts`, `state.ts` |
-| `src/ai/` | `model-manager.ts` (routing/credentials), `model-registry.ts` (aliases), `types.ts`, `sse.ts`, `providers/{anthropic,openai,gemini,ollama,errors}.ts` |
+| `src/ai/` | `model-manager.ts` (catalog-authoritative routing/credentials + `describeModelDetailed`), `model-registry.ts` (aliases + reverse-alias/validation), `model-catalog.ts` (curated models: provider/context/reasoning/recommended + fuzzy `suggestModels`), `provider-status.ts` (credential readiness), `types.ts`, `sse.ts`, `providers/{anthropic,openai,gemini,ollama,errors}.ts` |
 | `src/auth/` | OAuth PKCE, callback-server, token storage + auto-refresh, `flows/{anthropic,openai,google}` |
 | `src/commands/` | `launch, setup, auth, deep-interview, ralplan, approve, team, ultragoal, doctor, mcp, models, skills, resume, chat, evolve` (15) |
-| `src/tui/` | `app.ts` (`LaunchTui`), `renderer.ts` (differential ANSI), `terminal.ts`, `components/` (`evolution.ts` = canonical 5-stage model, footer, meter, ascii-art, tool-list, spinner, stream, slash) |
+| `src/tui/` | `app.ts` (`LaunchTui`, fills terminal width+height on a TTY), `renderer.ts` (differential ANSI), `terminal.ts` (ANSI-aware `truncate`), `components/` (`evolution.ts` = canonical 5-stage model + sub-stage/transition helpers, `color.ts` = capability + truecolor gradient, `capability.ts` = unicode detection, `layout.ts` = fit/center/box, `themes.ts` = cosmic/matrix/solar/mono, `select-list.ts` = keyboard-navigable picker, `model-picker.ts`/`provider-picker.ts` = catalog-driven choosers, `config-panel.ts` = `/model`·`/provider`·`/config` formatters, footer, meter+sparkline, ascii-art (+frames), tool-list, spinner, stream, slash) |
 | `src/mcp/` | MCP stdio server (`server.ts`, `tools.ts`, `protocol.ts`); set `JOC_MCP_PIPELINE=1` to expose pipeline tools |
 | `src/skills/` | `catalog.ts` — `SKILLS` docs + `skillsPromptSection()` injected into the launch prompt |
 | `test/` | 33 `bun:test` suites |
@@ -123,9 +123,11 @@ There is **no linter/formatter** configured — `bun run typecheck` + `bun test`
   (gjc parity: `bun install -g gajae-code`), which exposes `joc` at `~/.bun/bin/joc` plus a
   compatibility symlink at `~/.local/bin/joc`:
   ```bash
-  bun install -g jeo-code                     # npm registry (once published)
-  bun install -g github:akillness/jeo-code    # global install from GitHub today
-  sh scripts/install.sh --ref v0.1.0          # global install of a tag (--binary for a compiled bin)
+  bun install -g jeo-code                                      # npm registry (once published)
+  bun install -g github:akillness/jeo-code                     # GitHub shorthand
+  bun install -g git+https://github.com/akillness/jeo-code.git # explicit Git URL
+  sh scripts/install.sh --registry https://registry.npmjs.org/ # one-shot registry, no npm config mutation
+  sh scripts/install.sh --ref v0.1.0                           # global install of a tag (--binary for a compiled bin)
   ./install.sh                                # dev install from a clone (= scripts/install.sh --local, bun link)
   sh scripts/uninstall.sh --purge            # remove bin + ~/.joc/
   ```

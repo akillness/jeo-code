@@ -1,4 +1,4 @@
-import { EVOLUTION_SPINNER_FRAMES, stageIndexForStep, clampStageIndex } from "./evolution";
+import { spinnerFramesFor, stageIndexForStep, clampStageIndex } from "./evolution";
 
 /**
  * Stage-aware spinner. Frames evolve with the agent's step against its budget,
@@ -9,10 +9,12 @@ export class Spinner {
   private defaultFrames: string[];
   private frames: string[];
   private index: number = 0;
+  private unicode: boolean;
 
-  constructor(frames?: string[]) {
+  constructor(frames?: string[], opts: { unicode?: boolean } = {}) {
+    this.unicode = opts.unicode !== false;
     // Default to the "AI Coding Agent" stage frames when none are supplied.
-    this.defaultFrames = frames || [...EVOLUTION_SPINNER_FRAMES[3]!];
+    this.defaultFrames = frames || spinnerFramesFor(3, this.unicode);
     this.frames = this.defaultFrames;
   }
 
@@ -24,7 +26,7 @@ export class Spinner {
 
   /** Switch frame set to an explicit stage index (clamped). */
   setStage(stageIndex: number): void {
-    this.frames = [...EVOLUTION_SPINNER_FRAMES[clampStageIndex(stageIndex)]!];
+    this.frames = spinnerFramesFor(clampStageIndex(stageIndex), this.unicode);
     // Keep the animation phase valid when the frame count shrinks.
     this.index = this.frames.length ? this.index % this.frames.length : 0;
   }

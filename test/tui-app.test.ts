@@ -70,8 +70,8 @@ test("LaunchTui: multiple onStep renders do not produce duplicate footers in out
   ev.onStep!(3);
   
   // 1. Verify that ANSI cursor-up codes do not exceed the rendered block height.
-  // The block height is at most 12 lines (8 lines DNA ASCII art + 1 spacing line + 1 tool row + 1 footer row).
-  const blockHeight = 12;
+  // The live frame now includes evolution art, tool rows, forge boxes, two status rows, and footer.
+  const blockHeight = 24;
   for (const chunk of out) {
     const cursorUpRegex = /\x1b\[(\d+)A/g;
     let match;

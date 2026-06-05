@@ -10,16 +10,25 @@
  * `runAgentLoop` and calls `tui.start()` / `tui.finish(reply)` around the turn.
  */
 import { Renderer } from "./renderer";
+import { readWorkflowState } from "../agent/state";
 import { size, isTTY, hideCursor, showCursor } from "./terminal";
 import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
 import { renderFooter, type FooterData } from "./components/footer";
 import { getStageByIndex, renderAsciiArt, stageHeight, stageWidth } from "./components/ascii-art";
-import { evolutionTrack, createStageProgress, type StageProgress } from "./components/evolution";
+import { evolutionTrack, createStageProgress, type StageProgress, getEvolutionStatusMessage, transitionMessage } from "./components/evolution";
+import { supportsUnicode } from "./components/capability";
+import { centerBlock, padLineTo, fillScreen, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
+import { resolveTheme } from "./components/themes";
+import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, type ForgeSummary } from "./components/forge";
+import { renderJocStatus } from "./components/status";
+import chalk from "chalk";
 
 export interface LaunchTuiOptions {
   model: string;
+  /** Resolved provider name for the footer (anthropic / openai / gemini / ollama). */
+  provider?: string;
   sessionId?: string;
   write?: (s: string) => void;
   /** Step budget for this turn; drives the footer's `step N/M` denominator. */
@@ -38,25 +47,42 @@ const DEFAULT_MAX_STEPS = 25;
 export class LaunchTui {
   private readonly renderer: Renderer;
   private readonly write: (s: string) => void;
-  private readonly spinner = new Spinner();
+  private readonly spinner: Spinner;
   private readonly tools = new ToolList();
   private readonly stream = new StreamRegion();
+  private readonly forgeSummaries: ForgeSummary[] = [];
   private readonly footer: FooterData;
   private startedAt = 0;
+  private tickCount = 0;
+  private mutationGuarded = false;
   private timer: ReturnType<typeof setInterval> | undefined;
   private pendingIndex: number | null = null;
   // Cache the rendered art + track per stage so the 120ms spinner tick reuses
   // them instead of re-rendering/re-coloring the block every frame.
   private cachedStageIndex = -1;
+  private cachedCols = -1;
   private cachedArt: string[] = [];
   private cachedTrack = "";
   // Monotonic stage progress so evolution only ever moves forward this turn.
   private readonly progress: StageProgress = createStageProgress();
+  // Terminal unicode capability, detected once (drives spinner/track glyph set).
+  private readonly unicode: boolean = supportsUnicode();
+  // Active color theme (JOC_TUI_THEME), default cosmic; `mono` disables color.
+  private readonly theme = resolveTheme();
 
   constructor(opts: LaunchTuiOptions) {
     this.write = opts.write ?? ((s: string) => process.stdout.write(s));
     this.renderer = new Renderer(this.write);
-    this.footer = { model: opts.model, sessionId: opts.sessionId, maxSteps: opts.maxSteps ?? DEFAULT_MAX_STEPS };
+    this.spinner = new Spinner(undefined, { unicode: this.unicode });
+    this.footer = {
+      model: opts.model,
+      provider: opts.provider,
+      sessionId: opts.sessionId,
+      maxSteps: opts.maxSteps ?? DEFAULT_MAX_STEPS,
+      unicode: this.unicode,
+      showEta: true,
+      showProgress: true,
+    };
   }
 
   /** Whether a TUI should be used at all (TTY required). */
@@ -76,18 +102,23 @@ export class LaunchTui {
       onAssistant: (_raw, invocation) => {
         if (invocation && invocation.tool !== "done") {
           this.pendingIndex = this.tools.start(invocation.tool);
+          this.rememberForge(summarizeForgeInvocation(invocation.tool, invocation.arguments));
           this.draw();
         }
       },
-      onToolResult: (_tool, success) => {
+      onToolResult: (tool, success, output) => {
         if (this.pendingIndex !== null) {
           this.tools.finish(this.pendingIndex, success);
           this.pendingIndex = null;
         }
+        this.rememberForge(summarizeForgeResult(tool, success, output));
+        const marker = success ? (this.unicode ? "✓" : "v") : (this.unicode ? "✗" : "x");
+        this.stream.append(`${marker} ${success ? "complete" : "error"}: ${tool}\n`);
         this.draw();
       },
       onError: msg => {
-        this.stream.append(`! ${msg}`);
+        const marker = this.unicode ? "✗" : "x";
+        this.stream.append(`${marker} error: ${msg}\n`);
         this.draw();
       },
     };
@@ -98,8 +129,16 @@ export class LaunchTui {
     this.spinner.updateStep(0, this.footer.maxSteps);
     this.write(hideCursor());
     this.draw();
+
+    readWorkflowState("deep-interview")
+      .then(state => {
+        this.mutationGuarded = !!(state && state.active && state.current_phase !== "complete");
+        this.draw();
+      })
+      .catch(() => {});
     // Animate the spinner + elapsed clock while the model is thinking.
     this.timer = setInterval(() => {
+      this.tickCount++;
       this.spinner.next();
       this.draw();
     }, 120);
@@ -115,34 +154,103 @@ export class LaunchTui {
     this.write(showCursor());
     const finalLines = [...this.tools.render()];
     for (const line of this.stream.render(size().cols)) finalLines.push(line);
-    // Show how far the agent evolved this turn (monotonic peak).
-    finalLines.push(`Evolved to: ${evolutionTrack(this.progress.current())}`);
+    for (const line of this.renderForge(size().cols, 3)) finalLines.push(line);
+    // Show how far the agent evolved this turn (monotonic peak) with rich statistics.
+    const elapsedSecs = Math.round((Date.now() - this.startedAt) / 1000);
+    const steps = this.footer.step || 0;
+    const peak = this.progress.current();
+    finalLines.push(`Evolved to: ${evolutionTrack(peak, { unicode: this.unicode, color: this.theme.color })} (took ${steps} steps in ${elapsedSecs}s)`);
     finalLines.push(`joc> ${reply}`);
     console.log(finalLines.join("\n"));
   }
 
-  private draw(): void {
-    const cols = size().cols;
-    const elapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
-    const frame: string[] = [];
+  private rememberForge(summary: ForgeSummary): void {
+    this.forgeSummaries.push(summary);
+    if (this.forgeSummaries.length > 8) this.forgeSummaries.shift();
+  }
 
-    // Prepend evolutionary ASCII art at a stable block height (no flicker as
-    // stages change), then the live evolution track. Both are cached per stage
-    // index so the frequent spinner tick does not re-render the block.
+  private renderForge(width: number, maxEntries: number): string[] {
+    const boxWidth = Math.max(24, Math.min(96, width));
+    const paint = this.theme.color ? chalk.gray : (s: string) => s;
+    const lines: string[] = [];
+    for (const summary of this.forgeSummaries.slice(-maxEntries)) {
+      if (lines.length > 0) lines.push("");
+      lines.push(...formatForgeBox(summary, { width: boxWidth, maxLines: 8, unicode: this.unicode, paint }));
+    }
+    return lines;
+  }
+
+  private draw(): void {
+    const { cols, rows } = size();
+    const fit = isTTY(); // fill terminal width+height only on a real TTY
+    const elapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
+
+    // Resolve the current (monotonic) stage; announce a transition once when it
+    // first advances. The art + track are cached per stage index/cols so the
+    // 120ms spinner tick does not re-render the block every frame.
     const stepNow = this.footer.step || 0;
     const idx = this.progress.observe(stepNow, this.footer.maxSteps ?? DEFAULT_MAX_STEPS);
-    if (idx !== this.cachedStageIndex) {
-      this.cachedStageIndex = idx;
-      this.cachedArt = renderAsciiArt(getStageByIndex(idx), { height: stageHeight(), width: stageWidth() });
-      this.cachedTrack = evolutionTrack(idx);
+    const isThinking = this.timer !== undefined;
+    if (fit && this.progress.advanced() && idx > 0) {
+      const arrow = this.unicode ? "\u27f6" : "->";
+      this.stream.append(`${arrow} ${transitionMessage(idx)}\n`);
     }
-    for (const line of this.cachedArt) frame.push(line);
-    frame.push(this.cachedTrack);
-    frame.push(""); // spacing line
+    if (idx !== this.cachedStageIndex || cols !== this.cachedCols || isThinking) {
+      this.cachedStageIndex = idx;
+      this.cachedCols = cols;
+      const art = renderAsciiArt(getStageByIndex(idx), {
+        height: stageHeight(),
+        width: stageWidth(),
+        cols,
+        firing: isThinking,
+        frame: isThinking ? this.tickCount : 0,
+      });
+      this.cachedArt = fit ? centerBlock(art, cols) : art;
+      const track = evolutionTrack(idx, { unicode: this.unicode, color: this.theme.color });
+      this.cachedTrack = fit ? padLineTo(track, cols, "center") : track;
+    }
 
-    for (const line of this.tools.render()) frame.push(line);
-    for (const line of this.stream.render(cols)) frame.push(line);
-    frame.push(`${this.spinner.current()} ${renderFooter({ ...this.footer, elapsedMs })}`);
+    // Header: centered ASCII art + centered evolution track + spacing.
+    const header = [...this.cachedArt, this.cachedTrack, ""];
+
+    // Body: live tool list + stream region.
+    const body: string[] = [];
+    const toolCap = fit ? Math.max(3, rows - stageHeight() - 6) : undefined;
+    for (const line of this.tools.render(toolCap)) body.push(line);
+    for (const line of this.stream.render(cols)) body.push(line);
+    // Heavy panels only when filling a real screen; keep pipes/tests compact.
+    if (fit) for (const line of this.renderForge(cols, 2)) body.push(line);
+
+    // Bottom-pinned status + footer.
+    const bottom: string[] = [];
+    if (isThinking) {
+      const statusMsg = getEvolutionStatusMessage(stepNow, this.footer.maxSteps ?? DEFAULT_MAX_STEPS, this.tickCount);
+      if (fit) {
+        const stats = this.tools.stats();
+        for (const line of renderJocStatus({
+          step: stepNow,
+          maxSteps: this.footer.maxSteps,
+          elapsedMs,
+          message: statusMsg,
+          currentTool: this.tools.currentTool(),
+          okCount: stats.ok,
+          failCount: stats.fail,
+          runningCount: stats.running,
+          totalCount: stats.total,
+          mutationGuarded: this.mutationGuarded,
+          unicode: this.unicode,
+        })) bottom.push(line);
+      } else {
+        // Compact single-line status off a TTY (pipes / tests).
+        const guardBadge = this.mutationGuarded ? ` ${chalk.red.bold("[MUTATION LOCKED]")}` : "";
+        bottom.push(`  ${chalk.italic.gray(statusMsg)}${guardBadge}`);
+      }
+    }
+    bottom.push(`${this.spinner.current()} ${renderFooter({ ...this.footer, elapsedMs })}`);
+
+    // On a TTY, fill the whole screen (footer pinned to the bottom row); off a
+    // TTY (pipes/tests) keep the compact stacked frame.
+    const frame = fit ? fillScreen(header, body, bottom, rows) : [...header, ...body, ...bottom];
     this.renderer.render(frame);
   }
 }

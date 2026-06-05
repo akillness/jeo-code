@@ -63,6 +63,8 @@ export interface AgentLoopOptions {
   cwd: string;
   maxSteps?: number;
   model?: string;
+  /** Max generation tokens per step (drives the thinking budget). */
+  maxTokens?: number;
   tools?: Record<string, ToolHandler>;
   signal?: AbortSignal;
   events?: AgentLoopEvents;
@@ -120,11 +122,12 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     let responseText: string;
     try {
       responseText = await callLlm(history, {
-        jsonMode: true,
-        model: opts.model,
-        signal: opts.signal,
-        onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
-      });
+              jsonMode: true,
+              model: opts.model,
+              maxTokens: opts.maxTokens,
+              signal: opts.signal,
+              onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
+            });
     } catch (err) {
       const message = (err as Error).message;
       ev.onError?.(message);

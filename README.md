@@ -198,9 +198,19 @@ Routing is inferred from the model id; credentials resolve from `~/.joc/config.j
 | Per-project runtime | `<cwd>/.joc/` → `seeds/`, `plans/`, `state/`, `sessions/` |
 
 `config.json` fields: `providers`, `oauth`, `defaultModel`, `ollamaBaseUrl`, `openaiBaseUrl`,
-`thinkingLevel`. Env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, the
-`*_OAUTH_TOKEN` bearers, `OLLAMA_HOST`, `OPENAI_BASE_URL`, `JOC_DEFAULT_MODEL`) fill gaps but
-never override on-disk values. Verify everything with `joc doctor`.
+`thinkingLevel`, `modelAliases`, `retry`. Env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`GEMINI_API_KEY`, the `*_OAUTH_TOKEN` bearers, `OLLAMA_HOST`, `OPENAI_BASE_URL`,
+`JOC_DEFAULT_MODEL`) fill gaps but never override on-disk values. Verify everything with `joc doctor`.
+
+**Provider retry budgets (gjc parity).** `retry.requestMaxRetries` sets how many times a failed
+provider request is retried (the initial request is not counted); `retry.maxDelayMs` caps the
+exponential backoff. `retry.streamMaxRetries` / `retry.maxRetries` are accepted for gjc-config
+compatibility. Retries apply only to transient failures (network errors, `408/425/429/5xx/529`),
+honoring a server `Retry-After`; auth, bad-model, and malformed-request errors stay fail-fast.
+
+```json
+{ "defaultModel": "claude-3-5-sonnet", "retry": { "requestMaxRetries": 4, "maxDelayMs": 300000 } }
+```
 
 ---
 

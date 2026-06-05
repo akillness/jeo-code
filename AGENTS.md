@@ -89,6 +89,11 @@ There is **no linter/formatter** configured — `bun run typecheck` + `bun test`
   (`src/agent/state.ts`) reads `~/.joc/config.json`, validates it via `parseConfig`
   (`src/agent/config-schema.ts`, zod) — on a bad config it warns and falls back to env defaults — then
   overlays env vars only for gaps. Workflow state is `.joc/state/<skill>-state.json`.
+- **Provider retry budgets (gjc parity):** `config.retry.requestMaxRetries` (retries, excluding
+  the initial request) and `retry.maxDelayMs` (backoff cap) feed `resolveRetryOptions`
+  (`src/ai/model-manager.ts`) → `withRetry` (`src/util/retry.ts`) at both `call`/`stream` sites;
+  `streamMaxRetries`/`maxRetries` are accepted for gjc-config compatibility. Only transient
+  errors retry (`defaultRetryable`); auth/bad-model/malformed stay fail-fast.
 - **`edit` tool patch syntax** (`src/agent/tools.ts`): `≔A..B` replace lines, `≔A+` insert after line
   A (`≔0+` prepends), `≔$` append to EOF, or a `<<<<<<< SEARCH/=======/>>>>>>>` block. Keep
   `TOOL_PROTOCOL` (`src/agent/engine.ts`) in sync when changing it.

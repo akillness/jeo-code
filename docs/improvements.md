@@ -2239,3 +2239,29 @@ Files: `src/commands/doctor.ts`.
   `test/worktree.test.ts`: dispatch routing, `--version` non-routing, unknown-command,
   worktree reuse+`chdir`, real `git worktree add` creation). Real install smoke:
   `sh scripts/install.sh --local` links `~/.bun/bin/joc` + `~/.local/bin/joc`; `joc --version` ok.
+
+---
+
+## 61. Configurable provider retry budgets (gjc parity)
+
+**Dimension: ai/config.** gjc exposes `~/.gjc/config.yml` `retry.{requestMaxRetries,
+streamMaxRetries, maxRetries, maxDelayMs}`; `joc` previously hard-coded the provider request
+retry count. Wired a config-driven budget end to end.
+
+- **Schema/type.** Added an optional `retry` block to `ConfigSchema`
+  (`src/agent/config-schema.ts`, validates non-negative ints) and `Config`
+  (`src/agent/state.ts`). `requestMaxRetries`/`maxDelayMs` are honored; `streamMaxRetries`/
+  `maxRetries` are accepted for gjc-config compatibility.
+- **Wiring.** New `resolveRetryOptions(config.retry)` (`src/ai/model-manager.ts`) maps
+  `requestMaxRetries` → `withRetry` total attempts (`requestMaxRetries + 1`, since it counts
+  retries not the initial request) and passes `maxDelayMs` through. Applied at both
+  `ModelManager.call` and the `stream` non-streaming fallback. Only transient errors retry
+  (`defaultRetryable`: network + `408/425/429/5xx/529`, honoring `Retry-After`); unset → prior
+  defaults (3 attempts).
+- **Docs.** README Configuration documents `retry` with a JSON example; `AGENTS.md` records the
+  config→resolve→withRetry path.
+- **Verify:** `tsc --noEmit` → 0; new tests pass — `test/config-schema.test.ts` (retry block
+  accepted; negative rejected) and `test/retry.test.ts` (`resolveRetryOptions` mapping +
+  `withRetry` honors a resolved `requestMaxRetries=2` → 3 attempts). Note: concurrent in-progress
+  TUI work (evolution-stage `meter`/`spinner`/ascii-art) is untracked by this pass and is the
+  source of any `meter.test.ts` deltas.

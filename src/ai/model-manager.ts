@@ -7,7 +7,8 @@ import { geminiAdapter } from "./providers/gemini";
 import { ollamaAdapter } from "./providers/ollama";
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId } from "./model-registry";
-import { withRetry, defaultRetryable } from "../util/retry";
+import { withRetry, defaultRetryable, type RetryOptions } from "../util/retry";
+import type { Config } from "../agent/state";
 
 const ADAPTERS: Record<ProviderName, ProviderAdapter> = {
   anthropic: anthropicAdapter,
@@ -46,10 +47,28 @@ export interface ModelManager {
 
 const ALIAS_DEFAULTS = { fast: "ollama/qwen2.5:0.5b", local: "ollama/qwen2.5:0.5b", sonnet: "claude-3-5-sonnet", gpt: "gpt-4o", flash: "gemini-2.5-flash" };
 
+/**
+ * Build retry options from a config `retry` budget (gjc parity). `requestMaxRetries`
+ * counts retries (not the initial request), so total `withRetry` attempts =
+ * requestMaxRetries + 1. When unset, the `withRetry` defaults apply (3 attempts).
+ * `maxDelayMs` caps backoff when provided.
+ */
+export function resolveRetryOptions(retry: Config["retry"]): RetryOptions {
+  const opts: RetryOptions = { isRetryable: defaultRetryable };
+  if (typeof retry?.requestMaxRetries === "number") {
+    opts.retries = retry.requestMaxRetries + 1;
+  }
+  if (typeof retry?.maxDelayMs === "number") {
+    opts.maxDelayMs = retry.maxDelayMs;
+  }
+  return opts;
+}
+
 interface Resolved {
   adapter: ProviderAdapter;
   callOptions: CallOptions;
   credential: Credential;
+  retry: RetryOptions;
 }
 
 async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
@@ -76,7 +95,7 @@ async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
   };
 
   if (provider === "ollama") {
-    return { adapter, callOptions, credential: { kind: "none", provider: "openai" } };
+    return { adapter, callOptions, credential: { kind: "none", provider: "openai" }, retry: resolveRetryOptions(config.retry) };
   }
 
   const credential = await resolveCredential(provider as AuthProvider);
@@ -96,23 +115,23 @@ async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
       `No credential for provider '${provider}'. Run 'joc setup', 'joc auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
     );
   }
-  return { adapter, callOptions, credential: effective };
+  return { adapter, callOptions, credential: effective, retry: resolveRetryOptions(config.retry) };
 }
 
 export function createModelManager(): ModelManager {
   return {
     resolveProvider,
     async call(messages, options = {}) {
-      const { adapter, callOptions, credential } = await resolveCall(options);
-      return withRetry(() => adapter.call(messages, callOptions, credential), { isRetryable: defaultRetryable });
+      const { adapter, callOptions, credential, retry } = await resolveCall(options);
+      return withRetry(() => adapter.call(messages, callOptions, credential), retry);
     },
     async *stream(messages, options = {}) {
-      const { adapter, callOptions, credential } = await resolveCall(options);
+      const { adapter, callOptions, credential, retry } = await resolveCall(options);
       if (adapter.stream) {
         yield* adapter.stream(messages, callOptions, credential);
       } else {
         // Fallback: providers without streaming yield the full response as one chunk.
-        yield await withRetry(() => adapter.call(messages, callOptions, credential), { isRetryable: defaultRetryable });
+        yield await withRetry(() => adapter.call(messages, callOptions, credential), retry);
       }
     },
   };

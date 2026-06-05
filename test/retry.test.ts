@@ -1,5 +1,36 @@
 import { test, expect } from "bun:test";
 import { withRetry, defaultRetryable } from "../src/util/retry";
+import { resolveRetryOptions } from "../src/ai/model-manager";
+
+test("resolveRetryOptions maps a gjc retry budget to withRetry options", () => {
+  // Unset → withRetry defaults apply (no explicit retries/maxDelayMs), predicate wired.
+  const base = resolveRetryOptions(undefined);
+  expect(base.retries).toBeUndefined();
+  expect(base.maxDelayMs).toBeUndefined();
+  expect(typeof base.isRetryable).toBe("function");
+
+  // requestMaxRetries counts retries; total attempts = requestMaxRetries + 1.
+  expect(resolveRetryOptions({ requestMaxRetries: 4 }).retries).toBe(5);
+  expect(resolveRetryOptions({ requestMaxRetries: 0 }).retries).toBe(1);
+
+  // maxDelayMs passes through; unrelated gjc fields are ignored.
+  const opts = resolveRetryOptions({ maxDelayMs: 1000, streamMaxRetries: 100, maxRetries: 3 });
+  expect(opts.maxDelayMs).toBe(1000);
+  expect(opts.retries).toBeUndefined();
+});
+
+test("withRetry honors a resolved requestMaxRetries budget (attempt count)", async () => {
+  let attempts = 0;
+  const opts = resolveRetryOptions({ requestMaxRetries: 2, maxDelayMs: 0 });
+  await expect(
+    withRetry(async () => {
+      attempts++;
+      throw new Error("HTTP 503: overloaded");
+    }, { ...opts, sleep: async () => {} }),
+  ).rejects.toThrow("503");
+  // requestMaxRetries=2 → 3 total attempts (1 initial + 2 retries).
+  expect(attempts).toBe(3);
+});
 
 test("defaultRetryable classification", () => {
   // Network errors

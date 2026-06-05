@@ -38,6 +38,18 @@ export interface Config {
   thinkingLevel?: "low" | "medium" | "high";
   /** Friendly model aliases, e.g. { fast: "ollama/qwen2.5:0.5b" }. Override built-ins. */
   modelAliases?: { [alias: string]: string };
+  /**
+   * Provider retry budgets (gjc parity). `requestMaxRetries` is the number of
+   * retries (excluding the initial request) for a provider request; `maxDelayMs`
+   * caps exponential backoff. `maxRetries`/`streamMaxRetries` are accepted for
+   * gjc-config compatibility.
+   */
+  retry?: {
+    requestMaxRetries?: number;
+    streamMaxRetries?: number;
+    maxRetries?: number;
+    maxDelayMs?: number;
+  };
 }
 
 export interface WorkflowState {

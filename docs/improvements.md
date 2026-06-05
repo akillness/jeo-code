@@ -2301,3 +2301,19 @@ and document it.
 - **Verify:** `tsc --noEmit` → 0; `bun test` → **150/150 across 30 files** (new
   `test/evolution.test.ts`: tables aligned, stage math + guards, track render,
   ascii↔canonical name sync, spinner shrink-safety).
+
+### Batch B — Robustness (passes 66–69)
+
+- **66. Uniform block height.** `stageHeight()` (max art lines across stages) +
+  `renderAsciiArt(stage, { height })` bottom-pads the block so the live TUI never
+  jumps as stages change; `app.ts` renders at `stageHeight()`.
+- **67. Plain / NO_COLOR mode.** `renderAsciiArt(stage, { color: false })` returns
+  art with no ANSI escapes for non-TTY / NO_COLOR / previews.
+- **68. Injectable animation.** `animateAsciiArt(stage, { write, sleep, delayMs,
+  color })` is now testable and non-blocking (`delayMs: 0` skips sleeps).
+- **69. Stage metadata + sync.** `stageCaption()` extracts a stage's bracketed
+  caption; `stageWidth()` exposes the global art width; tests lock ascii↔canonical
+  name sync and per-stage caption presence.
+- **Verify:** `tsc --noEmit` → 0; `bun test` → **157/157 across 31 files** (new
+  `test/ascii-art.test.ts`: height/width normalization, color-off no-ANSI, caption
+  presence, injectable animate with/without delay).

@@ -11,10 +11,9 @@ import {
   skillsPromptSection
 } from "../src/skills/catalog";
 
-test("skillNames returns all five skills", () => {
+test("skillNames returns all four skills", () => {
   const names = skillNames();
-  expect(names.length).toBe(5);
-  expect(names).toContain("launch");
+  expect(names.length).toBe(4);
   expect(names).toContain("deep-interview");
   expect(names).toContain("ralplan");
   expect(names).toContain("team");
@@ -47,7 +46,7 @@ test("formatSkill output format", () => {
 
 test("skillsPromptSection contains every skill name", () => {
   const section = skillsPromptSection();
-  expect(section).toContain("launch");
+
   expect(section).toContain("deep-interview");
   expect(section).toContain("ralplan");
   expect(section).toContain("team");

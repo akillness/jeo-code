@@ -1,7 +1,7 @@
 import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
-import { ProviderHttpError } from "./errors";
+import { providerHttpError } from "./errors";
 
 function openaiRequest(messages: Message[], options: CallOptions, credential: Credential, stream: boolean): { url: string; headers: Record<string, string>; body: string } {
   const resolvedModel = options.model.startsWith("openai/") ? options.model.slice(7) : options.model;
@@ -36,10 +36,7 @@ export const openaiAdapter: ProviderAdapter = {
   async call(messages, options, credential) {
     const { url, headers, body } = openaiRequest(messages, options, credential, false);
     const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new ProviderHttpError("OpenAI", response.status, text);
-    }
+    if (!response.ok) throw await providerHttpError("OpenAI", response);
     const result = (await response.json()) as { choices: { message: { content: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     if (result.usage) options.onUsage?.({ inputTokens: result.usage.prompt_tokens, outputTokens: result.usage.completion_tokens });
     return result.choices[0]?.message?.content ?? "";
@@ -47,10 +44,7 @@ export const openaiAdapter: ProviderAdapter = {
   async *stream(messages, options, credential) {
     const { url, headers, body } = openaiRequest(messages, options, credential, true);
     const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new ProviderHttpError("OpenAI", response.status, text, "(stream)");
-    }
+    if (!response.ok) throw await providerHttpError("OpenAI", response, "(stream)");
     if (!response.body) return;
     for await (const data of readSse(response.body)) {
       let chunk: { choices?: { delta?: { content?: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };

@@ -71,6 +71,7 @@ export async function runRalplanCommand(): Promise<void> {
 
     ralplanState.current_phase = "complete";
     ralplanState.plan_path = planPath;
+    ralplanState.approved = false;
     await writeWorkflowState("ralplan", ralplanState, cwd);
 
     console.log("\nPlan preview:");

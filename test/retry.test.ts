@@ -72,6 +72,7 @@ test("retries a retryable error then succeeds (fn called twice, sleep called onc
     {
       retries: 3,
       baseDelayMs: 100,
+      random: () => 1, // equal jitter at max → deterministic schedule
       sleep: async (ms) => {
         sleepCalls.push(ms);
       },
@@ -103,6 +104,7 @@ test("exhausts after retries attempts and rethrows (fn called retries times)", a
       {
         retries: 3,
         baseDelayMs: 100,
+        random: () => 1,
         sleep: async (ms) => {
           sleepCalls.push(ms);
         },
@@ -163,6 +165,7 @@ test("exponential backoff with cap", async () => {
       {
         retries: 5,
         baseDelayMs: 100,
+        random: () => 1,
         maxDelayMs: 350,
         sleep: async (ms) => {
           sleepCalls.push(ms);

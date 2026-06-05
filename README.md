@@ -3,7 +3,7 @@
 [![Bun Version](https://img.shields.io/badge/Bun-%3E%3D%201.3.14-blue?logo=bun)](https://bun.sh)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen)]()
-[![Tests Status](https://img.shields.io/badge/Tests-79%20Passed-brightgreen)]()
+[![Tests Status](https://img.shields.io/badge/Tests-128%20Passed-brightgreen)]()
 
 > An interactive AI coding agent **and** a disciplined spec-first pipeline — one
 > lean, pure-TypeScript CLI on Bun.
@@ -22,8 +22,8 @@ ergonomics (minimal tool loop, persistent sessions, compaction, project context)
 ```text
 joc                      →  interactive coding agent (TUI: live tools + status footer)
 
-joc deep-interview ──> joc ralplan ──> joc team ──> joc ultragoal
- (Socratic clarify)      (blueprint)    (execute)     (verify)
+joc deep-interview → joc ralplan → joc approve → joc team → joc ultragoal
+ (Socratic clarify)   (blueprint)    (gate)        (execute)   (verify)
         │
   [Mutation Lock] — file edits blocked until ambiguity ≤ 20%
 ```
@@ -74,7 +74,7 @@ Local dev without installing (from the repo root):
 ```bash
 bun run start --help     # = bun src/cli.ts --help
 bun run typecheck        # tsc -p tsconfig.json --noEmit
-bun test                 # unit tests (20 files, 79 tests)
+bun test                 # unit tests (27 files, 128 tests)
 ```
 
 ---
@@ -86,9 +86,10 @@ bun test                 # unit tests (20 files, 79 tests)
 | `joc` / `joc launch ["request"]` | Interactive coding agent (TUI REPL, one-shot, or piped). `--resume [id]`, `--list`, `--no-tui`, `--no-session`. |
 | `joc setup` | Interactive provider/model picker (API key / browser OAuth / local), with live model probing. |
 | `joc auth [login\|logout\|refresh\|status] [provider] [--token <bearer>]` | Real OAuth (PKCE) login + token storage with auto-refresh. |
-| `joc doctor [--strict]` | Probe provider connectivity, credentials, and OAuth expiry; report if the default model is reachable. `--strict` exits non-zero when it isn't. |
+| `joc doctor [--strict] [--json]` | Probe provider connectivity, credentials, and OAuth expiry; report if the default model is reachable. Colorized status on a TTY. `--strict` exits non-zero when it isn't; `--json` emits a machine-readable report for CI. |
 | `joc deep-interview "<idea>" [--auto]` | Socratic requirements interview; freezes a spec when ambiguity ≤ 20%. `--auto` runs non-interactively (CI/pipes). |
 | `joc ralplan` | Planner/Architect/Critic blueprint from the frozen seed. |
+| `joc approve <plan-path>` | Approve the active plan blueprint; gates execution (`team` refuses to run until approved). Idempotent. |
 | `joc team` | Per-task executor loop (shared tool engine) against the plan. |
 | `joc ultragoal` | Verify acceptance criteria and write a report. |
 | `joc models [name]` | List model aliases + probe local/OpenAI-compatible models for reachability. |
@@ -112,8 +113,8 @@ hardened tool-call engine (`src/agent/engine.ts`). It calls `read` / `write` / `
 - **Project context** — the prompt auto-loads the first of `JEO.md` / `AGENTS.md` /
   `.joc/context.md` / `CLAUDE.md`.
 - **Compaction** — long conversations are summarized automatically to stay within the context window.
-- **No-progress guard** — if a (weak/local) model repeats the same tool call 3× without
-  signalling done, the loop stops with a clear message instead of burning steps.
+- **Progress guards** — if a (weak/local) model repeats the same tool call 3× or racks up 5
+  consecutive tool failures without signalling done, the loop stops with a clear message instead of burning steps.
 - **Token usage** — each turn prints a `(N in / M out tokens)` footer; all four provider
   adapters report usage in both blocking `call` and streaming modes.
 
@@ -136,8 +137,9 @@ entirely — releasing once ambiguity ≤ 20%.
    Constraint completeness, and Success/Acceptance criteria. Freezes a seed to
    `.joc/seeds/seed-<slug>.yaml`.
 2. **`joc ralplan`** — multi-role (Planner/Architect/Critic) blueprint → `.joc/plans/plan-<slug>.yaml`.
-3. **`joc team`** — executes plan tasks via the shared tool engine; checkpoints to `.joc/state/team-state.json`.
-4. **`joc ultragoal`** — runs acceptance checks and writes `.joc/state/ultragoal-report.md`.
+3. **`joc approve <plan-path>`** — approval gate: marks the plan approved so `team` will execute it.
+4. **`joc team`** — executes plan tasks via the shared tool engine; checkpoints to `.joc/state/team-state.json`.
+5. **`joc ultragoal`** — runs acceptance checks and writes `.joc/state/ultragoal-report.md`.
 
 ---
 
@@ -193,14 +195,14 @@ jeo-code/
 ├── src/
 │   ├── cli.ts                 # entry: Bun version guard + dispatch
 │   ├── cli/runner.ts          # lazy command registry (bare joc → launch)
-│   ├── commands/              # launch, setup, auth, deep-interview, ralplan, team, ultragoal, doctor, mcp
+│   ├── commands/              # launch, setup, auth, deep-interview, ralplan, approve, team, ultragoal, doctor, mcp, models, skills, resume, chat
 │   ├── agent/                 # engine (tool loop), loop, json, tools (+MutationGuard), session, compaction, context-files, state
 │   ├── ai/                    # provider adapters (anthropic/openai/gemini/ollama) + model-manager
 │   ├── auth/                  # storage (+auto-refresh), pkce, callback-server, refresh, flows/{anthropic,openai,google}
 │   ├── mcp/                   # MCP protocol + tools + stdio server
 │   └── tui/                   # differential renderer + components + LaunchTui
 ├── scripts/                   # install.sh / uninstall.sh (bun install + bun link)
-├── test/                      # 20 suites (79 tests): oauth, engine, json, session, context-files, compaction, streaming, tui-*
+├── test/                      # 27 suites (128 tests): oauth, engine, tools-fs, provider-errors, retry, config-schema, cli-runner, mutation-guard, approve, team-schema, session, compaction, streaming, tui-*
 ├── docs/improvements.md       # architectural analysis & changelog (ralph passes)
 ├── plan/                      # long-horizon work plans (TUI, features, install, model, provider)
 └── README.md
@@ -211,7 +213,7 @@ jeo-code/
 ## Development
 
 ```bash
-bun install                                  # deps (zod, chalk)
+bun install                                  # deps: zod (config validation), chalk (doctor colors)
 bun run typecheck                            # tsc -p tsconfig.json --noEmit
 bun test                                     # full suite
 GEMINI_OAUTH_CLIENT_SECRET=<x> bun test      # Google OAuth flow tests need this env var

@@ -97,3 +97,43 @@ test("bashTool: a non-zero exit is surfaced as a failure", async () => {
   expect(res.success).toBe(false);
   expect(res.error).toContain("Exit code 3");
 });
+
+import { DEFAULT_TOOLS } from "../src/agent/engine";
+
+test("DEFAULT_TOOLS.bash forwards timeoutMs from tool args", async () => {
+  const res = await DEFAULT_TOOLS.bash({ command: "sleep 30", timeoutMs: 200 }, dir);
+  expect(res.success).toBe(false);
+  expect(res.error).toContain("timed out");
+}, 10_000);
+
+import { editTool } from "../src/agent/tools";
+
+test("editTool: ≔A+ inserts after a line, ≔$ appends, ≔A..B replaces", async () => {
+  const f = "edit-modes.ts";
+  await fs.writeFile(path.join(dir, f), "a\nb\nc\n");
+
+  // insert after line 1
+  let r = await editTool(f, "≔1+\nX", dir);
+  expect(r.success).toBe(true);
+  expect(await fs.readFile(path.join(dir, f), "utf-8")).toBe("a\nX\nb\nc\n");
+
+  // append to EOF
+  r = await editTool(f, "≔$\nZ", dir);
+  expect(r.success).toBe(true);
+  expect(await fs.readFile(path.join(dir, f), "utf-8")).toBe("a\nX\nb\nc\nZ");
+
+  // replace line 1
+  r = await editTool(f, "≔1\nAA", dir);
+  expect(r.success).toBe(true);
+  expect((await fs.readFile(path.join(dir, f), "utf-8")).split("\n")[0]).toBe("AA");
+
+  // prepend (≔0+)
+  r = await editTool(f, "≔0+\nTOP", dir);
+  expect(r.success).toBe(true);
+  expect((await fs.readFile(path.join(dir, f), "utf-8")).startsWith("TOP\n")).toBe(true);
+
+  // out-of-bounds insert is rejected
+  r = await editTool(f, "≔999+\nnope", dir);
+  expect(r.success).toBe(false);
+  expect(r.error).toContain("out of bounds");
+});

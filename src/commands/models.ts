@@ -1,6 +1,7 @@
 import { readGlobalConfig } from "../agent/state";
 import { listAliases, resolveModelId } from "../ai/model-registry";
 import { resolveProvider } from "../ai/model-manager";
+import { resolveCredential, type AuthProvider } from "../auth";
 
 async function probeOllama(baseUrl: string): Promise<string[]> {
   try {
@@ -48,5 +49,15 @@ export async function runModelsCommand(_args: string[] = []): Promise<void> {
     if (compat.length) for (const m of compat.slice(0, 30)) console.log(`  ${m}`);
     else console.log("  (none reachable)");
   }
+  console.log("\nProvider credentials:");
+  for (const p of ["anthropic", "openai", "gemini"] as AuthProvider[]) {
+    const cred = await resolveCredential(p);
+    const label =
+      cred.kind === "api_key" ? "API key" :
+      cred.kind === "oauth" ? "OAuth" :
+      "none (run 'joc setup' or 'joc auth login')";
+    console.log(`  ${p.padEnd(10)} ${label}`);
+  }
+
   console.log("\nSet a default with 'joc setup' or JOC_DEFAULT_MODEL=<id>.");
 }

@@ -2376,3 +2376,531 @@ and document it.
   via `joc evolve`.
 - **Net:** `tsc --noEmit` → 0; `bun test` → **167/167 across 33 files** (5 new test
   suites: evolution, ascii-art, footer, evolve, + rewritten meter). All gates green.
+
+---
+
+## Evolution TUI Refinements — 20-pass improvement run (82–101)
+
+**Date:** 2026-06-05 · **Dimension: tui / usability.**
+
+We analyzed the existing codebase and designed a complete evolutionary theme for the joc TUI. As the agent progresses through steps, the TUI dynamically evolves from a primordial single cell to a full technological singularity. We implemented 20 distinct improvements to make this identity beautiful, robust, and highly interactive.
+
+### New passes:
+
+- **82. Multi-stage evolution frames gradient.** Added line-by-line gradients using `chalk` colors in `src/tui/components/ascii-art.ts` to make stages visually unique.
+- **83. Welcome banner animation.** Wired `animateAsciiArt` into `runLaunchCommand` in `src/commands/launch.ts` to display the initial evolution cell on startup.
+- **84. Dynamic evolving TUI art.** Prepended the ASCII art block corresponding to the current evolution stage into the live TUI frame in `LaunchTui.draw()`.
+- **85. Custom colors for evolution stages.** Added line-specific coloring in `renderAsciiArt` to highlight key structures (e.g. green base pairs in Double Helix).
+- **86. Typewriter effect for welcome banner.** Added a typewriter-style delayed stream for ASCII art lines on interactive startup.
+- **87. Evolutionary spinner.** Spinner frames in `src/tui/components/spinner.ts` now transition between cell soup, DNA, tool slash, braille snake, and singularity arcs.
+- **88. Evolutionary progress meter.** Progress bar characters in `src/tui/components/meter.ts` now scale from simple dots (`.`) to solid blocks (`█`) as completion increases.
+- **89. Evolution track in footer.** Replaced the bare text footer with a color-coded evolution track `●●●○○` showing current progress.
+- **90. Terminal resize auto-scaling.** `renderAsciiArt` now accepts a `cols` width ceiling; if columns shrink below the art width, the block is dynamically hidden.
+- **91. Evolutionary helper tips.** Integrated `getEvolutionTip` into `/help` command output to display era-specific advice to the user.
+- **92. Synapse firing overlay.** Added random glowing yellow sparks (`*`, `.`, `o`, `+`, `✦`) in empty spaces of the ASCII art during thinking states.
+- **93. Dynamic reasoning status messages.** Displayed changing, context-aware reasoning phrases (e.g. "Synthesizing primordial logic...", "Resolving type boundaries...") based on evolution stage.
+- **94. Tool list fading decay.** Faded out completed tools in `ToolList.render()` using `chalk.gray` while keeping active tools bright.
+- **95. Rich evolution summary stats.** Enhanced `LaunchTui.finish()` to report total steps, duration, and final peak evolution stage reached.
+- **96. Interactive `/evolve` command.** Registered a REPL slash command `/evolve` that plays a full evolution sequence of all stages.
+- **97. Evolution test suite.** Added `test/tui-evolution.test.ts` verifying all stage mapping, auto-scaling, synapse firing, and tip helpers.
+- **98. Doctor terminal diagnostics.** Enhanced `joc doctor` to report terminal size, color support, and ASCII art compatibility.
+- **99. Renderer resize clear optimization.** Added `prevCols` tracking to `Renderer` to clear screen and remove wrapping ghosts when columns change.
+- **100. Mutation Guard lock badge.** Displayed a red `🛡️  [MUTATION LOCKED]` badge in the thinking line when code edits are restricted by deep-interview.
+- **101. Documentation & Prompt alignment.** Updated `README.md` and log entries to reflect the newly landed TUI evolution features.
+
+### Verification:
+
+- `tsc -p tsconfig.json --noEmit` -> 0 errors.
+- `bun test` -> **173/173 tests pass across 34 files** (added `test/tui-evolution.test.ts` + updated `test/meter.test.ts` and `test/footer.test.ts`).
+- Interactive `/evolve` command, doctor diagnostics, and TUI auto-scaling are manually verified in a real terminal session.
+
+
+## Evolution TUI — terminal-fit, gradient & theme run (passes 102–151)
+
+**Date:** 2026-06-05 · **Dimension: tui / usability / robustness.**
+
+A 50-pass run deepening the "evolution" identity into a real, capability-aware,
+**terminal-filling** rendering system. The headline requirement: *the art and
+the live frame must fit the terminal's width and height.* New modules:
+`color.ts` (capability + truecolor gradient), `capability.ts` (unicode
+detection), `layout.ts` (responsive fit/center/box), `themes.ts` (palette
+registry). Every pass keeps `tsc --noEmit` at 0 and the suite green.
+
+### Batch F — Color capability + truecolor gradient engine (102–108)
+- **102. `detectColorLevel`.** New `src/tui/components/color.ts` detects None/Basic/256/TrueColor from `NO_COLOR`/`FORCE_COLOR`/`COLORTERM`/`TERM` (+ TTY hint); pure + injectable env.
+- **103. RGB primitives.** `hexToRgb`, `rgbToAnsi256`, `rgbToAnsi16`, `fgEscape`, `resetEscape` — deterministic raw SGR (not chalk-gated) so output is testable.
+- **104. Gradient math.** `lerpColor`, `gradientStops(from,to,n)` span endpoints exactly.
+- **105. Stage gradient palettes.** `EVOLUTION_STAGE_GRADIENTS` + `stageGradient(i)`: a cosmic arc (cyan tide → green helix → amber tools → magenta machine → white-hot singularity).
+- **106. `applyGradient`.** Per-character left→right gradient with graceful downgrade truecolor→256→16→plain; spaces unpainted but counted (phase-aligned multi-line art).
+- **107. Art gradient option.** `renderAsciiArt({ gradient, colorLevel })` paints the block via the stage palette; `color:false` suppresses it.
+- **108. Tests.** `test/color.test.ts` — level matrix, hex parse, stops endpoints, ansi256/16 quantization, gradient escapes + plain downgrade, art gradient preserves visible width.
+
+### Batch G — Unicode detection + ASCII fallbacks (109–114)
+- **109. `supportsUnicode`.** New `capability.ts`: `TERM=dumb/linux`→no, UTF locale→yes, else assume modern.
+- **110. ASCII spinner set.** `EVOLUTION_SPINNER_FRAMES_ASCII` + `spinnerFramesFor(i,unicode)`; `Spinner({ unicode })` selects the set.
+- **111. ASCII meter glyphs.** `EVOLUTION_METER_GLYPHS_ASCII` + `meterGlyphsFor`; `meter(...,{unicode})`.
+- **112. ASCII track markers.** `evolutionTrack(...,{unicode})` → `#`/`-` instead of ●/○.
+- **113. Live auto-detect.** `LaunchTui` detects unicode once and drives the spinner + track glyph set accordingly.
+- **114. Tests.** `test/capability.test.ts` — detection matrix + ASCII purity of every fallback table.
+
+### Batch H — ANSI-aware width/truncate correctness (115–119, real bugs)
+- **115/116. `visibleWidth`/`stripAnsi`.** Width that ignores SGR escapes.
+- **117. ANSI-aware `truncate`.** `terminal.ts` `truncate` now counts visible columns, copies escapes verbatim, and appends a reset when cutting mid-color — never spills raw `\x1b[…` bytes onto the screen.
+- **118. Renderer.** The differential renderer's per-line truncation inherits the fix (colored/gradient lines never corrupt).
+- **119. Tests.** `test/ansi-width.test.ts` — colored cut keeps width 4, resets, no partial escape.
+
+### Batch I — Continuous sub-stage progress + transitions (120–126)
+- **120. `stageProgressRatio`.** Fraction within the current stage band [0,1).
+- **121. Next-stage helpers.** `overallProgress`, `nextStageName`, `stepsToNextStage`.
+- **122. Transition messages.** `EVOLUTION_TRANSITION_MESSAGES` + `transitionMessage(i)`.
+- **123. `StageProgress.advanced()`.** Reports the observe that raised the peak (one-shot transition signal).
+- **124. Track sub-marker.** `evolutionTrack({ ratio })` shows a half marker (◐ / `+`) on the next stage while partway.
+- **125. Live transition line.** On a TTY, the app announces `⟶ <transition>` once when the stage advances.
+- **126. Tests.** `test/transitions.test.ts` — ratio bands, countdown, advance signal, sub-marker.
+
+### Batch J — Multi-frame breathing/DNA animation (127–133)
+- **127. `AsciiStage.frames`.** Optional per-stage animation blocks; Primordial Cell pulses, the Double Helix twists (3 frames).
+- **128/129. `stageBlocks`/`stageFrame` + `renderAsciiArt({ frame })`.** Tick-driven block selection (wraps; falls back to `art`).
+- **130. Live breathing.** The app drives `frame: tickCount` while thinking.
+- **131. `animateFrames`.** In-place frame cycler for previews; injectable write/sleep.
+- **132. Uniform dims.** `stageHeight`/`stageWidth` scan frames so every frame normalizes to one global width+height (flicker-free).
+- **133. Tests.** `test/animation.test.ts` — frame wrap, distinct frames, global dims, injectable animate.
+
+### Responsive layout — fill terminal width+height (`layout.ts`)
+- **`padLineTo`/`alignBlock`/`centerBlock`** (ANSI-aware), **`padBlockToHeight`** (never truncates), **`fillScreen`** (footer pinned to the bottom row, blank-filled gap), **`boxBlock`** (bordered panel).
+- **Live app:** on a TTY the frame now **fills the whole screen** — ASCII art centered to `cols`, footer pinned to the bottom `row`; off a TTY (pipes/tests) it stays compact. Heavy panels gated to the TTY path. `test/layout.test.ts` covers it.
+
+### Batch K — Theme registry (134–139)
+- **134–136. `themes.ts`.** `EvolutionTheme` + `THEMES`: `cosmic` (default), `matrix` (phosphor green), `solar` (warm star), `mono` (colorless). `getTheme`/`listThemes`/`resolveTheme(JOC_TUI_THEME)`/`themeGradient`.
+- **137. App theme.** `LaunchTui` reads `JOC_TUI_THEME`; `mono` disables track color.
+- **138. `evolve --theme`/`--list-themes`** (see Batch L).
+- **139. Tests.** `test/themes.test.ts` — case-insensitive lookup, fallback, mono colorless, env resolution.
+
+### Batch L — `joc evolve` UX (140–145)
+- **140. `--json`.** Emits the canonical stage model (names, captions, tips, transitions, themes) for tooling.
+- **141. `--loop [n]`.** Plays the stage's animation frames n times (bounded; injectable sleep).
+- **142. `--theme`/`--gradient`/`--ascii`/`--width`/`--fit`.** Theme + truecolor gradient + ASCII fallback + width override + terminal-width centering.
+- **143. `--list`.** One track line per stage with its era tip.
+- **144. `--list-themes`.** Theme catalog.
+- **145. Tests.** `test/evolve.test.ts` extended — json shape, list, list-themes, ascii purity, forced-truecolor gradient, loop animation.
+
+### Batch M — Footer / meter / tool-list polish (146–151)
+- **146. Footer ETA.** Opt-in `showEta` extrapolates remaining time from elapsed/step (`eta Ns`); hidden at the final step.
+- **147. Footer progress.** Opt-in `showProgress` shows `evo NN% → <next stage> in N`.
+- **148. `sparkline`.** Compact `▁▂▃▅▇` series glyph (ASCII ramp fallback) in `meter.ts`.
+- **149. Footer unicode.** `renderFooter({ unicode })` ASCII arrow + track markers.
+- **150. Tool-list cap.** `ToolList.render(maxRows)` keeps the most recent rows and prepends `(+N earlier)`; the live frame caps tool rows to fit the screen.
+- **151. Tests.** `test/footer-polish.test.ts` — ETA/progress opt-in, sparkline normalization, tool-list cap.
+
+### Verification (passes 102–151)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **all green** (251 tests across 46 files at run time, including the concurrent agents' suites; this run added `color`, `capability`, `ansi-width`, `transitions`, `layout`, `animation`, `themes`, `footer-polish` suites + extended `evolve`).
+- Real smoke: `joc evolve --list` (auto ASCII fallback under `TERM=dumb`), `joc evolve --step 60 --ascii` (half-marker track + 75% meter), `joc evolve --json`, and a forced-truecolor `--gradient --theme matrix --fit` render (matrix-green per-char gradient, centered to terminal width, full block meter).
+
+> **Note (concurrent work):** during this run other `gjc` agents were editing the
+> same tree (`forge.ts`, `status.ts`, `config-panel.ts`, slash `/config`, etc.).
+> Their rich `renderForge`/`renderJocStatus` panels were rendering in the compact
+> non-TTY path and inflating the test frame; pass-set gated them behind the TTY
+> fill path (consistent with the terminal-fit mandate), restoring the green gate.
+---
+
+## TUI Forge/Status/Ralph Streaming — 50-pass improvement run (102–151)
+
+**Date:** 2026-06-05 · **Dimension: tui / agent-progress observability.**
+
+This pass focused the already-evolving `joc` TUI on concrete coding-agent work: progress status,
+`joc thinking`, `joc forge`, boxed previews for tool calls/results, and Ralph-style subagent
+guidance streams. The local repository does not contain gjc's `packages/tui` source, so the pass
+used the repo's existing gjc/pi-tui parity notes plus the current `src/tui/` implementation as the
+grounding target.
+
+### New passes:
+
+- **102. Forge summary model.** Added `ForgeSummary` as a reusable, pure TUI data shape for tool previews.
+- **103. Secret redaction.** Added `redactSecrets()` so forge boxes mask API keys, tokens, passwords, and secrets.
+- **104. Bash preview summarizer.** `bash` invocations render as `bash command` code previews with timeout metadata.
+- **105. Read preview summarizer.** `read` invocations render file path and requested line range.
+- **106. Write preview summarizer.** `write` invocations render target path, byte count, line count, and content preview.
+- **107. Edit preview summarizer.** `edit` invocations render target path plus compact patch preview.
+- **108. Find preview summarizer.** `find` invocations render the glob in a dedicated mini-view.
+- **109. Search preview summarizer.** `search` invocations render regex plus searched glob.
+- **110. Unknown-tool JSON preview.** Non-default tools degrade to a JSON argument preview.
+- **111. Tool-result summarizer.** Tool results now get success/failure summaries with different output budgets.
+- **112. Bounded preview lines.** Long previews are capped by line and character budget.
+- **113. Result clipping marker.** Forge previews add a hidden-line marker when content is clipped.
+- **114. Secret-safe result boxes.** Result output passes through the same redaction path as invocation previews.
+- **115. ANSI-aware wrapping.** Forge box wrapping uses visible width so colored labels do not break borders.
+- **116. Unicode/ascii box mode.** Forge boxes use unicode borders on capable terminals and ASCII fallback otherwise.
+- **117. Width-bounded boxes.** Box width clamps between compact and wide terminal-safe bounds.
+- **118. Theme-aware border paint.** Live TUI boxes dim under colored themes and stay plain under `mono`.
+- **119. Component exports.** `forge.ts` and `status.ts` are exported through the TUI component barrel.
+- **120. Tool stats API.** `ToolList.stats()` exposes running/ok/fail/total counts.
+- **121. Current tool API.** `ToolList.currentTool()` exposes the active forge target for status rows.
+- **122. `joc thinking` row.** Added a live thinking status row with stage-aware message, step, percent, meter, and elapsed time.
+- **123. `joc forge` row.** Added a live forge status row with current tool and tool outcome counts.
+- **124. Mutation lock consolidation.** Mutation guard status now appears in the structured `joc forge` row.
+- **125. Progress percentage guard.** `progressPercent()` clamps invalid/empty step budgets to safe `0%`.
+- **126. Status meter integration.** Thinking status uses the existing evolutionary meter in compact 10-cell form.
+- **127. Live invocation boxes.** `LaunchTui.onAssistant` records a forge box when a tool call is proposed.
+- **128. Live result boxes.** `LaunchTui.onToolResult` records a result box with complete/error evidence.
+- **129. Recent forge history.** The TUI retains the last eight forge summaries and renders the most recent boxes.
+- **130. Screen-fit box budget.** TTY mode shows fewer forge boxes than non-TTY test mode to avoid crowding the footer.
+- **131. Static final forge summary.** `finish()` preserves recent forge boxes in scrollback after the live region collapses.
+- **132. Complete stream marker.** Successful tool results stream `complete: <tool>` with unicode/ascii markers.
+- **133. Error stream marker.** Failed tool results and model errors stream `error: ...` with unicode/ascii markers.
+- **134. Transition newline fix.** Evolution transition messages now append a newline so stream events do not concatenate.
+- **135. Plain stream parity.** Non-TUI launch output now uses `stream:complete` / `stream:error` event labels.
+- **136. Provider footer wiring.** Launch passes resolved provider metadata into `LaunchTui`.
+- **137. Ralph stream kind.** Added a typed `RalphStreamKind` (`step | complete | error`) for team/subagent output.
+- **138. Ralph todo guide.** Team execution prints an ordered Ralph guidance todo list before execution.
+- **139. Resume-aware active todo.** Team guidance marks the resumed pending task, not always task 1.
+- **140. Completed todo marker.** Already-completed team tasks render with `[x]`.
+- **141. Active todo marker.** The current team task renders with `[>]`.
+- **142. Pending todo marker.** Future team tasks render with `[ ]`.
+- **143. Subagent step stream.** Team subagents stream `stream:step <role> thinking N/M`.
+- **144. Subagent tool completion stream.** Successful subagent tool calls stream `stream:complete tool <name>`.
+- **145. Subagent tool error stream.** Failed subagent tool calls stream `stream:error tool <name>`.
+- **146. Subagent model-error stream.** Subagent engine errors stream through the same `stream:error` format.
+- **147. Subagent finish stream.** Successful task convergence emits `stream:complete <role> finished task`.
+- **148. Subagent non-convergence stream.** Step-cap failure emits `stream:error <role> did not converge...`.
+- **149. Forge/status tests.** Added `test/forge-status.test.ts` for forge summaries, redaction, status rows, and Ralph streams.
+- **150. Existing TUI test alignment.** Updated TUI app/slash/tool-list tests for the richer live frame and expanded command palette.
+- **151. README alignment.** Documented `joc thinking`, `joc forge`, boxed tool previews, stream labels, and updated suite counts.
+
+### Verification:
+
+- `bun test test/forge-status.test.ts test/tui-components.test.ts test/team-schema.test.ts` → **16 pass / 0 fail**.
+- `bun test test/footer-polish.test.ts test/slash.test.ts test/subagents.test.ts test/tui-app.test.ts test/forge-status.test.ts` → **24 pass / 0 fail**.
+- `bun run typecheck` → 0 errors.
+- `bun test` → **251/251 tests pass across 46 files**.
+
+## Model / Provider / Subagent configuration in the TUI — 50-pass run (152–201)
+
+**Date:** 2026-06-05 · **Dimension: tui / model+provider+subagent configuration & flow.**
+
+This run analyzes the gjc-parity `joc` surface and makes the **model, provider, and
+subagent configuration** first-class in the interactive TUI: a typed subagent role
+registry (executor/planner/architect/critic) that `joc team` actually drives, a shared
+provider-credential inventory, pure config-panel formatters, the provider in the live
+footer, and a full set of `/model /models /provider /agents /config /thinking` slash
+commands wired into the launch REPL. New modules: `src/agent/subagents.ts`,
+`src/ai/provider-status.ts`, `src/tui/components/config-panel.ts`.
+
+> **Note (concurrent work):** two other `gjc` agents were editing the same tree during
+> this run (the "Evolution TUI gradient/theme" and "Forge/Status streaming" passes, both
+> labelled 102–151). This run uses **152–201** to avoid renumbering theirs, and touches a
+> disjoint set of new files plus narrow edits to `launch.ts`/`team.ts`/`models.ts`. README
+> count-sync was deferred to the agent actively editing `README.md`.
+
+### Batch N — Subagent role registry (152–162)
+- **152. `SubagentRole` registry.** `src/agent/subagents.ts` defines executor/planner/architect/critic as pure data (id/title/description/readOnly/defaultMaxSteps).
+- **153. `normalizeRoleId` + case-insensitive `getSubagentRole`.** Loose role input is trimmed/lowercased before lookup.
+- **154. `defaultSubagentRole()`.** Resolves to `executor` (the only mutating role).
+- **155. `resolveSubagentModel`.** Per-role config override (`config.subagents[id].model`) → global `defaultModel`.
+- **156. `resolveSubagentMaxSteps`.** Per-role override → role default → 15 fallback.
+- **157. `subagentSystemPrompt`.** Role-specific executor prompt; read-only roles get an explicit no-mutation directive.
+- **158. `subagentToolset`.** Read-only roles physically drop `write`/`edit`, keeping `read`/`find`/`search`/`bash`.
+- **159. Config schema.** `config-schema.ts` validates an optional `subagents` map (`{ model?, maxSteps? }`) via zod.
+- **160. Config type.** `Config.subagents` added in `state.ts`.
+- **161. `team.ts` role wiring.** `executeTaskWithAgent` now runs the executor role with its resolved model, step budget, and toolset.
+- **162. `team.ts` observability.** Each task logs `Subagent: <role> · model <m> · ≤N steps`.
+
+### Batch O — Provider credential inventory (163–169)
+- **163. `provider-status.ts`.** `PROVIDER_NAMES` + `CLOUD_PROVIDERS` constants.
+- **164. `providerEnvVar`.** Maps cloud providers to `<NAME>_API_KEY`; ollama → none.
+- **165. `credentialLabel`.** Renders api_key / oauth / keyless / none.
+- **166. `describeProvider`.** Reports kind/label/baseUrl/ready; ollama is keyless-ready, OpenAI-compatible with a base URL is ready without a key.
+- **167. `describeAllProviders`.** Single config read for all four providers.
+- **168. `ai/index` export.** Provider status re-exported from the `ai` barrel.
+- **169. `joc models` refactor.** Now uses the shared status (ollama row + base URLs + ✓/· ready marks) instead of a local 3-provider loop.
+
+### Batch P — Pure config-panel formatters (170–175)
+- **170. `formatModelLine`.** Alias expansion + provider + credential mark (`✓` / `· no credential`).
+- **171. `formatAliasLines`.** Alias→target, sorted and padded.
+- **172. `formatProviderPanel`.** Credential table with ready marks and base URLs.
+- **173. `formatAgentsPanel`.** Subagent roster with resolved model/steps and a read-only tag.
+- **174. `formatAgentDetail`.** Per-role detail incl. mutation capability.
+- **175. `formatConfigPanel`.** Effective runtime config with conditional fields (base URLs, retries, session).
+
+### Batch Q — Provider in the live footer (176–179)
+- **176. `LaunchTuiOptions.provider`.** TUI accepts a resolved provider.
+- **177. Footer provider.** `LaunchTui` sets `footer.provider` so the footer renders `model (provider)`.
+- **178. Launch wiring.** `runTurn` resolves the provider via `describeModel` and passes it into the TUI.
+- **179. Interactive header.** Startup banner shows `Model: <id> (<provider>) · thinking: <level>` and a richer slash-command hint line.
+
+### Batch R — Configuration slash commands (180–192)
+- **180. `/models`.** Lists default model, aliases, and the provider table.
+- **181. `/provider`.** Shows the credential/base-URL table.
+- **182. `/provider <name>`.** Switches the session model to that provider's default alias.
+- **183. `/agents`.** Lists subagent roles with resolved model/step budgets.
+- **184. `/agents <role>`.** Shows a single role's detail.
+- **185. `/config`.** Prints the effective runtime configuration snapshot.
+- **186. `/thinking`.** Shows the current thinking level + token budget.
+- **187. `/thinking <level>`.** Sets the session thinking level (validated low/medium/high).
+- **188. `/model` upgrade.** Now warns when the routed provider has no credential and names the env var to set.
+- **189. `/help` refresh.** Lists every new configuration command.
+- **190. Slash palette.** `SLASH_COMMANDS` expanded so autocomplete + "did you mean?" cover the new commands.
+- **191. `/provider`/`/agents`/`/thinking` actionable errors.** Unknown inputs print the known set / valid levels.
+- **192. `joc models` alias routing.** Each alias line is annotated with its routed provider.
+
+### Batch S — Per-session thinking budget (193–195)
+- **193. `AgentLoopOptions.maxTokens`.** The engine loop accepts a generation-token budget.
+- **194. `callLlm` plumbing.** `runAgentLoop` forwards `maxTokens` to each model call.
+- **195. `/thinking` → loop.** The session thinking level maps to `thinkingMaxTokens` and is threaded into `runAgentLoop`.
+
+### Batch T — Tests (196–201)
+- **196. `test/subagents.test.ts`.** Registry shape, normalization, model/step resolution, read-only prompt + toolset.
+- **197. `test/provider-status.test.ts`.** Env-isolated credential status (keyless ollama, credential-less cloud, OpenAI local base URL).
+- **198. `test/config-panel.test.ts`.** Pure-formatter coverage with ANSI stripping.
+- **199. `test/slash.test.ts` extension.** New-command palette + `/model` vs `/models` disambiguation.
+- **200. Disjoint-module guarantee.** New files coexist with the concurrent gradient/forge runs; no duplicate definitions or handlers.
+- **201. Real smoke.** `joc models` renders the shared provider table + per-alias provider routing under a fresh config dir.
+
+### Verification (passes 152–201)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **251 pass / 0 fail across 46 files** (this run added `subagents`, `provider-status`, `config-panel` suites + extended `slash`).
+- Real smoke: `JOC_CONFIG_DIR=$(mktemp -d) JOC_DEFAULT_MODEL=fast joc models` shows the four-provider credential table (ollama keyless ✓ + base URL) and per-alias provider routing (`fast → ollama/… (ollama)`, `gpt → gpt-4o (openai)`).
+
+## Ralph subagent todo-guidance stream tightening (202)
+
+**Date:** 2026-06-05 · **Dimension: team / ooo ralph execution.**
+
+The prior streaming pass printed Ralph-style todos around `joc team`, but the executor subagent
+itself still received only the single task string. This follow-up pushes the same immutable todo
+contract into the subagent prompt so the worker is guided by the ordered plan, completed markers,
+the active `[>]` todo, and the explicit `stream:step` / `stream:complete` / `stream:error`
+lifecycle contract.
+
+- **202. Subagent prompt contract.** Added `buildRalphSubagentPrompt()` with full todo guide,
+  current todo index, no-skip/no-rewrite rules, verify-before-done instruction, and concise
+  `done.reason` guidance.
+- **203. Tool-request streaming.** `onAssistant` now streams `stream:step tool <name> requested`
+  before execution and `stream:error invalid tool-call json; retrying` for malformed model output.
+- **204. Prompt regression test.** Extended `test/forge-status.test.ts` to assert the full todo order,
+  active/completed markers, and streaming contract are present in the subagent prompt.
+
+### Verification
+
+- `bun test test/forge-status.test.ts test/team-schema.test.ts` → **12 pass / 0 fail**.
+- `bun run typecheck` → **0 errors**.
+- `bun test` → **251 pass / 0 fail across 46 files**.
+
+## Live model discovery for TUI model/provider/subagent config — 50-pass run (202–251)
+
+**Date:** 2026-06-05 · **Dimension: tui / live provider model catalog & config flow.**
+
+This run makes the TUI's model/provider/subagent configuration **pull the real, logged-in
+model catalog** from each credentialed provider instead of guessing from static aliases. When
+a provider is authenticated (OAuth bearer or API key), `joc` now queries its `models` endpoint
+and lets the user pick a concrete, validated id; unreachable / not-logged-in providers degrade
+gracefully. New module: `src/ai/model-discovery.ts`.
+
+> **Note (concurrent work):** the same tree is being edited by other `gjc` agents (gradient/theme
+> and forge/status runs, both labelled 102–151, plus a 152–201 forge variant). This run uses
+> **202–251**, adds the new discovery module + tests, and makes narrow edits to
+> `launch.ts`/`models.ts`/`config-panel.ts`. README count-sync deferred to the agent editing it.
+
+### Batch U — Discovery engine (`src/ai/model-discovery.ts`) (202–215)
+- **202. `ProviderModelsResult`.** Typed result: provider, models, ok, auth `source`, error.
+- **203. Anthropic discovery headers.** OAuth → `Bearer` + `anthropic-beta`; API key → `x-api-key`, mirroring the call adapter.
+- **204. OpenAI discovery request.** Base-URL-aware `GET {base}/models` with `Authorization: Bearer`.
+- **205. Gemini discovery request.** OAuth → `Bearer`; API key → `?key=` query, matching the call adapter.
+- **206. Ollama tag discovery.** Keyless `GET {base}/api/tags`.
+- **207. `discoveryRequest` dispatcher.** Single place to build url+headers per provider/credential.
+- **208. `parseModelsBody`.** Normalizes `data[].id` (anthropic/openai), `models[].name` (gemini, strips `models/`), ollama (`ollama/` prefix).
+- **209. `listProviderModels`.** Per-provider fetch with an **injectable `fetchImpl`** (testable) — never throws.
+- **210. Timeout-bounded.** Default 5s `AbortSignal.timeout` (4s in the TUI) + caller `signal` passthrough so the UI never hangs.
+- **211. Credential short-circuit.** A not-logged-in cloud provider returns `not logged in` **without** a network call.
+- **212. Error classification.** 401/403 → `auth rejected`; other status → `HTTP n`; abort → `timeout`; else `unreachable`.
+- **213. Sort + cap.** Results are sorted and capped (`limit`, default 100).
+- **214. `discoverModels` aggregator.** Parallel across providers, each with its config base URL; skips nothing but tags failures.
+- **215. `ai/index` export.** Discovery re-exported from the `ai` barrel.
+
+### Batch V — Live-model formatters (`config-panel.ts`) (216–219)
+- **216. `formatLiveModels`.** Groups models by provider with the auth source and a per-provider count; surfaces failure reasons inline.
+- **217. Current marker.** The active resolved model is tagged `◀ current`.
+- **218. Cap + login hint.** Per-provider cap with `(+N more)`; an all-empty result hints `joc auth login` / start Ollama.
+- **219. `liveModelKnown`.** Membership check against successful provider lists (used for unknown-id warnings).
+
+### Batch W — `joc models` live catalog (220–223)
+- **220. Live section.** `joc models` now appends a live, credential-driven catalog via `discoverModels`.
+- **221. Auth source shown.** Each provider line shows oauth / api_key / keyless.
+- **222. Graceful failures.** Not-logged-in / unreachable providers print a reason, not a crash.
+- **223. Current default marked.** The resolved default model is highlighted in the live list.
+
+### Batch X — TUI launch wiring (224–243)
+- **224. Session cache.** `liveModelsCache` holds discovery results for the session.
+- **225. `getLiveModels` helper.** Fetches once, prints a `(fetching models…)` notice, reused by every config command.
+- **226. `/models` live.** Lists the real catalog from logged-in providers (+ aliases + default).
+- **227. `/models refresh`.** Forces a re-fetch.
+- **228. `/model <id>` validation.** Flags an id that is absent from the live provider catalog.
+- **229. `/provider <name>` live list.** After switching, prints that provider's live models to pick from.
+- **230. `/provider <name> <model>`.** Selects a concrete live model id directly.
+- **231. Not-logged-in warning.** Switching to an unauthenticated provider warns and points at `joc auth login`.
+- **232. `/agents <role> <model>`.** Persists a per-role subagent model to `~/.joc/config.json` (consumed by `joc team`).
+- **233. Subagent model validation.** Unknown ids get a verify-it note against the live catalog.
+- **234. `/agents` usage hint.** Shows the new `set model` form.
+- **235. `/help` refresh.** Documents `/models [refresh]`, `/provider [name] [model]`, `/agents [role] [model]`.
+- **236. Switch readiness.** Provider switch reflects credential readiness in the model line.
+- **237. Actionable errors retained.** Unknown provider/role still list the known set.
+- **238. REPL never blocks.** Discovery failures degrade to messages; the loop continues.
+- **239. Shared cache.** `/models`, `/provider`, `/model`, `/agents` all read one cache.
+- **240. Routing-qualified ids.** `ollama/*` ids preserved so the router still resolves them.
+- **241. Logged-in-only queries.** Discovery skips `none` cloud providers (no wasted calls).
+- **242. Snappy timeout.** TUI discovery is 4s-bounded.
+- **243. Durable subagent config.** `saveGlobalConfig` writes the role model so `joc team` picks it up across runs.
+
+### Batch Y — Tests (244–251)
+- **244. `discoveryRequest` tests.** Anthropic api-key/oauth, gemini oauth-vs-key, OpenAI base-URL override.
+- **245. `parseModelsBody` tests.** All four provider shapes normalized.
+- **246. Success path.** `listProviderModels` returns sorted, capped models with the right source.
+- **247. Auth failure.** 401 → `auth rejected`.
+- **248. Network failure.** Thrown fetch → `unreachable`.
+- **249. Keyless + short-circuit.** Ollama keyless; credential-less cloud short-circuits without fetching (spy asserts no call).
+- **250. Aggregator.** `discoverModels` covers all providers in parallel.
+- **251. Formatter tests.** `formatLiveModels` grouping/marking/overflow/login-hint + `liveModelKnown`.
+
+### Verification (passes 202–251)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **297 pass / 0 fail across 52 files** (this run added `model-discovery` + extended `config-panel`).
+- Real smoke: `JOC_CONFIG_DIR=$(mktemp -d) JOC_DEFAULT_MODEL=fast joc models` against a `GEMINI_API_KEY` account fetched **50 live Gemini models** (`gemini-2.0-flash`, …) while anthropic/openai correctly reported `not logged in`.
+
+## Model/Provider setting flow — catalog + picker + setup overhaul (passes MP1–MP50)
+
+**Date:** 2026-06-05 · **Dimension: tui / config / usability.**
+
+A 50-pass run hardening the **model & provider setting flow**. Where the existing
+`/model`/`/provider`/`/config` panels (concurrent work) only knew *aliases* and
+*credential readiness*, this run adds a curated **model catalog** (provider, context
+window, reasoning, recommended), a fuzzy resolver ("did you mean"), a generic
+keyboard-navigable **select-list**, catalog-driven **model/provider pickers**,
+**catalog-authoritative routing**, and a **`joc setup` overhaul** with validation,
+recommendations, base-URL normalization, and a richer summary. All new logic is in
+owned/new files (`model-catalog.ts`, `select-list.ts`, `model-picker.ts`,
+`provider-picker.ts`, `setup-helpers.ts`, `model-manager.ts`, `model-registry.ts`)
+to avoid clobbering the concurrently-edited `config-panel.ts`/`provider-status.ts`/
+`launch.ts`.
+
+### Catalog (MP1–MP12) — `src/ai/model-catalog.ts`
+- **MP1–5.** `ModelCatalogEntry` + curated Anthropic/OpenAI/Gemini/Ollama models with provider, context window, reasoning flag, recommended flag, note.
+- **MP6–8.** `catalogForProvider` (recommended-first), `findCatalogEntry` (normalized), `recommendedModel`.
+- **MP9–10.** `searchCatalog` (id/family/note), `validateModelId` (known + provider match).
+- **MP11.** `editDistance` + `suggestModels` ("did you mean" via Levenshtein + substring).
+- **MP12.** `test/model-catalog.test.ts` — routing parity, recommended ids, validation, typo suggestions.
+
+### Registry reverse-alias (MP13–MP18) — `src/ai/model-registry.ts`
+- **MP13–17.** `aliasesFor` (reverse of `expandAlias`), `isAlias`, `describeAlias` (+ catalog knownness), `validateAliases` (flag uncatalogued targets), `effectiveAliasesFor` (async, config-merged).
+- **MP18.** `test/model-registry-alias.test.ts`.
+
+### Select-list (MP19–MP28) — `src/tui/components/select-list.ts`
+- **MP19–23.** `SelectList<T>` state machine: filter, wrap/clamp navigation skipping disabled items, `typeChar`/`backspace`, paging.
+- **MP24–27.** `renderSelectList` pure renderer: viewport **scroll window** (fits terminal height), cursor highlight, group headers, right-aligned hints, filter footer, unicode/ASCII glyphs.
+- **MP28.** `test/select-list.test.ts`.
+
+### Pickers (MP29–MP40)
+- **MP29–36.** `model-picker.ts`: `buildModelChoices` (catalog × readiness, ready providers first, recommended first), `modelHint` badges (ctx/⚡reasoning/★recommended/✓ready), `formatContextWindow`, `modelPicker`/`renderModelPicker`.
+- **MP37–40.** `provider-picker.ts`: `buildProviderChoices` (ready-first), `providerHint`, `recommendedProvider`, `providerPicker`/`renderProviderPicker`. `test/pickers.test.ts` covers both.
+
+### Catalog-aware routing (MP41–MP44) — `src/ai/model-manager.ts`
+- **MP41–43.** `resolveProvider` is now **catalog-authoritative** for known ids (heuristics remain the fallback); `describeModelDetailed` returns alias expansion + routed provider + catalog metadata + reverse aliases.
+- **MP44.** `test/model-routing.test.ts`.
+
+### Setup overhaul (MP45–MP50) — `src/commands/setup.ts` + `setup-helpers.ts`
+- **MP45.** `normalizeBaseUrl` (scheme-add, trailing-slash strip) for Ollama + OpenAI-compatible URLs.
+- **MP46.** `chooseDefaultModel` validates the typed id against the catalog, warns on provider mismatch, and prints "did you mean" suggestions.
+- **MP47.** Each provider now shows its **recommended models** before the prompt.
+- **MP48.** Blank input defaults to the provider's **recommended** model (cloud, Ollama, OpenAI-compatible).
+- **MP49.** `buildSetupSummary` reports `default model → routed provider (ctx, reasoning)` + enabled providers.
+- **MP50.** `test/setup-helpers.test.ts` (pure helpers fully covered without a TTY).
+
+### Verification (MP1–MP50)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **all green** (304 tests / 53 files at run time, including concurrent suites; this run added `model-catalog`, `model-registry-alias`, `select-list`, `pickers`, `model-routing`, `setup-helpers`).
+- Real smoke (deterministic helper run): `gpt4o` → suggests `gpt-4o`; `gpt-4o` chosen as anthropic → "routes to openai" warning; `describeModelDetailed('flash')` → `gemini-2.5-flash` (1M ctx, alias `flash`); model choices grouped ready-first with `ctx · reasoning · recommended · ready` badges.
+
+> **Note:** the interactive `joc setup` readline loop hangs on piped/non-TTY stdin
+> (pre-existing behavior, unrelated to this run); the flow logic is verified via the
+> extracted pure helpers and their unit tests.
+
+## Installer Git URL + npm registry control — 50-pass run (IR1–IR50)
+
+**Date:** 2026-06-05 · **Dimension: install / distribution / private registry ergonomics.**
+
+This run analyzed the existing gjc-parity installer path and tightened `jeo-code` installation
+around the explicit Git URL `https://github.com/akillness/jeo-code.git`, Bun global installs,
+and npm registry workflows (`npm config set registry`, scoped registries, one-shot registry
+selection, and project `.npmrc`). The key policy: **one-shot registry by default; global npm
+config mutation only when explicitly requested**.
+
+### Git-source install improvements (IR1–IR10)
+
+- **IR1. Default Git URL.** `scripts/install.sh` now defaults to `https://github.com/akillness/jeo-code.git` instead of only `owner/repo` shorthand.
+- **IR2. `JOC_REPO_URL`.** Added env alias alongside `JOC_REPO` for explicit URL-driven installs.
+- **IR3. `--repo <url|owner/repo>`.** Installer accepts an explicit Git URL, GitHub shorthand, or owner/repo.
+- **IR4. URL normalization.** `https://...git` sources normalize to `git+https://...git` for Bun/npm-compatible Git specs.
+- **IR5. GitHub shorthand retained.** `akillness/jeo-code` still normalizes to `github:akillness/jeo-code`.
+- **IR6. Ref composition.** `--ref` works with full Git URLs and shorthand sources.
+- **IR7. README Git URL command.** Quick start documents `bun install -g git+https://github.com/akillness/jeo-code.git`.
+- **IR8. Installer Git URL command.** README documents `sh scripts/install.sh --repo https://github.com/akillness/jeo-code.git`.
+- **IR9. Help output source clarity.** `--help` prints the active source URL and default source.
+- **IR10. AGENTS install parity.** Runtime guidance now lists npm, GitHub shorthand, and explicit Git URL installs.
+
+### Registry controls (IR11–IR24)
+
+- **IR11. `--registry <url>`.** Adds one-shot registry selection for this install only.
+- **IR12. `--npm-registry` alias.** Supports explicit npm wording for the same flag.
+- **IR13. `JOC_REGISTRY`.** Env-driven one-shot registry support.
+- **IR14. URL validation.** Registry URLs must start with `http://` or `https://`.
+- **IR15. One-shot env plumbing.** Installer passes both `NPM_CONFIG_REGISTRY` and `npm_config_registry` into `bun add -g`.
+- **IR16. No default mutation.** `--registry` alone does not call `npm config set`.
+- **IR17. `--persist-registry`.** Explicitly opts into persistent npm config mutation.
+- **IR18. Official registry restore.** README documents `https://registry.npmjs.org/` restore flow.
+- **IR19. Mirror registry flow.** README documents `https://npmjs.co.kr` speed/mirror flow.
+- **IR20. Private registry flow.** README documents `https://your-company-registry.com`.
+- **IR21. `--print-registry`.** Installer can run `npm config get registry`.
+- **IR22. `--delete-registry`.** Installer can run `npm config delete registry`.
+- **IR23. Dry-run registry commands.** Registry config mutations print planned commands under `--dry-run`.
+- **IR24. npm presence guard.** Persistent/print/delete operations fail clearly when `npm` is unavailable.
+
+### Scoped and project-pinned registry support (IR25–IR34)
+
+- **IR25. `--scope <@scope>`.** Adds npm-compatible scoped registry key support.
+- **IR26. Scope normalization.** `my-org` normalizes to `@my-org:registry`; `@my-org` stays scoped.
+- **IR27. Scoped persist.** `--scope @my-org --persist-registry` writes `@my-org:registry`.
+- **IR28. Scoped print/delete.** Registry get/delete use the same scoped key.
+- **IR29. `JOC_REGISTRY_SCOPE`.** Env-driven scope support.
+- **IR30. Scoped one-shot warning.** Installer explains when scope-specific behavior needs persisted/project config.
+- **IR31. `--project-npmrc`.** Writes project-local `.npmrc` instead of changing global npm config.
+- **IR32. Project global key.** `.npmrc` can pin `registry=<url>`.
+- **IR33. Project scoped key.** `.npmrc` can pin `@my-org:registry=<url>`.
+- **IR34. README `.npmrc` workflow.** Registry section shows project-pinned `.npmrc` usage.
+
+### Installer UX/safety (IR35–IR42)
+
+- **IR35. `--package <name>`.** npm package name is configurable without env mutation.
+- **IR36. `--dry-run`.** Prints the Bun/npm commands without installing.
+- **IR37. Dry-run no symlink noise.** Dry-run completion no longer reports existing symlinks as changed.
+- **IR38. Help expansion.** `--help` now documents repo, package, registry, scope, persist, print/delete, `.npmrc`, and dry-run flags.
+- **IR39. Bun capitalization.** User-facing installer output consistently says `Bun`.
+- **IR40. Version check simplification.** Removed the shell pipeline from `bun --version` handling.
+- **IR41. Mode compatibility.** Registry flags compose with Git, npm, local, binary, and ref modes where applicable.
+- **IR42. Default safety statement.** README states that registry mutation is opt-in only.
+
+### Tests and docs (IR43–IR50)
+
+- **IR43. Install help test.** Added `test/install-script.test.ts` coverage for Git URL and registry controls in help output.
+- **IR44. Dry-run normalization test.** Test verifies full Git URL → `git+https://...` and one-shot registry env.
+- **IR45. README quick start.** Quick start now includes npm package, GitHub shorthand, and explicit Git URL.
+- **IR46. README install section.** Installation section now has a dedicated registry-aware workflow.
+- **IR47. README count sync.** README badge and project-structure counts updated to the observed suite total.
+- **IR48. Docs changelog.** This `docs/improvements.md` pass records the 50 installer improvements.
+- **IR49. Focused verification.** `bun test test/install-script.test.ts` covers the new installer behavior without network access.
+- **IR50. Full verification.** Final gates ran with typecheck and the complete Bun test suite.
+
+### Verification (IR1–IR50)
+
+- `sh scripts/install.sh --help` → documents Git URL, registry, scope, persist, `.npmrc`, print/delete, and dry-run controls.
+- `sh scripts/install.sh --dry-run --registry https://registry.npmjs.org/ --repo https://github.com/akillness/jeo-code.git` → prints `git+https://github.com/akillness/jeo-code.git` and one-shot registry env without installing.
+- `bun test test/install-script.test.ts` → **2 pass / 0 fail**.
+- `bun run typecheck` → **0 errors**.
+- `bun test` → **306 pass / 0 fail across 54 files**.

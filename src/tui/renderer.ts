@@ -6,6 +6,7 @@ export class Renderer {
   private write: Writer;
   private cols: () => number;
   private prev: string[] = [];
+  private prevCols?: number;
 
   constructor(write?: Writer, cols?: () => number) {
     this.write = write || ((s: string) => process.stdout.write(s));
@@ -14,6 +15,11 @@ export class Renderer {
 
   render(lines: string[]): void {
     const currentCols = this.cols();
+    if (this.prevCols !== undefined && this.prevCols !== currentCols) {
+      this.clear();
+    }
+    this.prevCols = currentCols;
+
     const next = lines.map(line => truncate(line, currentCols));
     const maxLen = Math.max(this.prev.length, next.length);
     let cursorRow = 0;

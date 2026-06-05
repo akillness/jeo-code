@@ -5,7 +5,13 @@ export const SLASH_COMMANDS = [
   "/clear",
   "/compact",
   "/model",
+  "/models",
+  "/provider",
+  "/agents",
+  "/config",
+  "/thinking",
   "/sessions",
+  "/evolve",
   "/exit",
   "/quit",
 ];

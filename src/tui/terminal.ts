@@ -39,6 +39,40 @@ export function isTTY(): boolean {
   return !!process.stdout.isTTY;
 }
 
+/**
+ * Truncate a line to `cols` *visible* columns. SGR color escapes are copied
+ * verbatim and do NOT count toward the width, so a colored line is never cut
+ * mid-escape (which would spill raw `\x1b[…` bytes onto the screen). If the line
+ * is cut while a color is active, a reset (`\x1b[0m`) is appended so trailing
+ * frame content is not tinted by a dangling color.
+ */
 export function truncate(line: string, cols: number): string {
-  return line.length <= cols ? line : line.slice(0, cols);
+  const limit = Math.max(0, cols);
+  // Fast path: no escapes → plain slice by length.
+  if (!line.includes("\x1b")) {
+    return line.length <= limit ? line : line.slice(0, limit);
+  }
+  let out = "";
+  let visible = 0;
+  let sawEscape = false;
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] === "\x1b") {
+      const m = /^\x1b\[[0-9;]*m/.exec(line.slice(i));
+      if (m) {
+        out += m[0];
+        sawEscape = true;
+        i += m[0].length;
+        continue;
+      }
+    }
+    if (visible >= limit) break;
+    out += line[i];
+    visible++;
+    i++;
+  }
+  if (i < line.length && sawEscape && !out.endsWith("\x1b[0m")) {
+    out += "\x1b[0m";
+  }
+  return out;
 }

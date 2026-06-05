@@ -51,6 +51,19 @@ export const ConfigSchema = z
         maxDelayMs: z.number().int().min(0).optional(),
       })
       .optional(),
+    /**
+     * Per-subagent-role overrides (gjc role-agent parity). Keyed by role id
+     * (executor / planner / architect / critic); each may pin a model and/or a
+     * step budget. Tolerant of unknown keys.
+     */
+    subagents: z
+      .record(
+        z.object({
+          model: z.string().optional(),
+          maxSteps: z.number().int().min(1).optional(),
+        }),
+      )
+      .optional(),
   })
   .passthrough();
 

@@ -6,7 +6,8 @@ import { openaiAdapter } from "./providers/openai";
 import { geminiAdapter } from "./providers/gemini";
 import { ollamaAdapter } from "./providers/ollama";
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
-import { expandAlias, resolveModelId } from "./model-registry";
+import { expandAlias, resolveModelId, effectiveAliasesFor } from "./model-registry";
+import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog";
 import { withRetry, defaultRetryable, type RetryOptions } from "../util/retry";
 import type { Config } from "../agent/state";
 
@@ -18,6 +19,10 @@ const ADAPTERS: Record<ProviderName, ProviderAdapter> = {
 };
 
 export function resolveProvider(model: string): ProviderName {
+  // Catalog is authoritative for known ids (correct even when heuristics would
+  // misroute a future/edge id); heuristics handle everything uncatalogued.
+  const entry = findCatalogEntry(model);
+  if (entry) return entry.provider;
   const m = (model ?? "").toLowerCase();
   if (m.startsWith("ollama/")) return "ollama";
   // OpenAI: explicit prefix, any GPT, or a reasoning model (o1/o3/o4-mini, o1-preview…).
@@ -37,6 +42,32 @@ export function thinkingMaxTokens(level?: "low" | "medium" | "high"): number {
 export async function describeModel(input: string): Promise<{ input: string; resolved: string; provider: ProviderName }> {
   const resolved = await resolveModelId(input);
   return { input, resolved, provider: resolveProvider(resolved) };
+}
+
+export interface ModelDescription {
+  input: string;
+  resolved: string;
+  provider: ProviderName;
+  /** Catalog metadata when the resolved id is known (context window, reasoning…). */
+  entry?: ModelCatalogEntry;
+  /** Alias names that expand to the resolved id. */
+  aliases: string[];
+}
+
+/**
+ * Rich model description for the `/model` panel + diagnostics: alias expansion,
+ * routed provider, catalog metadata (context window, reasoning, recommended),
+ * and the reverse-alias list. Falls back gracefully for uncatalogued ids.
+ */
+export async function describeModelDetailed(input: string): Promise<ModelDescription> {
+  const { resolved, provider } = await describeModel(input);
+  return {
+    input,
+    resolved,
+    provider,
+    entry: findCatalogEntry(resolved),
+    aliases: await effectiveAliasesFor(resolved),
+  };
 }
 
 export interface ModelManager {

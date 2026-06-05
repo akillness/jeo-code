@@ -3,7 +3,7 @@
 [![Bun Version](https://img.shields.io/badge/Bun-%3E%3D%201.3.14-blue?logo=bun)](https://bun.sh)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen)]()
-[![Tests Status](https://img.shields.io/badge/Tests-128%20Passed-brightgreen)]()
+[![Tests Status](https://img.shields.io/badge/Tests-306%20Passed-brightgreen)]()
 
 > An interactive AI coding agent **and** a disciplined spec-first pipeline — one
 > lean, pure-TypeScript CLI on Bun.
@@ -37,9 +37,10 @@ launch it from whatever repository you want it to operate on:
 
 ```bash
 # 1. Install (gjc parity: one bun global install)
-bun install -g jeo-code                       # npm registry (once published)
-bun install -g github:akillness/jeo-code      # from GitHub today
-#   …or bootstrap bun + install in one shot:
+bun install -g jeo-code                                      # npm registry (once published)
+bun install -g github:akillness/jeo-code                     # GitHub shorthand
+bun install -g git+https://github.com/akillness/jeo-code.git # explicit Git URL
+#   …or bootstrap Bun + install from the Git URL in one shot:
 curl -fsSL https://raw.githubusercontent.com/akillness/jeo-code/main/scripts/install.sh | sh
 
 # 2. Configure a provider + default model (interactive)
@@ -69,11 +70,41 @@ joc "add a /health route to server.ts and run the tests"  # one-shot request
 `~/.local/bin/joc` and auto-installs Bun (enforcing the `1.3.14` floor) when it is missing.
 
 ```bash
-bun install -g jeo-code                          # npm registry (gjc parity, once published)
-bun install -g github:akillness/jeo-code         # global install straight from GitHub
-sh scripts/install.sh --ref v0.1.0               # global install of a specific tag
-sh scripts/install.sh --binary                   # compile a standalone binary (no bun at runtime)
-sh scripts/uninstall.sh [--purge]                # remove the bin + bun registry entry (--purge also wipes ~/.joc/)
+bun install -g jeo-code                                      # npm registry (gjc parity, once published)
+bun install -g github:akillness/jeo-code                     # GitHub shorthand
+bun install -g git+https://github.com/akillness/jeo-code.git # explicit Git URL
+sh scripts/install.sh --repo https://github.com/akillness/jeo-code.git
+sh scripts/install.sh --ref v0.1.0                           # global install of a specific tag
+sh scripts/install.sh --binary                               # compile a standalone binary (no bun at runtime)
+sh scripts/uninstall.sh [--purge]                            # remove the bin + bun registry entry (--purge also wipes ~/.joc/)
+```
+
+### Registry-aware installs
+
+`joc` does **not** mutate your npm registry by default. Use `--registry` for a one-shot
+Bun install, and add `--persist-registry` only when you intentionally want the installer
+to run `npm config set ...`.
+
+```bash
+# One-shot registry for this install only
+sh scripts/install.sh --npm --registry https://registry.npmjs.org/
+sh scripts/install.sh --npm --registry https://npmjs.co.kr
+sh scripts/install.sh --npm --registry https://your-company-registry.com
+
+# Persist globally via npm config (official registry restore / mirror / private)
+sh scripts/install.sh --npm --registry https://registry.npmjs.org/ --persist-registry
+sh scripts/install.sh --npm --registry https://npmjs.co.kr --persist-registry
+sh scripts/install.sh --npm --registry https://your-company-registry.com --persist-registry
+
+# Scope-only registry (writes @my-org:registry, not the global registry)
+sh scripts/install.sh --npm --scope @my-org --registry https://your-company-registry.com --persist-registry
+
+# Project-pinned .npmrc instead of global npm config
+sh scripts/install.sh --npm --registry https://registry.npmjs.org/ --project-npmrc
+
+# Inspect / reset npm registry config
+sh scripts/install.sh --print-registry
+sh scripts/install.sh --delete-registry
 ```
 
 From a clone, `./install.sh` performs the dev install (`bun link`) so source edits
@@ -88,7 +119,7 @@ Local dev without installing (from the repo root):
 ```bash
 bun run start --help     # = bun src/cli.ts --help
 bun run typecheck        # tsc -p tsconfig.json --noEmit
-bun test                 # unit tests (33 files, 167 tests)
+bun test                 # unit tests (54 files, 306 tests)
 ```
 
 ---
@@ -111,7 +142,7 @@ bun test                 # unit tests (33 files, 167 tests)
 | `joc resume [id]` | Resume the latest interactive session (or a specific id). |
 | `joc chat "<msg>"` | Single-shot streaming chat (no tools) — renders the reply token-by-token. |
 | `joc mcp [serve\|tools]` | Run `joc` as an MCP stdio server (set `JOC_MCP_PIPELINE=1` to also expose the pipeline tools). |
-| `joc evolve [--step N] [--max M] [--animate] [--no-color]` | Preview the **evolution TUI** identity — the five ASCII-art stages with their evolution track and stage meter. |
+| `joc evolve [--step N] [--max M] [--animate] [--loop N] [--theme cosmic\|matrix\|solar\|mono] [--gradient] [--ascii] [--fit] [--width W] [--list] [--list-themes] [--json] [--no-color]` | Preview the **evolution TUI** identity — five ASCII-art stages with track + stage meter. `--gradient` truecolor (256/16/plain downgrade), `--theme` palettes, `--ascii` legacy-terminal fallback, `--fit`/`--width` terminal sizing, `--list`/`--list-themes`/`--json` for tooling. |
 
 ---
 
@@ -121,13 +152,17 @@ Run bare `joc` (or `joc launch`) for a conversational coding agent built on a sh
 hardened tool-call engine (`src/agent/engine.ts`). It calls `read` / `write` / `edit` /
 `bash` / `find` / `search` in a loop until it signals done.
 
-- **TUI** — on a TTY it renders a differential UI (live tool-call list + in-place status
-  footer); `--no-tui`, piped input, and non-TTY fall back to a plain stream.
+- **TUI** — on a TTY it renders a differential UI (live tool-call list, `joc thinking`
+  progress status, `joc forge` tool stats, and boxed previews for `bash` / `write` /
+  `read` / `edit` calls); `--no-tui`, piped input, and non-TTY fall back to a
+  plain `stream:complete` / `stream:error` event stream.
 - **Evolution TUI** — the live view evolves with the agent's progress through five stages
   (**Primordial Cell → Double Helix → Tool User → AI Coding Agent → Singularity**). The ASCII
   art, spinner, progress meter, and footer track all advance in lockstep from one canonical
   stage model (`src/tui/components/evolution.ts`); `finish()` records `Evolved to: <stage>`.
-  Preview it any time with `joc evolve`.
+  Preview it any time with `joc evolve` (try `--theme matrix --gradient --fit`). On a TTY the
+  live frame **fills the terminal** — art centered to the width, footer pinned to the bottom row —
+  and downgrades gracefully (truecolor→256→16→plain, unicode→ASCII) per terminal capability.
 - **Sessions** — every turn is appended to `.joc/sessions/<id>.jsonl`; `joc launch --list`
   and `joc launch --resume [id]` resume past conversations.
 - **tmux orchestration (gjc parity)** — `joc --tmux` creates/attaches a leader session named
@@ -237,7 +272,7 @@ jeo-code/
 │   ├── mcp/                   # MCP protocol + tools + stdio server
 │   └── tui/                   # differential renderer + components + LaunchTui
 ├── scripts/                   # install.sh / uninstall.sh (bun install + bun link)
-├── test/                      # 33 suites (167 tests): oauth, engine, tools-fs, retry, config-schema, cli-runner, mutation-guard, approve, team-schema, session, compaction, streaming, evolution, ascii-art, footer, evolve, meter, tui-*
+├── test/                      # 54 suites (306 tests): oauth, engine, tools-fs, retry, config-schema, cli-runner, mutation-guard, approve, team-schema, session, compaction, streaming, evolution, ascii-art, footer, evolve, meter, install, model/provider picker, tui-*
 ├── docs/improvements.md       # architectural analysis & changelog (ralph passes)
 ├── plan/                      # long-horizon work plans (TUI, features, install, model, provider)
 └── README.md

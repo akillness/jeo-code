@@ -3,6 +3,7 @@ import { resolveCredential, snapshotProvider, type AuthProvider, type Credential
 import { resolveProvider } from "../ai";
 import { resolveModelId } from "../ai/model-registry";
 import { meter } from "../tui/components/meter";
+import { size } from "../tui/terminal";
 import chalk from "chalk";
 
 interface ProbeResult {
@@ -173,6 +174,11 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
       defaultModel: { configured: config.defaultModel, resolved: resolvedModel, provider: defaultProvider },
       ollamaBaseUrl: ollamaBase,
       openaiBaseUrl: config.openaiBaseUrl ?? null,
+      terminal: {
+        cols: size().cols,
+        rows: size().rows,
+        colorLevel: chalk.level
+      },
       providers: probes.map(p => ({
         name: p.name,
         credential: p.credKind,
@@ -197,6 +203,13 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   console.log(`Config:         ${process.env.HOME}/.joc/config.json`);
   if (config.openaiBaseUrl) console.log(`OpenAI base:    ${config.openaiBaseUrl}`);
   console.log(`Ollama base:    ${ollamaBase}`);
+
+  const termSize = size();
+  const tuiVerdict = termSize.cols < 40 
+    ? `${termSize.cols}x${termSize.rows} ${chalk.red("(too narrow for ASCII art)")}` 
+    : `${termSize.cols}x${termSize.rows} ${chalk.green("(ASCII art enabled)")}`;
+  console.log(`Terminal size:  ${tuiVerdict}`);
+  console.log(`Color support:  Level ${chalk.level} (${chalk.level > 0 ? chalk.green("enabled") : "disabled"})`);
   console.log("");
 
   console.log("Provider connectivity:");

@@ -4,8 +4,60 @@ import {
   readWorkflowState,
   writeWorkflowState,
 } from "../agent/state";
-import { runAgentLoop, executorSystemPrompt } from "../agent/engine";
+import { runAgentLoop } from "../agent/engine";
+import { readGlobalConfig } from "../agent/state";
+import {
+  defaultSubagentRole,
+  resolveSubagentModel,
+  resolveSubagentMaxSteps,
+  subagentSystemPrompt,
+  subagentToolset,
+} from "../agent/subagents";
 import type { Message } from "../agent/loop";
+
+export type RalphStreamKind = "step" | "complete" | "error";
+
+export function formatRalphTodoGuide(tasks: string[], activeIndex = 0, completed: readonly string[] = []): string[] {
+  const done = new Set(completed);
+  const lines = [
+    "[RALPH] Subagent guidance: follow todos in order; stream every step, complete, and error event.",
+  ];
+  tasks.forEach((task, index) => {
+    const mark = done.has(task) ? "x" : index === activeIndex ? ">" : " ";
+    lines.push(`[TODO] ${index + 1}/${tasks.length} [${mark}] ${task}`);
+  });
+  return lines;
+}
+
+export function formatRalphStreamEvent(kind: RalphStreamKind, message: string): string {
+  const label = kind === "complete" ? "complete" : kind === "error" ? "error" : "step";
+  return `  └─ stream:${label} ${message}`;
+}
+
+export interface RalphSubagentPromptContext {
+  task: string;
+  tasks: string[];
+  activeIndex: number;
+  completed?: readonly string[];
+}
+
+export function buildRalphSubagentPrompt(ctx: RalphSubagentPromptContext): string {
+  const guide = formatRalphTodoGuide(ctx.tasks, ctx.activeIndex, ctx.completed ?? []).join("\n");
+  return [
+    "You are an ooo ralph subagent executing one todo from an immutable plan.",
+    "",
+    guide,
+    "",
+    `Current todo: ${ctx.activeIndex + 1}/${ctx.tasks.length} "${ctx.task}"`,
+    "",
+    "Rules:",
+    "- Execute ONLY the current [>] todo; do not skip ahead or rewrite the todo list.",
+    "- Treat completed [x] todos as context only; do not redo them unless required to verify this todo.",
+    "- Use tools in small steps and verify the current todo before calling done.",
+    "- The caller streams your lifecycle as stream:step, stream:complete, and stream:error; keep done.reason concise.",
+  ].join("\n");
+}
+
 
 export async function runTeamCommand(): Promise<void> {
   const cwd = process.cwd();
@@ -56,6 +108,7 @@ export async function runTeamCommand(): Promise<void> {
 
   console.log(`Loaded ${tasks.length} tasks for execution.`);
 
+
   // Initialize team state
   let teamState = await readWorkflowState("team", cwd) || {
     active: true,
@@ -68,13 +121,22 @@ export async function runTeamCommand(): Promise<void> {
   };
 
   await writeWorkflowState("team", teamState, cwd);
+  for (const line of formatRalphTodoGuide(tasks, Math.max(0, tasks.indexOf(teamState.pending_tasks?.[0] ?? "")), teamState.completed_tasks ?? [])) console.log(line);
 
   while (teamState.pending_tasks && teamState.pending_tasks.length > 0) {
     const currentTask = teamState.pending_tasks[0];
     console.log(`\n[TASK] Current: "${currentTask}"`);
+    const activeIndex = tasks.indexOf(currentTask);
+    for (const line of formatRalphTodoGuide(tasks, activeIndex, teamState.completed_tasks ?? [])) console.log(line);
 
     // Run the Executor loop
-    const success = await executeTaskWithAgent(currentTask, cwd);
+    const success = await executeTaskWithAgent({
+      task: currentTask,
+      tasks,
+      activeIndex,
+      completed: teamState.completed_tasks ?? [],
+      cwd,
+    });
     
     if (success) {
       teamState.completed_tasks = [...(teamState.completed_tasks ?? []), currentTask];
@@ -95,27 +157,42 @@ export async function runTeamCommand(): Promise<void> {
   }
 }
 
-async function executeTaskWithAgent(task: string, cwd: string): Promise<boolean> {
+async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: string }): Promise<boolean> {
+  const config = await readGlobalConfig();
+  const role = defaultSubagentRole();
+  const model = resolveSubagentModel(role.id, config);
+  const maxSteps = resolveSubagentMaxSteps(role.id, config);
+  console.log(`  └─ Subagent: ${role.title} · model ${model} · ≤${maxSteps} steps`);
+
   const history: Message[] = [
-    { role: "system", content: executorSystemPrompt() },
-    { role: "user", content: `Your task is: "${task}"` },
+    { role: "system", content: subagentSystemPrompt(role) },
+    { role: "user", content: buildRalphSubagentPrompt(ctx) },
   ];
 
   const result = await runAgentLoop(history, {
-    cwd,
-    maxSteps: 15,
+    cwd: ctx.cwd,
+    model,
+    maxSteps,
+    tools: subagentToolset(role),
     events: {
-      onStep: step => console.log(`  └─ Step ${step}: Thinking...`),
-      onToolResult: (tool, ok) => console.log(`  └─ Tool [${tool}] → ${ok ? "Success" : "Failed"}`),
-      onError: msg => console.log(`  └─ Error in execution step: ${msg}`),
+      onAssistant: (_raw, invocation) => {
+        if (!invocation) {
+          console.log(formatRalphStreamEvent("error", "invalid tool-call json; retrying"));
+        } else if (invocation.tool !== "done") {
+          console.log(formatRalphStreamEvent("step", `tool ${invocation.tool} requested`));
+        }
+      },
+      onStep: step => console.log(formatRalphStreamEvent("step", `${role.title} thinking ${step}/${maxSteps}`)),
+      onToolResult: (tool, ok) => console.log(formatRalphStreamEvent(ok ? "complete" : "error", `tool ${tool}`)),
+      onError: msg => console.log(formatRalphStreamEvent("error", msg)),
     },
   });
 
   if (result.done) {
-    console.log("  └─ Executor completed the task successfully.");
+    console.log(formatRalphStreamEvent("complete", `${role.title} finished task`));
     return true;
   }
-  console.log(`  └─ Did not converge within ${result.steps} steps.`);
+  console.log(formatRalphStreamEvent("error", `${role.title} did not converge within ${result.steps} steps`));
   return false;
 }
 export const StepSchema = z.object({

@@ -1,4 +1,12 @@
-import { stageIndexForStep, EVOLUTION_STAGE_NAMES, EVOLUTION_STAGE_COUNT } from "./evolution";
+import {
+  stageIndexForStep,
+
+  overallProgress,
+  nextStageName,
+  stepsToNextStage,
+  evolutionTrack,
+  EVOLUTION_STAGE_COUNT,
+} from "./evolution";
 
 export interface FooterData {
   model: string;
@@ -9,10 +17,17 @@ export interface FooterData {
   sessionId?: string;
   /** Append a compact evolution-stage tag (default true when step+maxSteps known). */
   showStage?: boolean;
+  /** Use ASCII track markers in the stage tag (default unicode). */
+  unicode?: boolean;
+  /** Show an estimated time-to-completion (`eta Ns`); opt-in. */
+  showEta?: boolean;
+  /** Show whole-turn evolution progress (`evo NN%`) + steps to next stage; opt-in. */
+  showProgress?: boolean;
 }
 
 export function renderFooter(d: FooterData): string {
   const parts: string[] = [];
+  const unicode = d.unicode !== false;
 
   // Model & Provider
   if (d.model) {
@@ -38,15 +53,42 @@ export function renderFooter(d: FooterData): string {
     parts.push(`${secs}s`);
   }
 
+  // Estimated remaining time (opt-in): linear extrapolation from elapsed/step.
+  if (
+    d.showEta &&
+    d.step !== undefined &&
+    d.step > 0 &&
+    d.maxSteps !== undefined &&
+    d.step < d.maxSteps &&
+    d.elapsedMs !== undefined &&
+    d.elapsedMs > 0
+  ) {
+    const etaMs = (d.elapsedMs / d.step) * (d.maxSteps - d.step);
+    parts.push(`eta ${Math.round(etaMs / 1000)}s`);
+  }
+
+  // Whole-turn progress + countdown to the next stage (opt-in).
+  if (d.showProgress && d.step !== undefined && d.maxSteps !== undefined) {
+    const pct = Math.round(overallProgress(d.step, d.maxSteps) * 100);
+    const idx = stageIndexForStep(d.step, d.maxSteps);
+    if (idx < EVOLUTION_STAGE_COUNT - 1) {
+      const remaining = stepsToNextStage(d.step, d.maxSteps);
+      const arrow = unicode ? "\u2192" : "->";
+      parts.push(`evo ${pct}% ${arrow} ${nextStageName(d.step, d.maxSteps)} in ${remaining}`);
+    } else {
+      parts.push(`evo ${pct}%`);
+    }
+  }
+
   // Session ID
   if (d.sessionId) {
     parts.push(d.sessionId.slice(0, 8));
   }
 
-  // Compact evolution-stage tag, e.g. "evo 3/5 Tool User (Homo Habilis)".
+  // Compact evolution-stage tag, e.g. "●●●○○ Tool User (Homo Habilis) [3/5]".
   if (d.showStage !== false && d.step !== undefined && d.maxSteps !== undefined) {
     const idx = stageIndexForStep(d.step, d.maxSteps);
-    parts.push(`evo ${idx + 1}/${EVOLUTION_STAGE_COUNT} ${EVOLUTION_STAGE_NAMES[idx]}`);
+    parts.push(evolutionTrack(idx, { color: true, unicode }));
   }
 
   return parts.join(" · ");

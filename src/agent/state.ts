@@ -50,6 +50,12 @@ export interface Config {
     maxRetries?: number;
     maxDelayMs?: number;
   };
+  /**
+   * Per-subagent-role overrides (gjc role-agent parity). Keyed by role id
+   * (executor / planner / architect / critic); each may pin a model and/or a
+   * tool-loop step budget.
+   */
+  subagents?: { [roleId: string]: { model?: string; maxSteps?: number } };
 }
 
 export interface WorkflowState {

@@ -61,6 +61,7 @@ export class LaunchTui {
     return {
       onStep: step => {
         this.footer.step = step;
+        this.spinner.updateStep(step, this.footer.maxSteps);
         this.spinner.next();
         this.draw();
       },
@@ -86,6 +87,7 @@ export class LaunchTui {
 
   start(): void {
     this.startedAt = Date.now();
+    this.spinner.updateStep(0, this.footer.maxSteps);
     this.write(hideCursor());
     this.draw();
     // Animate the spinner + elapsed clock while the model is thinking.
@@ -113,6 +115,14 @@ export class LaunchTui {
     const cols = size().cols;
     const elapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
     const frame: string[] = [];
+
+    // Prepend evolutionary ASCII art
+    const stage = getEvolutionStage(this.footer.step || 0, this.footer.maxSteps);
+    for (const line of renderAsciiArt(stage)) {
+      frame.push(line);
+    }
+    frame.push(""); // spacing line
+
     for (const line of this.tools.render()) frame.push(line);
     for (const line of this.stream.render(cols)) frame.push(line);
     frame.push(`${this.spinner.current()} ${renderFooter({ ...this.footer, elapsedMs })}`);

@@ -1,38 +1,54 @@
 #!/bin/sh
-# joc (jeo-code) installer — mirrors gjc's install.sh pattern.
+# joc (jeo-code) installer — gjc-style bun global install.
+#
+# The gjc parity path is a single bun global install. The published-package form
+# (once jeo-code is on npm) is identical to gajae-code's:
+#
+#   bun install -g jeo-code            # gjc parity: bun install -g gajae-code
+#
+# Until then this script performs the equivalent global install straight from the
+# GitHub repo, auto-installing bun if missing.
+#
 # Usage:
-#   curl -fsSL <raw-url>/scripts/install.sh | sh
-#   sh scripts/install.sh --local            # install from local clone (dev)
-#   sh scripts/install.sh --ref v0.1.0       # install specific git ref
+#   curl -fsSL <raw-url>/scripts/install.sh | sh   # global install from GitHub (default)
+#   sh scripts/install.sh                          # same as above
+#   sh scripts/install.sh --npm                    # bun install -g jeo-code (npm registry)
+#   sh scripts/install.sh --ref v0.1.0             # global install of a specific git ref
+#   sh scripts/install.sh --local                  # dev: install from this clone (bun link)
+#   sh scripts/install.sh --binary                 # compile a standalone binary (no bun at runtime)
 set -e
 
-REPO="${JOC_REPO:-jeo-code/jeo-code}"
+REPO="${JOC_REPO:-akillness/jeo-code}"
+PKG="${JOC_PKG:-jeo-code}"
 INSTALL_DIR="${JOC_INSTALL_DIR:-$HOME/.local/bin}"
 MIN_BUN_VERSION="1.3.14"
 
-MODE=""
+MODE="global"
 REF=""
 SRC_DIR=""
-BINARY=0
+LINKED=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --global)   MODE="global"; shift ;;
+    --npm)      MODE="npm"; shift ;;
     --local)    MODE="local"; shift ;;
-    --source)   MODE="source"; shift ;;
-    --binary)   BINARY=1; [ -z "$MODE" ] && MODE="local"; shift ;;
+    --binary)   MODE="binary"; shift ;;
     --ref)      shift; REF="$1"; shift ;;
     --ref=*)    REF="${1#*=}"; shift ;;
     -r)         shift; REF="$1"; shift ;;
     -h|--help)
       cat <<EOF
-joc installer
-  --local         install from current clone (uses repo root of this script)
-  --source        clone repo and install via bun (default)
+joc installer (gjc-style bun global install)
+  (default)       bun global install from github:$REPO  →  exposes 'joc'
+  --npm           bun install -g $PKG (npm registry; gjc parity once published)
+  --local         install from current clone via 'bun link' (dev)
   --binary        compile a standalone binary (no bun needed at runtime)
-  --ref <ref>     install specific tag/branch/commit
+  --ref <ref>     install a specific tag/branch/commit
 Environment:
-  JOC_INSTALL_DIR (default \$HOME/.local/bin)
-  JOC_REPO        (default jeo-code/jeo-code)
+  JOC_INSTALL_DIR (default \$HOME/.local/bin — compatibility symlink)
+  JOC_REPO        (default $REPO)
+  JOC_PKG         (default $PKG)
 EOF
       exit 0
       ;;
@@ -42,7 +58,6 @@ EOF
 done
 
 has_bun() { command -v bun >/dev/null 2>&1; }
-has_git() { command -v git >/dev/null 2>&1; }
 
 version_ge() {
   cur="$1"; min="$2"
@@ -68,83 +83,79 @@ require_bun() {
   fi
 }
 
-resolve_source_dir() {
-  if [ "$MODE" = "local" ]; then
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-    if [ ! -f "$SRC_DIR/src/cli.ts" ]; then
-      echo "--local: expected cli.ts at $SRC_DIR/src/cli.ts"
-      exit 1
-    fi
-    return
-  fi
-  # --source: clone fresh
-  if ! has_git; then
-    echo "git is required for source install"; exit 1
-  fi
-  TMP="$(mktemp -d)"
-  trap 'rm -rf "$TMP"' EXIT
-  if [ -n "$REF" ]; then
-    git clone "https://github.com/${REPO}.git" "$TMP" >/dev/null
-    (cd "$TMP" && git checkout "$REF" >/dev/null)
-  else
-    git clone --depth 1 "https://github.com/${REPO}.git" "$TMP" >/dev/null
-  fi
-  if [ ! -f "$TMP/src/cli.ts" ]; then
-    echo "Expected src/cli.ts inside cloned repo"; exit 1
-  fi
-  SRC_DIR="$TMP"
+bun_bin_dir() { echo "${BUN_INSTALL:-$HOME/.bun}/bin"; }
+
+# bun global install (the gjc-idiomatic path). Exposes the package's `joc` bin
+# in bun's global bin dir (~/.bun/bin/joc).
+install_global() {
+  spec="github:$REPO"
+  [ -n "$REF" ] && spec="github:$REPO#$REF"
+  echo "Installing $PKG globally via bun ($spec)..."
+  bun add -g "$spec"
 }
 
-install_deps() {
+install_npm() {
+  spec="$PKG"
+  [ -n "$REF" ] && spec="$PKG@$REF"
+  echo "Installing $PKG globally via bun ($spec)..."
+  bun add -g "$spec"
+}
+
+# Dev install from the current clone: register the package globally with
+# `bun link` so source edits are picked up immediately.
+install_local() {
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+  if [ ! -f "$SRC_DIR/src/cli.ts" ]; then
+    echo "--local: expected cli.ts at $SRC_DIR/src/cli.ts"
+    exit 1
+  fi
   ( cd "$SRC_DIR" && bun install --silent >/dev/null )
-}
-
-install_link() {
-  BUN_BIN="${BUN_INSTALL:-$HOME/.bun}/bin"
-  # bun-native install: register the package globally and expose its `joc` bin
-  # in bun's global bin dir (idiomatic `bun link`, the bun analogue of npm link).
   ( cd "$SRC_DIR" && bun link >/dev/null 2>&1 ) || true
-
-  LINKED=""
-  [ -e "$BUN_BIN/joc" ] && LINKED="$BUN_BIN/joc"
-
-  # Compatibility symlink in INSTALL_DIR (default ~/.local/bin) so the documented
-  # location keeps working even when bun's global bin is not on PATH.
-  mkdir -p "$INSTALL_DIR"
-  if [ -n "$LINKED" ]; then
-    ln -sf "$LINKED" "$INSTALL_DIR/joc"
-  else
-    # Fallback for older bun without bin exposure: link the entry directly.
-    ln -sf "$SRC_DIR/src/cli.ts" "$INSTALL_DIR/joc"
-  fi
-  chmod +x "$INSTALL_DIR/joc" 2>/dev/null || true
 }
 
 install_binary() {
-  # Compile a standalone executable (no Bun needed at runtime).
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+  if [ ! -f "$SRC_DIR/src/cli.ts" ]; then
+    echo "--binary must be run from a clone (expected $SRC_DIR/src/cli.ts)"
+    exit 1
+  fi
+  ( cd "$SRC_DIR" && bun install --silent >/dev/null )
   mkdir -p "$INSTALL_DIR"
+  echo "Compiling standalone binary → $INSTALL_DIR/joc ..."
   ( cd "$SRC_DIR" && bun build src/cli.ts --compile --outfile "$INSTALL_DIR/joc" >/dev/null )
   chmod +x "$INSTALL_DIR/joc" 2>/dev/null || true
 }
 
+# Add a compatibility symlink in INSTALL_DIR so the documented location keeps
+# working even when bun's global bin dir is not on PATH.
+link_compat() {
+  BUN_BIN="$(bun_bin_dir)"
+  [ -e "$BUN_BIN/joc" ] && LINKED="$BUN_BIN/joc"
+  mkdir -p "$INSTALL_DIR"
+  if [ -n "$LINKED" ]; then
+    ln -sf "$LINKED" "$INSTALL_DIR/joc"
+    chmod +x "$INSTALL_DIR/joc" 2>/dev/null || true
+  fi
+}
+
 print_done() {
+  BUN_BIN="$(bun_bin_dir)"
   echo ""
-  [ -n "$LINKED" ] && echo "Linked joc via 'bun link' → $LINKED"
-  echo "Installed joc → $INSTALL_DIR/joc"
+  [ -n "$LINKED" ] && echo "Linked joc via bun → $LINKED"
+  [ -e "$INSTALL_DIR/joc" ] && echo "Compatibility symlink → $INSTALL_DIR/joc"
   case ":$PATH:" in
-    *":$INSTALL_DIR:"*|*":$BUN_BIN:"*) echo "Run: joc --help" ;;
-    *) echo "Add $INSTALL_DIR (or $BUN_BIN) to PATH, then run: joc --help" ;;
+    *":$BUN_BIN:"*|*":$INSTALL_DIR:"*) echo "Run: joc --help" ;;
+    *) echo "Add $BUN_BIN (or $INSTALL_DIR) to PATH, then run: joc --help" ;;
   esac
 }
 
-[ -z "$MODE" ] && MODE="source"
 require_bun
-resolve_source_dir
-install_deps
-if [ "$BINARY" = "1" ]; then
-  install_binary
-else
-  install_link
-fi
+case "$MODE" in
+  global) install_global; link_compat ;;
+  npm)    install_npm;    link_compat ;;
+  local)  install_local;  link_compat ;;
+  binary) install_binary ;;
+esac
 print_done

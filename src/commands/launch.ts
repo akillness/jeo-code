@@ -3,11 +3,14 @@ import { runAgentLoop, executorSystemPrompt } from "../agent/engine";
 import { LaunchTui } from "../tui/app";
 import { skillsPromptSection } from "../skills/catalog";
 import { matchSlash, isSlashAttempt } from "../tui/components/slash";
+import { EVOLUTION_STAGES, renderAsciiArt } from "../tui/components/ascii-art";
 import type { Message } from "../agent/loop";
 import { readGlobalConfig } from "../agent/state";
 import { describeModel } from "../ai";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { maybeCompact } from "../agent/compaction";
+import * as path from "node:path";
+import * as fs from "node:fs";
 import {
   createSession,
   appendMessage,
@@ -24,16 +27,28 @@ interface LaunchFlags {
   noTui: boolean;
   maxSteps: number;
   message: string;
+  tmux: boolean;
+  worktree?: string;
 }
 
 function parseFlags(args: string[]): LaunchFlags {
-  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 25, message: "" };
+  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 25, message: "", tmux: false };
   const rest: string[] = [];
   const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--list") {
       flags.list = true;
+    } else if (a === "--tmux") {
+      flags.tmux = true;
+    } else if (a === "--worktree") {
+      const next = args[i + 1];
+      if (next && !next.startsWith("-")) {
+        flags.worktree = next;
+        i++;
+      }
+    } else if (a.startsWith("--worktree=")) {
+      flags.worktree = a.slice("--worktree=".length);
     } else if (a === "--no-session") {
       flags.noSession = true;
     } else if (a === "--no-tui") {
@@ -70,9 +85,132 @@ function parseFlags(args: string[]): LaunchFlags {
   return flags;
 }
 
+/**
+ * Resolve a git worktree path (gjc `--worktree <path>` parity). If the path
+ * already exists it is reused as-is; otherwise a new worktree is created on a
+ * branch derived from the path basename. Returns the absolute worktree path.
+ */
+function resolveWorktree(cwd: string, wt: string): string {
+  const abs = path.isAbsolute(wt) ? wt : path.resolve(cwd, wt);
+  if (fs.existsSync(abs)) return abs;
+  if (!Bun.which("git")) {
+    console.error("error: --worktree requires git on PATH");
+    process.exit(1);
+  }
+  const branch = (path.basename(abs).replace(/[^a-zA-Z0-9_-]/g, "-") || "joc-wt");
+  const withBranch = Bun.spawnSync(["git", "worktree", "add", "-b", branch, abs], {
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (withBranch.exitCode !== 0) {
+    // Branch may already exist; retry attaching the existing branch.
+    const plain = Bun.spawnSync(["git", "worktree", "add", abs], {
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (plain.exitCode !== 0) {
+      console.error(
+        `error: failed to create git worktree at ${abs}: ${withBranch.stderr.toString().trim()}`,
+      );
+      process.exit(1);
+    }
+  }
+  return abs;
+}
+
 export async function runLaunchCommand(args: string[]): Promise<void> {
-  const cwd = process.cwd();
+  let cwd = process.cwd();
   const flags = parseFlags(args);
+
+  if (flags.worktree) {
+    const wt = resolveWorktree(cwd, flags.worktree);
+    if (wt !== cwd) {
+      process.chdir(wt);
+      cwd = wt;
+      if (process.env.JOC_TMUX_LAUNCHED !== "1") console.log(`Using worktree: ${wt}`);
+    }
+  }
+  if (flags.tmux) {
+    if (!process.env.TMUX && process.env.JOC_TMUX_LAUNCHED !== "1") {
+      const tmuxBin = Bun.which("tmux");
+      if (tmuxBin) {
+        let branch = "";
+        try {
+          const gitRes = Bun.spawnSync(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], {
+            cwd,
+            stdout: "pipe",
+            stderr: "ignore",
+          });
+          if (gitRes.exitCode === 0) {
+            branch = gitRes.stdout.toString().trim().replace(/[^a-zA-Z0-9_-]/g, "-");
+          }
+        } catch {}
+        const sessionName = branch ? `joc-${branch}` : "joc-session";
+
+        // Strip orchestration flags: the worktree is already the tmux session
+        // cwd (`-c cwd` below), so the inner process inherits it directly.
+        const innerArgs: string[] = [];
+        for (let j = 0; j < args.length; j++) {
+          const a = args[j];
+          if (a === "--tmux") continue;
+          if (a === "--worktree") { j++; continue; }
+          if (a.startsWith("--worktree=")) continue;
+          innerArgs.push(a);
+        }
+        const entrypoint = process.argv[1] || "joc";
+        const resolvedEntrypoint = path.isAbsolute(entrypoint) ? entrypoint : path.resolve(cwd, entrypoint);
+        let cmd: string[] = [];
+        if (entrypoint.endsWith(".ts") || entrypoint.endsWith(".js") || entrypoint.endsWith(".mjs")) {
+          cmd = [process.execPath, resolvedEntrypoint];
+        } else {
+          cmd = [resolvedEntrypoint];
+        }
+
+        const innerCmd = `exec env JOC_TMUX_LAUNCHED=1 ${[...cmd, "launch", ...innerArgs].map(a => `"${a.replace(/"/g, '\\"')}"`).join(" ")}`;
+
+        const hasSession = Bun.spawnSync([tmuxBin, "has-session", "-t", `=${sessionName}`]);
+        if (hasSession.exitCode === 0) {
+          console.log(`Attaching to existing tmux session: ${sessionName}`);
+          const proc = Bun.spawn([tmuxBin, "attach-session", "-t", `=${sessionName}`], {
+            stdin: "inherit",
+            stdout: "inherit",
+            stderr: "inherit",
+          });
+          await proc.exited;
+          return;
+        }
+
+        console.log(`Starting new tmux session: ${sessionName}`);
+        const createSession = Bun.spawnSync([
+          tmuxBin,
+          "new-session",
+          "-d",
+          "-s",
+          sessionName,
+          "-c",
+          cwd,
+          innerCmd
+        ]);
+        if (createSession.exitCode !== 0) {
+          console.error(`Error: Failed to create tmux session: ${createSession.stderr.toString()}`);
+          process.exit(1);
+        }
+
+        const attach = Bun.spawn([tmuxBin, "attach-session", "-t", `=${sessionName}`], {
+          stdin: "inherit",
+          stdout: "inherit",
+          stderr: "inherit",
+        });
+        await attach.exited;
+        return;
+      } else {
+        console.warn("warning: tmux is not available on PATH. Launching directly...");
+      }
+    }
+  }
+
   const cfg = await readGlobalConfig();
   const defaultModel = cfg.defaultModel;
 
@@ -197,7 +335,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   }
 
   // INTERACTIVE mode
-  console.log("=== joc launch — interactive coding agent ===");
+  const welcomeStage = EVOLUTION_STAGES[0];
+  console.log(renderAsciiArt(welcomeStage).join("\n"));
+  console.log(`\n=== joc launch — interactive coding agent (Evolution Stage: ${welcomeStage.name}) ===`);
   console.log(`Model: ${defaultModel}`);
   if (sessionId) console.log(`Session: ${sessionId}`);
   if (contextFiles.length > 0) console.log(`Project context: ${contextFiles.map(f => f.path).join(", ")}`);

@@ -9,7 +9,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "launch",
     summary: "Interactive coding agent (chat + tools). Default when no subcommand is given.",
-    usage: "launch [\"one-shot request\"] [--resume [id]] [--list]",
+    usage: "launch [\"one-shot request\"] [--resume [id]] [--list] [--tmux] [--worktree <path>]",
     loader: async () => {
       const m = await import("../commands/launch");
       return args => m.runLaunchCommand(args);
@@ -202,13 +202,15 @@ export async function dispatch(argv: string[], ctx: DispatchContext): Promise<nu
     console.log(`${ctx.appName} v${ctx.version}`);
     return 0;
   }
-  if (!first) {
-    const run = await findCommand("launch")!.loader();
-    await run([]);
-    return 0;
-  }
   if (first === "--help" || first === "-h") {
     console.log(renderHelp(ctx));
+    return 0;
+  }
+  // Bare invocation or a leading global flag (e.g. `joc`, `joc --tmux`,
+  // `joc --tmux --worktree <path>`) routes to the interactive agent — gjc parity.
+  if (!first || first.startsWith("-")) {
+    const run = await findCommand("launch")!.loader();
+    await run(argv);
     return 0;
   }
 

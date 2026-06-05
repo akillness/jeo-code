@@ -2214,3 +2214,28 @@ Files: `src/commands/doctor.ts`.
   `bash`, created the file, guards engaged cleanly).
 - **Gates (current):** `tsc -p tsconfig.json --noEmit` → 0; `bun test` → **118/118 across 25 files**;
   13 `joc` commands intact.
+---
+
+## 60. gjc-style install + run parity (`bun install -g`, `--tmux`/`--worktree`)
+
+**Dimension: install + cli.** Brought `joc`'s install and launch surfaces in line with how
+`gjc` is installed and run.
+
+- **Install (gjc parity).** `scripts/install.sh` now performs a single **bun global install**
+  by default (`bun add -g github:akillness/jeo-code`), mirroring `bun install -g gajae-code`,
+  instead of the old clone+`bun link` dance. Fixed the `JOC_REPO` default (was the non-existent
+  `jeo-code/jeo-code`; now `akillness/jeo-code`). Modes: default global, `--npm`
+  (`bun install -g jeo-code`), `--local` (dev `bun link` from a clone), `--binary` (compiled).
+  Added a compatibility symlink in `~/.local/bin` and a PATH hint. `package.json` gained
+  `files`, `engines.bun`, `repository`, and `license` so registry/GitHub installs are clean.
+- **Run (gjc parity).** Generalized `dispatch` so a bare call **or any leading `--flag`**
+  (`joc`, `joc --tmux`, `joc --tmux --worktree <path>`) routes to `launch`. Added
+  `--worktree <path>` to `launch`: reuses an existing dir or creates a git worktree on a branch
+  named after the path basename, then `chdir`s into it. In tmux mode the worktree becomes the
+  session cwd and `--worktree`/`--tmux` are stripped from the inner command.
+- **Docs.** README leads with `bun install -g` and the `--tmux`/`--worktree` entrypoints;
+  `AGENTS.md` runtime/tooling preferences updated; test counts synced.
+- **Verify:** `tsc --noEmit` → 0; `bun test` → **135/135 across 29 files** (new
+  `test/worktree.test.ts`: dispatch routing, `--version` non-routing, unknown-command,
+  worktree reuse+`chdir`, real `git worktree add` creation). Real install smoke:
+  `sh scripts/install.sh --local` links `~/.bun/bin/joc` + `~/.local/bin/joc`; `joc --version` ok.

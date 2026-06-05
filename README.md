@@ -32,9 +32,15 @@ joc deep-interview → joc ralplan → joc approve → joc team → joc ultragoa
 
 ## Quick start
 
+Install `joc` the same way you install `gjc` — a single Bun global install — then
+launch it from whatever repository you want it to operate on:
+
 ```bash
-# 1. Install (bun-native: bun install + bun link)
-chmod +x ./install.sh && ./install.sh
+# 1. Install (gjc parity: one bun global install)
+bun install -g jeo-code                       # npm registry (once published)
+bun install -g github:akillness/jeo-code      # from GitHub today
+#   …or bootstrap bun + install in one shot:
+curl -fsSL https://raw.githubusercontent.com/akillness/jeo-code/main/scripts/install.sh | sh
 
 # 2. Configure a provider + default model (interactive)
 joc setup
@@ -45,11 +51,11 @@ export JOC_DEFAULT_MODEL=ollama/qwen2.5:0.5b
 # 3. Verify the setup is reachable
 joc doctor
 
-# 4a. Talk to the agent
-joc launch "add a /health route to server.ts and run the tests"   # bare `joc` opens the REPL
-
-# 4b. …or run the spec-first pipeline
-joc deep-interview "build a CLI task manager with SQLite" && joc ralplan && joc team && joc ultragoal
+# 4. Launch from the target repo (gjc-style entrypoints)
+joc                                   # interactive agent in the current checkout
+joc --tmux                            # create/attach a joc-managed tmux session
+joc --tmux --worktree ../joc-feature  # isolate work in a dedicated git worktree
+joc "add a /health route to server.ts and run the tests"  # one-shot request
 ```
 
 **Requirements:** Bun `v1.3.14+` (the installer auto-installs it if missing; the CLI re-checks at startup).
@@ -58,15 +64,23 @@ joc deep-interview "build a CLI task manager with SQLite" && joc ralplan && joc 
 
 ## Installation
 
-The top-level `install.sh` delegates to the canonical `scripts/install.sh` (single source
-of truth). It auto-installs Bun if missing, enforces the version floor, and registers the
-`joc` binary the **bun-native way via `bun link`** — exposing it at `~/.bun/bin/joc` and
-adding a compatibility symlink at `~/.local/bin/joc`. A PATH hint is printed if needed.
+`joc` installs exactly like `gjc`: a single Bun global install that registers the
+`joc` binary in `~/.bun/bin`. The installer also drops a compatibility symlink at
+`~/.local/bin/joc` and auto-installs Bun (enforcing the `1.3.14` floor) when it is missing.
 
 ```bash
-./install.sh                          # = bun install + bun link (scripts/install.sh --local)
-sh scripts/install.sh --ref v0.1.0    # advanced: clone + install a specific tag
-sh scripts/uninstall.sh [--purge]     # remove the bin + bun registry entry (--purge also wipes ~/.joc/)
+bun install -g jeo-code                          # npm registry (gjc parity, once published)
+bun install -g github:akillness/jeo-code         # global install straight from GitHub
+sh scripts/install.sh --ref v0.1.0               # global install of a specific tag
+sh scripts/install.sh --binary                   # compile a standalone binary (no bun at runtime)
+sh scripts/uninstall.sh [--purge]                # remove the bin + bun registry entry (--purge also wipes ~/.joc/)
+```
+
+From a clone, `./install.sh` performs the dev install (`bun link`) so source edits
+take effect immediately; `scripts/install.sh --help` lists every mode.
+
+```bash
+./install.sh                          # dev install from this clone (= scripts/install.sh --local)
 ```
 
 Local dev without installing (from the repo root):
@@ -74,7 +88,7 @@ Local dev without installing (from the repo root):
 ```bash
 bun run start --help     # = bun src/cli.ts --help
 bun run typecheck        # tsc -p tsconfig.json --noEmit
-bun test                 # unit tests (27 files, 128 tests)
+bun test                 # unit tests (29 files, 135 tests)
 ```
 
 ---
@@ -83,7 +97,7 @@ bun test                 # unit tests (27 files, 128 tests)
 
 | Command | What it does |
 | --- | --- |
-| `joc` / `joc launch ["request"]` | Interactive coding agent (TUI REPL, one-shot, or piped). `--resume [id]`, `--list`, `--no-tui`, `--no-session`. |
+| `joc` / `joc launch ["request"]` | Interactive coding agent (TUI REPL, one-shot, or piped). `--tmux` (create/attach a joc tmux session), `--worktree <path>` (run in a dedicated git worktree), `--resume [id]`, `--list`, `--no-tui`, `--no-session`. |
 | `joc setup` | Interactive provider/model picker (API key / browser OAuth / local), with live model probing. |
 | `joc auth [login\|logout\|refresh\|status] [provider] [--token <bearer>]` | Real OAuth (PKCE) login + token storage with auto-refresh. |
 | `joc doctor [--strict] [--json]` | Probe provider connectivity, credentials, and OAuth expiry; report if the default model is reachable. Colorized status on a TTY. `--strict` exits non-zero when it isn't; `--json` emits a machine-readable report for CI. |
@@ -110,6 +124,9 @@ hardened tool-call engine (`src/agent/engine.ts`). It calls `read` / `write` / `
   footer); `--no-tui`, piped input, and non-TTY fall back to a plain stream.
 - **Sessions** — every turn is appended to `.joc/sessions/<id>.jsonl`; `joc launch --list`
   and `joc launch --resume [id]` resume past conversations.
+- **tmux orchestration (gjc parity)** — `joc --tmux` creates/attaches a leader session named
+  `joc-<branch>`; add `--worktree <path>` to run inside a dedicated git worktree (auto-created
+  on a branch named after the path) so edits and evidence stay isolated from your main checkout.
 - **Project context** — the prompt auto-loads the first of `JEO.md` / `AGENTS.md` /
   `.joc/context.md` / `CLAUDE.md`.
 - **Compaction** — long conversations are summarized automatically to stay within the context window.
@@ -123,6 +140,8 @@ joc                                   # REPL — slash cmds: /help /clear /model
 joc launch "fix the failing test"     # one-shot
 echo "summarize src/agent" | joc      # piped / non-TTY (plain output)
 joc launch --resume                   # resume the latest session (or --resume <uuid>)
+joc --tmux                            # create/attach a joc-managed tmux session (named joc-<branch>)
+joc --tmux --worktree ../joc-feature  # isolate edits/evidence in a dedicated git worktree
 ```
 
 ---
@@ -202,7 +221,7 @@ jeo-code/
 │   ├── mcp/                   # MCP protocol + tools + stdio server
 │   └── tui/                   # differential renderer + components + LaunchTui
 ├── scripts/                   # install.sh / uninstall.sh (bun install + bun link)
-├── test/                      # 27 suites (128 tests): oauth, engine, tools-fs, provider-errors, retry, config-schema, cli-runner, mutation-guard, approve, team-schema, session, compaction, streaming, tui-*
+├── test/                      # 29 suites (135 tests): oauth, engine, tools-fs, provider-errors, retry, config-schema, cli-runner, mutation-guard, approve, team-schema, session, compaction, streaming, tui-*
 ├── docs/improvements.md       # architectural analysis & changelog (ralph passes)
 ├── plan/                      # long-horizon work plans (TUI, features, install, model, provider)
 └── README.md

@@ -22,3 +22,9 @@ export function stepMeter(step: number, total: number, width = 20): string {
   const safeTotal = total > 0 ? total : 0;
   return `${step}/${safeTotal} ${meter(step, safeTotal, width)}`;
 }
+
+/** Render a labeled meter, e.g. `tokens [#####-----] 50%`. Empty label → bare meter. */
+export function meterLabeled(label: string, value: number, max = 1, width = 20): string {
+  const bar = meter(value, max, width);
+  return label ? `${label} ${bar}` : bar;
+}

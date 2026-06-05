@@ -1,8 +1,8 @@
 import {
-  EVOLUTION_STAGES,
   getStageByIndex,
   renderAsciiArt,
   stageHeight,
+  stageWidth,
   animateAsciiArt,
 } from "../tui/components/ascii-art";
 import {
@@ -61,10 +61,11 @@ export async function runEvolveCommand(args: string[], opts: EvolveOptions = {})
     const stage = getStageByIndex(index);
     const ratio = EVOLUTION_STAGE_COUNT > 1 ? index / (EVOLUTION_STAGE_COUNT - 1) : 1;
     line(`── Stage ${index + 1}/${EVOLUTION_STAGE_COUNT}: ${stage.name} ──`);
+    const w = stageWidth();
     if (flags.animate) {
-      await animateAsciiArt(stage, { color: flags.color, write, height: stageHeight() });
+      await animateAsciiArt(stage, { color: flags.color, write, height: stageHeight(), width: w });
     } else {
-      for (const l of renderAsciiArt(stage, { color: flags.color, height: stageHeight() })) line(l);
+      for (const l of renderAsciiArt(stage, { color: flags.color, height: stageHeight(), width: w })) line(l);
     }
     line(evolutionTrack(index, { color: flags.color }));
     line(meter(ratio));

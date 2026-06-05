@@ -81,3 +81,23 @@ test("animateAsciiArt: delayMs 0 never calls sleep", async () => {
   expect(sleeps).toBe(0);
   expect(out.length).toBeGreaterThan(0);
 });
+
+test("stage integrity: every stage has non-empty art and a synced name", async () => {
+  const { EVOLUTION_STAGE_NAMES } = await import("../src/tui/components/evolution");
+  EVOLUTION_STAGES.forEach((s, i) => {
+    expect(s.art.length).toBeGreaterThan(0);
+    expect(s.art.some(l => l.trim().length > 0)).toBe(true);
+    expect(s.name).toBe(EVOLUTION_STAGE_NAMES[i]);
+    expect(stageCaption(s)).toBeDefined();
+  });
+});
+
+test("all stages align to a uniform global width and height when requested", () => {
+  const w = stageWidth();
+  const h = stageHeight();
+  for (const s of EVOLUTION_STAGES) {
+    const lines = renderAsciiArt(s, { color: false, width: w, height: h });
+    expect(lines.length).toBe(h);
+    expect(lines.every(l => l.length === w)).toBe(true);
+  }
+});

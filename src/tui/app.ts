@@ -15,8 +15,8 @@ import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
 import { renderFooter, type FooterData } from "./components/footer";
-import { getEvolutionStage, renderAsciiArt, stageHeight } from "./components/ascii-art";
-import { evolutionTrack, stageIndexForStep } from "./components/evolution";
+import { getStageByIndex, renderAsciiArt, stageHeight, stageWidth } from "./components/ascii-art";
+import { evolutionTrack, createStageProgress, type StageProgress } from "./components/evolution";
 
 export interface LaunchTuiOptions {
   model: string;
@@ -50,6 +50,8 @@ export class LaunchTui {
   private cachedStageIndex = -1;
   private cachedArt: string[] = [];
   private cachedTrack = "";
+  // Monotonic stage progress so evolution only ever moves forward this turn.
+  private readonly progress: StageProgress = createStageProgress();
 
   constructor(opts: LaunchTuiOptions) {
     this.write = opts.write ?? ((s: string) => process.stdout.write(s));
@@ -113,9 +115,8 @@ export class LaunchTui {
     this.write(showCursor());
     const finalLines = [...this.tools.render()];
     for (const line of this.stream.render(size().cols)) finalLines.push(line);
-    // Show how far the agent evolved this turn.
-    const reached = stageIndexForStep(this.footer.step ?? 0, this.footer.maxSteps ?? DEFAULT_MAX_STEPS);
-    finalLines.push(`Evolved to: ${evolutionTrack(reached)}`);
+    // Show how far the agent evolved this turn (monotonic peak).
+    finalLines.push(`Evolved to: ${evolutionTrack(this.progress.current())}`);
     finalLines.push(`joc> ${reply}`);
     console.log(finalLines.join("\n"));
   }
@@ -129,10 +130,10 @@ export class LaunchTui {
     // stages change), then the live evolution track. Both are cached per stage
     // index so the frequent spinner tick does not re-render the block.
     const stepNow = this.footer.step || 0;
-    const idx = stageIndexForStep(stepNow, this.footer.maxSteps ?? DEFAULT_MAX_STEPS);
+    const idx = this.progress.observe(stepNow, this.footer.maxSteps ?? DEFAULT_MAX_STEPS);
     if (idx !== this.cachedStageIndex) {
       this.cachedStageIndex = idx;
-      this.cachedArt = renderAsciiArt(getEvolutionStage(stepNow, this.footer.maxSteps), { height: stageHeight() });
+      this.cachedArt = renderAsciiArt(getStageByIndex(idx), { height: stageHeight(), width: stageWidth() });
       this.cachedTrack = evolutionTrack(idx);
     }
     for (const line of this.cachedArt) frame.push(line);

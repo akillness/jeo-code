@@ -88,7 +88,7 @@ Local dev without installing (from the repo root):
 ```bash
 bun run start --help     # = bun src/cli.ts --help
 bun run typecheck        # tsc -p tsconfig.json --noEmit
-bun test                 # unit tests (29 files, 135 tests)
+bun test                 # unit tests (33 files, 167 tests)
 ```
 
 ---
@@ -237,7 +237,7 @@ jeo-code/
 │   ├── mcp/                   # MCP protocol + tools + stdio server
 │   └── tui/                   # differential renderer + components + LaunchTui
 ├── scripts/                   # install.sh / uninstall.sh (bun install + bun link)
-├── test/                      # 29 suites (135 tests): oauth, engine, tools-fs, provider-errors, retry, config-schema, cli-runner, mutation-guard, approve, team-schema, session, compaction, streaming, tui-*
+├── test/                      # 33 suites (167 tests): oauth, engine, tools-fs, retry, config-schema, cli-runner, mutation-guard, approve, team-schema, session, compaction, streaming, evolution, ascii-art, footer, evolve, meter, tui-*
 ├── docs/improvements.md       # architectural analysis & changelog (ralph passes)
 ├── plan/                      # long-horizon work plans (TUI, features, install, model, provider)
 └── README.md

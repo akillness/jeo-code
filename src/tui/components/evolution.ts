@@ -114,3 +114,30 @@ export function evolutionTrack(activeIndex: number, opts: { color?: boolean } = 
   }
   return `${markers} ${EVOLUTION_STAGE_NAMES[active]} [${active + 1}/${EVOLUTION_STAGE_COUNT}]`;
 }
+
+/**
+ * Monotonic stage progress: evolution should only move forward within a turn.
+ * `observe(step, maxSteps)` returns the highest stage seen so far, so a transient
+ * step drop (e.g. a retry resetting the counter) never visibly "devolves" the UI.
+ */
+export interface StageProgress {
+  observe(step: number, maxSteps: number): number;
+  current(): number;
+  reset(): void;
+}
+
+export function createStageProgress(): StageProgress {
+  let peak = 0;
+  return {
+    observe(step: number, maxSteps: number): number {
+      peak = Math.max(peak, stageIndexForStep(step, maxSteps));
+      return peak;
+    },
+    current() {
+      return peak;
+    },
+    reset() {
+      peak = 0;
+    },
+  };
+}

@@ -2350,3 +2350,29 @@ and document it.
   `test/evolve.test.ts`: registration, all-stages render, `--no-color` no-ANSI,
   `--step` single-stage, `--animate` no-delay). Real smoke: `joc evolve --no-color
   --step 100 --max 100` renders the Singularity stage + `[████…] 100%`.
+
+### Batch E — Polish (passes 78–81)
+
+- **78. Labeled meter.** `meterLabeled(label, value, max, width)` prefixes a meter
+  with a label (bare meter when empty) for doctor/pipeline rows.
+- **79. Global width alignment.** `joc evolve` and the live `app.ts` render art at
+  the global `stageWidth()` so every stage shares a uniform width (no horizontal
+  jump as stages change).
+- **80. Monotonic stage progress.** `createStageProgress()` returns the highest
+  stage seen so far; `LaunchTui` uses it so a transient step drop (e.g. a retry
+  resetting the counter) never visibly "devolves" the UI. `finish()` reports the
+  monotonic peak.
+- **81. Stage integrity tests.** Lock that every stage has non-empty art, a
+  caption, and a canonical-synced name, and that all stages align to a uniform
+  global width+height.
+- **Verify:** `tsc --noEmit` → 0; `bun test` → **167/167 across 33 files**.
+
+### Run summary (passes 62–81, the "≥20 improvements" run)
+
+- **20 verified passes** turned a scattered, partly-broken evolution seed into a
+  coherent identity: one canonical model (`evolution.ts`) drives the ASCII art,
+  spinner, meter, and footer track in lockstep; everything is guarded, plain-mode
+  capable, flicker-free (uniform width+height), monotonic, cached, and previewable
+  via `joc evolve`.
+- **Net:** `tsc --noEmit` → 0; `bun test` → **167/167 across 33 files** (5 new test
+  suites: evolution, ascii-art, footer, evolve, + rewritten meter). All gates green.

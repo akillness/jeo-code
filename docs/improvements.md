@@ -2332,3 +2332,21 @@ and document it.
   re-rendering/re-coloring the block every frame.
 - **Verify:** `tsc --noEmit` → 0; `bun test` → **161/161 across 32 files** (new
   `test/footer.test.ts`: stage tag presence/tracking/opt-out + segment order).
+
+### Batch D — Feature & docs (passes 74–77)
+
+- **74. `joc evolve` command.** New `src/commands/evolve.ts` (+ runner
+  registration) previews the evolution identity: renders all five stages (or one
+  via `--step N --max M`) with art, evolution track, and a stage meter;
+  `--animate` streams line-by-line, `--no-color` for plain output. `write`/`sleep`
+  injectable for tests.
+- **75. README.** Added the `joc evolve` command row and an "Evolution TUI"
+  feature bullet describing the five-stage lockstep model.
+- **76. AGENTS.md.** Listed `evolve` (15 commands) and documented
+  `evolution.ts` as the canonical 5-stage model in the `src/tui/` map.
+- **77. Spinner lifecycle.** `Spinner.reset()` + frame-count-shrink index safety
+  (`setStage`) keep the animation phase valid when frame sets change size.
+- **Verify:** `tsc --noEmit` → 0; `bun test` → **166/166 across 33 files** (new
+  `test/evolve.test.ts`: registration, all-stages render, `--no-color` no-ANSI,
+  `--step` single-stage, `--animate` no-delay). Real smoke: `joc evolve --no-color
+  --step 100 --max 100` renders the Singularity stage + `[████…] 100%`.

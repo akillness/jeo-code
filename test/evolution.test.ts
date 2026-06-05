@@ -10,6 +10,7 @@ import {
   clampStageIndex,
   evolutionStageName,
   evolutionTrack,
+  createStageProgress,
 } from "../src/tui/components/evolution";
 import { EVOLUTION_STAGES } from "../src/tui/components/ascii-art";
 import { Spinner } from "../src/tui/components/spinner";
@@ -88,4 +89,14 @@ test("spinner frames evolve with step and survive frame-count shrink", () => {
   expect(EVOLUTION_SPINNER_FRAMES[2]).toContain(sp.current());
   sp.reset();
   expect(typeof sp.current()).toBe("string");
+});
+
+test("createStageProgress is monotonic (never devolves) and resettable", () => {
+  const p = createStageProgress();
+  expect(p.observe(100, 100)).toBe(4); // singularity
+  expect(p.observe(1, 100)).toBe(4); // would be stage 1, but peak holds
+  expect(p.current()).toBe(4);
+  p.reset();
+  expect(p.current()).toBe(0);
+  expect(p.observe(50, 100)).toBe(2);
 });

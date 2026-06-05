@@ -45,6 +45,11 @@ export class LaunchTui {
   private startedAt = 0;
   private timer: ReturnType<typeof setInterval> | undefined;
   private pendingIndex: number | null = null;
+  // Cache the rendered art + track per stage so the 120ms spinner tick reuses
+  // them instead of re-rendering/re-coloring the block every frame.
+  private cachedStageIndex = -1;
+  private cachedArt: string[] = [];
+  private cachedTrack = "";
 
   constructor(opts: LaunchTuiOptions) {
     this.write = opts.write ?? ((s: string) => process.stdout.write(s));
@@ -121,13 +126,17 @@ export class LaunchTui {
     const frame: string[] = [];
 
     // Prepend evolutionary ASCII art at a stable block height (no flicker as
-    // stages change), then the live evolution track.
+    // stages change), then the live evolution track. Both are cached per stage
+    // index so the frequent spinner tick does not re-render the block.
     const stepNow = this.footer.step || 0;
-    const stage = getEvolutionStage(stepNow, this.footer.maxSteps);
-    for (const line of renderAsciiArt(stage, { height: stageHeight() })) {
-      frame.push(line);
+    const idx = stageIndexForStep(stepNow, this.footer.maxSteps ?? DEFAULT_MAX_STEPS);
+    if (idx !== this.cachedStageIndex) {
+      this.cachedStageIndex = idx;
+      this.cachedArt = renderAsciiArt(getEvolutionStage(stepNow, this.footer.maxSteps), { height: stageHeight() });
+      this.cachedTrack = evolutionTrack(idx);
     }
-    frame.push(evolutionTrack(stageIndexForStep(stepNow, this.footer.maxSteps ?? DEFAULT_MAX_STEPS)));
+    for (const line of this.cachedArt) frame.push(line);
+    frame.push(this.cachedTrack);
     frame.push(""); // spacing line
 
     for (const line of this.tools.render()) frame.push(line);

@@ -21,11 +21,28 @@
     "type": "git",
     "url": "git+https://github.com/akillness/jeo-code.git"
   },
+  "homepage": "https://github.com/akillness/jeo-code#readme",
+  "bugs": {
+    "url": "https://github.com/akillness/jeo-code/issues"
+  },
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "bun",
+    "cli",
+    "spec-first",
+    "gjc"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "license": "MIT",
   "scripts": {
     "start": "bun src/cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "bun build src/cli.ts --compile --outfile dist/joc",
+    "pack:check": "npm pack --dry-run",
     "test": "bun test"
   },
   "dependencies": {

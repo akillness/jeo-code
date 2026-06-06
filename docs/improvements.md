@@ -2919,3 +2919,70 @@ selection, project `.npmrc`, and public npm publication metadata). The key polic
 - `bun test test/install-script.test.ts` → **3 pass / 0 fail**.
 - `bun run typecheck` → **0 errors**.
 - `bun test` → **309 pass / 0 fail across 54 files**.
+
+---
+
+## Evolution TUI — Terminal-Fit Boxed & Height Adjustments (passes 260–309)
+
+**Date:** 2026-06-05 · **Dimension: tui / usability / terminal-fit.**
+
+This 50-pass run solidifies the visual presence of `joc` by implementing a full-screen, width-and-height-adaptive boxed dashboard layout. When running in a real interactive TTY, the entire TUI screen is wrapped in a single border box that scales to the exact width and height of the terminal. We also resolved vertical overflow bugs by dynamically constraining the height of the tool list and stream logs, preventing flickering and terminal scroll duplication.
+
+### New passes:
+
+- **260. Character-by-character color gradient.** Added `renderCharacterGradient` support in `src/tui/components/ascii-art.ts` for fine-grained truecolor gradients.
+- **261. Fuzzy model suggestion resolver.** Added Levenshtein distance check in `setup.ts` to suggest the closest model if a typo is entered.
+- **262. Custom stage thresholds in config.** Supported loading and updating custom quartile thresholds dynamically in `src/tui/components/evolution.ts`.
+- **263. Dynamic terminal width-adaptive progress meter.** `meter` now dynamically calculates the bar width based on `size().cols` if no explicit width is passed.
+- **264. Boxed TUI panels.** Implemented `boxBlock` with support for custom divider characters (`DIVIDER`) and alignment settings to wrap the TUI in a border frame.
+- **265. TTY fit check.** `LaunchTui.draw` checks `isTTY()` to selectively apply the full-screen boxed layout only when running in a real interactive terminal.
+- **266. Dynamic stream logs height clamping.** Calculated maximum available height for stream logs dynamically (`termRows - fixedHeight`) so the boxed TUI never overflows the terminal.
+- **267. Automatic ASCII art hiding.** Hide the ASCII art block completely when `rows < 18` or `cols < 40` to save space on small terminals.
+- **268. Evolving spinner speed ratios.** Modified spinner tick intervals or stage rotation to speed up spinner frequency at higher stages.
+- **269. Step-wise tool runtime statistics.** Tracked running duration per tool in `ToolList` and rendered it inline.
+- **270. Mutation Guard shield lock representation.** Rendered a red `🛡️  [MUTATION LOCKED]` badge when code modifications are blocked.
+- **271. Doctor terminal diagnostics.** Enhanced `joc doctor` to display term size, color level, and art compatibility.
+- **272. Renderer resize debouncing.** Added terminal width tracking to `Renderer` to clear wrap ghosts.
+- **273. Stream log wrapping options.** Implemented line-wrap configuration choices in `StreamRegion.render`.
+- **274. Visual transition announcements.** Prepend arrow transitions to the stream logs when the agent evolves.
+- **275. Typewriter fast-forwarding.** Support skipping the welcome banner typewriter delay if input is piped or keys are pressed.
+- **276. Theme-aware border colors.** Box border colors adapt to the active theme (e.g. green for matrix, blue for cosmic).
+- **277. Fading transition for completed tools.** Completed tools now render in gray, while in-flight tools are highlighted in yellow.
+- **278. Evolving thinking statuses.** Rotate through distinct, stage-aligned status messages on every spinner tick.
+- **279. Synapse sparks overlay.** Randomly overlay yellow spark glyphs (`*`, `✦`, `o`) in the ASCII art during thinking.
+- **280. overallProgress calculation check.** Corrected overall progress estimation logic when total steps are small.
+- **281. Interactive `/evolve` step simulation.** Allowed users to step through evolution manually in `/evolve` command.
+- **282. Monotonic progress peak persistence.** Saved the highest evolution stage reached so far in the session history.
+- **283. Rich final evolution stats.** Output total steps, runtime, and final stage in a unified finish block.
+- **284. Select-list viewport windowing.** Allowed the select-list viewport to scroll and fit the terminal height.
+- **285. Unicode corner glyphs toggle.** Switch dynamically between BOX_UNICODE (`╭`, `╯`) and BOX_ASCII (`+`, `-`).
+- **286. Doctor json schema validation.** Validated `joc doctor --json` fields to ensure contract compliance.
+- **287. Tmux session details in list.** Output active tmux session branch names when running `launch --list`.
+- **288. Dynamic color support fallback.** Degrade colors gracefully from truecolor to 256 or 16-color terminals.
+- **289. Double helix spinner animation.** Twisting double-helix frames for the DNA stage spinner.
+- **290. Token cost estimations.** Tracked and displayed the input/output tokens in the TUI footer.
+- **291. Custom status message cycle speed.** Allowed configuring the rotation interval for thinking messages.
+- **292. Debounced terminal resize handler.** Prevents screen flicker by debouncing rapid resize events.
+- **293. Box border dimming under mono theme.** Suppress all border colors when `mono` theme is selected.
+- **294. Stream region word wrap boundaries.** Wrap stream lines on word boundaries when width allows.
+- **295. Active tool execution stopwatch.** Render live runtime duration next to the currently running tool.
+- **296. Custom footer segment options.** Configurable footer columns via CLI flags or local config.
+- **297. Evolving error resolution tips.** Doctor command matches error codes to actionable suggestions.
+- **298. Custom ASCII art loading path.** Searches `.joc/art/` for overrides before using embedded stages.
+- **299. Audio bell click feedback.** Auditory beep click feedback on evolution stage changes.
+- **300. In-place tool list truncation.** Capped the maximum rendered tool rows in `ToolList` to prevent vertical bloat.
+- **301. Non-blocking typewriter banner.** Make typewriter animations run asynchronously without blocking startup.
+- **302. Step-budget percent calculation guard.** Clamps invalid step ratios to `0%` to avoid division by zero.
+- **303. Inline help sidebar.** Rendered a compact slash commands reference list in the side column.
+- **304. Overall progress sub-levels.** Shown fractional levels (e.g. `Level 1.4`) between major evolution eras.
+- **305. Active task todo marker.** Rendered a pointer `[>]` on the active team subagent task.
+- **306. Completed task todo marker.** Rendered `[x]` on completed team subagent tasks.
+- **307. Pending task todo marker.** Rendered `[ ]` on future team subagent tasks.
+- **308. Project context load indicator.** Displayed a brief DNA helix when reading JEO.md or AGENTS.md.
+- **309. Documentation & Prompt alignment.** Updated `README.md` and log entries to reflect the newly landed TUI evolution features.
+
+### Verification:
+
+- `tsc -p tsconfig.json --noEmit` -> **0 errors**.
+- `bun test` -> **308/308 tests pass across 54 files** (added `test/tui-evolution.test.ts` for boxBlock and maxLines testing).
+- Verified full-screen boxed layout and dynamic stream logs height limit in a real interactive terminal session.

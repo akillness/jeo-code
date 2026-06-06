@@ -5,7 +5,7 @@ export class StreamRegion {
     this.buffer += text;
   }
 
-  render(width: number): string[] {
+  render(width: number, maxLines?: number): string[] {
     if (this.buffer === "") {
       return [];
     }
@@ -24,6 +24,9 @@ export class StreamRegion {
       }
     }
 
+    if (maxLines !== undefined && maxLines > 0 && result.length > maxLines) {
+      return result.slice(result.length - maxLines);
+    }
     return result;
   }
 

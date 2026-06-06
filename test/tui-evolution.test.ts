@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { getEvolutionStage, renderAsciiArt, animateAsciiArt } from "../src/tui/components/ascii-art";
 import { getEvolutionTip, getEvolutionStatusMessage } from "../src/tui/components/evolution";
+import { boxBlock, BOX_ASCII } from "../src/tui/components/layout";
 import chalk from "chalk";
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -82,4 +83,16 @@ test("animateAsciiArt calls write and sleep", async () => {
   
   expect(writes.length).toBe(stage.art.length);
   expect(sleepCount).toBe(stage.art.length);
+});
+
+test("boxBlock wraps lines and handles dividers", () => {
+  const content = ["hello", "DIVIDER", "world"];
+  const boxed = boxBlock(content, 10, { glyphs: BOX_ASCII });
+  expect(boxed).toEqual([
+    "+--------+",
+    "|hello   |",
+    "+--------+",
+    "|world   |",
+    "+--------+"
+  ]);
 });

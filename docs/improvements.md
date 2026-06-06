@@ -2822,15 +2822,15 @@ to avoid clobbering the concurrently-edited `config-panel.ts`/`provider-status.t
 > (pre-existing behavior, unrelated to this run); the flow logic is verified via the
 > extracted pure helpers and their unit tests.
 
-## Installer Git URL + npm registry control — 50-pass run (IR1–IR50)
+## Installer Git URL + npm registry control — 58-pass run (IR1–IR58)
 
 **Date:** 2026-06-05 · **Dimension: install / distribution / private registry ergonomics.**
 
 This run analyzed the existing gjc-parity installer path and tightened `jeo-code` installation
 around the explicit Git URL `https://github.com/akillness/jeo-code.git`, Bun global installs,
 and npm registry workflows (`npm config set registry`, scoped registries, one-shot registry
-selection, and project `.npmrc`). The key policy: **one-shot registry by default; global npm
-config mutation only when explicitly requested**.
+selection, project `.npmrc`, and public npm publication metadata). The key policy:
+**one-shot registry by default; global npm config mutation only when explicitly requested**.
 
 ### Git-source install improvements (IR1–IR10)
 
@@ -2886,21 +2886,36 @@ config mutation only when explicitly requested**.
 - **IR41. Mode compatibility.** Registry flags compose with Git, npm, local, binary, and ref modes where applicable.
 - **IR42. Default safety statement.** README states that registry mutation is opt-in only.
 
-### Tests and docs (IR43–IR50)
+### npm package publication readiness (IR43–IR50)
+- **IR43. `publishConfig`.** `package.json` now pins public npm publication to `https://registry.npmjs.org/`.
+- **IR44. npm metadata.** Added homepage, bugs URL, and keywords for registry presentation.
+- **IR45. Pack check script.** Added `bun run pack:check` (`npm pack --dry-run`) for publish validation.
+- **IR46. Bin assertion.** Tests lock `joc -> src/cli.ts` and the Bun shebang required by global installs.
+- **IR47. Publish README.** README now documents `npm login`, `npm publish --access public`, `npm view`, and `bun install -g jeo-code`.
+- **IR48. Pack smoke.** `npm pack --dry-run` confirms the publish tarball includes `src/cli.ts`, runtime sources, scripts, README, and `tsconfig.json`.
+- **IR49. Local tarball global install.** A temp `bun install -g jeo-code-0.1.0.tgz` smoke confirms `joc --version` runs from the packed npm artifact.
+- **IR50. npm auth boundary.** Actual `npm publish --access public` was attempted and blocked by npm `ENEEDAUTH`; publication needs `npm login` / a valid npm token.
 
-- **IR43. Install help test.** Added `test/install-script.test.ts` coverage for Git URL and registry controls in help output.
-- **IR44. Dry-run normalization test.** Test verifies full Git URL → `git+https://...` and one-shot registry env.
-- **IR45. README quick start.** Quick start now includes npm package, GitHub shorthand, and explicit Git URL.
-- **IR46. README install section.** Installation section now has a dedicated registry-aware workflow.
-- **IR47. README count sync.** README badge and project-structure counts updated to the observed suite total.
-- **IR48. Docs changelog.** This `docs/improvements.md` pass records the 50 installer improvements.
-- **IR49. Focused verification.** `bun test test/install-script.test.ts` covers the new installer behavior without network access.
-- **IR50. Full verification.** Final gates ran with typecheck and the complete Bun test suite.
 
-### Verification (IR1–IR50)
+### Tests and docs (IR51–IR58)
+
+- **IR51. Install help test.** Added `test/install-script.test.ts` coverage for Git URL and registry controls in help output.
+- **IR52. Dry-run normalization test.** Test verifies full Git URL → `git+https://...` and one-shot registry env.
+- **IR53. Package metadata test.** Test verifies publish config, package bin, packaged files, and CLI Bun shebang.
+- **IR54. README quick start.** Quick start now includes npm package, GitHub shorthand, and explicit Git URL.
+- **IR55. README install section.** Installation section now has dedicated registry-aware and npm-publishing workflows.
+- **IR56. README count sync.** README badge and project-structure counts updated to the observed suite total.
+- **IR57. Docs changelog.** This `docs/improvements.md` pass records the installer and publication improvements.
+- **IR58. Full verification.** Final gates ran with typecheck and the complete Bun test suite.
+
+### Verification (IR1–IR58)
 
 - `sh scripts/install.sh --help` → documents Git URL, registry, scope, persist, `.npmrc`, print/delete, and dry-run controls.
 - `sh scripts/install.sh --dry-run --registry https://registry.npmjs.org/ --repo https://github.com/akillness/jeo-code.git` → prints `git+https://github.com/akillness/jeo-code.git` and one-shot registry env without installing.
-- `bun test test/install-script.test.ts` → **2 pass / 0 fail**.
+- `npm pack --dry-run` → creates `jeo-code-0.1.0.tgz` with the expected publish contents.
+- `npm publish --dry-run --access public --registry https://registry.npmjs.org/` → package validation succeeds (npm warns login is required for real publish).
+- temp tarball smoke: `bun install -g <packed jeo-code-0.1.0.tgz>` then `joc --version` → `joc v0.1.0`.
+- `npm publish --access public --registry https://registry.npmjs.org/` → blocked by npm auth (`ENEEDAUTH`), so the registry package is not published from this machine.
+- `bun test test/install-script.test.ts` → **3 pass / 0 fail**.
 - `bun run typecheck` → **0 errors**.
-- `bun test` → **306 pass / 0 fail across 54 files**.
+- `bun test` → **309 pass / 0 fail across 54 files**.

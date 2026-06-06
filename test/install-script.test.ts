@@ -50,3 +50,15 @@ test("installer dry-run normalizes the Git URL and keeps registry one-shot", asy
   expect(stdout).toContain("NPM_CONFIG_REGISTRY=https://registry.npmjs.org/");
   expect(stdout).toContain("Dry run complete; no install changes were made.");
 });
+test("package metadata is npm-publication ready for bun install -g jeo-code", async () => {
+  const pkg = JSON.parse(await Bun.file("package.json").text());
+  expect(pkg.name).toBe("jeo-code");
+  expect(pkg.bin).toEqual({ joc: "src/cli.ts" });
+  expect(pkg.files).toContain("src");
+  expect(pkg.publishConfig).toEqual({
+    access: "public",
+    registry: "https://registry.npmjs.org/",
+  });
+  const cli = await Bun.file("src/cli.ts").text();
+  expect(cli.startsWith("#!/usr/bin/env bun")).toBe(true);
+});

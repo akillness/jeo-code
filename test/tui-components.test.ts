@@ -70,6 +70,14 @@ test("StreamRegion.append then render(width) wraps a >width line and splits on \
   stream.clear();
   expect(stream.render(5)).toEqual([]);
 });
+test("StreamRegion.render(width, maxLines) truncates the result to maxLines", () => {
+  const stream = new StreamRegion();
+  stream.append("line1\nline2\nline3");
+  expect(stream.render(10, 2)).toEqual([
+    "line2",
+    "line3"
+  ]);
+});
 
 test("renderFooter includes model, step 2/25, 2s and omits step when undefined", () => {
   const footer1 = renderFooter({

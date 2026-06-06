@@ -184,6 +184,7 @@ export class LaunchTui {
     const { cols, rows } = size();
     const fit = isTTY(); // fill terminal width+height only on a real TTY
     const elapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
+    const innerWidth = fit ? cols - 4 : cols;
 
     // Resolve the current (monotonic) stage; announce a transition once when it
     // first advances. The art + track are cached per stage index/cols so the
@@ -201,30 +202,27 @@ export class LaunchTui {
       const art = renderAsciiArt(getStageByIndex(idx), {
         height: stageHeight(),
         width: stageWidth(),
-        cols,
+        cols: innerWidth,
         firing: isThinking,
         frame: isThinking ? this.tickCount : 0,
       });
-      this.cachedArt = fit ? centerBlock(art, cols) : art;
+      this.cachedArt = fit ? centerBlock(art, innerWidth) : art;
       const track = evolutionTrack(idx, { unicode: this.unicode, color: this.theme.color });
-      this.cachedTrack = fit ? padLineTo(track, cols, "center") : track;
+      this.cachedTrack = fit ? padLineTo(track, innerWidth, "center") : track;
     }
 
-    // Header: centered ASCII art + centered evolution track + spacing.
-    const header = [...this.cachedArt, this.cachedTrack, ""];
+    const showArt = fit && rows >= 18 && cols >= 40;
+    const artLinesCount = showArt ? stageHeight() : 0;
+    const trackCount = showArt ? 1 : 0;
+    const headerHeight = artLinesCount + trackCount + (showArt ? 1 : 0);
 
-    // Body: live tool list + stream region.
-    const body: string[] = [];
-    const toolCap = fit ? Math.max(3, rows - stageHeight() - 6) : undefined;
-    for (const line of this.tools.render(toolCap)) body.push(line);
-    for (const line of this.stream.render(cols)) body.push(line);
-    // Heavy panels only when filling a real screen; keep pipes/tests compact.
-    if (fit) for (const line of this.renderForge(cols, 2)) body.push(line);
+    const toolLines = this.tools.render(fit ? Math.max(3, rows - 15) : undefined);
+    const toolListHeight = toolLines.length;
 
     // Bottom-pinned status + footer.
     const bottom: string[] = [];
+    const statusMsg = getEvolutionStatusMessage(stepNow, this.footer.maxSteps ?? DEFAULT_MAX_STEPS, this.tickCount);
     if (isThinking) {
-      const statusMsg = getEvolutionStatusMessage(stepNow, this.footer.maxSteps ?? DEFAULT_MAX_STEPS, this.tickCount);
       if (fit) {
         const stats = this.tools.stats();
         for (const line of renderJocStatus({
@@ -247,10 +245,53 @@ export class LaunchTui {
       }
     }
     bottom.push(`${this.spinner.current()} ${renderFooter({ ...this.footer, elapsedMs })}`);
+    const bottomHeight = bottom.length;
 
-    // On a TTY, fill the whole screen (footer pinned to the bottom row); off a
-    // TTY (pipes/tests) keep the compact stacked frame.
-    const frame = fit ? fillScreen(header, body, bottom, rows) : [...header, ...body, ...bottom];
+    const forgeLines = fit ? this.renderForge(innerWidth, 2) : [];
+    const forgeHeight = forgeLines.length;
+
+    const overhead = fit ? 4 : 0; // 2 borders + 2 dividers
+    const fixedHeight = headerHeight + toolListHeight + forgeHeight + bottomHeight + overhead;
+    const maxStreamLines = fit ? Math.max(2, rows - fixedHeight) : undefined;
+    const streamLines = this.stream.render(innerWidth, maxStreamLines);
+
+    let frame: string[] = [];
+
+    if (fit) {
+      // Boxed TUI matching terminal width & height exactly
+      const innerLines: string[] = [];
+      if (showArt) {
+        for (const line of this.cachedArt) innerLines.push(line);
+        innerLines.push(this.cachedTrack);
+        innerLines.push("DIVIDER");
+      }
+
+      for (const line of toolLines) innerLines.push(line);
+      for (const line of streamLines) innerLines.push(line);
+      for (const line of forgeLines) innerLines.push(line);
+
+      innerLines.push("DIVIDER");
+
+      const totalLines = innerLines.length + bottom.length;
+      const fillerCount = Math.max(0, rows - 2 - totalLines);
+
+      const boxedContent: string[] = [];
+      for (const line of innerLines) boxedContent.push(line);
+      for (let i = 0; i < fillerCount; i++) boxedContent.push("");
+      for (const line of bottom) boxedContent.push(line);
+
+      const paint = this.theme.color ? chalk.blue : (s: string) => s;
+      frame = boxBlock(boxedContent, cols, {
+        glyphs: this.unicode ? BOX_UNICODE : BOX_ASCII,
+        paint,
+      });
+    } else {
+      // Unboxed Mode (fallback for tests/non-TTY)
+      const header = showArt ? [...this.cachedArt, this.cachedTrack, ""] : [];
+      const body = [...toolLines, ...streamLines, ...forgeLines];
+      frame = [...header, ...body, ...bottom];
+    }
+
     this.renderer.render(frame);
   }
 }

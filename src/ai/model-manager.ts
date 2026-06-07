@@ -7,7 +7,7 @@ import { geminiAdapter } from "./providers/gemini";
 import { ollamaAdapter } from "./providers/ollama";
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId, effectiveAliasesFor } from "./model-registry";
-import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog";
+import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
 import { withRetry, defaultRetryable, type RetryOptions } from "../util/retry";
 import type { Config } from "../agent/state";
 
@@ -32,9 +32,11 @@ export function resolveProvider(model: string): ProviderName {
 }
 
 /** Map the configured thinking level to a default max-token budget. */
-export function thinkingMaxTokens(level?: "low" | "medium" | "high"): number {
+export function thinkingMaxTokens(level?: "minimal" | "low" | "medium" | "high" | "xhigh"): number {
+  if (level === "minimal") return 1000;
   if (level === "low") return 2000;
   if (level === "high") return 8000;
+  if (level === "xhigh") return 16000;
   return 4000;
 }
 

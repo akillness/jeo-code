@@ -3,7 +3,8 @@ import { listAliases, resolveModelId } from "../ai/model-registry";
 import { resolveProvider } from "../ai/model-manager";
 import { describeAllProviders } from "../ai/provider-status";
 import { discoverModels } from "../ai/model-discovery";
-import { formatLiveModels } from "../tui/components/config-panel";
+import { formatLiveModels, formatCatalogTable } from "../tui/components/config-panel";
+import { MODEL_CATALOG, fuzzyMatchCatalog } from "../ai/model-catalog";
 
 async function probeOllama(baseUrl: string): Promise<string[]> {
   try {
@@ -27,7 +28,17 @@ async function probeOpenAiCompat(baseUrl: string): Promise<string[]> {
   }
 }
 
-export async function runModelsCommand(_args: string[] = []): Promise<void> {
+export async function runModelsCommand(args: string[] = []): Promise<void> {
+  const checkMode = args.includes("--check");
+  const providerFilter = args.find(a => ["anthropic", "openai", "gemini", "ollama"].includes(a.toLowerCase()))?.toLowerCase();
+  if (args.includes("--catalog")) {
+    const query = args.find(a => !a.startsWith("--") && !["anthropic", "openai", "gemini", "ollama"].includes(a.toLowerCase()));
+    const rows = query ? fuzzyMatchCatalog(query) : [...MODEL_CATALOG];
+    console.log("\n=== joc models --catalog ===");
+    console.log(`Known model capabilities${query ? ` matching '${query}'` : ""}:`);
+    for (const line of formatCatalogTable(rows)) console.log(line);
+    return;
+  }
   const config = await readGlobalConfig();
   console.log("\n=== joc models ===");
   const resolved = await resolveModelId(config.defaultModel);
@@ -58,7 +69,16 @@ export async function runModelsCommand(_args: string[] = []): Promise<void> {
   }
 
   console.log("\nLive models (logged-in providers):");
-  const live = await discoverModels({ config, timeoutMs: 4000 });
+  let live = await discoverModels({ config, timeoutMs: 4000 });
+  if (providerFilter) live = live.filter(r => r.provider === providerFilter);
+  if (checkMode) {
+    for (const r of live) {
+      const mark = r.ok ? "✓" : "✗";
+      const detail = r.ok ? `${r.models.length} models (${r.source})` : `${r.error} (${r.source})`;
+      console.log(`  ${mark} ${r.provider.padEnd(10)} ${detail}`);
+    }
+    return;
+  }
   for (const line of formatLiveModels(live, { current: resolved, perProvider: 20 })) console.log(line);
 
   console.log("\nSet a default with 'joc setup' or JOC_DEFAULT_MODEL=<id>.");

@@ -5,7 +5,7 @@
  * feeds keystrokes to the `SelectList` and renders it.
  */
 import { SelectList, renderSelectList, type SelectItem, type RenderSelectOptions } from "./select-list";
-import { catalogForProvider, type ModelCatalogEntry } from "../../ai/model-catalog";
+import { catalogForProvider, type ModelCatalogEntry } from "../../ai/model-catalog-compat";
 import { PROVIDER_NAMES, type ProviderStatus } from "../../ai/provider-status";
 import type { ProviderName } from "../../ai/types";
 

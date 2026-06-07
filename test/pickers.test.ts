@@ -10,7 +10,7 @@ import {
   buildProviderChoices,
   recommendedProvider,
 } from "../src/tui/components/provider-picker";
-import { findCatalogEntry } from "../src/ai/model-catalog";
+import { findCatalogEntry } from "../src/ai/model-catalog-compat";
 import type { ProviderStatus } from "../src/ai/provider-status";
 
 const status = (name: ProviderStatus["name"], ready: boolean, extra: Partial<ProviderStatus> = {}): ProviderStatus => ({
@@ -29,7 +29,7 @@ test("formatContextWindow renders k/M units", () => {
 });
 
 test("modelHint badges reasoning / recommended / readiness", () => {
-  const o1 = findCatalogEntry("o1")!;
+  const o1 = findCatalogEntry("o3")!; // reasoning model
   const h = modelHint(o1, false, true);
   expect(h).toContain("reasoning");
   expect(h).toContain("no credential");

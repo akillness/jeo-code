@@ -4,7 +4,7 @@
  * and summary logic is unit-testable without a TTY.
  */
 import type { ProviderName } from "../ai/types";
-import { recommendedModel, validateModelId, suggestModels, findCatalogEntry, catalogForProvider } from "../ai/model-catalog";
+import { recommendedModel, validateModelId, suggestModels, findCatalogEntry, catalogForProvider } from "../ai/model-catalog-compat";
 import { resolveProvider } from "../ai/model-manager";
 import type { Config } from "../agent/state";
 

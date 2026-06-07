@@ -35,7 +35,7 @@ export interface Config {
   /** Base URL override for OpenAI-compatible providers (LM Studio, vLLM, llama-cpp-server, ...). */
   openaiBaseUrl?: string;
   defaultModel: string;
-  thinkingLevel?: "low" | "medium" | "high";
+  thinkingLevel?: "minimal" | "low" | "medium" | "high" | "xhigh";
   /** Friendly model aliases, e.g. { fast: "ollama/qwen2.5:0.5b" }. Override built-ins. */
   modelAliases?: { [alias: string]: string };
   /**

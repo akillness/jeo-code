@@ -8,6 +8,9 @@ import chalk from "chalk";
 import type { ProviderStatus } from "../../ai/provider-status";
 import type { SubagentRole } from "../../agent/subagents";
 import type { ProviderModelsResult } from "../../ai/model-discovery";
+import type { PickEntry } from "../../ai/model-picker";
+import type { CatalogModel } from "../../ai/model-catalog";
+import { formatTokens } from "../../ai/model-catalog";
 
 /** A single "Model: alias → resolved (provider)" status line. */
 export function formatModelLine(d: {
@@ -121,4 +124,45 @@ export function formatLiveModels(
 /** True when `model` appears in a provider's discovered list (exact match). */
 export function liveModelKnown(results: ProviderModelsResult[], model: string): boolean {
   return results.some(r => r.ok && r.models.includes(model));
+}
+
+/**
+ * Numbered pick list: `  #N  model  (provider)`. Select one with `/model #N`.
+ * The active model (if any) is marked.
+ */
+export function formatPickList(entries: PickEntry[], opts: { current?: string; cap?: number } = {}): string[] {
+  if (entries.length === 0) return ["  (no models — log in with 'joc auth login' or start Ollama)"];
+  const cap = opts.cap ?? 60;
+  const width = String(Math.min(entries.length, cap)).length + 1; // "#" + digits
+  const lines = entries.slice(0, cap).map(e => {
+    const tag = `#${e.index}`.padStart(width);
+    const mark = opts.current && e.model === opts.current ? chalk.green(" ◀ current") : "";
+    return `  ${chalk.yellow(tag)}  ${e.model} ${chalk.gray(`(${e.provider})`)}${mark}`;
+  });
+  if (entries.length > cap) lines.push(chalk.gray(`  …(+${entries.length - cap} more — narrow with /provider <name> or /search)`));
+  return lines;
+}
+
+function thinkCell(levels: string[]): string {
+  return levels.length ? levels.join(",") : "-";
+}
+
+/** Catalog table grouped by provider: provider · model · ctx · out · thinking · img. */
+export function formatCatalogTable(models: CatalogModel[], opts: { current?: string } = {}): string[] {
+  if (models.length === 0) return ["  (no catalog matches)"];
+  const pw = Math.max(...models.map(m => m.provider.length), 8);
+  const mw = Math.min(Math.max(...models.map(m => m.canonical.length), 6), 30);
+  const lines = [`  ${"provider".padEnd(pw)}  ${"model".padEnd(mw)}  ${"ctx".padStart(5)}  ${"out".padStart(5)}  thinking  img`];
+  for (const m of models) {
+    const mark = opts.current && (m.canonical === opts.current || m.providerModel === opts.current) ? chalk.green(" ◀") : "";
+    lines.push(
+      `  ${chalk.gray(m.provider.padEnd(pw))}  ${m.canonical.padEnd(mw)}  ${formatTokens(m.contextTokens).padStart(5)}  ${formatTokens(m.maxOutputTokens).padStart(5)}  ${chalk.cyan(thinkCell(m.thinking))}  ${m.images ? "yes" : "no"}${mark}`,
+    );
+  }
+  return lines;
+}
+
+/** One-line capability summary for a single model, e.g. for `/model` output. */
+export function formatCapabilityLine(m: CatalogModel): string {
+  return `${chalk.gray("caps:")} ctx ${formatTokens(m.contextTokens)} · out ${formatTokens(m.maxOutputTokens)} · thinking ${thinkCell(m.thinking)} · images ${m.images ? "yes" : "no"}`;
 }

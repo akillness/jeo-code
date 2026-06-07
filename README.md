@@ -3,7 +3,7 @@
 [![Bun Version](https://img.shields.io/badge/Bun-%3E%3D%201.3.14-blue?logo=bun)](https://bun.sh)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen)]()
-[![Tests Status](https://img.shields.io/badge/Tests-309%20Passed-brightgreen)]()
+[![Tests Status](https://img.shields.io/badge/Tests-310%20Passed-brightgreen)]()
 
 > An interactive AI coding agent **and** a disciplined spec-first pipeline — one
 > lean, pure-TypeScript CLI on Bun.
@@ -116,11 +116,16 @@ and keeps the executable bin as `joc -> src/cli.ts` with a Bun shebang.
 
 ```bash
 npm login --registry https://registry.npmjs.org/
-npm publish --access public --registry https://registry.npmjs.org/
+bun run publish:npm
 npm view jeo-code version bin --registry https://registry.npmjs.org/
 bun install -g jeo-code
 joc --version
 ```
+
+For CI/release publishing, add an npm automation token as the repository secret
+`NPM_TOKEN`, then run the `Publish npm package` GitHub Action (dry-run or publish)
+or publish a GitHub release. The workflow runs `bun install --frozen-lockfile`,
+`bun run typecheck`, `bun test`, `npm pack --dry-run`, then `npm publish --provenance`.
 
 From a clone, `./install.sh` performs the dev install (`bun link`) so source edits
 take effect immediately; `scripts/install.sh --help` lists every mode.
@@ -134,7 +139,7 @@ Local dev without installing (from the repo root):
 ```bash
 bun run start --help     # = bun src/cli.ts --help
 bun run typecheck        # tsc -p tsconfig.json --noEmit
-bun test                 # unit tests (54 files, 309 tests)
+bun test                 # unit tests (54 files, 310 tests)
 ```
 
 ---
@@ -287,7 +292,7 @@ jeo-code/
 │   ├── mcp/                   # MCP protocol + tools + stdio server
 │   └── tui/                   # differential renderer + components + LaunchTui
 ├── scripts/                   # install.sh / uninstall.sh (bun install + bun link)
-├── test/                      # 54 suites (309 tests): oauth, engine, tools-fs, retry, config-schema, cli-runner, mutation-guard, approve, team-schema, session, compaction, streaming, evolution, ascii-art, footer, evolve, meter, install, model/provider picker, tui-*
+├── test/                      # 54 suites (310 tests): oauth, engine, tools-fs, retry, config-schema, cli-runner, mutation-guard, approve, team-schema, session, compaction, streaming, evolution, ascii-art, footer, evolve, meter, install, model/provider picker, tui-*
 ├── docs/improvements.md       # architectural analysis & changelog (ralph passes)
 ├── plan/                      # long-horizon work plans (TUI, features, install, model, provider)
 └── README.md

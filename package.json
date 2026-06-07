@@ -43,6 +43,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "bun build src/cli.ts --compile --outfile dist/joc",
     "pack:check": "npm pack --dry-run",
+    "publish:npm": "npm publish --access public --registry https://registry.npmjs.org/",
     "test": "bun test"
   },
   "dependencies": {

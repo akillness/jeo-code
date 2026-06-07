@@ -28,3 +28,15 @@ test("matchSlash distinguishes /model from /models", () => {
   expect(matchSlash("/p")).toEqual(["/provider"]);
   expect(matchSlash("/t")).toEqual(["/thinking"]);
 });
+
+test("SLASH_COMMANDS includes the code-view commands (view/diff/find/search)", () => {
+  for (const cmd of ["/view", "/diff", "/find", "/search"]) {
+    expect(SLASH_COMMANDS).toContain(cmd);
+  }
+});
+
+test("matchSlash resolves the code-view command prefixes", () => {
+  expect(matchSlash("/v")).toEqual(["/view"]);
+  expect(matchSlash("/d")).toEqual(["/diff"]);
+  expect(matchSlash("/sea")).toEqual(["/search"]);
+});

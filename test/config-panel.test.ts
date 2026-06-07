@@ -8,10 +8,12 @@ import {
   formatConfigPanel,
   formatLiveModels,
   liveModelKnown,
+  formatPickList,
 } from "../src/tui/components/config-panel";
 import { SUBAGENT_ROLES, getSubagentRole } from "../src/agent/subagents";
 import type { ProviderStatus } from "../src/ai/provider-status";
 import type { ProviderModelsResult } from "../src/ai/model-discovery";
+import { flattenModels } from "../src/ai/model-picker";
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -111,4 +113,25 @@ test("liveModelKnown matches only ok provider lists", () => {
   expect(liveModelKnown(LIVE, "gpt-4o")).toBe(true);
   expect(liveModelKnown(LIVE, "claude-x")).toBe(false); // anthropic failed → not counted
   expect(liveModelKnown(LIVE, "nope")).toBe(false);
+});
+
+test("formatPickList numbers each model and marks the current one", () => {
+  const flat = flattenModels([
+    { provider: "openai", ok: true, source: "oauth", models: ["gpt-4o", "o3"] },
+    { provider: "gemini", ok: true, source: "api_key", models: ["gemini-2.0-flash"] },
+  ]);
+  const out = formatPickList(flat, { current: "o3" }).map(strip);
+  expect(out[0]).toContain("#1");
+  expect(out[0]).toContain("gpt-4o");
+  expect(out[0]).toContain("(openai)");
+  expect(out[1]).toContain("#2  o3");
+  expect(out[1]).toContain("◀ current");
+  expect(out[2]).toContain("#3  gemini-2.0-flash");
+});
+
+test("formatPickList empty → login hint, and caps with overflow", () => {
+  expect(formatPickList([]).join("\n")).toContain("no models");
+  const many = flattenModels([{ provider: "openai", ok: true, source: "oauth", models: Array.from({ length: 70 }, (_, i) => `m${i}`) }]);
+  const out = formatPickList(many, { cap: 10 }).map(strip);
+  expect(out.some(l => l.includes("+60 more"))).toBe(true);
 });

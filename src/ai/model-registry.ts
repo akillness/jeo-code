@@ -1,5 +1,5 @@
 import { readGlobalConfig } from "../agent/state";
-import { findCatalogEntry } from "./model-catalog";
+import { findCatalogEntry } from "./model-catalog-compat";
 
 export interface ModelAliases {
   [alias: string]: string;

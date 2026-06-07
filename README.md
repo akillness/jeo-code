@@ -3,7 +3,7 @@
 [![Bun Version](https://img.shields.io/badge/Bun-%3E%3D%201.3.14-blue?logo=bun)](https://bun.sh)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen)]()
-[![Tests Status](https://img.shields.io/badge/Tests-310%20Passed-brightgreen)]()
+[![Tests Status](https://img.shields.io/badge/Tests-348%20Passed-brightgreen)]()
 
 > An interactive AI coding agent **and** a disciplined spec-first pipeline — one
 > lean, pure-TypeScript CLI on Bun.
@@ -199,6 +199,12 @@ hardened tool-call engine (`src/agent/engine.ts`). It calls `read` / `write` / `
   Preview it any time with `joc evolve` (try `--theme matrix --gradient --fit`). On a TTY the
   live frame **fills the terminal** — art centered to the width, footer pinned to the bottom row —
   and downgrades gracefully (truecolor→256→16→plain, unicode→ASCII) per terminal capability.
+- **Model & provider control (live)** — `<Tab>` autocompletes slash commands and their
+  arguments: model ids, providers, and subagent roles. `/model` and `/models` pull the
+  **real model list from your logged-in (OAuth / API-key) accounts** via live discovery —
+  pick by id or `#N`, set the session model or save it as default. `/provider` switches
+  providers, and `/agents <role> [model|maxSteps N]` pins a per-role model/step budget for
+  the `executor` / `planner` / `architect` / `critic` subagents.
 - **Sessions** — every turn is appended to `.joc/sessions/<id>.jsonl`; `joc launch --list`
   and `joc launch --resume [id]` resume past conversations.
 - **tmux orchestration (gjc parity)** — `joc --tmux` creates/attaches a leader session named
@@ -213,7 +219,7 @@ hardened tool-call engine (`src/agent/engine.ts`). It calls `read` / `write` / `
   adapters report usage in both blocking `call` and streaming modes.
 
 ```bash
-joc                                   # REPL — slash cmds: /help /clear /model /sessions /exit
+joc                                   # REPL — slash: /model /models /provider /agents /thinking /config (Tab to autocomplete)
 joc launch "fix the failing test"     # one-shot
 echo "summarize src/agent" | joc      # piped / non-TTY (plain output)
 joc launch --resume                   # resume the latest session (or --resume <uuid>)

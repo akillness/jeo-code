@@ -2918,7 +2918,7 @@ selection, project `.npmrc`, and public npm publication metadata). The key polic
 - `npm publish --access public --registry https://registry.npmjs.org/` → blocked by npm auth (`ENEEDAUTH`), so the registry package is not published from this machine.
 - `bun test test/install-script.test.ts` → **3 pass / 0 fail**.
 - `bun run typecheck` → **0 errors**.
-- `bun test` → **310 pass / 0 fail across 54 files**.
+- `bun test` → **309 pass / 0 fail across 54 files**.
 
 ---
 
@@ -2987,6 +2987,82 @@ This 50-pass run solidifies the visual presence of `joc` by implementing a full-
 - `bun test` -> **308/308 tests pass across 54 files** (added `test/tui-evolution.test.ts` for boxBlock and maxLines testing).
 - Verified full-screen boxed layout and dynamic stream logs height limit in a real interactive terminal session.
 
+## TUI slash commands + code view (코드뷰) — 50-pass run (252–301)
+
+**Date:** 2026-06-05 · **Dimension: tui / slash commands + code view + live model flow.**
+
+This run adds an in-TUI **code view** (`/view`, `/diff`) and content commands (`/find`, `/search`)
+on top of the live model/provider/subagent flow from passes 202–251. The code view renders a file
+(or git diff) with a line-number gutter, ANSI-aware width clamping, light language-aware coloring,
+and a bounded line budget — all pure functions in `src/tui/components/code-view.ts`. The live model
+discovery (`/models`, `/provider`, `/agents`) from the prior run is unchanged and still drives
+config from the OAuth/API-key catalog.
+
+> **Note (concurrent work):** the tree is being edited by other `gjc` agents (evolution/theme,
+> forge/status, boxed-layout runs, several re-using 102–151 / 152–201). This run uses **252–301**,
+> adds the new `code-view` module + tests, and makes narrow edits to `launch.ts`/`slash.ts`. README
+> count-sync deferred to the agent editing it.
+
+### Batch Z — Code view module (`src/tui/components/code-view.ts`) (252–266)
+- **252. `detectLanguage`.** Extension → language id (ts/js/json/md/py/sh/yaml/…); unknown → "".
+- **253. `languageLabel`.** "" → "text" for headers.
+- **254. `parseLineRange`.** `start-end` / `start-` / `start`; rejects `end < start` and non-numeric.
+- **255. `sliceLines`.** 1-based slice with clamping; returns `{ lines, startLine }`.
+- **256. Comment dimming.** Whole-line gray when the trimmed line starts with the language's line-comment token.
+- **257. String-literal coloring.** Double/single/backtick literals colored green (single pass).
+- **258. Keyword coloring.** A small keyword set colored cyan on word boundaries when no string match.
+- **259. `formatCodeBlock`.** Right-aligned line-number gutter with the real start line.
+- **260. Gutter auto-size.** Gutter width derives from the last line number (min 2).
+- **261. ANSI-aware clamp.** Each rendered line truncated to `cols` via the ANSI-aware `truncate` (never cuts mid-escape).
+- **262. Line budget.** `maxLines` cap (default 200) with a `…(+N more lines)` marker.
+- **263. Highlight marker.** Highlighted absolute line numbers get a `▶`/`>` gutter marker + bold number.
+- **264. Plain mode.** `color:false` yields a fully un-escaped block (testable, pipe-safe).
+- **265. `formatDiff`.** Unified-diff coloring: `+++/---` bold, `@@` cyan, `+` green, `-` red.
+- **266. Diff plain mode + cap.** `color:false` and a `maxLines` cap with overflow marker.
+
+### Batch AA — Slash commands (`launch.ts`) (267–286)
+- **267. `/view <file>`.** Reads the file and renders it through the code view.
+- **268. `/view <file> <a-b>`.** Optional line range (start-end / start- / start).
+- **269. Invalid-range guard.** Bad ranges report the accepted forms instead of rendering.
+- **270. Missing-file guard.** Read errors print a single `! cannot read …` line.
+- **271. View header.** Shows path + detected language + the rendered line span.
+- **272. Terminal-width fit.** Lines clamp to `cols-1` so the gutter never wraps.
+- **273. 200-line budget.** Large files are capped with the overflow marker.
+- **274. `/diff`.** Renders `git diff` with +/- coloring.
+- **275. `/diff <file>`.** Path-scoped diff via `git diff -- <file>`.
+- **276. No-changes message.** Empty diff prints `(no unstaged changes)`.
+- **277. Non-repo guard.** A failed `git diff` reports the reason, not a crash.
+- **278. `/find <glob>`.** Lists files via the `find` tool.
+- **279. `/find` usage guard.** Missing glob prints usage.
+- **280. `/search <pattern> [glob]`.** Greps the repo via the `search` tool.
+- **281. `/search` usage guard.** Missing pattern prints usage.
+- **282. Palette additions.** `SLASH_COMMANDS` gains `/view /diff /find /search`.
+- **283. Autocomplete.** `matchSlash` resolves the new prefixes (`/v`, `/d`, `/sea`).
+- **284. `/help` docs.** New code-view commands documented.
+- **285. Hint line.** Interactive banner lists the new commands.
+- **286. Did-you-mean.** Unknown-command suggestions now include the code-view commands (via the palette).
+
+### Batch AB — Tests & verify (287–301)
+- **287. Language detection tests.** Extension map + `languageLabel`.
+- **288. Range parsing tests.** All forms + invalid cases.
+- **289. Slice tests.** Range slice, open-ended, clamp.
+- **290. Gutter tests.** Numbered gutter with the right start line.
+- **291. Overflow test.** `maxLines` cap + `+N more` marker.
+- **292. Marker + clamp test.** Highlight marker + ANSI-aware width clamp.
+- **293. Highlight tests.** Comment/string/keyword coloring with `chalk.level` forced for the non-TTY env.
+- **294. Visible-text invariant.** Highlighting never changes the stripped text.
+- **295. Diff color/plain test.** Colored vs `color:false`.
+- **296. Diff cap test.** Overflow marker on long diffs.
+- **297. Palette test.** `SLASH_COMMANDS` contains the code-view commands.
+- **298. Prefix test.** `matchSlash` resolves `/v` `/d` `/sea`.
+- **299. chalk-level isolation.** Forced color is restored in `finally` so other suites are unaffected.
+- **300. Real render smoke.** `formatCodeBlock` over `src/cli.ts:1-6` produces the numbered gutter.
+- **301. Full gate.** `typecheck` 0 + `bun test` green.
+
+### Verification (passes 252–301)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **320 pass / 0 fail across 55 files** (this run added `code-view` + extended `slash`).
+- Real smoke: `formatCodeBlock` over `src/cli.ts` lines 1-6 renders a numbered gutter (`1 │ #!/usr/bin/env bun`, …); live `joc models` still fetches the credentialed catalog from passes 202–251.
 
 ## npm publish automation for `bun install -g jeo-code` (NPM1–NPM12)
 
@@ -3019,3 +3095,127 @@ requiring a logged-in local workstation.
 - `npm whoami --registry https://registry.npmjs.org/` → `ENEEDAUTH` on this machine.
 - `bun run typecheck` → **0 errors**.
 - `bun test` → **310 pass / 0 fail across 54 files** for the publish-enablement commit. The current working tree also includes separate in-progress TUI code-view changes, which were left uncommitted.
+
+## Selecting & persisting from the live OAuth model list — 50-pass run (302–351)
+
+**Date:** 2026-06-05 · **Dimension: tui / live model selection + persistence + auth probe.**
+
+The live discovery from passes 202–251 fetches the OAuth/API-key catalog; this run closes the loop
+so the user can actually **pick from and persist** a model out of that live list: numbered selection
+(`/model #N`), fuzzy substring selection (`/model gpt-4`), `/model save` to persist the default,
+per-provider numbered lists, and a `joc models --check` / `joc models <provider>` auth-probe. New
+module: `src/ai/model-picker.ts` (pure).
+
+> **Note (concurrent work):** other `gjc` agents continue editing the tree (evolution/theme,
+> forge/status, publish-enablement). This run uses **302–351**, adds the new `model-picker` module +
+> tests, and makes narrow edits to `launch.ts`/`models.ts`/`config-panel.ts`. README count-sync
+> deferred to the agent editing it.
+
+### Batch AC — Pick engine (`src/ai/model-picker.ts`) (302–311)
+- **302. `PickEntry` + `flattenModels`.** Flattens successful discovery results into a 1-based ordered pick list (ok providers only).
+- **303. `parsePickToken`.** `#N` → 1-based index; rejects `#0` and non-`#` tokens.
+- **304. `pickByIndex`.** Bounds-checked 1-based lookup.
+- **305. `matchModels`.** Case-insensitive substring match over model ids.
+- **306. Exact-id priority.** `resolveSelection` prefers an exact id over substring matches.
+- **307. Unique-substring select.** A single substring match resolves to that model.
+- **308. Ambiguity surface.** Multiple substring matches return `ambiguous` with the candidate list.
+- **309. Out-of-range.** `#N` beyond the list returns `out-of-range` with the max.
+- **310. None.** No match returns `none` (caller falls back to literal id/alias).
+- **311. `ai/index` export.** Picker re-exported from the `ai` barrel.
+
+### Batch AD — Numbered pick UI (`config-panel.ts`) (312–316)
+- **312. `formatPickList`.** `  #N  model  (provider)` numbered lines.
+- **313. Current marker.** The active model is tagged `◀ current`.
+- **314. Cap + overflow.** Long lists cap with a `narrow with /provider` hint.
+- **315. Empty hint.** No models → `joc auth login` / Ollama hint.
+- **316. Right-aligned index column.** Index width derives from the list length.
+
+### Batch AE — TUI selection + persistence (`launch.ts`) (317–336)
+- **317. `lastPickIndex`.** Session var holding the most recently displayed numbered list.
+- **318. `/models` numbered.** Lists the live catalog as a numbered pick list and stores the index.
+- **319. `/provider <name>` numbered.** That provider's live subset becomes the numbered list.
+- **320. `/model #N`.** Selects the Nth model from the last list.
+- **321. `/model <substr>`.** Fuzzy substring selection against the last list (exact id wins).
+- **322. Ambiguous feedback.** A multi-match substring lists the candidates with `#N`.
+- **323. Out-of-range feedback.** `#N` beyond range reports the valid range.
+- **324. `#N` without a list.** Prompts the user to run `/models` first.
+- **325. Literal fallback.** Unknown tokens still resolve as a literal model id/alias (back-compat).
+- **326. `/model save`.** Persists the session/default model to `~/.joc/config.json`.
+- **327. `/model save <id>`.** Persists an explicit id as the default.
+- **328. Save confirmation.** Reports the resolved/provider for the saved default.
+- **329. Persist hint.** `/model` output reminds users they can `/model save`.
+- **330. `/help` refresh.** Documents `/model [id|#N|save]`.
+- **331. Picklist reuse.** `/model`, `/models`, `/provider` share one `lastPickIndex`.
+- **332. Unused-import cleanup.** Dropped `formatLiveModels` from `launch.ts` (replaced by the numbered list).
+- **333. `joc models <provider>`.** One-shot live list filtered to a single provider.
+- **334. `joc models --check`.** Compact per-provider auth/reachability probe (✓/✗ + count or error + source).
+- **335. Probe source labels.** Check mode shows whether each provider used oauth / api_key / keyless.
+- **336. Early-return check mode.** `--check` prints only the probe table and exits.
+
+### Batch AF — Tests & verify (337–351)
+- **337. `flattenModels` test.** 1-based ordering, ok-only.
+- **338. `parsePickToken` test.** `#N` accept/reject.
+- **339. `pickByIndex` test.** Bounds.
+- **340. `matchModels` test.** Case-insensitive substrings.
+- **341. `resolveSelection` index.** `#N` → entry.
+- **342. `resolveSelection` out-of-range.** Reports max.
+- **343. Exact vs unique-substring.** Both resolve to `match`.
+- **344. Ambiguous + none.** Multi-match and no-match.
+- **345. `formatPickList` numbering.** `#N` + current marker + provider tag.
+- **346. `formatPickList` empty/overflow.** Login hint + `+N more`.
+- **347. Picker barrel export.** Imported via `../ai` in `launch.ts`.
+- **348. Suite green.** `model-picker` + extended `config-panel` suites pass.
+- **349. Typecheck 0.**
+- **350. Real check smoke.** `joc models --check` reports ✓ gemini 50 models (api_key), ✗ anthropic/openai not logged in.
+- **351. Real numbered render.** `formatPickList` over a discovery set renders `#1 gpt-4o (openai)` etc.
+
+### Verification (passes 302–351)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **331 pass / 0 fail across 56 files** (added `model-picker` + extended `config-panel`).
+- Real smoke: `JOC_CONFIG_DIR=$(mktemp -d) JOC_DEFAULT_MODEL=fast joc models --check` →
+  `✓ gemini 50 models (api_key)`, `✓ ollama 1 models (keyless)`, `✗ anthropic/openai not logged in (none)`.
+
+## REPL autocomplete + subagent role settings (passes AC1–AC25)
+
+**Date:** 2026-06-05 · **Dimension: tui / usability.**
+
+A ≥20-pass run adding **interactive text autocompletion** to the REPL and rounding
+out subagent role configuration. Before this, only slash-command *names* prefix-
+matched (`matchSlash`); there was no argument-level completion. Now `<Tab>`
+completes slash names AND their arguments — including the **live model list pulled
+from the OAuth-authenticated / logged-in accounts** (via the existing
+`discoverModels`), aliases, catalog ids, provider names, subagent role ids, and
+`maxSteps`. New module `src/tui/components/autocomplete.ts` (pure + sync, so the
+readline completer never blocks on the network).
+
+### Engine — `src/tui/components/autocomplete.ts` (AC1–AC16)
+- **AC1.** `tokenize(line)` → tokens + trailing-space flag (new-arg detection).
+- **AC2–3.** `CompletionContext` + `staticCompletionContext()` (wired to `SLASH_COMMANDS`, `MODEL_CATALOG`, `PROVIDER_NAMES`, `SUBAGENT_ROLES`).
+- **AC4–6.** `prefixHits`, `dedupeCap`, `rankedModelPool` (live → alias → catalog ranking).
+- **AC7.** `complete(line, ctx)` dispatcher returning `{ completions, token, kind }`.
+- **AC8.** `/model` → `save` + ranked models; `#N` numbered picks are not completed.
+- **AC9.** `/models` → `refresh`.
+- **AC10.** `/provider` → provider names; second arg → that provider's live models.
+- **AC11.** `/agents` → role ids; second arg → `maxSteps` keyword + live models.
+- **AC12.** `/thinking` → low/medium/high.
+- **AC13.** `#`-prefixed model tokens suppressed; non-slash input never completed.
+- **AC14.** `commonPrefix` for tab "fill to ambiguity".
+- **AC15.** `readlineCompleter(line, ctx)` → Node/Bun `[hits, token]` contract (whole line when no hits).
+- **AC16.** `test/autocomplete.test.ts` (12 tests).
+
+### Subagent role settings — `src/agent/subagents.ts` (AC17–AC21)
+- **AC17.** `subagentRoleIds()` (completion + validation source).
+- **AC18.** `parseMaxSteps` (positive-int guard).
+- **AC19–20.** `withSubagentSetting` (immutable model/maxSteps patch, merge not replace) + `clearSubagentSetting` (reset a role).
+- **AC21.** `test/subagents-setting.test.ts` (5 tests; round-trips through `resolveSubagentModel`/`resolveSubagentMaxSteps`).
+
+### REPL wiring — `src/commands/launch.ts` (AC22–AC25)
+- **AC22.** Alias names snapshotted once at REPL start (sync completer source).
+- **AC23.** Background `discoverModels` warm-up populates the live cache so `<Tab>` has the logged-in models without first running `/models`.
+- **AC24.** `completionContext()` builds the sync context from the live cache (`flattenModels(...).map(e => e.model)`), aliases, and `modelsForProvider`.
+- **AC25.** `createInterface({ completer })` wired with `readlineCompleter`.
+
+### Verification (AC1–AC25)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **all green** (348 tests / 58 files at run time; added `autocomplete`, `subagents-setting`).
+- Real smoke (completer against real registries + simulated live ids): `/mo`→`/model /models`; `/model `→`save` + live ids (`claude-opus-4…`, `gpt-4o-2024…`) ranked before aliases/catalog; `/provider openai `→`gpt-4o-2024…, o3-mini…`; `/agents `→`executor planner architect critic`; `/agents planner `→`maxSteps …`; `/thinking `→`low medium high`; `/models `→`refresh`.

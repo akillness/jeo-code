@@ -36,7 +36,7 @@ export const ConfigSchema = z
     ollamaBaseUrl: z.string().optional(),
     openaiBaseUrl: z.string().optional(),
     defaultModel: z.string().min(1),
-    thinkingLevel: z.enum(["low", "medium", "high"]).optional(),
+    thinkingLevel: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
     modelAliases: z.record(z.string()).optional(),
     /**
      * Provider retry budgets (gjc parity). `requestMaxRetries` counts retries

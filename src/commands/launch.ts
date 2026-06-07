@@ -3,13 +3,14 @@ import { runAgentLoop, executorSystemPrompt } from "../agent/engine";
 import { LaunchTui } from "../tui/app";
 import { skillsPromptSection } from "../skills/catalog";
 import { matchSlash, isSlashAttempt } from "../tui/components/slash";
+import { staticCompletionContext, readlineCompleter, type CompletionContext } from "../tui/components/autocomplete";
 import { EVOLUTION_STAGES, renderAsciiArt, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
 import chalk from "chalk";
 import type { Message } from "../agent/loop";
 import { readGlobalConfig, saveGlobalConfig } from "../agent/state";
-import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels } from "../ai";
-import type { ProviderModelsResult } from "../ai";
+import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata } from "../ai";
+import type { ProviderModelsResult, PickEntry } from "../ai";
 
 import { listAliases } from "../ai/model-registry";
 
@@ -21,9 +22,13 @@ import {
   formatAgentsPanel,
   formatAgentDetail,
   formatConfigPanel,
-  formatLiveModels,
+
   liveModelKnown,
+  formatPickList,
+  formatCapabilityLine,
 } from "../tui/components/config-panel";
+import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff } from "../tui/components/code-view";
+import { findTool, searchTool } from "../agent/tools";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { maybeCompact } from "../agent/compaction";
 import * as path from "node:path";
@@ -258,7 +263,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const history: Message[] = [{ role: "system", content: systemPrompt }];
   let sessionModel: string | undefined = undefined;
   // Session thinking-level override (`/thinking`); falls back to the config level.
-  let sessionThinking: "low" | "medium" | "high" | undefined = cfg.thinkingLevel;
+  let sessionThinking: "minimal" | "low" | "medium" | "high" | "xhigh" | undefined = cfg.thinkingLevel;
   // Cache of live, credential-validated models per provider (refreshed via `/models refresh`).
   let liveModelsCache: ProviderModelsResult[] | null = null;
   const getLiveModels = async (force = false): Promise<ProviderModelsResult[]> => {
@@ -268,6 +273,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     return liveModelsCache;
   };
+  // The most recently displayed numbered pick list; `/model #N` selects from it.
+  let lastPickIndex: PickEntry[] = [];
 
   // pi-style session persistence: resume an existing session or create a new one.
   let sessionId: string | undefined;
@@ -373,10 +380,29 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   console.log(`Model: ${defaultModel} (${startProvider})  ·  thinking: ${sessionThinking ?? "medium"}`);
   if (sessionId) console.log(`Session: ${sessionId}`);
   if (contextFiles.length > 0) console.log(`Project context: ${contextFiles.map(f => f.path).join(", ")}`);
-  console.log("Type your request. Slash commands: /help /model /models /provider /agents /config /thinking /sessions /compact /exit" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
+  console.log("Type your request. Slash: /help /model /models /provider /agents /config /thinking /view /diff /find /search /sessions /exit" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
 
   const useTui = LaunchTui.usable(flags.noTui);
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // Tab autocomplete: alias names snapshotted once; live models come from the
+  // background-warmed cache (logged-in/OAuth accounts). The completer is sync, so
+  // it never blocks on the network — it reads whatever the cache currently holds.
+  const aliasNames = Object.keys(await listAliases());
+  void discoverModels({ timeoutMs: 4000 })
+    .then(r => {
+      liveModelsCache ??= r;
+    })
+    .catch(() => {});
+  const completionContext = (): CompletionContext => ({
+    ...staticCompletionContext(),
+    liveModels: liveModelsCache ? flattenModels(liveModelsCache).map(e => e.model) : [],
+    aliases: aliasNames,
+    modelsForProvider: p => liveModelsCache?.find(r => r.provider === p)?.models ?? [],
+  });
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    completer: (line: string) => readlineCompleter(line, completionContext()),
+  });
 
   try {
     while (true) {
@@ -387,12 +413,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         console.log("Slash Commands:");
         console.log("  /help               - Show this help message");
         console.log("  /clear              - Clear conversation history (keeps system prompt)");
-        console.log("  /model [id]         - Set or display the session model (+ provider, credential)");
+        console.log("  /model [id|#N|save] - Set the session model by id, by #N from /models, or save as default");
         console.log("  /models [refresh]   - Live model list from logged-in providers (+ aliases)");
         console.log("  /provider [name] [model] - Provider credentials, or switch + list that provider's live models");
         console.log("  /agents [role] [model]   - List subagent roles, show one, or pin a role's model (saved)");
         console.log("  /config             - Show the effective runtime configuration");
         console.log("  /thinking [level]   - Show or set the thinking budget (low/medium/high)");
+        console.log("  /view <file> [a-b]  - Code view: render a file with line numbers + light highlight");
+        console.log("  /diff [file]        - Render `git diff` with +/- coloring");
+        console.log("  /find <glob>        - List files matching a glob");
+        console.log("  /search <pat> [glob]- Grep the repo for a pattern");
         console.log("  /sessions           - List saved sessions");
         console.log("  /evolve             - Simulate and view the agent's evolutionary gallery");
         console.log("  /compact            - Summarize older turns to free context");
@@ -436,9 +466,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         console.log("Aliases:");
         for (const line of formatAliasLines(await listAliases())) console.log(line);
         const live = await getLiveModels(refresh);
-        console.log("Live models (logged-in providers):");
-        for (const line of formatLiveModels(live, { current: resolved })) console.log(line);
-        console.log("Refresh with: /models refresh");
+        lastPickIndex = flattenModels(live);
+        console.log("Live models (logged-in providers) — select with /model #N:");
+        for (const line of formatPickList(lastPickIndex, { current: resolved })) console.log(line);
+        console.log("Refresh: /models refresh  ·  one provider: /provider <name>");
         continue;
       }
       if (input.startsWith("/provider") && (input === "/provider" || input[9] === " ")) {
@@ -470,8 +501,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const live = await getLiveModels();
         const forProvider = live.filter(r => r.provider === name);
         if (forProvider.length) {
-          console.log(`Live ${name} models:`);
-          for (const line of formatLiveModels(forProvider, { current: resolved })) console.log(line);
+          lastPickIndex = flattenModels(forProvider);
+          console.log(`Live ${name} models — select with /model #N:`);
+          for (const line of formatPickList(lastPickIndex, { current: resolved })) console.log(line);
         }
         if (explicitModel && !liveModelKnown(live, target)) {
           console.log(`  (note: '${target}' is not in ${name}'s live list — it may still work, or pick one above)`);
@@ -539,16 +571,43 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`Thinking level: ${sessionThinking ?? "medium"} (~${thinkingMaxTokens(sessionThinking)} max tokens/step)`);
           continue;
         }
-        if (arg === "low" || arg === "medium" || arg === "high") {
+        if (arg === "minimal" || arg === "low" || arg === "medium" || arg === "high" || arg === "xhigh") {
           sessionThinking = arg;
           console.log(`Thinking set to ${arg} (~${thinkingMaxTokens(arg)} max tokens/step)`);
         } else {
-          console.log(`Invalid level '${arg}'. Use: low | medium | high.`);
+          console.log(`Invalid level '${arg}'. Use: minimal | low | medium | high | xhigh.`);
         }
         continue;
       }
       if (input.startsWith("/model") && (input === "/model" || input[6] === " ")) {
-        const arg = input.substring(6).trim();
+        let arg = input.substring(6).trim();
+        // `/model save [id]` → persist the (session or given) model as the config default.
+        if (arg === "save" || arg.startsWith("save ")) {
+          const toSave = arg.slice(4).trim() || sessionModel || defaultModel;
+          const cfgNow = await readGlobalConfig();
+          await saveGlobalConfig({ ...cfgNow, defaultModel: toSave });
+          const { resolved, provider } = await describeModel(toSave);
+          console.log(`Default model saved: ${formatModelLine({ label: toSave, resolved, provider })} → ~/.joc/config.json`);
+          continue;
+        }
+        // Selection from the last numbered pick list (`#N`) or a fuzzy substring.
+        if (arg && lastPickIndex.length) {
+          const sel = resolveSelection(lastPickIndex, arg);
+          if (sel.kind === "index" || sel.kind === "match") {
+            arg = sel.entry.model;
+          } else if (sel.kind === "ambiguous") {
+            console.log(`'${arg}' matches ${sel.matches.length} models — be more specific:`);
+            for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
+            continue;
+          } else if (sel.kind === "out-of-range") {
+            console.log(`#${arg.slice(1)} is out of range (1-${sel.max}). Run /models first.`);
+            continue;
+          }
+          // kind "none" → fall through and treat `arg` as a literal model id/alias.
+        } else if (arg.startsWith("#")) {
+          console.log("Run /models (or /provider <name>) first to build the numbered list.");
+          continue;
+        }
         const label = arg || (sessionModel || defaultModel);
         if (arg) sessionModel = arg;
         const { resolved, provider } = await describeModel(label);
@@ -556,10 +615,78 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const st = statuses.find(s => s.name === provider);
         console.log(`${arg ? "Model set to" : "Current model"}: ${formatModelLine({ label, resolved, provider, ready: st?.ready })}`);
         if (st && !st.ready) console.log(`  ! ${provider} has no credential — run 'joc setup' or set ${st.envVar ?? "the provider key"}.`);
-        // When a concrete id was set and we have a live catalog, flag unknown ids.
         if (arg && liveModelsCache && resolved === label && !liveModelKnown(liveModelsCache, resolved)) {
           console.log(`  (note: '${resolved}' is not in the live ${provider} catalog — run /models to see valid ids)`);
         }
+        const meta = catalogMetadata(resolved);
+        if (meta) console.log(`  ${formatCapabilityLine(meta)}`);
+        console.log("  (persist as default: /model save)");
+        continue;
+      }
+      if (input.startsWith("/view") && (input === "/view" || input[5] === " ")) {
+        const tokens = input.substring(5).trim().split(/\s+/).filter(Boolean);
+        const file = tokens[0];
+        if (!file) {
+          console.log("Usage: /view <file> [start-end]   (e.g. /view src/cli.ts 1-40)");
+          continue;
+        }
+        let content: string;
+        try {
+          content = await fs.promises.readFile(path.resolve(cwd, file), "utf-8");
+        } catch (err) {
+          console.log(`! cannot read ${file}: ${(err as Error).message}`);
+          continue;
+        }
+        const range = tokens[1] ? parseLineRange(tokens[1]) : undefined;
+        if (tokens[1] && !range) {
+          console.log(`Invalid range '${tokens[1]}'. Use start-end | start- | start.`);
+          continue;
+        }
+        const lang = detectLanguage(file);
+        const { lines, startLine } = sliceLines(content, range ?? undefined);
+        const { cols } = await import("../tui/terminal").then(m => m.size());
+        console.log(chalk.bold(`${file}`) + chalk.gray(`  (${languageLabel(lang)}, lines ${startLine}-${startLine + lines.length - 1})`));
+        for (const line of formatCodeBlock(lines.join("\n"), { startLine, lang, cols: Math.max(40, cols - 1), maxLines: 200 })) {
+          console.log(line);
+        }
+        continue;
+      }
+      if (input.startsWith("/diff") && (input === "/diff" || input[5] === " ")) {
+        const target = input.substring(5).trim();
+        const proc = Bun.spawnSync(["git", "diff", ...(target ? ["--", target] : [])], { cwd, stdout: "pipe", stderr: "pipe" });
+        if (proc.exitCode !== 0 && !proc.stdout.length) {
+          console.log(`! git diff failed: ${proc.stderr.toString().trim() || "not a git repo?"}`);
+          continue;
+        }
+        const text = proc.stdout.toString();
+        if (!text.trim()) {
+          console.log("(no unstaged changes)");
+          continue;
+        }
+        const { cols } = await import("../tui/terminal").then(m => m.size());
+        for (const line of formatDiff(text, { cols: Math.max(40, cols - 1), maxLines: 400 })) console.log(line);
+        continue;
+      }
+      if (input.startsWith("/find") && (input === "/find" || input[5] === " ")) {
+        const glob = input.substring(5).trim();
+        if (!glob) {
+          console.log("Usage: /find <glob>   (e.g. /find src/**/*.ts)");
+          continue;
+        }
+        const res = await findTool(glob, cwd);
+        console.log(res.success ? (res.output || "(no matches)") : `! ${res.error}`);
+        continue;
+      }
+      if (input.startsWith("/search") && (input === "/search" || input[7] === " ")) {
+        const tokens = input.substring(7).trim().split(/\s+/).filter(Boolean);
+        const pattern = tokens[0];
+        const glob = tokens[1] ?? "*";
+        if (!pattern) {
+          console.log("Usage: /search <pattern> [glob]   (e.g. /search resolveProvider src/**/*.ts)");
+          continue;
+        }
+        const res = await searchTool(pattern, glob, cwd);
+        console.log(res.success ? (res.output || "(no matches)") : `! ${res.error}`);
         continue;
       }
 

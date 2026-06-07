@@ -112,3 +112,38 @@ export function subagentToolset(role: SubagentRole): Record<string, ToolHandler>
   }
   return ro;
 }
+
+/** All role ids (for `/agents` autocomplete + validation). */
+export function subagentRoleIds(): string[] {
+  return SUBAGENT_ROLES.map(r => r.id);
+}
+
+/** Parse a `/agents <role> maxSteps <n>` value → positive int, else undefined. */
+export function parseMaxSteps(input: string | undefined): number | undefined {
+  const n = parseInt((input ?? "").trim(), 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Return a new `subagents` map with a role's settings patched (model and/or
+ * maxSteps). Pure — does not mutate `config`. Unknown roles are rejected by the
+ * caller via `getSubagentRole`; this helper trusts the id it is given.
+ */
+export function withSubagentSetting(
+  config: Pick<Config, "subagents">,
+  roleId: string,
+  patch: { model?: string; maxSteps?: number },
+): SubagentConfig {
+  const id = normalizeRoleId(roleId);
+  const subs: SubagentConfig = { ...(config.subagents ?? {}) };
+  subs[id] = { ...subs[id], ...patch };
+  return subs;
+}
+
+/** Return a new `subagents` map with a role's override removed (reset to defaults). */
+export function clearSubagentSetting(config: Pick<Config, "subagents">, roleId: string): SubagentConfig {
+  const id = normalizeRoleId(roleId);
+  const subs: SubagentConfig = { ...(config.subagents ?? {}) };
+  delete subs[id];
+  return subs;
+}

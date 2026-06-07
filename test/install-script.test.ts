@@ -59,6 +59,15 @@ test("package metadata is npm-publication ready for bun install -g jeo-code", as
     access: "public",
     registry: "https://registry.npmjs.org/",
   });
+  expect(pkg.scripts["publish:npm"]).toBe("npm publish --access public --registry https://registry.npmjs.org/");
   const cli = await Bun.file("src/cli.ts").text();
   expect(cli.startsWith("#!/usr/bin/env bun")).toBe(true);
+});
+
+test("npm publish workflow is wired for NPM_TOKEN based publication", async () => {
+  const workflow = await Bun.file(".github/workflows/npm-publish.yml").text();
+  expect(workflow).toContain("Publish npm package");
+  expect(workflow).toContain("secrets.NPM_TOKEN");
+  expect(workflow).toContain("npm publish --access public --registry https://registry.npmjs.org/ --provenance");
+  expect(workflow).toContain("npm publish --dry-run --access public");
 });

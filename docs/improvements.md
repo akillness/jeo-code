@@ -2918,7 +2918,7 @@ selection, project `.npmrc`, and public npm publication metadata). The key polic
 - `npm publish --access public --registry https://registry.npmjs.org/` → blocked by npm auth (`ENEEDAUTH`), so the registry package is not published from this machine.
 - `bun test test/install-script.test.ts` → **3 pass / 0 fail**.
 - `bun run typecheck` → **0 errors**.
-- `bun test` → **309 pass / 0 fail across 54 files**.
+- `bun test` → **310 pass / 0 fail across 54 files**.
 
 ---
 
@@ -2986,3 +2986,36 @@ This 50-pass run solidifies the visual presence of `joc` by implementing a full-
 - `tsc -p tsconfig.json --noEmit` -> **0 errors**.
 - `bun test` -> **308/308 tests pass across 54 files** (added `test/tui-evolution.test.ts` for boxBlock and maxLines testing).
 - Verified full-screen boxed layout and dynamic stream logs height limit in a real interactive terminal session.
+
+
+## npm publish automation for `bun install -g jeo-code` (NPM1–NPM12)
+
+**Date:** 2026-06-07 · **Dimension: install / npm publication.**
+
+`bun install -g jeo-code` can only resolve once `jeo-code` exists on the public npm
+registry. The package metadata and tarball already validated locally; this pass adds the
+missing authenticated publication path so a repository secret can publish the package without
+requiring a logged-in local workstation.
+
+- **NPM1. Publish script.** Added `bun run publish:npm` as the canonical local publish command.
+- **NPM2. GitHub publish workflow.** Added `.github/workflows/npm-publish.yml`.
+- **NPM3. Manual workflow dispatch.** Workflow supports `workflow_dispatch`.
+- **NPM4. Dry-run input.** Manual dispatch can run `npm publish --dry-run`.
+- **NPM5. Release publish trigger.** Published GitHub releases trigger npm publication.
+- **NPM6. NPM token wiring.** Workflow uses `secrets.NPM_TOKEN` through `NODE_AUTH_TOKEN`.
+- **NPM7. Provenance.** Real workflow publish uses `npm publish --provenance`.
+- **NPM8. Gate before publish.** Workflow runs Bun install, typecheck, tests, and `npm pack --dry-run`.
+- **NPM9. README workflow docs.** README now documents `NPM_TOKEN` and the `Publish npm package` action.
+- **NPM10. Publish script test.** `test/install-script.test.ts` locks the `publish:npm` script.
+- **NPM11. Workflow test.** Tests assert the workflow contains NPM token, dry-run, and provenance publish wiring.
+- **NPM12. Auth boundary confirmed.** Local npm registry still reports `ENEEDAUTH`; actual publication must run in an authenticated environment or GitHub Actions with `NPM_TOKEN`.
+
+### Verification (NPM1–NPM12)
+
+- `bun test test/install-script.test.ts` → **4 pass / 0 fail**.
+- `npm pack --dry-run` → valid `jeo-code-0.1.0.tgz`.
+- `npm publish --dry-run --access public --registry https://registry.npmjs.org/` → package validation succeeds.
+- temp tarball smoke: `bun install -g <packed tarball>` then `joc --version` → `joc v0.1.0`.
+- `npm whoami --registry https://registry.npmjs.org/` → `ENEEDAUTH` on this machine.
+- `bun run typecheck` → **0 errors**.
+- `bun test` → **310 pass / 0 fail across 54 files** for the publish-enablement commit. The current working tree also includes separate in-progress TUI code-view changes, which were left uncommitted.

@@ -68,6 +68,17 @@ test("npm publish workflow is wired for NPM_TOKEN based publication", async () =
   const workflow = await Bun.file(".github/workflows/npm-publish.yml").text();
   expect(workflow).toContain("Publish npm package");
   expect(workflow).toContain("secrets.NPM_TOKEN");
+  expect(workflow).toContain("Verify npm token");
+  expect(workflow).toContain("2FA bypass for publishing");
   expect(workflow).toContain("npm publish --access public --registry https://registry.npmjs.org/ --provenance");
   expect(workflow).toContain("npm publish --dry-run --access public");
+});
+
+test("README documents npm token publish permissions", async () => {
+  const readme = await Bun.file("README.md").text();
+  expect(readme).toContain("Required npm token permissions");
+  expect(readme).toContain("Automation");
+  expect(readme).toContain("Granular Access Token");
+  expect(readme).toContain("bypass 2FA");
+  expect(readme).toContain("NPM_TOKEN");
 });

@@ -44,6 +44,15 @@ jobs:
       - name: Check package contents
         run: npm pack --dry-run
 
+      - name: Verify npm token
+        run: |
+          npm whoami --registry https://registry.npmjs.org/ >/dev/null || {
+            echo "::error title=NPM_TOKEN is not publish-capable::Set NPM_TOKEN to an npm Automation token or a granular token with publish/read-write permission and 2FA bypass for publishing."
+            exit 1
+          }
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Dry-run publish
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: npm publish --dry-run --access public --registry https://registry.npmjs.org/
@@ -51,7 +60,14 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish to npm
+        id: publish
         if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
         run: npm publish --access public --registry https://registry.npmjs.org/ --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Explain npm permission failures
+        if: ${{ failure() && steps.publish.outcome == 'failure' }}
+        run: |
+          echo "::error title=npm publish permission failure::If npm returned E403 about 2FA, replace NPM_TOKEN with an npm Automation token or a granular token that has package publish/read-write permission and 'bypass 2FA for publishing' enabled."
+          exit 1

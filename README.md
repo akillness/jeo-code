@@ -122,10 +122,26 @@ bun install -g jeo-code
 joc --version
 ```
 
-For CI/release publishing, add an npm automation token as the repository secret
-`NPM_TOKEN`, then run the `Publish npm package` GitHub Action (dry-run or publish)
-or publish a GitHub release. The workflow runs `bun install --frozen-lockfile`,
-`bun run typecheck`, `bun test`, `npm pack --dry-run`, then `npm publish --provenance`.
+For CI/release publishing, add an npm token as the repository secret `NPM_TOKEN`,
+then run the `Publish npm package` GitHub Action (dry-run or publish) or publish a
+GitHub release. The workflow runs `bun install --frozen-lockfile`, `bun run typecheck`,
+`bun test`, `npm pack --dry-run`, then `npm publish --provenance`.
+
+Required npm token permissions:
+
+1. npmjs.com → account settings → **Access Tokens** → create an **Automation** token, or
+   a **Granular Access Token** with package publish/read-write permission.
+2. If the npm account has 2FA enabled, the token must be allowed to **bypass 2FA for
+   publishing**. A read-only token or granular token without 2FA bypass fails with:
+   `Two-factor authentication or granular access token with bypass 2fa enabled is required`.
+3. GitHub repo → Settings → Secrets and variables → Actions → set `NPM_TOKEN` to that token.
+4. Re-run the `Publish npm package` workflow. After it succeeds, verify:
+
+```bash
+npm view jeo-code version bin --registry https://registry.npmjs.org/
+bun install -g jeo-code
+joc --version
+```
 
 From a clone, `./install.sh` performs the dev install (`bun link`) so source edits
 take effect immediately; `scripts/install.sh --help` lists every mode.

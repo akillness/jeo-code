@@ -3909,3 +3909,24 @@ Two real defects behind "still doesn't work" / "screen gets pushed".
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **425 pass / 0 fail across 67 files**.
 - PTY: `/help` + `/m` no longer pushes the screen (DECSTBM footer); scroll region cleanly reset on `/exit`.
+
+## Fix: in-turn TUI clipped by the preview scroll region (passes 647–653)
+
+**Date:** 2026-06-05 · **Dimension: tui / regression fix — in-turn frame.**
+
+Root cause of "bash/thinking/hud/todos result+progress screens don't work": the DECSTBM scroll
+region (added for the no-scroll preview) stayed active during a turn, so the full-screen turn TUI
+(`LaunchTui.draw` → `fillScreen(rows)`) was clipped/misaligned at the bottom.
+
+- **647.** Reproduced a real Ollama turn: the boxed live frame's bottom 8 rows were clipped and the footer/box border was garbled because the scroll region reserved them.
+- **648.** Confined the scroll region to the **input-wait phase only**: `armPreview()` before `rl.question`, `disarmPreview()` immediately after — so turns and command output render on the full screen.
+- **649.** `armPreview` sets DECSTBM wrapped in `ESC7/ESC8` so the cursor never visibly jumps (absorbs DECSTBM's home move).
+- **650.** `drawFooter` gated by `previewArmed`; footer batched into one write (per-row absolute clear → no scroll, no duplication).
+- **651.** `disarmPreview` clears the footer rows + resets the region; called after each input and in `finally`; `process.once("exit")` safety net.
+- **652.** Verified: in-turn TUI now renders full-screen (step-timeline, forge boxes, "Evolved to", reply, next prompt — bottom intact); `/help` + `/pro` preview still shows pinned with no scroll.
+- **653.** Typecheck 0; `bun test` 425 pass / 67 files.
+
+### Verification (passes 647–653)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **425 pass / 0 fail across 67 files**.
+- PTY: real qwen2.5 turn renders the full in-turn frame uncut; slash preview unaffected and non-scrolling.

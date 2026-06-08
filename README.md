@@ -51,6 +51,7 @@ joc setup
 | `/roles [tier model]` | 모델 역할 티어(smol/slow/plan) 표시·설정 |
 | `/thinking [level]` | 사고 예산(minimal/low/medium/high/xhigh) |
 | `/config` | 현재 런타임 설정 표시 |
+| `/skill [name [intent]]` | 워크플로우 skill 목록·표시·실행 (번들 + `~/.joc/skills`, `.joc/skills`의 사용자 SKILL.md) |
 | `/view <file> [a-b]` · `/diff [file]` · `/find <glob>` · `/search <pat>` | 코드뷰 / git diff / 파일·패턴 검색 |
 | `/sessions` · `/compact` · `/clear` · `/help` · `/exit` | 세션·컨텍스트 관리 |
 

@@ -26,6 +26,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/find", usage: "/find <glob>", description: "List files matching a glob", group: "code" },
   { command: "/search", usage: "/search <pat> [glob]", description: "Search the repo for a pattern", group: "code" },
   { command: "/sessions", usage: "/sessions", description: "List saved sessions", group: "session" },
+  { command: "/skill", usage: "/skill [name [intent]]", description: "List, show, or run a workflow skill (bundled + ~/.joc/skills)", group: "system" },
   { command: "/evolve", usage: "/evolve", description: "Simulate and view the agent's evolutionary gallery", group: "system" },
   { command: "/exit", usage: "/exit", description: "Exit the agent", group: "system" },
   { command: "/quit", usage: "/quit", description: "Exit the agent", group: "system" },

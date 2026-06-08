@@ -17,6 +17,7 @@ import { SLASH_COMMANDS } from "./slash";
 import { catalogIds } from "../../ai/model-catalog-compat";
 import { PROVIDER_NAMES } from "../../ai/provider-status";
 import { SUBAGENT_ROLES } from "../../agent/subagents";
+import { skillNames } from "../../skills/catalog";
 
 export interface CompletionContext {
   slashCommands: string[];
@@ -149,6 +150,8 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       if (argIndex === 2 && (tokens[2]?.toLowerCase() === "maxsteps" || tokens[2]?.toLowerCase() === "steps")) return { completions: [], token, kind: "none" };
       return { completions: [], token, kind: "none" };
     }
+    case "/skill":
+      return argIndex === 0 ? finish(skillNames(), "subcommand") : { completions: [], token, kind: "none" };
     case "/roles": {
       const tiers = ["smol", "slow", "plan"];
       if (argIndex === 0) return finish(tiers, "role");

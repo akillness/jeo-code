@@ -3663,3 +3663,23 @@ agents' current `launch.ts`/`autocomplete`/`config-panel` rather than isolated.
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **403 pass / 0 fail across 65 files**.
 - Real smoke: refactored `auth login --token` + `auth status` round-trip; `/provider login <name>` shares the identical `interactiveOAuthLogin` flow (typecheck-verified).
+
+## REPL login selection UI + post-login status badge (passes 558–565)
+
+**Date:** 2026-06-05 · **Dimension: tui / in-REPL auth UX.**
+
+Follow-up to the `/provider login` work: improves the no-argument path and confirms credential state.
+
+- **558.** `/provider login` with no provider now lists the three cloud providers with their current credential status (`✓ <label>` / `· not logged in`).
+- **559.** Prompts the user to pick by number (1-3) or by name; blank cancels.
+- **560.** Numeric and name selection both resolve to the provider.
+- **561.** After a successful login, prints a status badge (`status → <provider>: ✓ <label>`) re-read from `describeAllProviders`.
+- **562.** Live-model cache invalidated so the next `/models` re-discovers with the new credential.
+- **563.** `/models` capability columns (live + catalog) already shipped by the integrated peer work — no duplication.
+- **564.** Typecheck 0; `bun test` 403 pass / 65 files.
+- **565.** Built on the integrated tree (no isolation); committed + pushed.
+
+### Verification (passes 558–565)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **403 pass / 0 fail across 65 files**.
+- `/provider login` (no arg) → numbered provider picker with status; post-login badge confirms `✓`.

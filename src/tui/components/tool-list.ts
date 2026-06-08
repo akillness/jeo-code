@@ -64,4 +64,9 @@ export class ToolList {
   reset(): void {
     this.rows = [];
   }
+
+  /** Immutable snapshot of the tool rows (for the step timeline / summaries). */
+  snapshot(): { tool: string; status: ToolStatus }[] {
+    return this.rows.map(r => ({ tool: r.tool, status: r.status }));
+  }
 }

@@ -23,6 +23,8 @@ import { centerBlock, padLineTo, fillScreen, boxBlock, BOX_ASCII, BOX_UNICODE } 
 import { resolveTheme } from "./components/themes";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, type ForgeSummary } from "./components/forge";
 import { renderJocStatus } from "./components/status";
+import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact } from "./components/step-timeline";
+import { formatHintBar } from "./components/hints";
 import chalk from "chalk";
 
 export interface LaunchTuiOptions {
@@ -152,7 +154,18 @@ export class LaunchTui {
     }
     this.renderer.clear();
     this.write(showCursor());
-    const finalLines = [...this.tools.render()];
+    const timelineSteps = stepsFromTools(this.tools.snapshot());
+    const totalElapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
+    const finalLines: string[] = [];
+    if (timelineSteps.length) {
+      finalLines.push(formatStepHeader(timelineSteps, { elapsedMs: totalElapsedMs, unicode: this.unicode, color: this.theme.color }));
+    }
+    for (const line of formatStepTimeline(timelineSteps, { unicode: this.unicode, color: this.theme.color, highlightActive: true, maxRows: 12 })) {
+      finalLines.push(line);
+    }
+    if (timelineSteps.length > 1) {
+      finalLines.push(`  ${formatStepTimelineCompact(timelineSteps, { unicode: this.unicode, color: this.theme.color })}`);
+    }
     for (const line of this.stream.render(size().cols)) finalLines.push(line);
     for (const line of this.renderForge(size().cols, 3)) finalLines.push(line);
     // Show how far the agent evolved this turn (monotonic peak) with rich statistics.
@@ -244,7 +257,14 @@ export class LaunchTui {
         bottom.push(`  ${chalk.italic.gray(statusMsg)}${guardBadge}`);
       }
     }
-    bottom.push(`${this.spinner.current()} ${renderFooter({ ...this.footer, elapsedMs })}`);
+    // TTY only: a key-hint bar above the footer (kept out of non-TTY/test frames).
+    if (fit) bottom.push(formatHintBar(undefined, { unicode: this.unicode, color: this.theme.color, cols: innerWidth }));
+    // Live animated step strip appended to the footer when the turn has steps.
+    const liveSteps = stepsFromTools(this.tools.snapshot());
+    const strip = liveSteps.length
+      ? `  ${formatStepTimelineCompact(liveSteps, { unicode: this.unicode, color: this.theme.color, frame: this.tickCount, cap: 16 })}`
+      : "";
+    bottom.push(`${this.spinner.current()} ${renderFooter({ ...this.footer, elapsedMs })}${strip}`);
     const bottomHeight = bottom.length;
 
     const forgeLines = fit ? this.renderForge(innerWidth, 2) : [];

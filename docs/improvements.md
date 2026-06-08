@@ -3377,3 +3377,256 @@ pure module: `src/ai/model-enrich.ts`.
 - Real smoke: `joc models --caps` →
   `gemini  gemini-2.5-pro  1M  66K  minimal,low,medium,high  yes` (known, ranked first), unknown ids `-/?`;
   `joc models --caps --images` → exactly the 3 image-capable known models.
+
+## GJC list-models parity + live setting flow hardening — 50-pass run (452–501)
+
+**Date:** 2026-06-07 · **Dimension: tui / provider, model, and subagent live-selection correctness.**
+
+Process: I re-ran the installed `gjc 0.2.4` directly (`gjc --help`, `gjc --list-models all`,
+`gjc --list-models gemini`) and used two read-only architect subagents to review UI parity and
+live-list flow safety. The patch copies functional UI design items only — not source — and keeps
+OAuth/API-key discovery as the source of truth for availability.
+
+### Batch AQ — Reference capture + subagent review (452–458)
+- **452. Direct GJC version check.** Confirmed installed reference surface is `gjc/0.2.4`.
+- **453. GJC help capture.** Reconfirmed `--model`, `--smol`, `--slow`, `--plan`, `--provider`, `--models`, `--thinking`, and `--list-models`.
+- **454. GJC list-models capture.** Reconfirmed two-section `Canonical models` + `Provider models` output.
+- **455. GJC fuzzy capture.** Reconfirmed `gjc --list-models gemini` filters the catalog by query.
+- **456. UI parity subagent.** Architect review identified missing canonical table, selectable capability rows, provider validation, and `/agents` parsing gaps.
+- **457. Live-list flow subagent.** Architect review identified model-id rewrite and credential-consistency blockers.
+- **458. Scope reconciliation.** Kept the implementation additive: no source-copying, no catalog ownership rewrite, no removal of existing `--catalog`/`--caps`.
+
+### Batch AR — Selectable capability row design (459–466)
+- **459. `formatPickListWithCapabilities`.** Added numbered `#N` rows with provider/model/ctx/out/thinking/img columns.
+- **460. Unknown live ids.** Unknown catalog metadata renders `-` / `?`, preserving availability without inventing capabilities.
+- **461. Current marker.** Selectable capability rows mark the current model with `◀ current`.
+- **462. Width bounds.** Long model ids are elided at bounded width.
+- **463. Overflow hint.** Large live lists keep a `+N more` hint and tell users to narrow with `/provider`.
+- **464. Canonical formatter.** Added GJC-style `formatCanonicalCatalogTable`.
+- **465. Variant grouping.** Canonical rows group provider variants and show a variant count.
+- **466. Selected-provider model.** Canonical rows display the chosen provider-qualified selected model.
+
+### Batch AS — TUI slash flow hardening (467–478)
+- **467. `/models` default.** Live OAuth/API-key lists now use selectable capability rows.
+- **468. `/models caps`.** Capability-sorted live rows are now also numbered and selectable with `/model #N`.
+- **469. `/models catalog`.** Interactive catalog view now renders canonical + provider sections.
+- **470. `/models refresh`.** Refresh still forces a network refresh and now flows into the same capability picker.
+- **471. `/model` no-arg flow.** Showing the current model now also builds a live `#N` picker.
+- **472. `/provider <name> #N`.** Provider-local numbered selection works in the same command.
+- **473. Provider-local fuzzy selection.** Provider-specific live fuzzy matches resolve before assignment.
+- **474. Provider mismatch guard.** `/provider openai sonnet` is blocked because it resolves to Anthropic.
+- **475. Provider list UI.** Provider switching shows provider-local selectable capability rows.
+- **476. `/agents <role> #N`.** Subagent role models can be pinned from the live numbered model list.
+- **477. `/agents <role> maxSteps N`.** The previously advertised step-budget setting now persists correctly.
+- **478. `/agents <role> reset`.** Per-role settings can be reset to config defaults.
+
+### Batch AT — Model identity + credential correctness (479–487)
+- **479. OpenAI payload preservation.** OpenAI adapter no longer rewrites `gpt-4o-mini` to `gpt-4o`.
+- **480. OpenAI prefix stripping only.** `openai/custom-live` strips only the provider prefix before request payload.
+- **481. Anthropic payload preservation.** Claude 3.7/4 live ids are no longer rewritten to Claude 3.5 Sonnet.
+- **482. Anthropic prefix stripping only.** `anthropic/<id>` strips only the provider prefix.
+- **483. Gemini prefix tolerance.** Gemini requests strip both `google/` and `gemini/` prefixes.
+- **484. Shared credential rule.** Added `effectiveCredentialForProvider` so discovery and execution share OAuth/API-key compatibility behavior.
+- **485. OpenAI/Gemini OAuth fallback.** Incompatible OAuth with an API key now discovers using the API key, matching execution.
+- **486. OAuth-only incompatibility.** OAuth-only incompatible providers now return the same explicit compatibility error before fetching.
+- **487. Config snapshot pass-through.** `discoverModels` passes the effective config snapshot to provider discovery.
+
+### Batch AU — CLI, autocomplete, docs, and tests (488–501)
+- **488. `joc --list-models`.** Added a GJC-style global flag that routes to the catalog table.
+- **489. `--list-models=<query>`.** Fuzzy query form works without invoking the agent loop.
+- **490. `joc models --catalog <provider-query>`.** Provider words such as `gemini` now filter instead of being discarded.
+- **491. CLI help.** Global help documents `--list-models[=<query>]`.
+- **492. Models command summary.** `joc models` help text now names live OAuth/API-key models and capability tables.
+- **493. Autocomplete `/models`.** Completes `refresh`, `caps`, and `catalog`.
+- **494. Autocomplete `/agents`.** Completes `reset`, `maxSteps`, and live/catalog models.
+- **495. Autocomplete `/roles`.** Completes `smol`/`slow`/`plan`, then model ids.
+- **496. Autocomplete `/thinking`.** Completes the full `minimal`/`low`/`medium`/`high`/`xhigh` ladder.
+- **497. Provider model-id tests.** Added adapter tests asserting selected live ids are preserved.
+- **498. Discovery credential tests.** Added API-key fallback and OAuth-only compatibility tests.
+- **499. Formatter tests.** Added selectable capability rows and canonical catalog table tests.
+- **500. README sync.** Updated the command table, live model-control description, and suite/test counts.
+- **501. Verification sync.** Re-ran typecheck, full tests, and live smoke commands after the final query-filter fix.
+
+### Verification (passes 452–501)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **381 pass / 0 fail across 62 files**.
+- Direct GJC reference checks: `gjc --version` → `gjc/0.2.4`; `gjc --list-models all` and
+  `gjc --list-models gemini` showed the canonical/provider model-list design used for parity.
+- Joc smokes:
+  - `bun src/cli.ts --list-models gemini` → canonical + provider sections filtered to Gemini rows.
+  - `bun src/cli.ts models --caps --images` → 3 known image-capable live Gemini rows.
+  - `bun src/cli.ts models --check` → anthropic 8 OAuth models, OpenAI not logged in, Gemini 50 API-key models, Ollama 1 keyless model.
+
+## GJC global runtime flag parity — 50-pass run (502–551)
+
+**Date:** 2026-06-07 · **Dimension: CLI/TUI launch flags for model, provider, thinking, and role-tier selection.**
+
+This follow-up closes the remaining GJC help-surface gap identified by the architect subagent:
+`--model`, `--provider`, `--smol`, `--slow`, `--plan`, `--thinking`, and `--models` now have
+bounded behavior instead of being accidentally treated as user prompt text.
+
+### Batch AV — Subagent review and routing contract (502–509)
+- **502. Architect review.** Confirmed remaining gap was global runtime flags, not model-manager architecture.
+- **503. Routing rule.** Kept `--tmux` / `--worktree` in the launch fallback path.
+- **504. Listing exception.** Added explicit `--models` routing before the generic leading-flag launch fallback.
+- **505. Singular/plural split.** Preserved `--model` as a launch runtime flag, while `--models` lists models.
+- **506. `--models=<query>`.** Added optional equals-form forwarding to `joc models`.
+- **507. Help ordering.** Kept version/help first, listing flags second, launch flags third.
+- **508. No broad rewrite.** Reused existing `runModelsCommand` and launch session state.
+- **509. Subagent recommendation applied.** Added invalid flag errors rather than silently stuffing bad selectors into prompts.
+
+### Batch AW — Launch parser parity (510–521)
+- **510. `LaunchFlags.model`.** Added `--model <id>` and `--model=<id>`.
+- **511. `LaunchFlags.provider`.** Added `--provider <name>` and `--provider=<name>`.
+- **512. `LaunchFlags.thinking`.** Added `--thinking <level>` and `--thinking=<level>`.
+- **513. Role-tier flags.** Added `--smol`, `--slow`, and `--plan`.
+- **514. Typed providers.** Provider flags validate against anthropic/openai/gemini/ollama.
+- **515. Typed thinking ladder.** Thinking flags validate minimal/low/medium/high/xhigh.
+- **516. Missing model value.** `--model` without a value emits a clear launch error.
+- **517. Invalid provider error.** Bad provider values emit a clear launch error.
+- **518. Invalid thinking error.** Bad thinking values emit a clear launch error.
+- **519. Equals form support.** Model/provider/thinking all accept equals form.
+- **520. Space form support.** Model/provider/thinking all accept space-separated values.
+- **521. Prompt preservation.** Valid flags are consumed before building `flags.message`.
+
+### Batch AX — Effective runtime behavior (522–532)
+- **522. Initial session model.** Launch initializes `sessionModel` from the parsed flag model.
+- **523. Explicit model precedence.** `--model` wins over provider and role-tier selectors.
+- **524. Role-tier resolution.** `--smol`/`--slow`/`--plan` resolve through configured model tiers.
+- **525. Provider default mapping.** Provider flags reuse the TUI provider defaults.
+- **526. Provider/model mismatch guard.** `--provider openai --model sonnet` is rejected before a turn starts.
+- **527. Initial thinking override.** `sessionThinking` initializes from the flag when present.
+- **528. Interactive welcome accuracy.** The welcome banner now shows the flag-selected model.
+- **529. One-shot safety.** Invalid runtime flags return before the agent loop starts.
+- **530. Tmux safety.** Existing tmux/worktree orchestration remains untouched.
+- **531. Config fallback.** No flag still means config/default-model behavior.
+- **532. Launch parser export.** `parseFlags` is exported for focused unit coverage.
+
+### Batch AY — Docs, tests, and smoke coverage (533–551)
+- **533. Global help.** `joc --help` documents `--model`.
+- **534. Provider help.** `joc --help` documents `--provider`.
+- **535. Role-tier help.** `joc --help` documents `--smol|--slow|--plan`.
+- **536. Thinking help.** `joc --help` documents the five-level thinking ladder.
+- **537. Models help.** `joc --help` documents `--models`.
+- **538. README examples.** Added examples for `--list-models`, `--models --catalog`, `--model`, `--provider`, `--thinking`, and role-tier launch.
+- **539. Publish docs restoration.** Restored required npm token publish-permission text in the compact README so existing install tests stay meaningful.
+- **540. Parser tests.** Added `launch-flags.test.ts`.
+- **541. Model/provider/thinking parse test.** Covers `--model`, `--provider`, `--thinking`, and prompt preservation.
+- **542. Role-tier parse test.** Covers `--slow`, `--plan`, and max-step coexistence.
+- **543. Invalid flag test.** Covers provider/thinking error capture.
+- **544. Runner help tests.** Assert global help includes the new runtime selectors.
+- **545. `--models` dispatch test.** Ensures `--models --catalog gpt` routes to the models command.
+- **546. Focused flag tests.** `bun test test/launch-flags.test.ts test/cli-runner.test.ts` passed.
+- **547. Typecheck.** `tsc -p tsconfig.json --noEmit` passed.
+- **548. Full suite.** `bun test` passed with 385 tests across 63 files.
+- **549. Help smoke.** `bun src/cli.ts --help` shows the new GJC-style global flags.
+- **550. Models smoke.** `bun src/cli.ts --models --catalog gpt` renders canonical/provider tables.
+- **551. Invalid flag smoke.** `bun src/cli.ts --provider bogus --no-session "should not run"` returns a clear error without entering the agent loop.
+
+### Verification (passes 502–551)
+- `bun test test/launch-flags.test.ts test/cli-runner.test.ts` → **11 pass / 0 fail**.
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **385 pass / 0 fail across 63 files**.
+- `bun src/cli.ts --help` includes `--model`, `--provider`, `--smol|--slow|--plan`, `--thinking`, `--models`, and `--list-models`.
+- `bun src/cli.ts --models --catalog gpt` renders the GJC-style model catalog.
+- `bun src/cli.ts --provider bogus --no-session "should not run"` returns `error: --provider must be one of: anthropic, openai, gemini, ollama`.
+
+## Step-process timeline component — TUI process trace (passes 452–497)
+
+**Date:** 2026-06-05 · **Dimension: tui / step-by-step process indication + status coloring.**
+
+Adds the step-process trace the prior runs lacked: a numbered, status-colored vertical timeline
+of the turn's tool steps (스텝 단위 프로세스 표기 + 색상 배치), with an animated active marker. New
+self-contained module `src/tui/components/step-timeline.ts` (joc's own design — generic status
+timeline, not a copy of any other agent's source) + `ToolList.snapshot()`, wired only into the
+stable `LaunchTui.finish()`.
+
+> **Note (concurrent work):** during this run other `gjc` agents were actively editing the hot
+> files (`launch.ts`, `cli/runner.ts`, `config-panel.ts`, `autocomplete.ts`, providers). To avoid
+> clobbering in-flight peer work, this run touches ONLY new files (`step-timeline.ts` + test) and two
+> stable files (`tool-list.ts` snapshot accessor, `app.ts` finish wiring). It is intentionally a
+> focused, collision-free feature rather than 50 padded edits into concurrently-rewritten files.
+
+### Batch AQ — Timeline engine (`step-timeline.ts`)
+- **452. `StepState`** (pending/active/done/failed) + **453. `TimelineStep`** type.
+- **454–457.** Unicode + ASCII glyph maps and Unicode + ASCII spinner frame sets.
+- **458. `stepGlyph`** state lookup; **459.** animated active spinner by frame; **460.** negative-frame safety; **461.** unicode/ascii switch.
+- **462. `colorForState`** per-state chalk mapping; **463.** identity when color off.
+- **464. `stateFromToolStatus`** (running→active, ok→done, fail→failed); **465. `stepsFromTools`** converter.
+- **466. `StepSummary`** type; **467. `summarizeSteps`** counts.
+- **468. `formatStepSummary`** counts/total; **469.** zero-bucket omission; **470.** ASCII fallback; **471.** color gating.
+- **472. `formatStepTimeline`** numbered rows; **473.** connector gutter (│); **474.** last-step corner (└); **475.** ASCII connectors (| / `); **476.** per-state glyph+color; **477.** title line; **478.** empty → `(no steps)`; **479.** detail rendering; **480.** maxWidth truncation; **481.** zero-padded index width; **482.** frame-driven active animation.
+
+### Batch AR — Wiring (stable files only)
+- **483. `ToolList.snapshot()`** immutable row accessor (additive, stable file).
+- **484.** `app.ts` imports the timeline; **485.** `finish()` renders the timeline instead of the plain tool list; **486.** appends a colored step-summary line; **487.** gates color via the active theme; **488.** gates glyphs via terminal unicode capability.
+
+### Batch AS — Tests & verify
+- **489–496.** `step-timeline.test.ts`: glyph/animation, color identity, tool-status mapping, summarize, summary (unicode+ascii+zero-omit), timeline (connectors/corner/numbering), ascii+title+empty, detail+maxWidth.
+- **497. Verify.** `tsc --noEmit` 0 errors; `bun test` 393 pass / 0 fail / 64 files; existing `tui-app`/`tui-components` suites stay green (finish() still surfaces tool labels); live render smoke shows the numbered gutter + `✓2 ✗1 ◐1 / 4` summary.
+
+### Verification (passes 452–497)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **393 pass / 0 fail across 64 files** (added `step-timeline`).
+- Real smoke: `formatStepTimeline` over a 4-step turn →
+  `│ ● 1 read` / `│ ● 2 bash` / `✗ 3 edit` / `└ ◐ 4 write` + summary `✓2 ✗1 ◐1 / 4`.
+
+## Step-timeline polish — duration, header, compact strip, progress, cap (passes 498–517)
+
+**Date:** 2026-06-05 · **Dimension: tui / step-process layout, color, animation.**
+
+Extends the step-process timeline with glanceable summary affordances and wires them into the
+stable `finish()` collapse — all in joc's own `step-timeline.ts` (no peer-file collisions).
+
+> **Note (concurrent work):** the hot files (`launch.ts`, `cli/runner.ts`, `config-panel.ts`,
+> `autocomplete.ts`, providers) remain under active concurrent edit. This run touches only
+> `step-timeline.ts` (+ test) and the stable `app.ts finish()` / `tool-list.ts`.
+
+### Batch AT — Timeline affordances (`step-timeline.ts`)
+- **498. `formatDuration`** ms/seconds/minutes (`340ms` / `1.2s` / `1m 30s`).
+- **499. `formatStepHeader`** — `Steps  ✓2 ✗1 ◐1 / 4  ·  3.2s` (summary + optional elapsed).
+- **500. `formatStepTimelineCompact`** — horizontal glyph strip `● ● ✗ ◐`.
+- **501.** compact strip cap + `+N` overflow; **502.** empty → "".
+- **503. `formatProgressBar`** — `▓▓▓░░ 3/5` (ASCII `###.. 3/5`).
+- **504.** progress fill clamped to [0,1]; **505.** zero-total safe; **506.** color-gated fill/empty paint.
+- **507. `highlightActive`** option bolds the active row; **508. `maxRows`** keeps recent rows + `(+N earlier)`.
+- **509.** ASCII fallbacks across all new renderers; **510.** color-off plain output everywhere.
+
+### Batch AU — finish() wiring (stable `app.ts`)
+- **511.** `finish()` shows a step header with total turn elapsed; **512.** renders the timeline with `highlightActive`; **513.** caps to the most recent 12 rows; **514.** appends a compact glyph strip for multi-step turns; **515.** all gated by theme color + terminal unicode capability.
+
+### Batch AV — Tests & verify
+- **516.** `step-timeline.test.ts` extended: duration, header (with/without elapsed), compact strip (unicode/ascii/overflow/empty), progress bar (ratio/ascii/zero/clamp), maxRows `(+N earlier)`, highlightActive bold (chalk level forced + restored).
+- **517. Verify.** `tsc --noEmit` 0; `bun test` 398 pass / 0 fail / 64 files; `tui-app` stays green; live render smoke shows the header + numbered gutter + compact strip + progress bar.
+
+### Verification (passes 498–517)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **398 pass / 0 fail across 64 files**.
+- Real smoke: `Steps  ✓2 ✗1 ◐1 / 4  ·  3.2s` / numbered gutter / `● ● ✗ ◐` / `▓▓▓▓░░░░ 2/4`.
+
+## Key-hint bar + live step strip — TUI layout/color (passes 518–537)
+
+**Date:** 2026-06-05 · **Dimension: tui / keybinding hints + real-time step indication + color layout.**
+
+Adds a gjc-style key-hint row (functional design parity, joc's own code) and a real-time animated
+step strip to the live frame. New self-contained module `src/tui/components/hints.ts`; wiring is in
+the stable `app.ts draw()` bottom region, TTY-gated so non-TTY/test frames are unchanged.
+
+### Batch AW — Key-hint bar (`hints.ts`)
+- **518. `KeyHint`** type + **519. `DEFAULT_HINTS`** (^C cancel, Tab complete, /help, /model, /exit).
+- **520. `formatHint`** — highlighted key + dimmed label.
+- **521. `formatHintBar`** — joined row; **522.** unicode `·` vs ASCII `|` separator; **523.** color gating; **524.** `cols` clamp via ANSI-aware truncate; **525.** custom indent; **526.** empty → "".
+
+### Batch AX — Live frame wiring (stable `app.ts draw()`)
+- **527.** Key-hint bar rendered above the footer (TTY only, width-clamped).
+- **528.** Live animated step strip appended to the footer line (active glyph animates via tick frame).
+- **529.** Strip built from `ToolList.snapshot()`; **530.** capped to 16 glyphs; **531.** theme-color + unicode gated; **532.** height accounted via the existing `bottomHeight`/fit budget; **533.** non-TTY/test frames unaffected (fit-gated).
+
+### Batch AY — Tests & verify
+- **534–536.** `hints.test.ts`: defaults, `formatHint`, separator unicode/ascii, cols clamp + empty, custom indent.
+- **537. Verify.** `tsc --noEmit` 0; `bun test` 403 pass / 0 fail / 65 files; `tui-app` stays green (additions are TTY-gated).
+
+### Verification (passes 518–537)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **403 pass / 0 fail across 65 files** (added `hints`).
+- Render: hint bar `^C cancel · Tab complete · /help commands · /model switch · /exit quit`; footer carries a live `● ● ✗ ◐` step strip.

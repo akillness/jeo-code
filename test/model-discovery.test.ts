@@ -113,7 +113,7 @@ test("listProviderModels: OAuth discovery uses the provider OAuth token directly
   await fs.writeFile(
     path.join(dir, "config.json"),
     JSON.stringify({
-      providers: { anthropic: "sk-ant", openai: "sk-oai", gemini: "sk-gem" },
+      providers: { openai: "sk-oai", gemini: "sk-gem" },
       oauth: { anthropic: "oauth-ant" },
       defaultModel: "claude-3-5-sonnet",
     }),

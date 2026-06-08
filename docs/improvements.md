@@ -4168,3 +4168,48 @@ Applied the completed subagent review results that arrived after the first push.
 - Focused: `bun test test/live-model-picker.test.ts test/provider-status.test.ts test/model-discovery.test.ts test/slash.test.ts test/autocomplete.test.ts` → **67 pass / 0 fail**.
 - `bun test` → **477 pass / 0 fail across 72 files**.
 - `bun run build` → compiled `dist/joc`.
+## OpenAI ChatGPT/Codex OAuth actually serves turns + graceful 429 — passes 735–742
+
+**Date:** 2026-06-08 · **Dimension: provider correctness (implemented-but-broken) / reliability.**
+
+Two user-reported runtime errors: (1) `Anthropic request failed (HTTP 429)` surfaced as a raw
+fatal turn error; (2) "provider 설정하고 model 설정시 오류가 발생해" — selecting an OpenAI model on an
+OAuth-only (ChatGPT/Codex) login threw `set OPENAI_API_KEY`, because the bundled adapter only
+spoke `api.openai.com/v1/chat/completions`, which rejects ChatGPT/Codex tokens. Root cause for (2):
+ChatGPT/Codex OAuth must route through the Codex subscription backend, not the standard API.
+
+- **735.** New `src/ai/providers/openai-responses.ts`: builds + parses the Codex Responses request
+  against `https://chatgpt.com/backend-api/codex/responses` (Responses schema, `stream:true`,
+  `chatgpt-account-id` decoded from the OAuth JWT, `OpenAI-Beta: responses=experimental`,
+  `originator: codex_cli_rs`). Parses `response.output_text.delta` (text) and `response.completed`
+  (usage) SSE events.
+- **736.** `openai.ts` adapter branches on credential kind: `oauth` → Codex Responses
+  (`codexResponsesCall`/`codexResponsesStream`); `api_key` → existing chat/completions. So an
+  OAuth-only ChatGPT/Codex login now serves real agent turns.
+- **737.** `OAUTH_FLOW_REGISTRY.openai.verifiedEndToEnd = true` (now genuinely served E2E via Codex);
+  note updated. Gemini stays `false` (no compatible backend yet).
+- **738.** Credential preference unified in `effectiveCredentialForProvider` (call path) and
+  `listProviderModels` (discovery): an explicit `*_API_KEY` in config wins (broad, documented
+  `api.openai.com/v1`); OAuth-only is used when verified E2E (Anthropic Messages, OpenAI Codex),
+  else fail-fast asking for a key (Gemini).
+- **739.** `provider-status`: OpenAI OAuth-only is now `ready=true` (label `OAuth`); Gemini OAuth-only
+  stays `ready=false` (`OAuth (API key needed)`).
+- **740.** Catalog adds `gpt-5.5` (openai) and `PROVIDER_DEFAULT.openai = gpt-5.5`, a model the Codex
+  backend serves, so `/provider openai` and `joc --provider openai` default to a working model.
+- **741.** Graceful provider errors: `launch.ts` maps a surfaced 429/rate-limit to an actionable line
+  ("Rate limited by <provider> … wait and resend, or switch model with /model — a local ollama model
+  never rate-limits") and 401/403 to a credential-check hint, at all turn-error sites (one-shot, TUI,
+  interactive REPL).
+- **742.** Tests: `openai-responses.test.ts` (account-id JWT extraction, Codex request url/headers/
+  input shape, SSE event parsing); updated `provider-status` (openai oauth-only ready; gemini
+  oauth-only needs key) and `model-discovery` (anthropic oauth-only uses oauth token) tests.
+
+### Verification (passes 735–742)
+- `bun run typecheck` → **0 errors**.
+- `bun test` → **481 pass / 0 fail across 73 files**.
+- `bun run build` → compiled `dist/joc`.
+- **Live E2E against the user's real ChatGPT (team plan) OAuth token:**
+  `joc --model gpt-5.5 --no-tui "…"` → `Hello! … (16831 in / 46 out tokens)`;
+  `joc --provider openai --no-tui "…"` → `OK (33699 in / 20 out tokens)`. OpenAI OAuth now runs turns.
+  (Probe also confirmed `gpt-5.5` is the served model; `gpt-5`/`gpt-5.x-codex`/`gpt-4o` are rejected
+  by the Codex backend with a clear `… not supported when using Codex with a ChatGPT account`.)

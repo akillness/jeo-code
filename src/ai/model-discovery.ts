@@ -9,7 +9,7 @@
  * the TUI never hangs; failures degrade to a tagged result, never a throw.
  */
 import { readGlobalConfig, type Config } from "../agent/state";
-import { resolveCredential, type AuthProvider, type Credential, OAUTH_FLOW_REGISTRY } from "../auth";
+import { resolveCredential, type AuthProvider, type Credential } from "../auth";
 import type { ProviderName } from "./types";
 import { PROVIDER_NAMES } from "./provider-status";
 import { catalogByProvider } from "./model-catalog";
@@ -154,11 +154,8 @@ export async function listProviderModels(
     source = cred.kind === "oauth" ? "oauth" : cred.kind === "api_key" ? "api_key" : "none";
     const config = opts.config ?? (await readGlobalConfig());
     const prov = provider as AuthProvider;
-    if (
-      cred.kind === "oauth" &&
-      OAUTH_FLOW_REGISTRY[prov]?.verifiedEndToEnd === false &&
-      config.providers?.[prov]
-    ) {
+    if (cred.kind === "oauth" && config.providers?.[prov]) {
+      // An API key is the broader, documented path — prefer it for live discovery.
       cred = { kind: "api_key", provider: prov, token: config.providers[prov]! };
       source = "api_key";
     }

@@ -128,7 +128,9 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       if (argIndex === 1) return finish(ctx.modelsForProvider(tokens[1] ?? ""), "model");
       return { completions: [], token, kind: "none" };
     }
-    case "/agents": {
+    case "/agents":
+    case "/subagent":
+    case "/subagents": {
       if (argIndex === 0) return finish(ctx.roleIds, "role");
       if (argIndex === 1) return finish(["reset", "maxSteps", ...rankedModelPool(ctx)], "model");
       if (argIndex === 2 && (tokens[2]?.toLowerCase() === "maxsteps" || tokens[2]?.toLowerCase() === "steps")) return { completions: [], token, kind: "none" };

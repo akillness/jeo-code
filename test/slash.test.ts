@@ -16,8 +16,8 @@ test("isSlashAttempt: slash without a space", () => {
   expect(isSlashAttempt("/model gpt-4o")).toBe(false); // has an arg → real command, not a typo probe
   expect(isSlashAttempt("hello")).toBe(false);
 });
-test("SLASH_COMMANDS includes the config commands (model/provider/agents/config/thinking)", () => {
-  for (const cmd of ["/model", "/models", "/provider", "/agents", "/config", "/thinking"]) {
+test("SLASH_COMMANDS includes the config and subagent commands", () => {
+  for (const cmd of ["/model", "/models", "/provider", "/agents", "/subagent", "/subagents", "/config", "/thinking"]) {
     expect(SLASH_COMMANDS).toContain(cmd);
   }
 });
@@ -32,6 +32,7 @@ test("matchSlash distinguishes /model from /models", () => {
   expect(matchSlash("/models")).toEqual(["/models"]);
   expect(matchSlash("/p")).toEqual(["/provider"]);
   expect(matchSlash("/t")).toEqual(["/thinking"]);
+  expect(matchSlash("/sub")).toEqual(["/subagent", "/subagents"]);
 });
 
 test("SLASH_COMMANDS includes the code-view commands (view/diff/find/search)", () => {
@@ -51,6 +52,8 @@ test("formatSlashCommandList lists all commands for bare slash and narrows by pr
   expect(all).toContain("Slash Commands:");
   expect(all).toContain("/model [id|#N|save]");
   expect(all).toContain("/agents [role] [model|#N|maxSteps N|reset]");
+  expect(all).toContain("Subagents:");
+  expect(all).toContain("/subagent [role] [model|#N|maxSteps N|reset]");
   expect(formatSlashCommandList("/?").join("\n")).toContain("/agents [role] [model|#N|maxSteps N|reset]");
 
   const modelOnly = formatSlashCommandList("/m").join("\n");

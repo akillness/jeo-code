@@ -5,8 +5,8 @@ import { skillsPromptSection } from "../skills/catalog";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
-import { matchSlash, isSlashAttempt, formatSlashCommandList, formatSlashPreview } from "../tui/components/slash";
-import { staticCompletionContext, readlineCompleter, type CompletionContext } from "../tui/components/autocomplete";
+import { matchSlash, isSlashAttempt, formatSlashCommandList, formatSlashPreview, slashPreviewMatches } from "../tui/components/slash";
+import { staticCompletionContext, readlineCompleter, formatCompletionPreview, type CompletionContext } from "../tui/components/autocomplete";
 import { EVOLUTION_STAGES, renderAsciiArt, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
 import chalk from "chalk";
@@ -533,6 +533,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     (process.stdout.rows ?? 24) > PREVIEW_ROWS + 4;
   const out = process.stdout;
   let previewArmed = false;
+  // Arrow-key selection over the slash preview list.
+  let navMatches: string[] = []; // command names matching the typed keyword (display order)
+  let navIdx = -1; // highlighted row, -1 = none
+  let typedLine = ""; // the user-typed line (restored after readline's history nav)
+  let pendingSelection: string | undefined; // command chosen via arrows, applied on Enter
+  let lastFooterKey = "";
+  let previewPending = false;
 
   // Arm the reserved footer region without moving the visible cursor (ESC7/ESC8
   // absorb DECSTBM's home jump).
@@ -546,14 +553,24 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const disarmPreview = () => {
     if (!previewArmed) return;
     previewArmed = false;
+    lastFooterKey = "";
     const rows = process.stdout.rows ?? 24;
     let s = "\x1b7";
     for (let i = 0; i < PREVIEW_ROWS; i++) s += `\x1b[${rows - PREVIEW_ROWS + 1 + i};1H\x1b[2K`;
-    s += "\x1b[r\x1b8"; // reset region, restore cursor to the flow position
+    s += "\x1b[r\x1b8\x1b[?25h"; // reset region, restore cursor, ensure it is visible
     out.write(s);
+  };
+  const previewLines = (line: string, selected = -1): string[] => {
+    const slash = formatSlashPreview(line, PREVIEW_ROWS, selected);
+    if (slash.length) return slash.map(l => chalk.gray(l));
+    const args = formatCompletionPreview(line, completionContext(), PREVIEW_ROWS);
+    return args.map(l => chalk.gray(l));
   };
   const drawFooter = (lines: string[]) => {
     if (!previewArmed) return;
+    const key = lines.join("\n");
+    if (key === lastFooterKey) return;
+    lastFooterKey = key;
     const rows = process.stdout.rows ?? 24;
     const base = rows - PREVIEW_ROWS;
     let s = "\x1b7";
@@ -561,21 +578,46 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       s += `\x1b[${base + 1 + i};1H\x1b[2K`;
       if (i < lines.length) s += lines[i]!;
     }
-    s += "\x1b8";
+    s += "\x1b8\x1b[?25h";
     out.write(s);
   };
 
   if (previewEnabled) {
     process.once("exit", () => out.write("\x1b[r")); // safety net: always reset region
     process.stdin.on("keypress", (_ch: string, key: { name?: string } | undefined) => {
+      if (previewPending) return;
+      previewPending = true;
       setImmediate(() => {
+        previewPending = false;
         if (!previewArmed) return;
         try {
           if (key && (key.name === "return" || key.name === "enter")) {
             drawFooter([]);
             return;
           }
-          drawFooter(formatSlashPreview(rl.line, PREVIEW_ROWS).map(l => chalk.gray(l)));
+          // Arrow up/down: move the highlight over the slash keyword preview list.
+          // Once the user types a real argument (`/subagent `, `/provider login `, ...),
+          // we stop intercepting arrows and just show the live completion preview.
+          if (key && (key.name === "up" || key.name === "down") && navMatches.length > 0) {
+            const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
+            if (rli.line !== typedLine) {
+              rli.line = typedLine;
+              rli.cursor = typedLine.length;
+              rli._refreshLine?.();
+            }
+            if (navIdx === -1) navIdx = key.name === "down" ? 0 : navMatches.length - 1;
+            else navIdx = (navIdx + (key.name === "down" ? 1 : -1) + navMatches.length) % navMatches.length;
+            pendingSelection = navMatches[navIdx];
+            drawFooter(previewLines(typedLine, navIdx));
+            return;
+          }
+          // Any other key edits the line: refresh the slash-keyword matches (if any),
+          // reset the highlight, and show either the command preview or argument preview.
+          typedLine = rl.line;
+          navMatches = slashPreviewMatches(typedLine);
+          navIdx = -1;
+          pendingSelection = undefined;
+          drawFooter(previewLines(typedLine));
         } catch { /* ignore render races */ }
       });
     });
@@ -584,8 +626,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   try {
     while (true) {
       armPreview();
-      const input = (await rl.question("\njoc> ")).trim();
+      const raw = (await rl.question("\njoc> ")).trim();
       disarmPreview();
+      // If an arrow-key selection was made over the slash preview, run that command.
+      const input = pendingSelection && isSlashAttempt(raw) && pendingSelection.startsWith(raw)
+        ? pendingSelection
+        : raw;
+      pendingSelection = undefined;
+      navMatches = [];
+      navIdx = -1;
       if (input === "/exit" || input === "/quit") break;
       if (input === "") continue;
       if (input === "/" || input === "/?" || input === "/help") {

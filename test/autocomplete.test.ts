@@ -4,10 +4,10 @@ import {
   tokenize,
   commonPrefix,
   readlineCompleter,
+  formatCompletionPreview,
   staticCompletionContext,
   type CompletionContext,
 } from "../src/tui/components/autocomplete";
-
 const ctx = (over: Partial<CompletionContext> = {}): CompletionContext => ({
   slashCommands: ["/model", "/models", "/provider", "/agents", "/subagent", "/subagents", "/thinking", "/help"],
   liveModels: ["claude-3-5-sonnet-live", "gpt-4o-live"],
@@ -84,6 +84,28 @@ test("/agents completes role ids, then models + maxSteps keyword", () => {
   expect(m.completions).toContain("gpt-4o-live");
   expect(complete("/subagent ", ctx()).completions).toEqual(["executor", "planner", "architect", "critic"]);
   expect(complete("/subagents executor ", ctx()).completions).toContain("maxSteps");
+});
+
+test("formatCompletionPreview lists argument completions after slash commands", () => {
+  const sub = formatCompletionPreview("/subagent ", ctx()).join("\n");
+  expect(sub).toContain("Subagent roles:");
+  expect(sub).toContain("executor");
+  expect(sub).toContain("critic");
+
+  const login = formatCompletionPreview("/provider login ", ctx()).join("\n");
+  expect(login).toContain("Providers:");
+  expect(login).toContain("anthropic");
+  expect(login).toContain("gemini");
+
+  const models = formatCompletionPreview("/models ", ctx()).join("\n");
+  expect(models).toContain("Subcommands:");
+  expect(models).toContain("refresh");
+  expect(models).toContain("catalog");
+});
+
+test("formatCompletionPreview stays empty for keyword-only slash probes", () => {
+  expect(formatCompletionPreview("/sub", ctx())).toEqual([]);
+  expect(formatCompletionPreview("hello", ctx())).toEqual([]);
 });
 
 test("/roles completes tier then live/catalog models", () => {

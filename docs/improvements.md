@@ -3889,6 +3889,24 @@ Verified the reported "model change / provider auth don't work" claim and added 
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **425 pass / 0 fail across 67 files**.
 
+## Live argument preview + cursor-visible slash footer (passes 644–650)
+
+**Date:** 2026-06-07 · **Dimension: tui / slash-command argument entry.**
+
+- **644.** Added `formatCompletionPreview()` so live footer previews now continue after a real slash command space (`/subagent `, `/provider login `, `/models `, ...).
+- **645.** The REPL footer now falls back from command-keyword preview to argument-completion preview instead of going blank after the first space.
+- **646.** Footer redraws are now de-duplicated and coalesced, reducing lag while typing and avoiding redundant 8-row clears on every keypress.
+- **647.** Footer clear/draw paths now explicitly emit `CSI ?25h`, ensuring the input cursor stays visible after preview updates.
+- **648.** Added unit coverage for subagent/provider/subcommand argument previews and kept the existing slash-keyword preview coverage.
+- **649.** Verified an interactive PTY smoke: typing `/subagent executor` shows the preview, keeps accepting input, and executes the role-detail command.
+- **650.** README updated to document continued preview after a command space and the `/subagent` aliases.
+
+### Verification (passes 644–650)
+- `bun test test/autocomplete.test.ts test/slash.test.ts test/model-discovery.test.ts` → **43 pass / 0 fail**.
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **425 pass / 0 fail across 67 files**.
+- Interactive PTY smoke: `/subagent ` preview rendered `Subagent roles:`, cursor-show sequence present, `executor` input echoed, and the role detail rendered.
+
 ## Fix: stale global install + non-scrolling slash preview footer (passes 638–646)
 
 **Date:** 2026-06-05 · **Dimension: tui / install resolution + no-scroll layout.**
@@ -3949,3 +3967,23 @@ While verifying joc on a real Ollama turn, the weak model emitted a tool call wi
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **426 pass / 0 fail across 67 files** (added the forge undefined-tool guard test).
 - PTY: `run echo hi` turn → no `tool.toLowerCase` crash (grep count 0); full in-turn frame renders.
+
+## Arrow-key selection over the slash preview (passes 661–668)
+
+**Date:** 2026-06-05 · **Dimension: tui / keyboard navigation.**
+
+The slash preview is now navigable with the arrow keys.
+
+- **661.** `formatSlashPreview(line, max, selected)` marks the highlighted row with `❯` (bold).
+- **662.** `slashPreviewMatches(line)` returns the matching command names in display order (index-aligned with the preview rows).
+- **663.** Up/Down keypress moves the highlight (wraps); first press selects row 0 (Down) / last (Up).
+- **664.** readline's history nudge on Up/Down is undone (restore `rl.line` to the typed prefix) so navigation never changes the input text.
+- **665.** Enter applies the highlighted command: the loop substitutes the typed prefix with `pendingSelection` when it is a slash-keyword prefix of the selection, then executes it.
+- **666.** Selection state resets on any edit key and after each submit.
+- **667.** `slash.test.ts` covers the `❯` selected marker and `slashPreviewMatches` index alignment.
+- **668.** Verified in a PTY: typing `/m`, ↓ highlights `/model` (`❯`), Enter runs it (shows the live model picker).
+
+### Verification (passes 661–668)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **430 pass / 0 fail across 67 files**.
+- PTY: `/m` + Down → `❯ /model …`; Enter executes the highlighted command; README documents arrow-key selection.

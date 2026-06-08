@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { matchSlash, isSlashAttempt, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, formatSlashCommandList, formatSlashPreview } from "../src/tui/components/slash";
+import { matchSlash, isSlashAttempt, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, formatSlashCommandList, formatSlashPreview, slashPreviewMatches } from "../src/tui/components/slash";
 
 test("matchSlash: prefix-matches slash commands, case-insensitive", () => {
   expect(matchSlash("/")).toEqual(SLASH_COMMANDS);
@@ -88,4 +88,22 @@ test("formatSlashPreview: caps the list with a +N more line", () => {
   const out = formatSlashPreview("/", 3);
   expect(out.length).toBe(4); // 3 rows + overflow line
   expect(out[3]).toContain("more");
+});
+
+test("formatSlashPreview: selected index marks the highlighted row with ❯", () => {
+  const out = formatSlashPreview("/m", 6, 1).map(l => l.replace(/\x1b\[[0-9;]*m/g, ""));
+  // /m → /model (row 0), /models (row 1) → row 1 selected
+  expect(out[0].startsWith("  ")).toBe(true);
+  expect(out[1].startsWith("❯ ")).toBe(true);
+  expect(out[1]).toContain("/models");
+});
+
+test("slashPreviewMatches: command names in display order; empty for args/non-slash", () => {
+  expect(slashPreviewMatches("/m")).toEqual(["/model", "/models"]);
+  expect(slashPreviewMatches("/model gpt")).toEqual([]); // has a space
+  expect(slashPreviewMatches("hello")).toEqual([]);
+  // index alignment: matches[i] corresponds to formatSlashPreview row i
+  const matches = slashPreviewMatches("/c");
+  const rows = formatSlashPreview("/c", 20).map(l => l.replace(/❯ |  /, ""));
+  matches.forEach((cmd, i) => expect(rows[i]).toContain(cmd));
 });

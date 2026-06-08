@@ -20,7 +20,8 @@ import { getStageByIndex, renderAsciiArt, stageHeight, stageWidth } from "./comp
 import { evolutionTrack, createStageProgress, type StageProgress, getEvolutionStatusMessage, transitionMessage } from "./components/evolution";
 import { supportsUnicode } from "./components/capability";
 import { centerBlock, padLineTo, fillScreen, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
-import { resolveTheme } from "./components/themes";
+import { resolveTheme, themeGradient } from "./components/themes";
+import { detectColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, type ForgeSummary } from "./components/forge";
 import { renderJocStatus } from "./components/status";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact } from "./components/step-timeline";
@@ -184,7 +185,8 @@ export class LaunchTui {
   }
 
   private renderForge(width: number, maxEntries: number): string[] {
-    const boxWidth = Math.max(24, Math.min(96, width));
+    const floor = Math.min(24, width);
+    const boxWidth = Math.max(floor, Math.min(96, width));
     const paint = this.theme.color ? chalk.gray : (s: string) => s;
     const lines: string[] = [];
     for (const summary of this.forgeSummaries.slice(-maxEntries)) {
@@ -219,6 +221,9 @@ export class LaunchTui {
         cols: innerWidth,
         firing: isThinking,
         frame: isThinking ? this.tickCount : 0,
+        color: this.theme.color,
+        gradient: themeGradient(this.theme, idx),
+        colorLevel: detectColorLevel(process.env, isTTY()),
       });
       this.cachedArt = fit ? centerBlock(art, innerWidth) : art;
       const track = evolutionTrack(idx, { unicode: this.unicode, color: this.theme.color });
@@ -230,7 +235,7 @@ export class LaunchTui {
     const trackCount = showArt ? 1 : 0;
     const headerHeight = artLinesCount + trackCount + (showArt ? 1 : 0);
 
-    const toolLines = this.tools.render(fit ? Math.max(3, rows - 15) : undefined);
+    const toolLines = this.tools.render(fit ? Math.max(3, rows - 15) : undefined, { color: this.theme.color });
     const toolListHeight = toolLines.length;
 
     // Bottom-pinned status + footer.
@@ -251,11 +256,14 @@ export class LaunchTui {
           totalCount: stats.total,
           mutationGuarded: this.mutationGuarded,
           unicode: this.unicode,
+          color: this.theme.color,
         })) bottom.push(line);
       } else {
         // Compact single-line status off a TTY (pipes / tests).
-        const guardBadge = this.mutationGuarded ? ` ${chalk.red.bold("[MUTATION LOCKED]")}` : "";
-        bottom.push(`  ${chalk.italic.gray(statusMsg)}${guardBadge}`);
+        const italicGray = this.theme.color ? chalk.italic.gray : (s: string) => s;
+        const redBold = this.theme.color ? chalk.red.bold : (s: string) => s;
+        const guardBadge = this.mutationGuarded ? ` ${redBold("[MUTATION LOCKED]")}` : "";
+        bottom.push(`  ${italicGray(statusMsg)}${guardBadge}`);
       }
     }
     // TTY only: a key-hint bar above the footer (kept out of non-TTY/test frames).
@@ -273,7 +281,7 @@ export class LaunchTui {
 
     const overhead = fit ? 4 : 0; // 2 borders + 2 dividers
     const fixedHeight = headerHeight + toolListHeight + forgeHeight + bottomHeight + overhead;
-    const maxStreamLines = fit ? Math.max(2, rows - fixedHeight) : undefined;
+    const maxStreamLines = fit ? Math.max(0, rows - fixedHeight) : undefined;
     const streamLines = this.stream.render(innerWidth, maxStreamLines);
 
     let frame: string[] = [];
@@ -313,6 +321,9 @@ export class LaunchTui {
       frame = [...header, ...body, ...bottom];
     }
 
+    if (fit) {
+      frame = frame.slice(0, rows);
+    }
     this.renderer.render(frame);
   }
 }

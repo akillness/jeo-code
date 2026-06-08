@@ -5,6 +5,15 @@ import * as path from "node:path";
 import { extractJsonObject } from "../src/agent/json";
 import { editTool } from "../src/agent/tools";
 import { createSession, appendMessage, loadSession, sessionPath } from "../src/agent/session";
+import { LaunchTui } from "../src/tui/app";
+import { renderAsciiArt, getStageByIndex } from "../src/tui/components/ascii-art";
+import { resolveTheme } from "../src/tui/components/themes";
+import { renderJocStatus } from "../src/tui/components/status";
+import { ToolList } from "../src/tui/components/tool-list";
+import { boxBlock, BOX_ASCII } from "../src/tui/components/layout";
+import { visibleWidth } from "../src/tui/components/color";
+import { formatForgeBox } from "../src/tui/components/forge";
+import { EVOLUTION_SPINNER_FRAMES_ASCII } from "../src/tui/components/evolution";
 
 // --- json.ts: scan past non-JSON braces (review LOW finding) ---
 
@@ -77,5 +86,190 @@ test("loadSession: tolerates a malformed non-header line and keeps valid message
     expect(messages.map(m => m.content)).toEqual(["hi", "yo"]);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+function simulateTerminal(writes: string[]): string[] {
+  const lines: string[] = [];
+  let cursorRow = 0;
+
+  for (const write of writes) {
+    let i = 0;
+    while (i < write.length) {
+      if (write.startsWith("\x1b[", i)) {
+        const endIdx = write.indexOf("A", i);
+        const endB = write.indexOf("B", i);
+        const endG = write.indexOf("G", i);
+        const endK = write.indexOf("K", i);
+        const endJ = write.indexOf("J", i);
+        const endH = write.indexOf("h", i);
+        const endL = write.indexOf("l", i);
+        
+        const ends = [
+          { char: 'A', idx: endIdx },
+          { char: 'B', idx: endB },
+          { char: 'G', idx: endG },
+          { char: 'K', idx: endK },
+          { char: 'J', idx: endJ },
+          { char: 'h', idx: endH },
+          { char: 'l', idx: endL }
+        ].filter(e => e.idx !== -1).sort((a, b) => a.idx - b.idx);
+        
+        if (ends.length > 0) {
+          const first = ends[0];
+          const seq = write.substring(i, first.idx + 1);
+          i = first.idx + 1;
+          
+          if (first.char === 'A') {
+            const match = seq.match(/\d+/);
+            const n = parseInt(match ? match[0] : "1", 10);
+            cursorRow = Math.max(0, cursorRow - n);
+          } else if (first.char === 'B') {
+            const match = seq.match(/\d+/);
+            const n = parseInt(match ? match[0] : "1", 10);
+            cursorRow = cursorRow + n;
+          } else if (first.char === 'K') {
+            if (lines[cursorRow] !== undefined) {
+              lines[cursorRow] = "";
+            }
+          } else if (first.char === 'J') {
+            lines.length = cursorRow;
+          }
+        } else {
+          i += 2;
+        }
+      } else {
+        let nextEsc = write.indexOf("\x1b[", i);
+        if (nextEsc === -1) nextEsc = write.length;
+        const text = write.substring(i, nextEsc);
+        i = nextEsc;
+        
+        if (text) {
+          lines[cursorRow] = text;
+        }
+      }
+    }
+  }
+  return lines;
+}
+
+// --- TUI Review Fixes ---
+
+test("FIX 1: clamp composed frame to terminal rows", () => {
+  const originalColumns = process.stdout.columns;
+  const originalRows = process.stdout.rows;
+  const originalIsTTY = process.stdout.isTTY;
+
+  Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+  Object.defineProperty(process.stdout, "columns", { value: 80, configurable: true });
+  Object.defineProperty(process.stdout, "rows", { value: 15, configurable: true });
+
+  try {
+    const out: string[] = [];
+    const tui = new LaunchTui({
+      model: "m1",
+      write: (s) => out.push(s),
+    });
+
+    tui.start();
+    const ev = tui.events();
+    ev.onStep!(1);
+    
+    // Add many tool runs to exceed the height
+    for (let i = 0; i < 20; i++) {
+      const idx = tui.tools.start("tool_" + i);
+      tui.tools.finish(idx, true);
+    }
+    
+    ev.onAssistant!("", { tool: "dummy" });
+
+    const lines = simulateTerminal(out);
+    expect(lines.length).toBeLessThanOrEqual(15);
+  } finally {
+    Object.defineProperty(process.stdout, "isTTY", { value: originalIsTTY, configurable: true });
+    Object.defineProperty(process.stdout, "columns", { value: originalColumns, configurable: true });
+    Object.defineProperty(process.stdout, "rows", { value: originalRows, configurable: true });
+  }
+});
+
+test("FIX 2: render art with theme.color=false -> output has no \\x1b[", () => {
+  const stage = getStageByIndex(0);
+  const theme = resolveTheme({ JOC_TUI_THEME: "mono" });
+  expect(theme.color).toBe(false);
+  const art = renderAsciiArt(stage, {
+    color: theme.color,
+  });
+  const text = art.join("\n");
+  expect(text).not.toContain("\x1b[");
+});
+
+test("FIX 3: renderJocStatus with color=false -> no \\x1b[", () => {
+  const status = renderJocStatus({
+    step: 1,
+    maxSteps: 25,
+    message: "thinking",
+    color: false,
+  });
+  const text = status.join("\n");
+  expect(text).not.toContain("\x1b[");
+});
+
+test("FIX 4: ToolList render with color=false -> no \\x1b[", () => {
+  const tools = new ToolList();
+  tools.start("test-tool");
+  const rendered = tools.render(undefined, { color: false });
+  const text = rendered.join("\n");
+  expect(text).not.toContain("\x1b[");
+});
+
+test("FIX 5: boxBlock truncates content to inner width", () => {
+  const content = ["this is a very long line that exceeds the box width"];
+  const width = 20;
+  const boxed = boxBlock(content, width, { glyphs: BOX_ASCII });
+  
+  for (const line of boxed) {
+    expect(visibleWidth(line)).toBe(20);
+    expect(line.endsWith("+") || line.endsWith("|")).toBe(true);
+  }
+});
+
+test("FIX 6: render forge at innerWidth=20 -> every line visibleWidth <= innerWidth", () => {
+  const summary = {
+    title: "Forge Task",
+    lines: ["short line", "another somewhat longer line"],
+  };
+  const boxed = formatForgeBox(summary, { width: 20 });
+  for (const line of boxed) {
+    expect(visibleWidth(line)).toBeLessThanOrEqual(20);
+  }
+});
+
+test("FIX 7: all ascii stage-0 frames have equal string length", () => {
+  const frames = EVOLUTION_SPINNER_FRAMES_ASCII[0];
+  const len = frames[0].length;
+  for (const frame of frames) {
+    expect(frame.length).toBe(len);
+  }
+});
+
+test("FIX 8: non-TTY status fallback honors mono theme (no color)", () => {
+  const out: string[] = [];
+  const originalEnv = process.env.JOC_TUI_THEME;
+  process.env.JOC_TUI_THEME = "mono";
+  try {
+    const tui = new LaunchTui({
+      model: "m1",
+      write: (s) => out.push(s),
+    });
+    tui.start();
+    const ev = tui.events();
+    ev.onStep!(1);
+    
+    const text = out.join("");
+    // mono = no SGR color/style codes (…m). Cursor-control ANSI (\x1b[1G, \x1b[2K,
+    // \x1b[?25l) is the renderer doing its job and is allowed.
+    expect(text).not.toMatch(/\x1b\[[0-9;]*m/);
+  } finally {
+    process.env.JOC_TUI_THEME = originalEnv;
   }
 });

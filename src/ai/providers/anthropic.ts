@@ -70,6 +70,7 @@ export const anthropicAdapter: ProviderAdapter = {
   async *stream(messages, options, credential) {
     const response = await postAnthropic(messages, options, credential, true);
     if (!response.body) return;
+    let cachedInput: number | undefined;
     for await (const data of readSse(response.body)) {
       let evt: {
         type?: string;
@@ -85,14 +86,14 @@ export const anthropicAdapter: ProviderAdapter = {
       if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta" && evt.delta.text) {
         yield evt.delta.text;
       } else if (evt.type === "message_start" && evt.message?.usage) {
+        cachedInput = evt.message.usage.input_tokens;
         options.onUsage?.({ inputTokens: evt.message.usage.input_tokens, outputTokens: evt.message.usage.output_tokens });
       } else if (evt.type === "message_delta" && evt.usage) {
-        options.onUsage?.({ outputTokens: evt.usage.output_tokens });
+        options.onUsage?.({ inputTokens: cachedInput, outputTokens: evt.usage.output_tokens });
       }
     }
   },
 };
-
 function headersFor(credential: Credential): Record<string, string> {
   if (credential.kind === "oauth") {
     return {

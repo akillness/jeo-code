@@ -3,7 +3,7 @@ import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
 
-function openaiRequest(messages: Message[], options: CallOptions, credential: Credential, stream: boolean): { url: string; headers: Record<string, string>; body: string } {
+export function openaiRequest(messages: Message[], options: CallOptions, credential: Credential, stream: boolean): { url: string; headers: Record<string, string>; body: string } {
   const model = options.model.startsWith("openai/") ? options.model.slice(7) : options.model;
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
   const openaiMessages: { role: string; content: string }[] = [];
@@ -11,12 +11,17 @@ function openaiRequest(messages: Message[], options: CallOptions, credential: Cr
   for (const msg of messages) {
     if (msg.role !== "system") openaiMessages.push({ role: msg.role, content: msg.content });
   }
+  const isReasoning = /^o\d/.test(model);
   const payload: Record<string, unknown> = {
     model,
     messages: openaiMessages,
-    temperature: options.temperature ?? 0.2,
-    max_tokens: options.maxTokens ?? 4000,
   };
+  if (isReasoning) {
+    payload.max_completion_tokens = options.maxTokens ?? 4000;
+  } else {
+    payload.temperature = options.temperature ?? 0.2;
+    payload.max_tokens = options.maxTokens ?? 4000;
+  }
   if (stream) {
     payload.stream = true;
     payload.stream_options = { include_usage: true };

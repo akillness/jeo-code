@@ -51,11 +51,11 @@ joc setup
 | `/roles [tier model]` | 모델 역할 티어(smol/slow/plan) 표시·설정 |
 | `/thinking [level]` | 사고 예산(minimal/low/medium/high/xhigh) |
 | `/config` | 현재 런타임 설정 표시 |
-| `/skill [name [intent]]` | 워크플로우 skill 목록·표시·실행 (번들 + `~/.joc/skills`, `.joc/skills`의 사용자 SKILL.md) |
+| `/skill [name [intent]]` · `/speckit.plan` 등 | 워크플로우 skill 목록·표시·실행 (번들 + `~/.joc/skills`, `.joc/skills`, `~/.agents/skills/<name>/SKILL.md`의 사용자 SKILL.md) |
 | `/view <file> [a-b]` · `/diff [file]` · `/find <glob>` · `/search <pat>` | 코드뷰 / git diff / 파일·패턴 검색 |
 | `/sessions` · `/compact` · `/clear` · `/help` · `/exit` | 세션·컨텍스트 관리 |
 
-TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다. 입력창에 `/`로 시작하는 키워드를 타이핑하면 일치하는 명령 목록이 **실시간 미리보기**로 아래에 표시되고, **방향키(↑/↓)로 선택**한 뒤 Enter로 실행할 수 있습니다(`❯` 표시). `/subagent `·`/provider login `처럼 공백 뒤 인자를 입력할 때도 사용 가능한 role/provider/subcommand 목록이 계속 보입니다. `/provider gemini`처럼 프로바이더만 실행하면 화면 폭에 맞는 **방향키 모델 선택기**가 열리고, Enter로 바로 모델을 설정할 수 있습니다.
+TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다. 입력창에 `/`로 시작하는 키워드를 타이핑하면 일치하는 명령 목록이 **실시간 미리보기**로 아래에 표시되고, **방향키(↑/↓)로 선택**한 뒤 Enter로 실행할 수 있습니다(`❯` 표시). `/subagent `·`/provider login `처럼 공백 뒤 인자를 입력할 때도 사용 가능한 role/provider/subcommand 목록이 계속 보입니다. `/provider gemini`처럼 프로바이더만 실행하면 화면 폭에 맞는 **방향키 모델 선택기**가 열리고, Enter로 바로 모델을 설정할 수 있습니다. Skill 문서에서 선언/언급한 `/speckit.plan` 같은 직접 슬래시 별칭도 팔레트와 Tab 자동완성에 나타나며, Enter 실행 시 해당 skill 문서를 세션에 주입합니다.
 
 > **OpenAI(ChatGPT/Codex) OAuth 모델 표시:** ChatGPT/Codex OAuth 토큰은 `api.openai.com/v1/models` 목록 엔드포인트를 거부하기 때문에, 예전에는 OAuth 로그인을 해도 OpenAI 모델이 목록에 **추가되지 않았습니다**. 이제 로그인된(OAuth/API key) 프로바이더의 live 목록 조회가 실패하면 내장 **카탈로그로 폴백**해 모델이 항상 표시되며, `/models`·로그인 직후 메시지에 `· catalog (live list endpoint unavailable)`로 정직하게 라벨링됩니다.
 
@@ -63,7 +63,7 @@ TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행
 >
 > **코드뷰 안전:** `/view`·`/diff`는 파일/diff의 신뢰할 수 없는 제어 바이트(ANSI 이스케이프, `\r`, 탭, C0)를 렌더 전에 제거합니다 — 임의 파일을 열어도 화면이 깨지거나 커서가 튀지 않습니다.
 >
-> **사용자 skill 문서:** `~/.joc/skills`·`.joc/skills`의 `SKILL.md`가 번들 skill과 병합되어 시스템 프롬프트와 `/skill` 자동완성에 모두 반영됩니다(이름이 같으면 사용자 문서가 우선). `JOC_TUI_THEME=mono`는 푸터 색까지 완전한 무채색으로 출력합니다.
+> **사용자 skill 문서:** `~/.joc/skills`·`.joc/skills`의 평면 `<name>.md`와 `~/.agents/skills/<name>/SKILL.md`·`.agents/skills/<name>/SKILL.md` 폴더형 문서가 번들 skill과 병합되어 시스템 프롬프트, `/skill`, Tab 자동완성, `/speckit.*` 같은 직접 슬래시 별칭에 모두 반영됩니다(이름이 같으면 뒤쪽 문서가 우선). `aliases:`/`slash:` 헤더 또는 본문에 언급된 `/name.step` 패턴을 자동 인식합니다. `JOC_TUI_THEME=mono`는 푸터 색까지 완전한 무채색으로 출력합니다.
 
 ```bash
 # REPL 안에서
@@ -71,6 +71,7 @@ TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행
 /provider gemini            # ↑/↓로 실제 live model 선택 → Enter로 즉시 설정
 /models caps                # 로그인된 프로바이더의 실제 모델 + capability
 /model #3                   # 방금 표시된 목록에서 3번 모델 선택
+/speckit.plan "OAuth 모델 표시 고장 수정"  # ~/.agents/skills/spec-kit/SKILL.md 별칭으로 skill 실행
 ```
 
 ## 자주 쓰는 명령

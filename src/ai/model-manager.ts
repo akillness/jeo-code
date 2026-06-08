@@ -190,7 +190,7 @@ export function createModelManager(): ModelManager {
     async *stream(messages, options = {}) {
       const { adapter, callOptions, credential, retry } = await resolveCall(options);
       if (adapter.stream) {
-        yield* adapter.stream(messages, callOptions, credential);
+        yield* adapter.stream(messages, { ...callOptions, signal: withTimeout(callOptions.signal, DEFAULT_CALL_TIMEOUT_MS) }, credential);
       } else {
         // Fallback: providers without streaming yield the full response as one chunk.
         yield await withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, DEFAULT_CALL_TIMEOUT_MS) }, credential), retry);

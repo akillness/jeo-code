@@ -43,11 +43,28 @@ export const TOOL_PROTOCOL = [
   '{ "tool": "<name>", "arguments": { ... } }',
 ].join("\n");
 
-export function executorSystemPrompt(role = "Executor Agent, a senior software developer"): string {
+/** Restricted protocol for read-only subagent roles (planner/architect/critic):
+ *  advertises only the non-mutating tools so the model does not waste steps
+ *  calling write/edit/bash, which `subagentToolset` has physically removed. */
+export const READONLY_TOOL_PROTOCOL = [
+  "You have these READ-ONLY tools (call exactly ONE per step):",
+  "1. read   {filePath, lineRange?}      — read a file (lineRange: \"start-end\", \"start-\", or \"start\")",
+  "2. find   {globPattern}               — find files by name",
+  "3. search {pattern, globPattern?}     — grep for a pattern",
+  "4. done   {reason?}                   — call when your review/analysis is complete",
+  "",
+  "Reply with STRICT JSON only — no prose, no code fences:",
+  '{ "tool": "<name>", "arguments": { ... } }',
+].join("\n");
+
+export function executorSystemPrompt(
+  role = "Executor Agent, a senior software developer",
+  protocol: string = TOOL_PROTOCOL,
+): string {
   return (
     `You are the ${role}.\n` +
     `Accomplish the user's request by calling tools and verifying your work.\n\n` +
-    `${TOOL_PROTOCOL}\n\n` +
+    `${protocol}\n\n` +
     `Always verify (run tests / execute the program) before calling done.`
   );
 }

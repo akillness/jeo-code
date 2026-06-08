@@ -97,8 +97,11 @@ export function sanitizeForTerminal(line: string): string {
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     // other ESC-led two-byte sequences
     .replace(/\x1b[@-Z\\-_]/g, "")
-    // any remaining C0 controls + DEL
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+    // 8-bit C1 CSI/OSC (U+009B / U+009D …) — neutralize the payload like the ESC forms
+    .replace(/\x9b[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x9d[^\x07\x9c]*(?:\x07|\x9c)/g, "")
+    // any remaining C0 controls + DEL + C1 (U+0080–U+009F)
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "");
 }
 
 export interface CodeViewOptions {

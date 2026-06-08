@@ -22,6 +22,8 @@ test("globalModelsArgs only scans the leading global flag segment", () => {
   expect(globalModelsArgs(["--tmux", "--", "--models", "routing"])).toBeNull();
   expect(globalModelsArgs(["--tmux", "fix", "--models", "routing"])).toBeNull();
   expect(globalModelsArgs(["doctor", "--models"])).toBeNull();
+  // A real 8-4-4-4-12 UUID after --resume must be skipped so a trailing --models is still seen.
+  expect(globalModelsArgs(["--resume", "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "--models", "caps"])).toEqual(["caps"]);
 });
 
 test("dispatch: --version prints and returns 0", async () => {

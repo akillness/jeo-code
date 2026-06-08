@@ -6,6 +6,7 @@
  * pure functions over `string[]` blocks, injectable `cols`/`rows` for tests.
  */
 import { visibleWidth } from "./color";
+import { truncate } from "../terminal";
 
 export type HAlign = "left" | "center" | "right";
 export type VAlign = "top" | "center" | "bottom";
@@ -98,8 +99,9 @@ export function boxBlock(
       const rightChar = g.tr === "+" ? "+" : "┤";
       return paint(leftChar + g.h.repeat(inner) + rightChar);
     }
+    const truncated = truncate(l, inner);
     const align = opts.align ?? "left";
-    return paint(g.v) + padLineTo(l, inner, align) + paint(g.v);
+    return paint(g.v) + padLineTo(truncated, inner, align) + paint(g.v);
   });
   return [top, ...mid, bottom];
 }

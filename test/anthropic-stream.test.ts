@@ -59,7 +59,7 @@ test("anthropicAdapter.stream: reports usage from message_start/message_delta", 
     for await (const d of anthropicAdapter.stream!([{ role: "user", content: "x" }], { model: "claude-3-5-sonnet", onUsage: u => usages.push(u) }, cred)) text += d;
     expect(text).toBe("hi");
     expect(usages).toContainEqual({ inputTokens: 12, outputTokens: 0 });
-    expect(usages).toContainEqual({ outputTokens: 5 });
+    expect(usages).toContainEqual({ inputTokens: 12, outputTokens: 5 });
   } finally {
     globalThis.fetch = prevFetch;
   }

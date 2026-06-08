@@ -1,17 +1,17 @@
 import { createInterface } from "node:readline/promises";
 import { runAgentLoop, executorSystemPrompt } from "../agent/engine";
 import { LaunchTui } from "../tui/app";
-import { skillsPromptSection, loadSkills, formatSkill, getSkillFrom } from "../skills/catalog";
+import { skillsPromptSection, loadSkills, formatSkill, getSkillFrom, getSkillBySlash, skillSlashAliases, type SkillDoc } from "../skills/catalog";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
-import { matchSlash, isSlashAttempt, formatSlashCommandList, formatSlashPreview, slashPreviewMatches } from "../tui/components/slash";
+import { matchSlash, isSlashAttempt, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, type SlashCommandInfo } from "../tui/components/slash";
 import { staticCompletionContext, readlineCompleter, formatCompletionPreview, type CompletionContext } from "../tui/components/autocomplete";
 import { EVOLUTION_STAGES, renderAsciiArt, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
 import chalk from "chalk";
 import type { Message } from "../agent/loop";
-import { readGlobalConfig, saveGlobalConfig } from "../agent/state";
+import { readGlobalConfig, saveConfigPatch } from "../agent/state";
 import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, enrichAll, sortByCapability, knownCount, MODEL_CATALOG, fuzzyMatchCatalog } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 
@@ -33,6 +33,7 @@ import {
   formatCanonicalCatalogTable,
 } from "../tui/components/config-panel";
 import { liveModelPicker, renderLiveModelPicker } from "../tui/components/live-model-picker";
+import { skillPicker, renderSkillPicker } from "../tui/components/skill-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff } from "../tui/components/code-view";
 import { findTool, searchTool } from "../agent/tools";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
@@ -369,6 +370,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const contextFiles = await loadProjectContext(cwd);
   const resolvedSkills = await loadSkills(cwd); // bundled + user/project SKILL.md docs
   const resolvedSkillNames = resolvedSkills.map(s => s.name);
+  const skillSlashDetails: SlashCommandInfo[] = resolvedSkills.flatMap(skill =>
+    skillSlashAliases(skill).map(alias => ({
+      command: alias,
+      usage: `${alias} [intent]`,
+      description: `Run ${skill.name} skill${skill.summary ? ` — ${skill.summary}` : ""}`,
+      group: "skills" as const,
+    })),
+  );
   const baseSystemPrompt =
     executorSystemPrompt("joc, an interactive coding agent") +
     "\nWhen you have finished the user's request, or need to reply to or ask the user something, call done with {\"reason\": <your natural-language reply to the user>}. The reason text is shown to the user as your message." +
@@ -504,6 +513,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   console.log("Type your request. Slash: /help /model /models /provider /agents /roles /thinking /skill /view /diff /find /search /sessions /exit  (type / for the full ↑/↓ palette)" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
 
   const useTui = LaunchTui.usable(flags.noTui);
+  const runSkillInvocation = async (skill: SkillDoc, intent: string, invokedAs?: string): Promise<void> => {
+    console.log(formatSkill(skill));
+    const requested = invokedAs ? `Requested slash command: ${invokedAs}\n\n` : "";
+    const task = `Apply the "${skill.name}" skill to this session.\n\n${formatSkill(skill)}\n\n${requested}${intent ? `User intent: ${intent}` : "Proceed according to the skill."}`;
+    const { reply, rendered, usage } = await runTurn(task, useTui);
+    if (!rendered) console.log(`joc> ${reply}${usage}`);
+    else if (usage) console.log(usage.trim());
+  };
   // Tab autocomplete: alias names snapshotted once; live models come from the
   // background-warmed cache (logged-in/OAuth accounts). The completer is sync, so
   // it never blocks on the network — it reads whatever the cache currently holds.
@@ -513,13 +530,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       liveModelsCache ??= r;
     })
     .catch(() => {});
-  const completionContext = (): CompletionContext => ({
-    ...staticCompletionContext(),
-    liveModels: liveModelsCache ? flattenModels(liveModelsCache).map(e => e.model) : [],
-    aliases: aliasNames,
-    skillNames: resolvedSkillNames,
-    modelsForProvider: p => liveModelsCache?.find(r => r.provider === p)?.models ?? [],
-  });
+  const completionContext = (): CompletionContext => {
+    const base = staticCompletionContext();
+    return {
+      ...base,
+      slashCommands: [...base.slashCommands, ...skillSlashDetails.map(d => d.command)],
+      liveModels: liveModelsCache ? flattenModels(liveModelsCache).map(e => e.model) : [],
+      aliases: aliasNames,
+      skillNames: resolvedSkillNames,
+      modelsForProvider: p => liveModelsCache?.find(r => r.provider === p)?.models ?? [],
+    };
+  };
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -575,7 +596,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
   const previewLines = (line: string, selected = -1): string[] => {
     const cols = Math.max(20, (process.stdout.columns ?? 80) - 1);
-    const slash = formatSlashPreview(line, PREVIEW_ROWS, selected);
+    const slash = formatSlashPreview(line, PREVIEW_ROWS, selected, skillSlashDetails);
     if (slash.length) return slash.map(l => chalk.gray(truncateAnsi(l, cols)));
     const args = formatCompletionPreview(line, completionContext(), PREVIEW_ROWS);
     return args.map(l => chalk.gray(truncateAnsi(l, cols)));
@@ -701,6 +722,55 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     return chosen;
   };
 
+  const pickSkillFromList = async (skills: SkillDoc[]): Promise<SkillDoc | undefined> => {
+    if (!process.stdin.isTTY || skills.length === 0) return undefined;
+    const list = skillPicker(skills);
+    let chosen: SkillDoc | undefined;
+    await runSelectPicker(
+      (cols, rows) =>
+        renderSkillPicker(list, {
+          cols,
+          rows: Math.max(4, Math.min(rows, 12)),
+          unicode: true,
+          color: true,
+        }),
+      (ch, key) => {
+        if (key?.name === "up") {
+          list.up();
+          return false;
+        }
+        if (key?.name === "down") {
+          list.down();
+          return false;
+        }
+        if (key?.name === "pageup") {
+          list.page(-1, 6);
+          return false;
+        }
+        if (key?.name === "pagedown") {
+          list.page(1, 6);
+          return false;
+        }
+        if (key?.name === "backspace") {
+          list.backspace();
+          return false;
+        }
+        if (key?.name === "escape" || (key?.ctrl && key.name === "c")) {
+          return true;
+        }
+        if (key?.name === "return" || key?.name === "enter") {
+          chosen = list.selected()?.value;
+          return true;
+        }
+        if (ch && ch >= " " && !key?.ctrl && !key?.meta) {
+          list.typeChar(ch);
+        }
+        return false;
+      },
+    );
+    return chosen;
+  };
+
   if (previewEnabled) {
     process.once("exit", () => out.write("\x1b[r")); // safety net: always reset region
     process.stdin.on("keypress", (_ch: string, key: { name?: string } | undefined) => {
@@ -733,7 +803,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // Any other key edits the line: refresh the slash-keyword matches (if any),
           // reset the highlight, and show either the command preview or argument preview.
           typedLine = rl.line;
-          navMatches = slashPreviewMatches(typedLine);
+          navMatches = slashPreviewMatches(typedLine, skillSlashDetails);
           navIdx = -1;
           pendingSelection = undefined;
           drawFooter(previewLines(typedLine));
@@ -757,7 +827,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (input === "/exit" || input === "/quit") break;
       if (input === "") continue;
       if (input === "/" || input === "/?" || input === "/help") {
-        logLines(formatSlashCommandList(input === "/help" ? "/" : input));
+        logLines(formatSlashCommandList(input === "/help" ? "/" : input, skillSlashDetails));
         console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .joc/sessions/.");
         const tip = getEvolutionTip(history.length, flags.maxSteps);
         console.log(`\n${chalk.cyan("Evolutionary Tip:")} ${tip}`);
@@ -890,7 +960,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         const st = statuses.find(s => s.name === name);
         if (st && !st.ready) {
-          console.log(`! ${name} is not logged in — run 'joc auth login' or set ${st.envVar ?? "the provider key"}. Switching anyway.`);
+          console.log(`! ${name} is not ready (${st.label}) — set ${st.envVar ?? "the provider key"} or configure a compatible base URL. Switching anyway.`);
         }
         const live = await getLiveModels();
         const forProvider = live.filter(r => r.provider === name);
@@ -979,7 +1049,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           continue;
         }
         if (modelArg?.toLowerCase() === "reset") {
-          await saveGlobalConfig({ ...cfgNow, subagents: clearSubagentSetting(cfgNow, role.id) });
+          await saveConfigPatch(raw => ({ subagents: clearSubagentSetting(raw, role.id) }));
           console.log(`${role.title} settings reset to defaults → ~/.joc/config.json`);
           continue;
         }
@@ -989,7 +1059,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             console.log(`Usage: /agents ${role.id} maxSteps <positive-number>`);
             continue;
           }
-          await saveGlobalConfig({ ...cfgNow, subagents: withSubagentSetting(cfgNow, role.id, { maxSteps }) });
+          await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { maxSteps }) }));
           console.log(`${role.title} maxSteps set to ${maxSteps} → ~/.joc/config.json`);
           continue;
         }
@@ -1017,7 +1087,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             continue;
           }
           // Persist a per-role model override to ~/.joc/config.json (consumed by 'joc team').
-          await saveGlobalConfig({ ...cfgNow, subagents: withSubagentSetting(cfgNow, role.id, { model: chosenModel }) });
+          await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: chosenModel }) }));
           const { provider } = await describeModel(chosenModel);
           console.log(`${role.title} model set to ${chosenModel} (${provider}) — saved to ~/.joc/config.json`);
           const live = await getLiveModels();
@@ -1084,8 +1154,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             console.log("Run /models first to build the numbered live model list.");
             continue;
           }
-          const next = { ...cfgNow, roles: { ...(cfgNow.roles ?? {}), [tier]: chosenModel } };
-          await saveGlobalConfig(next);
+          await saveConfigPatch(raw => ({ roles: { ...(raw.roles ?? {}), [tier]: chosenModel } }));
           console.log(`Role '${tier}' model set to ${chosenModel} → ~/.joc/config.json`);
           continue;
         }
@@ -1142,8 +1211,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             continue;
           }
           const finalSave = toSave || sessionModel || defaultModel;
-          const cfgNow = await readGlobalConfig();
-          await saveGlobalConfig({ ...cfgNow, defaultModel: finalSave });
+          await saveConfigPatch(() => ({ defaultModel: finalSave }));
           const { resolved, provider } = await describeModel(finalSave);
           console.log(`Default model saved: ${formatModelLine({ label: finalSave, resolved, provider })} → ~/.joc/config.json`);
           continue;
@@ -1172,7 +1240,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const statuses = await describeAllProviders();
         const st = statuses.find(s => s.name === provider);
         console.log(`${arg ? "Model set to" : "Current model"}: ${formatModelLine({ label, resolved, provider, ready: st?.ready })}`);
-        if (st && !st.ready) console.log(`  ! ${provider} has no credential — run 'joc setup' or set ${st.envVar ?? "the provider key"}.`);
+        if (st && !st.ready) console.log(`  ! ${provider} is not ready (${st.label}) — set ${st.envVar ?? "the provider key"} or run 'joc setup'.`);
         if (arg && liveModelsCache && resolved === label && !liveModelKnown(liveModelsCache, resolved)) {
           console.log(`  (note: '${resolved}' is not in the live ${provider} catalog — run /models to see valid ids)`);
         }
@@ -1253,12 +1321,29 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         console.log(res.success ? (res.output || "(no matches)") : `! ${res.error}`);
         continue;
       }
-      if (input.startsWith("/skill") && (input === "/skill" || input[6] === " ")) {
-        const rest = input.substring(6).trim();
+      const skillEntrypoint = input.startsWith("/skill:") ? "/skill:" : input.startsWith("/skill") && (input === "/skill" || input[6] === " ") ? "/skill" : "";
+      if (skillEntrypoint) {
+        const rest = skillEntrypoint === "/skill:" ? input.substring(7).trim() : input.substring(6).trim();
         const skills = await loadSkills(cwd);
         if (!rest) {
-          console.log("Skills (bundled + ~/.joc/skills, .joc/skills) — run with /skill <name> [intent]:");
-          for (const s of skills) console.log(`  ${s.name.padEnd(16)} ${s.summary}`);
+          if (process.stdin.isTTY && process.stdout.isTTY) {
+            const picked = await pickSkillFromList(skills);
+            if (!picked) {
+              console.log("(cancelled)");
+              continue;
+            }
+            try {
+              await runSkillInvocation(picked, "");
+            } catch (err) {
+              console.log(`! ${(err as Error).message}`);
+            }
+            continue;
+          }
+          console.log("Skills (bundled + configured docs) — run with /skill <name> [intent] or a skill slash alias:");
+          for (const s of skills) {
+            const aliases = skillSlashAliases(s);
+            console.log(`  ${s.name.padEnd(16)} ${s.summary}${aliases.length ? `  (${aliases.join(", ")})` : ""}`);
+          }
           continue;
         }
         const [nm, ...intentParts] = rest.split(/\s+/);
@@ -1267,25 +1352,30 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`Unknown skill: ${nm}. Available: ${skills.map(s => s.name).join(", ")}`);
           continue;
         }
-        console.log(formatSkill(skill));
         const intent = intentParts.join(" ").trim();
-        // Invoke the skill: seed a turn with its guidance (+ optional user intent).
-        const task = `Apply the "${skill.name}" skill to this session.\n\n${formatSkill(skill)}\n\n${intent ? `User intent: ${intent}` : "Proceed according to the skill."}`;
         try {
-          const { reply, rendered, usage } = await runTurn(task, useTui);
-          if (!rendered) console.log(`joc> ${reply}${usage}`);
-          else if (usage) console.log(usage.trim());
+          await runSkillInvocation(skill, intent);
         } catch (err) {
           console.log(`! ${(err as Error).message}`);
         }
         continue;
       }
-
+      const skillCommand = input.split(/\s+/, 1)[0] ?? "";
+      const aliasSkill = getSkillBySlash(resolvedSkills, skillCommand);
+      if (aliasSkill) {
+        const intent = input.slice(skillCommand.length).trim();
+        try {
+          await runSkillInvocation(aliasSkill, intent, skillCommand);
+        } catch (err) {
+          console.log(`! ${(err as Error).message}`);
+        }
+        continue;
+      }
       // Unhandled slash attempt → suggest, don't send the typo to the model.
       if (isSlashAttempt(input)) {
-        const m = matchSlash(input);
+        const m = matchSlash(input, [...completionContext().slashCommands]);
         if (m.length) {
-          for (const line of formatSlashCommandList(input)) console.log(line);
+          for (const line of formatSlashCommandList(input, skillSlashDetails)) console.log(line);
         } else {
           console.log(`Unknown command '${input}'. Try /help.`);
         }

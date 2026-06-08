@@ -114,6 +114,26 @@ test("listProviderModels: OAuth discovery uses the provider OAuth token directly
     path.join(dir, "config.json"),
     JSON.stringify({
       providers: { anthropic: "sk-ant", openai: "sk-oai", gemini: "sk-gem" },
+      oauth: { anthropic: "oauth-ant" },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  let auth = "";
+  const fetchSpy = (async (_url: string | URL | Request, init?: RequestInit) => {
+    auth = String((init?.headers as Record<string, string>)?.authorization ?? "");
+    return new Response(JSON.stringify({ content: [] }), { status: 200 });
+  }) as typeof fetch;
+  const r = await listProviderModels("anthropic", { fetchImpl: fetchSpy });
+  expect(r.ok).toBe(true);
+  expect(r.source).toBe("oauth");
+  expect(auth).toBe("Bearer oauth-ant");
+});
+
+test("listProviderModels: OpenAI OAuth + API Key swaps to API Key", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: { openai: "sk-oai" },
       oauth: { openai: "oauth-oai" },
       defaultModel: "claude-3-5-sonnet",
     }),
@@ -121,13 +141,12 @@ test("listProviderModels: OAuth discovery uses the provider OAuth token directly
   let auth = "";
   const fetchSpy = (async (_url: string | URL | Request, init?: RequestInit) => {
     auth = String((init?.headers as Record<string, string>)?.Authorization ?? "");
-    return new Response(JSON.stringify({ data: [{ id: "gpt-4o-mini" }] }), { status: 200 });
+    return new Response(JSON.stringify({ data: [{ id: "gpt-4o" }] }), { status: 200 });
   }) as typeof fetch;
   const r = await listProviderModels("openai", { fetchImpl: fetchSpy });
   expect(r.ok).toBe(true);
-  expect(r.source).toBe("oauth");
-  expect(auth).toBe("Bearer oauth-oai");
-  expect(r.models).toEqual(["gpt-4o-mini"]);
+  expect(r.source).toBe("api_key");
+  expect(auth).toBe("Bearer sk-oai");
 });
 
 test("listProviderModels: OAuth-only discovery still probes the provider list", async () => {
@@ -203,10 +222,13 @@ test("parseModelsBody: openai drops non-chat families (embeddings/tts/image/mode
       { id: "gpt-4o" }, { id: "o3" }, { id: "text-embedding-3-small" },
       { id: "tts-1" }, { id: "dall-e-3" }, { id: "whisper-1" },
       { id: "omni-moderation-latest" }, { id: "gpt-4o-audio-preview" },
+      { id: "gpt-4o-search-preview" }, { id: "gpt-3.5-turbo-instruct" },
     ],
   });
   expect(ids).toContain("gpt-4o");
   expect(ids).toContain("o3");
+  expect(ids).toContain("gpt-4o-search-preview");
+  expect(ids).not.toContain("gpt-3.5-turbo-instruct");
   expect(ids).not.toContain("text-embedding-3-small");
   expect(ids).not.toContain("tts-1");
   expect(ids).not.toContain("dall-e-3");
@@ -225,9 +247,10 @@ test("parseModelsBody: gemini keeps only generateContent-capable models", () => 
       { name: "models/gemini-2.5-flash-image", supportedGenerationMethods: ["generateContent"] },
       { name: "models/gemini-2.5-pro-preview-tts", supportedGenerationMethods: ["generateContent"] },
       { name: "models/gemini-legacy" }, // no methods → permissive keep
+      { name: "models/learnlm-1.5-pro-experimental" },
     ],
   });
-  expect(ids).toEqual(["gemini-2.5-pro", "gemini-legacy"]);
+  expect(ids).toEqual(["gemini-2.5-pro", "gemini-legacy", "learnlm-1.5-pro-experimental"]);
 });
 
 test("catalogOr: an api_key rejection does NOT fabricate catalog rows (bad key stays a failure)", () => {

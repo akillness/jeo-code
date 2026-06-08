@@ -9,7 +9,7 @@
  * the TUI never hangs; failures degrade to a tagged result, never a throw.
  */
 import { readGlobalConfig, type Config } from "../agent/state";
-import { resolveCredential, type AuthProvider, type Credential } from "../auth";
+import { resolveCredential, type AuthProvider, type Credential, OAUTH_FLOW_REGISTRY } from "../auth";
 import type { ProviderName } from "./types";
 import { PROVIDER_NAMES } from "./provider-status";
 import { catalogByProvider } from "./model-catalog";
@@ -88,7 +88,7 @@ export function discoveryRequest(
  * chat turn so pickers never offer a model that fails at call time.
  */
 function isOpenAiChatModel(id: string): boolean {
-  return !/(^|[-/])(text-embedding|embedding|tts|whisper|dall-e|moderation|omni-moderation|davinci|babbage|computer-use|realtime|audio|image|sora|transcribe|search|codex)([-/]|$)/i.test(id);
+  return !/(^|[-/])(text-embedding|embedding|tts|whisper|dall-e|moderation|omni-moderation|davinci|babbage|computer-use|realtime|audio|image|sora|transcribe|instruct|codex)([-/]|$)/i.test(id);
 }
 
 /**
@@ -96,7 +96,7 @@ function isOpenAiChatModel(id: string): boolean {
  * audio/image/vectors — not a usable text turn for a coding chat. Drop them by family.
  */
 function isGeminiChatModel(id: string): boolean {
-  return !/(^|[-/])(embedding|aqa|tts|image|imagen|veo|learnlm)([-/]|$)/i.test(id);
+  return !/(^|[-/])(embedding|aqa|tts|image|imagen|veo)([-/]|$)/i.test(id);
 }
 
 /** Parse a provider's models response body into normalized, chat-capable model ids. */
@@ -152,6 +152,16 @@ export async function listProviderModels(
     const raw = await resolveCredential(provider as AuthProvider);
     cred = raw;
     source = cred.kind === "oauth" ? "oauth" : cred.kind === "api_key" ? "api_key" : "none";
+    const config = opts.config ?? (await readGlobalConfig());
+    const prov = provider as AuthProvider;
+    if (
+      cred.kind === "oauth" &&
+      OAUTH_FLOW_REGISTRY[prov]?.verifiedEndToEnd === false &&
+      config.providers?.[prov]
+    ) {
+      cred = { kind: "api_key", provider: prov, token: config.providers[prov]! };
+      source = "api_key";
+    }
     const isLocalOpenAi = provider === "openai" && !!(opts.baseUrl ?? process.env.OPENAI_BASE_URL);
     if (source === "none" && !isLocalOpenAi) {
       return { provider, models: [], ok: false, source, error: "not logged in" };

@@ -32,7 +32,7 @@ export const EVOLUTION_STAGE_COLORS: readonly ((s: string) => string)[] = [
 
 /** Spinner frame sets, one per evolution stage. */
 export const EVOLUTION_SPINNER_FRAMES: readonly string[][] = [
-  [".", "..", "...", "....", "...", ".."],
+  [".   ", "..  ", "... ", "....", "... ", "..  "],
   ["\u2801", "\u2802", "\u2804", "\u2808", "\u2810", "\u2820"],
   ["|", "/", "-", "\\"],
   ["\u280b", "\u2819", "\u2839", "\u2838", "\u283c", "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"],
@@ -45,7 +45,7 @@ export const EVOLUTION_SPINNER_FRAMES: readonly string[][] = [
  * `EVOLUTION_SPINNER_FRAMES`.
  */
 export const EVOLUTION_SPINNER_FRAMES_ASCII: readonly string[][] = [
-  [".", "..", "...", "....", "...", ".."],
+  [".   ", "..  ", "... ", "....", "... ", "..  "],
   ["-", "=", "~", "="],
   ["|", "/", "-", "\\"],
   ["[.  ]", "[.. ]", "[...]", "[ ..]", "[  .]", "[   ]"],

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { matchSlash, isSlashAttempt, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, formatSlashCommandList, formatSlashPreview, slashPreviewMatches } from "../src/tui/components/slash";
+import { matchSlash, isSlashAttempt, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, type SlashCommandInfo } from "../src/tui/components/slash";
 
 test("matchSlash: prefix-matches slash commands, case-insensitive", () => {
   expect(matchSlash("/")).toEqual(SLASH_COMMANDS);
@@ -84,10 +84,26 @@ test("formatSlashPreview: empty for non-slash, argument input, or no match", () 
   expect(formatSlashPreview("/zzz")).toEqual([]);
 });
 
-test("formatSlashPreview: caps the list with a +N more line", () => {
+test("formatSlashPreview: overflow scrolls a window within the row budget with ↑/↓ markers", () => {
   const out = formatSlashPreview("/", 3);
-  expect(out.length).toBe(4); // 3 rows + overflow line
-  expect(out[3]).toContain("more");
+  // 23 commands match "/", budget 3 → at most 3 lines total (markers included).
+  expect(out.length).toBeLessThanOrEqual(3);
+  // From the top (no selection) there are hidden rows below → a ↓ marker, no ↑ marker.
+  expect(out.some(l => l.includes("↓") && l.includes("more"))).toBe(true);
+  expect(out.some(l => l.includes("↑"))).toBe(false);
+});
+
+test("formatSlashPreview: a far-down selection stays visible inside the scroll window", () => {
+  const matches = slashPreviewMatches("/"); // full command list
+  const last = matches.length - 1;
+  const out = formatSlashPreview("/", 8, last).map(l => l.replace(/\x1b\[[0-9;]*m/g, ""));
+  expect(out.length).toBeLessThanOrEqual(8);
+  // The selected (last) command is rendered AND carries the ❯ cursor.
+  const sel = out.find(l => l.startsWith("❯ "));
+  expect(sel).toBeDefined();
+  expect(sel!).toContain(matches[last]!.slice(1)); // usage starts with the command name sans leading marker
+  // Scrolled past the top → an ↑ marker is present.
+  expect(out.some(l => l.includes("↑"))).toBe(true);
 });
 
 test("formatSlashPreview: selected index marks the highlighted row with ❯", () => {
@@ -106,4 +122,15 @@ test("slashPreviewMatches: command names in display order; empty for args/non-sl
   const matches = slashPreviewMatches("/c");
   const rows = formatSlashPreview("/c", 20).map(l => l.replace(/❯ |  /, ""));
   matches.forEach((cmd, i) => expect(rows[i]).toContain(cmd));
+});
+
+test("dynamic skill slash aliases appear in palette, preview, and selection order", () => {
+  const dynamic: SlashCommandInfo[] = [
+    { command: "/speckit.plan", usage: "/speckit.plan [intent]", description: "Run spec-kit plan", group: "skills" },
+    { command: "/speckit.tasks", usage: "/speckit.tasks [intent]", description: "Run spec-kit tasks", group: "skills" },
+  ];
+  expect(matchSlash("/speckit.p", dynamic.map(d => d.command))).toEqual(["/speckit.plan"]);
+  expect(formatSlashCommandList("/speckit", dynamic).join("\n")).toContain("Skills:");
+  expect(formatSlashPreview("/speckit.t", 6, 0, dynamic).join("\n")).toContain("❯ /speckit.tasks");
+  expect(slashPreviewMatches("/speckit", dynamic)).toEqual(["/speckit.plan", "/speckit.tasks"]);
 });

@@ -36,6 +36,12 @@ test("completes the slash command name by prefix", () => {
   expect(r.token).toBe("/mod");
 });
 
+test("completes dynamic skill slash command aliases from context", () => {
+  const r = complete("/speckit.p", ctx({ slashCommands: ["/model", "/speckit.plan", "/speckit.tasks"] }));
+  expect(r.kind).toBe("command");
+  expect(r.completions).toEqual(["/speckit.plan"]);
+});
+
 test("/model completes live models first, then aliases, then catalog", () => {
   const r = complete("/model ", ctx()); // empty token → all
   expect(r.kind).toBe("model");
@@ -93,6 +99,11 @@ test("/skill completes resolved skill names (bundled + user) from the context", 
   const withUser = ctx({ skillNames: ["deep-interview", "ralplan", "my-custom-skill"] });
   expect(complete("/skill ", withUser).completions).toContain("my-custom-skill");
   expect(complete("/skill my", withUser).completions).toEqual(["my-custom-skill"]);
+});
+
+test("/skill: completes GJC-style skill entrypoint names", () => {
+  const withUser = ctx({ skillNames: ["deep-interview", "spec-kit"] });
+  expect(complete("/skill:sp", withUser).completions).toEqual(["/skill:spec-kit"]);
 });
 
 test("formatCompletionPreview lists argument completions after slash commands", () => {

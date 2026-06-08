@@ -3832,3 +3832,43 @@ engine so they're discoverable via `<Tab>`.
 - `bun test test/cli-runner.test.ts test/tmux.test.ts` → **17 pass / 0 fail**.
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **419 pass / 0 fail across 67 files**.
+
+## Tmux option terminator + runtime identity hardening (passes 620–629)
+
+**Date:** 2026-06-07 · **Dimension: tmux / final architect edge-case closure.**
+
+- **620.** Implemented conventional `--` end-of-options handling in `parseFlags`; the sentinel is omitted from the user prompt.
+- **621.** Model-list and global help/version scanners now stop at `--`, preserving flag-like prompt text.
+- **622.** `joc --tmux -- --models routing` stays an agent prompt with message `--models routing`.
+- **623.** `joc --tmux --models --caps --thinking=high` preserves the `--thinking=high` model-list filter instead of stripping it as a launch flag.
+- **624.** Runtime tmux suffix parts now append deterministic short hashes when truncating long model ids.
+- **625.** Combined runtime suffixes now append a deterministic hash when the whole suffix is truncated.
+- **626.** Explicit `--provider` is included in the tmux session identity even when `--model` is also present.
+- **627.** Provider/model mismatch validation now happens before tmux attach/create, so incompatible requests never attach to an existing stale session.
+- **628.** Added regression tests for option terminator behavior, preserved model-list filters, hash-distinct long model IDs, and pre-tmux provider mismatch validation.
+- **629.** Re-ran focused regressions, typecheck, and the full test suite.
+
+### Verification (passes 620–629)
+- `bun test test/launch-flags.test.ts test/cli-runner.test.ts test/tmux.test.ts` → **23 pass / 0 fail**.
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **422 pass / 0 fail across 67 files**.
+
+## Live slash preview + model/provider auth re-verification (passes 630–637)
+
+**Date:** 2026-06-05 · **Dimension: tui / live input preview + auth verification.**
+
+Verified the reported "model change / provider auth don't work" claim and added a live preview.
+
+- **630.** Verified in a real PTY (tmux): `/model gpt-4o` **does** set the session model (`Model set to: gpt-4o (openai)`); the "no credential" note is correct, not a failure.
+- **631.** Verified `/provider login gemini` dispatches the real OAuth flow (browser open, localhost:8085 callback, code prompt) — auth works.
+- **632.** `formatSlashPreview(line, max?)` — compact preview of matching command usages for a slash keyword prefix; `[]` for non-slash/argument/no-match input.
+- **633.** Live preview wired into the REPL: a `keypress` handler renders the matching commands beneath the input via DEC save/restore cursor (`ESC 7`/`ESC 8`), cleared on Enter, TTY-only — never disturbs the readline line.
+- **634.** Preview caps with a `…(+N more)` line.
+- **635.** `slash.test.ts` covers preview prefix match, empty cases, and the cap.
+- **636.** README documents the live preview; `/logout` row already present.
+- **637.** Typecheck 0; `bun test` 425 pass / 67 files; tmux smoke shows `/mo` → live two-command preview.
+
+### Verification (passes 630–637)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **425 pass / 0 fail across 67 files** (added `formatSlashPreview` tests).
+- Real PTY: typing `/mo` shows the `/model` + `/models` preview beneath the prompt; `/model gpt-4o` sets the session model; `/provider login gemini` starts OAuth.

@@ -18,6 +18,8 @@ test("findCommand: known commands resolve, unknown returns undefined", () => {
 test("globalModelsArgs only scans the leading global flag segment", () => {
   expect(globalModelsArgs(["--tmux", "--models", "--catalog", "gpt"])).toEqual(["--catalog", "gpt"]);
   expect(globalModelsArgs(["--tmux", "--list-models=gemini"])).toEqual(["--catalog", "gemini"]);
+  expect(globalModelsArgs(["--tmux", "--models", "--caps", "--thinking=high"])).toEqual(["--caps", "--thinking=high"]);
+  expect(globalModelsArgs(["--tmux", "--", "--models", "routing"])).toBeNull();
   expect(globalModelsArgs(["--tmux", "fix", "--models", "routing"])).toBeNull();
   expect(globalModelsArgs(["doctor", "--models"])).toBeNull();
 });

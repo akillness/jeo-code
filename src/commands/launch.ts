@@ -5,7 +5,7 @@ import { skillsPromptSection } from "../skills/catalog";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
-import { matchSlash, isSlashAttempt, formatSlashCommandList } from "../tui/components/slash";
+import { matchSlash, isSlashAttempt, formatSlashCommandList, formatSlashPreview } from "../tui/components/slash";
 import { staticCompletionContext, readlineCompleter, type CompletionContext } from "../tui/components/autocomplete";
 import { EVOLUTION_STAGES, renderAsciiArt, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
@@ -81,18 +81,32 @@ function isThinkingLevel(input: string | undefined): input is ThinkLevel {
   return input === "minimal" || input === "low" || input === "medium" || input === "high" || input === "xhigh";
 }
 
-function tmuxSafeNamePart(input: string): string {
-  return input.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "value";
+function hashString(input: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
+}
+
+function tmuxSafeNamePart(input: string, max = 32): string {
+  const safe = input.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "value";
+  if (safe.length <= max) return safe;
+  return `${safe.slice(0, Math.max(1, max - 7))}-${hashString(input)}`;
 }
 
 function tmuxRuntimeSuffix(flags: LaunchFlags): string {
   const parts: string[] = [];
+  if (flags.provider) parts.push(`provider-${flags.provider}`);
   if (flags.model) parts.push(`model-${tmuxSafeNamePart(flags.model)}`);
   else if (flags.modelRole) parts.push(flags.modelRole);
-  else if (flags.provider) parts.push(`provider-${flags.provider}`);
   if (flags.thinking) parts.push(`think-${flags.thinking}`);
   if (flags.maxSteps !== 25) parts.push(`steps-${flags.maxSteps}`);
-  return parts.length ? `-${parts.join("-").slice(0, 72)}` : "";
+  if (parts.length === 0) return "";
+  const joined = parts.join("-");
+  const suffix = joined.length <= 72 ? joined : `${joined.slice(0, 65)}-${hashString(joined)}`;
+  return `-${suffix}`;
 }
 
 function shellQuote(arg: string): string {
@@ -105,6 +119,10 @@ export function parseFlags(args: string[]): LaunchFlags {
   const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (a === "--") {
+      rest.push(...args.slice(i + 1));
+      break;
+    }
     if (a === "--list") {
       flags.list = true;
     } else if (a === "--tmux") {
@@ -237,6 +255,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (process.env.JOC_TMUX_LAUNCHED !== "1") console.log(`Using worktree: ${wt}`);
     }
   }
+  const cfg = await readGlobalConfig();
+  const defaultModel = cfg.defaultModel;
+  const initialSessionModel =
+    flags.model ??
+    (flags.modelRole ? resolveRoleModel(flags.modelRole, cfg) : flags.provider ? PROVIDER_DEFAULT[flags.provider] : undefined);
+  if (flags.provider && initialSessionModel) {
+    const { provider } = await describeModel(initialSessionModel);
+    if (provider !== flags.provider) {
+      console.log(`error: selected model '${initialSessionModel}' resolves to ${provider}, not requested provider ${flags.provider}.`);
+      return;
+    }
+  }
+
   if (flags.tmux) {
     if (!process.env.TMUX && process.env.JOC_TMUX_LAUNCHED !== "1") {
       const tmuxBin = Bun.which("tmux");
@@ -316,18 +347,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
   }
 
-  const cfg = await readGlobalConfig();
-  const defaultModel = cfg.defaultModel;
-  const initialSessionModel =
-    flags.model ??
-    (flags.modelRole ? resolveRoleModel(flags.modelRole, cfg) : flags.provider ? PROVIDER_DEFAULT[flags.provider] : undefined);
-  if (flags.provider && initialSessionModel) {
-    const { provider } = await describeModel(initialSessionModel);
-    if (provider !== flags.provider) {
-      console.log(`error: selected model '${initialSessionModel}' resolves to ${provider}, not requested provider ${flags.provider}.`);
-      return;
-    }
-  }
 
   // --list: print persisted sessions and exit.
   if (flags.list) {
@@ -497,6 +516,28 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     output: process.stdout,
     completer: (line: string) => readlineCompleter(line, completionContext()),
   });
+
+  // Live slash preview: as the user types a slash keyword, show matching commands
+  // beneath the input box. Uses DEC save/restore cursor so it never disturbs the
+  // readline line; cleared on Enter. TTY-only.
+  if (process.stdin.isTTY) {
+    const out = process.stdout;
+    const drawPreview = () => {
+      const preview = formatSlashPreview(rl.line);
+      out.write("\x1b7\n\x1b[0J"); // save cursor, drop below input, clear old preview
+      if (preview.length) out.write(chalk.gray(preview.join("\n")));
+      out.write("\x1b8"); // restore cursor to the input line
+    };
+    process.stdin.on("keypress", (_ch: string, key: { name?: string } | undefined) => {
+      setImmediate(() => {
+        if (key && (key.name === "return" || key.name === "enter")) {
+          out.write("\x1b[0J"); // submitted → clear the preview region
+          return;
+        }
+        try { drawPreview(); } catch { /* ignore render races */ }
+      });
+    });
+  }
 
   try {
     while (true) {

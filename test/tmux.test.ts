@@ -134,6 +134,88 @@ test("tmux runtime model flags get a distinct session and propagate to inner lau
   }
 });
 
+test("tmux long runtime model ids get hash-distinct session names", async () => {
+  const originalWhich = Bun.which;
+  const originalSpawnSync = Bun.spawnSync;
+  const originalSpawn = Bun.spawn;
+  const originalEnv = { ...process.env };
+  const sessionNames: string[] = [];
+
+  try {
+    Bun.which = (bin: string) => (bin === "tmux" ? "/usr/local/bin/tmux" : originalWhich(bin));
+    Bun.spawnSync = (cmd: any) => {
+      const command = Array.isArray(cmd) ? cmd : [cmd];
+      if (command[0] === "git" && command[1] === "symbolic-ref") {
+        return { exitCode: 0, stdout: Buffer.from("feature-branch\n"), stderr: Buffer.from("") } as any;
+      }
+      if (command[0] === "/usr/local/bin/tmux" && command[1] === "has-session") {
+        sessionNames.push(command[3]);
+        return { exitCode: 1, stdout: Buffer.from(""), stderr: Buffer.from("") } as any;
+      }
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as any;
+    };
+    Bun.spawn = (() => ({ exited: Promise.resolve(0) })) as any;
+
+    delete process.env.TMUX;
+    delete process.env.JOC_TMUX_LAUNCHED;
+
+    const prefix = "provider/same-very-long-model-name-that-shares-the-prefix-";
+    await runLaunchCommand(["--tmux", "--no-session", "--model", `${prefix}alpha`]);
+    await runLaunchCommand(["--tmux", "--no-session", "--model", `${prefix}bravo`]);
+
+    expect(sessionNames.length).toBe(2);
+    expect(sessionNames[0]).not.toBe(sessionNames[1]);
+    expect(sessionNames[0]).toContain("model-provider-same-very-long");
+    expect(sessionNames[1]).toContain("model-provider-same-very-long");
+  } finally {
+    Bun.which = originalWhich;
+    Bun.spawnSync = originalSpawnSync;
+    Bun.spawn = originalSpawn;
+    process.env = originalEnv;
+  }
+});
+
+test("tmux validates provider/model mismatch before attaching to existing session", async () => {
+  const originalWhich = Bun.which;
+  const originalSpawnSync = Bun.spawnSync;
+  const originalSpawn = Bun.spawn;
+  const originalLog = console.log;
+  const originalEnv = { ...process.env };
+  const logs: string[] = [];
+  let tmuxTouched = false;
+
+  try {
+    console.log = (...args: unknown[]) => logs.push(args.join(" "));
+    Bun.which = (bin: string) => {
+      if (bin === "tmux") tmuxTouched = true;
+      return bin === "tmux" ? "/usr/local/bin/tmux" : originalWhich(bin);
+    };
+    Bun.spawnSync = ((cmd: any) => {
+      const command = Array.isArray(cmd) ? cmd : [cmd];
+      if (command[0] === "/usr/local/bin/tmux") tmuxTouched = true;
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as any;
+    }) as any;
+    Bun.spawn = (() => {
+      tmuxTouched = true;
+      return { exited: Promise.resolve(0) };
+    }) as any;
+
+    delete process.env.TMUX;
+    delete process.env.JOC_TMUX_LAUNCHED;
+
+    await runLaunchCommand(["--tmux", "--provider", "openai", "--model", "sonnet", "hello"]);
+
+    expect(logs.join("\n")).toContain("resolves to anthropic, not requested provider openai");
+    expect(tmuxTouched).toBe(false);
+  } finally {
+    Bun.which = originalWhich;
+    Bun.spawnSync = originalSpawnSync;
+    Bun.spawn = originalSpawn;
+    console.log = originalLog;
+    process.env = originalEnv;
+  }
+});
+
 test("tmux attach to existing session behavior", async () => {
   const originalWhich = Bun.which;
   const originalSpawnSync = Bun.spawnSync;

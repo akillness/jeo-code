@@ -3872,3 +3872,40 @@ Verified the reported "model change / provider auth don't work" claim and added 
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **425 pass / 0 fail across 67 files** (added `formatSlashPreview` tests).
 - Real PTY: typing `/mo` shows the `/model` + `/models` preview beneath the prompt; `/model gpt-4o` sets the session model; `/provider login gemini` starts OAuth.
+
+## OAuth live model reflection after provider login (passes 638–643)
+
+**Date:** 2026-06-07 · **Dimension: auth / provider-specific live model discovery.**
+
+- **638.** Provider model discovery now uses the resolved OAuth bearer directly for listing when OAuth is present, instead of rejecting OpenAI/Gemini OAuth-only discovery on adapter-compatibility grounds.
+- **639.** The execution adapters still keep their existing API-key compatibility rules; this change is discovery/UI-only so `/models`, `/provider`, and `/model` reflect the account's live catalog after OAuth login.
+- **640.** REPL `/provider login` now immediately refreshes the live model cache after a successful OAuth login.
+- **641.** After login, the REPL prints the provider-specific live model picker so the refreshed catalog is visible in `/model #N` / `/provider <name> #N` right away.
+- **642.** `/logout` now refreshes the live model cache too, so provider-specific model lists do not linger after credential removal.
+- **643.** Added regression tests for OAuth-backed discovery, OAuth-only model listing, `--` option termination, and preserved model-list filters.
+
+### Verification (passes 638–643)
+- `bun test test/model-discovery.test.ts test/launch-flags.test.ts test/cli-runner.test.ts` → **31 pass / 0 fail**.
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **425 pass / 0 fail across 67 files**.
+
+## Fix: stale global install + non-scrolling slash preview footer (passes 638–646)
+
+**Date:** 2026-06-05 · **Dimension: tui / install resolution + no-scroll layout.**
+
+Two real defects behind "still doesn't work" / "screen gets pushed".
+
+- **638.** Root cause of "still not working": the user's `joc` resolved to a stale standalone global install (`~/.bun/install/global/node_modules/jeo-code`), not the dev checkout — so none of the fixes were running. Re-pointed the global at the dev checkout via `bun link` (global `node_modules/jeo-code` → dev checkout symlink); `joc` now always runs the latest source.
+- **639.** Reproduced the screen-push bug: the previous live-preview wrote below the prompt at the bottom row, scrolling the terminal and breaking `ESC7/ESC8` restore (duplicated preview, prompt jumped up).
+- **640.** Replaced it with a **DEC scroll region (DECSTBM) reserved footer**: `\x1b[1;{rows-8}r` confines normal output to the top region; the preview is drawn in the fixed bottom rows via absolute positioning + per-row clear, so it never scrolls/pushes the screen.
+- **641.** Footer cleared on Enter; each reserved row cleared before redraw (no duplication).
+- **642.** Scroll region reset on exit (`finally`) + a `process.once("exit")` safety net + `resize` re-apply, so the terminal is never left with a restricted scroll region.
+- **643.** Opt out with `JOC_NO_SLASH_PREVIEW=1`; auto-disabled on terminals too short (`rows ≤ 12`).
+- **644.** Verified in a 14-row tmux: typing `/m` after a full `/help` keeps all prior output in place and shows the preview footer with **no scroll**; `/exit` then `seq 1 20` scrolls normally (region restored).
+- **645.** Typecheck 0; `bun test` 425 pass / 67 files.
+- **646.** Fix is live immediately for the user (global `joc` symlinks to the dev checkout).
+
+### Verification (passes 638–646)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **425 pass / 0 fail across 67 files**.
+- PTY: `/help` + `/m` no longer pushes the screen (DECSTBM footer); scroll region cleanly reset on `/exit`.

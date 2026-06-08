@@ -35,6 +35,15 @@ test("forge boxes are width-bounded and redact secret-like values", () => {
   expect(box.every(line => line.length <= 36)).toBe(true);
 });
 
+test("forge summaries never throw on an undefined/empty tool name (malformed model output)", () => {
+  // A model can emit a tool call with no `tool` field; the TUI must not crash.
+  const inv = summarizeForgeInvocation(undefined as unknown as string, { foo: 1 });
+  expect(inv.title).toContain("(no tool)");
+  const res = summarizeForgeResult(undefined as unknown as string, false, "boom");
+  expect(res.title).toContain("(no tool)");
+  expect(() => formatForgeBox(inv, { width: 40, unicode: false, paint: s => s })).not.toThrow();
+});
+
 test("renderJocStatus exposes progress status, joc thinking, and joc forge", () => {
   expect(progressPercent(3, 10)).toBe(30);
   const lines = renderJocStatus({

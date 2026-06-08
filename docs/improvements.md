@@ -3930,3 +3930,22 @@ region (added for the no-scroll preview) stayed active during a turn, so the ful
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **425 pass / 0 fail across 67 files**.
 - PTY: real qwen2.5 turn renders the full in-turn frame uncut; slash preview unaffected and non-scrolling.
+
+## Fix: forge crash on malformed tool call + README screenshot (passes 654–660)
+
+**Date:** 2026-06-05 · **Dimension: tui / crash fix + docs.**
+
+While verifying joc on a real Ollama turn, the weak model emitted a tool call with no `tool` field.
+
+- **654.** Real crash reproduced: the in-turn TUI printed `undefined is not an object (evaluating 'tool.toLowerCase')` (twice) — `summarizeForgeInvocation`/`summarizeForgeResult` called `.toLowerCase()` on an undefined tool name.
+- **655.** Guarded both forge summarizers (`tool || "(no tool)"`); `app.ts onAssistant` now uses a fallback tool label so the step timeline never shows `undefined`.
+- **656.** `forge-status.test.ts` regression test: summaries never throw on undefined/empty tool; `formatForgeBox` stays safe.
+- **657.** Confirmed the earlier "box misalignment" was a `tmux capture-pane -p` trailing-space artifact, not a real bug — the rendered PNG shows forge boxes aligned (padLineTo is ANSI-width correct).
+- **658.** Added a real TUI screenshot: captured an ANSI frame from a live turn and rendered it to `docs/joc-tui.png` (headless browser, SGR→HTML); referenced at the top of the README.
+- **659.** README documents the in-turn frame (evolution art, step timeline, forge boxes, status footer) + the live slash preview.
+- **660.** Typecheck 0; `bun test` 426 pass / 67 files; PTY shows 0 crash lines after the fix.
+
+### Verification (passes 654–660)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **426 pass / 0 fail across 67 files** (added the forge undefined-tool guard test).
+- PTY: `run echo hi` turn → no `tool.toLowerCase` crash (grep count 0); full in-turn frame renders.

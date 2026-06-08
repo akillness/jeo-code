@@ -103,8 +103,9 @@ export class LaunchTui {
       },
       onAssistant: (_raw, invocation) => {
         if (invocation && invocation.tool !== "done") {
-          this.pendingIndex = this.tools.start(invocation.tool);
-          this.rememberForge(summarizeForgeInvocation(invocation.tool, invocation.arguments));
+          const toolName = invocation.tool || "(no tool)";
+          this.pendingIndex = this.tools.start(toolName);
+          this.rememberForge(summarizeForgeInvocation(toolName, invocation.arguments));
           this.draw();
         }
       },

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { matchSlash, isSlashAttempt, SLASH_COMMANDS } from "../src/tui/components/slash";
+import { matchSlash, isSlashAttempt, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, formatSlashCommandList } from "../src/tui/components/slash";
 
 test("matchSlash: prefix-matches slash commands, case-insensitive", () => {
   expect(matchSlash("/")).toEqual(SLASH_COMMANDS);
@@ -22,6 +22,11 @@ test("SLASH_COMMANDS includes the config commands (model/provider/agents/config/
   }
 });
 
+test("slash command details stay in sync with command names", () => {
+  expect(SLASH_COMMAND_DETAILS.map(c => c.command)).toEqual(SLASH_COMMANDS);
+  expect(SLASH_COMMAND_DETAILS.find(c => c.command === "/agents")?.usage).toContain("maxSteps");
+});
+
 test("matchSlash distinguishes /model from /models", () => {
   expect(matchSlash("/model")).toEqual(["/model", "/models"]);
   expect(matchSlash("/models")).toEqual(["/models"]);
@@ -39,4 +44,22 @@ test("matchSlash resolves the code-view command prefixes", () => {
   expect(matchSlash("/v")).toEqual(["/view"]);
   expect(matchSlash("/d")).toEqual(["/diff"]);
   expect(matchSlash("/sea")).toEqual(["/search"]);
+});
+
+test("formatSlashCommandList lists all commands for bare slash and narrows by prefix", () => {
+  const all = formatSlashCommandList("/").join("\n");
+  expect(all).toContain("Slash Commands:");
+  expect(all).toContain("/model [id|#N|save]");
+  expect(all).toContain("/agents [role] [model|#N|maxSteps N|reset]");
+  expect(formatSlashCommandList("/?").join("\n")).toContain("/agents [role] [model|#N|maxSteps N|reset]");
+
+  const modelOnly = formatSlashCommandList("/m").join("\n");
+  expect(modelOnly).toContain("Slash Commands matching '/m':");
+  expect(modelOnly).toContain("/model");
+  expect(modelOnly).toContain("/models");
+  expect(modelOnly).not.toContain("/agents");
+});
+
+test("formatSlashCommandList returns an unknown hint for non-matches", () => {
+  expect(formatSlashCommandList("/zzz")).toEqual(["Unknown command '/zzz'. Try /help."]);
 });

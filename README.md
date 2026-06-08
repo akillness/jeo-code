@@ -81,6 +81,8 @@ joc --models --catalog gpt
 # 실행 시 모델/프로바이더/사고 예산 지정
 joc --model gemini-2.5-flash --thinking high "코드 분석해줘"
 joc --provider gemini --plan "구현 계획 세워줘"
+# 슬래시 명령어 팔레트
+# REPL에서 "/" 또는 "/m"처럼 prefix를 입력하면 사용 가능한 명령/옵션이 리스트업됩니다.
 
 # 인증 관리
 joc auth login anthropic

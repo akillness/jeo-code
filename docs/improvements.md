@@ -3219,3 +3219,161 @@ readline completer never blocks on the network).
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **all green** (348 tests / 58 files at run time; added `autocomplete`, `subagents-setting`).
 - Real smoke (completer against real registries + simulated live ids): `/mo`→`/model /models`; `/model `→`save` + live ids (`claude-opus-4…`, `gpt-4o-2024…`) ranked before aliases/catalog; `/provider openai `→`gpt-4o-2024…, o3-mini…`; `/agents `→`executor planner architect critic`; `/agents planner `→`maxSteps …`; `/thinking `→`low medium high`; `/models `→`refresh`.
+
+## Model capability catalog + thinking ladder + role tiers (gjc UI parity) — 50-pass run (352–401)
+
+**Date:** 2026-06-05 · **Dimension: tui / model catalog metadata + thinking levels + role tiers.**
+
+Process: I ran the installed `gjc 0.2.4` directly and captured its model-config UI *design items*
+(functional surface only — no source copied): `--list-models` two-table layout (canonical +
+provider) with capability columns (context, max-out, thinking, images), fuzzy model match, the
+`minimal/low/medium/high/xhigh` thinking ladder, and the `--smol/--slow/--plan` model role tiers.
+An `architect` subagent reviewed joc vs. that surface and flagged a concurrent agent's
+`model-catalog-compat.ts` building on this run's `model-catalog.ts`; I confirmed no clobber and kept
+the catalog's public API stable. All capability data is joc-authored factual metadata about public
+models in joc's own structure.
+
+> **Note (concurrent work):** another `gjc` agent built `model-catalog-compat.ts`,
+> `setup-helpers.ts`, `tui/components/model-picker.ts`, and `autocomplete.ts` on top of this run's
+> `src/ai/model-catalog.ts` exports. This run uses **352–401**, keeps the catalog API stable for
+> that compat layer, and makes additive edits elsewhere. README count-sync deferred.
+
+### Batch AG — Capability catalog (`src/ai/model-catalog.ts`) (352–362)
+- **352. `ThinkLevel` + `THINK_LEVELS`.** Five-level ladder minimal/low/medium/high/xhigh.
+- **353. `CatalogModel`.** canonical/provider/providerModel/contextTokens/maxOutputTokens/thinking/images.
+- **354. `MODEL_CATALOG`.** Curated capability dataset for common public models (joc-authored facts).
+- **355. `formatTokens`.** Compact K/M token rendering.
+- **356. `findCatalogModel`.** Exact lookup by canonical or provider id.
+- **357. `fuzzyMatchCatalog`.** Case-insensitive substring match.
+- **358. `catalogByProvider`.** Provider filter.
+- **359. `catalogMetadata`.** Provider-prefix-tolerant annotation lookup.
+- **360. `supportsThinking`.** Per-model thinking-level support check.
+- **361. `ai/index` export.** Catalog re-exported from the barrel.
+- **362. Stable shared API.** Exports kept compatible with the concurrent `model-catalog-compat.ts` consumer.
+
+### Batch AH — Thinking ladder extension (363–366)
+- **363. `thinkingMaxTokens`.** Added `minimal`=1000 and `xhigh`=16000 (additive; existing levels unchanged).
+- **364. Config schema.** `thinkingLevel` enum extended to the five-level ladder.
+- **365. Config type.** `Config.thinkingLevel` widened.
+- **366. `/thinking`.** Accepts minimal/low/medium/high/xhigh; session var widened.
+
+### Batch AI — Catalog UI + commands (367–373)
+- **367. `formatCatalogTable`.** Provider·model·ctx·out·thinking·img table (joc's own column layout).
+- **368. Current marker.** Active model tagged in the table.
+- **369. `thinkCell`.** `-` when a model has no thinking levels.
+- **370. `formatCapabilityLine`.** One-line ctx/out/thinking/images summary.
+- **371. `joc models --catalog`.** Renders the capability table.
+- **372. `joc models --catalog <fuzzy>`.** Filters the catalog by substring.
+- **373. `/model` capability line.** Emits `caps: …` when the resolved model is in the catalog.
+
+### Batch AJ — Direct test + subagent discussion (374–377)
+- **374. Direct gjc run.** Captured `gjc 0.2.4` model command/flag surface (functional only).
+- **375. Design-item capture.** Two-table list-models, fuzzy match, thinking ladder, role tiers.
+- **376. Architect subagent.** Read-only parity review with grouped item batches + IP-risk flag.
+- **377. Collision reconciliation.** Verified the concurrent compat layer depends on this catalog; kept API stable.
+
+### Batch AK — Model role tiers (378–390)
+- **378. `Config.roles`.** smol/slow/plan tiers (gjc `--smol/--slow/--plan` parity).
+- **379. Schema.** `roles` object validated.
+- **380. Env overlay.** `JOC_SMOL_MODEL`/`JOC_SLOW_MODEL`/`JOC_PLAN_MODEL` fill gaps in `withEnvOverlay`.
+- **381. `resolveRoleModel`.** Tier → configured model, else `defaultModel` (empty string falls back).
+- **382. `ModelRole` type.** smol/slow/plan.
+- **383. `joc models` tiers line.** Shows resolved smol/slow/plan.
+- **384. `/roles`.** Lists the three tiers with their routed provider.
+- **385. `/roles <tier> <model>`.** Persists a tier model to `~/.joc/config.json`.
+- **386. Palette.** `/roles` added to `SLASH_COMMANDS`.
+- **387. `/help`.** Documents `/roles` and the extended `/thinking` ladder.
+- **388. Tier validation.** Only smol/slow/plan accepted for set.
+- **389. Default-model fallback display.** Unset tiers render the default model.
+- **390. Additive config.** `roles` does not alter existing subagents/model behavior.
+
+### Batch AL — Tests & verify (391–401)
+- **391. Catalog levels test.** `THINK_LEVELS` ladder.
+- **392. Thinking budget test.** Extended `thinkingMaxTokens` mapping.
+- **393. `formatTokens` test.**
+- **394. Catalog well-formedness test.** Provider/limits/levels valid.
+- **395. Lookup tests.** `findCatalogModel` / `catalogMetadata` (prefix-tolerant).
+- **396. Match/filter tests.** `fuzzyMatchCatalog` / `catalogByProvider`.
+- **397. `supportsThinking` test.**
+- **398. Catalog table/cap-line formatter tests.**
+- **399. Role-tier tests.** `resolveRoleModel` override/fallback/empty-string.
+- **400. Typecheck 0 + full suite green.**
+- **401. Real smokes.** `joc models --catalog gpt` renders the table; `JOC_SLOW_MODEL=o3 JOC_PLAN_MODEL=claude-opus-4 joc models` shows `Role tiers: smol=fast · slow=o3 · plan=claude-opus-4`.
+
+### Verification (passes 352–401)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **362 pass / 0 fail across 60 files** (added `model-catalog`, `model-roles`).
+- Real smoke: `joc models --catalog gpt` →
+  `openai  gpt-4o  128K  16K  -  yes` (capability table); role tiers resolve from `JOC_*_MODEL` env.
+- gjc reference: captured from a direct `gjc 0.2.4` run; only functional design items reproduced, no source copied.
+
+## Live + catalog capability merge for the OAuth model list — 50-pass run (402–451)
+
+**Date:** 2026-06-05 · **Dimension: tui / live model list enriched with capability metadata.**
+
+Closes the architect-flagged MEDIUM gap from the prior run: the OAuth/API-key-discovered live
+model list (`model-discovery.ts`) is now merged with the static capability catalog
+(`model-catalog.ts`) so users see context window, max output, thinking levels, and image support
+next to the models they can *actually* use — gjc provider-table parity applied to live results. New
+pure module: `src/ai/model-enrich.ts`.
+
+> **Note (concurrent work):** the `model-catalog-compat.ts` layer and other components remain owned by
+> a concurrent agent. This run uses **402–451**, adds the new `model-enrich.ts` + tests, and makes
+> additive-only edits (new module + appended formatter + new `--caps`/`/models caps` branches). No
+> existing exports changed; no concurrent files clobbered.
+
+### Batch AM — Enrich engine (`src/ai/model-enrich.ts`) (402–414)
+- **402. `EnrichedModel`.** { id, provider, meta? } pairing a live id with catalog metadata.
+- **403. `enrichResult`.** Annotates one provider's ok models; failed results → [].
+- **404. `enrichAll`.** Flattens enrichment across providers, preserving order.
+- **405. `knownCount`.** Splits known (catalog-annotated) vs unknown.
+- **406. `sortByCapability`.** Known models first (largest context first), unknown last; stable.
+- **407. `CapabilityFilter`.** thinking / images / minContext.
+- **408. `filterCapable` thinking.** Keep only models supporting a thinking level.
+- **409. `filterCapable` images.** Keep only image-capable (or not).
+- **410. `filterCapable` minContext.** Keep only models with ≥ N context.
+- **411. No-op passthrough.** No filter → all models (including unknown).
+- **412. Unknown exclusion.** Any active filter drops unknown-metadata ids.
+- **413. `ai/index` export.** Enrich re-exported from the barrel.
+- **414. Catalog reuse.** Live ids resolved via `catalogMetadata` (provider-prefix tolerant).
+
+### Batch AN — Enriched UI (`config-panel.ts`) (415–421)
+- **415. `formatEnrichedModels`.** provider·model·ctx·out·thinking·img table for live models.
+- **416. Unknown rendering.** `-` for ctx/out, `?` for thinking/img on unknown ids.
+- **417. Current marker.** Active model tagged `◀`.
+- **418. Long-id truncation.** Over-width ids elide with `…`.
+- **419. Cap + overflow.** Per-table cap with `+N more`.
+- **420. Empty hint.** No live models → `joc auth login` hint.
+- **421. Helper reuse.** Shares `thinkCell`/`formatTokens` with the catalog table.
+
+### Batch AO — Command surfaces (422–433)
+- **422. `joc models --caps`.** Live capability table (discover → enrich → render).
+- **423. `--caps --thinking=<lvl>`.** Filter to models supporting a level.
+- **424. `--caps --images`.** Filter to image-capable models.
+- **425. `--caps --long`.** Filter to ≥200K context models.
+- **426. Summary line.** `N with known capabilities, M unknown`.
+- **427. Capability-first sort.** Output sorted by `sortByCapability`.
+- **428. `/models caps`.** TUI branch rendering the enriched table.
+- **429. `/models refresh` preserved.** Subcommand parsing keeps refresh working.
+- **430. `/help`.** Documents `/models [refresh|caps]`.
+- **431. launch imports.** `enrichAll`/`sortByCapability`/`formatEnrichedModels` wired.
+- **432. models-cmd imports.** Enrich helpers imported.
+- **433. Current marked.** The resolved default is marked in the caps view.
+
+### Batch AP — Tests & verify (434–451)
+- **434–443.** `model-enrich.test.ts`: enrichResult/enrichAll/knownCount/sortByCapability/filterCapable (thinking/images/minContext/no-op) + `formatEnrichedModels` render & empty.
+- **444. Typecheck 0.**
+- **445. Full suite green (372 / 61 files).**
+- **446. Real smoke `--caps`.** gemini-2.5-pro/flash (1M, thinking) ranked first; unknown gemini ids show `-`/`?`.
+- **447. Real smoke `--caps --images`.** Narrows to the 3 image-capable known models.
+- **448. Gap closed.** Architect MEDIUM #2 (live+catalog merge) implemented.
+- **449. No clobber.** Concurrent `model-catalog-compat.ts` untouched; its consumers still compile.
+- **450. Additive-only.** New module + appended formatter + new branches; no export signatures changed.
+- **451. Docs logged.**
+
+### Verification (passes 402–451)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **372 pass / 0 fail across 61 files** (added `model-enrich`).
+- Real smoke: `joc models --caps` →
+  `gemini  gemini-2.5-pro  1M  66K  minimal,low,medium,high  yes` (known, ranked first), unknown ids `-/?`;
+  `joc models --caps --images` → exactly the 3 image-capable known models.

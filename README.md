@@ -155,7 +155,7 @@ Local dev without installing (from the repo root):
 ```bash
 bun run start --help     # = bun src/cli.ts --help
 bun run typecheck        # tsc -p tsconfig.json --noEmit
-bun test                 # unit tests (54 files, 310 tests)
+bun test                 # unit tests (61 files, 372 tests)
 ```
 
 ---
@@ -173,7 +173,7 @@ bun test                 # unit tests (54 files, 310 tests)
 | `joc approve <plan-path>` | Approve the active plan blueprint; gates execution (`team` refuses to run until approved). Idempotent. |
 | `joc team` | Per-task executor loop (shared tool engine) against the plan. |
 | `joc ultragoal` | Verify acceptance criteria and write a report. |
-| `joc models [name]` | List model aliases + probe local/OpenAI-compatible models for reachability. |
+| `joc models [name] [--catalog] [--caps] [--check]` | Live model list from logged-in (OAuth/API) accounts + aliases & provider credentials. `--catalog` shows the capability catalog (context/out/thinking/images), `--caps` merges live models with capabilities (`--thinking=<lvl>`/`--images`/`--long` filters), `--check` is a per-provider auth/reachability probe. |
 | `joc skills [name]` | List bundled workflow skills; `joc skills <name>` prints details. |
 | `joc resume [id]` | Resume the latest interactive session (or a specific id). |
 | `joc chat "<msg>"` | Single-shot streaming chat (no tools) — renders the reply token-by-token. |
@@ -203,8 +203,10 @@ hardened tool-call engine (`src/agent/engine.ts`). It calls `read` / `write` / `
   arguments: model ids, providers, and subagent roles. `/model` and `/models` pull the
   **real model list from your logged-in (OAuth / API-key) accounts** via live discovery —
   pick by id or `#N`, set the session model or save it as default. `/provider` switches
-  providers, and `/agents <role> [model|maxSteps N]` pins a per-role model/step budget for
-  the `executor` / `planner` / `architect` / `critic` subagents.
+  providers (and lists that provider's live models), and `/agents <role> [model]` pins a per-role
+  model for the `executor` / `planner` / `architect` / `critic` subagents. `/roles [tier model]`
+  sets the `smol`/`slow`/`plan` model tiers; `/thinking` spans `minimal`→`xhigh`; `/view` / `/diff`
+  / `/find` / `/search` give an in-TUI code view.
 - **Sessions** — every turn is appended to `.joc/sessions/<id>.jsonl`; `joc launch --list`
   and `joc launch --resume [id]` resume past conversations.
 - **tmux orchestration (gjc parity)** — `joc --tmux` creates/attaches a leader session named
@@ -219,7 +221,7 @@ hardened tool-call engine (`src/agent/engine.ts`). It calls `read` / `write` / `
   adapters report usage in both blocking `call` and streaming modes.
 
 ```bash
-joc                                   # REPL — slash: /model /models /provider /agents /thinking /config (Tab to autocomplete)
+joc                                   # REPL — slash: /model /models /provider /agents /roles /thinking /config /view /diff /find /search (Tab to autocomplete)
 joc launch "fix the failing test"     # one-shot
 echo "summarize src/agent" | joc      # piped / non-TTY (plain output)
 joc launch --resume                   # resume the latest session (or --resume <uuid>)
@@ -281,7 +283,8 @@ Routing is inferred from the model id; credentials resolve from `~/.joc/config.j
 | Per-project runtime | `<cwd>/.joc/` → `seeds/`, `plans/`, `state/`, `sessions/` |
 
 `config.json` fields: `providers`, `oauth`, `defaultModel`, `ollamaBaseUrl`, `openaiBaseUrl`,
-`thinkingLevel`, `modelAliases`, `retry`. Env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`thinkingLevel` (`minimal`/`low`/`medium`/`high`/`xhigh`), `modelAliases`, `roles` (`smol`/`slow`/`plan`
+model tiers), `subagents` (per-role model/maxSteps), `retry`. Env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 `GEMINI_API_KEY`, the `*_OAUTH_TOKEN` bearers, `OLLAMA_HOST`, `OPENAI_BASE_URL`,
 `JOC_DEFAULT_MODEL`) fill gaps but never override on-disk values. Verify everything with `joc doctor`.
 
@@ -314,7 +317,7 @@ jeo-code/
 │   ├── mcp/                   # MCP protocol + tools + stdio server
 │   └── tui/                   # differential renderer + components + LaunchTui
 ├── scripts/                   # install.sh / uninstall.sh (bun install + bun link)
-├── test/                      # 54 suites (310 tests): oauth, engine, tools-fs, retry, config-schema, cli-runner, mutation-guard, approve, team-schema, session, compaction, streaming, evolution, ascii-art, footer, evolve, meter, install, model/provider picker, tui-*
+├── test/                      # 61 suites (372 tests): oauth, engine, tools-fs, retry, config-schema, cli-runner, mutation-guard, approve, team-schema, session, compaction, streaming, evolution, ascii-art, footer, evolve, meter, install, model-discovery/picker/catalog/enrich/roles, provider-status, config-panel, code-view, tui-*
 ├── docs/improvements.md       # architectural analysis & changelog (ralph passes)
 ├── plan/                      # long-horizon work plans (TUI, features, install, model, provider)
 └── README.md

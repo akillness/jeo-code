@@ -46,6 +46,13 @@ export async function describeModel(input: string): Promise<{ input: string; res
   return { input, resolved, provider: resolveProvider(resolved) };
 }
 
+export type ModelRole = "smol" | "slow" | "plan";
+
+/** Resolve a model role tier (smol/slow/plan) → configured tier model, else defaultModel. */
+export function resolveRoleModel(role: ModelRole, config: { defaultModel: string; roles?: { smol?: string; slow?: string; plan?: string } }): string {
+  return config.roles?.[role] || config.defaultModel;
+}
+
 export interface ModelDescription {
   input: string;
   resolved: string;

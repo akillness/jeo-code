@@ -1,10 +1,11 @@
 import { readGlobalConfig } from "../agent/state";
 import { listAliases, resolveModelId } from "../ai/model-registry";
-import { resolveProvider } from "../ai/model-manager";
+import { resolveProvider, resolveRoleModel } from "../ai/model-manager";
 import { describeAllProviders } from "../ai/provider-status";
 import { discoverModels } from "../ai/model-discovery";
-import { formatLiveModels, formatCatalogTable } from "../tui/components/config-panel";
-import { MODEL_CATALOG, fuzzyMatchCatalog } from "../ai/model-catalog";
+import { formatLiveModels, formatCatalogTable, formatEnrichedModels } from "../tui/components/config-panel";
+import { MODEL_CATALOG, fuzzyMatchCatalog, type ThinkLevel } from "../ai/model-catalog";
+import { enrichAll, filterCapable, sortByCapability, knownCount } from "../ai/model-enrich";
 
 async function probeOllama(baseUrl: string): Promise<string[]> {
   try {
@@ -39,10 +40,28 @@ export async function runModelsCommand(args: string[] = []): Promise<void> {
     for (const line of formatCatalogTable(rows)) console.log(line);
     return;
   }
+  if (args.includes("--caps")) {
+    const cfg = await readGlobalConfig();
+    const def = await resolveModelId(cfg.defaultModel);
+    const thinkArg = args.find(a => a.startsWith("--thinking="))?.split("=")[1] as ThinkLevel | undefined;
+    const filter = {
+      thinking: thinkArg,
+      images: args.includes("--images") ? true : undefined,
+      minContext: args.includes("--long") ? 200_000 : undefined,
+    };
+    console.log("\n=== joc models --caps (live + capabilities) ===");
+    const live = await discoverModels({ config: cfg, timeoutMs: 4000 });
+    const enriched = sortByCapability(filterCapable(enrichAll(live), filter));
+    const { known, unknown } = knownCount(enriched);
+    for (const line of formatEnrichedModels(enriched, { current: def })) console.log(line);
+    console.log(`\n${known} with known capabilities, ${unknown} unknown.`);
+    return;
+  }
   const config = await readGlobalConfig();
   console.log("\n=== joc models ===");
   const resolved = await resolveModelId(config.defaultModel);
   console.log(`Default model: ${config.defaultModel}${resolved !== config.defaultModel ? ` → ${resolved}` : ""} → ${resolveProvider(resolved)}`);
+  console.log(`Role tiers: smol=${resolveRoleModel("smol", config)} · slow=${resolveRoleModel("slow", config)} · plan=${resolveRoleModel("plan", config)}`);
 
   const aliases = await listAliases();
   console.log("\nAliases (use as the model id; config overrides built-ins):");

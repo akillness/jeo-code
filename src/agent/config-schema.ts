@@ -64,6 +64,14 @@ export const ConfigSchema = z
         }),
       )
       .optional(),
+    /** Model role tiers (smol/slow/plan); each falls back to defaultModel. */
+    roles: z
+      .object({
+        smol: z.string().optional(),
+        slow: z.string().optional(),
+        plan: z.string().optional(),
+      })
+      .optional(),
   })
   .passthrough();
 

@@ -9,6 +9,7 @@ export const SLASH_COMMANDS = [
   "/provider",
   "/agents",
   "/config",
+  "/roles",
   "/thinking",
   "/view",
   "/diff",

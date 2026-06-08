@@ -9,7 +9,7 @@ import { getEvolutionTip } from "../tui/components/evolution";
 import chalk from "chalk";
 import type { Message } from "../agent/loop";
 import { readGlobalConfig, saveGlobalConfig } from "../agent/state";
-import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata } from "../ai";
+import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, enrichAll, sortByCapability } from "../ai";
 import type { ProviderModelsResult, PickEntry } from "../ai";
 
 import { listAliases } from "../ai/model-registry";
@@ -26,6 +26,7 @@ import {
   liveModelKnown,
   formatPickList,
   formatCapabilityLine,
+  formatEnrichedModels,
 } from "../tui/components/config-panel";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff } from "../tui/components/code-view";
 import { findTool, searchTool } from "../agent/tools";
@@ -414,11 +415,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         console.log("  /help               - Show this help message");
         console.log("  /clear              - Clear conversation history (keeps system prompt)");
         console.log("  /model [id|#N|save] - Set the session model by id, by #N from /models, or save as default");
-        console.log("  /models [refresh]   - Live model list from logged-in providers (+ aliases)");
+        console.log("  /models [refresh|caps] - Live model list (caps = + context/out/thinking/img)");
         console.log("  /provider [name] [model] - Provider credentials, or switch + list that provider's live models");
         console.log("  /agents [role] [model]   - List subagent roles, show one, or pin a role's model (saved)");
         console.log("  /config             - Show the effective runtime configuration");
-        console.log("  /thinking [level]   - Show or set the thinking budget (low/medium/high)");
+        console.log("  /roles [tier model] - Show or set model role tiers (smol/slow/plan)");
+        console.log("  /thinking [level]   - Show or set the thinking budget (minimal/low/medium/high/xhigh)");
         console.log("  /view <file> [a-b]  - Code view: render a file with line numbers + light highlight");
         console.log("  /diff [file]        - Render `git diff` with +/- coloring");
         console.log("  /find <glob>        - List files matching a glob");
@@ -458,7 +460,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
       if (input.startsWith("/models") && (input === "/models" || input[7] === " ")) {
-        const refresh = input.substring(7).trim().toLowerCase() === "refresh";
+        const sub = input.substring(7).trim().toLowerCase();
+        const refresh = sub === "refresh";
+        if (sub === "caps") {
+          const live = await getLiveModels();
+          const def = sessionModel || (await readGlobalConfig()).defaultModel;
+          const { resolved } = await describeModel(def);
+          console.log("Live models with capabilities (ctx/out/thinking/img):");
+          for (const line of formatEnrichedModels(sortByCapability(enrichAll(live)), { current: resolved })) console.log(line);
+          continue;
+        }
         const cfgNow = await readGlobalConfig();
         const def = sessionModel || cfgNow.defaultModel;
         const { resolved, provider } = await describeModel(def);
@@ -563,6 +574,25 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           requestMaxRetries: cfgNow.retry?.requestMaxRetries,
           sessionId,
         })) console.log(line);
+        continue;
+      }
+      if (input.startsWith("/roles") && (input === "/roles" || input[6] === " ")) {
+        const tokens = input.substring(6).trim().split(/\s+/).filter(Boolean);
+        const cfgNow = await readGlobalConfig();
+        const TIERS = ["smol", "slow", "plan"] as const;
+        if (tokens.length >= 2 && (TIERS as readonly string[]).includes(tokens[0])) {
+          const tier = tokens[0] as (typeof TIERS)[number];
+          const next = { ...cfgNow, roles: { ...(cfgNow.roles ?? {}), [tier]: tokens[1] } };
+          await saveGlobalConfig(next);
+          console.log(`Role '${tier}' model set to ${tokens[1]} → ~/.joc/config.json`);
+          continue;
+        }
+        console.log("Model role tiers (fall back to the default model):");
+        for (const tier of TIERS) {
+          const { provider } = await describeModel(resolveRoleModel(tier, cfgNow));
+          console.log(`  ${tier.padEnd(5)} ${resolveRoleModel(tier, cfgNow)} (${provider})`);
+        }
+        console.log("Set a tier: /roles <smol|slow|plan> <model>");
         continue;
       }
       if (input.startsWith("/thinking") && (input === "/thinking" || input[9] === " ")) {

@@ -4,6 +4,7 @@ export * from "./provider-status";
 export * from "./model-discovery";
 export * from "./model-picker";
 export * from "./model-catalog";
+export * from "./model-enrich";
 export { anthropicAdapter } from "./providers/anthropic";
 export { openaiAdapter } from "./providers/openai";
 export { geminiAdapter } from "./providers/gemini";

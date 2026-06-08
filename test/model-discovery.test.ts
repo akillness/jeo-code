@@ -108,7 +108,7 @@ test("listProviderModels: ollama is keyless and never needs a credential", async
   expect(r.models).toEqual(["ollama/llama3"]);
 });
 
-test("listProviderModels: incompatible OAuth falls back to API key for discovery", async () => {
+test("listProviderModels: OAuth discovery uses the provider OAuth token directly", async () => {
   await fs.writeFile(
     path.join(dir, "config.json"),
     JSON.stringify({
@@ -124,12 +124,12 @@ test("listProviderModels: incompatible OAuth falls back to API key for discovery
   }) as typeof fetch;
   const r = await listProviderModels("openai", { fetchImpl: fetchSpy });
   expect(r.ok).toBe(true);
-  expect(r.source).toBe("api_key");
-  expect(auth).toBe("Bearer sk-oai");
+  expect(r.source).toBe("oauth");
+  expect(auth).toBe("Bearer oauth-oai");
   expect(r.models).toEqual(["gpt-4o-mini"]);
 });
 
-test("listProviderModels: incompatible OAuth-only discovery reports adapter compatibility", async () => {
+test("listProviderModels: OAuth-only discovery still probes the provider list", async () => {
   await fs.writeFile(
     path.join(dir, "config.json"),
     JSON.stringify({
@@ -141,13 +141,13 @@ test("listProviderModels: incompatible OAuth-only discovery reports adapter comp
   let called = false;
   const fetchSpy = (async () => {
     called = true;
-    return new Response("{}", { status: 200 });
+    return new Response(JSON.stringify({ data: [{ id: "gpt-4o" }] }), { status: 200 });
   }) as typeof fetch;
   const r = await listProviderModels("openai", { fetchImpl: fetchSpy });
-  expect(r.ok).toBe(false);
+  expect(r.ok).toBe(true);
   expect(r.source).toBe("oauth");
-  expect(r.error).toContain("OAuth backend is not compatible");
-  expect(called).toBe(false);
+  expect(r.models).toEqual(["gpt-4o"]);
+  expect(called).toBe(true);
 });
 
 test("listProviderModels: credential-less cloud short-circuits without fetching", async () => {

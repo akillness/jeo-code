@@ -12,7 +12,6 @@ import { readGlobalConfig, type Config } from "../agent/state";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
 import type { ProviderName } from "./types";
 import { PROVIDER_NAMES } from "./provider-status";
-import { effectiveCredentialForProvider } from "./model-manager";
 
 export interface ProviderModelsResult {
   provider: ProviderName;
@@ -34,7 +33,7 @@ export interface DiscoveryOptions {
   signal?: AbortSignal;
   /** Cap the number of returned ids per provider; default 100. */
   limit?: number;
-  /** Config snapshot used for credential compatibility and provider base URLs. */
+  /** Config snapshot used for provider base URLs. */
   config?: Config;
 }
 
@@ -104,16 +103,10 @@ export async function listProviderModels(
   let cred: Credential | undefined;
   let source: ProviderModelsResult["source"] = "keyless";
   if (provider !== "ollama") {
-    const cfg = opts.config ?? (await readGlobalConfig());
     const raw = await resolveCredential(provider as AuthProvider);
-    const isLocalOpenAi = provider === "openai" && !!(opts.baseUrl ?? process.env.OPENAI_BASE_URL);
-    try {
-      cred = effectiveCredentialForProvider(provider as AuthProvider, raw, cfg, provider);
-    } catch (err) {
-      const rawSource = raw.kind === "oauth" ? "oauth" : raw.kind === "api_key" ? "api_key" : "none";
-      return { provider, models: [], ok: false, source: rawSource, error: (err as Error).message };
-    }
+    cred = raw;
     source = cred.kind === "oauth" ? "oauth" : cred.kind === "api_key" ? "api_key" : "none";
+    const isLocalOpenAi = provider === "openai" && !!(opts.baseUrl ?? process.env.OPENAI_BASE_URL);
     if (source === "none" && !isLocalOpenAi) {
       return { provider, models: [], ok: false, source, error: "not logged in" };
     }

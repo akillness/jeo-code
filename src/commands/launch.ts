@@ -385,6 +385,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     return liveModelsCache;
   };
+  const refreshLiveModelsCache = async (): Promise<ProviderModelsResult[]> => {
+    liveModelsCache = null;
+    return getLiveModels(true);
+  };
   // The most recently displayed numbered pick list; `/model #N` selects from it.
   let lastPickIndex: PickEntry[] = [];
 
@@ -500,7 +504,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // background-warmed cache (logged-in/OAuth accounts). The completer is sync, so
   // it never blocks on the network — it reads whatever the cache currently holds.
   const aliasNames = Object.keys(await listAliases());
-  void discoverModels({ timeoutMs: 4000 })
+  void getLiveModels()
     .then(r => {
       liveModelsCache ??= r;
     })
@@ -517,24 +521,58 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     completer: (line: string) => readlineCompleter(line, completionContext()),
   });
 
-  // Live slash preview: as the user types a slash keyword, show matching commands
-  // beneath the input box. Uses DEC save/restore cursor so it never disturbs the
-  // readline line; cleared on Enter. TTY-only.
-  if (process.stdin.isTTY) {
-    const out = process.stdout;
-    const drawPreview = () => {
-      const preview = formatSlashPreview(rl.line);
-      out.write("\x1b7\n\x1b[0J"); // save cursor, drop below input, clear old preview
-      if (preview.length) out.write(chalk.gray(preview.join("\n")));
-      out.write("\x1b8"); // restore cursor to the input line
-    };
+  // Live slash preview pinned to a reserved bottom footer via a DEC scroll region
+  // (DECSTBM). Normal output scrolls ONLY in the region above the footer, so the
+  // preview never pushes/scrolls the screen. Cleared on Enter; region reset on exit.
+  // Opt out with JOC_NO_SLASH_PREVIEW=1.
+  const PREVIEW_ROWS = 8; // reserved footer rows (max preview lines)
+  const previewEnabled =
+    process.stdin.isTTY &&
+    process.env.JOC_NO_SLASH_PREVIEW !== "1" &&
+    (process.stdout.rows ?? 24) > PREVIEW_ROWS + 4;
+  const out = process.stdout;
+  let regionActive = false;
+
+  const setScrollRegion = () => {
+    const rows = process.stdout.rows ?? 24;
+    out.write(`\x1b[1;${rows - PREVIEW_ROWS}r`); // scroll region = top .. (rows-PREVIEW_ROWS)
+    out.write(`\x1b[${rows - PREVIEW_ROWS};1H`); // park cursor at the region's bottom row
+    regionActive = true;
+  };
+  const resetScrollRegion = () => {
+    if (!regionActive) return;
+    const rows = process.stdout.rows ?? 24;
+    for (let i = 0; i < PREVIEW_ROWS; i++) out.write(`\x1b[${rows - PREVIEW_ROWS + 1 + i};1H\x1b[2K`);
+    out.write("\x1b[r"); // reset scroll region to full screen
+    out.write(`\x1b[${rows};1H`); // cursor to bottom
+    regionActive = false;
+  };
+  const drawFooter = (lines: string[]) => {
+    const rows = process.stdout.rows ?? 24;
+    const base = rows - PREVIEW_ROWS; // last row of the scroll region
+    out.write("\x1b7"); // save cursor (in the scroll region; footer draw won't move it)
+    for (let i = 0; i < PREVIEW_ROWS; i++) {
+      out.write(`\x1b[${base + 1 + i};1H\x1b[2K`); // clear each reserved footer row
+      if (i < lines.length) out.write(lines[i]!);
+    }
+    out.write("\x1b8"); // restore cursor to the input line
+  };
+
+  if (previewEnabled) {
+    setScrollRegion();
+    process.once("exit", () => { if (regionActive) out.write("\x1b[r"); }); // safety net
+    process.stdout.on("resize", () => {
+      if (regionActive) setScrollRegion();
+    });
     process.stdin.on("keypress", (_ch: string, key: { name?: string } | undefined) => {
       setImmediate(() => {
-        if (key && (key.name === "return" || key.name === "enter")) {
-          out.write("\x1b[0J"); // submitted → clear the preview region
-          return;
-        }
-        try { drawPreview(); } catch { /* ignore render races */ }
+        try {
+          if (key && (key.name === "return" || key.name === "enter")) {
+            drawFooter([]);
+            return;
+          }
+          drawFooter(formatSlashPreview(rl.line, PREVIEW_ROWS).map(l => chalk.gray(l)));
+        } catch { /* ignore render races */ }
       });
     });
   }
@@ -646,9 +684,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           try {
             const { email } = await interactiveOAuthLogin(target as AuthProvider, rl);
             console.log(`[SUCCESS] OAuth login complete for ${target}${email ? ` (${email})` : ""}. Tokens saved to ~/.joc/config.json.`);
-            liveModelsCache = null; // re-discover with the new credential
+            const live = await refreshLiveModelsCache();
             const after = (await describeAllProviders()).find(s => s.name === target);
             if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
+            const forProvider = live.filter(r => r.provider === target);
+            if (forProvider.some(r => r.ok && r.models.length > 0)) {
+              lastPickIndex = flattenModels(forProvider);
+              console.log(`  live ${target} models → /model #N or /provider ${target} #N`);
+              for (const line of formatPickListWithCapabilities(lastPickIndex, { cap: 12 })) console.log(line);
+            } else {
+              const failed = forProvider.find(r => !r.ok);
+              if (failed?.error) console.log(`  live ${target} models unavailable: ${failed.error}`);
+            }
           } catch (err) {
             console.log(`[FAILED] ${(err as Error).message} — or set ${target.toUpperCase()}_API_KEY.`);
           }
@@ -718,7 +765,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         const removed = await logoutOAuth(target as AuthProvider);
         console.log(removed ? `[SUCCESS] Removed OAuth token for ${target}.` : `No OAuth token stored for ${target}.`);
-        liveModelsCache = null; // re-discover after credential change
+        await refreshLiveModelsCache();
         continue;
       }
       const agentsCommand =
@@ -1028,6 +1075,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
     }
   } finally {
+    resetScrollRegion(); // restore full-screen scrolling before leaving the REPL
     rl.close();
   }
 }

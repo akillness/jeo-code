@@ -63,7 +63,8 @@ function jsonPreview(args: Record<string, unknown>): string[] {
 
 export function summarizeForgeInvocation(tool: string, rawArgs: unknown): ForgeSummary {
   const args = asRecord(rawArgs);
-  const normalized = tool.toLowerCase();
+  const safeTool = tool || "(no tool)";
+  const normalized = safeTool.toLowerCase();
   if (normalized === "bash") {
     const command = stringArg(args, "command", "cmd") ?? "";
     const timeout = stringArg(args, "timeoutMs", "timeout");
@@ -114,13 +115,13 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown): ForgeS
     return { title: "search content", language: "regex", lines: [`pattern: ${pattern}`, `glob: ${glob}`] };
   }
 
-  return { title: `${tool} arguments`, language: "json", lines: jsonPreview(args) };
+  return { title: `${safeTool} arguments`, language: "json", lines: jsonPreview(args) };
 }
 
 export function summarizeForgeResult(tool: string, success: boolean, output: string): ForgeSummary {
   const status = success ? "ok" : "failed";
   return {
-    title: `${tool} result ${status}`,
+    title: `${tool || "(no tool)"} result ${status}`,
     language: "output",
     lines: previewLines(output || "<no output>", success ? 5 : 10, success ? 600 : 1200),
   };

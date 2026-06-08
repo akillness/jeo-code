@@ -55,9 +55,10 @@ joc setup
 | `/view <file> [a-b]` · `/diff [file]` · `/find <glob>` · `/search <pat>` | 코드뷰 / git diff / 파일·패턴 검색 |
 | `/sessions` · `/compact` · `/clear` · `/help` · `/exit` | 세션·컨텍스트 관리 |
 
-TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다. 입력창에 `/`로 시작하는 키워드를 타이핑하면 일치하는 명령 목록이 **실시간 미리보기**로 아래에 표시되고, **방향키(↑/↓)로 선택**한 뒤 Enter로 실행할 수 있습니다(`❯` 표시). `/subagent `·`/provider login `처럼 공백 뒤 인자를 입력할 때도 사용 가능한 role/provider/subcommand 목록이 계속 보입니다. `/provider gemini`처럼 프로바이더만 실행하면 화면 폭에 맞는 **방향키 모델 선택기**가 열리고, Enter로 바로 모델을 설정할 수 있습니다. Skill 문서에서 선언/언급한 `/speckit.plan` 같은 직접 슬래시 별칭도 팔레트와 Tab 자동완성에 나타나며, Enter 실행 시 해당 skill 문서를 세션에 주입합니다.
+TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다. 입력창에 `/`로 시작하는 키워드를 타이핑하면 일치하는 명령 목록이 **실시간 미리보기**로 아래에 표시되고, **방향키(↑/↓)로 선택**한 뒤 Enter로 실행할 수 있습니다(`❯` 표시). `/subagent `·`/provider login `처럼 공백 뒤 인자를 입력할 때도 사용 가능한 role/provider/subcommand 목록이 계속 보입니다. `/provider login`은 방향키 프로바이더 선택기를 열고, `/provider gemini` 또는 빈 `/model`은 화면 폭에 맞는 **방향키 모델 선택기**를 열어 Enter로 바로 모델을 설정합니다. Skill 문서에서 선언/언급한 `/speckit.plan` 같은 직접 슬래시 별칭도 팔레트와 Tab 자동완성에 나타나며, Enter 실행 시 해당 skill 문서를 세션에 주입합니다.
 
 > **OpenAI(ChatGPT/Codex) OAuth 모델 표시:** ChatGPT/Codex OAuth 토큰은 `api.openai.com/v1/models` 목록 엔드포인트를 거부하기 때문에, 예전에는 OAuth 로그인을 해도 OpenAI 모델이 목록에 **추가되지 않았습니다**. 이제 로그인된(OAuth/API key) 프로바이더의 live 목록 조회가 실패하면 내장 **카탈로그로 폴백**해 모델이 항상 표시되며, `/models`·로그인 직후 메시지에 `· catalog (live list endpoint unavailable)`로 정직하게 라벨링됩니다.
+> OAuth-only라서 실제 호출 준비가 안 된 프로바이더의 모델은 picker에서 비활성화됩니다. 예: OpenAI ChatGPT/Codex OAuth는 Codex 백엔드용 토큰이므로 bundled `api.openai.com/v1` 어댑터에는 `OPENAI_API_KEY` 또는 호환 base URL이 필요합니다.
 
 > **모델 목록은 채팅 가능한 모델만:** live discovery가 임베딩·TTS·이미지·moderation 같은 비대화 모델을 걸러냅니다(OpenAI 패밀리 denylist, Gemini는 `generateContent` 지원 + 이름 필터). 그래서 `/models`·`/provider <name>`·`#N` 선택 목록에는 실제로 대화에 쓸 수 있는 모델만 나옵니다.
 >

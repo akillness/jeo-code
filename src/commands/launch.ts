@@ -34,6 +34,7 @@ import {
 } from "../tui/components/config-panel";
 import { liveModelPicker, renderLiveModelPicker } from "../tui/components/live-model-picker";
 import { skillPicker, renderSkillPicker } from "../tui/components/skill-picker";
+import { providerPicker, renderProviderPicker } from "../tui/components/provider-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff } from "../tui/components/code-view";
 import { findTool, searchTool } from "../agent/tools";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
@@ -669,12 +670,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
 
   const pickLiveProviderModel = async (
-    providerName: ProviderName,
+    providerName: string,
     entries: PickEntry[],
     current?: string,
+    disabledProviders: readonly ProviderName[] = [],
   ): Promise<PickEntry | undefined> => {
     if (!process.stdin.isTTY || entries.length === 0) return undefined;
-    const list = liveModelPicker(entries, { current });
+    const list = liveModelPicker(entries, { current, disabledProviders, disabledHint: "needs API key/base URL" });
     let chosen: PickEntry | undefined;
     await runSelectPicker(
       (cols, rows) =>
@@ -769,6 +771,56 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       },
     );
     return chosen;
+  };
+
+  const pickCloudProvider = async (statuses: Awaited<ReturnType<typeof describeAllProviders>>): Promise<AuthProvider | undefined> => {
+    const cloud = new Set(["anthropic", "openai", "gemini"]);
+    const list = providerPicker(statuses.filter(s => cloud.has(s.name)), true);
+    let chosen: ProviderName | undefined;
+    await runSelectPicker(
+      (cols, rows) =>
+        renderProviderPicker(list, {
+          title: "Select OAuth provider",
+          cols,
+          rows: Math.max(4, Math.min(rows, 8)),
+          unicode: true,
+          color: true,
+        }),
+      (ch, key) => {
+        if (key?.name === "up") {
+          list.up();
+          return false;
+        }
+        if (key?.name === "down") {
+          list.down();
+          return false;
+        }
+        if (key?.name === "pageup") {
+          list.page(-1, 4);
+          return false;
+        }
+        if (key?.name === "pagedown") {
+          list.page(1, 4);
+          return false;
+        }
+        if (key?.name === "backspace") {
+          list.backspace();
+          return false;
+        }
+        if (key?.name === "escape" || (key?.ctrl && key.name === "c")) {
+          return true;
+        }
+        if (key?.name === "return" || key?.name === "enter") {
+          chosen = list.selected()?.value;
+          return true;
+        }
+        if (ch && ch >= " " && !key?.ctrl && !key?.meta) {
+          list.typeChar(ch);
+        }
+        return false;
+      },
+    );
+    return chosen && cloud.has(chosen) ? chosen as AuthProvider : undefined;
   };
 
   if (previewEnabled) {
@@ -909,16 +961,20 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           const cloud = ["anthropic", "openai", "gemini"] as const;
           let target = tokens.slice(1).map(t => t.toLowerCase()).find(t => (cloud as readonly string[]).includes(t));
           if (!target) {
-            // No provider given → show current status and let the user pick.
             const statuses = await describeAllProviders();
-            console.log("Log in to which provider?");
-            cloud.forEach((p, i) => {
-              const st = statuses.find(s => s.name === p);
-              console.log(`  ${i + 1}) ${p.padEnd(10)} ${st?.ready ? `✓ ${st.label}` : "· not logged in"}`);
-            });
-            const ans = (await rl.question("Choose [1-3] or name (blank to cancel): ")).trim().toLowerCase();
-            const byNum: Record<string, string> = { "1": "anthropic", "2": "openai", "3": "gemini" };
-            target = byNum[ans] ?? ((cloud as readonly string[]).includes(ans) ? ans : undefined);
+            if (process.stdin.isTTY && process.stdout.isTTY) {
+              target = await pickCloudProvider(statuses);
+            } else {
+              // No provider given → show current status and let the user pick.
+              console.log("Log in to which provider?");
+              cloud.forEach((p, i) => {
+                const st = statuses.find(s => s.name === p);
+                console.log(`  ${i + 1}) ${p.padEnd(10)} ${st?.ready ? `✓ ${st.label}` : "· not ready"}`);
+              });
+              const ans = (await rl.question("Choose [1-3] or name (blank to cancel): ")).trim().toLowerCase();
+              const byNum: Record<string, string> = { "1": "anthropic", "2": "openai", "3": "gemini" };
+              target = byNum[ans] ?? ((cloud as readonly string[]).includes(ans) ? ans : undefined);
+            }
             if (!target) {
               console.log("(cancelled)");
               continue;
@@ -969,7 +1025,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         let pickedFromPicker = false;
         let target = explicitModel ?? PROVIDER_DEFAULT[name];
         if (!explicitModel && providerPick.length && process.stdin.isTTY && process.stdout.isTTY) {
-          const picked = await pickLiveProviderModel(name, providerPick, currentResolved);
+          const picked = await pickLiveProviderModel(name, providerPick, currentResolved, st && !st.ready ? [name] : []);
           if (!picked) {
             console.log("(cancelled)");
             continue;
@@ -980,6 +1036,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           const sel = resolveSelection(providerPick, explicitModel);
           if (sel.kind === "index" || sel.kind === "match") {
             target = sel.entry.model;
+            if (st && !st.ready) {
+              console.log(`Cannot select ${sel.entry.model}: ${name} is not ready (${st.label}). Set ${st.envVar ?? "the provider key"} first.`);
+              continue;
+            }
           } else if (sel.kind === "ambiguous") {
             console.log(`'${explicitModel}' matches ${sel.matches.length} ${name} models — be more specific:`);
             for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
@@ -1074,6 +1134,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             const sel = resolveSelection(entries, modelArg);
             if (sel.kind === "index" || sel.kind === "match") {
               chosenModel = sel.entry.model;
+              const bad = (await describeAllProviders()).find(s => s.name === sel.entry.provider && !s.ready);
+              if (bad) {
+                console.log(`Cannot pin ${sel.entry.model}: ${sel.entry.provider} is not ready (${bad.label}). Set ${bad.envVar ?? "the provider key"} first.`);
+                continue;
+              }
             } else if (sel.kind === "ambiguous") {
               console.log(`'${modelArg}' matches ${sel.matches.length} live models — be more specific:`);
               for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
@@ -1142,6 +1207,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             const sel = resolveSelection(entries, chosenModel);
             if (sel.kind === "index" || sel.kind === "match") {
               chosenModel = sel.entry.model;
+              const bad = (await describeAllProviders()).find(s => s.name === sel.entry.provider && !s.ready);
+              if (bad) {
+                console.log(`Cannot set role ${tier} to ${sel.entry.model}: ${sel.entry.provider} is not ready (${bad.label}). Set ${bad.envVar ?? "the provider key"} first.`);
+                continue;
+              }
             } else if (sel.kind === "ambiguous") {
               console.log(`'${chosenModel}' matches ${sel.matches.length} live models — be more specific:`);
               for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
@@ -1216,10 +1286,30 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`Default model saved: ${formatModelLine({ label: finalSave, resolved, provider })} → ~/.joc/config.json`);
           continue;
         }
+        const statuses = await describeAllProviders();
+        const disabledModelProviders = statuses.filter(s => !s.ready).map(s => s.name);
+        if (!arg && process.stdin.isTTY && process.stdout.isTTY) {
+          const live = await getLiveModels();
+          lastPickIndex = flattenModels(live);
+          if (lastPickIndex.length) {
+            const currentResolved = (await describeModel(sessionModel || defaultModel)).resolved;
+            const picked = await pickLiveProviderModel("live", lastPickIndex, currentResolved, disabledModelProviders);
+            if (!picked) {
+              console.log("(cancelled)");
+              continue;
+            }
+            arg = picked.model;
+          }
+        }
         // Selection from the last numbered pick list (`#N`) or a fuzzy substring.
         if (arg && lastPickIndex.length) {
           const sel = resolveSelection(lastPickIndex, arg);
           if (sel.kind === "index" || sel.kind === "match") {
+            if (disabledModelProviders.includes(sel.entry.provider)) {
+              const bad = statuses.find(s => s.name === sel.entry.provider);
+              console.log(`Cannot select ${sel.entry.model}: ${sel.entry.provider} is not ready (${bad?.label ?? "not ready"}). Set ${bad?.envVar ?? "the provider key"} first.`);
+              continue;
+            }
             arg = sel.entry.model;
           } else if (sel.kind === "ambiguous") {
             console.log(`'${arg}' matches ${sel.matches.length} models — be more specific:`);
@@ -1237,7 +1327,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const label = arg || (sessionModel || defaultModel);
         if (arg) sessionModel = arg;
         const { resolved, provider } = await describeModel(label);
-        const statuses = await describeAllProviders();
         const st = statuses.find(s => s.name === provider);
         console.log(`${arg ? "Model set to" : "Current model"}: ${formatModelLine({ label, resolved, provider, ready: st?.ready })}`);
         if (st && !st.ready) console.log(`  ! ${provider} is not ready (${st.label}) — set ${st.envVar ?? "the provider key"} or run 'joc setup'.`);

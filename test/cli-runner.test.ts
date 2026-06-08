@@ -51,6 +51,9 @@ test("renderHelp lists every command", () => {
   expect(help).toContain("launch");
   expect(help).toContain("doctor");
   expect(help).toContain("ultragoal");
+  expect(help).toContain("--model <id>");
+  expect(help).toContain("--models");
+  expect(help).toContain("--thinking <level>");
 });
 
 test("dispatch: per-command --help prints that command's usage without running it", async () => {
@@ -68,4 +71,35 @@ test("dispatch: per-command --help prints that command's usage without running i
   expect(text).toContain("Usage: joc deep-interview");
   expect(text).toContain("Socratic"); // the command summary, not the global help
   expect(text).not.toContain("Commands:"); // global help not printed
+});
+
+test("dispatch: --list-models routes to GJC-style catalog output", async () => {
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => logs.push(a.join(" "));
+  let code: number;
+  try {
+    code = await dispatch(["--list-models", "gpt"], { appName: "joc", version: "0.0.0" });
+  } finally {
+    console.log = orig;
+  }
+  expect(code).toBe(0);
+  const text = logs.join("\n");
+  expect(text).toContain("Canonical models matching 'gpt'");
+  expect(text).toContain("Provider models");
+});
+
+test("dispatch: --models routes to the models command", async () => {
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => logs.push(a.join(" "));
+  let code: number;
+  try {
+    code = await dispatch(["--models", "--catalog", "gpt"], { appName: "joc", version: "0.0.0" });
+  } finally {
+    console.log = orig;
+  }
+  expect(code).toBe(0);
+  const text = logs.join("\n");
+  expect(text).toContain("Canonical models matching 'gpt'");
 });

@@ -32,6 +32,32 @@ joc doctor
 joc setup
 ```
 
+## 대화형 슬래시 명령어
+
+`joc` REPL 입력창에서 사용할 수 있는 명령입니다 (`<Tab>` 자동완성 지원).
+
+| 명령 | 설명 |
+| --- | --- |
+| `/model [id\|#N\|save]` | 세션 모델 설정(라이브 #N 선택·퍼지 매칭·기본값 저장) |
+| `/models [refresh\|caps\|catalog]` | 로그인된 OAuth/API 모델 목록(+capability/카탈로그 표) |
+| `/provider [name] [model\|#N]` | 프로바이더 자격증명·전환, 해당 프로바이더 라이브 모델 목록 |
+| `/provider login <name>` | **입력창에서 바로 OAuth 로그인** (anthropic/openai/gemini) |
+| `/agents [role] [model]` | 서브에이전트(executor/planner/architect/critic) 역할 모델 설정 |
+| `/roles [tier model]` | 모델 역할 티어(smol/slow/plan) 표시·설정 |
+| `/thinking [level]` | 사고 예산(minimal/low/medium/high/xhigh) |
+| `/config` | 현재 런타임 설정 표시 |
+| `/view <file> [a-b]` · `/diff [file]` · `/find <glob>` · `/search <pat>` | 코드뷰 / git diff / 파일·패턴 검색 |
+| `/sessions` · `/compact` · `/clear` · `/help` · `/exit` | 세션·컨텍스트 관리 |
+
+TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다.
+
+```bash
+# REPL 안에서
+/provider login gemini      # 브라우저 OAuth 로그인 → 토큰 저장 → 모델 목록 자동 갱신
+/models caps                # 로그인된 프로바이더의 실제 모델 + capability
+/model #3                   # 방금 표시된 목록에서 3번 모델 선택
+```
+
 ## 자주 쓰는 명령
 
 ```bash
@@ -47,6 +73,14 @@ joc --tmux --worktree ../joc-work
 
 # 모델 목록 확인
 joc models
+
+# GJC 스타일 모델 카탈로그(정적 capability)
+joc --list-models=gemini
+joc --models --catalog gpt
+
+# 실행 시 모델/프로바이더/사고 예산 지정
+joc --model gemini-2.5-flash --thinking high "코드 분석해줘"
+joc --provider gemini --plan "구현 계획 세워줘"
 
 # 인증 관리
 joc auth login anthropic
@@ -90,3 +124,11 @@ GEMINI_API_KEY=...
 JOC_DEFAULT_MODEL=...
 OLLAMA_HOST=http://localhost:11434
 ```
+
+## Publishing
+
+Required npm token permissions:
+
+- Use an npm **Granular Access Token** stored as `NPM_TOKEN`.
+- Token type: **Automation** so CI can publish with provenance.
+- npm account/package settings must allow publish automation to **bypass 2FA** for the workflow.

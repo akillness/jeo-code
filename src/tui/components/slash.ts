@@ -7,6 +7,7 @@ export const SLASH_COMMANDS = [
   "/model",
   "/models",
   "/provider",
+  "/logout",
   "/agents",
   "/config",
   "/roles",

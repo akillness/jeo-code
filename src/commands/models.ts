@@ -3,7 +3,7 @@ import { listAliases, resolveModelId } from "../ai/model-registry";
 import { resolveProvider, resolveRoleModel } from "../ai/model-manager";
 import { describeAllProviders } from "../ai/provider-status";
 import { discoverModels } from "../ai/model-discovery";
-import { formatLiveModels, formatCatalogTable, formatEnrichedModels } from "../tui/components/config-panel";
+import { formatLiveModels, formatCatalogTable, formatCanonicalCatalogTable, formatEnrichedModels } from "../tui/components/config-panel";
 import { MODEL_CATALOG, fuzzyMatchCatalog, type ThinkLevel } from "../ai/model-catalog";
 import { enrichAll, filterCapable, sortByCapability, knownCount } from "../ai/model-enrich";
 
@@ -33,10 +33,12 @@ export async function runModelsCommand(args: string[] = []): Promise<void> {
   const checkMode = args.includes("--check");
   const providerFilter = args.find(a => ["anthropic", "openai", "gemini", "ollama"].includes(a.toLowerCase()))?.toLowerCase();
   if (args.includes("--catalog")) {
-    const query = args.find(a => !a.startsWith("--") && !["anthropic", "openai", "gemini", "ollama"].includes(a.toLowerCase()));
+    const query = args.find(a => !a.startsWith("--") && a.toLowerCase() !== "all");
     const rows = query ? fuzzyMatchCatalog(query) : [...MODEL_CATALOG];
     console.log("\n=== joc models --catalog ===");
-    console.log(`Known model capabilities${query ? ` matching '${query}'` : ""}:`);
+    console.log(`Canonical models${query ? ` matching '${query}'` : ""}`);
+    for (const line of formatCanonicalCatalogTable(rows)) console.log(line);
+    console.log("\nProvider models");
     for (const line of formatCatalogTable(rows)) console.log(line);
     return;
   }

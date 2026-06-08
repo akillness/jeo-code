@@ -4,8 +4,7 @@ import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
 
 function openaiRequest(messages: Message[], options: CallOptions, credential: Credential, stream: boolean): { url: string; headers: Record<string, string>; body: string } {
-  const resolvedModel = options.model.startsWith("openai/") ? options.model.slice(7) : options.model;
-  const model = resolvedModel.includes("gpt-4o") ? "gpt-4o" : resolvedModel;
+  const model = options.model.startsWith("openai/") ? options.model.slice(7) : options.model;
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
   const openaiMessages: { role: string; content: string }[] = [];
   if (systemPrompt) openaiMessages.push({ role: "system", content: systemPrompt });

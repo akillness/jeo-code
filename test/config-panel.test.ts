@@ -9,6 +9,8 @@ import {
   formatLiveModels,
   liveModelKnown,
   formatPickList,
+  formatPickListWithCapabilities,
+  formatCanonicalCatalogTable,
 } from "../src/tui/components/config-panel";
 import { SUBAGENT_ROLES, getSubagentRole } from "../src/agent/subagents";
 import type { ProviderStatus } from "../src/ai/provider-status";
@@ -134,4 +136,35 @@ test("formatPickList empty → login hint, and caps with overflow", () => {
   const many = flattenModels([{ provider: "openai", ok: true, source: "oauth", models: Array.from({ length: 70 }, (_, i) => `m${i}`) }]);
   const out = formatPickList(many, { cap: 10 }).map(strip);
   expect(out.some(l => l.includes("+60 more"))).toBe(true);
+});
+
+test("formatPickListWithCapabilities numbers live models with capability columns", () => {
+  const flat = flattenModels([
+    { provider: "openai", ok: true, source: "oauth", models: ["gpt-4o", "unknown-live-model"] },
+  ]);
+  const out = formatPickListWithCapabilities(flat, { current: "gpt-4o" }).map(strip);
+  const joined = out.join("\n");
+  expect(out[0]).toContain("provider");
+  expect(out[0]).toContain("thinking");
+  expect(joined).toContain("#1");
+  expect(joined).toContain("128K");
+  expect(joined).toContain("◀ current");
+  expect(joined).toContain("unknown-live-model");
+  expect(joined).toContain("?");
+});
+
+test("formatCanonicalCatalogTable renders GJC-style canonical rows", () => {
+  const out = formatCanonicalCatalogTable([
+    { canonical: "alpha", provider: "openai", providerModel: "alpha-1", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true },
+    { canonical: "alpha", provider: "openai", providerModel: "alpha-2", contextTokens: 200_000, maxOutputTokens: 32_768, thinking: ["low"], images: true },
+    { canonical: "beta", provider: "gemini", providerModel: "beta-1", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: ["low"], images: true },
+  ], { current: "openai/alpha-2" }).map(strip);
+  const joined = out.join("\n");
+  expect(out[0]).toContain("canonical");
+  expect(out[0]).toContain("selected");
+  expect(out[0]).toContain("variants");
+  expect(joined).toContain("alpha");
+  expect(joined).toContain("openai/alpha-2");
+  expect(joined).toContain("2");
+  expect(joined).toContain("◀");
 });

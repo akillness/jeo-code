@@ -6,8 +6,7 @@ import { providerHttpError } from "./errors";
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
 function anthropicPayload(messages: Message[], options: CallOptions, stream: boolean): string {
-  const resolvedModel = options.model.startsWith("anthropic/") ? options.model.slice(10) : options.model;
-  const model = resolvedModel.includes("sonnet") ? "claude-3-5-sonnet-20241022" : resolvedModel;
+  const model = options.model.startsWith("anthropic/") ? options.model.slice(10) : options.model;
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
   const anthropicMessages = messages.filter(m => m.role !== "system").map(m => ({ role: m.role, content: m.content }));
   const payload: Record<string, unknown> = {

@@ -3724,3 +3724,22 @@ just `executor`.
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **409 pass / 0 fail across 66 files** (added `team-subagent`).
 - The subagent loop is now exercised under test (read-only enforcement, convergence, step cap), and `joc team` dispatches the role each plan step declares.
+
+## Subagent re-verification — full `joc team` command integration (passes 584–589)
+
+**Date:** 2026-06-05 · **Dimension: agent / subagent end-to-end command correctness.**
+
+Deepens verification from the loop level to the full command: drives `runTeamCommand` against a
+seeded approved plan with a mocked LLM and asserts orchestration + role routing + state transitions.
+
+- **584.** `team-run.test.ts` chdirs to a temp project, seeds `.joc/state/ralplan-state.json` (approved) + a YAML plan with per-step `role`, mocks `callLlm` → `done`, and runs `runTeamCommand`.
+- **585.** Asserts each step dispatches to its declared role (`Subagent: Planner` / `Architect`).
+- **586.** Asserts a role-less step falls back to `Subagent: Executor`.
+- **587.** Asserts `[SUCCESS] All tasks…` and `team-state.json` advances to `current_phase: complete` with all tasks completed.
+- **588.** Asserts the approval gate: an unapproved plan is refused (`not approved`).
+- **589.** Typecheck 0; `bun test` 411 pass / 67 files.
+
+### Verification (passes 584–589)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **411 pass / 0 fail across 67 files** (added `team-run`).
+- The subagent system is now verified at three levels: pure role registry/resolution, the executor loop (read-only enforcement/convergence/step cap), and the full `joc team` command (plan parse → per-step role routing → execution → state).

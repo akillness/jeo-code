@@ -9,7 +9,7 @@ import {
 } from "../src/tui/components/autocomplete";
 
 const ctx = (over: Partial<CompletionContext> = {}): CompletionContext => ({
-  slashCommands: ["/model", "/models", "/provider", "/agents", "/thinking", "/help"],
+  slashCommands: ["/model", "/models", "/provider", "/agents", "/subagent", "/subagents", "/thinking", "/help"],
   liveModels: ["claude-3-5-sonnet-live", "gpt-4o-live"],
   aliases: ["fast", "sonnet", "gpt"],
   catalogModels: ["claude-3-5-sonnet", "gpt-4o", "gemini-2.0-flash"],
@@ -76,6 +76,8 @@ test("/agents completes role ids, then models + maxSteps keyword", () => {
   expect(m.completions).toContain("reset");
   expect(m.completions).toContain("maxSteps");
   expect(m.completions).toContain("gpt-4o-live");
+  expect(complete("/subagent ", ctx()).completions).toEqual(["executor", "planner", "architect", "critic"]);
+  expect(complete("/subagents executor ", ctx()).completions).toContain("maxSteps");
 });
 
 test("/roles completes tier then live/catalog models", () => {

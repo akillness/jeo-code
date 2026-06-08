@@ -16,6 +16,8 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/provider", usage: "/provider [name] [model|#N]", description: "Credentials, switch provider, list live models; `login <name>` starts OAuth", group: "models" },
   { command: "/logout", usage: "/logout <anthropic|openai|gemini>", description: "Remove the stored OAuth token for a provider", group: "models" },
   { command: "/agents", usage: "/agents [role] [model|#N|maxSteps N|reset]", description: "List subagent roles or pin role model/settings", group: "subagents" },
+  { command: "/subagent", usage: "/subagent [role] [model|#N|maxSteps N|reset]", description: "Alias for /agents; list or configure subagent roles", group: "subagents" },
+  { command: "/subagents", usage: "/subagents [role] [model|#N|maxSteps N|reset]", description: "Alias for /agents; list or configure subagent roles", group: "subagents" },
   { command: "/config", usage: "/config", description: "Show the effective runtime configuration", group: "models" },
   { command: "/roles", usage: "/roles [tier model]", description: "Show or set model role tiers (smol/slow/plan)", group: "models" },
   { command: "/thinking", usage: "/thinking [level]", description: "Show or set thinking budget (minimal/low/medium/high/xhigh)", group: "models" },
@@ -43,6 +45,15 @@ export function isSlashAttempt(input: string): boolean {
   return input.startsWith("/") && !input.slice(1).includes(" ");
 }
 
+const GROUP_LABELS: Record<SlashCommandInfo["group"], string> = {
+  session: "Session",
+  models: "Models / Providers",
+  subagents: "Subagents",
+  code: "Code tools",
+  system: "System",
+};
+
+const GROUP_ORDER: readonly SlashCommandInfo["group"][] = ["models", "subagents", "code", "session", "system"];
 /** Format a visible command palette for `/`, `/help`, or a partial slash prefix. */
 export function formatSlashCommandList(input = "/"): string[] {
   const query = input === "/?" ? "/" : input;
@@ -54,9 +65,13 @@ export function formatSlashCommandList(input = "/"): string[] {
   const title = query === "/" || query === "/help"
     ? "Slash Commands:"
     : `Slash Commands matching '${query}':`;
-  return [
-    title,
-    ...rows.map(c => `  ${c.usage.padEnd(usageWidth)} - ${c.description}`),
-    "Tip: type a slash prefix like /m to narrow, or press Tab for inline completion.",
-  ];
+  const lines = [title];
+  for (const group of GROUP_ORDER) {
+    const groupRows = rows.filter(c => c.group === group);
+    if (groupRows.length === 0) continue;
+    lines.push(`  ${GROUP_LABELS[group]}:`);
+    for (const c of groupRows) lines.push(`    ${c.usage.padEnd(usageWidth)} - ${c.description}`);
+  }
+  lines.push("Tip: type a slash prefix like /m to narrow, or press Tab for inline completion.");
+  return lines;
 }

@@ -662,8 +662,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         liveModelsCache = null; // re-discover after credential change
         continue;
       }
-      if (input.startsWith("/agents") && (input === "/agents" || input[7] === " ")) {
-        const tokens = input.substring(7).trim().split(/\s+/).filter(Boolean);
+      const agentsCommand =
+        input === "/agents" || input.startsWith("/agents ") ? "/agents" :
+        input === "/subagents" || input.startsWith("/subagents ") ? "/subagents" :
+        input === "/subagent" || input.startsWith("/subagent ") ? "/subagent" :
+        undefined;
+      if (agentsCommand) {
+        const tokens = input.substring(agentsCommand.length).trim().split(/\s+/).filter(Boolean);
         const roleArg = tokens[0];
         const modelArg = tokens[1];
         const cfgNow = await readGlobalConfig();

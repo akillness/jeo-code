@@ -3683,3 +3683,44 @@ Follow-up to the `/provider login` work: improves the no-argument path and confi
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **403 pass / 0 fail across 65 files**.
 - `/provider login` (no arg) → numbered provider picker with status; post-login badge confirms `✓`.
+
+## Slash command palette listing + subagent help (passes 566–573)
+
+**Date:** 2026-06-07 · **Dimension: TUI / slash-command discoverability.**
+
+- **566.** Added structured `SLASH_COMMAND_DETAILS` metadata so command names, usages, descriptions, and groups have one source of truth.
+- **567.** Kept `SLASH_COMMANDS` derived from the structured metadata, preserving autocomplete order.
+- **568.** Added `formatSlashCommandList("/")` for a full REPL command palette.
+- **569.** Added prefix narrowing: entering `/m` now lists matching command usages instead of only a terse “Did you mean”.
+- **570.** Wired `/`, `/?`, and `/help` to the same visible slash command list.
+- **571.** Improved `/agents /`, `/agents ?`, and `/agents help` to list subagent roles plus model/maxSteps/reset subcommands.
+- **572.** Added tests for metadata sync, bare-slash listing, prefix narrowing, and unknown slash hints.
+- **573.** Fixed the existing `team.ts` role map typing surfaced by the full typecheck gate.
+
+### Verification (passes 566–573)
+- `bun test test/slash.test.ts test/autocomplete.test.ts` → **22 pass / 0 fail**.
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **409 pass / 0 fail across 66 files**.
+
+## Subagent execution verified + per-step role routing (passes 574–583)
+
+**Date:** 2026-06-05 · **Dimension: agent / subagent execution correctness.**
+
+Re-verified that subagents actually run and improved `joc team` so all four roles are usable, not
+just `executor`.
+
+- **574.** End-to-end test (`team-subagent.test.ts`) drives `runAgentLoop` with a read-only role's toolset (mocked LLM) and confirms a `write` is **rejected** at the engine boundary (`Unknown tool: write`).
+- **575.** Confirms the loop converges on `done` for a read-only role.
+- **576.** Confirms the `executor` toolset exposes `write`/`edit` and the loop completes.
+- **577.** Confirms a role's step budget is honored when the model never signals `done` (stops at the cap).
+- **578.** `StepSchema` gains an optional `role` field (executor/planner/architect/critic).
+- **579.** `joc team` builds a task→role map and routes each step to its declared role via `getSubagentRole(roleId) ?? defaultSubagentRole()` — previously every task ran as `executor`.
+- **580.** Unknown/empty role falls back to `executor` (safe default).
+- **581.** Read-only roles (planner/architect/critic) execute with the mutation-free toolset, so a plan/review step physically cannot edit the repo.
+- **582.** Per-role model + step budget (`resolveSubagentModel`/`resolveSubagentMaxSteps`) feed the routed role.
+- **583.** Typecheck 0; `bun test` 409 pass / 66 files.
+
+### Verification (passes 574–583)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **409 pass / 0 fail across 66 files** (added `team-subagent`).
+- The subagent loop is now exercised under test (read-only enforcement, convergence, step cap), and `joc team` dispatches the role each plan step declares.

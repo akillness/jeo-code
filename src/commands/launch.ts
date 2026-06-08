@@ -5,7 +5,7 @@ import { skillsPromptSection } from "../skills/catalog";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
-import { matchSlash, isSlashAttempt } from "../tui/components/slash";
+import { matchSlash, isSlashAttempt, formatSlashCommandList } from "../tui/components/slash";
 import { staticCompletionContext, readlineCompleter, type CompletionContext } from "../tui/components/autocomplete";
 import { EVOLUTION_STAGES, renderAsciiArt, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
@@ -485,27 +485,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       const input = (await rl.question("\njoc> ")).trim();
       if (input === "/exit" || input === "/quit") break;
       if (input === "") continue;
-      if (input === "/help") {
-        console.log("Slash Commands:");
-        console.log("  /help               - Show this help message");
-        console.log("  /clear              - Clear conversation history (keeps system prompt)");
-        console.log("  /model [id|#N|save] - Show/set session model by id, live #N, fuzzy match, or save default");
-        console.log("  /models [refresh|caps|catalog] - Live OAuth/API-key models; caps/catalog add capability tables");
-        console.log("  /provider [name] [model|#N] - Credentials, switch provider, list live models");
-        console.log("  /provider login <name>      - OAuth login (anthropic/openai/gemini) from here");
-        console.log("  /logout <name>              - Remove the stored OAuth token for a provider");
-        console.log("  /agents [role] [model|#N|maxSteps N|reset] - List subagents or pin role model/settings");
-        console.log("  /config             - Show the effective runtime configuration");
-        console.log("  /roles [tier model] - Show or set model role tiers (smol/slow/plan)");
-        console.log("  /thinking [level]   - Show or set the thinking budget (minimal/low/medium/high/xhigh)");
-        console.log("  /view <file> [a-b]  - Code view: render a file with line numbers + light highlight");
-        console.log("  /diff [file]        - Render `git diff` with +/- coloring");
-        console.log("  /find <glob>        - List files matching a glob");
-        console.log("  /search <pat> [glob]- Grep the repo for a pattern");
-        console.log("  /sessions           - List saved sessions");
-        console.log("  /evolve             - Simulate and view the agent's evolutionary gallery");
-        console.log("  /compact            - Summarize older turns to free context");
-        console.log("  /exit, /quit        - Exit the agent");
+      if (input === "/" || input === "/?" || input === "/help") {
+        for (const line of formatSlashCommandList(input === "/help" ? "/" : input)) console.log(line);
         console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .joc/sessions/.");
         const tip = getEvolutionTip(history.length, flags.maxSteps);
         console.log(`\n${chalk.cyan("Evolutionary Tip:")} ${tip}`);
@@ -686,13 +667,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const roleArg = tokens[0];
         const modelArg = tokens[1];
         const cfgNow = await readGlobalConfig();
-        if (!roleArg) {
+        if (!roleArg || roleArg === "/" || roleArg === "?" || roleArg.toLowerCase() === "help") {
           console.log("Subagent roles (used by 'joc team'):");
           for (const line of formatAgentsPanel(SUBAGENT_ROLES, r => ({
             model: resolveSubagentModel(r.id, cfgNow),
             maxSteps: resolveSubagentMaxSteps(r.id, cfgNow),
           }))) console.log(line);
           console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  steps: /agents <role> maxSteps <N>");
+          console.log("Available: executor, planner, architect, critic");
+          console.log("Subcommands: <role> <model|#N>, <role> maxSteps <N>, <role> reset");
           continue;
         }
         const role = getSubagentRole(roleArg);
@@ -960,7 +943,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // Unhandled slash attempt → suggest, don't send the typo to the model.
       if (isSlashAttempt(input)) {
         const m = matchSlash(input);
-        console.log(m.length ? `Did you mean: ${m.join("  ")} ?` : `Unknown command '${input}'. Try /help.`);
+        if (m.length) {
+          for (const line of formatSlashCommandList(input)) console.log(line);
+        } else {
+          console.log(`Unknown command '${input}'. Try /help.`);
+        }
         continue;
       }
 

@@ -8,6 +8,7 @@ import { runAgentLoop } from "../agent/engine";
 import { readGlobalConfig } from "../agent/state";
 import {
   defaultSubagentRole,
+  getSubagentRole,
   resolveSubagentModel,
   resolveSubagentMaxSteps,
   subagentSystemPrompt,
@@ -105,6 +106,8 @@ export async function runTeamCommand(): Promise<void> {
   }
 
   const tasks = parsed.data.steps.map(step => step.name);
+  // Map each task name to its optional subagent role (executor/planner/architect/critic).
+  const roleByTask = new Map<string, string | undefined>(parsed.data.steps.map(step => [step.name, step.role]));
 
   console.log(`Loaded ${tasks.length} tasks for execution.`);
 
@@ -136,6 +139,7 @@ export async function runTeamCommand(): Promise<void> {
       activeIndex,
       completed: teamState.completed_tasks ?? [],
       cwd,
+      roleId: roleByTask.get(currentTask),
     });
     
     if (success) {
@@ -157,9 +161,9 @@ export async function runTeamCommand(): Promise<void> {
   }
 }
 
-async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: string }): Promise<boolean> {
+async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: string; roleId?: string }): Promise<boolean> {
   const config = await readGlobalConfig();
-  const role = defaultSubagentRole();
+  const role = getSubagentRole(ctx.roleId) ?? defaultSubagentRole();
   const model = resolveSubagentModel(role.id, config);
   const maxSteps = resolveSubagentMaxSteps(role.id, config);
   console.log(`  └─ Subagent: ${role.title} · model ${model} · ≤${maxSteps} steps`);
@@ -197,6 +201,8 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
 }
 export const StepSchema = z.object({
   name: z.string(),
+  /** Optional subagent role for this step (executor/planner/architect/critic). */
+  role: z.string().optional(),
 }).passthrough();
 
 export const PlanSchema = z.object({

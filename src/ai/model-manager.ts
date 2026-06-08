@@ -105,9 +105,11 @@ export function resolveRetryOptions(retry: Config["retry"]): RetryOptions {
 }
 
 /**
- * Apply the same credential compatibility rule everywhere a provider call or
- * live model discovery needs credentials. OAuth is preferred only when the
- * bundled adapter is verified end-to-end; otherwise an API key in config wins.
+ * Pick the credential to actually use for a provider call / live discovery.
+ * An API key is the broader, documented path, so it wins whenever present.
+ * An OAuth-only login is usable only when the bundled adapter is verified
+ * end-to-end (Anthropic Messages, OpenAI ChatGPT/Codex Responses); otherwise
+ * (e.g. Gemini OAuth) we fail fast asking for an API key.
  */
 export function effectiveCredentialForProvider(
   provider: AuthProvider,
@@ -115,10 +117,12 @@ export function effectiveCredentialForProvider(
   config: Pick<Config, "providers">,
   model: string,
 ): Credential {
-  if (credential.kind === "oauth" && OAUTH_FLOW_REGISTRY[provider]?.verifiedEndToEnd === false) {
+  if (credential.kind === "oauth") {
     const apiKey = config.providers[provider];
     if (apiKey) return { kind: "api_key", provider, token: apiKey };
-    throw new Error(`Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'joc setup') to use ${model}.`);
+    if (OAUTH_FLOW_REGISTRY[provider]?.verifiedEndToEnd === false) {
+      throw new Error(`Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'joc setup') to use ${model}.`);
+    }
   }
   return credential;
 }

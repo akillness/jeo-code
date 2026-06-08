@@ -2,6 +2,7 @@ import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
+import { codexResponsesCall, codexResponsesStream } from "./openai-responses";
 
 export function openaiRequest(messages: Message[], options: CallOptions, credential: Credential, stream: boolean): { url: string; headers: Record<string, string>; body: string } {
   const model = options.model.startsWith("openai/") ? options.model.slice(7) : options.model;
@@ -38,6 +39,8 @@ export function openaiRequest(messages: Message[], options: CallOptions, credent
 export const openaiAdapter: ProviderAdapter = {
   name: "openai",
   async call(messages, options, credential) {
+    // ChatGPT/Codex OAuth can't use /chat/completions — route to the Codex Responses backend.
+    if (credential.kind === "oauth") return codexResponsesCall(messages, options, credential);
     const { url, headers, body } = openaiRequest(messages, options, credential, false);
     const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) throw await providerHttpError("OpenAI", response);
@@ -46,6 +49,10 @@ export const openaiAdapter: ProviderAdapter = {
     return result.choices[0]?.message?.content ?? "";
   },
   async *stream(messages, options, credential) {
+    if (credential.kind === "oauth") {
+      yield* codexResponsesStream(messages, options, credential);
+      return;
+    }
     const { url, headers, body } = openaiRequest(messages, options, credential, true);
     const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) throw await providerHttpError("OpenAI", response, "(stream)");

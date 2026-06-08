@@ -32,8 +32,8 @@ export const OAUTH_FLOW_REGISTRY: Record<AuthProvider, OAuthFlow> = {
     label: "OpenAI (ChatGPT/Codex)",
     login: loginOpenAI,
     refresh: refreshOpenAIToken,
-    verifiedEndToEnd: false,
-    note: "Token targets the ChatGPT/Codex backend; the bundled chat adapter expects an OPENAI_API_KEY.",
+    verifiedEndToEnd: true,
+    note: "ChatGPT/Codex OAuth served via the Codex Responses backend (chatgpt.com/backend-api/codex/responses). An OPENAI_API_KEY, when set, takes precedence and uses api.openai.com.",
   },
   gemini: {
     provider: "gemini",

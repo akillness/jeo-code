@@ -67,7 +67,7 @@ export interface LaunchFlags {
   errors: string[];
 }
 
-const PROVIDER_DEFAULT: Record<ProviderName, string> = { anthropic: "sonnet", openai: "gpt", gemini: "flash", ollama: "fast" };
+const PROVIDER_DEFAULT: Record<ProviderName, string> = { anthropic: "sonnet", openai: "gpt-5.5", gemini: "flash", ollama: "fast" };
 
 function takeValue(args: string[], index: number, inlinePrefix: string): { value?: string; nextIndex: number } {
   const current = args[index]!;
@@ -435,6 +435,20 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     onError: (msg: string) => console.log(`  └─ stream:error ${msg}`),
   };
 
+  // Map raw provider errors (rate limit / auth) to a concise, actionable line.
+  const friendlyProviderError = (err: unknown): string => {
+    const msg = (err as Error)?.message ?? String(err);
+    const status = (err as { status?: number })?.status;
+    if (status === 429 || /\b429\b/.test(msg) || /rate[ _]?limit/i.test(msg)) {
+      const prov = /anthropic/i.test(msg) ? "Anthropic" : /openai/i.test(msg) ? "OpenAI" : /gemini|google/i.test(msg) ? "Gemini" : "the provider";
+      return `Rate limited by ${prov} (HTTP 429). Auto-retry was exhausted — wait a moment and resend, slow your request rate, or switch model with /model (a local ollama model never rate-limits).`;
+    }
+    if (status === 401 || status === 403 || /\b40[13]\b/.test(msg)) {
+      return `${msg}\n  → Check credentials: run 'joc auth status', re-login with /provider login <name>, or set the provider API key.`;
+    }
+    return msg;
+  };
+
   // Run one conversational turn: compact, persist user msg, run the loop, persist + return the reply.
   // When `useTui`, a live TUI renders the turn and prints the final reply itself (rendered=true).
   const runTurn = async (
@@ -463,7 +477,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         events: tui ? tui.events() : streamEvents,
       });
     } catch (err) {
-      if (tui) tui.finish(`! ${(err as Error).message}`);
+      if (tui) tui.finish(`! ${friendlyProviderError(err)}`);
       throw err;
     } finally {
       process.removeListener("SIGINT", onSigint);
@@ -497,7 +511,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       const { reply, usage } = await runTurn(messageContent, false);
       console.log(reply + usage);
     } catch (err) {
-      console.log(`! ${(err as Error).message}`);
+      console.log(`! ${friendlyProviderError(err)}`);
     }
     return;
   }
@@ -1480,7 +1494,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(usage.trim());
         }
       } catch (err) {
-        console.log(`! ${(err as Error).message}`);
+        console.log(`! ${friendlyProviderError(err)}`);
       }
     }
   } finally {

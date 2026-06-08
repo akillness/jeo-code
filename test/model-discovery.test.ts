@@ -108,6 +108,48 @@ test("listProviderModels: ollama is keyless and never needs a credential", async
   expect(r.models).toEqual(["ollama/llama3"]);
 });
 
+test("listProviderModels: incompatible OAuth falls back to API key for discovery", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: { anthropic: "sk-ant", openai: "sk-oai", gemini: "sk-gem" },
+      oauth: { openai: "oauth-oai" },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  let auth = "";
+  const fetchSpy = (async (_url: string | URL | Request, init?: RequestInit) => {
+    auth = String((init?.headers as Record<string, string>)?.Authorization ?? "");
+    return new Response(JSON.stringify({ data: [{ id: "gpt-4o-mini" }] }), { status: 200 });
+  }) as typeof fetch;
+  const r = await listProviderModels("openai", { fetchImpl: fetchSpy });
+  expect(r.ok).toBe(true);
+  expect(r.source).toBe("api_key");
+  expect(auth).toBe("Bearer sk-oai");
+  expect(r.models).toEqual(["gpt-4o-mini"]);
+});
+
+test("listProviderModels: incompatible OAuth-only discovery reports adapter compatibility", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: { anthropic: "sk-ant", gemini: "sk-gem" },
+      oauth: { openai: "oauth-oai" },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  let called = false;
+  const fetchSpy = (async () => {
+    called = true;
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  const r = await listProviderModels("openai", { fetchImpl: fetchSpy });
+  expect(r.ok).toBe(false);
+  expect(r.source).toBe("oauth");
+  expect(r.error).toContain("OAuth backend is not compatible");
+  expect(called).toBe(false);
+});
+
 test("listProviderModels: credential-less cloud short-circuits without fetching", async () => {
   // Fresh config dir with no keys → anthropic credential is "none".
   const empty = await fs.mkdtemp(path.join(os.tmpdir(), "joc-disc-empty-"));

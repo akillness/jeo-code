@@ -6,7 +6,7 @@
  *  - `/model gpt`      → live (logged-in) model ids + aliases + catalog ids
  *  - `/provider an`    → provider names; second arg → that provider's live models
  *  - `/agents exec`    → subagent role ids; second arg → live model ids
- *  - `/thinking h`     → low/medium/high
+ *  - `/thinking h`     → minimal/low/medium/high/xhigh
  *
  * Pure + synchronous: the dynamic data (live models from the OAuth-authenticated
  * accounts, alias snapshot) is passed in via `CompletionContext`, so the readline
@@ -43,7 +43,7 @@ export interface CompletionResult {
 }
 
 const MAX_COMPLETIONS = 50;
-const THINKING_LEVELS = ["low", "medium", "high"];
+const THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh"];
 
 /** Static half of a completion context (no network/config needed). */
 export function staticCompletionContext(): Omit<CompletionContext, "liveModels" | "aliases" | "modelsForProvider"> {
@@ -122,7 +122,7 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       return { completions: [], token, kind: "none" };
     }
     case "/models":
-      return argIndex === 0 ? finish(["refresh"], "subcommand") : { completions: [], token, kind: "none" };
+      return argIndex === 0 ? finish(["refresh", "caps", "catalog"], "subcommand") : { completions: [], token, kind: "none" };
     case "/provider": {
       if (argIndex === 0) return finish(ctx.providers, "provider");
       if (argIndex === 1) return finish(ctx.modelsForProvider(tokens[1] ?? ""), "model");
@@ -130,8 +130,14 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     }
     case "/agents": {
       if (argIndex === 0) return finish(ctx.roleIds, "role");
-      if (argIndex === 1) return finish(["maxSteps", ...rankedModelPool(ctx)], "model");
-      if (argIndex === 2 && tokens[2]?.toLowerCase() === "maxsteps") return { completions: [], token, kind: "none" };
+      if (argIndex === 1) return finish(["reset", "maxSteps", ...rankedModelPool(ctx)], "model");
+      if (argIndex === 2 && (tokens[2]?.toLowerCase() === "maxsteps" || tokens[2]?.toLowerCase() === "steps")) return { completions: [], token, kind: "none" };
+      return { completions: [], token, kind: "none" };
+    }
+    case "/roles": {
+      const tiers = ["smol", "slow", "plan"];
+      if (argIndex === 0) return finish(tiers, "role");
+      if (argIndex === 1 && tiers.includes(tokens[1]?.toLowerCase() ?? "")) return finish(rankedModelPool(ctx), "model");
       return { completions: [], token, kind: "none" };
     }
     case "/thinking":

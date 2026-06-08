@@ -3630,3 +3630,36 @@ the stable `app.ts draw()` bottom region, TTY-gated so non-TTY/test frames are u
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **403 pass / 0 fail across 65 files** (added `hints`).
 - Render: hint bar `^C cancel · Tab complete · /help commands · /model switch · /exit quit`; footer carries a live `● ● ✗ ◐` step strip.
+
+## REPL OAuth login + logout from the input box (passes 538–557)
+
+**Date:** 2026-06-05 · **Dimension: tui / in-REPL provider authentication + integration.**
+
+Adds the requested ability to authenticate from the input box: `/provider login <name>` runs the
+real OAuth flow without leaving the REPL, plus `/logout <name>`. Integrated with the concurrent
+agents' current `launch.ts`/`autocomplete`/`config-panel` rather than isolated.
+
+### Batch AZ — Reusable login flow (`commands/auth.ts`)
+- **538. `OAuthPrompt`** interface (readline satisfies it).
+- **539. `interactiveOAuthLogin(provider, prompt, log?)`** — extracted the OAuth flow (instructions, browser open, manual-code fallback) so it's shared.
+- **540.** `runAuthLogin` refactored to call it (no behavior change; `--token` manual path intact).
+
+### Batch BA — REPL auth commands (`launch.ts`)
+- **541. `/provider login <name>`** runs OAuth in the REPL using the live readline; **542.** validates the provider is a cloud one; **543.** prints success + account email; **544.** invalidates the live-model cache so the next `/models` re-discovers with the new credential; **545.** failure hint points at the env key.
+- **546. `/provider auth <name>`** accepted as an alias.
+- **547. `/logout <name>`** removes the stored OAuth token (`logoutOAuth`) and invalidates the cache.
+- **548.** Usage messages for missing/invalid provider on both.
+
+### Batch BB — Surfacing + docs
+- **549. `/logout`** added to the `SLASH_COMMANDS` palette (Tab autocomplete + did-you-mean).
+- **550–552. `/help`** documents `/provider login`, `/logout`.
+- **553. README** gains a 대화형 슬래시 명령어 table incl. `/provider login`, the step-timeline/hints note, and a REPL auth example.
+
+### Batch BC — Integration & verify
+- **554.** Built on the concurrent agents' current files (autocomplete/config-panel/launch), no isolation.
+- **555.** `tsc --noEmit` 0; **556.** `bun test` 403 pass / 65 files; **557.** real smoke: `joc auth login anthropic --token …` (refactored path) stores the bearer and `joc auth status` shows `set (manual)`.
+
+### Verification (passes 538–557)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **403 pass / 0 fail across 65 files**.
+- Real smoke: refactored `auth login --token` + `auth status` round-trip; `/provider login <name>` shares the identical `interactiveOAuthLogin` flow (typecheck-verified).

@@ -104,6 +104,25 @@ export function resolveRetryOptions(retry: Config["retry"]): RetryOptions {
   return opts;
 }
 
+/**
+ * Apply the same credential compatibility rule everywhere a provider call or
+ * live model discovery needs credentials. OAuth is preferred only when the
+ * bundled adapter is verified end-to-end; otherwise an API key in config wins.
+ */
+export function effectiveCredentialForProvider(
+  provider: AuthProvider,
+  credential: Credential,
+  config: Pick<Config, "providers">,
+  model: string,
+): Credential {
+  if (credential.kind === "oauth" && OAUTH_FLOW_REGISTRY[provider]?.verifiedEndToEnd === false) {
+    const apiKey = config.providers[provider];
+    if (apiKey) return { kind: "api_key", provider, token: apiKey };
+    throw new Error(`Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'joc setup') to use ${model}.`);
+  }
+  return credential;
+}
+
 interface Resolved {
   adapter: ProviderAdapter;
   callOptions: CallOptions;
@@ -139,15 +158,7 @@ async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
   }
 
   const credential = await resolveCredential(provider as AuthProvider);
-  let effective = credential;
-  if (effective.kind === "oauth" && OAUTH_FLOW_REGISTRY[provider as AuthProvider]?.verifiedEndToEnd === false) {
-    const apiKey = config.providers[provider as AuthProvider];
-    if (apiKey) {
-      effective = { kind: "api_key", provider: provider as AuthProvider, token: apiKey };
-    } else {
-      throw new Error(`Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'joc setup') to use ${model}.`);
-    }
-  }
+  const effective = effectiveCredentialForProvider(provider as AuthProvider, credential, config, model);
 
   const isLocalOpenAi = provider === "openai" && !!baseUrl;
   if (effective.kind === "none" && !isLocalOpenAi) {

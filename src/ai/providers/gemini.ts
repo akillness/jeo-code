@@ -4,7 +4,7 @@ import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
 
 function geminiRequest(messages: Message[], options: CallOptions, credential: Credential, action: "generateContent" | "streamGenerateContent"): { url: string; headers: Record<string, string>; body: string } {
-  const resolvedModel = options.model.startsWith("google/") ? options.model.slice(7) : options.model;
+  const resolvedModel = options.model.replace(/^(google|gemini)\//, "");
   let geminiModel = resolvedModel;
   if (!geminiModel || geminiModel === "claude-3-5-sonnet") geminiModel = "gemini-2.0-flash";
 

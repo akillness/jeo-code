@@ -72,25 +72,8 @@ async function runAuthLogin(rest: string[]): Promise<void> {
     return;
   }
 
-  const flow = OAUTH_FLOW_REGISTRY[chosen];
-  console.log(`\n=== joc auth login — ${flow.label} ===`);
-  if (!flow.verifiedEndToEnd && flow.note) console.log(`Note: ${flow.note}`);
-  for (const line of OAUTH_FLOWS[chosen].instructions) console.log("  " + line);
-  console.log("");
-
-  const ctrl: OAuthController = {
-    onAuth: ({ url, instructions }) => {
-      console.log(`Opening browser:\n  ${url}\n`);
-      if (instructions) console.log(instructions + "\n");
-      void openInBrowser(url);
-    },
-    onProgress: msg => console.log(`  … ${msg}`),
-    onManualCodeInput: async () =>
-      (await rl.question("Paste redirect URL or code (or wait for the browser callback): ")).trim(),
-  };
-
   try {
-    const { email } = await interactiveLogin(chosen, ctrl);
+    const { email } = await interactiveOAuthLogin(chosen, rl);
     console.log(`\n[SUCCESS] OAuth login complete for ${chosen}${email ? ` (${email})` : ""}.`);
     console.log("Stored access + refresh tokens in ~/.joc/config.json; joc will auto-refresh on expiry.");
   } catch (err) {
@@ -100,6 +83,40 @@ async function runAuthLogin(rest: string[]): Promise<void> {
   } finally {
     rl.close();
   }
+}
+
+/** Prompt object the OAuth manual-code fallback needs (a readline interface satisfies it). */
+export interface OAuthPrompt {
+  question(query: string): Promise<string>;
+}
+
+/**
+ * Run the interactive OAuth login flow for a provider using an existing prompt
+ * (readline) interface. Shared by `joc auth login` and the REPL `/provider login`.
+ * Prints flow instructions, opens the browser, and resolves with the account email.
+ */
+export async function interactiveOAuthLogin(
+  provider: AuthProvider,
+  prompt: OAuthPrompt,
+  log: (s: string) => void = console.log,
+): Promise<{ email?: string }> {
+  const flow = OAUTH_FLOW_REGISTRY[provider];
+  log(`\n=== OAuth login — ${flow.label} ===`);
+  if (!flow.verifiedEndToEnd && flow.note) log(`Note: ${flow.note}`);
+  for (const line of OAUTH_FLOWS[provider].instructions) log("  " + line);
+  log("");
+
+  const ctrl: OAuthController = {
+    onAuth: ({ url, instructions }) => {
+      log(`Opening browser:\n  ${url}\n`);
+      if (instructions) log(instructions + "\n");
+      void openInBrowser(url);
+    },
+    onProgress: msg => log(`  … ${msg}`),
+    onManualCodeInput: async () =>
+      (await prompt.question("Paste redirect URL or code (or wait for the browser callback): ")).trim(),
+  };
+  return interactiveLogin(provider, ctrl);
 }
 
 async function runAuthLogout(provider?: AuthProvider): Promise<void> {

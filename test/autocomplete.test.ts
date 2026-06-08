@@ -15,7 +15,7 @@ const ctx = (over: Partial<CompletionContext> = {}): CompletionContext => ({
   catalogModels: ["claude-3-5-sonnet", "gpt-4o", "gemini-2.0-flash"],
   providers: ["anthropic", "openai", "gemini", "ollama"],
   roleIds: ["executor", "planner", "architect", "critic"],
-  thinkingLevels: ["low", "medium", "high"],
+  thinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
   modelsForProvider: p => (p === "openai" ? ["gpt-4o-live", "gpt-4o-mini-live"] : []),
   ...over,
 });
@@ -56,9 +56,10 @@ test("/model #N is not completed (numbered pick)", () => {
   expect(complete("/model #1", ctx()).completions).toEqual([]);
 });
 
-test("/models completes the refresh subcommand", () => {
-  expect(complete("/models ", ctx()).completions).toEqual(["refresh"]);
+test("/models completes model-list subcommands", () => {
+  expect(complete("/models ", ctx()).completions).toEqual(["refresh", "caps", "catalog"]);
   expect(complete("/models re", ctx()).completions).toEqual(["refresh"]);
+  expect(complete("/models ca", ctx()).completions).toEqual(["caps", "catalog"]);
 });
 
 test("/provider completes names, then that provider's live models", () => {
@@ -72,12 +73,20 @@ test("/agents completes role ids, then models + maxSteps keyword", () => {
   expect(complete("/agents ", ctx()).completions).toEqual(["executor", "planner", "architect", "critic"]);
   expect(complete("/agents exec", ctx()).completions).toEqual(["executor"]);
   const m = complete("/agents executor ", ctx());
+  expect(m.completions).toContain("reset");
   expect(m.completions).toContain("maxSteps");
   expect(m.completions).toContain("gpt-4o-live");
 });
 
-test("/thinking completes the three levels", () => {
-  expect(complete("/thinking ", ctx()).completions).toEqual(["low", "medium", "high"]);
+test("/roles completes tier then live/catalog models", () => {
+  expect(complete("/roles ", ctx()).completions).toEqual(["smol", "slow", "plan"]);
+  const m = complete("/roles smol ", ctx());
+  expect(m.kind).toBe("model");
+  expect(m.completions).toContain("gpt-4o-live");
+});
+
+test("/thinking completes the five levels", () => {
+  expect(complete("/thinking ", ctx()).completions).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
   expect(complete("/thinking h", ctx()).completions).toEqual(["high"]);
 });
 
@@ -101,5 +110,5 @@ test("staticCompletionContext is wired to the real registries", () => {
   expect(s.providers).toContain("anthropic");
   expect(s.roleIds).toContain("executor");
   expect(s.catalogModels).toContain("gpt-4o");
-  expect(s.thinkingLevels).toEqual(["low", "medium", "high"]);
+  expect(s.thinkingLevels).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
 });

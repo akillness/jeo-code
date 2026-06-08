@@ -93,7 +93,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "models",
-    summary: "List model aliases + probe local/compatible models.",
+    summary: "List model aliases, live OAuth/API-key models, and GJC-style capability tables.",
     loader: async () => {
       const m = await import("../commands/models");
       return args => m.runModelsCommand(args);
@@ -190,6 +190,12 @@ export function renderHelp(ctx: DispatchContext): string {
   lines.push("Options:");
   lines.push("  -v, --version    Show version.");
   lines.push("  -h, --help       Show help.");
+  lines.push("      --model <id>             Use a session model for launch/one-shot.");
+  lines.push("      --provider <name>        Start launch on a provider default (anthropic/openai/gemini/ollama).");
+  lines.push("      --smol|--slow|--plan     Start launch with the configured model role tier.");
+  lines.push("      --thinking <level>       Set thinking budget (minimal/low/medium/high/xhigh).");
+  lines.push("      --models                 List live OAuth/API-key models (same as `joc models`).");
+  lines.push("      --list-models[=<query>]  List GJC-style model catalog (or fuzzy query).");
   lines.push("");
   return lines.join("\n");
 }
@@ -213,6 +219,19 @@ export async function dispatch(argv: string[], ctx: DispatchContext): Promise<nu
   }
   if (first === "--help" || first === "-h") {
     console.log(renderHelp(ctx));
+    return 0;
+  }
+  if (first === "--models" || first?.startsWith("--models=")) {
+    const run = await findCommand("models")!.loader();
+    const value = first.includes("=") ? first.slice("--models=".length) : undefined;
+    await run([...(value ? [value] : []), ...argv.slice(1)]);
+    return 0;
+  }
+  if (first === "--list-models" || first?.startsWith("--list-models=")) {
+    const run = await findCommand("models")!.loader();
+    const value = first.includes("=") ? first.slice("--list-models=".length) : argv[1];
+    const query = value && value !== "all" ? [value] : [];
+    await run(["--catalog", ...query]);
     return 0;
   }
   // Bare invocation or a leading global flag (e.g. `joc`, `joc --tmux`,

@@ -11,7 +11,7 @@ import type { ProviderModelsResult } from "../../ai/model-discovery";
 import type { PickEntry } from "../../ai/model-picker";
 import type { CatalogModel } from "../../ai/model-catalog";
 import type { EnrichedModel } from "../../ai/model-enrich";
-import { formatTokens } from "../../ai/model-catalog";
+import { catalogMetadata, formatTokens } from "../../ai/model-catalog";
 
 /** A single "Model: alias → resolved (provider)" status line. */
 export function formatModelLine(d: {
@@ -144,6 +144,35 @@ export function formatPickList(entries: PickEntry[], opts: { current?: string; c
   return lines;
 }
 
+/**
+ * Numbered pick list with GJC-style capability columns. This is the setting-flow
+ * view: every row has a stable `#N` token and the live/OAuth model id is
+ * annotated with catalog metadata when known.
+ */
+export function formatPickListWithCapabilities(entries: PickEntry[], opts: { current?: string; cap?: number } = {}): string[] {
+  if (entries.length === 0) return ["  (no models — log in with 'joc auth login' or start Ollama)"];
+  const cap = opts.cap ?? 50;
+  const shown = entries.slice(0, cap);
+  const iw = String(Math.min(entries.length, cap)).length + 1;
+  const pw = Math.max(...shown.map(e => e.provider.length), 8);
+  const mw = Math.min(Math.max(...shown.map(e => e.model.length), 6), 36);
+  const lines = [`  ${"#".padStart(iw)}  ${"provider".padEnd(pw)}  ${"model".padEnd(mw)}  ${"ctx".padStart(5)}  ${"out".padStart(5)}  thinking  img`];
+  for (const e of shown) {
+    const meta = catalogMetadata(e.model);
+    const ctx = meta ? formatTokens(meta.contextTokens) : "-";
+    const out = meta ? formatTokens(meta.maxOutputTokens) : "-";
+    const think = meta ? thinkCell(meta.thinking) : "?";
+    const img = meta ? (meta.images ? "yes" : "no") : "?";
+    const id = e.model.length > mw ? e.model.slice(0, mw - 1) + "…" : e.model.padEnd(mw);
+    const mark = opts.current && e.model === opts.current ? chalk.green(" ◀ current") : "";
+    lines.push(
+      `  ${chalk.yellow(`#${e.index}`.padStart(iw))}  ${chalk.gray(e.provider.padEnd(pw))}  ${id}  ${ctx.padStart(5)}  ${out.padStart(5)}  ${chalk.cyan(think)}  ${img}${mark}`,
+    );
+  }
+  if (entries.length > cap) lines.push(chalk.gray(`  …(+${entries.length - cap} more — narrow with /provider <name>)`));
+  return lines;
+}
+
 function thinkCell(levels: string[]): string {
   return levels.length ? levels.join(",") : "-";
 }
@@ -160,6 +189,40 @@ export function formatCatalogTable(models: CatalogModel[], opts: { current?: str
       `  ${chalk.gray(m.provider.padEnd(pw))}  ${m.canonical.padEnd(mw)}  ${formatTokens(m.contextTokens).padStart(5)}  ${formatTokens(m.maxOutputTokens).padStart(5)}  ${chalk.cyan(thinkCell(m.thinking))}  ${m.images ? "yes" : "no"}${mark}`,
     );
   }
+  return lines;
+}
+
+/**
+ * Canonical catalog table matching the useful GJC `--list-models` layout:
+ * canonical id, selected provider model, variant count, context, and max output.
+ */
+export function formatCanonicalCatalogTable(models: CatalogModel[], opts: { current?: string; cap?: number } = {}): string[] {
+  if (models.length === 0) return ["  (no catalog matches)"];
+  const grouped = new Map<string, CatalogModel[]>();
+  for (const m of models) grouped.set(m.canonical, [...(grouped.get(m.canonical) ?? []), m]);
+  const rows = [...grouped.entries()].map(([canonical, variants]) => {
+    const selected =
+      variants.find(m => opts.current && (m.canonical === opts.current || m.providerModel === opts.current || `${m.provider}/${m.providerModel}` === opts.current)) ??
+      variants[0]!;
+    const selectedId = selected.providerModel.startsWith(`${selected.provider}/`)
+      ? selected.providerModel
+      : `${selected.provider}/${selected.providerModel}`;
+    return { canonical, selected, selectedId, variants: variants.length };
+  });
+  const cap = opts.cap ?? 50;
+  const shown = rows.slice(0, cap);
+  const cw = Math.min(Math.max(...shown.map(r => r.canonical.length), 9), 36);
+  const sw = Math.min(Math.max(...shown.map(r => r.selectedId.length), 8), 42);
+  const lines = [`  ${"canonical".padEnd(cw)}  ${"selected".padEnd(sw)}  variants  ${"context".padStart(7)}  ${"max-out".padStart(7)}`];
+  for (const r of shown) {
+    const canonical = r.canonical.length > cw ? r.canonical.slice(0, cw - 1) + "…" : r.canonical.padEnd(cw);
+    const selectedId = r.selectedId.length > sw ? r.selectedId.slice(0, sw - 1) + "…" : r.selectedId.padEnd(sw);
+    const mark = opts.current && (r.selected.canonical === opts.current || r.selected.providerModel === opts.current || r.selectedId === opts.current) ? chalk.green(" ◀") : "";
+    lines.push(
+      `  ${canonical}  ${selectedId}  ${String(r.variants).padStart(8)}  ${formatTokens(r.selected.contextTokens).padStart(7)}  ${formatTokens(r.selected.maxOutputTokens).padStart(7)}${mark}`,
+    );
+  }
+  if (rows.length > cap) lines.push(chalk.gray(`  …(+${rows.length - cap} more)`));
   return lines;
 }
 

@@ -2,6 +2,9 @@ import { createInterface } from "node:readline/promises";
 import { runAgentLoop, executorSystemPrompt } from "../agent/engine";
 import { LaunchTui } from "../tui/app";
 import { skillsPromptSection } from "../skills/catalog";
+import { interactiveOAuthLogin } from "./auth";
+import { logoutOAuth } from "../auth";
+import type { AuthProvider } from "../auth";
 import { matchSlash, isSlashAttempt } from "../tui/components/slash";
 import { staticCompletionContext, readlineCompleter, type CompletionContext } from "../tui/components/autocomplete";
 import { EVOLUTION_STAGES, renderAsciiArt, animateAsciiArt } from "../tui/components/ascii-art";
@@ -9,12 +12,12 @@ import { getEvolutionTip } from "../tui/components/evolution";
 import chalk from "chalk";
 import type { Message } from "../agent/loop";
 import { readGlobalConfig, saveGlobalConfig } from "../agent/state";
-import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, enrichAll, sortByCapability } from "../ai";
-import type { ProviderModelsResult, PickEntry } from "../ai";
+import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, enrichAll, sortByCapability, knownCount, MODEL_CATALOG, fuzzyMatchCatalog } from "../ai";
+import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 
 import { listAliases } from "../ai/model-registry";
 
-import { SUBAGENT_ROLES, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps } from "../agent/subagents";
+import { SUBAGENT_ROLES, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, parseMaxSteps, withSubagentSetting, clearSubagentSetting } from "../agent/subagents";
 import {
   formatModelLine,
   formatAliasLines,
@@ -24,9 +27,10 @@ import {
   formatConfigPanel,
 
   liveModelKnown,
-  formatPickList,
+  formatPickListWithCapabilities,
   formatCapabilityLine,
-  formatEnrichedModels,
+  formatCatalogTable,
+  formatCanonicalCatalogTable,
 } from "../tui/components/config-panel";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff } from "../tui/components/code-view";
 import { findTool, searchTool } from "../agent/tools";
@@ -42,7 +46,7 @@ import {
   latestSessionId,
 } from "../agent/session";
 
-interface LaunchFlags {
+export interface LaunchFlags {
   list: boolean;
   resume: boolean;
   resumeId?: string;
@@ -52,10 +56,33 @@ interface LaunchFlags {
   message: string;
   tmux: boolean;
   worktree?: string;
+  model?: string;
+  provider?: ProviderName;
+  modelRole?: ModelRole;
+  thinking?: ThinkLevel;
+  errors: string[];
 }
 
-function parseFlags(args: string[]): LaunchFlags {
-  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 25, message: "", tmux: false };
+const PROVIDER_DEFAULT: Record<ProviderName, string> = { anthropic: "sonnet", openai: "gpt", gemini: "flash", ollama: "fast" };
+
+function takeValue(args: string[], index: number, inlinePrefix: string): { value?: string; nextIndex: number } {
+  const current = args[index]!;
+  if (current.startsWith(inlinePrefix)) return { value: current.slice(inlinePrefix.length), nextIndex: index };
+  const next = args[index + 1];
+  if (next && !next.startsWith("-")) return { value: next, nextIndex: index + 1 };
+  return { nextIndex: index };
+}
+
+function isProviderName(input: string | undefined): input is ProviderName {
+  return input === "anthropic" || input === "openai" || input === "gemini" || input === "ollama";
+}
+
+function isThinkingLevel(input: string | undefined): input is ThinkLevel {
+  return input === "minimal" || input === "low" || input === "medium" || input === "high" || input === "xhigh";
+}
+
+export function parseFlags(args: string[]): LaunchFlags {
+  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 25, message: "", tmux: false, errors: [] };
   const rest: string[] = [];
   const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (let i = 0; i < args.length; i++) {
@@ -85,6 +112,39 @@ function parseFlags(args: string[]): LaunchFlags {
     } else if (a.startsWith("--max-steps=")) {
       const n = parseInt(a.slice(12), 10);
       if (Number.isFinite(n) && n > 0) flags.maxSteps = n;
+    } else if (a === "--model") {
+      const { value, nextIndex } = takeValue(args, i, "--model=");
+      if (value) flags.model = value;
+      else flags.errors.push("--model requires a value");
+      i = nextIndex;
+    } else if (a.startsWith("--model=")) {
+      const { value } = takeValue(args, i, "--model=");
+      if (value) flags.model = value;
+      else flags.errors.push("--model requires a value");
+    } else if (a === "--provider") {
+      const { value, nextIndex } = takeValue(args, i, "--provider=");
+      const normalized = value?.toLowerCase();
+      if (isProviderName(normalized)) flags.provider = normalized;
+      else flags.errors.push("--provider must be one of: anthropic, openai, gemini, ollama");
+      i = nextIndex;
+    } else if (a.startsWith("--provider=")) {
+      const { value } = takeValue(args, i, "--provider=");
+      const normalized = value?.toLowerCase();
+      if (isProviderName(normalized)) flags.provider = normalized;
+      else flags.errors.push("--provider must be one of: anthropic, openai, gemini, ollama");
+    } else if (a === "--thinking") {
+      const { value, nextIndex } = takeValue(args, i, "--thinking=");
+      const normalized = value?.toLowerCase();
+      if (isThinkingLevel(normalized)) flags.thinking = normalized;
+      else flags.errors.push("--thinking must be one of: minimal, low, medium, high, xhigh");
+      i = nextIndex;
+    } else if (a.startsWith("--thinking=")) {
+      const { value } = takeValue(args, i, "--thinking=");
+      const normalized = value?.toLowerCase();
+      if (isThinkingLevel(normalized)) flags.thinking = normalized;
+      else flags.errors.push("--thinking must be one of: minimal, low, medium, high, xhigh");
+    } else if (a === "--smol" || a === "--slow" || a === "--plan") {
+      flags.modelRole = a.slice(2) as ModelRole;
     } else if (a === "--resume") {
       flags.resume = true;
       const next = args[i + 1];
@@ -146,6 +206,10 @@ function resolveWorktree(cwd: string, wt: string): string {
 export async function runLaunchCommand(args: string[]): Promise<void> {
   let cwd = process.cwd();
   const flags = parseFlags(args);
+  if (flags.errors.length) {
+    for (const err of flags.errors) console.log(`error: ${err}`);
+    return;
+  }
 
   if (flags.worktree) {
     const wt = resolveWorktree(cwd, flags.worktree);
@@ -236,6 +300,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const cfg = await readGlobalConfig();
   const defaultModel = cfg.defaultModel;
+  const initialSessionModel =
+    flags.model ??
+    (flags.modelRole ? resolveRoleModel(flags.modelRole, cfg) : flags.provider ? PROVIDER_DEFAULT[flags.provider] : undefined);
+  if (flags.provider && initialSessionModel) {
+    const { provider } = await describeModel(initialSessionModel);
+    if (provider !== flags.provider) {
+      console.log(`error: selected model '${initialSessionModel}' resolves to ${provider}, not requested provider ${flags.provider}.`);
+      return;
+    }
+  }
 
   // --list: print persisted sessions and exit.
   if (flags.list) {
@@ -262,9 +336,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const systemPrompt = withProjectContext(baseSystemPrompt, contextFiles);
 
   const history: Message[] = [{ role: "system", content: systemPrompt }];
-  let sessionModel: string | undefined = undefined;
+  let sessionModel: string | undefined = initialSessionModel;
   // Session thinking-level override (`/thinking`); falls back to the config level.
-  let sessionThinking: "minimal" | "low" | "medium" | "high" | "xhigh" | undefined = cfg.thinkingLevel;
+  let sessionThinking: "minimal" | "low" | "medium" | "high" | "xhigh" | undefined = flags.thinking ?? cfg.thinkingLevel;
   // Cache of live, credential-validated models per provider (refreshed via `/models refresh`).
   let liveModelsCache: ProviderModelsResult[] | null = null;
   const getLiveModels = async (force = false): Promise<ProviderModelsResult[]> => {
@@ -377,8 +451,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const welcomeStage = EVOLUTION_STAGES[0];
   await animateAsciiArt(welcomeStage);
   console.log(`\n=== joc launch — interactive coding agent (Evolution Stage: ${welcomeStage.name}) ===`);
-  const { provider: startProvider } = await describeModel(defaultModel);
-  console.log(`Model: ${defaultModel} (${startProvider})  ·  thinking: ${sessionThinking ?? "medium"}`);
+  const activeStartModel = sessionModel || defaultModel;
+  const { provider: startProvider } = await describeModel(activeStartModel);
+  console.log(`Model: ${activeStartModel} (${startProvider})  ·  thinking: ${sessionThinking ?? "medium"}`);
   if (sessionId) console.log(`Session: ${sessionId}`);
   if (contextFiles.length > 0) console.log(`Project context: ${contextFiles.map(f => f.path).join(", ")}`);
   console.log("Type your request. Slash: /help /model /models /provider /agents /config /thinking /view /diff /find /search /sessions /exit" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
@@ -414,10 +489,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         console.log("Slash Commands:");
         console.log("  /help               - Show this help message");
         console.log("  /clear              - Clear conversation history (keeps system prompt)");
-        console.log("  /model [id|#N|save] - Set the session model by id, by #N from /models, or save as default");
-        console.log("  /models [refresh|caps] - Live model list (caps = + context/out/thinking/img)");
-        console.log("  /provider [name] [model] - Provider credentials, or switch + list that provider's live models");
-        console.log("  /agents [role] [model]   - List subagent roles, show one, or pin a role's model (saved)");
+        console.log("  /model [id|#N|save] - Show/set session model by id, live #N, fuzzy match, or save default");
+        console.log("  /models [refresh|caps|catalog] - Live OAuth/API-key models; caps/catalog add capability tables");
+        console.log("  /provider [name] [model|#N] - Credentials, switch provider, list live models");
+        console.log("  /provider login <name>      - OAuth login (anthropic/openai/gemini) from here");
+        console.log("  /logout <name>              - Remove the stored OAuth token for a provider");
+        console.log("  /agents [role] [model|#N|maxSteps N|reset] - List subagents or pin role model/settings");
         console.log("  /config             - Show the effective runtime configuration");
         console.log("  /roles [tier model] - Show or set model role tiers (smol/slow/plan)");
         console.log("  /thinking [level]   - Show or set the thinking budget (minimal/low/medium/high/xhigh)");
@@ -460,14 +537,32 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
       if (input.startsWith("/models") && (input === "/models" || input[7] === " ")) {
-        const sub = input.substring(7).trim().toLowerCase();
-        const refresh = sub === "refresh";
+        const tokens = input.substring(7).trim().split(/\s+/).filter(Boolean);
+        const lowerTokens = tokens.map(t => t.toLowerCase());
+        const sub = lowerTokens[0] ?? "";
+        const refresh = lowerTokens.includes("refresh");
+        if (sub === "catalog") {
+          const cfgNow = await readGlobalConfig();
+          const def = sessionModel || cfgNow.defaultModel;
+          const { resolved } = await describeModel(def);
+          const query = tokens.slice(1).join(" ");
+          const rows = query ? fuzzyMatchCatalog(query) : [...MODEL_CATALOG];
+          console.log(`Canonical models${query ? ` matching '${query}'` : ""}:`);
+          for (const line of formatCanonicalCatalogTable(rows, { current: resolved })) console.log(line);
+          console.log("\nProvider models:");
+          for (const line of formatCatalogTable(rows, { current: resolved })) console.log(line);
+          continue;
+        }
         if (sub === "caps") {
-          const live = await getLiveModels();
+          const live = await getLiveModels(refresh);
           const def = sessionModel || (await readGlobalConfig()).defaultModel;
           const { resolved } = await describeModel(def);
-          console.log("Live models with capabilities (ctx/out/thinking/img):");
-          for (const line of formatEnrichedModels(sortByCapability(enrichAll(live)), { current: resolved })) console.log(line);
+          const enriched = sortByCapability(enrichAll(live));
+          lastPickIndex = enriched.map((m, i): PickEntry => ({ index: i + 1, provider: m.provider, model: m.id }));
+          const { known, unknown } = knownCount(enriched);
+          console.log("Live models with capabilities (select with /model #N):");
+          for (const line of formatPickListWithCapabilities(lastPickIndex, { current: resolved })) console.log(line);
+          console.log(`  (${known} with known capabilities, ${unknown} unknown)`);
           continue;
         }
         const cfgNow = await readGlobalConfig();
@@ -479,14 +574,32 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const live = await getLiveModels(refresh);
         lastPickIndex = flattenModels(live);
         console.log("Live models (logged-in providers) — select with /model #N:");
-        for (const line of formatPickList(lastPickIndex, { current: resolved })) console.log(line);
-        console.log("Refresh: /models refresh  ·  one provider: /provider <name>");
+        for (const line of formatPickListWithCapabilities(lastPickIndex, { current: resolved })) console.log(line);
+        console.log("Refresh: /models refresh  ·  capabilities: /models caps  ·  one provider: /provider <name>");
         continue;
       }
       if (input.startsWith("/provider") && (input === "/provider" || input[9] === " ")) {
         const tokens = input.substring(9).trim().split(/\s+/).filter(Boolean);
         const name = (tokens[0] ?? "").toLowerCase();
         const explicitModel = tokens[1];
+        // `/provider login|auth [name]` → run OAuth login from the REPL.
+        if (name === "login" || name === "auth") {
+          const cloud = ["anthropic", "openai", "gemini"];
+          const target = tokens.slice(1).map(t => t.toLowerCase()).find(t => cloud.includes(t));
+          if (!target) {
+            console.log("Usage: /provider login <anthropic|openai|gemini>");
+            continue;
+          }
+          console.log(`Starting OAuth login for ${target}…`);
+          try {
+            const { email } = await interactiveOAuthLogin(target as AuthProvider, rl);
+            console.log(`[SUCCESS] OAuth login complete for ${target}${email ? ` (${email})` : ""}. Tokens saved to ~/.joc/config.json.`);
+            liveModelsCache = null; // re-discover with the new credential
+          } catch (err) {
+            console.log(`[FAILED] ${(err as Error).message} — or set ${target.toUpperCase()}_API_KEY.`);
+          }
+          continue;
+        }
         const cfgNow = await readGlobalConfig();
         const statuses = await describeAllProviders(cfgNow);
         if (!name) {
@@ -495,8 +608,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log("Switch with: /provider <name> [model]  ·  list live models: /models");
           continue;
         }
-        const PROVIDER_DEFAULT: Record<string, string> = { anthropic: "sonnet", openai: "gpt", gemini: "flash", ollama: "fast" };
-        if (!(name in PROVIDER_DEFAULT)) {
+        if (!isProviderName(name)) {
           console.log(`Unknown provider '${name}'. Known: ${statuses.map(s => s.name).join(", ")}.`);
           continue;
         }
@@ -504,21 +616,55 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (st && !st.ready) {
           console.log(`! ${name} is not logged in — run 'joc auth login' or set ${st.envVar ?? "the provider key"}. Switching anyway.`);
         }
-        const target = explicitModel ?? PROVIDER_DEFAULT[name];
-        sessionModel = target;
-        const { resolved, provider } = await describeModel(target);
-        console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}`);
-        // Show the provider's live, credentialed catalog so the user can pick a concrete id.
         const live = await getLiveModels();
         const forProvider = live.filter(r => r.provider === name);
-        if (forProvider.length) {
-          lastPickIndex = flattenModels(forProvider);
-          console.log(`Live ${name} models — select with /model #N:`);
-          for (const line of formatPickList(lastPickIndex, { current: resolved })) console.log(line);
+        const providerPick = flattenModels(forProvider);
+        let target = explicitModel ?? PROVIDER_DEFAULT[name];
+        if (explicitModel && providerPick.length) {
+          const sel = resolveSelection(providerPick, explicitModel);
+          if (sel.kind === "index" || sel.kind === "match") {
+            target = sel.entry.model;
+          } else if (sel.kind === "ambiguous") {
+            console.log(`'${explicitModel}' matches ${sel.matches.length} ${name} models — be more specific:`);
+            for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
+            continue;
+          } else if (sel.kind === "out-of-range") {
+            console.log(`#${explicitModel.slice(1)} is out of range for ${name} (1-${sel.max}).`);
+            continue;
+          }
+        } else if (explicitModel?.startsWith("#")) {
+          console.log(`No numbered ${name} model list is available yet.`);
+          continue;
         }
-        if (explicitModel && !liveModelKnown(live, target)) {
+        const { resolved, provider } = await describeModel(target);
+        if (explicitModel && provider !== name) {
+          console.log(`! '${target}' resolves to ${provider}, not ${name}. Pick a ${name} model from the live list below.`);
+          if (providerPick.length) for (const line of formatPickListWithCapabilities(providerPick, { cap: 20 })) console.log(line);
+          continue;
+        }
+        sessionModel = target;
+        console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}`);
+        // Show the provider's live, credentialed catalog so the user can pick a concrete id.
+        if (providerPick.length) {
+          lastPickIndex = providerPick;
+          console.log(`Live ${name} models — select with /model #N or /provider ${name} #N:`);
+          for (const line of formatPickListWithCapabilities(lastPickIndex, { current: resolved })) console.log(line);
+        }
+        if (explicitModel && !liveModelKnown(live, target) && !liveModelKnown(live, resolved)) {
           console.log(`  (note: '${target}' is not in ${name}'s live list — it may still work, or pick one above)`);
         }
+        continue;
+      }
+      if (input.startsWith("/logout") && (input === "/logout" || input[7] === " ")) {
+        const cloud = ["anthropic", "openai", "gemini"];
+        const target = input.substring(7).trim().split(/\s+/).map(t => t.toLowerCase()).find(t => cloud.includes(t));
+        if (!target) {
+          console.log("Usage: /logout <anthropic|openai|gemini>");
+          continue;
+        }
+        const removed = await logoutOAuth(target as AuthProvider);
+        console.log(removed ? `[SUCCESS] Removed OAuth token for ${target}.` : `No OAuth token stored for ${target}.`);
+        liveModelsCache = null; // re-discover after credential change
         continue;
       }
       if (input.startsWith("/agents") && (input === "/agents" || input[7] === " ")) {
@@ -532,7 +678,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             model: resolveSubagentModel(r.id, cfgNow),
             maxSteps: resolveSubagentMaxSteps(r.id, cfgNow),
           }))) console.log(line);
-          console.log("Detail: /agents <role>  ·  set model: /agents <role> <model>");
+          console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  steps: /agents <role> maxSteps <N>");
           continue;
         }
         const role = getSubagentRole(roleArg);
@@ -540,16 +686,51 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`Unknown role '${roleArg}'. Known: ${SUBAGENT_ROLES.map(r => r.id).join(", ")}.`);
           continue;
         }
+        if (modelArg?.toLowerCase() === "reset") {
+          await saveGlobalConfig({ ...cfgNow, subagents: clearSubagentSetting(cfgNow, role.id) });
+          console.log(`${role.title} settings reset to defaults → ~/.joc/config.json`);
+          continue;
+        }
+        if (modelArg?.toLowerCase() === "maxsteps" || modelArg?.toLowerCase() === "steps") {
+          const maxSteps = parseMaxSteps(tokens[2]);
+          if (!maxSteps) {
+            console.log(`Usage: /agents ${role.id} maxSteps <positive-number>`);
+            continue;
+          }
+          await saveGlobalConfig({ ...cfgNow, subagents: withSubagentSetting(cfgNow, role.id, { maxSteps }) });
+          console.log(`${role.title} maxSteps set to ${maxSteps} → ~/.joc/config.json`);
+          continue;
+        }
         if (modelArg) {
+          let chosenModel = modelArg;
+          let entries = lastPickIndex;
+          if (modelArg.startsWith("#") && entries.length === 0) {
+            const live = await getLiveModels();
+            entries = flattenModels(live);
+          }
+          if (entries.length) {
+            const sel = resolveSelection(entries, modelArg);
+            if (sel.kind === "index" || sel.kind === "match") {
+              chosenModel = sel.entry.model;
+            } else if (sel.kind === "ambiguous") {
+              console.log(`'${modelArg}' matches ${sel.matches.length} live models — be more specific:`);
+              for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
+              continue;
+            } else if (sel.kind === "out-of-range") {
+              console.log(`#${modelArg.slice(1)} is out of range (1-${sel.max}). Run /models first.`);
+              continue;
+            }
+          } else if (modelArg.startsWith("#")) {
+            console.log("Run /models first to build the numbered live model list.");
+            continue;
+          }
           // Persist a per-role model override to ~/.joc/config.json (consumed by 'joc team').
-          const next = { ...cfgNow, subagents: { ...(cfgNow.subagents ?? {}) } };
-          next.subagents[role.id] = { ...next.subagents[role.id], model: modelArg };
-          await saveGlobalConfig(next);
-          const { provider } = await describeModel(modelArg);
-          console.log(`${role.title} model set to ${modelArg} (${provider}) — saved to ~/.joc/config.json`);
+          await saveGlobalConfig({ ...cfgNow, subagents: withSubagentSetting(cfgNow, role.id, { model: chosenModel }) });
+          const { provider } = await describeModel(chosenModel);
+          console.log(`${role.title} model set to ${chosenModel} (${provider}) — saved to ~/.joc/config.json`);
           const live = await getLiveModels();
-          if (!liveModelKnown(live, modelArg)) {
-            console.log(`  (note: '${modelArg}' is not in any live model list — verify it is valid for ${provider})`);
+          if (!liveModelKnown(live, chosenModel)) {
+            console.log(`  (note: '${chosenModel}' is not in any live model list — verify it is valid for ${provider})`);
           }
           continue;
         }
@@ -557,6 +738,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           model: resolveSubagentModel(role.id, cfgNow),
           maxSteps: resolveSubagentMaxSteps(role.id, cfgNow),
         })) console.log(line);
+        const live = await getLiveModels();
+        const agentPick = flattenModels(live);
+        if (agentPick.length) {
+          lastPickIndex = agentPick;
+          console.log(`Live models for ${role.title} — pin with /agents ${role.id} #N:`);
+          for (const line of formatPickListWithCapabilities(lastPickIndex, { current: resolveSubagentModel(role.id, cfgNow), cap: 20 })) console.log(line);
+        }
         continue;
       }
       if (input === "/config") {
@@ -582,9 +770,31 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const TIERS = ["smol", "slow", "plan"] as const;
         if (tokens.length >= 2 && (TIERS as readonly string[]).includes(tokens[0])) {
           const tier = tokens[0] as (typeof TIERS)[number];
-          const next = { ...cfgNow, roles: { ...(cfgNow.roles ?? {}), [tier]: tokens[1] } };
+          let chosenModel = tokens[1]!;
+          let entries = lastPickIndex;
+          if (chosenModel.startsWith("#") && entries.length === 0) {
+            const live = await getLiveModels();
+            entries = flattenModels(live);
+          }
+          if (entries.length) {
+            const sel = resolveSelection(entries, chosenModel);
+            if (sel.kind === "index" || sel.kind === "match") {
+              chosenModel = sel.entry.model;
+            } else if (sel.kind === "ambiguous") {
+              console.log(`'${chosenModel}' matches ${sel.matches.length} live models — be more specific:`);
+              for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
+              continue;
+            } else if (sel.kind === "out-of-range") {
+              console.log(`#${chosenModel.slice(1)} is out of range (1-${sel.max}). Run /models first.`);
+              continue;
+            }
+          } else if (chosenModel.startsWith("#")) {
+            console.log("Run /models first to build the numbered live model list.");
+            continue;
+          }
+          const next = { ...cfgNow, roles: { ...(cfgNow.roles ?? {}), [tier]: chosenModel } };
           await saveGlobalConfig(next);
-          console.log(`Role '${tier}' model set to ${tokens[1]} → ~/.joc/config.json`);
+          console.log(`Role '${tier}' model set to ${chosenModel} → ~/.joc/config.json`);
           continue;
         }
         console.log("Model role tiers (fall back to the default model):");
@@ -593,6 +803,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`  ${tier.padEnd(5)} ${resolveRoleModel(tier, cfgNow)} (${provider})`);
         }
         console.log("Set a tier: /roles <smol|slow|plan> <model>");
+        const live = await getLiveModels();
+        const rolePick = flattenModels(live);
+        if (rolePick.length) {
+          lastPickIndex = rolePick;
+          console.log("Live models for role tiers — set with /roles <tier> #N:");
+          for (const line of formatPickListWithCapabilities(lastPickIndex, { cap: 15 })) console.log(line);
+        }
         continue;
       }
       if (input.startsWith("/thinking") && (input === "/thinking" || input[9] === " ")) {
@@ -650,6 +867,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         const meta = catalogMetadata(resolved);
         if (meta) console.log(`  ${formatCapabilityLine(meta)}`);
+        if (!arg) {
+          const live = await getLiveModels();
+          lastPickIndex = flattenModels(live);
+          console.log("Live models (logged-in providers) — set with /model #N:");
+          for (const line of formatPickListWithCapabilities(lastPickIndex, { current: resolved, cap: 20 })) console.log(line);
+        }
         console.log("  (persist as default: /model save)");
         continue;
       }

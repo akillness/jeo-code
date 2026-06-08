@@ -56,8 +56,8 @@ export function formatSkill(s: SkillDoc): string {
   ].join("\n");
 }
 
-export function skillsPromptSection(): string {
-  return SKILLS.map(s => `- ${s.name} — ${s.summary}`).join("\n");
+export function skillsPromptSection(skills: SkillDoc[] = SKILLS): string {
+  return skills.map(s => `- ${s.name} — ${s.summary}`).join("\n");
 }
 
 import * as fs from "node:fs/promises";

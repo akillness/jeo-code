@@ -76,6 +76,7 @@ test("renderSelectList renders group headers + hints, fitted to cols", () => {
   expect(text).toContain("G1");
   expect(text).toContain("G2");
   expect(text).toContain("h1");
+  expect(lines.map(stripAnsi).every(line => line.length <= 30)).toBe(true);
 });
 
 test("empty list renders a (no matches) line, not a crash", () => {

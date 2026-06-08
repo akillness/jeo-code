@@ -26,3 +26,18 @@ test("footer joins segments with ' · ' and leads with the model", () => {
   expect(out.startsWith("m1 · ")).toBe(true);
   expect(out).toContain("abcd1234");
 });
+
+test("footer stage track honors the mono theme (color:false emits no ANSI)", () => {
+  const chalk = require("chalk").default ?? require("chalk");
+  const prev = chalk.level;
+  chalk.level = 3; // force color so the assertion is meaningful off a TTY
+  try {
+    const colored = renderFooter({ model: "m", step: 3, maxSteps: 5 });
+    expect(/\x1b\[/.test(colored)).toBe(true); // default → colored
+    const mono = renderFooter({ model: "m", step: 3, maxSteps: 5, color: false });
+    expect(/\x1b\[/.test(mono)).toBe(false); // mono → no ANSI even with color forced on
+    expect(mono).toContain("step 3/5");
+  } finally {
+    chalk.level = prev;
+  }
+});

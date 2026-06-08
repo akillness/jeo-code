@@ -80,6 +80,27 @@ export function lightHighlightLine(line: string, lang: string): string {
   return out;
 }
 
+/**
+ * Make a line from arbitrary file/diff content safe to print in the REPL/TUI region.
+ * File bytes are untrusted display data: a raw `\x1b[2J`, OSC title set, lone `\r`
+ * progress-overwrite, or a stray C0 byte can clear the screen, move the cursor, or
+ * corrupt the gutter. Strip CR, expand tabs, and remove ANSI/C0 control sequences.
+ * joc's own coloring is applied AFTER this, so no intended color is lost.
+ */
+export function sanitizeForTerminal(line: string): string {
+  return line
+    .replace(/\r/g, "")
+    .replace(/\t/g, "  ")
+    // OSC: ESC ] ... (BEL | ST)
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    // CSI: ESC [ ... final-byte  (SGR, cursor moves, screen/line clears, etc.)
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    // other ESC-led two-byte sequences
+    .replace(/\x1b[@-Z\\-_]/g, "")
+    // any remaining C0 controls + DEL
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+}
+
 export interface CodeViewOptions {
   startLine?: number;
   lang?: string;
@@ -114,9 +135,10 @@ export function formatCodeBlock(content: string, opts: CodeViewOptions = {}): st
     const marked = highlight.has(no);
     const numText = String(no).padStart(gutterW);
     const num = color ? (marked ? chalk.yellow.bold(numText) : chalk.gray(numText)) : numText;
-    const body = color ? lightHighlightLine(shown[i], lang) : shown[i];
+    const body = sanitizeForTerminal(shown[i]);
+    const colored = color ? lightHighlightLine(body, lang) : body;
     const marker = marked ? (color ? chalk.yellow("▶") : ">") : " ";
-    const line = `${marker}${num} ${sep} ${body}`;
+    const line = `${marker}${num} ${sep} ${colored}`;
     out.push(truncate(line, cols));
   }
   if (allLines.length > maxLines) {
@@ -133,7 +155,8 @@ export function formatDiff(diffText: string, opts: { cols?: number; maxLines?: n
   const color = opts.color !== false;
   const lines = diffText.split("\n");
   const shown = lines.slice(0, maxLines);
-  const out = shown.map(l => {
+  const out = shown.map(raw => {
+    const l = sanitizeForTerminal(raw);
     if (!color) return truncate(l, cols);
     if (l.startsWith("+++") || l.startsWith("---")) return truncate(chalk.bold(l), cols);
     if (l.startsWith("@@")) return truncate(chalk.cyan(l), cols);

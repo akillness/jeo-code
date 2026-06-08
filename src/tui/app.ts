@@ -265,7 +265,7 @@ export class LaunchTui {
     const strip = liveSteps.length
       ? `  ${formatStepTimelineCompact(liveSteps, { unicode: this.unicode, color: this.theme.color, frame: this.tickCount, cap: 16 })}`
       : "";
-    bottom.push(`${this.spinner.current()} ${renderFooter({ ...this.footer, elapsedMs })}${strip}`);
+    bottom.push(`${this.spinner.current()} ${renderFooter({ ...this.footer, elapsedMs, color: this.theme.color })}${strip}`);
     const bottomHeight = bottom.length;
 
     const forgeLines = fit ? this.renderForge(innerWidth, 2) : [];

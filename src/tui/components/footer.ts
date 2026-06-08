@@ -23,6 +23,8 @@ export interface FooterData {
   showEta?: boolean;
   /** Show whole-turn evolution progress (`evo NN%`) + steps to next stage; opt-in. */
   showProgress?: boolean;
+  /** Colorize the stage track (default true). Set false for the mono theme. */
+  color?: boolean;
 }
 
 export function renderFooter(d: FooterData): string {
@@ -88,7 +90,7 @@ export function renderFooter(d: FooterData): string {
   // Compact evolution-stage tag, e.g. "●●●○○ Tool User (Homo Habilis) [3/5]".
   if (d.showStage !== false && d.step !== undefined && d.maxSteps !== undefined) {
     const idx = stageIndexForStep(d.step, d.maxSteps);
-    parts.push(evolutionTrack(idx, { color: true, unicode }));
+    parts.push(evolutionTrack(idx, { color: d.color !== false, unicode }));
   }
 
   return parts.join(" · ");

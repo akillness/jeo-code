@@ -30,6 +30,8 @@ export interface CompletionContext {
   providers: string[];
   roleIds: string[];
   thinkingLevels: string[];
+  /** Resolved skill names (bundled + user/project). Falls back to bundled when omitted. */
+  skillNames?: string[];
   /** Live model ids for a given provider (for `/provider <p> <model>`). */
   modelsForProvider: (provider: string) => string[];
 }
@@ -151,7 +153,7 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       return { completions: [], token, kind: "none" };
     }
     case "/skill":
-      return argIndex === 0 ? finish(skillNames(), "subcommand") : { completions: [], token, kind: "none" };
+      return argIndex === 0 ? finish(ctx.skillNames ?? skillNames(), "subcommand") : { completions: [], token, kind: "none" };
     case "/roles": {
       const tiers = ["smol", "slow", "plan"];
       if (argIndex === 0) return finish(tiers, "role");

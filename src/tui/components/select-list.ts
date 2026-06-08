@@ -10,6 +10,7 @@
 import chalk from "chalk";
 import { padLineTo } from "./layout";
 import { visibleWidth } from "./color";
+import { truncate as truncateAnsi } from "../terminal";
 
 export interface SelectItem<T> {
   value: T;
@@ -145,11 +146,15 @@ export function renderSelectList<T>(list: SelectList<T>, opts: RenderSelectOptio
   const tint = (s: string, fn: (x: string) => string) => (color ? fn(s) : s);
 
   const out: string[] = [];
-  if (opts.title) out.push(tint(opts.title, chalk.bold));
+  if (opts.title) {
+    const title = tint(opts.title, chalk.bold);
+    out.push(cols ? clampToCols(title, cols) : title);
+  }
 
   const items = list.visible();
   if (items.length === 0) {
-    out.push(tint("  (no matches)", chalk.gray));
+    const empty = tint("  (no matches)", chalk.gray);
+    out.push(cols ? clampToCols(empty, cols) : empty);
   } else {
     const cur = list.cursorIndex();
     // Scrolling window centered-ish on the cursor.
@@ -157,12 +162,16 @@ export function renderSelectList<T>(list: SelectList<T>, opts: RenderSelectOptio
     start = Math.min(start, Math.max(0, items.length - rows));
     const end = Math.min(items.length, start + rows);
 
-    if (start > 0) out.push(tint(`  \u2191 ${start} more`, chalk.gray));
+    if (start > 0) {
+      const more = tint(`  \u2191 ${start} more`, chalk.gray);
+      out.push(cols ? clampToCols(more, cols) : more);
+    }
     let lastGroup: string | undefined;
     for (let i = start; i < end; i++) {
       const it = items[i]!;
       if (it.group && it.group !== lastGroup) {
-        out.push(tint(`  ${it.group}`, chalk.gray));
+        const group = tint(`  ${it.group}`, chalk.gray);
+        out.push(cols ? clampToCols(group, cols) : group);
         lastGroup = it.group;
       }
       const isCur = i === cur;
@@ -182,18 +191,22 @@ export function renderSelectList<T>(list: SelectList<T>, opts: RenderSelectOptio
       }
       out.push(cols ? clampToCols(line, cols) : line);
     }
-    if (end < items.length) out.push(tint(`  \u2193 ${items.length - end} more`, chalk.gray));
+    if (end < items.length) {
+      const more = tint(`  \u2193 ${items.length - end} more`, chalk.gray);
+      out.push(cols ? clampToCols(more, cols) : more);
+    }
   }
 
   const q = list.filter();
   const filterPart = q ? `filter: ${q}` : "type to filter";
   const keys = unicode ? "\u2191/\u2193 move \u00b7 enter select \u00b7 esc cancel" : "up/down move . enter select . esc cancel";
-  out.push(tint(`  ${filterPart}  \u2014  ${keys}`, chalk.gray));
+  const footer = tint(`  ${filterPart}  \u2014  ${keys}`, chalk.gray);
+  out.push(cols ? clampToCols(footer, cols) : footer);
   return out;
 }
 
-/** Fit a (possibly colored) line to cols by visible width, preserving the right hint. */
 function clampToCols(line: string, cols: number): string {
   if (visibleWidth(line) <= cols) return padLineTo(line, cols, "left");
-  return line; // caller-built hint lines are already gap-fitted; leave longer plain lines to the renderer truncate
+  const cut = truncateAnsi(line, cols);
+  return visibleWidth(cut) <= cols ? padLineTo(cut, cols, "left") : cut;
 }

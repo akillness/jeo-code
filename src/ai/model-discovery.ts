@@ -12,6 +12,7 @@ import { readGlobalConfig, type Config } from "../agent/state";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
 import type { ProviderName } from "./types";
 import { PROVIDER_NAMES } from "./provider-status";
+import { catalogByProvider } from "./model-catalog";
 
 export interface ProviderModelsResult {
   provider: ProviderName;
@@ -22,6 +23,8 @@ export interface ProviderModelsResult {
   source: "oauth" | "api_key" | "keyless" | "none";
   /** Present on failure: a short, human-readable reason. */
   error?: string;
+  /** True when the live endpoint was unusable and ids came from the static catalog. */
+  fallback?: boolean;
 }
 
 export interface DiscoveryOptions {
@@ -79,17 +82,60 @@ export function discoveryRequest(
   }
 }
 
-/** Parse a provider's models response body into normalized model ids. */
+/**
+ * OpenAI `/v1/models` lists every model family — embeddings, audio/tts, image, moderation,
+ * realtime — but joc only calls chat/completions. Drop the families that can never serve a
+ * chat turn so pickers never offer a model that fails at call time.
+ */
+function isOpenAiChatModel(id: string): boolean {
+  return !/(^|[-/])(text-embedding|embedding|tts|whisper|dall-e|moderation|omni-moderation|davinci|babbage|computer-use|realtime|audio|image|sora|transcribe|search|codex)([-/]|$)/i.test(id);
+}
+
+/**
+ * Gemini exposes generateContent for image/tts/embedding variants too, but those emit
+ * audio/image/vectors — not a usable text turn for a coding chat. Drop them by family.
+ */
+function isGeminiChatModel(id: string): boolean {
+  return !/(^|[-/])(embedding|aqa|tts|image|imagen|veo|learnlm)([-/]|$)/i.test(id);
+}
+
+/** Parse a provider's models response body into normalized, chat-capable model ids. */
 export function parseModelsBody(provider: ProviderName, body: unknown): string[] {
-  const data = body as { data?: { id?: string }[]; models?: { name?: string }[] };
+  const data = body as {
+    data?: { id?: string }[];
+    models?: { name?: string; supportedGenerationMethods?: string[] }[];
+  };
   if (provider === "ollama") {
     return (data.models ?? []).map(m => `ollama/${m.name ?? ""}`).filter(s => s !== "ollama/");
   }
   if (provider === "gemini") {
-    return (data.models ?? []).map(m => (m.name ?? "").replace(/^models\//, "")).filter(Boolean);
+    // Keep only models the generateContent endpoint can serve (skip embeddings/tts/aqa/etc).
+    // When the list omits supportedGenerationMethods, keep the id (be permissive).
+    return (data.models ?? [])
+      .filter(m => !m.supportedGenerationMethods || m.supportedGenerationMethods.includes("generateContent"))
+      .map(m => (m.name ?? "").replace(/^models\//, ""))
+      .filter(id => id && isGeminiChatModel(id));
   }
   // anthropic / openai: { data: [{ id }] }
-  return (data.data ?? []).map(m => m.id ?? "").filter(Boolean);
+  const ids = (data.data ?? []).map(m => m.id ?? "").filter(Boolean);
+  return provider === "openai" ? ids.filter(isOpenAiChatModel) : ids;
+}
+
+/**
+ * When a provider is authenticated (oauth/api_key) but the live `models` endpoint
+ * is unusable — e.g. ChatGPT/Codex OAuth tokens are rejected by `api.openai.com/v1/models`
+ * — surface the static catalog ids so the provider's models still appear in pickers.
+ * Keyless/not-logged-in results are returned unchanged.
+ */
+export function catalogOr(result: ProviderModelsResult): ProviderModelsResult {
+  if (result.ok && result.models.length > 0) return result;
+  // Only OAuth tokens legitimately fail the *list* endpoint while still working for
+  // chat (ChatGPT/Codex). An api_key rejection means a bad/invalid key — never paper
+  // over that with catalog rows, or the user picks a model that cannot authenticate.
+  if (result.source !== "oauth") return result;
+  const ids = catalogByProvider(result.provider).map(m => m.providerModel);
+  if (ids.length === 0) return result;
+  return { ...result, models: ids, ok: true, fallback: true };
 }
 
 /** Discover the live model list for one provider. Never throws. */
@@ -136,11 +182,12 @@ export async function listProviderModels(
  * probed. Runs in parallel.
  */
 export async function discoverModels(
-  opts: DiscoveryOptions & { providers?: ProviderName[]; config?: Config } = {},
+  opts: DiscoveryOptions & { providers?: ProviderName[]; config?: Config; catalogFallback?: boolean } = {},
 ): Promise<ProviderModelsResult[]> {
   const cfg = opts.config ?? (await readGlobalConfig());
   const providers = opts.providers ?? [...PROVIDER_NAMES];
-  return Promise.all(
+  const useFallback = opts.catalogFallback !== false;
+  const results = await Promise.all(
     providers.map(p =>
       listProviderModels(p, {
         ...opts,
@@ -149,4 +196,5 @@ export async function discoverModels(
       }),
     ),
   );
+  return useFallback ? results.map(catalogOr) : results;
 }

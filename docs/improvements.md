@@ -4047,3 +4047,36 @@ returned a severity-rated list. Fixed the HIGH items that live in stable (non-ho
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **438 pass / 0 fail across 69 files**, process exit code 0.
 - Architect status was BLOCK; the HIGH provider-timeout / unhandled-rejection / read-only-bash / fail-closed-guard / exit-code / clean-error items are now resolved.
+
+## OpenAI OAuth model bug + architect-driven model/TUI hardening — passes 694–706
+
+**Date:** 2026-06-05 · **Dimension: correctness of implemented features / TUI safety.**
+
+Headline bug report: **OpenAI(ChatGPT/Codex) OAuth 로그인 후 provider 모델이 목록에 추가되지 않음.**
+Root cause: ChatGPT/Codex OAuth tokens are rejected by `api.openai.com/v1/models`, so live
+discovery returned `ok:false` and `flattenModels` (which only keeps `ok` results) contributed
+zero OpenAI models to every picker. A read-only `architect` subagent then reviewed the whole
+model/TUI surface and surfaced more genuine bugs in already-implemented features.
+
+- **694.** (HIGH bug, headline) `model-discovery.ts` `catalogOr()` + `discoverModels` map: when an authenticated provider's live `models` endpoint is unusable, fall back to the static catalog so models still appear. Verified live: `/models` now shows `openai (oauth): 6 models` where it was previously empty.
+- **695.** Honesty: fallback rows are labelled `· catalog (live list endpoint unavailable)` in `config-panel.formatLiveModels` and the post-login REPL message (`launch.ts`) — never claim "live" for catalog ids.
+- **696.** (HIGH bug, architect #2) Restricted the fallback to `source === "oauth"` only. An `api_key` 401 means a *bad key* — fabricating catalog rows there would let the user pick a model that cannot authenticate.
+- **697.** (HIGH bug, architect #1) `parseModelsBody` now filters endpoint-incompatible models: OpenAI drops embeddings/tts/whisper/dall-e/moderation/audio/image/realtime/search families; Gemini keeps only `generateContent`-capable ids and drops image/tts/embedding/aqa/veo/imagen by family. Verified live: gemini list 50 → 29, no `*-image`/`*-tts`/`embedding`.
+- **698.** (HIGH bug, architect #3) `code-view.ts` `sanitizeForTerminal()`: `/view` and `/diff` now strip CR, expand tabs, and remove ANSI (CSI/OSC) + C0 control bytes from untrusted file/diff content before rendering. A file containing `\x1b[2J` can no longer clear the screen or corrupt the gutter.
+- **699.** (MED bug, architect #5) `footer.ts` stage track honored `color:true` unconditionally; added `FooterData.color` and pass `this.theme.color` from `app.ts` so `JOC_TUI_THEME=mono` emits no ANSI.
+- **700.** (HIGH bug, architect hot #1) `/model save #N` persisted the literal string `#N` as `defaultModel` (corrupting config). The save branch now resolves the target through the same `resolveSelection(lastPickIndex, …)` path as `/model #N`. Verified live: `/model save #2` saved `claude-opus-4-1-20250805`, not `#2`.
+- **701.** (architect hot #5) User/project skills are now discoverable: `launch.ts` resolves `loadSkills(cwd)` once, builds the system prompt from the merged list (`skillsPromptSection(resolvedSkills)`), and feeds resolved names into the autocomplete context so `/skill` Tab-completes user skills, not just bundled ones.
+- **702.** Banner discoverability: the launch hint line now lists `/roles` and `/skill` and points to `/` for the full ↑/↓ palette.
+- **703.** README: documented the OAuth catalog-fallback behavior and honest labelling.
+- **704–706.** Tests: catalog fallback (oauth-only) + api_key-no-fallback; OpenAI/Gemini non-chat model filtering; `sanitizeForTerminal` + code/diff escape neutralization; footer mono-theme no-ANSI; `/skill` user-name completion.
+
+### Integration
+Per this request ("다른 에이전트 작업은 포함해서 동작하도록 개선"), concurrent peer work in
+`launch.ts` (logLines truncation, full-screen `runSelectPicker`, arrow+Enter model selector),
+`select-list.ts`, `providers/anthropic.ts` (stream) is **included** in this push rather than
+isolated; all gates pass with it.
+
+### Verification (passes 694–706)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **449 pass / 0 fail across 69 files**, exit 0.
+- Live (tmux/PTY): OpenAI OAuth models appear in `/models`; gemini image/tts/embedding removed; `/` → ↑/↓ moves `❯`, Enter runs the command (`/compact` → "nothing to compact"); `/skill` lists skills; `/model save #2` resolves to a real model. Architect (read-only subagent) ran end-to-end — live proof the subagent path works.

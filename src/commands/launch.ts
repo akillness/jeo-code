@@ -522,50 +522,54 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   });
 
   // Live slash preview pinned to a reserved bottom footer via a DEC scroll region
-  // (DECSTBM). Normal output scrolls ONLY in the region above the footer, so the
-  // preview never pushes/scrolls the screen. Cleared on Enter; region reset on exit.
-  // Opt out with JOC_NO_SLASH_PREVIEW=1.
-  const PREVIEW_ROWS = 8; // reserved footer rows (max preview lines)
+  // (DECSTBM). The region is armed ONLY while waiting for input, and disarmed for
+  // turns/command output so the full-screen turn TUI renders normally. The footer
+  // is drawn at absolute rows (per-row clear → no scroll, no duplication).
+  // Opt out with JOC_NO_SLASH_PREVIEW=1; auto-off on short terminals.
+  const PREVIEW_ROWS = 8;
   const previewEnabled =
     process.stdin.isTTY &&
     process.env.JOC_NO_SLASH_PREVIEW !== "1" &&
     (process.stdout.rows ?? 24) > PREVIEW_ROWS + 4;
   const out = process.stdout;
-  let regionActive = false;
+  let previewArmed = false;
 
-  const setScrollRegion = () => {
+  // Arm the reserved footer region without moving the visible cursor (ESC7/ESC8
+  // absorb DECSTBM's home jump).
+  const armPreview = () => {
+    if (!previewEnabled || previewArmed) return;
     const rows = process.stdout.rows ?? 24;
-    out.write(`\x1b[1;${rows - PREVIEW_ROWS}r`); // scroll region = top .. (rows-PREVIEW_ROWS)
-    out.write(`\x1b[${rows - PREVIEW_ROWS};1H`); // park cursor at the region's bottom row
-    regionActive = true;
+    out.write(`\x1b7\x1b[1;${rows - PREVIEW_ROWS}r\x1b8`);
+    previewArmed = true;
   };
-  const resetScrollRegion = () => {
-    if (!regionActive) return;
+  // Clear the footer rows and reset the scroll region to the full screen.
+  const disarmPreview = () => {
+    if (!previewArmed) return;
+    previewArmed = false;
     const rows = process.stdout.rows ?? 24;
-    for (let i = 0; i < PREVIEW_ROWS; i++) out.write(`\x1b[${rows - PREVIEW_ROWS + 1 + i};1H\x1b[2K`);
-    out.write("\x1b[r"); // reset scroll region to full screen
-    out.write(`\x1b[${rows};1H`); // cursor to bottom
-    regionActive = false;
+    let s = "\x1b7";
+    for (let i = 0; i < PREVIEW_ROWS; i++) s += `\x1b[${rows - PREVIEW_ROWS + 1 + i};1H\x1b[2K`;
+    s += "\x1b[r\x1b8"; // reset region, restore cursor to the flow position
+    out.write(s);
   };
   const drawFooter = (lines: string[]) => {
+    if (!previewArmed) return;
     const rows = process.stdout.rows ?? 24;
-    const base = rows - PREVIEW_ROWS; // last row of the scroll region
-    out.write("\x1b7"); // save cursor (in the scroll region; footer draw won't move it)
+    const base = rows - PREVIEW_ROWS;
+    let s = "\x1b7";
     for (let i = 0; i < PREVIEW_ROWS; i++) {
-      out.write(`\x1b[${base + 1 + i};1H\x1b[2K`); // clear each reserved footer row
-      if (i < lines.length) out.write(lines[i]!);
+      s += `\x1b[${base + 1 + i};1H\x1b[2K`;
+      if (i < lines.length) s += lines[i]!;
     }
-    out.write("\x1b8"); // restore cursor to the input line
+    s += "\x1b8";
+    out.write(s);
   };
 
   if (previewEnabled) {
-    setScrollRegion();
-    process.once("exit", () => { if (regionActive) out.write("\x1b[r"); }); // safety net
-    process.stdout.on("resize", () => {
-      if (regionActive) setScrollRegion();
-    });
+    process.once("exit", () => out.write("\x1b[r")); // safety net: always reset region
     process.stdin.on("keypress", (_ch: string, key: { name?: string } | undefined) => {
       setImmediate(() => {
+        if (!previewArmed) return;
         try {
           if (key && (key.name === "return" || key.name === "enter")) {
             drawFooter([]);
@@ -579,7 +583,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   try {
     while (true) {
+      armPreview();
       const input = (await rl.question("\njoc> ")).trim();
+      disarmPreview();
       if (input === "/exit" || input === "/quit") break;
       if (input === "") continue;
       if (input === "/" || input === "/?" || input === "/help") {
@@ -1075,7 +1081,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
     }
   } finally {
-    resetScrollRegion(); // restore full-screen scrolling before leaving the REPL
+    disarmPreview(); // clear footer + restore full-screen scrolling before leaving the REPL
     rl.close();
   }
 }

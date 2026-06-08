@@ -124,10 +124,15 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     case "/models":
       return argIndex === 0 ? finish(["refresh", "caps", "catalog"], "subcommand") : { completions: [], token, kind: "none" };
     case "/provider": {
-      if (argIndex === 0) return finish(ctx.providers, "provider");
+      const cloud = ["anthropic", "openai", "gemini"];
+      if (argIndex === 0) return finish(["login", "auth", ...ctx.providers], "provider");
+      // `/provider login|auth <name>` → cloud provider names (OAuth-capable).
+      if (argIndex === 1 && (tokens[1]?.toLowerCase() === "login" || tokens[1]?.toLowerCase() === "auth")) return finish(cloud, "provider");
       if (argIndex === 1) return finish(ctx.modelsForProvider(tokens[1] ?? ""), "model");
       return { completions: [], token, kind: "none" };
     }
+    case "/logout":
+      return argIndex === 0 ? finish(["anthropic", "openai", "gemini"], "provider") : { completions: [], token, kind: "none" };
     case "/agents":
     case "/subagent":
     case "/subagents": {

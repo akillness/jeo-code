@@ -91,6 +91,49 @@ test("tmux session launch behavior", async () => {
   }
 });
 
+test("tmux runtime model flags get a distinct session and propagate to inner launch", async () => {
+  const originalWhich = Bun.which;
+  const originalSpawnSync = Bun.spawnSync;
+  const originalSpawn = Bun.spawn;
+  const originalEnv = { ...process.env };
+  const spawnSyncCalls: any[] = [];
+
+  try {
+    Bun.which = (bin: string) => (bin === "tmux" ? "/usr/local/bin/tmux" : originalWhich(bin));
+    Bun.spawnSync = (cmd: any) => {
+      const command = Array.isArray(cmd) ? cmd : [cmd];
+      spawnSyncCalls.push(command);
+      if (command[0] === "git" && command[1] === "symbolic-ref") {
+        return { exitCode: 0, stdout: Buffer.from("feature-branch\n"), stderr: Buffer.from("") } as any;
+      }
+      if (command[0] === "/usr/local/bin/tmux" && command[1] === "has-session") {
+        return { exitCode: 1, stdout: Buffer.from(""), stderr: Buffer.from("") } as any;
+      }
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as any;
+    };
+    Bun.spawn = (() => ({ exited: Promise.resolve(0) })) as any;
+
+    delete process.env.TMUX;
+    delete process.env.JOC_TMUX_LAUNCHED;
+
+    await runLaunchCommand(["--tmux", "--no-session", "--model", "gemini-2.5-flash", "--thinking", "high", "--max-steps=7", "it's ok"]);
+
+    const newSessionCall = spawnSyncCalls.find(c => c[0] === "/usr/local/bin/tmux" && c[1] === "new-session");
+    expect(newSessionCall).toBeDefined();
+    expect(newSessionCall).toContain("joc-feature-branch-model-gemini-2-5-flash-think-high-steps-7");
+    const innerCmd = String(newSessionCall.at(-1));
+    expect(innerCmd).toContain("'--model' 'gemini-2.5-flash'");
+    expect(innerCmd).toContain("'--thinking' 'high'");
+    expect(innerCmd).toContain("'--max-steps=7'");
+    expect(innerCmd).toContain("'it'\\''s ok'");
+  } finally {
+    Bun.which = originalWhich;
+    Bun.spawnSync = originalSpawnSync;
+    Bun.spawn = originalSpawn;
+    process.env = originalEnv;
+  }
+});
+
 test("tmux attach to existing session behavior", async () => {
   const originalWhich = Bun.which;
   const originalSpawnSync = Bun.spawnSync;

@@ -81,6 +81,24 @@ function isThinkingLevel(input: string | undefined): input is ThinkLevel {
   return input === "minimal" || input === "low" || input === "medium" || input === "high" || input === "xhigh";
 }
 
+function tmuxSafeNamePart(input: string): string {
+  return input.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "value";
+}
+
+function tmuxRuntimeSuffix(flags: LaunchFlags): string {
+  const parts: string[] = [];
+  if (flags.model) parts.push(`model-${tmuxSafeNamePart(flags.model)}`);
+  else if (flags.modelRole) parts.push(flags.modelRole);
+  else if (flags.provider) parts.push(`provider-${flags.provider}`);
+  if (flags.thinking) parts.push(`think-${flags.thinking}`);
+  if (flags.maxSteps !== 25) parts.push(`steps-${flags.maxSteps}`);
+  return parts.length ? `-${parts.join("-").slice(0, 72)}` : "";
+}
+
+function shellQuote(arg: string): string {
+  return `'${arg.replace(/'/g, `'\\''`)}'`;
+}
+
 export function parseFlags(args: string[]): LaunchFlags {
   const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 25, message: "", tmux: false, errors: [] };
   const rest: string[] = [];
@@ -234,7 +252,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             branch = gitRes.stdout.toString().trim().replace(/[^a-zA-Z0-9_-]/g, "-");
           }
         } catch {}
-        const sessionName = branch ? `joc-${branch}` : "joc-session";
+        const sessionName = (branch ? `joc-${branch}` : "joc-session") + tmuxRuntimeSuffix(flags);
 
         // Strip orchestration flags: the worktree is already the tmux session
         // cwd (`-c cwd` below), so the inner process inherits it directly.
@@ -255,7 +273,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           cmd = [resolvedEntrypoint];
         }
 
-        const innerCmd = `exec env JOC_TMUX_LAUNCHED=1 ${[...cmd, "launch", ...innerArgs].map(a => `"${a.replace(/"/g, '\\"')}"`).join(" ")}`;
+        const innerCmd = `exec env JOC_TMUX_LAUNCHED=1 ${[...cmd, "launch", ...innerArgs].map(shellQuote).join(" ")}`;
 
         const hasSession = Bun.spawnSync([tmuxBin, "has-session", "-t", `=${sessionName}`]);
         if (hasSession.exitCode === 0) {

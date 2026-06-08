@@ -62,11 +62,17 @@ test("/models completes model-list subcommands", () => {
   expect(complete("/models ca", ctx()).completions).toEqual(["caps", "catalog"]);
 });
 
-test("/provider completes names, then that provider's live models", () => {
-  expect(complete("/provider ", ctx()).completions).toEqual(["anthropic", "openai", "gemini", "ollama"]);
+test("/provider completes login/auth + names, then that provider's live models", () => {
+  expect(complete("/provider ", ctx()).completions).toEqual(["login", "auth", "anthropic", "openai", "gemini", "ollama"]);
+  // `/provider login ` → OAuth-capable cloud providers
+  expect(complete("/provider login ", ctx()).completions).toEqual(["anthropic", "openai", "gemini"]);
   const second = complete("/provider openai ", ctx());
   expect(second.kind).toBe("model");
   expect(second.completions).toEqual(["gpt-4o-live", "gpt-4o-mini-live"]);
+});
+
+test("/logout completes cloud provider names", () => {
+  expect(complete("/logout ", ctx()).completions).toEqual(["anthropic", "openai", "gemini"]);
 });
 
 test("/agents completes role ids, then models + maxSteps keyword", () => {

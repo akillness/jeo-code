@@ -42,6 +42,14 @@ export interface CompletionResult {
   kind: string;
 }
 
+const PREVIEW_LABEL: Record<string, string> = {
+  command: "Commands",
+  model: "Models",
+  provider: "Providers",
+  role: "Subagent roles",
+  thinking: "Thinking levels",
+  subcommand: "Subcommands",
+};
 const MAX_COMPLETIONS = 50;
 const THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh"];
 
@@ -152,6 +160,23 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     default:
       return { completions: [], token, kind: "none" };
   }
+}
+
+/** Compact live preview for slash-command arguments (`/subagent `, `/provider login `, ...). */
+export function formatCompletionPreview(line: string, ctx: CompletionContext, max = 6): string[] {
+  if (max <= 0) return [];
+  const result = complete(line, ctx);
+  if (result.kind === "none" || result.kind === "command" || result.completions.length === 0) return [];
+  const label = PREVIEW_LABEL[result.kind] ?? "Matches";
+  const budget = Math.max(1, max - 1);
+  const shown = result.completions.slice(0, budget);
+  const lines = [`${label}:`, ...shown.map(c => `  ${c}`)];
+  const hidden = result.completions.length - shown.length;
+  if (hidden > 0) {
+    if (lines.length >= max) lines[lines.length - 1] = `  …(+${hidden + 1} more)`;
+    else lines.push(`  …(+${hidden} more)`);
+  }
+  return lines;
 }
 
 /** Longest common prefix of a list (for tab "fill to ambiguity"). */

@@ -82,15 +82,25 @@ export function formatSlashCommandList(input = "/"): string[] {
  * capped, or [] for non-slash / argument input (a space means it is a real
  * command being typed, not a keyword probe).
  */
-export function formatSlashPreview(line: string, max = 6): string[] {
+export function formatSlashPreview(line: string, max = 6, selected = -1): string[] {
   const trimmed = line.trimStart();
   if (!trimmed.startsWith("/") || trimmed.includes(" ")) return [];
   const matches = matchSlash(trimmed);
   if (matches.length === 0) return [];
   const rows = SLASH_COMMAND_DETAILS.filter(c => matches.includes(c.command)).slice(0, max);
   const usageWidth = Math.max(...rows.map(r => r.usage.length), 6);
-  const lines = rows.map(r => `  ${r.usage.padEnd(usageWidth)}  ${r.description}`);
+  const lines = rows.map((r, i) => {
+    const body = `${r.usage.padEnd(usageWidth)}  ${r.description}`;
+    return i === selected ? `❯ ${body}` : `  ${body}`;
+  });
   const hidden = matches.length - rows.length;
   if (hidden > 0) lines.push(`  …(+${hidden} more)`);
   return lines;
+}
+
+/** The matching command names for a slash-keyword prefix, in display order. Empty otherwise. */
+export function slashPreviewMatches(line: string): string[] {
+  const trimmed = line.trimStart();
+  if (!trimmed.startsWith("/") || trimmed.includes(" ")) return [];
+  return matchSlash(trimmed);
 }

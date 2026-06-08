@@ -367,11 +367,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   // pi-style: load project context (JEO.md / AGENTS.md / .joc/context.md / CLAUDE.md) into the prompt.
   const contextFiles = await loadProjectContext(cwd);
+  const resolvedSkills = await loadSkills(cwd); // bundled + user/project SKILL.md docs
+  const resolvedSkillNames = resolvedSkills.map(s => s.name);
   const baseSystemPrompt =
     executorSystemPrompt("joc, an interactive coding agent") +
     "\nWhen you have finished the user's request, or need to reply to or ask the user something, call done with {\"reason\": <your natural-language reply to the user>}. The reason text is shown to the user as your message." +
     "\n\nAvailable joc workflow skills (suggest the relevant command when the user's task fits one):\n" +
-    skillsPromptSection();
+    skillsPromptSection(resolvedSkills);
   const systemPrompt = withProjectContext(baseSystemPrompt, contextFiles);
 
   const history: Message[] = [{ role: "system", content: systemPrompt }];
@@ -499,7 +501,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   console.log(`Model: ${activeStartModel} (${startProvider})  ·  thinking: ${sessionThinking ?? "medium"}`);
   if (sessionId) console.log(`Session: ${sessionId}`);
   if (contextFiles.length > 0) console.log(`Project context: ${contextFiles.map(f => f.path).join(", ")}`);
-  console.log("Type your request. Slash: /help /model /models /provider /agents /config /thinking /view /diff /find /search /sessions /exit" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
+  console.log("Type your request. Slash: /help /model /models /provider /agents /roles /thinking /skill /view /diff /find /search /sessions /exit  (type / for the full ↑/↓ palette)" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
 
   const useTui = LaunchTui.usable(flags.noTui);
   // Tab autocomplete: alias names snapshotted once; live models come from the
@@ -515,6 +517,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     ...staticCompletionContext(),
     liveModels: liveModelsCache ? flattenModels(liveModelsCache).map(e => e.model) : [],
     aliases: aliasNames,
+    skillNames: resolvedSkillNames,
     modelsForProvider: p => liveModelsCache?.find(r => r.provider === p)?.models ?? [],
   });
   const rl = createInterface({
@@ -542,6 +545,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let typedLine = ""; // the user-typed line (restored after readline's history nav)
   let pendingSelection: string | undefined; // command chosen via arrows, applied on Enter
   let lastFooterKey = "";
+  const logLines = (lines: string | string[]) => {
+    const arr = Array.isArray(lines) ? lines : [lines];
+    const cols = Math.max(20, (process.stdout.columns ?? 80) - 1);
+    for (const line of arr) {
+      console.log(truncateAnsi(line, cols));
+    }
+  };
   let previewPending = false;
 
   // Arm the reserved footer region without moving the visible cursor (ESC7/ESC8
@@ -637,6 +647,60 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
   };
 
+  const pickLiveProviderModel = async (
+    providerName: ProviderName,
+    entries: PickEntry[],
+    current?: string,
+  ): Promise<PickEntry | undefined> => {
+    if (!process.stdin.isTTY || entries.length === 0) return undefined;
+    const list = liveModelPicker(entries, { current });
+    let chosen: PickEntry | undefined;
+    await runSelectPicker(
+      (cols, rows) =>
+        renderLiveModelPicker(list, {
+          title: `Select ${providerName} model`,
+          cols,
+          rows: Math.max(4, Math.min(rows, 12)),
+          unicode: true,
+          color: true,
+        }),
+      (ch, key) => {
+        if (key?.name === "up") {
+          list.up();
+          return false;
+        }
+        if (key?.name === "down") {
+          list.down();
+          return false;
+        }
+        if (key?.name === "pageup") {
+          list.page(-1, 6);
+          return false;
+        }
+        if (key?.name === "pagedown") {
+          list.page(1, 6);
+          return false;
+        }
+        if (key?.name === "backspace") {
+          list.backspace();
+          return false;
+        }
+        if (key?.name === "escape" || (key?.ctrl && key.name === "c")) {
+          return true;
+        }
+        if (key?.name === "return" || key?.name === "enter") {
+          chosen = list.selected()?.value;
+          return true;
+        }
+        if (ch && ch >= " " && !key?.ctrl && !key?.meta) {
+          list.typeChar(ch);
+        }
+        return false;
+      },
+    );
+    return chosen;
+  };
+
   if (previewEnabled) {
     process.once("exit", () => out.write("\x1b[r")); // safety net: always reset region
     process.stdin.on("keypress", (_ch: string, key: { name?: string } | undefined) => {
@@ -693,7 +757,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (input === "/exit" || input === "/quit") break;
       if (input === "") continue;
       if (input === "/" || input === "/?" || input === "/help") {
-        for (const line of formatSlashCommandList(input === "/help" ? "/" : input)) console.log(line);
+        logLines(formatSlashCommandList(input === "/help" ? "/" : input));
         console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .joc/sessions/.");
         const tip = getEvolutionTip(history.length, flags.maxSteps);
         console.log(`\n${chalk.cyan("Evolutionary Tip:")} ${tip}`);
@@ -736,9 +800,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           const query = tokens.slice(1).join(" ");
           const rows = query ? fuzzyMatchCatalog(query) : [...MODEL_CATALOG];
           console.log(`Canonical models${query ? ` matching '${query}'` : ""}:`);
-          for (const line of formatCanonicalCatalogTable(rows, { current: resolved })) console.log(line);
+          logLines(formatCanonicalCatalogTable(rows, { current: resolved }));
           console.log("\nProvider models:");
-          for (const line of formatCatalogTable(rows, { current: resolved })) console.log(line);
+          logLines(formatCatalogTable(rows, { current: resolved }));
           continue;
         }
         if (sub === "caps") {
@@ -749,7 +813,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           lastPickIndex = enriched.map((m, i): PickEntry => ({ index: i + 1, provider: m.provider, model: m.id }));
           const { known, unknown } = knownCount(enriched);
           console.log("Live models with capabilities (select with /model #N):");
-          for (const line of formatPickListWithCapabilities(lastPickIndex, { current: resolved })) console.log(line);
+          logLines(formatPickListWithCapabilities(lastPickIndex, { current: resolved }));
           console.log(`  (${known} with known capabilities, ${unknown} unknown)`);
           continue;
         }
@@ -758,11 +822,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const { resolved, provider } = await describeModel(def);
         console.log(`Default model: ${formatModelLine({ label: def, resolved, provider })}`);
         console.log("Aliases:");
-        for (const line of formatAliasLines(await listAliases())) console.log(line);
+        logLines(formatAliasLines(await listAliases()));
         const live = await getLiveModels(refresh);
         lastPickIndex = flattenModels(live);
         console.log("Live models (logged-in providers) — select with /model #N:");
-        for (const line of formatPickListWithCapabilities(lastPickIndex, { current: resolved })) console.log(line);
+        logLines(formatPickListWithCapabilities(lastPickIndex, { current: resolved }));
         console.log("Refresh: /models refresh  ·  capabilities: /models caps  ·  one provider: /provider <name>");
         continue;
       }
@@ -800,8 +864,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             const forProvider = live.filter(r => r.provider === target);
             if (forProvider.some(r => r.ok && r.models.length > 0)) {
               lastPickIndex = flattenModels(forProvider);
-              console.log(`  live ${target} models → /model #N or /provider ${target} #N`);
-              for (const line of formatPickListWithCapabilities(lastPickIndex, { cap: 12 })) console.log(line);
+              const viaCatalog = forProvider.some(r => r.fallback);
+              console.log(`  ${viaCatalog ? "catalog" : "live"} ${target} models → /model #N or /provider ${target} #N${viaCatalog ? "  (live list endpoint rejected this token; showing known models)" : ""}`);
+              logLines(formatPickListWithCapabilities(lastPickIndex, { cap: 12 }));
             } else {
               const failed = forProvider.find(r => !r.ok);
               if (failed?.error) console.log(`  live ${target} models unavailable: ${failed.error}`);
@@ -815,8 +880,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const statuses = await describeAllProviders(cfgNow);
         if (!name) {
           console.log("Providers (credential · base URL):");
-          for (const line of formatProviderPanel(statuses)) console.log(line);
-          console.log("Switch with: /provider <name> [model]  ·  list live models: /models");
+          logLines(formatProviderPanel(statuses));
+          console.log("Switch with: /provider <name> [model]  ·  arrows+Enter picker: /provider <name>  ·  list live models: /models");
           continue;
         }
         if (!isProviderName(name)) {
@@ -830,8 +895,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const live = await getLiveModels();
         const forProvider = live.filter(r => r.provider === name);
         const providerPick = flattenModels(forProvider);
+        const currentResolved = (await describeModel(sessionModel || cfgNow.defaultModel)).resolved;
+        let pickedFromPicker = false;
         let target = explicitModel ?? PROVIDER_DEFAULT[name];
-        if (explicitModel && providerPick.length) {
+        if (!explicitModel && providerPick.length && process.stdin.isTTY && process.stdout.isTTY) {
+          const picked = await pickLiveProviderModel(name, providerPick, currentResolved);
+          if (!picked) {
+            console.log("(cancelled)");
+            continue;
+          }
+          pickedFromPicker = true;
+          target = picked.model;
+        } else if (explicitModel && providerPick.length) {
           const sel = resolveSelection(providerPick, explicitModel);
           if (sel.kind === "index" || sel.kind === "match") {
             target = sel.entry.model;
@@ -850,7 +925,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const { resolved, provider } = await describeModel(target);
         if (explicitModel && provider !== name) {
           console.log(`! '${target}' resolves to ${provider}, not ${name}. Pick a ${name} model from the live list below.`);
-          if (providerPick.length) for (const line of formatPickListWithCapabilities(providerPick, { cap: 20 })) console.log(line);
+          if (providerPick.length) logLines(formatPickListWithCapabilities(providerPick, { cap: 20 }));
           continue;
         }
         sessionModel = target;
@@ -858,11 +933,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         // Show the provider's live, credentialed catalog so the user can pick a concrete id.
         if (providerPick.length) {
           lastPickIndex = providerPick;
-          console.log(`Live ${name} models — select with /model #N or /provider ${name} #N:`);
-          for (const line of formatPickListWithCapabilities(lastPickIndex, { current: resolved })) console.log(line);
-        }
-        if (explicitModel && !liveModelKnown(live, target) && !liveModelKnown(live, resolved)) {
-          console.log(`  (note: '${target}' is not in ${name}'s live list — it may still work, or pick one above)`);
+          if (!pickedFromPicker) {
+            console.log(`Live ${name} models — select with /model #N, /provider ${name} #N, or rerun /provider ${name} and use arrows+Enter:`);
+            logLines(formatPickListWithCapabilities(lastPickIndex, { current: resolved }));
+          }
         }
         continue;
       }
@@ -1048,11 +1122,30 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         let arg = input.substring(6).trim();
         // `/model save [id]` → persist the (session or given) model as the config default.
         if (arg === "save" || arg.startsWith("save ")) {
-          const toSave = arg.slice(4).trim() || sessionModel || defaultModel;
+          let toSave = arg.slice(4).trim();
+          // Resolve `#N`/fuzzy through the same pick-list logic as `/model #N`, so we never
+          // persist a literal token like "#2" as defaultModel (which then fails to route).
+          if (toSave && lastPickIndex.length) {
+            const sel = resolveSelection(lastPickIndex, toSave);
+            if (sel.kind === "index" || sel.kind === "match") toSave = sel.entry.model;
+            else if (sel.kind === "ambiguous") {
+              console.log(`'${toSave}' matches ${sel.matches.length} models — be more specific:`);
+              for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
+              continue;
+            } else if (sel.kind === "out-of-range") {
+              console.log(`#${toSave.slice(1)} is out of range (1-${sel.max}). Run /models first.`);
+              continue;
+            }
+            // kind "none" → treat `toSave` as a literal model id/alias.
+          } else if (toSave.startsWith("#")) {
+            console.log("Run /models (or /provider <name>) first to build the numbered list.");
+            continue;
+          }
+          const finalSave = toSave || sessionModel || defaultModel;
           const cfgNow = await readGlobalConfig();
-          await saveGlobalConfig({ ...cfgNow, defaultModel: toSave });
-          const { resolved, provider } = await describeModel(toSave);
-          console.log(`Default model saved: ${formatModelLine({ label: toSave, resolved, provider })} → ~/.joc/config.json`);
+          await saveGlobalConfig({ ...cfgNow, defaultModel: finalSave });
+          const { resolved, provider } = await describeModel(finalSave);
+          console.log(`Default model saved: ${formatModelLine({ label: finalSave, resolved, provider })} → ~/.joc/config.json`);
           continue;
         }
         // Selection from the last numbered pick list (`#N`) or a fuzzy substring.

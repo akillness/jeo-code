@@ -7,6 +7,7 @@ import {
   parseModelsBody,
   listProviderModels,
   discoverModels,
+  catalogOr,
 } from "../src/ai/model-discovery";
 
 let dir: string;
@@ -172,4 +173,66 @@ test("listProviderModels: credential-less cloud short-circuits without fetching"
 test("discoverModels runs all providers in parallel", async () => {
   const results = await discoverModels({ fetchImpl: okFetch({ data: [{ id: "x" }], models: [{ name: "y" }] }) });
   expect(results.map(r => r.provider).sort()).toEqual(["anthropic", "gemini", "ollama", "openai"]);
+});
+
+test("catalogOr: OAuth provider with rejected live endpoint falls back to catalog ids", () => {
+  // Simulates ChatGPT/Codex OAuth: /v1/models returns 401, but the user IS logged in.
+  const r = catalogOr({ provider: "openai", models: [], ok: false, source: "oauth", error: "auth rejected" });
+  expect(r.ok).toBe(true);
+  expect(r.fallback).toBe(true);
+  expect(r.models.length).toBeGreaterThan(0);
+  expect(r.models).toContain("gpt-4o");
+});
+
+test("catalogOr: keyless/not-logged-in results are returned unchanged (no fabricated models)", () => {
+  const none = catalogOr({ provider: "openai", models: [], ok: false, source: "none", error: "not logged in" });
+  expect(none.ok).toBe(false);
+  expect(none.models).toEqual([]);
+  expect(none.fallback).toBeUndefined();
+});
+
+test("catalogOr: a successful live result is never overwritten by the catalog", () => {
+  const live = catalogOr({ provider: "openai", models: ["gpt-live-1"], ok: true, source: "oauth" });
+  expect(live.models).toEqual(["gpt-live-1"]);
+  expect(live.fallback).toBeUndefined();
+});
+
+test("parseModelsBody: openai drops non-chat families (embeddings/tts/image/moderation)", () => {
+  const ids = parseModelsBody("openai", {
+    data: [
+      { id: "gpt-4o" }, { id: "o3" }, { id: "text-embedding-3-small" },
+      { id: "tts-1" }, { id: "dall-e-3" }, { id: "whisper-1" },
+      { id: "omni-moderation-latest" }, { id: "gpt-4o-audio-preview" },
+    ],
+  });
+  expect(ids).toContain("gpt-4o");
+  expect(ids).toContain("o3");
+  expect(ids).not.toContain("text-embedding-3-small");
+  expect(ids).not.toContain("tts-1");
+  expect(ids).not.toContain("dall-e-3");
+  expect(ids).not.toContain("whisper-1");
+  expect(ids).not.toContain("omni-moderation-latest");
+  expect(ids).not.toContain("gpt-4o-audio-preview");
+});
+
+test("parseModelsBody: gemini keeps only generateContent-capable models", () => {
+  const ids = parseModelsBody("gemini", {
+    models: [
+      { name: "models/gemini-2.5-pro", supportedGenerationMethods: ["generateContent", "countTokens"] },
+      { name: "models/embedding-001", supportedGenerationMethods: ["embedContent"] },
+      { name: "models/gemini-2.5-flash-tts", supportedGenerationMethods: ["bidiGenerateContent"] },
+      // generateContent-capable but emits images/audio → still excluded by family name
+      { name: "models/gemini-2.5-flash-image", supportedGenerationMethods: ["generateContent"] },
+      { name: "models/gemini-2.5-pro-preview-tts", supportedGenerationMethods: ["generateContent"] },
+      { name: "models/gemini-legacy" }, // no methods → permissive keep
+    ],
+  });
+  expect(ids).toEqual(["gemini-2.5-pro", "gemini-legacy"]);
+});
+
+test("catalogOr: an api_key rejection does NOT fabricate catalog rows (bad key stays a failure)", () => {
+  const r = catalogOr({ provider: "openai", models: [], ok: false, source: "api_key", error: "auth rejected" });
+  expect(r.ok).toBe(false);
+  expect(r.models).toEqual([]);
+  expect(r.fallback).toBeUndefined();
 });

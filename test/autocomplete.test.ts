@@ -86,6 +86,15 @@ test("/agents completes role ids, then models + maxSteps keyword", () => {
   expect(complete("/subagents executor ", ctx()).completions).toContain("maxSteps");
 });
 
+test("/skill completes resolved skill names (bundled + user) from the context", () => {
+  // No skillNames in context → falls back to bundled skills.
+  expect(complete("/skill ", ctx()).completions.length).toBeGreaterThan(0);
+  // Context-provided names (including a user skill) are offered and prefix-filtered.
+  const withUser = ctx({ skillNames: ["deep-interview", "ralplan", "my-custom-skill"] });
+  expect(complete("/skill ", withUser).completions).toContain("my-custom-skill");
+  expect(complete("/skill my", withUser).completions).toEqual(["my-custom-skill"]);
+});
+
 test("formatCompletionPreview lists argument completions after slash commands", () => {
   const sub = formatCompletionPreview("/subagent ", ctx()).join("\n");
   expect(sub).toContain("Subagent roles:");

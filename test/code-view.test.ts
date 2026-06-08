@@ -8,6 +8,7 @@ import {
   lightHighlightLine,
   formatCodeBlock,
   formatDiff,
+  sanitizeForTerminal,
 } from "../src/tui/components/code-view";
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -96,4 +97,26 @@ test("formatDiff caps long diffs", () => {
   const big = Array.from({ length: 20 }, (_, i) => `+line${i}`).join("\n");
   const out = formatDiff(big, { maxLines: 5, color: false });
   expect(out[out.length - 1]).toContain("+15 more");
+});
+
+test("sanitizeForTerminal strips ANSI/C0 controls, CR, and expands tabs", () => {
+  expect(sanitizeForTerminal("a\tb")).toBe("a  b");
+  expect(sanitizeForTerminal("done\r")).toBe("done");
+  expect(sanitizeForTerminal("clear\x1b[2Jhere")).toBe("clearhere");
+  expect(sanitizeForTerminal("\x1b[31mred\x1b[0m")).toBe("red");
+  expect(sanitizeForTerminal("\x1b]0;evil title\x07ok")).toBe("ok");
+  expect(sanitizeForTerminal("nul\x00byte")).toBe("nulbyte");
+});
+
+test("formatCodeBlock neutralizes file-origin escape sequences (no raw ESC leaks)", () => {
+  const malicious = "safe line\nevil\x1b[2J\x1b[H line\nx\ty";
+  const out = formatCodeBlock(malicious, { color: false });
+  for (const l of out) expect(l).not.toContain("\x1b");
+  expect(out.join("\n")).toContain("evil line"); // CSI removed, text kept
+  expect(out.join("\n")).toContain("x  y"); // tab expanded
+});
+
+test("formatDiff neutralizes file-origin escape sequences", () => {
+  const out = formatDiff("+added\x1b[2J\n-\x1b]0;t\x07removed", { color: false });
+  for (const l of out) expect(l).not.toContain("\x1b");
 });

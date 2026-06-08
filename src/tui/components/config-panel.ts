@@ -111,7 +111,8 @@ export function formatLiveModels(
       lines.push(`${chalk.bold(r.provider)} ${chalk.gray(`(${r.source})`)}: ${chalk.yellow(r.error ?? "unavailable")}`);
       continue;
     }
-    lines.push(`${chalk.bold(r.provider)} ${chalk.gray(`(${r.source})`)}: ${r.models.length} model${r.models.length === 1 ? "" : "s"}`);
+    const tag = r.fallback ? chalk.gray(" · catalog (live list endpoint unavailable)") : "";
+    lines.push(`${chalk.bold(r.provider)} ${chalk.gray(`(${r.source})`)}: ${r.models.length} model${r.models.length === 1 ? "" : "s"}${tag}`);
     for (const m of r.models.slice(0, cap)) {
       const mark = opts.current && m === opts.current ? chalk.green(" ◀ current") : "";
       lines.push(`  ${m}${mark}`);

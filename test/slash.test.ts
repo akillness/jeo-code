@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { matchSlash, isSlashAttempt, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, formatSlashCommandList } from "../src/tui/components/slash";
+import { matchSlash, isSlashAttempt, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, formatSlashCommandList, formatSlashPreview } from "../src/tui/components/slash";
 
 test("matchSlash: prefix-matches slash commands, case-insensitive", () => {
   expect(matchSlash("/")).toEqual(SLASH_COMMANDS);
@@ -65,4 +65,27 @@ test("formatSlashCommandList lists all commands for bare slash and narrows by pr
 
 test("formatSlashCommandList returns an unknown hint for non-matches", () => {
   expect(formatSlashCommandList("/zzz")).toEqual(["Unknown command '/zzz'. Try /help."]);
+});
+
+test("formatSlashPreview: live preview for a slash keyword prefix", () => {
+  // bare "/m" → matching command usages
+  const m = formatSlashPreview("/m").join("\n");
+  expect(m).toContain("/model");
+  expect(m).toContain("/models");
+  expect(m).not.toContain("/agents");
+  // a unique prefix shows the one command
+  expect(formatSlashPreview("/thi").join("\n")).toContain("/thinking");
+});
+
+test("formatSlashPreview: empty for non-slash, argument input, or no match", () => {
+  expect(formatSlashPreview("")).toEqual([]);
+  expect(formatSlashPreview("hello")).toEqual([]);
+  expect(formatSlashPreview("/model gpt-4o")).toEqual([]); // has a space → real command, not a keyword probe
+  expect(formatSlashPreview("/zzz")).toEqual([]);
+});
+
+test("formatSlashPreview: caps the list with a +N more line", () => {
+  const out = formatSlashPreview("/", 3);
+  expect(out.length).toBe(4); // 3 rows + overflow line
+  expect(out[3]).toContain("more");
 });

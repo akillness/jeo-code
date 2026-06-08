@@ -29,3 +29,10 @@ test("parseFlags records invalid provider/thinking values as launch errors", () 
   ]);
   expect(flags.message).toBe("hello");
 });
+
+test("parseFlags treats -- as end-of-options and omits the sentinel", () => {
+  const flags = parseFlags(["--tmux", "--", "--models", "routing"]);
+  expect(flags.tmux).toBe(true);
+  expect(flags.message).toBe("--models routing");
+  expect(flags.errors).toEqual([]);
+});

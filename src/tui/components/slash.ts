@@ -75,3 +75,22 @@ export function formatSlashCommandList(input = "/"): string[] {
   lines.push("Tip: type a slash prefix like /m to narrow, or press Tab for inline completion.");
   return lines;
 }
+
+/**
+ * Compact live preview shown beneath the input box as the user types a slash
+ * keyword (before any space). Returns matching command usages + descriptions,
+ * capped, or [] for non-slash / argument input (a space means it is a real
+ * command being typed, not a keyword probe).
+ */
+export function formatSlashPreview(line: string, max = 6): string[] {
+  const trimmed = line.trimStart();
+  if (!trimmed.startsWith("/") || trimmed.includes(" ")) return [];
+  const matches = matchSlash(trimmed);
+  if (matches.length === 0) return [];
+  const rows = SLASH_COMMAND_DETAILS.filter(c => matches.includes(c.command)).slice(0, max);
+  const usageWidth = Math.max(...rows.map(r => r.usage.length), 6);
+  const lines = rows.map(r => `  ${r.usage.padEnd(usageWidth)}  ${r.description}`);
+  const hidden = matches.length - rows.length;
+  if (hidden > 0) lines.push(`  …(+${hidden} more)`);
+  return lines;
+}

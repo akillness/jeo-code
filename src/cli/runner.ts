@@ -226,13 +226,13 @@ function stripLaunchOnlyArgs(args: string[]): string[] {
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     const name = flagName(a);
-    if (LAUNCH_ONLY_FLAGS.has(name)) continue;
-    if (VALUE_FLAGS.has(name)) {
-      if (!a.includes("=") && args[i + 1] && !args[i + 1]!.startsWith("-")) i++;
-      continue;
+    if (a === "--") {
+      out.push(...args.slice(i + 1));
+      break;
     }
-    if (OPTIONAL_UUID_FLAGS.has(name)) {
-      if (args[i + 1] && UUID_REGEX.test(args[i + 1]!)) i++;
+    if (name === "--tmux" || name === "--no-tui") continue;
+    if (name === "--worktree") {
+      if (!a.includes("=") && args[i + 1] && !args[i + 1]!.startsWith("-")) i++;
       continue;
     }
     out.push(a);
@@ -249,6 +249,7 @@ function stripLaunchOnlyArgs(args: string[]): string[] {
 export function globalModelsArgs(argv: string[]): string[] | null {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
+    if (a === "--") break;
     if (a === "--models" || a.startsWith("--models=")) {
       const value = a.startsWith("--models=") ? a.slice("--models=".length) : undefined;
       return [...(value ? [value] : []), ...stripLaunchOnlyArgs(argv.slice(i + 1))];
@@ -280,6 +281,7 @@ function leadingGlobalFlag(argv: string[], targets: readonly string[]): boolean 
   const wanted = new Set(targets);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
+    if (a === "--") break;
     const name = flagName(a);
     if (wanted.has(a) || wanted.has(name)) return true;
     if (LAUNCH_ONLY_FLAGS.has(name)) continue;

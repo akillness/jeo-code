@@ -1,6 +1,15 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { readWorkflowState } from "./state";
+import { readWorkflowState, readWorkflowStateStrict, type WorkflowState } from "./state";
+
+/** Read the deep-interview lock; on corrupt state fail CLOSED (treat as active lock). */
+async function readMutationLock(cwd: string): Promise<WorkflowState | null> {
+  try {
+    return await readWorkflowStateStrict("deep-interview", cwd);
+  } catch {
+    return { active: true, current_phase: "locked", skill: "deep-interview" };
+  }
+}
 
 export interface ToolResult {
   success: boolean;
@@ -34,7 +43,7 @@ export async function assertMutationAllowed(
   filePath: string,
   cwd: string = process.cwd()
 ): Promise<void> {
-  const deepInterviewState = await readWorkflowState("deep-interview", cwd);
+  const deepInterviewState = await readMutationLock(cwd);
   if (deepInterviewState && deepInterviewState.active && deepInterviewState.current_phase !== "complete") {
     // Check if the target is NOT inside the local .joc folder. Use a path-boundary
     // check (not bare startsWith) so siblings like ".joc-backup" aren't mistaken for ".joc/".
@@ -54,7 +63,7 @@ export async function assertMutationAllowed(
 export async function assertBashAllowed(
   cwd: string = process.cwd()
 ): Promise<void> {
-  const deepInterviewState = await readWorkflowState("deep-interview", cwd);
+  const deepInterviewState = await readMutationLock(cwd);
   if (deepInterviewState && deepInterviewState.active && deepInterviewState.current_phase !== "complete") {
     throw new Error(
       "[MutationGuard] bash is disabled during an active Socratic interview (ambiguity must reach <=20% first). Finish 'joc deep-interview'."

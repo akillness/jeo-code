@@ -169,12 +169,23 @@ async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
   return { adapter, callOptions, credential: effective, retry: resolveRetryOptions(config.retry) };
 }
 
+/** Hard cap for a single non-streaming provider request (service-readiness: a
+ *  blackholed/unreachable provider must not hang the agent or `joc team`). */
+const DEFAULT_CALL_TIMEOUT_MS = 120_000;
+
+/** Compose the caller's signal (if any) with a fresh per-attempt timeout. */
+function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
+  const timeout = AbortSignal.timeout(ms);
+  if (!signal) return timeout;
+  return typeof AbortSignal.any === "function" ? AbortSignal.any([signal, timeout]) : signal;
+}
+
 export function createModelManager(): ModelManager {
   return {
     resolveProvider,
     async call(messages, options = {}) {
       const { adapter, callOptions, credential, retry } = await resolveCall(options);
-      return withRetry(() => adapter.call(messages, callOptions, credential), retry);
+      return withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, DEFAULT_CALL_TIMEOUT_MS) }, credential), retry);
     },
     async *stream(messages, options = {}) {
       const { adapter, callOptions, credential, retry } = await resolveCall(options);
@@ -182,7 +193,7 @@ export function createModelManager(): ModelManager {
         yield* adapter.stream(messages, callOptions, credential);
       } else {
         // Fallback: providers without streaming yield the full response as one chunk.
-        yield await withRetry(() => adapter.call(messages, callOptions, credential), retry);
+        yield await withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, DEFAULT_CALL_TIMEOUT_MS) }, credential), retry);
       }
     },
   };

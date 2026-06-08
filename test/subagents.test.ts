@@ -48,14 +48,16 @@ test("subagentSystemPrompt: read-only roles get a no-mutation directive", () => 
   expect(arch).toContain("Do not create or modify files");
 });
 
-test("subagentToolset: read-only roles drop write/edit, executor keeps them", () => {
+test("subagentToolset: read-only roles drop write/edit/bash, executor keeps them", () => {
   const execTools = Object.keys(subagentToolset(getSubagentRole("executor")!));
   expect(execTools).toContain("write");
   expect(execTools).toContain("edit");
+  expect(execTools).toContain("bash");
 
   const roTools = Object.keys(subagentToolset(getSubagentRole("planner")!));
   expect(roTools).not.toContain("write");
   expect(roTools).not.toContain("edit");
+  expect(roTools).not.toContain("bash"); // bash can mutate the repo → excluded for read-only roles
   expect(roTools).toContain("read");
   expect(roTools).toContain("search");
   expect(roTools).toContain("find");

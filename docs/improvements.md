@@ -4002,8 +4002,48 @@ Skills are now user-configurable and callable from the REPL.
 - **674.** `/skill` added to the slash palette (preview/arrow-nav) and autocomplete (arg0 → bundled skill names).
 - **675.** `skills-config.test.ts`: markdown parsing (inferred + header), `loadSkills` merge + user override.
 - **676.** Verified in a PTY: `/skill` lists the four bundled skills plus a custom `~/.joc/skills/greet.md`.
-
 ### Verification (passes 669–676)
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
-- `bun test` → **435 pass / 0 fail across 69 files** (added `skills-config`).
+- `bun test` → **437 pass / 0 fail across 69 files** (added `skills-config`).
 - PTY: `/skill` shows `deep-interview/ralplan/team/ultragoal` + the user `greet` skill; README documents `/skill` + configurable skill dirs.
+
+## Provider arrow picker + non-clipping select lists (passes 677–684)
+
+**Date:** 2026-06-07 · **Dimension: tui / provider model selection and width fitting.**
+
+- **677.** Added `live-model-picker.ts` — a `SelectList`-based live model picker with provider grouping and capability hints (`ctx/out/thinking/img/current`).
+- **678.** `/provider <name>` with no explicit model now opens a keyboard picker on TTY: ↑/↓ moves, PageUp/PageDown jumps, typing filters, Enter selects, Esc cancels.
+- **679.** Selected provider models are applied immediately to the session model; non-TTY use still falls back to the old text/list behavior.
+- **680.** Provider help text now advertises the arrow-picker path (`/provider <name>`).
+- **681.** `renderSelectList` now clamps title, group headers, scroll markers, items, and footer to terminal width instead of letting long lines overflow.
+- **682.** Slash/footer previews are also width-clamped before drawing, preventing on-screen clipping while typing.
+- **683.** Added unit coverage for the live model picker, select-list width fitting, and argument-preview behavior.
+- **684.** Verified an interactive PTY smoke: `/provider gemini`, ↓, Enter opens the picker and sets a Gemini model successfully.
+
+### Verification (passes 677–684)
+- `bun test test/live-model-picker.test.ts test/select-list.test.ts test/autocomplete.test.ts test/slash.test.ts test/model-discovery.test.ts` → **53 pass / 0 fail**.
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **437 pass / 0 fail across 69 files**.
+- Interactive PTY smoke: `Select gemini model` picker rendered, arrow navigation moved selection, Enter applied `Model set to: … (gemini)`.
+
+## Service-readiness hardening (architect review) — passes 685–693
+
+**Date:** 2026-06-05 · **Dimension: stability / completeness / shippability.**
+
+A read-only `architect` subagent reviewed joc for production/service readiness (status: BLOCK) and
+returned a severity-rated list. Fixed the HIGH items that live in stable (non-hot) files.
+
+- **685.** (HIGH) Provider `call` now has a hard per-attempt timeout: `model-manager.ts` composes the caller signal with `AbortSignal.timeout(120s)` (fresh per retry) so a blackholed/unreachable provider can no longer hang the agent or `joc team` (which passed no signal).
+- **686.** (HIGH) OAuth auto-refresh no longer leaks an unhandled rejection: `storage.ts` `.finally(...)` cleanup is `void`-guarded with `.catch(() => {})`.
+- **687.** (HIGH) Read-only subagent roles (planner/architect/critic) now drop **bash** too (not just write/edit) — `subagentToolset` excludes all mutating tools so a review/plan lane physically cannot change the repo.
+- **688.** (HIGH) MutationGuard fails CLOSED on a corrupt deep-interview lock: new `readWorkflowStateStrict` distinguishes ENOENT (→ null) from invalid JSON (→ throws); `tools.ts` `readMutationLock` treats a corrupt lock as active → blocks write/edit/bash instead of silently allowing them.
+- **689.** (HIGH, partial) `joc team` sets `process.exitCode = 1` on every failure precondition (no/!approved/unreadable/invalid plan) and on a failed task, so CI/scripts no longer see broken runs as success.
+- **690.** (HIGH→robustness) `cli.ts` wraps `dispatch` in try/catch → a clean `error: <message>` + exit 1 instead of a raw unhandled-rejection stack trace.
+- **691.** Tests: read-only `subagentToolset` excludes bash; MutationGuard fail-closed on corrupt state; `team-run` resets `process.exitCode` so the CLI's exit-code behavior doesn't leak into the test runner.
+- **692.** Confirmed package.json is consistent for `bun install -g` (version/bin/files/engines match cli.ts + README) — no version drift.
+- **693.** Remaining MEDIUM/LOW items (TUI dispose-on-error in the concurrently-rewritten launch.ts, stream retry, tool path-sandbox, non-TTY stdin cap) logged for a follow-up; not touched to avoid clobbering the in-flight picker work.
+
+### Verification (passes 685–693)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **438 pass / 0 fail across 69 files**, process exit code 0.
+- Architect status was BLOCK; the HIGH provider-timeout / unhandled-rejection / read-only-bash / fail-closed-guard / exit-code / clean-error items are now resolved.

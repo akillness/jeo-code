@@ -69,6 +69,7 @@ export async function runTeamCommand(): Promise<void> {
     console.log(
       `[ERROR] No completed plan found. Please run 'joc ralplan' to generate a plan first.`
     );
+    process.exitCode = 1;
     return;
   }
 
@@ -76,6 +77,7 @@ export async function runTeamCommand(): Promise<void> {
     console.log(
       `[ERROR] Plan is not approved. Please approve the plan before executing.`
     );
+    process.exitCode = 1;
     return;
   }
 
@@ -88,6 +90,7 @@ export async function runTeamCommand(): Promise<void> {
     planContent = await fs.readFile(planPath, "utf-8");
   } catch (err: any) {
     console.log(`[ERROR] Failed to read plan file: ${err.message}`);
+    process.exitCode = 1;
     return;
   }
 
@@ -96,12 +99,14 @@ export async function runTeamCommand(): Promise<void> {
     rawPlan = parseYaml(planContent);
   } catch (err: any) {
     console.log(`[ERROR] Failed to parse plan YAML: ${err.message}`);
+    process.exitCode = 1;
     return;
   }
 
   const parsed = PlanSchema.safeParse(rawPlan);
   if (!parsed.success) {
     console.log(`[ERROR] Plan validation failed: ${parsed.error.message}`);
+    process.exitCode = 1;
     return;
   }
 
@@ -149,6 +154,7 @@ export async function runTeamCommand(): Promise<void> {
       console.log(`[TASK SUCCESS] Completed: "${currentTask}"`);
     } else {
       console.log(`[TASK FAILED] Failed on task: "${currentTask}". Halting execution.`);
+      process.exitCode = 1;
       break;
     }
   }

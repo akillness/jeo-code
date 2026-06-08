@@ -36,3 +36,16 @@ test("MutationGuard blocks sibling dirs like .joc-backup (path-boundary, not pre
   expect(res.success).toBe(false);
   expect(res.error).toContain("MutationGuard Blocked");
 });
+
+test("MutationGuard fails CLOSED on a corrupt deep-interview state (blocks mutation)", async () => {
+  const d = await fs.mkdtemp(path.join(os.tmpdir(), "joc-mutguard-corrupt-"));
+  try {
+    await fs.mkdir(path.join(d, ".joc", "state"), { recursive: true });
+    await fs.writeFile(path.join(d, ".joc", "state", "deep-interview-state.json"), "{ not valid json");
+    const res = await writeTool("src/evil.ts", "console.log(1)", d);
+    expect(res.success).toBe(false);
+    expect(res.error).toContain("MutationGuard");
+  } finally {
+    await fs.rm(d, { recursive: true, force: true });
+  }
+});

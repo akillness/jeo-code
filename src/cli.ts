@@ -13,5 +13,11 @@ if (typeof Bun !== "undefined" && Bun.semver?.order(Bun.version, MIN_BUN_VERSION
 }
 process.title = APP_NAME;
 
-const code = await dispatch(process.argv.slice(2), { appName: APP_NAME, version: VERSION });
-if (code !== 0) process.exit(code);
+try {
+  const code = await dispatch(process.argv.slice(2), { appName: APP_NAME, version: VERSION });
+  if (code !== 0) process.exit(code);
+} catch (err) {
+  // Service-readiness: never surface a raw stack trace to users; clean error + non-zero exit.
+  process.stderr.write(`error: ${(err as Error)?.message ?? String(err)}\n`);
+  process.exit(1);
+}

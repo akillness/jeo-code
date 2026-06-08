@@ -584,17 +584,31 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const explicitModel = tokens[1];
         // `/provider login|auth [name]` → run OAuth login from the REPL.
         if (name === "login" || name === "auth") {
-          const cloud = ["anthropic", "openai", "gemini"];
-          const target = tokens.slice(1).map(t => t.toLowerCase()).find(t => cloud.includes(t));
+          const cloud = ["anthropic", "openai", "gemini"] as const;
+          let target = tokens.slice(1).map(t => t.toLowerCase()).find(t => (cloud as readonly string[]).includes(t));
           if (!target) {
-            console.log("Usage: /provider login <anthropic|openai|gemini>");
-            continue;
+            // No provider given → show current status and let the user pick.
+            const statuses = await describeAllProviders();
+            console.log("Log in to which provider?");
+            cloud.forEach((p, i) => {
+              const st = statuses.find(s => s.name === p);
+              console.log(`  ${i + 1}) ${p.padEnd(10)} ${st?.ready ? `✓ ${st.label}` : "· not logged in"}`);
+            });
+            const ans = (await rl.question("Choose [1-3] or name (blank to cancel): ")).trim().toLowerCase();
+            const byNum: Record<string, string> = { "1": "anthropic", "2": "openai", "3": "gemini" };
+            target = byNum[ans] ?? ((cloud as readonly string[]).includes(ans) ? ans : undefined);
+            if (!target) {
+              console.log("(cancelled)");
+              continue;
+            }
           }
           console.log(`Starting OAuth login for ${target}…`);
           try {
             const { email } = await interactiveOAuthLogin(target as AuthProvider, rl);
             console.log(`[SUCCESS] OAuth login complete for ${target}${email ? ` (${email})` : ""}. Tokens saved to ~/.joc/config.json.`);
             liveModelsCache = null; // re-discover with the new credential
+            const after = (await describeAllProviders()).find(s => s.name === target);
+            if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
           } catch (err) {
             console.log(`[FAILED] ${(err as Error).message} — or set ${target.toUpperCase()}_API_KEY.`);
           }

@@ -59,3 +59,57 @@ export function formatSkill(s: SkillDoc): string {
 export function skillsPromptSection(): string {
   return SKILLS.map(s => `- ${s.name} — ${s.summary}`).join("\n");
 }
+
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import * as os from "node:os";
+
+/** Global + per-project skill-doc directories (user-configurable SKILL.md files). */
+export function skillDirs(cwd: string = process.cwd()): string[] {
+  const home = process.env.JOC_CONFIG_DIR || path.join(os.homedir(), ".joc");
+  return [path.join(home, "skills"), path.join(cwd, ".joc", "skills")];
+}
+
+/** Parse a user skill markdown file into a SkillDoc. Supports optional `key: value`
+ *  header lines (summary / command / when) before the body; otherwise infers. */
+export function parseSkillMarkdown(name: string, content: string): SkillDoc {
+  const meta: Record<string, string> = {};
+  const body: string[] = [];
+  for (const raw of content.split(/\r?\n/)) {
+    const m = body.length === 0 ? raw.match(/^(summary|command|when|whenToUse|use)\s*:\s*(.+)$/i) : null;
+    if (m) { meta[m[1].toLowerCase()] = m[2].trim(); continue; }
+    if (body.length === 0 && raw.startsWith("# ")) continue; // skip a leading title
+    body.push(raw);
+  }
+  const details = body.join("\n").trim();
+  const firstLine = details.split("\n").find(l => l.trim())?.trim() ?? "";
+  return {
+    name,
+    command: meta.command ?? `/skill ${name}`,
+    summary: meta.summary ?? ((firstLine.length > 100 ? firstLine.slice(0, 99) + "…" : firstLine) || name),
+    whenToUse: meta.when ?? meta.whentouse ?? meta.use ?? "",
+    details: details || "(no details)",
+  };
+}
+
+/** Bundled skills merged with user skill docs from {@link skillDirs} (user overrides by name). */
+export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[]> {
+  const byName = new Map<string, SkillDoc>(SKILLS.map(s => [s.name, s]));
+  for (const dir of skillDirs(cwd)) {
+    let entries: string[] = [];
+    try { entries = await fs.readdir(dir); } catch { continue; }
+    for (const f of entries) {
+      if (!f.endsWith(".md")) continue;
+      const nm = f.slice(0, -3);
+      try {
+        byName.set(nm, parseSkillMarkdown(nm, await fs.readFile(path.join(dir, f), "utf-8")));
+      } catch { /* skip unreadable file */ }
+    }
+  }
+  return [...byName.values()];
+}
+
+/** Case-insensitive lookup within a resolved skill list. */
+export function getSkillFrom(skills: SkillDoc[], name: string): SkillDoc | undefined {
+  return skills.find(s => s.name.toLowerCase() === name.toLowerCase());
+}

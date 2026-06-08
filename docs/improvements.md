@@ -3904,7 +3904,7 @@ Verified the reported "model change / provider auth don't work" claim and added 
 ### Verification (passes 644–650)
 - `bun test test/autocomplete.test.ts test/slash.test.ts test/model-discovery.test.ts` → **43 pass / 0 fail**.
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
-- `bun test` → **425 pass / 0 fail across 67 files**.
+- `bun test` → **430 pass / 0 fail across 67 files**.
 - Interactive PTY smoke: `/subagent ` preview rendered `Subagent roles:`, cursor-show sequence present, `executor` input echoed, and the role detail rendered.
 
 ## Fix: stale global install + non-scrolling slash preview footer (passes 638–646)
@@ -3987,3 +3987,23 @@ The slash preview is now navigable with the arrow keys.
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **430 pass / 0 fail across 67 files**.
 - PTY: `/m` + Down → `❯ /model …`; Enter executes the highlighted command; README documents arrow-key selection.
+
+## Configurable skill docs + `/skill` slash invocation (passes 669–676)
+
+**Date:** 2026-06-05 · **Dimension: tui / skills configuration + invocation.**
+
+Skills are now user-configurable and callable from the REPL.
+
+- **669.** `skillDirs()` — global `~/.joc/skills` (honors `JOC_CONFIG_DIR`) + per-project `.joc/skills`.
+- **670.** `parseSkillMarkdown(name, content)` — turns a SKILL.md into a `SkillDoc` (optional `summary:`/`command:`/`when:` headers, else inferred; leading `# title` stripped).
+- **671.** `loadSkills(cwd)` — bundled skills merged with user docs; user files override bundled by name.
+- **672.** `getSkillFrom(skills, name)` — case-insensitive lookup over the resolved list.
+- **673.** `/skill` REPL command: no arg lists bundled + configured skills; `/skill <name> [intent]` shows the doc and **invokes** it (seeds a turn with the skill guidance + optional intent).
+- **674.** `/skill` added to the slash palette (preview/arrow-nav) and autocomplete (arg0 → bundled skill names).
+- **675.** `skills-config.test.ts`: markdown parsing (inferred + header), `loadSkills` merge + user override.
+- **676.** Verified in a PTY: `/skill` lists the four bundled skills plus a custom `~/.joc/skills/greet.md`.
+
+### Verification (passes 669–676)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **435 pass / 0 fail across 69 files** (added `skills-config`).
+- PTY: `/skill` shows `deep-interview/ralplan/team/ultragoal` + the user `greet` skill; README documents `/skill` + configurable skill dirs.

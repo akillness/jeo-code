@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { runAgentLoop, executorSystemPrompt } from "../agent/engine";
 import { LaunchTui } from "../tui/app";
-import { skillsPromptSection } from "../skills/catalog";
+import { skillsPromptSection, loadSkills, formatSkill, getSkillFrom } from "../skills/catalog";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
@@ -32,6 +32,7 @@ import {
   formatCatalogTable,
   formatCanonicalCatalogTable,
 } from "../tui/components/config-panel";
+import { liveModelPicker, renderLiveModelPicker } from "../tui/components/live-model-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff } from "../tui/components/code-view";
 import { findTool, searchTool } from "../agent/tools";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
@@ -45,6 +46,7 @@ import {
   listSessions,
   latestSessionId,
 } from "../agent/session";
+import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize } from "../tui/terminal";
 
 export interface LaunchFlags {
   list: boolean;
@@ -533,6 +535,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     (process.stdout.rows ?? 24) > PREVIEW_ROWS + 4;
   const out = process.stdout;
   let previewArmed = false;
+  let pickerActive = false;
   // Arrow-key selection over the slash preview list.
   let navMatches: string[] = []; // command names matching the typed keyword (display order)
   let navIdx = -1; // highlighted row, -1 = none
@@ -561,10 +564,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     out.write(s);
   };
   const previewLines = (line: string, selected = -1): string[] => {
+    const cols = Math.max(20, (process.stdout.columns ?? 80) - 1);
     const slash = formatSlashPreview(line, PREVIEW_ROWS, selected);
-    if (slash.length) return slash.map(l => chalk.gray(l));
+    if (slash.length) return slash.map(l => chalk.gray(truncateAnsi(l, cols)));
     const args = formatCompletionPreview(line, completionContext(), PREVIEW_ROWS);
-    return args.map(l => chalk.gray(l));
+    return args.map(l => chalk.gray(truncateAnsi(l, cols)));
   };
   const drawFooter = (lines: string[]) => {
     if (!previewArmed) return;
@@ -582,10 +586,61 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     out.write(s);
   };
 
+  const runSelectPicker = async <T>(
+    render: (cols: number, rows: number) => string[],
+    onKey: (ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => boolean | undefined,
+  ): Promise<void> => {
+    pickerActive = true;
+    disarmPreview();
+    const cols = Math.max(40, terminalSize().cols - 2);
+    const rows = Math.max(6, terminalSize().rows - 6);
+    let rendered = 0;
+    const repaint = () => {
+      const lines = render(cols, rows).map(line => truncateAnsi(line, cols));
+      let s = rendered > 0 ? cursorUp(rendered) : "\n";
+      const total = Math.max(rendered, lines.length);
+      for (let i = 0; i < total; i++) {
+        s += toColumn(1) + clearLine();
+        if (i < lines.length) s += lines[i]!;
+        if (i < total - 1) s += "\n";
+      }
+      out.write(s + "\x1b[?25h");
+      rendered = total;
+    };
+    const clear = () => {
+      if (rendered <= 0) return;
+      let s = cursorUp(rendered);
+      for (let i = 0; i < rendered; i++) {
+        s += toColumn(1) + clearLine();
+        if (i < rendered - 1) s += "\n";
+      }
+      out.write(s + "\x1b[?25h");
+      rendered = 0;
+    };
+    repaint();
+    try {
+      await new Promise<void>(resolve => {
+        const handler = (ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
+          const done = onKey(ch, key);
+          if (done) {
+            process.stdin.off("keypress", handler);
+            clear();
+            resolve();
+            return;
+          }
+          repaint();
+        };
+        process.stdin.on("keypress", handler);
+      });
+    } finally {
+      pickerActive = false;
+    }
+  };
+
   if (previewEnabled) {
     process.once("exit", () => out.write("\x1b[r")); // safety net: always reset region
     process.stdin.on("keypress", (_ch: string, key: { name?: string } | undefined) => {
-      if (previewPending) return;
+      if (pickerActive || previewPending) return;
       previewPending = true;
       setImmediate(() => {
         previewPending = false;
@@ -1103,6 +1158,33 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         const res = await searchTool(pattern, glob, cwd);
         console.log(res.success ? (res.output || "(no matches)") : `! ${res.error}`);
+        continue;
+      }
+      if (input.startsWith("/skill") && (input === "/skill" || input[6] === " ")) {
+        const rest = input.substring(6).trim();
+        const skills = await loadSkills(cwd);
+        if (!rest) {
+          console.log("Skills (bundled + ~/.joc/skills, .joc/skills) — run with /skill <name> [intent]:");
+          for (const s of skills) console.log(`  ${s.name.padEnd(16)} ${s.summary}`);
+          continue;
+        }
+        const [nm, ...intentParts] = rest.split(/\s+/);
+        const skill = getSkillFrom(skills, nm);
+        if (!skill) {
+          console.log(`Unknown skill: ${nm}. Available: ${skills.map(s => s.name).join(", ")}`);
+          continue;
+        }
+        console.log(formatSkill(skill));
+        const intent = intentParts.join(" ").trim();
+        // Invoke the skill: seed a turn with its guidance (+ optional user intent).
+        const task = `Apply the "${skill.name}" skill to this session.\n\n${formatSkill(skill)}\n\n${intent ? `User intent: ${intent}` : "Proceed according to the skill."}`;
+        try {
+          const { reply, rendered, usage } = await runTurn(task, useTui);
+          if (!rendered) console.log(`joc> ${reply}${usage}`);
+          else if (usage) console.log(usage.trim());
+        } catch (err) {
+          console.log(`! ${(err as Error).message}`);
+        }
         continue;
       }
 

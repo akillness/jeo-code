@@ -59,6 +59,12 @@ TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행
 
 > **OpenAI(ChatGPT/Codex) OAuth 모델 표시:** ChatGPT/Codex OAuth 토큰은 `api.openai.com/v1/models` 목록 엔드포인트를 거부하기 때문에, 예전에는 OAuth 로그인을 해도 OpenAI 모델이 목록에 **추가되지 않았습니다**. 이제 로그인된(OAuth/API key) 프로바이더의 live 목록 조회가 실패하면 내장 **카탈로그로 폴백**해 모델이 항상 표시되며, `/models`·로그인 직후 메시지에 `· catalog (live list endpoint unavailable)`로 정직하게 라벨링됩니다.
 
+> **모델 목록은 채팅 가능한 모델만:** live discovery가 임베딩·TTS·이미지·moderation 같은 비대화 모델을 걸러냅니다(OpenAI 패밀리 denylist, Gemini는 `generateContent` 지원 + 이름 필터). 그래서 `/models`·`/provider <name>`·`#N` 선택 목록에는 실제로 대화에 쓸 수 있는 모델만 나옵니다.
+>
+> **코드뷰 안전:** `/view`·`/diff`는 파일/diff의 신뢰할 수 없는 제어 바이트(ANSI 이스케이프, `\r`, 탭, C0)를 렌더 전에 제거합니다 — 임의 파일을 열어도 화면이 깨지거나 커서가 튀지 않습니다.
+>
+> **사용자 skill 문서:** `~/.joc/skills`·`.joc/skills`의 `SKILL.md`가 번들 skill과 병합되어 시스템 프롬프트와 `/skill` 자동완성에 모두 반영됩니다(이름이 같으면 사용자 문서가 우선). `JOC_TUI_THEME=mono`는 푸터 색까지 완전한 무채색으로 출력합니다.
+
 ```bash
 # REPL 안에서
 /provider login gemini      # 브라우저 OAuth 로그인 → 토큰 저장 → 모델 목록 자동 갱신

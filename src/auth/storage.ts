@@ -39,9 +39,10 @@ export async function resolveCredential(provider: AuthProvider): Promise<Credent
             return refreshOAuthToken(provider);
           })();
           inFlightRefresh.set(provider, refreshPromise);
-          refreshPromise.finally(() => {
+          // Cleanup must not create its own unobserved rejection if the refresh rejects.
+          void refreshPromise.finally(() => {
             inFlightRefresh.delete(provider);
-          });
+          }).catch(() => {});
         }
         const result = await refreshPromise;
         if (result.refreshed && result.credential.kind === "oauth") {

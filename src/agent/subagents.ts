@@ -98,16 +98,21 @@ export function subagentSystemPrompt(role: SubagentRole): string {
   return (
     base +
     `\n\nYou are a READ-ONLY ${role.title}. Do not create or modify files; ` +
-    `use read / find / search (and read-only bash) only, then report your findings via done.`
+    `use read / find / search only, then report your findings via done.`
   );
 }
 
-/** Toolset for a role: read-only roles drop the mutating tools (write/edit). */
+/**
+ * Toolset for a role: read-only roles drop ALL mutating tools (write/edit and
+ * bash) so a review/plan lane physically cannot change the repo — bash can run
+ * arbitrary mutating shell, so it is excluded for read-only roles too.
+ */
 export function subagentToolset(role: SubagentRole): Record<string, ToolHandler> {
   if (!role.readOnly) return DEFAULT_TOOLS;
+  const MUTATING = new Set(["write", "edit", "bash"]);
   const ro: Record<string, ToolHandler> = {};
   for (const [name, handler] of Object.entries(DEFAULT_TOOLS)) {
-    if (name === "write" || name === "edit") continue;
+    if (MUTATING.has(name)) continue;
     ro[name] = handler;
   }
   return ro;

@@ -176,6 +176,30 @@ export async function readWorkflowState(
   }
 }
 
+/**
+ * Like {@link readWorkflowState} but distinguishes a missing file (→ null) from a
+ * corrupt/invalid one (→ throws). Security-sensitive callers (the MutationGuard)
+ * use this to fail CLOSED: a corrupt lock state must not be treated as "no lock".
+ */
+export async function readWorkflowStateStrict(
+  skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
+  cwd: string = process.cwd()
+): Promise<WorkflowState | null> {
+  const statePath = path.join(getLocalJocDir(cwd), "state", `${skill}-state.json`);
+  let data: string;
+  try {
+    data = await fs.readFile(statePath, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  try {
+    return JSON.parse(data) as WorkflowState;
+  } catch {
+    throw new Error(`workflow state ${statePath} is corrupt (invalid JSON)`);
+  }
+}
+
 export async function writeWorkflowState(
   skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
   state: WorkflowState,

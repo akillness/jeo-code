@@ -14,6 +14,7 @@ const origLog = console.log;
 
 afterEach(async () => {
   console.log = origLog;
+  process.exitCode = 0; // runTeamCommand sets exitCode=1 on failure paths; don't leak it to the runner
   process.chdir(origCwd);
   if (tmp) await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
   tmp = "";

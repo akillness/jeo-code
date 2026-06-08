@@ -15,6 +15,17 @@ test("buildLiveModelChoices annotates known capabilities and current model", () 
   expect(choices[1]?.hint).toContain("unknown caps");
 });
 
+test("buildLiveModelChoices disables models whose provider is not ready", () => {
+  const choices = buildLiveModelChoices([
+    { index: 1, provider: "openai", model: "gpt-4o" },
+    { index: 2, provider: "gemini", model: "gemini-2.5-flash" },
+  ], { disabledProviders: ["openai"], disabledHint: "needs API key" });
+  expect(choices[0]?.disabled).toBe(true);
+  expect(choices[0]?.group).toBe("openai (not ready)");
+  expect(choices[0]?.hint).toContain("needs API key");
+  expect(choices[1]?.disabled).toBe(false);
+});
+
 test("renderLiveModelPicker uses the generic select-list renderer with width fitting", () => {
   const list = liveModelPicker([
     { index: 1, provider: "gemini", model: "gemini-2.5-flash" },

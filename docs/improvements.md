@@ -4140,3 +4140,31 @@ subagents for GJC reference analysis and Joc TUI review.
   lists `/speckit`, `/speckit.constitution`, `/speckit.specify`, `/speckit.plan`,
   `/speckit.tasks`, `/speckit.implement`, `/speckit.clarify`, `/speckit.analyze`,
   `/speckit.checklist`.
+
+## Review-result follow-up — picker parity + OAuth-disabled model rows (passes 728–734)
+
+**Date:** 2026-06-08 · **Dimension: TUI consistency / provider honesty.**
+
+Applied the completed subagent review results that arrived after the first push.
+
+- **728.** Bare `/model` on a TTY now opens the same `SelectList`-backed live model picker as
+  `/provider <name>`, instead of only printing a numbered list.
+- **729.** `/provider login` with no provider now opens the existing provider picker on TTY; the
+  numbered prompt remains for non-TTY/plain streams.
+- **730.** `live-model-picker.ts` supports disabled provider rows with a right-side readiness hint,
+  using the already-tested `SelectItem.disabled` behavior.
+- **731.** OpenAI/Gemini OAuth-only fallback models stay visible for orientation but are disabled in
+  keyboard pickers when the provider is not ready for the bundled adapter.
+- **732.** `/model #N`, `/provider <name> #N`, `/roles <tier> #N`, and `/agents <role> #N` now refuse
+  numbered selections that point at a not-ready provider instead of saving a model that will fail at
+  call time.
+- **733.** README now documents the `/model` picker, `/provider login` picker, and disabled OAuth-only
+  model rows.
+- **734.** Focused coverage added for disabled live-model choices.
+
+### Verification (passes 728–734)
+
+- `bun run typecheck` → **0 errors**.
+- Focused: `bun test test/live-model-picker.test.ts test/provider-status.test.ts test/model-discovery.test.ts test/slash.test.ts test/autocomplete.test.ts` → **67 pass / 0 fail**.
+- `bun test` → **477 pass / 0 fail across 72 files**.
+- `bun run build` → compiled `dist/joc`.

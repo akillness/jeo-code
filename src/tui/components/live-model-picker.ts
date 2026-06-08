@@ -1,4 +1,5 @@
 import type { PickEntry } from "../../ai/model-picker";
+import type { ProviderName } from "../../ai/types";
 import { catalogMetadata, formatTokens } from "../../ai/model-catalog";
 import { SelectList, renderSelectList, type RenderSelectOptions, type SelectItem } from "./select-list";
 
@@ -17,16 +18,28 @@ function liveModelHint(model: string, current?: string): string {
   return parts.join(" · ");
 }
 
-export function buildLiveModelChoices(entries: PickEntry[], opts: { current?: string } = {}): SelectItem<PickEntry>[] {
-  return entries.map(entry => ({
-    value: entry,
-    label: `#${entry.index} ${entry.model}`,
-    group: entry.provider,
-    hint: liveModelHint(entry.model, opts.current),
-  }));
+export interface LiveModelPickerOptions {
+  current?: string;
+  /** Providers visible for context but not selectable because they cannot serve a turn. */
+  disabledProviders?: readonly ProviderName[];
+  disabledHint?: string;
 }
 
-export function liveModelPicker(entries: PickEntry[], opts: { current?: string } = {}): SelectList<PickEntry> {
+export function buildLiveModelChoices(entries: PickEntry[], opts: LiveModelPickerOptions = {}): SelectItem<PickEntry>[] {
+  const disabled = new Set(opts.disabledProviders ?? []);
+  return entries.map(entry => {
+    const blocked = disabled.has(entry.provider);
+    return {
+      value: entry,
+      label: `#${entry.index} ${entry.model}`,
+      group: blocked ? `${entry.provider} (not ready)` : entry.provider,
+      hint: blocked ? `${liveModelHint(entry.model, opts.current)} · ${opts.disabledHint ?? "provider not ready"}` : liveModelHint(entry.model, opts.current),
+      disabled: blocked,
+    };
+  });
+}
+
+export function liveModelPicker(entries: PickEntry[], opts: LiveModelPickerOptions = {}): SelectList<PickEntry> {
   return new SelectList(buildLiveModelChoices(entries, opts));
 }
 

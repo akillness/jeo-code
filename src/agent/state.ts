@@ -56,6 +56,11 @@ export interface Config {
    * tool-loop step budget.
    */
   subagents?: { [roleId: string]: { model?: string; maxSteps?: number } };
+  /**
+   * Model role tiers (gjc `--smol`/`--slow`/`--plan` parity). Each falls back to
+   * `defaultModel`. Env `JOC_SMOL_MODEL`/`JOC_SLOW_MODEL`/`JOC_PLAN_MODEL` fill gaps.
+   */
+  roles?: { smol?: string; slow?: string; plan?: string };
 }
 
 export interface WorkflowState {
@@ -104,6 +109,11 @@ function withEnvOverlay(cfg: Config): Config {
     defaultModel: process.env.JOC_DEFAULT_MODEL || cfg.defaultModel,
     ollamaBaseUrl: cfg.ollamaBaseUrl || process.env.OLLAMA_HOST || "http://localhost:11434",
     openaiBaseUrl: cfg.openaiBaseUrl || process.env.OPENAI_BASE_URL,
+    roles: {
+      smol: cfg.roles?.smol || process.env.JOC_SMOL_MODEL,
+      slow: cfg.roles?.slow || process.env.JOC_SLOW_MODEL,
+      plan: cfg.roles?.plan || process.env.JOC_PLAN_MODEL,
+    },
   };
 }
 

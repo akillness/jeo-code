@@ -10,6 +10,7 @@ import type { SubagentRole } from "../../agent/subagents";
 import type { ProviderModelsResult } from "../../ai/model-discovery";
 import type { PickEntry } from "../../ai/model-picker";
 import type { CatalogModel } from "../../ai/model-catalog";
+import type { EnrichedModel } from "../../ai/model-enrich";
 import { formatTokens } from "../../ai/model-catalog";
 
 /** A single "Model: alias → resolved (provider)" status line. */
@@ -165,4 +166,28 @@ export function formatCatalogTable(models: CatalogModel[], opts: { current?: str
 /** One-line capability summary for a single model, e.g. for `/model` output. */
 export function formatCapabilityLine(m: CatalogModel): string {
   return `${chalk.gray("caps:")} ctx ${formatTokens(m.contextTokens)} · out ${formatTokens(m.maxOutputTokens)} · thinking ${thinkCell(m.thinking)} · images ${m.images ? "yes" : "no"}`;
+}
+
+/**
+ * Live + catalog capability table: live (logged-in) models annotated with
+ * context/out/thinking/img when the catalog knows them, "-" otherwise.
+ */
+export function formatEnrichedModels(models: EnrichedModel[], opts: { current?: string; cap?: number } = {}): string[] {
+  if (models.length === 0) return ["  (no live models — log in with 'joc auth login' or start Ollama)"];
+  const cap = opts.cap ?? 50;
+  const shown = models.slice(0, cap);
+  const pw = Math.max(...shown.map(m => m.provider.length), 8);
+  const mw = Math.min(Math.max(...shown.map(m => m.id.length), 6), 36);
+  const lines = [`  ${"provider".padEnd(pw)}  ${"model".padEnd(mw)}  ${"ctx".padStart(5)}  ${"out".padStart(5)}  thinking  img`];
+  for (const m of shown) {
+    const ctx = m.meta ? formatTokens(m.meta.contextTokens) : "-";
+    const out = m.meta ? formatTokens(m.meta.maxOutputTokens) : "-";
+    const think = m.meta ? thinkCell(m.meta.thinking) : "?";
+    const img = m.meta ? (m.meta.images ? "yes" : "no") : "?";
+    const mark = opts.current && m.id === opts.current ? chalk.green(" ◀") : "";
+    const id = m.id.length > mw ? m.id.slice(0, mw - 1) + "…" : m.id.padEnd(mw);
+    lines.push(`  ${chalk.gray(m.provider.padEnd(pw))}  ${id}  ${ctx.padStart(5)}  ${out.padStart(5)}  ${chalk.cyan(think)}  ${img}${mark}`);
+  }
+  if (models.length > cap) lines.push(chalk.gray(`  …(+${models.length - cap} more)`));
+  return lines;
 }

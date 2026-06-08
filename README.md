@@ -42,6 +42,7 @@ joc setup
 | `/models [refresh\|caps\|catalog]` | 로그인된 OAuth/API 모델 목록(+capability/카탈로그 표) |
 | `/provider [name] [model\|#N]` | 프로바이더 자격증명·전환, 해당 프로바이더 라이브 모델 목록 |
 | `/provider login <name>` | **입력창에서 바로 OAuth 로그인** (anthropic/openai/gemini) |
+| `/logout <name>` | 저장된 OAuth 토큰 제거 |
 | `/agents [role] [model]` | 서브에이전트(executor/planner/architect/critic) 역할 모델 설정 |
 | `/roles [tier model]` | 모델 역할 티어(smol/slow/plan) 표시·설정 |
 | `/thinking [level]` | 사고 예산(minimal/low/medium/high/xhigh) |
@@ -67,6 +68,8 @@ joc launch --resume
 
 # tmux 세션에서 실행
 joc --tmux
+joc --tmux --model gemini-2.5-flash --thinking high
+joc --tmux --models --catalog gpt
 
 # 별도 worktree에서 실행
 joc --tmux --worktree ../joc-work
@@ -82,7 +85,8 @@ joc --models --catalog gpt
 joc --model gemini-2.5-flash --thinking high "코드 분석해줘"
 joc --provider gemini --plan "구현 계획 세워줘"
 # 슬래시 명령어 팔레트
-# REPL에서 "/" 또는 "/m"처럼 prefix를 입력하면 사용 가능한 명령/옵션이 리스트업됩니다.
+# REPL에서 "/" 또는 "/m"처럼 prefix를 입력하면 카테고리별 명령/옵션이 리스트업됩니다.
+# subagent 설정은 /agents, /subagent, /subagents 모두 지원합니다.
 
 # 인증 관리
 joc auth login anthropic

@@ -210,6 +210,91 @@ export function renderCommandHelp(spec: CommandSpec, ctx: DispatchContext): stri
   ].join("\n");
 }
 
+const VALUE_FLAGS = new Set(["--worktree", "--model", "--provider", "--thinking", "--max-steps"]);
+const OPTIONAL_UUID_FLAGS = new Set(["--resume"]);
+const VALUE_PREFIXES = ["--worktree=", "--model=", "--provider=", "--thinking=", "--max-steps="];
+const LAUNCH_ONLY_FLAGS = new Set(["--tmux", "--no-tui", "--no-session", "--list", "--smol", "--slow", "--plan"]);
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function flagName(arg: string): string {
+  const eq = arg.indexOf("=");
+  return eq === -1 ? arg : arg.slice(0, eq);
+}
+
+function stripLaunchOnlyArgs(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    const name = flagName(a);
+    if (LAUNCH_ONLY_FLAGS.has(name)) continue;
+    if (VALUE_FLAGS.has(name)) {
+      if (!a.includes("=") && args[i + 1] && !args[i + 1]!.startsWith("-")) i++;
+      continue;
+    }
+    if (OPTIONAL_UUID_FLAGS.has(name)) {
+      if (args[i + 1] && UUID_REGEX.test(args[i + 1]!)) i++;
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
+/**
+ * Convert a leading global model-list flag into `joc models` arguments. The scan
+ * deliberately stops at the first positional command/prompt token so strings like
+ * `joc --tmux fix --models routing` remain agent prompts instead of being hijacked
+ * into a model-list command.
+ */
+export function globalModelsArgs(argv: string[]): string[] | null {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === "--models" || a.startsWith("--models=")) {
+      const value = a.startsWith("--models=") ? a.slice("--models=".length) : undefined;
+      return [...(value ? [value] : []), ...stripLaunchOnlyArgs(argv.slice(i + 1))];
+    }
+    if (a === "--list-models" || a.startsWith("--list-models=")) {
+      const inline = a.startsWith("--list-models=") ? a.slice("--list-models=".length) : undefined;
+      const next = inline === undefined ? argv[i + 1] : undefined;
+      const consumedNext = !!next && !next.startsWith("-");
+      const query = inline ?? (consumedNext ? next : undefined);
+      return ["--catalog", ...(query && query !== "all" ? [query] : [])];
+    }
+
+    const name = flagName(a);
+    if (LAUNCH_ONLY_FLAGS.has(name)) continue;
+    if (VALUE_FLAGS.has(name) || VALUE_PREFIXES.some(prefix => a.startsWith(prefix))) {
+      if (!a.includes("=") && argv[i + 1] && !argv[i + 1]!.startsWith("-")) i++;
+      continue;
+    }
+    if (OPTIONAL_UUID_FLAGS.has(name)) {
+      if (argv[i + 1] && UUID_REGEX.test(argv[i + 1]!)) i++;
+      continue;
+    }
+    break;
+  }
+  return null;
+}
+
+function leadingGlobalFlag(argv: string[], targets: readonly string[]): boolean {
+  const wanted = new Set(targets);
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    const name = flagName(a);
+    if (wanted.has(a) || wanted.has(name)) return true;
+    if (LAUNCH_ONLY_FLAGS.has(name)) continue;
+    if (VALUE_FLAGS.has(name) || VALUE_PREFIXES.some(prefix => a.startsWith(prefix))) {
+      if (!a.includes("=") && argv[i + 1] && !argv[i + 1]!.startsWith("-")) i++;
+      continue;
+    }
+    if (OPTIONAL_UUID_FLAGS.has(name)) {
+      if (argv[i + 1] && UUID_REGEX.test(argv[i + 1]!)) i++;
+      continue;
+    }
+    break;
+  }
+  return false;
+}
 export async function dispatch(argv: string[], ctx: DispatchContext): Promise<number> {
   const first = argv[0];
 
@@ -221,17 +306,18 @@ export async function dispatch(argv: string[], ctx: DispatchContext): Promise<nu
     console.log(renderHelp(ctx));
     return 0;
   }
-  if (first === "--models" || first?.startsWith("--models=")) {
-    const run = await findCommand("models")!.loader();
-    const value = first.includes("=") ? first.slice("--models=".length) : undefined;
-    await run([...(value ? [value] : []), ...argv.slice(1)]);
+  if (leadingGlobalFlag(argv, ["--version", "-v"])) {
+    console.log(`${ctx.appName} v${ctx.version}`);
     return 0;
   }
-  if (first === "--list-models" || first?.startsWith("--list-models=")) {
+  if (leadingGlobalFlag(argv, ["--help", "-h"])) {
+    console.log(renderHelp(ctx));
+    return 0;
+  }
+  const modelsArgs = first === "launch" ? globalModelsArgs(argv.slice(1)) : globalModelsArgs(argv);
+  if (modelsArgs) {
     const run = await findCommand("models")!.loader();
-    const value = first.includes("=") ? first.slice("--list-models=".length) : argv[1];
-    const query = value && value !== "all" ? [value] : [];
-    await run(["--catalog", ...query]);
+    await run(modelsArgs);
     return 0;
   }
   // Bare invocation or a leading global flag (e.g. `joc`, `joc --tmux`,

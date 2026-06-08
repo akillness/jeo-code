@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { suggestCommands, findCommand, dispatch, renderHelp } from "../src/cli/runner";
+import { suggestCommands, findCommand, dispatch, renderHelp, globalModelsArgs } from "../src/cli/runner";
 
 test("suggestCommands: recovers from common typos", () => {
   expect(suggestCommands("lauch")).toContain("launch");
@@ -15,6 +15,13 @@ test("findCommand: known commands resolve, unknown returns undefined", () => {
   expect(findCommand("nope")).toBeUndefined();
 });
 
+test("globalModelsArgs only scans the leading global flag segment", () => {
+  expect(globalModelsArgs(["--tmux", "--models", "--catalog", "gpt"])).toEqual(["--catalog", "gpt"]);
+  expect(globalModelsArgs(["--tmux", "--list-models=gemini"])).toEqual(["--catalog", "gemini"]);
+  expect(globalModelsArgs(["--tmux", "fix", "--models", "routing"])).toBeNull();
+  expect(globalModelsArgs(["doctor", "--models"])).toBeNull();
+});
+
 test("dispatch: --version prints and returns 0", async () => {
   const logs: string[] = [];
   const orig = console.log;
@@ -27,6 +34,22 @@ test("dispatch: --version prints and returns 0", async () => {
   }
   expect(code).toBe(0);
   expect(logs.join("\n")).toContain("joc v9.9.9");
+});
+
+test("dispatch: --tmux --version and --tmux --help stay global", async () => {
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => logs.push(a.join(" "));
+  try {
+    expect(await dispatch(["--tmux", "--version"], { appName: "joc", version: "9.9.9" })).toBe(0);
+    expect(await dispatch(["--tmux", "--help"], { appName: "joc", version: "9.9.9" })).toBe(0);
+  } finally {
+    console.log = orig;
+  }
+  const text = logs.join("\n");
+  expect(text).toContain("joc v9.9.9");
+  expect(text).toContain("Options:");
+  expect(text).not.toContain("Starting new tmux session");
 });
 
 test("dispatch: unknown command returns 1 and suggests a near match", async () => {
@@ -102,4 +125,62 @@ test("dispatch: --models routes to the models command", async () => {
   expect(code).toBe(0);
   const text = logs.join("\n");
   expect(text).toContain("Canonical models matching 'gpt'");
+});
+
+test("dispatch: tmux plus --models still routes to models listing", async () => {
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => logs.push(a.join(" "));
+  let code: number;
+  try {
+    code = await dispatch(["--tmux", "--models", "--catalog", "gpt"], { appName: "joc", version: "0.0.0" });
+  } finally {
+    console.log = orig;
+  }
+  expect(code).toBe(0);
+  const text = logs.join("\n");
+  expect(text).toContain("Canonical models matching 'gpt'");
+  expect(text).not.toContain("Starting new tmux session");
+});
+
+test("dispatch: tmux plus --list-models still routes to catalog listing", async () => {
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => logs.push(a.join(" "));
+  let code: number;
+  try {
+    code = await dispatch(["--tmux", "--list-models", "gemini"], { appName: "joc", version: "0.0.0" });
+  } finally {
+    console.log = orig;
+  }
+  expect(code).toBe(0);
+  expect(logs.join("\n")).toContain("Canonical models matching 'gemini'");
+});
+
+test("dispatch: launch plus tmux model-list flags routes to models command", async () => {
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => logs.push(a.join(" "));
+  let code: number;
+  try {
+    code = await dispatch(["launch", "--tmux", "--list-models=gemini"], { appName: "joc", version: "0.0.0" });
+  } finally {
+    console.log = orig;
+  }
+  expect(code).toBe(0);
+  expect(logs.join("\n")).toContain("Canonical models matching 'gemini'");
+});
+
+test("dispatch: unknown command with later --models is not hijacked", async () => {
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => logs.push(a.join(" "));
+  let code: number;
+  try {
+    code = await dispatch(["definitely-not-a-cmd", "--models"], { appName: "joc", version: "0.0.0" });
+  } finally {
+    console.log = orig;
+  }
+  expect(code).toBe(1);
+  expect(logs.join("\n")).toContain("Unknown command: definitely-not-a-cmd");
 });

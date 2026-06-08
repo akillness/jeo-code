@@ -3743,3 +3743,92 @@ seeded approved plan with a mocked LLM and asserts orchestration + role routing 
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **411 pass / 0 fail across 67 files** (added `team-run`).
 - The subagent system is now verified at three levels: pure role registry/resolution, the executor loop (read-only enforcement/convergence/step cap), and the full `joc team` command (plan parse → per-step role routing → execution → state).
+
+## Slash palette grouped subagent aliases (passes 590–596)
+
+**Date:** 2026-06-07 · **Dimension: TUI / subagent slash command discoverability.**
+
+- **590.** Added `/subagent` and `/subagents` aliases for the existing `/agents` subagent configuration flow.
+- **591.** Wired the aliases into autocomplete so `/subagent <Tab>` and `/subagents executor <Tab>` expose the same role/model/maxSteps options.
+- **592.** Wired the aliases into the REPL command handler so they execute the identical role list/configuration path.
+- **593.** Grouped `formatSlashCommandList` output by Models / Providers, Subagents, Code tools, Session, and System.
+- **594.** Kept bare `/`, `/?`, `/help`, and prefix narrowing (`/sub`, `/m`) on the same formatter.
+- **595.** Updated README examples to document categorized slash listing and subagent aliases.
+- **596.** Added tests for subagent alias metadata, prefix matching, grouped palette output, and alias autocomplete.
+
+### Verification (passes 590–596)
+- `bun test test/slash.test.ts test/autocomplete.test.ts` → **22 pass / 0 fail**.
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **411 pass / 0 fail across 67 files**.
+
+## Tmux feature propagation for model/subagent flows (passes 597–606)
+
+**Date:** 2026-06-07 · **Dimension: tmux / global flag routing + runtime profile sessions.**
+
+- **597.** `joc --tmux --models ...` now routes to the model listing command instead of opening a tmux-backed agent turn with `--models` as prompt text.
+- **598.** `joc --tmux --list-models <query>` now routes to the GJC-style catalog listing before tmux launch fallback.
+- **599.** Model-list routing strips tmux/worktree orchestration flags so `--models --catalog gpt` receives clean model-command arguments.
+- **600.** Runtime tmux sessions now get a deterministic suffix for `--model`, `--provider`, `--smol|--slow|--plan`, `--thinking`, and non-default `--max-steps`.
+- **601.** No-runtime-flag tmux behavior remains unchanged (`joc-<branch>` session name).
+- **602.** Runtime-profile suffixes prevent an existing default branch session from swallowing a new model/provider/thinking launch request.
+- **603.** Inner tmux launch command now uses single-quote shell escaping, including prompts with apostrophes.
+- **604.** Added dispatch tests for `--tmux --models` and `--tmux --list-models`.
+- **605.** Added tmux tests that assert runtime flags create a distinct session and propagate to the inner `launch` command.
+- **606.** Re-verified slash/subagent alias tests alongside tmux routing.
+
+### Verification (passes 597–606)
+- `bun test test/tmux.test.ts test/cli-runner.test.ts test/slash.test.ts test/autocomplete.test.ts` → **35 pass / 0 fail**.
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **414 pass / 0 fail across 67 files**.
+
+## Tmux model-list boundary fix from architect review (passes 607–612)
+
+**Date:** 2026-06-07 · **Dimension: tmux / dispatcher boundary correctness.**
+
+- **607.** Applied the architect subagent's blocking finding: model-list detection no longer scans past the first positional command/prompt token.
+- **608.** `joc --tmux fix --models routing` remains a tmux-backed agent prompt instead of being hijacked into `joc models`.
+- **609.** `joc doctor --models` / unknown subcommands with later `--models` are no longer hijacked by global listing routing.
+- **610.** `joc launch --tmux --list-models=gemini` still routes to the catalog listing for explicit launch-form invocations.
+- **611.** Exported and tested `globalModelsArgs` so the leading-global parsing boundary is covered directly.
+- **612.** Kept the prior `--tmux --models` and runtime-profile tmux session behavior intact.
+
+### Verification (passes 607–612)
+- `bun test test/cli-runner.test.ts test/tmux.test.ts` → **16 pass / 0 fail**.
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **417 pass / 0 fail across 67 files**.
+
+## Auth commands made Tab-discoverable (passes 590–595)
+
+**Date:** 2026-06-05 · **Dimension: tui / autocomplete integration for REPL auth.**
+
+Integrates the `/provider login` + `/logout` REPL auth commands with the concurrent autocomplete
+engine so they're discoverable via `<Tab>`.
+
+- **590.** `/provider` arg0 now completes `login`, `auth`, then provider names.
+- **591.** `/provider login|auth <name>` completes the OAuth-capable cloud providers (anthropic/openai/gemini).
+- **592.** New `/logout` autocomplete case completes cloud provider names.
+- **593.** `/provider openai <model>` second-arg model completion preserved.
+- **594.** `autocomplete.test.ts` updated for the new `/provider` arg0 list + `/provider login` + `/logout`.
+- **595.** Typecheck 0; `bun test` 419 pass / 67 files.
+
+### Verification (passes 590–595)
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **419 pass / 0 fail across 67 files**.
+- `complete("/provider ")` → `login auth anthropic openai gemini ollama`; `complete("/provider login ")` → cloud providers; `complete("/logout ")` → cloud providers.
+
+## Tmux global help/version boundary (passes 613–619)
+
+**Date:** 2026-06-07 · **Dimension: tmux / global option dispatch.**
+
+- **613.** Added leading-global detection for `--help` and `--version` after tmux orchestration flags.
+- **614.** `joc --tmux --help` now prints CLI help instead of opening a tmux session that exits immediately.
+- **615.** `joc --tmux --version` now prints the version without starting/attaching tmux.
+- **616.** The scan still stops at the first positional prompt token, preserving prompts that contain later flag-like text.
+- **617.** Added regression tests for tmux help/version dispatch.
+- **618.** Re-ran focused tmux/runner tests.
+- **619.** Re-ran typecheck and the full suite after the edge-case patch.
+
+### Verification (passes 613–619)
+- `bun test test/cli-runner.test.ts test/tmux.test.ts` → **17 pass / 0 fail**.
+- `tsc -p tsconfig.json --noEmit` → **0 errors**.
+- `bun test` → **419 pass / 0 fail across 67 files**.

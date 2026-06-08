@@ -48,6 +48,20 @@ test("subagentSystemPrompt: read-only roles get a no-mutation directive", () => 
   expect(arch).toContain("Do not create or modify files");
 });
 
+test("subagentSystemPrompt: read-only roles advertise only non-mutating tools", () => {
+  const arch = subagentSystemPrompt(getSubagentRole("architect")!);
+  // The restricted protocol must NOT offer write/edit/bash, which subagentToolset removed.
+  expect(arch).not.toMatch(/^\s*\d+\.\s*write\b/m);
+  expect(arch).not.toMatch(/^\s*\d+\.\s*edit\b/m);
+  expect(arch).not.toMatch(/^\s*\d+\.\s*bash\b/m);
+  expect(arch).toContain("read");
+  expect(arch).toContain("search");
+  // The executor (mutating) prompt still advertises write/edit/bash.
+  const exec = subagentSystemPrompt(getSubagentRole("executor")!);
+  expect(exec).toMatch(/^\s*\d+\.\s*write\b/m);
+  expect(exec).toMatch(/^\s*\d+\.\s*bash\b/m);
+});
+
 test("subagentToolset: read-only roles drop write/edit/bash, executor keeps them", () => {
   const execTools = Object.keys(subagentToolset(getSubagentRole("executor")!));
   expect(execTools).toContain("write");

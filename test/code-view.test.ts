@@ -106,6 +106,10 @@ test("sanitizeForTerminal strips ANSI/C0 controls, CR, and expands tabs", () => 
   expect(sanitizeForTerminal("\x1b[31mred\x1b[0m")).toBe("red");
   expect(sanitizeForTerminal("\x1b]0;evil title\x07ok")).toBe("ok");
   expect(sanitizeForTerminal("nul\x00byte")).toBe("nulbyte");
+  // 8-bit C1 controls (xterm in UTF-8 mode interprets these the same as ESC forms).
+  expect(sanitizeForTerminal("clear\u009b2Jhere")).toBe("clearhere"); // 8-bit CSI + payload
+  expect(sanitizeForTerminal("\u009d0;evil\u0007ok")).toBe("ok"); // 8-bit OSC + payload
+  expect(sanitizeForTerminal("a\u0090b\u009fc")).toBe("abc"); // stray C1 introducers
 });
 
 test("formatCodeBlock neutralizes file-origin escape sequences (no raw ESC leaks)", () => {

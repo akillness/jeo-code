@@ -4,6 +4,8 @@ import { size } from "../terminal";
 export interface MeterOptions {
   /** Use ASCII-only glyphs for terminals without unicode (default true = unicode). */
   unicode?: boolean;
+  /** Whether to render color (default true). */
+  color?: boolean;
 }
 
 /** Horizontal evolutionary percent/progress meter for pipeline + doctor TUI views. */
@@ -19,7 +21,8 @@ export function meter(value: number, max = 1, width?: number, opts: MeterOptions
   const cells = width !== undefined ? Math.max(0, Math.trunc(width)) : Math.max(10, Math.min(40, size().cols - 30));
   const filledCount = Math.round(ratio * cells);
   const { fill, empty, color } = meterGlyphsFor(stageIndexForRatio(ratio), opts.unicode !== false);
-  const bar = color(fill.repeat(filledCount)) + empty.repeat(cells - filledCount);
+  const paint = opts.color !== false ? color : (s: string) => s;
+  const bar = paint(fill.repeat(filledCount)) + empty.repeat(cells - filledCount);
   return `[${bar}] ${Math.round(ratio * 100)}%`;
 }
 

@@ -4,6 +4,8 @@ export interface SkillDoc {
   summary: string;       // one line
   whenToUse: string;     // one line
   details: string;       // 2-5 lines of guidance
+  /** Slash aliases that invoke this skill directly, e.g. `/speckit.plan`. */
+  aliases?: string[];
 }
 
 export const SKILLS: SkillDoc[] = [
@@ -46,64 +48,184 @@ export function skillNames(): string[] {
 }
 
 export function formatSkill(s: SkillDoc): string {
+  const aliases = skillSlashAliases(s);
   return [
     `Skill: ${s.name}`,
     `Command: ${s.command}`,
+    aliases.length ? `Slash aliases: ${aliases.join(", ")}` : undefined,
     `Summary: ${s.summary}`,
     `When to use: ${s.whenToUse}`,
     `Details:`,
     s.details.split("\n").map(line => `  ${line}`).join("\n")
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 export function skillsPromptSection(skills: SkillDoc[] = SKILLS): string {
-  return skills.map(s => `- ${s.name} — ${s.summary}`).join("\n");
+  return skills
+    .map(s => {
+      const aliases = skillSlashAliases(s);
+      return `- ${s.name}${aliases.length ? ` (${aliases.join(", ")})` : ""} — ${s.summary}`;
+    })
+    .join("\n");
 }
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
+const BUILTIN_SLASH_ALIASES = new Set([
+  "/help", "/clear", "/compact", "/model", "/models", "/provider", "/logout",
+  "/agents", "/subagent", "/subagents", "/config", "/roles", "/thinking",
+  "/view", "/diff", "/find", "/search", "/sessions", "/skill", "/evolve",
+  "/exit", "/quit",
+]);
+
+function normalizeSlashAlias(raw: string): string | undefined {
+  const m = raw.trim().match(/^\/[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*$/);
+  if (!m) return undefined;
+  const alias = m[0];
+  return BUILTIN_SLASH_ALIASES.has(alias.toLowerCase()) ? undefined : alias;
+}
+
+function splitAliasHeader(value: string): string[] {
+  return value.split(/[,\s]+/).map(normalizeSlashAlias).filter((a): a is string => !!a);
+}
+
+function inferSlashAliases(content: string): string[] {
+  const aliases: string[] = [];
+  const re = /(?:^|[\s`([{])((\/[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*))/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(content))) {
+    const alias = normalizeSlashAlias(match[1] ?? "");
+    if (alias && !aliases.some(a => a.toLowerCase() === alias.toLowerCase())) aliases.push(alias);
+  }
+  return aliases;
+}
+
+function dedupeAliases(aliases: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const alias of aliases) {
+    const key = alias.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(alias);
+  }
+  return out;
+}
+
+export function skillSlashAliases(skill: SkillDoc): string[] {
+  return dedupeAliases(skill.aliases ?? []);
+}
 
 /** Global + per-project skill-doc directories (user-configurable SKILL.md files). */
 export function skillDirs(cwd: string = process.cwd()): string[] {
   const home = process.env.JOC_CONFIG_DIR || path.join(os.homedir(), ".joc");
-  return [path.join(home, "skills"), path.join(cwd, ".joc", "skills")];
+  const configured = (process.env.JOC_SKILLS_DIR ?? "")
+    .split(path.delimiter)
+    .map(s => s.trim())
+    .filter(Boolean);
+  return [
+    path.join(os.homedir(), ".agents", "skills"),
+    path.join(home, "skills"),
+    path.join(cwd, ".agents", "skills"),
+    path.join(cwd, ".joc", "skills"),
+    ...configured,
+  ];
 }
 
-/** Parse a user skill markdown file into a SkillDoc. Supports optional `key: value`
- *  header lines (summary / command / when) before the body; otherwise infers. */
+/** Parse a user skill markdown file into a SkillDoc. Recognizes both the documented
+ *  `key: value` header grammar (summary / command / when[ to use] / use) AND the
+ *  decorated form emitted by `joc skills --write` (`Skill:` / `When to use:` /
+ *  `Details:`), tolerating a leading `# title` and blank separators. Falls back to
+ *  inferring the summary from the first body line. */
 export function parseSkillMarkdown(name: string, content: string): SkillDoc {
   const meta: Record<string, string> = {};
-  const body: string[] = [];
-  for (const raw of content.split(/\r?\n/)) {
-    const m = body.length === 0 ? raw.match(/^(summary|command|when|whenToUse|use)\s*:\s*(.+)$/i) : null;
-    if (m) { meta[m[1].toLowerCase()] = m[2].trim(); continue; }
-    if (body.length === 0 && raw.startsWith("# ")) continue; // skip a leading title
-    body.push(raw);
+  const lines = content.split(/\r?\n/);
+  const HEADER = /^(summary|command|when to use|when|whentouse|use|skill|alias|aliases|slash|slashes)\s*:\s*(.*)$/i;
+  let idx = 0;
+  // YAML-style frontmatter (the standard agent SKILL.md format): a `---` … `---`
+  // block at the very top. `description:` maps to the summary so real skill files
+  // never surface a literal "---" summary into the prompt or /skill list.
+  while (idx < lines.length && lines[idx]!.trim() === "") idx++;
+  if (idx < lines.length && lines[idx]!.trim() === "---") {
+    idx++;
+    for (; idx < lines.length && lines[idx]!.trim() !== "---"; idx++) {
+      const fm = lines[idx]!.match(/^([A-Za-z][\w-]*)\s*:\s*(.*)$/);
+      if (!fm) continue;
+      const key = fm[1]!.toLowerCase().replace(/[\s_-]+/g, "");
+      let value = fm[2]!.trim().replace(/^["']|["']$/g, "");
+      if (value === ">" || value === "|") {
+        const block: string[] = [];
+        for (idx++; idx < lines.length && /^\s+/.test(lines[idx] ?? ""); idx++) block.push(lines[idx]!.trim());
+        idx--;
+        value = block.join(" ").replace(/\s+/g, " ").trim();
+      }
+      meta[key] = value;
+    }
+    if (idx < lines.length) idx++; // consume the closing ---
   }
-  const details = body.join("\n").trim();
-  const firstLine = details.split("\n").find(l => l.trim())?.trim() ?? "";
+  // Skip leading blank lines and a single leading markdown title.
+  while (idx < lines.length && lines[idx]!.trim() === "") idx++;
+  if (idx < lines.length && lines[idx]!.startsWith("# ")) {
+    idx++;
+    while (idx < lines.length && lines[idx]!.trim() === "") idx++;
+  }
+  // Parse a leading header block (tolerating blank separators); `Details:` (or the
+  // first free line) begins the body.
+  let detailsBlock: string[] | null = null;
+  for (; idx < lines.length; idx++) {
+    const raw = lines[idx]!;
+    if (raw.trim() === "") continue;
+    const dm = raw.match(/^details\s*:\s*(.*)$/i);
+    if (dm) {
+      const inline = dm[1]!.trim();
+      detailsBlock = inline ? [inline] : [];
+      for (idx++; idx < lines.length; idx++) detailsBlock.push(lines[idx]!.replace(/^ {2}/, ""));
+      break;
+    }
+    const m = raw.match(HEADER);
+    if (m) { meta[m[1]!.toLowerCase().replace(/\s+/g, "")] = m[2]!.trim(); continue; }
+    break;
+  }
+  const body = (detailsBlock ? detailsBlock.join("\n") : lines.slice(idx).join("\n")).trim();
+  const firstLine = body.split("\n").find(l => l.trim())?.trim() ?? "";
+  const explicitAliases = [
+    ...splitAliasHeader(meta.alias ?? ""),
+    ...splitAliasHeader(meta.aliases ?? ""),
+    ...splitAliasHeader(meta.slash ?? ""),
+    ...splitAliasHeader(meta.slashes ?? ""),
+  ];
+  const rawSummary = meta.summary ?? meta.description ?? firstLine;
   return {
     name,
     command: meta.command ?? `/skill ${name}`,
-    summary: meta.summary ?? ((firstLine.length > 100 ? firstLine.slice(0, 99) + "…" : firstLine) || name),
-    whenToUse: meta.when ?? meta.whentouse ?? meta.use ?? "",
-    details: details || "(no details)",
+    summary: rawSummary ? (rawSummary.length > 180 ? rawSummary.slice(0, 179) + "…" : rawSummary) : name,
+    whenToUse: meta.whentouse ?? meta.when ?? meta.use ?? "",
+    details: body || "(no details)",
+    aliases: dedupeAliases([...explicitAliases, ...inferSlashAliases(content)]),
   };
 }
 
 /** Bundled skills merged with user skill docs from {@link skillDirs} (user overrides by name). */
 export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[]> {
-  const byName = new Map<string, SkillDoc>(SKILLS.map(s => [s.name, s]));
+  const byName = new Map<string, SkillDoc>(SKILLS.map(s => [s.name.toLowerCase(), s]));
   for (const dir of skillDirs(cwd)) {
-    let entries: string[] = [];
-    try { entries = await fs.readdir(dir); } catch { continue; }
-    for (const f of entries) {
-      if (!f.endsWith(".md")) continue;
-      const nm = f.slice(0, -3);
-      try {
-        byName.set(nm, parseSkillMarkdown(nm, await fs.readFile(path.join(dir, f), "utf-8")));
-      } catch { /* skip unreadable file */ }
+    let entries: import("node:fs").Dirent[] = [];
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith(".md")) {
+        const nm = entry.name.slice(0, -3);
+        try {
+          byName.set(nm.toLowerCase(), parseSkillMarkdown(nm, await fs.readFile(path.join(dir, entry.name), "utf-8")));
+        } catch { /* skip unreadable file */ }
+        continue;
+      }
+      if (entry.isDirectory()) {
+        const skillPath = path.join(dir, entry.name, "SKILL.md");
+        try {
+          byName.set(entry.name.toLowerCase(), parseSkillMarkdown(entry.name, await fs.readFile(skillPath, "utf-8")));
+        } catch { /* skip dirs without SKILL.md or unreadable files */ }
+      }
     }
   }
   return [...byName.values()];
@@ -112,4 +234,10 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
 /** Case-insensitive lookup within a resolved skill list. */
 export function getSkillFrom(skills: SkillDoc[], name: string): SkillDoc | undefined {
   return skills.find(s => s.name.toLowerCase() === name.toLowerCase());
+}
+
+/** Case-insensitive lookup by direct slash alias, e.g. `/speckit.plan`. */
+export function getSkillBySlash(skills: SkillDoc[], command: string): SkillDoc | undefined {
+  const q = command.toLowerCase();
+  return skills.find(s => skillSlashAliases(s).some(a => a.toLowerCase() === q));
 }

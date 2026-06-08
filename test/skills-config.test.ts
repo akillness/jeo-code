@@ -2,7 +2,7 @@ import { test, expect, beforeAll, afterAll } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { parseSkillMarkdown, loadSkills, getSkillFrom, SKILLS } from "../src/skills/catalog";
+import { parseSkillMarkdown, loadSkills, getSkillFrom, getSkillBySlash, skillSlashAliases, formatSkill, SKILLS } from "../src/skills/catalog";
 
 test("parseSkillMarkdown infers summary from the first body line; strips a title", () => {
   const s = parseSkillMarkdown("notes", "# Notes Skill\nKeep a running log of decisions.\nMore detail here.");
@@ -19,21 +19,49 @@ test("parseSkillMarkdown honors explicit header keys", () => {
   expect(s.details).toBe("Do the deploy steps.");
 });
 
+test("parseSkillMarkdown extracts explicit and inferred slash aliases", () => {
+  const s = parseSkillMarkdown(
+    "spec-kit",
+    "summary: SDD wrapper\naliases: /speckit.constitution /speckit.plan\n\nRun `/speckit.specify` or `/speckit.tasks` inside the agent.",
+  );
+  expect(skillSlashAliases(s)).toEqual(["/speckit.constitution", "/speckit.plan", "/speckit.specify", "/speckit.tasks"]);
+  expect(formatSkill(s)).toContain("Slash aliases: /speckit.constitution, /speckit.plan");
+});
+
+test("parseSkillMarkdown skips YAML frontmatter and uses folded description as summary", () => {
+  const s = parseSkillMarkdown("spec-kit", "---\nname: spec-kit\ndescription: >\n  Spec-driven workflow via specify.\n  Supports /speckit.plan.\n---\n\n# spec-kit\n\nBody starts here.");
+  expect(s.summary).toBe("Spec-driven workflow via specify. Supports /speckit.plan.");
+  expect(s.details).toContain("Body starts here.");
+  expect(skillSlashAliases(s)).toContain("/speckit.plan");
+});
+
 let dir: string;
 const prev = process.env.JOC_CONFIG_DIR;
+const prevHome = process.env.HOME;
+const prevSkillsDir = process.env.JOC_SKILLS_DIR;
 
 beforeAll(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-skills-"));
   process.env.JOC_CONFIG_DIR = dir;
+  // Isolate from the real ~/.agents/skills and any JOC_SKILLS_DIR so the merge
+  // assertions see only the fixtures written below.
+  process.env.HOME = dir;
+  delete process.env.JOC_SKILLS_DIR;
   await fs.mkdir(path.join(dir, "skills"), { recursive: true });
   await fs.writeFile(path.join(dir, "skills", "myskill.md"), "summary: my custom skill\n\nStep 1. Step 2.");
   // Override a bundled skill by name.
   await fs.writeFile(path.join(dir, "skills", "ralplan.md"), "summary: my overridden ralplan\n\ncustom plan flow");
+  await fs.mkdir(path.join(dir, "skills", "spec-kit"), { recursive: true });
+  await fs.writeFile(path.join(dir, "skills", "spec-kit", "SKILL.md"), "summary: spec kit skill\n\nUse /speckit.plan and /speckit.tasks.");
 });
 
 afterAll(async () => {
   if (prev === undefined) delete process.env.JOC_CONFIG_DIR;
   else process.env.JOC_CONFIG_DIR = prev;
+  if (prevHome === undefined) delete process.env.HOME;
+  else process.env.HOME = prevHome;
+  if (prevSkillsDir === undefined) delete process.env.JOC_SKILLS_DIR;
+  else process.env.JOC_SKILLS_DIR = prevSkillsDir;
   await fs.rm(dir, { recursive: true, force: true });
 });
 
@@ -47,4 +75,31 @@ test("loadSkills merges bundled + user skill docs; user overrides by name", asyn
   expect(mine?.summary).toBe("my custom skill");
   // bundled ralplan overridden by the user file
   expect(getSkillFrom(skills, "ralplan")?.summary).toBe("my overridden ralplan");
+  const spec = getSkillFrom(skills, "spec-kit");
+  expect(spec?.summary).toBe("spec kit skill");
+  expect(getSkillBySlash(skills, "/speckit.plan")?.name).toBe("spec-kit");
+});
+
+test("parseSkillMarkdown round-trips the formatSkill (joc skills --write) decoration", () => {
+  const bundled = SKILLS.find(s => s.name === "deep-interview")!;
+  // This is exactly what `joc skills --write` puts on disk.
+  const onDisk = `# ${bundled.name}\n\n${formatSkill(bundled)}\n`;
+  const back = parseSkillMarkdown(bundled.name, onDisk);
+  expect(back.summary).toBe(bundled.summary); // NOT "Skill: deep-interview"
+  expect(back.command).toBe(bundled.command);
+  expect(back.whenToUse).toBe(bundled.whenToUse);
+  expect(back.details.split("\n")[0]).toBe(bundled.details.split("\n")[0]);
+});
+
+test("loadSkills overrides bundled skills case-insensitively by filename", async () => {
+  // A capital-cased filename must still override the lowercase bundled name.
+  await fs.writeFile(path.join(dir, "skills", "Team.md"), "summary: cased override\n\nbody");
+  try {
+    const skills = await loadSkills(dir);
+    const team = skills.filter(s => s.name.toLowerCase() === "team");
+    expect(team.length).toBe(1); // no duplicate bundled+user entry
+    expect(getSkillFrom(skills, "team")?.summary).toBe("cased override");
+  } finally {
+    await fs.rm(path.join(dir, "skills", "Team.md"), { force: true });
+  }
 });

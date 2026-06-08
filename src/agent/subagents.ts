@@ -9,7 +9,7 @@
  * review/plan lane physically cannot edit the repo, mirroring gjc's read-only
  * role agents.
  */
-import { DEFAULT_TOOLS, executorSystemPrompt, type ToolHandler } from "./engine";
+import { DEFAULT_TOOLS, executorSystemPrompt, READONLY_TOOL_PROTOCOL, type ToolHandler } from "./engine";
 import type { Config } from "./state";
 
 export interface SubagentRole {
@@ -93,8 +93,10 @@ export function resolveSubagentMaxSteps(roleId: string, config: Pick<Config, "su
 
 /** Build a role-specific executor system prompt; read-only roles get a no-mutation directive. */
 export function subagentSystemPrompt(role: SubagentRole): string {
-  const base = executorSystemPrompt(`${role.title} subagent — ${role.description}`);
-  if (!role.readOnly) return base;
+  if (!role.readOnly) return executorSystemPrompt(`${role.title} subagent — ${role.description}`);
+  // Read-only roles get a restricted protocol so the model never tries (and wastes
+  // scarce steps on) write/edit/bash — which `subagentToolset` has already removed.
+  const base = executorSystemPrompt(`${role.title} subagent — ${role.description}`, READONLY_TOOL_PROTOCOL);
   return (
     base +
     `\n\nYou are a READ-ONLY ${role.title}. Do not create or modify files; ` +

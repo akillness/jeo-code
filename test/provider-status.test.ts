@@ -82,3 +82,44 @@ test("describeAllProviders returns every provider, ollama keyless", async () => 
   expect(all.map(s => s.name)).toEqual([...PROVIDER_NAMES]);
   expect(all.find(s => s.name === "ollama")!.ready).toBe(true);
 });
+test("describeProvider: openai oauth-only → ready=false, label contains 'API key'", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: {},
+      oauth: { openai: "oauth-oai" },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  const s = await describeProvider("openai");
+  expect(s.ready).toBe(false);
+  expect(s.label).toContain("API key");
+});
+
+test("describeProvider: openai oauth+key → ready=true", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: { openai: "sk-oai" },
+      oauth: { openai: "oauth-oai" },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  const s = await describeProvider("openai");
+  expect(s.ready).toBe(true);
+  expect(s.label).toBe("OAuth");
+});
+
+test("describeProvider: anthropic oauth-only → ready=true", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: {},
+      oauth: { anthropic: "oauth-ant" },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  const s = await describeProvider("anthropic");
+  expect(s.ready).toBe(true);
+  expect(s.label).toBe("OAuth");
+});

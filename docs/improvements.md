@@ -4080,3 +4080,63 @@ isolated; all gates pass with it.
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **449 pass / 0 fail across 69 files**, exit 0.
 - Live (tmux/PTY): OpenAI OAuth models appear in `/models`; gemini image/tts/embedding removed; `/` → ↑/↓ moves `❯`, Enter runs the command (`/compact` → "nothing to compact"); `/skill` lists skills; `/model save #2` resolves to a real model. Architect (read-only subagent) ran end-to-end — live proof the subagent path works.
+
+## OpenAI OAuth readiness + spec-kit skill slash integration — passes 707–727
+
+**Date:** 2026-06-08 · **Dimension: provider correctness / TUI slash skills / config safety.**
+
+Follow-up on the reported "implemented but not actually working" class of bugs, using read-only
+subagents for GJC reference analysis and Joc TUI review.
+
+- **707.** Subagent reference review completed against upstream GJC/Codex OAuth patterns; confirmed
+  ChatGPT/Codex OAuth tokens target the Codex backend, while Joc's bundled OpenAI adapter uses
+  `api.openai.com/v1`.
+- **708.** Provider status now treats OpenAI/Gemini OAuth-only flows as **not ready for bundled
+  adapters** when no API key exists, instead of pretending OAuth is end-to-end ready.
+- **709.** Model discovery still shows authenticated OAuth catalog fallbacks so OpenAI models are
+  visible after OAuth login, but bad API keys no longer fabricate catalog rows.
+- **710.** OpenAI OAuth + API key discovery prefers the API key for `/models`, matching the adapter
+  credential path that can actually serve requests.
+- **711.** OpenAI reasoning requests (`o3`, `o4`, etc.) use `max_completion_tokens` and omit
+  `temperature`, preventing OpenAI parameter errors.
+- **712.** Streaming provider calls inherit the same hard per-attempt timeout as non-streaming
+  calls, preventing stream hangs.
+- **713.** Anthropic stream usage now carries cached input tokens into output-token deltas.
+- **714.** `/provider` and `/model` not-ready warnings now say **not ready (label)** instead of the
+  false "not logged in/no credential" message for OAuth-only accounts.
+- **715.** `readRawGlobalConfig()` + `saveConfigPatch()` persist config changes from raw disk state,
+  so env-only OAuth/default-model/role values are never baked into `~/.joc/config.json`.
+- **716.** `/agents`, `/roles`, and `/model save` use `saveConfigPatch()` for safe partial config
+  writes.
+- **717.** Read-only subagent prompts advertise only read-only tools, matching the physical toolset.
+- **718.** Skill loading now supports flat `~/.joc/skills/<name>.md`, project `.joc/skills`, and
+  oh-my-skills-style `~/.agents/skills/<name>/SKILL.md` / `.agents/skills/<name>/SKILL.md`.
+- **719.** Skill parser handles YAML frontmatter (`description: >`) and no longer surfaces `---` as
+  the summary.
+- **720.** Skill parser extracts slash aliases from `aliases:`/`slash:` headers and from body mentions
+  such as `/speckit.plan`.
+- **721.** `/skill:<name>` now works as a GJC-style entrypoint in addition to `/skill <name>`.
+- **722.** Direct skill slash aliases (`/speckit.plan`, `/speckit.tasks`, etc.) appear in the slash
+  palette and Tab completion.
+- **723.** Direct skill slash aliases execute by injecting the matched skill doc plus the invoked
+  slash command into the session turn.
+- **724.** Bare `/skill` on a TTY opens a keyboard-selectable skill picker (↑/↓, PageUp/PageDown,
+  type-to-filter, Enter, Esc), reusing the existing `SelectList` convention.
+- **725.** Slash preview selected rows are visibly emphasized, even inside the gray preview footer.
+- **726.** README documents `.agents` skill loading, `/speckit.*` aliases, and the skill picker path.
+- **727.** `joc skills spec-kit` verified against the real global
+  `/Users/jangyoung/.agents/skills/spec-kit/SKILL.md`, showing `/speckit.*` aliases and a folded
+  YAML description summary.
+
+### Verification (passes 707–727)
+
+- Read-only subagents completed: `0-GjcReference`, `1-JocTuiReview`.
+- `bun run typecheck` → **0 errors**.
+- `bun test` → **476 pass / 0 fail across 72 files**.
+- `bun run build` → compiled `dist/joc`.
+- Focused suites: skill/slash/autocomplete/skill-picker, model-discovery/provider-status/OpenAI
+  reasoning/model-manager/Anthropic stream.
+- Real CLI smoke: `bun src/cli.ts skills spec-kit` resolves the global oh-my-skills document and
+  lists `/speckit`, `/speckit.constitution`, `/speckit.specify`, `/speckit.plan`,
+  `/speckit.tasks`, `/speckit.implement`, `/speckit.clarify`, `/speckit.analyze`,
+  `/speckit.checklist`.

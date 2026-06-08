@@ -6,6 +6,7 @@
  */
 import { readGlobalConfig, type Config } from "../agent/state";
 import { resolveCredential, type AuthProvider } from "../auth";
+import { OAUTH_FLOW_REGISTRY } from "../auth/flows";
 import type { ProviderName } from "./types";
 
 export const PROVIDER_NAMES: readonly ProviderName[] = ["anthropic", "openai", "gemini", "ollama"];
@@ -58,12 +59,19 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
   const cred = await resolveCredential(name as AuthProvider);
   const kind: CredentialKind = cred.kind === "api_key" ? "api_key" : cred.kind === "oauth" ? "oauth" : "none";
   const baseUrl = name === "openai" ? cfg.openaiBaseUrl : undefined;
-  // An OpenAI-compatible local server (LM Studio, vLLM) needs no key.
-  const ready = kind !== "none" || (name === "openai" && !!baseUrl);
+  let ready = kind !== "none" || (name === "openai" && !!baseUrl);
+  let label = ready && kind === "none" ? "keyless (local base URL)" : credentialLabel(kind);
+  if (kind === "oauth") {
+    const prov = name as AuthProvider;
+    if (OAUTH_FLOW_REGISTRY[prov]?.verifiedEndToEnd === false && !cfg.providers?.[prov]) {
+      ready = false;
+      label = "OAuth (API key needed)";
+    }
+  }
   return {
     name,
     kind,
-    label: ready && kind === "none" ? "keyless (local base URL)" : credentialLabel(kind),
+    label,
     baseUrl,
     envVar: providerEnvVar(name),
     ready,

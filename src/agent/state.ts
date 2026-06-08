@@ -159,6 +159,38 @@ export async function saveGlobalConfig(config: Config): Promise<void> {
   await fs.chmod(globalConfigPath(), 0o600).catch(() => {}); // ensure mode even if file pre-existed
 }
 
+/** Read the on-disk config WITHOUT the env overlay. Used as the base for
+ *  persistence so env-only values (OAuth bearer tokens, JOC_DEFAULT_MODEL,
+ *  JOC_*_MODEL role tiers, OLLAMA_HOST/OPENAI_BASE_URL) are never baked into
+ *  ~/.joc/config.json by an unrelated `/agents`/`/roles`/`/model save`. */
+export async function readRawGlobalConfig(): Promise<Config> {
+  const clean: Config = { providers: {}, defaultModel: "claude-3-5-sonnet", thinkingLevel: "medium" };
+  let data: string;
+  try {
+    data = await fs.readFile(globalConfigPath(), "utf-8");
+  } catch {
+    return clean;
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data);
+  } catch {
+    return clean;
+  }
+  const parsed = parseConfig(raw);
+  return parsed.ok ? (parsed.config as Config) : clean;
+}
+
+/** Merge a patch onto the RAW on-disk config and persist. The `build` callback
+ *  receives the raw config so partial updates (subagents/roles maps) are derived
+ *  from on-disk state, never from the env-overlaid runtime config. */
+export async function saveConfigPatch(build: (raw: Config) => Partial<Config>): Promise<Config> {
+  const raw = await readRawGlobalConfig();
+  const next = { ...raw, ...build(raw) };
+  await saveGlobalConfig(next);
+  return next;
+}
+
 export function getLocalJocDir(cwd: string = process.cwd()): string {
   return path.join(cwd, ".joc");
 }

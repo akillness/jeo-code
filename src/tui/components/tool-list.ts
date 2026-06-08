@@ -28,25 +28,41 @@ export class ToolList {
     }
   }
 
-  render(maxRows?: number): string[] {
+  render(maxRows?: number, optionsOrColor?: boolean | { color?: boolean }): string[] {
+    let color = true;
+    if (typeof optionsOrColor === "boolean") {
+      color = optionsOrColor;
+    } else if (optionsOrColor && typeof optionsOrColor === "object") {
+      if (optionsOrColor.color !== undefined) {
+        color = optionsOrColor.color;
+      }
+    }
+
     const rows =
       maxRows !== undefined && maxRows > 0 && this.rows.length > maxRows
         ? this.rows.slice(this.rows.length - (maxRows - 1)) // keep the most recent rows
         : this.rows;
     const hidden = this.rows.length - rows.length;
+
+    const yellowDot = color ? chalk.yellow("·") : "·";
+    const yellowRunning = color ? chalk.yellow.bold("running...") : "running...";
+    const redDot = color ? chalk.red("·") : "·";
+    const redFailed = color ? chalk.red.bold("FAILED") : "FAILED";
+    const grayLine = (s: string) => color ? chalk.gray(s) : s;
+
     const lines = rows.map(row => {
       if (row.status === "running") {
-        return `  ${chalk.yellow("·")} ${row.tool} ${chalk.yellow.bold("running...")}`;
+        return `  ${yellowDot} ${row.tool} ${yellowRunning}`;
       } else if (row.status === "ok") {
         // Faded decay for completed successful tools
-        return chalk.gray(`  · ${row.tool} ok`);
+        return grayLine(`  · ${row.tool} ok`);
       } else {
         // Bright red for failures
-        return `  ${chalk.red("·")} ${row.tool} ${chalk.red.bold("FAILED")}`;
+        return `  ${redDot} ${row.tool} ${redFailed}`;
       }
     });
     if (hidden > 0) {
-      lines.unshift(chalk.gray(`  · (+${hidden} earlier)`));
+      lines.unshift(grayLine(`  · (+${hidden} earlier)`));
     }
     return lines;
   }

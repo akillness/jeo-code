@@ -214,7 +214,7 @@ const VALUE_FLAGS = new Set(["--worktree", "--model", "--provider", "--thinking"
 const OPTIONAL_UUID_FLAGS = new Set(["--resume"]);
 const VALUE_PREFIXES = ["--worktree=", "--model=", "--provider=", "--thinking=", "--max-steps="];
 const LAUNCH_ONLY_FLAGS = new Set(["--tmux", "--no-tui", "--no-session", "--list", "--smol", "--slow", "--plan"]);
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function flagName(arg: string): string {
   const eq = arg.indexOf("=");

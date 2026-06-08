@@ -13,6 +13,7 @@ export interface JocStatusData {
   totalCount?: number;
   mutationGuarded?: boolean;
   unicode?: boolean;
+  color?: boolean;
 }
 
 export function progressPercent(step: number | undefined, maxSteps: number | undefined): number {
@@ -28,7 +29,8 @@ export function renderJocStatus(data: JocStatusData): string[] {
   const step = Number.isFinite(data.step) ? Math.max(0, Math.trunc(data.step ?? 0)) : 0;
   const max = Number.isFinite(data.maxSteps) && (data.maxSteps ?? 0) > 0 ? Math.trunc(data.maxSteps ?? 0) : 0;
   const pct = progressPercent(step, max);
-  const bar = meter(step, max || 1, 10, { unicode: data.unicode !== false });
+  const useColor = data.color !== false;
+  const bar = meter(step, max || 1, 10, { unicode: data.unicode !== false, color: useColor });
   const elapsed = `${seconds(data.elapsedMs)}s`;
   const msg = data.message ?? "thinking through the next tool call";
   const current = data.currentTool ? `forging ${data.currentTool}` : "forge idle";
@@ -36,10 +38,15 @@ export function renderJocStatus(data: JocStatusData): string[] {
   const fail = data.failCount ?? 0;
   const running = data.runningCount ?? 0;
   const total = data.totalCount ?? ok + fail + running;
-  const guard = data.mutationGuarded ? ` · ${chalk.red.bold("mutation locked")}` : "";
+
+  const cyanBold = useColor ? chalk.cyan.bold : (s: string) => s;
+  const magentaBold = useColor ? chalk.magenta.bold : (s: string) => s;
+  const redBold = useColor ? chalk.red.bold : (s: string) => s;
+
+  const guard = data.mutationGuarded ? ` · ${redBold("mutation locked")}` : "";
 
   return [
-    `  ${chalk.cyan.bold("joc thinking")} · ${msg} · step ${step}/${max} · ${pct}% ${bar} · ${elapsed}`,
-    `  ${chalk.magenta.bold("joc forge")} · ${current} · tools ${total} (${ok} ok / ${fail} fail / ${running} running)${guard}`,
+    `  ${cyanBold("joc thinking")} · ${msg} · step ${step}/${max} · ${pct}% ${bar} · ${elapsed}`,
+    `  ${magentaBold("joc forge")} · ${current} · tools ${total} (${ok} ok / ${fail} fail / ${running} running)${guard}`,
   ];
 }

@@ -106,9 +106,13 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
   if (!line.startsWith("/")) return { completions: [], token: line, kind: "none" };
 
   const { tokens, trailingSpace } = tokenize(line);
-  // Completing the command name itself (single token, still typing it).
   if (tokens.length <= 1 && !trailingSpace) {
     const token = tokens[0] ?? "/";
+    if (token.toLowerCase().startsWith("/skill:")) {
+      const prefix = token.slice("/skill:".length);
+      const names = ctx.skillNames ?? skillNames();
+      return { completions: dedupeCap(prefixHits(names.map(n => `/skill:${n}`), `/skill:${prefix}`)), token, kind: "command" };
+    }
     return { completions: dedupeCap(prefixHits(ctx.slashCommands, token)), token, kind: "command" };
   }
 

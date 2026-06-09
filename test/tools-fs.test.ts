@@ -34,6 +34,31 @@ test("findTool skips node_modules and .git", async () => {
   expect(res.output).not.toContain("config.ts");
 });
 
+test("findTool: path globs (slash / **) resolve via real glob, not basename-only -name", async () => {
+  await fs.mkdir(path.join(dir, "src", "deep"), { recursive: true });
+  await fs.writeFile(path.join(dir, "src", "deep", "nested.ts"), "x\n");
+
+  // exact relative path
+  const exact = await findTool("src/keep.ts", dir);
+  expect(exact.success).toBe(true);
+  expect(exact.output).toContain("src/keep.ts");
+
+  // one-level path glob
+  const oneLevel = await findTool("src/*.ts", dir);
+  expect(oneLevel.output).toContain("src/keep.ts");
+  expect(oneLevel.output).not.toContain("nested.ts"); // not recursive
+
+  // ** matches zero OR more segments, and still prunes ignored dirs
+  const deep = await findTool("src/**/*.ts", dir);
+  expect(deep.output).toContain("src/keep.ts");        // zero intermediate segments
+  expect(deep.output).toContain("src/deep/nested.ts"); // one segment
+  expect(deep.output).not.toContain("node_modules");
+
+  const everywhere = await findTool("**/*.ts", dir);
+  expect(everywhere.output).not.toContain("junk.ts"); // node_modules pruned
+  expect(everywhere.output).not.toContain("config.ts"); // .git pruned
+});
+
 test("searchTool skips ignored dirs and only matches source", async () => {
   const res = await searchTool("NEEDLE", "*.ts", dir);
   expect(res.success).toBe(true);

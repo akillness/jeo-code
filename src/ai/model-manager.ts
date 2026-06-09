@@ -91,16 +91,27 @@ const ALIAS_DEFAULTS = { fast: "ollama/qwen2.5:0.5b", local: "ollama/qwen2.5:0.5
 /**
  * Build retry options from a config `retry` budget (gjc parity). `requestMaxRetries`
  * counts retries (not the initial request), so total `withRetry` attempts =
- * requestMaxRetries + 1. When unset, the `withRetry` defaults apply (3 attempts).
+ * requestMaxRetries + 1. When unset, the `withRetry` defaults apply (3 attempts),
+ * but rate-limit (429) errors get a more generous budget + a backoff floor so a
+ * transient per-minute window can clear instead of the very first 429 instantly
+ * exhausting auto-retry. Explicit config (`requestMaxRetries`/`maxDelayMs`) always
+ * wins and disables the matching rate-limit default.
  * `maxDelayMs` caps backoff when provided.
  */
+const DEFAULT_RATE_LIMIT_RETRIES = 5; // total attempts for 429 (initial + 4 retries)
+const DEFAULT_RATE_LIMIT_MIN_DELAY_MS = 2000; // 429 floor when the server sends no Retry-After
 export function resolveRetryOptions(retry: Config["retry"]): RetryOptions {
   const opts: RetryOptions = { isRetryable: defaultRetryable };
   if (typeof retry?.requestMaxRetries === "number") {
     opts.retries = retry.requestMaxRetries + 1;
+    opts.rateLimitRetries = retry.requestMaxRetries + 1; // explicit budget: no rate-limit bonus
+  } else {
+    opts.rateLimitRetries = DEFAULT_RATE_LIMIT_RETRIES;
   }
   if (typeof retry?.maxDelayMs === "number") {
     opts.maxDelayMs = retry.maxDelayMs;
+  } else {
+    opts.rateLimitMinDelayMs = DEFAULT_RATE_LIMIT_MIN_DELAY_MS;
   }
   return opts;
 }

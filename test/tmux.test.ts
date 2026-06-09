@@ -1,5 +1,5 @@
 import { test, expect, spyOn, mock } from "bun:test";
-import { runLaunchCommand, tmuxSessionName, parseFlags } from "../src/commands/launch";
+import { runLaunchCommand, tmuxSessionName, allocateTmuxSession, parseFlags } from "../src/commands/launch";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -152,9 +152,9 @@ test("tmux long runtime model ids get hash-distinct session names", async () => 
       if (command[0] === "git" && command[1] === "symbolic-ref") {
         return { exitCode: 0, stdout: Buffer.from("feature-branch\n"), stderr: Buffer.from("") } as any;
       }
-      if (command[0] === "/usr/local/bin/tmux" && command[1] === "has-session") {
-        sessionNames.push(command[3]);
-        return { exitCode: 1, stdout: Buffer.from(""), stderr: Buffer.from("") } as any;
+      if (command[0] === "/usr/local/bin/tmux" && command[1] === "new-session") {
+        sessionNames.push(command[command.indexOf("-s") + 1]);
+        return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as any;
       }
       return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as any;
     };
@@ -220,7 +220,7 @@ test("tmux validates provider/model mismatch before attaching to existing sessio
   }
 });
 
-test("tmux attach to existing session behavior", async () => {
+test("tmux creates an INDEPENDENT session (base-2) when the base name is already live", async () => {
   const originalWhich = Bun.which;
   const originalSpawnSync = Bun.spawnSync;
   const originalSpawn = Bun.spawn;
@@ -228,6 +228,7 @@ test("tmux attach to existing session behavior", async () => {
 
   const spawnSyncCalls: any[] = [];
   const spawnCalls: any[] = [];
+  let hasSessionProbes = 0;
 
   try {
     Bun.which = (bin: string) => {
@@ -246,9 +247,12 @@ test("tmux attach to existing session behavior", async () => {
           stderr: Buffer.from(""),
         } as any;
       }
-      if (command[0] === "/usr/local/bin/tmux" && command[1] === "has-session") {
-        // Session already exists (exit code 0)
-        return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as any;
+      if (command[0] === "/usr/local/bin/tmux" && command[1] === "new-session") {
+        // First create (base) loses the race / is taken; second create (base-2) succeeds.
+        hasSessionProbes++;
+        return hasSessionProbes === 1
+          ? { exitCode: 1, stdout: Buffer.from(""), stderr: Buffer.from("duplicate session: base") } as any
+          : { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as any;
       }
       return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as any;
     };
@@ -266,15 +270,16 @@ test("tmux attach to existing session behavior", async () => {
 
     await runLaunchCommand(["--tmux", "--no-session", "--no-tui", "hello"]);
 
-    // Verify we only attached to the existing session and did not create a new one
-    const newSessionCall = spawnSyncCalls.find(c => c[0] === "/usr/local/bin/tmux" && c[1] === "new-session");
-    expect(newSessionCall).toBeUndefined();
+    // The base was taken, so we must create a fresh independent session (base-2), not attach to base.
+    const newSessionCalls = spawnSyncCalls.filter(c => c[0] === "/usr/local/bin/tmux" && c[1] === "new-session");
+    expect(newSessionCalls.length).toBe(2); // base (duplicate) then base-2 (created)
+    const createdName = newSessionCalls[1]![newSessionCalls[1]!.indexOf("-s") + 1] as string;
+    expect(createdName).toMatch(/^joc-main-.*-2$/); // first free suffix
 
     const attachCall = spawnCalls.find(c => c[0] === "/usr/local/bin/tmux" && c[1] === "attach-session");
     expect(attachCall).toBeDefined();
-    expect(attachCall).toContain("-t");
     const target = attachCall![attachCall!.indexOf("-t") + 1] as string;
-    expect(target).toMatch(/^=joc-main-/); // branch-prefixed, now dir-scoped
+    expect(target).toBe(`=${createdName}`); // attaches to the NEW session, not the existing base
 
   } finally {
     Bun.which = originalWhich;
@@ -284,6 +289,17 @@ test("tmux attach to existing session behavior", async () => {
   }
 });
 
+test("allocateTmuxSession: base when free, next free -N on collision, error passthrough", () => {
+  // base is free → created on the first try
+  expect(allocateTmuxSession("joc-main-x", () => "ok")).toEqual({ name: "joc-main-x" });
+  // base + base-2 taken (lost the race) → base-3 wins
+  let calls = 0;
+  const r = allocateTmuxSession("joc-main-x", () => (++calls <= 2 ? "taken" : "ok"));
+  expect(r).toEqual({ name: "joc-main-x-3" });
+  // a real tmux failure aborts with the message
+  expect(allocateTmuxSession("joc-main-x", () => "error:server not found")).toEqual({ error: "server not found" });
+});
+
 test("tmuxSessionName: same branch + different dirs get INDEPENDENT sessions (no collision)", () => {
   const flags = parseFlags([]);
   const a = tmuxSessionName("/home/u/projA", "main", flags);
@@ -291,7 +307,8 @@ test("tmuxSessionName: same branch + different dirs get INDEPENDENT sessions (no
   expect(a).not.toBe(b); // different working dirs → independent sessions even on the same branch
   expect(a.startsWith("joc-main-")).toBe(true);
   expect(b.startsWith("joc-main-")).toBe(true);
-  // Same dir + branch + flags is stable so re-running reattaches your own session.
+  // Same dir + branch + flags yields a stable BASE; uniqueTmuxSessionName then makes each
+  // concurrent invocation independent (base, base-2, …) at launch time.
   expect(tmuxSessionName("/home/u/projA", "main", flags)).toBe(a);
   // Same basename, different absolute path still diverges (hash of full cwd).
   expect(tmuxSessionName("/a/proj", "main", flags)).not.toBe(tmuxSessionName("/b/proj", "main", flags));

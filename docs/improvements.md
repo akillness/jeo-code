@@ -4735,3 +4735,67 @@ for dozens of real user skills (tdd, caveman, to-prd, grill-me, setup-pre-commit
   prunes node_modules/.git; existing `*.ts` recursive-basename test still green.
 - Live `findTool`: `src/**/*.ts`→98, `src/agent/*.ts`→12, `src/skills/catalog.ts`→1, `**/*.test.ts`→79,
   `*.ts`→177 (unchanged), node_modules never present.
+## Anthropic 429 resilience + single-box input — pass 812
+
+**Date:** 2026-06-09 · **Dimensions: provider/reliability (429 auto-retry), tui (single boxed input).**
+
+Two reported defects. (1) Setting an Anthropic model and sending a turn surfaced
+`Rate limited by Anthropic (HTTP 429). Auto-retry was exhausted` on the very FIRST request,
+"took 1 steps in 4s". Root cause: the agent turn (`runAgentLoop → callLlm → manager.call`) wraps the
+request in `withRetry`, but the default budget was ~3 attempts with sub-second exponential backoff —
+so a real per-minute/OTPM 429 window (which needs seconds, not milliseconds, to clear) instantly
+exhausted retries. (2) The interactive prompt showed TWO inputs at once: readline's own echoed
+`joc> <text>` line AND the boxed input mirrored in the reserved footer.
+
+- **812a.** `withRetry` gained `rateLimitRetries` (a higher attempt cap applied only when the current
+  error is a 429) and `rateLimitMinDelayMs` (a backoff floor for 429s when the server sends no
+  `Retry-After`). Server `Retry-After` still takes precedence (capped 30s). New exported
+  `isRateLimitError(err)` classifies 429 by `.status` or message. Non-429 errors (e.g. 503) are
+  unchanged — same attempt count and no floor.
+- **812b.** `resolveRetryOptions` now defaults rate-limit handling to **5 attempts + a 2s floor** for
+  provider calls when the user has NOT pinned a budget. Explicit `requestMaxRetries` / `maxDelayMs`
+  always win and disable the matching rate-limit default (so `requestMaxRetries: 0` stays fail-fast).
+  `resolveRetryOptions(undefined).{retries,maxDelayMs}` remain `undefined` (generic path unchanged).
+- **812c.** Single-box input: `launch` overrides readline's `_writeToOutput` so that **while the
+  boxed-footer prompt is armed**, readline's own echo/prompt is suppressed and only the box is
+  visible. `rl.line` still tracks the input, so the footer box (which reads it on every keypress)
+  is the sole, accurate input surface. The box is now drawn immediately on arm (placeholder) since
+  the old `joc>` echo affordance is gone. Sub-prompts (e.g. "Choose [1-3]") run with the footer
+  disarmed and echo normally. No-preview fallback (short terminal / `JOC_NO_SLASH_PREVIEW=1`) keeps
+  the classic echoed prompt.
+
+### Verification (pass 812)
+
+- `bun run typecheck` → **0 errors**. `bun test` → **541 pass / 0 fail** (+ rate-limit tests:
+  extra-attempts cap, 429 backoff floor, non-429 not floored, `isRateLimitError` detection,
+  `resolveRetryOptions` default/explicit precedence).
+- Echo suppression verified against Bun's `node:readline`: while armed, typing emits zero output but
+  `rl.line` correctly holds the typed text; while disarmed, typing echoes — so the box is the single
+  visible input and sub-prompts still work.
+
+## tmux independent sessions per invocation — pass 812
+
+**Date:** 2026-06-08 · **Dimension: tmux session isolation (user-reported regression).**
+
+User report: `joc --tmux` from different processes collides into the SAME tmux session (clients
+mirror each other) instead of each getting an independent session.
+
+- **812.** The launch path did `has-session` → if present **attach to the existing session**, so a
+  second `joc --tmux` in the same dir+branch attached to (and mirrored) the first process's session.
+  Pass 801 had only made the NAME directory-scoped, which fixed cross-project collisions but not the
+  same-dir same-process-class case the user hit. Now each invocation **creates its own session**:
+  `allocateTmuxSession(base, tryCreate)` tries `base`, then `base-2`, `base-3`, … and the create
+  itself is the guard — race-safe, so two processes starting at the same instant can't both win
+  `base` (`tmux new-session` returns `duplicate session` for the loser, which retries the next
+  suffix). Sessions die with their joc process, so sequential re-runs reuse the clean base; only live
+  overlap is suffixed. The in-tmux no-nesting guard (`$TMUX` / `JOC_TMUX_LAUNCHED`) is unchanged.
+  Replaced the old attach-to-existing branch entirely.
+
+### Verification (pass 812)
+- `bun run typecheck` → 0 errors. `bun test` → **541 pass / 0 fail**. `bun run build` → ok.
+- Tests: `allocateTmuxSession` unit (base free / next free -N on collision / error passthrough);
+  integration test now asserts base-taken → creates+attaches `base-2` (not attach to base); long-model
+  + launch tests updated to read the `-s` name from `new-session`.
+- **Live (real tmux, outside tmux via `env -u TMUX`):** 3 concurrent `joc --tmux` from the same
+  dir+branch produced 3 DISTINCT live sessions `joc-main-<dir>-<hash>`, `…-2`, `…-3` simultaneously;
+  the "Starting new independent tmux session" message names each + how to reattach.

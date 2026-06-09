@@ -10,7 +10,7 @@
  * `runAgentLoop` and calls `tui.start()` / `tui.finish(reply)` around the turn.
  */
 import { Renderer } from "./renderer";
-import { readWorkflowState } from "../agent/state";
+import { readWorkflowStateStrict } from "../agent/state";
 import { size, isTTY, hideCursor, showCursor } from "./terminal";
 import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
@@ -24,7 +24,7 @@ import { resolveTheme, themeGradient } from "./components/themes";
 import { detectColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, type ForgeSummary } from "./components/forge";
 import { renderJocStatus } from "./components/status";
-import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact } from "./components/step-timeline";
+import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
 import chalk from "chalk";
 
@@ -61,6 +61,8 @@ export class LaunchTui {
   private finished = false;
   private timer: ReturnType<typeof setInterval> | undefined;
   private pendingIndex: number | null = null;
+  // Agent-declared task plan (the `todo` tool), rendered as a live checklist.
+  private todos: { title: string; status: "pending" | "in_progress" | "done" }[] = [];
   // Cache the rendered art + track per stage so the 120ms spinner tick reuses
   // them instead of re-rendering/re-coloring the block every frame.
   private cachedStageIndex = -1;
@@ -98,6 +100,22 @@ export class LaunchTui {
     return isTTY() && !noTui;
   }
 
+  /** Update the agent-declared task plan (driven by the `todo` tool). */
+  setTodos(items: { title: string; status: "pending" | "in_progress" | "done" }[]): void {
+    this.todos = items;
+    this.draw();
+  }
+
+  /** Render the task plan as a status-colored checklist; empty when no plan. */
+  private renderPlan(color: boolean): string[] {
+    if (this.todos.length === 0) return [];
+    const steps = this.todos.map(t => ({
+      label: t.title,
+      state: (t.status === "done" ? "done" : t.status === "in_progress" ? "active" : "pending") as StepState,
+    }));
+    const header = formatStepHeader(steps, { unicode: this.unicode, color, label: "Plan" });
+    return [header, ...formatStepTimeline(steps, { unicode: this.unicode, color, highlightActive: true, maxRows: 8 })];
+  }
   /** The events object to hand to runAgentLoop. */
   events(): AgentEventsLike {
     return {
@@ -139,13 +157,19 @@ export class LaunchTui {
     this.write(hideCursor());
     this.draw();
 
-    readWorkflowState("deep-interview")
+    readWorkflowStateStrict("deep-interview")
       .then(state => {
         if (this.finished) return;
         this.mutationGuarded = !!(state && state.active && state.current_phase !== "complete");
         this.draw();
       })
-      .catch(() => {});
+      .catch(() => {
+        if (this.finished) return;
+        // Engine MutationGuard fails closed on corrupt state; mirror that in the UI
+        // instead of showing an unlocked footer while edits are actually blocked.
+        this.mutationGuarded = true;
+        this.draw();
+      });
     // Animate the spinner + elapsed clock while the model is thinking.
     this.timer = setInterval(() => {
       this.tickCount++;
@@ -166,6 +190,7 @@ export class LaunchTui {
     const timelineSteps = stepsFromTools(this.tools.snapshot());
     const totalElapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
     const finalLines: string[] = [];
+    for (const line of this.renderPlan(this.theme.color)) finalLines.push(line);
     if (timelineSteps.length) {
       finalLines.push(formatStepHeader(timelineSteps, { elapsedMs: totalElapsedMs, unicode: this.unicode, color: this.theme.color }));
     }
@@ -248,6 +273,9 @@ export class LaunchTui {
     const toolLines = this.tools.render(fit ? Math.max(3, rows - 15) : undefined, { color: this.theme.color, indexed: fit });
     const toolListHeight = toolLines.length;
 
+    const planLines = this.renderPlan(this.theme.color);
+    const planHeight = planLines.length;
+
     // Bottom-pinned status + footer.
     const bottom: string[] = [];
     const statusMsg = getEvolutionStatusMessage(stepNow, this.footer.maxSteps ?? DEFAULT_MAX_STEPS, this.tickCount);
@@ -290,7 +318,7 @@ export class LaunchTui {
     const forgeHeight = forgeLines.length;
 
     const overhead = fit ? 4 : 0; // 2 borders + 2 dividers
-    const fixedHeight = headerHeight + toolListHeight + forgeHeight + bottomHeight + overhead;
+    const fixedHeight = headerHeight + planHeight + toolListHeight + forgeHeight + bottomHeight + overhead;
     const maxStreamLines = fit ? Math.max(0, rows - fixedHeight) : undefined;
     const streamLines = this.stream.render(innerWidth, maxStreamLines);
 
@@ -305,6 +333,7 @@ export class LaunchTui {
         innerLines.push("DIVIDER");
       }
 
+      for (const line of planLines) innerLines.push(line);
       for (const line of toolLines) innerLines.push(line);
       for (const line of streamLines) innerLines.push(line);
       for (const line of forgeLines) innerLines.push(line);
@@ -327,7 +356,7 @@ export class LaunchTui {
     } else {
       // Unboxed Mode (fallback for tests/non-TTY)
       const header = showArt ? [...this.cachedArt, this.cachedTrack, ""] : [];
-      const body = [...toolLines, ...streamLines, ...forgeLines];
+      const body = [...planLines, ...toolLines, ...streamLines, ...forgeLines];
       frame = [...header, ...body, ...bottom];
     }
 

@@ -1,5 +1,7 @@
 import { createInterface } from "node:readline/promises";
-import { runAgentLoop, executorSystemPrompt } from "../agent/engine";
+import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS } from "../agent/engine";
+import { createTaskTool, TASK_TOOL_PROTOCOL_LINE } from "../agent/task-tool";
+import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { LaunchTui } from "../tui/app";
 import { skillsPromptSection, loadSkills, formatSkill, getSkillFrom, getSkillBySlash, skillSlashAliases, type SkillDoc } from "../skills/catalog";
 import { interactiveOAuthLogin } from "./auth";
@@ -397,6 +399,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const baseSystemPrompt =
     executorSystemPrompt("joc, an interactive coding agent") +
     "\nWhen you have finished the user's request, or need to reply to or ask the user something, call done with {\"reason\": <your natural-language reply to the user>}. The reason text is shown to the user as your message." +
+    "\n\nDelegation: " + TASK_TOOL_PROTOCOL_LINE +
+    " Call task with {\"role\": \"executor|planner|architect|critic\", \"task\": <assignment>, \"context\": <optional>} to hand a focused slice to a subagent." +
+    "\n\nPlanning: " + TODO_TOOL_PROTOCOL_LINE +
     "\n\nAvailable joc workflow skills (suggest the relevant command when the user's task fits one):\n" +
     skillsPromptSection(resolvedSkills);
   const systemPrompt = withProjectContext(baseSystemPrompt, contextFiles);
@@ -467,11 +472,23 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (tui) tui.start();
     let result;
     const ac = new AbortController();
+    const tools = {
+      ...DEFAULT_TOOLS,
+      task: createTaskTool({
+        config: { ...cfg, defaultModel: activeModel },
+        signal: ac.signal,
+        onEvent: useTui
+          ? undefined
+          : e => { if (e.kind === "tool") console.log(`  └─ [${e.role}] ${e.success ? "✓" : "✗"} ${e.detail}`); },
+      }),
+      todo: createTodoTool({ onChange: items => tui?.setTodos(items) }),
+    };
     const onSigint = () => ac.abort();
     process.once("SIGINT", onSigint);
     try {
       result = await runAgentLoop(history, {
         cwd,
+        tools,
         maxSteps: flags.maxSteps,
         model: sessionModel,
         maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,

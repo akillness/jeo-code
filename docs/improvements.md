@@ -5067,3 +5067,36 @@ reviews + live tmux repro). Both are real behavioral defects.
 
 > Remaining planner-roadmap (queued, larger/riskier — own session): gitignore-aware shared file walker
 > for find/search (L); parallel read-only `task` fan-out (M); OpenAI/Gemini reasoning-effort mapping (M).
+
+## Process-UI: real-content status, double-helix in forge, live subagent monitoring — pass 839
+
+**Date:** 2026-06-08 · **Dimension: live-turn TUI content fidelity (user-reported; gjc parity).**
+
+User: the `[STEP] joc thinking` line churns meaningless messages every tick; expose the double
+helix in `[TOOL] joc forge`; show STEP-level real content (file, plan step, progress) "as if
+thinking"; and supplement the missing subagent progress/result summary (ref. gjc's TUI).
+
+- **839a.** `[STEP] joc thinking · <msg>` used `getEvolutionStatusMessage(step, max, tickCount)`,
+  which rotated 3 decorative strings every 120ms tick (meaningless churn). Replaced with
+  `LaunchTui.currentActivity()` — the real, stable in-flight action: the running tool's actual
+  target (`read src/agent/engine.ts`, `bash: bun test`, `edit …`), else the active plan step
+  (`step: Add the retry guard`), else plan progress (`plan 1/3 complete`), else a calm default.
+  Changes only when the actual work changes — no per-tick flicker.
+- **839b.** `[TOOL] joc forge` now carries the current evolution-stage identity via a new
+  `stage?` field on `renderJocStatus` — e.g. `●●○○○ Double Helix (DNA) [2/5]` — so the double
+  helix is always exposed, even when the large ASCII art is dropped on short terminals.
+- **839c.** Subagent monitoring: in TUI mode `createTaskTool({ onEvent })` was `undefined`, so a
+  delegated `task` subagent ran invisibly until its result box. Added `LaunchTui.onSubagentEvent`
+  and wired launch's `onEvent` to it: the stream now shows `▸ [executor] start: <assignment>`,
+  each nested `[executor] ✓/✗ <tool>`, and `◂ [executor] done: <summary>` — gjc-style live
+  play-by-play (full findings still arrive as the task tool's result forge box).
+
+### Verification (pass 839)
+- `bun run typecheck` → 0 errors. `bun test` → **603 pass / 0 fail**. `bun run build` → ok.
+- Deterministic frame render: `[STEP]` shows `read src/agent/engine.ts` (not "Transcribing…"),
+  `[TOOL]` shows `Double Helix (DNA) [2/5]`, and four `onSubagentEvent` calls render as
+  start/tool/tool/done lines in the stream.
+- New tests: `renderJocStatus` stage exposure; `onSubagentEvent` surfaces assignment + nested
+  tools + result summary; boxed `[STEP]`/`[TOOL]` real-content + double-helix assertions.
+- **Live (real PTY, ollama fast):** `joc launch "read package.json …" --model fast --max-steps 2`
+  ran a real turn (4110 tokens in) and exited cleanly (EXIT=0).

@@ -524,8 +524,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         config: { ...cfg, defaultModel: activeModel },
         signal: ac.signal,
         onEvent: useTui
-          ? undefined
-          : e => { if (e.kind === "tool") console.log(`  └─ [${e.role}] ${e.success ? "✓" : "✗"} ${e.detail}`); },
+          ? (e => tui?.onSubagentEvent(e))
+          : (e => { if (e.kind === "tool") console.log(`  └─ [${e.role}] ${e.success ? "✓" : "✗"} ${e.detail}`); }),
       }),
       todo: createTodoTool({ onChange: items => tui?.setTodos(items) }),
     };

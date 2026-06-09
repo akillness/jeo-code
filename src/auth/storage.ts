@@ -23,7 +23,7 @@ function accessOf(stored: string | StoredOAuth | undefined): string | undefined 
   return typeof stored === "string" ? stored : stored.access;
 }
 
-/** Single point of resolution: OAuth bearer beats API key when both exist. */
+/** Raw credential resolver: returns refreshable OAuth first; execution/status may override with an API key when both exist. */
 export async function resolveCredential(provider: AuthProvider): Promise<Credential> {
   const cfg = await readGlobalConfig();
   const stored = cfg.oauth?.[provider];

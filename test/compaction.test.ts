@@ -156,3 +156,66 @@ test("maybeCompact: force lowers the trigger floor for a small history", async (
   expect(history.length).toBe(6); // system + summary + 4 recent
   expect(history[1].content).toContain("FORCED-SUMMARY");
 });
+
+test("maybeCompact: compacts short histories when pasted content exceeds the char budget", async () => {
+  mockCallLlm = async (messages) => {
+    expect(messages[0].content).toContain("[user] " + "X".repeat(50));
+    return "CHAR-SUMMARY";
+  };
+  const history: Message[] = [
+    { role: "system", content: "system instruction" },
+    { role: "user", content: "X".repeat(200) },
+    { role: "assistant", content: "small reply" },
+  ];
+
+  const result = await maybeCompact(history, { maxMessages: 40, maxChars: 100, keepRecent: 1 });
+
+  expect(result.compacted).toBe(true);
+  expect(result.removed).toBe(1);
+  expect(history.length).toBe(3); // system + summary + 1 recent
+  expect(history[1].content).toContain("CHAR-SUMMARY");
+  expect(history[2].content).toBe("small reply");
+});
+
+test("maybeCompact: caps the summarizer input so compaction cannot create a huge prompt", async () => {
+  mockCallLlm = async (messages) => {
+    expect(messages[0].content.length).toBeLessThanOrEqual(260);
+    expect(messages[0].content).toContain("omitted from summary input");
+    return "BOUNDED-SUMMARY";
+  };
+  const history: Message[] = [
+    { role: "user", content: "A".repeat(300) },
+    { role: "assistant", content: "B".repeat(300) },
+    { role: "user", content: "recent" },
+  ];
+
+  const result = await maybeCompact(history, {
+    maxMessages: 40,
+    maxChars: 100,
+    keepRecent: 1,
+    maxSummaryInputChars: 120,
+  });
+
+  expect(result.compacted).toBe(true);
+  expect(result.removed).toBe(2);
+  expect(history[0].content).toContain("BOUNDED-SUMMARY");
+  expect(history[1].content).toBe("recent");
+});
+
+test("maybeCompact: truncates oversized recent messages so char-budget compaction converges", async () => {
+  mockCallLlm = async () => "RECENT-SUMMARY";
+  const history: Message[] = [
+    { role: "system", content: "system instruction" },
+    { role: "assistant", content: "older small" },
+    { role: "user", content: "Z".repeat(400) },
+  ];
+
+  const first = await maybeCompact(history, { maxMessages: 40, maxChars: 120, keepRecent: 1 });
+  expect(first.compacted).toBe(true);
+  expect(history.length).toBe(3);
+  expect(history[2].content.length).toBeLessThan(400);
+  expect(history[2].content.endsWith("…") || history[2].content.includes("truncated")).toBe(true);
+
+  const second = await maybeCompact(history, { maxMessages: 40, maxChars: 120, keepRecent: 1 });
+  expect(second.compacted).toBe(false);
+});

@@ -133,3 +133,44 @@ test("loadProjectContext ignores directories and empty files", async () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("loadProjectContext loads bounded .agents rule and hook guidance after root context", async () => {
+  const tmpDir = await createTempDir();
+  try {
+    await fs.writeFile(path.join(tmpDir, "AGENTS.md"), "root rules", "utf-8");
+    await fs.mkdir(path.join(tmpDir, ".agents", "rules"), { recursive: true });
+    await fs.mkdir(path.join(tmpDir, ".agents", "hooks", "core"), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, ".agents", "rules", "frontend.md"), "frontend rule", "utf-8");
+    await fs.writeFile(path.join(tmpDir, ".agents", "hooks", "core", "triggers.json"), "{\"slash\":\"/work\"}", "utf-8");
+
+    const context = await loadProjectContext(tmpDir);
+
+    expect(context.map(c => c.path)).toEqual([
+      "AGENTS.md",
+      ".agents/hooks/core/triggers.json",
+      ".agents/rules/frontend.md",
+    ]);
+    expect(context[1].content).toContain("/work");
+    expect(context[2].content).toBe("frontend rule");
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadProjectContext caps total project guidance so hook/rule files cannot bloat the prompt", async () => {
+  const tmpDir = await createTempDir();
+  try {
+    await fs.writeFile(path.join(tmpDir, "JEO.md"), "A".repeat(40_000), "utf-8");
+    await fs.writeFile(path.join(tmpDir, "AGENTS.md"), "B".repeat(40_000), "utf-8");
+    await fs.mkdir(path.join(tmpDir, ".agents", "rules"), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, ".agents", "rules", "huge.md"), "C".repeat(40_000), "utf-8");
+
+    const context = await loadProjectContext(tmpDir);
+    const total = context.reduce((sum, c) => sum + c.content.length, 0);
+
+    expect(total).toBeLessThanOrEqual(64_000 + "\n…(truncated)".length);
+    expect(context.some(c => c.content.includes("…(truncated)"))).toBe(true);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});

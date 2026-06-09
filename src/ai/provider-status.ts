@@ -4,8 +4,8 @@
  * provider, how it will authenticate (API key / OAuth / keyless / none), its
  * effective base URL, and whether it is ready to serve a request.
  */
-import { readGlobalConfig, type Config } from "../agent/state";
-import { resolveCredential, type AuthProvider } from "../auth";
+import { readGlobalConfig, type Config, type StoredOAuth } from "../agent/state";
+import type { AuthProvider, Credential } from "../auth";
 import { OAUTH_FLOW_REGISTRY } from "../auth/flows";
 import type { ProviderName } from "./types";
 
@@ -49,6 +49,27 @@ export function credentialLabel(kind: CredentialKind): string {
   }
 }
 
+function oauthAccess(stored: string | StoredOAuth | undefined): string | undefined {
+  if (!stored) return undefined;
+  return typeof stored === "string" ? stored : stored.access;
+}
+
+function configuredCredential(provider: AuthProvider, cfg: Config): Credential {
+  const oauth = oauthAccess(cfg.oauth?.[provider]);
+  if (oauth) return { kind: "oauth", provider, token: oauth };
+  const key = cfg.providers?.[provider];
+  if (key) return { kind: "api_key", provider, token: key };
+  return { kind: "none", provider };
+}
+
+/** Match the real call path: API keys are broader and win whenever both key + OAuth exist. */
+function effectiveCredential(provider: AuthProvider, cred: Credential, cfg: Config): Credential {
+  const key = cfg.providers?.[provider];
+  if (cred.kind === "oauth" && key) return { kind: "api_key", provider, token: key };
+  return cred;
+}
+
+
 /** Resolve the status of a single provider. */
 export async function describeProvider(name: ProviderName, config?: Config): Promise<ProviderStatus> {
   const cfg = config ?? (await readGlobalConfig());
@@ -56,19 +77,18 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
     const baseUrl = cfg.ollamaBaseUrl ?? "http://localhost:11434";
     return { name, kind: "keyless", label: credentialLabel("keyless"), baseUrl, ready: true };
   }
-  const cred = await resolveCredential(name as AuthProvider);
-  const kind: CredentialKind = cred.kind === "api_key" ? "api_key" : cred.kind === "oauth" ? "oauth" : "none";
-  const baseUrl = name === "openai" ? cfg.openaiBaseUrl : undefined;
-  let ready = kind !== "none" || (name === "openai" && !!baseUrl);
+  const prov = name as AuthProvider;
+  const cred = configuredCredential(prov, cfg);
+  const effective = effectiveCredential(prov, cred, cfg);
+  const kind: CredentialKind = effective.kind === "api_key" ? "api_key" : effective.kind === "oauth" ? "oauth" : "none";
+  const baseUrl = name === "openai" && kind !== "oauth" ? cfg.openaiBaseUrl : undefined;
+  let ready = kind !== "none" || (name === "openai" && !!cfg.openaiBaseUrl);
   let label = ready && kind === "none" ? "keyless (local base URL)" : credentialLabel(kind);
-  if (kind === "oauth") {
-    const prov = name as AuthProvider;
-    if (OAUTH_FLOW_REGISTRY[prov]?.verifiedEndToEnd === false && !cfg.providers?.[prov]) {
-      ready = false;
-      label = name === "gemini"
-        ? "OAuth — Gemini needs an API key (Cloud Code Assist not served)"
-        : "OAuth (API key needed)";
-    }
+  if (kind === "oauth" && OAUTH_FLOW_REGISTRY[prov]?.verifiedEndToEnd === false) {
+    ready = false;
+    label = name === "gemini"
+      ? "OAuth — Gemini needs an API key (Cloud Code Assist not served)"
+      : "OAuth (API key needed)";
   }
   return {
     name,

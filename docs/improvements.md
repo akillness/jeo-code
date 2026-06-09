@@ -5213,3 +5213,30 @@ subagent's own stages/results were not exposed like gjc, and `/subagent ...` was
 - Focused tests added/updated: `task-tool.test.ts` asserts nested step headers and result summaries;
   `stream-events.test.ts` covers model-delegated `task` and direct one-shot `/subagent run`.
 - Verification: `bun test test/task-tool.test.ts test/stream-events.test.ts test/autocomplete.test.ts test/slash.test.ts test/tui-app.test.ts` → **61 pass / 0 fail**; `bun run typecheck` → 0 errors; `bun test` → **615 pass / 0 fail**; `bun run build` → ok.
+
+## Provider/status consistency + bounded project guidance/context — passes 850–853
+
+**Date:** 2026-06-08 · **Dimensions: OAuth/model truthfulness, hook/rule guidance loading, memory bloat control.**
+
+The broad hardening pass focused on concrete places where `joc` could diverge from the real GJC-style
+execution path or allow context to grow from a few huge skill/rule packets.
+
+- **850.** Provider readiness now reports the **effective** credential path: when an API key and OAuth
+  token both exist, status uses `API key` (the same path model execution already uses), instead of
+  showing `OAuth` while the call path silently switches to the key. `joc doctor` now probes the same
+  effective credential, so Gemini `oauth+key` no longer fails a doctor probe through the unsupported
+  OAuth path while actual model calls would use the key.
+- **851.** Project context loading now recognizes bounded OMA/GJC-style guidance files:
+  `.agents/rules/*.md`, `.joc/rules/*.md`, and `.agents/hooks/**` text config/docs (`.md`, `.json`,
+  `.jsonc`, `.yaml`, `.yml`, `.toml`). Skill docs stay in `skills/catalog.ts`; hook/rule policy is
+  injected as project context with per-file and total caps.
+- **852.** Compaction now triggers on **character budget** as well as message count, caps the
+  summarizer input, and truncates oversized recent messages when needed so char-budget compaction
+  actually converges instead of re-summarizing forever on every turn. A short session containing
+  pasted SKILL.md / deep-dive / graphify packets can now compact before reaching 40 messages.
+- **853.** Parsed skill docs now cap `details` to 8k characters before `/skill` injection, so a
+  single giant `SKILL.md` no longer pastes an unbounded workflow document into one turn.
+
+### Verification (passes 850–853)
+- Focused: `bun test test/compaction.test.ts test/context-files.test.ts test/provider-status.test.ts test/doctor.test.ts test/model-manager.test.ts test/skills.test.ts` → **40 pass / 0 fail**.
+- `bun run typecheck` → 0 errors.

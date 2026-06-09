@@ -96,6 +96,22 @@ test("describeProvider: openai oauth-only → ready=true (served via Codex Respo
   expect(s.label).toBe("OAuth");
 });
 
+test("describeProvider: openai oauth path hides local base URL because Codex backend is used instead", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: {},
+      oauth: { openai: "oauth-oai" },
+      openaiBaseUrl: "http://localhost:1234/v1",
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  const s = await describeProvider("openai");
+  expect(s.ready).toBe(true);
+  expect(s.kind).toBe("oauth");
+  expect(s.baseUrl).toBeUndefined();
+});
+
 test("describeProvider: gemini oauth-only → ready=false, label contains 'API key' (no Codex-style backend)", async () => {
   await fs.writeFile(
     path.join(dir, "config.json"),
@@ -110,7 +126,7 @@ test("describeProvider: gemini oauth-only → ready=false, label contains 'API k
   expect(s.label).toContain("API key");
 });
 
-test("describeProvider: openai oauth+key → ready=true", async () => {
+test("describeProvider: openai oauth+key reports the effective API-key path", async () => {
   await fs.writeFile(
     path.join(dir, "config.json"),
     JSON.stringify({
@@ -121,7 +137,8 @@ test("describeProvider: openai oauth+key → ready=true", async () => {
   );
   const s = await describeProvider("openai");
   expect(s.ready).toBe(true);
-  expect(s.label).toBe("OAuth");
+  expect(s.kind).toBe("api_key");
+  expect(s.label).toBe("API key");
 });
 
 test("describeProvider: anthropic oauth-only → ready=true", async () => {
@@ -136,4 +153,19 @@ test("describeProvider: anthropic oauth-only → ready=true", async () => {
   const s = await describeProvider("anthropic");
   expect(s.ready).toBe(true);
   expect(s.label).toBe("OAuth");
+});
+
+test("describeProvider: gemini oauth+key reports ready API-key path instead of blocked OAuth", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: { gemini: "AIza-gem" },
+      oauth: { gemini: "oauth-gem" },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  const s = await describeProvider("gemini");
+  expect(s.ready).toBe(true);
+  expect(s.kind).toBe("api_key");
+  expect(s.label).toBe("API key");
 });

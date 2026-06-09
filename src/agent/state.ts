@@ -21,9 +21,9 @@ export interface Config {
     gemini?: string;
   };
   /**
-   * OAuth credentials (take precedence over API keys for the same provider).
-   * A bare string is a legacy/manually-pasted bearer with no refresh metadata;
-   * a {@link StoredOAuth} object carries refresh token + expiry for auto-refresh.
+   * OAuth credentials. `resolveCredential()` returns these before API keys so refresh
+   * metadata is not lost, but provider execution/status applies the GJC parity rule:
+   * an API key is broader and wins whenever both key + OAuth exist.
    */
   oauth?: {
     anthropic?: string | StoredOAuth;

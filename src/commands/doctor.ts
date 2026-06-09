@@ -1,6 +1,7 @@
 import { readGlobalConfig } from "../agent/state";
 import { resolveCredential, snapshotProvider, type AuthProvider, type Credential } from "../auth";
 import { resolveProvider } from "../ai";
+import { effectiveCredentialForProvider } from "../ai/model-manager";
 import { resolveModelId } from "../ai/model-registry";
 import { meter } from "../tui/components/meter";
 import { size } from "../tui/terminal";
@@ -28,7 +29,12 @@ async function timedFetch(url: string, init: RequestInit): Promise<{ res: Respon
   }
 }
 
+const NO_OPENAI_CREDENTIAL_DETAIL = "no credential (run 'joc setup' or 'joc auth login openai')";
+
 async function probeOpenAi(credential: Credential, baseUrl: string | undefined): Promise<ProbeResult> {
+  if (credential.kind === "none" && !baseUrl) {
+    return { status: "skipped", detail: NO_OPENAI_CREDENTIAL_DETAIL };
+  }
   // ChatGPT/Codex OAuth can't use api.openai.com — verify the Codex backend instead.
   // A deliberately-unsupported model returns 400 *after* auth but *before* any generation,
   // so it confirms connectivity + credentials without burning subscription credit.
@@ -156,11 +162,22 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   const cloud = ["anthropic", "openai", "gemini"] as AuthProvider[];
   const cloudProbes = await Promise.all(
     cloud.map(async provider => {
-      const credential = await resolveCredential(provider);
+      const rawCredential = await resolveCredential(provider);
+      let credential = rawCredential;
       let result: ProbeResult;
-      if (provider === "openai") result = await probeOpenAi(credential, config.openaiBaseUrl);
-      else if (provider === "gemini") result = await probeGemini(credential);
-      else result = await probeAnthropic(credential);
+      try {
+        credential = effectiveCredentialForProvider(
+          provider,
+          rawCredential,
+          config,
+          provider === defaultProvider ? config.defaultModel : provider,
+        );
+        if (provider === "openai") result = await probeOpenAi(credential, config.openaiBaseUrl);
+        else if (provider === "gemini") result = await probeGemini(credential);
+        else result = await probeAnthropic(credential);
+      } catch (err) {
+        result = { status: "fail", detail: (err as Error).message };
+      }
       return { name: provider, credKind: credential.kind, result };
     })
   );

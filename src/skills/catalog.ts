@@ -117,6 +117,9 @@ export function skillSlashAliases(skill: SkillDoc): string[] {
   return dedupeAliases(skill.aliases ?? []);
 }
 
+
+const MAX_SKILL_SUMMARY_CHARS = 180;
+const MAX_SKILL_DETAILS_CHARS = 8_000;
 /** Global + per-project skill-doc directories (user-configurable SKILL.md files). */
 export function skillDirs(cwd: string = process.cwd()): string[] {
   const home = process.env.JOC_CONFIG_DIR || path.join(os.homedir(), ".joc");
@@ -203,12 +206,16 @@ export function parseSkillMarkdown(name: string, content: string): SkillDoc {
     ...splitAliasHeader(meta.slashes ?? ""),
   ];
   const rawSummary = meta.summary ?? meta.description ?? firstLine;
+  const summary = rawSummary ? (rawSummary.length > MAX_SKILL_SUMMARY_CHARS ? rawSummary.slice(0, MAX_SKILL_SUMMARY_CHARS - 1) + "…" : rawSummary) : name;
+  const details = body
+    ? (body.length > MAX_SKILL_DETAILS_CHARS ? body.slice(0, MAX_SKILL_DETAILS_CHARS - 1) + "…" : body)
+    : "(no details)";
   return {
     name,
     command: meta.command ?? `/skill ${name}`,
-    summary: rawSummary ? (rawSummary.length > 180 ? rawSummary.slice(0, 179) + "…" : rawSummary) : name,
+    summary,
     whenToUse: meta.whentouse ?? meta.when ?? meta.use ?? "",
-    details: body || "(no details)",
+    details,
     aliases: dedupeAliases([...explicitAliases, ...inferSlashAliases(content)]),
   };
 }

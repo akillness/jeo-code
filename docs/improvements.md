@@ -4971,3 +4971,14 @@ MEDIUM/LOW findings, acted on below, plus 13 untested-branch cases now covered (
   parseLineSelector explicit `0`/`a+0` errors; stream wall-clock vs idle timeout; withTimeout
   AbortSignal.any fallback. Planner roadmap (multi-hunk edit, gitignore-aware walker, structured grep
   context, parallel task fan-out, session export, OpenAI/Gemini reasoning-effort mapping) queued.
+## read directory fallback — pass 831
+
+**Date:** 2026-06-09 · **Dimension: agent tool ergonomics (gjc parity).**
+
+- **831.** `read` on a directory path now returns its listing (delegates to `lsTool`) instead of an
+  EISDIR error, matching gjc where reading a directory yields a dirent listing. `raw`/`lineRange` on a
+  directory is a clear error (those modes are file-only). Reduces tool-selection thrash for the model.
+
+### Verification (pass 831)
+- `bun run typecheck` → 0 errors. `bun test` → **583 pass / 0 fail**. `bun run build` → ok. New test:
+  `read("src")` lists `keep.ts`; `read("src","1-5")` errors with "is a directory".

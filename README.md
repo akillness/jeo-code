@@ -26,7 +26,7 @@ joc
 # 한 번의 요청을 바로 실행
 joc "README를 정리하고 테스트를 실행해줘"
 
-# 현재 설정과 모델 연결 상태 확인
+# 현재 설정과 모델 연결 상태 확인 (실제 호출 경로로 점검: Anthropic=GET /v1/models, OpenAI OAuth=Codex 백엔드)
 joc doctor
 
 # API 키 / OAuth / 로컬 모델 설정

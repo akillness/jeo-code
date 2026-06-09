@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { saveConfigPatch, readRawGlobalConfig } from "../src/agent/state";
+import { saveConfigPatch, readRawGlobalConfig, readGlobalConfig } from "../src/agent/state";
 import { setApiKey, setOauthToken } from "../src/auth/storage";
 
 let dir: string;
@@ -11,6 +11,7 @@ const saved = {
   model: process.env.JOC_DEFAULT_MODEL,
   oauth: process.env.ANTHROPIC_OAUTH_TOKEN,
   smol: process.env.JOC_SMOL_MODEL,
+  gemini: process.env.GEMINI_API_KEY,
 };
 
 beforeEach(async () => {
@@ -24,6 +25,7 @@ afterEach(async () => {
     JOC_DEFAULT_MODEL: saved.model,
     ANTHROPIC_OAUTH_TOKEN: saved.oauth,
     JOC_SMOL_MODEL: saved.smol,
+    GEMINI_API_KEY: saved.gemini,
   })) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -78,4 +80,26 @@ test("auth storage setters persist onto the RAW config — no env-only values ba
   } finally {
     delete process.env.OLLAMA_HOST;
   }
+});
+test("readGlobalConfig overlays env API keys onto providers when a config file exists (env fills gaps)", async () => {
+  // A config file WITHOUT a gemini key, but GEMINI_API_KEY is present in the env.
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({ providers: { anthropic: "disk-anthropic" }, defaultModel: "ollama/qwen2.5:0.5b" }),
+  );
+  process.env.GEMINI_API_KEY = "env-gemini-key";
+  const cfg = await readGlobalConfig();
+  // The env key fills the gap so provider/model selection (incl. subagent overrides) resolves.
+  expect(cfg.providers.gemini).toBe("env-gemini-key");
+  expect(cfg.providers.anthropic).toBe("disk-anthropic"); // disk value untouched
+});
+
+test("readGlobalConfig: on-disk provider key wins over the env key (env never overrides disk)", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({ providers: { gemini: "disk-gemini-key" }, defaultModel: "gemini-flash-latest" }),
+  );
+  process.env.GEMINI_API_KEY = "env-gemini-key";
+  const cfg = await readGlobalConfig();
+  expect(cfg.providers.gemini).toBe("disk-gemini-key"); // disk wins
 });

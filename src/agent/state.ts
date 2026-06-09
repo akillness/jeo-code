@@ -127,12 +127,22 @@ function envOAuth(): NonNullable<Config["oauth"]> {
   };
 }
 
-/** Merge env-provided OAuth tokens / Ollama base over a config (env fills gaps only). */
+/** Merge env-provided credentials / base URLs over a config (env fills gaps only;
+ *  on-disk values always win). Previously the providers API-key map was NOT overlaid
+ *  when a config file existed, so a provider whose key lived only in the environment
+ *  (e.g. GEMINI_API_KEY) resolved to "no credential" — breaking provider/model
+ *  selection (including per-role subagent overrides) despite the key being present. */
 function withEnvOverlay(cfg: Config): Config {
   const envTok = envOAuth();
   const oauth = { ...envTok, ...(cfg.oauth ?? {}) };
+  // Disk wins; env fills only the gaps (??=).
+  const providers: Config["providers"] = { ...(cfg.providers ?? {}) };
+  providers.anthropic ??= process.env.ANTHROPIC_API_KEY;
+  providers.openai ??= process.env.OPENAI_API_KEY;
+  providers.gemini ??= process.env.GEMINI_API_KEY;
   return {
     ...cfg,
+    providers,
     oauth,
     defaultModel: process.env.JOC_DEFAULT_MODEL || cfg.defaultModel,
     ollamaBaseUrl: cfg.ollamaBaseUrl || process.env.OLLAMA_HOST || "http://localhost:11434",

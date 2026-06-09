@@ -12,13 +12,14 @@ import {
 
 let dir: string;
 const prevCfgDir = process.env.JOC_CONFIG_DIR;
-const OAUTH_ENV = ["ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_OAUTH_TOKEN", "GEMINI_OAUTH_TOKEN"];
+const OAUTH_ENV = ["ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_OAUTH_TOKEN", "GEMINI_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"];
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeAll(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-prov-"));
   process.env.JOC_CONFIG_DIR = dir;
-  // A config file makes readGlobalConfig ignore env API keys; only OAuth env can leak in.
+  // A config file with an empty providers map + no credential env vars isolates each
+  // scenario: readGlobalConfig overlays env API keys onto gaps, so they must be cleared.
   await fs.writeFile(
     path.join(dir, "config.json"),
     JSON.stringify({ providers: {}, defaultModel: "claude-3-5-sonnet" }),

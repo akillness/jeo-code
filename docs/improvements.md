@@ -1972,6 +1972,40 @@ prints a per-turn footer `(N in / M out tokens)` (one-shot, interactive, and TUI
 **Verification:** `tsc` 0; `bun test` **79/79** (+1: mock SSE — text `"hi"`, usages include
 `{inputTokens:12,…}` and `{outputTokens:5}`). Files: `src/ai/providers/anthropic.ts`, `test/anthropic-stream.test.ts`.
 
+## 45. Ralph pass 37 — subagent provider/model selection (2 bugfixes) + stream category index
+
+**Date:** 2026-06-09 · gjc dimensions: **provider** / **model** (bugfix), **tui** (readability).
+
+**Symptom (user report):** "joc subagent의 provider/model 설정이 동작하지 않는다." Two independent
+root causes found and fixed:
+
+1. **Stale session config in the in-loop `task` tool.** `runTurn` (`src/commands/launch.ts`) built the
+   delegated `task` tool from the session-start `cfg` snapshot, so a per-role model/maxSteps override set
+   mid-session via `/agents <role> <model>` (persisted by `saveConfigPatch`) was a no-op for delegated
+   subagents until restart. Fix: `runTurn` now re-reads `readGlobalConfig()` each turn and feeds that fresh
+   config to `createTaskTool`. (`joc team` already re-read fresh config per task; only launch was stale.)
+
+2. **Env API keys never overlaid onto the providers map when a config file exists.** `withEnvOverlay`
+   (`src/agent/state.ts`) merged env OAuth tokens, default model, base URLs, and role tiers — but NOT
+   `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY`. So a provider whose key lived only in the
+   environment resolved to "No credential" (e.g. pinning a subagent to `gemini-flash-latest` with only
+   `GEMINI_API_KEY` set). Fix: gap-fill the providers map from env (`providers.x ??= process.env.X_API_KEY`)
+   — disk still wins, env only fills gaps. Per-role subagent provider/model selection now resolves.
+
+**TUI / stream categorization (readability):** the live `LaunchTui` stream region (`onSubagentEvent`,
+`onToolResult`, `onError`) and the plain non-TUI sinks (`formatTaskSubEvent`, `createStreamEvents`) now
+lead every line with a category badge from `category-index` (`[AGENT]`/`[STEP]`/`[DONE]`/`[ERR]`),
+matching the already-categorized forge boxes, tool list, status line, `/view`, `/diff`, and `joc team`.
+Progress, completion, error, and subagent lines are now classifiable at a glance in both TUI and pipe modes.
+
+**Verification:** `tsc` 0; `bun test` **684/684** (+8: in-loop override→callLlm routing, default fallback,
+disk-persisted override e2e through `runLaunchCommand`, env-key gap-fill + disk-wins, plus stream-badge
+assertions; updated `provider-status`/`doctor`/`tui-app` to clear API-key env so the overlay is deterministic).
+Live (real providers): direct `/subagent run executor` ran on the pinned `ollama/qwen2.5:0.5b` **override**
+(not the default); a real parent on **anthropic/claude-haiku-4-5** emitted `task executor` and the in-loop
+subagent ran cross-provider on the ollama override — confirming the exact fixed path. Files:
+`src/commands/launch.ts`, `src/agent/state.ts`, `src/tui/app.ts`, `test/{task-tool,stream-events,config-save,provider-status,doctor,tui-app}.test.ts`.
+
 ---
 
 ## 42. Objective completion summary — gjc-comparison improvement program
@@ -5591,3 +5625,33 @@ collides conceptually with the built-in `/skill` command and creates noisy/accid
 ### Verification (pass 869)
 - Focused: `bun test test/skills.test.ts test/skills-config.test.ts test/slash.test.ts test/autocomplete.test.ts` → **59 pass / 0 fail**.
 - Full: `bun run typecheck` → 0 errors; `bun test` → **679 pass / 0 fail**; `bun run build` → ok.
+
+## Subagent model freshness + categorized stream ledger — pass 870
+
+**Date:** 2026-06-09 · **Dimensions: provider/model correctness, subagent routing, TUI/plain-stream legibility, skill-path safety.**
+
+This pass continued the `gjc` parity track in the two places users notice immediately: whether
+delegated agents really use the configured model/provider, and whether the live stream is scannable
+instead of a pile of anonymous lines.
+
+- **870a.** `readGlobalConfig()` now overlays environment API keys into missing `providers.*` gaps even
+  when an on-disk config exists, while still preserving the on-disk key when both are present. This
+  fixes provider selection cases where `GEMINI_API_KEY`/`OPENAI_API_KEY` existed only in the environment
+  but a config file made the provider appear uncredentialed.
+- **870b.** `joc launch` re-reads global config for every conversational turn before constructing the
+  `task` tool, so `/agents <role> <model>` and per-role max-step settings saved mid-session apply to the
+  next delegated subagent without restarting `joc`.
+- **870c.** Plain `--no-tui` streams and live TUI subagent streams now classify progress/results with
+  stable category badges such as `[STEP]`, `[DONE]`, `[ERR]`, and `[AGENT]`, matching the existing
+  forge/tool/code/diff/file category index.
+- **870d.** Explicit `/skill:/path/to/file.md` invocation is supported for real external skill files, but
+  the same reserved-name guard now applies there too: external meta-skills named `skill`, `model`,
+  `provider`, etc. still cannot hijack the workflow surface.
+- **870e.** README guidance now documents that `/agents` settings affect the current session immediately
+  and that explicit skill file paths are allowed only when they do not collide with built-in command names.
+
+### Verification (pass 870)
+- Focused: `bun test test/skills.test.ts test/skills-config.test.ts test/config-save.test.ts test/provider-status.test.ts test/doctor.test.ts test/task-tool.test.ts test/stream-events.test.ts test/tui-app.test.ts test/category-index.test.ts` → **80 pass / 0 fail**.
+- Typecheck: `bun run typecheck` → 0 errors.
+- Full: `bun test` → **686 pass / 0 fail**; `bun run build` → ok.
+- Local live smoke: `JOC_DEFAULT_MODEL=fast bun src/cli.ts launch "Use the done tool with reason live smoke ok." --model fast --max-steps 2 --no-session --no-tui` reached the local Ollama loop and emitted categorized `[STEP]`/`[DONE]` stream lines before the 2-step cap.

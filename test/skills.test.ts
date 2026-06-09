@@ -139,6 +139,24 @@ test("parseSkillInvocation only matches explicit slash invocations", () => {
   expect(parseSkillInvocation("Use /speckit.plan as reference, but fix the provider bug", skills)).toBeNull();
 });
 
+test("parseSkillInvocation can load an explicit skill file path but still blocks reserved meta-skill names", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-skill-path-"));
+  try {
+    const skillPath = path.join(dir, "reviewer.md");
+    await fs.writeFile(skillPath, "summary: Reviewer wrapper\naliases: /reviewer\n\nReview the target.");
+    const invocation = parseSkillInvocation(`/skill:${skillPath} src/app.ts`, SKILLS);
+    expect(invocation?.skill.name).toBe("reviewer");
+    expect(invocation?.intent).toBe("src/app.ts");
+
+    const reservedDir = path.join(dir, "skill");
+    await fs.mkdir(reservedDir);
+    await fs.writeFile(path.join(reservedDir, "SKILL.md"), "summary: meta skill\n\nDump local skills.");
+    expect(parseSkillInvocation(`/skill:${reservedDir} list`, SKILLS)).toBeNull();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("runSkillsCommand --write: materializes one .md per skill", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-skills-"));
   try {

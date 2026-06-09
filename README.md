@@ -46,7 +46,7 @@ joc setup
 | `/provider [name] [model\|#N]` | 프로바이더 자격증명·전환, 해당 프로바이더 라이브 모델 목록 |
 | `/provider login <name>` | **입력창에서 바로 OAuth 로그인** (anthropic/openai/gemini) |
 | `/logout <name>` | 저장된 OAuth 토큰 제거 |
-| `/agents [role] [model]` · `/subagents ...` | 서브에이전트(executor/planner/architect/critic) 역할 모델 설정 |
+| `/agents [role] [model]` · `/subagents ...` | 서브에이전트(executor/planner/architect/critic) 역할 모델 설정(저장 즉시 현재 세션의 `task` 위임에도 반영) |
 | `/subagent run [role] <task>` · `/subagent <role> -- <task>` | 서브에이전트 직접 실행(단계·툴·결과 스트림 표시) |
 | `/roles [tier model]` | 모델 역할 티어(smol/slow/plan) 표시·설정 |
 | `/thinking [level]` | 사고 예산(minimal/low/medium/high/xhigh) |
@@ -70,7 +70,7 @@ TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행
 >
 > **파일 검색(`/find` · `find` tool):** 슬래시 없는 이름 패턴(`*.ts`, `engine.ts`)은 하위 디렉터리까지 재귀 basename 매칭이고, `/`나 `**`를 포함한 **경로 글로브**(`src/**/*.ts`, `src/agent/*.ts`, 정확한 상대경로 `src/skills/catalog.ts`)는 실제 glob 의미로 해석됩니다. 이전에는 `find -name`이 basename만 보기 때문에 경로 글로브가 항상 매칭 0건이었습니다(문서의 `/find src/**/*.ts` 예시조차 동작 안 함). `node_modules`/`.git`/`dist` 등 무시 디렉터리는 양쪽 경로 모두에서 제외됩니다.
 >
-> **사용자 skill 문서:** `~/.joc/skills`·`.joc/skills`의 평면 `<name>.md`와 `~/.agents/skills/<name>/SKILL.md`·`.agents/skills/<name>/SKILL.md` 폴더형 문서는 계속 로드되며 `/skill`, Tab 자동완성, `/speckit.*` 같은 **직접 슬래시 호출**에서 실행할 수 있습니다(이름이 같으면 뒤쪽 문서가 우선). 다만 **상시 시스템 프롬프트에는 번들 workflow skill 4개만** 광고되고, 사용자가 SKILL.md 전문을 붙여넣어도 그 내용은 기본적으로 **참고 데이터**로 취급됩니다 — 외부 skill이 일반 코딩 요청을 가로채지 않도록 한 것입니다. `aliases:`/`slash:` 헤더 또는 본문에 언급된 **해당 skill 소유의** `/name.step` 패턴을 자동 인식합니다. SKILL.md 프런트매터 파서는 YAML 블록 스칼라(`description: >`/`|`, chomping `>-`/`|+` 포함)는 물론, 실제 스킬 파일에 흔한 비표준 `description: Use this skill when >` + 들여쓴 연속 블록 형태까지 접어서 한 줄 요약으로 만듭니다(이전에는 `Use this skill when >`라는 잘린 요약이 그대로 노출됨). `JOC_TUI_THEME=mono`는 푸터 색까지 완전한 무채색으로 출력합니다.
+> **사용자 skill 문서:** `~/.joc/skills`·`.joc/skills`의 평면 `<name>.md`와 `~/.agents/skills/<name>/SKILL.md`·`.agents/skills/<name>/SKILL.md` 폴더형 문서는 계속 로드되며 `/skill`, Tab 자동완성, `/speckit.*` 같은 **직접 슬래시 호출**에서 실행할 수 있습니다(이름이 같으면 뒤쪽 문서가 우선). `/skill:/path/to/file.md`처럼 명시적 파일 경로도 읽을 수 있지만, `skill`·`model`·`provider`처럼 `joc` 내장 명령과 충돌하는 외부 meta-skill 이름은 로드/실행하지 않습니다. **상시 시스템 프롬프트에는 번들 workflow skill 4개만** 광고되고, 사용자가 SKILL.md 전문을 붙여넣어도 그 내용은 기본적으로 **참고 데이터**로 취급됩니다 — 외부 skill이 일반 코딩 요청을 가로채지 않도록 한 것입니다. `aliases:`/`slash:` 헤더 또는 본문에 언급된 **해당 skill 소유의** `/name.step` 패턴을 자동 인식합니다. SKILL.md 프런트매터 파서는 YAML 블록 스칼라(`description: >`/`|`, chomping `>-`/`|+` 포함)는 물론, 실제 스킬 파일에 흔한 비표준 `description: Use this skill when >` + 들여쓴 연속 블록 형태까지 접어서 한 줄 요약으로 만듭니다(이전에는 `Use this skill when >`라는 잘린 요약이 그대로 노출됨). `JOC_TUI_THEME=mono`는 푸터 색까지 완전한 무채색으로 출력합니다.
 >
 > **hook/rule 프로젝트 가이던스 + 메모리 관리:** `.agents/rules/*.md`·`.joc/rules/*.md`·`.agents/hooks/**`의 텍스트 설정/문서(`.md`, `.json`, `.jsonc`, `.yaml`, `.yml`, `.toml`)는 skill 문서와 별개로 **bounded project context**에 들어갑니다(프로젝트 root 컨텍스트와 별도 reserve budget, 파일별/총량 cap 적용). 프로젝트 로컬뿐 아니라 `~/.agents/rules`·`~/.agents/hooks`·`~/.joc/rules`도 읽습니다. 대형 SKILL.md·deep-dive·graphify 패킷을 몇 번 붙여도 메시지 수 40개를 기다리지 않고 문자 예산 기준으로 compaction이 실행되며, compaction 요약 입력과 **생성된 요약 결과 자체**도 cap되어 컨텍스트/메모리 비대화를 막습니다.
 >

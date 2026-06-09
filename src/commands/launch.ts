@@ -211,11 +211,14 @@ export function formatTaskSubEvent(e: TaskSubEvent): string {
   const detail = firstOutputLine(e.detail);
   const summary = e.summary ? ` — ${e.summary}` : "";
   const step = e.step && e.maxSteps ? ` step ${e.step}/${e.maxSteps}` : "";
-  if (e.kind === "start") return `  ${chalk.magenta(`▸ [${role}]`)} ${detail}`.slice(0, 220);
-  if (e.kind === "step") return `    ${chalk.cyan(`[${role}${step}]`)} ${detail || "working"}`;
-  if (e.kind === "tool") return `    [${role}] ${e.success === false ? chalk.red("✗") : chalk.green("✓")} ${detail || "tool"}${summary}`;
-  if (e.kind === "error") return `    [${role}] ${chalk.red("✗")} ${detail || "error"}`;
-  return `  ${chalk.magenta(`◂ [${role}]`)} done${e.success ? "" : " (incomplete)"}${detail ? `: ${detail}` : ""}`;
+  // Lead every nested-subagent line with the [AGENT] category badge so the stream
+  // is classifiable at a glance (parity with the live TUI and `joc team`).
+  const badge = categoryBadge("subagent");
+  if (e.kind === "start") return `${badge} ${chalk.magenta(`▸ [${role}]`)} ${detail}`.slice(0, 240);
+  if (e.kind === "step") return `  ${badge} ${chalk.cyan(`[${role}${step}]`)} ${detail || "working"}`;
+  if (e.kind === "tool") return `  ${badge} [${role}] ${e.success === false ? chalk.red("✗") : chalk.green("✓")} ${detail || "tool"}${summary}`;
+  if (e.kind === "error") return `  ${badge} [${role}] ${chalk.red("✗")} ${detail || "error"}`;
+  return `${badge} ${chalk.magenta(`◂ [${role}]`)} done${e.success === false ? " (incomplete)" : ""}${detail ? `: ${detail}` : ""}`;
 }
 
 function logTaskSubEvent(e: TaskSubEvent, log: (line: string) => void = (s: string) => console.log(s)): void {
@@ -270,15 +273,15 @@ export function createStreamEvents(
       const tool = typeof invocation?.tool === "string" ? invocation.tool.trim() : "";
       if (!tool || tool === "done") return;
       pending = summarizeForgeInvocation(tool, invocation?.arguments).title;
-      log(`${chalk.cyan(`[step ${step}/${maxSteps}]`)} ${pending}`);
+      log(`${categoryBadge("progress")} ${chalk.cyan(`[step ${step}/${maxSteps}]`)} ${pending}`);
     },
     onToolResult: (tool: string, ok: boolean, output?: string) => {
       const label = pending || tool;
       const mark = ok ? chalk.green("✓") : chalk.red("✗");
-      log(`  ${mark} ${label}${streamResultSuffix(tool, ok, output)}`);
+      log(`  ${categoryBadge(ok ? "done" : "error")} ${mark} ${label}${streamResultSuffix(tool, ok, output)}`);
       pending = "";
     },
-    onError: (msg: string) => log(`  ${chalk.red("\u2717")} ${msg}`),
+    onError: (msg: string) => log(`  ${categoryBadge("error")} ${chalk.red("\u2717")} ${msg}`),
   };
 }
 
@@ -612,7 +615,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const beforeLen = history.length;
     history.push({ role: "user", content: userInput });
 
-    const activeModel = sessionModel || defaultModel;
+    // Re-read the on-disk config each turn so per-role subagent model/maxSteps
+    // overrides set mid-session via /agents (persisted by saveConfigPatch) are
+    // honored by the delegated `task` tool. The session-start `cfg` snapshot is
+    // stale here, which previously made `/agents <role> <model>` a no-op for
+    // delegated subagents until the process restarted.
+    const turnConfig = await readGlobalConfig();
+    const activeModel = sessionModel || turnConfig.defaultModel;
     const { provider: activeProvider } = await describeModel(activeModel);
     const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: flags.maxSteps }) : null;
     if (tui) tui.start();
@@ -621,7 +630,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const tools = {
       ...DEFAULT_TOOLS,
       task: createTaskTool({
-        config: { ...cfg, defaultModel: activeModel },
+        config: { ...turnConfig, defaultModel: activeModel },
         signal: ac.signal,
         onEvent: useTui
           ? (e => tui?.onSubagentEvent(e))

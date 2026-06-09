@@ -43,6 +43,6 @@ export function categoryForTool(tool: string): UiCategory {
   if (normalized === "read" || normalized === "write") return "file";
   if (normalized === "edit") return "diff";
   if (normalized === "search" || normalized === "find") return "search";
-  if (normalized.includes("agent")) return "subagent";
+  if (normalized === "task" || normalized.includes("agent")) return "subagent";
   return "tool";
 }

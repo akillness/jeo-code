@@ -483,11 +483,22 @@ export async function findTool(
   }
 }
 
+export interface SearchOptions {
+  /** Lines of context before/after each match (grep -B/-A). */
+  before?: number;
+  after?: number;
+  /** Symmetric context (grep -C); overrides before/after when set. */
+  context?: number;
+  /** Stop after this many matches per file (grep -m). */
+  maxMatches?: number;
+}
+
 export async function searchTool(
   pattern: string,
   globPattern: string = "*",
   cwd: string = process.cwd(),
-  ignoreCase: boolean = false
+  ignoreCase: boolean = false,
+  opts: SearchOptions = {},
 ): Promise<ToolResult> {
   if (typeof pattern !== "string" || pattern === "") {
     return { success: false, output: "", error: 'search requires a non-empty "pattern" (a regex/string to grep for).' };
@@ -495,8 +506,18 @@ export async function searchTool(
   try {
     const flags = ignoreCase ? "-rnIi" : "-rnI";
     const excludes = IGNORED_DIRS.map(d => `--exclude-dir=${d}`);
+    const n = (v: unknown): number | undefined =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : undefined;
+    const ctx: string[] = [];
+    const C = n(opts.context), B = n(opts.before), A = n(opts.after), M = n(opts.maxMatches);
+    if (C !== undefined) ctx.push("-C", String(C));
+    else {
+      if (B !== undefined) ctx.push("-B", String(B));
+      if (A !== undefined) ctx.push("-A", String(A));
+    }
+    if (M !== undefined) ctx.push("-m", String(M));
     const { stdout, stderr, exitCode, timedOut } = await spawnTextWithTimeout(
-      ["grep", flags, "--include", globPattern, ...excludes, "--", pattern, "."],
+      ["grep", flags, ...ctx, "--include", globPattern, ...excludes, "--", pattern, "."],
       cwd,
     );
     if (timedOut) return { success: false, output: "", error: "search timed out (60s) — narrow the pattern or glob." };

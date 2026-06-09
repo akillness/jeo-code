@@ -28,7 +28,7 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
   edit: (a, cwd) => editTool(a.filePath ?? a.path, a.editBlock ?? a.edit ?? "", cwd),
   bash: (a, cwd) => bashTool(a.command ?? a.cmd, cwd, typeof a.timeoutMs === "number" ? a.timeoutMs : undefined, typeof a.cwd === "string" ? a.cwd : (typeof a.subdir === "string" ? a.subdir : undefined), a.env && typeof a.env === "object" ? a.env : undefined),
   find: (a, cwd) => findTool(a.globPattern ?? a.pattern, cwd),
-  search: (a, cwd) => searchTool(a.pattern, a.globPattern ?? "*", cwd, !!(a.ignoreCase ?? a.i)),
+  search: (a, cwd) => searchTool(a.pattern, a.globPattern ?? "*", cwd, !!(a.ignoreCase ?? a.i), { before: a.before, after: a.after, context: a.context, maxMatches: a.maxMatches }),
   ls: (a, cwd) => lsTool(a.dirPath ?? a.path ?? a.dir ?? ".", cwd),
 };
 
@@ -40,7 +40,7 @@ export const TOOL_PROTOCOL = [
   "3. edit   {filePath, editBlock}       — ≔A..B replace lines; ≔A+ insert after line A; ≔$ append EOF (payload on next line)",
   "4. bash   {command, timeoutMs?, cwd?, env?} — run a shell command (cwd: subdir; env: extra vars)",
   "5. find   {globPattern}               — find files by name",
-  "6. search {pattern, globPattern?, ignoreCase?} — grep for a pattern (ignoreCase: case-insensitive)",
+  "6. search {pattern, globPattern?, ignoreCase?, context?, maxMatches?} — grep (context: N lines around each match)",
   "7. ls     {dirPath}                   — list a directory's entries (dirs first)",
   "8. done   {reason?}                   — call when the task is fully implemented AND verified",
   "",

@@ -274,6 +274,24 @@ test("read/write/edit: missing/empty required args are soft errors (no cryptic c
   expect(e2.error).toContain("editBlock");
 });
 
+test("searchTool: context option includes surrounding lines; maxMatches caps per file", async () => {
+  const f = path.join(dir, "src", "ctx.ts");
+  await fs.writeFile(f, "before1\nbefore2\nNEEDLE_CTX\nafter1\nafter2\n");
+  const plain = await searchTool("NEEDLE_CTX", "*.ts", dir);
+  expect(plain.output).toContain("NEEDLE_CTX");
+  expect(plain.output).not.toContain("before2");
+  const ctx = await searchTool("NEEDLE_CTX", "*.ts", dir, false, { context: 1 });
+  expect(ctx.output).toContain("before2");
+  expect(ctx.output).toContain("after1");
+  expect(ctx.output).not.toContain("before1"); // only 1 line of context
+
+  // maxMatches caps per-file matches.
+  const multi = path.join(dir, "src", "many.ts");
+  await fs.writeFile(multi, "HIT\nHIT\nHIT\n");
+  const capped = await searchTool("HIT", "many.ts", dir, false, { maxMatches: 1 });
+  expect((capped.output.match(/HIT/g) || []).length).toBe(1);
+});
+
 test("findTool skips node_modules and .git", async () => {
   const res = await findTool("*.ts", dir);
   expect(res.success).toBe(true);

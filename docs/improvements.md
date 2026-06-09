@@ -5051,3 +5051,19 @@ reviews + live tmux repro). Both are real behavioral defects.
 - `bun run typecheck` → 0 errors. `bun test` → **599 pass / 0 fail**. `bun run build` → ok.
 - New tests: read/write/edit empty-arg soft errors; retryableStream idle aborts a stalled stream
   (first chunk emitted, then silence → "stream idle" + onIdle fired) and does NOT fire on prompt chunks.
+## search context lines — pass 838
+
+**Date:** 2026-06-09 · **Dimension: search ergonomics (gjc parity, planner roadmap).**
+
+- **838.** `search` gained `{context?, before?, after?, maxMatches?}` (grep `-C`/`-B`/`-A`/`-m`), so the
+  model can request N lines of surrounding context per match (and cap matches per file) instead of
+  bare `file:line:text` — enough local context to edit safely. Numeric inputs are validated; defaults
+  unchanged (no context).
+
+### Verification (pass 838)
+- `bun run typecheck` → 0 errors. `bun test` → **600 pass / 0 fail**. `bun run build` → ok.
+- New test: `context:1` includes the immediately-surrounding lines (not 2-away); `maxMatches:1` caps
+  per-file hits.
+
+> Remaining planner-roadmap (queued, larger/riskier — own session): gitignore-aware shared file walker
+> for find/search (L); parallel read-only `task` fan-out (M); OpenAI/Gemini reasoning-effort mapping (M).

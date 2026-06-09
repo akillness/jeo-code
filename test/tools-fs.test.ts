@@ -2,7 +2,7 @@ import { test, expect, beforeAll, afterAll } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { findTool, searchTool, readTool, writeTool, bashTool, lsTool, parseLineSelector, parseEditHunks, editTool, IGNORED_DIRS } from "../src/agent/tools";
+import { findTool, searchTool, readTool, writeTool, bashTool, lsTool, parseLineSelector, parseEditHunks, editTool, readGitignore, IGNORED_DIRS } from "../src/agent/tools";
 
 let dir = "";
 
@@ -298,6 +298,49 @@ test("editTool: unterminated SEARCH marker gives a marker-specific error (not th
   const res = await editTool(f, "<<<<<<< SEARCH\nx\n(no divider or terminator)", dir);
   expect(res.success).toBe(false);
   expect(res.error).toContain("unterminated SEARCH block");
+});
+
+test("readGitignore: parses dir + file globs; skips comment/negation/multi-segment", async () => {
+  const d = await fs.mkdtemp(path.join(os.tmpdir(), "joc-gi-"));
+  await fs.writeFile(path.join(d, ".gitignore"), "# comment\n\n*.log\nbuildme/\n!keep.log\nsub/path\nplain\n");
+  const gi = await readGitignore(d);
+  expect(gi.dirs).toContain("*.log");
+  expect(gi.dirs).toContain("buildme");
+  expect(gi.dirs).toContain("plain");
+  expect(gi.fileGlobs).toContain("*.log");
+  expect(gi.fileGlobs).toContain("plain");
+  expect(gi.fileGlobs).not.toContain("buildme"); // dir-only entry
+  expect(gi.dirs).not.toContain("keep.log"); // negation skipped
+  expect(gi.dirs.some(x => x.includes("path"))).toBe(false); // multi-segment skipped
+});
+
+test("readGitignore: absent .gitignore → empty (no-op)", async () => {
+  const d = await fs.mkdtemp(path.join(os.tmpdir(), "joc-gi-none-"));
+  const gi = await readGitignore(d);
+  expect(gi).toEqual({ dirs: [], fileGlobs: [] });
+});
+
+test("find/search honor .gitignore on top of IGNORED_DIRS", async () => {
+  const d = await fs.mkdtemp(path.join(os.tmpdir(), "joc-gifs-"));
+  await fs.writeFile(path.join(d, ".gitignore"), "*.log\nbuildme/\n");
+  await fs.mkdir(path.join(d, "buildme"), { recursive: true });
+  await fs.writeFile(path.join(d, "keep.ts"), "NEEDLE_GI\n");
+  await fs.writeFile(path.join(d, "app.log"), "NEEDLE_GI\n");
+  await fs.writeFile(path.join(d, "buildme", "x.ts"), "NEEDLE_GI\n");
+
+  const all = await findTool("**/*", d); // path glob branch (Bun.Glob)
+  expect(all.output).toContain("keep.ts");
+  expect(all.output).not.toContain("app.log");
+  expect(all.output).not.toContain("buildme/x.ts");
+
+  const bare = await findTool("*.ts", d); // bare-name branch (find -name)
+  expect(bare.output).toContain("keep.ts");
+  expect(bare.output).not.toContain("x.ts"); // buildme/ pruned
+
+  const s = await searchTool("NEEDLE_GI", "*", d);
+  expect(s.output).toContain("keep.ts");
+  expect(s.output).not.toContain("app.log");
+  expect(s.output).not.toContain("buildme");
 });
 
 test("findTool skips node_modules and .git", async () => {

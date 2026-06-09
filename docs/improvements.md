@@ -5274,3 +5274,20 @@ skill (`[01:TOOL] demo → failed`) and the target file was never created; and d
   no-intent variant); `LaunchTui` shows `calling model (m1)` after `onStep` and not after `onAssistant`.
 - Live (tmux, ollama): `/demo` no longer calls a `demo` tool and the `calling model` status renders
   (the weak 0.5b model still can't complete the write — a model limitation, not the framing bug).
+## gitignore-aware find/search — pass 858
+
+**Date:** 2026-06-09 · **Dimension: search/find match repository intent (planner roadmap, last big gap).**
+
+- **858.** `find` and `search` now honor the repo-root `.gitignore` on top of `IGNORED_DIRS`. New
+  exported `readGitignore(cwd)` parses single-segment patterns into dir + file-glob exclude lists
+  (conservative: skips comments, negations `!`, and anchored/multi-segment `a/b` patterns that
+  basename excludes can't represent). Wired into all three code paths: `find` bare-name (`find -name`
+  prune group), `find` path-glob (`Bun.Glob` segment + basename filter), and `search`
+  (`grep --exclude-dir`/`--exclude`). Absent `.gitignore` → empty → behavior identical to before
+  (existing tests unchanged).
+
+### Verification (pass 858)
+- `bun run typecheck` → 0 errors. `bun test` → **633 pass / 0 fail**. `bun run build` → ok.
+- New tests: `readGitignore` parses dir/file globs + skips comment/negation/multi-segment; absent
+  file → empty no-op; `find`/`search` exclude a gitignored `*.log` and `buildme/` (both find branches
+  + search) while keeping tracked files.

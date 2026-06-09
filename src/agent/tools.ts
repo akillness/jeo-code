@@ -35,6 +35,36 @@ export const IGNORED_DIRS = [
 ];
 
 /**
+ * Read the repo-root `.gitignore` into basename dir + file-glob exclude lists, so
+ * find/search match repository intent (build artifacts, logs, .env, …) on top of
+ * IGNORED_DIRS. Conservative semantics: single-segment patterns only (entries with
+ * an internal `/` are anchored/path patterns that basename excludes can't represent),
+ * negations (`!`) and comments skipped. Absent/unreadable .gitignore → empty (no-op).
+ */
+export async function readGitignore(cwd: string): Promise<{ dirs: string[]; fileGlobs: string[] }> {
+  let content = "";
+  try {
+    content = await fs.readFile(path.join(cwd, ".gitignore"), "utf-8");
+  } catch {
+    return { dirs: [], fileGlobs: [] };
+  }
+  const dirs = new Set<string>();
+  const fileGlobs = new Set<string>();
+  for (const raw of content.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || line.startsWith("!")) continue;
+    let p = line;
+    const dirOnly = p.endsWith("/");
+    if (dirOnly) p = p.slice(0, -1);
+    if (p.startsWith("/")) p = p.slice(1);
+    if (!p || p.includes("/")) continue; // skip anchored/multi-segment patterns
+    dirs.add(p);
+    if (!dirOnly) fileGlobs.add(p);
+  }
+  return { dirs: [...dirs], fileGlobs: [...fileGlobs] };
+}
+
+/**
  * Validates if codebase mutation tools are blocked due to an active Socratic interview.
  * Mutation is blocked only if deep-interview is active, not completed, and the file
  * is NOT under the `.joc/` directory (planning/spec files are allowed).
@@ -452,9 +482,15 @@ export async function findTool(
   // match (it only sees basenames) — route those through Bun.Glob for correct semantics.
   if (globPattern.includes("/") || globPattern.includes("**")) {
     try {
+      const gi = await readGitignore(cwd);
+      const prunedDirs = new Set([...IGNORED_DIRS, ...gi.dirs]);
+      const fileGlobs = gi.fileGlobs.map(g => new Bun.Glob(g));
       const matches: string[] = [];
       for await (const rel of new Bun.Glob(globPattern).scan({ cwd, onlyFiles: true })) {
-        if (rel.split("/").some(seg => IGNORED_DIRS.includes(seg))) continue;
+        const segs = rel.split("/");
+        if (segs.some(seg => prunedDirs.has(seg))) continue;
+        const base = segs[segs.length - 1] ?? rel;
+        if (fileGlobs.some(g => g.match(base))) continue;
         matches.push(`./${rel}`);
         if (matches.length >= 5000) break;
       }
@@ -470,10 +506,12 @@ export async function findTool(
     }
   }
   try {
+    const gi = await readGitignore(cwd);
+    const pruneNames = [...IGNORED_DIRS, ...gi.dirs];
     const pruneGroup: string[] = [];
-    for (let i = 0; i < IGNORED_DIRS.length; i++) {
+    for (let i = 0; i < pruneNames.length; i++) {
       if (i > 0) pruneGroup.push("-o");
-      pruneGroup.push("-name", IGNORED_DIRS[i]);
+      pruneGroup.push("-name", pruneNames[i]!);
     }
     const { stdout, timedOut } = await spawnTextWithTimeout(
       ["find", ".", "-type", "d", "(", ...pruneGroup, ")", "-prune", "-o", "-name", globPattern, "-print"],
@@ -514,7 +552,11 @@ export async function searchTool(
   }
   try {
     const flags = ignoreCase ? "-rnIi" : "-rnI";
-    const excludes = IGNORED_DIRS.map(d => `--exclude-dir=${d}`);
+    const gi = await readGitignore(cwd);
+    const excludes = [
+      ...[...IGNORED_DIRS, ...gi.dirs].map(d => `--exclude-dir=${d}`),
+      ...gi.fileGlobs.map(f => `--exclude=${f}`),
+    ];
     const n = (v: unknown): number | undefined =>
       typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : undefined;
     const ctx: string[] = [];

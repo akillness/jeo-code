@@ -102,17 +102,16 @@ const DEFAULT_RATE_LIMIT_RETRIES = 5; // total attempts for 429 (initial + 4 ret
 const DEFAULT_RATE_LIMIT_MIN_DELAY_MS = 2000; // 429 floor when the server sends no Retry-After
 export function resolveRetryOptions(retry: Config["retry"]): RetryOptions {
   const opts: RetryOptions = { isRetryable: defaultRetryable };
-  if (typeof retry?.requestMaxRetries === "number") {
-    opts.retries = retry.requestMaxRetries + 1;
-    opts.rateLimitRetries = retry.requestMaxRetries + 1; // explicit budget: no rate-limit bonus
-  } else {
-    opts.rateLimitRetries = DEFAULT_RATE_LIMIT_RETRIES;
-  }
-  if (typeof retry?.maxDelayMs === "number") {
-    opts.maxDelayMs = retry.maxDelayMs;
-  } else {
-    opts.rateLimitMinDelayMs = DEFAULT_RATE_LIMIT_MIN_DELAY_MS;
-  }
+  if (typeof retry?.requestMaxRetries === "number") opts.retries = retry.requestMaxRetries + 1;
+  if (typeof retry?.maxDelayMs === "number") opts.maxDelayMs = retry.maxDelayMs;
+  // 429 attempt budget: explicit rateLimitRetries wins; else mirror the request
+  // budget (no bonus); else the generous default so a transient window can clear.
+  if (typeof retry?.rateLimitRetries === "number") opts.rateLimitRetries = retry.rateLimitRetries + 1;
+  else if (typeof retry?.requestMaxRetries === "number") opts.rateLimitRetries = retry.requestMaxRetries + 1;
+  else opts.rateLimitRetries = DEFAULT_RATE_LIMIT_RETRIES;
+  // 429 backoff floor: explicit wins; else default UNLESS the user pinned maxDelayMs.
+  if (typeof retry?.rateLimitMinDelayMs === "number") opts.rateLimitMinDelayMs = retry.rateLimitMinDelayMs;
+  else if (typeof retry?.maxDelayMs !== "number") opts.rateLimitMinDelayMs = DEFAULT_RATE_LIMIT_MIN_DELAY_MS;
   return opts;
 }
 
@@ -202,6 +201,27 @@ function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
   return typeof AbortSignal.any === "function" ? AbortSignal.any([signal, timeout]) : signal;
 }
 
+/**
+ * Stream wrapper that retries ONLY the initial connection — before any chunk is
+ * yielded — so a transient 429/5xx on stream connect recovers (the non-streaming
+ * call path already retried; the stream path previously had no retry). A failure
+ * after the first token propagates (retrying would duplicate emitted output).
+ */
+export async function* retryableStream(
+  makeIter: () => AsyncIterator<string>,
+  retry: RetryOptions,
+): AsyncGenerator<string> {
+  const { iter, first } = await withRetry(async () => {
+    const it = makeIter();
+    const f = await it.next();
+    return { iter: it, first: f };
+  }, retry);
+  if (!first.done) {
+    yield first.value;
+    for (let n = await iter.next(); !n.done; n = await iter.next()) yield n.value;
+  }
+}
+
 export function createModelManager(): ModelManager {
   return {
     resolveProvider,
@@ -212,7 +232,11 @@ export function createModelManager(): ModelManager {
     async *stream(messages, options = {}) {
       const { adapter, callOptions, credential, retry } = await resolveCall(options);
       if (adapter.stream) {
-        yield* adapter.stream(messages, { ...callOptions, signal: withTimeout(callOptions.signal, DEFAULT_CALL_TIMEOUT_MS) }, credential);
+        const streamFn = adapter.stream.bind(adapter);
+        yield* retryableStream(
+          () => streamFn(messages, { ...callOptions, signal: withTimeout(callOptions.signal, DEFAULT_CALL_TIMEOUT_MS) }, credential)[Symbol.asyncIterator](),
+          retry,
+        );
       } else {
         // Fallback: providers without streaming yield the full response as one chunk.
         yield await withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, DEFAULT_CALL_TIMEOUT_MS) }, credential), retry);

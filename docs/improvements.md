@@ -4886,3 +4886,38 @@ User: improve the live operation/process UI, run it, verify, improve.
   the footer.
 - **Live (real PTY, ollama fast):** `joc launch "…" --model fast --max-steps 2` ran a real turn
   (4109 tokens in) and exited cleanly (EXIT=0), alt-screen restored, no crash.
+## gjc-parity improvement program, round A+B — passes 815–823
+
+**Date:** 2026-06-09 · **Dimensions: agent tool surface, engine robustness, provider reliability/cost.**
+
+Iterative improvement pass referencing gjc's tool/provider surface. Each item ships with a focused
+test; the suite stayed green (557→563 pass) and `bun run build` succeeds throughout.
+
+- **815.** `read` rich selectors: new `parseLineSelector` supports comma-separated multi-range
+  (`5-10,20-25`, sorted + overlap-merged with a `…` gap marker), `a+n` (n lines from a), plus the
+  existing `a-b`/`a-`/`a`. Out-of-range starts drop; explicit reversed `b<a` is an error.
+- **816.** New read-only `ls {dirPath}` tool: lists a directory (dirs first, `/`-suffixed, then
+  files), wired into `DEFAULT_TOOLS` + both protocols; available to read-only subagent roles.
+- **817.** `search {…, ignoreCase?}` → grep `-i` for case-insensitive matching.
+- **818.** `edit` near-miss diagnostics: a failed SEARCH block now reports whether a
+  whitespace-trimmed version matches, or whether the first search line is present (mismatch below it)
+  — so the model self-corrects instead of blindly retrying.
+- **819.** `bash {…, cwd?/subdir?}` runs in a resolved subdirectory (mutation lock still keyed on the
+  project cwd).
+- **820.** Stream initial-connect retry: new exported `retryableStream` retries ONLY the connection
+  before any chunk is yielded (a mid-stream failure propagates, no duplicate output). Closes the gap
+  where a 429/5xx on stream connect had no retry while the non-stream call path did.
+- **821.** Anthropic prompt caching (gjc parity): the stable system prompt is sent as a
+  `cache_control:ephemeral` content block, billing cached input at ~10% on later turns (ignored below
+  the ~1024-token cache minimum). `anthropicPayload` exported for testing.
+- **822.** Unknown-tool "did you mean?": `nearestToolName` (prefix / Levenshtein ≤2) suggests the
+  closest real tool when the model calls a bogus name.
+- **823.** Configurable 429 budget: `retry.rateLimitRetries` + `retry.rateLimitMinDelayMs` added to
+  the config schema + `Config` type; `resolveRetryOptions` honors them (explicit wins, else mirrors
+  the request budget, else the generous default). `undefined` config still yields 5 attempts + 2s floor.
+
+### Verification (passes 815–823)
+
+- `bun run typecheck` → 0 errors. `bun test` → **563 pass / 0 fail** (+ new tool/selector/ls/search/
+  edit/bash tests; `retryableStream` connect-retry + mid-stream-propagation; `nearestToolName`;
+  `anthropicPayload` cache_control; `resolveRetryOptions` overrides + regression guard). `bun run build` → ok.

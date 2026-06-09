@@ -71,6 +71,47 @@ export async function assertBashAllowed(
   }
 }
 
+/**
+ * Parse a read line selector into sorted, merged, inclusive [start,end] ranges.
+ * Segments are comma-separated; each is one of: "a-b" (range), "a-" (a→EOF),
+ * "a" (single line), or "a+n" (n lines starting at a). Out-of-range starts are
+ * dropped; an explicit "a-b" with b<a is an error. Mirrors gjc's read selectors.
+ */
+export function parseLineSelector(spec: string, total: number): { ranges: [number, number][] } | { error: string } {
+  const segs = spec.split(",").map(s => s.trim()).filter(Boolean);
+  if (segs.length === 0) return { error: "empty selector" };
+  const ranges: [number, number][] = [];
+  for (const seg of segs) {
+    let m: RegExpMatchArray | null;
+    if ((m = seg.match(/^(\d+)\+(\d+)$/))) {
+      const start = Math.max(1, parseInt(m[1]));
+      const count = Math.max(1, parseInt(m[2]));
+      if (start <= total) ranges.push([start, Math.min(total, start + count - 1)]);
+    } else if ((m = seg.match(/^(\d+)-(\d+)$/))) {
+      const start = Math.max(1, parseInt(m[1]));
+      const end = parseInt(m[2]);
+      if (end < start) return { error: `segment '${seg}': end < start (file has ${total} lines)` };
+      if (start <= total) ranges.push([start, Math.min(total, end)]);
+    } else if ((m = seg.match(/^(\d+)-$/))) {
+      const start = Math.max(1, parseInt(m[1]));
+      if (start <= total) ranges.push([start, total]);
+    } else if ((m = seg.match(/^(\d+)$/))) {
+      const start = Math.max(1, parseInt(m[1]));
+      if (start <= total) ranges.push([start, start]);
+    } else {
+      return { error: `invalid segment '${seg}'. Use "a-b", "a-", "a", or "a+n".` };
+    }
+  }
+  ranges.sort((x, y) => x[0] - y[0]);
+  const merged: [number, number][] = [];
+  for (const [s, e] of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e);
+    else merged.push([s, e]);
+  }
+  return { ranges: merged };
+}
+
 export async function readTool(
   filePath: string,
   lineRange?: string,
@@ -82,23 +123,19 @@ export async function readTool(
     const lines = content.split("\n");
 
     if (lineRange) {
-      // Accept "start-end", open-ended "start-", or a single "start".
-      const match = lineRange.match(/^(\d+)(?:-(\d+)?)?$/);
-      if (match) {
-        const start = Math.max(1, parseInt(match[1]));
-        const hasRange = lineRange.includes("-");
-        const end = match[2]
-          ? Math.min(lines.length, parseInt(match[2]))
-          : hasRange
-            ? lines.length            // "start-" → to EOF
-            : Math.min(lines.length, start); // single line
-        if (end < start) {
-          return { success: false, output: "", error: `Invalid lineRange '${lineRange}': end < start (file has ${lines.length} lines)` };
-        }
-        const sliced = lines.slice(start - 1, end).map((l, i) => `${start + i}|${l}`).join("\n");
-        return { success: true, output: sliced };
+      const parsed = parseLineSelector(lineRange, lines.length);
+      if ("error" in parsed) {
+        return { success: false, output: "", error: `Invalid lineRange '${lineRange}': ${parsed.error}` };
       }
-      return { success: false, output: "", error: `Invalid lineRange '${lineRange}'. Use "start-end", "start-", or "start".` };
+      if (parsed.ranges.length === 0) {
+        return { success: true, output: `(no lines in range; file has ${lines.length} lines)` };
+      }
+      const out: string[] = [];
+      parsed.ranges.forEach(([start, end], i) => {
+        if (i > 0) out.push("…"); // gap marker between non-contiguous ranges
+        for (let ln = start; ln <= end; ln++) out.push(`${ln}|${lines[ln - 1] ?? ""}`);
+      });
+      return { success: true, output: out.join("\n") };
     }
 
     const MAX_LINES = 500;
@@ -225,10 +262,19 @@ export async function editTool(
               content = content.replace(searchVal, replaceVal);
               updated = true;
             } else {
+              // Near-miss diagnostics so the model can self-correct instead of
+              // blindly retrying the same failing block.
+              const firstLine = searchVal.split("\n")[0] ?? "";
+              const trimmedHit = content.replace(/[ \t]+$/gm, "").includes(searchVal.trim())
+                ? " A whitespace-trimmed version DOES match — fix leading/trailing spaces or indentation."
+                : "";
+              const anchorHit = !trimmedHit && firstLine.trim() && content.includes(firstLine)
+                ? " The first search line IS present, so the mismatch is below it — re-read the exact bytes with read, then retry."
+                : "";
               return {
                 success: false,
                 output: "",
-                error: "Failed to apply edit: Search block not found in file.",
+                error: `Failed to apply edit: Search block not found in file.${trimmedHit}${anchorHit}`,
               };
             }
           }
@@ -254,13 +300,16 @@ export async function editTool(
 export async function bashTool(
   command: string,
   cwd: string = process.cwd(),
-  timeoutMs: number = 120_000
+  timeoutMs: number = 120_000,
+  subdir?: string
 ): Promise<ToolResult> {
   try {
+    // The mutation lock is keyed on the PROJECT cwd, not the run subdir.
     await assertBashAllowed(cwd);
+    const runCwd = subdir ? path.resolve(cwd, subdir) : cwd;
     // Run the command using Bun's native spawn
     const proc = Bun.spawn(["bash", "-c", command], {
-      cwd,
+      cwd: runCwd,
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -367,12 +416,14 @@ export async function findTool(
 export async function searchTool(
   pattern: string,
   globPattern: string = "*",
-  cwd: string = process.cwd()
+  cwd: string = process.cwd(),
+  ignoreCase: boolean = false
 ): Promise<ToolResult> {
   try {
+    const flags = ignoreCase ? "-rnIi" : "-rnI";
     const excludes = IGNORED_DIRS.map(d => `--exclude-dir=${d}`);
     const proc = Bun.spawn(
-      ["grep", "-rnI", "--include", globPattern, ...excludes, "--", pattern, "."],
+      ["grep", flags, "--include", globPattern, ...excludes, "--", pattern, "."],
       { cwd, stdout: "pipe", stderr: "pipe" },
     );
     await proc.exited;
@@ -388,6 +439,32 @@ export async function searchTool(
       output = output.slice(0, MAX_OUTPUT) + "\n…(output truncated at 100000 chars)";
     }
     return { success: true, output };
+  } catch (err: any) {
+    return { success: false, output: "", error: err.message };
+  }
+}
+/**
+ * List a single directory's entries (read-only): directories first (with a
+ * trailing `/`), then files, alphabetically. Hidden entries are included. This
+ * gives the model gjc-style directory inspection without shelling out to `ls`.
+ */
+export async function lsTool(
+  dirPath: string = ".",
+  cwd: string = process.cwd()
+): Promise<ToolResult> {
+  try {
+    const abs = path.resolve(cwd, dirPath);
+    const stat = await fs.stat(abs);
+    if (!stat.isDirectory()) {
+      return { success: false, output: "", error: `Not a directory: ${dirPath} (use read for files).` };
+    }
+    const entries = await fs.readdir(abs, { withFileTypes: true });
+    if (entries.length === 0) return { success: true, output: "(empty directory)" };
+    const sorted = entries.sort((a, b) =>
+      a.isDirectory() !== b.isDirectory() ? (a.isDirectory() ? -1 : 1) : a.name.localeCompare(b.name),
+    );
+    const out = sorted.map(e => (e.isDirectory() ? `${e.name}/` : e.name)).join("\n");
+    return { success: true, output: out };
   } catch (err: any) {
     return { success: false, output: "", error: err.message };
   }

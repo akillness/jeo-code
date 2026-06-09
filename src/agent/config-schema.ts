@@ -49,6 +49,8 @@ export const ConfigSchema = z
         streamMaxRetries: z.number().int().min(0).optional(),
         maxRetries: z.number().int().min(0).optional(),
         maxDelayMs: z.number().int().min(0).optional(),
+        rateLimitRetries: z.number().int().min(0).optional(),
+        rateLimitMinDelayMs: z.number().int().min(0).optional(),
       })
       .optional(),
     /**

@@ -9,7 +9,7 @@
  */
 import { callLlm, type Message } from "./loop";
 import { extractJsonObject } from "./json";
-import { readTool, writeTool, editTool, bashTool, findTool, searchTool, type ToolResult } from "./tools";
+import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, type ToolResult } from "./tools";
 import { friendlyProviderError } from "../util/provider-error";
 
 export interface ToolInvocation {
@@ -21,24 +21,26 @@ export type ToolHandler = (args: Record<string, any>, cwd: string) => Promise<To
 
 /** The default executor toolset (read / write / edit / bash / find / search). */
 export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
-  read: (a, cwd) => readTool(a.filePath ?? a.path, a.lineRange, cwd),
+  read: (a, cwd) => readTool(a.filePath ?? a.path, a.lineRange ?? a.range, cwd),
   write: (a, cwd) => writeTool(a.filePath ?? a.path, a.content ?? "", cwd),
   edit: (a, cwd) => editTool(a.filePath ?? a.path, a.editBlock ?? a.edit ?? "", cwd),
-  bash: (a, cwd) => bashTool(a.command ?? a.cmd, cwd, typeof a.timeoutMs === "number" ? a.timeoutMs : undefined),
+  bash: (a, cwd) => bashTool(a.command ?? a.cmd, cwd, typeof a.timeoutMs === "number" ? a.timeoutMs : undefined, typeof a.cwd === "string" ? a.cwd : (typeof a.subdir === "string" ? a.subdir : undefined)),
   find: (a, cwd) => findTool(a.globPattern ?? a.pattern, cwd),
-  search: (a, cwd) => searchTool(a.pattern, a.globPattern ?? "*", cwd),
+  search: (a, cwd) => searchTool(a.pattern, a.globPattern ?? "*", cwd, !!(a.ignoreCase ?? a.i)),
+  ls: (a, cwd) => lsTool(a.dirPath ?? a.path ?? a.dir ?? ".", cwd),
 };
 
 /** Tool-protocol description injected into the system prompt. */
 export const TOOL_PROTOCOL = [
   "You have these tools (call exactly ONE per step):",
-  "1. read   {filePath, lineRange?}      — read a file (lineRange: \"start-end\", \"start-\", or \"start\")",
+  "1. read   {filePath, lineRange?}      — read a file (lineRange: \"a-b\", \"a-\", \"a\", \"a+n\", or multi \"a-b,c-d\")",
   "2. write  {filePath, content}         — create/overwrite a file",
   "3. edit   {filePath, editBlock}       — ≔A..B replace lines; ≔A+ insert after line A; ≔$ append EOF (payload on next line)",
   "4. bash   {command, timeoutMs?}       — run a shell command (tests, build, mkdir, ...); timeoutMs default 120000",
   "5. find   {globPattern}               — find files by name",
-  "6. search {pattern, globPattern?}     — grep for a pattern",
-  "7. done   {reason?}                   — call when the task is fully implemented AND verified",
+  "6. search {pattern, globPattern?, ignoreCase?} — grep for a pattern (ignoreCase: case-insensitive)",
+  "7. ls     {dirPath}                   — list a directory's entries (dirs first)",
+  "8. done   {reason?}                   — call when the task is fully implemented AND verified",
   "",
   "Reply with STRICT JSON only — no prose, no code fences:",
   '{ "tool": "<name>", "arguments": { ... } }',
@@ -49,10 +51,11 @@ export const TOOL_PROTOCOL = [
  *  calling write/edit/bash, which `subagentToolset` has physically removed. */
 export const READONLY_TOOL_PROTOCOL = [
   "You have these READ-ONLY tools (call exactly ONE per step):",
-  "1. read   {filePath, lineRange?}      — read a file (lineRange: \"start-end\", \"start-\", or \"start\")",
+  "1. read   {filePath, lineRange?}      — read a file (lineRange: \"a-b\", \"a-\", \"a\", \"a+n\", or multi \"a-b,c-d\")",
   "2. find   {globPattern}               — find files by name",
-  "3. search {pattern, globPattern?}     — grep for a pattern",
-  "4. done   {reason?}                   — call when your review/analysis is complete",
+  "3. search {pattern, globPattern?, ignoreCase?} — grep for a pattern",
+  "4. ls     {dirPath}                   — list a directory's entries",
+  "5. done   {reason?}                   — call when your review/analysis is complete",
   "",
   "Reply with STRICT JSON only — no prose, no code fences:",
   '{ "tool": "<name>", "arguments": { ... } }',
@@ -109,6 +112,38 @@ export function truncateToolOutput(s: string, max = 4000): string {
   return `${s.slice(0, head)}\n…(${s.length - max} chars truncated)…\n${s.slice(s.length - tail)}`;
 }
 
+/** Levenshtein distance (small inputs: tool/command names). */
+function editDistance(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  let cur = new Array<number>(n + 1).fill(0);
+  for (let i = 1; i <= m; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, cur] = [cur, prev];
+  }
+  return prev[n];
+}
+
+/** Nearest known tool name for an unknown call: exact, prefix, or edit distance ≤ 2. */
+export function nearestToolName(name: string, known: string[]): string | undefined {
+  const want = name.trim().toLowerCase();
+  if (!want) return undefined;
+  let best: string | undefined;
+  let bestD = Infinity;
+  for (const k of known) {
+    const kl = k.toLowerCase();
+    if (kl === want) return k;
+    const d = kl.startsWith(want) || want.startsWith(kl) ? 1 : editDistance(want, kl);
+    if (d < bestD) { bestD = d; best = k; }
+  }
+  return bestD <= 2 ? best : undefined;
+}
 /**
  * Drive `history` through the tool-call loop, mutating it in place so callers
  * (e.g. an interactive REPL) can keep the conversation across multiple turns.
@@ -222,7 +257,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     let output: string;
     if (!handler) {
       success = false;
-      output = `Unknown tool: ${invocation.tool}. Available: ${Object.keys(tools).join(", ")}, done.`;
+      const suggestion = nearestToolName(invocation.tool, Object.keys(tools));
+      const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
+      output = `Unknown tool: ${invocation.tool}.${hint} Available: ${Object.keys(tools).join(", ")}, done.`;
     } else {
       const res = await handler(invocation.arguments ?? {}, cwd);
       success = res.success;

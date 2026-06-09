@@ -49,6 +49,10 @@ export interface Config {
     streamMaxRetries?: number;
     maxRetries?: number;
     maxDelayMs?: number;
+    /** Retries (excluding the initial request) specifically for 429 rate limits. */
+    rateLimitRetries?: number;
+    /** Minimum backoff (ms) for a 429 when the server sends no Retry-After. */
+    rateLimitMinDelayMs?: number;
   };
   /**
    * Per-subagent-role overrides (gjc role-agent parity). Keyed by role id

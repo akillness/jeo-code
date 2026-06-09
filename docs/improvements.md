@@ -4935,3 +4935,39 @@ test; the suite stayed green (557→563 pass) and `bun run build` succeeds throu
 ### Verification (passes 824–825)
 - `bun run typecheck` → 0 errors. `bun test` → **565 pass / 0 fail**. New tests: raw read has no
   prefixes + matches verbatim; bash env var is visible to the child and the parent env still inherits.
+## Subagent cross-validation round + hardening — passes 826–830
+
+**Date:** 2026-06-09 · **Dimensions: tool robustness, provider cost-accounting, retry correctness.**
+
+After passes 815–825 I ran a **read-only subagent cross-validation batch** (2× architect, 1× critic,
+1× planner) over the changed files. No CRITICAL/HIGH defects; the reviewers confirmed verified-good
+properties (subdir does NOT bypass the mutation lock; grep array-spawn + `--` can't shell-inject;
+retryableStream never duplicates emitted output; resolveRetryOptions precedence matches the docs;
+the cache_control system block is valid Messages-API shape for api_key + oauth). They surfaced
+MEDIUM/LOW findings, acted on below, plus 13 untested-branch cases now covered (582 pass, up from 565).
+
+- **826.** `search`/`find` runaway guard: new `spawnTextWithTimeout` escalates SIGTERM→SIGKILL after
+  60s so a grep/find over a huge tree can't block the whole turn; `searchTool` now rejects an empty
+  pattern with a soft error (mirroring `findTool`'s glob guard) instead of silently matching everything.
+- **827.** Anthropic usage now sums `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`
+  in both `call` and `stream` — pass 821's prompt caching had made reported input collapse to the
+  uncached delta on a cache hit, silently under-reporting true prompt size. (`totalInputTokens` exported.)
+- **828.** `withRetry` floors a 429's honored `Retry-After` by `rateLimitMinDelayMs` too, so a
+  `Retry-After: 0` (or Gemini `retryDelay: "0s"`) can't burn the rate-limit budget back-to-back.
+- **829.** `bash {env}` is sanitized: non-string values (numbers/arrays the model might send) are
+  dropped before merging over `process.env`, so a bad value can't make `Bun.spawn` throw cryptically.
+- **830.** `read` lineRange output is capped at 2000 lines with a truncation notice, so `read(file,"1-")`
+  on a multi-MB file can't materialize the whole file in memory (parity with the default + raw caps).
+  Raw-mode truncation message now says "drop raw and pass lineRange" (the previous wording suggested an
+  unproductive raw+lineRange retry).
+
+### Verification (passes 826–830 + cross-validation)
+- `bun run typecheck` → 0 errors. `bun test` → **582 pass / 0 fail** (+17). `bun run build` → ok.
+- Cross-validation tests added: parseLineSelector EOF/adjacency-merge; readTool empty-range +
+  raw-truncation + lineRange-cap; searchTool invalid-regex + empty-pattern; editTool ≔A..B range +
+  SEARCH/REPLACE happy path; retryableStream first-success + empty-iterator; resolveRetryOptions
+  requestMaxRetries:0; Retry-After:0 floor; anthropicPayload no-system + prefix-strip; totalInputTokens.
+- Deferred (LOW, logged for a later pass): editTool near-miss CRLF/false-positive refinement;
+  parseLineSelector explicit `0`/`a+0` errors; stream wall-clock vs idle timeout; withTimeout
+  AbortSignal.any fallback. Planner roadmap (multi-hunk edit, gitignore-aware walker, structured grep
+  context, parallel task fan-out, session export, OpenAI/Gemini reasoning-effort mapping) queued.

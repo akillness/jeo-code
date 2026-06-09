@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { retryableStream, resolveRetryOptions } from "../src/ai/model-manager";
 import { nearestToolName } from "../src/agent/engine";
-import { anthropicPayload } from "../src/ai/providers/anthropic";
+import { anthropicPayload, totalInputTokens } from "../src/ai/providers/anthropic";
 import { defaultRetryable } from "../src/util/retry";
 
 // --- 820: stream initial-connect retry ---
@@ -26,6 +26,41 @@ test("retryableStream: retries the initial connection, then streams all chunks",
   expect(out).toEqual(["a", "b", "c"]);
 });
 
+test("retryableStream: first connect succeeds → no retry, makeIter called once", async () => {
+  let calls = 0;
+  const makeIter = () => { calls++; return iterFromChunks(["x", "y"]); };
+  const out: string[] = [];
+  for await (const c of retryableStream(makeIter, { retries: 3, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable })) out.push(c);
+  expect(calls).toBe(1);
+  expect(out).toEqual(["x", "y"]);
+});
+
+test("retryableStream: empty iterator (first.done) yields nothing and completes", async () => {
+  const makeIter = (): AsyncIterator<string> => ({ next: async () => ({ value: undefined as any, done: true }) });
+  const out: string[] = [];
+  for await (const c of retryableStream(makeIter, { retries: 3, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable })) out.push(c);
+  expect(out).toEqual([]);
+});
+
+test("resolveRetryOptions: requestMaxRetries:0 also disables the 429 safety net", () => {
+  expect(resolveRetryOptions({ requestMaxRetries: 0 }).rateLimitRetries).toBe(1);
+});
+
+test("anthropicPayload: no system prompt → no system field (avoids a 400)", () => {
+  const payload = JSON.parse(anthropicPayload([{ role: "user" as const, content: "hi" }], { model: "claude-x", maxTokens: 50 } as any, false, true));
+  expect(payload.system).toBeUndefined();
+});
+
+test("anthropicPayload: strips the anthropic/ prefix from the model id", () => {
+  const payload = JSON.parse(anthropicPayload([{ role: "user" as const, content: "hi" }], { model: "anthropic/claude-sonnet-4-5", maxTokens: 50 } as any, false, true));
+  expect(payload.model).toBe("claude-sonnet-4-5");
+});
+
+test("totalInputTokens: sums uncached + cache-read + cache-creation input tokens", () => {
+  expect(totalInputTokens({ input_tokens: 10, cache_read_input_tokens: 90, cache_creation_input_tokens: 5 })).toBe(105);
+  expect(totalInputTokens({ input_tokens: 7 })).toBe(7);
+  expect(totalInputTokens({})).toBe(0);
+});
 test("retryableStream: a failure AFTER the first chunk propagates (no duplicate output)", async () => {
   const makeIter = (): AsyncIterator<string> => {
     let i = 0;

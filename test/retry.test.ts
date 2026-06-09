@@ -97,6 +97,17 @@ test("withRetry: a non-rate-limit error is NOT floored by rateLimitMinDelayMs", 
   expect(sleeps).toEqual([100]); // jitter only, no 429 floor
 });
 
+test("withRetry: a 429 Retry-After:0 is still floored by rateLimitMinDelayMs", async () => {
+  const sleeps: number[] = [];
+  await withRetry(
+    async () => { throw { status: 429, message: "slow", retryAfterMs: 0 }; },
+    { retries: 1, rateLimitRetries: 3, rateLimitMinDelayMs: 2000, baseDelayMs: 1, sleep: async ms => { sleeps.push(ms); } },
+  ).catch(() => {});
+  // Without the floor a Retry-After:0 would sleep 0 and burn the budget instantly.
+  expect(sleeps.length).toBe(2);
+  for (const ms of sleeps) expect(ms).toBe(2000);
+});
+
 test("withRetry honors a resolved requestMaxRetries budget (attempt count)", async () => {
   let attempts = 0;
   const opts = resolveRetryOptions({ requestMaxRetries: 2, maxDelayMs: 0 });

@@ -63,3 +63,13 @@ test("runAgentLoop: a FAILED tool with huge error output also spills", async () 
   await runAgentLoop(history, { cwd, maxSteps: 5, tools: { boom: async () => ({ success: false, output: "", error: hugeErr }) } });
   expect(history.some(m => m.content.includes("saved to .joc/artifacts/tool-results/"))).toBe(true);
 });
+
+test("spillToolResult: retention caps the artifact directory at MAX_TOOL_ARTIFACTS", async () => {
+  const { spillToolResult, MAX_TOOL_ARTIFACTS } = await import("../src/agent/engine");
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "joc-artgc-"));
+  for (let i = 0; i < MAX_TOOL_ARTIFACTS + 10; i++) {
+    await spillToolResult("t", `payload ${i}`, cwd);
+  }
+  const left = await fs.readdir(path.join(cwd, ".joc", "artifacts", "tool-results"));
+  expect(left.length).toBeLessThanOrEqual(MAX_TOOL_ARTIFACTS);
+});

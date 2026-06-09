@@ -124,6 +124,22 @@ export const TOOL_SPILL_THRESHOLD = 4_000;
  * return the workspace-relative path (for the model to `read`). Best-effort: throws
  * are caught by the caller, which simply omits the artifact note.
  */
+/** Most recent tool-result artifacts to keep; older ones are pruned on each spill. */
+export const MAX_TOOL_ARTIFACTS = 50;
+
+/** Best-effort retention: keep the newest `MAX_TOOL_ARTIFACTS` files in `dir`, delete the rest. */
+async function pruneToolArtifacts(dir: string): Promise<void> {
+  const files = await fs.readdir(dir).catch(() => [] as string[]);
+  if (files.length <= MAX_TOOL_ARTIFACTS) return;
+  const stamped = await Promise.all(
+    files.map(async f => ({ f, m: (await fs.stat(path.join(dir, f)).catch(() => null))?.mtimeMs ?? 0 })),
+  );
+  stamped.sort((a, b) => b.m - a.m); // newest first
+  for (const { f } of stamped.slice(MAX_TOOL_ARTIFACTS)) {
+    await fs.rm(path.join(dir, f), { force: true }).catch(() => {});
+  }
+}
+
 export async function spillToolResult(tool: string, output: string, cwd: string): Promise<string> {
   const dir = path.join(cwd, ".joc", "artifacts", "tool-results");
   await fs.mkdir(dir, { recursive: true });
@@ -131,6 +147,8 @@ export async function spillToolResult(tool: string, output: string, cwd: string)
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const rel = path.join(".joc", "artifacts", "tool-results", `${stamp}-${safeTool}.txt`);
   await fs.writeFile(path.join(cwd, rel), output, "utf-8");
+  // Retention so a long session can't grow the artifact dir without bound.
+  await pruneToolArtifacts(dir);
   return rel;
 }
 

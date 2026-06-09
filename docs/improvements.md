@@ -4982,3 +4982,26 @@ MEDIUM/LOW findings, acted on below, plus 13 untested-branch cases now covered (
 ### Verification (pass 831)
 - `bun run typecheck` → 0 errors. `bun test` → **583 pass / 0 fail**. `bun run build` → ok. New test:
   `read("src")` lists `keep.ts`; `read("src","1-5")` errors with "is a directory".
+## gjc-parity round D (planner-roadmap) — passes 832–834
+
+**Date:** 2026-06-09 · **Dimensions: edit power, evidence recovery, session portability.**
+
+Driven by the read-only planner subagent's prioritized gap survey. Completes the 20-pass main
+program (815–834).
+
+- **832.** Atomic multi-hunk `edit`: a single editBlock may now carry MULTIPLE
+  `<<<<<<< SEARCH / ======= / >>>>>>>` hunks (new exported `parseEditHunks`). They apply in order to a
+  working copy and write only if ALL match — a later failing hunk leaves the file untouched (atomic),
+  with `(hunk i/N)` in the error. Backward compatible: single-hunk + the near-miss diagnostics still work.
+- **833.** Tool-result artifact spill: output > 12k chars is written verbatim to
+  `.joc/artifacts/tool-results/<stamp>-<tool>.txt` and the history note points the model there, so the
+  decisive middle of long test logs / searches isn't lost to the head+tail cap (`read` recovers it).
+- **834.** Session transcript export: `exportSession(id, "markdown"|"json", cwd, {includeSystem})` +
+  a `joc export [id] [--json] [--system]` command — turns JSONL sessions into shareable handoff/audit
+  artifacts (system messages excluded by default; tolerates a malformed trailing line).
+
+### Verification (passes 832–834)
+- `bun run typecheck` → 0 errors. `bun test` → **592 pass / 0 fail** (+9). `bun run build` → ok;
+  `joc --help` lists `export`. New tests: parseEditHunks one/many/malformed; multi-hunk apply-in-order
+  + atomic-failure-writes-nothing; oversized output spills to a recoverable artifact while small output
+  does not; markdown/json export with/without system + malformed-tail tolerance.

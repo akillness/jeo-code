@@ -33,6 +33,15 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: "export",
+    summary: "Export a saved session transcript to Markdown (or --json).",
+    usage: "export [id] [--json] [--system]",
+    loader: async () => {
+      const m = await import("../commands/export");
+      return args => m.runExportCommand(args);
+    },
+  },
+  {
     name: "deep-interview",
     summary: "Execute Socratic requirements interview (locks tools while ambiguity > 20%).",
     usage: 'deep-interview "<initial idea>"',

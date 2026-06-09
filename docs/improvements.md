@@ -4799,3 +4799,29 @@ mirror each other) instead of each getting an independent session.
 - **Live (real tmux, outside tmux via `env -u TMUX`):** 3 concurrent `joc --tmux` from the same
   dir+branch produced 3 DISTINCT live sessions `joc-main-<dir>-<hash>`, `…-2`, `…-3` simultaneously;
   the "Starting new independent tmux session" message names each + how to reattach.
+
+## Single input box — suppress readline's raw prompt on Bun — pass 813
+
+**Date:** 2026-06-08 · **Dimension: TUI input correctness (user-reported; gjc parity).**
+
+User report: two input areas show at once — the styled boxed input AND a raw `joc>` CLI line —
+where only the box should appear (gjc shows a single boxed input).
+
+- **813.** The single-box design suppressed readline's own prompt/echo by monkeypatching
+  `rl._writeToOutput` — a **Node internal that Bun does not expose** (`typeof rl._writeToOutput
+  === "undefined"` on Bun 1.3.14). So on Bun the patch silently no-op'd: readline echoed its
+  `joc>` prompt while the boxed footer also drew → two inputs. Fixed by gating readline's
+  `output` stream instead: `gatedStdout(process.stdout, () => previewArmed)` proxies stdout and
+  turns its visible-output methods (`write`/`cursorTo`/`moveCursor`/`clearLine`/`clearScreenDown`)
+  into no-ops (still firing the write callback so readline never stalls) while the box is armed,
+  forwarding everything otherwise. Our footer writes straight to `process.stdout`, never through
+  the proxy, so the box always renders. Works on Bun AND Node; removed the dead `_writeToOutput`
+  patch. `previewArmed` moved above `createInterface` so the gate closure can read it.
+
+### Verification (pass 813)
+- `bun run typecheck` → 0 errors. `bun test` → **543 pass / 0 fail**. `bun run build` → ok.
+- Verified on Bun 1.3.14 that `rl._writeToOutput` is undefined (root cause) and that Bun's
+  readline funnels prompt+echo+cursor through `output.write` (so gating `write` is sufficient).
+- New tests: `gatedStdout` unit (no-op while gated + callback fired, forwarded when open, geometry
+  passthrough) and an end-to-end readline test asserting the `joc>` prompt and `hi` echo are NOT
+  written to the underlying stream while gated (only the box would show them).

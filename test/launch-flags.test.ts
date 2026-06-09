@@ -1,5 +1,7 @@
 import { test, expect } from "bun:test";
-import { parseFlags } from "../src/commands/launch";
+import { parseFlags, gatedStdout } from "../src/commands/launch";
+import { createInterface } from "node:readline/promises";
+import { Readable, Writable } from "node:stream";
 
 test("parseFlags captures GJC-style model/provider/thinking launch flags", () => {
   const flags = parseFlags(["--model", "gpt-4o-mini", "--provider=OPENAI", "--thinking", "high", "fix", "it"]);
@@ -35,4 +37,46 @@ test("parseFlags treats -- as end-of-options and omits the sentinel", () => {
   expect(flags.tmux).toBe(true);
   expect(flags.message).toBe("--models routing");
   expect(flags.errors).toEqual([]);
+});
+
+test("gatedStdout: write is a no-op while gated, forwarded when open", () => {
+  const seen: string[] = [];
+  const fake = new Writable({ write(c, _e, cb) { seen.push(c.toString()); cb(); } }) as any;
+  fake.columns = 80; fake.rows = 24; fake.isTTY = true;
+  let gated = true;
+  const out = gatedStdout(fake, () => gated);
+
+  let cbCalled = false;
+  expect(out.write("hidden", () => { cbCalled = true; })).toBe(true);
+  expect(seen).toEqual([]);          // swallowed while gated
+  expect(cbCalled).toBe(true);       // callback still fired so readline never stalls
+
+  gated = false;
+  out.write("shown");
+  expect(seen).toEqual(["shown"]);   // forwarded when open
+
+  // geometry/props are forwarded unchanged
+  expect((out as any).columns).toBe(80);
+  expect((out as any).isTTY).toBe(true);
+});
+
+test("gatedStdout: readline's own prompt/echo is suppressed while gated (single-box)", async () => {
+  const seen: string[] = [];
+  const out = new Writable({ write(c, _e, cb) { seen.push(c.toString()); cb(); } }) as any;
+  out.columns = 80; out.rows = 24; out.isTTY = true;
+  const input = new Readable({ read() {} }) as any;
+  input.isTTY = true; input.setRawMode = () => {};
+
+  let armed = true; // box mode: readline output must be suppressed
+  const rl = createInterface({ input, output: gatedStdout(out, () => armed) });
+  const answer = rl.question("joc> ");
+  input.push("hi");
+  await new Promise(r => setTimeout(r, 30));
+  input.push("\n");
+  expect((await answer)).toBe("hi");
+  rl.close();
+
+  const joined = seen.join("");
+  expect(joined).not.toContain("joc>"); // no duplicated raw CLI prompt line
+  expect(joined).not.toContain("hi");   // no raw echo either — only our box would show it
 });

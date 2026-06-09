@@ -5307,3 +5307,18 @@ Follow-up to the GJC comparison: `joc` deep-interview still had a real safety de
 ### Verification (pass 858)
 - Focused: `bun test test/deep-interview.test.ts test/mutation-guard.test.ts test/skills.test.ts` → **18 pass / 0 fail**.
 - Full: `bun run typecheck` → 0 errors; `bun test` → **636 pass / 0 fail**; `bun run build` → ok.
+## Parallel read-only task fan-out — pass 859
+
+**Date:** 2026-06-09 · **Dimension: subagent throughput (planner roadmap).**
+
+- **859.** `task` now accepts a `tasks` array to fan out multiple sub-assignments to the same role.
+  Read-only roles (planner/architect/critic) run **concurrently** via a bounded worker pool
+  (`MAX_FANOUT = 4`); the mutating **executor is serialized** (concurrency 1) so parallel subagents
+  can't race on the same files. Results are returned in order (`### Task i/N` sections) with a
+  `[Role fan-out] ok/N completed (concurrency K | executor — serialized)` header. The single-task
+  form is unchanged (extracted into a shared `runOne`); the protocol line advertises `task|tasks[]`.
+
+### Verification (pass 859)
+- `bun run typecheck` → 0 errors. `bun test` → **639 pass / 0 fail**. `bun run build` → ok.
+- New tests: architect fan-out of 3 → "3/3 completed (concurrency 3)" + ordered Task sections;
+  executor fan-out → "executor — serialized"; empty `tasks` → soft error.

@@ -6,6 +6,14 @@ export interface RetryOptions {
   sleep?: (ms: number) => Promise<void>;   // injectable for tests (default real setTimeout)
   random?: () => number;   // injectable RNG for jitter (default Math.random); equal-jitter in [0.5x, 1x]
   onRetry?: (attempt: number, err: unknown) => void;
+  /** Minimum backoff (ms) applied specifically to rate-limit (429) errors when the
+   *  server sends no `Retry-After`. A burst limit rarely clears in <1s, so a sub-second
+   *  retry just burns the budget; default 0 (no floor) preserves generic behavior. */
+  rateLimitMinDelayMs?: number;
+  /** Total attempt cap used specifically when the current error is a rate limit (429).
+   *  When higher than `retries`, rate-limit errors get extra attempts so a transient
+   *  per-minute window can reset; non-rate-limit errors still use `retries`. */
+  rateLimitRetries?: number;
 }
 
 // Default retryable predicate: true for transient network errors, transient/overload
@@ -72,13 +80,19 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
   const sleep = opts?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
   const random = opts?.random ?? Math.random;
   const onRetry = opts?.onRetry;
+  const rateLimitMinDelayMs = opts?.rateLimitMinDelayMs ?? 0;
+  const rateLimitRetries = opts?.rateLimitRetries;
 
   let attempt = 1;
   while (true) {
     try {
       return await fn();
     } catch (err) {
-      if (attempt >= retries || !isRetryable(err, attempt)) {
+      // Rate-limit (429) errors may use a higher attempt cap so a transient
+      // per-minute window can reset before we surface the failure.
+      const rateLimited = isRateLimitError(err);
+      const cap = rateLimited && typeof rateLimitRetries === "number" ? Math.max(retries, rateLimitRetries) : retries;
+      if (attempt >= cap || !isRetryable(err, attempt)) {
         throw err;
       }
 
@@ -86,7 +100,14 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
       // Equal jitter: half fixed + half random → [0.5x, 1x] of the capped backoff.
       const jittered = capped / 2 + random() * (capped / 2);
       const serverDelay = retryAfterOf(err);
-      const delay = serverDelay !== undefined ? Math.min(serverDelay, RETRY_AFTER_CAP_MS) : jittered;
+      // Server `Retry-After` wins; else jitter, floored for rate limits so we don't
+      // give up in <1s on a burst that needs a few seconds to clear.
+      const delay =
+        serverDelay !== undefined
+          ? Math.min(serverDelay, RETRY_AFTER_CAP_MS)
+          : rateLimited
+            ? Math.max(jittered, rateLimitMinDelayMs)
+            : jittered;
 
       if (onRetry) {
         onRetry(attempt, err);
@@ -105,4 +126,15 @@ function retryAfterOf(err: unknown): number | undefined {
     if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
   }
   return undefined;
+}
+
+// True when an error is an HTTP 429 / rate-limit (structured `.status` or message text).
+export function isRateLimitError(err: unknown): boolean {
+  if (typeof err === "object" && err !== null) {
+    const status = (err as { status?: unknown }).status;
+    const n = typeof status === "number" ? status : typeof status === "string" ? Number(status) : NaN;
+    if (n === 429) return true;
+  }
+  const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return /\b429\b/.test(message) || /rate[ _]?limit/i.test(message);
 }

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { withRetry, defaultRetryable } from "../src/util/retry";
+import { withRetry, defaultRetryable, isRateLimitError } from "../src/util/retry";
 import { resolveRetryOptions } from "../src/ai/model-manager";
 
 test("resolveRetryOptions maps a gjc retry budget to withRetry options", () => {
@@ -17,6 +17,84 @@ test("resolveRetryOptions maps a gjc retry budget to withRetry options", () => {
   const opts = resolveRetryOptions({ maxDelayMs: 1000, streamMaxRetries: 100, maxRetries: 3 });
   expect(opts.maxDelayMs).toBe(1000);
   expect(opts.retries).toBeUndefined();
+});
+
+test("resolveRetryOptions: rate-limit defaults engage only when not explicitly configured", () => {
+  // Unset → generous 429 budget + a backoff floor so the first 429 doesn't instantly exhaust.
+  const base = resolveRetryOptions(undefined);
+  expect(base.rateLimitRetries).toBe(5);
+  expect(base.rateLimitMinDelayMs).toBe(2000);
+
+  // Explicit requestMaxRetries wins: rate-limit gets no bonus beyond the budget.
+  const explicit = resolveRetryOptions({ requestMaxRetries: 2 });
+  expect(explicit.retries).toBe(3);
+  expect(explicit.rateLimitRetries).toBe(3);
+
+  // Explicit maxDelayMs wins: no rate-limit floor is injected.
+  const capped = resolveRetryOptions({ maxDelayMs: 500 });
+  expect(capped.maxDelayMs).toBe(500);
+  expect(capped.rateLimitMinDelayMs).toBeUndefined();
+});
+
+test("isRateLimitError: detects 429 by status and by message", () => {
+  expect(isRateLimitError({ status: 429 })).toBe(true);
+  expect(isRateLimitError({ status: "429" })).toBe(true);
+  expect(isRateLimitError(new Error("Rate limited (HTTP 429)"))).toBe(true);
+  expect(isRateLimitError(new Error("rate_limit exceeded"))).toBe(true);
+  expect(isRateLimitError({ status: 503 })).toBe(false);
+  expect(isRateLimitError(new Error("HTTP 500"))).toBe(false);
+});
+
+test("withRetry: rate-limit errors get extra attempts beyond the base retries budget", async () => {
+  let attempts = 0;
+  await expect(
+    withRetry(
+      async () => {
+        attempts++;
+        throw { status: 429, message: "slow down" };
+      },
+      { retries: 2, rateLimitRetries: 5, baseDelayMs: 1, sleep: async () => {} },
+    ),
+  ).rejects.toBeDefined();
+  // retries=2 would stop at 2, but rateLimitRetries=5 lifts the cap for 429s.
+  expect(attempts).toBe(5);
+});
+
+test("withRetry: a 429 without Retry-After waits at least rateLimitMinDelayMs", async () => {
+  const sleeps: number[] = [];
+  await withRetry(
+    async () => {
+      throw { status: 429, message: "slow down" };
+    },
+    {
+      retries: 1,
+      rateLimitRetries: 3,
+      rateLimitMinDelayMs: 2000,
+      baseDelayMs: 100, // jitter would be ≤100ms; the 429 floor must dominate
+      maxDelayMs: 100,
+      random: () => 1,
+      sleep: async ms => { sleeps.push(ms); },
+    },
+  ).catch(() => {});
+  // Two retries before exhausting the rateLimitRetries=3 cap; each waited ≥ the floor.
+  expect(sleeps.length).toBe(2);
+  for (const ms of sleeps) expect(ms).toBeGreaterThanOrEqual(2000);
+});
+
+test("withRetry: a non-rate-limit error is NOT floored by rateLimitMinDelayMs", async () => {
+  const sleeps: number[] = [];
+  await withRetry(
+    async () => { throw new Error("HTTP 503: overloaded"); },
+    {
+      retries: 2,
+      rateLimitMinDelayMs: 2000,
+      baseDelayMs: 100,
+      maxDelayMs: 100,
+      random: () => 1,
+      sleep: async ms => { sleeps.push(ms); },
+    },
+  ).catch(() => {});
+  expect(sleeps).toEqual([100]); // jitter only, no 429 floor
 });
 
 test("withRetry honors a resolved requestMaxRetries budget (attempt count)", async () => {

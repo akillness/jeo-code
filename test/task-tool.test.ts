@@ -134,3 +134,33 @@ test("createTaskTool: per-role model override is reported in the output", async 
   expect(res.success).toBe(true);
   expect(res.output).toContain("on gemini-2.5-pro");
 });
+test("createTaskTool: read-only fan-out runs all tasks and combines results", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "reviewed" } }),
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
+  const res = await tool({ role: "architect", tasks: ["review A", "review B", "review C"] }, await tmpDir());
+  expect(res.success).toBe(true);
+  expect(res.output).toContain("[Architect fan-out] 3/3 completed (concurrency 3)");
+  expect(res.output).toContain("### Task 1/3");
+  expect(res.output).toContain("### Task 3/3");
+});
+
+test("createTaskTool: executor fan-out is serialized for mutation safety", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "done" } }),
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
+  const res = await tool({ role: "executor", tasks: ["t1", "t2"] }, await tmpDir());
+  expect(res.output).toContain("executor — serialized");
+});
+
+test("createTaskTool: empty tasks array is a soft error", async () => {
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
+  const res = await tool({ role: "architect", tasks: [] }, await tmpDir());
+  expect(res.success).toBe(false);
+  expect(res.error).toContain("non-empty 'tasks'");
+});

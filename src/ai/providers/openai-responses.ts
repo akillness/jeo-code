@@ -54,6 +54,8 @@ export function codexResponsesRequest(
     stream: true, // the Codex backend only streams
     store: false,
   };
+  // Map thinkingLevel → reasoning effort for Codex reasoning models (gjc parity).
+  if (options.reasoningEffort) payload.reasoning = { effort: options.reasoningEffort };
   const accountId = extractChatgptAccountId(token);
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -86,7 +88,8 @@ export function parseResponsesEvent(data: string): ResponsesEvent {
     return {};
   }
   if (o.type === "response.output_text.delta" && typeof o.delta === "string") return { delta: o.delta };
-  if (o.type === "response.completed" && o.response?.usage) {
+  // `response.incomplete` (max_output_tokens / content filter) also carries usage — don't drop it.
+  if ((o.type === "response.completed" || o.type === "response.incomplete") && o.response?.usage) {
     return { usage: { inputTokens: o.response.usage.input_tokens, outputTokens: o.response.usage.output_tokens } };
   }
   if (o.type === "response.failed" || o.type === "error") {

@@ -5391,3 +5391,25 @@ prior backlog was cleared). Fixed the concrete provider/stream ones:
   doesn't truly verify per-criterion (HIGH — needs project-aware command derivation); ultragoal
   blank-line criteria loss (MEDIUM); Codex Responses in-band errors lack a retryable status +
   `reasoningEffort` not forwarded + incomplete-usage (LOW).
+## Codex Responses: reasoning effort + incomplete usage — pass 863
+
+**Date:** 2026-06-09 · **Dimension: OpenAI Codex (OAuth) provider correctness.**
+
+Closing the LOW Codex Responses items from the provider review:
+
+- **863a.** `codexResponsesRequest` now forwards `options.reasoningEffort` as `reasoning: { effort }`
+  in the payload — previously `reasoningEffort` was plumbed through `CallOptions` (pass 841) but never
+  sent on the Codex OAuth path, so thinking level had no effect for ChatGPT/Codex subscriptions.
+- **863b.** `parseResponsesEvent` now captures usage on `response.incomplete`
+  (max_output_tokens / content filter), not just `response.completed` — those turns previously
+  reported zero tokens.
+- Intentionally NOT changed: blanket retryability of in-band `response.failed`/`error` events.
+  Transient ones with rate-limit/overloaded/timeout wording already retry via `defaultRetryable`'s
+  message match; blindly retrying ALL in-band failures risks looping on permanent (content/policy)
+  failures. Left as-is by design.
+
+### Verification (pass 863)
+- `bun run typecheck` → 0 errors. `bun test` → **652 pass / 0 fail**. `bun run build` → ok.
+- New tests: `codexResponsesRequest` emits `reasoning.effort` when set and omits it otherwise;
+  `parseResponsesEvent` captures usage on both `response.incomplete` and `response.completed`, and
+  still parses delta/error events.

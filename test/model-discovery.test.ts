@@ -261,6 +261,10 @@ test("parseModelsBody: openai drops non-chat families (embeddings/tts/image/mode
   expect(ids).not.toContain("gpt-4o-audio-preview");
 });
 
+test("parseModelsBody: openai parses Codex model endpoint shape and skips unsupported rows", () => {
+  expect(parseModelsBody("openai", { models: [{ slug: "gpt-5.5" }, { id: "gpt-5.4" }, { slug: "hidden", supported_in_api: false }] })).toEqual(["gpt-5.5", "gpt-5.4"]);
+});
+
 test("parseModelsBody: gemini keeps only generateContent-capable models", () => {
   const ids = parseModelsBody("gemini", {
     models: [

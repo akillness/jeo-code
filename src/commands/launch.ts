@@ -6,7 +6,7 @@ import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
 import { matchSlash, isSlashAttempt, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, type SlashCommandInfo } from "../tui/components/slash";
-import { staticCompletionContext, readlineCompleter, formatCompletionPreview, type CompletionContext } from "../tui/components/autocomplete";
+import { staticCompletionContext, readlineCompleter, formatCompletionPreview, tokenize, type CompletionContext } from "../tui/components/autocomplete";
 import { EVOLUTION_STAGES, renderAsciiArt, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
 import chalk from "chalk";
@@ -38,6 +38,7 @@ import { skillPicker, renderSkillPicker } from "../tui/components/skill-picker";
 import { providerPicker, renderProviderPicker } from "../tui/components/provider-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff } from "../tui/components/code-view";
 import { categoryBadge } from "../tui/components/category-index";
+import { renderInputBox } from "../tui/components/input-box";
 import { findTool, searchTool } from "../agent/tools";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { maybeCompact } from "../agent/compaction";
@@ -534,6 +535,31 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       liveModelsCache ??= r;
     })
     .catch(() => {});
+  const mentionPaths = (prefix: string): string[] => {
+    const norm = prefix.replace(/\\/g, "/");
+    const wantsDirChildren = norm.endsWith("/");
+    const dirPart = wantsDirChildren ? norm.slice(0, -1) : path.posix.dirname(norm) === "." ? "" : path.posix.dirname(norm);
+    const namePart = wantsDirChildren ? "" : path.posix.basename(norm);
+    const absDir = path.resolve(cwd, dirPart || ".");
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(absDir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    return entries
+      .filter(entry => !entry.name.startsWith("."))
+      .filter(entry => !namePart || entry.name.toLowerCase().startsWith(namePart.toLowerCase()))
+      .sort((a, b) => {
+        if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      })
+      .slice(0, 50)
+      .map(entry => {
+        const rel = dirPart ? `${dirPart}/${entry.name}` : entry.name;
+        return entry.isDirectory() ? `${rel}/` : rel;
+      });
+  };
   const completionContext = (): CompletionContext => {
     const base = staticCompletionContext();
     return {
@@ -543,6 +569,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       aliases: aliasNames,
       skillNames: resolvedSkillNames,
       modelsForProvider: p => liveModelsCache?.find(r => r.provider === p)?.models ?? [],
+      mentionPaths,
     };
   };
   const rl = createInterface({
@@ -556,7 +583,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // turns/command output so the full-screen turn TUI renders normally. The footer
   // is drawn at absolute rows (per-row clear → no scroll, no duplication).
   // Opt out with JOC_NO_SLASH_PREVIEW=1; auto-off on short terminals.
-  const PREVIEW_ROWS = 8;
+  const currentAtLabel = (line: string): string | undefined => {
+    const { tokens } = tokenize(line);
+    const token = [...tokens].reverse().find(t => t.startsWith("@"));
+    if (!token) return undefined;
+    const norm = token.slice(1).replace(/\\/g, "/");
+    if (!norm) return "@ .";
+    if (norm.endsWith("/")) return `@ ${norm.slice(0, -1) || "."}`;
+    const dir = path.posix.dirname(norm);
+    return `@ ${dir === "." ? norm : dir}`;
+  };
+  const PREVIEW_ROWS = 12;
   const previewEnabled =
     process.stdin.isTTY &&
     process.env.JOC_NO_SLASH_PREVIEW !== "1" &&
@@ -599,11 +636,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     out.write(s);
   };
   const previewLines = (line: string, selected = -1): string[] => {
-    const cols = Math.max(20, (process.stdout.columns ?? 80) - 1);
-    const slash = formatSlashPreview(line, PREVIEW_ROWS, selected, skillSlashDetails);
-    if (slash.length) return slash.map(l => chalk.gray(truncateAnsi(l, cols)));
-    const args = formatCompletionPreview(line, completionContext(), PREVIEW_ROWS);
-    return args.map(l => chalk.gray(truncateAnsi(l, cols)));
+    const cols = Math.max(24, (process.stdout.columns ?? 80) - 1);
+    const input = renderInputBox(line, {
+      cols,
+      color: true,
+      unicode: true,
+      cwdLabel: currentAtLabel(line),
+      maxBodyRows: Math.max(1, PREVIEW_ROWS - 5),
+    }).map(l => truncateAnsi(l, cols));
+    const budget = Math.max(0, PREVIEW_ROWS - input.length);
+    const slash = budget > 0 ? formatSlashPreview(line, budget, selected, skillSlashDetails) : [];
+    const args = !slash.length && budget > 0 ? formatCompletionPreview(line, completionContext(), budget) : [];
+    const preview = (slash.length ? slash : args).map(l => chalk.gray(truncateAnsi(l, cols)));
+    return [...input, ...preview].slice(0, PREVIEW_ROWS);
   };
   const drawFooter = (lines: string[]) => {
     if (!previewArmed) return;

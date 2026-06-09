@@ -4326,3 +4326,60 @@ catalog though the Codex backend serves only a small set.
   runs on ollama (find/edit executed). Cloud 429s now show the actionable rate-limit line and the
   loop honors the server's retry delay. (Cloud accounts are externally rate-limited right now; the
   unthrottled local path and the clear diagnosis are the deliverable.)
+
+## Provider settings root-cause fix + indexed TUI readability run (passes 735–746)
+
+**Date:** 2026-06-08 · **Dimension: provider/model correctness / TUI readability.**
+
+Cross-validated with three read-only subagents before landing the changes (`2-GjcProviderModel`,
+`3-JocTuiIndexing`, `4-ProviderTuiPlanCritic`).
+
+- **735.** Confirmed the main provider/model settings bug was not the runtime OpenAI adapter anymore,
+  but the *settings surfaces*: `setup.ts` still defaulted OpenAI OAuth users to `gpt-4o`, which the
+  Codex backend rejects.
+- **736.** `setup-helpers.ts recommendedModelsFor(provider, { codex })` now exposes a Codex-specific
+  OpenAI recommendation path (`gpt-5.5`, `gpt-5.4`) with explicit `Codex OAuth` notes.
+- **737.** `setup.ts` now detects the OpenAI OAuth-only path (OAuth token present, no API key) and
+  recommends/saves Codex-backed defaults instead of `gpt-4o`.
+- **738.** Removed the stale anthropic setup fallback `claude-3-5-sonnet-20241022` in favor of the
+  live catalog-era default `claude-sonnet-4-5`.
+- **739.** `model-discovery.ts` OpenAI OAuth discovery no longer blindly probes
+  `api.openai.com/v1/models`; it now calls `chatgpt.com/backend-api/codex/models` with the same
+  OAuth/account-id header shape as the Codex responses backend.
+- **740.** `parseModelsBody("openai", …)` now understands the Codex model endpoint shape
+  (`models:[{slug|id,supported_in_api}]`) and skips rows marked unsupported.
+- **741.** Existing `catalogOr()` Codex fallback behavior was preserved as a last-resort safety net,
+  but the happy path is now real live Codex model discovery rather than a static 2-model guess.
+- **742.** Added tests locking the OpenAI OAuth discovery request URL/headers and the Codex model
+  response parsing path.
+- **743.** Added a shared TUI category/index helper (`category-index.ts`) so progress/tool/diff/file/
+  command/subagent surfaces can share the same badge vocabulary instead of ad-hoc strings.
+- **744.** `renderJocStatus()` now prefixes the thinking/forge lines with indexed category badges,
+  improving scanability of in-progress vs tool-state regions.
+- **745.** `ToolList.render({ indexed: true })` and `formatForgeBox({ index })` now emit indexed
+  category badges like `[01:CMD]`, `[02:FILE]`, preserving plain-mode safety and width bounds.
+- **746.** `/view` and `/diff` headers now carry `[FILE]` / `[DIFF]` badges so file paths and diff
+  blocks are visually classified before the body content starts.
+
+### Verification (passes 735–746)
+
+- Read-only cross-validation completed: `2-GjcProviderModel`, `3-JocTuiIndexing`, `4-ProviderTuiPlanCritic`.
+- Focused provider/model suites: `bun test test/model-discovery.test.ts test/setup-helpers.test.ts test/openai-responses.test.ts test/provider-status.test.ts` → **44 pass / 0 fail**.
+- Focused TUI readability suites: `bun test test/category-index.test.ts test/forge-status.test.ts test/tui-components.test.ts test/review-fixes.test.ts test/code-view.test.ts` → **42 pass / 0 fail**.
+- Combined focused run: `bun test test/model-discovery.test.ts test/setup-helpers.test.ts test/openai-responses.test.ts test/provider-status.test.ts test/category-index.test.ts test/forge-status.test.ts test/tui-components.test.ts test/review-fixes.test.ts test/code-view.test.ts` → **86 pass / 0 fail**.
+
+## Boxed input footer + `@path` preview run (passes 747–752)
+
+**Date:** 2026-06-08 · **Dimension: input UX / TUI readability.**
+
+- **747.** Added free-text `@path` completion support in `autocomplete.ts`; non-slash input stays untouched except for `@...` path mentions.
+- **748.** `launch.ts` now resolves relative path suggestions synchronously from the workspace root for `@` mentions, preferring directories and showing folder-style `src/.../` entries.
+- **749.** Added `input-box.ts` to render the active input line as a boxed input area with a `[CMD] input` header, optional `@ folder` label, and width-aware wrapping.
+- **750.** The live footer preview no longer shows only slash/help candidates; it now shows the boxed input area first, then slash/completion/path preview rows underneath.
+- **751.** The footer input box grows to multiple wrapped rows as the typed line exceeds the available TUI width, instead of staying a single clipped line.
+- **752.** Added tests for `@path` completion and boxed input rendering/wrapping.
+
+### Verification (passes 747–752)
+
+- `bun test test/autocomplete.test.ts test/input-box.test.ts test/category-index.test.ts` → **27 pass / 0 fail**.
+- `bun run typecheck` → **0 errors**.

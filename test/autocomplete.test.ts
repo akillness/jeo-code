@@ -17,6 +17,7 @@ const ctx = (over: Partial<CompletionContext> = {}): CompletionContext => ({
   roleIds: ["executor", "planner", "architect", "critic"],
   thinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
   modelsForProvider: p => (p === "openai" ? ["gpt-4o-live", "gpt-4o-mini-live"] : []),
+  mentionPaths: prefix => (prefix === "" ? ["src/", "README.md"] : prefix === "src/" ? ["src/commands/", "src/tui/"] : prefix === "src/c" ? ["src/commands/"] : []),
   ...over,
 });
 
@@ -27,6 +28,16 @@ test("tokenize tracks tokens + trailing space", () => {
 
 test("non-slash input is not completed", () => {
   expect(complete("hello world", ctx()).completions).toEqual([]);
+});
+
+test("@path mentions complete in free-text mode", () => {
+  const root = complete("@", ctx());
+  expect(root.kind).toBe("path");
+  expect(root.completions).toContain("@src/");
+  const nested = complete("please inspect @src/c", ctx());
+  expect(nested.kind).toBe("path");
+  expect(nested.token).toBe("@src/c");
+  expect(nested.completions).toEqual(["@src/commands/"]);
 });
 
 test("completes the slash command name by prefix", () => {
@@ -121,6 +132,12 @@ test("formatCompletionPreview lists argument completions after slash commands", 
   expect(models).toContain("Subcommands:");
   expect(models).toContain("refresh");
   expect(models).toContain("catalog");
+});
+
+test("formatCompletionPreview shows path suggestions for @mentions", () => {
+  const out = formatCompletionPreview("review @src/", ctx()).join("\n");
+  expect(out).toContain("Paths:");
+  expect(out).toContain("@src/commands/");
 });
 
 test("formatCompletionPreview stays empty for keyword-only slash probes", () => {

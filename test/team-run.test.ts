@@ -36,8 +36,14 @@ async function seedPlan(steps: { name: string; role?: string }[]): Promise<void>
 }
 
 test("runTeamCommand routes each step to its declared subagent role and completes", async () => {
+  let turn = 0;
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "task done" } }),
+    callLlm: async () => {
+      turn++;
+      if (turn === 1) return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nIn Scope:\nOut of Scope:\nFile-level Changes:\nSequencing:\nAcceptance Criteria:\nVerification:\nRisks:" } });
+      if (turn === 2) return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nFindings:\nRecommendations:\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nChanged Files:\nVerification:\nOpen Risks:" } });
+    },
   }));
   const { runTeamCommand } = await import("../src/commands/team");
 
@@ -66,8 +72,13 @@ test("runTeamCommand routes each step to its declared subagent role and complete
 });
 
 test("runTeamCommand routes duplicate task names by step index, not by name", async () => {
+  let turn = 0;
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "task done" } }),
+    callLlm: async () => {
+      turn++;
+      if (turn === 1) return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nIn Scope:\nOut of Scope:\nFile-level Changes:\nSequencing:\nAcceptance Criteria:\nVerification:\nRisks:" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nFindings:\nRecommendations:\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } });
+    },
   }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([
@@ -124,7 +135,7 @@ test("runTeamCommand refuses unknown plan subagent roles before execution", asyn
 
 test("runTeamCommand normalizes mixed-case plan roles", async () => {
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "task done" } }),
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nFindings:\nRecommendations:\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } }),
   }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "review design", role: "ARCHITECT" }]);
@@ -170,5 +181,62 @@ test("runTeamCommand does not give write/edit/bash tools to read-only plan steps
   const out = logs.join("\n");
   expect(out).toContain("Subagent: Architect");
   expect(out).toContain("tool write");
+  expect(process.exitCode).toBe(1);
+});
+
+test("runTeamCommand halts when an architect review returns a blocking verdict", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({
+      tool: "done",
+      arguments: { reason: "Summary:\nFindings:\nRecommendations:\nArchitectural Status: BLOCK\nCode Review Recommendation: REQUEST CHANGES" },
+    }),
+  }));
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "review design", role: "architect" }]);
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand();
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  expect(out).toContain("architect gated execution");
+  expect(out).toContain("[TASK FAILED]");
+  expect(process.exitCode).toBe(1);
+});
+
+test("runTeamCommand halts when a critic returns REJECT", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({
+      tool: "done",
+      arguments: { reason: "[REJECT]\nJustification:\nSummary:\nRequired Fixes:" },
+    }),
+  }));
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "critique plan", role: "critic" }]);
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand();
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  expect(out).toContain("critic gated execution");
+  expect(out).toContain("[TASK FAILED]");
+  expect(process.exitCode).toBe(1);
+});
+
+test("runTeamCommand halts when a planner report misses required sections", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "planned" } }),
+  }));
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "plan work", role: "planner" }]);
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand();
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  expect(out).toContain("Planner report incomplete");
+  expect(out).toContain("[TASK FAILED]");
   expect(process.exitCode).toBe(1);
 });

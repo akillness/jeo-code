@@ -5517,3 +5517,25 @@ high-leverage correctness gaps that fit this session's “no model/provider/TUI 
 - Focused: `bun test test/gemini-stream.test.ts test/compaction.test.ts test/tui-app.test.ts test/skills.test.ts test/skills-config.test.ts test/stream-events.test.ts` →
   **52 pass / 0 fail**.
 - Full: `bun run typecheck` → 0 errors; `bun test` → **658 pass / 0 fail**.
+
+## Team review-lane verdict gating — pass 867
+
+**Date:** 2026-06-09 · **Dimensions: orchestration safety, role-contract consumption, plan review gating.**
+
+After splitting role prompts/contracts, `joc team` was still treating any converged subagent turn as a
+successful step. That meant a planner/architect/critic report could omit its required structure or
+even return a blocking/reject verdict and the team executor would still march forward.
+
+- **867a.** `src/commands/team.ts` now validates role-agent report contracts through
+  `validateSubagentDoneReason()` before a step is marked successful.
+- **867b.** Added `parseRoleGateVerdict()` so orchestration consumes structured review outcomes:
+  architect steps now halt the plan on `BLOCK` / `REQUEST CHANGES`, and critic steps halt on
+  `[REJECT]` / `[ITERATE]`.
+- **867c.** Team execution now treats missing planner/architect/critic sections as a hard failure
+  (`report incomplete`) instead of silently accepting a generic `done.reason`.
+- **867d.** Focused tests now cover the positive routing path plus the new gating failures for
+  architect, critic, and malformed planner reports.
+
+### Verification (pass 867)
+- Focused: `bun test test/subagents.test.ts test/task-tool.test.ts test/team-subagent.test.ts test/team-run.test.ts` → **32 pass / 0 fail**.
+- Full: `bun run typecheck` → 0 errors; `bun test` → **656 pass / 0 fail**; `bun run build` → ok.

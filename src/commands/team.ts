@@ -17,6 +17,7 @@ import {
   subagentSystemPrompt,
   subagentToolset,
   subagentRoleIds,
+  validateSubagentDoneReason,
 } from "../agent/subagents";
 import type { Message } from "../agent/loop";
 import { categoryBadge } from "../tui/components/category-index";
@@ -93,6 +94,32 @@ export function activeStepIndex(totalTasks: number, pendingTasks: readonly strin
   if (totalTasks <= 0) return 0;
   const pending = pendingTasks?.length ?? totalTasks;
   return Math.max(0, Math.min(totalTasks - pending, totalTasks - 1));
+}
+
+function extractLineValue(reason: string, label: string): string | undefined {
+  const match = reason.match(new RegExp(`^${label}:\\s*(.+)$`, "im"));
+  return match?.[1]?.trim();
+}
+
+export function parseRoleGateVerdict(roleId: string, reason: string): { ok: boolean; message?: string } {
+  const trimmed = reason.trim();
+  if (roleId === "architect") {
+    const status = extractLineValue(trimmed, "Architectural Status");
+    const review = extractLineValue(trimmed, "Code Review Recommendation");
+    if (!status || !review) return { ok: false, message: "architect report missing Architectural Status or Code Review Recommendation" };
+    if (status === "BLOCK" || review === "REQUEST CHANGES") {
+      return { ok: false, message: `architect gated execution (${status} / ${review})` };
+    }
+    return { ok: true };
+  }
+  if (roleId === "critic") {
+    const firstLine = trimmed.split(/\r?\n/, 1)[0]?.trim() ?? "";
+    if (firstLine === "[REJECT]" || firstLine === "[ITERATE]") {
+      return { ok: false, message: `critic gated execution (${firstLine})` };
+    }
+    return { ok: true };
+  }
+  return { ok: true };
 }
 
 
@@ -267,12 +294,26 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
     },
   });
 
-  if (result.done) {
-    console.log(formatRalphStreamEvent("complete", `${role.title} finished task`, renderOpts));
-    return true;
+  const reason = result.doneReason?.trim() || `${role.title} did not converge within ${result.steps} steps`;
+  if (!result.done) {
+    console.log(formatRalphStreamEvent("error", reason, renderOpts));
+    return false;
   }
-  console.log(formatRalphStreamEvent("error", result.doneReason ?? `${role.title} did not converge within ${result.steps} steps`, renderOpts));
-  return false;
+
+  const contract = validateSubagentDoneReason(role, reason);
+  if (!contract.ok) {
+    console.log(formatRalphStreamEvent("error", `${role.title} report incomplete: missing ${contract.missing?.join(", ")}`, renderOpts));
+    return false;
+  }
+
+  const gate = parseRoleGateVerdict(role.id, reason);
+  if (!gate.ok) {
+    console.log(formatRalphStreamEvent("error", gate.message ?? `${role.title} blocked execution`, renderOpts));
+    return false;
+  }
+
+  console.log(formatRalphStreamEvent("complete", `${role.title} finished task`, renderOpts));
+  return true;
 }
 export const StepSchema = z.object({
   name: z.string(),

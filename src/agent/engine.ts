@@ -61,12 +61,13 @@ export const READONLY_TOOL_PROTOCOL = [
 export function executorSystemPrompt(
   role = "Executor Agent, a senior software developer",
   protocol: string = TOOL_PROTOCOL,
+  verificationDirective = "Always verify (run tests / execute the program) before calling done.",
 ): string {
   return (
     `You are the ${role}.\n` +
     `Accomplish the user's request by calling tools and verifying your work.\n\n` +
     `${protocol}\n\n` +
-    `Always verify (run tests / execute the program) before calling done.`
+    verificationDirective
   );
 }
 

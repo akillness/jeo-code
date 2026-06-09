@@ -96,7 +96,14 @@ export function subagentSystemPrompt(role: SubagentRole): string {
   if (!role.readOnly) return executorSystemPrompt(`${role.title} subagent — ${role.description}`);
   // Read-only roles get a restricted protocol so the model never tries (and wastes
   // scarce steps on) write/edit/bash — which `subagentToolset` has already removed.
-  const base = executorSystemPrompt(`${role.title} subagent — ${role.description}`, READONLY_TOOL_PROTOCOL);
+  // They also need a read-only verification directive: the generic executor prompt
+  // says "run tests / execute the program", but these roles intentionally have no
+  // bash tool and should not attempt execution.
+  const base = executorSystemPrompt(
+    `${role.title} subagent — ${role.description}`,
+    READONLY_TOOL_PROTOCOL,
+    "Verify by reading/searching the relevant files and citing evidence before calling done; do not run tests or execute programs.",
+  );
   return (
     base +
     `\n\nYou are a READ-ONLY ${role.title}. Do not create or modify files; ` +

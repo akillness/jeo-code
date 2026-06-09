@@ -271,7 +271,7 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
     console.log(formatRalphStreamEvent("complete", `${role.title} finished task`, renderOpts));
     return true;
   }
-  console.log(formatRalphStreamEvent("error", `${role.title} did not converge within ${result.steps} steps`, renderOpts));
+  console.log(formatRalphStreamEvent("error", result.doneReason ?? `${role.title} did not converge within ${result.steps} steps`, renderOpts));
   return false;
 }
 export const StepSchema = z.object({

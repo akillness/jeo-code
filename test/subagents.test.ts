@@ -8,6 +8,10 @@ import {
   resolveSubagentMaxSteps,
   subagentSystemPrompt,
   subagentToolset,
+  subagentRoleIds,
+  parseMaxSteps,
+  withSubagentSetting,
+  clearSubagentSetting,
 } from "../src/agent/subagents";
 
 test("registry exposes the four bundled roles; only executor mutates", () => {
@@ -48,6 +52,16 @@ test("subagentSystemPrompt: read-only roles get a no-mutation directive", () => 
   expect(arch).toContain("Do not create or modify files");
 });
 
+test("subagentSystemPrompt: read-only roles use read/search verification instead of execution", () => {
+  const arch = subagentSystemPrompt(getSubagentRole("architect")!);
+  expect(arch).not.toContain("run tests / execute the program");
+  expect(arch).toContain("Verify by reading/searching");
+  expect(arch).toContain("do not run tests or execute programs");
+
+  const exec = subagentSystemPrompt(getSubagentRole("executor")!);
+  expect(exec).toContain("run tests / execute the program");
+});
+
 test("subagentSystemPrompt: read-only roles advertise only non-mutating tools", () => {
   const arch = subagentSystemPrompt(getSubagentRole("architect")!);
   // The restricted protocol must NOT offer write/edit/bash, which subagentToolset removed.
@@ -75,4 +89,25 @@ test("subagentToolset: read-only roles drop write/edit/bash, executor keeps them
   expect(roTools).toContain("read");
   expect(roTools).toContain("search");
   expect(roTools).toContain("find");
+});
+
+test("subagent helpers parse and persist role overrides immutably", () => {
+  expect(subagentRoleIds()).toEqual(["executor", "planner", "architect", "critic"]);
+  expect(parseMaxSteps(" 12 ")).toBe(12);
+  expect(parseMaxSteps("0")).toBeUndefined();
+  expect(parseMaxSteps("-2")).toBeUndefined();
+  expect(parseMaxSteps("nope")).toBeUndefined();
+
+  const original = { subagents: { planner: { model: "fast", maxSteps: 4 } } };
+  const patched = withSubagentSetting(original, " PLANNER ", { maxSteps: 9 });
+  expect(patched).toEqual({ planner: { model: "fast", maxSteps: 9 } });
+  expect(original.subagents.planner.maxSteps).toBe(4);
+
+  const added = withSubagentSetting(original, "architect", { model: "sonnet" });
+  expect(added.architect).toEqual({ model: "sonnet" });
+  expect(original.subagents).not.toHaveProperty("architect");
+
+  const cleared = clearSubagentSetting({ subagents: patched }, "planner");
+  expect(cleared).toEqual({});
+  expect(patched).toHaveProperty("planner");
 });

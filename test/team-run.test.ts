@@ -137,3 +137,38 @@ test("runTeamCommand normalizes mixed-case plan roles", async () => {
   expect(out).toContain("Subagent: Architect");
   expect(out).toContain("[SUCCESS] All tasks in the plan executed successfully!");
 });
+
+test("runTeamCommand surfaces the engine stop reason on subagent failure", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "read", arguments: { filePath: "missing.txt" } }),
+  }));
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "read missing file" }]);
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand();
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  expect(out).toContain("Stopped: repeated the same 'read' call");
+  expect(out).not.toContain("Executor did not converge within");
+  expect(process.exitCode).toBe(1);
+});
+
+test("runTeamCommand does not give write/edit/bash tools to read-only plan steps", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "write", arguments: { filePath: "pwn.txt", content: "mutated" } }),
+  }));
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "review without mutation", role: "architect" }]);
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand();
+  console.log = origLog;
+
+  await expect(fs.readFile(path.join(tmp, "pwn.txt"), "utf-8")).rejects.toThrow();
+  const out = logs.join("\n");
+  expect(out).toContain("Subagent: Architect");
+  expect(out).toContain("tool write");
+  expect(process.exitCode).toBe(1);
+});

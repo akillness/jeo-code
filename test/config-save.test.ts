@@ -103,3 +103,13 @@ test("readGlobalConfig: on-disk provider key wins over the env key (env never ov
   const cfg = await readGlobalConfig();
   expect(cfg.providers.gemini).toBe("disk-gemini-key"); // disk wins
 });
+
+test("readGlobalConfig treats blank on-disk provider keys as env-fillable gaps", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({ providers: { gemini: "" }, defaultModel: "gemini-flash-latest" }),
+  );
+  process.env.GEMINI_API_KEY = "env-gemini-key";
+  const cfg = await readGlobalConfig();
+  expect(cfg.providers.gemini).toBe("env-gemini-key");
+});

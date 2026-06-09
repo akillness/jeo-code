@@ -5655,3 +5655,22 @@ instead of a pile of anonymous lines.
 - Typecheck: `bun run typecheck` → 0 errors.
 - Full: `bun test` → **686 pass / 0 fail**; `bun run build` → ok.
 - Local live smoke: `JOC_DEFAULT_MODEL=fast bun src/cli.ts launch "Use the done tool with reason live smoke ok." --model fast --max-steps 2 --no-session --no-tui` reached the local Ollama loop and emitted categorized `[STEP]`/`[DONE]` stream lines before the 2-step cap.
+
+## Provider credential blank-key hardening — pass 871
+
+**Date:** 2026-06-09 · **Dimensions: credential resolution correctness, manual-config resilience.**
+
+A follow-up review on pass 870 identified a narrow but real manual-config edge case: an empty string in
+`~/.joc/config.json.providers.<name>` counted as an on-disk value and therefore masked a valid
+environment API key. That left `joc doctor`, `/provider`, and delegated subagents reporting "no
+credential" even though the shell had a usable key.
+
+- **871a.** Provider API-key overlay now treats a blank on-disk provider value as a gap while still
+  preserving any non-empty on-disk key over the environment.
+- **871b.** Added regression coverage for the blank-provider-key case, alongside the existing "env fills
+  missing gap" and "disk non-empty key wins" tests.
+
+### Verification (pass 871)
+- Focused: `bun test test/config-save.test.ts test/provider-status.test.ts test/doctor.test.ts` → **20 pass / 0 fail**.
+- Typecheck: `bun run typecheck` → 0 errors.
+- Full: `bun test` → **687 pass / 0 fail**; `bun run build` → ok.

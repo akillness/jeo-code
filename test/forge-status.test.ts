@@ -155,3 +155,18 @@ test("fitForgeBoxes: includes whole most-recent boxes within budget, never a hal
   // both fit exactly → both, in display order with the separator
   expect(fitForgeBoxes(lines, 9)).toEqual(lines);
 });
+
+test("renderJocStatus: forge line exposes the evolution stage (double helix) when provided", () => {
+  const lines = renderJocStatus({
+    step: 4, maxSteps: 25, currentTool: "read",
+    stage: "●●○○○ Double Helix (DNA) [2/5]",
+    color: false, unicode: true,
+  });
+  const forgeLine = lines[1] ?? "";
+  expect(forgeLine).toContain("joc forge");
+  expect(forgeLine).toContain("Double Helix (DNA)"); // stage identity exposed
+  expect(forgeLine).toContain("forging read");        // current tool still shown
+  // without a stage, the forge line omits it (no leading separator noise)
+  const plain = renderJocStatus({ step: 1, maxSteps: 25, color: false });
+  expect(plain[1] ?? "").not.toContain("Double Helix");
+});

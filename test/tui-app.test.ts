@@ -284,3 +284,51 @@ test("LaunchTui (boxed): bottom status/footer is never cut off when content over
     Renderer.prototype.render = realRender;
   }
 });
+
+test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result in the stream", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
+  tui.start();
+  tui.onSubagentEvent({ role: "executor", kind: "start", detail: "Add a retry guard to engine.ts" });
+  tui.onSubagentEvent({ role: "executor", kind: "tool", detail: "read src/agent/engine.ts", success: true });
+  tui.onSubagentEvent({ role: "executor", kind: "tool", detail: "edit src/agent/engine.ts", success: false });
+  tui.onSubagentEvent({ role: "executor", kind: "done", detail: "completed in 4 steps: guard added", success: true });
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => logged.push(a.join(" "));
+  try { tui.finish("done"); } finally { console.log = origLog; }
+  const txt = logged.join("\n");
+  expect(txt).toContain("[executor] start: Add a retry guard to engine.ts"); // assignment
+  expect(txt).toContain("[executor]"); // nested tool calls present
+  expect(txt).toContain("read src/agent/engine.ts");
+  expect(txt).toContain("completed in 4 steps: guard added"); // result summary
+});
+
+test("LaunchTui (boxed): [STEP] shows the real in-flight file and [TOOL] exposes the double helix", () => {
+  const realRender = Renderer.prototype.render;
+  let frame: string[] = [];
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  try {
+    const tui = new LaunchTui({ model: "m1", maxSteps: 25, tty: true, write: () => {} });
+    tui.start();
+    const ev = tui.events();
+    ev.onStep!(3);
+    ev.onAssistant!("", { tool: "read", arguments: { filePath: "src/agent/engine.ts" } }); // tool now in-flight
+    (tui as unknown as { draw: () => void }).draw();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+
+    const txt = frame.map(strip);
+    const stepLine = txt.find(l => l.includes("joc thinking")) ?? "";
+    const toolLine = txt.find(l => l.includes("joc forge")) ?? "";
+    // [STEP] reflects the actual file, not a generic cycling message
+    expect(stepLine).toContain("src/agent/engine.ts");
+    expect(stepLine).not.toContain("Transcribing instructions");
+    // [TOOL] forge line exposes the current evolution stage (double helix at the DNA step)
+    expect(toolLine).toContain("Double Helix");
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});

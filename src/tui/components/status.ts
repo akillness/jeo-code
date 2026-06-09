@@ -15,6 +15,10 @@ export interface JocStatusData {
   mutationGuarded?: boolean;
   unicode?: boolean;
   color?: boolean;
+  /** Compact evolution-stage identity (e.g. "●●○○○ Double Helix (DNA) [2/5]") shown in the
+   *  forge line so the current stage — the double helix — is always exposed, even when the
+   *  large ASCII art is dropped on short terminals. */
+  stage?: string;
 }
 
 export function progressPercent(step: number | undefined, maxSteps: number | undefined): number {
@@ -35,6 +39,7 @@ export function renderJocStatus(data: JocStatusData): string[] {
   const elapsed = `${seconds(data.elapsedMs)}s`;
   const msg = data.message ?? "thinking through the next tool call";
   const current = data.currentTool ? `forging ${data.currentTool}` : "forge idle";
+  const stage = data.stage ? `${data.stage} · ` : "";
   const ok = data.okCount ?? 0;
   const fail = data.failCount ?? 0;
   const running = data.runningCount ?? 0;
@@ -52,6 +57,6 @@ export function renderJocStatus(data: JocStatusData): string[] {
 
   return [
     `  ${categoryBadge("progress", { color: useColor })} ${cyanBold("joc thinking")} · ${msg} · step ${step}/${max} · ${pct}% ${bar} · ${elapsed}`,
-    `  ${categoryBadge("tool", { color: useColor })} ${magentaBold("joc forge")} · ${current} · tools ${total} (${toolCounts})${guard}`,
+    `  ${categoryBadge("tool", { color: useColor })} ${magentaBold("joc forge")} · ${stage}${current} · tools ${total} (${toolCounts})${guard}`,
   ];
 }

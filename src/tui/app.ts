@@ -17,7 +17,8 @@ import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
 import { renderFooter, type FooterData } from "./components/footer";
 import { getStageByIndex, renderAsciiArt, stageHeight, stageWidth, stageBlocks } from "./components/ascii-art";
-import { evolutionTrack, createStageProgress, type StageProgress, getEvolutionStatusMessage, transitionMessage } from "./components/evolution";
+import { evolutionTrack, createStageProgress, type StageProgress, transitionMessage } from "./components/evolution";
+import type { TaskSubEvent } from "../agent/task-tool";
 import { supportsUnicode } from "./components/capability";
 import { centerBlock, padLineTo, fillScreen, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
 import { resolveTheme, themeGradient } from "./components/themes";
@@ -162,6 +163,61 @@ export class LaunchTui {
         this.draw();
       },
     };
+  }
+
+  /**
+   * Real, stable "what joc is doing right now" for the [STEP] line — the in-flight tool's
+   * actual target (file / command), else the active plan step, else overall plan progress.
+   * Replaces the per-tick cycling status text so the line shows genuine content (thinking
+   * about a real file/step) instead of churning decorative messages every 120ms.
+   */
+  private currentActivity(): string {
+    const running = this.tools.currentTool();
+    if (running) {
+      const last = this.forgeSummaries[this.forgeSummaries.length - 1];
+      if (last?.title?.toLowerCase().startsWith("bash")) {
+        const cmd = last.lines.map(l => l.trim()).find(l => l.length > 0 && !l.startsWith("#"));
+        return cmd ? `bash: ${cmd}` : "bash command";
+      }
+      return last?.title ?? `running ${running}`;
+    }
+    const active = this.todos.find(t => t.status === "in_progress");
+    if (active) return `step: ${active.title}`;
+    if (this.todos.length > 0) {
+      const done = this.todos.filter(t => t.status === "done").length;
+      return `plan ${done}/${this.todos.length} complete`;
+    }
+    return "thinking through the next tool call";
+  }
+
+  /**
+   * Surface a delegated subagent's live progress (the `task` tool) in the stream region,
+   * mirroring gjc's subagent monitoring: the assignment, each nested tool call, and the
+   * final outcome — so a TUI turn shows what the subagent actually did instead of going
+   * silent until the task result box. The full findings still arrive as the task tool's
+   * own result forge box; this is the live play-by-play.
+   */
+  onSubagentEvent(e: TaskSubEvent): void {
+    if (this.finished) return;
+    const role = e.role || "subagent";
+    const ok = this.unicode ? "✓" : "v";
+    const bad = this.unicode ? "✗" : "x";
+    const detail = (e.detail ?? "").split("\n").find(l => l.trim().length > 0)?.trim().slice(0, 140) ?? "";
+    switch (e.kind) {
+      case "start":
+        this.stream.append(`${this.unicode ? "▸" : ">"} [${role}] start: ${detail}\n`);
+        break;
+      case "tool":
+        this.stream.append(`  [${role}] ${e.success === false ? bad : ok} ${detail || "tool"}\n`);
+        break;
+      case "error":
+        this.stream.append(`  [${role}] ${bad} ${detail || "error"}\n`);
+        break;
+      case "done":
+        this.stream.append(`${this.unicode ? "◂" : "<"} [${role}] done${e.success === false ? " (incomplete)" : ""}: ${detail}\n`);
+        break;
+    }
+    this.draw();
   }
 
   start(): void {
@@ -314,7 +370,8 @@ export class LaunchTui {
 
     // Bottom-pinned status + footer.
     const bottom: string[] = [];
-    const statusMsg = getEvolutionStatusMessage(stepNow, this.footer.maxSteps ?? DEFAULT_MAX_STEPS, this.tickCount);
+    const statusMsg = this.currentActivity();
+    const stageTrack = evolutionTrack(idx, { unicode: this.unicode, color: this.theme.color });
     if (isThinking) {
       if (fit) {
         const stats = this.tools.stats();
@@ -323,6 +380,7 @@ export class LaunchTui {
           maxSteps: this.footer.maxSteps,
           elapsedMs,
           message: statusMsg,
+          stage: stageTrack,
           currentTool: this.tools.currentTool(),
           okCount: stats.ok,
           failCount: stats.fail,

@@ -12,6 +12,8 @@ export interface CompactionResult {
   compacted: boolean;
   removed: number;
   summary?: string;
+  /** True when the LLM summary failed and a deterministic placeholder was used. */
+  summaryFailed?: boolean;
 }
 
 export async function maybeCompact(
@@ -69,7 +71,18 @@ export async function maybeCompact(
       removed: older.length,
       summary,
     };
-  } catch {
-    return { compacted: false, removed: 0 };
+  } catch (err) {
+    // Summarizer LLM unavailable (provider/auth/rate-limit/offline). Still bound
+    // in-memory history with a deterministic placeholder so it never grows
+    // unbounded across a session (and the prompt doesn't balloon every turn).
+    const systemMessages = hasSystem ? [history[0]] : [];
+    const next: Message[] = [
+      ...systemMessages,
+      { role: "user", content: `[Earlier conversation omitted: ${older.length} messages — summary unavailable]` },
+      ...recent,
+    ];
+    history.splice(0, history.length, ...next);
+    process.stderr.write(`[joc] compaction summary failed (${(err as Error)?.message ?? "error"}); dropped ${older.length} older messages to bound memory.\n`);
+    return { compacted: true, removed: older.length, summaryFailed: true };
   }
 }

@@ -120,7 +120,7 @@ test("maybeCompact: above threshold without system message", async () => {
   expect(history[2].content).toBe("Message 7");
 });
 
-test("maybeCompact: callLlm throws/rejects", async () => {
+test("maybeCompact: callLlm failure still bounds history with a deterministic placeholder", async () => {
   const history = makeHistory(15, true);
   const originalHistory = [...history];
 
@@ -133,8 +133,14 @@ test("maybeCompact: callLlm throws/rejects", async () => {
     keepRecent: 4,
   });
 
-  expect(result).toEqual({ compacted: false, removed: 0 });
-  expect(history).toEqual(originalHistory);
+  // Old behavior swallowed the error and left history unbounded. Now it must still
+  // trim so a persistently-failing summarizer can't grow memory across a session.
+  expect(result.compacted).toBe(true);
+  expect(result.summaryFailed).toBe(true);
+  expect(result.removed).toBe(11); // body 15 - keepRecent 4
+  expect(history.length).toBe(6); // system + placeholder + 4 recent
+  expect(history[0]).toEqual(originalHistory[0]); // system preserved
+  expect(history[1].content).toContain("Earlier conversation omitted");
 });
 
 test("maybeCompact: force lowers the trigger floor for a small history", async () => {

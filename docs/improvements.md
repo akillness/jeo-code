@@ -4496,3 +4496,53 @@ then run end-to-end in a temp project.
   `approve <relative-path>` → SUCCESS; `team` → per-task Executor loop runs (write executed), halts
   with a clear "did not converge" on the weak 0.5b model; `ultragoal` → threads team state, writes
   report + `ultragoal-state.json`. No dead-ends; the 0.5b model's content limits are clearly reported.
+
+## TUI memory + re-render hardening (long sessions, scrollback, resize) — passes 781–796
+
+**Date:** 2026-06-08 · **Dimension: CLI memory optimization + per-frame render cost.**
+
+User focus: memory optimization, memory growth over time, scrollback, and re-render
+logic/burden on screen resize — iterate, measure, retrospect, improve. Drove this with a
+read-only architect audit + a measurement harness (heap + per-frame draw time vs session length).
+
+**Baseline (measured):** StreamRegion render scaled linearly (0.5ms→34ms / 50 renders as output grew
+100→20k lines; buffer →1.16MB); LaunchTui heap +19.4MB and draw 1.5→4.5ms over 2000 steps; the art
+block was re-rendered (gradient per-char) every 120ms tick.
+
+- **781.** `StreamRegion`: replaced the unbounded `buffer += text` string with a BOUNDED line ring
+  (cap 500) + a trailing partial line. render() is now O(visible lines) and memory is flat. Measured:
+  render flat ~0.3–0.8ms regardless of output volume.
+- **782.** `ToolList`: capped rows (default 500) with a `dropped` offset so `start()` returns an
+  ABSOLUTE index and `finish()` stays valid across front-trims; `(+N earlier)` and `stats().total`
+  account for dropped rows. No-op in normal turns (≤25 rows); flattens pathological ones.
+- **783.** `ToolList.currentTool()` iterates backwards instead of `[...rows].reverse().find()` — no
+  per-frame copy/allocation.
+- **784.** (HIGH per-frame) Fixed the defeated art cache in `app.ts`: the guard was `|| isThinking`,
+  forcing a full gradient re-render every 120ms even for frameless stages (2/3/4 are byte-identical).
+  Now keyed on the EFFECTIVE animation frame (`tickCount % stageBlocks(stage).length`) → frameless
+  stages render ONCE, animated stages cache their 2–3 distinct frames. Measured: frameless-stage draw
+  4µs/frame (was rebuilding gradient art + O(width²) truncate every tick).
+- **785.** `terminal.ts` `truncate()`: O(width²)→O(length) on heavily color-escaped (gradient) lines
+  via a sticky SGR regex (no per-escape `line.slice(i)` allocation).
+- **786.** (only true cross-session leak) `compaction.ts`: a failed summarizer LLM call used to be
+  swallowed (`catch → {compacted:false}`), leaving in-memory history unbounded across a session under
+  a persistently-failing summarizer. Now falls back to a deterministic placeholder (drops the older
+  block, keeps system + recent) so history stays bounded, and surfaces the failure on stderr.
+- **787.** `app.ts` `finished` guard: `draw()` and the async `readWorkflowState().then()` no longer
+  repaint a live frame after `finish()` printed the static output (post-finish race).
+- **788.** `launch.ts`: added an idle-prompt `process.stdout.on("resize")` that re-syncs the reserved
+  footer scroll region + redraws (the live-turn path was already covered by the 120ms tick + the
+  renderer's width-change full clear).
+- **789–796.** Measurement-driven verify/retrospect loop + tests: StreamRegion ring cap; ToolList
+  stable-index cap; compaction deterministic fallback; plus re-benchmarks confirming flat heap
+  (+19.4MB→+3.6MB / 2000 steps) and flat per-frame draw (1.5–4.5ms→~1.0ms; frameless 4µs/frame).
+
+### Already-correct (confirmed bounded, not changed)
+Renderer prev[] bounded by `frame.slice(0,rows)`; width-change full clear (resize-safe); in-place
+writes (no scrollback growth, one console.log/turn); per-turn LaunchTui GC; forgeSummaries cap 8;
+timer cleared in finish() on all paths; SIGINT + picker keypress listeners balanced.
+
+### Verification (passes 781–796)
+- `bun run typecheck` → **0 errors**. `bun test` → **506 pass / 0 fail**.
+- Harness: StreamRegion render flat; LaunchTui heap +3.6MB (was +19.4MB) over 2000 steps; draw ~1.0ms
+  flat; frameless-stage draw 4µs/frame (art cached once, cachedFrame=0).

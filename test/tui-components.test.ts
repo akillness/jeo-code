@@ -104,3 +104,23 @@ test("renderFooter includes model, step 2/25, 2s and omits step when undefined",
   });
   expect(stripAnsi(footer3)).toBe("claude (anthropic) · step 3/10 · 4s · 1a2b3c4d · \u25cf\u25cf\u25cf\u25cb\u25cb Tool User (Homo Habilis) [3/5]");
 });
+
+test("StreamRegion caps retained lines so memory stays flat over a long session", () => {
+  const s = new StreamRegion(3);
+  for (let i = 0; i < 100; i++) s.append(`line${i}\n`);
+  expect(s.render(80)).toEqual(["line97", "line98", "line99"]); // only the last `cap` lines retained
+});
+
+test("ToolList caps rows but keeps finish() indices stable across front trims", () => {
+  const t = new ToolList(2);
+  t.start("a");            // abs 0
+  const i1 = t.start("b"); // abs 1
+  const i2 = t.start("c"); // abs 2 → exceeds cap 2 → drops "a" (dropped=1)
+  t.finish(i2, true);      // resolves to "c" despite the trim
+  t.finish(i1, false);     // resolves to "b"
+  expect(t.stats().total).toBe(3); // dropped(1) + retained(2)
+  const out = t.render(undefined, { color: false }).join("\n");
+  expect(out).toContain("c ok");
+  expect(out).toContain("b FAILED");
+  expect(out).toContain("(+1 earlier)");
+});

@@ -46,6 +46,11 @@ export function isTTY(): boolean {
  * is cut while a color is active, a reset (`\x1b[0m`) is appended so trailing
  * frame content is not tinted by a dangling color.
  */
+// Sticky SGR matcher reused across truncate() calls so a heavily color-escaped
+// line (e.g. a per-char gradient) is scanned in O(length) without allocating a
+// fresh `line.slice(i)` substring at every escape.
+const SGR_STICKY = /\x1b\[[0-9;]*m/y;
+
 export function truncate(line: string, cols: number): string {
   const limit = Math.max(0, cols);
   // Fast path: no escapes → plain slice by length.
@@ -58,7 +63,8 @@ export function truncate(line: string, cols: number): string {
   let i = 0;
   while (i < line.length) {
     if (line[i] === "\x1b") {
-      const m = /^\x1b\[[0-9;]*m/.exec(line.slice(i));
+      SGR_STICKY.lastIndex = i;
+      const m = SGR_STICKY.exec(line);
       if (m) {
         out += m[0];
         sawEscape = true;

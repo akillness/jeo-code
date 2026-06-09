@@ -5567,3 +5567,27 @@ contracts consistently.
 ### Verification (pass 868)
 - Focused: `bun test test/compaction.test.ts test/deep-interview.test.ts test/subagents.test.ts test/task-tool.test.ts test/team-subagent.test.ts test/team-run.test.ts` → **52 pass / 0 fail**.
 - Full: `bun run typecheck` → 0 errors; `bun test` → **678 pass / 0 fail**; `bun run build` → ok.
+
+## External meta-skill hijack guard — pass 869
+
+**Date:** 2026-06-09 · **Dimensions: skill-routing correctness, prompt-noise reduction, foreign-skill compatibility.**
+
+A reproduced user issue showed `joc` surfacing a huge external `skill` meta-skill dump (`Skill: skill …`)
+instead of doing normal work. The root cause was not the built-in workflow surface itself; it was the
+interaction between foreign runtime skill packs under `~/.agents/skills/` and `joc`'s generic skill
+loader/executor. A meta-skill literally named `skill` is valid in another runtime, but in `joc` it
+collides conceptually with the built-in `/skill` command and creates noisy/accidental execution paths.
+
+- **869a.** `loadSkills()` now skips hidden external/system skill directories and ignores external
+  skills whose names collide with built-in command names (for example `skill`, `model`, `provider`,
+  etc.). Bundled workflow skills are unaffected.
+- **869b.** `buildSkillTask()` now injects a compact `<skill_guidance>` brief instead of the full
+  `formatSkill()` dump, so even an explicit skill invocation no longer floods the prompt or TUI with
+  `Skill: … / Command: … / Details: …` boilerplate.
+- **869c.** Focused regressions cover both protections: hidden/system external skills stay hidden,
+  reserved-name external skills are skipped, and execution tasks no longer embed the full `formatSkill`
+  banner.
+
+### Verification (pass 869)
+- Focused: `bun test test/skills.test.ts test/skills-config.test.ts test/slash.test.ts test/autocomplete.test.ts` → **59 pass / 0 fail**.
+- Full: `bun run typecheck` → 0 errors; `bun test` → **679 pass / 0 fail**; `bun run build` → ok.

@@ -1,8 +1,42 @@
 import { test, expect } from "bun:test";
+import { openaiRequest } from "../src/ai/providers/openai";
+import { thinkingToReasoningEffort } from "../src/ai/model-manager";
 import { retryableStream, resolveRetryOptions } from "../src/ai/model-manager";
 import { nearestToolName } from "../src/agent/engine";
 import { anthropicPayload, totalInputTokens } from "../src/ai/providers/anthropic";
 import { defaultRetryable } from "../src/util/retry";
+
+const apiKey = { kind: "api_key" as const, provider: "openai" as const, token: "k" };
+
+test("thinkingToReasoningEffort: maps levels to o-series-safe tiers", () => {
+  expect(thinkingToReasoningEffort("minimal")).toBe("low");
+  expect(thinkingToReasoningEffort("low")).toBe("low");
+  expect(thinkingToReasoningEffort("medium")).toBe("medium");
+  expect(thinkingToReasoningEffort("high")).toBe("high");
+  expect(thinkingToReasoningEffort("xhigh")).toBe("high");
+  expect(thinkingToReasoningEffort(undefined)).toBeUndefined();
+});
+
+test("openaiRequest: reasoning models get reasoning_effort + max_completion_tokens, no temperature", () => {
+  const msgs = [{ role: "user" as const, content: "hi" }];
+  for (const model of ["o3", "gpt-5.1"]) {
+    const { body } = openaiRequest(msgs, { model, maxTokens: 500, reasoningEffort: "high" } as any, apiKey, false);
+    const p = JSON.parse(body);
+    expect(p.reasoning_effort).toBe("high");
+    expect(p.max_completion_tokens).toBe(500);
+    expect(p.temperature).toBeUndefined();
+    expect(p.max_tokens).toBeUndefined();
+  }
+});
+
+test("openaiRequest: classic chat models keep temperature + max_tokens, no reasoning_effort", () => {
+  const { body } = openaiRequest([{ role: "user" as const, content: "hi" }], { model: "gpt-4o", maxTokens: 500, reasoningEffort: "high" } as any, apiKey, false);
+  const p = JSON.parse(body);
+  expect(p.max_tokens).toBe(500);
+  expect(p.temperature).toBe(0.2);
+  expect(p.reasoning_effort).toBeUndefined();
+  expect(p.max_completion_tokens).toBeUndefined();
+});
 
 // --- 820: stream initial-connect retry ---
 

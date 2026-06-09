@@ -5100,3 +5100,20 @@ thinking"; and supplement the missing subagent progress/result summary (ref. gjc
   tools + result summary; boxed `[STEP]`/`[TOOL]` real-content + double-helix assertions.
 - **Live (real PTY, ollama fast):** `joc launch "read package.json …" --model fast --max-steps 2`
   ran a real turn (4110 tokens in) and exited cleanly (EXIT=0).
+
+## Subagent monitor: nested tool calls show the real target — pass 840
+
+**Date:** 2026-06-08 · **Dimension: subagent monitoring fidelity (gjc parity, follow-up to 839c).**
+
+- **840.** The subagent live monitor (`onSubagentEvent`) and the task tool's own step trace showed
+  only the bare tool NAME (`✓ read`, `✓ bash`) for each nested call — gjc shows the actual target.
+  Added a local `toolTarget(tool, args)` in task-tool.ts and hooked the subagent loop's `onAssistant`
+  to capture each invocation's concrete target, surfaced via `onToolResult`: now `read src/x.ts`,
+  `bash: bun test` (first line only, capped), `edit <file>`, `find <glob>`, `search <pat>`,
+  `task <role>`. Kept local (no TUI import into the agent layer).
+
+### Verification (pass 840)
+- `bun run typecheck` → 0 errors. `bun test` → **607 pass / 0 fail**. `bun run build` → ok.
+- Updated the existing task-tool event test (`find` → `find *`) and added a test asserting `read`
+  surfaces `read src/agent/engine.ts` and `bash` surfaces `bash: echo hi` (first line only) in both
+  the live events and the result trace.

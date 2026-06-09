@@ -37,8 +37,31 @@ test("createTaskTool: executor delegates, runs a tool, then completes on done", 
   expect(res.output).toContain("scaffold ready");
   expect(res.output).toContain("✓ find");
   expect(events.some(e => e.startsWith("executor:start"))).toBe(true);
-  expect(events.some(e => e === "executor:tool:find")).toBe(true);
+  expect(events.some(e => e === "executor:tool:find *")).toBe(true); // detail carries the glob target
   expect(events.some(e => e.startsWith("executor:done"))).toBe(true);
+});
+
+test("createTaskTool: subagent tool events carry the concrete target (file/command), not just the name", async () => {
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      if (turn === 1) return JSON.stringify({ tool: "read", arguments: { filePath: "src/agent/engine.ts" } });
+      if (turn === 2) return JSON.stringify({ tool: "bash", arguments: { command: "echo hi\nsecond line" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "ok" } });
+    },
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const toolEvents: string[] = [];
+  const tool = createTaskTool({
+    config: { defaultModel: "ollama/fast", subagents: {} },
+    onEvent: e => { if (e.kind === "tool") toolEvents.push(e.detail ?? ""); },
+  });
+  const res = await tool({ role: "executor", task: "inspect" }, await tmpDir());
+
+  expect(toolEvents).toContain("read src/agent/engine.ts"); // file target, not bare "read"
+  expect(toolEvents).toContain("bash: echo hi");            // first command line only
+  expect(res.output).toContain("read src/agent/engine.ts"); // trace also carries the enriched target
 });
 
 test("createTaskTool: unknown explicit role is rejected instead of executor fallback", async () => {

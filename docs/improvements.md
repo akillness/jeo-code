@@ -5162,3 +5162,29 @@ turn only exposed the final reply (or sparse tool-result lines) instead of the l
 - `bun run typecheck` → **0 errors**.
 - `bun test` → **612 pass / 0 fail**.
 - `bun run build` → **success**.
+
+## Plain/cmd-mode flow actually shows steps + results — pass 845
+
+**Date:** 2026-06-08 · **Dimension: non-TTY turn visibility (user-reported; gjc parity).**
+
+User: entering a request via cmd shows neither the operation results nor the steps — the whole
+flow looks like it does nothing.
+
+- **845.** In non-TTY / `--no-tui` / piped mode the turn used `streamEvents`, which only had
+  `onToolResult` + `onError` — no `onStep`, no `onAssistant`. So step progress and the tool being
+  run were never printed, and a turn that finished without a tool call (or before the first
+  result) showed ONLY the final reply (the README already claimed `[step N/M] <tool target>`
+  streaming — it was aspirational, not wired). Extracted `createStreamEvents(maxSteps, log?)`
+  (exported, testable) that surfaces every step header with the real tool target (via
+  `summarizeForgeInvocation`), each result (with the failing-output tail), and errors — the
+  cmd-mode equivalent of the live TUI. Also enriched the non-TUI subagent `onEvent` to print
+  start / nested tool / done (was tool-only).
+
+### Verification (pass 845)
+- `bun run typecheck` → 0 errors. `bun test` → **613 pass / 0 fail**. `bun run build` → ok.
+- New `stream-events.test.ts`: unit (step header + target + result tail; `done`/invalid emit
+  nothing) AND an **end-to-end** test that runs the real `runLaunchCommand` one-shot flow with a
+  mocked tool-calling model and asserts `[step 1/3] read note.txt`, `✓ read note.txt`, and the
+  final reply all print.
+- Live: piped `--no-tui` turn runs and exits cleanly (the local 0.5b model rarely emits tool
+  calls, so tool lines are covered by the e2e mock test rather than the live run).

@@ -1,6 +1,9 @@
 import { test, expect } from "bun:test";
 import { LaunchTui } from "../src/tui/app";
 import { hideCursor, showCursor, clearToEnd } from "../src/tui/terminal";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 
 test("LaunchTui.usable is false under a non-TTY test process", () => {
   expect(LaunchTui.usable(false)).toBe(false); // bun test stdout is not a TTY
@@ -23,6 +26,57 @@ test("LaunchTui: footer defaults to 25 steps when maxSteps is omitted", () => {
   expect(out.join("")).toContain("step 3/25");
 });
 
+test("LaunchTui: setTodos renders a plan checklist in live and final output", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
+  tui.start();
+  tui.setTodos([
+    { title: "Scaffold module", status: "done" },
+    { title: "Write tests", status: "in_progress" },
+    { title: "Run suite", status: "pending" },
+  ]);
+  const live = out.join("");
+  expect(live).toContain("Plan");
+  expect(live).toContain("Scaffold module");
+  expect(live).toContain("Write tests");
+
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => logged.push(a.join(" "));
+  try {
+    tui.finish("done");
+  } finally {
+    console.log = origLog;
+  }
+  const finalText = logged.join("\n");
+  expect(finalText).toContain("Run suite"); // plan retained in static output
+});
+
+test("LaunchTui: corrupt deep-interview state shows fail-closed mutation lock", async () => {
+  const originalCwd = process.cwd();
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-tui-lock-"));
+  try {
+    await fs.mkdir(path.join(dir, ".joc", "state"), { recursive: true });
+    await fs.writeFile(path.join(dir, ".joc", "state", "deep-interview-state.json"), "{ nope", "utf8");
+    process.chdir(dir);
+
+    const out: string[] = [];
+    const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
+    tui.start();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(out.join("")).toContain("MUTATION LOCKED");
+    const origLog = console.log;
+    console.log = () => {};
+    try {
+      tui.finish("done");
+    } finally {
+      console.log = origLog;
+    }
+  } finally {
+    process.chdir(originalCwd);
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
 test("LaunchTui: live region renders tool list + footer, finish collapses to static output", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", sessionId: "abcd1234efgh", write: s => out.push(s) });

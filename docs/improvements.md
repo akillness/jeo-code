@@ -4615,3 +4615,43 @@ The `team` executor now fails safe when a plan references subagent roles.
 - `bun run typecheck` → **0 errors**.
 - `bun test` → **pass** (current workspace: 515 pass / 0 fail).
 - `bun run build` → **success**.
+
+## Interactive subagent delegation + agent-declared task plan — pass 805
+
+**Date:** 2026-06-09 · **Dimension: agentic workflow / GJC tool-surface parity (`task`, `todo_write`).**
+
+The interactive agent could only `read/write/edit/bash/find/search`. The subagent registry
+(`subagents.ts`) existed but was reachable only from `joc team` — the launch agent could not
+delegate, and it had no way to declare a plan the user could watch. Two gjc-parity tools close
+that gap, both wired into the launch tool-loop and TUI.
+
+- **805.** New `src/agent/task-tool.ts` `createTaskTool({config, signal, onEvent})` returns a
+  `task` ToolHandler. It runs a nested `runAgentLoop` with the role's system prompt, model
+  (`resolveSubagentModel`), step budget (`resolveSubagentMaxSteps`), and `subagentToolset(role)`
+  — so read-only roles (planner/architect/critic) physically cannot mutate the repo, explicit role
+  typos fail instead of falling back to the mutating executor, and delegation cannot recurse (the
+  subagent toolset never includes `task`). The launch loop builds `{ ...DEFAULT_TOOLS, task }` per
+  turn with the active session model as the fallback and threads `ac.signal` so Ctrl-C cancels
+  nested work. System prompt advertises `task {role, task, context?}`.
+- **806.** New `src/agent/todo-tool.ts` `createTodoTool({onChange})` returns a `todo` ToolHandler.
+  It parses `{todos:[{title,status}]}` (or a `items:[string]` shorthand), normalizes loose status
+  strings, and auto-promotes the first pending item to `in_progress` when nothing is active. The
+  launch loop wires `onChange → tui.setTodos(...)`.
+- **807.** `LaunchTui` gained `setTodos()` + `renderPlan()`: the plan renders as a status-colored
+  "Plan" checklist (reusing the step-timeline component) above the tool list in the live frame and
+  is retained in the static final output. Height is accounted for in the differential renderer's
+  `fixedHeight`; an empty plan adds zero rows (no regression to existing TUI height bounds).
+- **808.** `LaunchTui` now reads the deep-interview lock with the same strict fail-closed semantics
+  as the engine MutationGuard. A corrupt `.joc/state/deep-interview-state.json` displays
+  `[MUTATION LOCKED]` instead of falsely showing an unlocked footer while edits are blocked.
+
+### Verification (passes 805–808)
+
+- `bun run typecheck` → **0 errors**.
+- `bun test test/task-tool.test.ts test/todo-tool.test.ts test/tui-app.test.ts` → **21 pass / 0 fail**
+  (executor delegation runs a tool then completes; explicit unknown role is rejected; omitted role
+  defaults to executor; read-only architect's `write` is absent so no file is created; todo status
+  normalization + auto-promotion + soft-fail on bad input; TUI plan checklist and fail-closed
+  mutation-lock rendering are covered).
+- `bun test` → **530 pass / 0 fail**.
+- `bun run build` → **success**.

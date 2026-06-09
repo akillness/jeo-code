@@ -154,11 +154,18 @@ export function parseSkillMarkdown(name: string, content: string): SkillDoc {
       if (!fm) continue;
       const key = fm[1]!.toLowerCase().replace(/[\s_-]+/g, "");
       let value = fm[2]!.trim().replace(/^["']|["']$/g, "");
-      if (value === ">" || value === "|") {
+      // YAML block scalar indicator `>` / `|` (with optional chomping `+`/`-`). Also fold in
+      // the invalid-but-ubiquitous lead-in form real SKILL.md files use, e.g.
+      // `description: Use this skill when >` followed by an indented continuation block —
+      // otherwise the summary is the truncated nonsense "Use this skill when >".
+      // Require whitespace before the indicator (or the whole value) so a description that
+      // merely ENDS in `>` (e.g. "returns <T>") is left intact.
+      if (/(?:^|\s)[>|][+-]?$/.test(value)) {
+        const lead = value.replace(/\s*[>|][+-]?$/, "").trim();
         const block: string[] = [];
         for (idx++; idx < lines.length && /^\s+/.test(lines[idx] ?? ""); idx++) block.push(lines[idx]!.trim());
         idx--;
-        value = block.join(" ").replace(/\s+/g, " ").trim();
+        value = [lead, block.join(" ")].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
       }
       meta[key] = value;
     }

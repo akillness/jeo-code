@@ -8,8 +8,24 @@ import {
   getSkill,
   skillNames,
   formatSkill,
-  skillsPromptSection
+  skillsPromptSection,
+  parseSkillMarkdown,
 } from "../src/skills/catalog";
+
+test("parseSkillMarkdown folds YAML block scalars and the lead-in '... >' form", () => {
+  // plain block scalar
+  expect(parseSkillMarkdown("a", "---\ndescription: >\n  Hello block scalar.\n---\n").summary)
+    .toBe("Hello block scalar.");
+  // invalid-but-ubiquitous lead-in form: "<text> >" + indented continuation
+  expect(parseSkillMarkdown("b", "---\ndescription: Use this skill when >\n  doing TDD work.\n---\n").summary)
+    .toBe("Use this skill when doing TDD work.");
+  // chomping indicator with lead-in
+  expect(parseSkillMarkdown("c", "---\ndescription: Lead >-\n  rest of it.\n---\n").summary)
+    .toBe("Lead rest of it.");
+  // a description that merely ENDS in '>' (no whitespace before) must be left intact
+  expect(parseSkillMarkdown("d", "---\ndescription: returns Promise<T>\n---\nbody").summary)
+    .toBe("returns Promise<T>");
+});
 
 test("skillNames returns all four skills", () => {
   const names = skillNames();

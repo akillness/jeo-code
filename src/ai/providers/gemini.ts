@@ -90,6 +90,8 @@ export const geminiAdapter: ProviderAdapter = {
     if (!response.ok) throw await providerHttpError("Gemini", response, "(stream)");
     if (!response.body) return;
     let lastUsage: GeminiChunk["usageMetadata"];
+    let yieldedAny = false;
+    let lastEmptyReason: string | undefined;
     for await (const data of readSse(response.body)) {
       let chunk: GeminiChunk;
       try {
@@ -98,10 +100,18 @@ export const geminiAdapter: ProviderAdapter = {
         continue;
       }
       const delta = textOf(chunk);
-      if (delta) yield delta;
+      if (delta) {
+        yieldedAny = true;
+        yield delta;
+      } else {
+        lastEmptyReason = blockedReason(chunk) ?? lastEmptyReason;
+      }
       // Gemini emits cumulative usageMetadata on most chunks; capture the last and
       // report ONCE after the stream so an accumulating sink can't over-count.
       if (chunk.usageMetadata) lastUsage = chunk.usageMetadata;
+    }
+    if (!yieldedAny && lastEmptyReason) {
+      throw new Error(`Gemini returned no content (${lastEmptyReason}).`);
     }
     if (lastUsage) {
       options.onUsage?.({ inputTokens: lastUsage.promptTokenCount, outputTokens: lastUsage.candidatesTokenCount });

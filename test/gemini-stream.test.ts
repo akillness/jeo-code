@@ -29,3 +29,26 @@ test("geminiAdapter.stream: concatenates SSE text deltas + reports usage", async
     globalThis.fetch = prevFetch;
   }
 });
+
+test("geminiAdapter.stream: throws on blocked empty SSE response", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      sseStream([
+        'data: {"promptFeedback":{"blockReason":"SAFETY"}}\n\n',
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } }
+    )) as typeof fetch;
+  try {
+    const opts: CallOptions = { model: "gemini-2.5-flash" };
+    const cred = { kind: "api_key", provider: "gemini", token: "k" } as const;
+    const run = async () => {
+      for await (const _ of geminiAdapter.stream!([{ role: "user", content: "hi" }], opts, cred)) {
+        // consume stream
+      }
+    };
+    await expect(run()).rejects.toThrow("Gemini returned no content (blockReason=SAFETY).");
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});

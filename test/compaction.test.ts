@@ -202,6 +202,28 @@ test("maybeCompact: caps the summarizer input so compaction cannot create a huge
   expect(history[1].content).toBe("recent");
 });
 
+test("maybeCompact: truncates oversized generated summaries before reinserting", async () => {
+  mockCallLlm = async () => "S".repeat(500);
+  const history: Message[] = [
+    { role: "user", content: "older".repeat(40) },
+    { role: "assistant", content: "middle".repeat(40) },
+    { role: "user", content: "recent" },
+  ];
+
+  const result = await maybeCompact(history, {
+    maxMessages: 40,
+    maxChars: 120,
+    keepRecent: 1,
+    maxSummaryInputChars: 80,
+  });
+
+  expect(result.compacted).toBe(true);
+  expect(history.length).toBe(2);
+  expect(history[0].content.length).toBeLessThanOrEqual(120);
+  expect(history[0].content.endsWith("…") || history[0].content.includes("truncated")).toBe(true);
+  expect(history[1].content).toBe("recent");
+});
+
 test("maybeCompact: truncates oversized recent messages so char-budget compaction converges", async () => {
   mockCallLlm = async () => "RECENT-SUMMARY";
   const history: Message[] = [

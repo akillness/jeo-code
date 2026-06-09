@@ -5492,4 +5492,28 @@ with a skill routing brief instead of doing the concrete coding-agent task.
 ### Verification (pass 865)
 - Focused: `bun test test/skills.test.ts test/skills-config.test.ts test/stream-events.test.ts` →
   **27 pass / 0 fail**.
-- Full: `bun run typecheck` → 0 errors; `bun test` → **656 pass / 0 fail**.
+- Full gate after provider/TUI follow-up: `bun run typecheck` → 0 errors; `bun test` → **658 pass / 0 fail**.
+
+## Provider/TUI context hardening from fresh architect review — pass 866
+
+**Date:** 2026-06-09 · **Dimensions: provider correctness, TUI resilience, compaction memory bounds.**
+
+A read-only architect review of OAuth/provider, TUI, and compaction paths found three small,
+high-leverage correctness gaps that fit this session's “no model/provider/TUI surprises” goal.
+
+- **866a.** Gemini streaming now mirrors the non-stream `call()` guard: if an SSE response yields no
+  text and reports `promptFeedback.blockReason` or a non-STOP finish reason, the adapter throws
+  `Gemini returned no content (...)` instead of silently producing an empty assistant turn.
+- **866b.** The 120ms live TUI animation interval now catches transient render exceptions so resize
+  or component-state races do not abort the CLI mid-turn.
+- **866c.** Compaction now caps oversized generated summaries before reinserting them into history,
+  keeping post-compaction context bounded even when the summarizer itself returns excessive text.
+  User-triggered `/compact` keeps its previous useful behavior instead of truncating the summary to
+  the force-mode trigger floor.
+- **866d.** Focused regressions cover blocked Gemini SSE, oversized compaction summaries, and the
+  existing TUI app path.
+
+### Verification (pass 866)
+- Focused: `bun test test/gemini-stream.test.ts test/compaction.test.ts test/tui-app.test.ts test/skills.test.ts test/skills-config.test.ts test/stream-events.test.ts` →
+  **52 pass / 0 fail**.
+- Full: `bun run typecheck` → 0 errors; `bun test` → **658 pass / 0 fail**.

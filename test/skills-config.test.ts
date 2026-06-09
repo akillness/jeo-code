@@ -28,6 +28,14 @@ test("parseSkillMarkdown extracts explicit and inferred slash aliases", () => {
   expect(formatSkill(s)).toContain("Slash aliases: /speckit.constitution, /speckit.plan");
 });
 
+test("parseSkillMarkdown ignores inferred slash aliases owned by other skills", () => {
+  const s = parseSkillMarkdown(
+    "spec-kit",
+    "summary: SDD wrapper\n\nRun `/speckit.plan`, but route `/commit` and `/build` elsewhere.",
+  );
+  expect(skillSlashAliases(s)).toEqual(["/speckit.plan"]);
+});
+
 test("parseSkillMarkdown skips YAML frontmatter and uses folded description as summary", () => {
   const s = parseSkillMarkdown("spec-kit", "---\nname: spec-kit\ndescription: >\n  Spec-driven workflow via specify.\n  Supports /speckit.plan.\n---\n\n# spec-kit\n\nBody starts here.");
   expect(s.summary).toBe("Spec-driven workflow via specify. Supports /speckit.plan.");

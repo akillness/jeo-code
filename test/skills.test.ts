@@ -27,6 +27,13 @@ test("parseSkillMarkdown folds YAML block scalars and the lead-in '... >' form",
     .toBe("returns Promise<T>");
 });
 
+test("parseSkillMarkdown caps oversized details to keep skill invocation prompts bounded", () => {
+  const giant = "detail line\n".repeat(1200);
+  const parsed = parseSkillMarkdown("huge", `---\nsummary: big\n---\n${giant}`);
+  expect(parsed.details.length).toBeLessThanOrEqual(8_000);
+  expect(parsed.details.endsWith("…")).toBe(true);
+});
+
 test("skillNames returns all four skills", () => {
   const names = skillNames();
   expect(names.length).toBe(4);

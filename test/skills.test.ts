@@ -10,7 +10,26 @@ import {
   formatSkill,
   skillsPromptSection,
   parseSkillMarkdown,
+  buildSkillTask,
 } from "../src/skills/catalog";
+
+test("buildSkillTask: drives execution with real tools, not a skill-named tool call", () => {
+  const skill = parseSkillMarkdown("demo", "---\ndescription: Demo\nslash: /demo\n---\n# Demo\nCreate demo-output.txt.");
+  const task = buildSkillTask(skill, "make the file", "/demo");
+  // Explicitly forbids the failure we reproduced (model calling a tool named "demo").
+  expect(task).toContain('Do NOT emit a tool call named "demo"');
+  expect(task).toContain("Use your real tools");
+  expect(task).toContain("User intent: make the file");
+  expect(task).toContain("Invoked as: /demo");
+  expect(task).toContain("Create demo-output.txt"); // skill guidance injected
+});
+
+test("buildSkillTask: no intent → still instructs the agent to carry out the workflow", () => {
+  const skill = parseSkillMarkdown("demo", "# Demo\nDo a thing.");
+  const task = buildSkillTask(skill, "");
+  expect(task).toContain("Carry out this skill's workflow now");
+  expect(task).not.toContain("Invoked as:");
+});
 
 test("parseSkillMarkdown folds YAML block scalars and the lead-in '... >' form", () => {
   // plain block scalar

@@ -5248,3 +5248,29 @@ execution path or allow context to grow from a few huge skill/rule packets.
 ### Verification (passes 850–856)
 - Focused: `bun test test/compaction.test.ts test/context-files.test.ts test/provider-status.test.ts test/doctor.test.ts test/model-manager.test.ts test/skills.test.ts` → **40 pass / 0 fail**.
 - `bun run typecheck` → 0 errors; full `bun test` → **625 pass / 0 fail**; `bun run build` → ok.
+## Skill slash actually executes + visible model-wait status — pass 857
+
+**Date:** 2026-06-09 · **Dimensions: skill invocation correctness, TUI progress legibility.**
+
+Reported + reproduced in `joc --tmux` (ollama): invoking a slash skill (`/demo`, `/speckit.*`)
+**read/echoed the skill doc but ran no real work** — the model emitted a tool call named after the
+skill (`[01:TOOL] demo → failed`) and the target file was never created; and during the model wait
+**nothing showed** what was happening.
+
+- **857a.** New exported `buildSkillTask(skill, intent, invokedAs?)` reframes the turn so the agent
+  EXECUTES the skill: it states the skill is GUIDANCE (not a callable tool), explicitly forbids
+  emitting a tool call named after the skill, and directs use of the real tools
+  (read/write/edit/bash/find/search/ls/task/todo) before `done`. `runSkillInvocation` now calls it and
+  **drops the full-doc `console.log` dump** (the "only reads the file" symptom) for a concise banner;
+  the live TUI shows progress and the final reply is the skill's result. Live re-verify: the bogus
+  skill-named tool call is gone (`called demo tool: false`).
+- **857b.** `LaunchTui` tracks a `thinking` phase (set on `onStep`, cleared on `onAssistant`) and the
+  status line now reads **`calling model (<model>)…`** while waiting on the model — so the wait is no
+  longer an opaque pause. Live re-verify: `calling model` shown during the turn.
+
+### Verification (pass 857)
+- `bun run typecheck` → 0 errors. `bun test` → **630 pass / 0 fail**. `bun run build` → ok.
+- New tests: `buildSkillTask` forbids the skill-named tool call + injects intent/guidance (and the
+  no-intent variant); `LaunchTui` shows `calling model (m1)` after `onStep` and not after `onAssistant`.
+- Live (tmux, ollama): `/demo` no longer calls a `demo` tool and the `calling model` status renders
+  (the weak 0.5b model still can't complete the write — a model limitation, not the framing bug).

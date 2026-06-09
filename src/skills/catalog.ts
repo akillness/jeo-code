@@ -60,6 +60,28 @@ export function formatSkill(s: SkillDoc): string {
   ].filter(Boolean).join("\n");
 }
 
+/**
+ * Build the agent task that EXECUTES a skill's workflow (rather than merely echoing
+ * the doc or — as weak models do — calling a bogus tool named after the skill). The
+ * skill text is injected as GUIDANCE and the agent is told to use its real tools.
+ */
+export function buildSkillTask(skill: SkillDoc, intent: string, invokedAs?: string): string {
+  const requested = invokedAs ? `Invoked as: ${invokedAs}\n` : "";
+  return [
+    `You are now executing the "${skill.name}" workflow skill in this repository.`,
+    `IMPORTANT: this skill is GUIDANCE for you — it is NOT a callable tool. Do NOT emit a tool call named "${skill.name}". Use your real tools (read, write, edit, bash, find, search, ls, task, todo) to carry out the work, then call done with a short summary.`,
+    "",
+    `--- ${skill.name} skill ---`,
+    formatSkill(skill),
+    `--- end skill ---`,
+    "",
+    requested +
+      (intent
+        ? `User intent: ${intent}`
+        : "Carry out this skill's workflow now. If it needs a concrete target you weren't given, make a reasonable assumption or ask the user via done."),
+  ].join("\n");
+}
+
 export function skillsPromptSection(skills: SkillDoc[] = SKILLS): string {
   const lines: string[] = [];
   let used = 0;

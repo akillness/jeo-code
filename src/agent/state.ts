@@ -76,6 +76,7 @@ export interface WorkflowState {
   initial_idea?: string;
   current_ambiguity?: number;
   threshold?: number;
+  threshold_source?: string;
   seed_path?: string;
   plan_path?: string;
   completed_tasks?: string[];

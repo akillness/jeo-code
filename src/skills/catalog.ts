@@ -12,9 +12,9 @@ export const SKILLS: SkillDoc[] = [
   {
     name: "deep-interview",
     command: 'joc deep-interview "<idea>"',
-    summary: "Socratic ambiguity gate, freezes a seed at ambiguity ≤ 20%; --auto for non-interactive.",
+    summary: "Socratic ambiguity gate; freezes a seed only when clarity is sufficient, with --auto for non-interactive clarification.",
     whenToUse: "When an idea is vague and needs requirement gathering and refinement before planning.",
-    details: "Initiates a Socratic dialogue to ask clarifying questions about a vague idea.\nScores the ambiguity of the proposal and iterates until it is under 20%.\nSaves a structured requirements seed that can be used by subsequent workflows.\nSupports an --auto flag to skip interaction."
+    details: "Initiates a Socratic dialogue to ask clarifying questions about a vague idea.\nScores the ambiguity of the proposal and iterates until it is under 20%.\nFreezes a structured requirements seed only after concrete acceptance criteria exist.\nSupports an --auto flag for non-interactive clarification without bypassing the ambiguity gate."
   },
   {
     name: "ralplan",

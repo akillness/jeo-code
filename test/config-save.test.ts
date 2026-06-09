@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { saveConfigPatch, readRawGlobalConfig } from "../src/agent/state";
+import { setApiKey, setOauthToken } from "../src/auth/storage";
 
 let dir: string;
 const saved = {
@@ -61,4 +62,20 @@ test("saveConfigPatch builds the patch from the RAW on-disk config, not the env 
   expect(raw.subagents?.planner?.model).toBe("gpt-4o"); // pre-existing override preserved
   expect(raw.subagents?.critic?.maxSteps).toBe(8); // new patch merged
   expect(raw.roles?.smol).toBeUndefined(); // env tier not present in raw config
+});
+
+test("auth storage setters persist onto the RAW config — no env-only values baked in", async () => {
+  process.env.OLLAMA_HOST = "http://env-ollama:9999"; // readGlobalConfig would overlay this
+  process.env.JOC_DEFAULT_MODEL = "gemini-flash-latest";
+  try {
+    await setApiKey("anthropic", "sk-test-key");
+    await setOauthToken("openai", "oauth-token-x");
+    const onDisk = JSON.parse(await fs.readFile(path.join(dir, "config.json"), "utf-8"));
+    expect(onDisk.providers.anthropic).toBe("sk-test-key"); // the intended write persisted
+    expect(onDisk.oauth.openai).toBe("oauth-token-x");
+    expect(onDisk.ollamaBaseUrl).toBeUndefined(); // env OLLAMA_HOST NOT baked
+    expect(onDisk.defaultModel).not.toBe("gemini-flash-latest"); // env model NOT baked
+  } finally {
+    delete process.env.OLLAMA_HOST;
+  }
 });

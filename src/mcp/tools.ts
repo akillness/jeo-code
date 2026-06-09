@@ -2,11 +2,29 @@ import { resolveProvider } from "../ai";
 import { resolveCredential, type AuthProvider } from "../auth";
 import { readGlobalConfig } from "../agent/state";
 import type { ToolDefinition, ToolResult } from "./protocol";
+import { effectiveCredentialForProvider } from "../ai/model-manager";
 
 const AUTH_PROVIDERS: AuthProvider[] = ["anthropic", "openai", "gemini"];
 
 function textResult(text: string, isError = false): ToolResult {
   return { content: [{ type: "text", text }], isError };
+}
+
+/**
+ * The credential kind joc would ACTUALLY use for a provider (the effective credential):
+ * an API key wins over OAuth, and an OAuth-only login the bundled adapter can't serve
+ * (e.g. Gemini Cloud Code Assist) reports "none". This matches the real call path, unlike
+ * the bare resolveCredential() kind.
+ */
+async function effectiveKind(provider: AuthProvider): Promise<string> {
+  const cred = await resolveCredential(provider);
+  if (cred.kind === "none") return "none";
+  try {
+    const cfg = await readGlobalConfig();
+    return effectiveCredentialForProvider(provider, cred, cfg, provider).kind;
+  } catch {
+    return "none"; // OAuth-only but unusable by the bundled adapter
+  }
 }
 
 export const TOOLS: ToolDefinition[] = [
@@ -41,8 +59,9 @@ export const TOOLS: ToolDefinition[] = [
       if (!AUTH_PROVIDERS.includes(provider as AuthProvider)) {
         return textResult(`error: provider must be one of ${AUTH_PROVIDERS.join(", ")}`, true);
       }
-      const credential = await resolveCredential(provider as AuthProvider);
-      return textResult(JSON.stringify({ provider, kind: credential.kind }));
+      const configured = (await resolveCredential(provider as AuthProvider)).kind;
+      const usable = await effectiveKind(provider as AuthProvider);
+      return textResult(JSON.stringify({ provider, kind: usable, configured }));
     },
   },
   {
@@ -57,9 +76,9 @@ export const TOOLS: ToolDefinition[] = [
         openaiBaseUrl: cfg.openaiBaseUrl ?? null,
         ollamaBaseUrl: cfg.ollamaBaseUrl ?? "http://localhost:11434",
         credentials: {
-          anthropic: (await resolveCredential("anthropic")).kind,
-          openai: (await resolveCredential("openai")).kind,
-          gemini: (await resolveCredential("gemini")).kind,
+          anthropic: await effectiveKind("anthropic"),
+          openai: await effectiveKind("openai"),
+          gemini: await effectiveKind("gemini"),
         },
       };
       return textResult(JSON.stringify(snapshot, null, 2));

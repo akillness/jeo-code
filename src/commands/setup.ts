@@ -1,5 +1,5 @@
 import { createInterface } from "node:readline/promises";
-import { saveGlobalConfig, readGlobalConfig, type Config } from "../agent/state";
+import { saveGlobalConfig, readGlobalConfig, readRawGlobalConfig, type Config } from "../agent/state";
 import {
   interactiveLogin,
   getStoredOAuth,
@@ -64,6 +64,16 @@ async function listOpenAiCompatibleModels(baseUrl: string, apiKey?: string): Pro
 }
 
 export async function runSetupCommand(): Promise<void> {
+  // `setup` is interactive; on a non-TTY (piped/CI) stdin readline can't prompt and
+  // would reject with a cryptic "readline was closed". Fail with clear guidance instead.
+  if (!process.stdin.isTTY) {
+    console.log(
+      "joc setup needs an interactive terminal (TTY).\n" +
+      "Non-interactive options: set env vars (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY, JOC_DEFAULT_MODEL, OLLAMA_HOST),\n" +
+      "run 'joc auth login <anthropic|openai|gemini>' for OAuth, or edit ~/.joc/config.json directly. Verify with 'joc doctor'.",
+    );
+    return;
+  }
   const current = await readGlobalConfig();
   const rl = createInterface({ input: process.stdin, output: process.stdout });
 
@@ -87,7 +97,11 @@ export async function runSetupCommand(): Promise<void> {
   };
   const choice = map[sel] ?? "skip";
 
-  const next: Config = JSON.parse(JSON.stringify(current)) as Config;
+  // Build the persisted config from the RAW on-disk state (NOT the env-overlaid
+  // `current`), so `joc setup` never bakes env-only values — OAuth bearer tokens
+  // (*_OAUTH_TOKEN), JOC_DEFAULT_MODEL, JOC_*_MODEL roles, OLLAMA_HOST/OPENAI_BASE_URL —
+  // permanently into ~/.joc/config.json. `current` is still used for display defaults.
+  const next: Config = JSON.parse(JSON.stringify(await readRawGlobalConfig())) as Config;
   next.providers = next.providers || {};
   next.oauth = next.oauth || {};
 

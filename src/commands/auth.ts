@@ -23,6 +23,17 @@ export async function runAuthCommand(args: string[]): Promise<void> {
   process.exitCode = 1;
 }
 
+const CLOUD_PROVIDERS: readonly AuthProvider[] = ["anthropic", "openai", "gemini"];
+/** True (and prints an error + sets exit code) when `p` is given but not a known provider. */
+function rejectInvalidProvider(p: string | undefined): boolean {
+  if (p !== undefined && !(CLOUD_PROVIDERS as readonly string[]).includes(p)) {
+    console.log(`Unknown provider '${p}'. Use one of: ${CLOUD_PROVIDERS.join(", ")}.`);
+    process.exitCode = 1;
+    return true;
+  }
+  return false;
+}
+
 function fmtExpiry(expires?: number): string {
   if (!expires) return "";
   const ms = expires - Date.now();
@@ -57,6 +68,7 @@ async function runAuthLogin(rest: string[]): Promise<void> {
   const manualToken = tokenIdx >= 0 ? rest[tokenIdx + 1] : undefined;
   const provider = rest.find((a, i) => a !== "--token" && rest[i - 1] !== "--token") as AuthProvider | undefined;
 
+  if (rejectInvalidProvider(provider)) return;
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const chosen = provider ?? (await selectProvider(rl));
   if (!chosen) {
@@ -120,6 +132,7 @@ export async function interactiveOAuthLogin(
 }
 
 async function runAuthLogout(provider?: AuthProvider): Promise<void> {
+  if (rejectInvalidProvider(provider)) return;
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const chosen = provider ?? (await selectProvider(rl, "logout"));
   rl.close();
@@ -134,6 +147,7 @@ async function runAuthRefresh(provider?: AuthProvider): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  if (rejectInvalidProvider(provider)) return;
   const result = await refreshOAuthToken(provider);
   console.log(
     result.refreshed

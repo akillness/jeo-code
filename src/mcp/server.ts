@@ -35,19 +35,31 @@ export async function runMcpServer(options: ServerOptions = {}): Promise<void> {
       const line = buffer.slice(0, newlineIndex).trim();
       buffer = buffer.slice(newlineIndex + 1);
       if (!line) continue;
-      const response = await handleLine(line, tools);
+      let response: JsonRpcResponse | null = null;
+      try {
+        response = await handleLine(line, tools);
+      } catch (err) {
+        // A bad line must never kill the stdin read loop (the whole server).
+        response = fail(null, INTERNAL_ERROR, (err as Error)?.message ?? "internal error");
+      }
       if (response) writeResponse(response);
     }
   }
 }
 
-async function handleLine(line: string, tools: ToolDefinition[]): Promise<JsonRpcResponse | null> {
-  let req: JsonRpcRequest;
+export async function handleLine(line: string, tools: ToolDefinition[]): Promise<JsonRpcResponse | null> {
+  let parsed: unknown;
   try {
-    req = JSON.parse(line) as JsonRpcRequest;
+    parsed = JSON.parse(line);
   } catch {
     return fail(null, PARSE_ERROR, "invalid JSON");
   }
+  // `null`, arrays, and primitives are valid JSON but not JSON-RPC requests — accessing
+  // `req.jsonrpc` on them would throw and (without the loop guard) kill the server.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return fail(null, INVALID_REQUEST, "malformed JSON-RPC request");
+  }
+  const req = parsed as JsonRpcRequest;
   if (req.jsonrpc !== "2.0" || typeof req.method !== "string") {
     return fail(req.id ?? null, INVALID_REQUEST, "malformed JSON-RPC request");
   }

@@ -86,7 +86,7 @@ test("end-to-end: cmd-mode task subagent prints nested steps and result summarie
       turn++;
       if (turn === 1) return JSON.stringify({ tool: "task", arguments: { role: "executor", task: "inspect note.txt" } });
       if (turn === 2) return JSON.stringify({ tool: "read", arguments: { filePath: "note.txt" } });
-      if (turn === 3) return JSON.stringify({ tool: "done", arguments: { reason: "subagent read it" } });
+      if (turn === 3) return JSON.stringify({ tool: "done", arguments: { reason: "subagent read it\nSummary:\nChanged Files:\nVerification:" } });
       return JSON.stringify({ tool: "done", arguments: { reason: "parent integrated" } });
     },
   }));
@@ -128,7 +128,7 @@ test("end-to-end: one-shot /subagent run executes directly and streams the subag
     callLlm: async () => {
       turn++;
       if (turn === 1) return JSON.stringify({ tool: "read", arguments: { filePath: "note.txt" } });
-      return JSON.stringify({ tool: "done", arguments: { reason: "direct subagent complete" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "direct subagent complete\nSummary:\nChanged Files:\nVerification:" } });
     },
   }));
 
@@ -159,4 +159,46 @@ test("end-to-end: one-shot /subagent run executes directly and streams the subag
   expect(out).toContain("[executor] ✓ read note.txt — 1|hello direct");
   expect(out).toContain("◂ [executor] done: direct subagent complete");
   expect(out).toContain("[Executor subagent] completed");
+});
+
+test("end-to-end: one-shot skill alias executes configured skill instead of chatting about it", async () => {
+  let seenUser = "";
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: Array<{ role: string; content: string }>) => {
+      seenUser = messages.at(-1)?.content ?? "";
+      return JSON.stringify({ tool: "done", arguments: { reason: "skill executed" } });
+    },
+  }));
+
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-skill-cfg-"));
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-skill-work-"));
+  await fs.mkdir(path.join(cfgDir, "skills", "spec-kit"), { recursive: true });
+  await fs.writeFile(
+    path.join(cfgDir, "skills", "spec-kit", "SKILL.md"),
+    "summary: SDD wrapper\naliases: /speckit.plan\n\nPlan with spec-kit.",
+  );
+  const savedCfg = process.env.JOC_CONFIG_DIR;
+  const savedCwd = process.cwd();
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => logged.push(a.join(" "));
+  try {
+    process.env.JOC_CONFIG_DIR = cfgDir;
+    process.chdir(workDir);
+    const { runLaunchCommand } = await import("../src/commands/launch");
+    await runLaunchCommand(["/speckit.plan improve joc", "--model", "ollama/qwen2.5:0.5b", "--no-session", "--no-tui"]);
+  } finally {
+    console.log = origLog;
+    process.chdir(savedCwd);
+    if (savedCfg === undefined) delete process.env.JOC_CONFIG_DIR; else process.env.JOC_CONFIG_DIR = savedCfg;
+    await fs.rm(cfgDir, { recursive: true, force: true });
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
+
+  const out = logged.join("\n");
+  expect(seenUser).toContain('You are now executing the "spec-kit"');
+  expect(seenUser).toContain("Invoked as: /speckit.plan");
+  expect(seenUser).toContain("User intent: improve joc");
+  expect(out).toContain("▶ Running skill: spec-kit — improve joc");
+  expect(out).toContain("skill executed");
 });

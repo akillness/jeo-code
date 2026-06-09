@@ -270,9 +270,13 @@ export class LaunchTui {
       });
     // Animate the spinner + elapsed clock while the model is thinking.
     this.timer = setInterval(() => {
-      this.tickCount++;
-      this.spinner.next();
-      this.draw();
+      try {
+        this.tickCount++;
+        this.spinner.next();
+        this.draw();
+      } catch {
+        // Ignore transient render races (resize/component state) so the agent turn keeps running.
+      }
     }, 120);
   }
 

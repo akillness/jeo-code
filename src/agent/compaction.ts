@@ -58,6 +58,11 @@ function truncateRecentContent(content: string, maxChars: number): string {
   return content.slice(0, maxChars - marker.length) + marker;
 }
 
+function truncateSummary(summary: string, maxChars: number): string {
+  const prefix = "[Earlier conversation summary]\n";
+  return truncateRecentContent(summary, Math.max(0, maxChars - prefix.length));
+}
+
 function clampRecentMessages(messages: Message[], budgetChars: number): Message[] {
   if (messages.length === 0) return messages;
   const overhead = messages.reduce((sum, msg) => sum + msg.role.length + 4, 0);
@@ -117,7 +122,8 @@ export async function maybeCompact(
     );
 
     const systemMessages = hasSystem ? [history[0]] : [];
-    const summaryMessage: Message = { role: "user", content: "[Earlier conversation summary]\n" + summary };
+    const boundedSummary = truncateSummary(summary, opts.force ? maxSummaryInputChars : Math.min(maxChars, maxSummaryInputChars));
+    const summaryMessage: Message = { role: "user", content: "[Earlier conversation summary]\n" + boundedSummary };
     const boundedRecent = clampRecentMessages(recent, Math.max(0, maxChars - messageChars([summaryMessage])));
     const next: Message[] = [
       ...systemMessages,

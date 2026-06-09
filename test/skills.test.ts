@@ -9,6 +9,8 @@ import {
   skillNames,
   formatSkill,
   skillsPromptSection,
+  workflowSkillsForPrompt,
+  parseSkillInvocation,
   parseSkillMarkdown,
   buildSkillTask,
 } from "../src/skills/catalog";
@@ -108,6 +110,30 @@ test("skillsPromptSection caps an oversized skill catalog and reports omitted en
   expect(section.length).toBeLessThanOrEqual(6_200);
   expect(section).toContain("omitted for brevity");
   expect(section.split("\n").length).toBeLessThanOrEqual(41);
+});
+
+test("workflowSkillsForPrompt advertises only bundled workflow skills", () => {
+  const ralplan = SKILLS.find(s => s.name === "ralplan")!;
+  const external = parseSkillMarkdown("spec-kit", "summary: SDD wrapper\naliases: /speckit.plan\n\nUse spec-kit.");
+  const routed = workflowSkillsForPrompt([...SKILLS, external, { ...ralplan, summary: "custom ralplan" }]);
+  expect(routed.map(s => s.name)).toEqual(SKILLS.map(s => s.name));
+  expect(routed.some(s => s.name === "spec-kit")).toBe(false);
+  expect(routed.find(s => s.name === "ralplan")?.summary).toBe("custom ralplan");
+});
+
+test("parseSkillInvocation only matches explicit slash invocations", () => {
+  const spec = parseSkillMarkdown("spec-kit", "summary: SDD wrapper\naliases: /speckit.plan\n\nUse spec-kit.");
+  const skills = [...SKILLS, spec];
+  expect(parseSkillInvocation("/speckit.plan write tasks", skills)).toMatchObject({
+    skill: expect.objectContaining({ name: "spec-kit" }),
+    intent: "write tasks",
+    invokedAs: "/speckit.plan",
+  });
+  expect(parseSkillInvocation("/skill:spec-kit write plan", skills)).toMatchObject({
+    skill: expect.objectContaining({ name: "spec-kit" }),
+    intent: "write plan",
+  });
+  expect(parseSkillInvocation("Use /speckit.plan as reference, but fix the provider bug", skills)).toBeNull();
 });
 
 test("runSkillsCommand --write: materializes one .md per skill", async () => {

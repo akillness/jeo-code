@@ -38,6 +38,13 @@ export const SKILLS: SkillDoc[] = [
     details: "Verifies the implementation against the acceptance criteria specified in the plan.\nRuns checks, tests, or validations to ensure correctness.\nGenerates a final completion report outlining the changes and verification evidence."
   }
 ];
+export const BUILTIN_SKILL_NAMES = SKILLS.map(s => s.name.toLowerCase());
+
+export function workflowSkillsForPrompt(skills: SkillDoc[] = SKILLS): SkillDoc[] {
+  const byName = new Map(skills.map(s => [s.name.toLowerCase(), s]));
+  return SKILLS.map(s => byName.get(s.name.toLowerCase()) ?? s);
+}
+
 
 export function getSkill(name: string): SkillDoc | undefined {
   return SKILLS.find(s => s.name.toLowerCase() === name.toLowerCase());
@@ -125,13 +132,23 @@ function splitAliasHeader(value: string): string[] {
   return value.split(/[,\s]+/).map(normalizeSlashAlias).filter((a): a is string => !!a);
 }
 
-function inferSlashAliases(content: string): string[] {
+function aliasOwner(alias: string): string {
+  return alias.slice(1).split(".", 1)[0]?.toLowerCase().replace(/[^a-z0-9]/g, "") ?? "";
+}
+
+function skillAliasOwner(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function inferSlashAliases(content: string, skillName: string): string[] {
   const aliases: string[] = [];
+  const owner = skillAliasOwner(skillName);
   const re = /(?:^|[\s`([{])((\/[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*))/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(content))) {
     const alias = normalizeSlashAlias(match[1] ?? "");
-    if (alias && !aliases.some(a => a.toLowerCase() === alias.toLowerCase())) aliases.push(alias);
+    if (!alias || aliasOwner(alias) !== owner) continue;
+    if (!aliases.some(a => a.toLowerCase() === alias.toLowerCase())) aliases.push(alias);
   }
   return aliases;
 }
@@ -253,7 +270,7 @@ export function parseSkillMarkdown(name: string, content: string): SkillDoc {
     summary,
     whenToUse: meta.whentouse ?? meta.when ?? meta.use ?? "",
     details,
-    aliases: dedupeAliases([...explicitAliases, ...inferSlashAliases(content)]),
+    aliases: dedupeAliases([...explicitAliases, ...inferSlashAliases(content, name)]),
   };
 }
 
@@ -291,4 +308,33 @@ export function getSkillFrom(skills: SkillDoc[], name: string): SkillDoc | undef
 export function getSkillBySlash(skills: SkillDoc[], command: string): SkillDoc | undefined {
   const q = command.toLowerCase();
   return skills.find(s => skillSlashAliases(s).some(a => a.toLowerCase() === q));
+}
+
+export interface SkillInvocation {
+  skill: SkillDoc;
+  intent: string;
+  invokedAs?: string;
+}
+
+/** Parse only explicit skill invocations. Ambient mentions of skill names or slash
+ * aliases inside a broader prompt are deliberately ignored so pasted SKILL.md files
+ * cannot hijack an ordinary coding request. */
+export function parseSkillInvocation(input: string, skills: SkillDoc[]): SkillInvocation | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  const explicitEntrypoint = trimmed.startsWith("/skill:")
+    ? "/skill:"
+    : (trimmed === "/skill" || trimmed.startsWith("/skill ")) ? "/skill" : "";
+  if (explicitEntrypoint) {
+    const rest = explicitEntrypoint === "/skill:" ? trimmed.substring(7).trim() : trimmed.substring(6).trim();
+    if (!rest) return null;
+    const [name, ...intentParts] = rest.split(/\s+/);
+    const skill = getSkillFrom(skills, name ?? "");
+    return skill ? { skill, intent: intentParts.join(" ").trim() } : null;
+  }
+
+  const command = trimmed.split(/\s+/, 1)[0] ?? "";
+  const skill = getSkillBySlash(skills, command);
+  return skill ? { skill, intent: trimmed.slice(command.length).trim(), invokedAs: command } : null;
 }

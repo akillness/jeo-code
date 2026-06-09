@@ -5674,3 +5674,27 @@ credential" even though the shell had a usable key.
 - Focused: `bun test test/config-save.test.ts test/provider-status.test.ts test/doctor.test.ts` → **20 pass / 0 fail**.
 - Typecheck: `bun run typecheck` → 0 errors.
 - Full: `bun test` → **687 pass / 0 fail**; `bun run build` → ok.
+
+## Deep-interview language preservation — pass 872
+
+**Date:** 2026-06-09 · **Dimensions: spec-first workflow fidelity, multilingual UX, seed-path safety.**
+
+`gjc` keeps requirement gathering in the user's language; `joc` still defaulted its interviewer prompt,
+fallback questions, and auto-mode answers to English. That made Korean requirements feel like translated
+data instead of a native interview and could leak English acceptance criteria into frozen seeds.
+
+- **872a.** `deep-interview` now detects the initial idea language across English, Korean, Japanese, and
+  Chinese, persists it in workflow state, and instructs the interviewer LLM to keep `assessment`,
+  `nextQuestion`, `goal`, `constraints`, and `acceptance_criteria` in that language.
+- **872b.** The auto-mode fallback answer and acceptance-criteria follow-up are localized to the detected
+  interview language, so `--auto` does not reintroduce English when a non-English interview needs one more
+  clarification pass.
+- **872c.** Non-ASCII-only ideas now receive a safe ASCII slug fallback (`interview-<id>`) instead of
+  producing an empty `seed-.yaml` path.
+- **872d.** README spec-first guidance now documents language preservation as part of the deep-interview
+  gate.
+
+### Verification (pass 872)
+- Focused: `bun test test/deep-interview.test.ts` → **7 pass / 0 fail**.
+- Typecheck: `bun run typecheck` → 0 errors.
+- Full: `bun test` → **688 pass / 0 fail**; `bun run build` → ok.

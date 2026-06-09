@@ -123,6 +123,36 @@ test("deep-interview --auto: freezes only concrete criteria and keeps empty cons
   await fs.rm(cwd, { recursive: true, force: true });
 });
 
+test("deep-interview preserves non-English interview language and uses a safe slug fallback", async () => {
+  const cwd = await tempDir();
+  let systemPrompt = "";
+  mockCallLlm = async (messages: Message[]) => {
+    systemPrompt = messages.find(m => m.role === "system")?.content ?? "";
+    return JSON.stringify({
+      ambiguityScore: 0.1,
+      assessment: "명확합니다",
+      nextQuestion: "없습니다",
+      goal: "터미널 메모 앱 만들기",
+      constraints: [],
+      acceptance_criteria: ["사용자는 CLI에서 메모를 생성하고 조회할 수 있다"],
+    });
+  };
+
+  process.chdir(cwd);
+  await runDeepInterviewCommand(["--auto", "터미널 메모 앱 만들기"]);
+
+  const state = await readState(cwd);
+  expect(state.language).toBe("ko");
+  expect(state.slug.startsWith("interview-")).toBe(true);
+  expect(systemPrompt).toContain("Korean (한국어)");
+  expect(systemPrompt).toContain("Preserve the user's language");
+  const seed = await fs.readFile(state.seed_path, "utf-8");
+  expect(seed).toContain("터미널 메모 앱 만들기");
+  expect(seed).toContain("사용자는 CLI에서 메모를 생성하고 조회할 수 있다");
+
+  await fs.rm(cwd, { recursive: true, force: true });
+});
+
 test("deep-interview --auto: stores confirmed topology for multi-component ideas", async () => {
   const cwd = await tempDir();
   mockCallLlm = async () => JSON.stringify({

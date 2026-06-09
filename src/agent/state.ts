@@ -97,6 +97,7 @@ export interface WorkflowState {
   seed_path?: string;
   topology?: WorkflowTopologyState;
   codebase_context?: string;
+  language?: string;
   plan_path?: string;
   completed_tasks?: string[];
   pending_tasks?: string[];

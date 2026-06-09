@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseFlags, gatedStdout } from "../src/commands/launch";
+import { parseFlags, gatedStdout, shouldUseOneShotTui } from "../src/commands/launch";
 import { createInterface } from "node:readline/promises";
 import { Readable, Writable } from "node:stream";
 
@@ -37,6 +37,20 @@ test("parseFlags treats -- as end-of-options and omits the sentinel", () => {
   expect(flags.tmux).toBe(true);
   expect(flags.message).toBe("--models routing");
   expect(flags.errors).toEqual([]);
+});
+
+test("shouldUseOneShotTui enables the live TUI for command-argument input on a TTY", () => {
+  const desc = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  try {
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+    expect(shouldUseOneShotTui(false)).toBe(true);
+    expect(shouldUseOneShotTui(true)).toBe(false);
+
+    Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
+    expect(shouldUseOneShotTui(false)).toBe(false);
+  } finally {
+    if (desc) Object.defineProperty(process.stdout, "isTTY", desc);
+  }
 });
 
 test("gatedStdout: write is a no-op while gated, forwarded when open", () => {

@@ -1,5 +1,5 @@
 import { createInterface } from "node:readline/promises";
-import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS } from "../agent/engine";
+import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, type AgentLoopEvents } from "../agent/engine";
 import { createTaskTool, TASK_TOOL_PROTOCOL_LINE } from "../agent/task-tool";
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { LaunchTui } from "../tui/app";
@@ -41,6 +41,7 @@ import { providerPicker, renderProviderPicker } from "../tui/components/provider
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff } from "../tui/components/code-view";
 import { categoryBadge } from "../tui/components/category-index";
 import { renderInputBox } from "../tui/components/input-box";
+import { summarizeForgeInvocation } from "../tui/components/forge";
 import { findTool, searchTool } from "../agent/tools";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { maybeCompact } from "../agent/compaction";
@@ -187,6 +188,44 @@ export function gatedStdout(real: NodeJS.WriteStream, gated: () => boolean): Nod
       return typeof value === "function" ? value.bind(target) : value;
     },
   }) as unknown as NodeJS.WriteStream;
+}
+
+/**
+ * Plain (non-TTY / `--no-tui`) progress sink — the cmd-mode equivalent of the live TUI, and
+ * the gjc-parity fix for "I typed a request but saw no steps/results". The old sink only
+ * logged tool RESULTS, so a turn that finished without a tool call (or before the first
+ * result) printed nothing but the final reply. This surfaces every STEP, the tool it is about
+ * to run (with the real file/command target via `summarizeForgeInvocation`), and each result —
+ * tracking the current step + pending invocation across the engine's
+ * onStep → onAssistant → onToolResult sequence.
+ */
+export function createStreamEvents(
+  maxSteps: number,
+  log: (line: string) => void = (s: string) => console.log(s),
+): AgentLoopEvents {
+  let step = 0;
+  let pending = "";
+  return {
+    onStep: (n: number) => { step = n; },
+    onAssistant: (_raw: string, invocation: { tool?: string; arguments?: unknown } | null) => {
+      const tool = typeof invocation?.tool === "string" ? invocation.tool.trim() : "";
+      if (!tool || tool === "done") return;
+      pending = summarizeForgeInvocation(tool, invocation?.arguments).title;
+      log(`${chalk.cyan(`[step ${step}/${maxSteps}]`)} ${pending}`);
+    },
+    onToolResult: (tool: string, ok: boolean, output?: string) => {
+      const label = pending || tool;
+      const mark = ok ? chalk.green("\u2713") : chalk.red("\u2717");
+      const tail = !ok && output ? ` \u2014 ${(String(output).split("\n").find(l => l.trim()) ?? "").slice(0, 120)}` : "";
+      log(`  ${mark} ${label}${tail}`);
+      pending = "";
+    },
+    onError: (msg: string) => log(`  ${chalk.red("\u2717")} ${msg}`),
+  };
+}
+
+export function shouldUseOneShotTui(noTui: boolean): boolean {
+  return LaunchTui.usable(noTui);
 }
 
 export function parseFlags(args: string[]): LaunchFlags {
@@ -496,10 +535,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
   }
 
-  const streamEvents = {
-    onToolResult: (tool: string, ok: boolean) => console.log(`  └─ stream:${ok ? "complete" : "error"} tool ${tool}`),
-    onError: (msg: string) => console.log(`  └─ stream:error ${msg}`),
-  };
+  // Plain (non-TTY / --no-tui) progress sink — the cmd-mode equivalent of the live TUI.
+  const streamEvents = createStreamEvents(flags.maxSteps);
 
 
   // Run one conversational turn: compact, persist user msg, run the loop, persist + return the reply.
@@ -525,7 +562,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         signal: ac.signal,
         onEvent: useTui
           ? (e => tui?.onSubagentEvent(e))
-          : (e => { if (e.kind === "tool") console.log(`  └─ [${e.role}] ${e.success ? "✓" : "✗"} ${e.detail}`); }),
+          : (e => {
+              if (e.kind === "start") console.log(`  ${chalk.magenta(`\u25b8 [${e.role}]`)} ${e.detail ?? ""}`.slice(0, 200));
+              else if (e.kind === "tool") console.log(`    [${e.role}] ${e.success ? chalk.green("\u2713") : chalk.red("\u2717")} ${e.detail ?? "tool"}`);
+              else if (e.kind === "error") console.log(`    [${e.role}] ${chalk.red("\u2717")} ${e.detail ?? "error"}`);
+              else if (e.kind === "done") console.log(`  ${chalk.magenta(`\u25c2 [${e.role}]`)} done${e.success ? "" : " (incomplete)"}`);
+            }),
       }),
       todo: createTodoTool({ onChange: items => tui?.setTodos(items) }),
     };
@@ -573,8 +615,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       return;
     }
     try {
-      const { reply, usage } = await runTurn(messageContent, false);
-      console.log(reply + usage);
+      const { reply, rendered, usage } = await runTurn(messageContent, shouldUseOneShotTui(flags.noTui));
+      if (!rendered) console.log(reply + usage);
+      else if (usage) console.log(usage.trim());
     } catch (err) {
       console.log(`! ${friendlyProviderError(err)}`);
     }

@@ -95,7 +95,7 @@ launch / 15 in team), and `AbortSignal` (Ctrl-C cancels the in-flight turn).
 | `src/tui/` | `app.ts` (`LaunchTui`, fills terminal width+height on a TTY), `renderer.ts` (differential ANSI), `terminal.ts` (ANSI-aware `truncate`), `components/` (`evolution.ts` = canonical 5-stage model + sub-stage/transition helpers, `color.ts` = capability + truecolor gradient, `capability.ts` = unicode detection, `layout.ts` = fit/center/box, `themes.ts` = cosmic/matrix/solar/mono, `select-list.ts` = keyboard-navigable picker, `model-picker.ts`/`provider-picker.ts` = catalog-driven choosers, `autocomplete.ts` = `<Tab>` completion (slash names + live model/provider/role args), `config-panel.ts` = `/model`·`/provider`·`/config` formatters, footer, meter+sparkline, ascii-art (+frames), tool-list, spinner, stream, slash) |
 | `src/mcp/` | MCP stdio server (`server.ts`, `tools.ts`, `protocol.ts`); set `JOC_MCP_PIPELINE=1` to expose pipeline tools |
 | `src/skills/` | `catalog.ts` — `SKILLS` docs + `skillsPromptSection()` injected into the launch prompt |
-| `test/` | 33 `bun:test` suites |
+| `test/` | 82 `bun:test` suites |
 | `scripts/` | `install.sh` (canonical), `uninstall.sh`, `smoke-test.sh` |
 | `plan/`, `docs/improvements.md` | Roadmap + ralph-pass changelog (changes are logged here) |
 
@@ -105,7 +105,7 @@ launch / 15 in team), and `AbortSignal` (Ctrl-C cancels the in-flight turn).
 bun install                  # deps: zod (config validation), chalk (doctor colors)
 bun run start --help         # = bun src/cli.ts --help
 bun run typecheck            # tsc -p tsconfig.json --noEmit   (must be 0)
-bun test                     # full suite (29 files)
+bun test                     # full suite (82 files)
 bun test test/engine.test.ts # single suite
 bun run build                # bun build src/cli.ts --compile --outfile dist/joc
 ```

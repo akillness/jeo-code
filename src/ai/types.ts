@@ -26,6 +26,8 @@ export interface CallOptions {
   onUsage?: (usage: Usage) => void;
   /** Abort in-flight provider requests (Ctrl-C / timeout / supersede). */
   signal?: AbortSignal;
+  /** Reasoning effort for reasoning models (o-series / gpt-5), mapped from thinkingLevel. */
+  reasoningEffort?: "minimal" | "low" | "medium" | "high";
 }
 
 export interface ProviderAdapter {

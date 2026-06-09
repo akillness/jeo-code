@@ -233,7 +233,11 @@ export async function exportSession(
   ];
   for (const m of picked) {
     const role = m.role.charAt(0).toUpperCase() + m.role.slice(1);
-    lines.push(`## ${role}`, "", "```", m.content, "```", "");
+    // Fence longer than the longest backtick run in the body (CommonMark) so message
+    // content containing ``` doesn't prematurely close the code fence.
+    const longest = (m.content.match(/`+/g) ?? []).reduce((mx, r) => Math.max(mx, r.length), 0);
+    const fence = "`".repeat(Math.max(3, longest + 1));
+    lines.push(`## ${role}`, "", fence, m.content, fence, "");
   }
   return lines.join("\n");
 }

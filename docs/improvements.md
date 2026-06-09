@@ -5117,3 +5117,25 @@ thinking"; and supplement the missing subagent progress/result summary (ref. gjc
 - Updated the existing task-tool event test (`find` → `find *`) and added a test asserting `read`
   surfaces `read src/agent/engine.ts` and `bash` surfaces `bash: echo hi` (first line only) in both
   the live events and the result trace.
+## Provider reasoning-effort + export/edit polish — passes 841–844
+
+**Date:** 2026-06-09 · **Dimensions: provider quality/cost parity, export fidelity, edit error UX.**
+
+Continuation of the post-assessment improvement rounds (numbered 841+ to avoid collision with
+concurrent sessions at 839–840).
+
+- **841.** OpenAI reasoning-effort mapping: `thinkingLevel` → `reasoning_effort` (`thinkingToReasoningEffort`,
+  minimal/low→low, medium→medium, high/xhigh→high) threaded via a new `CallOptions.reasoningEffort`
+  set in `resolveCall`. `openaiRequest` now detects gpt-5 family as reasoning too (max_completion_tokens,
+  no temperature) and emits `reasoning_effort` for reasoning models only; classic chat (gpt-4o) unchanged.
+- **842.** `exportSession` markdown uses a fence longer than the longest backtick run in each message
+  (CommonMark), so message content containing ``` no longer prematurely closes the code fence.
+- **843.** Doc drift: `AGENTS.md` test-suite counts corrected (33 → 82 suites; "29 files" → "82 files").
+- **844.** `edit` returns a marker-specific error for an unterminated SEARCH block (missing
+  `=======`/`>>>>>>>`) instead of the unrelated "use ≔ line range" hint, so the model repairs the marker.
+
+### Verification (passes 841–844)
+- `bun run typecheck` → 0 errors. `bun test` → **609 pass / 0 fail**. `bun run build` → ok.
+- New tests: thinkingToReasoningEffort mapping; openaiRequest golden payloads (o3/gpt-5.1 →
+  reasoning_effort+max_completion_tokens, no temperature; gpt-4o → temperature+max_tokens, no effort);
+  markdown fence ≥ backtick run; unterminated SEARCH marker → marker-specific error.

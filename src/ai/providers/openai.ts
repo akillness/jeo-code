@@ -12,13 +12,16 @@ export function openaiRequest(messages: Message[], options: CallOptions, credent
   for (const msg of messages) {
     if (msg.role !== "system") openaiMessages.push({ role: msg.role, content: msg.content });
   }
-  const isReasoning = /^o\d/.test(model);
+  // Reasoning models (o-series, gpt-5 family) take max_completion_tokens + reasoning_effort
+  // and reject temperature; classic chat models (gpt-4o, …) take max_tokens + temperature.
+  const isReasoning = /^o\d/.test(model) || /^gpt-5/.test(model);
   const payload: Record<string, unknown> = {
     model,
     messages: openaiMessages,
   };
   if (isReasoning) {
     payload.max_completion_tokens = options.maxTokens ?? 4000;
+    if (options.reasoningEffort) payload.reasoning_effort = options.reasoningEffort;
   } else {
     payload.temperature = options.temperature ?? 0.2;
     payload.max_tokens = options.maxTokens ?? 4000;

@@ -46,3 +46,12 @@ test("exportSession: tolerates a malformed trailing line", async () => {
   const md = await exportSession(id, "markdown", cwd);
   expect(md).toContain("## Assistant"); // earlier messages still render
 });
+
+test("exportSession: markdown fence is longer than backtick runs in the content", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "joc-fence-"));
+  const { id } = await createSession(cwd);
+  await appendMessage(id, { role: "assistant", content: "see:\n```ts\ncode\n```\nend" }, cwd);
+  const md = await exportSession(id, "markdown", cwd);
+  // content has a 3-backtick run → the fence must be at least 4 backticks
+  expect(md).toContain("````");
+});

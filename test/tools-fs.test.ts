@@ -292,6 +292,14 @@ test("searchTool: context option includes surrounding lines; maxMatches caps per
   expect((capped.output.match(/HIT/g) || []).length).toBe(1);
 });
 
+test("editTool: unterminated SEARCH marker gives a marker-specific error (not the ≔ hint)", async () => {
+  const f = path.join(dir, "unterm.txt");
+  await fs.writeFile(f, "x\n");
+  const res = await editTool(f, "<<<<<<< SEARCH\nx\n(no divider or terminator)", dir);
+  expect(res.success).toBe(false);
+  expect(res.error).toContain("unterminated SEARCH block");
+});
+
 test("findTool skips node_modules and .git", async () => {
   const res = await findTool("*.ts", dir);
   expect(res.success).toBe(true);

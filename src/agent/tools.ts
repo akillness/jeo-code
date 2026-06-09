@@ -320,6 +320,15 @@ export async function editTool(
     }
 
     if (!updated) {
+      // A SEARCH marker present but unparsed means the divider/terminator is missing —
+      // point the model at the marker rather than at the unrelated ≔ syntax.
+      if (editBlock.includes("<<<<<<< SEARCH")) {
+        return {
+          success: false,
+          output: "",
+          error: "Failed to apply edit: unterminated SEARCH block — each hunk needs '<<<<<<< SEARCH', a '=======' divider, and a '>>>>>>>' terminator.",
+        };
+      }
       return {
         success: false,
         output: "",

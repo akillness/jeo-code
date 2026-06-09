@@ -41,6 +41,17 @@ export function thinkingMaxTokens(level?: "minimal" | "low" | "medium" | "high" 
   return 4000;
 }
 
+/** Map the thinking level to an OpenAI reasoning-effort tier. `minimal` maps to `low`
+ *  (the lowest tier o-series reliably accepts; gpt-5's `minimal` is opt-in via options). */
+export function thinkingToReasoningEffort(
+  level?: "minimal" | "low" | "medium" | "high" | "xhigh",
+): "low" | "medium" | "high" | undefined {
+  if (!level) return undefined;
+  if (level === "minimal" || level === "low") return "low";
+  if (level === "high" || level === "xhigh") return "high";
+  return "medium";
+}
+
 /** Describe a model id: alias expansion + the provider it routes to. For `/model` + diagnostics. */
 export async function describeModel(input: string): Promise<{ input: string; resolved: string; provider: ProviderName }> {
   const resolved = await resolveModelId(input);
@@ -172,6 +183,7 @@ async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
     baseUrl,
     onUsage: options.onUsage,
     signal: options.signal,
+    reasoningEffort: options.reasoningEffort ?? thinkingToReasoningEffort(config.thinkingLevel),
   };
 
   if (provider === "ollama") {

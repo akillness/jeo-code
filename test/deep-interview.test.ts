@@ -153,10 +153,11 @@ test("deep-interview --auto: stores confirmed topology for multi-component ideas
   await fs.rm(cwd, { recursive: true, force: true });
 });
 
-test("deep-interview marks existing-repo modification ideas as brownfield", async () => {
+test("deep-interview captures brownfield repo evidence for modification ideas", async () => {
   const cwd = await tempDir();
-  await fs.mkdir(path.join(cwd, "src"), { recursive: true });
+  await fs.mkdir(path.join(cwd, "src", "auth"), { recursive: true });
   await fs.writeFile(path.join(cwd, "package.json"), "{\"name\":\"demo\"}", "utf-8");
+  await fs.writeFile(path.join(cwd, "src", "auth", "login.ts"), "export function loginFlow() {}", "utf-8");
   mockCallLlm = async () => JSON.stringify({
     ambiguityScore: 0.1,
     assessment: "Clear enough",
@@ -171,6 +172,9 @@ test("deep-interview marks existing-repo modification ideas as brownfield", asyn
 
   const state = await readState(cwd);
   expect(state.type).toBe("brownfield");
+  expect(state.codebase_context).toContain("Repo markers:");
+  expect(state.codebase_context).toContain("src/auth/login.ts");
+  expect(state.codebase_context).toContain("matched: login");
 
   await fs.rm(cwd, { recursive: true, force: true });
 });

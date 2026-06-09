@@ -96,6 +96,7 @@ export interface WorkflowState {
   type?: "greenfield" | "brownfield";
   seed_path?: string;
   topology?: WorkflowTopologyState;
+  codebase_context?: string;
   plan_path?: string;
   completed_tasks?: string[];
   pending_tasks?: string[];

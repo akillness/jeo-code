@@ -5030,3 +5030,24 @@ export shapes as **correct**, and caught one **HIGH silent-corruption defect** +
 - Deferred LOW (logged): markdown export dynamic fence length; artifact retention/GC; distinct
   "unterminated SEARCH marker" error vs generic format error. Critic's remaining coverage ideas
   (cascading-replacement semantics, export empty/latest/missing, --json+--system) queued.
+## Post-review hardening (P1 defects) — passes 836–837
+
+**Date:** 2026-06-09 · **Dimensions: tool input validation, streaming timeout correctness.**
+
+From my own "remaining improvement points" assessment (grounded in the session's architect/critic
+reviews + live tmux repro). Both are real behavioral defects.
+
+- **836.** `read`/`write`/`edit` now guard a missing/empty `filePath` (and `edit` an empty
+  `editBlock`) with a soft, actionable error — previously `path.resolve(cwd, undefined)` threw a
+  cryptic caught error when a weak model omitted the arg. (Mirrors the earlier `find`/`search` guards.)
+- **837.** Streaming used a single 120s WALL-CLOCK timeout (`DEFAULT_CALL_TIMEOUT_MS`) on the whole
+  stream, so a healthy long generation (>120s) was aborted mid-stream. Replaced with a **per-chunk
+  idle timeout** (`STREAM_IDLE_TIMEOUT_MS`, 120s of silence) via `retryableStream`'s new idle option +
+  a per-attempt `AbortController`: an actively-emitting stream now runs unbounded, while a genuinely
+  stalled stream is cancelled. New `composeAbort` preserves BOTH the caller's signal (Ctrl-C) and the
+  timeout even when `AbortSignal.any` is unavailable (fixes the earlier withTimeout LOW finding).
+
+### Verification (passes 836–837)
+- `bun run typecheck` → 0 errors. `bun test` → **599 pass / 0 fail**. `bun run build` → ok.
+- New tests: read/write/edit empty-arg soft errors; retryableStream idle aborts a stalled stream
+  (first chunk emitted, then silence → "stream idle" + onIdle fired) and does NOT fire on prompt chunks.

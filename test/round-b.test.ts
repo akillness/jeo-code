@@ -35,6 +35,31 @@ test("retryableStream: first connect succeeds → no retry, makeIter called once
   expect(out).toEqual(["x", "y"]);
 });
 
+test("retryableStream: per-chunk idle timeout aborts a stalled stream (long-but-silent)", async () => {
+  let idled = false;
+  const makeIter = (): AsyncIterator<string> => {
+    let i = 0;
+    return {
+      next: async () => {
+        if (i++ === 0) return { value: "a", done: false };
+        return new Promise<IteratorResult<string>>(() => {}); // hang forever on the 2nd chunk
+      },
+    };
+  };
+  const out: string[] = [];
+  await expect((async () => {
+    for await (const c of retryableStream(makeIter, { retries: 1, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable }, { idleMs: 20, onIdle: () => { idled = true; } })) out.push(c);
+  })()).rejects.toThrow("stream idle");
+  expect(out).toEqual(["a"]); // first chunk emitted, then stalled
+  expect(idled).toBe(true);
+});
+
+test("retryableStream: idle timeout does NOT fire when chunks arrive promptly", async () => {
+  const out: string[] = [];
+  for await (const c of retryableStream(() => iterFromChunks(["a", "b"]), { retries: 1, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable }, { idleMs: 1000, onIdle: () => { throw new Error("should not idle"); } })) out.push(c);
+  expect(out).toEqual(["a", "b"]);
+});
+
 test("retryableStream: empty iterator (first.done) yields nothing and completes", async () => {
   const makeIter = (): AsyncIterator<string> => ({ next: async () => ({ value: undefined as any, done: true }) });
   const out: string[] = [];

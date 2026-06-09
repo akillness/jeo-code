@@ -1,8 +1,8 @@
 # jeo-code (`joc`)
 
 Bun 기반 AI 코딩 에이전트 CLI입니다. 저장소 안에서 `joc`를 실행하면 파일을 읽고, 수정하고, 명령을 실행하며 작업을 끝까지 진행합니다.
-진행 중에는 ASCII 진화 아트·스텝 타임라인·툴 forge 박스(bash/read/write/edit)·라이브 상태 푸터가 한 화면에 표시되고, 입력창에서 `/`로 시작하면 명령 미리보기가 하단에 노출됩니다. `[STEP] joc thinking` 줄은 매 틱 바뀌는 장식 문구 대신 **지금 실제로 하는 일**(진행 중인 파일·명령, 활성 plan 단계, plan 진행도)을 보여주고, `[TOOL] joc forge` 줄에는 현재 진화 단계(**double helix** 등)가 항상 노출됩니다. `task`로 위임한 **서브에이전트의 진행 상황**(할당·중첩 툴 호출의 실제 대상 `read src/x.ts`·`bash: …`·결과 요약)도 gjc처럼 스트림에 실시간 표시됩니다.
-`joc "요청"`처럼 cmd 인자로 한 번에 실행해도 TTY에서는 같은 라이브 TUI가 뜨고, `--no-tui`/파이프 모드에서는 `[step N/M] <tool target>` + 결과 라인이 스트리밍되어 전체 동작 흐름이 보입니다.
+진행 중에는 ASCII 진화 아트·스텝 타임라인·툴 forge 박스(bash/read/write/edit/task)·라이브 상태 푸터가 한 화면에 표시되고, 입력창에서 `/`로 시작하면 명령 미리보기가 하단에 노출됩니다. `[STEP] joc thinking` 줄은 매 틱 바뀌는 장식 문구 대신 **지금 실제로 하는 일**(진행 중인 파일·명령, 활성 plan 단계, plan 진행도)을 보여주고, `[TOOL] joc forge` 줄에는 현재 진화 단계(**double helix** 등)가 항상 노출됩니다. `task`로 위임하거나 `/subagent run …`으로 직접 실행한 **서브에이전트의 진행 상황**(할당·`step N/M`·중첩 툴 호출의 실제 대상 `read src/x.ts`·`bash: …`·결과 요약)도 gjc처럼 스트림에 실시간 표시됩니다.
+`joc "요청"`처럼 cmd 인자로 한 번에 실행해도 TTY에서는 같은 라이브 TUI가 뜨고, `--no-tui`/파이프 모드에서는 `[step N/M] <tool target>` + 결과 라인이 스트리밍되어 전체 동작 흐름이 보입니다. `joc "/subagent run executor <작업>" --no-tui`처럼 서브에이전트를 cmd에서 직접 실행해도 동일하게 nested step/result가 출력됩니다.
 TUI는 **차등(differential) 렌더러**로 화면을 제자리에서 갱신해 스크롤백을 늘리지 않고(턴당 최종 출력 1회만 기록), 화면 크기 변경 시 폭이 바뀌면 전체 재도색·idle 프롬프트에서도 리사이즈로 푸터 영역을 재동기화합니다. 스트림/툴 목록은 **고정 크기 링 버퍼**라 긴 세션에서도 메모리·프레임당 렌더 비용이 평탄하며(요약 LLM 실패 시에도 히스토리는 결정적으로 압축돼 무한 증가하지 않음), 진화 아트는 애니메이션 프레임 단위로 캐시돼 매 틱 재렌더하지 않습니다. 화면이 짧아 모든 섹션이 다 들어가지 못할 때는 **하단 상태/키힌트/푸터(라이브 진행 표시: 스텝·ETA·스피너)를 항상 먼저 확보**하고, 가치가 낮은 순서(장식용 ASCII 아트 → forge 상세 박스 → 스트림)대로 줄여 표시합니다 — 푸터가 화면 밖으로 잘려 사라지지 않습니다. forge 박스는 테두리가 있어 **통째로 들어갈 때만**(최근 것 우선) 표시하고 반쪽짜리 박스를 만들지 않습니다.
 
 ## 설치
@@ -46,7 +46,8 @@ joc setup
 | `/provider [name] [model\|#N]` | 프로바이더 자격증명·전환, 해당 프로바이더 라이브 모델 목록 |
 | `/provider login <name>` | **입력창에서 바로 OAuth 로그인** (anthropic/openai/gemini) |
 | `/logout <name>` | 저장된 OAuth 토큰 제거 |
-| `/agents [role] [model]` · `/subagent ...` · `/subagents ...` | 서브에이전트(executor/planner/architect/critic) 역할 모델 설정 |
+| `/agents [role] [model]` · `/subagents ...` | 서브에이전트(executor/planner/architect/critic) 역할 모델 설정 |
+| `/subagent run [role] <task>` · `/subagent <role> -- <task>` | 서브에이전트 직접 실행(단계·툴·결과 스트림 표시) |
 | `/roles [tier model]` | 모델 역할 티어(smol/slow/plan) 표시·설정 |
 | `/thinking [level]` | 사고 예산(minimal/low/medium/high/xhigh) |
 | `/config` | 현재 런타임 설정 표시 |
@@ -56,7 +57,7 @@ joc setup
 
 TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다. 입력창에 `/`로 시작하는 키워드를 타이핑하면 일치하는 명령 목록이 **실시간 미리보기**로 아래에 표시되고, **방향키(↑/↓)로 선택**한 뒤 Enter로 실행할 수 있습니다(`❯` 표시). `/subagent `·`/provider login `처럼 공백 뒤 인자를 입력할 때도 사용 가능한 role/provider/subcommand 목록이 계속 보입니다. `/provider login`은 방향키 프로바이더 선택기를 열고, `/provider gemini` 또는 빈 `/model`은 화면 폭에 맞는 **방향키 모델 선택기**를 열어 Enter로 바로 모델을 설정합니다. `진행중/완료/subagent/tool/diff/file/command` 같은 UI 범주는 색인형 배지(`[AGENT]`, `[01:CMD]`, `[FILE]`, `[DIFF]`, `[STEP]`)로 구분되어 진행중 항목, 완료 항목, subagent 스트림, forge 박스, 코드뷰 헤더를 빠르게 스캔할 수 있습니다. 입력은 하단 푸터의 **박스형 입력란 하나로만** 노출됩니다 — 박스 모드에서는 기존 readline 에코(`joc> …` 원시 입력 줄)를 숨기므로 입력창이 중복으로 보이지 않으며, 폭을 넘기면 자연스럽게 여러 줄로 감싸집니다. `@src/`처럼 입력하면 현재 워크스페이스 기준 상대 경로 후보가 `Paths:` 섹션에 표시되고, 폴더 경로는 `src/.../`처럼 슬래시로 구분됩니다. Skill 문서에서 선언/언급한 `/speckit.plan` 같은 직접 슬래시 별칭도 팔레트와 Tab 자동완성에 나타나며, Enter 실행 시 해당 skill 문서를 세션에 주입합니다.
 
-대화형 에이전트는 내부 `todo` tool로 작업 계획을 선언하면 TUI에 **Plan 체크리스트**를 유지하고, `task` tool로 executor/planner/architect/critic 서브에이전트에 bounded 작업을 위임할 수 있습니다. planner/architect/critic은 read/find/search 전용이라 파일을 수정하지 못하며, role 오타는 mutating executor로 조용히 fallback되지 않고 실패합니다.
+대화형 에이전트는 내부 `todo` tool로 작업 계획을 선언하면 TUI에 **Plan 체크리스트**를 유지하고, `task` tool로 executor/planner/architect/critic 서브에이전트에 bounded 작업을 위임할 수 있습니다. `/subagent run [role] <task>` 또는 `joc "/subagent run executor <task>" --no-tui`는 모델에게 위임 판단을 맡기지 않고 지정 role의 서브에이전트를 즉시 실행하며, `step N/M`·중첩 툴 대상·결과 요약·최종 요약을 그대로 노출합니다. planner/architect/critic은 read/find/search 전용이라 파일을 수정하지 못하며, role 오타는 mutating executor로 조용히 fallback되지 않고 실패합니다.
 
 > **OpenAI(ChatGPT/Codex) OAuth로 실제 실행:** ChatGPT/Codex OAuth 토큰은 `api.openai.com/v1`(chat/completions·models)을 거부합니다. joc는 OpenAI가 **OAuth로만 로그인**된 경우(별도 API 키 없음) Codex 구독 백엔드(`chatgpt.com/backend-api/codex/responses`)로 turn 실행을 라우팅하고, 모델 discovery도 `chatgpt.com/backend-api/codex/models`를 직접 조회해 실제 Codex 구독 모델(`gpt-5.5`, `gpt-5.4` 등)을 표시합니다. `OPENAI_API_KEY`가 설정돼 있으면 표준 `api.openai.com/v1` 경로가 우선합니다.
 > `OPENAI_API_KEY`가 설정돼 있으면 그 키(표준 `api.openai.com/v1`, 전체 모델)가 우선합니다. Gemini OAuth는 아직 호환 백엔드가 없어 `GEMINI_API_KEY`가 필요하며 picker에서 `OAuth (API key needed)`로 표시됩니다. 레이트리밋(HTTP 429)은 자동 재시도 후에도 지속되면 `/model`로 다른(로컬 ollama 등) 모델로 전환하라는 안내 메시지로 정리해 보여줍니다.

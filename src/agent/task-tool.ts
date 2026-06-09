@@ -26,9 +26,17 @@ import {
 /** Lifecycle event emitted while a delegated subagent runs. */
 export interface TaskSubEvent {
   role: string;
-  kind: "start" | "tool" | "done" | "error";
+  kind: "start" | "step" | "tool" | "done" | "error";
   detail?: string;
   success?: boolean;
+  /** Current nested subagent step, when known. */
+  step?: number;
+  /** Nested subagent step budget, when known. */
+  maxSteps?: number;
+  /** Short, human-readable summary of the nested tool result. */
+  summary?: string;
+  /** Model selected for this subagent run. */
+  model?: string;
 }
 
 export interface TaskToolOptions {
@@ -72,6 +80,15 @@ function toolTarget(tool: string, rawArgs: unknown): string {
   return tool || "tool";
 }
 
+function firstUsefulLine(output: string | undefined): string {
+  if (!output) return "";
+  const line = output
+    .split("\n")
+    .map(l => l.trim())
+    .find(l => l.length > 0);
+  return line ? line.replace(/\s+/g, " ").slice(0, 140) : "";
+}
+
 /**
  * Build a `task` ToolHandler bound to a config + (optional) abort signal. The
  * handler accepts `{ role?, task | prompt | assignment, context? }`.
@@ -107,7 +124,8 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
 
     const trace: string[] = [];
     let lastTarget = ""; // the most recent tool's concrete target, captured at invocation time
-    opts.onEvent?.({ role: role.id, kind: "start", detail: taskText });
+    let currentStep = 0;
+    opts.onEvent?.({ role: role.id, kind: "start", detail: taskText, maxSteps, model });
     const result = await runAgentLoop(history, {
       cwd,
       model,
@@ -115,22 +133,37 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       signal: opts.signal,
       tools: subagentToolset(role),
       events: {
+        onStep: n => {
+          currentStep = n;
+        },
         onAssistant: (_raw, invocation) => {
           if (invocation && invocation.tool && invocation.tool !== "done") {
             lastTarget = toolTarget(invocation.tool, invocation.arguments);
+            trace.push(`  step ${currentStep}/${maxSteps}: ${lastTarget}`);
+            opts.onEvent?.({
+              role: role.id,
+              kind: "step",
+              detail: lastTarget,
+              step: currentStep,
+              maxSteps,
+              model,
+            });
           }
         },
-        onToolResult: (tool, success) => {
+        onToolResult: (tool, success, output) => {
           const label = lastTarget || tool;
-          trace.push(`  ${success ? "✓" : "✗"} ${label}`);
-          opts.onEvent?.({ role: role.id, kind: "tool", detail: label, success });
+          const summary = firstUsefulLine(output);
+          const suffix = summary ? ` — ${summary}` : "";
+          trace.push(`  ${success ? "✓" : "✗"} ${label}${suffix}`);
+          opts.onEvent?.({ role: role.id, kind: "tool", detail: label, success, summary, step: currentStep, maxSteps, model });
+          lastTarget = "";
         },
-        onError: msg => opts.onEvent?.({ role: role.id, kind: "error", detail: msg }),
+        onError: msg => opts.onEvent?.({ role: role.id, kind: "error", detail: msg, step: currentStep, maxSteps, model }),
       },
     });
-    opts.onEvent?.({ role: role.id, kind: "done", detail: result.doneReason, success: result.done });
-
     const reason = result.doneReason?.trim() || `(subagent reached the ${result.steps}-step limit without signaling done)`;
+    opts.onEvent?.({ role: role.id, kind: "done", detail: reason, success: result.done, step: result.steps, maxSteps, model });
+
     const header = `[${role.title} subagent] ${result.done ? "completed" : "stopped"} in ${result.steps} step(s) on ${model}.`;
     const body = trace.length ? `\nSteps:\n${trace.join("\n")}` : "";
     return { success: result.done, output: `${header}${body}\n\nResult:\n${reason}` };

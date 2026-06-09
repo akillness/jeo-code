@@ -78,3 +78,85 @@ test("end-to-end: a piped one-shot turn prints the per-step flow (not just the f
   expect(out).toMatch(/\u2713 read note\.txt/);
   expect(out).toContain("read complete"); // final reply still printed
 });
+
+test("end-to-end: cmd-mode task subagent prints nested steps and result summaries", async () => {
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      if (turn === 1) return JSON.stringify({ tool: "task", arguments: { role: "executor", task: "inspect note.txt" } });
+      if (turn === 2) return JSON.stringify({ tool: "read", arguments: { filePath: "note.txt" } });
+      if (turn === 3) return JSON.stringify({ tool: "done", arguments: { reason: "subagent read it" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "parent integrated" } });
+    },
+  }));
+
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-sub-cfg-"));
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-sub-work-"));
+  await fs.writeFile(path.join(workDir, "note.txt"), "hello from note\n");
+  const savedCfg = process.env.JOC_CONFIG_DIR;
+  const savedCwd = process.cwd();
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => logged.push(a.join(" "));
+  try {
+    process.env.JOC_CONFIG_DIR = cfgDir;
+    process.chdir(workDir);
+    const { runLaunchCommand } = await import("../src/commands/launch");
+    await runLaunchCommand(["delegate to a subagent", "--model", "ollama/qwen2.5:0.5b", "--max-steps", "4", "--no-session", "--no-tui"]);
+  } finally {
+    console.log = origLog;
+    process.chdir(savedCwd);
+    if (savedCfg === undefined) delete process.env.JOC_CONFIG_DIR; else process.env.JOC_CONFIG_DIR = savedCfg;
+    await fs.rm(cfgDir, { recursive: true, force: true });
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
+
+  const out = logged.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  expect(out).toContain("[step 1/4] task executor");
+  expect(out).toContain("▸ [executor] inspect note.txt");
+  expect(out).toContain("[executor step 1/15] read note.txt");
+  expect(out).toContain("[executor] ✓ read note.txt — 1|hello from note");
+  expect(out).toContain("◂ [executor] done: subagent read it");
+  expect(out).toContain("✓ task executor — [Executor subagent] completed");
+  expect(out).toContain("parent integrated");
+});
+
+test("end-to-end: one-shot /subagent run executes directly and streams the subagent flow", async () => {
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      if (turn === 1) return JSON.stringify({ tool: "read", arguments: { filePath: "note.txt" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "direct subagent complete" } });
+    },
+  }));
+
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-direct-cfg-"));
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-direct-work-"));
+  await fs.writeFile(path.join(workDir, "note.txt"), "hello direct\n");
+  const savedCfg = process.env.JOC_CONFIG_DIR;
+  const savedCwd = process.cwd();
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => logged.push(a.join(" "));
+  try {
+    process.env.JOC_CONFIG_DIR = cfgDir;
+    process.chdir(workDir);
+    const { runLaunchCommand } = await import("../src/commands/launch");
+    await runLaunchCommand(["/subagent run executor inspect note.txt", "--model", "ollama/qwen2.5:0.5b", "--no-session", "--no-tui"]);
+  } finally {
+    console.log = origLog;
+    process.chdir(savedCwd);
+    if (savedCfg === undefined) delete process.env.JOC_CONFIG_DIR; else process.env.JOC_CONFIG_DIR = savedCfg;
+    await fs.rm(cfgDir, { recursive: true, force: true });
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
+
+  const out = logged.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  expect(out).toContain("▸ [executor] inspect note.txt");
+  expect(out).toContain("[executor step 1/15] read note.txt");
+  expect(out).toContain("[executor] ✓ read note.txt — 1|hello direct");
+  expect(out).toContain("◂ [executor] done: direct subagent complete");
+  expect(out).toContain("[Executor subagent] completed");
+});

@@ -162,10 +162,16 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     case "/logout":
       return argIndex === 0 ? finish(["anthropic", "openai", "gemini"], "provider") : { completions: [], token, kind: "none" };
     case "/agents":
-    case "/subagent":
     case "/subagents": {
       if (argIndex === 0) return finish(ctx.roleIds, "role");
       if (argIndex === 1) return finish(["reset", "maxSteps", ...rankedModelPool(ctx)], "model");
+      if (argIndex === 2 && (tokens[2]?.toLowerCase() === "maxsteps" || tokens[2]?.toLowerCase() === "steps")) return { completions: [], token, kind: "none" };
+      return { completions: [], token, kind: "none" };
+    }
+    case "/subagent": {
+      if (argIndex === 0) return finish(["run", ...ctx.roleIds], "subcommand");
+      if (argIndex === 1 && tokens[1]?.toLowerCase() === "run") return finish(ctx.roleIds, "role");
+      if (argIndex === 1) return finish(["--", "reset", "maxSteps", ...rankedModelPool(ctx)], "model");
       if (argIndex === 2 && (tokens[2]?.toLowerCase() === "maxsteps" || tokens[2]?.toLowerCase() === "steps")) return { completions: [], token, kind: "none" };
       return { completions: [], token, kind: "none" };
     }

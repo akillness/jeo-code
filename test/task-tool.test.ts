@@ -35,8 +35,10 @@ test("createTaskTool: executor delegates, runs a tool, then completes on done", 
   expect(res.success).toBe(true);
   expect(res.output).toContain("[Executor subagent] completed");
   expect(res.output).toContain("scaffold ready");
+  expect(res.output).toContain("step 1/15: find *");
   expect(res.output).toContain("✓ find");
   expect(events.some(e => e.startsWith("executor:start"))).toBe(true);
+  expect(events.some(e => e === "executor:step:find *")).toBe(true); // step header carries the pending target before the result
   expect(events.some(e => e === "executor:tool:find *")).toBe(true); // detail carries the glob target
   expect(events.some(e => e.startsWith("executor:done"))).toBe(true);
 });
@@ -53,15 +55,22 @@ test("createTaskTool: subagent tool events carry the concrete target (file/comma
   }));
   const { createTaskTool } = await import("../src/agent/task-tool");
   const toolEvents: string[] = [];
+  const toolSummaries: string[] = [];
   const tool = createTaskTool({
     config: { defaultModel: "ollama/fast", subagents: {} },
-    onEvent: e => { if (e.kind === "tool") toolEvents.push(e.detail ?? ""); },
+    onEvent: e => {
+      if (e.kind === "tool") {
+        toolEvents.push(e.detail ?? "");
+        toolSummaries.push(e.summary ?? "");
+      }
+    },
   });
   const res = await tool({ role: "executor", task: "inspect" }, await tmpDir());
 
   expect(toolEvents).toContain("read src/agent/engine.ts"); // file target, not bare "read"
   expect(toolEvents).toContain("bash: echo hi");            // first command line only
   expect(res.output).toContain("read src/agent/engine.ts"); // trace also carries the enriched target
+  expect(toolSummaries.some(s => s.length > 0)).toBe(true);          // result summary is surfaced for cmd/TUI streams
 });
 
 test("createTaskTool: unknown explicit role is rejected instead of executor fallback", async () => {

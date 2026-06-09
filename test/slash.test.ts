@@ -53,7 +53,7 @@ test("formatSlashCommandList lists all commands for bare slash and narrows by pr
   expect(all).toContain("/model [id|#N|save]");
   expect(all).toContain("/agents [role] [model|#N|maxSteps N|reset]");
   expect(all).toContain("Subagents:");
-  expect(all).toContain("/subagent [role] [model|#N|maxSteps N|reset]");
+  expect(all).toContain("/subagent run [role] <task> | <role> -- <task>");
   expect(formatSlashCommandList("/?").join("\n")).toContain("/agents [role] [model|#N|maxSteps N|reset]");
 
   const modelOnly = formatSlashCommandList("/m").join("\n");

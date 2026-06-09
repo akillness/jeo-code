@@ -21,6 +21,9 @@ test("buildSkillTask: drives execution with real tools, not a skill-named tool c
   // Explicitly forbids the failure we reproduced (model calling a tool named "demo").
   expect(task).toContain('Do NOT emit a tool call named "demo"');
   expect(task).toContain("Use your real tools");
+  expect(task).toContain("<skill_guidance name=\"demo\">");
+  expect(task).not.toContain("Command: /skill demo");
+  expect(task).not.toContain("Skill: demo");
   expect(task).toContain("User intent: make the file");
   expect(task).toContain("Invoked as: /demo");
   expect(task).toContain("Create demo-output.txt"); // skill guidance injected

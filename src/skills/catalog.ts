@@ -67,6 +67,18 @@ export function formatSkill(s: SkillDoc): string {
   ].filter(Boolean).join("\n");
 }
 
+function compactSkillExecutionBrief(skill: SkillDoc): string {
+  const aliases = skillSlashAliases(skill);
+  return [
+    `Name: ${skill.name}`,
+    aliases.length ? `Slash aliases: ${aliases.join(", ")}` : undefined,
+    `Summary: ${skill.summary}`,
+    skill.whenToUse ? `When to use: ${skill.whenToUse}` : undefined,
+    "Guidance:",
+    ...skill.details.split("\n").map(line => `  ${line}`),
+  ].filter(Boolean).join("\n");
+}
+
 /**
  * Build the agent task that EXECUTES a skill's workflow (rather than merely echoing
  * the doc or — as weak models do — calling a bogus tool named after the skill). The
@@ -78,9 +90,9 @@ export function buildSkillTask(skill: SkillDoc, intent: string, invokedAs?: stri
     `You are now executing the "${skill.name}" workflow skill in this repository.`,
     `IMPORTANT: this skill is GUIDANCE for you — it is NOT a callable tool. Do NOT emit a tool call named "${skill.name}". Use your real tools (read, write, edit, bash, find, search, ls, task, todo) to carry out the work, then call done with a short summary.`,
     "",
-    `--- ${skill.name} skill ---`,
-    formatSkill(skill),
-    `--- end skill ---`,
+    `<skill_guidance name="${skill.name}">`,
+    compactSkillExecutionBrief(skill),
+    `</skill_guidance>`,
     "",
     requested +
       (intent
@@ -120,6 +132,10 @@ const BUILTIN_SLASH_ALIASES = new Set([
   "/view", "/diff", "/find", "/search", "/sessions", "/skill", "/evolve",
   "/exit", "/quit",
 ]);
+
+const RESERVED_SKILL_NAMES = new Set(
+  [...BUILTIN_SLASH_ALIASES].map(alias => alias.slice(1).toLowerCase())
+);
 
 function normalizeSlashAlias(raw: string): string | undefined {
   const m = raw.trim().match(/^\/[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*$/);
@@ -274,6 +290,10 @@ export function parseSkillMarkdown(name: string, content: string): SkillDoc {
   };
 }
 
+function isSupportedExternalSkill(doc: SkillDoc): boolean {
+  return !RESERVED_SKILL_NAMES.has(doc.name.toLowerCase());
+}
+
 /** Bundled skills merged with user skill docs from {@link skillDirs} (user overrides by name). */
 export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[]> {
   const byName = new Map<string, SkillDoc>(SKILLS.map(s => [s.name.toLowerCase(), s]));
@@ -281,17 +301,20 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
     let entries: import("node:fs").Dirent[] = [];
     try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
       if (entry.isFile() && entry.name.endsWith(".md")) {
         const nm = entry.name.slice(0, -3);
         try {
-          byName.set(nm.toLowerCase(), parseSkillMarkdown(nm, await fs.readFile(path.join(dir, entry.name), "utf-8")));
+          const parsed = parseSkillMarkdown(nm, await fs.readFile(path.join(dir, entry.name), "utf-8"));
+          if (isSupportedExternalSkill(parsed)) byName.set(nm.toLowerCase(), parsed);
         } catch { /* skip unreadable file */ }
         continue;
       }
       if (entry.isDirectory()) {
         const skillPath = path.join(dir, entry.name, "SKILL.md");
         try {
-          byName.set(entry.name.toLowerCase(), parseSkillMarkdown(entry.name, await fs.readFile(skillPath, "utf-8")));
+          const parsed = parseSkillMarkdown(entry.name, await fs.readFile(skillPath, "utf-8"));
+          if (isSupportedExternalSkill(parsed)) byName.set(entry.name.toLowerCase(), parsed);
         } catch { /* skip dirs without SKILL.md or unreadable files */ }
       }
     }

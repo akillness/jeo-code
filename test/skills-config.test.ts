@@ -61,6 +61,10 @@ beforeAll(async () => {
   await fs.writeFile(path.join(dir, "skills", "ralplan.md"), "summary: my overridden ralplan\n\ncustom plan flow");
   await fs.mkdir(path.join(dir, "skills", "spec-kit"), { recursive: true });
   await fs.writeFile(path.join(dir, "skills", "spec-kit", "SKILL.md"), "summary: spec kit skill\n\nUse /speckit.plan and /speckit.tasks.");
+  await fs.mkdir(path.join(dir, ".agents", "skills", ".system"), { recursive: true });
+  await fs.writeFile(path.join(dir, ".agents", "skills", ".system", "hidden.md"), "summary: hidden\n\nbody");
+  await fs.mkdir(path.join(dir, "skills", "skill"), { recursive: true });
+  await fs.writeFile(path.join(dir, "skills", "skill", "SKILL.md"), "summary: conflicts with builtin\n\nShould not load.");
 });
 
 afterAll(async () => {
@@ -86,6 +90,12 @@ test("loadSkills merges bundled + user skill docs; user overrides by name", asyn
   const spec = getSkillFrom(skills, "spec-kit");
   expect(spec?.summary).toBe("spec kit skill");
   expect(getSkillBySlash(skills, "/speckit.plan")?.name).toBe("spec-kit");
+});
+
+test("loadSkills skips hidden system dirs and external skills that collide with builtin command names", async () => {
+  const skills = await loadSkills(dir);
+  expect(getSkillFrom(skills, "skill")).toBeUndefined();
+  expect(getSkillFrom(skills, "hidden")).toBeUndefined();
 });
 
 test("parseSkillMarkdown round-trips the formatSkill (joc skills --write) decoration", () => {

@@ -34,6 +34,8 @@ export interface CompletionContext {
   skillNames?: string[];
   /** Live model ids for a given provider (for `/provider <p> <model>`). */
   modelsForProvider: (provider: string) => string[];
+  /** Sync path suggestions for free-text `@path` mentions (relative to cwd). */
+  mentionPaths?: (prefix: string) => string[];
 }
 
 export interface CompletionResult {
@@ -52,6 +54,7 @@ const PREVIEW_LABEL: Record<string, string> = {
   role: "Subagent roles",
   thinking: "Thinking levels",
   subcommand: "Subcommands",
+  path: "Paths",
 };
 const MAX_COMPLETIONS = 50;
 const THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh"];
@@ -99,13 +102,23 @@ function rankedModelPool(ctx: CompletionContext): string[] {
 }
 
 /**
- * Compute completions for the current input line. Returns an empty list for
- * non-slash input (free-text prompts are not completed).
+ * Compute completions for the current input line. Slash commands are completed as
+ * before; free-text input stays untouched except for `@path` mentions, which can
+ * surface local relative paths.
  */
 export function complete(line: string, ctx: CompletionContext): CompletionResult {
-  if (!line.startsWith("/")) return { completions: [], token: line, kind: "none" };
-
   const { tokens, trailingSpace } = tokenize(line);
+  if (!line.startsWith("/")) {
+    const token = trailingSpace ? "" : tokens[tokens.length - 1] ?? "";
+    if (token.startsWith("@")) {
+      const prefix = token.slice(1);
+      const pool = (ctx.mentionPaths?.(prefix) ?? []).map(p => (p.startsWith("@") ? p : `@${p}`));
+      return { completions: dedupeCap(prefixHits(pool, token)), token, kind: "path" };
+    }
+    return { completions: [], token: line, kind: "none" };
+  }
+
+  // Completing the command name itself (single token, still typing it).
   if (tokens.length <= 1 && !trailingSpace) {
     const token = tokens[0] ?? "/";
     if (token.toLowerCase().startsWith("/skill:")) {

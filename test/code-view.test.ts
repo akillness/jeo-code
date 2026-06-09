@@ -93,6 +93,21 @@ test("formatDiff colors +/-/@@ and is plain when color:false", () => {
   expect(strip(plain[4])).toBe("+new");
 });
 
+test("formatDiff differentiates old/new file headers with distinct ANSI colors", () => {
+  const diff = "--- a/x\n+++ b/x";
+  const prev = chalk.level;
+  chalk.level = 3;
+  try {
+    const out = formatDiff(diff);
+    expect(out[0]).toMatch(/\x1b\[[0-9;]*3[19]m|\x1b\[[0-9;]*9[19]m/);
+    expect(out[1]).toMatch(/\x1b\[[0-9;]*3[29]m|\x1b\[[0-9;]*9[29]m/);
+    expect(strip(out[0]!)).toBe("--- a/x");
+    expect(strip(out[1]!)).toBe("+++ b/x");
+  } finally {
+    chalk.level = prev;
+  }
+});
+
 test("formatDiff caps long diffs", () => {
   const big = Array.from({ length: 20 }, (_, i) => `+line${i}`).join("\n");
   const out = formatDiff(big, { maxLines: 5, color: false });

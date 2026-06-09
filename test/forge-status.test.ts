@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import chalk from "chalk";
 import {
   formatForgeBox,
   progressPercent,
@@ -66,6 +67,31 @@ test("renderJocStatus exposes progress status, joc thinking, and joc forge", () 
   expect(lines[1]).toContain("mutation locked");
 });
 
+test("renderJocStatus colorizes the forge count segments when color is on", () => {
+  const prev = chalk.level;
+  chalk.level = 3;
+  try {
+    const lines = renderJocStatus({
+      step: 3,
+      maxSteps: 10,
+      elapsedMs: 2400,
+      message: "Resolving type boundaries...",
+      currentTool: "bash",
+      okCount: 2,
+      failCount: 1,
+      runningCount: 1,
+      totalCount: 4,
+      mutationGuarded: true,
+      unicode: false,
+      color: true,
+    });
+    expect(lines[1]).toContain("\x1b[");
+    expect(stripAnsi(lines[1]!)).toContain("tools 4 (2 ok / 1 fail / 1 running)");
+  } finally {
+    chalk.level = prev;
+  }
+});
+
 test("ralph guide renders ordered todos and streaming complete/error events", () => {
   const guide = formatRalphTodoGuide(["Plan", "Implement", "Verify"], 1, ["Plan"]);
   expect(guide).toEqual([
@@ -77,6 +103,19 @@ test("ralph guide renders ordered todos and streaming complete/error events", ()
   expect(formatRalphStreamEvent("step", "Executor thinking 1/15")).toBe("  └─ stream:step Executor thinking 1/15");
   expect(formatRalphStreamEvent("complete", "tool bash")).toBe("  └─ stream:complete tool bash");
   expect(formatRalphStreamEvent("error", "tool write")).toBe("  └─ stream:error tool write");
+});
+
+test("ralph render helpers can colorize subagent guidance and stream events", () => {
+  const prev = chalk.level;
+  chalk.level = 3;
+  try {
+    const guide = formatRalphTodoGuide(["Plan", "Implement"], 1, ["Plan"], { color: true, indexed: true });
+    expect(guide[0]).toContain("\x1b[");
+    expect(stripAnsi(guide[0]!)).toContain("[AGENT] Subagent guidance:");
+    expect(formatRalphStreamEvent("error", "tool write", { color: true, indexed: true })).toContain("\x1b[");
+  } finally {
+    chalk.level = prev;
+  }
 });
 
 test("ralph subagent prompt carries full todo order and streaming contract", () => {

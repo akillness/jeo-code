@@ -77,6 +77,10 @@ export interface WorkflowState {
   completed_tasks?: string[];
   pending_tasks?: string[];
   approved?: boolean;
+  /** ultragoal terminal outcome. */
+  status?: string;
+  passed?: number;
+  total?: number;
 }
 
 /**

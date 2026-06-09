@@ -130,9 +130,14 @@ export async function runTeamCommand(): Promise<void> {
     return;
   }
 
-  const parsed = PlanSchema.safeParse(rawPlan);
+  const parsed = PlanSchema.safeParse(normalizePlanShape(rawPlan));
   if (!parsed.success) {
-    console.log(`[ERROR] Plan validation failed: ${parsed.error.message}`);
+    const shape = Array.isArray(rawPlan) ? "a top-level list" : typeof rawPlan;
+    console.log(
+      `[ERROR] The plan is not in the expected shape — it needs a top-level object with a 'steps:' list ` +
+      `(each step: { name, role?, ... }), but the plan file is ${shape}.\n` +
+      `  The planning model likely produced malformed YAML. Review ${planPath} or re-run 'joc ralplan' (with a more capable model).`
+    );
     process.exitCode = 1;
     return;
   }
@@ -241,9 +246,35 @@ export const StepSchema = z.object({
 }).passthrough();
 
 export const PlanSchema = z.object({
-  name: z.string(),
-  steps: z.array(StepSchema),
+  name: z.string().optional(),
+  steps: z.array(StepSchema).min(1),
 }).passthrough();
+
+/**
+ * Tolerate common planning-model deviations so a valid-enough plan still executes:
+ * a top-level list of tasks, a `tasks:` alias for `steps:`, bare-string tasks, and
+ * step name under `task`/`title`/`description`/`step`.
+ */
+export function normalizePlanShape(raw: any): any {
+  let plan = raw;
+  if (Array.isArray(plan)) plan = { steps: plan };
+  if (plan && typeof plan === "object" && !Array.isArray(plan)) {
+    if (!Array.isArray(plan.steps) && Array.isArray(plan.tasks)) plan = { ...plan, steps: plan.tasks };
+    if (Array.isArray(plan.steps)) {
+      plan = {
+        ...plan,
+        steps: plan.steps.map((s: any) =>
+          typeof s === "string"
+            ? { name: s }
+            : s && typeof s === "object" && !s.name
+              ? { ...s, name: s.task ?? s.title ?? s.description ?? s.step ?? "" }
+              : s,
+        ).filter((s: any) => s && typeof s.name === "string" && s.name.trim() !== ""),
+      };
+    }
+  }
+  return plan;
+}
 
 function parseValue(v: string): any {
   if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {

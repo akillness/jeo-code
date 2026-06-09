@@ -4452,3 +4452,47 @@ Note: with a `GEMINI_API_KEY` set (the common case) Gemini is fully `ready` and 
 - Live: Gemini API-key turns succeed; OpenAI Codex OAuth turns succeed; the Gemini-OAuth message is
   now clear and correct. Cloud Code Assist serving is left unimplemented (unverifiable) rather than
   shipped broken.
+
+## gjc spec-first flow parity: unblock the chain end-to-end — passes 771–780
+
+**Date:** 2026-06-08 · **Dimension: real workflow correctness (gjc flow parity).**
+
+Goal: verify joc runs the full gjc chain (deep-interview → ralplan → approve → team → ultragoal) and
+fix where it dead-ends. A read-only architect audit + live runs (ollama, since cloud is rate-limited)
+found two HIGH chain-breakers and several threading gaps. All menus' `--help` verified; the chain was
+then run end-to-end in a temp project.
+
+- **771.** (HIGH, G1) `deep-interview --auto` non-convergence left `phase="interviewing"` + a `.draft`
+  seed → ralplan refused AND the MutationGuard stayed **permanently locked** (no write/edit/bash ever
+  again for that project). Now `--auto` ALWAYS freezes a best-effort seed at the canonical path with
+  `phase="complete"` (logged honestly), so the pipeline proceeds and the guard unlocks. Verified live.
+- **772.** (HIGH, G2) Producer↔consumer plan contract: `ralplan`'s prompt now mandates the exact
+  schema `team` consumes (top-level `name`, `steps:` list of `{name, role?}`), and self-validates its
+  own output against `PlanSchema`, repairing once before persisting.
+- **773.** `team` tolerates common plan deviations via `normalizePlanShape` (top-level list, `tasks:`
+  alias, bare-string tasks, step name under `task`/`title`/`description`/`step`); `PlanSchema.name` is
+  now optional. A malformed plan yields a clear, actionable error (not a raw Zod dump).
+- **774.** (HIGH bug found live) `approve <plan>` rejected the correct path when it differed only by
+  symlink/relative/absolute form (macOS `/var`↔`/private/var`). Now compares canonical realpaths and
+  prints the active plan path to copy. Verified: relative-path approve succeeds.
+- **775.** (G5) `ralplan` handoff now instructs `joc approve <plan>` THEN `joc team` (was skipping the
+  approval gate, which team then rejected).
+- **776.** (G4) `ultragoal` threads `team-state`: warns when team didn't complete, records the plan +
+  execution status in the report, instead of verifying the seed in isolation.
+- **777.** (G7) `ultragoal` persists `ultragoal-state.json` ({phase:complete, status, passed/total,
+  plan_path}) so the chain has a queryable terminal phase (`WorkflowState` gains status/passed/total).
+- **778.** (G6) MutationGuard messages reworded to the real (phase-based) unlock condition — "finish
+  the interview to freeze the seed" — instead of claiming an ambiguity threshold the guard doesn't
+  re-check (which also avoids contradicting the best-effort `--auto` freeze).
+- **779.** Tests updated/added: `name`-optional plan accepted; `normalizePlanShape` deviations;
+  (existing approve/team/mutation-guard suites still green).
+- **780.** Deliberately kept ralplan as a single 3-role-prompt pass (joc is the lean re-impl; a true
+  Planner→Architect→Critic multi-pass is a noted future fidelity enhancement, not a chain-breaker).
+
+### Verification (passes 771–780)
+- `bun run typecheck` → **0 errors**. `bun test` → **504 pass / 0 fail**.
+- All 15 command `--help` menus respond. Full chain run live (ollama) in a temp project:
+  `deep-interview --auto` → phase=complete seed; `ralplan` → valid plan + correct handoff;
+  `approve <relative-path>` → SUCCESS; `team` → per-task Executor loop runs (write executed), halts
+  with a clear "did not converge" on the weak 0.5b model; `ultragoal` → threads team state, writes
+  report + `ultragoal-state.json`. No dead-ends; the 0.5b model's content limits are clearly reported.

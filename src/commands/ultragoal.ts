@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { readWorkflowState, getLocalJocDir } from "../agent/state";
+import { readWorkflowState, writeWorkflowState, getLocalJocDir, type WorkflowState } from "../agent/state";
 import { bashTool } from "../agent/tools";
 
 export async function runUltragoalCommand(): Promise<void> {
@@ -18,6 +18,18 @@ export async function runUltragoalCommand(): Promise<void> {
   const seedPath = interviewState.seed_path;
   console.log(`\n=== Starting Ultragoal Verification Stage ===`);
   console.log(`Reading requirements and acceptance criteria from: ${seedPath}`);
+
+
+  // Thread team execution state: verification should run AFTER the plan was executed.
+  const teamState = await readWorkflowState("team", cwd);
+  if (!teamState || teamState.current_phase !== "complete") {
+    console.log(
+      `[WARN] No completed 'joc team' execution found (run deep-interview → ralplan → approve → team first).\n` +
+      `       Verifying current repository state anyway — results reflect whatever is on disk now.`,
+    );
+  } else {
+    console.log(`Verifying against team execution (plan: ${teamState.plan_path ?? "?"}).`);
+  }
 
   let seedContent = "";
   try {
@@ -89,7 +101,9 @@ export async function runUltragoalCommand(): Promise<void> {
   const reportContent = 
     `# Ultragoal Verification Report: ${interviewState.slug}\n` +
     `Date: ${new Date().toISOString()}\n` +
-    `Status: ${status} (${passedCount}/${totalCount} criteria passed)\n\n` +
+    `Status: ${status} (${passedCount}/${totalCount} criteria passed)\n` +
+    `Plan: ${teamState?.plan_path ?? "(team not run)"}\n` +
+    `Execution: ${teamState?.current_phase === "complete" ? "team complete" : "team NOT complete — verified current disk state"}\n\n` +
     `## Criteria Verification Matrix\n` +
     `| Criterion | Status | Verification Output |\n` +
     `|---|---|---|\n` +
@@ -97,6 +111,21 @@ export async function runUltragoalCommand(): Promise<void> {
     `\n`;
 
   await fs.writeFile(reportPath, reportContent, "utf-8");
+
+  // Persist a machine-readable terminal phase so the chain is queryable end-to-end.
+  const ultragoalState: WorkflowState = {
+    active: false,
+    current_phase: "complete",
+    skill: "ultragoal",
+    slug: interviewState.slug,
+    seed_path: seedPath,
+    plan_path: teamState?.plan_path,
+    status,
+    passed: passedCount,
+    total: totalCount,
+  };
+  await writeWorkflowState("ultragoal", ultragoalState, cwd);
+
   console.log(`\n[VERIFICATION COMPLETE] Report saved to: ${reportPath}`);
   console.log(`Overall status: ${status} (${passedCount}/${totalCount} passed)`);
 }

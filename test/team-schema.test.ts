@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseYaml, PlanSchema } from "../src/commands/team";
+import { parseYaml, PlanSchema, normalizePlanShape } from "../src/commands/team";
 
 test("parseYaml & PlanSchema: validates a well-formed YAML plan", () => {
   const validYaml = `
@@ -22,14 +22,15 @@ steps:
   }
 });
 
-test("parseYaml & PlanSchema: rejects plan missing top-level name", () => {
-  const invalidYaml = `
+test("parseYaml & PlanSchema: accepts a plan with steps but no top-level name (name is optional)", () => {
+  // Real planning models often omit a top-level name; the steps list is what matters.
+  const yaml = `
 steps:
   - name: "Task 1"
 `;
-  const parsed = parseYaml(invalidYaml);
+  const parsed = parseYaml(yaml);
   const result = PlanSchema.safeParse(parsed);
-  expect(result.success).toBe(false);
+  expect(result.success).toBe(true);
 });
 
 test("parseYaml & PlanSchema: rejects plan with non-string top-level name", () => {
@@ -80,4 +81,17 @@ name: "Malformed Plan"
 invalid line here without colon
 `;
   expect(() => parseYaml(malformedYaml)).toThrow();
+});
+
+test("normalizePlanShape: tolerates common plan deviations so a valid-enough plan executes", () => {
+  // top-level list of tasks
+  expect(PlanSchema.safeParse(normalizePlanShape([{ name: "a" }, { name: "b" }])).success).toBe(true);
+  // `tasks:` alias for `steps:`
+  expect(PlanSchema.safeParse(normalizePlanShape({ tasks: [{ name: "a" }] })).success).toBe(true);
+  // bare-string tasks
+  expect(PlanSchema.safeParse(normalizePlanShape({ steps: ["do a", "do b"] })).success).toBe(true);
+  // step name under an alias key
+  const norm = normalizePlanShape({ steps: [{ description: "implement reverse" }] });
+  expect(PlanSchema.safeParse(norm).success).toBe(true);
+  expect(norm.steps[0].name).toBe("implement reverse");
 });

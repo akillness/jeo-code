@@ -16,6 +16,7 @@ import {
   resolveSubagentMaxSteps,
   subagentSystemPrompt,
   subagentToolset,
+  subagentRoleIds,
 } from "../agent/subagents";
 import type { Message } from "../agent/loop";
 import { categoryBadge } from "../tui/components/category-index";
@@ -88,6 +89,12 @@ export function buildRalphSubagentPrompt(ctx: RalphSubagentPromptContext): strin
   ].join("\n");
 }
 
+export function activeStepIndex(totalTasks: number, pendingTasks: readonly string[] | undefined): number {
+  if (totalTasks <= 0) return 0;
+  const pending = pendingTasks?.length ?? totalTasks;
+  return Math.max(0, Math.min(totalTasks - pending, totalTasks - 1));
+}
+
 
 export async function runTeamCommand(): Promise<void> {
   const cwd = process.cwd();
@@ -144,9 +151,23 @@ export async function runTeamCommand(): Promise<void> {
     return;
   }
 
+  const unknownRoles = parsed.data.steps
+    .map(step => step.role?.trim())
+    .filter((role): role is string => !!role && !getSubagentRole(role));
+  if (unknownRoles.length > 0) {
+    const unique = [...new Set(unknownRoles)];
+    console.log(
+      `[ERROR] Plan references unknown subagent role(s): ${unique.join(", ")}. ` +
+      `Known roles: ${subagentRoleIds().join(", ")}. Fix ${planPath} or re-run 'joc ralplan'.`
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const tasks = parsed.data.steps.map(step => step.name);
-  // Map each task name to its optional subagent role (executor/planner/architect/critic).
-  const roleByTask = new Map<string, string | undefined>(parsed.data.steps.map(step => [step.name, step.role]));
+  // Keep roles by STEP INDEX, not task name: generated plans may contain duplicate
+  // names, and those duplicates must still route to their own role.
+  const roleByIndex = parsed.data.steps.map(step => getSubagentRole(step.role)?.id);
 
   console.log(`Loaded ${tasks.length} tasks for execution.`);
 
@@ -176,12 +197,12 @@ export async function runTeamCommand(): Promise<void> {
 
   await writeWorkflowState("team", teamState, cwd);
   const renderOpts: RalphRenderOptions = { color: !!process.stdout.isTTY, indexed: true };
-  for (const line of formatRalphTodoGuide(tasks, Math.max(0, tasks.indexOf(teamState.pending_tasks?.[0] ?? "")), teamState.completed_tasks ?? [], renderOpts)) console.log(line);
+  for (const line of formatRalphTodoGuide(tasks, activeStepIndex(tasks.length, teamState.pending_tasks), teamState.completed_tasks ?? [], renderOpts)) console.log(line);
 
   while (teamState.pending_tasks && teamState.pending_tasks.length > 0) {
     const currentTask = teamState.pending_tasks[0];
     console.log(`\n[TASK] Current: "${currentTask}"`);
-    const activeIndex = tasks.indexOf(currentTask);
+    const activeIndex = activeStepIndex(tasks.length, teamState.pending_tasks);
     for (const line of formatRalphTodoGuide(tasks, activeIndex, teamState.completed_tasks ?? [], renderOpts)) console.log(line);
 
     // Run the Executor loop
@@ -191,7 +212,7 @@ export async function runTeamCommand(): Promise<void> {
       activeIndex,
       completed: teamState.completed_tasks ?? [],
       cwd,
-      roleId: roleByTask.get(currentTask),
+      roleId: roleByIndex[activeIndex],
     });
     
     if (success) {

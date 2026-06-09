@@ -65,6 +65,29 @@ test("runTeamCommand routes each step to its declared subagent role and complete
   expect(teamState.completed_tasks.length).toBe(3);
 });
 
+test("runTeamCommand routes duplicate task names by step index, not by name", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "task done" } }),
+  }));
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([
+    { name: "review", role: "planner" },
+    { name: "review", role: "architect" },
+  ]);
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand();
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  const plannerAt = out.indexOf("Subagent: Planner");
+  const architectAt = out.indexOf("Subagent: Architect");
+  expect(plannerAt).toBeGreaterThanOrEqual(0);
+  expect(architectAt).toBeGreaterThan(plannerAt);
+  const teamState = JSON.parse(await fs.readFile(path.join(tmp, ".joc", "state", "team-state.json"), "utf-8"));
+  expect(teamState.completed_tasks).toEqual(["review", "review"]);
+});
+
 test("runTeamCommand refuses an unapproved plan", async () => {
   const { runTeamCommand } = await import("../src/commands/team");
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), "joc-team-na-"));
@@ -81,4 +104,36 @@ test("runTeamCommand refuses an unapproved plan", async () => {
   console.log = origLog;
 
   expect(logs.join("\n")).toContain("not approved");
+});
+
+test("runTeamCommand refuses unknown plan subagent roles before execution", async () => {
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "review design", role: "plannr" }]);
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand();
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  expect(out).toContain("unknown subagent role");
+  expect(out).toContain("plannr");
+  expect(out).toContain("executor, planner, architect, critic");
+  expect(process.exitCode).toBe(1);
+  await expect(fs.readFile(path.join(tmp, ".joc", "state", "team-state.json"), "utf-8")).rejects.toThrow();
+});
+
+test("runTeamCommand normalizes mixed-case plan roles", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "task done" } }),
+  }));
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "review design", role: "ARCHITECT" }]);
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand();
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  expect(out).toContain("Subagent: Architect");
+  expect(out).toContain("[SUCCESS] All tasks in the plan executed successfully!");
 });

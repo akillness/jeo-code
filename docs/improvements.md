@@ -4593,3 +4593,25 @@ new session.
 - `bun run typecheck` → **0 errors**. `bun test` → **507 pass / 0 fail**.
 - New-session name observed dir-scoped (`joc-feature-branch-jeo-code-<hash>`); unit test asserts two
   dirs on the same branch → different names, and same dir+branch+flags → stable name (reattach).
+
+## Subagent team routing hardening — pass 802
+
+**Date:** 2026-06-08 · **Dimension: subagent correctness / GJC role-agent parity.**
+
+The `team` executor now fails safe when a plan references subagent roles.
+
+- **802.** Plan roles are validated before any `team-state.json` write or tool-loop execution. A typo
+  such as `plannr` no longer falls back to the mutating `executor`; `joc team` reports the unknown
+  role and the known role set (`executor, planner, architect, critic`).
+- **803.** Per-step role routing is now index-based instead of task-name-based. Generated plans may
+  contain duplicate step names; duplicates now keep their own role order instead of being collapsed by
+  a `Map<taskName, role>`.
+- **804.** Mixed-case plan roles are normalized through the role registry, preserving permissive input
+  while still rejecting unknown roles.
+
+### Verification (passes 802–804)
+
+- `bun test test/team-run.test.ts test/subagents.test.ts` → **12 pass / 0 fail**.
+- `bun run typecheck` → **0 errors**.
+- `bun test` → **pass** (current workspace: 515 pass / 0 fail).
+- `bun run build` → **success**.

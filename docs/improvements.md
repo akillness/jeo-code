@@ -5322,3 +5322,15 @@ Follow-up to the GJC comparison: `joc` deep-interview still had a real safety de
 - `bun run typecheck` → 0 errors. `bun test` → **639 pass / 0 fail**. `bun run build` → ok.
 - New tests: architect fan-out of 3 → "3/3 completed (concurrency 3)" + ordered Task sections;
   executor fan-out → "executor — serialized"; empty `tasks` → soft error.
+## Tool-artifact retention (GC) — pass 860
+
+**Date:** 2026-06-09 · **Dimension: durability (bounded disk).**
+
+- **860.** `spillToolResult` now prunes `.joc/artifacts/tool-results/` to the newest
+  `MAX_TOOL_ARTIFACTS` (50) on each spill (best-effort, by mtime), so a long team/REPL session can't
+  grow the artifact dir without bound — closing the last LOW finding from the round-D architect review.
+
+### Verification (pass 860)
+- `bun run typecheck` → 0 errors. `bun test` → **640 pass / 0 fail**. `bun run build` → ok.
+- New test: spilling `MAX_TOOL_ARTIFACTS + 10` times leaves ≤ `MAX_TOOL_ARTIFACTS` files.
+- README carries no stale numeric counts (AGENTS.md counts already corrected in pass 843).

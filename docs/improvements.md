@@ -4655,3 +4655,37 @@ that gap, both wired into the launch tool-loop and TUI.
   mutation-lock rendering are covered).
 - `bun test` → **530 pass / 0 fail**.
 - `bun run build` → **success**.
+
+## Onboarding + MCP hardening (setup/auth/mcp audit) — passes 802–809
+
+**Date:** 2026-06-08 · **Dimension: onboarding correctness / MCP protocol robustness / secret hygiene.**
+
+A read-only architect audit of the less-covered onboarding/integration surfaces (setup, auth,
+auth storage, MCP server/tools) plus live smoke tests found real defects:
+
+- **802.** (HIGH/P0) MCP server crashed on a `null` (or array/primitive) JSON-RPC line: `JSON.parse("null")`
+  is valid JSON but `req.jsonrpc` threw, and the `for await` stdin loop had no guard → the server stopped
+  serving ALL subsequent requests (trivial DoS). `handleLine` now rejects non-object requests with
+  `-32600` and the loop wraps `handleLine` in try/catch so one bad line never kills the server.
+- **803.** (HIGH/P1) `auth/storage.ts` setters (setOauthToken/setOauthCredential/clearOauthToken/setApiKey)
+  read the ENV-OVERLAID config and saved it → baked env-only OAuth tokens, OLLAMA_HOST, OPENAI_BASE_URL,
+  and role tiers into `~/.joc/config.json` (plaintext secret leak + stale-token shadowing on env rotation).
+  Rewritten via `saveConfigPatch`/`readRawGlobalConfig` (the contract launch.ts already follows).
+- **804.** (HIGH/P1) `joc setup` had the same env-leak: `next` was cloned from the overlaid config and saved.
+  Now built from `readRawGlobalConfig()` (overlaid `current` used only for display defaults).
+- **805.** (MED) `joc setup` on a non-TTY stdin crashed with "readline was closed"; now detects `!isTTY` and
+  prints clear non-interactive guidance (env vars / `joc auth login` / edit config) and returns.
+- **806.** (MED) `joc auth login|logout|refresh <bogus>` cast the arg to a provider with no validation
+  (persisted `oauth.bogus` / cryptic crash). Now validated against anthropic/openai/gemini with a clear error.
+- **807.** (MED) MCP `joc_credential_status` / `joc_config_snapshot` reported the BARE credential
+  (oauth-beats-key), not the EFFECTIVE one the call path uses. Now report the effective kind (API key wins;
+  unusable OAuth-only → "none"), plus `configured` for transparency.
+- **808–809.** Tests: `mcp.test.ts` (malformed inputs → -32600/-32700, server keeps serving after a bad line);
+  storage env-leak test (setters persist onto raw config, no env baked). Exported `handleLine` for testing.
+
+### Verification (passes 802–809)
+- `bun run typecheck` → **0 errors**. `bun test` → **533 pass / 0 fail**.
+- Live: `printf 'null\n[]\n{ping}\n' | joc mcp serve` → two `-32600` then a normal `ping` result (no crash);
+  `joc auth refresh bogus` / `auth login bogus` → "Unknown provider"; piped `joc setup` → clean TTY guidance.
+- Confirmed correct (unchanged): expiry/refresh math (5-min skew), real call-path credential precedence,
+  MCP protocol shapes/error codes, config-schema validation.

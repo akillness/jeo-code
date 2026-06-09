@@ -1,4 +1,4 @@
-import { readGlobalConfig, saveGlobalConfig, type Config, type StoredOAuth } from "../agent/state";
+import { readGlobalConfig, readRawGlobalConfig, saveConfigPatch, type StoredOAuth } from "../agent/state";
 
 export type AuthProvider = "anthropic" | "openai" | "gemini";
 
@@ -82,33 +82,27 @@ export async function getStoredOAuth(provider: AuthProvider): Promise<StoredOAut
 
 /** Persist a plain bearer token (legacy / manual paste — no refresh metadata). */
 export async function setOauthToken(provider: AuthProvider, token: string): Promise<void> {
-  const cfg = await readGlobalConfig();
-  const next: Config = JSON.parse(JSON.stringify(cfg));
-  next.oauth = next.oauth ?? {};
-  next.oauth[provider] = token;
-  await saveGlobalConfig(next);
+  // Persist onto the RAW on-disk config (not env-overlaid) so a short-lived
+  // *_OAUTH_TOKEN env / OLLAMA_HOST / role tier is never baked into config.json.
+  await saveConfigPatch(raw => ({ oauth: { ...(raw.oauth ?? {}), [provider]: token } }));
 }
 
 /** Persist a full OAuth credential set (access + refresh + expiry). */
 export async function setOauthCredential(provider: AuthProvider, cred: StoredOAuth): Promise<void> {
-  const cfg = await readGlobalConfig();
-  const next: Config = JSON.parse(JSON.stringify(cfg));
-  next.oauth = next.oauth ?? {};
-  next.oauth[provider] = cred;
-  await saveGlobalConfig(next);
+  await saveConfigPatch(raw => ({ oauth: { ...(raw.oauth ?? {}), [provider]: cred } }));
 }
 
 export async function clearOauthToken(provider: AuthProvider): Promise<boolean> {
-  const cfg = await readGlobalConfig();
-  if (!cfg.oauth?.[provider]) return false;
-  delete cfg.oauth[provider];
-  await saveGlobalConfig(cfg);
+  const raw = await readRawGlobalConfig();
+  if (!raw.oauth?.[provider]) return false;
+  await saveConfigPatch(r => {
+    const oauth = { ...(r.oauth ?? {}) };
+    delete oauth[provider];
+    return { oauth };
+  });
   return true;
 }
 
 export async function setApiKey(provider: AuthProvider, key: string): Promise<void> {
-  const cfg = await readGlobalConfig();
-  const next: Config = JSON.parse(JSON.stringify(cfg));
-  next.providers[provider] = key;
-  await saveGlobalConfig(next);
+  await saveConfigPatch(raw => ({ providers: { ...(raw.providers ?? {}), [provider]: key } }));
 }

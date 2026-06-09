@@ -120,6 +120,14 @@ export async function readTool(
 ): Promise<ToolResult> {
   try {
     const absPath = path.resolve(cwd, filePath);
+    // gjc parity: reading a directory returns its listing instead of an EISDIR error.
+    const st = await fs.stat(absPath).catch(() => null);
+    if (st?.isDirectory()) {
+      if (raw || lineRange) {
+        return { success: false, output: "", error: `${filePath} is a directory — drop raw/lineRange; reading it lists entries.` };
+      }
+      return lsTool(filePath, cwd);
+    }
     const content = await fs.readFile(absPath, "utf-8");
 
     if (raw) {

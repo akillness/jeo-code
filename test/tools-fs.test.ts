@@ -197,6 +197,16 @@ test("readTool: huge lineRange is capped with a truncation notice", async () => 
   expect(res.output.split("\n").length).toBeLessThan(2100);
 });
 
+test("readTool: reading a directory returns its listing (gjc parity)", async () => {
+  const res = await readTool("src", undefined, dir);
+  expect(res.success).toBe(true);
+  expect(res.output).toContain("keep.ts");
+  // raw/lineRange on a directory is a clear error
+  const bad = await readTool("src", "1-5", dir);
+  expect(bad.success).toBe(false);
+  expect(bad.error).toContain("is a directory");
+});
+
 test("findTool skips node_modules and .git", async () => {
   const res = await findTool("*.ts", dir);
   expect(res.success).toBe(true);

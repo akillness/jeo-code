@@ -40,10 +40,23 @@ export async function runApproveCommand(args: string[] = []): Promise<void> {
     return;
   }
 
+  // Compare canonical (symlink-resolved) paths so a relative arg, an absolute arg,
+  // or a /var↔/private/var (macOS) form all match the stored plan path.
+  const canonical = async (p: string): Promise<string> => {
+    try {
+      return await fs.realpath(p);
+    } catch {
+      return p;
+    }
+  };
   const resolvedStatePath = path.resolve(cwd, ralplanState.plan_path);
-  if (resolvedStatePath !== resolvedInputPath) {
+  const [canonInput, canonState] = await Promise.all([canonical(resolvedInputPath), canonical(resolvedStatePath)]);
+  if (canonInput !== canonState) {
     console.log(
-      `[ERROR] Provided plan path does not match the active plan in the ralplan state.`
+      `[ERROR] Provided plan path does not match the active plan in the ralplan state.\n` +
+      `  provided: ${resolvedInputPath}\n` +
+      `  active:   ${resolvedStatePath}\n` +
+      `  Run 'joc approve "${resolvedStatePath}"' to approve the active plan.`
     );
     process.exitCode = 1;
     return;

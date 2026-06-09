@@ -7,6 +7,7 @@ import {
   getLocalJocDir,
   type WorkflowState,
 } from "../agent/state";
+import { PlanSchema, normalizePlanShape, parseYaml } from "./team";
 
 export async function runRalplanCommand(): Promise<void> {
   const cwd = process.cwd();
@@ -51,16 +52,48 @@ export async function runRalplanCommand(): Promise<void> {
     `2. Architect: Reviews technical feasibility, structural directories, and patterns.\n` +
     `3. Critic: Critiques the plan for vagueness, redundant copies, and missing steps.\n\n` +
     `Analyze the given crystallized spec (seed.yaml) and generate a step-by-step implementation plan.\n` +
-    `Output the final plan in YAML format. Ensure it contains a clear sequence of tasks with descriptive names and target files.\n` +
-    `Output ONLY the YAML. Do not include markdown wraps or code blocks.`;
+    `Output the plan as YAML with EXACTLY this shape (no prose, no markdown, no code fences):\n` +
+    `name: "<short plan name>"\n` +
+    `steps:\n` +
+    `  - name: "<imperative task, e.g. Implement reverse() in src/reverse.ts>"\n` +
+    `    role: executor   # one of: executor | planner | architect | critic\n` +
+    `    target: "<primary file path>"\n` +
+    `  - name: "<next task>"\n` +
+    `    role: executor\n` +
+    `    target: "<file>"\n` +
+    `Provide 3-8 concrete, ordered steps. Output ONLY the YAML above.`;
 
   const messages = [
     { role: "user" as const, content: `Here is the crystallized spec (seed.yaml):\n\n${seedContent}` }
   ];
 
   try {
-    const rawPlan = await callLlm(messages, { systemPrompt });
-    const cleanPlan = rawPlan.replace(/```yaml|```/g, "").trim();
+    // Generate, then self-validate against the schema `team` consumes; repair once so a
+    // malformed plan never reaches approve/team (producer↔consumer contract).
+    const generate = async (extra = ""): Promise<string> => {
+      const raw = await callLlm(
+        extra ? [...messages, { role: "user" as const, content: extra }] : messages,
+        { systemPrompt },
+      );
+      return raw.replace(/```yaml|```/g, "").trim();
+    };
+    const isValidPlan = (yaml: string): boolean => {
+      try {
+        return PlanSchema.safeParse(normalizePlanShape(parseYaml(yaml))).success;
+      } catch {
+        return false;
+      }
+    };
+    let cleanPlan = await generate();
+    if (!isValidPlan(cleanPlan)) {
+      console.log("[ralplan] First plan did not match the required shape; requesting a corrected plan…");
+      cleanPlan = await generate(
+        `Your previous output was not valid. Output ONLY YAML with a top-level 'name:' and a 'steps:' list where each item is '- name: <task>' with an optional 'role:'. No prose, no code fences.`,
+      );
+      if (!isValidPlan(cleanPlan)) {
+        console.log("[ralplan] WARNING: the model's plan still doesn't match the schema. Saving it, but 'joc team' may reject it — review/edit the plan or re-run with a stronger model.");
+      }
+    }
 
     const planDir = path.join(getLocalJocDir(cwd), "plans");
     await fs.mkdir(planDir, { recursive: true });
@@ -78,7 +111,9 @@ export async function runRalplanCommand(): Promise<void> {
     console.log("-----------------------------------------");
     console.log(cleanPlan);
     console.log("-----------------------------------------");
-    console.log("\n[Handoff Ready] The blueprint is prepared. Run 'joc team' to execute the plan.");
+    console.log(`\n[Handoff Ready] The blueprint is prepared but NOT yet approved.`);
+    console.log(`  1) Review it, then approve:  joc approve "${planPath}"`);
+    console.log(`  2) Execute the plan:         joc team`);
 
   } catch (error: any) {
     console.log(`[ERROR calling LLM during Planning]: ${error.message}`);

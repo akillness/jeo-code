@@ -7,6 +7,8 @@
  * appends the result to history, and continues until the model calls `done`
  * or the step budget is exhausted.
  */
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { callLlm, type Message } from "./loop";
 import { extractJsonObject } from "./json";
 import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, type ToolResult } from "./tools";
@@ -110,6 +112,24 @@ export function truncateToolOutput(s: string, max = 4000): string {
   const head = Math.floor(max * 0.6);
   const tail = max - head;
   return `${s.slice(0, head)}\n…(${s.length - max} chars truncated)…\n${s.slice(s.length - tail)}`;
+}
+
+/** Tool output larger than this is spilled to a recoverable artifact file. */
+export const TOOL_SPILL_THRESHOLD = 12_000;
+
+/**
+ * Write an oversized tool result verbatim under `.joc/artifacts/tool-results/` and
+ * return the workspace-relative path (for the model to `read`). Best-effort: throws
+ * are caught by the caller, which simply omits the artifact note.
+ */
+export async function spillToolResult(tool: string, output: string, cwd: string): Promise<string> {
+  const dir = path.join(cwd, ".joc", "artifacts", "tool-results");
+  await fs.mkdir(dir, { recursive: true });
+  const safeTool = tool.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 32) || "tool";
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const rel = path.join(".joc", "artifacts", "tool-results", `${stamp}-${safeTool}.txt`);
+  await fs.writeFile(path.join(cwd, rel), output, "utf-8");
+  return rel;
 }
 
 /** Levenshtein distance (small inputs: tool/command names). */
@@ -268,9 +288,17 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
 
     ev.onToolResult?.(invocation.tool, success, output);
     history.push({ role: "assistant", content: responseText });
+    let resultBody = truncateToolOutput(output);
+    // Spill oversized tool output to a recoverable artifact so the decisive middle
+    // (test logs, long searches) isn't lost to the head+tail cap — the model can
+    // `read` the full file when the preview elides what it needs.
+    if (output.length > TOOL_SPILL_THRESHOLD) {
+      const artifact = await spillToolResult(invocation.tool, output, cwd).catch(() => null);
+      if (artifact) resultBody += `\n[full output (${output.length} chars) saved to ${artifact} — read it for the elided middle]`;
+    }
     history.push({
       role: "user",
-      content: `Tool [${invocation.tool}] result (${success ? "ok" : "fail"}):\n${truncateToolOutput(output)}`,
+      content: `Tool [${invocation.tool}] result (${success ? "ok" : "fail"}):\n${resultBody}`,
     });
 
     if (success) {

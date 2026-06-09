@@ -194,6 +194,34 @@ export async function writeTool(
   }
 }
 
+/** Strip a single leading and trailing newline (CRLF or LF) — the editBlock framing. */
+function trimOneNewline(s: string): string {
+  if (s.startsWith("\r\n")) s = s.slice(2);
+  else if (s.startsWith("\n")) s = s.slice(1);
+  if (s.endsWith("\r\n")) s = s.slice(0, -2);
+  else if (s.endsWith("\n")) s = s.slice(0, -1);
+  return s;
+}
+
+/**
+ * Parse one or MORE `<<<<<<< SEARCH / ======= / >>>>>>>` hunks from an edit block.
+ * Returns null when there are no SEARCH markers (so the ≔ path / format error stands).
+ * Each hunk's search/replace has one framing newline trimmed (same as the legacy
+ * single-hunk path). A marker present but malformed (no `=======`/`>>>>>>>`) → null.
+ */
+export function parseEditHunks(block: string): { search: string; replace: string }[] | null {
+  if (!block.includes("<<<<<<< SEARCH")) return null;
+  const hunks: { search: string; replace: string }[] = [];
+  for (const seg of block.split("<<<<<<< SEARCH").slice(1)) {
+    const eq = seg.indexOf("=======");
+    if (eq === -1) return null;
+    const gt = seg.indexOf(">>>>>>>", eq);
+    if (gt === -1) return null;
+    hunks.push({ search: trimOneNewline(seg.slice(0, eq)), replace: trimOneNewline(seg.slice(eq + 7, gt)) });
+  }
+  return hunks.length ? hunks : null;
+}
+
 export async function editTool(
   filePath: string,
   editBlock: string,
@@ -247,66 +275,32 @@ export async function editTool(
     }
 
     if (!updated) {
-      // Direct substring replacement fallback
-      const searchMatch = editBlock.split("<<<<<<< SEARCH");
-      if (searchMatch.length > 1) {
-        const parts = searchMatch[1].split("=======");
-        if (parts.length > 1) {
-          let searchVal = parts[0];
-          if (searchVal.startsWith("\r\n")) {
-            searchVal = searchVal.slice(2);
-          } else if (searchVal.startsWith("\n")) {
-            searchVal = searchVal.slice(1);
+      // SEARCH/REPLACE hunks — one or MORE blocks applied in order to a working copy.
+      // Atomic: if ANY hunk fails to match, nothing is written to disk.
+      const hunks = parseEditHunks(editBlock);
+      if (hunks) {
+        let working = content;
+        for (const [i, h] of hunks.entries()) {
+          if (h.search === "") {
+            return { success: false, output: "", error: `Failed to apply edit: hunk ${i + 1} has an empty SEARCH block.` };
           }
-          if (searchVal.endsWith("\r\n")) {
-            searchVal = searchVal.slice(0, -2);
-          } else if (searchVal.endsWith("\n")) {
-            searchVal = searchVal.slice(0, -1);
-          }
-
-          if (searchVal === "") {
-            return {
-              success: false,
-              output: "",
-              error: "Failed to apply edit: Search block is empty.",
-            };
-          }
-
-          const replaceParts = parts[1].split(">>>>>>>");
-          if (replaceParts.length > 0) {
-            let replaceVal = replaceParts[0];
-            if (replaceVal.startsWith("\r\n")) {
-              replaceVal = replaceVal.slice(2);
-            } else if (replaceVal.startsWith("\n")) {
-              replaceVal = replaceVal.slice(1);
-            }
-            if (replaceVal.endsWith("\r\n")) {
-              replaceVal = replaceVal.slice(0, -2);
-            } else if (replaceVal.endsWith("\n")) {
-              replaceVal = replaceVal.slice(0, -1);
-            }
-
-            if (content.includes(searchVal)) {
-              content = content.replace(searchVal, replaceVal);
-              updated = true;
-            } else {
-              // Near-miss diagnostics so the model can self-correct instead of
-              // blindly retrying the same failing block.
-              const firstLine = searchVal.split("\n")[0] ?? "";
-              const trimmedHit = content.replace(/[ \t]+$/gm, "").includes(searchVal.trim())
-                ? " A whitespace-trimmed version DOES match — fix leading/trailing spaces or indentation."
-                : "";
-              const anchorHit = !trimmedHit && firstLine.trim() && content.includes(firstLine)
-                ? " The first search line IS present, so the mismatch is below it — re-read the exact bytes with read, then retry."
-                : "";
-              return {
-                success: false,
-                output: "",
-                error: `Failed to apply edit: Search block not found in file.${trimmedHit}${anchorHit}`,
-              };
-            }
+          if (working.includes(h.search)) {
+            working = working.replace(h.search, h.replace);
+          } else {
+            // Near-miss diagnostics so the model can self-correct instead of blindly retrying.
+            const firstLine = h.search.split("\n")[0] ?? "";
+            const trimmedHit = working.replace(/[ \t]+$/gm, "").includes(h.search.trim())
+              ? " A whitespace-trimmed version DOES match — fix leading/trailing spaces or indentation."
+              : "";
+            const anchorHit = !trimmedHit && firstLine.trim() && working.includes(firstLine)
+              ? " The first search line IS present, so the mismatch is below it — re-read the exact bytes with read, then retry."
+              : "";
+            const which = hunks.length > 1 ? ` (hunk ${i + 1}/${hunks.length})` : "";
+            return { success: false, output: "", error: `Failed to apply edit: Search block not found in file${which}.${trimmedHit}${anchorHit}` };
           }
         }
+        content = working;
+        updated = true;
       }
     }
 

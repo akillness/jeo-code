@@ -2,7 +2,7 @@ import { test, expect, beforeAll, afterAll } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { findTool, searchTool, readTool, bashTool, lsTool, parseLineSelector, editTool, IGNORED_DIRS } from "../src/agent/tools";
+import { findTool, searchTool, readTool, bashTool, lsTool, parseLineSelector, parseEditHunks, editTool, IGNORED_DIRS } from "../src/agent/tools";
 
 let dir = "";
 
@@ -205,6 +205,33 @@ test("readTool: reading a directory returns its listing (gjc parity)", async () 
   const bad = await readTool("src", "1-5", dir);
   expect(bad.success).toBe(false);
   expect(bad.error).toContain("is a directory");
+});
+
+test("parseEditHunks: parses one, many, and rejects malformed/none", () => {
+  expect(parseEditHunks("no markers here")).toBeNull();
+  const one = parseEditHunks("<<<<<<< SEARCH\na\n=======\nb\n>>>>>>>");
+  expect(one).toEqual([{ search: "a", replace: "b" }]);
+  const two = parseEditHunks("<<<<<<< SEARCH\na\n=======\nb\n>>>>>>>\n<<<<<<< SEARCH\nc\n=======\nd\n>>>>>>>");
+  expect(two).toEqual([{ search: "a", replace: "b" }, { search: "c", replace: "d" }]);
+  expect(parseEditHunks("<<<<<<< SEARCH\na\n(no divider)")).toBeNull();
+});
+
+test("editTool: multiple SEARCH/REPLACE hunks apply in order", async () => {
+  const f = path.join(dir, "multi-edit.ts");
+  await fs.writeFile(f, "const a = 1;\nconst b = 2;\n");
+  const res = await editTool(f, "<<<<<<< SEARCH\nconst a = 1;\n=======\nconst a = 10;\n>>>>>>>\n<<<<<<< SEARCH\nconst b = 2;\n=======\nconst b = 20;\n>>>>>>>", dir);
+  expect(res.success).toBe(true);
+  expect(await fs.readFile(f, "utf-8")).toBe("const a = 10;\nconst b = 20;\n");
+});
+
+test("editTool: multi-hunk is atomic — a later failing hunk writes nothing", async () => {
+  const f = path.join(dir, "atomic-edit.ts");
+  const original = "const a = 1;\nconst b = 2;\n";
+  await fs.writeFile(f, original);
+  const res = await editTool(f, "<<<<<<< SEARCH\nconst a = 1;\n=======\nconst a = 10;\n>>>>>>>\n<<<<<<< SEARCH\nNOPE_NOT_PRESENT\n=======\nx\n>>>>>>>", dir);
+  expect(res.success).toBe(false);
+  expect(res.error).toContain("hunk 2/2");
+  expect(await fs.readFile(f, "utf-8")).toBe(original); // unchanged — first hunk NOT applied
 });
 
 test("findTool skips node_modules and .git", async () => {

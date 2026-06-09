@@ -196,3 +196,44 @@ export async function latestSessionId(cwd = process.cwd()): Promise<string | und
   const list = await listSessions(cwd);
   return list[0]?.id;
 }
+
+export interface ExportOptions {
+  /** Include system messages in the export (default false — they're boilerplate). */
+  includeSystem?: boolean;
+}
+
+/**
+ * Render a saved session to Markdown or JSON for handoff, bug reports, and audit
+ * trails. Reuses `loadSession` (which tolerates a malformed trailing line).
+ */
+export async function exportSession(
+  id: string,
+  format: "markdown" | "json" = "markdown",
+  cwd = process.cwd(),
+  opts: ExportOptions = {},
+): Promise<string> {
+  const { header, messages } = await loadSession(id, cwd);
+  const picked = opts.includeSystem ? messages : messages.filter(m => m.role !== "system");
+
+  if (format === "json") {
+    return JSON.stringify(
+      { id: header.id, timestamp: header.timestamp, cwd: header.cwd, messageCount: picked.length, messages: picked },
+      null,
+      2,
+    );
+  }
+
+  const lines: string[] = [
+    `# joc session ${header.id}`,
+    "",
+    `- Started: ${header.timestamp}`,
+    `- Workspace: ${header.cwd}`,
+    `- Messages: ${picked.length}`,
+    "",
+  ];
+  for (const m of picked) {
+    const role = m.role.charAt(0).toUpperCase() + m.role.slice(1);
+    lines.push(`## ${role}`, "", "```", m.content, "```", "");
+  }
+  return lines.join("\n");
+}

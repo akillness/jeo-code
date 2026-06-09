@@ -4546,3 +4546,30 @@ timer cleared in finish() on all paths; SIGINT + picker keypress listeners balan
 - `bun run typecheck` → **0 errors**. `bun test` → **506 pass / 0 fail**.
 - Harness: StreamRegion render flat; LaunchTui heap +3.6MB (was +19.4MB) over 2000 steps; draw ~1.0ms
   flat; frameless-stage draw 4µs/frame (art cached once, cachedFrame=0).
+
+## gjc fidelity: real ralplan consensus + corrupt-state safety — passes 797–800
+
+**Date:** 2026-06-08 · **Dimension: gjc flow fidelity / state safety (deferred G3, G8).**
+
+Picked up the two items deferred from the spec-first audit (passes 771–780).
+
+- **797.** (G3) `ralplan` is now a real **Planner → Architect → Critic consensus**: three chained
+  `callLlm` passes, each consuming the prior output (Planner drafts → Architect reviews feasibility/
+  structure/missing steps → Critic finalizes for verifiability), instead of one call with a blended
+  3-role prompt. The shared schema spec is included in every pass so each output is team-consumable.
+- **798.** ralplan self-validates the Critic output against team's `PlanSchema`; on failure it repairs
+  once, then falls back to the best schema-valid earlier pass (Architect/Planner) so a malformed plan
+  never reaches approve/team. Console shows the `[1/3] [2/3] [3/3]` passes (the old log overstated a
+  single turn).
+- **799.** (G8) `team` reads `team-state.json` with `readWorkflowStateStrict`: a corrupt state file is
+  now a distinct hard error ("fix or delete it") instead of being treated as missing and silently
+  re-running already-completed tasks. Gates still fail safe; resume no longer loses progress on
+  corruption.
+- **800.** Verified live (ollama): ralplan runs the 3 passes and writes a valid plan; a corrupted
+  team-state makes `joc team` refuse before executing any task.
+
+### Verification (passes 797–800)
+- `bun run typecheck` → **0 errors**. `bun test` → **506 pass / 0 fail**.
+- Live: `joc ralplan` → "Planner → Architect → Critic consensus" with [1/3]/[2/3]/[3/3] passes + a
+  schema-valid plan; corrupt `.joc/state/team-state.json` → `joc team` prints the corrupt-state error
+  and exits non-zero (no silent re-run).

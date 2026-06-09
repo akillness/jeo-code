@@ -135,11 +135,12 @@ function envOAuth(): NonNullable<Config["oauth"]> {
 function withEnvOverlay(cfg: Config): Config {
   const envTok = envOAuth();
   const oauth = { ...envTok, ...(cfg.oauth ?? {}) };
-  // Disk wins; env fills only the gaps (??=).
+  // Disk wins when it is a real key; env fills missing/blank gaps. A hand-edited
+  // empty string should not mask a valid environment credential.
   const providers: Config["providers"] = { ...(cfg.providers ?? {}) };
-  providers.anthropic ??= process.env.ANTHROPIC_API_KEY;
-  providers.openai ??= process.env.OPENAI_API_KEY;
-  providers.gemini ??= process.env.GEMINI_API_KEY;
+  if (!providers.anthropic && process.env.ANTHROPIC_API_KEY) providers.anthropic = process.env.ANTHROPIC_API_KEY;
+  if (!providers.openai && process.env.OPENAI_API_KEY) providers.openai = process.env.OPENAI_API_KEY;
+  if (!providers.gemini && process.env.GEMINI_API_KEY) providers.gemini = process.env.GEMINI_API_KEY;
   return {
     ...cfg,
     providers,

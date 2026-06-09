@@ -10,6 +10,7 @@
 import { callLlm, type Message } from "./loop";
 import { extractJsonObject } from "./json";
 import { readTool, writeTool, editTool, bashTool, findTool, searchTool, type ToolResult } from "./tools";
+import { friendlyProviderError } from "../util/provider-error";
 
 export interface ToolInvocation {
   tool: string;
@@ -146,7 +147,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
             });
     } catch (err) {
-      const message = (err as Error).message;
+      const message = friendlyProviderError(err);
       ev.onError?.(message);
       // Surface the real cause so callers don't print a misleading "step limit" message.
       return finish({ done: false, steps: step, doneReason: `Error: ${message}` });

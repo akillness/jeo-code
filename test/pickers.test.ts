@@ -33,7 +33,7 @@ test("modelHint badges reasoning / recommended / readiness", () => {
   const h = modelHint(o1, false, true);
   expect(h).toContain("reasoning");
   expect(h).toContain("no credential");
-  const sonnet = findCatalogEntry("claude-3-5-sonnet")!;
+  const sonnet = findCatalogEntry("claude-sonnet-4-5")!;
   expect(modelHint(sonnet, true, true)).toContain("recommended");
   expect(modelHint(sonnet, true, true)).toContain("ready");
 });

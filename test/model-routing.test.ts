@@ -18,7 +18,7 @@ test("resolveProvider is catalog-authoritative for known ids", () => {
 
 test("describeModelDetailed attaches catalog metadata + reverse aliases", async () => {
   const d = await describeModelDetailed("gpt");
-  expect(d.resolved).toBe("gpt-4o"); // alias expanded
+  expect(d.resolved).toBe("gpt-5.5"); // alias expanded
   expect(d.provider).toBe("openai");
   expect(d.entry?.contextWindow).toBeGreaterThan(0);
   expect(d.aliases).toContain("gpt"); // reverse alias (builtin, always present)

@@ -11,6 +11,7 @@ import { EVOLUTION_STAGES, renderAsciiArt, animateAsciiArt } from "../tui/compon
 import { getEvolutionTip } from "../tui/components/evolution";
 import chalk from "chalk";
 import type { Message } from "../agent/loop";
+import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch } from "../agent/state";
 import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, enrichAll, sortByCapability, knownCount, MODEL_CATALOG, fuzzyMatchCatalog } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
@@ -435,19 +436,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     onError: (msg: string) => console.log(`  └─ stream:error ${msg}`),
   };
 
-  // Map raw provider errors (rate limit / auth) to a concise, actionable line.
-  const friendlyProviderError = (err: unknown): string => {
-    const msg = (err as Error)?.message ?? String(err);
-    const status = (err as { status?: number })?.status;
-    if (status === 429 || /\b429\b/.test(msg) || /rate[ _]?limit/i.test(msg)) {
-      const prov = /anthropic/i.test(msg) ? "Anthropic" : /openai/i.test(msg) ? "OpenAI" : /gemini|google/i.test(msg) ? "Gemini" : "the provider";
-      return `Rate limited by ${prov} (HTTP 429). Auto-retry was exhausted — wait a moment and resend, slow your request rate, or switch model with /model (a local ollama model never rate-limits).`;
-    }
-    if (status === 401 || status === 403 || /\b40[13]\b/.test(msg)) {
-      return `${msg}\n  → Check credentials: run 'joc auth status', re-login with /provider login <name>, or set the provider API key.`;
-    }
-    return msg;
-  };
 
   // Run one conversational turn: compact, persist user msg, run the loop, persist + return the reply.
   // When `useTui`, a live TUI renders the turn and prints the final reply itself (rendered=true).

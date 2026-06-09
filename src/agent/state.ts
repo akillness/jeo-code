@@ -124,7 +124,7 @@ function envDefaultConfig(): Config {
       openai: process.env.OPENAI_API_KEY,
       gemini: process.env.GEMINI_API_KEY,
     },
-    defaultModel: process.env.JOC_DEFAULT_MODEL || "claude-3-5-sonnet",
+    defaultModel: process.env.JOC_DEFAULT_MODEL || "claude-sonnet-4-5",
     thinkingLevel: "medium",
   };
 }

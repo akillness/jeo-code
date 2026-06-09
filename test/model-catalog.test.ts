@@ -46,7 +46,7 @@ test("catalog entries are well-formed (provider, positive limits)", () => {
 
 test("findCatalogModel matches canonical and provider model id", () => {
   expect(findCatalogModel("gpt-4o")?.provider).toBe("openai");
-  expect(findCatalogModel("claude-3-5-sonnet-20241022")?.canonical).toBe("claude-3-5-sonnet");
+  expect(findCatalogModel("claude-sonnet-4-5-20250929")?.canonical).toBe("claude-sonnet-4-5");
   expect(findCatalogModel("nope")).toBeUndefined();
 });
 
@@ -68,7 +68,7 @@ test("catalogMetadata tolerates provider-prefixed ids", () => {
 });
 
 test("supportsThinking reflects the catalog", () => {
-  expect(supportsThinking("claude-sonnet-4", "high")).toBe(true);
+  expect(supportsThinking("claude-sonnet-4-5", "high")).toBe(true);
   expect(supportsThinking("gpt-4o", "high")).toBe(false); // gpt-4o has no thinking
   expect(supportsThinking("unknown", "low")).toBe(false);
 });

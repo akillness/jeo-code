@@ -10,10 +10,10 @@ import {
 
 test("aliasesFor is the reverse of expandAlias", () => {
   expect(aliasesFor("ollama/qwen2.5:0.5b")).toEqual(["fast", "local"]);
-  expect(aliasesFor("gpt-4o")).toEqual(["gpt"]);
+  expect(aliasesFor("gpt-5.5")).toEqual(["gpt"]);
   expect(aliasesFor("nonexistent")).toEqual([]);
   // round-trip
-  for (const alias of aliasesFor("gpt-4o")) expect(expandAlias(alias)).toBe("gpt-4o");
+  for (const alias of aliasesFor("gpt-5.5")) expect(expandAlias(alias)).toBe("gpt-5.5");
 });
 
 test("isAlias distinguishes aliases from concrete ids", () => {
@@ -24,7 +24,7 @@ test("isAlias distinguishes aliases from concrete ids", () => {
 test("describeAlias resolves target + catalog knownness", () => {
   const d = describeAlias("sonnet");
   expect(d.isAlias).toBe(true);
-  expect(d.target).toBe("claude-3-5-sonnet");
+  expect(d.target).toBe("claude-sonnet-4-5");
   expect(d.knownTarget).toBe(true);
   // concrete id passes through
   const c = describeAlias("gpt-4o");

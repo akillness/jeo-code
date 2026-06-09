@@ -4213,3 +4213,49 @@ ChatGPT/Codex OAuth must route through the Codex subscription backend, not the s
   `joc --provider openai --no-tui "…"` → `OK (33699 in / 20 out tokens)`. OpenAI OAuth now runs turns.
   (Probe also confirmed `gpt-5.5` is the served model; `gpt-5`/`gpt-5.x-codex`/`gpt-4o` are rejected
   by the Codex backend with a clear `… not supported when using Codex with a ChatGPT account`.)
+
+## Stale model ids caused `/model` 404 + raw 429 — passes 743–751
+
+**Date:** 2026-06-08 · **Dimension: provider correctness (implemented-but-broken) / reliability.**
+
+User: "model 설정시 오류가 아직도 발생" with `Anthropic request failed (HTTP 429)`. Live diagnosis
+(`joc doctor` + real OAuth probes) found TWO distinct causes behind "model 설정 오류":
+
+1. **Stale model ids → 404.** Selecting an Anthropic model sent the catalog **canonical** id verbatim
+   (`claude-3-5-sonnet`), and the `canonical → providerModel` mapping was never applied at call time,
+   so even the mapped `claude-3-5-sonnet-20241022` is now **retired** and returns
+   `404 not_found_error`. The Anthropic OAuth `/v1/models` endpoint (200 OK) shows the *current* set
+   (`claude-sonnet-4-5-20250929`, `claude-opus-4-5`, `claude-haiku-4-5`, …).
+2. **Raw 429.** A genuine subscription rate-limit surfaced as raw JSON because the agent loop
+   **catches** the LLM error and returns it as `doneReason` (rendered as the reply), so the
+   launch-level friendly mapper never ran.
+
+- **743.** `model-catalog.ts` `toProviderModel(id, provider?)`: maps a catalog canonical to the exact
+  wire id; live/provider/alias-target ids pass through unchanged, scoped to the resolved provider.
+- **744.** `resolveCall` (`model-manager.ts`) applies `toProviderModel` to `callOptions.model`, so a
+  canonical like `claude-sonnet-4-5` actually calls `claude-sonnet-4-5-20250929`.
+- **745.** Refreshed the Anthropic catalog to the current served models (haiku/sonnet/opus 4.5 +
+  opus 4.1) — verified present in the user's live OAuth `/v1/models`.
+- **746.** Updated built-in aliases + `ALIAS_DEFAULTS`: `sonnet→claude-sonnet-4-5`,
+  `opus→claude-opus-4-5`, `haiku→claude-haiku-4-5`, `gpt→gpt-5.5`; fresh-install default model →
+  `claude-sonnet-4-5`; `RECOMMENDED` anthropic → `claude-sonnet-4-5`.
+- **747.** Shared `src/util/provider-error.ts` `friendlyProviderError()` (429 → actionable
+  rate-limit line, 401/403 → credential hint), replacing the launch-local closure.
+- **748.** `engine.ts` maps the caught LLM error through `friendlyProviderError` for BOTH `onError`
+  and the `doneReason` — so a 429 now renders as guidance ("…switch model with /model…"), never raw
+  JSON. `launch.ts` reuses the same util at every throw site.
+- **749.** README: documents the canonical→provider-id mapping (404 avoidance) and points at
+  `/models`·`/provider` as the authoritative live source.
+- **750.** Updated tests pinned to the retired ids/aliases (registry, registry-alias, catalog,
+  catalog-compat, routing, pickers, setup-helpers) to the current ids.
+- **751.** New `provider-error.test.ts` (429/401/passthrough mapping) + `toProviderModel` coverage.
+
+### Verification (passes 743–751)
+- `bun run typecheck` → **0 errors**.
+- `bun test` → **485 pass / 0 fail across 73 files**.
+- `bun run build` → compiled `dist/joc`.
+- **Live against the user's real OAuth:**
+  - `joc --model claude-haiku-4-5-20251001 --no-tui "…"` → real reply (19261 in / 22 out) — current ids work.
+  - `joc --model sonnet --no-tui "…"` → no longer 404 (id resolves to `claude-sonnet-4-5-20250929`);
+    the transient subscription 429 now prints the friendly, actionable line instead of raw JSON.
+  - `joc --model gpt-5.5` / `--provider openai` still serve turns via the Codex backend.

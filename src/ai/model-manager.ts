@@ -8,6 +8,7 @@ import { ollamaAdapter } from "./providers/ollama";
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId, effectiveAliasesFor } from "./model-registry";
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
+import { toProviderModel } from "./model-catalog";
 import { withRetry, defaultRetryable, type RetryOptions } from "../util/retry";
 import type { Config } from "../agent/state";
 
@@ -85,7 +86,7 @@ export interface ModelManager {
   resolveProvider: typeof resolveProvider;
 }
 
-const ALIAS_DEFAULTS = { fast: "ollama/qwen2.5:0.5b", local: "ollama/qwen2.5:0.5b", sonnet: "claude-3-5-sonnet", gpt: "gpt-4o", flash: "gemini-2.5-flash" };
+const ALIAS_DEFAULTS = { fast: "ollama/qwen2.5:0.5b", local: "ollama/qwen2.5:0.5b", sonnet: "claude-sonnet-4-5", opus: "claude-opus-4-5", haiku: "claude-haiku-4-5", gpt: "gpt-5.5", flash: "gemini-2.5-flash" };
 
 /**
  * Build retry options from a config `retry` budget (gjc parity). `requestMaxRetries`
@@ -147,7 +148,9 @@ async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
     (provider === "ollama" ? config.ollamaBaseUrl : undefined);
 
   const callOptions: CallOptions = {
-    model,
+    // Map a catalog canonical (e.g. claude-3-5-sonnet) to the exact wire id the
+    // provider accepts (claude-3-5-sonnet-20241022); live/provider ids pass through.
+    model: toProviderModel(model, provider),
     systemPrompt: options.systemPrompt,
     temperature: options.temperature ?? 0.2,
     maxTokens: options.maxTokens ?? thinkingMaxTokens(config.thinkingLevel),

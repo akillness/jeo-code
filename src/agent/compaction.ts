@@ -74,12 +74,24 @@ function clampRecentMessages(messages: Message[], budgetChars: number): Message[
   }));
 }
 
+const SUMMARY_PREFIX = "[Earlier conversation summary]\n";
+const FALLBACK_SUMMARY_PREFIX = "[Earlier conversation omitted:";
+
+function alreadyCompacted(body: Message[]): boolean {
+  if (body.length === 0) return false;
+  const first = body[0];
+  if (first.role !== "user") return false;
+  return first.content.startsWith(SUMMARY_PREFIX) || first.content.startsWith(FALLBACK_SUMMARY_PREFIX);
+}
+
 export async function maybeCompact(
   history: Message[],
   opts: CompactionOptions = {}
 ): Promise<CompactionResult> {
+  // `force` only lowers the trigger floor; the OUTPUT budget stays at DEFAULT_MAX_CHARS
+  // so a user-initiated `/compact` cannot shred recent messages down to one character.
   const maxMessages = opts.maxMessages ?? (opts.force ? 1 : 40);
-  const maxChars = opts.maxChars ?? (opts.force ? 1 : DEFAULT_MAX_CHARS);
+  const maxChars = opts.maxChars ?? DEFAULT_MAX_CHARS;
   const keepRecent = opts.keepRecent ?? (opts.force ? 4 : 12);
   const maxSummaryInputChars = opts.maxSummaryInputChars ?? DEFAULT_SUMMARY_INPUT_CHARS;
 
@@ -90,6 +102,13 @@ export async function maybeCompact(
   const overChars = messageChars(body) > maxChars;
 
   if (!overMessages && !overChars) {
+    return { compacted: false, removed: 0 };
+  }
+
+  // Idempotence guard: if the first body message is already a compaction marker
+  // and the remaining body fits within keepRecent, a repeated force-compact would
+  // just re-summarize the previous summary and progressively lose detail. Skip.
+  if (alreadyCompacted(body) && body.length <= keepRecent + 1 && !overChars) {
     return { compacted: false, removed: 0 };
   }
 
@@ -122,8 +141,8 @@ export async function maybeCompact(
     );
 
     const systemMessages = hasSystem ? [history[0]] : [];
-    const boundedSummary = truncateSummary(summary, opts.force ? maxSummaryInputChars : Math.min(maxChars, maxSummaryInputChars));
-    const summaryMessage: Message = { role: "user", content: "[Earlier conversation summary]\n" + boundedSummary };
+    const boundedSummary = truncateSummary(summary, Math.min(maxChars, maxSummaryInputChars));
+    const summaryMessage: Message = { role: "user", content: SUMMARY_PREFIX + boundedSummary };
     const boundedRecent = clampRecentMessages(recent, Math.max(0, maxChars - messageChars([summaryMessage])));
     const next: Message[] = [
       ...systemMessages,

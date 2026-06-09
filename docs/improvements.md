@@ -5539,3 +5539,31 @@ even return a blocking/reject verdict and the team executor would still march fo
 ### Verification (pass 867)
 - Focused: `bun test test/subagents.test.ts test/task-tool.test.ts test/team-subagent.test.ts test/team-run.test.ts` → **32 pass / 0 fail**.
 - Full: `bun run typecheck` → 0 errors; `bun test` → **656 pass / 0 fail**; `bun run build` → ok.
+
+## Interview/prompt safety + stronger role/team contracts — pass 868
+
+**Date:** 2026-06-09 · **Dimensions: compaction correctness, brownfield prompt safety, verdict parsing robustness.**
+
+A follow-up hardening pass caught a few subtle but real issues left after the earlier deep-interview
+and role-agent work: forced compaction could keep re-summarizing an already-compacted history and
+erode recent content, brownfield evidence strings were still prompt-injection shaped data, and the
+team review gate/parser needed to tolerate light markdown formatting while enforcing the richer role
+contracts consistently.
+
+- **868a.** `src/agent/compaction.ts` now detects already-compacted histories and skips redundant
+  force-compaction passes when the body already fits the retained window. It also stops truncating
+  summary reinsertion more aggressively in `force` mode than in normal mode.
+- **868b.** `src/commands/deep-interview.ts` now sanitizes brownfield file/token strings, skips
+  symlinked directories during repo evidence scanning, and fences brownfield evidence as untrusted
+  DATA before injecting it into the interview prompt.
+- **868c.** `src/agent/subagents.ts` tightened planner/architect required report markers to match
+  the richer prompt contracts (`In Scope`, `Out of Scope`, `Recommendations`, etc.), preventing old
+  partial report shapes from being treated as valid.
+- **868d.** `src/commands/team.ts` now parses architect verdict fields more defensively, tolerating
+  lightly formatted output while still halting on blocking review states.
+- **868e.** Focused regressions cover the force-compaction idempotence case, brownfield evidence
+  sanitization/symlink skipping, and the stricter role-report contract validation.
+
+### Verification (pass 868)
+- Focused: `bun test test/compaction.test.ts test/deep-interview.test.ts test/subagents.test.ts test/task-tool.test.ts test/team-subagent.test.ts test/team-run.test.ts` → **52 pass / 0 fail**.
+- Full: `bun run typecheck` → 0 errors; `bun test` → **678 pass / 0 fail**; `bun run build` → ok.

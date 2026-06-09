@@ -178,3 +178,41 @@ test("deep-interview captures brownfield repo evidence for modification ideas", 
 
   await fs.rm(cwd, { recursive: true, force: true });
 });
+
+test("deep-interview: brownfield scanner sanitizes file names and skips symlinked dirs", async () => {
+  const cwd = await tempDir();
+  await fs.mkdir(path.join(cwd, "src"), { recursive: true });
+  await fs.writeFile(path.join(cwd, "package.json"), "{\"name\":\"demo\"}", "utf-8");
+  // File whose name contains a backtick — buildBrownfieldContext must strip it before
+  // surfacing the path to the LLM, otherwise the fence around evidence can be broken.
+  await fs.writeFile(path.join(cwd, "src", "login`evil.ts"), "// adversarial filename", "utf-8");
+
+  // Symlinked directory inside src/ — the scanner must not follow it.
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "joc-deep-outside-"));
+  await fs.writeFile(path.join(outside, "secret-login.ts"), "// should not be surfaced", "utf-8");
+  try {
+    await fs.symlink(outside, path.join(cwd, "src", "linked"), "dir");
+  } catch {
+    // Skip symlink coverage on platforms that disallow it.
+  }
+
+  mockCallLlm = async () => JSON.stringify({
+    ambiguityScore: 0.1,
+    assessment: "Clear enough",
+    nextQuestion: "none",
+    goal: "Fix the existing login flow",
+    constraints: [],
+    acceptance_criteria: ["Login works again end-to-end"],
+  });
+
+  process.chdir(cwd);
+  await runDeepInterviewCommand(["--auto", "fix the existing login flow"]);
+
+  const state = await readState(cwd);
+  expect(state.codebase_context).not.toContain("`");
+  expect(state.codebase_context).not.toContain("secret-login.ts");
+  expect(state.codebase_context).not.toContain("linked/");
+
+  await fs.rm(cwd, { recursive: true, force: true });
+  await fs.rm(outside, { recursive: true, force: true });
+});

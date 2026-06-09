@@ -5435,3 +5435,61 @@ without actually carrying repo facts into the interview.
 ### Verification (pass 863)
 - Focused: `bun test test/deep-interview.test.ts` → **5 pass / 0 fail**.
 - Full: `bun run typecheck` → 0 errors; `bun test` → **642 pass / 0 fail**; `bun run build` → ok.
+
+## Role-agent prompt split + contract validation — pass 864
+
+**Date:** 2026-06-09 · **Dimensions: subagent method parity, structured verdicts, safer delegation.**
+
+The next GJC gap after deep-interview was the role-agent layer: `joc` had the four right names
+(executor/planner/architect/critic) but they all behaved like tiny variants of the same executor
+prompt, and the parent accepted any free-form `done.reason` as success.
+
+- **864a.** Added dedicated role prompt files under `src/prompts/agents/` for executor, planner,
+  architect, and critic. Each now has its own identity, constraints, execution loop, tool protocol,
+  and output contract instead of the old one-sentence templated prompt.
+- **864b.** `src/agent/subagents.ts` now carries per-role prompt templates plus required
+  `done.reason` markers, and exposes `validateSubagentDoneReason()` so the runtime can distinguish a
+  real role report from a generic “planned/reviewed/done” string.
+- **864c.** `src/agent/task-tool.ts` now validates the final subagent report before marking the role
+  task successful. Missing planner/architect/critic report sections are surfaced as
+  `contract incomplete` instead of silently treated as a valid review/plan.
+- **864d.** Focused tests now cover richer prompt contracts and invalid role-report failures, so the
+  role-agent upgrade is pinned by observable behavior rather than prompt text alone.
+
+### Verification (pass 864)
+- Focused: `bun test test/subagents.test.ts test/task-tool.test.ts test/team-subagent.test.ts` → **22 pass / 0 fail**.
+- Full: `bun run typecheck` → 0 errors; `bun test` → **656 pass / 0 fail**; `bun run build` → ok.
+
+## Skill routing discipline + one-shot alias execution — pass 865
+
+**Date:** 2026-06-09 · **Dimensions: skill surface, prompt safety, context footprint, CLI UX.**
+
+GJC's current public runtime exposes exactly four bundled workflow skills and keeps the default
+surface intentionally small. `joc` still loaded configured/global skills correctly, but it also
+advertised the entire resolved skill catalog in every launch prompt. A user with broad oh-my-skills
+installed could paste or reference unrelated SKILL.md packets and the model would sometimes answer
+with a skill routing brief instead of doing the concrete coding-agent task.
+
+- **865a.** Launch prompts now advertise only the bundled workflow surface (`deep-interview`,
+  `ralplan`, `team`, `ultragoal`). Configured/user skills remain explicit slash commands, but they
+  no longer become ambient routing defaults that hijack ordinary requests.
+- **865b.** The launch prompt now includes a pasted-skill guard: SKILL.md text in user input is
+  treated as reference data unless the user explicitly asks for skill help or invokes `/skill` /
+  a skill slash alias.
+- **865c.** `workflowSkillsForPrompt()` preserves user overrides of bundled skills while filtering
+  external skills out of the always-on prompt, reducing per-turn prompt footprint and drift.
+- **865d.** One-shot slash aliases now execute their configured skill (`joc "/speckit.plan ..."`)
+  instead of falling through to a normal chat/tool turn.
+- **865e.** Inferred slash aliases are restricted to aliases owned by the skill name (for example,
+  `spec-kit` may infer `/speckit.plan`, but not unrelated `/commit` mentions), reducing accidental
+  slash hijacks from broad SKILL.md bodies.
+- **865f.** `parseSkillInvocation()` only matches explicit leading slash invocations, so ambient
+  mentions like “use `/speckit.plan` as reference, but fix the provider bug” cannot accidentally
+  activate a skill.
+- **865g.** Added a Bun/TypeScript `*.md` module declaration so source-backed prompt templates under
+  `src/prompts/agents/` typecheck cleanly when imported by the subagent registry.
+
+### Verification (pass 865)
+- Focused: `bun test test/skills.test.ts test/skills-config.test.ts test/stream-events.test.ts` →
+  **27 pass / 0 fail**.
+- Full: `bun run typecheck` → 0 errors; `bun test` → **656 pass / 0 fail**.

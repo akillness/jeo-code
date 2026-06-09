@@ -4423,3 +4423,32 @@ Applied follow-up items from the completed read-only TUI review.
 ### Verification (passes 753–757)
 
 - `bun test test/forge-status.test.ts test/code-view.test.ts test/review-fixes.test.ts` → **35 pass / 0 fail**.
+
+## Honest Gemini-OAuth guidance (Cloud Code Assist not served) — passes 767–770
+
+**Date:** 2026-06-08 · **Dimension: diagnosability / honesty (no unverifiable backend).**
+
+User: "Gemini wrongly says it needs an API key." Root cause (verified): joc's Gemini OAuth uses the
+Gemini CLI desktop client with the `cloud-platform` scope — those tokens authenticate against Google
+**Cloud Code Assist** (`cloudcode-pa.googleapis.com`), which requires a managed-project onboarding
+flow (`loadCodeAssist`/`onboardUser`). joc's bundled adapter targets the public `generativelanguage`
+API (prefers `GEMINI_API_KEY`), so a Gemini-OAuth-only login genuinely cannot serve a turn. Live
+probing confirmed Cloud Code Assist is unreachable without the managed project (403 SERVICE_DISABLED),
+so a Cloud Code Assist adapter cannot be verified here and was deliberately NOT shipped as a stub.
+
+- **767.** Gemini OAuth-only error (effectiveCredentialForProvider) is now Gemini-specific and
+  actionable: explains Cloud Code Assist isn't served and points to a free `GEMINI_API_KEY`
+  (aistudio.google.com/apikey), noting Anthropic/OpenAI OAuth ARE served.
+- **768.** `provider-status` label for Gemini OAuth-only → "OAuth — Gemini needs an API key (Cloud
+  Code Assist not served)" (clear WHY, not a bare "API key needed").
+- **769.** OAUTH_FLOW_REGISTRY.gemini.note rewritten with the managed-project reason + key guidance.
+- **770.** README provider matrix: Gemini OAuth row explains the limitation and the free-key path.
+
+Note: with a `GEMINI_API_KEY` set (the common case) Gemini is fully `ready` and serves turns — the
+"needs API key" message only appears for an OAuth-only Gemini login, where it is now accurate.
+
+### Verification (passes 767–770)
+- `bun run typecheck` → **0 errors**. `bun test` → **503 pass / 0 fail**.
+- Live: Gemini API-key turns succeed; OpenAI Codex OAuth turns succeed; the Gemini-OAuth message is
+  now clear and correct. Cloud Code Assist serving is left unimplemented (unverifiable) rather than
+  shipped broken.

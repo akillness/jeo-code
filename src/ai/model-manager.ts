@@ -122,7 +122,11 @@ export function effectiveCredentialForProvider(
     const apiKey = config.providers[provider];
     if (apiKey) return { kind: "api_key", provider, token: apiKey };
     if (OAUTH_FLOW_REGISTRY[provider]?.verifiedEndToEnd === false) {
-      throw new Error(`Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'joc setup') to use ${model}.`);
+      throw new Error(
+        provider === "gemini"
+          ? `Gemini OAuth (Gemini CLI / Cloud Code Assist) is not served by joc's bundled adapter yet. Use a free GEMINI_API_KEY from https://aistudio.google.com/apikey (or run 'joc setup') — or use Anthropic/OpenAI, which ARE served via OAuth — then retry ${model}.`
+          : `Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'joc setup') to use ${model}.`,
+      );
     }
   }
   return credential;

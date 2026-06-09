@@ -5,6 +5,7 @@ import { resolveModelId } from "../ai/model-registry";
 import { meter } from "../tui/components/meter";
 import { size } from "../tui/terminal";
 import chalk from "chalk";
+import { extractChatgptAccountId, CODEX_RESPONSES_URL } from "../ai/providers/openai-responses";
 
 interface ProbeResult {
   status: "ok" | "fail" | "skipped";
@@ -28,8 +29,34 @@ async function timedFetch(url: string, init: RequestInit): Promise<{ res: Respon
 }
 
 async function probeOpenAi(credential: Credential, baseUrl: string | undefined): Promise<ProbeResult> {
+  // ChatGPT/Codex OAuth can't use api.openai.com — verify the Codex backend instead.
+  // A deliberately-unsupported model returns 400 *after* auth but *before* any generation,
+  // so it confirms connectivity + credentials without burning subscription credit.
+  if (credential.kind === "oauth") {
+    const accountId = extractChatgptAccountId(credential.token);
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      authorization: `Bearer ${credential.token}`,
+      "OpenAI-Beta": "responses=experimental",
+      originator: "codex_cli_rs",
+      accept: "text/event-stream",
+    };
+    if (accountId) headers["chatgpt-account-id"] = accountId;
+    try {
+      const { res, latencyMs } = await timedFetch(CODEX_RESPONSES_URL, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model: "joc-doctor-probe", input: [{ role: "user", content: [{ type: "input_text", text: "ping" }] }], stream: true, store: false }),
+      });
+      if (res.ok || res.status === 400) return { status: "ok", detail: "POST codex/responses (Codex backend reachable)", latencyMs };
+      if (res.status === 401 || res.status === 403) return { status: "fail", detail: `Codex auth rejected (${res.status})`, latencyMs };
+      return { status: "fail", detail: `POST codex/responses ${res.status}`, latencyMs };
+    } catch (err) {
+      return { status: "fail", detail: `network error: ${(err as Error).message}` };
+    }
+  }
   const base = (baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
-  const token = credential.kind === "oauth" || credential.kind === "api_key" ? credential.token : "no-key";
+  const token = credential.kind === "api_key" ? credential.token : "no-key";
   try {
     const { res, latencyMs } = await timedFetch(`${base}/models`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -66,12 +93,10 @@ async function probeAnthropic(credential: Credential): Promise<ProbeResult> {
   if (credential.kind === "none") {
     return { status: "skipped", detail: "no credential (run 'joc setup' or 'joc auth login anthropic')" };
   }
-  // Anthropic has no free model-listing endpoint; verify auth by issuing a
-  // 1-token request that returns quickly without burning meaningful credit.
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-    "anthropic-version": "2023-06-01",
-  };
+  // GET /v1/models verifies auth without burning credit and without depending on a
+  // (possibly retired) model id — the old 1-token POST 404'd whenever the probe model
+  // was deprecated.
+  const headers: Record<string, string> = { "anthropic-version": "2023-06-01" };
   if (credential.kind === "oauth") {
     headers.authorization = `Bearer ${credential.token}`;
     headers["anthropic-beta"] = "oauth-2025-04-20";
@@ -79,20 +104,12 @@ async function probeAnthropic(credential: Credential): Promise<ProbeResult> {
     headers["x-api-key"] = credential.token;
   }
   try {
-    const { res, latencyMs } = await timedFetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: "claude-3-5-sonnet-20241022",
-        max_tokens: 1,
-        messages: [{ role: "user", content: "ping" }],
-      }),
-    });
-    if (res.ok) return { status: "ok", detail: "POST /v1/messages 200 (1-token probe)", latencyMs };
+    const { res, latencyMs } = await timedFetch("https://api.anthropic.com/v1/models?limit=1", { headers });
+    if (res.ok) return { status: "ok", detail: "GET /v1/models 200", latencyMs };
     if (res.status === 401 || res.status === 403) {
       return { status: "fail", detail: `auth rejected (${res.status})`, latencyMs };
     }
-    return { status: "fail", detail: `POST /v1/messages ${res.status}`, latencyMs };
+    return { status: "fail", detail: `GET /v1/models ${res.status}`, latencyMs };
   } catch (err) {
     return { status: "fail", detail: `network error: ${(err as Error).message}` };
   }

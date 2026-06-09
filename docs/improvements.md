@@ -4259,3 +4259,31 @@ User: "model 설정시 오류가 아직도 발생" with `Anthropic request faile
   - `joc --model sonnet --no-tui "…"` → no longer 404 (id resolves to `claude-sonnet-4-5-20250929`);
     the transient subscription 429 now prints the friendly, actionable line instead of raw JSON.
   - `joc --model gpt-5.5` / `--provider openai` still serve turns via the Codex backend.
+
+## `joc doctor` probes the real call path (no false FAIL) — passes 752–756
+
+**Date:** 2026-06-08 · **Dimension: diagnostics honesty.**
+
+Follow-up: `joc doctor` reported `anthropic [FAIL] 404` and `openai [FAIL] 403` for providers that
+actually work, because the probes hit the wrong endpoints — Anthropic POSTed the **retired**
+`claude-3-5-sonnet-20241022` (→404), and OpenAI GET `api.openai.com/v1/models` with a ChatGPT/Codex
+OAuth token (→403). The status column contradicted real usage.
+
+- **752.** `probeAnthropic` now does `GET /v1/models?limit=1` (200 with OAuth or API key) — verifies
+  auth without burning credit and without depending on any (possibly retired) model id.
+- **753.** `probeOpenAi` branches on credential: OAuth → `POST chatgpt.com/backend-api/codex/responses`
+  with a deliberately-unsupported model (`joc-doctor-probe`), which returns **400 after auth but
+  before generation** (no credit) → reported OK; 401/403 → fail. API key/local base URL keep
+  `GET /v1/models`.
+- **754.** Distinguishes *reachable/authenticated* from *rate-limited*: a throttled subscription still
+  shows the provider OK in `doctor` (auth works), while an actual turn maps the 429 to the friendly
+  switch-model guidance.
+- **755.** README: note that `joc doctor` reflects the real call path.
+- **756.** Verified live: `joc doctor` now shows anthropic `GET /v1/models 200`, openai
+  `POST codex/responses (Codex backend reachable)`, gemini + ollama OK — all four [ OK ].
+
+### Verification (passes 752–756)
+- `bun run typecheck` → **0 errors**.
+- `bun test` → **485 pass / 0 fail across 73 files**.
+- `bun run build` → compiled `dist/joc`.
+- Live: `joc doctor` → all four providers `[ OK ]` (was anthropic/openai FAIL).

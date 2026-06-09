@@ -160,6 +160,35 @@ function shellQuote(arg: string): string {
   return `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * A `process.stdout` view whose visible-output methods become no-ops while `gated()` is
+ * true. Used as readline's `output` so that, while the boxed slash-preview footer is armed,
+ * readline's OWN prompt/echo is suppressed and only our box is visible — no duplicated raw
+ * `joc>` line. The previous approach monkeypatched `rl._writeToOutput`, a Node internal Bun
+ * does not expose (so on Bun both inputs showed at once). Gating the shared `output` stream
+ * works on both runtimes. Our footer is written straight to `process.stdout`, never through
+ * this proxy, so it always renders. Geometry/everything else is forwarded unchanged.
+ */
+const GATED_OUTPUT_METHODS = new Set(["write", "cursorTo", "moveCursor", "clearLine", "clearScreenDown"]);
+export function gatedStdout(real: NodeJS.WriteStream, gated: () => boolean): NodeJS.WriteStream {
+  return new Proxy(real, {
+    get(target, prop, _receiver) {
+      if (typeof prop === "string" && GATED_OUTPUT_METHODS.has(prop)) {
+        return (...args: any[]) => {
+          if (gated()) {
+            const cb = args[args.length - 1]; // honor readline's write callback so it never stalls
+            if (typeof cb === "function") cb();
+            return true;
+          }
+          return (target as any)[prop](...args);
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as unknown as NodeJS.WriteStream;
+}
+
 export function parseFlags(args: string[]): LaunchFlags {
   const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 25, message: "", tmux: false, errors: [] };
   const rest: string[] = [];
@@ -618,9 +647,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       mentionPaths,
     };
   };
+  let previewArmed = false;
   const rl = createInterface({
     input: process.stdin,
-    output: process.stdout,
+    // Single-box input: gate readline's output while the boxed footer is armed so its own
+    // `joc>` prompt/echo is suppressed and ONLY our box shows. (Bun exposes no
+    // `_writeToOutput` to patch, so gating the shared output stream is the portable fix.)
+    output: gatedStdout(process.stdout, () => previewArmed),
     completer: (line: string) => readlineCompleter(line, completionContext()),
   });
 
@@ -645,19 +678,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     process.env.JOC_NO_SLASH_PREVIEW !== "1" &&
     (process.stdout.rows ?? 24) > PREVIEW_ROWS + 4;
   const out = process.stdout;
-  let previewArmed = false;
-  // Single-box input: while the slash-preview footer is armed (the main "joc>" prompt),
-  // suppress readline's own echo/prompt so ONLY the boxed input drawn in the reserved
-  // footer is visible — no duplicated raw CLI line. Sub-prompts (e.g. "Choose [1-3]")
-  // run with the footer disarmed, so they echo normally.
-  const rlInternal = rl as unknown as { _writeToOutput?: (s: string) => void };
-  const originalWriteToOutput = rlInternal._writeToOutput?.bind(rl);
-  if (originalWriteToOutput) {
-    rlInternal._writeToOutput = (s: string) => {
-      if (previewArmed) return;
-      originalWriteToOutput(s);
-    };
-  }
   let pickerActive = false;
   // Arrow-key selection over the slash preview list.
   let navMatches: string[] = []; // command names matching the typed keyword (display order)

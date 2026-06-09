@@ -48,3 +48,15 @@ test("readSse handles a data payload split across chunks", async () => {
   }
   expect(results).toEqual(['{"x":1}']);
 });
+test("readLines cancels the underlying stream on early return (no socket leak)", async () => {
+  let cancelled = false;
+  const enc = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) { c.enqueue(enc.encode("a\nb\nc\n")); }, // left open (not closed)
+    cancel() { cancelled = true; },
+  });
+  const gen = readLines(stream);
+  expect((await gen.next()).value).toBe("a");
+  await gen.return(undefined as unknown as string); // early exit → finally → reader.cancel()
+  expect(cancelled).toBe(true);
+});

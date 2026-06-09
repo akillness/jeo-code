@@ -2,6 +2,16 @@ import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readLines } from "../sse";
 import { providerHttpError } from "./errors";
 
+/**
+ * Resolve the Ollama base URL. `OLLAMA_HOST` is documented as a bare host:port
+ * (e.g. `127.0.0.1:11434`), but `fetch` needs a scheme — prepend `http://` when
+ * missing, else `fetch("127.0.0.1:11434/api/chat")` throws "Failed to parse URL".
+ */
+export function normalizeOllamaBaseUrl(baseUrl?: string): string {
+  const v = (baseUrl ?? process.env.OLLAMA_HOST ?? "http://localhost:11434").trim();
+  return (/^https?:\/\//i.test(v) ? v : `http://${v}`).replace(/\/$/, "");
+}
+
 function ollamaRequest(messages: Message[], options: CallOptions, stream: boolean): { url: string; body: string } {
   const model = options.model.startsWith("ollama/") ? options.model.slice(7) : options.model;
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
@@ -17,7 +27,7 @@ function ollamaRequest(messages: Message[], options: CallOptions, stream: boolea
     options: { temperature: options.temperature ?? 0.2, num_predict: options.maxTokens ?? 4000 },
   };
   if (options.jsonMode) payload.format = "json";
-  const base = (options.baseUrl ?? process.env.OLLAMA_HOST ?? "http://localhost:11434").replace(/\/$/, "");
+  const base = normalizeOllamaBaseUrl(options.baseUrl);
   return { url: `${base}/api/chat`, body: JSON.stringify(payload) };
 }
 

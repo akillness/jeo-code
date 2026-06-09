@@ -116,6 +116,18 @@ function tmuxRuntimeSuffix(flags: LaunchFlags): string {
   return `-${suffix}`;
 }
 
+/**
+ * tmux session name for `joc --tmux`. Keyed on the working DIRECTORY (not just the
+ * git branch) so two different projects/worktrees on the same branch (e.g. `main`)
+ * get INDEPENDENT sessions instead of the second invocation attaching to the first.
+ * Same (dir, branch, runtime flags) → same name, so re-running reattaches your session.
+ */
+export function tmuxSessionName(cwd: string, branch: string, flags: LaunchFlags): string {
+  const dirTag = `${tmuxSafeNamePart(path.basename(cwd) || "root", 16)}-${hashString(cwd)}`;
+  const base = branch ? `joc-${branch}-${dirTag}` : `joc-${dirTag}`;
+  return base + tmuxRuntimeSuffix(flags);
+}
+
 function shellQuote(arg: string): string {
   return `'${arg.replace(/'/g, `'\\''`)}'`;
 }
@@ -290,7 +302,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             branch = gitRes.stdout.toString().trim().replace(/[^a-zA-Z0-9_-]/g, "-");
           }
         } catch {}
-        const sessionName = (branch ? `joc-${branch}` : "joc-session") + tmuxRuntimeSuffix(flags);
+        const sessionName = tmuxSessionName(cwd, branch, flags);
 
         // Strip orchestration flags: the worktree is already the tmux session
         // cwd (`-c cwd` below), so the inner process inherits it directly.

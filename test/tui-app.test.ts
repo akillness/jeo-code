@@ -5,6 +5,18 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
+test("LaunchTui: shows a 'calling model' status while waiting on the model, then the tool", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
+  tui.start();
+  const ev = tui.events();
+  ev.onStep!(1); // step begins → waiting on the model
+  expect(out.join("")).toContain("calling model (m1)");
+  out.length = 0;
+  ev.onAssistant!("", { tool: "bash", arguments: { command: "echo hi" } }); // model replied → tool runs
+  const afterAssistant = out.join("");
+  expect(afterAssistant).not.toContain("calling model");
+});
 test("LaunchTui: on a TTY the live turn uses the alternate screen buffer (scroll-safe)", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });

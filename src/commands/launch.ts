@@ -3,7 +3,7 @@ import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, type AgentLoopEvents
 import { createTaskTool, TASK_TOOL_PROTOCOL_LINE, type TaskSubEvent } from "../agent/task-tool";
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { LaunchTui } from "../tui/app";
-import { skillsPromptSection, loadSkills, formatSkill, getSkillFrom, getSkillBySlash, skillSlashAliases, type SkillDoc } from "../skills/catalog";
+import { skillsPromptSection, loadSkills, formatSkill, buildSkillTask, getSkillFrom, getSkillBySlash, skillSlashAliases, type SkillDoc } from "../skills/catalog";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
@@ -733,9 +733,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const useTui = LaunchTui.usable(flags.noTui);
   const runSkillInvocation = async (skill: SkillDoc, intent: string, invokedAs?: string): Promise<void> => {
-    console.log(formatSkill(skill));
-    const requested = invokedAs ? `Requested slash command: ${invokedAs}\n\n` : "";
-    const task = `Apply the "${skill.name}" skill to this session.\n\n${formatSkill(skill)}\n\n${requested}${intent ? `User intent: ${intent}` : "Proceed according to the skill."}`;
+    // Drive the agent loop to EXECUTE the skill (don't just dump the doc). A concise
+    // banner replaces the old full-doc print; the live TUI shows progress, and the
+    // final reply is the skill's result.
+    if (!useTui) console.log(`▶ Running skill: ${skill.name}${intent ? ` — ${intent}` : ""}`);
+    const task = buildSkillTask(skill, intent, invokedAs);
     const { reply, rendered, usage } = await runTurn(task, useTui);
     if (!rendered) console.log(`joc> ${reply}${usage}`);
     else if (usage) console.log(usage.trim());

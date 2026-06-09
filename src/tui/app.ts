@@ -69,6 +69,9 @@ export class LaunchTui {
   private finished = false;
   private timer: ReturnType<typeof setInterval> | undefined;
   private pendingIndex: number | null = null;
+  // True between a step start and the model's reply — i.e. we're waiting on the model.
+  // Surfaced in the status line ("calling model…") so the wait isn't an opaque pause.
+  private thinking = false;
   // True while the live turn renders in the alternate screen buffer (TTY only);
   // drives leaving it on finish so terminal scroll never fights the repaint.
   private usedAltScreen = false;
@@ -135,11 +138,13 @@ export class LaunchTui {
     return {
       onStep: step => {
         this.footer.step = step;
+        this.thinking = true; // waiting on the model for this step
         this.spinner.updateStep(step, this.footer.maxSteps);
         this.spinner.next();
         this.draw();
       },
       onAssistant: (_raw, invocation) => {
+        this.thinking = false; // model replied; now dispatching the tool
         if (invocation && invocation.tool !== "done") {
           const toolName = invocation.tool || "(no tool)";
           this.pendingIndex = this.tools.start(toolName);
@@ -173,6 +178,10 @@ export class LaunchTui {
    */
   private currentActivity(): string {
     const running = this.tools.currentTool();
+    // Waiting on the model and no tool is mid-flight → make the pause legible.
+    if (this.thinking && !running) {
+      return `calling model (${this.footer.model})…`;
+    }
     if (running) {
       const last = this.forgeSummaries[this.forgeSummaries.length - 1];
       if (last?.title?.toLowerCase().startsWith("bash")) {

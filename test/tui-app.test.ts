@@ -1,10 +1,45 @@
 import { test, expect } from "bun:test";
 import { LaunchTui } from "../src/tui/app";
-import { hideCursor, showCursor, clearToEnd } from "../src/tui/terminal";
+import { hideCursor, showCursor, clearToEnd, enterAltScreen, leaveAltScreen } from "../src/tui/terminal";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
+test("LaunchTui: on a TTY the live turn uses the alternate screen buffer (scroll-safe)", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  const live = out.join("");
+  // Enters the alt screen before hiding the cursor → scroll can't fight the repaint.
+  expect(live).toContain(enterAltScreen());
+  expect(live.indexOf(enterAltScreen())).toBeLessThan(live.indexOf(hideCursor()));
+  expect(live).not.toContain(leaveAltScreen()); // not left yet
+
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => logged.push(a.join(" "));
+  try {
+    tui.finish("ok");
+  } finally {
+    console.log = origLog;
+  }
+  const tail = out.join("");
+  expect(tail).toContain(leaveAltScreen()); // restored main buffer on finish
+  expect(tail).toContain(showCursor());
+  // Final summary is printed to the main buffer (scrollback), not the alt screen.
+  expect(logged.join("\n")).toContain("joc> ok");
+});
+
+test("LaunchTui: without a TTY the alt screen is NOT used (plain in-place render)", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: false, write: s => out.push(s) });
+  tui.start();
+  tui.finish("done");
+  const all = out.join("");
+  expect(all).not.toContain(enterAltScreen());
+  expect(all).not.toContain(leaveAltScreen());
+  expect(all).toContain(clearToEnd()); // legacy path clears in place instead
+});
 test("LaunchTui.usable is false under a non-TTY test process", () => {
   expect(LaunchTui.usable(false)).toBe(false); // bun test stdout is not a TTY
   expect(LaunchTui.usable(true)).toBe(false); // --no-tui always false
@@ -210,3 +245,42 @@ function simulateTerminal(writes: string[]): string[] {
   }
   return lines;
 }
+
+import { Renderer } from "../src/tui/renderer";
+
+test("LaunchTui (boxed): bottom status/footer is never cut off when content overflows the terminal", () => {
+  const realRender = Renderer.prototype.render;
+  let frame: string[] = [];
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  try {
+    // tty:true forces the boxed full-screen layout; size() defaults to 80x24.
+    const tui = new LaunchTui({ model: "m1", provider: "ollama", sessionId: "sess1234", maxSteps: 25, tty: true, write: () => {} });
+    tui.start();
+    const ev = tui.events();
+    tui.setTodos([
+      { title: "alpha", status: "done" },
+      { title: "bravo", status: "in_progress" },
+      { title: "charlie", status: "pending" },
+    ]);
+    // Drive enough tool activity to overflow a 24-row terminal (art + plan + tools + stream + forge).
+    for (let s = 1; s <= 6; s++) {
+      ev.onStep!(s);
+      ev.onAssistant!("", { tool: "bash", arguments: { command: "bun test" } });
+      ev.onToolResult!("bash", true, "543 pass");
+    }
+    (tui as unknown as { draw: () => void }).draw();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+
+    const txt = frame.map(strip);
+    expect(frame.length).toBeLessThanOrEqual(24);          // fits inside the terminal height
+    // The live footer (model + step counter) and the key-hint bar must both survive at the bottom.
+    expect(txt.some(l => l.includes("m1") && l.includes("step"))).toBe(true);
+    expect(txt.some(l => /\/exit|\/help/i.test(l))).toBe(true);
+    // The very last content row (above the bottom border) is the footer, not a forge box / blank.
+    const lastContent = txt[txt.length - 2] ?? "";
+    expect(lastContent).toContain("m1");
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});

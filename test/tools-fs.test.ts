@@ -59,6 +59,16 @@ test("findTool: path globs (slash / **) resolve via real glob, not basename-only
   expect(everywhere.output).not.toContain("config.ts"); // .git pruned
 });
 
+test("findTool: missing/empty globPattern is a soft error, not an uncaught crash", async () => {
+  // The model can call find with no glob; that must not throw `globPattern.includes`.
+  const undef = await findTool(undefined as unknown as string, dir);
+  expect(undef.success).toBe(false);
+  expect(undef.error).toContain("globPattern");
+
+  const blank = await findTool("   ", dir);
+  expect(blank.success).toBe(false);
+});
+
 test("searchTool skips ignored dirs and only matches source", async () => {
   const res = await searchTool("NEEDLE", "*.ts", dir);
   expect(res.success).toBe(true);

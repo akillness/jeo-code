@@ -310,6 +310,12 @@ export async function findTool(
   globPattern: string,
   cwd: string = process.cwd()
 ): Promise<ToolResult> {
+  // Guard loose model input: a missing/empty pattern (model called find with no
+  // globPattern) must be a soft tool error, not an uncaught `globPattern.includes`
+  // crash that aborts the whole turn.
+  if (typeof globPattern !== "string" || globPattern.trim() === "") {
+    return { success: false, output: "", error: 'find requires a non-empty "globPattern", e.g. "src/**/*.ts" or "*.ts".' };
+  }
   // Bare-name patterns (no path separator, no `**`) → recursive basename match via
   // `find -name`, preserving the "find files by name" contract and the expectation that
   // `*.ts` matches at any depth. Patterns with a `/` or `**` are real PATH globs

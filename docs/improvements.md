@@ -4825,3 +4825,34 @@ where only the box should appear (gjc shows a single boxed input).
 - New tests: `gatedStdout` unit (no-op while gated + callback fired, forwarded when open, geometry
   passthrough) and an end-to-end readline test asserting the `joc>` prompt and `hi` echo are NOT
   written to the underlying stream while gated (only the box would show them).
+## Scroll-safe live turn (alternate screen buffer) + find no-glob guard — pass 814
+
+**Date:** 2026-06-09 · **Dimensions: tui (scroll flicker), agent tool robustness.**
+
+Reported via `joc --tmux`: scrolling (mouse wheel) made the screen flicker and content
+disappear. Reproduced with `tmux pipe-pane`: the live turn repaints the WHOLE frame into the
+**main buffer** every 120ms via relative cursor moves (`cursorUp`/`clearLine`), and there was
+**no alternate screen** (`?1049h` count = 0). So any terminal scroll fought the repaint — each
+120ms tick yanked the viewport back to the live region and the relative-cursor math desynced.
+
+- **814a.** `LaunchTui` now renders the transient live turn in the **alternate screen buffer**
+  on a real TTY: `start()` emits `enterAltScreen()` (`?1049h`) + resets the renderer; `finish()`
+  emits `leaveAltScreen()` (`?1049l`) and then prints the static summary to the MAIN buffer
+  (scrollback) — so the turn still leaves exactly one record, and the alt screen (no scrollback;
+  tmux disables wheel-scroll there) eliminates the flicker. New `enterAltScreen`/`leaveAltScreen`
+  helpers in `terminal.ts`; a once-per-process `exit` safety restores the main buffer + cursor if
+  we crash mid-turn. TTY detection is injectable (`LaunchTuiOptions.tty`, defaults to `isTTY()`)
+  so the behavior is unit-testable; non-TTY (pipes/tests) keep the legacy in-place clear path.
+- **814b.** `findTool` now guards a missing/empty `globPattern`: returns a soft ToolResult error
+  instead of throwing `globPattern.includes` (an uncaught crash that aborted the whole turn — seen
+  live when a weak model called `find` with no args). The turn now continues on bad input.
+
+### Verification (pass 814)
+
+- `bun run typecheck` → **0 errors**. `bun test` → **546 pass / 0 fail**. `bun run build` → ok.
+- Live `joc --tmux` (ollama qwen2.5:0.5b), captured via `tmux pipe-pane`: a turn now emits
+  `?1049h` on start and `?1049l` on finish (`altEnter:1, altLeave:1`); after finish the main
+  buffer shows the final summary in scrollback with the idle box restored. The no-glob `find`
+  call returns "find requires a non-empty globPattern" and the turn keeps going (no crash).
+- New tests: alt-screen enter-before-hideCursor + leave-on-finish (tty:true) and the no-TTY
+  legacy path (tty:false); `findTool` undefined/blank glob is a soft error.

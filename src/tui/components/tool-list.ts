@@ -17,15 +17,31 @@ export interface ToolStats {
 
 export class ToolList {
   private rows: ToolRow[] = [];
+  // Rows trimmed from the front to keep memory + per-frame cost flat on a
+  // pathologically long turn. `start()` returns an ABSOLUTE index so `finish()`
+  // stays valid across trims (a no-op in normal turns, which stay well under cap).
+  private dropped = 0;
+  private readonly cap: number;
+
+  constructor(cap = 500) {
+    this.cap = Math.max(1, cap);
+  }
 
   start(tool: string): number {
     this.rows.push({ tool, status: "running" });
-    return this.rows.length - 1;
+    const absIndex = this.dropped + this.rows.length - 1;
+    if (this.rows.length > this.cap) {
+      const drop = this.rows.length - this.cap;
+      this.rows.splice(0, drop);
+      this.dropped += drop;
+    }
+    return absIndex;
   }
 
   finish(index: number, ok: boolean): void {
-    if (this.rows[index]) {
-      this.rows[index].status = ok ? "ok" : "fail";
+    const i = index - this.dropped;
+    if (i >= 0 && this.rows[i]) {
+      this.rows[i].status = ok ? "ok" : "fail";
     }
   }
 
@@ -45,7 +61,7 @@ export class ToolList {
       maxRows !== undefined && maxRows > 0 && this.rows.length > maxRows
         ? this.rows.slice(this.rows.length - (maxRows - 1)) // keep the most recent rows
         : this.rows;
-    const hidden = this.rows.length - rows.length;
+    const hidden = this.dropped + (this.rows.length - rows.length);
 
     const yellowDot = color ? chalk.yellow("·") : "·";
     const yellowRunning = color ? chalk.yellow.bold("running...") : "running...";
@@ -72,17 +88,21 @@ export class ToolList {
   }
 
   currentTool(): string | undefined {
-    return [...this.rows].reverse().find(row => row.status === "running")?.tool;
+    for (let i = this.rows.length - 1; i >= 0; i--) {
+      if (this.rows[i]!.status === "running") return this.rows[i]!.tool;
+    }
+    return undefined;
   }
 
   stats(): ToolStats {
-    const stats: ToolStats = { running: 0, ok: 0, fail: 0, total: this.rows.length };
+    const stats: ToolStats = { running: 0, ok: 0, fail: 0, total: this.dropped + this.rows.length };
     for (const row of this.rows) stats[row.status]++;
     return stats;
   }
 
   reset(): void {
     this.rows = [];
+    this.dropped = 0;
   }
 
   /** Immutable snapshot of the tool rows (for the step timeline / summaries). */

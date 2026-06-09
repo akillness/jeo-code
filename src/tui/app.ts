@@ -16,7 +16,7 @@ import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
 import { renderFooter, type FooterData } from "./components/footer";
-import { getStageByIndex, renderAsciiArt, stageHeight, stageWidth } from "./components/ascii-art";
+import { getStageByIndex, renderAsciiArt, stageHeight, stageWidth, stageBlocks } from "./components/ascii-art";
 import { evolutionTrack, createStageProgress, type StageProgress, getEvolutionStatusMessage, transitionMessage } from "./components/evolution";
 import { supportsUnicode } from "./components/capability";
 import { centerBlock, padLineTo, fillScreen, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
@@ -58,12 +58,17 @@ export class LaunchTui {
   private startedAt = 0;
   private tickCount = 0;
   private mutationGuarded = false;
+  private finished = false;
   private timer: ReturnType<typeof setInterval> | undefined;
   private pendingIndex: number | null = null;
   // Cache the rendered art + track per stage so the 120ms spinner tick reuses
   // them instead of re-rendering/re-coloring the block every frame.
   private cachedStageIndex = -1;
   private cachedCols = -1;
+  // Effective animation frame the cached art was rendered at. Keying the cache on
+  // this (not the raw `isThinking` flag) lets frameless stages render ONCE instead
+  // of re-rendering the gradient block every 120ms tick.
+  private cachedFrame = -1;
   private cachedArt: string[] = [];
   private cachedTrack = "";
   // Monotonic stage progress so evolution only ever moves forward this turn.
@@ -136,6 +141,7 @@ export class LaunchTui {
 
     readWorkflowState("deep-interview")
       .then(state => {
+        if (this.finished) return;
         this.mutationGuarded = !!(state && state.active && state.current_phase !== "complete");
         this.draw();
       })
@@ -150,6 +156,7 @@ export class LaunchTui {
 
   /** Collapse the live region to static final output. */
   finish(reply: string): void {
+    this.finished = true;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
@@ -197,6 +204,7 @@ export class LaunchTui {
   }
 
   private draw(): void {
+    if (this.finished) return; // never repaint a live frame after the final static output
     const { cols, rows } = size();
     const fit = isTTY(); // fill terminal width+height only on a real TTY
     const elapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
@@ -212,9 +220,11 @@ export class LaunchTui {
       const arrow = this.unicode ? "\u27f6" : "->";
       this.stream.append(`${arrow} ${transitionMessage(idx)}\n`);
     }
-    if (idx !== this.cachedStageIndex || cols !== this.cachedCols || isThinking) {
+    const effFrame = isThinking ? this.tickCount % stageBlocks(getStageByIndex(idx)).length : 0;
+    if (idx !== this.cachedStageIndex || cols !== this.cachedCols || effFrame !== this.cachedFrame) {
       this.cachedStageIndex = idx;
       this.cachedCols = cols;
+      this.cachedFrame = effFrame;
       const art = renderAsciiArt(getStageByIndex(idx), {
         height: stageHeight(),
         width: stageWidth(),

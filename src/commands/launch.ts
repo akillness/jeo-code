@@ -910,6 +910,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         } catch { /* ignore render races */ }
       });
     });
+    // Idle-prompt resize: the live-turn path is covered by the 120ms tick + the
+    // renderer's width-change clear, but at the idle prompt no timer runs — re-sync
+    // the reserved footer scroll region to the new terminal height and redraw.
+    process.stdout.on("resize", () => {
+      if (!previewArmed) return;
+      try {
+        disarmPreview();
+        armPreview();
+        drawFooter(previewLines(typedLine, navIdx));
+      } catch { /* ignore resize render races */ }
+    });
   }
 
   try {

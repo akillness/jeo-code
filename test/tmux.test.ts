@@ -1,5 +1,5 @@
 import { test, expect, spyOn, mock } from "bun:test";
-import { runLaunchCommand } from "../src/commands/launch";
+import { runLaunchCommand, tmuxSessionName, parseFlags } from "../src/commands/launch";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -74,13 +74,15 @@ test("tmux session launch behavior", async () => {
     const newSessionCall = spawnSyncCalls.find(c => c[0] === "/usr/local/bin/tmux" && c[1] === "new-session");
     expect(newSessionCall).toBeDefined();
     expect(newSessionCall).toContain("-s");
-    expect(newSessionCall).toContain("joc-feature-branch");
+    const newName = newSessionCall![newSessionCall!.indexOf("-s") + 1] as string;
+    expect(newName.startsWith("joc-feature-branch-")).toBe(true); // branch + dir-scoped tag
 
     // Verify attach-session call
     const attachCall = spawnCalls.find(c => c[0] === "/usr/local/bin/tmux" && c[1] === "attach-session");
     expect(attachCall).toBeDefined();
     expect(attachCall).toContain("-t");
-    expect(attachCall).toContain("=joc-feature-branch");
+    const attachTarget = attachCall![attachCall!.indexOf("-t") + 1] as string;
+    expect(attachTarget.startsWith("=joc-feature-branch-")).toBe(true);
 
   } finally {
     Bun.which = originalWhich;
@@ -120,7 +122,9 @@ test("tmux runtime model flags get a distinct session and propagate to inner lau
 
     const newSessionCall = spawnSyncCalls.find(c => c[0] === "/usr/local/bin/tmux" && c[1] === "new-session");
     expect(newSessionCall).toBeDefined();
-    expect(newSessionCall).toContain("joc-feature-branch-model-gemini-2-5-flash-think-high-steps-7");
+    const sessName = newSessionCall![newSessionCall!.indexOf("-s") + 1] as string;
+    expect(sessName.startsWith("joc-feature-branch-")).toBe(true);
+    expect(sessName).toContain("model-gemini-2-5-flash-think-high-steps-7"); // runtime suffix preserved
     const innerCmd = String(newSessionCall.at(-1));
     expect(innerCmd).toContain("'--model' 'gemini-2.5-flash'");
     expect(innerCmd).toContain("'--thinking' 'high'");
@@ -269,7 +273,8 @@ test("tmux attach to existing session behavior", async () => {
     const attachCall = spawnCalls.find(c => c[0] === "/usr/local/bin/tmux" && c[1] === "attach-session");
     expect(attachCall).toBeDefined();
     expect(attachCall).toContain("-t");
-    expect(attachCall).toContain("=joc-main");
+    const target = attachCall![attachCall!.indexOf("-t") + 1] as string;
+    expect(target).toMatch(/^=joc-main-/); // branch-prefixed, now dir-scoped
 
   } finally {
     Bun.which = originalWhich;
@@ -277,4 +282,17 @@ test("tmux attach to existing session behavior", async () => {
     Bun.spawn = originalSpawn;
     process.env = originalEnv;
   }
+});
+
+test("tmuxSessionName: same branch + different dirs get INDEPENDENT sessions (no collision)", () => {
+  const flags = parseFlags([]);
+  const a = tmuxSessionName("/home/u/projA", "main", flags);
+  const b = tmuxSessionName("/home/u/projB", "main", flags);
+  expect(a).not.toBe(b); // different working dirs → independent sessions even on the same branch
+  expect(a.startsWith("joc-main-")).toBe(true);
+  expect(b.startsWith("joc-main-")).toBe(true);
+  // Same dir + branch + flags is stable so re-running reattaches your own session.
+  expect(tmuxSessionName("/home/u/projA", "main", flags)).toBe(a);
+  // Same basename, different absolute path still diverges (hash of full cwd).
+  expect(tmuxSessionName("/a/proj", "main", flags)).not.toBe(tmuxSessionName("/b/proj", "main", flags));
 });

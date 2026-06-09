@@ -99,7 +99,7 @@ review @src/commands/launch.ts and @src/tui/  # @ 입력 시 상대 경로 후�
 joc launch --list
 joc launch --resume
 
-# tmux 세션에서 실행
+# tmux 세션에서 실행 (세션 이름은 작업 디렉터리별로 독립 — 같은 브랜치라도 다른 프로젝트/worktree는 별도 세션)
 joc --tmux
 joc --tmux --model gemini-2.5-flash --thinking high
 joc --tmux --models --catalog gpt

@@ -4573,3 +4573,23 @@ Picked up the two items deferred from the spec-first audit (passes 771–780).
 - Live: `joc ralplan` → "Planner → Architect → Critic consensus" with [1/3]/[2/3]/[3/3] passes + a
   schema-valid plan; corrupt `.joc/state/team-state.json` → `joc team` prints the corrupt-state error
   and exits non-zero (no silent re-run).
+
+## Independent tmux sessions per working directory — pass 801
+
+**Date:** 2026-06-08 · **Dimension: tmux session isolation.**
+
+Reported: `joc --tmux` collided on the same tmux session (a second invocation attached to the first)
+instead of running an independent session. Root cause: the session name was `joc-<branch>` +
+runtime-flag suffix — keyed only on the git branch, so two different working directories/worktrees on
+the same branch (e.g. `main`) produced the SAME name and `has-session` matched → attach instead of a
+new session.
+
+- **801.** New `tmuxSessionName(cwd, branch, flags)` keys the session on the working DIRECTORY
+  (`joc-<branch>-<basename>-<hash(cwd)>` + runtime suffix). Different projects/worktrees on the same
+  branch now get INDEPENDENT sessions; the same (dir, branch, flags) stays stable so re-running
+  reattaches your own session. `cwd` is already the worktree path when `--worktree` is used.
+
+### Verification (pass 801)
+- `bun run typecheck` → **0 errors**. `bun test` → **507 pass / 0 fail**.
+- New-session name observed dir-scoped (`joc-feature-branch-jeo-code-<hash>`); unit test asserts two
+  dirs on the same branch → different names, and same dir+branch+flags → stable name (reattach).

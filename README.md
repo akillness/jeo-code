@@ -59,6 +59,8 @@ TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행
 
 > **모델 목록은 채팅 가능한 모델만:** live discovery가 임베딩·TTS·이미지·moderation 같은 비대화 모델을 걸러냅니다(OpenAI 패밀리 denylist, Gemini는 `generateContent` 지원 + 이름 필터). 그래서 `/models`·`/provider <name>`·`#N` 선택 목록에는 실제로 대화에 쓸 수 있는 모델만 나옵니다.
 >
+> **모델 id 매핑(404 방지):** 별칭(`sonnet`/`opus`/`haiku`/`gpt`/`flash`)과 카탈로그 canonical은 호출 직전에 실제 provider 모델 id로 매핑됩니다 — 예: `sonnet` → `claude-sonnet-4-5` → 와이어 id `claude-sonnet-4-5-20250929`. 카탈로그/별칭은 현재 제공되는 모델로 유지되며, 구형 id를 직접 지정해 `model not found(404)`가 나오면 `/models` 또는 `/provider <name>`로 지금 사용 가능한 모델을 골라 `#N`으로 선택하세요(라이브 목록이 권위 소스).
+>
 > **코드뷰 안전:** `/view`·`/diff`는 파일/diff의 신뢰할 수 없는 제어 바이트(ANSI 이스케이프, `\r`, 탭, C0)를 렌더 전에 제거합니다 — 임의 파일을 열어도 화면이 깨지거나 커서가 튀지 않습니다.
 >
 > **사용자 skill 문서:** `~/.joc/skills`·`.joc/skills`의 평면 `<name>.md`와 `~/.agents/skills/<name>/SKILL.md`·`.agents/skills/<name>/SKILL.md` 폴더형 문서가 번들 skill과 병합되어 시스템 프롬프트, `/skill`, Tab 자동완성, `/speckit.*` 같은 직접 슬래시 별칭에 모두 반영됩니다(이름이 같으면 뒤쪽 문서가 우선). `aliases:`/`slash:` 헤더 또는 본문에 언급된 `/name.step` 패턴을 자동 인식합니다. `JOC_TUI_THEME=mono`는 푸터 색까지 완전한 무채색으로 출력합니다.

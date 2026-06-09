@@ -21,7 +21,7 @@ export interface ModelCatalogEntry {
 }
 
 /** Canonical ids that should be surfaced as a provider's recommended default. */
-const RECOMMENDED = new Set(["claude-3-5-sonnet", "gpt-4o", "gemini-2.0-flash", "qwen2.5"]);
+const RECOMMENDED = new Set(["claude-sonnet-4-5", "gpt-4o", "gemini-2.0-flash", "qwen2.5"]);
 
 export function normalizeModelId(id: string): string {
   return (id ?? "").trim().toLowerCase();

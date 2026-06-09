@@ -35,11 +35,10 @@ const STD: ThinkLevel[] = ["minimal", "low", "medium", "high"];
 /** A curated set of common public models with their documented capabilities. */
 export const MODEL_CATALOG: readonly CatalogModel[] = [
   // Anthropic
-  { canonical: "claude-3-5-haiku", provider: "anthropic", providerModel: "claude-3-5-haiku-latest", contextTokens: 200_000, maxOutputTokens: 8_192, thinking: [], images: true },
-  { canonical: "claude-3-5-sonnet", provider: "anthropic", providerModel: "claude-3-5-sonnet-20241022", contextTokens: 200_000, maxOutputTokens: 8_192, thinking: [], images: true },
-  { canonical: "claude-3-7-sonnet", provider: "anthropic", providerModel: "claude-3-7-sonnet-20250219", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
-  { canonical: "claude-sonnet-4", provider: "anthropic", providerModel: "claude-sonnet-4-20250514", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
-  { canonical: "claude-opus-4", provider: "anthropic", providerModel: "claude-opus-4-20250514", contextTokens: 200_000, maxOutputTokens: 32_000, thinking: FULL, images: true },
+  { canonical: "claude-haiku-4-5", provider: "anthropic", providerModel: "claude-haiku-4-5-20251001", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
+  { canonical: "claude-sonnet-4-5", provider: "anthropic", providerModel: "claude-sonnet-4-5-20250929", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
+  { canonical: "claude-opus-4-1", provider: "anthropic", providerModel: "claude-opus-4-1-20250805", contextTokens: 200_000, maxOutputTokens: 32_000, thinking: FULL, images: true },
+  { canonical: "claude-opus-4-5", provider: "anthropic", providerModel: "claude-opus-4-5-20251101", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
   // OpenAI
   { canonical: "gpt-4o", provider: "openai", providerModel: "gpt-4o", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true },
   { canonical: "gpt-4o-mini", provider: "openai", providerModel: "gpt-4o-mini", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true },
@@ -68,6 +67,18 @@ export function formatTokens(n: number): string {
 export function findCatalogModel(idOrModel: string): CatalogModel | undefined {
   const q = idOrModel.trim();
   return MODEL_CATALOG.find(m => m.canonical === q || m.providerModel === q || `${m.provider}/${m.providerModel}` === q);
+}
+
+/**
+ * Map a user-facing canonical id to the exact provider model id used on the wire
+ * (e.g. `claude-3-5-sonnet` → `claude-3-5-sonnet-20241022`). Ids that are not a
+ * known canonical (already a provider id, a live-discovered id, an alias target)
+ * are returned unchanged. Scope to `provider` when known so a canonical never
+ * leaks across providers.
+ */
+export function toProviderModel(id: string, provider?: ProviderName): string {
+  const m = MODEL_CATALOG.find(c => c.canonical === id && (!provider || c.provider === provider));
+  return m ? m.providerModel : id;
 }
 
 /** Case-insensitive substring match over canonical + provider model id. */

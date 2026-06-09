@@ -67,6 +67,22 @@ export interface Config {
   roles?: { smol?: string; slow?: string; plan?: string };
 }
 
+export interface WorkflowTopologyComponent {
+  id: string;
+  name: string;
+  description: string;
+  status: "active" | "deferred";
+  evidence?: string[];
+}
+
+export interface WorkflowTopologyState {
+  status: "pending" | "confirmed" | "legacy_missing";
+  confirmed_at?: string | null;
+  components: WorkflowTopologyComponent[];
+  deferrals?: Array<{ component_id: string; reason: string; confirmed_at: string }>;
+  last_targeted_component_id?: string | null;
+}
+
 export interface WorkflowState {
   active: boolean;
   current_phase: string;
@@ -77,7 +93,9 @@ export interface WorkflowState {
   current_ambiguity?: number;
   threshold?: number;
   threshold_source?: string;
+  type?: "greenfield" | "brownfield";
   seed_path?: string;
+  topology?: WorkflowTopologyState;
   plan_path?: string;
   completed_tasks?: string[];
   pending_tasks?: string[];

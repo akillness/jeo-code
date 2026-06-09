@@ -132,3 +132,26 @@ test("ralph subagent prompt carries full todo order and streaming contract", () 
   expect(prompt).toContain("Execute ONLY the current [>] todo");
   expect(prompt).toContain("stream:step, stream:complete, and stream:error");
 });
+import { fitForgeBoxes } from "../src/tui/components/forge";
+
+test("fitForgeBoxes: includes whole most-recent boxes within budget, never a half-box", () => {
+  // two 4-line boxes separated by a blank line (9 lines total)
+  const box = (n: number) => [`+---${n}---+`, `|head ${n}|`, `|body ${n}|`, `+-------+`];
+  const lines = [...box(1), "", ...box(2)];
+  expect(lines.length).toBe(9);
+
+  // ample budget → everything
+  expect(fitForgeBoxes(lines, 99)).toEqual(lines);
+
+  // budget fits exactly one box (4) but not two (4+1+4=9) → keep the MOST RECENT (box 2), whole
+  const one = fitForgeBoxes(lines, 5);
+  expect(one).toEqual(box(2));
+  expect(one).not.toContain(""); // no dangling separator
+
+  // budget below a single box → nothing (better than a broken half-box)
+  expect(fitForgeBoxes(lines, 3)).toEqual([]);
+  expect(fitForgeBoxes(lines, 0)).toEqual([]);
+
+  // both fit exactly → both, in display order with the separator
+  expect(fitForgeBoxes(lines, 9)).toEqual(lines);
+});

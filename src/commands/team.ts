@@ -3,7 +3,9 @@ import chalk from "chalk";
 import { z } from "zod";
 import {
   readWorkflowState,
+  readWorkflowStateStrict,
   writeWorkflowState,
+  type WorkflowState,
 } from "../agent/state";
 import { runAgentLoop } from "../agent/engine";
 import { readGlobalConfig } from "../agent/state";
@@ -149,16 +151,28 @@ export async function runTeamCommand(): Promise<void> {
   console.log(`Loaded ${tasks.length} tasks for execution.`);
 
 
-  // Initialize team state
-  let teamState = await readWorkflowState("team", cwd) || {
-    active: true,
-    current_phase: "executing",
-    skill: "team" as const,
-    slug: planState.slug,
-    plan_path: planPath,
-    completed_tasks: [],
-    pending_tasks: [...tasks],
-  };
+  // Initialize team state. Use the STRICT reader so a corrupt team-state.json is a
+  // distinct error rather than being treated as "no state" — which would silently
+  // re-run already-completed tasks from scratch and lose progress.
+  let teamState: WorkflowState;
+  try {
+    teamState = (await readWorkflowStateStrict("team", cwd)) ?? {
+      active: true,
+      current_phase: "executing",
+      skill: "team" as const,
+      slug: planState.slug,
+      plan_path: planPath,
+      completed_tasks: [],
+      pending_tasks: [...tasks],
+    };
+  } catch {
+    console.log(
+      `[ERROR] .joc/state/team-state.json is corrupt. Fix or delete it before re-running 'joc team' ` +
+      `(refusing to silently restart and re-run already-completed tasks).`,
+    );
+    process.exitCode = 1;
+    return;
+  }
 
   await writeWorkflowState("team", teamState, cwd);
   const renderOpts: RalphRenderOptions = { color: !!process.stdout.isTTY, indexed: true };

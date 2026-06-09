@@ -4921,3 +4921,17 @@ test; the suite stayed green (557→563 pass) and `bun run build` succeeds throu
 - `bun run typecheck` → 0 errors. `bun test` → **563 pass / 0 fail** (+ new tool/selector/ls/search/
   edit/bash tests; `retryableStream` connect-retry + mid-stream-propagation; `nearestToolName`;
   `anthropicPayload` cache_control; `resolveRetryOptions` overrides + regression guard). `bun run build` → ok.
+## gjc-parity round C — passes 824–825
+
+**Date:** 2026-06-09 · **Dimension: agent tool surface (verbatim reads, scoped shell env).**
+
+- **824.** `bash {…, env?}` merges caller-supplied env vars on top of the inherited parent
+  environment (PATH etc. preserved), so a step can run with extra vars without a fragile inline
+  `VAR=… cmd` prefix.
+- **825.** `read {…, raw?}` returns verbatim file bytes with no `N|` line prefixes (gjc `:raw`),
+  char-capped at 50k for context safety — useful for piping/exact-byte inspection. Annotated mode is
+  unchanged.
+
+### Verification (passes 824–825)
+- `bun run typecheck` → 0 errors. `bun test` → **565 pass / 0 fail**. New tests: raw read has no
+  prefixes + matches verbatim; bash env var is visible to the child and the parent env still inherits.

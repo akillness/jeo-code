@@ -115,11 +115,22 @@ export function parseLineSelector(spec: string, total: number): { ranges: [numbe
 export async function readTool(
   filePath: string,
   lineRange?: string,
-  cwd: string = process.cwd()
+  cwd: string = process.cwd(),
+  raw: boolean = false
 ): Promise<ToolResult> {
   try {
     const absPath = path.resolve(cwd, filePath);
     const content = await fs.readFile(absPath, "utf-8");
+
+    if (raw) {
+      // Verbatim bytes, no "N|" line prefixes (gjc `:raw`), char-capped for context safety.
+      const MAX_CHARS = 50_000;
+      if (content.length > MAX_CHARS) {
+        return { success: true, output: content.slice(0, MAX_CHARS) + `\n…(raw truncated at ${MAX_CHARS} of ${content.length} chars; pass lineRange to read a slice)` };
+      }
+      return { success: true, output: content };
+    }
+
     const lines = content.split("\n");
 
     if (lineRange) {
@@ -301,7 +312,8 @@ export async function bashTool(
   command: string,
   cwd: string = process.cwd(),
   timeoutMs: number = 120_000,
-  subdir?: string
+  subdir?: string,
+  env?: Record<string, string>
 ): Promise<ToolResult> {
   try {
     // The mutation lock is keyed on the PROJECT cwd, not the run subdir.
@@ -312,6 +324,8 @@ export async function bashTool(
       cwd: runCwd,
       stdout: "pipe",
       stderr: "pipe",
+      // Inherit the parent env; merge caller-supplied vars on top when provided.
+      ...(env ? { env: { ...process.env, ...env } } : {}),
     });
 
     let timedOut = false;

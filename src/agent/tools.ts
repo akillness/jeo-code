@@ -154,6 +154,7 @@ export async function readTool(
       let emitted = 0;
       let capped = false;
       outer: for (const [i, [start, end]] of parsed.ranges.entries()) {
+        if (emitted >= MAX_RANGE_LINES) { capped = true; break; }
         if (i > 0) out.push("…"); // gap marker between non-contiguous ranges
         for (let ln = start; ln <= end; ln++) {
           if (emitted >= MAX_RANGE_LINES) { capped = true; break outer; }

@@ -83,7 +83,7 @@ export async function assertMutationAllowed(
     if (!insideJoc) {
       throw new Error(
         `[MutationGuard Blocked] Code mutation is blocked while a Socratic interview is active (the requirements seed is not yet frozen).\n` +
-        `Current ambiguity: ${((deepInterviewState.current_ambiguity ?? 1) * 100).toFixed(0)}%. Finish the interview to freeze the seed and unlock writes — run 'joc deep-interview' (or 'joc deep-interview --auto' for a best-effort freeze).\n` +
+        `Current ambiguity: ${((deepInterviewState.current_ambiguity ?? 1) * 100).toFixed(0)}%. Finish the interview to freeze the seed and unlock writes — run 'joc deep-interview'. Non-interactive '--auto' can continue clarification, but it does not bypass the ambiguity gate.\n` +
         `Only spec/planning writes under '.joc/' are permitted until then.`
       );
     }
@@ -96,7 +96,7 @@ export async function assertBashAllowed(
   const deepInterviewState = await readMutationLock(cwd);
   if (deepInterviewState && deepInterviewState.active && deepInterviewState.current_phase !== "complete") {
     throw new Error(
-      "[MutationGuard] bash is blocked while a Socratic interview is active (requirements seed not frozen). Finish 'joc deep-interview' (or '--auto') to freeze the seed and unlock."
+      "[MutationGuard] bash is blocked while a Socratic interview is active (requirements seed not frozen). Finish 'joc deep-interview' to continue; '--auto' does not bypass the ambiguity gate."
     );
   }
 }

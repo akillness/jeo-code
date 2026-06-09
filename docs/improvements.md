@@ -5291,3 +5291,19 @@ skill (`[01:TOOL] demo → failed`) and the target file was never created; and d
 - New tests: `readGitignore` parses dir/file globs + skips comment/negation/multi-segment; absent
   file → empty no-op; `find`/`search` exclude a gitignored `*.log` and `buildme/` (both find branches
   + search) while keeping tracked files.
+
+## Deep-interview gate integrity hardening — pass 858
+
+**Date:** 2026-06-09 · **Dimensions: spec-gate safety, seed correctness, MutationGuard honesty.**
+
+Follow-up to the GJC comparison: `joc` deep-interview still had a real safety defect. In `--auto` / non-TTY mode it would freeze a **best-effort** seed even when ambiguity stayed above the threshold, which flipped `current_phase` to `complete` and unlocked the MutationGuard. It also fabricated default constraints/acceptance criteria when the model failed to supply any.
+
+- **858a.** `src/commands/deep-interview.ts` no longer bypasses the ambiguity gate in `--auto` / non-TTY mode. If ambiguity stays above the threshold, or if concrete acceptance criteria are still missing, no seed is written, `current_phase` stays `interviewing`, and writes remain locked.
+- **858b.** Seed freezing now requires concrete acceptance criteria. When the score falls below threshold without them, the interview stays open and explicitly asks for testable success checks instead of silently freezing an underspecified seed.
+- **858c.** Seed YAML no longer fabricates fallback constraints/criteria (`"TypeScript / Bun runtime"`, `"Runs successfully in the terminal"`). Empty constraints stay `constraints: []`; acceptance criteria must come from the interview.
+- **858d.** MutationGuard messaging was corrected so `--auto` is described as non-interactive clarification only, not as a best-effort freeze that bypasses the gate.
+- **858e.** Public docs/prompt surface were synced: README + bundled `deep-interview` skill summary/details no longer claim that `--auto` always freezes a best-effort seed.
+
+### Verification (pass 858)
+- Focused: `bun test test/deep-interview.test.ts test/mutation-guard.test.ts test/skills.test.ts` → **18 pass / 0 fail**.
+- Full: `bun run typecheck` → 0 errors; `bun test` → **636 pass / 0 fail**; `bun run build` → ok.

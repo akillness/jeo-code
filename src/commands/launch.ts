@@ -37,6 +37,7 @@ import { liveModelPicker, renderLiveModelPicker } from "../tui/components/live-m
 import { skillPicker, renderSkillPicker } from "../tui/components/skill-picker";
 import { providerPicker, renderProviderPicker } from "../tui/components/provider-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff } from "../tui/components/code-view";
+import { categoryBadge } from "../tui/components/category-index";
 import { findTool, searchTool } from "../agent/tools";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { maybeCompact } from "../agent/compaction";
@@ -1368,7 +1369,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const lang = detectLanguage(file);
         const { lines, startLine } = sliceLines(content, range ?? undefined);
         const { cols } = await import("../tui/terminal").then(m => m.size());
-        console.log(chalk.bold(`${file}`) + chalk.gray(`  (${languageLabel(lang)}, lines ${startLine}-${startLine + lines.length - 1})`));
+        console.log(`${categoryBadge("file")} ${chalk.bold(`${file}`)}${chalk.gray(`  (${languageLabel(lang)}, lines ${startLine}-${startLine + lines.length - 1})`)}`);
         for (const line of formatCodeBlock(lines.join("\n"), { startLine, lang, cols: Math.max(40, cols - 1), maxLines: 200 })) {
           console.log(line);
         }
@@ -1387,6 +1388,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           continue;
         }
         const { cols } = await import("../tui/terminal").then(m => m.size());
+        console.log(`${categoryBadge("diff")} git diff${target ? ` -- ${target}` : ""}`);
         for (const line of formatDiff(text, { cols: Math.max(40, cols - 1), maxLines: 400 })) console.log(line);
         continue;
       }

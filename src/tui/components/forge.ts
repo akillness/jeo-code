@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import { BOX_ASCII, BOX_UNICODE, padLineTo, type BoxGlyphs } from "./layout";
 import { stripAnsi, visibleWidth } from "./color";
+import { categoryBadge, categoryForTool, type UiCategory } from "./category-index";
 
 export interface ForgeSummary {
   title: string;
@@ -13,6 +14,9 @@ export interface ForgeBoxOptions {
   maxLines?: number;
   unicode?: boolean;
   paint?: (s: string) => string;
+  index?: number;
+  category?: UiCategory;
+  color?: boolean;
 }
 
 const SECRET_VALUE_RE = /(api[_-]?key|authorization|bearer|password|secret|token)(\s*[:=]\s*)(["']?)[^"'\s,}]+/gi;
@@ -150,8 +154,10 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
   const inner = Math.max(1, width - 2);
   const top = paint(glyphs.tl + glyphs.h.repeat(inner) + glyphs.tr);
   const bottom = paint(glyphs.bl + glyphs.h.repeat(inner) + glyphs.br);
-  const label = summary.language ? `${summary.title} · ${summary.language}` : summary.title;
-  const title = `${chalk.bold(label)}`;
+  const category = opts.category ?? categoryForTool(summary.title.split(/\s+/, 1)[0] ?? summary.language ?? "");
+  const badge = categoryBadge(category, { index: opts.index, color: opts.color });
+  const label = summary.language ? `${badge} ${summary.title} · ${summary.language}` : `${badge} ${summary.title}`;
+  const title = `${opts.color === false ? label : chalk.bold(label)}`;
   const rendered: string[] = [top, paint(glyphs.v) + padLineTo(title, inner, "left") + paint(glyphs.v)];
   const separator = paint(glyphs.v) + paint(glyphs.h.repeat(inner)) + paint(glyphs.v);
   rendered.push(separator);

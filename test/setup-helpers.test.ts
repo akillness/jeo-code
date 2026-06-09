@@ -46,6 +46,13 @@ test("recommendedModelsFor returns annotated id lines", () => {
   expect(lines[0]).toContain("—"); // note separator
 });
 
+test("recommendedModelsFor can show Codex OAuth OpenAI defaults", () => {
+  const lines = recommendedModelsFor("openai", 2, { codex: true });
+  expect(lines[0]).toContain("gpt-5.5");
+  expect(lines[0]).toContain("Codex OAuth");
+  expect(lines.join("\n")).not.toContain("gpt-4o");
+});
+
 test("buildEnabledProviders detects keys, oauth, and base URLs", () => {
   expect(buildEnabledProviders(cfg({ providers: { anthropic: "k" } }))).toContain("anthropic");
   expect(buildEnabledProviders(cfg({ oauth: { openai: "t" } as Config["oauth"] }))).toContain("openai");

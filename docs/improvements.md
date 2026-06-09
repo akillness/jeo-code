@@ -4287,3 +4287,42 @@ OAuth token (→403). The status column contradicted real usage.
 - `bun test` → **485 pass / 0 fail across 73 files**.
 - `bun run build` → compiled `dist/joc`.
 - Live: `joc doctor` → all four providers `[ OK ]` (was anthropic/openai FAIL).
+
+## Real-workflow focus: real model lists, clear blockage diagnosis, honor retry hints — passes 757–766
+
+**Date:** 2026-06-08 · **Dimension: real workflow correctness + diagnosability (over fallback).**
+
+User steer: prioritize the *real* execution flow and make blockages clearly identifiable, rather
+than enhancing fallbacks. Reported: models don't actually run; OpenAI shows catalog (not real)
+models; Gemini wrongly says it needs an API key. Live diagnosis: all three cloud accounts were
+rate-limited (free-tier RPM / subscription), and the OpenAI OAuth picker listed the full static
+catalog though the Codex backend serves only a small set.
+
+- **757.** OpenAI OAuth model list is now the **real Codex-served set** (`CODEX_MODELS = gpt-5.5,
+  gpt-5.4`), not the chat-completions catalog. Verified live: every other id (gpt-4o, o3, gpt-5,
+  *-codex) returns `not supported` from `chatgpt.com/backend-api/codex/responses`; gpt-5.5/gpt-5.4
+  serve real turns. `joc models` openai now shows exactly those two.
+- **758.** Added `gpt-5.4` to the catalog (Codex-served alongside gpt-5.5).
+- **759.** Gemini live discovery drops non-chat families it was surfacing (`deep-research`,
+  `computer-use`, `antigravity`) so the list shows usable chat models (29 → 24); `learnlm` stays.
+- **760.** Clear blockage diagnosis (engine): a model that returns JSON with **no `tool` field** no
+  longer loops as a confusing `'undefined' call`. It is guided once, then stops with
+  *"the model returned no valid tool call … may be too small to follow the JSON tool protocol —
+  switch to a stronger model with /model."* Verified live against the 0.5b local model.
+- **761.** Honor server retry hints from the 429 **body** (`parseRetryFromBody`): Google/Gemini omit
+  the `Retry-After` header and instead say `"retryDelay":"8s"` / "Please retry in 8.6s". `withRetry`
+  now waits the server-directed time (capped 30s) so a transient free-tier RPM 429 self-recovers
+  mid-loop instead of aborting the turn.
+- **762.** `providerHttpError` prefers the `Retry-After` header, else the parsed body hint.
+- **763–766.** Tests: Codex-set fallback (openai oauth) vs full catalog (other oauth); gemini family
+  filter (research/computer-use/antigravity dropped, learnlm kept); engine invalid-tool diagnosis;
+  `parseRetryFromBody` + body-hint honoring.
+
+### Verification (passes 757–766)
+- `bun run typecheck` → **0 errors**.
+- `bun test` → **494 pass / 0 fail across 73 files**.
+- `bun run build` → compiled `dist/joc`.
+- Live: `joc models` → openai shows only `gpt-5.5`/`gpt-5.4`; gemini noise removed. Real tool loop
+  runs on ollama (find/edit executed). Cloud 429s now show the actionable rate-limit line and the
+  loop honors the server's retry delay. (Cloud accounts are externally rate-limited right now; the
+  unthrottled local path and the clear diagnosis are the deliverable.)

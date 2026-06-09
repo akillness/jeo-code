@@ -24,7 +24,7 @@ function reportModelChoice(r: { warning?: string; suggestions: string[] }): void
 type ProviderChoice = "anthropic" | "openai" | "gemini" | "ollama" | "lmstudio" | "openai-compatible";
 
 const DEFAULT_MODELS: Record<ProviderChoice, string> = {
-  anthropic: "claude-3-5-sonnet-20241022",
+  anthropic: "claude-sonnet-4-5",
   openai: "gpt-4o",
   gemini: "gemini-2.0-flash",
   ollama: "ollama/llama3.1:8b",
@@ -126,12 +126,15 @@ export async function runSetupCommand(): Promise<void> {
         if (key.trim()) next.providers[choice] = key.trim();
       }
     }
-    console.log(`\nRecommended ${choice} models:`);
-    for (const m of recommendedModelsFor(choice)) console.log(`  - ${m}`);
-    const dm = await rl.question(`Default model for ${choice} [${recommendedModelsFor(choice)[0]?.split(" ")[0] ?? DEFAULT_MODELS[choice]}]: `);
-    const picked = chooseDefaultModel(dm, choice);
+    const openAiCodexOnly = choice === "openai" && !!next.oauth.openai && !next.providers.openai;
+    const recommended = recommendedModelsFor(choice, 5, { codex: openAiCodexOnly });
+    const fallbackModel = recommended[0]?.split(" ")[0] ?? DEFAULT_MODELS[choice];
+    console.log(`\nRecommended ${choice}${openAiCodexOnly ? " Codex OAuth" : ""} models:`);
+    for (const m of recommended) console.log(`  - ${m}`);
+    const dm = await rl.question(`Default model for ${choice} [${fallbackModel}]: `);
+    const picked = chooseDefaultModel(dm.trim() || fallbackModel, choice);
     reportModelChoice(picked);
-    next.defaultModel = picked.model || DEFAULT_MODELS[choice];
+    next.defaultModel = picked.model || fallbackModel;
   } else if (choice === "ollama") {
     const url = await rl.question(`Ollama base URL [${current.ollamaBaseUrl || DEFAULT_BASE_URLS.ollama}]: `);
     next.ollamaBaseUrl = normalizeBaseUrl(url, current.ollamaBaseUrl || DEFAULT_BASE_URLS.ollama!);

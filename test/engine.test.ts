@@ -183,3 +183,16 @@ test("truncateToolOutput: keeps head and tail (tail holds the decisive part)", (
   expect(out).toContain("TAIL_MARKER"); // would be lost by a pure head-cut
   expect(out).toContain("chars truncated");
 });
+
+test("runAgentLoop: a model that never emits a 'tool' field stops with a clear, actionable reason", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ arguments: { foo: 1 } }), // valid JSON, no "tool" field
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history = [{ role: "system" as const, content: "sys" }];
+  const result = await runAgentLoop(history, { cwd: process.cwd(), maxSteps: 8, tools: {} });
+  expect(result.done).toBe(false);
+  expect(result.doneReason).toContain("no valid tool call");
+  expect(result.doneReason).toContain("/model"); // points the user at a stronger model
+  expect(result.steps).toBeLessThanOrEqual(3); // stops at the guard, not the step cap
+});

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { ProviderHttpError, parseRetryAfter } from "../src/ai/providers/errors";
+import { ProviderHttpError, parseRetryAfter, parseRetryFromBody, providerHttpError } from "../src/ai/providers/errors";
 import { defaultRetryable, withRetry } from "../src/util/retry";
 
 test("ProviderHttpError carries a numeric status and a descriptive message", () => {
@@ -78,4 +78,20 @@ test("withRetry: a Retry-After error overrides backoff (capped at 30s)", async (
     { retries: 5, baseDelayMs: 100, random: () => 1, sleep: async ms => { sleeps.push(ms); } }
   );
   expect(sleeps).toEqual([2000, 30000]); // honored, then capped at 30s
+});
+
+test("parseRetryFromBody extracts Google/Gemini retry hints (header absent)", () => {
+  // Gemini free-tier 429 message form.
+  expect(parseRetryFromBody("...Please retry in 8.640764186s. ")).toBeCloseTo(8640, -2);
+  // Google structured retryDelay form.
+  expect(parseRetryFromBody('{"error":{"details":[{"retryDelay":"8s"}]}}')).toBe(8000);
+  expect(parseRetryFromBody("no hint here")).toBeUndefined();
+  expect(parseRetryFromBody("")).toBeUndefined();
+});
+
+test("providerHttpError honors a body retry hint when no Retry-After header is present", async () => {
+  const res = new Response('{"error":{"message":"Please retry in 5s","status":"RESOURCE_EXHAUSTED"}}', { status: 429 });
+  const err = await providerHttpError("Gemini", res);
+  expect(err.status).toBe(429);
+  expect(err.retryAfterMs).toBe(5000);
 });

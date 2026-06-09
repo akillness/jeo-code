@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { categoryBadge, categoryForTool } from "./category-index";
 
 export type ToolStatus = "running" | "ok" | "fail";
 
@@ -28,14 +29,16 @@ export class ToolList {
     }
   }
 
-  render(maxRows?: number, optionsOrColor?: boolean | { color?: boolean }): string[] {
+  render(maxRows?: number, optionsOrColor?: boolean | { color?: boolean; indexed?: boolean }): string[] {
     let color = true;
+    let indexed = false;
     if (typeof optionsOrColor === "boolean") {
       color = optionsOrColor;
     } else if (optionsOrColor && typeof optionsOrColor === "object") {
       if (optionsOrColor.color !== undefined) {
         color = optionsOrColor.color;
       }
+      indexed = optionsOrColor.indexed === true;
     }
 
     const rows =
@@ -50,15 +53,16 @@ export class ToolList {
     const redFailed = color ? chalk.red.bold("FAILED") : "FAILED";
     const grayLine = (s: string) => color ? chalk.gray(s) : s;
 
-    const lines = rows.map(row => {
+    const lines = rows.map((row, i) => {
+      const badge = indexed ? `${categoryBadge(categoryForTool(row.tool), { index: hidden + i + 1, color })} ` : "";
       if (row.status === "running") {
-        return `  ${yellowDot} ${row.tool} ${yellowRunning}`;
+        return `  ${yellowDot} ${badge}${row.tool} ${yellowRunning}`;
       } else if (row.status === "ok") {
         // Faded decay for completed successful tools
-        return grayLine(`  · ${row.tool} ok`);
+        return grayLine(`  · ${badge}${row.tool} ok`);
       } else {
         // Bright red for failures
-        return `  ${redDot} ${row.tool} ${redFailed}`;
+        return `  ${redDot} ${badge}${row.tool} ${redFailed}`;
       }
     });
     if (hidden > 0) {

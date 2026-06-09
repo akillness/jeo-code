@@ -5,6 +5,7 @@
  */
 import type { ProviderName } from "../ai/types";
 import { recommendedModel, validateModelId, suggestModels, findCatalogEntry, catalogForProvider } from "../ai/model-catalog-compat";
+import { CODEX_MODELS } from "../ai/model-catalog";
 import { resolveProvider } from "../ai/model-manager";
 import type { Config } from "../agent/state";
 
@@ -56,7 +57,13 @@ export function chooseDefaultModel(typed: string | undefined, provider: Provider
 }
 
 /** Top-N recommended catalog rows for a provider, as `id — note` display lines. */
-export function recommendedModelsFor(provider: ProviderName, n = 5): string[] {
+export function recommendedModelsFor(provider: ProviderName, n = 5, opts: { codex?: boolean } = {}): string[] {
+  if (provider === "openai" && opts.codex) {
+    return CODEX_MODELS.slice(0, n).map(id => {
+      const entry = findCatalogEntry(id);
+      return `${id}${entry?.note ? ` — ${entry.note}, Codex OAuth` : " — Codex OAuth"}`;
+    });
+  }
   return catalogForProvider(provider)
     .slice(0, n)
     .map(e => `${e.id}${e.note ? ` — ${e.note}` : ""}`);

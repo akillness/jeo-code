@@ -61,12 +61,25 @@ export function formatSkill(s: SkillDoc): string {
 }
 
 export function skillsPromptSection(skills: SkillDoc[] = SKILLS): string {
-  return skills
-    .map(s => {
-      const aliases = skillSlashAliases(s);
-      return `- ${s.name}${aliases.length ? ` (${aliases.join(", ")})` : ""} — ${s.summary}`;
-    })
-    .join("\n");
+  const lines: string[] = [];
+  let used = 0;
+  for (const [i, s] of skills.entries()) {
+    if (lines.length >= MAX_SKILLS_PROMPT_LINES) {
+      const remaining = skills.length - i;
+      if (remaining > 0) lines.push(`- … ${remaining} more skill(s) omitted for brevity`);
+      break;
+    }
+    const aliases = skillSlashAliases(s);
+    const line = `- ${s.name}${aliases.length ? ` (${aliases.join(", ")})` : ""} — ${s.summary}`;
+    if (used + line.length + 1 > MAX_SKILLS_PROMPT_CHARS) {
+      const remaining = skills.length - i;
+      if (remaining > 0) lines.push(`- … ${remaining} more skill(s) omitted for brevity`);
+      break;
+    }
+    lines.push(line);
+    used += line.length + 1;
+  }
+  return lines.join("\n");
 }
 
 import * as fs from "node:fs/promises";
@@ -120,6 +133,8 @@ export function skillSlashAliases(skill: SkillDoc): string[] {
 
 const MAX_SKILL_SUMMARY_CHARS = 180;
 const MAX_SKILL_DETAILS_CHARS = 8_000;
+const MAX_SKILLS_PROMPT_LINES = 40;
+const MAX_SKILLS_PROMPT_CHARS = 6_000;
 /** Global + per-project skill-doc directories (user-configurable SKILL.md files). */
 export function skillDirs(cwd: string = process.cwd()): string[] {
   const home = process.env.JOC_CONFIG_DIR || path.join(os.homedir(), ".joc");

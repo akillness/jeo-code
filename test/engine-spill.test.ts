@@ -45,3 +45,21 @@ test("runAgentLoop: small tool output is NOT spilled", async () => {
   await runAgentLoop(history, { cwd, maxSteps: 5, tools: { small: async () => ({ success: true, output: "tiny" }) } });
   expect(history.some(m => m.content.includes(".joc/artifacts"))).toBe(false);
 });
+
+test("runAgentLoop: a FAILED tool with huge error output also spills", async () => {
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      return turn === 1
+        ? JSON.stringify({ tool: "boom", arguments: {} })
+        : JSON.stringify({ tool: "done", arguments: { reason: "ok" } });
+    },
+  }));
+  const { runAgentLoop, TOOL_SPILL_THRESHOLD } = await import("../src/agent/engine");
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "joc-spill3-"));
+  const hugeErr = "E".repeat(TOOL_SPILL_THRESHOLD + 3000);
+  const history = [{ role: "system" as const, content: "s" }];
+  await runAgentLoop(history, { cwd, maxSteps: 5, tools: { boom: async () => ({ success: false, output: "", error: hugeErr }) } });
+  expect(history.some(m => m.content.includes("saved to .joc/artifacts/tool-results/"))).toBe(true);
+});

@@ -114,8 +114,10 @@ export function truncateToolOutput(s: string, max = 4000): string {
   return `${s.slice(0, head)}\n…(${s.length - max} chars truncated)…\n${s.slice(s.length - tail)}`;
 }
 
-/** Tool output larger than this is spilled to a recoverable artifact file. */
-export const TOOL_SPILL_THRESHOLD = 12_000;
+/** Tool output larger than this is spilled to a recoverable artifact file. Aligned
+ *  with `truncateToolOutput`'s 4000-char cap so that whenever the model-visible
+ *  result drops content, the full output is recoverable via the artifact. */
+export const TOOL_SPILL_THRESHOLD = 4_000;
 
 /**
  * Write an oversized tool result verbatim under `.joc/artifacts/tool-results/` and

@@ -234,6 +234,31 @@ test("editTool: multi-hunk is atomic — a later failing hunk writes nothing", a
   expect(await fs.readFile(f, "utf-8")).toBe(original); // unchanged — first hunk NOT applied
 });
 
+test("editTool: $-patterns in the replacement are inserted literally (no String.replace corruption)", async () => {
+  const f = path.join(dir, "dollar.txt");
+  await fs.writeFile(f, "PLACEHOLDER\n");
+  // $$, $&, $', $` would all be rewritten by String.replace's pattern substitution.
+  const res = await editTool(f, "<<<<<<< SEARCH\nPLACEHOLDER\n=======\ncost=$$5 $& $' $` end\n>>>>>>>", dir);
+  expect(res.success).toBe(true);
+  expect(await fs.readFile(f, "utf-8")).toBe("cost=$$5 $& $' $` end\n");
+});
+
+test("editTool: single-hunk replaces only the match; surrounding lines survive", async () => {
+  const f = path.join(dir, "surround.txt");
+  await fs.writeFile(f, "keep1\nTARGET\nkeep2\n");
+  const res = await editTool(f, "<<<<<<< SEARCH\nTARGET\n=======\nCHANGED\n>>>>>>>", dir);
+  expect(res.success).toBe(true);
+  expect(await fs.readFile(f, "utf-8")).toBe("keep1\nCHANGED\nkeep2\n");
+});
+
+test("editTool: garbage edit block (no directives) returns the format error", async () => {
+  const f = path.join(dir, "garbage.txt");
+  await fs.writeFile(f, "x\n");
+  const res = await editTool(f, "just some prose, no directives", dir);
+  expect(res.success).toBe(false);
+  expect(res.error).toContain("Invalid edit block format");
+});
+
 test("findTool skips node_modules and .git", async () => {
   const res = await findTool("*.ts", dir);
   expect(res.success).toBe(true);

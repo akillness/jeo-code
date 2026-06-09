@@ -5005,3 +5005,28 @@ program (815–834).
   `joc --help` lists `export`. New tests: parseEditHunks one/many/malformed; multi-hunk apply-in-order
   + atomic-failure-writes-nothing; oversized output spills to a recoverable artifact while small output
   does not; markdown/json export with/without system + malformed-tail tolerance.
+## Round-D cross-validation + HIGH fix — pass 835
+
+**Date:** 2026-06-09 · **Dimension: edit correctness (silent-corruption fix), evidence recovery.**
+
+A second read-only subagent round (architect + critic) reviewed passes 832–834. The architect
+confirmed multi-hunk atomicity, spill safety (caught, sanitized, under-cwd, no double-push), and
+export shapes as **correct**, and caught one **HIGH silent-corruption defect** + a MEDIUM gap:
+
+- **835a (HIGH).** `editTool` applied hunks via `working.replace(h.search, h.replace)` — with a string
+  replacement, JS still interprets `$`-patterns (`$$`, `$&`, `` $` ``, `$'`) in the payload, so a
+  replacement containing literal `$` (Makefiles, shell `$'…'`, regex-replacement literals) was
+  silently corrupted (`$'` would splice the rest of the file) while reporting success. Fixed with a
+  function replacer `working.replace(h.search, () => h.replace)` — the payload is inserted verbatim.
+- **835b (MEDIUM).** Lowered `TOOL_SPILL_THRESHOLD` 12000 → **4000** to align with
+  `truncateToolOutput`'s cap, so the "recoverable" promise has no hole: whenever the model-visible
+  result drops content, the full output is now spilled to an artifact.
+
+### Verification (pass 835)
+- `bun run typecheck` → 0 errors. `bun test` → **596 pass / 0 fail** (+4). `bun run build` → ok.
+- New tests: replacement with `$$ $& $' $\`` is inserted literally (proves the HIGH fix); single-hunk
+  replaces only the match (surrounding lines survive); garbage edit block → format error; a FAILED
+  tool with huge error output also spills.
+- Deferred LOW (logged): markdown export dynamic fence length; artifact retention/GC; distinct
+  "unterminated SEARCH marker" error vs generic format error. Critic's remaining coverage ideas
+  (cascading-replacement semantics, export empty/latest/missing, --json+--system) queued.

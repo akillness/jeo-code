@@ -285,7 +285,10 @@ export async function editTool(
             return { success: false, output: "", error: `Failed to apply edit: hunk ${i + 1} has an empty SEARCH block.` };
           }
           if (working.includes(h.search)) {
-            working = working.replace(h.search, h.replace);
+            // Function replacer: bypasses String.replace's `$`-pattern substitution
+            // ($&, $`, $', $$) so a replacement containing literal `$` (Makefiles,
+            // shell `$'…'`, regex literals) is inserted verbatim, not corrupted.
+            working = working.replace(h.search, () => h.replace);
           } else {
             // Near-miss diagnostics so the model can self-correct instead of blindly retrying.
             const firstLine = h.search.split("\n")[0] ?? "";

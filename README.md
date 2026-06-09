@@ -140,7 +140,7 @@ joc auth status
 
 ## Spec-first 워크플로우
 
-요구사항을 먼저 정리하고 계획, 실행, 검증까지 진행할 때 사용합니다. 단계는 상태(`.joc/state/`)로 이어지며 게이트가 있습니다: deep-interview가 먼저 **top-level topology를 확인**하고, brownfield 요청이면 **repo marker + path evidence**를 수집한 뒤, 그 다음 **시드를 동결**(ambiguity ≤ 20%; `--auto`/non-TTY도 이 게이트를 우회하지 못하며, 기준 미달이면 시드를 동결하지 않음)해야 MutationGuard가 코드 수정을 허용하고 ralplan이 진행됩니다 → ralplan은 **Planner→Architect→Critic 합의**(3단계 연쇄 패스)로 **승인 대기** 플랜을 만들고(스키마 자체검증·보정 포함) → `joc approve <plan>`로 승인해야 → team이 실행하며(손상된 team 상태는 무시하지 않고 거부, 알 수 없는 subagent role은 실행 전 거부, 동일한 task 이름도 step index 기준으로 올바른 role에 라우팅) → ultragoal이 team 실행을 검증합니다.
+요구사항을 먼저 정리하고 계획, 실행, 검증까지 진행할 때 사용합니다. 단계는 상태(`.joc/state/`)로 이어지며 게이트가 있습니다: deep-interview가 먼저 **top-level topology를 확인**하고, brownfield 요청이면 **repo marker + path evidence**를 수집한 뒤, 그 다음 **시드를 동결**(ambiguity ≤ 20%; `--auto`/non-TTY도 이 게이트를 우회하지 못하며, 기준 미달이면 시드를 동결하지 않음)해야 MutationGuard가 코드 수정을 허용하고 ralplan이 진행됩니다 → ralplan은 **Planner→Architect→Critic 합의**(3단계 연쇄 패스)로 **승인 대기** 플랜을 만들고(스키마 자체검증·보정 포함) → `joc approve <plan>`로 승인해야 → team이 실행하며(손상된 team 상태는 무시하지 않고 거부, 알 수 없는 subagent role은 실행 전 거부, 동일한 task 이름도 step index 기준으로 올바른 role에 라우팅, planner/architect/critic report가 계약을 못 지키거나 architect가 `BLOCK`/`REQUEST CHANGES`, critic이 `[REJECT]`/`[ITERATE]`를 내면 즉시 중단) → ultragoal이 team 실행을 검증합니다.
 
 ```bash
 joc deep-interview "만들고 싶은 기능 설명"

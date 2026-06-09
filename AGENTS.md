@@ -1,4 +1,51 @@
-# Repository Guidelines
+<!-- Generated: 2026-06-07 | Updated: 2026-06-07 -->
+
+# jeo-code
+
+## Purpose
+`jeo-code` (binary `joc`) is a pure-TypeScript AI coding agent that runs on Bun with zero native dependencies. It re-implements the `gajae-code` (`gjc`) spec-first workflow contract and adopts `pi-mono` runtime ergonomics.
+
+## Key Files
+| File | Description |
+|------|-------------|
+| `package.json` | Project dependencies, scripts, and publication metadata |
+| `tsconfig.json` | TypeScript configuration enabling strict types and Bun imports |
+| `bun.lock` | Lockfile for Bun package dependencies |
+
+## Subdirectories
+| Directory | Purpose |
+|-----------|---------|
+| `src/` | Application source code containing CLI, agent engine, AI providers, auth, TUI, MCP, and skills (see `src/AGENTS.md`) |
+| `test/` | Flat directory containing full `bun:test` unit and integration test suites (see `test/AGENTS.md`) |
+| `docs/` | Project documentation and architectural changelog improvements (see `docs/AGENTS.md`) |
+| `scripts/` | Shell scripts for installation, uninstallation, and local checks (see `scripts/AGENTS.md`) |
+| `plan/` | Implementation planning blueprints and milestones (see `plan/AGENTS.md`) |
+
+## For AI Agents
+
+### Working In This Directory
+- Use TypeScript strict mode and strict ESM patterns.
+- Do not add external native or runtime dependencies (keep it zero-dependency, Bun-only).
+- Maintain compatibility with Bun versions >= 1.3.14.
+
+### Testing Requirements
+- Run `bun test` to execute all tests (must be all green).
+- Run `bun run typecheck` to ensure no TypeScript compilation issues.
+
+### Common Patterns
+- Free functions over classes for command/CLI registry handlers.
+- Safe tool error handling (return `ToolResult` instead of throwing exceptions).
+
+## Dependencies
+
+### External
+- Bun >= 1.3.14 (Runtime & Test Runner)
+- Zod (Runtime config validation)
+- Chalk (Doctor connectivity reporting colors)
+
+<!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+
+## Repository Guidelines
 
 ## Project Overview
 

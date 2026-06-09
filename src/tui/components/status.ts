@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { meter } from "./meter";
+import { categoryBadge } from "./category-index";
 
 export interface JocStatusData {
   step?: number;
@@ -46,7 +47,7 @@ export function renderJocStatus(data: JocStatusData): string[] {
   const guard = data.mutationGuarded ? ` · ${redBold("mutation locked")}` : "";
 
   return [
-    `  ${cyanBold("joc thinking")} · ${msg} · step ${step}/${max} · ${pct}% ${bar} · ${elapsed}`,
-    `  ${magentaBold("joc forge")} · ${current} · tools ${total} (${ok} ok / ${fail} fail / ${running} running)${guard}`,
+    `  ${categoryBadge("progress", { color: useColor })} ${cyanBold("joc thinking")} · ${msg} · step ${step}/${max} · ${pct}% ${bar} · ${elapsed}`,
+    `  ${categoryBadge("tool", { color: useColor })} ${magentaBold("joc forge")} · ${current} · tools ${total} (${ok} ok / ${fail} fail / ${running} running)${guard}`,
   ];
 }

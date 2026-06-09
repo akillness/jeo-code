@@ -189,9 +189,9 @@ export class LaunchTui {
     const boxWidth = Math.max(floor, Math.min(96, width));
     const paint = this.theme.color ? chalk.gray : (s: string) => s;
     const lines: string[] = [];
-    for (const summary of this.forgeSummaries.slice(-maxEntries)) {
+    for (const [i, summary] of this.forgeSummaries.slice(-maxEntries).entries()) {
       if (lines.length > 0) lines.push("");
-      lines.push(...formatForgeBox(summary, { width: boxWidth, maxLines: 8, unicode: this.unicode, paint }));
+      lines.push(...formatForgeBox(summary, { width: boxWidth, maxLines: 8, unicode: this.unicode, paint, index: i + 1, color: this.theme.color }));
     }
     return lines;
   }
@@ -235,7 +235,7 @@ export class LaunchTui {
     const trackCount = showArt ? 1 : 0;
     const headerHeight = artLinesCount + trackCount + (showArt ? 1 : 0);
 
-    const toolLines = this.tools.render(fit ? Math.max(3, rows - 15) : undefined, { color: this.theme.color });
+    const toolLines = this.tools.render(fit ? Math.max(3, rows - 15) : undefined, { color: this.theme.color, indexed: fit });
     const toolListHeight = toolLines.length;
 
     // Bottom-pinned status + footer.

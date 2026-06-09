@@ -131,6 +131,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   let consecutiveFailures = 0;
   let lastSig = "";
   let repeatCount = 0;
+  // Invalid-tool-call guard: a model that returns JSON without a usable `tool`
+  // field can't drive the loop at all — surface that clearly instead of looping.
+  let invalidToolCalls = 0;
   while (step <= maxSteps) {
     if (opts.signal?.aborted) {
       return finish({ done: false, steps: step - 1, doneReason: "Cancelled." });
@@ -171,6 +174,28 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     }
 
     ev.onAssistant?.(responseText, invocation);
+
+    // Valid JSON but no usable `tool` field: the model isn't following the protocol.
+    // Guide it once or twice, then stop with a clear, actionable reason.
+    const toolName = typeof invocation?.tool === "string" ? invocation.tool.trim() : "";
+    if (!toolName) {
+      invalidToolCalls++;
+      if (invalidToolCalls >= MAX_REPEAT) {
+        return finish({
+          done: false,
+          steps: step,
+          doneReason: `Stopped: the model returned no valid tool call ${MAX_REPEAT}× (a JSON reply with no "tool" field). The selected model may be too small to follow the JSON tool protocol — switch to a stronger model with /model.`,
+        });
+      }
+      history.push({ role: "assistant", content: responseText });
+      history.push({
+        role: "user",
+        content: `Your last reply had no "tool" field. Reply with exactly one JSON object, e.g. {"tool":"find","arguments":{"globPattern":"src/**"}} or {"tool":"done","arguments":{"reason":"…"}}.`,
+      });
+      step++;
+      continue;
+    }
+    invalidToolCalls = 0;
 
     if (invocation.tool === "done") {
       return finish({ done: true, steps: step, doneReason: (invocation.arguments?.reason as string) ?? "" });

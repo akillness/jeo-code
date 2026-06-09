@@ -47,6 +47,7 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   { canonical: "o3-mini", provider: "openai", providerModel: "o3-mini", contextTokens: 200_000, maxOutputTokens: 100_000, thinking: STD, images: false },
   { canonical: "o4-mini", provider: "openai", providerModel: "o4-mini", contextTokens: 200_000, maxOutputTokens: 100_000, thinking: STD, images: true },
   { canonical: "gpt-5.5", provider: "openai", providerModel: "gpt-5.5", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
+  { canonical: "gpt-5.4", provider: "openai", providerModel: "gpt-5.4", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
   // Google
   { canonical: "gemini-1.5-pro", provider: "gemini", providerModel: "gemini-1.5-pro", contextTokens: 1_000_000, maxOutputTokens: 8_192, thinking: [], images: true },
   { canonical: "gemini-2.0-flash", provider: "gemini", providerModel: "gemini-2.0-flash", contextTokens: 1_000_000, maxOutputTokens: 8_192, thinking: [], images: true },
@@ -55,6 +56,14 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   // Ollama (local)
   { canonical: "qwen2.5", provider: "ollama", providerModel: "ollama/qwen2.5:0.5b", contextTokens: 32_768, maxOutputTokens: 8_192, thinking: [], images: false },
 ];
+
+/**
+ * OpenAI models the ChatGPT/Codex subscription backend (`codex/responses`) actually
+ * serves. The Codex backend rejects standard API ids (gpt-4o, o3, …) and exposes no
+ * usable list endpoint, so an OAuth-only OpenAI login surfaces exactly these instead
+ * of the full chat-completions catalog. Verified live against a ChatGPT account.
+ */
+export const CODEX_MODELS: readonly string[] = ["gpt-5.5", "gpt-5.4"];
 
 /** Format a token count compactly (1000 → 1K, 1_000_000 → 1M). */
 export function formatTokens(n: number): string {

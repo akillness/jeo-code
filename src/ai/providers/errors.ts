@@ -37,11 +37,25 @@ export function parseRetryAfter(value: string | null | undefined): number | unde
 }
 
 /**
+ * Extract a server-directed retry delay from a 429/503 response *body* (in ms).
+ * Some providers (notably Google/Gemini) omit the `Retry-After` header and instead
+ * put the hint in the JSON, e.g. `"retryDelay": "8s"` or `"Please retry in 8.6s"`.
+ */
+export function parseRetryFromBody(detail: string | null | undefined): number | undefined {
+  if (!detail) return undefined;
+  const m = detail.match(/"retryDelay"\s*:\s*"?([\d.]+)s/i) || detail.match(/retry in ([\d.]+)\s*s/i);
+  if (!m) return undefined;
+  const s = Number(m[1]);
+  return Number.isFinite(s) ? Math.max(0, s * 1000) : undefined;
+}
+
+/**
  * Build a {@link ProviderHttpError} from a non-ok `Response`, capturing the body
  * and any `Retry-After`. Use at every adapter's `!response.ok` site so the retry
  * layer sees a uniform, status-carrying, backoff-aware error.
  */
 export async function providerHttpError(provider: string, response: Response, context?: string): Promise<ProviderHttpError> {
   const detail = await response.text().catch(() => "");
-  return new ProviderHttpError(provider, response.status, detail, context, parseRetryAfter(response.headers.get("retry-after")));
+  const retryAfterMs = parseRetryAfter(response.headers.get("retry-after")) ?? parseRetryFromBody(detail);
+  return new ProviderHttpError(provider, response.status, detail, context, retryAfterMs);
 }

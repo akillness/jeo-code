@@ -48,6 +48,12 @@ afterAll(async () => {
 const okFetch = (body: unknown): typeof fetch =>
   (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch;
 
+function fakeJwt(accountId: string): string {
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } })).toString("base64url");
+  return `${header}.${payload}.sig`;
+}
+
 test("discoveryRequest: anthropic api-key uses x-api-key + version", () => {
   const { url, headers } = discoveryRequest("anthropic", { kind: "api_key", provider: "anthropic", token: "k" });
   expect(url).toBe("https://api.anthropic.com/v1/models");
@@ -72,6 +78,14 @@ test("discoveryRequest: gemini oauth omits ?key=, api-key appends it", () => {
 test("discoveryRequest: openai honors a base URL override", () => {
   const { url } = discoveryRequest("openai", { kind: "api_key", provider: "openai", token: "k" }, "http://localhost:1234/v1");
   expect(url).toBe("http://localhost:1234/v1/models");
+});
+
+test("discoveryRequest: openai oauth uses the Codex models endpoint", () => {
+  const { url, headers } = discoveryRequest("openai", { kind: "oauth", provider: "openai", token: fakeJwt("acct-1") });
+  expect(url).toBe("https://chatgpt.com/backend-api/codex/models");
+  expect(headers.Authorization).toContain("Bearer ");
+  expect(headers["chatgpt-account-id"]).toBe("acct-1");
+  expect(headers["OpenAI-Beta"]).toBe("responses=experimental");
 });
 
 test("parseModelsBody normalizes each provider shape", () => {
@@ -159,14 +173,17 @@ test("listProviderModels: OAuth-only discovery still probes the provider list", 
     }),
   );
   let called = false;
-  const fetchSpy = (async () => {
+  const fetchSpy = (async (_url: string | URL | Request, init?: RequestInit) => {
     called = true;
-    return new Response(JSON.stringify({ data: [{ id: "gpt-4o" }] }), { status: 200 });
+    const headers = init?.headers as Record<string, string>;
+    expect(String(_url)).toBe("https://chatgpt.com/backend-api/codex/models");
+    expect(headers.Authorization).toContain("Bearer ");
+    return new Response(JSON.stringify({ models: [{ slug: "gpt-5.5", supported_in_api: true }, { slug: "hidden", supported_in_api: false }] }), { status: 200 });
   }) as typeof fetch;
   const r = await listProviderModels("openai", { fetchImpl: fetchSpy });
   expect(r.ok).toBe(true);
   expect(r.source).toBe("oauth");
-  expect(r.models).toEqual(["gpt-4o"]);
+  expect(r.models).toEqual(["gpt-5.5"]);
   expect(called).toBe(true);
 });
 
@@ -194,13 +211,20 @@ test("discoverModels runs all providers in parallel", async () => {
   expect(results.map(r => r.provider).sort()).toEqual(["anthropic", "gemini", "ollama", "openai"]);
 });
 
-test("catalogOr: OAuth provider with rejected live endpoint falls back to catalog ids", () => {
+test("catalogOr: OpenAI OAuth (Codex) falls back to the Codex-served model set, not the full catalog", () => {
   // Simulates ChatGPT/Codex OAuth: /v1/models returns 401, but the user IS logged in.
   const r = catalogOr({ provider: "openai", models: [], ok: false, source: "oauth", error: "auth rejected" });
   expect(r.ok).toBe(true);
   expect(r.fallback).toBe(true);
+  expect(r.models).toContain("gpt-5.5"); // Codex actually serves this
+  expect(r.models).not.toContain("gpt-4o"); // Codex rejects standard API ids
+});
+
+test("catalogOr: non-OpenAI OAuth provider falls back to its full static catalog", () => {
+  const r = catalogOr({ provider: "anthropic", models: [], ok: false, source: "oauth", error: "auth rejected" });
+  expect(r.ok).toBe(true);
+  expect(r.fallback).toBe(true);
   expect(r.models.length).toBeGreaterThan(0);
-  expect(r.models).toContain("gpt-4o");
 });
 
 test("catalogOr: keyless/not-logged-in results are returned unchanged (no fabricated models)", () => {
@@ -248,6 +272,10 @@ test("parseModelsBody: gemini keeps only generateContent-capable models", () => 
       { name: "models/gemini-2.5-pro-preview-tts", supportedGenerationMethods: ["generateContent"] },
       { name: "models/gemini-legacy" }, // no methods → permissive keep
       { name: "models/learnlm-1.5-pro-experimental" },
+      // generateContent-capable but non-chat families (research/computer-use/antigravity) → excluded
+      { name: "models/deep-research-pro-preview-12-2025", supportedGenerationMethods: ["generateContent"] },
+      { name: "models/gemini-2.5-computer-use-preview-10-2025", supportedGenerationMethods: ["generateContent"] },
+      { name: "models/antigravity-preview-05-2026", supportedGenerationMethods: ["generateContent"] },
     ],
   });
   expect(ids).toEqual(["gemini-2.5-pro", "gemini-legacy", "learnlm-1.5-pro-experimental"]);

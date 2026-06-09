@@ -79,14 +79,15 @@ TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행
 | Provider | API 키 | OAuth(구독) 로그인 | 현재 권장 모델 |
 | --- | --- | --- | --- |
 | anthropic | ✅ `ANTHROPIC_API_KEY` | ✅ Claude Pro/Max — Messages API 직접 호출 | `claude-sonnet-4-5` · `claude-opus-4-5` · `claude-haiku-4-5` (별칭 `sonnet`/`opus`/`haiku`) |
-| openai | ✅ `OPENAI_API_KEY` (전체 모델) | ✅ ChatGPT/Codex — Codex Responses 백엔드 자동 라우팅 | `gpt-5.5` (별칭 `gpt`) |
+| openai | ✅ `OPENAI_API_KEY` (전체 모델) | ✅ ChatGPT/Codex — Codex Responses 백엔드 자동 라우팅 | OAuth는 Codex가 실제 서빙하는 `gpt-5.5` · `gpt-5.4`만 노출(별칭 `gpt`) |
 | gemini | ✅ `GEMINI_API_KEY` | ❌ 아직 미지원 → API 키 필요 (picker에 `OAuth (API key needed)`) | `gemini-2.5-flash` · `gemini-2.5-pro` (별칭 `flash`) |
 | ollama | — | — (keyless 로컬, 레이트리밋 없음) | `ollama/qwen2.5:0.5b` (별칭 `fast`/`local`) |
 
 - **키 + OAuth 둘 다 있으면 API 키가 우선**(표준 엔드포인트·전체 모델). OAuth 전용이면 위 백엔드로 동작합니다.
 - 별칭/카탈로그 canonical은 호출 직전 실제 provider 모델 id로 매핑됩니다(예: `sonnet` → `claude-sonnet-4-5-20250929`).
 - `model not found(404)`가 나면 모델 id가 구형일 수 있습니다 — `/models`·`/provider <name>`로 현재 모델을 확인해 `#N`으로 고르세요(라이브 목록이 권위 소스).
-- 레이트리밋(HTTP 429)은 자동 재시도 후에도 지속되면 친절 안내로 정리되며, `/model`로 다른 모델(로컬 ollama 등)로 전환할 수 있습니다.
+- 레이트리밋(HTTP 429)은 친절 안내로 정리되고, 서버가 본문에 준 재시도 지연(예: Gemini `retryDelay`/"retry in 8.6s")을 honor해 일시적 RPM 제한은 루프가 스스로 대기·복구합니다. 지속되면 `/model`로 다른 모델(로컬 ollama 등)로 전환하세요.
+- 막힘은 명확히 알립니다: 모델이 유효한 tool 호출(JSON `tool` 필드)을 못 내면 "더 강한 모델로 전환(/model)" 안내로 중단합니다(약한 로컬 모델 대비).
 - 연결 상태는 `joc doctor`가 **실제 호출 경로**로 점검합니다(anthropic=`GET /v1/models`, openai OAuth=Codex 백엔드 도달 확인, 크레딧 미소모).
 
 ## 자주 쓰는 명령

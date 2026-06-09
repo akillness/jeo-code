@@ -12,7 +12,8 @@ import { readGlobalConfig, type Config } from "../agent/state";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
 import type { ProviderName } from "./types";
 import { PROVIDER_NAMES } from "./provider-status";
-import { catalogByProvider } from "./model-catalog";
+import { catalogByProvider, CODEX_MODELS } from "./model-catalog";
+import { extractChatgptAccountId } from "./providers/openai-responses";
 
 export interface ProviderModelsResult {
   provider: ProviderName;
@@ -42,6 +43,7 @@ export interface DiscoveryOptions {
 
 const DEFAULT_TIMEOUT = 5000;
 const DEFAULT_LIMIT = 100;
+const CODEX_MODELS_URL = "https://chatgpt.com/backend-api/codex/models";
 
 function anthropicHeaders(cred: Credential): Record<string, string> {
   if (cred.kind === "oauth") {
@@ -63,8 +65,18 @@ export function discoveryRequest(
     case "anthropic":
       return { url: "https://api.anthropic.com/v1/models", headers: anthropicHeaders(cred!) };
     case "openai": {
-      const base = (baseUrl ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
       const token = cred?.kind === "oauth" || cred?.kind === "api_key" ? cred.token : "";
+      if (cred?.kind === "oauth" && !baseUrl && !process.env.OPENAI_BASE_URL) {
+        const accountId = extractChatgptAccountId(token);
+        const headers: Record<string, string> = {
+          Authorization: `Bearer ${token}`,
+          "OpenAI-Beta": "responses=experimental",
+          originator: "codex_cli_rs",
+        };
+        if (accountId) headers["chatgpt-account-id"] = accountId;
+        return { url: CODEX_MODELS_URL, headers };
+      }
+      const base = (baseUrl ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
       return { url: `${base}/models`, headers: token ? { Authorization: `Bearer ${token}` } : {} };
     }
     case "gemini": {
@@ -96,14 +108,16 @@ function isOpenAiChatModel(id: string): boolean {
  * audio/image/vectors — not a usable text turn for a coding chat. Drop them by family.
  */
 function isGeminiChatModel(id: string): boolean {
-  return !/(^|[-/])(embedding|aqa|tts|image|imagen|veo)([-/]|$)/i.test(id);
+  return !/(^|[-/])(embedding|aqa|tts|image|imagen|veo|deep-research|computer-use|antigravity)([-/]|$)/i.test(id);
 }
+
+type CodexModelRow = { slug?: string; id?: string; supported_in_api?: boolean; priority?: number };
 
 /** Parse a provider's models response body into normalized, chat-capable model ids. */
 export function parseModelsBody(provider: ProviderName, body: unknown): string[] {
   const data = body as {
     data?: { id?: string }[];
-    models?: { name?: string; supportedGenerationMethods?: string[] }[];
+    models?: ({ name?: string; supportedGenerationMethods?: string[] } & CodexModelRow)[];
   };
   if (provider === "ollama") {
     return (data.models ?? []).map(m => `ollama/${m.name ?? ""}`).filter(s => s !== "ollama/");
@@ -115,6 +129,12 @@ export function parseModelsBody(provider: ProviderName, body: unknown): string[]
       .filter(m => !m.supportedGenerationMethods || m.supportedGenerationMethods.includes("generateContent"))
       .map(m => (m.name ?? "").replace(/^models\//, ""))
       .filter(id => id && isGeminiChatModel(id));
+  }
+  if (provider === "openai" && data.models?.some(m => m.slug || m.id)) {
+    return data.models
+      .filter(m => m.supported_in_api !== false)
+      .map(m => m.slug ?? m.id ?? "")
+      .filter(Boolean);
   }
   // anthropic / openai: { data: [{ id }] }
   const ids = (data.data ?? []).map(m => m.id ?? "").filter(Boolean);
@@ -133,7 +153,7 @@ export function catalogOr(result: ProviderModelsResult): ProviderModelsResult {
   // chat (ChatGPT/Codex). An api_key rejection means a bad/invalid key — never paper
   // over that with catalog rows, or the user picks a model that cannot authenticate.
   if (result.source !== "oauth") return result;
-  const ids = catalogByProvider(result.provider).map(m => m.providerModel);
+  const ids = result.provider === "openai" ? [...CODEX_MODELS] : catalogByProvider(result.provider).map(m => m.providerModel);
   if (ids.length === 0) return result;
   return { ...result, models: ids, ok: true, fallback: true };
 }

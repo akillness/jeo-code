@@ -108,6 +108,25 @@ test("bashTool: subdir runs the command in a resolved subdirectory", async () =>
   expect(res.output.trim().endsWith("/src")).toBe(true);
 });
 
+test("readTool: raw mode returns verbatim content with no line prefixes", async () => {
+  const f = path.join(dir, "raw.txt");
+  await fs.writeFile(f, "alpha\nbeta\n");
+  const annotated = await readTool(f);
+  expect(annotated.output).toContain("1|alpha");
+  const raw = await readTool(f, undefined, dir, true);
+  expect(raw.output).toBe("alpha\nbeta\n");
+  expect(raw.output).not.toContain("|");
+});
+
+test("bashTool: env vars are merged into the child environment", async () => {
+  const res = await bashTool("echo \"$JOC_TEST_VAR\"", dir, 10_000, undefined, { JOC_TEST_VAR: "hello-env" });
+  expect(res.success).toBe(true);
+  expect(res.output.trim()).toBe("hello-env");
+  // Parent env still inherited (PATH present) alongside the injected var.
+  const inherit = await bashTool("test -n \"$PATH\" && echo ok", dir, 10_000, undefined, { JOC_TEST_VAR: "x" });
+  expect(inherit.output.trim()).toBe("ok");
+});
+
 test("findTool skips node_modules and .git", async () => {
   const res = await findTool("*.ts", dir);
   expect(res.success).toBe(true);

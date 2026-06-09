@@ -21,10 +21,10 @@ export type ToolHandler = (args: Record<string, any>, cwd: string) => Promise<To
 
 /** The default executor toolset (read / write / edit / bash / find / search). */
 export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
-  read: (a, cwd) => readTool(a.filePath ?? a.path, a.lineRange ?? a.range, cwd),
+  read: (a, cwd) => readTool(a.filePath ?? a.path, a.lineRange ?? a.range, cwd, !!a.raw),
   write: (a, cwd) => writeTool(a.filePath ?? a.path, a.content ?? "", cwd),
   edit: (a, cwd) => editTool(a.filePath ?? a.path, a.editBlock ?? a.edit ?? "", cwd),
-  bash: (a, cwd) => bashTool(a.command ?? a.cmd, cwd, typeof a.timeoutMs === "number" ? a.timeoutMs : undefined, typeof a.cwd === "string" ? a.cwd : (typeof a.subdir === "string" ? a.subdir : undefined)),
+  bash: (a, cwd) => bashTool(a.command ?? a.cmd, cwd, typeof a.timeoutMs === "number" ? a.timeoutMs : undefined, typeof a.cwd === "string" ? a.cwd : (typeof a.subdir === "string" ? a.subdir : undefined), a.env && typeof a.env === "object" ? a.env : undefined),
   find: (a, cwd) => findTool(a.globPattern ?? a.pattern, cwd),
   search: (a, cwd) => searchTool(a.pattern, a.globPattern ?? "*", cwd, !!(a.ignoreCase ?? a.i)),
   ls: (a, cwd) => lsTool(a.dirPath ?? a.path ?? a.dir ?? ".", cwd),
@@ -33,10 +33,10 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
 /** Tool-protocol description injected into the system prompt. */
 export const TOOL_PROTOCOL = [
   "You have these tools (call exactly ONE per step):",
-  "1. read   {filePath, lineRange?}      — read a file (lineRange: \"a-b\", \"a-\", \"a\", \"a+n\", or multi \"a-b,c-d\")",
+  "1. read   {filePath, lineRange?, raw?} — read a file (lineRange \"a-b\",\"a-\",\"a\",\"a+n\",\"a-b,c-d\"; raw: verbatim, no line numbers)",
   "2. write  {filePath, content}         — create/overwrite a file",
   "3. edit   {filePath, editBlock}       — ≔A..B replace lines; ≔A+ insert after line A; ≔$ append EOF (payload on next line)",
-  "4. bash   {command, timeoutMs?}       — run a shell command (tests, build, mkdir, ...); timeoutMs default 120000",
+  "4. bash   {command, timeoutMs?, cwd?, env?} — run a shell command (cwd: subdir; env: extra vars)",
   "5. find   {globPattern}               — find files by name",
   "6. search {pattern, globPattern?, ignoreCase?} — grep for a pattern (ignoreCase: case-insensitive)",
   "7. ls     {dirPath}                   — list a directory's entries (dirs first)",

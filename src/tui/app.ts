@@ -11,7 +11,7 @@
  */
 import { Renderer } from "./renderer";
 import { readWorkflowStateStrict } from "../agent/state";
-import { size, isTTY, hideCursor, showCursor } from "./terminal";
+import { size, isTTY, hideCursor, showCursor, enterAltScreen, leaveAltScreen } from "./terminal";
 import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
@@ -22,7 +22,7 @@ import { supportsUnicode } from "./components/capability";
 import { centerBlock, padLineTo, fillScreen, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
 import { resolveTheme, themeGradient } from "./components/themes";
 import { detectColorLevel } from "./components/color";
-import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, type ForgeSummary } from "./components/forge";
+import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, type ForgeSummary } from "./components/forge";
 import { renderJocStatus } from "./components/status";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
@@ -36,6 +36,8 @@ export interface LaunchTuiOptions {
   write?: (s: string) => void;
   /** Step budget for this turn; drives the footer's `step N/M` denominator. */
   maxSteps?: number;
+  /** Whether to treat the output as a TTY (drives alt-screen use). Defaults to isTTY(). */
+  tty?: boolean;
 }
 
 export interface AgentEventsLike {
@@ -46,6 +48,11 @@ export interface AgentEventsLike {
 }
 
 const DEFAULT_MAX_STEPS = 25;
+
+// Registered once per process: if we exit while still in the alternate screen
+// (e.g. an uncaught crash mid-turn), restore the main buffer + cursor so the
+// terminal is never left stuck on a blank alt screen.
+let altScreenExitSafetyArmed = false;
 
 export class LaunchTui {
   private readonly renderer: Renderer;
@@ -61,6 +68,9 @@ export class LaunchTui {
   private finished = false;
   private timer: ReturnType<typeof setInterval> | undefined;
   private pendingIndex: number | null = null;
+  // True while the live turn renders in the alternate screen buffer (TTY only);
+  // drives leaving it on finish so terminal scroll never fights the repaint.
+  private usedAltScreen = false;
   // Agent-declared task plan (the `todo` tool), rendered as a live checklist.
   private todos: { title: string; status: "pending" | "in_progress" | "done" }[] = [];
   // Cache the rendered art + track per stage so the 120ms spinner tick reuses
@@ -79,9 +89,12 @@ export class LaunchTui {
   private readonly unicode: boolean = supportsUnicode();
   // Active color theme (JOC_TUI_THEME), default cosmic; `mono` disables color.
   private readonly theme = resolveTheme();
+  // Whether the live turn may use the alternate screen buffer (real TTY only).
+  private readonly tty: boolean;
 
   constructor(opts: LaunchTuiOptions) {
     this.write = opts.write ?? ((s: string) => process.stdout.write(s));
+    this.tty = opts.tty ?? isTTY();
     this.renderer = new Renderer(this.write);
     this.spinner = new Spinner(undefined, { unicode: this.unicode });
     this.footer = {
@@ -154,6 +167,21 @@ export class LaunchTui {
   start(): void {
     this.startedAt = Date.now();
     this.spinner.updateStep(0, this.footer.maxSteps);
+    // On a real TTY, render the transient live turn in the alternate screen buffer.
+    // It has no scrollback, so mouse-wheel scroll can't fight the 120ms in-place
+    // repaint (the old "scroll → flicker / screen disappears" bug); the main buffer
+    // + scrollback stay intact and the final summary is printed there in finish().
+    if (this.tty) {
+      this.usedAltScreen = true;
+      this.write(enterAltScreen());
+      this.renderer.reset();
+      if (!altScreenExitSafetyArmed) {
+        altScreenExitSafetyArmed = true;
+        process.once("exit", () => {
+          try { process.stdout.write(leaveAltScreen() + showCursor()); } catch { /* terminal gone */ }
+        });
+      }
+    }
     this.write(hideCursor());
     this.draw();
 
@@ -185,8 +213,16 @@ export class LaunchTui {
       clearInterval(this.timer);
       this.timer = undefined;
     }
-    this.renderer.clear();
-    this.write(showCursor());
+    if (this.usedAltScreen) {
+      // Leave the alt screen (restores the main buffer + scrollback), then print the
+      // static summary below the prior output so the turn leaves exactly one record.
+      this.renderer.reset();
+      this.write(leaveAltScreen());
+      this.write(showCursor());
+    } else {
+      this.renderer.clear();
+      this.write(showCursor());
+    }
     const timelineSteps = stepsFromTools(this.tools.snapshot());
     const totalElapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
     const finalLines: string[] = [];
@@ -231,7 +267,7 @@ export class LaunchTui {
   private draw(): void {
     if (this.finished) return; // never repaint a live frame after the final static output
     const { cols, rows } = size();
-    const fit = isTTY(); // fill terminal width+height only on a real TTY
+    const fit = this.tty; // boxed full-screen layout only on a TTY (defaults to isTTY())
     const elapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
     const innerWidth = fit ? cols - 4 : cols;
 
@@ -326,27 +362,47 @@ export class LaunchTui {
 
     if (fit) {
       // Boxed TUI matching terminal width & height exactly
-      const innerLines: string[] = [];
-      if (showArt) {
-        for (const line of this.cachedArt) innerLines.push(line);
-        innerLines.push(this.cachedTrack);
-        innerLines.push("DIVIDER");
+      // Reserve the bottom status/hint/footer FIRST — it is the live heartbeat (spinner,
+      // step, ETA, mutation guard, key hints) and must NEVER be trimmed. Then fit the inner
+      // sections into the remaining rows by priority, shedding the lowest-value content first
+      // when the terminal is short: plan + tool list (work state) > stream > forge detail >
+      // ASCII art (decorative). Previously the assembly could overflow `rows` and the final
+      // slice(0, rows) silently cut the footer off the bottom.
+      const avail = Math.max(0, rows - 2); // content rows inside the top + bottom borders
+      const bottomKeep = bottom.slice(0, avail);
+      let budget = avail - bottomKeep.length;
+      const take = (lines: string[]): string[] => {
+        const kept = budget > 0 ? lines.slice(0, budget) : [];
+        budget -= kept.length;
+        return kept;
+      };
+      // Keep-priority order (highest first); display order is reassembled below.
+      const planK = take(planLines);
+      const toolsK = take(toolLines);
+      const streamK = take(streamLines);
+      // Forge boxes are bordered — include as many WHOLE (most-recent) boxes as fit; never a half-box.
+      const forgeK = fitForgeBoxes(forgeLines, budget);
+      budget -= forgeK.length;
+      let headerK: string[] = [];
+      if (showArt && budget >= headerHeight) {
+        headerK = [...this.cachedArt, this.cachedTrack, "DIVIDER"];
+        budget -= headerHeight;
       }
 
-      for (const line of planLines) innerLines.push(line);
-      for (const line of toolLines) innerLines.push(line);
-      for (const line of streamLines) innerLines.push(line);
-      for (const line of forgeLines) innerLines.push(line);
-
-      innerLines.push("DIVIDER");
-
-      const totalLines = innerLines.length + bottom.length;
-      const fillerCount = Math.max(0, rows - 2 - totalLines);
+      // Display order: art header → plan → tools → stream → forge → trailing divider.
+      const innerLines = [...headerK, ...planK, ...toolsK, ...streamK, ...forgeK];
+      let trailingDivider: string[] = [];
+      if (innerLines.length && budget > 0) {
+        trailingDivider = ["DIVIDER"];
+        budget--;
+      }
+      const fillerCount = Math.max(0, budget);
 
       const boxedContent: string[] = [];
       for (const line of innerLines) boxedContent.push(line);
+      for (const line of trailingDivider) boxedContent.push(line);
       for (let i = 0; i < fillerCount; i++) boxedContent.push("");
-      for (const line of bottom) boxedContent.push(line);
+      for (const line of bottomKeep) boxedContent.push(line);
 
       const paint = this.theme.color ? chalk.blue : (s: string) => s;
       frame = boxBlock(boxedContent, cols, {

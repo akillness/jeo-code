@@ -28,6 +28,18 @@ export function showCursor(): string {
   return `${ESC}?25h`;
 }
 
+/** Enter the alternate screen buffer (xterm `?1049h`): a separate, scrollback-free
+ *  screen. Used for the transient live-turn UI so terminal scroll (mouse wheel) can't
+ *  fight the in-place repaint — and the main buffer / scrollback is left untouched. */
+export function enterAltScreen(): string {
+  return `${ESC}?1049h`;
+}
+
+/** Leave the alternate screen buffer (`?1049l`), restoring the main buffer + scrollback. */
+export function leaveAltScreen(): string {
+  return `${ESC}?1049l`;
+}
+
 export function size(): { cols: number; rows: number } {
   return {
     cols: process.stdout.columns || 80,

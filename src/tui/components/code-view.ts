@@ -161,7 +161,8 @@ export function formatDiff(diffText: string, opts: { cols?: number; maxLines?: n
   const out = shown.map(raw => {
     const l = sanitizeForTerminal(raw);
     if (!color) return truncate(l, cols);
-    if (l.startsWith("+++") || l.startsWith("---")) return truncate(chalk.bold(l), cols);
+    if (l.startsWith("+++")) return truncate(chalk.green.bold(l), cols);
+    if (l.startsWith("---")) return truncate(chalk.red.bold(l), cols);
     if (l.startsWith("@@")) return truncate(chalk.cyan(l), cols);
     if (l.startsWith("+")) return truncate(chalk.green(l), cols);
     if (l.startsWith("-")) return truncate(chalk.red(l), cols);

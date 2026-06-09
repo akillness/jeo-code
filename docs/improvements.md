@@ -4383,3 +4383,43 @@ Cross-validated with three read-only subagents before landing the changes (`2-Gj
 
 - `bun test test/autocomplete.test.ts test/input-box.test.ts test/category-index.test.ts` → **27 pass / 0 fail**.
 - `bun run typecheck` → **0 errors**.
+
+## Hierarchical AGENTS.md documentation & Deep Init (passes 767–775)
+
+**Date:** 2026-06-08 · **Dimension: documentation / repository design.**
+
+- **767.** Implemented Deep Init Skill structure: created comprehensive, hierarchical `AGENTS.md` files across the entire codebase.
+- **768.** Formatted the root `jeo-code/AGENTS.md` with structured metadata and Project Purpose/Directories tables while preserving all legacy repository guidelines.
+- **769.** Created Level 1 nested `AGENTS.md` documentation for `src/`, `test/`, `docs/`, `scripts/`, and `plan/` with correct relative parent references.
+- **770.** Created Level 2 nested `AGENTS.md` documentation for `src/ai/`, `src/agent/`, `src/auth/`, `src/commands/`, `src/tui/`, `src/util/`, `src/skills/`, `src/mcp/`, `src/cli/`, and `plan/gem/` mapping directories purpose, key files, and conventions.
+- **771.** Created Level 3 nested `AGENTS.md` documentation for `src/ai/providers/`, `src/auth/flows/`, and `src/tui/components/` defining provider adapter details and UI components.
+- **772.** Established strict parent-child reference links (`<!-- Parent: ... -->`) to allow agents to navigate the codebase structure.
+- **773.** Verified the entire hierarchical layout using the project's strict validation script: `python3 oh-my-skills/.agent-skills/deepinit/scripts/validate_agents_hierarchy.py jeo-code --strict` passes completely with 0 warnings or errors.
+- **774.** Added `live-model-picker.test.ts` for unit test coverage of the live selection list.
+- **775.** Verified all CLI model/provider picker flows and width-aware clamping to prevent TUI clipping.
+
+### Verification (passes 767–775)
+- `python3 oh-my-skills/.agent-skills/deepinit/scripts/validate_agents_hierarchy.py jeo-code --strict` → **PASS (19 files)**.
+- `bun run typecheck` → **0 errors**.
+- `bun test` → **503 pass / 0 fail across 76 files**.
+
+## Subagent stream + diff/status classification follow-up (passes 753–757)
+
+**Date:** 2026-06-08 · **Dimension: TUI classification / readability.**
+
+Applied follow-up items from the completed read-only TUI review.
+
+- **753.** `team.ts` Ralph/subagent output now supports colored/indexed rendering (`[AGENT]`) for
+  live console events while preserving the old plain strings for prompts/tests by default.
+- **754.** Active/done/pending todo markers in `formatRalphTodoGuide()` are now colorized in the
+  live `joc team` path, making subagent progress easier to scan.
+- **755.** `renderJocStatus()` now colorizes the per-state forge counts (`ok`/`fail`/`running`)
+  instead of leaving the whole parenthetical unclassified.
+- **756.** `formatDiff()` now differentiates old/new file headers: `---` red-bold, `+++` green-bold,
+  while keeping hunk headers cyan and preserving plain-mode output.
+- **757.** Added focused tests locking colored subagent helpers, colored forge counts, and the new
+  diff-header styling.
+
+### Verification (passes 753–757)
+
+- `bun test test/forge-status.test.ts test/code-view.test.ts test/review-fixes.test.ts` → **35 pass / 0 fail**.

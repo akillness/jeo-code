@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import chalk from "chalk";
 import { z } from "zod";
 import {
   readWorkflowState,
@@ -15,24 +16,50 @@ import {
   subagentToolset,
 } from "../agent/subagents";
 import type { Message } from "../agent/loop";
+import { categoryBadge } from "../tui/components/category-index";
 
 export type RalphStreamKind = "step" | "complete" | "error";
 
-export function formatRalphTodoGuide(tasks: string[], activeIndex = 0, completed: readonly string[] = []): string[] {
+export interface RalphRenderOptions {
+  color?: boolean;
+  indexed?: boolean;
+}
+
+export function formatRalphTodoGuide(
+  tasks: string[],
+  activeIndex = 0,
+  completed: readonly string[] = [],
+  opts: RalphRenderOptions = {},
+): string[] {
   const done = new Set(completed);
+  const color = opts.color === true;
+  const badge = opts.indexed || color ? `${categoryBadge("subagent", { color })} ` : "";
+  const green = color ? chalk.green.bold : (s: string) => s;
+  const yellow = color ? chalk.yellow.bold : (s: string) => s;
+  const gray = color ? chalk.gray : (s: string) => s;
   const lines = [
-    "[RALPH] Subagent guidance: follow todos in order; stream every step, complete, and error event.",
+    `${badge || "[RALPH] " }Subagent guidance: follow todos in order; stream every step, complete, and error event.`,
   ];
   tasks.forEach((task, index) => {
-    const mark = done.has(task) ? "x" : index === activeIndex ? ">" : " ";
+    const mark = done.has(task) ? green("x") : index === activeIndex ? yellow(">") : gray(" ");
     lines.push(`[TODO] ${index + 1}/${tasks.length} [${mark}] ${task}`);
   });
   return lines;
 }
 
-export function formatRalphStreamEvent(kind: RalphStreamKind, message: string): string {
+export function formatRalphStreamEvent(kind: RalphStreamKind, message: string, opts: RalphRenderOptions = {}): string {
   const label = kind === "complete" ? "complete" : kind === "error" ? "error" : "step";
-  return `  └─ stream:${label} ${message}`;
+  if (!opts.color && !opts.indexed) return `  └─ stream:${label} ${message}`;
+  const color = opts.color === true;
+  const badge = `${categoryBadge("subagent", { color })} `;
+  const tint = color
+    ? kind === "complete"
+      ? chalk.green.bold
+      : kind === "error"
+        ? chalk.red.bold
+        : chalk.cyan.bold
+    : (s: string) => s;
+  return `  ${badge}${tint(`stream:${label}`)} ${message}`;
 }
 
 export interface RalphSubagentPromptContext {
@@ -129,13 +156,14 @@ export async function runTeamCommand(): Promise<void> {
   };
 
   await writeWorkflowState("team", teamState, cwd);
-  for (const line of formatRalphTodoGuide(tasks, Math.max(0, tasks.indexOf(teamState.pending_tasks?.[0] ?? "")), teamState.completed_tasks ?? [])) console.log(line);
+  const renderOpts: RalphRenderOptions = { color: !!process.stdout.isTTY, indexed: true };
+  for (const line of formatRalphTodoGuide(tasks, Math.max(0, tasks.indexOf(teamState.pending_tasks?.[0] ?? "")), teamState.completed_tasks ?? [], renderOpts)) console.log(line);
 
   while (teamState.pending_tasks && teamState.pending_tasks.length > 0) {
     const currentTask = teamState.pending_tasks[0];
     console.log(`\n[TASK] Current: "${currentTask}"`);
     const activeIndex = tasks.indexOf(currentTask);
-    for (const line of formatRalphTodoGuide(tasks, activeIndex, teamState.completed_tasks ?? [])) console.log(line);
+    for (const line of formatRalphTodoGuide(tasks, activeIndex, teamState.completed_tasks ?? [], renderOpts)) console.log(line);
 
     // Run the Executor loop
     const success = await executeTaskWithAgent({
@@ -170,6 +198,7 @@ export async function runTeamCommand(): Promise<void> {
 async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: string; roleId?: string }): Promise<boolean> {
   const config = await readGlobalConfig();
   const role = getSubagentRole(ctx.roleId) ?? defaultSubagentRole();
+  const renderOpts: RalphRenderOptions = { color: !!process.stdout.isTTY, indexed: true };
   const model = resolveSubagentModel(role.id, config);
   const maxSteps = resolveSubagentMaxSteps(role.id, config);
   console.log(`  └─ Subagent: ${role.title} · model ${model} · ≤${maxSteps} steps`);
@@ -187,22 +216,22 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
     events: {
       onAssistant: (_raw, invocation) => {
         if (!invocation) {
-          console.log(formatRalphStreamEvent("error", "invalid tool-call json; retrying"));
+          console.log(formatRalphStreamEvent("error", "invalid tool-call json; retrying", renderOpts));
         } else if (invocation.tool !== "done") {
-          console.log(formatRalphStreamEvent("step", `tool ${invocation.tool} requested`));
+          console.log(formatRalphStreamEvent("step", `tool ${invocation.tool} requested`, renderOpts));
         }
       },
-      onStep: step => console.log(formatRalphStreamEvent("step", `${role.title} thinking ${step}/${maxSteps}`)),
-      onToolResult: (tool, ok) => console.log(formatRalphStreamEvent(ok ? "complete" : "error", `tool ${tool}`)),
-      onError: msg => console.log(formatRalphStreamEvent("error", msg)),
+      onStep: step => console.log(formatRalphStreamEvent("step", `${role.title} thinking ${step}/${maxSteps}`, renderOpts)),
+      onToolResult: (tool, ok) => console.log(formatRalphStreamEvent(ok ? "complete" : "error", `tool ${tool}`, renderOpts)),
+      onError: msg => console.log(formatRalphStreamEvent("error", msg, renderOpts)),
     },
   });
 
   if (result.done) {
-    console.log(formatRalphStreamEvent("complete", `${role.title} finished task`));
+    console.log(formatRalphStreamEvent("complete", `${role.title} finished task`, renderOpts));
     return true;
   }
-  console.log(formatRalphStreamEvent("error", `${role.title} did not converge within ${result.steps} steps`));
+  console.log(formatRalphStreamEvent("error", `${role.title} did not converge within ${result.steps} steps`, renderOpts));
   return false;
 }
 export const StepSchema = z.object({

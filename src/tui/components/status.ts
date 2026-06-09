@@ -43,11 +43,15 @@ export function renderJocStatus(data: JocStatusData): string[] {
   const cyanBold = useColor ? chalk.cyan.bold : (s: string) => s;
   const magentaBold = useColor ? chalk.magenta.bold : (s: string) => s;
   const redBold = useColor ? chalk.red.bold : (s: string) => s;
+  const green = useColor ? chalk.green : (s: string) => s;
+  const yellow = useColor ? chalk.yellow : (s: string) => s;
+  const red = useColor ? chalk.red : (s: string) => s;
+  const toolCounts = `${green(`${ok} ok`)} / ${red(`${fail} fail`)} / ${yellow(`${running} running`)}`;
 
   const guard = data.mutationGuarded ? ` · ${redBold("mutation locked")}` : "";
 
   return [
     `  ${categoryBadge("progress", { color: useColor })} ${cyanBold("joc thinking")} · ${msg} · step ${step}/${max} · ${pct}% ${bar} · ${elapsed}`,
-    `  ${categoryBadge("tool", { color: useColor })} ${magentaBold("joc forge")} · ${current} · tools ${total} (${ok} ok / ${fail} fail / ${running} running)${guard}`,
+    `  ${categoryBadge("tool", { color: useColor })} ${magentaBold("joc forge")} · ${current} · tools ${total} (${toolCounts})${guard}`,
   ];
 }

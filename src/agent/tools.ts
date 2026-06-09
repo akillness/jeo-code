@@ -119,6 +119,9 @@ export async function readTool(
   raw: boolean = false
 ): Promise<ToolResult> {
   try {
+    if (typeof filePath !== "string" || filePath.trim() === "") {
+      return { success: false, output: "", error: 'read requires a non-empty "filePath".' };
+    }
     const absPath = path.resolve(cwd, filePath);
     // gjc parity: reading a directory returns its listing instead of an EISDIR error.
     const st = await fs.stat(absPath).catch(() => null);
@@ -184,6 +187,9 @@ export async function writeTool(
   cwd: string = process.cwd()
 ): Promise<ToolResult> {
   try {
+    if (typeof filePath !== "string" || filePath.trim() === "") {
+      return { success: false, output: "", error: 'write requires a non-empty "filePath".' };
+    }
     await assertMutationAllowed(filePath, cwd);
     const absPath = path.resolve(cwd, filePath);
     await fs.mkdir(path.dirname(absPath), { recursive: true });
@@ -228,6 +234,12 @@ export async function editTool(
   cwd: string = process.cwd()
 ): Promise<ToolResult> {
   try {
+    if (typeof filePath !== "string" || filePath.trim() === "") {
+      return { success: false, output: "", error: 'edit requires a non-empty "filePath".' };
+    }
+    if (typeof editBlock !== "string" || editBlock === "") {
+      return { success: false, output: "", error: 'edit requires a non-empty "editBlock" (≔ directive or <<<<<<< SEARCH block).' };
+    }
     await assertMutationAllowed(filePath, cwd);
     const absPath = path.resolve(cwd, filePath);
     let content = await fs.readFile(absPath, "utf-8");

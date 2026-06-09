@@ -194,11 +194,28 @@ async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
  *  blackholed/unreachable provider must not hang the agent or `joc team`). */
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 
+/** Per-chunk idle cap for streaming: a stream that emits NOTHING for this long is
+ *  aborted, but a healthy long generation (chunks keep arriving) runs unbounded —
+ *  unlike a single wall-clock cap that would kill a long-but-active stream. */
+const STREAM_IDLE_TIMEOUT_MS = 120_000;
+
+/** Combine two abort signals into one. Preserves BOTH even when `AbortSignal.any`
+ *  is unavailable (manual fallback), so neither the caller's cancel nor the timeout
+ *  is silently dropped. */
+function composeAbort(a: AbortSignal | undefined, b: AbortSignal): AbortSignal {
+  if (!a) return b;
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([a, b]);
+  if (a.aborted || b.aborted) return AbortSignal.abort();
+  const ctrl = new AbortController();
+  const onAbort = () => ctrl.abort();
+  a.addEventListener("abort", onAbort, { once: true });
+  b.addEventListener("abort", onAbort, { once: true });
+  return ctrl.signal;
+}
+
 /** Compose the caller's signal (if any) with a fresh per-attempt timeout. */
 function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
-  const timeout = AbortSignal.timeout(ms);
-  if (!signal) return timeout;
-  return typeof AbortSignal.any === "function" ? AbortSignal.any([signal, timeout]) : signal;
+  return composeAbort(signal, AbortSignal.timeout(ms));
 }
 
 /**
@@ -207,18 +224,42 @@ function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
  * call path already retried; the stream path previously had no retry). A failure
  * after the first token propagates (retrying would duplicate emitted output).
  */
+export interface StreamIdleOptions {
+  /** Abort + reject if no chunk arrives within this many ms (per-chunk, not total). */
+  idleMs: number;
+  onIdle?: () => void;
+}
+
+/** `iter.next()`, optionally racing a per-chunk idle timeout that fires `onIdle`. */
+async function nextMaybeIdle(iter: AsyncIterator<string>, idle?: StreamIdleOptions): Promise<IteratorResult<string>> {
+  if (!idle) return iter.next();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      idle.onIdle?.();
+      reject(new Error(`stream idle for ${idle.idleMs}ms (no chunk)`));
+    }, idle.idleMs);
+  });
+  try {
+    return await Promise.race([iter.next(), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function* retryableStream(
   makeIter: () => AsyncIterator<string>,
   retry: RetryOptions,
+  idle?: StreamIdleOptions,
 ): AsyncGenerator<string> {
   const { iter, first } = await withRetry(async () => {
     const it = makeIter();
-    const f = await it.next();
+    const f = await nextMaybeIdle(it, idle);
     return { iter: it, first: f };
   }, retry);
   if (!first.done) {
     yield first.value;
-    for (let n = await iter.next(); !n.done; n = await iter.next()) yield n.value;
+    for (let n = await nextMaybeIdle(iter, idle); !n.done; n = await nextMaybeIdle(iter, idle)) yield n.value;
   }
 }
 
@@ -233,10 +274,16 @@ export function createModelManager(): ModelManager {
       const { adapter, callOptions, credential, retry } = await resolveCall(options);
       if (adapter.stream) {
         const streamFn = adapter.stream.bind(adapter);
-        yield* retryableStream(
-          () => streamFn(messages, { ...callOptions, signal: withTimeout(callOptions.signal, DEFAULT_CALL_TIMEOUT_MS) }, credential)[Symbol.asyncIterator](),
-          retry,
-        );
+        // Per-attempt abort controller fired by the idle timeout — so a stalled stream
+        // is cancelled, but a long, actively-emitting generation is NOT killed by a
+        // total wall-clock cap. The caller's signal (Ctrl-C) is preserved via composeAbort.
+        let attempt: AbortController | null = null;
+        const makeIter = () => {
+          attempt = new AbortController();
+          const signal = composeAbort(callOptions.signal, attempt.signal);
+          return streamFn(messages, { ...callOptions, signal }, credential)[Symbol.asyncIterator]();
+        };
+        yield* retryableStream(makeIter, retry, { idleMs: STREAM_IDLE_TIMEOUT_MS, onIdle: () => attempt?.abort() });
       } else {
         // Fallback: providers without streaming yield the full response as one chunk.
         yield await withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, DEFAULT_CALL_TIMEOUT_MS) }, credential), retry);

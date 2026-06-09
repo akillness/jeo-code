@@ -2,7 +2,7 @@ import { test, expect, beforeAll, afterAll } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { findTool, searchTool, readTool, bashTool, lsTool, parseLineSelector, parseEditHunks, editTool, IGNORED_DIRS } from "../src/agent/tools";
+import { findTool, searchTool, readTool, writeTool, bashTool, lsTool, parseLineSelector, parseEditHunks, editTool, IGNORED_DIRS } from "../src/agent/tools";
 
 let dir = "";
 
@@ -257,6 +257,21 @@ test("editTool: garbage edit block (no directives) returns the format error", as
   const res = await editTool(f, "just some prose, no directives", dir);
   expect(res.success).toBe(false);
   expect(res.error).toContain("Invalid edit block format");
+});
+
+test("read/write/edit: missing/empty required args are soft errors (no cryptic crash)", async () => {
+  const r = await readTool(undefined as unknown as string, undefined, dir);
+  expect(r.success).toBe(false);
+  expect(r.error).toContain("read requires");
+  const w = await writeTool("", "x", dir);
+  expect(w.success).toBe(false);
+  expect(w.error).toContain("write requires");
+  const e = await editTool(undefined as unknown as string, "≔1\nx", dir);
+  expect(e.success).toBe(false);
+  expect(e.error).toContain("edit requires");
+  const e2 = await editTool(path.join(dir, "src", "keep.ts"), "", dir);
+  expect(e2.success).toBe(false);
+  expect(e2.error).toContain("editBlock");
 });
 
 test("findTool skips node_modules and .git", async () => {

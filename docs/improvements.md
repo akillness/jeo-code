@@ -5139,3 +5139,26 @@ concurrent sessions at 839–840).
 - New tests: thinkingToReasoningEffort mapping; openaiRequest golden payloads (o3/gpt-5.1 →
   reasoning_effort+max_completion_tokens, no temperature; gpt-4o → temperature+max_tokens, no effort);
   markdown fence ≥ backtick run; unterminated SEARCH marker → marker-specific error.
+
+## One-shot command input exposes the same live flow — pass 845
+
+**Date:** 2026-06-09 · **Dimension: cmd-mode execution visibility / GJC flow parity.**
+
+Reported: running `joc "..."` from the command line made the overall flow feel broken because the
+turn only exposed the final reply (or sparse tool-result lines) instead of the live stages.
+
+- **845.** One-shot command-argument input now uses the live `LaunchTui` whenever stdout is a TTY and
+  `--no-tui` is not set. This matches interactive `joc` behavior: the user sees evolution status,
+  step timeline, forge boxes, subagent monitoring, and the final collapsed summary even when the
+  request came from argv instead of the REPL prompt.
+- **846.** Plain cmd mode (`--no-tui` or non-TTY/piped output) uses the same exported
+  `createStreamEvents()` progress sink: `[step N/M] <tool target>` before each tool call, result
+  markers with failure tails, and provider errors. This is the non-TTY equivalent of the live TUI and
+  prevents silent turns when the agent is still working.
+
+### Verification (passes 845–846)
+
+- `bun test test/launch-flags.test.ts test/stream-events.test.ts` → **9 pass / 0 fail**.
+- `bun run typecheck` → **0 errors**.
+- `bun test` → **612 pass / 0 fail**.
+- `bun run build` → **success**.

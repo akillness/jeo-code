@@ -66,6 +66,8 @@ TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행
 >
 > **코드뷰 안전:** `/view`·`/diff`는 파일/diff의 신뢰할 수 없는 제어 바이트(ANSI 이스케이프, `\r`, 탭, C0)를 렌더 전에 제거합니다 — 임의 파일을 열어도 화면이 깨지거나 커서가 튀지 않습니다.
 >
+> **파일 검색(`/find` · `find` tool):** 슬래시 없는 이름 패턴(`*.ts`, `engine.ts`)은 하위 디렉터리까지 재귀 basename 매칭이고, `/`나 `**`를 포함한 **경로 글로브**(`src/**/*.ts`, `src/agent/*.ts`, 정확한 상대경로 `src/skills/catalog.ts`)는 실제 glob 의미로 해석됩니다. 이전에는 `find -name`이 basename만 보기 때문에 경로 글로브가 항상 매칭 0건이었습니다(문서의 `/find src/**/*.ts` 예시조차 동작 안 함). `node_modules`/`.git`/`dist` 등 무시 디렉터리는 양쪽 경로 모두에서 제외됩니다.
+>
 > **사용자 skill 문서:** `~/.joc/skills`·`.joc/skills`의 평면 `<name>.md`와 `~/.agents/skills/<name>/SKILL.md`·`.agents/skills/<name>/SKILL.md` 폴더형 문서가 번들 skill과 병합되어 시스템 프롬프트, `/skill`, Tab 자동완성, `/speckit.*` 같은 직접 슬래시 별칭에 모두 반영됩니다(이름이 같으면 뒤쪽 문서가 우선). `aliases:`/`slash:` 헤더 또는 본문에 언급된 `/name.step` 패턴을 자동 인식합니다. SKILL.md 프런트매터 파서는 YAML 블록 스칼라(`description: >`/`|`, chomping `>-`/`|+` 포함)는 물론, 실제 스킬 파일에 흔한 비표준 `description: Use this skill when >` + 들여쓴 연속 블록 형태까지 접어서 한 줄 요약으로 만듭니다(이전에는 `Use this skill when >`라는 잘린 요약이 그대로 노출됨). `JOC_TUI_THEME=mono`는 푸터 색까지 완전한 무채색으로 출력합니다.
 
 ```bash

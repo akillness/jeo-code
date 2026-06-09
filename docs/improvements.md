@@ -4713,3 +4713,25 @@ for dozens of real user skills (tdd, caveman, to-prd, grill-me, setup-pre-commit
 - New `parseSkillMarkdown` regression test (plain `>`, lead-in `... >`, chomping `>-`, and the
   `returns Promise<T>` no-regression case).
 - Live `joc skills` now shows real summaries for tdd/caveman/to-prd/grill-me/setup-pre-commit/grill-with-docs.
+
+## find tool path-glob support — pass 811
+
+**Date:** 2026-06-08 · **Dimension: file-search correctness (find tool + /find menu parity with gjc).**
+
+- **811.** `findTool` shelled out to `find . -name <glob>`, which only matches the BASENAME. So every
+  path-containing pattern returned zero results: `src/**/*.ts`, `src/agent/*.ts`, and even an exact
+  relative path like `src/skills/catalog.ts` — and the `/find` menu's own documented usage
+  `/find src/**/*.ts` was permanently broken. The agent's `find` tool had the same blind spot.
+  Fixed: patterns containing `/` or `**` now resolve through `Bun.Glob().scan()` with real glob
+  semantics (`**` matches zero-or-more segments, exact paths work); bare-name patterns (`*.ts`,
+  `engine.ts`) keep recursive `find -name` matching so `*.ts`-at-any-depth and the model's
+  "find files by name" contract are unchanged. `IGNORED_DIRS` (node_modules/.git/dist/…) are pruned
+  on both paths.
+
+### Verification (pass 811)
+- `bun run typecheck` → 0 errors. `bun test` → **535 pass / 0 fail**. `bun run build` → ok.
+- New `tools-fs.test.ts` case: exact relative path, one-level `src/*.ts` (non-recursive),
+  `src/**/*.ts` (matches both `src/keep.ts` zero-segment and `src/deep/nested.ts`), `**/*.ts`
+  prunes node_modules/.git; existing `*.ts` recursive-basename test still green.
+- Live `findTool`: `src/**/*.ts`→98, `src/agent/*.ts`→12, `src/skills/catalog.ts`→1, `**/*.test.ts`→79,
+  `*.ts`→177 (unchanged), node_modules never present.

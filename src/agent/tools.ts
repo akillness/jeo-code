@@ -310,6 +310,30 @@ export async function findTool(
   globPattern: string,
   cwd: string = process.cwd()
 ): Promise<ToolResult> {
+  // Bare-name patterns (no path separator, no `**`) → recursive basename match via
+  // `find -name`, preserving the "find files by name" contract and the expectation that
+  // `*.ts` matches at any depth. Patterns with a `/` or `**` are real PATH globs
+  // (`src/**/*.ts`, `src/agent/*.ts`, an exact relative path) which `find -name` can NEVER
+  // match (it only sees basenames) — route those through Bun.Glob for correct semantics.
+  if (globPattern.includes("/") || globPattern.includes("**")) {
+    try {
+      const matches: string[] = [];
+      for await (const rel of new Bun.Glob(globPattern).scan({ cwd, onlyFiles: true })) {
+        if (rel.split("/").some(seg => IGNORED_DIRS.includes(seg))) continue;
+        matches.push(`./${rel}`);
+        if (matches.length >= 5000) break;
+      }
+      matches.sort();
+      let output = matches.length ? matches.join("\n") : "No matching files found.";
+      const MAX_OUTPUT = 100_000;
+      if (output.length > MAX_OUTPUT) {
+        output = output.slice(0, MAX_OUTPUT) + "\n…(output truncated at 100000 chars)";
+      }
+      return { success: true, output };
+    } catch (err: any) {
+      return { success: false, output: "", error: err.message };
+    }
+  }
   try {
     const pruneGroup: string[] = [];
     for (let i = 0; i < IGNORED_DIRS.length; i++) {

@@ -179,7 +179,8 @@ There is **no linter/formatter** configured — `bun run typecheck` + `bun test`
   sh scripts/uninstall.sh --purge            # remove bin + ~/.joc/
   ```
 - **Run entrypoints (gjc parity):** bare `joc` (current checkout), `joc --tmux`
-  (create/attach a `joc-<branch>` tmux leader), `joc --tmux --worktree <path>` (run in a
+  (create/attach a directory-scoped `joc-<branch>-<dir>-<hash>` tmux leader, so different
+  projects/worktrees on the same branch do not collide), `joc --tmux --worktree <path>` (run in a
   dedicated git worktree). `dispatch` routes a bare call or any leading `--flag` to `launch`;
   `--worktree` is stripped from the inner tmux command since the session cwd is the worktree.
 - Runtime config: global `~/.joc/config.json` (dir `0700`, file `0600`; override dir with

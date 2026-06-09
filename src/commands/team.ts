@@ -96,28 +96,57 @@ export function activeStepIndex(totalTasks: number, pendingTasks: readonly strin
   return Math.max(0, Math.min(totalTasks - pending, totalTasks - 1));
 }
 
+const ARCHITECT_STATUS_VALUES = new Set(["CLEAR", "WATCH", "BLOCK"]);
+const ARCHITECT_REVIEW_VALUES = new Set(["APPROVE", "COMMENT", "REQUEST CHANGES"]);
+
 function extractLineValue(reason: string, label: string): string | undefined {
-  const match = reason.match(new RegExp(`^${label}:\\s*(.+)$`, "im"));
-  return match?.[1]?.trim();
+  // Strip leading/trailing markdown emphasis/quoting/heading chars so the gate
+  // accepts e.g. `**Architectural Status:** CLEAR` or `> Architectural Status: CLEAR`.
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const rawLine of reason.split(/\r?\n/)) {
+    const stripped = rawLine.replace(/[*_`>#]+/g, "").trim();
+    const m = stripped.match(new RegExp(`^${escaped}\\s*:\\s*(.+)$`, "i"));
+    if (m) return m[1]!.trim();
+  }
+  return undefined;
+}
+
+function normalizeArchitectVerdict(raw: string): string {
+  // Drop trailing `(caveats)` or `- comments`; collapse whitespace; uppercase.
+  return raw.split(/\s*[(\-—–]/, 1)[0]!.replace(/\s+/g, " ").trim().toUpperCase();
 }
 
 export function parseRoleGateVerdict(roleId: string, reason: string): { ok: boolean; message?: string } {
   const trimmed = reason.trim();
   if (roleId === "architect") {
-    const status = extractLineValue(trimmed, "Architectural Status");
-    const review = extractLineValue(trimmed, "Code Review Recommendation");
-    if (!status || !review) return { ok: false, message: "architect report missing Architectural Status or Code Review Recommendation" };
+    const statusRaw = extractLineValue(trimmed, "Architectural Status");
+    const reviewRaw = extractLineValue(trimmed, "Code Review Recommendation");
+    if (!statusRaw || !reviewRaw) {
+      return { ok: false, message: "architect report missing Architectural Status or Code Review Recommendation" };
+    }
+    const status = normalizeArchitectVerdict(statusRaw);
+    const review = normalizeArchitectVerdict(reviewRaw);
+    if (!ARCHITECT_STATUS_VALUES.has(status)) {
+      return { ok: false, message: `architect Architectural Status invalid (expected CLEAR|WATCH|BLOCK, got ${JSON.stringify(statusRaw)})` };
+    }
+    if (!ARCHITECT_REVIEW_VALUES.has(review)) {
+      return { ok: false, message: `architect Code Review Recommendation invalid (expected APPROVE|COMMENT|REQUEST CHANGES, got ${JSON.stringify(reviewRaw)})` };
+    }
     if (status === "BLOCK" || review === "REQUEST CHANGES") {
       return { ok: false, message: `architect gated execution (${status} / ${review})` };
     }
     return { ok: true };
   }
   if (roleId === "critic") {
+    // Fail-closed: only an explicit [OKAY] first line approves. Anything else
+    // (malformed, missing verdict, wrong case) gates so a buggy/spoofed reason
+    // cannot silently pass review.
     const firstLine = trimmed.split(/\r?\n/, 1)[0]?.trim() ?? "";
+    if (firstLine === "[OKAY]") return { ok: true };
     if (firstLine === "[REJECT]" || firstLine === "[ITERATE]") {
       return { ok: false, message: `critic gated execution (${firstLine})` };
     }
-    return { ok: true };
+    return { ok: false, message: `critic verdict missing or malformed (expected [OKAY]|[ITERATE]|[REJECT], got ${JSON.stringify(firstLine.slice(0, 40))})` };
   }
   return { ok: true };
 }

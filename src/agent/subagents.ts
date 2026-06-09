@@ -51,7 +51,16 @@ export const SUBAGENT_ROLES: readonly SubagentRole[] = [
     readOnly: true,
     defaultMaxSteps: 10,
     prompt: plannerPrompt,
-    requiredDoneMarkers: ["Summary:", "File-level Changes:", "Verification:"],
+    requiredDoneMarkers: [
+      "Summary:",
+      "In Scope:",
+      "Out of Scope:",
+      "File-level Changes:",
+      "Sequencing:",
+      "Acceptance Criteria:",
+      "Verification:",
+      "Risks:",
+    ],
   },
   {
     id: "architect",
@@ -60,7 +69,13 @@ export const SUBAGENT_ROLES: readonly SubagentRole[] = [
     readOnly: true,
     defaultMaxSteps: 10,
     prompt: architectPrompt,
-    requiredDoneMarkers: ["Summary:", "Findings:", "Architectural Status:", "Code Review Recommendation:"],
+    requiredDoneMarkers: [
+      "Summary:",
+      "Findings:",
+      "Recommendations:",
+      "Architectural Status:",
+      "Code Review Recommendation:",
+    ],
   },
   {
     id: "critic",

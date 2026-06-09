@@ -224,6 +224,50 @@ test("maybeCompact: truncates oversized generated summaries before reinserting",
   expect(history[1].content).toBe("recent");
 });
 
+test("maybeCompact: force does NOT shred recent message content (regression for force-floor bug)", async () => {
+  mockCallLlm = async () => "FORCED-SUMMARY";
+  const recentContent = "This is real user content that must survive force compaction.";
+  const history: Message[] = [
+    { role: "system", content: "system instruction" },
+    ...Array.from({ length: 6 }, (_, i) => ({ role: i % 2 === 0 ? "user" : "assistant", content: `older ${i}` } as Message)),
+    { role: "user", content: recentContent },
+    { role: "assistant", content: "ack" },
+    { role: "user", content: "final" },
+  ];
+
+  const result = await maybeCompact(history, { force: true });
+  expect(result.compacted).toBe(true);
+  // Recent messages must remain readable — the previous bug clamped them to ~1 char.
+  const recents = history.slice(2).map(m => m.content);
+  expect(recents).toContain(recentContent);
+  expect(recents).toContain("final");
+  // None of the surviving recent messages should be a single-char truncation artifact.
+  for (const r of recents) expect(r.length).toBeGreaterThan(2);
+});
+
+test("maybeCompact: repeated force-compact on already-compacted history is a no-op", async () => {
+  let calls = 0;
+  mockCallLlm = async () => {
+    calls++;
+    return "FIRST-SUMMARY";
+  };
+  const history: Message[] = [
+    { role: "system", content: "system instruction" },
+    ...Array.from({ length: 8 }, (_, i) => ({ role: i % 2 === 0 ? "user" : "assistant", content: `m${i}` } as Message)),
+  ];
+
+  const first = await maybeCompact(history, { force: true });
+  expect(first.compacted).toBe(true);
+  expect(calls).toBe(1);
+  const afterFirst = history.map(m => m.content);
+
+  // Second force call on already-compacted history must not re-summarize and must not lose content.
+  const second = await maybeCompact(history, { force: true });
+  expect(second.compacted).toBe(false);
+  expect(calls).toBe(1);
+  expect(history.map(m => m.content)).toEqual(afterFirst);
+});
+
 test("maybeCompact: truncates oversized recent messages so char-budget compaction converges", async () => {
   mockCallLlm = async () => "RECENT-SUMMARY";
   const history: Message[] = [

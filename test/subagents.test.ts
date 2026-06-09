@@ -104,10 +104,59 @@ test("subagent helpers parse and persist role overrides immutably", () => {
 
 test("validateSubagentDoneReason enforces role-specific done markers", () => {
   const architect = getSubagentRole("architect")!;
-  expect(validateSubagentDoneReason(architect, "Summary:\nFindings:\nArchitectural Status: WATCH\nCode Review Recommendation: COMMENT").ok).toBe(true);
+  expect(
+    validateSubagentDoneReason(
+      architect,
+      "Summary:\nFindings:\nRecommendations:\nArchitectural Status: WATCH\nCode Review Recommendation: COMMENT",
+    ).ok,
+  ).toBe(true);
   expect(validateSubagentDoneReason(architect, "reviewed").ok).toBe(false);
+  // Architect must include Recommendations: — drift between prompt contract and
+  // markers used to let this through silently.
+  expect(
+    validateSubagentDoneReason(
+      architect,
+      "Summary:\nFindings:\nArchitectural Status: WATCH\nCode Review Recommendation: COMMENT",
+    ).ok,
+  ).toBe(false);
 
   const critic = getSubagentRole("critic")!;
   expect(validateSubagentDoneReason(critic, "[REJECT]\nJustification:\nSummary:\nRequired Fixes:").ok).toBe(true);
   expect(validateSubagentDoneReason(critic, "Justification:\nSummary:").ok).toBe(false);
+});
+
+test("validateSubagentDoneReason covers executor + planner happy + missing-section paths", () => {
+  const executor = getSubagentRole("executor")!;
+  expect(
+    validateSubagentDoneReason(executor, "Summary:\nChanged Files:\nVerification:").ok,
+  ).toBe(true);
+  const execMissing = validateSubagentDoneReason(executor, "Summary:\nVerification:");
+  expect(execMissing.ok).toBe(false);
+  expect(execMissing.missing).toContain("Changed Files:");
+
+  const planner = getSubagentRole("planner")!;
+  expect(
+    validateSubagentDoneReason(
+      planner,
+      "Summary:\nIn Scope:\nOut of Scope:\nFile-level Changes:\nSequencing:\nAcceptance Criteria:\nVerification:\nRisks:",
+    ).ok,
+  ).toBe(true);
+  // Planner contract drift used to accept a report that only had Summary/File-level/Verification.
+  const plannerThin = validateSubagentDoneReason(
+    planner,
+    "Summary:\nFile-level Changes:\nVerification:",
+  );
+  expect(plannerThin.ok).toBe(false);
+  expect(plannerThin.missing).toEqual(
+    expect.arrayContaining(["In Scope:", "Out of Scope:", "Sequencing:", "Acceptance Criteria:", "Risks:"]),
+  );
+});
+
+test("validateSubagentDoneReason rejects empty / whitespace-only reasons", () => {
+  const executor = getSubagentRole("executor")!;
+  expect(validateSubagentDoneReason(executor, undefined).ok).toBe(false);
+  expect(validateSubagentDoneReason(executor, "").ok).toBe(false);
+  expect(validateSubagentDoneReason(executor, "   \n  ").ok).toBe(false);
+  const critic = getSubagentRole("critic")!;
+  expect(validateSubagentDoneReason(critic, "").missing).toContain("done.reason");
 });

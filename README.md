@@ -53,7 +53,7 @@ joc setup
 | `/view <file> [a-b]` · `/diff [file]` · `/find <glob>` · `/search <pat>` | 코드뷰 / git diff / 파일·패턴 검색 |
 | `/sessions` · `/compact` · `/clear` · `/help` · `/exit` | 세션·컨텍스트 관리 |
 
-TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다. 입력창에 `/`로 시작하는 키워드를 타이핑하면 일치하는 명령 목록이 **실시간 미리보기**로 아래에 표시되고, **방향키(↑/↓)로 선택**한 뒤 Enter로 실행할 수 있습니다(`❯` 표시). `/subagent `·`/provider login `처럼 공백 뒤 인자를 입력할 때도 사용 가능한 role/provider/subcommand 목록이 계속 보입니다. `/provider login`은 방향키 프로바이더 선택기를 열고, `/provider gemini` 또는 빈 `/model`은 화면 폭에 맞는 **방향키 모델 선택기**를 열어 Enter로 바로 모델을 설정합니다. `진행중/완료/subagent/tool/diff/file/command` 같은 UI 범주는 색인형 배지(`[AGENT]`, `[01:CMD]`, `[FILE]`, `[DIFF]`, `[STEP]`)로 구분되어 진행중 항목, 완료 항목, subagent 스트림, forge 박스, 코드뷰 헤더를 빠르게 스캔할 수 있습니다. 입력 중인 텍스트는 하단 푸터에서 **박스형 입력란**으로 미러링되며, 폭을 넘기면 자연스럽게 여러 줄로 감싸집니다. `@src/`처럼 입력하면 현재 워크스페이스 기준 상대 경로 후보가 `Paths:` 섹션에 표시되고, 폴더 경로는 `src/.../`처럼 슬래시로 구분됩니다. Skill 문서에서 선언/언급한 `/speckit.plan` 같은 직접 슬래시 별칭도 팔레트와 Tab 자동완성에 나타나며, Enter 실행 시 해당 skill 문서를 세션에 주입합니다.
+TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다. 입력창에 `/`로 시작하는 키워드를 타이핑하면 일치하는 명령 목록이 **실시간 미리보기**로 아래에 표시되고, **방향키(↑/↓)로 선택**한 뒤 Enter로 실행할 수 있습니다(`❯` 표시). `/subagent `·`/provider login `처럼 공백 뒤 인자를 입력할 때도 사용 가능한 role/provider/subcommand 목록이 계속 보입니다. `/provider login`은 방향키 프로바이더 선택기를 열고, `/provider gemini` 또는 빈 `/model`은 화면 폭에 맞는 **방향키 모델 선택기**를 열어 Enter로 바로 모델을 설정합니다. `진행중/완료/subagent/tool/diff/file/command` 같은 UI 범주는 색인형 배지(`[AGENT]`, `[01:CMD]`, `[FILE]`, `[DIFF]`, `[STEP]`)로 구분되어 진행중 항목, 완료 항목, subagent 스트림, forge 박스, 코드뷰 헤더를 빠르게 스캔할 수 있습니다. 입력은 하단 푸터의 **박스형 입력란 하나로만** 노출됩니다 — 박스 모드에서는 기존 readline 에코(`joc> …` 원시 입력 줄)를 숨기므로 입력창이 중복으로 보이지 않으며, 폭을 넘기면 자연스럽게 여러 줄로 감싸집니다. `@src/`처럼 입력하면 현재 워크스페이스 기준 상대 경로 후보가 `Paths:` 섹션에 표시되고, 폴더 경로는 `src/.../`처럼 슬래시로 구분됩니다. Skill 문서에서 선언/언급한 `/speckit.plan` 같은 직접 슬래시 별칭도 팔레트와 Tab 자동완성에 나타나며, Enter 실행 시 해당 skill 문서를 세션에 주입합니다.
 
 대화형 에이전트는 내부 `todo` tool로 작업 계획을 선언하면 TUI에 **Plan 체크리스트**를 유지하고, `task` tool로 executor/planner/architect/critic 서브에이전트에 bounded 작업을 위임할 수 있습니다. planner/architect/critic은 read/find/search 전용이라 파일을 수정하지 못하며, role 오타는 mutating executor로 조용히 fallback되지 않고 실패합니다.
 
@@ -69,6 +69,8 @@ TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행
 > **파일 검색(`/find` · `find` tool):** 슬래시 없는 이름 패턴(`*.ts`, `engine.ts`)은 하위 디렉터리까지 재귀 basename 매칭이고, `/`나 `**`를 포함한 **경로 글로브**(`src/**/*.ts`, `src/agent/*.ts`, 정확한 상대경로 `src/skills/catalog.ts`)는 실제 glob 의미로 해석됩니다. 이전에는 `find -name`이 basename만 보기 때문에 경로 글로브가 항상 매칭 0건이었습니다(문서의 `/find src/**/*.ts` 예시조차 동작 안 함). `node_modules`/`.git`/`dist` 등 무시 디렉터리는 양쪽 경로 모두에서 제외됩니다.
 >
 > **사용자 skill 문서:** `~/.joc/skills`·`.joc/skills`의 평면 `<name>.md`와 `~/.agents/skills/<name>/SKILL.md`·`.agents/skills/<name>/SKILL.md` 폴더형 문서가 번들 skill과 병합되어 시스템 프롬프트, `/skill`, Tab 자동완성, `/speckit.*` 같은 직접 슬래시 별칭에 모두 반영됩니다(이름이 같으면 뒤쪽 문서가 우선). `aliases:`/`slash:` 헤더 또는 본문에 언급된 `/name.step` 패턴을 자동 인식합니다. SKILL.md 프런트매터 파서는 YAML 블록 스칼라(`description: >`/`|`, chomping `>-`/`|+` 포함)는 물론, 실제 스킬 파일에 흔한 비표준 `description: Use this skill when >` + 들여쓴 연속 블록 형태까지 접어서 한 줄 요약으로 만듭니다(이전에는 `Use this skill when >`라는 잘린 요약이 그대로 노출됨). `JOC_TUI_THEME=mono`는 푸터 색까지 완전한 무채색으로 출력합니다.
+>
+> **tmux 독립 세션:** `joc --tmux`는 매 실행마다 자신만의 tmux 세션을 만들어, 서로 다른 프로세스에서 동시에 띄워도 한 세션에 묶여(미러링되어) 잡히지 않습니다. 세션 이름은 작업 디렉터리+브랜치+런타임 플래그 기반의 base이고, 같은 base가 이미 살아있으면 `base-2`, `base-3` …로 자동 분리됩니다. 생성 자체가 잠금이라(`tmux new-session`의 `duplicate session` 충돌 시 다음 접미사로 재시도) 완전히 동시에 시작한 두 프로세스도 base를 동시에 차지하지 못합니다. joc 프로세스가 끝나면 세션도 사라지므로 순차 재실행은 깨끗한 base 이름을 다시 씁니다. 이미 tmux 안에서 `joc --tmux`를 실행하면 중첩 없이 현재 pane에서 그대로 동작합니다. 나중에 다시 붙으려면 `tmux attach -t <세션명>`.
 
 ```bash
 # REPL 안에서
@@ -103,7 +105,7 @@ review @src/commands/launch.ts and @src/tui/  # @ 입력 시 상대 경로 후�
 joc launch --list
 joc launch --resume
 
-# tmux 세션에서 실행 (세션 이름은 작업 디렉터리별로 독립 — 같은 브랜치라도 다른 프로젝트/worktree는 별도 세션)
+# tmux 세션에서 실행 — 매 실행마다 독립 세션 (같은 디렉터리·브랜치에서 동시에 여러 번 띄워도 base, base-2, base-3 …로 분리)
 joc --tmux
 joc --tmux --model gemini-2.5-flash --thinking high
 joc --tmux --models --catalog gpt

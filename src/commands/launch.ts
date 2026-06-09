@@ -119,15 +119,41 @@ function tmuxRuntimeSuffix(flags: LaunchFlags): string {
 }
 
 /**
- * tmux session name for `joc --tmux`. Keyed on the working DIRECTORY (not just the
+ * Base tmux session name for `joc --tmux`. Keyed on the working DIRECTORY (not just the
  * git branch) so two different projects/worktrees on the same branch (e.g. `main`)
- * get INDEPENDENT sessions instead of the second invocation attaching to the first.
- * Same (dir, branch, runtime flags) → same name, so re-running reattaches your session.
+ * never share a base. {@link uniqueTmuxSessionName} then makes each concurrent invocation
+ * fully independent, so a second `joc --tmux` never attaches to (and mirrors) the first.
  */
 export function tmuxSessionName(cwd: string, branch: string, flags: LaunchFlags): string {
   const dirTag = `${tmuxSafeNamePart(path.basename(cwd) || "root", 16)}-${hashString(cwd)}`;
   const base = branch ? `joc-${branch}-${dirTag}` : `joc-${dirTag}`;
   return base + tmuxRuntimeSuffix(flags);
+}
+
+/**
+ * Allocate + create an INDEPENDENT tmux session from a base name. Each separate,
+ * concurrent `joc --tmux` invocation gets its OWN session instead of attaching to (and
+ * mirroring) one another process already created: try `base`, then `base-2`, `base-3`, …
+ * The create itself is the guard, so this is race-safe — two processes starting at the
+ * same instant can't both win `base`. `tryCreate` must attempt to create the named session
+ * and return `"ok"` (created — it's ours), `"taken"` (name already live / lost the race →
+ * try the next suffix), or `"error:<msg>"` (a real failure → abort). Sessions die with
+ * their joc process, so a sequential re-run reuses the clean base; only live overlap is
+ * suffixed.
+ */
+export type TmuxCreateResult = "ok" | "taken" | `error:${string}`;
+export function allocateTmuxSession(
+  base: string,
+  tryCreate: (name: string) => TmuxCreateResult,
+): { name: string } | { error: string } {
+  for (let n = 1; n <= 1000; n++) {
+    const candidate = n === 1 ? base : `${base}-${n}`;
+    const result = tryCreate(candidate);
+    if (result === "ok") return { name: candidate };
+    if (result === "taken") continue;
+    return { error: result.slice("error:".length) };
+  }
+  return { error: `could not allocate a free tmux session name for ${base} (1000 already live?)` };
 }
 
 function shellQuote(arg: string): string {
@@ -304,7 +330,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             branch = gitRes.stdout.toString().trim().replace(/[^a-zA-Z0-9_-]/g, "-");
           }
         } catch {}
-        const sessionName = tmuxSessionName(cwd, branch, flags);
+        const sessionBase = tmuxSessionName(cwd, branch, flags);
 
         // Strip orchestration flags: the worktree is already the tmux session
         // cwd (`-c cwd` below), so the inner process inherits it directly.
@@ -327,33 +353,24 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
         const innerCmd = `exec env JOC_TMUX_LAUNCHED=1 ${[...cmd, "launch", ...innerArgs].map(shellQuote).join(" ")}`;
 
-        const hasSession = Bun.spawnSync([tmuxBin, "has-session", "-t", `=${sessionName}`]);
-        if (hasSession.exitCode === 0) {
-          console.log(`Attaching to existing tmux session: ${sessionName}`);
-          const proc = Bun.spawn([tmuxBin, "attach-session", "-t", `=${sessionName}`], {
-            stdin: "inherit",
-            stdout: "inherit",
-            stderr: "inherit",
-          });
-          await proc.exited;
-          return;
-        }
-
-        console.log(`Starting new tmux session: ${sessionName}`);
-        const createSession = Bun.spawnSync([
-          tmuxBin,
-          "new-session",
-          "-d",
-          "-s",
-          sessionName,
-          "-c",
-          cwd,
-          innerCmd
-        ]);
-        if (createSession.exitCode !== 0) {
-          console.error(`Error: Failed to create tmux session: ${createSession.stderr.toString()}`);
+        // Create a fresh, independent session (race-safe: the create is the guard).
+        const alloc = allocateTmuxSession(sessionBase, name => {
+          const created = Bun.spawnSync([tmuxBin, "new-session", "-d", "-s", name, "-c", cwd, innerCmd]);
+          if (created.exitCode === 0) return "ok";
+          const err = created.stderr.toString().trim();
+          if (/duplicate session/i.test(err)) return "taken"; // another joc grabbed this name
+          return `error:${err || `tmux new-session exited ${created.exitCode}`}`;
+        });
+        if ("error" in alloc) {
+          console.error(`Error: Failed to create tmux session: ${alloc.error}`);
           process.exit(1);
         }
+        const sessionName = alloc.name;
+        console.log(
+          sessionName === sessionBase
+            ? `Starting new tmux session: ${sessionName}`
+            : `Starting new independent tmux session: ${sessionName} (another live joc session already owns ${sessionBase}; reattach later with: tmux attach -t ${sessionName})`,
+        );
 
         const attach = Bun.spawn([tmuxBin, "attach-session", "-t", `=${sessionName}`], {
           stdin: "inherit",
@@ -629,6 +646,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     (process.stdout.rows ?? 24) > PREVIEW_ROWS + 4;
   const out = process.stdout;
   let previewArmed = false;
+  // Single-box input: while the slash-preview footer is armed (the main "joc>" prompt),
+  // suppress readline's own echo/prompt so ONLY the boxed input drawn in the reserved
+  // footer is visible — no duplicated raw CLI line. Sub-prompts (e.g. "Choose [1-3]")
+  // run with the footer disarmed, so they echo normally.
+  const rlInternal = rl as unknown as { _writeToOutput?: (s: string) => void };
+  const originalWriteToOutput = rlInternal._writeToOutput?.bind(rl);
+  if (originalWriteToOutput) {
+    rlInternal._writeToOutput = (s: string) => {
+      if (previewArmed) return;
+      originalWriteToOutput(s);
+    };
+  }
   let pickerActive = false;
   // Arrow-key selection over the slash preview list.
   let navMatches: string[] = []; // command names matching the typed keyword (display order)
@@ -955,6 +984,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   try {
     while (true) {
       armPreview();
+      // Render the boxed input immediately (placeholder) so the prompt is visible
+      // even though readline's own "joc>" echo is now suppressed in box mode.
+      typedLine = "";
+      navMatches = [];
+      navIdx = -1;
+      drawFooter(previewLines(""));
       const raw = (await rl.question("\njoc> ")).trim();
       disarmPreview();
       // If an arrow-key selection was made over the slash preview, run that command.

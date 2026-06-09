@@ -27,7 +27,10 @@ export async function* readLines(stream: ReadableStream<Uint8Array>): AsyncGener
       }
     }
   } finally {
-    reader.releaseLock();
+    // cancel() frees the underlying HTTP connection on early generator return
+    // (consumer break) — releaseLock() alone leaks the socket until GC. No-op on a
+    // normally-drained stream.
+    await reader.cancel().catch(() => {});
   }
 }
 

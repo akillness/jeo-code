@@ -5357,3 +5357,37 @@ interview overfit the most-described sub-area and lose sibling components entire
 ### Verification (pass 861)
 - Focused: `bun test test/deep-interview.test.ts test/skills.test.ts` → **16 pass / 0 fail**.
 - Full: `bun run typecheck` → 0 errors; `bun test` → **642 pass / 0 fail**; `bun run build` → ok.
+## Provider correctness pass (fresh architect discovery) — pass 862
+
+**Date:** 2026-06-09 · **Dimension: provider correctness (Gemini alternation, usage, blocked responses; Ollama URL; SSE leak).**
+
+A fresh read-only architect review of subsystems untouched this session surfaced real defects (the
+prior backlog was cleared). Fixed the concrete provider/stream ones:
+
+- **862a (HIGH).** Gemini requires strictly ALTERNATING user/model turns, but the adapter mapped roles
+  1:1, so any consecutive same-role messages (a compaction summary prepended before a tool-result,
+  back-to-back tool results) caused a mid-session API rejection. `geminiRequest` now **coalesces
+  adjacent same-role turns** into one content block (root-cause fix — covers all sources, not just
+  compaction). `geminiRequest` exported for testing.
+- **862b (MEDIUM).** Gemini returned HTTP 200 with empty text on safety/RECITATION blocks, which
+  downstream surfaced as a misleading "couldn't parse tool call". `call()` now throws a descriptive
+  error (`blockReason`/`finishReason`) when the response is empty due to a block.
+- **862c (MEDIUM).** Gemini `stream()` emitted cumulative `usageMetadata` on every chunk → an
+  accumulating sink over-counted tokens. Now captures the last usage and reports it **once** after the
+  stream (matching the other adapters' emit-once contract).
+- **862d (MEDIUM).** `OLLAMA_HOST` is conventionally a bare `host:port`, but it was used verbatim as a
+  URL → `fetch("127.0.0.1:11434/api/chat")` threw "Failed to parse URL". New exported
+  `normalizeOllamaBaseUrl` prepends `http://` when the scheme is missing.
+- **862e (MEDIUM).** `readLines` (SSE) only `releaseLock()`-ed in its finally; on early generator
+  return (consumer break) the HTTP body stream was never cancelled → leaked connection until GC. Now
+  `await reader.cancel()` in finally (no-op on a fully-drained stream).
+
+### Verification (pass 862)
+- `bun run typecheck` → 0 errors. `bun test` → **649 pass / 0 fail**. `bun run build` → ok.
+- New tests: `geminiRequest` coalesces consecutive same-role into one multi-part content (+ single
+  turns unchanged); `normalizeOllamaBaseUrl` (bare host → http://, scheme kept, trailing-slash strip,
+  URL-parseable); `readLines` cancels the stream on early return.
+- Deferred (logged for follow-up): ultragoal verification hardcodes `bun test`/`src/cli.ts` and
+  doesn't truly verify per-criterion (HIGH — needs project-aware command derivation); ultragoal
+  blank-line criteria loss (MEDIUM); Codex Responses in-band errors lack a retryable status +
+  `reasoningEffort` not forwarded + incomplete-usage (LOW).

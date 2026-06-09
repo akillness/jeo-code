@@ -122,7 +122,7 @@ export async function maybeCompact(
     const next: Message[] = [
       ...systemMessages,
       summaryMessage,
-      ...boundedRecent
+      ...boundedRecent,
     ];
 
     history.splice(0, history.length, ...next);

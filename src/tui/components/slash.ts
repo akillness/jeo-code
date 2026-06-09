@@ -18,7 +18,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/provider", usage: "/provider [name] [model|#N]", description: "Credentials, switch provider, list live models; `login <name>` starts OAuth", group: "models" },
   { command: "/logout", usage: "/logout <anthropic|openai|gemini>", description: "Remove the stored OAuth token for a provider", group: "models" },
   { command: "/agents", usage: "/agents [role] [model|#N|maxSteps N|reset]", description: "List subagent roles or pin role model/settings", group: "subagents" },
-  { command: "/subagent", usage: "/subagent [role] [model|#N|maxSteps N|reset]", description: "Alias for /agents; list or configure subagent roles", group: "subagents" },
+  { command: "/subagent", usage: "/subagent run [role] <task> | <role> -- <task>", description: "Run a subagent now with live step/result stream", group: "subagents" },
   { command: "/subagents", usage: "/subagents [role] [model|#N|maxSteps N|reset]", description: "Alias for /agents; list or configure subagent roles", group: "subagents" },
   { command: "/config", usage: "/config", description: "Show the effective runtime configuration", group: "models" },
   { command: "/roles", usage: "/roles [tier model]", description: "Show or set model role tiers (smol/slow/plan)", group: "models" },

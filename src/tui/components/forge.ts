@@ -119,6 +119,17 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown): ForgeS
     return { title: "search content", language: "regex", lines: [`pattern: ${pattern}`, `glob: ${glob}`] };
   }
 
+  if (normalized === "task") {
+    const role = stringArg(args, "role") ?? "executor";
+    const task = stringArg(args, "task", "prompt", "assignment") ?? "<missing task>";
+    const context = stringArg(args, "context");
+    return {
+      title: `task ${role}`,
+      language: "text",
+      lines: [`role: ${role}`, ...previewLines(task, 4, 500), ...(context ? ["context:", ...previewLines(context, 3, 300)] : [])],
+    };
+  }
+
   return { title: `${safeTool} arguments`, language: "json", lines: jsonPreview(args) };
 }
 

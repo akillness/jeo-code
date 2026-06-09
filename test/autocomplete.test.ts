@@ -99,7 +99,8 @@ test("/agents completes role ids, then models + maxSteps keyword", () => {
   expect(m.completions).toContain("reset");
   expect(m.completions).toContain("maxSteps");
   expect(m.completions).toContain("gpt-4o-live");
-  expect(complete("/subagent ", ctx()).completions).toEqual(["executor", "planner", "architect", "critic"]);
+  expect(complete("/subagent ", ctx()).completions).toEqual(["run", "executor", "planner", "architect", "critic"]);
+  expect(complete("/subagent run ", ctx()).completions).toEqual(["executor", "planner", "architect", "critic"]);
   expect(complete("/subagents executor ", ctx()).completions).toContain("maxSteps");
 });
 
@@ -119,9 +120,9 @@ test("/skill: completes GJC-style skill entrypoint names", () => {
 
 test("formatCompletionPreview lists argument completions after slash commands", () => {
   const sub = formatCompletionPreview("/subagent ", ctx()).join("\n");
-  expect(sub).toContain("Subagent roles:");
+  expect(sub).toContain("Subcommands:");
+  expect(sub).toContain("run");
   expect(sub).toContain("executor");
-  expect(sub).toContain("critic");
 
   const login = formatCompletionPreview("/provider login ", ctx()).join("\n");
   expect(login).toContain("Providers:");

@@ -203,12 +203,17 @@ export class LaunchTui {
     const ok = this.unicode ? "✓" : "v";
     const bad = this.unicode ? "✗" : "x";
     const detail = (e.detail ?? "").split("\n").find(l => l.trim().length > 0)?.trim().slice(0, 140) ?? "";
+    const summary = e.summary ? ` — ${e.summary}` : "";
+    const step = e.step && e.maxSteps ? ` step ${e.step}/${e.maxSteps}` : "";
     switch (e.kind) {
       case "start":
         this.stream.append(`${this.unicode ? "▸" : ">"} [${role}] start: ${detail}\n`);
         break;
+      case "step":
+        this.stream.append(`  [${role}${step}] ${detail || "working"}\n`);
+        break;
       case "tool":
-        this.stream.append(`  [${role}] ${e.success === false ? bad : ok} ${detail || "tool"}\n`);
+        this.stream.append(`  [${role}] ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`);
         break;
       case "error":
         this.stream.append(`  [${role}] ${bad} ${detail || "error"}\n`);

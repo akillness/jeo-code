@@ -290,7 +290,8 @@ test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result i
   const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
   tui.start();
   tui.onSubagentEvent({ role: "executor", kind: "start", detail: "Add a retry guard to engine.ts" });
-  tui.onSubagentEvent({ role: "executor", kind: "tool", detail: "read src/agent/engine.ts", success: true });
+  tui.onSubagentEvent({ role: "executor", kind: "step", detail: "read src/agent/engine.ts", step: 1, maxSteps: 15 });
+  tui.onSubagentEvent({ role: "executor", kind: "tool", detail: "read src/agent/engine.ts", success: true, summary: "1|const ok = true;" });
   tui.onSubagentEvent({ role: "executor", kind: "tool", detail: "edit src/agent/engine.ts", success: false });
   tui.onSubagentEvent({ role: "executor", kind: "done", detail: "completed in 4 steps: guard added", success: true });
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
@@ -302,7 +303,9 @@ test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result i
   const txt = logged.join("\n");
   expect(txt).toContain("[executor] start: Add a retry guard to engine.ts"); // assignment
   expect(txt).toContain("[executor]"); // nested tool calls present
+  expect(txt).toContain("[executor step 1/15]");
   expect(txt).toContain("read src/agent/engine.ts");
+  expect(txt).toContain("1|const ok = true;");
   expect(txt).toContain("completed in 4 steps: guard added"); // result summary
 });
 

@@ -5188,3 +5188,28 @@ flow looks like it does nothing.
   final reply all print.
 - Live: piped `--no-tui` turn runs and exits cleanly (the local 0.5b model rarely emits tool
   calls, so tool lines are covered by the e2e mock test rather than the live run).
+
+## Subagent cmd flow exposes real stages/results — passes 847–849
+
+**Date:** 2026-06-08 · **Dimension: direct subagent execution visibility / GJC flow parity.**
+
+Reported follow-up: even after cmd-mode step streaming, subagent input still felt broken because the
+subagent's own stages/results were not exposed like gjc, and `/subagent ...` was only a settings alias.
+
+- **847.** `task` subagents now emit a real nested stage stream: `start`, `step N/M: <target>`,
+  tool result with a first-line output summary, and `done: <reason>`. The task tool's returned trace
+  includes the same step headers and summaries, so both TUI and plain/cmd mode preserve the subagent's
+  actual flow instead of only a final opaque task result.
+- **848.** Plain/cmd mode now formats all subagent events through one sink and surfaces successful
+  `task` tool summaries (`✓ task executor — [Executor subagent] completed…`) in addition to failures.
+  `summarizeForgeInvocation("task", …)` now names the delegated role (`task executor`) and previews
+  the assignment instead of generic `task arguments`.
+- **849.** Added direct execution: `/subagent run [role] <task>` and `/subagent <role> -- <task>`
+  execute the chosen subagent immediately, including one-shot cmd input such as
+  `joc "/subagent run executor inspect note.txt" --no-tui`. `/agents`/`/subagents` remain the settings
+  surface; `/subagent` is now the run-now command.
+
+### Verification (passes 847–849)
+- Focused tests added/updated: `task-tool.test.ts` asserts nested step headers and result summaries;
+  `stream-events.test.ts` covers model-delegated `task` and direct one-shot `/subagent run`.
+- Verification: `bun test test/task-tool.test.ts test/stream-events.test.ts test/autocomplete.test.ts test/slash.test.ts test/tui-app.test.ts` → **61 pass / 0 fail**; `bun run typecheck` → 0 errors; `bun test` → **615 pass / 0 fail**; `bun run build` → ok.

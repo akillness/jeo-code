@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, type AgentLoopEvents } from "../agent/engine";
-import { createTaskTool, TASK_TOOL_PROTOCOL_LINE } from "../agent/task-tool";
+import { createTaskTool, TASK_TOOL_PROTOCOL_LINE, type TaskSubEvent } from "../agent/task-tool";
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { LaunchTui } from "../tui/app";
 import { skillsPromptSection, loadSkills, formatSkill, getSkillFrom, getSkillBySlash, skillSlashAliases, type SkillDoc } from "../skills/catalog";
@@ -190,6 +190,65 @@ export function gatedStdout(real: NodeJS.WriteStream, gated: () => boolean): Nod
   }) as unknown as NodeJS.WriteStream;
 }
 
+function firstOutputLine(output: string | undefined): string {
+  if (!output) return "";
+  const line = String(output)
+    .split("\n")
+    .map(l => l.trim())
+    .find(l => l.length > 0);
+  return line ? line.replace(/\s+/g, " ").slice(0, 140) : "";
+}
+
+function streamResultSuffix(tool: string, ok: boolean, output: string | undefined): string {
+  const summary = firstOutputLine(output);
+  if (!summary) return "";
+  if (!ok || tool === "task") return ` — ${summary}`;
+  return "";
+}
+
+export function formatTaskSubEvent(e: TaskSubEvent): string {
+  const role = e.role || "subagent";
+  const detail = firstOutputLine(e.detail);
+  const summary = e.summary ? ` — ${e.summary}` : "";
+  const step = e.step && e.maxSteps ? ` step ${e.step}/${e.maxSteps}` : "";
+  if (e.kind === "start") return `  ${chalk.magenta(`▸ [${role}]`)} ${detail}`.slice(0, 220);
+  if (e.kind === "step") return `    ${chalk.cyan(`[${role}${step}]`)} ${detail || "working"}`;
+  if (e.kind === "tool") return `    [${role}] ${e.success === false ? chalk.red("✗") : chalk.green("✓")} ${detail || "tool"}${summary}`;
+  if (e.kind === "error") return `    [${role}] ${chalk.red("✗")} ${detail || "error"}`;
+  return `  ${chalk.magenta(`◂ [${role}]`)} done${e.success ? "" : " (incomplete)"}${detail ? `: ${detail}` : ""}`;
+}
+
+function logTaskSubEvent(e: TaskSubEvent, log: (line: string) => void = (s: string) => console.log(s)): void {
+  log(formatTaskSubEvent(e));
+}
+
+export function parseDirectSubagentInput(input: string): { roleId: string; task: string } | null {
+  const trimmed = input.trim();
+  const command =
+    trimmed === "/subagent" || trimmed.startsWith("/subagent ") ? "/subagent" :
+    trimmed === "/agents" || trimmed.startsWith("/agents ") ? "/agents" :
+    trimmed === "/subagents" || trimmed.startsWith("/subagents ") ? "/subagents" :
+    "";
+  if (!command) return null;
+  const tokens = trimmed.slice(command.length).trim().split(/\s+/).filter(Boolean);
+  const first = tokens[0]?.toLowerCase();
+  if (first === "run" || first === "exec" || first === "start") {
+    let i = 1;
+    let roleId = "executor";
+    if (getSubagentRole(tokens[i])) {
+      roleId = tokens[i]!.toLowerCase();
+      i++;
+    }
+    return { roleId, task: tokens.slice(i).join(" ").trim() };
+  }
+  const sep = tokens.indexOf("--");
+  if (sep >= 0) {
+    const roleId = sep > 0 ? tokens[0]!.toLowerCase() : "executor";
+    return { roleId, task: tokens.slice(sep + 1).join(" ").trim() };
+  }
+  return null;
+}
+
 /**
  * Plain (non-TTY / `--no-tui`) progress sink — the cmd-mode equivalent of the live TUI, and
  * the gjc-parity fix for "I typed a request but saw no steps/results". The old sink only
@@ -215,9 +274,8 @@ export function createStreamEvents(
     },
     onToolResult: (tool: string, ok: boolean, output?: string) => {
       const label = pending || tool;
-      const mark = ok ? chalk.green("\u2713") : chalk.red("\u2717");
-      const tail = !ok && output ? ` \u2014 ${(String(output).split("\n").find(l => l.trim()) ?? "").slice(0, 120)}` : "";
-      log(`  ${mark} ${label}${tail}`);
+      const mark = ok ? chalk.green("✓") : chalk.red("✗");
+      log(`  ${mark} ${label}${streamResultSuffix(tool, ok, output)}`);
       pending = "";
     },
     onError: (msg: string) => log(`  ${chalk.red("\u2717")} ${msg}`),
@@ -562,12 +620,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         signal: ac.signal,
         onEvent: useTui
           ? (e => tui?.onSubagentEvent(e))
-          : (e => {
-              if (e.kind === "start") console.log(`  ${chalk.magenta(`\u25b8 [${e.role}]`)} ${e.detail ?? ""}`.slice(0, 200));
-              else if (e.kind === "tool") console.log(`    [${e.role}] ${e.success ? chalk.green("\u2713") : chalk.red("\u2717")} ${e.detail ?? "tool"}`);
-              else if (e.kind === "error") console.log(`    [${e.role}] ${chalk.red("\u2717")} ${e.detail ?? "error"}`);
-              else if (e.kind === "done") console.log(`  ${chalk.magenta(`\u25c2 [${e.role}]`)} done${e.success ? "" : " (incomplete)"}`);
-            }),
+          : (e => logTaskSubEvent(e)),
       }),
       todo: createTodoTool({ onChange: items => tui?.setTodos(items) }),
     };
@@ -602,6 +655,44 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     return { done: result.done, steps: result.steps, reply, rendered: !!tui, usage };
   };
 
+  const runDirectSubagent = async (roleId: string, taskText: string, useTuiForRun: boolean): Promise<void> => {
+    if (!taskText) {
+      console.log("Usage: /subagent run [executor|planner|architect|critic] <task>  (or /subagent <role> -- <task>)");
+      return;
+    }
+    const role = getSubagentRole(roleId);
+    if (!role) {
+      console.log(`Unknown subagent role '${roleId}'. Known: ${SUBAGENT_ROLES.map(r => r.id).join(", ")}.`);
+      return;
+    }
+    const cfgNow = await readGlobalConfig();
+    const activeModel = sessionModel || cfgNow.defaultModel;
+    const { provider } = await describeModel(activeModel);
+    const maxSteps = resolveSubagentMaxSteps(role.id, cfgNow);
+    const tui = useTuiForRun ? new LaunchTui({ model: activeModel, provider, sessionId, maxSteps }) : null;
+    if (tui) tui.start();
+    const ac = new AbortController();
+    const onSigint = () => ac.abort();
+    process.once("SIGINT", onSigint);
+    try {
+      const tool = createTaskTool({
+        config: { ...cfgNow, defaultModel: activeModel },
+        signal: ac.signal,
+        onEvent: tui ? (e => tui.onSubagentEvent(e)) : (e => logTaskSubEvent(e)),
+      });
+      const res = await tool({ role: role.id, task: taskText }, cwd);
+      const text = res.success ? res.output : `! ${res.error || res.output || "subagent failed"}`;
+      if (tui) tui.finish(text);
+      else console.log(text);
+    } catch (err) {
+      const text = `! ${friendlyProviderError(err)}`;
+      if (tui) tui.finish(text);
+      else console.log(text);
+    } finally {
+      process.removeListener("SIGINT", onSigint);
+    }
+  };
+
   const joinedArgs = flags.message;
   const isOneShot = joinedArgs.length > 0 || !process.stdin.isTTY;
 
@@ -612,6 +703,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     if (!messageContent) {
       console.log("No input provided.");
+      return;
+    }
+    const directSubagent = parseDirectSubagentInput(messageContent);
+    if (directSubagent) {
+      await runDirectSubagent(directSubagent.roleId, directSubagent.task, shouldUseOneShotTui(flags.noTui));
       return;
     }
     try {
@@ -633,7 +729,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   console.log(`Model: ${activeStartModel} (${startProvider})  ·  thinking: ${sessionThinking ?? "medium"}`);
   if (sessionId) console.log(`Session: ${sessionId}`);
   if (contextFiles.length > 0) console.log(`Project context: ${contextFiles.map(f => f.path).join(", ")}`);
-  console.log("Type your request. Slash: /help /model /models /provider /agents /roles /thinking /skill /view /diff /find /search /sessions /exit  (type / for the full ↑/↓ palette)" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
+  console.log("Type your request. Slash: /help /model /models /provider /agents /subagent run /roles /thinking /skill /view /diff /find /search /sessions /exit  (type / for the full ↑/↓ palette)" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
 
   const useTui = LaunchTui.usable(flags.noTui);
   const runSkillInvocation = async (skill: SkillDoc, intent: string, invokedAs?: string): Promise<void> => {
@@ -644,6 +740,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (!rendered) console.log(`joc> ${reply}${usage}`);
     else if (usage) console.log(usage.trim());
   };
+
   // Tab autocomplete: alias names snapshotted once; live models come from the
   // background-warmed cache (logged-in/OAuth accounts). The completer is sync, so
   // it never blocks on the network — it reads whatever the cache currently holds.
@@ -1275,6 +1372,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         undefined;
       if (agentsCommand) {
         const tokens = input.substring(agentsCommand.length).trim().split(/\s+/).filter(Boolean);
+        const directSubagent = parseDirectSubagentInput(input);
+        if (directSubagent) {
+          await runDirectSubagent(directSubagent.roleId, directSubagent.task, useTui);
+          continue;
+        }
         const roleArg = tokens[0];
         const modelArg = tokens[1];
         const cfgNow = await readGlobalConfig();
@@ -1285,8 +1387,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             maxSteps: resolveSubagentMaxSteps(r.id, cfgNow),
           }))) console.log(line);
           console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  steps: /agents <role> maxSteps <N>");
+          console.log("Run now: /subagent run [role] <task>  ·  /subagent <role> -- <task>");
           console.log("Available: executor, planner, architect, critic");
-          console.log("Subcommands: <role> <model|#N>, <role> maxSteps <N>, <role> reset");
+          console.log("Subcommands: run, <role> <model|#N>, <role> maxSteps <N>, <role> reset");
           continue;
         }
         const role = getSubagentRole(roleArg);

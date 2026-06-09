@@ -9,6 +9,8 @@ import {
   writeWorkflowState,
   clearWorkflowState,
   type WorkflowState,
+  type WorkflowTopologyComponent,
+  type WorkflowTopologyState,
   getLocalJocDir,
 } from "../agent/state";
 
@@ -45,6 +47,78 @@ function freezeReadiness(parsed: SocraticResponse | undefined): { ok: boolean; r
     return { ok: false, reason: "concrete acceptance criteria are still missing" };
   }
   return { ok: true };
+}
+
+function slugify(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 5)
+    .join("-");
+}
+
+function titleCase(input: string): string {
+  return input
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+async function inferProjectType(cwd: string, idea: string): Promise<"greenfield" | "brownfield"> {
+  const mentionsExisting =
+    /\b(fix|update|modify|extend|refactor|improve|support|repair|migrate|integrate)\b/i.test(idea) ||
+    /(기존|수정|개선|확장|리팩터링|마이그레이션|통합)/.test(idea);
+  if (!mentionsExisting) return "greenfield";
+  for (const marker of [".git", "src", "package.json", "tsconfig.json", "README.md"]) {
+    try {
+      await fs.access(path.join(cwd, marker));
+      return "brownfield";
+    } catch {
+      continue;
+    }
+  }
+  return "greenfield";
+}
+
+function inferTopologyComponents(initialIdea: string): WorkflowTopologyComponent[] {
+  const compact = initialIdea.replace(/\r?\n+/g, " ").trim();
+  let parts = compact
+    .split(/;+/)
+    .flatMap(part => part.split(/,\s*(?:and\s+)?/i))
+    .map(part => part.trim())
+    .filter(Boolean);
+  if (parts.length <= 1) {
+    const andParts = compact
+      .split(/\s+(?:and|및|그리고)\s+/i)
+      .map(part => part.trim())
+      .filter(Boolean);
+    if (andParts.length > 1 && andParts.length <= 4) parts = andParts;
+  }
+  if (parts.length === 0) parts = [compact];
+  if (parts.length > 6) parts = parts.slice(0, 6);
+
+  return parts.map((part, index) => {
+    const cleaned = part.replace(/^(build|create|implement|add|support|provide)\s+/i, "").trim() || part;
+    const words = cleaned.split(/\s+/).slice(0, 4).join(" ");
+    const label = titleCase(words || `Component ${index + 1}`);
+    return {
+      id: slugify(label || `component-${index + 1}`) || `component-${index + 1}`,
+      name: label || `Component ${index + 1}`,
+      description: part,
+      status: "active",
+      evidence: [part],
+    };
+  });
+}
+
+function formatTopology(topology: WorkflowTopologyState): string {
+  return topology.components
+    .filter(component => component.status === "active")
+    .map((component, index) => `${index + 1}. ${component.name}: ${component.description}`)
+    .join("\n");
 }
 
 export async function runDeepInterviewCommand(args: string[]): Promise<void> {
@@ -97,17 +171,12 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
       return;
     }
 
-    const slug = state?.slug || initialIdea
-      .toLowerCase()
-      .replace(/[^a-z0-9\s-]/g, "")
-      .trim()
-      .split(/\s+/)
-      .slice(0, 5)
-      .join("-");
+    const slug = state?.slug || slugify(initialIdea);
 
     const interviewId = state?.interview_id || crypto.randomUUID();
     const threshold = state?.threshold ?? DEFAULT_THRESHOLD;
     const thresholdSource = state?.threshold_source ?? DEFAULT_THRESHOLD_SOURCE;
+    const projectType = state?.type ?? await inferProjectType(cwd, initialIdea);
 
     if (!state) {
       state = {
@@ -120,11 +189,25 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
         current_ambiguity: 1.0,
         threshold,
         threshold_source: thresholdSource,
+        type: projectType,
+        topology: { status: "pending", confirmed_at: null, components: [], deferrals: [], last_targeted_component_id: null },
       };
       await writeWorkflowState("deep-interview", state, cwd);
-    } else if (!state.threshold_source) {
-      state.threshold_source = thresholdSource;
-      await writeWorkflowState("deep-interview", state, cwd);
+    } else {
+      let changed = false;
+      if (!state.threshold_source) {
+        state.threshold_source = thresholdSource;
+        changed = true;
+      }
+      if (!state.type) {
+        state.type = projectType;
+        changed = true;
+      }
+      if (!state.topology) {
+        state.topology = { status: "legacy_missing", confirmed_at: null, components: [], deferrals: [], last_targeted_component_id: null };
+        changed = true;
+      }
+      if (changed) await writeWorkflowState("deep-interview", state, cwd);
     }
 
     const history: Message[] = [
@@ -154,8 +237,48 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
       }
     ];
 
+    if (state.topology?.status !== "confirmed" || state.topology.components.length === 0) {
+      let components = inferTopologyComponents(initialIdea);
+      console.log(`\nRound 0 | Topology confirmation | Ambiguity: not scored yet`);
+      console.log(`\nI'm reading this as ${components.length} top-level component(s):`);
+      for (const [index, component] of components.entries()) {
+        console.log(`${index + 1}. ${component.name}: ${component.description}`);
+      }
+
+      if (!auto) {
+        const reply = await rl.question(
+          "\nPress Enter if this looks right, or type a revised comma-separated component list: "
+        );
+        if (reply.trim()) {
+          components = inferTopologyComponents(reply);
+          console.log("\nUpdated topology:");
+          for (const [index, component] of components.entries()) {
+            console.log(`${index + 1}. ${component.name}: ${component.description}`);
+          }
+        }
+      }
+
+      state.topology = {
+        status: "confirmed",
+        confirmed_at: new Date().toISOString(),
+        components,
+        deferrals: [],
+        last_targeted_component_id: components[0]?.id ?? null,
+      };
+      await writeWorkflowState("deep-interview", state, cwd);
+    }
+
+    history.push({
+      role: "user",
+      content:
+        `Project type: ${projectType}\n` +
+        `Confirmed topology:\n${formatTopology(state.topology!)}\n\n` +
+        `Target questions so every active component reaches clear goals, constraints, and acceptance criteria.`,
+    });
+
     console.log(`\n=== Starting Socratic Interview: ${slug} ===`);
     console.log(`Initial Idea: ${JSON.stringify(initialIdea)}`);
+    console.log(`Project Type: ${projectType}`);
     console.log(`Ambiguity Threshold: ${(threshold * 100).toFixed(0)}% (source: ${thresholdSource})\n`);
 
     let round = 1;

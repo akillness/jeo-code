@@ -122,3 +122,55 @@ test("deep-interview --auto: freezes only concrete criteria and keeps empty cons
 
   await fs.rm(cwd, { recursive: true, force: true });
 });
+
+test("deep-interview --auto: stores confirmed topology for multi-component ideas", async () => {
+  const cwd = await tempDir();
+  mockCallLlm = async () => JSON.stringify({
+    ambiguityScore: 0.1,
+    assessment: "Clear enough",
+    nextQuestion: "none",
+    goal: "Build an intake pipeline",
+    constraints: [],
+    acceptance_criteria: ["Each component has a working end-to-end path"],
+  });
+
+  process.chdir(cwd);
+  await runDeepInterviewCommand([
+    "--auto",
+    "ingest CSVs, normalize records, provide reviewer UI, and export audit-ready reports",
+  ]);
+
+  const state = await readState(cwd);
+  expect(state.topology.status).toBe("confirmed");
+  expect(state.topology.components.length).toBe(4);
+  expect(state.topology.components.map((c: any) => c.description)).toEqual([
+    "ingest CSVs",
+    "normalize records",
+    "provide reviewer UI",
+    "export audit-ready reports",
+  ]);
+
+  await fs.rm(cwd, { recursive: true, force: true });
+});
+
+test("deep-interview marks existing-repo modification ideas as brownfield", async () => {
+  const cwd = await tempDir();
+  await fs.mkdir(path.join(cwd, "src"), { recursive: true });
+  await fs.writeFile(path.join(cwd, "package.json"), "{\"name\":\"demo\"}", "utf-8");
+  mockCallLlm = async () => JSON.stringify({
+    ambiguityScore: 0.1,
+    assessment: "Clear enough",
+    nextQuestion: "none",
+    goal: "Fix the existing login flow",
+    constraints: [],
+    acceptance_criteria: ["Login works again end-to-end"],
+  });
+
+  process.chdir(cwd);
+  await runDeepInterviewCommand(["--auto", "fix the existing login flow"]);
+
+  const state = await readState(cwd);
+  expect(state.type).toBe("brownfield");
+
+  await fs.rm(cwd, { recursive: true, force: true });
+});

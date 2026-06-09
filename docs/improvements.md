@@ -5334,3 +5334,26 @@ Follow-up to the GJC comparison: `joc` deep-interview still had a real safety de
 - `bun run typecheck` → 0 errors. `bun test` → **640 pass / 0 fail**. `bun run build` → ok.
 - New test: spilling `MAX_TOOL_ARTIFACTS + 10` times leaves ≤ `MAX_TOOL_ARTIFACTS` files.
 - README carries no stale numeric counts (AGENTS.md counts already corrected in pass 843).
+
+## Deep-interview topology gate foundation — pass 861
+
+**Date:** 2026-06-09 · **Dimensions: interview structure, scope-shape preservation, brownfield labeling.**
+
+Continuation of the GJC-alignment work: after fixing the unsafe auto-freeze path, the next gap was
+that `joc` still treated every vague request as a single undifferentiated blob. That let the
+interview overfit the most-described sub-area and lose sibling components entirely.
+
+- **861a.** `src/commands/deep-interview.ts` now performs a **Round 0 topology confirmation** before
+  ambiguity scoring: it infers 1–6 top-level components from the initial idea, prints them, and
+  stores the confirmed topology in workflow state.
+- **861b.** Deep-interview state now carries `type` (`greenfield|brownfield`) plus a structured
+  `topology` object in `WorkflowState`, giving later rounds and downstream workflow steps a durable
+  shape of the user’s scope.
+- **861c.** A lightweight brownfield detector now marks obvious “fix/modify existing system” ideas
+  as brownfield when repo markers (`src`, `package.json`, `.git`, etc.) are present.
+- **861d.** The interview history now includes the confirmed project type + topology summary so the
+  questioning model is reminded to cover all active components, not just the first one.
+
+### Verification (pass 861)
+- Focused: `bun test test/deep-interview.test.ts test/skills.test.ts` → **16 pass / 0 fail**.
+- Full: `bun run typecheck` → 0 errors; `bun test` → **642 pass / 0 fail**; `bun run build` → ok.

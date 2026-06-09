@@ -63,12 +63,23 @@ async function postAnthropic(
   );
 }
 
+/** Anthropic usage: with prompt caching the input splits into uncached + cache read +
+ *  cache creation. Sum them so reported input reflects the TRUE prompt size. */
+interface AnthropicUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+export function totalInputTokens(u: AnthropicUsage): number {
+  return (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+}
 export const anthropicAdapter: ProviderAdapter = {
   name: "anthropic",
   async call(messages, options, credential) {
     const response = await postAnthropic(messages, options, credential, false);
-    const result = (await response.json()) as { content: { type: string; text: string }[]; usage?: { input_tokens?: number; output_tokens?: number } };
-    if (result.usage) options.onUsage?.({ inputTokens: result.usage.input_tokens, outputTokens: result.usage.output_tokens });
+    const result = (await response.json()) as { content: { type: string; text: string }[]; usage?: AnthropicUsage };
+    if (result.usage) options.onUsage?.({ inputTokens: totalInputTokens(result.usage), outputTokens: result.usage.output_tokens });
     return result.content.find(c => c.type === "text")?.text ?? "";
   },
   async *stream(messages, options, credential) {
@@ -79,7 +90,7 @@ export const anthropicAdapter: ProviderAdapter = {
       let evt: {
         type?: string;
         delta?: { type?: string; text?: string };
-        message?: { usage?: { input_tokens?: number; output_tokens?: number } };
+        message?: { usage?: AnthropicUsage };
         usage?: { output_tokens?: number };
       };
       try {
@@ -90,8 +101,8 @@ export const anthropicAdapter: ProviderAdapter = {
       if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta" && evt.delta.text) {
         yield evt.delta.text;
       } else if (evt.type === "message_start" && evt.message?.usage) {
-        cachedInput = evt.message.usage.input_tokens;
-        options.onUsage?.({ inputTokens: evt.message.usage.input_tokens, outputTokens: evt.message.usage.output_tokens });
+        cachedInput = totalInputTokens(evt.message.usage);
+        options.onUsage?.({ inputTokens: cachedInput, outputTokens: evt.message.usage.output_tokens });
       } else if (evt.type === "message_delta" && evt.usage) {
         options.onUsage?.({ inputTokens: cachedInput, outputTokens: evt.usage.output_tokens });
       }

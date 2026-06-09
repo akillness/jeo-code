@@ -100,14 +100,12 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
       // Equal jitter: half fixed + half random → [0.5x, 1x] of the capped backoff.
       const jittered = capped / 2 + random() * (capped / 2);
       const serverDelay = retryAfterOf(err);
-      // Server `Retry-After` wins; else jitter, floored for rate limits so we don't
-      // give up in <1s on a burst that needs a few seconds to clear.
-      const delay =
-        serverDelay !== undefined
-          ? Math.min(serverDelay, RETRY_AFTER_CAP_MS)
-          : rateLimited
-            ? Math.max(jittered, rateLimitMinDelayMs)
-            : jittered;
+      // Server `Retry-After` wins (capped); else jitter. For rate limits, apply the
+      // floor in BOTH cases so a 0/near-0 Retry-After (or sub-second jitter) doesn't
+      // burn the 429 budget back-to-back with no real pause.
+      const cappedServer = serverDelay !== undefined ? Math.min(serverDelay, RETRY_AFTER_CAP_MS) : undefined;
+      const base = cappedServer !== undefined ? cappedServer : jittered;
+      const delay = rateLimited ? Math.max(base, rateLimitMinDelayMs) : base;
 
       if (onRetry) {
         onRetry(attempt, err);

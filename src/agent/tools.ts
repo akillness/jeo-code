@@ -126,7 +126,7 @@ export async function readTool(
       // Verbatim bytes, no "N|" line prefixes (gjc `:raw`), char-capped for context safety.
       const MAX_CHARS = 50_000;
       if (content.length > MAX_CHARS) {
-        return { success: true, output: content.slice(0, MAX_CHARS) + `\n…(raw truncated at ${MAX_CHARS} of ${content.length} chars; pass lineRange to read a slice)` };
+        return { success: true, output: content.slice(0, MAX_CHARS) + `\n…(raw truncated at ${MAX_CHARS} of ${content.length} chars; drop raw and pass lineRange to read a slice)` };
       }
       return { success: true, output: content };
     }
@@ -141,11 +141,19 @@ export async function readTool(
       if (parsed.ranges.length === 0) {
         return { success: true, output: `(no lines in range; file has ${lines.length} lines)` };
       }
+      const MAX_RANGE_LINES = 2000; // cap selected output so a huge `1-` can't materialize MBs
       const out: string[] = [];
-      parsed.ranges.forEach(([start, end], i) => {
+      let emitted = 0;
+      let capped = false;
+      outer: for (const [i, [start, end]] of parsed.ranges.entries()) {
         if (i > 0) out.push("…"); // gap marker between non-contiguous ranges
-        for (let ln = start; ln <= end; ln++) out.push(`${ln}|${lines[ln - 1] ?? ""}`);
-      });
+        for (let ln = start; ln <= end; ln++) {
+          if (emitted >= MAX_RANGE_LINES) { capped = true; break outer; }
+          out.push(`${ln}|${lines[ln - 1] ?? ""}`);
+          emitted++;
+        }
+      }
+      if (capped) out.push(`…(range truncated at ${MAX_RANGE_LINES} lines; narrow the range)`);
       return { success: true, output: out.join("\n") };
     }
 
@@ -319,13 +327,18 @@ export async function bashTool(
     // The mutation lock is keyed on the PROJECT cwd, not the run subdir.
     await assertBashAllowed(cwd);
     const runCwd = subdir ? path.resolve(cwd, subdir) : cwd;
+    // Sanitize caller env: keep only string values (a model may send numbers/arrays),
+    // so a bad value can't make Bun.spawn throw cryptically.
+    const safeEnv = env && !Array.isArray(env)
+      ? Object.fromEntries(Object.entries(env).filter(([, v]) => typeof v === "string")) as Record<string, string>
+      : undefined;
     // Run the command using Bun's native spawn
     const proc = Bun.spawn(["bash", "-c", command], {
       cwd: runCwd,
       stdout: "pipe",
       stderr: "pipe",
-      // Inherit the parent env; merge caller-supplied vars on top when provided.
-      ...(env ? { env: { ...process.env, ...env } } : {}),
+      // Inherit the parent env; merge caller-supplied (sanitized) vars on top.
+      ...(safeEnv && Object.keys(safeEnv).length ? { env: { ...process.env, ...safeEnv } } : {}),
     });
 
     let timedOut = false;
@@ -369,6 +382,32 @@ export async function bashTool(
   }
 }
 
+/** Spawn a command, capture output, and escalate SIGTERM→SIGKILL if it exceeds
+ *  timeoutMs — so a runaway grep/find over a huge tree can't block the whole turn. */
+async function spawnTextWithTimeout(
+  cmd: string[],
+  cwd: string,
+  timeoutMs = 60_000,
+): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }> {
+  const proc = Bun.spawn(cmd, { cwd, stdout: "pipe", stderr: "pipe" });
+  let timedOut = false;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try { proc.kill(); } catch {}
+    killTimer = setTimeout(() => { try { proc.kill(9); } catch {} }, 3_000);
+  }, timeoutMs);
+  try {
+    await proc.exited;
+  } finally {
+    clearTimeout(timer);
+    if (killTimer) clearTimeout(killTimer);
+  }
+  const stdout = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+  return { stdout, stderr, exitCode: proc.exitCode, timedOut };
+}
+
 export async function findTool(
   globPattern: string,
   cwd: string = process.cwd()
@@ -409,12 +448,11 @@ export async function findTool(
       if (i > 0) pruneGroup.push("-o");
       pruneGroup.push("-name", IGNORED_DIRS[i]);
     }
-    const proc = Bun.spawn(
+    const { stdout, timedOut } = await spawnTextWithTimeout(
       ["find", ".", "-type", "d", "(", ...pruneGroup, ")", "-prune", "-o", "-name", globPattern, "-print"],
-      { cwd, stdout: "pipe", stderr: "pipe" },
+      cwd,
     );
-    await proc.exited;
-    const stdout = await new Response(proc.stdout).text();
+    if (timedOut) return { success: false, output: "", error: "find timed out (60s) — narrow the pattern." };
     const files = stdout.split("\n").filter(Boolean);
     let output = files.length > 0 ? files.join("\n") : "No matching files found.";
     const MAX_OUTPUT = 100_000;
@@ -433,19 +471,20 @@ export async function searchTool(
   cwd: string = process.cwd(),
   ignoreCase: boolean = false
 ): Promise<ToolResult> {
+  if (typeof pattern !== "string" || pattern === "") {
+    return { success: false, output: "", error: 'search requires a non-empty "pattern" (a regex/string to grep for).' };
+  }
   try {
     const flags = ignoreCase ? "-rnIi" : "-rnI";
     const excludes = IGNORED_DIRS.map(d => `--exclude-dir=${d}`);
-    const proc = Bun.spawn(
+    const { stdout, stderr, exitCode, timedOut } = await spawnTextWithTimeout(
       ["grep", flags, "--include", globPattern, ...excludes, "--", pattern, "."],
-      { cwd, stdout: "pipe", stderr: "pipe" },
+      cwd,
     );
-    await proc.exited;
-    const stdout = await new Response(proc.stdout).text();
-    const stderr = await new Response(proc.stderr).text();
+    if (timedOut) return { success: false, output: "", error: "search timed out (60s) — narrow the pattern or glob." };
     // grep exit codes: 0 = match, 1 = no match (not an error), >=2 = a real error.
-    if (proc.exitCode !== null && proc.exitCode >= 2) {
-      return { success: false, output: stdout, error: stderr.trim() || `grep failed (exit ${proc.exitCode})` };
+    if (exitCode !== null && exitCode >= 2) {
+      return { success: false, output: stdout, error: stderr.trim() || `grep failed (exit ${exitCode})` };
     }
     let output = stdout || "No matches found.";
     const MAX_OUTPUT = 100_000;

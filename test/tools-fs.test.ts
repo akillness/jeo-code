@@ -127,6 +127,76 @@ test("bashTool: env vars are merged into the child environment", async () => {
   expect(inherit.output.trim()).toBe("ok");
 });
 
+test("parseLineSelector: single line beyond EOF → empty ranges", () => {
+  const r = parseLineSelector("999", 10);
+  expect("ranges" in r && r.ranges).toEqual([]);
+});
+
+test("parseLineSelector: adjacent ranges (c=b+1) merge into one", () => {
+  const r = parseLineSelector("1-5,6-10", 100);
+  expect("ranges" in r && r.ranges).toEqual([[1, 10]]);
+});
+
+test("readTool: all-ranges-beyond-EOF returns the soft 'no lines in range' message", async () => {
+  const f = path.join(dir, "short.txt");
+  await fs.writeFile(f, "a\nb\nc\n"); // 4 lines incl trailing empty
+  const res = await readTool(f, "999");
+  expect(res.success).toBe(true);
+  expect(res.output).toContain("no lines in range");
+});
+
+test("readTool: raw mode truncates >50k with a notice", async () => {
+  const f = path.join(dir, "big.txt");
+  await fs.writeFile(f, "x".repeat(60_000));
+  const res = await readTool(f, undefined, dir, true);
+  expect(res.success).toBe(true);
+  expect(res.output.length).toBeLessThan(60_000);
+  expect(res.output).toContain("raw truncated at 50000 of 60000 chars");
+});
+
+test("searchTool: invalid regex (grep exit >=2) is a real failure, not silent success", async () => {
+  const res = await searchTool("[invalid", "*.ts", dir);
+  expect(res.success).toBe(false);
+  expect(res.error && res.error.length).toBeGreaterThan(0);
+});
+
+test("editTool: ≔A..B multi-line range replacement still works after near-miss change", async () => {
+  const f = path.join(dir, "range.txt");
+  await fs.writeFile(f, "a\nb\nc\nd\ne\n");
+  const res = await editTool(f, "≔2..4\nNEW", dir);
+  expect(res.success).toBe(true);
+  expect(await fs.readFile(f, "utf-8")).toBe("a\nNEW\ne\n");
+});
+
+test("editTool: successful SEARCH/REPLACE happy path still applies", async () => {
+  const f = path.join(dir, "sr.txt");
+  await fs.writeFile(f, "hello world\n");
+  const res = await editTool(f, "<<<<<<< SEARCH\nhello world\n=======\ngoodbye world\n>>>>>>>", dir);
+  expect(res.success).toBe(true);
+  expect(await fs.readFile(f, "utf-8")).toBe("goodbye world\n");
+});
+
+test("searchTool: empty pattern is a soft error, not match-everything", async () => {
+  const res = await searchTool("", "*.ts", dir);
+  expect(res.success).toBe(false);
+  expect(res.error).toContain("non-empty");
+});
+
+test("bashTool: non-string env values are dropped (no cryptic spawn throw)", async () => {
+  const res = await bashTool("echo \"[$NUMV][$STRV]\"", dir, 10_000, undefined, { NUMV: 123 as any, STRV: "ok" });
+  expect(res.success).toBe(true);
+  expect(res.output.trim()).toBe("[][ok]"); // NUMV dropped, STRV kept
+});
+
+test("readTool: huge lineRange is capped with a truncation notice", async () => {
+  const f = path.join(dir, "huge.txt");
+  await fs.writeFile(f, Array.from({ length: 5000 }, (_, i) => `L${i + 1}`).join("\n"));
+  const res = await readTool(f, "1-");
+  expect(res.success).toBe(true);
+  expect(res.output).toContain("range truncated at 2000 lines");
+  expect(res.output.split("\n").length).toBeLessThan(2100);
+});
+
 test("findTool skips node_modules and .git", async () => {
   const res = await findTool("*.ts", dir);
   expect(res.success).toBe(true);

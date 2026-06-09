@@ -41,7 +41,7 @@ export const OAUTH_FLOW_REGISTRY: Record<AuthProvider, OAuthFlow> = {
     login: loginGoogle,
     refresh: refreshGoogleToken,
     verifiedEndToEnd: false,
-    note: "Token targets Cloud Code Assist; the bundled generativelanguage adapter prefers GEMINI_API_KEY.",
+    note: "Token targets Google Cloud Code Assist (managed-project onboarding), which joc's bundled generativelanguage adapter does not call yet. Use a free GEMINI_API_KEY from https://aistudio.google.com/apikey to run Gemini; Anthropic/OpenAI are served via OAuth.",
   },
 };
 

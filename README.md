@@ -81,7 +81,7 @@ review @src/commands/launch.ts and @src/tui/  # @ 입력 시 상대 경로 후�
 | --- | --- | --- | --- |
 | anthropic | ✅ `ANTHROPIC_API_KEY` | ✅ Claude Pro/Max — Messages API 직접 호출 | `claude-sonnet-4-5` · `claude-opus-4-5` · `claude-haiku-4-5` (별칭 `sonnet`/`opus`/`haiku`) |
 | openai | ✅ `OPENAI_API_KEY` (전체 모델) | ✅ ChatGPT/Codex — Codex Responses 백엔드 자동 라우팅 | OAuth는 Codex가 실제 서빙하는 `gpt-5.5` · `gpt-5.4`만 노출(별칭 `gpt`) |
-| gemini | ✅ `GEMINI_API_KEY` | ❌ 아직 미지원 → API 키 필요 (picker에 `OAuth (API key needed)`) | `gemini-2.5-flash` · `gemini-2.5-pro` (별칭 `flash`) |
+| gemini | ✅ `GEMINI_API_KEY` (AI Studio, 무료) | ⚠️ Gemini CLI/Cloud Code Assist 토큰은 managed-project 온보딩이 필요해 joc 번들 어댑터가 아직 호출하지 않음 → **키 사용** | `gemini-2.5-flash` · `gemini-2.5-pro` (별칭 `flash`) |
 | ollama | — | — (keyless 로컬, 레이트리밋 없음) | `ollama/qwen2.5:0.5b` (별칭 `fast`/`local`) |
 
 - **키 + OAuth 둘 다 있으면 API 키가 우선**(표준 엔드포인트·전체 모델). OAuth 전용이면 위 백엔드로 동작합니다.

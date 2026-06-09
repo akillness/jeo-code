@@ -65,7 +65,9 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
     const prov = name as AuthProvider;
     if (OAUTH_FLOW_REGISTRY[prov]?.verifiedEndToEnd === false && !cfg.providers?.[prov]) {
       ready = false;
-      label = "OAuth (API key needed)";
+      label = name === "gemini"
+        ? "OAuth — Gemini needs an API key (Cloud Code Assist not served)"
+        : "OAuth (API key needed)";
     }
   }
   return {

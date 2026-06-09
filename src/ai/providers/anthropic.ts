@@ -7,7 +7,7 @@ const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
 const DEPRECATED_TEMPERATURE = "`temperature` is deprecated for this model.";
 
-function anthropicPayload(messages: Message[], options: CallOptions, stream: boolean, includeTemperature: boolean): string {
+export function anthropicPayload(messages: Message[], options: CallOptions, stream: boolean, includeTemperature: boolean): string {
   const model = options.model.startsWith("anthropic/") ? options.model.slice(10) : options.model;
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
   const anthropicMessages = messages.filter(m => m.role !== "system").map(m => ({ role: m.role, content: m.content }));
@@ -17,7 +17,11 @@ function anthropicPayload(messages: Message[], options: CallOptions, stream: boo
     max_tokens: options.maxTokens ?? 4000,
   };
   if (includeTemperature && options.temperature !== undefined) payload.temperature = options.temperature;
-  if (systemPrompt) payload.system = systemPrompt;
+  // Prompt caching (gjc parity): the system prompt (tool protocol + skills + project
+  // context) is large and stable across a session, so mark it cache_control:ephemeral.
+  // Anthropic then bills cached input at ~10% on later turns; below the ~1024-token
+  // cache minimum the marker is simply ignored (no error).
+  if (systemPrompt) payload.system = [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }];
   if (stream) payload.stream = true;
   return JSON.stringify(payload);
 }

@@ -2,7 +2,7 @@ import { test, expect, beforeAll, afterAll } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { findTool, searchTool, readTool, bashTool, IGNORED_DIRS } from "../src/agent/tools";
+import { findTool, searchTool, readTool, bashTool, lsTool, parseLineSelector, editTool, IGNORED_DIRS } from "../src/agent/tools";
 
 let dir = "";
 
@@ -23,6 +23,89 @@ afterAll(async () => {
 test("IGNORED_DIRS covers the usual noise", () => {
   expect(IGNORED_DIRS).toContain("node_modules");
   expect(IGNORED_DIRS).toContain(".git");
+});
+
+test("parseLineSelector: multi-range, a+n, sorting + merging, out-of-range drop", () => {
+  const r1 = parseLineSelector("3-5,10-12", 100);
+  expect("ranges" in r1 && r1.ranges).toEqual([[3, 5], [10, 12]]);
+  const r2 = parseLineSelector("50+3", 100);
+  expect("ranges" in r2 && r2.ranges).toEqual([[50, 52]]);
+  // overlapping/adjacent merge + sort
+  const r3 = parseLineSelector("10-12,1-3,11-15", 100);
+  expect("ranges" in r3 && r3.ranges).toEqual([[1, 3], [10, 15]]);
+  // out-of-range start dropped; clamps end to total
+  const r4 = parseLineSelector("999,8-", 10);
+  expect("ranges" in r4 && r4.ranges).toEqual([[8, 10]]);
+  // explicit reversed range is an error
+  const r5 = parseLineSelector("9-2", 100);
+  expect("error" in r5).toBe(true);
+});
+
+test("readTool: multi-range selector emits both ranges with a gap marker", async () => {
+  const f = path.join(dir, "multi.txt");
+  await fs.writeFile(f, Array.from({ length: 20 }, (_, i) => `line${i + 1}`).join("\n"));
+  const res = await readTool(f, "2-3,8-9");
+  expect(res.success).toBe(true);
+  expect(res.output).toContain("2|line2");
+  expect(res.output).toContain("3|line3");
+  expect(res.output).toContain("…"); // gap between the two ranges
+  expect(res.output).toContain("8|line8");
+  expect(res.output).not.toContain("5|line5");
+});
+
+test("readTool: a+n selector reads n lines from a", async () => {
+  const f = path.join(dir, "count.txt");
+  await fs.writeFile(f, Array.from({ length: 20 }, (_, i) => `L${i + 1}`).join("\n"));
+  const res = await readTool(f, "5+3");
+  expect(res.output).toContain("5|L5");
+  expect(res.output).toContain("7|L7");
+  expect(res.output).not.toContain("8|L8");
+});
+
+test("lsTool: lists dirs first (slash-suffixed) then files", async () => {
+  const res = await lsTool(".", dir);
+  expect(res.success).toBe(true);
+  const lines = res.output.split("\n");
+  expect(lines).toContain("src/");
+  expect(lines.indexOf("src/")).toBeLessThan(lines.indexOf("multi.txt"));
+});
+
+test("lsTool: a file path is a clear error (use read instead)", async () => {
+  const res = await lsTool("src/keep.ts", dir);
+  expect(res.success).toBe(false);
+  expect(res.error).toContain("Not a directory");
+});
+
+test("searchTool: ignoreCase matches mixed case", async () => {
+  await fs.writeFile(path.join(dir, "src", "case.ts"), "const Needle = 9;\n");
+  const sensitive = await searchTool("NEEDLE", "*.ts", dir, false);
+  expect(sensitive.output).not.toContain("case.ts");
+  const insensitive = await searchTool("NEEDLE", "*.ts", dir, true);
+  expect(insensitive.output).toContain("case.ts");
+});
+
+test("editTool: near-miss hint when only whitespace differs", async () => {
+  const f = path.join(dir, "edit.ts");
+  // First search line has trailing spaces in the file → raw substring match fails,
+  // but a trailing-whitespace-trimmed version matches → near-miss hint fires.
+  await fs.writeFile(f, "alpha   \nbeta\n");
+  const res = await editTool(f, "<<<<<<< SEARCH\nalpha\nbeta\n=======\nalpha\nBETA\n>>>>>>>", dir);
+  expect(res.success).toBe(false);
+  expect(res.error).toContain("whitespace-trimmed version DOES match");
+});
+
+test("editTool: anchor hint when first search line exists but block doesn't", async () => {
+  const f = path.join(dir, "edit2.ts");
+  await fs.writeFile(f, "function f() {\n  return 1;\n}\n");
+  const res = await editTool(f, "<<<<<<< SEARCH\nfunction f() {\n  return 999;\n=======\nfunction f() {\n  return 2;\n>>>>>>>", dir);
+  expect(res.success).toBe(false);
+  expect(res.error).toContain("first search line IS present");
+});
+
+test("bashTool: subdir runs the command in a resolved subdirectory", async () => {
+  const res = await bashTool("pwd", dir, 10_000, "src");
+  expect(res.success).toBe(true);
+  expect(res.output.trim().endsWith("/src")).toBe(true);
 });
 
 test("findTool skips node_modules and .git", async () => {

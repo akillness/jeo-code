@@ -77,6 +77,20 @@ test("skillsPromptSection contains every skill name", () => {
   expect(section).toContain("—");
 });
 
+test("skillsPromptSection caps an oversized skill catalog and reports omitted entries", () => {
+  const many = Array.from({ length: 80 }, (_, i) => ({
+    name: `skill-${i}`,
+    command: `/skill skill-${i}`,
+    summary: "S".repeat(180),
+    whenToUse: "",
+    details: "",
+  }));
+  const section = skillsPromptSection(many);
+  expect(section.length).toBeLessThanOrEqual(6_200);
+  expect(section).toContain("omitted for brevity");
+  expect(section.split("\n").length).toBeLessThanOrEqual(41);
+});
+
 test("runSkillsCommand --write: materializes one .md per skill", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-skills-"));
   try {

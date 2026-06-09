@@ -5214,7 +5214,7 @@ subagent's own stages/results were not exposed like gjc, and `/subagent ...` was
   `stream-events.test.ts` covers model-delegated `task` and direct one-shot `/subagent run`.
 - Verification: `bun test test/task-tool.test.ts test/stream-events.test.ts test/autocomplete.test.ts test/slash.test.ts test/tui-app.test.ts` → **61 pass / 0 fail**; `bun run typecheck` → 0 errors; `bun test` → **615 pass / 0 fail**; `bun run build` → ok.
 
-## Provider/status consistency + bounded project guidance/context — passes 850–853
+## Provider/status consistency + bounded project guidance/context — passes 850–856
 
 **Date:** 2026-06-08 · **Dimensions: OAuth/model truthfulness, hook/rule guidance loading, memory bloat control.**
 
@@ -5236,7 +5236,15 @@ execution path or allow context to grow from a few huge skill/rule packets.
   pasted SKILL.md / deep-dive / graphify packets can now compact before reaching 40 messages.
 - **853.** Parsed skill docs now cap `details` to 8k characters before `/skill` injection, so a
   single giant `SKILL.md` no longer pastes an unbounded workflow document into one turn.
+- **854.** Project-context loading now keeps a **reserved guidance budget** (`48k` root context +
+  `16k` hook/rule guidance) so huge `JEO.md` / `AGENTS.md` files cannot silently starve `.agents`
+  and `.joc` rules/hooks.
+- **855.** Global guidance parity: `loadProjectContext()` now scans `~/.agents/rules`,
+  `~/.agents/hooks`, and `~/.joc/rules` in addition to project-local directories, matching the
+  home+project shape already used for skill discovery.
+- **856.** `skillsPromptSection()` now caps the injected skill catalog (line count + char budget),
+  preventing a very large installed skill set from bloating the session system prompt.
 
-### Verification (passes 850–853)
+### Verification (passes 850–856)
 - Focused: `bun test test/compaction.test.ts test/context-files.test.ts test/provider-status.test.ts test/doctor.test.ts test/model-manager.test.ts test/skills.test.ts` → **40 pass / 0 fail**.
-- `bun run typecheck` → 0 errors.
+- `bun run typecheck` → 0 errors; full `bun test` → **625 pass / 0 fail**; `bun run build` → ok.

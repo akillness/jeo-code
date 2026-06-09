@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -7,6 +7,16 @@ import {
   withProjectContext,
   CONTEXT_CANDIDATES
 } from "../src/agent/context-files";
+
+const savedHome = process.env.HOME;
+beforeEach(() => {
+  delete process.env.HOME;
+});
+
+afterEach(() => {
+  if (savedHome === undefined) delete process.env.HOME;
+  else process.env.HOME = savedHome;
+});
 
 async function createTempDir(): Promise<string> {
   return await fs.mkdtemp(path.join(os.tmpdir(), "joc-context-test-"));
@@ -157,7 +167,7 @@ test("loadProjectContext loads bounded .agents rule and hook guidance after root
   }
 });
 
-test("loadProjectContext caps total project guidance so hook/rule files cannot bloat the prompt", async () => {
+test("loadProjectContext reserves guidance budget so large root files do not crowd out .agents rules", async () => {
   const tmpDir = await createTempDir();
   try {
     await fs.writeFile(path.join(tmpDir, "JEO.md"), "A".repeat(40_000), "utf-8");
@@ -168,9 +178,30 @@ test("loadProjectContext caps total project guidance so hook/rule files cannot b
     const context = await loadProjectContext(tmpDir);
     const total = context.reduce((sum, c) => sum + c.content.length, 0);
 
-    expect(total).toBeLessThanOrEqual(64_000 + "\n…(truncated)".length);
+    expect(total).toBeLessThanOrEqual(64_000 + "\n…(truncated)".length * 4);
+    expect(context.some(c => c.path === ".agents/rules/huge.md")).toBe(true);
     expect(context.some(c => c.content.includes("…(truncated)"))).toBe(true);
   } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadProjectContext also scans global ~/.agents guidance files", async () => {
+  const tmpDir = await createTempDir();
+  const fakeHome = await createTempDir();
+  process.env.HOME = fakeHome;
+  try {
+    await fs.mkdir(path.join(fakeHome, ".agents", "rules"), { recursive: true });
+    await fs.mkdir(path.join(fakeHome, ".agents", "hooks", "core"), { recursive: true });
+    await fs.writeFile(path.join(fakeHome, ".agents", "rules", "global.md"), "global rule", "utf-8");
+    await fs.writeFile(path.join(fakeHome, ".agents", "hooks", "core", "trigger.json"), "{\"name\":\"global\"}", "utf-8");
+
+    const context = await loadProjectContext(tmpDir);
+
+    expect(context.map(c => c.path)).toContain("~/.agents/rules/global.md");
+    expect(context.map(c => c.path)).toContain("~/.agents/hooks/core/trigger.json");
+  } finally {
+    await fs.rm(fakeHome, { recursive: true, force: true });
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });

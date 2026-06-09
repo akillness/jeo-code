@@ -5413,3 +5413,25 @@ Closing the LOW Codex Responses items from the provider review:
 - New tests: `codexResponsesRequest` emits `reasoning.effort` when set and omits it otherwise;
   `parseResponsesEvent` captures usage on both `response.incomplete` and `response.completed`, and
   still parses delta/error events.
+
+## Deep-interview brownfield evidence injection — pass 863
+
+**Date:** 2026-06-09 · **Dimensions: brownfield grounding, evidence-first questioning, prompt safety.**
+
+The topology gate fixed the interview shape, but brownfield turns still had no repository-grounded
+evidence in the model prompt. The next gap versus GJC was that `joc` labeled a request brownfield
+without actually carrying repo facts into the interview.
+
+- **863a.** `src/commands/deep-interview.ts` now captures a bounded `codebase_context` for brownfield
+  ideas: repo markers, relevant scanned directories, and keyword-matching file paths.
+- **863b.** `WorkflowState` now persists `codebase_context`, so resume flows keep the same repo
+  evidence instead of recomputing or forgetting it.
+- **863c.** Brownfield repo evidence is injected into the interview history with an explicit
+  instruction to cite those paths when relevant, pushing the questioning loop toward evidence-first
+  clarification instead of generic “tell me more” prompts.
+- **863d.** The startup banner now surfaces the brownfield evidence summary so the operator can see
+  what existing code surface the interview is grounding on.
+
+### Verification (pass 863)
+- Focused: `bun test test/deep-interview.test.ts` → **5 pass / 0 fail**.
+- Full: `bun run typecheck` → 0 errors; `bun test` → **642 pass / 0 fail**; `bun run build` → ok.

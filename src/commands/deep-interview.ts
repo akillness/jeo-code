@@ -121,6 +121,94 @@ function formatTopology(topology: WorkflowTopologyState): string {
     .join("\n");
 }
 
+const BROWNFIELD_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".json", ".yaml", ".yml", ".md"]);
+const BROWNFIELD_DIR_HINTS = ["src", "app", "lib", "packages", "functions", "scripts", "tests"] as const;
+const MAX_BROWNFIELD_FILES = 80;
+const MAX_BROWNFIELD_DEPTH = 3;
+const MAX_BROWNFIELD_MATCHES = 8;
+const MAX_BROWNFIELD_CONTEXT_CHARS = 3_000;
+const IDEA_STOP_WORDS = new Set([
+  "the", "and", "for", "with", "that", "this", "from", "into", "your", "build", "create", "make",
+  "add", "support", "provide", "improve", "update", "modify", "extend", "existing", "flow", "system",
+  "기존", "수정", "개선", "확장", "구현", "기능", "지원", "추가",
+]);
+
+function keywordTokens(idea: string): string[] {
+  const seen = new Set<string>();
+  const tokens = idea
+    .toLowerCase()
+    .replace(/[^a-z0-9가-힣\s_-]/g, " ")
+    .split(/\s+/)
+    .map(token => token.trim())
+    .filter(token => token.length >= 3 && !IDEA_STOP_WORDS.has(token));
+  for (const token of tokens) seen.add(token);
+  return [...seen];
+}
+
+async function collectCandidateFiles(root: string, relDir: string, depth: number, out: string[]): Promise<void> {
+  if (depth < 0 || out.length >= MAX_BROWNFIELD_FILES) return;
+  let entries: import("node:fs").Dirent[] = [];
+  try {
+    entries = await fs.readdir(path.join(root, relDir), { withFileTypes: true });
+  } catch {
+    return;
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    if (out.length >= MAX_BROWNFIELD_FILES) return;
+    const rel = relDir ? path.join(relDir, entry.name) : entry.name;
+    if (entry.isDirectory()) {
+      await collectCandidateFiles(root, rel, depth - 1, out);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if (BROWNFIELD_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) out.push(rel.replace(/\\/g, "/"));
+  }
+}
+
+async function buildBrownfieldContext(cwd: string, idea: string): Promise<string> {
+  const repoMarkers = [".git", "src", "package.json", "tsconfig.json", "README.md"];
+  const presentMarkers: string[] = [];
+  for (const marker of repoMarkers) {
+    try {
+      await fs.access(path.join(cwd, marker));
+      presentMarkers.push(marker);
+    } catch {
+      continue;
+    }
+  }
+
+  const candidateFiles: string[] = [];
+  for (const dir of BROWNFIELD_DIR_HINTS) {
+    await collectCandidateFiles(cwd, dir, MAX_BROWNFIELD_DEPTH, candidateFiles);
+  }
+
+  const keywords = keywordTokens(idea);
+  const ranked = candidateFiles
+    .map(file => {
+      const lower = file.toLowerCase();
+      const matches = keywords.filter(token => lower.includes(token));
+      return { file, matches };
+    })
+    .filter(entry => entry.matches.length > 0)
+    .sort((a, b) => b.matches.length - a.matches.length || a.file.localeCompare(b.file))
+    .slice(0, MAX_BROWNFIELD_MATCHES);
+
+  const lines = [
+    `Repo markers: ${presentMarkers.join(", ") || "(none)"}`,
+    `Relevant directories scanned: ${BROWNFIELD_DIR_HINTS.filter(dir => candidateFiles.some(file => file.startsWith(`${dir}/`) || file === dir)).join(", ") || "(none)"}`,
+    ranked.length > 0
+      ? "Path evidence:"
+      : "Path evidence: no keyword-matching files found yet; ask the user which existing surface should change.",
+    ...ranked.map(entry => `- ${entry.file} (matched: ${entry.matches.join(", ")})`),
+  ];
+
+  const summary = lines.join("\n");
+  return summary.length > MAX_BROWNFIELD_CONTEXT_CHARS
+    ? summary.slice(0, MAX_BROWNFIELD_CONTEXT_CHARS - 1) + "…"
+    : summary;
+}
+
 export async function runDeepInterviewCommand(args: string[]): Promise<void> {
   const auto = args.includes("--auto") || !process.stdin.isTTY;
   const filteredArgs = args.filter(arg => arg !== "--auto");
@@ -177,6 +265,10 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
     const threshold = state?.threshold ?? DEFAULT_THRESHOLD;
     const thresholdSource = state?.threshold_source ?? DEFAULT_THRESHOLD_SOURCE;
     const projectType = state?.type ?? await inferProjectType(cwd, initialIdea);
+    const codebaseContext =
+      projectType === "brownfield"
+        ? (state?.codebase_context ?? await buildBrownfieldContext(cwd, initialIdea))
+        : undefined;
 
     if (!state) {
       state = {
@@ -191,6 +283,7 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
         threshold_source: thresholdSource,
         type: projectType,
         topology: { status: "pending", confirmed_at: null, components: [], deferrals: [], last_targeted_component_id: null },
+        codebase_context: codebaseContext,
       };
       await writeWorkflowState("deep-interview", state, cwd);
     } else {
@@ -205,6 +298,10 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
       }
       if (!state.topology) {
         state.topology = { status: "legacy_missing", confirmed_at: null, components: [], deferrals: [], last_targeted_component_id: null };
+        changed = true;
+      }
+      if (projectType === "brownfield" && !state.codebase_context && codebaseContext) {
+        state.codebase_context = codebaseContext;
         changed = true;
       }
       if (changed) await writeWorkflowState("deep-interview", state, cwd);
@@ -276,9 +373,21 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
         `Target questions so every active component reaches clear goals, constraints, and acceptance criteria.`,
     });
 
+    if (projectType === "brownfield" && codebaseContext) {
+      history.push({
+        role: "user",
+        content:
+          `Brownfield repo evidence (cite these paths when relevant):\n${codebaseContext}\n\n` +
+          `Ask questions that clarify how the requested change should fit this existing codebase.`,
+      });
+    }
+
     console.log(`\n=== Starting Socratic Interview: ${slug} ===`);
     console.log(`Initial Idea: ${JSON.stringify(initialIdea)}`);
     console.log(`Project Type: ${projectType}`);
+    if (projectType === "brownfield" && codebaseContext) {
+      console.log(`Brownfield Context:\n${codebaseContext}\n`);
+    }
     console.log(`Ambiguity Threshold: ${(threshold * 100).toFixed(0)}% (source: ${thresholdSource})\n`);
 
     let round = 1;

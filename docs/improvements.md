@@ -4689,3 +4689,27 @@ auth storage, MCP server/tools) plus live smoke tests found real defects:
   `joc auth refresh bogus` / `auth login bogus` → "Unknown provider"; piped `joc setup` → clean TTY guidance.
 - Confirmed correct (unchanged): expiry/refresh math (5-min skew), real call-path credential precedence,
   MCP protocol shapes/error codes, config-schema validation.
+
+## SKILL.md frontmatter block-scalar parsing — pass 810
+
+**Date:** 2026-06-08 · **Dimension: skill discovery / menu correctness (parity with gjc).**
+
+`joc skills` and the `/skill` menu surfaced garbage one-line summaries like `Use this skill when >`
+for dozens of real user skills (tdd, caveman, to-prd, grill-me, setup-pre-commit, grill-with-docs, …).
+
+- **810.** `parseSkillMarkdown` only folded a YAML block scalar when the value was EXACTLY `>` or `|`.
+  Real SKILL.md files in the wild use the technically-invalid-but-ubiquitous lead-in form
+  `description: Use this skill when >` followed by an indented continuation block. joc kept the lead-in
+  verbatim as the summary and DROPPED the whole continuation block. Fixed: detect a trailing block-scalar
+  indicator (`>`/`|` with optional chomping `>-`/`|+`) when preceded by whitespace or spanning the whole
+  value, fold the indented block in, and join it onto the lead-in. A description that merely ENDS in `>`
+  (e.g. `returns Promise<T>`, no whitespace before the `>`) is left intact — no regression.
+- The "duplicate" entries in `joc skills` (e.g. `llm-monitoring-dashboard` ×3) are NOT a bug: they are
+  distinct directories the user keeps (timestamped backup dirs like `... 오후 11.16.16`); `loadSkills`
+  already dedupes by directory name, and faithfully listing every discovered dir is correct.
+
+### Verification (pass 810)
+- `bun run typecheck` → 0 errors. `bun test` → **534 pass / 0 fail**. `bun run build` → ok.
+- New `parseSkillMarkdown` regression test (plain `>`, lead-in `... >`, chomping `>-`, and the
+  `returns Promise<T>` no-regression case).
+- Live `joc skills` now shows real summaries for tdd/caveman/to-prd/grill-me/setup-pre-commit/grill-with-docs.

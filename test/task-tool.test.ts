@@ -134,6 +134,41 @@ test("createTaskTool: per-role model override is reported in the output", async 
   expect(res.success).toBe(true);
   expect(res.output).toContain("on gemini-2.5-pro");
 });
+test("createTaskTool: per-role model override is the model passed to callLlm (provider routing)", async () => {
+  const seen: (string | undefined)[] = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_msgs: unknown, options: { model?: string } = {}) => {
+      seen.push(options.model);
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nIn Scope:\nOut of Scope:\nFile-level Changes:\nSequencing:\nAcceptance Criteria:\nVerification:\nRisks:" } });
+    },
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({
+    config: { defaultModel: "ollama/fast", subagents: { planner: { model: "gemini-2.5-pro" } } },
+  });
+  const res = await tool({ role: "planner", task: "sequence the work" }, await tmpDir());
+  expect(res.success).toBe(true);
+  // The override — not the default — must be the model handed to the provider call.
+  expect(seen).toContain("gemini-2.5-pro");
+  expect(seen).not.toContain("ollama/fast");
+});
+
+test("createTaskTool: role without an override falls back to the (fresh) default model", async () => {
+  const seen: (string | undefined)[] = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_msgs: unknown, options: { model?: string } = {}) => {
+      seen.push(options.model);
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nIn Scope:\nOut of Scope:\nFile-level Changes:\nSequencing:\nAcceptance Criteria:\nVerification:\nRisks:" } });
+    },
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({
+    config: { defaultModel: "anthropic/claude-sonnet-4-5", subagents: { executor: { model: "gpt-5.5" } } },
+  });
+  const res = await tool({ role: "planner", task: "sequence the work" }, await tmpDir());
+  expect(res.success).toBe(true);
+  expect(seen).toContain("anthropic/claude-sonnet-4-5");
+});
 test("createTaskTool: read-only fan-out runs all tasks and combines results", async () => {
   await mock.module("../src/agent/loop", () => ({
     callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nFindings:\nRecommendations:\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } }),

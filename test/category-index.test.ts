@@ -15,6 +15,7 @@ test("categoryForTool classifies command, file, diff, search, subagent, and gene
   expect(categoryForTool("edit")).toBe("diff");
   expect(categoryForTool("search")).toBe("search");
   expect(categoryForTool("subagent")).toBe("subagent");
+  expect(categoryForTool("task")).toBe("subagent");
   expect(categoryForTool("unknown")).toBe("tool");
 });
 

@@ -25,6 +25,7 @@ import { resolveTheme, themeGradient } from "./components/themes";
 import { detectColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, type ForgeSummary } from "./components/forge";
 import { renderJocStatus } from "./components/status";
+import { categoryBadge } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
 import chalk from "chalk";
@@ -64,6 +65,7 @@ export class LaunchTui {
   private readonly forgeSummaries: ForgeSummary[] = [];
   private readonly footer: FooterData;
   private startedAt = 0;
+  private currentStepStartedAt = 0;
   private tickCount = 0;
   private mutationGuarded = false;
   private finished = false;
@@ -139,6 +141,7 @@ export class LaunchTui {
       onStep: step => {
         this.footer.step = step;
         this.thinking = true; // waiting on the model for this step
+        this.currentStepStartedAt = Date.now();
         this.spinner.updateStep(step, this.footer.maxSteps);
         this.spinner.next();
         this.draw();
@@ -158,13 +161,14 @@ export class LaunchTui {
           this.pendingIndex = null;
         }
         this.rememberForge(summarizeForgeResult(tool, success, output));
-        const marker = success ? (this.unicode ? "✓" : "v") : (this.unicode ? "✗" : "x");
-        this.stream.append(`${marker} ${success ? "complete" : "error"}: ${tool}\n`);
+        // Categorize the result so the stream reads as a classified ledger:
+        // [DONE] for success, [ERR] for failure — consistent with the forge/tool-list badges.
+        const resBadge = categoryBadge(success ? "done" : "error", { color: this.theme.color });
+        this.stream.append(`${resBadge} ${tool}\n`);
         this.draw();
       },
       onError: msg => {
-        const marker = this.unicode ? "✗" : "x";
-        this.stream.append(`${marker} error: ${msg}\n`);
+        this.stream.append(`${categoryBadge("error", { color: this.theme.color })} ${msg}\n`);
         this.draw();
       },
     };
@@ -180,7 +184,8 @@ export class LaunchTui {
     const running = this.tools.currentTool();
     // Waiting on the model and no tool is mid-flight → make the pause legible.
     if (this.thinking && !running) {
-      return `calling model (${this.footer.model})…`;
+      const elapsed = this.currentStepStartedAt ? ((Date.now() - this.currentStepStartedAt) / 1000).toFixed(1) : "0.0";
+      return `calling model (${this.footer.model}) (${elapsed}s)…`;
     }
     if (running) {
       const last = this.forgeSummaries[this.forgeSummaries.length - 1];
@@ -208,7 +213,9 @@ export class LaunchTui {
    */
   onSubagentEvent(e: TaskSubEvent): void {
     if (this.finished) return;
+    const color = this.theme.color;
     const role = e.role || "subagent";
+    const badge = categoryBadge("subagent", { color });
     const ok = this.unicode ? "✓" : "v";
     const bad = this.unicode ? "✗" : "x";
     const detail = (e.detail ?? "").split("\n").find(l => l.trim().length > 0)?.trim().slice(0, 140) ?? "";
@@ -216,19 +223,19 @@ export class LaunchTui {
     const step = e.step && e.maxSteps ? ` step ${e.step}/${e.maxSteps}` : "";
     switch (e.kind) {
       case "start":
-        this.stream.append(`${this.unicode ? "▸" : ">"} [${role}] start: ${detail}\n`);
+        this.stream.append(`${badge} ${role} ${this.unicode ? "▸" : ">"} start: ${detail}\n`);
         break;
       case "step":
-        this.stream.append(`  [${role}${step}] ${detail || "working"}\n`);
+        this.stream.append(`  ${badge} ${role}${step}: ${detail || "working"}\n`);
         break;
       case "tool":
-        this.stream.append(`  [${role}] ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`);
+        this.stream.append(`  ${badge} ${role} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`);
         break;
       case "error":
-        this.stream.append(`  [${role}] ${bad} ${detail || "error"}\n`);
+        this.stream.append(`  ${badge} ${role} ${bad} ${detail || "error"}\n`);
         break;
       case "done":
-        this.stream.append(`${this.unicode ? "◂" : "<"} [${role}] done${e.success === false ? " (incomplete)" : ""}: ${detail}\n`);
+        this.stream.append(`${badge} ${role} ${this.unicode ? "◂" : "<"} done${e.success === false ? " (incomplete)" : ""}: ${detail}\n`);
         break;
     }
     this.draw();

@@ -313,12 +313,12 @@ test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result i
   console.log = (...a: unknown[]) => logged.push(a.join(" "));
   try { tui.finish("done"); } finally { console.log = origLog; }
   const txt = logged.join("\n");
-  expect(txt).toContain("[executor] start: Add a retry guard to engine.ts"); // assignment
-  expect(txt).toContain("[executor]"); // nested tool calls present
-  expect(txt).toContain("[executor step 1/15]");
+  expect(txt).toContain("[AGENT]"); // every nested line carries the subagent category badge
+  expect(txt).toContain("executor > start: Add a retry guard to engine.ts"); // assignment
+  expect(txt).toContain("[AGENT] executor step 1/15:"); // step header
   expect(txt).toContain("read src/agent/engine.ts");
   expect(txt).toContain("1|const ok = true;");
-  expect(txt).toContain("completed in 4 steps: guard added"); // result summary
+  expect(txt).toContain("done: completed in 4 steps: guard added"); // result summary
 });
 
 test("LaunchTui (boxed): [STEP] shows the real in-flight file and [TOOL] exposes the double helix", () => {

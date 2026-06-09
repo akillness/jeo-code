@@ -36,10 +36,17 @@ test("createStreamEvents: 'done' and invalid responses do not emit a step line",
 });
 
 // Imported lazily so mock.restore() between suites stays clean.
-import { createStreamEvents } from "../src/commands/launch";
+import { createStreamEvents, formatTaskSubEvent } from "../src/commands/launch";
 function createStreamEventsSync(maxSteps: number, log: (s: string) => void) {
   return createStreamEvents(maxSteps, log);
 }
+
+test("formatTaskSubEvent treats only explicit false as incomplete", () => {
+  const out = formatTaskSubEvent({ kind: "done", role: "executor", detail: "ok" }).replace(/\x1b\[[0-9;]*m/g, "");
+  expect(out).toContain("[AGENT]");
+  expect(out).toContain("done: ok");
+  expect(out).not.toContain("(incomplete)");
+});
 
 test("end-to-end: a piped one-shot turn prints the per-step flow (not just the final reply)", async () => {
   let turn = 0;
@@ -119,7 +126,54 @@ test("end-to-end: cmd-mode task subagent prints nested steps and result summarie
   expect(out).toContain("[executor] ✓ read note.txt — 1|hello from note");
   expect(out).toContain("◂ [executor] done: subagent read it");
   expect(out).toContain("✓ task executor — [Executor subagent] completed");
+  expect(out).toContain("[AGENT]"); // nested subagent lines carry the category badge
+  expect(out).toContain("[STEP]"); // parent step lines carry the progress badge
+  expect(out).toContain("[DONE]"); // successful tool results carry the completed badge
   expect(out).toContain("parent integrated");
+});
+
+test("end-to-end: a disk-persisted subagent model override is the model the in-loop task tool uses", async () => {
+  let turn = 0;
+  const subagentModels: (string | undefined)[] = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_msgs: unknown, options: { model?: string } = {}) => {
+      turn++;
+      // turn 1: parent delegates. turns 2-3: subagent works + done. turn 4: parent done.
+      if (turn === 1) return JSON.stringify({ tool: "task", arguments: { role: "executor", task: "inspect note.txt" } });
+      if (turn === 2) { subagentModels.push(options.model); return JSON.stringify({ tool: "read", arguments: { filePath: "note.txt" } }); }
+      if (turn === 3) { subagentModels.push(options.model); return JSON.stringify({ tool: "done", arguments: { reason: "ok\nSummary:\nChanged Files:\nVerification:" } }); }
+      return JSON.stringify({ tool: "done", arguments: { reason: "parent done" } });
+    },
+  }));
+
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-ovr-cfg-"));
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-ovr-work-"));
+  await fs.writeFile(path.join(workDir, "note.txt"), "hello\n");
+  // Persist a per-role override so a DIFFERENT provider/model is pinned for executor.
+  await fs.writeFile(
+    path.join(cfgDir, "config.json"),
+    JSON.stringify({ defaultModel: "ollama/qwen2.5:0.5b", subagents: { executor: { model: "anthropic/claude-haiku-4-5" } } }),
+  );
+  const savedCfg = process.env.JOC_CONFIG_DIR;
+  const savedCwd = process.cwd();
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    process.env.JOC_CONFIG_DIR = cfgDir;
+    process.chdir(workDir);
+    const { runLaunchCommand } = await import("../src/commands/launch");
+    await runLaunchCommand(["delegate", "--model", "ollama/qwen2.5:0.5b", "--max-steps", "4", "--no-session", "--no-tui"]);
+  } finally {
+    console.log = origLog;
+    process.chdir(savedCwd);
+    if (savedCfg === undefined) delete process.env.JOC_CONFIG_DIR; else process.env.JOC_CONFIG_DIR = savedCfg;
+    await fs.rm(cfgDir, { recursive: true, force: true });
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
+
+  // The delegated subagent must run on the pinned override, NOT the parent default.
+  expect(subagentModels.length).toBeGreaterThan(0);
+  expect(subagentModels.every(m => m === "anthropic/claude-haiku-4-5")).toBe(true);
 });
 
 test("end-to-end: one-shot /subagent run executes directly and streams the subagent flow", async () => {

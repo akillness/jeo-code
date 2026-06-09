@@ -126,6 +126,39 @@ export function skillsPromptSection(skills: SkillDoc[] = SKILLS): string {
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
+import { existsSync, statSync, readFileSync } from "node:fs";
+
+export function tryResolveSkillFromFilePath(filePath: string): SkillDoc | null {
+  try {
+    let targetPath = path.resolve(filePath);
+    if (!existsSync(targetPath)) {
+      return null;
+    }
+    const stat = statSync(targetPath);
+    if (stat.isDirectory()) {
+      const skillMd = path.join(targetPath, "SKILL.md");
+      if (existsSync(skillMd) && statSync(skillMd).isFile()) {
+        targetPath = skillMd;
+      } else {
+        return null;
+      }
+    } else if (!stat.isFile() || !targetPath.endsWith(".md")) {
+      return null;
+    }
+
+    const content = readFileSync(targetPath, "utf-8");
+    // Determine a name for this skill
+    let skillName = path.basename(targetPath, ".md");
+    if (skillName.toLowerCase() === "skill" || skillName.toLowerCase() === "readme") {
+      // Use the directory name if the filename is generic
+      skillName = path.basename(path.dirname(targetPath));
+    }
+    const parsed = parseSkillMarkdown(skillName, content);
+    return isSupportedExternalSkill(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 const BUILTIN_SLASH_ALIASES = new Set([
   "/help", "/clear", "/compact", "/model", "/models", "/provider", "/logout",
   "/agents", "/subagent", "/subagents", "/config", "/roles", "/thinking",
@@ -353,11 +386,22 @@ export function parseSkillInvocation(input: string, skills: SkillDoc[]): SkillIn
     const rest = explicitEntrypoint === "/skill:" ? trimmed.substring(7).trim() : trimmed.substring(6).trim();
     if (!rest) return null;
     const [name, ...intentParts] = rest.split(/\s+/);
-    const skill = getSkillFrom(skills, name ?? "");
+    let skill = getSkillFrom(skills, name ?? "");
+    if (!skill && name) {
+      skill = tryResolveSkillFromFilePath(name) ?? undefined;
+    }
     return skill ? { skill, intent: intentParts.join(" ").trim() } : null;
   }
 
   const command = trimmed.split(/\s+/, 1)[0] ?? "";
-  const skill = getSkillBySlash(skills, command);
+  let skill = getSkillBySlash(skills, command);
+  if (!skill) {
+    if (command.startsWith("/") || command.startsWith(".") || command.includes("/")) {
+      const resolved = tryResolveSkillFromFilePath(command);
+      if (resolved) {
+        return { skill: resolved, intent: trimmed.slice(command.length).trim(), invokedAs: command };
+      }
+    }
+  }
   return skill ? { skill, intent: trimmed.slice(command.length).trim(), invokedAs: command } : null;
 }

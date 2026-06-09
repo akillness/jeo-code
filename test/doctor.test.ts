@@ -6,16 +6,28 @@ import * as path from "node:path";
 let cfgDir = "";
 const savedCfgDir = process.env.JOC_CONFIG_DIR;
 const savedFetch = globalThis.fetch;
+// readGlobalConfig overlays env API keys onto provider gaps, so clear them to keep
+// "no credential" / "oauth-only" diagnostics deterministic regardless of the host env.
+const CRED_ENV = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_OAUTH_TOKEN", "GEMINI_OAUTH_TOKEN"];
+const savedCredEnv: Record<string, string | undefined> = {};
 
 beforeEach(async () => {
   cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-doctor-"));
   process.env.JOC_CONFIG_DIR = cfgDir;
+  for (const k of CRED_ENV) {
+    savedCredEnv[k] = process.env[k];
+    delete process.env[k];
+  }
 });
 
 afterEach(async () => {
   globalThis.fetch = savedFetch;
   if (savedCfgDir === undefined) delete process.env.JOC_CONFIG_DIR;
   else process.env.JOC_CONFIG_DIR = savedCfgDir;
+  for (const k of CRED_ENV) {
+    if (savedCredEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedCredEnv[k];
+  }
   if (cfgDir) await fs.rm(cfgDir, { recursive: true, force: true });
 });
 

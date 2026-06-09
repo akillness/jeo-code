@@ -12,6 +12,7 @@ import {
   parseMaxSteps,
   withSubagentSetting,
   clearSubagentSetting,
+  validateSubagentDoneReason,
 } from "../src/agent/subagents";
 
 test("registry exposes the four bundled roles; only executor mutates", () => {
@@ -44,36 +45,25 @@ test("resolveSubagentMaxSteps: override → role default → 15 fallback", () =>
   expect(resolveSubagentMaxSteps("unknown", {})).toBe(15);
 });
 
-test("subagentSystemPrompt: read-only roles get a no-mutation directive", () => {
+test("subagentSystemPrompt: role prompts expose richer contracts", () => {
   const exec = subagentSystemPrompt(getSubagentRole("executor")!);
-  expect(exec).not.toContain("READ-ONLY");
-  const arch = subagentSystemPrompt(getSubagentRole("architect")!);
-  expect(arch).toContain("READ-ONLY");
-  expect(arch).toContain("Do not create or modify files");
-});
+  expect(exec).toContain("<execution_loop>");
+  expect(exec).toContain("Changed Files:");
+  expect(exec).toContain("Verification:");
 
-test("subagentSystemPrompt: read-only roles use read/search verification instead of execution", () => {
-  const arch = subagentSystemPrompt(getSubagentRole("architect")!);
-  expect(arch).not.toContain("run tests / execute the program");
-  expect(arch).toContain("Verify by reading/searching");
-  expect(arch).toContain("do not run tests or execute programs");
+  const planner = subagentSystemPrompt(getSubagentRole("planner")!);
+  expect(planner).toContain("File-level Changes:");
+  expect(planner).toContain("Acceptance Criteria:");
+  expect(planner).toContain("You have these READ-ONLY tools");
 
-  const exec = subagentSystemPrompt(getSubagentRole("executor")!);
-  expect(exec).toContain("run tests / execute the program");
-});
-
-test("subagentSystemPrompt: read-only roles advertise only non-mutating tools", () => {
   const arch = subagentSystemPrompt(getSubagentRole("architect")!);
-  // The restricted protocol must NOT offer write/edit/bash, which subagentToolset removed.
-  expect(arch).not.toMatch(/^\s*\d+\.\s*write\b/m);
-  expect(arch).not.toMatch(/^\s*\d+\.\s*edit\b/m);
-  expect(arch).not.toMatch(/^\s*\d+\.\s*bash\b/m);
-  expect(arch).toContain("read");
-  expect(arch).toContain("search");
-  // The executor (mutating) prompt still advertises write/edit/bash.
-  const exec = subagentSystemPrompt(getSubagentRole("executor")!);
-  expect(exec).toMatch(/^\s*\d+\.\s*write\b/m);
-  expect(exec).toMatch(/^\s*\d+\.\s*bash\b/m);
+  expect(arch).toContain("Architectural Status:");
+  expect(arch).toContain("Code Review Recommendation:");
+  expect(arch).toContain("CRITICAL");
+
+  const critic = subagentSystemPrompt(getSubagentRole("critic")!);
+  expect(critic).toContain("[OKAY]");
+  expect(critic).toContain("Required Fixes:");
 });
 
 test("subagentToolset: read-only roles drop write/edit/bash, executor keeps them", () => {
@@ -110,4 +100,14 @@ test("subagent helpers parse and persist role overrides immutably", () => {
   const cleared = clearSubagentSetting({ subagents: patched }, "planner");
   expect(cleared).toEqual({});
   expect(patched).toHaveProperty("planner");
+});
+
+test("validateSubagentDoneReason enforces role-specific done markers", () => {
+  const architect = getSubagentRole("architect")!;
+  expect(validateSubagentDoneReason(architect, "Summary:\nFindings:\nArchitectural Status: WATCH\nCode Review Recommendation: COMMENT").ok).toBe(true);
+  expect(validateSubagentDoneReason(architect, "reviewed").ok).toBe(false);
+
+  const critic = getSubagentRole("critic")!;
+  expect(validateSubagentDoneReason(critic, "[REJECT]\nJustification:\nSummary:\nRequired Fixes:").ok).toBe(true);
+  expect(validateSubagentDoneReason(critic, "Justification:\nSummary:").ok).toBe(false);
 });

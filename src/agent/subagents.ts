@@ -9,8 +9,12 @@
  * review/plan lane physically cannot edit the repo, mirroring gjc's read-only
  * role agents.
  */
-import { DEFAULT_TOOLS, executorSystemPrompt, READONLY_TOOL_PROTOCOL, type ToolHandler } from "./engine";
+import { DEFAULT_TOOLS, TOOL_PROTOCOL, READONLY_TOOL_PROTOCOL, type ToolHandler } from "./engine";
 import type { Config } from "./state";
+import architectPrompt from "../prompts/agents/architect.md" with { type: "text" };
+import criticPrompt from "../prompts/agents/critic.md" with { type: "text" };
+import executorPrompt from "../prompts/agents/executor.md" with { type: "text" };
+import plannerPrompt from "../prompts/agents/planner.md" with { type: "text" };
 
 export interface SubagentRole {
   /** Stable id used in config + `/agents <id>`. */
@@ -23,6 +27,10 @@ export interface SubagentRole {
   readOnly: boolean;
   /** Default tool-loop step budget for this role. */
   defaultMaxSteps: number;
+  /** Role-specific prompt template. */
+  prompt: string;
+  /** Required markers that must appear in done.reason. */
+  requiredDoneMarkers?: string[];
 }
 
 /** The four bundled subagent roles. `executor` is the only mutating role. */
@@ -33,6 +41,8 @@ export const SUBAGENT_ROLES: readonly SubagentRole[] = [
     description: "Bounded implementation, refactors, fixes, and verification-ready edits.",
     readOnly: false,
     defaultMaxSteps: 15,
+    prompt: executorPrompt,
+    requiredDoneMarkers: ["Summary:", "Changed Files:", "Verification:"],
   },
   {
     id: "planner",
@@ -40,6 +50,8 @@ export const SUBAGENT_ROLES: readonly SubagentRole[] = [
     description: "Read-only sequencing, acceptance criteria, risks, and handoff shape.",
     readOnly: true,
     defaultMaxSteps: 10,
+    prompt: plannerPrompt,
+    requiredDoneMarkers: ["Summary:", "File-level Changes:", "Verification:"],
   },
   {
     id: "architect",
@@ -47,6 +59,8 @@ export const SUBAGENT_ROLES: readonly SubagentRole[] = [
     description: "Read-only architecture and code review with severity-rated findings.",
     readOnly: true,
     defaultMaxSteps: 10,
+    prompt: architectPrompt,
+    requiredDoneMarkers: ["Summary:", "Findings:", "Architectural Status:", "Code Review Recommendation:"],
   },
   {
     id: "critic",
@@ -54,6 +68,8 @@ export const SUBAGENT_ROLES: readonly SubagentRole[] = [
     description: "Read-only plan critic; approves only actionable, verifiable plans.",
     readOnly: true,
     defaultMaxSteps: 8,
+    prompt: criticPrompt,
+    requiredDoneMarkers: ["Justification:"],
   },
 ];
 
@@ -91,24 +107,33 @@ export function resolveSubagentMaxSteps(roleId: string, config: Pick<Config, "su
   return getSubagentRole(roleId)?.defaultMaxSteps ?? 15;
 }
 
-/** Build a role-specific executor system prompt; read-only roles get a no-mutation directive. */
+function renderRolePrompt(template: string, role: SubagentRole): string {
+  return template
+    .replaceAll("{{TOOL_PROTOCOL}}", TOOL_PROTOCOL)
+    .replaceAll("{{READONLY_TOOL_PROTOCOL}}", READONLY_TOOL_PROTOCOL)
+    .replaceAll("{{ROLE_TITLE}}", role.title)
+    .trim();
+}
+
+export function validateSubagentDoneReason(role: SubagentRole, reason: string | undefined): { ok: boolean; missing?: string[] } {
+  const trimmed = (reason ?? "").trim();
+  if (!trimmed) return { ok: false, missing: ["done.reason"] };
+  if (role.id === "critic") {
+    const verdicts = ["[OKAY]", "[ITERATE]", "[REJECT]"];
+    const hasVerdict = verdicts.some(marker => trimmed.startsWith(marker));
+    const missing = [
+      ...(hasVerdict ? [] : ["[OKAY]|[ITERATE]|[REJECT]"]),
+      ...((role.requiredDoneMarkers ?? []).filter(marker => !trimmed.includes(marker))),
+    ];
+    return { ok: missing.length === 0, missing };
+  }
+  const missing = (role.requiredDoneMarkers ?? []).filter(marker => !trimmed.includes(marker));
+  return { ok: missing.length === 0, missing };
+}
+
+/** Build a role-specific system prompt from its dedicated template. */
 export function subagentSystemPrompt(role: SubagentRole): string {
-  if (!role.readOnly) return executorSystemPrompt(`${role.title} subagent — ${role.description}`);
-  // Read-only roles get a restricted protocol so the model never tries (and wastes
-  // scarce steps on) write/edit/bash — which `subagentToolset` has already removed.
-  // They also need a read-only verification directive: the generic executor prompt
-  // says "run tests / execute the program", but these roles intentionally have no
-  // bash tool and should not attempt execution.
-  const base = executorSystemPrompt(
-    `${role.title} subagent — ${role.description}`,
-    READONLY_TOOL_PROTOCOL,
-    "Verify by reading/searching the relevant files and citing evidence before calling done; do not run tests or execute programs.",
-  );
-  return (
-    base +
-    `\n\nYou are a READ-ONLY ${role.title}. Do not create or modify files; ` +
-    `use read / find / search only, then report your findings via done.`
-  );
+  return renderRolePrompt(role.prompt, role);
 }
 
 /**

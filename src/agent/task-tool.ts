@@ -21,6 +21,7 @@ import {
   resolveSubagentModel,
   resolveSubagentMaxSteps,
   subagentRoleIds,
+  validateSubagentDoneReason,
 } from "./subagents";
 
 /** Lifecycle event emitted while a delegated subagent runs. */
@@ -141,10 +142,13 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       },
     });
     const reason = result.doneReason?.trim() || `(subagent reached the ${result.steps}-step limit without signaling done)`;
-    opts.onEvent?.({ role: role.id, kind: "done", detail: reason, success: result.done, step: result.steps, maxSteps, model });
-    const header = `[${role.title} subagent] ${result.done ? "completed" : "stopped"} in ${result.steps} step(s) on ${model}.`;
+    const validation = validateSubagentDoneReason(role, reason);
+    const complete = result.done && validation.ok;
+    const detail = validation.ok ? reason : `${reason}\n\n[contract incomplete: missing ${validation.missing?.join(", ")}]`;
+    opts.onEvent?.({ role: role.id, kind: "done", detail, success: complete, step: result.steps, maxSteps, model });
+    const header = `[${role.title} subagent] ${complete ? "completed" : "stopped"} in ${result.steps} step(s) on ${model}.`;
     const body = trace.length ? `\nSteps:\n${trace.join("\n")}` : "";
-    return { success: result.done, output: `${header}${body}\n\nResult:\n${reason}` };
+    return { success: complete, output: `${header}${body}\n\nResult:\n${detail}` };
   };
 
   return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {

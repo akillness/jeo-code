@@ -18,7 +18,7 @@ test("createTaskTool: executor delegates, runs a tool, then completes on done", 
     callLlm: async () => {
       turn++;
       if (turn === 1) return JSON.stringify({ tool: "find", arguments: { globPattern: "*" } });
-      return JSON.stringify({ tool: "done", arguments: { reason: "scaffold ready" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nChanged Files:\nVerification:\nOpen Risks:\nscaffold ready" } });
     },
   }));
 
@@ -84,7 +84,7 @@ test("createTaskTool: unknown explicit role is rejected instead of executor fall
 
 test("createTaskTool: omitted role defaults to executor", async () => {
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "ok" } }),
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nChanged Files:\nVerification:\nOpen Risks:" } }),
   }));
   const { createTaskTool } = await import("../src/agent/task-tool");
   const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
@@ -100,7 +100,7 @@ test("createTaskTool: read-only role (architect) cannot write — write tool is 
       turn++;
       // Architect tries to write (not in its toolset) → unknown tool, then reviews via done.
       if (turn === 1) return JSON.stringify({ tool: "write", arguments: { filePath: "x.txt", content: "hi" } });
-      return JSON.stringify({ tool: "done", arguments: { reason: "review complete" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nFindings:\nRecommendations:\nArchitectural Status: WATCH\nCode Review Recommendation: COMMENT" } });
     },
   }));
   const { createTaskTool } = await import("../src/agent/task-tool");
@@ -124,7 +124,7 @@ test("createTaskTool: empty task is rejected with a helpful error", async () => 
 
 test("createTaskTool: per-role model override is reported in the output", async () => {
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "planned" } }),
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nIn Scope:\nOut of Scope:\nFile-level Changes:\nSequencing:\nAcceptance Criteria:\nVerification:\nRisks:" } }),
   }));
   const { createTaskTool } = await import("../src/agent/task-tool");
   const tool = createTaskTool({
@@ -136,7 +136,7 @@ test("createTaskTool: per-role model override is reported in the output", async 
 });
 test("createTaskTool: read-only fan-out runs all tasks and combines results", async () => {
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "reviewed" } }),
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nFindings:\nRecommendations:\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } }),
   }));
   const { createTaskTool } = await import("../src/agent/task-tool");
   const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
@@ -149,7 +149,7 @@ test("createTaskTool: read-only fan-out runs all tasks and combines results", as
 
 test("createTaskTool: executor fan-out is serialized for mutation safety", async () => {
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "done" } }),
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nChanged Files:\nVerification:\nOpen Risks:" } }),
   }));
   const { createTaskTool } = await import("../src/agent/task-tool");
   const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
@@ -163,4 +163,16 @@ test("createTaskTool: empty tasks array is a soft error", async () => {
   const res = await tool({ role: "architect", tasks: [] }, await tmpDir());
   expect(res.success).toBe(false);
   expect(res.error).toContain("non-empty 'tasks'");
+});
+
+test("createTaskTool: invalid planner report is surfaced as incomplete", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "planned" } }),
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
+  const res = await tool({ role: "planner", task: "sequence the work" }, await tmpDir());
+  expect(res.success).toBe(false);
+  expect(res.output).toContain("contract incomplete");
+  expect(res.output).toContain("File-level Changes:");
 });

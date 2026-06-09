@@ -4856,3 +4856,33 @@ disappear. Reproduced with `tmux pipe-pane`: the live turn repaints the WHOLE fr
   call returns "find requires a non-empty globPattern" and the turn keeps going (no crash).
 - New tests: alt-screen enter-before-hideCursor + leave-on-finish (tty:true) and the no-TTY
   legacy path (tty:false); `findTool` undefined/blank glob is a soft error.
+
+## Process-UI: footer never cut off + whole forge boxes — pass 814
+
+**Date:** 2026-06-08 · **Dimension: live-turn TUI layout (user-reported; gjc parity).**
+
+User: improve the live operation/process UI, run it, verify, improve.
+
+- **814.** On a normal-height terminal (e.g. 24-30 rows) the boxed live-turn UI overflowed: ASCII
+  art (~11 rows) + plan + tool list + stream + two forge boxes exceeded `rows`, and the final
+  `frame.slice(0, rows)` silently **cut the bottom-pinned status/hint/footer** — the live heartbeat
+  (spinner, step N/max, ETA, mutation-guard, key hints) disappeared. Rewrote `draw()`'s fit assembly
+  to RESERVE the bottom block first, then fit inner sections into the remaining rows by priority,
+  shedding the lowest value first: plan + tool list > stream > forge detail > decorative ASCII art.
+  So the footer is always visible; art auto-drops on short terminals and returns on tall ones.
+- **814b.** Forge boxes are bordered; truncating one mid-way left a broken half-box. Added
+  `fitForgeBoxes(lines, budget)` (in components/forge): include only WHOLE boxes that fit, preferring
+  the most recent, preserving display order — no half-box, no wasted blank rows.
+- **814c.** Aligned `draw()`'s `fit` to `this.tty` (was `isTTY()` directly) for consistency with the
+  rest of the class and to make the boxed path testable via `new LaunchTui({ tty: true })`.
+
+### Verification (pass 814)
+- `bun run typecheck` → 0 errors. `bun test` → **548 pass / 0 fail**. `bun run build` → ok.
+- Deterministic frame render (monkeypatched Renderer, ANSI-stripped) across rows 20/24/30/50:
+  footer + hint bar present in every case; art shown only at rows=50; rows=24 shows one WHOLE
+  most-recent forge box + footer (no half-box, minimal filler).
+- New tests: `fitForgeBoxes` unit (whole-box selection, most-recent preference, none-when-too-short)
+  and a boxed `LaunchTui` test asserting the footer/hint survive overflow and the last content row is
+  the footer.
+- **Live (real PTY, ollama fast):** `joc launch "…" --model fast --max-steps 2` ran a real turn
+  (4109 tokens in) and exited cleanly (EXIT=0), alt-screen restored, no crash.

@@ -144,6 +144,41 @@ function borderGlyphs(unicode: boolean | undefined): BoxGlyphs {
   return unicode === false ? BOX_ASCII : BOX_UNICODE;
 }
 
+/**
+ * Pick as many WHOLE forge boxes as fit `budget` rows. `lines` is the flat render of one or
+ * more bordered boxes separated by a single blank line. Boxes are bordered, so a partial box
+ * looks broken — this includes only complete boxes, preferring the MOST RECENT (last) ones,
+ * and preserves display order. Returns [] when not even one box fits.
+ */
+export function fitForgeBoxes(lines: string[], budget: number): string[] {
+  if (budget <= 0 || lines.length === 0) return [];
+  if (lines.length <= budget) return lines;
+  const groups: string[][] = [];
+  let cur: string[] = [];
+  for (const line of lines) {
+    if (line === "") {
+      if (cur.length) { groups.push(cur); cur = []; }
+    } else {
+      cur.push(line);
+    }
+  }
+  if (cur.length) groups.push(cur);
+  const kept: string[][] = [];
+  let used = 0;
+  for (let i = groups.length - 1; i >= 0; i--) {
+    const cost = groups[i]!.length + (kept.length ? 1 : 0); // +1 blank separator between boxes
+    if (used + cost > budget) break;
+    used += cost;
+    kept.unshift(groups[i]!);
+  }
+  const out: string[] = [];
+  for (let i = 0; i < kept.length; i++) {
+    if (i > 0) out.push("");
+    out.push(...kept[i]!);
+  }
+  return out;
+}
+
 export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}): string[] {
   const innerWidth = opts.width ?? 80;
   const floor = Math.min(24, innerWidth);

@@ -6,6 +6,7 @@
  */
 import { SelectList, renderSelectList, type SelectItem, type RenderSelectOptions } from "./select-list";
 import { catalogForProvider, type ModelCatalogEntry } from "../../ai/model-catalog-compat";
+import { companyLabel } from "../../ai/model-catalog";
 import { PROVIDER_NAMES, type ProviderStatus } from "../../ai/provider-status";
 import type { ProviderName } from "../../ai/types";
 
@@ -58,11 +59,11 @@ export function buildModelChoices(statuses: ProviderStatus[], opts: ModelPickerO
   for (const provider of providers) {
     const ready = !!readyOf.get(provider);
     if (!ready && !includeUnready) continue;
-    const group = `${provider}${ready ? "" : " (no credential)"}`;
+    const group = `${provider} — ${companyLabel(provider)}${ready ? "" : " (no credential)"}`;
     for (const entry of catalogForProvider(provider)) {
       items.push({
         value: entry.id,
-        label: entry.id,
+        label: `${entry.id} (${companyLabel(provider, entry)})`,
         group,
         hint: modelHint(entry, ready, unicode),
       });

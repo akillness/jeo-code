@@ -3,40 +3,68 @@ import * as path from "node:path";
 import { readWorkflowState, writeWorkflowState, getLocalJocDir, type WorkflowState } from "../agent/state";
 import { bashTool } from "../agent/tools";
 
-export async function runUltragoalCommand(): Promise<void> {
-  const cwd = process.cwd();
+export interface UltragoalEngineOptions {
+  cwd?: string;
+  signal?: AbortSignal;
+  onProgress?: (e: { skill: string; phase: string; detail?: string }) => void;
+  io?: {
+    output?: (line: string) => void;
+  };
+}
+
+export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Promise<{ ok: boolean; reason?: string }> {
+  const cwd = opts.cwd ?? process.cwd();
+
+  const log = (msg?: any) => {
+    const str = msg !== undefined ? String(msg) : "";
+    if (opts.io?.output) {
+      const lines = str.split("\n");
+      for (const line of lines) {
+        opts.io.output(line);
+      }
+    } else {
+      console.log(str);
+    }
+  };
+
+  if (opts.onProgress) {
+    opts.onProgress({ skill: "ultragoal", phase: "start" });
+  }
+
+  if (opts.signal?.aborted) {
+    return { ok: false, reason: "aborted" };
+  }
 
   // Read state to find acceptance criteria
   const interviewState = await readWorkflowState("deep-interview", cwd);
   if (!interviewState || !interviewState.seed_path) {
-    console.log(
+    log(
       `[ERROR] No crystallized requirements found. Please run 'joc deep-interview' first.`
     );
-    return;
+    return { ok: false, reason: "No crystallized requirements found" };
   }
 
   const seedPath = interviewState.seed_path;
-  console.log(`\n=== Starting Ultragoal Verification Stage ===`);
-  console.log(`Reading requirements and acceptance criteria from: ${seedPath}`);
-
+  log(`\n=== Starting Ultragoal Verification Stage ===`);
+  log(`Reading requirements and acceptance criteria from: ${seedPath}`);
 
   // Thread team execution state: verification should run AFTER the plan was executed.
   const teamState = await readWorkflowState("team", cwd);
   if (!teamState || teamState.current_phase !== "complete") {
-    console.log(
+    log(
       `[WARN] No completed 'joc team' execution found (run deep-interview → ralplan → approve → team first).\n` +
-      `       Verifying current repository state anyway — results reflect whatever is on disk now.`,
+      `       Verifying current repository state anyway — results reflect whatever is on disk now.`
     );
   } else {
-    console.log(`Verifying against team execution (plan: ${teamState.plan_path ?? "?"}).`);
+    log(`Verifying against team execution (plan: ${teamState.plan_path ?? "?"}).`);
   }
 
   let seedContent = "";
   try {
     seedContent = await fs.readFile(seedPath, "utf-8");
   } catch (err: any) {
-    console.log(`[ERROR] Failed to read seed file: ${err.message}`);
-    return;
+    log(`[ERROR] Failed to read seed file: ${err.message}`);
+    return { ok: false, reason: err.message };
   }
 
   // Parse acceptance criteria from seed YAML
@@ -63,21 +91,27 @@ export async function runUltragoalCommand(): Promise<void> {
     criteria.push("Runs successfully in the terminal");
   }
 
-  console.log(`Loaded ${criteria.length} acceptance criteria for verification.\n`);
+  log(`Loaded ${criteria.length} acceptance criteria for verification.\n`);
 
   const results: { criterion: string; passed: boolean; output: string }[] = [];
 
   for (const criterion of criteria) {
-    console.log(`[CHECK] Verifying: "${criterion}"`);
+    if (opts.signal?.aborted) {
+      return { ok: false, reason: "aborted" };
+    }
+
+    log(`[CHECK] Verifying: "${criterion}"`);
     
-    // We can execute a automatic verification pass.
-    // E.g., if there are tests, we run bun test. If not, we do a smoke check by running bun src/cli.ts setup or compile.
     let cmd = "bun test";
     if (criterion.toLowerCase().includes("run") || criterion.toLowerCase().includes("cli")) {
       cmd = "bun run src/cli.ts --help";
     }
 
-    console.log(`  └─ Running validation command: '${cmd}'`);
+    log(`  └─ Running validation command: '${cmd}'`);
+    if (opts.onProgress) {
+      opts.onProgress({ skill: "ultragoal", phase: "verifying", detail: `Verifying: ${criterion}` });
+    }
+
     const res = await bashTool(cmd, cwd);
     
     results.push({
@@ -86,7 +120,11 @@ export async function runUltragoalCommand(): Promise<void> {
       output: res.output.slice(0, 300) + (res.output.length > 300 ? "..." : "")
     });
 
-    console.log(`  └─ Result: ${res.success ? "PASSED" : "FAILED"}`);
+    log(`  └─ Result: ${res.success ? "PASSED" : "FAILED"}`);
+  }
+
+  if (opts.signal?.aborted) {
+    return { ok: false, reason: "aborted" };
   }
 
   // Write verification report
@@ -126,6 +164,16 @@ export async function runUltragoalCommand(): Promise<void> {
   };
   await writeWorkflowState("ultragoal", ultragoalState, cwd);
 
-  console.log(`\n[VERIFICATION COMPLETE] Report saved to: ${reportPath}`);
-  console.log(`Overall status: ${status} (${passedCount}/${totalCount} passed)`);
+  log(`\n[VERIFICATION COMPLETE] Report saved to: ${reportPath}`);
+  log(`Overall status: ${status} (${passedCount}/${totalCount} passed)`);
+
+  if (opts.onProgress) {
+    opts.onProgress({ skill: "ultragoal", phase: "complete" });
+  }
+
+  return { ok: status === "SUCCESS" };
+}
+
+export async function runUltragoalCommand(): Promise<void> {
+  await runUltragoalEngine();
 }

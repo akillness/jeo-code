@@ -265,35 +265,84 @@ async function buildBrownfieldContext(cwd: string, idea: string): Promise<string
     : summary;
 }
 
-export async function runDeepInterviewCommand(args: string[]): Promise<void> {
-  const auto = args.includes("--auto") || !process.stdin.isTTY;
+export interface DeepInterviewEngineOptions {
+  cwd?: string;
+  signal?: AbortSignal;
+  onProgress?: (e: { skill: string; phase: string; detail?: string }) => void;
+  io?: {
+    input?: () => Promise<string>;
+    output?: (line: string) => void;
+  };
+  args?: string[];
+}
+
+export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = {}): Promise<{ ok: boolean; reason?: string }> {
+  const cwd = opts.cwd ?? process.cwd();
+  const args = opts.args ?? [];
+  const auto = args.includes("--auto") || (opts.io?.input ? false : !process.stdin.isTTY);
   const filteredArgs = args.filter(arg => arg !== "--auto");
-  const cwd = process.cwd();
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+
+  const log = (msg?: any) => {
+    const str = msg !== undefined ? String(msg) : "";
+    if (opts.io?.output) {
+      const lines = str.split("\n");
+      for (const line of lines) {
+        opts.io.output(line);
+      }
+    } else {
+      console.log(str);
+    }
+  };
+
+  let rl: any;
+  if (!opts.io?.input) {
+    rl = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+  }
+
+  const ask = async (query: string): Promise<string> => {
+    if (opts.io?.input) {
+      log(query);
+      return await opts.io.input();
+    } else {
+      return await rl.question(query);
+    }
+  };
+
+  if (opts.onProgress) {
+    opts.onProgress({ skill: "deep-interview", phase: "start" });
+  }
 
   try {
+    if (opts.signal?.aborted) {
+      return { ok: false, reason: "aborted" };
+    }
+
     let state = await readWorkflowState("deep-interview", cwd);
     if (state && state.active && state.current_phase !== "complete") {
       if (auto) {
         await clearWorkflowState("deep-interview", cwd);
         state = null;
-        console.log("Cleared previous state. Starting fresh.");
+        log("Cleared previous state. Starting fresh.");
       } else {
-        const resume = await rl.question(
+        const resume = await ask(
           `\n[ALERT] An active requirements gathering session is already in progress (Ambiguity: ${((state.current_ambiguity ?? 1) * 100).toFixed(0)}%).\n` +
           `Would you like to resume it? [Y/n]: `
         );
         if (resume.trim().toLowerCase() === "n") {
           await clearWorkflowState("deep-interview", cwd);
           state = null;
-          console.log("Cleared previous state. Starting fresh.");
+          log("Cleared previous state. Starting fresh.");
         } else {
-          console.log("Resuming active Socratic interview session...");
+          log("Resuming active Socratic interview session...");
         }
       }
+    }
+
+    if (opts.signal?.aborted) {
+      return { ok: false, reason: "aborted" };
     }
 
     let initialIdea = "";
@@ -303,16 +352,16 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
       initialIdea = filteredArgs.join(" ");
       if (!initialIdea.trim()) {
         if (auto) {
-          console.log("Error: Initial project idea cannot be empty.");
-          return;
+          log("Error: Initial project idea cannot be empty.");
+          return { ok: false, reason: "Initial project idea cannot be empty" };
         }
-        initialIdea = await rl.question("\nEnter your initial project idea: ");
+        initialIdea = await ask("\nEnter your initial project idea: ");
       }
     }
 
     if (!initialIdea.trim()) {
-      console.log("Error: Initial project idea cannot be empty.");
-      return;
+      log("Error: Initial project idea cannot be empty.");
+      return { ok: false, reason: "Initial project idea cannot be empty" };
     }
 
     const interviewId = state?.interview_id || crypto.randomUUID();
@@ -398,21 +447,21 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
 
     if (state.topology?.status !== "confirmed" || state.topology.components.length === 0) {
       let components = inferTopologyComponents(initialIdea);
-      console.log(`\nRound 0 | Topology confirmation | Ambiguity: not scored yet`);
-      console.log(`\nI'm reading this as ${components.length} top-level component(s):`);
+      log(`\nRound 0 | Topology confirmation | Ambiguity: not scored yet`);
+      log(`\nI'm reading this as ${components.length} top-level component(s):`);
       for (const [index, component] of components.entries()) {
-        console.log(`${index + 1}. ${component.name}: ${component.description}`);
+        log(`${index + 1}. ${component.name}: ${component.description}`);
       }
 
       if (!auto) {
-        const reply = await rl.question(
+        const reply = await ask(
           "\nPress Enter if this looks right, or type a revised comma-separated component list: "
         );
         if (reply.trim()) {
           components = inferTopologyComponents(reply);
-          console.log("\nUpdated topology:");
+          log("\nUpdated topology:");
           for (const [index, component] of components.entries()) {
-            console.log(`${index + 1}. ${component.name}: ${component.description}`);
+            log(`${index + 1}. ${component.name}: ${component.description}`);
           }
         }
       }
@@ -437,9 +486,6 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
     });
 
     if (projectType === "brownfield" && codebaseContext) {
-      // Wrap evidence as DATA inside a fence so the interview LLM treats attacker-named
-      // paths (e.g. files committed by an upstream PR) as untrusted strings, not
-      // instructions. Paths are already sanitized in buildBrownfieldContext.
       history.push({
         role: "user",
         content:
@@ -449,13 +495,13 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
       });
     }
 
-    console.log(`\n=== Starting Socratic Interview: ${slug} ===`);
-    console.log(`Initial Idea: ${JSON.stringify(initialIdea)}`);
-    console.log(`Project Type: ${projectType}`);
+    log(`\n=== Starting Socratic Interview: ${slug} ===`);
+    log(`Initial Idea: ${JSON.stringify(initialIdea)}`);
+    log(`Project Type: ${projectType}`);
     if (projectType === "brownfield" && codebaseContext) {
-      console.log(`Brownfield Context:\n${codebaseContext}\n`);
+      log(`Brownfield Context:\n${codebaseContext}\n`);
     }
-    console.log(`Ambiguity Threshold: ${(threshold * 100).toFixed(0)}% (source: ${thresholdSource})\n`);
+    log(`Ambiguity Threshold: ${(threshold * 100).toFixed(0)}% (source: ${thresholdSource})\n`);
 
     let round = 1;
     let ambiguity = state.current_ambiguity ?? 1.0;
@@ -483,11 +529,18 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
       state!.seed_path = seedPath;
       state!.current_ambiguity = Math.min(state!.current_ambiguity ?? threshold, threshold);
       await writeWorkflowState("deep-interview", state!, cwd);
-      console.log(`Saved frozen requirements spec seed to: ${seedPath}`);
+      log(`Saved frozen requirements spec seed to: ${seedPath}`);
     };
 
     while (round <= 10) {
-      console.log(`\n[Round ${round}] Analyzing requirements...`);
+      if (opts.signal?.aborted) {
+        return { ok: false, reason: "aborted" };
+      }
+
+      log(`\n[Round ${round}] Analyzing requirements...`);
+      if (opts.onProgress) {
+        opts.onProgress({ skill: "deep-interview", phase: "interviewing", detail: `Round ${round}` });
+      }
 
       try {
         const responseText = await callLlm(history, { jsonMode: true });
@@ -498,36 +551,43 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
         state.current_ambiguity = ambiguity;
         await writeWorkflowState("deep-interview", state, cwd);
 
-        console.log(`Ambiguity ${meter(ambiguity)}  (Assessment: ${parsed.assessment})`);
+        log(`Ambiguity ${meter(ambiguity)}  (Assessment: ${parsed.assessment})`);
 
         const readiness = freezeReadiness(parsed);
         if (ambiguity <= threshold && readiness.ok) {
-          console.log(`\n[SUCCESS] Ambiguity is <= ${(threshold * 100).toFixed(0)}%! Concluding requirements gather.`);
+          log(`\n[SUCCESS] Ambiguity is <= ${(threshold * 100).toFixed(0)}%! Concluding requirements gather.`);
           await freezeSeed(parsed);
-          console.log("\n[Handoff Ready] Requirement is crystallized. Next, run 'joc ralplan' to build a plan.");
+          log("\n[Handoff Ready] Requirement is crystallized. Next, run 'joc ralplan' to build a plan.");
+          if (opts.onProgress) {
+            opts.onProgress({ skill: "deep-interview", phase: "complete" });
+          }
           break;
         }
 
         let nextQuestion = parsed.nextQuestion?.trim() || interviewLanguage.acceptanceFollowup;
         let answer = "";
         if (ambiguity <= threshold && !readiness.ok) {
-          console.log(`\n[HOLD] Ambiguity is below the threshold, but ${readiness.reason}. Keeping the interview open.`);
+          log(`\n[HOLD] Ambiguity is below the threshold, but ${readiness.reason}. Keeping the interview open.`);
           nextQuestion = interviewLanguage.acceptanceFollowup;
         }
 
-        console.log(`\nQuestion: ${nextQuestion}`);
+        log(`\nQuestion: ${nextQuestion}`);
+        if (opts.signal?.aborted) {
+          return { ok: false, reason: "aborted" };
+        }
+
         if (auto) {
           answer = ambiguity <= threshold && !readiness.ok ? interviewLanguage.autoCriteriaAnswer : interviewLanguage.autoDefaultAnswer;
         } else {
-          answer = await rl.question("\nYour Answer: ");
+          answer = await ask("\nYour Answer: ");
         }
 
         history.push({ role: "assistant", content: responseText });
         history.push({ role: "user", content: answer });
         round++;
       } catch (error: any) {
-        console.log(`\n[Error calling LLM]: ${error.message}`);
-        break;
+        log(`\n[Error calling LLM]: ${error.message}`);
+        return { ok: false, reason: error.message };
       }
     }
 
@@ -539,18 +599,26 @@ export async function runDeepInterviewCommand(args: string[]): Promise<void> {
         const why = !readiness.ok
           ? readiness.reason
           : `ambiguity stayed above ${(threshold * 100).toFixed(0)}%`;
-        console.log(
+        log(
           `\n[AUTO] Interview stopped after ${round - 1} rounds because ${why}. ` +
           `No seed was frozen; MutationGuard remains locked. Resume with 'joc deep-interview' to finish clarification.`
         );
       } else if (round > 10) {
-        console.log(
+        log(
           `\n[PAUSED] Interview stopped after ${round - 1} rounds without crystallizing concrete requirements. ` +
           `Resume with 'joc deep-interview' to continue.`
         );
       }
+      if (opts.onProgress) {
+        opts.onProgress({ skill: "deep-interview", phase: "interviewing" });
+      }
     }
+    return { ok: state.current_phase === "complete", reason: state.current_phase === "complete" ? undefined : "Interview incomplete" };
   } finally {
-    rl.close();
+    rl?.close();
   }
+}
+
+export async function runDeepInterviewCommand(args: string[]): Promise<void> {
+  await runDeepInterviewEngine({ args });
 }

@@ -5,10 +5,11 @@ import { anthropicAdapter } from "./providers/anthropic";
 import { openaiAdapter } from "./providers/openai";
 import { geminiAdapter } from "./providers/gemini";
 import { ollamaAdapter } from "./providers/ollama";
+import { antigravityAdapter } from "./providers/antigravity";
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId, effectiveAliasesFor } from "./model-registry";
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
-import { toProviderModel } from "./model-catalog";
+import { toProviderModel, CODEX_MODELS } from "./model-catalog";
 import { withRetry, defaultRetryable, type RetryOptions } from "../util/retry";
 import type { Config } from "../agent/state";
 
@@ -16,6 +17,7 @@ const ADAPTERS: Record<ProviderName, ProviderAdapter> = {
   anthropic: anthropicAdapter,
   openai: openaiAdapter,
   gemini: geminiAdapter,
+  antigravity: antigravityAdapter,
   ollama: ollamaAdapter,
 };
 
@@ -26,6 +28,7 @@ export function resolveProvider(model: string): ProviderName {
   if (entry) return entry.provider;
   const m = (model ?? "").toLowerCase();
   if (m.startsWith("ollama/")) return "ollama";
+  if (m.startsWith("antigravity/")) return "antigravity";
   // OpenAI: explicit prefix, any GPT, or a reasoning model (o1/o3/o4-mini, o1-preview…).
   if (m.startsWith("openai/") || m.includes("gpt") || /(^|\/)o\d/.test(m)) return "openai";
   if (m.startsWith("google/") || m.includes("gemini")) return "gemini";
@@ -35,6 +38,7 @@ const PROVIDER_ID_PREFIX: Record<ProviderName, string> = {
   anthropic: "anthropic/",
   openai: "openai/",
   gemini: "google/",
+  antigravity: "antigravity/",
   ollama: "ollama/",
 };
 
@@ -61,7 +65,8 @@ export function providerModelFor(model: string): string {
     model.startsWith("ollama/") ||
     model.startsWith("openai/") ||
     model.startsWith("anthropic/") ||
-    model.startsWith("google/")
+    model.startsWith("google/") ||
+    model.startsWith("antigravity/")
   ) {
     return model;
   }
@@ -149,27 +154,53 @@ const DEFAULT_RATE_LIMIT_RETRIES = 6; // total attempts for 429 (initial + 5 ret
 // 429 floor when the server sends no Retry-After. Escalates per attempt inside
 // withRetry (2s → 4s → 8s → 16s → 30s ≈ 60s total), spanning a per-minute window.
 const DEFAULT_RATE_LIMIT_MIN_DELAY_MS = 2000;
-export function resolveRetryOptions(retry: Config["retry"]): RetryOptions {
+export function resolveRetryOptions(retry: Config["retry"], kind: "request" | "stream" = "request"): RetryOptions {
   const opts: RetryOptions = { isRetryable: defaultRetryable };
-  if (typeof retry?.requestMaxRetries === "number") opts.retries = retry.requestMaxRetries + 1;
+
+  let targetRetries: number | undefined;
+  if (kind === "request") {
+    if (typeof retry?.requestMaxRetries === "number") {
+      targetRetries = retry.requestMaxRetries;
+    } else if (typeof retry?.maxRetries === "number") {
+      targetRetries = retry.maxRetries;
+    }
+  } else if (kind === "stream") {
+    if (typeof retry?.streamMaxRetries === "number") {
+      targetRetries = retry.streamMaxRetries;
+    } else if (typeof retry?.maxRetries === "number") {
+      targetRetries = retry.maxRetries;
+    }
+  }
+
+  if (typeof targetRetries === "number") {
+    opts.retries = targetRetries + 1;
+  }
+
   if (typeof retry?.maxDelayMs === "number") opts.maxDelayMs = retry.maxDelayMs;
-  // 429 attempt budget: explicit rateLimitRetries wins; else mirror the request
+
+  // 429 attempt budget: explicit rateLimitRetries wins; else mirror the resolved
   // budget (no bonus); else the generous default so a transient window can clear.
-  if (typeof retry?.rateLimitRetries === "number") opts.rateLimitRetries = retry.rateLimitRetries + 1;
-  else if (typeof retry?.requestMaxRetries === "number") opts.rateLimitRetries = retry.requestMaxRetries + 1;
-  else opts.rateLimitRetries = DEFAULT_RATE_LIMIT_RETRIES;
+  if (typeof retry?.rateLimitRetries === "number") {
+    opts.rateLimitRetries = retry.rateLimitRetries + 1;
+  } else if (typeof targetRetries === "number") {
+    opts.rateLimitRetries = targetRetries + 1;
+  } else {
+    opts.rateLimitRetries = DEFAULT_RATE_LIMIT_RETRIES;
+  }
+
   // 429 backoff floor: explicit wins; else default UNLESS the user pinned maxDelayMs.
   if (typeof retry?.rateLimitMinDelayMs === "number") opts.rateLimitMinDelayMs = retry.rateLimitMinDelayMs;
   else if (typeof retry?.maxDelayMs !== "number") opts.rateLimitMinDelayMs = DEFAULT_RATE_LIMIT_MIN_DELAY_MS;
+
   return opts;
 }
 
 /**
  * Pick the credential to actually use for a provider call / live discovery.
  * An API key is the broader, documented path, so it wins whenever present.
- * An OAuth-only login is usable only when the bundled adapter is verified
- * end-to-end (Anthropic Messages, OpenAI ChatGPT/Codex Responses); otherwise
- * (e.g. Gemini OAuth) we fail fast asking for an API key.
+ * Every bundled OAuth flow is now served end-to-end (Anthropic Messages,
+ * OpenAI ChatGPT/Codex Responses, Gemini/Antigravity Cloud Code Assist); the
+ * guard below only fires for a future flow that ships before its adapter.
  */
 export function effectiveCredentialForProvider(
   provider: AuthProvider,
@@ -182,9 +213,7 @@ export function effectiveCredentialForProvider(
     if (apiKey) return { kind: "api_key", provider, token: apiKey };
     if (OAUTH_FLOW_REGISTRY[provider]?.verifiedEndToEnd === false) {
       throw new Error(
-        provider === "gemini"
-          ? `Gemini OAuth (Gemini CLI / Cloud Code Assist) is not served by joc's bundled adapter yet. Use a free GEMINI_API_KEY from https://aistudio.google.com/apikey (or run 'joc setup') — or use Anthropic/OpenAI, which ARE served via OAuth — then retry ${model}.`
-          : `Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'joc setup') to use ${model}.`,
+        `Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'joc setup') to use ${model}.`,
       );
     }
   }
@@ -220,7 +249,7 @@ export function credentialForCall(
   return effective;
 }
 
-async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
+async function resolveCall(options: Partial<CallOptions>, kind: "request" | "stream" = "request"): Promise<Resolved> {
   const config = await readGlobalConfig();
   const aliases = { ...((config as { modelAliases?: Record<string, string> }).modelAliases ?? {}) };
   const model = expandAlias(options.model ?? config.defaultModel, { ...ALIAS_DEFAULTS, ...aliases });
@@ -247,16 +276,38 @@ async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
   };
   // Caller-supplied retry sink rides on the config-derived retry budget so the
   // engine/TUI can surface "rate limited — retrying in Ns" instead of a silent wait.
-  const retry: RetryOptions = { ...resolveRetryOptions(config.retry), ...(options.onRetry ? { onRetry: options.onRetry } : {}) };
+  // gjc parity: `requestMaxRetries` governs non-stream calls; `streamMaxRetries`
+  // governs the stream site's replay-safe pre-first-chunk loop (retryableStream
+  // never replays after the first emitted chunk). Both fall back to `maxRetries`,
+  // and an unset stream budget keeps the conservative withRetry default — the
+  // generous gjc default of 100 only applies when the user configures it.
+  const retry: RetryOptions = { ...resolveRetryOptions(config.retry, kind), ...(options.onRetry ? { onRetry: options.onRetry } : {}) };
 
   if (provider === "ollama") {
     return { adapter, callOptions, credential: { kind: "none", provider: "openai" }, retry };
   }
 
-  const credential = await resolveCredential(provider as AuthProvider);
-  const effective = effectiveCredentialForProvider(provider as AuthProvider, credential, config, model);
+  if (provider === "antigravity") {
+    // Prefer the dedicated Antigravity login (its client is what the agent
+    // backend authorizes); fall back to a gemini-cli OAuth token for users with
+    // their own project/permissions.
+    let credential = await resolveCredential("antigravity");
+    if (credential.kind !== "oauth") credential = await resolveCredential("gemini");
+    if (credential.kind !== "oauth") {
+      throw new Error("Antigravity models use Google OAuth. Run 'joc auth login antigravity' (recommended) or 'joc auth login gemini', then retry — the Google Cloud projectId is discovered automatically.");
+    }
+    return { adapter, callOptions, credential, retry };
+  }
 
+  const credentialProvider = provider as AuthProvider;
+  const credential = await resolveCredential(credentialProvider);
+  const effective = effectiveCredentialForProvider(credentialProvider, credential, config, model);
   const isLocalOpenAi = provider === "openai" && !!baseUrl;
+  if (provider === "openai" && effective.kind === "oauth" && !isLocalOpenAi && !CODEX_MODELS.includes(model)) {
+    throw new Error(
+      "OpenAI OAuth 자격증명은 Codex 모델(gpt-5.5/gpt-5.4)만 지원. OPENAI_API_KEY를 설정하거나 모델을 변경하세요"
+    );
+  }
   if (effective.kind === "none" && !isLocalOpenAi) {
     throw new Error(
       `No credential for provider '${provider}'. Run 'joc setup', 'joc auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
@@ -346,7 +397,7 @@ export function createModelManager(): ModelManager {
       return withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, DEFAULT_CALL_TIMEOUT_MS) }, credential), retry);
     },
     async *stream(messages, options = {}) {
-      const { adapter, callOptions, credential, retry } = await resolveCall(options);
+      const { adapter, callOptions, credential, retry } = await resolveCall(options, "stream");
       if (adapter.stream) {
         const streamFn = adapter.stream.bind(adapter);
         // Per-attempt abort controller fired by the idle timeout — so a stalled stream

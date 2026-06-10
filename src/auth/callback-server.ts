@@ -152,6 +152,11 @@ export abstract class OAuthCallbackFlow {
       const ask = this.ctrl.onManualCodeInput;
       const manualPromise = (async (): Promise<CallbackResult> => {
         while (true) {
+          // Cooperative cancellation: once the controller signal aborts (the
+          // caller finished or failed the login), STOP re-prompting. Without
+          // this guard an aborted `ask()` rejects instantly, the catch maps it
+          // to null, and the loop spins re-asking forever.
+          if (signal.aborted) return callbackPromise;
           const result = await Promise.race<CallbackResult | null>([
             callbackPromise,
             ask()

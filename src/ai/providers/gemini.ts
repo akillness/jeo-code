@@ -3,7 +3,35 @@ import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
 
-export function geminiRequest(messages: Message[], options: CallOptions, credential: Credential, action: "generateContent" | "streamGenerateContent"): { url: string; headers: Record<string, string>; body: string } {
+/** Gemini 2.5+/latest models think by default and BILL thought tokens against
+ *  `maxOutputTokens` — a small-budget call can burn its entire budget on thoughts
+ *  and return MAX_TOKENS with zero text (observed live on `gemini-flash-latest`).
+ *  Pin an explicit budget: off unless reasoning was requested. Pro-class models
+ *  cannot disable thinking (API minimum 128), so they keep a floor instead of 0.
+ *  Older models (1.5/2.0) reject `thinkingConfig` entirely → undefined (omit). */
+export function geminiThinkingBudget(model: string, effort?: CallOptions["reasoningEffort"], maxTokens?: number): number | undefined {
+  const m = model.toLowerCase();
+  const thinkingCapable = /gemini-(2\.5|[3-9])|flash-latest|pro-latest/.test(m);
+  if (!thinkingCapable) return undefined;
+  const floor = m.includes("pro") ? 128 : 0; // pro-class cannot fully disable thinking
+  let budget: number;
+  switch (effort) {
+    case "low": budget = 1024; break;
+    case "medium": budget = 4096; break;
+    case "high": budget = 8192; break;
+    case "minimal":
+    default: budget = floor;
+  }
+  // Thought tokens bill against maxOutputTokens: keep at least ~1K of the output
+  // budget for visible text, or thinking starves the reply to an empty MAX_TOKENS.
+  if (typeof maxTokens === "number") budget = Math.min(budget, Math.max(floor, maxTokens - 1024));
+  return budget;
+}
+
+/** Shared Gemini request payload (contents + generationConfig + systemInstruction)
+ *  used by BOTH the public generativelanguage path (API key) and the Cloud Code
+ *  Assist path (OAuth) — only the envelope/endpoint differs. */
+export function buildGeminiPayload(messages: Message[], options: CallOptions): { geminiModel: string; payload: Record<string, unknown> } {
   const resolvedModel = options.model.replace(/^(google|gemini)\//, "");
   let geminiModel = resolvedModel;
   if (!geminiModel || geminiModel === "claude-3-5-sonnet") geminiModel = "gemini-2.0-flash";
@@ -30,10 +58,16 @@ export function geminiRequest(messages: Message[], options: CallOptions, credent
     maxOutputTokens: options.maxTokens ?? 4000,
   };
   if (options.jsonMode) generationConfig.responseMimeType = "application/json";
+  const thinkingBudget = geminiThinkingBudget(geminiModel, options.reasoningEffort, options.maxTokens);
+  if (thinkingBudget !== undefined) generationConfig.thinkingConfig = { thinkingBudget };
 
   const payload: Record<string, unknown> = { contents, generationConfig };
   if (systemPrompt) payload.systemInstruction = { parts: [{ text: systemPrompt }] };
+  return { geminiModel, payload };
+}
 
+export function geminiRequest(messages: Message[], options: CallOptions, credential: Credential, action: "generateContent" | "streamGenerateContent"): { url: string; headers: Record<string, string>; body: string } {
+  const { geminiModel, payload } = buildGeminiPayload(messages, options);
   const oauth = credential.kind === "oauth" ? credential.token : undefined;
   const apiKey = credential.kind === "api_key" ? credential.token : undefined;
   let url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:${action}`;
@@ -46,10 +80,47 @@ export function geminiRequest(messages: Message[], options: CallOptions, credent
   return { url, headers, body: JSON.stringify(payload) };
 }
 
+const CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com";
+
+/** gemini-cli identification headers Cloud Code Assist expects (gjc parity). */
+export function getGeminiCliHeaders(modelId?: string): Record<string, string> {
+  const version = process.env.JOC_GEMINI_CLI_VERSION || "0.45.2";
+  return {
+    "User-Agent": `GeminiCLI/${version}/${modelId ?? "gemini-2.5-flash"} (${process.platform}; ${process.arch}; terminal)`,
+    "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
+  };
+}
+
+/**
+ * Cloud Code Assist request for a Google OAuth (gemini-cli) credential — the
+ * gemini-cli/gjc call path. OAuth tokens carry cloud-platform scope and target
+ * cloudcode-pa.googleapis.com, NOT the public generativelanguage API, so a
+ * plain `joc auth login gemini` works without any GEMINI_API_KEY. The body
+ * wraps the standard payload as `{ project, model, request }`.
+ */
+export function geminiCliRequest(messages: Message[], options: CallOptions, accessToken: string, projectId: string): { url: string; headers: Record<string, string>; body: string } {
+  const { geminiModel, payload } = buildGeminiPayload(messages, options);
+  return {
+    url: `${CODE_ASSIST_ENDPOINT}/v1internal:streamGenerateContent?alt=sse`,
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json",
+      accept: "text/event-stream",
+      ...getGeminiCliHeaders(geminiModel),
+    },
+    body: JSON.stringify({ project: projectId, model: geminiModel, request: payload }),
+  };
+}
+
 interface GeminiChunk {
   candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[];
   promptFeedback?: { blockReason?: string };
-  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
+}
+
+/** Cloud Code Assist wraps each standard chunk under `response`. */
+interface CcaChunk {
+  response?: GeminiChunk;
 }
 
 function textOf(chunk: GeminiChunk): string {
@@ -63,13 +134,71 @@ function blockedReason(chunk: GeminiChunk): string | undefined {
   const block = chunk.promptFeedback?.blockReason;
   if (block) return `blockReason=${block}`;
   const finish = chunk.candidates?.[0]?.finishReason;
-  if (finish && finish !== "STOP" && finish !== "MAX_TOKENS") return `finishReason=${finish}`;
+  if (finish === "MAX_TOKENS") {
+    // Only reached when NO text was produced at all (both call/stream paths guard
+    // on emptiness): the output budget was consumed before any visible text —
+    // typically thinking tokens on a 2.5+/latest model.
+    return "finishReason=MAX_TOKENS — output budget exhausted before any text; raise maxTokens or lower the thinking level";
+  }
+  if (finish && finish !== "STOP") return `finishReason=${finish}`;
   return undefined;
+}
+
+/**
+ * Cloud Code Assist SSE turn for a Google OAuth credential: resolves the
+ * projectId (stored → env → lazy loadCodeAssist/onboardUser discovery), POSTs
+ * the gemini-cli request, and yields text deltas. Usage is reported ONCE after
+ * the stream (thought tokens count as output, gjc parity). Shared by both
+ * `call` (concatenates) and `stream` (yields through).
+ */
+async function* ccaTurn(messages: Message[], options: CallOptions, credential: Credential & { kind: "oauth" }): AsyncGenerator<string> {
+  const { resolveAntigravityProjectId } = await import("./antigravity");
+  const projectId = await resolveAntigravityProjectId(credential);
+  const { url, headers, body } = geminiCliRequest(messages, options, credential.token, projectId);
+  const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
+  if (!response.ok) throw await providerHttpError("Gemini (Cloud Code Assist)", response);
+  if (!response.body) return;
+  let lastUsage: GeminiChunk["usageMetadata"];
+  let yieldedAny = false;
+  let lastEmptyReason: string | undefined;
+  for await (const data of readSse(response.body)) {
+    let chunk: CcaChunk;
+    try {
+      chunk = JSON.parse(data);
+    } catch {
+      continue;
+    }
+    const inner = chunk.response;
+    if (!inner) continue;
+    const delta = textOf(inner);
+    if (delta) {
+      yieldedAny = true;
+      yield delta;
+    } else {
+      lastEmptyReason = blockedReason(inner) ?? lastEmptyReason;
+    }
+    if (inner.usageMetadata) lastUsage = inner.usageMetadata;
+  }
+  if (!yieldedAny) {
+    throw new Error(`Gemini (Cloud Code Assist) returned no content${lastEmptyReason ? ` (${lastEmptyReason})` : ""}.`);
+  }
+  if (lastUsage) {
+    options.onUsage?.({
+      inputTokens: lastUsage.promptTokenCount,
+      outputTokens: (lastUsage.candidatesTokenCount ?? 0) + (lastUsage.thoughtsTokenCount ?? 0),
+    });
+  }
 }
 
 export const geminiAdapter: ProviderAdapter = {
   name: "gemini",
   async call(messages, options, credential) {
+    // OAuth (gemini-cli login) → Cloud Code Assist; no GEMINI_API_KEY required.
+    if (credential.kind === "oauth") {
+      let out = "";
+      for await (const delta of ccaTurn(messages, options, credential)) out += delta;
+      return out;
+    }
     const { url, headers, body } = geminiRequest(messages, options, credential, "generateContent");
     const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) throw await providerHttpError("Gemini", response);
@@ -85,6 +214,11 @@ export const geminiAdapter: ProviderAdapter = {
     return text;
   },
   async *stream(messages, options, credential) {
+    // OAuth (gemini-cli login) → Cloud Code Assist; no GEMINI_API_KEY required.
+    if (credential.kind === "oauth") {
+      yield* ccaTurn(messages, options, credential);
+      return;
+    }
     const { url, headers, body } = geminiRequest(messages, options, credential, "streamGenerateContent");
     const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) throw await providerHttpError("Gemini", response, "(stream)");

@@ -22,12 +22,13 @@ import type { TaskSubEvent } from "../agent/task-tool";
 import { supportsUnicode } from "./components/capability";
 import { centerBlock, padLineTo, fillScreen, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
 import { resolveTheme, themeGradient } from "./components/themes";
-import { detectColorLevel } from "./components/color";
+import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, type ForgeSummary } from "./components/forge";
 import { renderJocStatus } from "./components/status";
 import { categoryBadge, categoryForTool } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
+import { formatDuration, formatUsage } from "./components/duration";
 import chalk from "chalk";
 
 export interface LaunchTuiOptions {
@@ -47,6 +48,7 @@ export interface AgentEventsLike {
   onAssistant?(raw: string, invocation: { tool: string; arguments?: unknown } | null): void;
   onToolResult?(tool: string, success: boolean, output: string): void;
   onNotice?(message: string): void;
+  onUsage?(usage: { inputTokens: number; outputTokens: number }): void;
 }
 
 const DEFAULT_MAX_STEPS = 25;
@@ -79,6 +81,9 @@ export class LaunchTui {
   // [STEP] status row while waiting so backoff is visible at a glance. Cleared on the
   // next step / model reply.
   private retryNotice: string | null = null;
+  private workflowStatus: { skill: string; phase: string; detail?: string } | null = null;
+  // Cumulative token usage for the live turn (engine onUsage event).
+  private turnUsage: { inputTokens: number; outputTokens: number } | null = null;
   // True while the live turn renders in the alternate screen buffer (TTY only);
   // drives leaving it on finish so terminal scroll never fights the repaint.
   private usedAltScreen = false;
@@ -99,7 +104,7 @@ export class LaunchTui {
   // Terminal unicode capability, detected once (drives spinner/track glyph set).
   private readonly unicode: boolean = supportsUnicode();
   // Active color theme (JOC_TUI_THEME), default cosmic; `mono` disables color.
-  private readonly theme = resolveTheme();
+  private readonly theme = resolveTheme(process.env);
   // Whether the live turn may use the alternate screen buffer (real TTY only).
   private readonly tty: boolean;
 
@@ -127,6 +132,13 @@ export class LaunchTui {
   /** Update the agent-declared task plan (driven by the `todo` tool). */
   setTodos(items: { title: string; status: "pending" | "in_progress" | "done" }[]): void {
     this.todos = items;
+    this.draw();
+  }
+
+  /** Update estimated context usage shown in the footer. */
+  setContextUsage(usedTokens: number, maxTokens?: number): void {
+    this.footer.contextUsedTokens = usedTokens;
+    this.footer.contextMaxTokens = maxTokens;
     this.draw();
   }
 
@@ -180,14 +192,29 @@ export class LaunchTui {
         this.draw();
       },
       onNotice: msg => {
-        // Transient progress notice (e.g. rate-limit auto-retry countdown) — informational,
-        // styled as progress, not as a terminal error. Also pinned into the [STEP] status
-        // row via currentActivity() so the wait is legible without scanning the stream.
+        // Transient progress notice (e.g. rate-limit auto-retry countdown) is live
+        // state, not ledger content. Pin it in the status row only; do NOT append
+        // repeated retry notices into the stream/log area.
         this.retryNotice = msg;
-        this.stream.append(`${categoryBadge("progress", { color: this.theme.color })} ${msg}\n`);
+        this.draw();
+      },
+      onUsage: (u: { inputTokens: number; outputTokens: number }) => {
+        // Live cumulative token usage for the turn — shown in the final summary
+        // (and available to the footer meter).
+        this.turnUsage = u;
         this.draw();
       },
     };
+  }
+
+  /** Surface native workflow-engine progress (`/skill deep-interview`, etc.). */
+  setWorkflowStatus(status: { skill: string; phase: string; detail?: string } | null): void {
+    this.workflowStatus = status;
+    if (status) {
+      const detail = status.detail ? ` — ${status.detail}` : "";
+      this.stream.append(`${categoryBadge("progress", { color: this.theme.color })} workflow ${status.skill}: ${status.phase}${detail}\n`);
+    }
+    this.draw();
   }
 
   /**
@@ -197,6 +224,10 @@ export class LaunchTui {
    * about a real file/step) instead of churning decorative messages every 120ms.
    */
   private currentActivity(): string {
+    if (this.workflowStatus) {
+      const detail = this.workflowStatus.detail ? ` — ${this.workflowStatus.detail}` : "";
+      return `workflow ${this.workflowStatus.skill}: ${this.workflowStatus.phase}${detail}`;
+    }
     const running = this.tools.currentTool();
     // Waiting on the model and no tool is mid-flight → make the pause legible.
     if (this.thinking && !running) {
@@ -263,6 +294,7 @@ export class LaunchTui {
 
   start(): void {
     this.startedAt = Date.now();
+    this.turnUsage = null;
     this.spinner.updateStep(0, this.footer.maxSteps);
     // On a real TTY, render the transient live turn in the alternate screen buffer.
     // It has no scrollback, so mouse-wheel scroll can't fight the 120ms in-place
@@ -295,10 +327,19 @@ export class LaunchTui {
         this.mutationGuarded = true;
         this.draw();
       });
+    // Watch terminal resizes: rows/cols changes invalidate the previous frame, so
+    // force a full repaint instead of diffing against stale line positions.
+    if (this.tty) {
+      process.stdout.on("resize", this.onResize);
+    }
     // Animate the spinner + elapsed clock while the model is thinking.
     this.timer = setInterval(() => {
       try {
         this.tickCount++;
+        // Self-healing resync: every ~3s drop the differential baseline so the next
+        // draw rewrites EVERY line. Any screen corruption (stray child output, wheel
+        // noise, terminal glitches) is repaired automatically without user action.
+        if (this.tickCount % 25 === 0) this.renderer.reset();
         this.spinner.next();
         this.draw();
       } catch {
@@ -307,12 +348,28 @@ export class LaunchTui {
     }, 120);
   }
 
+  /** Force a full repaint of the live frame (auto-invoked on resize/input noise). */
+  repaint(): void {
+    if (this.finished) return;
+    this.renderer.reset();
+    this.draw();
+  }
+
+  private readonly onResize = (): void => {
+    try {
+      this.repaint();
+    } catch { /* resize race — next tick repaints */ }
+  };
+
   /** Collapse the live region to static final output. */
   finish(reply: string): void {
     this.finished = true;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
+    }
+    if (this.tty) {
+      process.stdout.removeListener("resize", this.onResize);
     }
     if (this.usedAltScreen) {
       // Leave the alt screen (restores the main buffer + scrollback), then print the
@@ -340,10 +397,10 @@ export class LaunchTui {
     for (const line of this.stream.render(size().cols)) finalLines.push(line);
     for (const line of this.renderForge(size().cols, 3)) finalLines.push(line);
     // Show how far the agent evolved this turn (monotonic peak) with rich statistics.
-    const elapsedSecs = Math.round((Date.now() - this.startedAt) / 1000);
     const steps = this.footer.step || 0;
     const peak = this.progress.current();
-    finalLines.push(`Evolved to: ${evolutionTrack(peak, { unicode: this.unicode, color: this.theme.color })} (took ${steps} steps in ${elapsedSecs}s)`);
+    const usageSuffix = this.turnUsage ? ` · ${formatUsage(this.turnUsage)}` : "";
+    finalLines.push(`Evolved to: ${evolutionTrack(peak, { unicode: this.unicode, color: this.theme.color })} (took ${steps} steps in ${formatDuration(Date.now() - this.startedAt)}${usageSuffix})`);
     finalLines.push(`joc> ${reply}`);
     console.log(finalLines.join("\n"));
   }
@@ -420,6 +477,11 @@ export class LaunchTui {
     const bottom: string[] = [];
     const statusMsg = this.currentActivity();
     if (isThinking) {
+      const colorLevel = detectColorLevel(process.env, isTTY());
+      const phase = (this.tickCount * 0.05) % 1;
+      const grad = themeGradient(this.theme, idx);
+      const palette = [grad.from, grad.to];
+
       if (fit) {
         const stats = this.tools.stats();
         for (const line of renderJocStatus({
@@ -437,13 +499,22 @@ export class LaunchTui {
           mutationGuarded: this.mutationGuarded,
           unicode: this.unicode,
           color: this.theme.color,
+          colorLevel,
+          phase,
+          palette,
+          isThinking: true,
         })) bottom.push(line);
       } else {
-        // Compact single-line status off a TTY (pipes / tests).
-        const italicGray = this.theme.color ? chalk.italic.gray : (s: string) => s;
+        // Compact fallback still keeps progress and insight separate: no decorative
+        // mixed "thinking/status" line, and retry notices never become stream logs.
+        let msg = statusMsg;
+        if (this.theme.color && colorLevel === ColorLevel.TrueColor) {
+          msg = animatedGradientText(msg, palette, phase, { colorLevel });
+        }
         const redBold = this.theme.color ? chalk.red.bold : (s: string) => s;
         const guardBadge = this.mutationGuarded ? ` ${redBold("[MUTATION LOCKED]")}` : "";
-        bottom.push(`  ${italicGray(statusMsg)}${guardBadge}`);
+        bottom.push(`  ${categoryBadge("progress", { color: this.theme.color })} step ${stepNow}/${this.footer.maxSteps} · elapsed ${formatDuration(elapsedMs)}`);
+        bottom.push(`  ${categoryBadge("status", { color: this.theme.color })} ${msg}${guardBadge}`);
       }
     }
     // TTY only: a key-hint bar above the footer (kept out of non-TTY/test frames).

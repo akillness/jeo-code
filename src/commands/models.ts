@@ -31,7 +31,7 @@ async function probeOpenAiCompat(baseUrl: string): Promise<string[]> {
 
 export async function runModelsCommand(args: string[] = []): Promise<void> {
   const checkMode = args.includes("--check");
-  const providerFilter = args.find(a => ["anthropic", "openai", "gemini", "ollama"].includes(a.toLowerCase()))?.toLowerCase();
+  const providerFilter = args.find(a => ["anthropic", "openai", "gemini", "antigravity", "ollama"].includes(a.toLowerCase()))?.toLowerCase();
   if (args.includes("--catalog")) {
     const query = args.find(a => !a.startsWith("--") && a.toLowerCase() !== "all");
     const rows = query ? fuzzyMatchCatalog(query) : [...MODEL_CATALOG];

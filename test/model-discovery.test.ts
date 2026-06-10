@@ -208,7 +208,88 @@ test("listProviderModels: credential-less cloud short-circuits without fetching"
 
 test("discoverModels runs all providers in parallel", async () => {
   const results = await discoverModels({ fetchImpl: okFetch({ data: [{ id: "x" }], models: [{ name: "y" }] }) });
-  expect(results.map(r => r.provider).sort()).toEqual(["anthropic", "gemini", "ollama", "openai"]);
+  expect(results.map(r => r.provider).sort()).toEqual(["anthropic", "antigravity", "gemini", "ollama", "openai"]);
+});
+
+test("listProviderModels: Antigravity queries the LIVE fetchAvailableModels endpoint (no hard-coded list)", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: { gemini: "sk-gem" },
+      oauth: { gemini: { access: "oauth-gem", projectId: "proj-1" } },
+      defaultModel: "antigravity/gemini-3-pro-low",
+    }),
+  );
+  let calledUrl = "";
+  let calledMethod = "";
+  const live = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    calledUrl = String(url);
+    calledMethod = init?.method ?? "GET";
+    return new Response(JSON.stringify({
+      models: {
+        "gemini-3-pro-high": { displayName: "Gemini 3 Pro High" },
+        "internal-secret": { isInternal: true },
+        "gemini-2.5-pro": {}, // denylisted upstream id
+      },
+    }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const r = await listProviderModels("antigravity", { fetchImpl: live });
+  expect(calledUrl).toContain("v1internal:fetchAvailableModels");
+  expect(calledMethod).toBe("POST");
+  expect(r.ok).toBe(true);
+  expect(r.source).toBe("oauth");
+  expect(r.fallback).toBeUndefined();
+  expect(r.models).toEqual(["antigravity/gemini-3-pro-high"]); // internal + denylisted dropped
+});
+
+test("listProviderModels: Antigravity prefers the API's own agentModelSorts as the positive chat set", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: {},
+      oauth: { gemini: { access: "oauth-gem", projectId: "proj-1" } },
+      defaultModel: "antigravity/gemini-3-flash",
+    }),
+  );
+  const live = (async () => new Response(JSON.stringify({
+    models: {
+      "gemini-3-flash": { displayName: "Gemini 3 Flash", model: "MODEL_PLACEHOLDER_M18" },
+      "claude-sonnet-4-6": { displayName: "Claude Sonnet 4.6", model: "MODEL_PLACEHOLDER_M35" },
+      "tab_flash_lite_preview": { model: "MODEL_PLACEHOLDER_M28" }, // not in agent groups
+      "gemini-3.1-flash-image": { displayName: "Image" },           // image-gen role
+      "chat_20706": { isInternal: true },
+    },
+    agentModelSorts: [{ groups: [{ modelIds: ["gemini-3-flash", "claude-sonnet-4-6"] }] }],
+    imageGenerationModelIds: ["gemini-3.1-flash-image"],
+    // Real payload shape regression: deprecatedModelIds is an OBJECT keyed by id.
+    deprecatedModelIds: { "gemini-3.1-pro-high": { newModelId: "gemini-pro-agent" } },
+  }), { status: 200 })) as unknown as typeof fetch;
+  const r = await listProviderModels("antigravity", { fetchImpl: live });
+  expect(r.ok).toBe(true);
+  // Positive selection: only the API-declared agent models, keyed by callable id —
+  // the internal MODEL_PLACEHOLDER_* enum never leaks.
+  expect(r.models).toEqual(["antigravity/claude-sonnet-4-6", "antigravity/gemini-3-flash"]);
+});
+
+test("listProviderModels: Antigravity list failure is surfaced, never papered over with catalog rows", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: {},
+      oauth: { gemini: { access: "oauth-gem", projectId: "proj-1" } },
+      defaultModel: "antigravity/gemini-3-pro-low",
+    }),
+  );
+  const denied = (async () => new Response("{}", { status: 403 })) as unknown as typeof fetch;
+  const r = await listProviderModels("antigravity", { fetchImpl: denied });
+  expect(r.ok).toBe(false);
+  expect(r.error).toBe("auth rejected");
+  expect(r.models).toEqual([]);
+});
+
+test("parseModelsBody: Antigravity model rows are provider-qualified", () => {
+  expect(parseModelsBody("antigravity", { models: [{ slug: "gemini-3-pro-low" }, { id: "claude-sonnet-4-5" }] }))
+    .toEqual(["antigravity/gemini-3-pro-low", "antigravity/claude-sonnet-4-5"]);
 });
 
 test("catalogOr: OpenAI OAuth (Codex) falls back to the Codex-served model set, not the full catalog", () => {

@@ -1,3 +1,7 @@
+import * as path from "node:path";
+import * as os from "node:os";
+import * as fs from "node:fs/promises";
+import { type StoredOAuth } from "../agent/state";
 import { createInterface } from "node:readline/promises";
 import { readGlobalConfig } from "../agent/state";
 import {
@@ -17,13 +21,14 @@ export async function runAuthCommand(args: string[]): Promise<void> {
   const sub = args[0];
   if (!sub || sub === "status") return runAuthStatus();
   if (sub === "login") return runAuthLogin(args.slice(1));
+  if (sub === "import") return runAuthImport(args.slice(1));
   if (sub === "logout") return runAuthLogout(args[1] as AuthProvider | undefined);
   if (sub === "refresh") return runAuthRefresh(args[1] as AuthProvider | undefined);
-  console.log(`Unknown auth subcommand: ${sub}\nUsage: joc auth [login|logout|refresh|status] [provider] [--token <bearer>]`);
+  console.log(`Unknown auth subcommand: ${sub}\nUsage: joc auth [login|logout|refresh|status|import] [provider] [--token <bearer>] [--import]`);
   process.exitCode = 1;
 }
 
-const CLOUD_PROVIDERS: readonly AuthProvider[] = ["anthropic", "openai", "gemini"];
+const CLOUD_PROVIDERS: readonly AuthProvider[] = ["anthropic", "openai", "gemini", "antigravity"]
 /** True (and prints an error + sets exit code) when `p` is given but not a known provider. */
 function rejectInvalidProvider(p: string | undefined): boolean {
   if (p !== undefined && !(CLOUD_PROVIDERS as readonly string[]).includes(p)) {
@@ -47,11 +52,18 @@ async function runAuthStatus(): Promise<void> {
   const cfg = await readGlobalConfig();
   console.log("\n=== joc auth status ===");
   console.log("Provider     API key   OAuth");
-  for (const p of ["anthropic", "openai", "gemini"] as AuthProvider[]) {
+  for (const p of ["anthropic", "openai", "gemini", "antigravity"] as AuthProvider[]) {
     const snap = await snapshotProvider(p);
-    const key = snap.apiKey ? "set" : "—";
+    const key = p === "antigravity" ? "—" : (snap.apiKey ? "set" : "—");
     let oauth = "—";
-    if (snap.oauth) {
+    if (p === "antigravity") {
+      const fallback = snap.oauth ? snap : await snapshotProvider("gemini");
+      if (fallback.oauth) {
+        oauth = snap.oauth
+          ? `set (refreshable)${fmtExpiry(snap.oauthExpires)}${snap.oauthEmail ? ` <${snap.oauthEmail}>` : ""}`
+          : "via gemini fallback";
+      }
+    } else if (snap.oauth) {
       oauth = snap.oauthHasRefresh ? "set (refreshable)" : "set (manual)";
       oauth += fmtExpiry(snap.oauthExpires);
       if (snap.oauthEmail) oauth += ` <${snap.oauthEmail}>`;
@@ -66,9 +78,20 @@ async function runAuthStatus(): Promise<void> {
 async function runAuthLogin(rest: string[]): Promise<void> {
   const tokenIdx = rest.indexOf("--token");
   const manualToken = tokenIdx >= 0 ? rest[tokenIdx + 1] : undefined;
-  const provider = rest.find((a, i) => a !== "--token" && rest[i - 1] !== "--token") as AuthProvider | undefined;
+  const isImport = rest.includes("--import");
+  const provider = rest.find((a, i) => a !== "--token" && rest[i - 1] !== "--token" && a !== "--import") as AuthProvider | undefined;
 
   if (rejectInvalidProvider(provider)) return;
+
+  if (isImport) {
+    if (provider !== "gemini") {
+      console.log(`[FAILED] Import is only supported for 'gemini' provider.`);
+      process.exitCode = 1;
+      return;
+    }
+    return runAuthImport(["gemini"]);
+  }
+
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const chosen = provider ?? (await selectProvider(rl));
   if (!chosen) {
@@ -97,9 +120,86 @@ async function runAuthLogin(rest: string[]): Promise<void> {
   }
 }
 
+async function runAuthImport(rest: string[]): Promise<void> {
+  const provider = rest.find(a => a !== "--import") as AuthProvider | undefined;
+  if (!provider) {
+    console.log("Usage: joc auth import <provider>");
+    process.exitCode = 1;
+    return;
+  }
+  if (rejectInvalidProvider(provider)) return;
+  if (provider !== "gemini") {
+    console.log(`[FAILED] Import is only supported for 'gemini' provider.`);
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    const credsPath = process.env.JOC_GEMINI_CREDS_PATH || path.join(os.homedir(), ".gemini", "oauth_creds.json");
+    let content: string;
+    try {
+      content = await fs.readFile(credsPath, "utf-8");
+    } catch (err: any) {
+      console.log(`[FAILED] Failed to read Gemini credentials file: ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    let creds: any;
+    try {
+      creds = JSON.parse(content);
+    } catch (err: any) {
+      console.log(`[FAILED] Failed to parse Gemini credentials JSON: ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    if (!creds || !creds.access_token) {
+      console.log(`[FAILED] Missing access_token in Gemini credentials.`);
+      process.exitCode = 1;
+      return;
+    }
+
+    let email: string | undefined;
+    if (creds.id_token) {
+      const parts = creds.id_token.split(".");
+      if (parts.length >= 2) {
+        try {
+          const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+          const payload = JSON.parse(atob(base64));
+          email = payload.email;
+        } catch {}
+      }
+    }
+
+    let expires = typeof creds.expiry_date === "number" ? creds.expiry_date : (typeof creds.expiry_date === "string" ? parseInt(creds.expiry_date, 10) : undefined);
+    if (isNaN(expires as number)) expires = undefined;
+
+    const imported: StoredOAuth = {
+      access: creds.access_token,
+      refresh: creds.refresh_token,
+      expires,
+      email,
+    };
+
+    const { setOauthCredential } = await import("../auth/storage");
+    await setOauthCredential("gemini", imported);
+
+    console.log(`[SUCCESS] Imported OAuth credentials for gemini (also usable as the Antigravity fallback when the backend accepts gemini-cli tokens).`);
+    if (email) {
+      console.log(`Account email: ${email}`);
+    }
+    const expiryMsg = expires ? fmtExpiry(expires) : "";
+    console.log(`Expiry status:${expiryMsg || " valid"}`);
+  } catch (err: any) {
+    console.log(`[FAILED] ${err.message}`);
+    process.exitCode = 1;
+  }
+}
+
 /** Prompt object the OAuth manual-code fallback needs (a readline interface satisfies it). */
 export interface OAuthPrompt {
-  question(query: string): Promise<string>;
+  question(query: string, options?: { signal?: AbortSignal }): Promise<string>;
 }
 
 /**
@@ -118,7 +218,13 @@ export async function interactiveOAuthLogin(
   for (const line of OAUTH_FLOWS[provider].instructions) log("  " + line);
   log("");
 
+  // Abort the pending "Paste redirect URL…" question once the flow settles.
+  // Without this the dangling readline question survives a SUCCESS/FAILED
+  // result, reprints its prompt over the result line, and queues in FRONT of
+  // any follow-up question (the `joc setup` API-key fallback appeared hung).
+  const ac = new AbortController();
   const ctrl: OAuthController = {
+    signal: ac.signal,
     onAuth: ({ url, instructions }) => {
       log(`Opening browser:\n  ${url}\n`);
       if (instructions) log(instructions + "\n");
@@ -126,9 +232,13 @@ export async function interactiveOAuthLogin(
     },
     onProgress: msg => log(`  … ${msg}`),
     onManualCodeInput: async () =>
-      (await prompt.question("Paste redirect URL or code (or wait for the browser callback): ")).trim(),
+      (await prompt.question("Paste redirect URL or code (or wait for the browser callback): ", { signal: ac.signal })).trim(),
   };
-  return interactiveLogin(provider, ctrl);
+  try {
+    return await interactiveLogin(provider, ctrl);
+  } finally {
+    ac.abort();
+  }
 }
 
 async function runAuthLogout(provider?: AuthProvider): Promise<void> {

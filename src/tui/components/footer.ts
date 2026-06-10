@@ -25,6 +25,10 @@ export interface FooterData {
   showProgress?: boolean;
   /** Colorize the stage track (default true). Set false for the mono theme. */
   color?: boolean;
+  /** Estimated context usage in tokens, when known. */
+  contextUsedTokens?: number;
+  /** Provider/model context window in tokens, when known. */
+  contextMaxTokens?: number;
 }
 
 export function renderFooter(d: FooterData): string {
@@ -81,6 +85,17 @@ export function renderFooter(d: FooterData): string {
       parts.push(`evo ${pct}% ${arrow} ${nextStageName(d.step, d.maxSteps)} in ${remaining}`);
     } else {
       parts.push(`evo ${pct}%`);
+    }
+  }
+
+  // Estimated context usage (opt-in): cheap footer signal for context growth.
+  if (d.contextUsedTokens !== undefined) {
+    const used = Math.max(0, Math.round(d.contextUsedTokens));
+    if (d.contextMaxTokens && d.contextMaxTokens > 0) {
+      const pct = Math.min(999, Math.round((used / d.contextMaxTokens) * 100));
+      parts.push(`ctx ${pct}% (${used}/${Math.round(d.contextMaxTokens)})`);
+    } else {
+      parts.push(`ctx ~${used}`);
     }
   }
 

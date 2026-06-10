@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { generatePKCE, generateState } from "../src/auth/pkce";
 import { OAuthCallbackFlow, parseCallbackInput } from "../src/auth/callback-server";
 import type { OAuthController, OAuthCredentials } from "../src/auth/types";
+import { googleClientSecret } from "../src/auth/flows/google";
 
 test("generatePKCE: challenge is base64url(SHA-256(verifier))", async () => {
   const { verifier, challenge } = await generatePKCE();
@@ -144,4 +145,125 @@ test("resolveCredential: auto-refreshes an expired anthropic OAuth token", async
     for (const [k, v] of clearedEnv) if (v !== undefined) process.env[k] = v;
     await fs.rm(home, { recursive: true, force: true });
   }
+});
+
+test("googleClientSecret: env override wins, blank/missing env falls back to bundled default", () => {
+  // explicit override
+  expect(googleClientSecret({ GEMINI_OAUTH_CLIENT_SECRET: "custom-secret" })).toBe("custom-secret");
+  // blank env must not mask the bundled default (login works out of the box)
+  const fallback = googleClientSecret({ GEMINI_OAUTH_CLIENT_SECRET: "" });
+  expect(fallback).toBe(googleClientSecret({}));
+  expect(fallback.startsWith("GOCSPX-")).toBe(true);
+  expect(fallback.length).toBeGreaterThan(10);
+});
+test("refreshOAuthToken: concurrent refreshes acquire lock sequentially and reuse already refreshed token without double-refresh", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "joc-oauth-lock-test-"));
+  const prevConfigDir = process.env.JOC_CONFIG_DIR;
+  process.env.JOC_CONFIG_DIR = home;
+
+  const configPath = path.join(home, "config.json");
+  const initialConfig = {
+    oauth: {
+      anthropic: {
+        access: "OLD-ACCESS",
+        refresh: "REFRESH-TOKEN",
+        expires: Date.now() - 10000,
+        email: "test@example.com",
+      },
+    },
+    defaultModel: "claude-sonnet-4-5",
+    thinkingLevel: "medium",
+  };
+  await fs.writeFile(configPath, JSON.stringify(initialConfig, null, 2), "utf-8");
+
+  const prevFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = async (input, init) => {
+    callCount++;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    return new Response(
+      JSON.stringify({
+        access_token: `NEW-ACCESS-${callCount}`,
+        refresh_token: "REFRESH-TOKEN-NEW",
+        expires_in: 3600,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  };
+
+  try {
+    const { refreshOAuthToken } = await import("../src/auth/refresh");
+    const { getStoredOAuth } = await import("../src/auth/storage");
+
+    const [res1, res2] = await Promise.all([
+      refreshOAuthToken("anthropic"),
+      refreshOAuthToken("anthropic"),
+    ]);
+
+    expect(callCount).toBe(1);
+
+    expect(res1.refreshed).toBe(true);
+    expect(res2.refreshed).toBe(true);
+
+    const result1New = res1.reason === "refreshed";
+    const result2New = res2.reason === "refreshed";
+
+    expect(result1New !== result2New).toBe(true);
+
+    const refreshedRes = result1New ? res1 : res2;
+    const alreadyRefreshedRes = result1New ? res2 : res1;
+
+    expect(refreshedRes.reason).toBe("refreshed");
+    expect((refreshedRes.credential as any).token).toBe("NEW-ACCESS-1");
+
+    expect(alreadyRefreshedRes.reason).toBe("already_refreshed");
+    expect((alreadyRefreshedRes.credential as any).token).toBe("NEW-ACCESS-1");
+
+    const stored = await getStoredOAuth("anthropic");
+    expect(stored?.access).toBe("NEW-ACCESS-1");
+    expect(stored?.refresh).toBe("REFRESH-TOKEN-NEW");
+    expect(stored?.expires).toBeGreaterThan(Date.now());
+  } finally {
+    globalThis.fetch = prevFetch;
+    if (prevConfigDir === undefined) delete process.env.JOC_CONFIG_DIR;
+    else process.env.JOC_CONFIG_DIR = prevConfigDir;
+    await fs.rm(home, { recursive: true, force: true });
+  }
+});
+
+test("OAuthCallbackFlow: aborted ctrl signal stops the manual re-prompt loop", async () => {
+  let ready: () => void;
+  const readyPromise = new Promise<void>(r => (ready = r));
+  const ac = new AbortController();
+  let asks = 0;
+  // Mimics the production wiring: rl.question(query, { signal }) — pending until
+  // the signal aborts, then rejects (AbortError), and rejects immediately when
+  // called with an already-aborted signal.
+  const ctrl: OAuthController = {
+    signal: ac.signal,
+    onAuth: () => ready(),
+    onManualCodeInput: () => {
+      asks++;
+      if (ac.signal.aborted) return Promise.reject(new Error("AbortError"));
+      return new Promise<string>((_, reject) =>
+        ac.signal.addEventListener("abort", () => reject(new Error("AbortError")), { once: true }),
+      );
+    },
+  };
+  const flow = new TestFlow(ctrl);
+  const loginPromise = flow.login();
+  await readyPromise;
+
+  // Browser callback completes the login while the paste prompt is still pending.
+  await fetch(`${flow.capturedRedirect}?code=ok&state=${flow.capturedState}`);
+  const creds = await loginPromise;
+  expect(creds.access).toBe("acc-ok");
+
+  // Production callers abort in finally once the flow settles. Without the
+  // loop guard this spun forever: the aborted ask() rejects instantly, maps to
+  // null, and the while(true) re-asks in a hot microtask loop.
+  const asksAtSettle = asks;
+  ac.abort();
+  await new Promise(r => setTimeout(r, 30));
+  expect(asks).toBe(asksAtSettle);
 });

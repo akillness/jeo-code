@@ -78,16 +78,29 @@ async function probeGemini(credential: Credential): Promise<ProbeResult> {
   if (credential.kind === "none") {
     return { status: "skipped", detail: "no credential (run 'joc setup' or 'joc auth login gemini')" };
   }
-  const key = credential.kind === "api_key" ? credential.token : "";
-  const url = credential.kind === "oauth"
-    ? "https://generativelanguage.googleapis.com/v1beta/models"
-    : `https://generativelanguage.googleapis.com/v1beta/models?key=${key}`;
+  // OAuth tokens are served via Cloud Code Assist (the REAL call path) — probe
+  // loadCodeAssist there; the public generativelanguage list rejects them.
+  if (credential.kind === "oauth") {
+    const { getGeminiCliHeaders } = await import("../ai/providers/gemini");
+    try {
+      const { res, latencyMs } = await timedFetch("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${credential.token}`,
+          "content-type": "application/json",
+          ...getGeminiCliHeaders(),
+        },
+        body: JSON.stringify({ metadata: { ideType: "IDE_UNSPECIFIED", platform: "PLATFORM_UNSPECIFIED", pluginType: "GEMINI" } }),
+      });
+      if (res.ok) return { status: "ok", detail: "POST cloudcode-pa /v1internal:loadCodeAssist 200 (Cloud Code Assist)", latencyMs };
+      return { status: "fail", detail: `POST cloudcode-pa /v1internal:loadCodeAssist ${res.status}`, latencyMs };
+    } catch (err) {
+      return { status: "fail", detail: `network error: ${(err as Error).message}` };
+    }
+  }
+  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${credential.token}`;
   try {
-    const { res, latencyMs } = await timedFetch(url, {
-      headers: credential.kind === "oauth"
-        ? { authorization: `Bearer ${credential.token}` }
-        : {},
-    });
+    const { res, latencyMs } = await timedFetch(url, { headers: {} });
     if (res.ok) return { status: "ok", detail: "GET /v1beta/models 200", latencyMs };
     return { status: "fail", detail: `GET /v1beta/models ${res.status}`, latencyMs };
   } catch (err) {

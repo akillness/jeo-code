@@ -1,6 +1,6 @@
 import type { Credential } from "../auth";
 
-export type ProviderName = "anthropic" | "openai" | "gemini" | "ollama";
+export type ProviderName = "anthropic" | "openai" | "gemini" | "antigravity" | "ollama";
 
 export interface Message {
   role: "system" | "user" | "assistant";

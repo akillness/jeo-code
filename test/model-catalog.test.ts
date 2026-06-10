@@ -8,6 +8,7 @@ import {
   catalogByProvider,
   catalogMetadata,
   supportsThinking,
+  companyLabel,
 } from "../src/ai/model-catalog";
 import { thinkingMaxTokens } from "../src/ai/model-manager";
 import { formatCatalogTable, formatCapabilityLine } from "../src/tui/components/config-panel";
@@ -37,7 +38,7 @@ test("formatTokens renders K/M compactly", () => {
 test("catalog entries are well-formed (provider, positive limits)", () => {
   expect(MODEL_CATALOG.length).toBeGreaterThan(5);
   for (const m of MODEL_CATALOG) {
-    expect(["anthropic", "openai", "gemini", "ollama"]).toContain(m.provider);
+    expect(["anthropic", "openai", "gemini", "antigravity", "ollama"]).toContain(m.provider);
     expect(m.contextTokens).toBeGreaterThan(0);
     expect(m.maxOutputTokens).toBeGreaterThan(0);
     for (const lvl of m.thinking) expect(THINK_LEVELS).toContain(lvl);
@@ -51,7 +52,7 @@ test("findCatalogModel matches canonical and provider model id", () => {
 });
 
 test("fuzzyMatchCatalog does case-insensitive substring matching", () => {
-  expect(fuzzyMatchCatalog("gpt").every(m => m.provider === "openai")).toBe(true);
+  expect(fuzzyMatchCatalog("gpt").every(m => m.provider === "openai" || m.provider === "antigravity")).toBe(true);
   expect(fuzzyMatchCatalog("CLAUDE").length).toBeGreaterThan(0);
   expect(fuzzyMatchCatalog("zzz")).toEqual([]);
 });
@@ -91,4 +92,15 @@ test("formatCapabilityLine summarizes one model", () => {
   expect(line).toContain("ctx 1M");
   expect(line).toContain("thinking");
   expect(line).toContain("images yes");
+});
+test("companyLabel maps built-ins, respects overrides, and falls back with capitalization", () => {
+  expect(companyLabel("anthropic")).toBe("Anthropic");
+  expect(companyLabel("openai")).toBe("OpenAI");
+  expect(companyLabel("gemini")).toBe("Google");
+  expect(companyLabel("ollama")).toBe("Ollama");
+  expect(companyLabel("antigravity")).toBe("Antigravity");
+  // Override priority
+  expect(companyLabel("anthropic", { company: "Custom Company" })).toBe("Custom Company");
+  // Fallback with capitalization
+  expect(companyLabel("someprovider")).toBe("Someprovider");
 });

@@ -144,6 +144,33 @@ export const COMMANDS: readonly CommandSpec[] = [
       return args => m.runEvolveCommand(args);
     },
   },
+  {
+    name: "state",
+    summary: "Read or update workflow state receipts under .joc/state (gjc-state parity).",
+    usage: "state <deep-interview|ralplan|team|ultragoal> <read|write|clear|handoff> [--input '<json>'] [--to <skill>] [--json]",
+    loader: async () => {
+      const m = await import("../commands/state");
+      return args => m.runStateCommand(args);
+    },
+  },
+  {
+    name: "session",
+    summary: "List, attach, or remove joc-managed tmux sessions.",
+    usage: "session [list|attach <name>|rm <name>] [--json]",
+    loader: async () => {
+      const m = await import("../commands/session");
+      return args => m.runSessionCommand(args);
+    },
+  },
+  {
+    name: "update",
+    summary: "Check for (and install) a newer jeo-code release from the npm registry.",
+    usage: "update [--check|--install] [--json] [--strict]",
+    loader: async () => {
+      const m = await import("../commands/update");
+      return args => m.runUpdateCommand(args);
+    },
+  },
 ];
 
 export function findCommand(name: string): CommandSpec | undefined {
@@ -200,7 +227,7 @@ export function renderHelp(ctx: DispatchContext): string {
   lines.push("  -v, --version    Show version.");
   lines.push("  -h, --help       Show help.");
   lines.push("      --model <id>             Use a session model for launch/one-shot.");
-  lines.push("      --provider <name>        Start launch on a provider default (anthropic/openai/gemini/ollama).");
+  lines.push("      --provider <name>        Start launch on a provider default (anthropic/openai/gemini/antigravity/ollama).");
   lines.push("      --smol|--slow|--plan     Start launch with the configured model role tier.");
   lines.push("      --thinking <level>       Set thinking budget (minimal/low/medium/high/xhigh).");
   lines.push("      --models                 List live OAuth/API-key models (same as `joc models`).");
@@ -219,10 +246,10 @@ export function renderCommandHelp(spec: CommandSpec, ctx: DispatchContext): stri
   ].join("\n");
 }
 
-const VALUE_FLAGS = new Set(["--worktree", "--model", "--provider", "--thinking", "--max-steps"]);
-const OPTIONAL_UUID_FLAGS = new Set(["--resume"]);
-const VALUE_PREFIXES = ["--worktree=", "--model=", "--provider=", "--thinking=", "--max-steps="];
-const LAUNCH_ONLY_FLAGS = new Set(["--tmux", "--no-tui", "--no-session", "--list", "--smol", "--slow", "--plan"]);
+const VALUE_FLAGS = new Set(["--worktree", "--model", "--provider", "--thinking", "--max-steps", "--append-system-prompt", "--skills", "--tools", "--system-prompt"]);
+const OPTIONAL_UUID_FLAGS = new Set(["--resume", "--continue", "-c"]);
+const VALUE_PREFIXES = ["--worktree=", "--model=", "--provider=", "--thinking=", "--max-steps=", "--append-system-prompt=", "--skills=", "--tools=", "--system-prompt="];
+const LAUNCH_ONLY_FLAGS = new Set(["--tmux", "--no-tui", "--no-session", "--list", "--smol", "--slow", "--plan", "-p", "--print", "--no-skills", "--no-tools"]);
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function flagName(arg: string): string {
@@ -239,7 +266,7 @@ function stripLaunchOnlyArgs(args: string[]): string[] {
       out.push(...args.slice(i + 1));
       break;
     }
-    if (name === "--tmux" || name === "--no-tui") continue;
+    if (name === "--tmux" || name === "--no-tui" || name === "-p" || name === "--print") continue;
     if (name === "--worktree") {
       if (!a.includes("=") && args[i + 1] && !args[i + 1]!.startsWith("-")) i++;
       continue;

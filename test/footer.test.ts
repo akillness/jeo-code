@@ -27,6 +27,12 @@ test("footer joins segments with ' · ' and leads with the model", () => {
   expect(out).toContain("abcd1234");
 });
 
+test("footer renders estimated context usage", () => {
+  const out = stripAnsi(renderFooter({ model: "m1", contextUsedTokens: 5000, contextMaxTokens: 20000, showStage: false }));
+  expect(out).toContain("ctx 25% (5000/20000)");
+  expect(stripAnsi(renderFooter({ model: "m1", contextUsedTokens: 1234, showStage: false }))).toContain("ctx ~1234");
+});
+
 test("footer stage track honors the mono theme (color:false emits no ANSI)", () => {
   const chalk = require("chalk").default ?? require("chalk");
   const prev = chalk.level;

@@ -9,28 +9,61 @@ import {
 } from "../agent/state";
 import { PlanSchema, normalizePlanShape, parseYaml } from "../agent/plan";
 
-export async function runRalplanCommand(): Promise<void> {
-  const cwd = process.cwd();
+export interface RalplanEngineOptions {
+  cwd?: string;
+  signal?: AbortSignal;
+  onProgress?: (e: { skill: string; phase: string; detail?: string }) => void;
+  io?: {
+    output?: (line: string) => void;
+  };
+}
+
+export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise<{ ok: boolean; reason?: string }> {
+  const cwd = opts.cwd ?? process.cwd();
+
+  const log = (msg?: any) => {
+    const str = msg !== undefined ? String(msg) : "";
+    if (opts.io?.output) {
+      const lines = str.split("\n");
+      for (const line of lines) {
+        opts.io.output(line);
+      }
+    } else {
+      console.log(str);
+    }
+  };
+
+  if (opts.onProgress) {
+    opts.onProgress({ skill: "ralplan", phase: "start" });
+  }
+
+  if (opts.signal?.aborted) {
+    return { ok: false, reason: "aborted" };
+  }
 
   // Read deep-interview state
   const interviewState = await readWorkflowState("deep-interview", cwd);
   if (!interviewState || interviewState.current_phase !== "complete" || !interviewState.seed_path) {
-    console.log(
+    log(
       `[ERROR] No crystallized requirements found. Please run 'joc deep-interview' to crystallize requirements first.`
     );
-    return;
+    return { ok: false, reason: "No crystallized requirements found" };
   }
 
   const seedPath = interviewState.seed_path;
-  console.log(`\n=== Starting Ralplan Planning Stage ===`);
-  console.log(`Reading requirements seed from: ${seedPath}`);
+  log(`\n=== Starting Ralplan Planning Stage ===`);
+  log(`Reading requirements seed from: ${seedPath}`);
 
   let seedContent = "";
   try {
     seedContent = await fs.readFile(seedPath, "utf-8");
   } catch (err: any) {
-    console.log(`[ERROR] Failed to read seed file: ${err.message}`);
-    return;
+    log(`[ERROR] Failed to read seed file: ${err.message}`);
+    return { ok: false, reason: err.message };
+  }
+
+  if (opts.signal?.aborted) {
+    return { ok: false, reason: "aborted" };
   }
 
   // Initialize ralplan state
@@ -43,7 +76,7 @@ export async function runRalplanCommand(): Promise<void> {
   };
   await writeWorkflowState("ralplan", ralplanState, cwd);
 
-  console.log("Running Planner → Architect → Critic consensus on the spec…");
+  log("Running Planner → Architect → Critic consensus on the spec…");
 
   // Shared output contract (the exact shape `team` consumes) included in every pass.
   const SCHEMA_SPEC =
@@ -72,26 +105,53 @@ export async function runRalplanCommand(): Promise<void> {
       }
     };
 
+    if (opts.signal?.aborted) {
+      return { ok: false, reason: "aborted" };
+    }
+
     // Three chained role passes, each consuming the prior output (gjc consensus).
-    console.log("  [1/3] Planner drafting the task sequence…");
+    log("  [1/3] Planner drafting the task sequence…");
+    if (opts.onProgress) {
+      opts.onProgress({ skill: "ralplan", phase: "planning", detail: "Planner drafting" });
+    }
     const draft = await callRole(PLANNER, `Crystallized spec (seed.yaml):\n\n${seedContent}`);
-    console.log("  [2/3] Architect reviewing feasibility & structure…");
+
+    if (opts.signal?.aborted) {
+      return { ok: false, reason: "aborted" };
+    }
+
+    log("  [2/3] Architect reviewing feasibility & structure…");
+    if (opts.onProgress) {
+      opts.onProgress({ skill: "ralplan", phase: "planning", detail: "Architect reviewing" });
+    }
     const reviewed = await callRole(ARCHITECT, `Crystallized spec (seed.yaml):\n\n${seedContent}\n\nPlanner's draft plan:\n\n${draft}\n\nReturn the improved plan.`);
-    console.log("  [3/3] Critic finalizing (tightening + verifiability)…");
+
+    if (opts.signal?.aborted) {
+      return { ok: false, reason: "aborted" };
+    }
+
+    log("  [3/3] Critic finalizing (tightening + verifiability)…");
+    if (opts.onProgress) {
+      opts.onProgress({ skill: "ralplan", phase: "planning", detail: "Critic finalizing" });
+    }
     let cleanPlan = await callRole(CRITIC, `Crystallized spec (seed.yaml):\n\n${seedContent}\n\nArchitect's plan:\n\n${reviewed}\n\nReturn the final, critiqued plan.`);
+
+    if (opts.signal?.aborted) {
+      return { ok: false, reason: "aborted" };
+    }
 
     // Self-validate the Critic's output against team's schema; repair once, else fall
     // back to the best valid earlier pass so a malformed plan never reaches approve/team.
     if (!isValidPlan(cleanPlan)) {
-      console.log("[ralplan] Final plan did not match the required shape; requesting a corrected plan…");
+      log("[ralplan] Final plan did not match the required shape; requesting a corrected plan…");
       cleanPlan = await callRole(CRITIC, `Your previous output was not valid for the required schema. Fix it.\n\n${SCHEMA_SPEC}\n\nPlan to fix:\n\n${cleanPlan}`);
       if (!isValidPlan(cleanPlan)) {
         const fallback = [reviewed, draft].find(isValidPlan);
         if (fallback) {
           cleanPlan = fallback;
-          console.log("[ralplan] Using an earlier valid pass output (Critic output was unparseable).");
+          log("[ralplan] Using an earlier valid pass output (Critic output was unparseable).");
         } else {
-          console.log("[ralplan] WARNING: no pass produced a schema-valid plan. Saving the Critic output, but 'joc team' may reject it — review/edit the plan or re-run with a stronger model.");
+          log("[ralplan] WARNING: no pass produced a schema-valid plan. Saving the Critic output, but 'joc team' may reject it — review/edit the plan or re-run with a stronger model.");
         }
       }
     }
@@ -101,22 +161,32 @@ export async function runRalplanCommand(): Promise<void> {
     const planPath = path.join(planDir, `plan-${interviewState.slug}.yaml`);
 
     await fs.writeFile(planPath, cleanPlan, "utf-8");
-    console.log(`\n[SUCCESS] Plan successfully created and saved to: ${planPath}`);
+    log(`\n[SUCCESS] Plan successfully created and saved to: ${planPath}`);
 
     ralplanState.current_phase = "complete";
     ralplanState.plan_path = planPath;
     ralplanState.approved = false;
     await writeWorkflowState("ralplan", ralplanState, cwd);
 
-    console.log("\nPlan preview:");
-    console.log("-----------------------------------------");
-    console.log(cleanPlan);
-    console.log("-----------------------------------------");
-    console.log(`\n[Handoff Ready] The blueprint is prepared but NOT yet approved.`);
-    console.log(`  1) Review it, then approve:  joc approve "${planPath}"`);
-    console.log(`  2) Execute the plan:         joc team`);
+    log("\nPlan preview:");
+    log("-----------------------------------------");
+    log(cleanPlan);
+    log("-----------------------------------------");
+    log(`\n[Handoff Ready] The blueprint is prepared but NOT yet approved.`);
+    log(`  1) Review it, then approve:  joc approve "${planPath}"`);
+    log(`  2) Execute the plan:         joc team`);
+
+    if (opts.onProgress) {
+      opts.onProgress({ skill: "ralplan", phase: "complete" });
+    }
+    return { ok: true };
 
   } catch (error: any) {
-    console.log(`[ERROR calling LLM during Planning]: ${error.message}`);
+    log(`[ERROR calling LLM during Planning]: ${error.message}`);
+    return { ok: false, reason: error.message };
   }
+}
+
+export async function runRalplanCommand(): Promise<void> {
+  await runRalplanEngine();
 }

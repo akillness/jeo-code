@@ -9,12 +9,25 @@
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { callLlm, type Message } from "./loop";
+import type { Message } from "./loop";
 import { extractJsonObject } from "./json";
 import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, type ToolResult } from "./tools";
 import { friendlyProviderError } from "../util/provider-error";
 import { isRateLimitError } from "../util/retry";
+import { runPreToolHooks, runPostTurnHooks } from "./hooks";
 
+
+async function invokeCallLlm(history: Message[], options: {
+  jsonMode: boolean;
+  model?: string;
+  maxTokens?: number;
+  signal?: AbortSignal;
+  onUsage?: (u: { inputTokens?: number; outputTokens?: number }) => void;
+  onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
+}): Promise<string> {
+  const mod = await import("./loop");
+  return mod.callLlm(history, options);
+}
 export interface ToolInvocation {
   tool: string;
   arguments?: Record<string, any>;
@@ -78,11 +91,13 @@ export function executorSystemPrompt(
 }
 
 export interface AgentLoopEvents {
-  onStep?(step: number): void;
+  onStep?(step: number): void | Promise<void>;
   onAssistant?(raw: string, invocation: ToolInvocation | null): void;
   onToolResult?(tool: string, success: boolean, output: string): void;
   /** Transient progress notice (e.g. "rate limited — retrying in Ns"); NOT a terminal error. */
   onNotice?(message: string): void;
+  /** Cumulative token usage after each LLM call — drives live usage meters. */
+  onUsage?(usage: { inputTokens: number; outputTokens: number }): void;
 }
 
 export interface AgentLoopOptions {
@@ -212,15 +227,19 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // Invalid-tool-call guard: a model that returns JSON without a usable `tool`
   // field can't drive the loop at all — surface that clearly instead of looping.
   let invalidToolCalls = 0;
+  // Prose-bounce guard: after this many invalid-JSON corrections, salvage the
+  // model's text as the final answer instead of burning the whole step budget.
+  const MAX_PARSE_BOUNCES = 2;
+  let parseFailures = 0;
   while (step <= maxSteps) {
     if (opts.signal?.aborted) {
       return finish({ done: false, steps: step - 1, doneReason: "Cancelled." });
     }
-    ev.onStep?.(step);
+    await ev.onStep?.(step);
 
     let responseText: string;
     try {
-      responseText = await callLlm(history, {
+      responseText = await invokeCallLlm(history, {
               jsonMode: true,
               model: opts.model,
               maxTokens: opts.maxTokens,
@@ -241,19 +260,31 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       // separate error event here printed the same message twice (live stream + reply).
       return finish({ done: false, steps: step, doneReason: `Error: ${message}` });
     }
+    if (sawUsage) ev.onUsage?.({ ...acc });
 
     let invocation: ToolInvocation;
     try {
       invocation = extractJsonObject<ToolInvocation>(responseText);
     } catch (err) {
-      // Not valid tool-call JSON — show the model the error and let it retry.
       ev.onAssistant?.(responseText, null);
+      // Prose salvage: a reply with no JSON object at all is a chat-style final
+      // answer, not a malformed tool call. Bouncing it back only made the model
+      // apologize for the format — and that apology surfaced as the visible reply.
+      // Same salvage after repeated bounces: the text we have IS the best answer.
+      const trimmed = responseText.trim();
+      parseFailures++;
+      if (trimmed && (!trimmed.includes("{") || parseFailures > MAX_PARSE_BOUNCES)) {
+        history.push({ role: "assistant", content: responseText });
+        return finish({ done: true, steps: step, doneReason: trimmed });
+      }
       history.push({ role: "assistant", content: responseText });
       history.push({
         role: "user",
         content:
           `Your last reply was not a valid tool call (${(err as Error).message}). ` +
-          `Reply with exactly one JSON object: {"tool":"<name>","arguments":{...}}.`,
+          `Do NOT apologize or explain the formatting mistake. If that reply was your final answer, ` +
+          `resend it as {"tool":"done","arguments":{"reason":"<that answer, verbatim>"}}; ` +
+          `otherwise reply with exactly one JSON tool call: {"tool":"<name>","arguments":{...}}.`,
       });
       step++;
       continue;
@@ -311,9 +342,21 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
       output = `Unknown tool: ${invocation.tool}.${hint} Available: ${Object.keys(tools).join(", ")}, done.`;
     } else {
-      const res = await handler(invocation.arguments ?? {}, cwd);
-      success = res.success;
-      output = res.success ? res.output : (res.error ? (res.output ? `${res.error}\n${res.output}` : res.error) : res.output);
+      const preHookResult = await runPreToolHooks(
+        cwd,
+        invocation.tool,
+        invocation.arguments ?? {},
+        opts.signal,
+        ev.onNotice
+      );
+      if (preHookResult.vetoed) {
+        success = false;
+        output = preHookResult.error + (preHookResult.output ? `\n${preHookResult.output}` : "");
+      } else {
+        const res = await handler(invocation.arguments ?? {}, cwd);
+        success = res.success;
+        output = res.success ? res.output : (res.error ? (res.output ? `${res.error}\n${res.output}` : res.error) : res.output);
+      }
     }
 
     ev.onToolResult?.(invocation.tool, success, output);
@@ -330,6 +373,16 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       role: "user",
       content: `Tool [${invocation.tool}] result (${success ? "ok" : "fail"}):\n${resultBody}`,
     });
+
+    await runPostTurnHooks(
+      cwd,
+      invocation.tool,
+      invocation.arguments ?? {},
+      success,
+      output,
+      opts.signal,
+      ev.onNotice
+    );
 
     if (success) {
       consecutiveFailures = 0;

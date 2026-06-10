@@ -13,10 +13,30 @@ test("resolveRetryOptions maps a gjc retry budget to withRetry options", () => {
   expect(resolveRetryOptions({ requestMaxRetries: 4 }).retries).toBe(5);
   expect(resolveRetryOptions({ requestMaxRetries: 0 }).retries).toBe(1);
 
-  // maxDelayMs passes through; unrelated gjc fields are ignored.
-  const opts = resolveRetryOptions({ maxDelayMs: 1000, streamMaxRetries: 100, maxRetries: 3 });
+  // maxDelayMs passes through
+  const opts = resolveRetryOptions({ maxDelayMs: 1000 });
   expect(opts.maxDelayMs).toBe(1000);
-  expect(opts.retries).toBeUndefined();
+
+  // streamMaxRetries is consumed by the stream kind
+  const streamOpts = resolveRetryOptions({ streamMaxRetries: 100 }, "stream");
+  expect(streamOpts.retries).toBe(101);
+
+  const requestOpts = resolveRetryOptions({ streamMaxRetries: 100 }, "request");
+  expect(requestOpts.retries).toBeUndefined();
+
+  // maxRetries fallback works for both request and stream if they are unset
+  const fallbackRequestOpts = resolveRetryOptions({ maxRetries: 3 }, "request");
+  expect(fallbackRequestOpts.retries).toBe(4);
+
+  const fallbackStreamOpts = resolveRetryOptions({ maxRetries: 3 }, "stream");
+  expect(fallbackStreamOpts.retries).toBe(4);
+
+  // requestMaxRetries and streamMaxRetries take precedence over maxRetries
+  const precRequestOpts = resolveRetryOptions({ requestMaxRetries: 5, maxRetries: 3 }, "request");
+  expect(precRequestOpts.retries).toBe(6);
+
+  const precStreamOpts = resolveRetryOptions({ streamMaxRetries: 10, maxRetries: 3 }, "stream");
+  expect(precStreamOpts.retries).toBe(11);
 });
 
 test("resolveRetryOptions: rate-limit defaults engage only when not explicitly configured", () => {

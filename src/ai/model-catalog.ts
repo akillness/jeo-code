@@ -27,10 +27,30 @@ export interface CatalogModel {
   thinking: ThinkLevel[];
   /** Whether the model accepts image input. */
   images: boolean;
+  /** Optional company override. */
+  company?: string;
 }
 
 const FULL: ThinkLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
 const STD: ThinkLevel[] = ["minimal", "low", "medium", "high"];
+
+export const ANTIGRAVITY_MODELS = [
+  "claude-opus-4-5-thinking",
+  "claude-opus-4-6-thinking",
+  "claude-sonnet-4-5",
+  "claude-sonnet-4-5-thinking",
+  "claude-sonnet-4-6",
+  "claude-sonnet-4-6-thinking",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-thinking",
+  "gemini-2.5-pro",
+  "gemini-3-flash",
+  "gemini-3-pro-high",
+  "gemini-3-pro-low",
+  "gemini-3.1-pro-high",
+  "gemini-3.1-pro-low",
+  "gpt-oss-120b-medium",
+] as const;
 
 /** A curated set of common public models with their documented capabilities. */
 export const MODEL_CATALOG: readonly CatalogModel[] = [
@@ -54,6 +74,18 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   { canonical: "gemini-2.0-flash", provider: "gemini", providerModel: "gemini-2.0-flash", contextTokens: 1_000_000, maxOutputTokens: 8_192, thinking: [], images: true },
   { canonical: "gemini-2.5-flash", provider: "gemini", providerModel: "gemini-2.5-flash", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true },
   { canonical: "gemini-2.5-pro", provider: "gemini", providerModel: "gemini-2.5-pro", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true },
+  // Google Antigravity / Gemini CLI (Cloud Code Assist) — provider-qualified to avoid
+  // collisions with public Gemini, Anthropic, and OpenAI/Codex ids.
+  ...ANTIGRAVITY_MODELS.map((id): CatalogModel => ({
+    canonical: `antigravity/${id}`,
+    provider: "antigravity",
+    providerModel: id,
+    contextTokens: id.includes("claude") ? 200_000 : id.includes("gemini-3") ? 1_000_000 : 1_000_000,
+    maxOutputTokens: id.includes("claude") ? 64_000 : 65_536,
+    thinking: id.includes("thinking") || id.includes("-high") || id.includes("-low") || id.includes("gemini-3") ? FULL : STD,
+    images: !id.includes("gpt-oss"),
+    company: id.includes("claude") ? "Anthropic via Antigravity" : id.includes("gpt") ? "OpenAI via Antigravity" : "Google Antigravity",
+  })),
   // Ollama (local)
   { canonical: "qwen2.5", provider: "ollama", providerModel: "ollama/qwen2.5:0.5b", contextTokens: 32_768, maxOutputTokens: 8_192, thinking: [], images: false },
 ];
@@ -116,4 +148,16 @@ export function catalogMetadata(modelId: string): CatalogModel | undefined {
 export function supportsThinking(modelId: string, level: ThinkLevel): boolean {
   const meta = catalogMetadata(modelId);
   return meta ? meta.thinking.includes(level) : false;
+}
+export function companyLabel(provider: string, entry?: { company?: string }): string {
+  if (entry?.company) {
+    return entry.company;
+  }
+  const low = provider.toLowerCase();
+  if (low === "anthropic") return "Anthropic";
+  if (low === "openai") return "OpenAI";
+  if (low === "gemini") return "Google";
+  if (low === "ollama") return "Ollama";
+  if (low === "antigravity") return "Antigravity";
+  return provider.charAt(0).toUpperCase() + provider.slice(1);
 }

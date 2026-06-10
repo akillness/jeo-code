@@ -1,3 +1,4 @@
+import { parseConfig } from "../src/agent/config-schema";
 import { test, expect } from "bun:test";
 import { qualifyModelId } from "../src/ai/model-manager";
 
@@ -26,4 +27,30 @@ test("qualifyModelId matches all spec cases", () => {
   // 8. empty string passes through
   expect(qualifyModelId("", "ollama")).toBe("");
   expect(qualifyModelId("   ", "ollama")).toBe("");
+});
+
+test("parseConfig normalizes colon-containing un-prefixed model IDs to ollama/", () => {
+  const rawConfig = {
+    defaultModel: "gpt-oss:20b",
+    roles: {
+      smol: "qwen2.5:0.5b",
+      slow: "claude-sonnet-4-5",
+      plan: "gpt-5.5",
+    },
+    subagents: {
+      executor: {
+        model: "custom-ollama:latest",
+      },
+    },
+  };
+
+  const res = parseConfig(rawConfig);
+  expect(res.ok).toBe(true);
+  if (res.ok) {
+    expect(res.config.defaultModel).toBe("ollama/gpt-oss:20b");
+    expect(res.config.roles?.smol).toBe("ollama/qwen2.5:0.5b");
+    expect(res.config.roles?.slow).toBe("claude-sonnet-4-5");
+    expect(res.config.roles?.plan).toBe("gpt-5.5");
+    expect(res.config.subagents?.executor?.model).toBe("ollama/custom-ollama:latest");
+  }
 });

@@ -30,14 +30,19 @@ export function showCursor(): string {
 
 /** Enter the alternate screen buffer (xterm `?1049h`): a separate, scrollback-free
  *  screen. Used for the transient live-turn UI so terminal scroll (mouse wheel) can't
- *  fight the in-place repaint — and the main buffer / scrollback is left untouched. */
+ *  fight the in-place repaint — and the main buffer / scrollback is left untouched.
+ *  Also disables "alternate scroll" (`?1007l`): with it on, terminals (and tmux)
+ *  translate mouse-wheel motion in the alt screen into Up/Down arrow key sequences,
+ *  which would otherwise leak into readline's buffer and corrupt the next prompt. */
 export function enterAltScreen(): string {
-  return `${ESC}?1049h`;
+  return `${ESC}?1049h${ESC}?1007l`;
 }
 
-/** Leave the alternate screen buffer (`?1049l`), restoring the main buffer + scrollback. */
+/** Leave the alternate screen buffer (`?1049l`), restoring the main buffer + scrollback.
+ *  Re-enables alternate scroll (`?1007h`, the common terminal default) so other
+ *  full-screen apps (vim/less) keep their wheel behavior after joc exits the turn. */
 export function leaveAltScreen(): string {
-  return `${ESC}?1049l`;
+  return `${ESC}?1007h${ESC}?1049l`;
 }
 
 export function size(): { cols: number; rows: number } {

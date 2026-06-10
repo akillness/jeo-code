@@ -5879,3 +5879,178 @@ User-reported: `/model` to Anthropic (OAuth) hit `Rate limited by Anthropic (HTT
 - New `test/rate-limit-handling.test.ts` (7 tests): usage-limit classification (+ RESOURCE_EXHAUSTED stays retryable), fail-fast budget (1 attempt), friendly message split, single-percent regression, ETA gating, TUI retry-notice pin/clear.
 - `bun run typecheck` → 0 errors; `bun test` → **731 pass / 0 fail** (94 files).
 - Live smoke (`--model haiku`, real Anthropic OAuth): tool loop + honest empty-done fallback verified; `--model sonnet` confirms wire-id mapping with only account-level 429s remaining.
+
+## 878. Google OAuth bundled client secret — login works out of the box (pass 878)
+
+**Date:** 2026-06-10 · **Dimension: auth UX / gemini-cli parity.**
+
+User-impact bug: completing the entire Google browser sign-in still failed at the token-exchange step with "[FAILED] … requires GEMINI_OAUTH_CLIENT_SECRET", because the installed-app client secret was sourced from env ONLY.
+
+### Fixes
+1. `src/auth/flows/google.ts`: env-only `requireClientSecret()` replaced with `googleClientSecret(env?)` — `GEMINI_OAUTH_CLIENT_SECRET` override → bundled gemini-cli default (base64-encoded like the client id, since installed-app secrets are not confidential per RFC 8252 §8.5 but the literal trips secret scanners). Wired at both the authorization-code exchange and the refresh-token call.
+2. `AGENTS.md`: stale "`GEMINI_OAUTH_CLIENT_SECRET` is needed for the Google OAuth tests" note corrected — it is now an optional override for self-provisioned clients.
+
+### Verification (pass 878)
+- New test (`test/oauth.test.ts`): env override wins; blank/missing env falls back to the bundled `GOCSPX-…` default (blank must not mask it).
+- Full: `bun run typecheck` → 0 errors; `bun test` → **732 pass / 0 fail** (94 files).
+
+## 879. gjc-parity skills/context/auth hardening + Gemini thinking-budget fix + live model verification (pass 879)
+
+**Date:** 2026-06-10 · **Dimension: skill/rule surface, OAuth robustness, model correctness, picker UX.** Driven by upstream gjc (`Yeachan-Heo/gajae-code`) behavior analysis.
+
+### gjc-parity surface (verified + completed in-flight work)
+1. **Skills as SKILL.md embeds** (`src/prompts/skills/<name>/SKILL.md` → `skills/catalog.ts` via Bun text imports), mirroring gjc's `src/defaults/gjc/skills/<name>/SKILL.md` source-bundled defaults; `joc skills --write` materializes the raw SKILL.md.
+2. **Hierarchical context files** (`context-files.ts`): parent walk up to git root/$HOME + nested `AGENTS.md` scan (depth ≤ 3, `IGNORED_DIRS` pruned) with cwd→nested→parent priority under the existing char budgets; hook/rule guidance dirs (`.agents/rules|hooks`, `.joc/rules`) keep their reserved budget.
+3. **OAuth refresh serialization**: cross-process file lock (`oauth-<provider>.lock`, stale-lock takeover) + in-lock freshness re-check (`already_refreshed`) so concurrent refreshes never double-spend a refresh token; `saveGlobalConfig` writes temp-then-rename (atomic, no torn config).
+4. **Retry budgets**: `streamMaxRetries` now actually consumed for stream calls; `maxRetries` is the fallback for both kinds (gjc `~/.gjc/config.yml` semantics).
+5. **Picker UX**: provider/model pickers and `/model`/`/config` panels show company branding (`openai — OpenAI`, `(ollama · Ollama)`) via `companyLabel`; 3 picker tests aligned.
+
+### Gemini thinking-budget fix (live-found bug)
+- `gemini-flash-latest` (the configured default!) returned an EMPTY reply: 2.5+/latest models think by default and bill thought tokens against `maxOutputTokens`, so small-budget calls finished `MAX_TOKENS` with zero text — and the adapter swallowed it as `""`.
+- `geminiThinkingBudget(model, effort, maxTokens)` (`providers/gemini.ts`): thinking OFF by default on flash-class, 128-floor on pro-class (cannot disable), omitted on pre-2.5 (rejects `thinkingConfig`); effort maps low/medium/high → 1024/4096/8192, clamped to keep ≥ ~1K of the output budget for text.
+- Empty + `MAX_TOKENS` now throws an actionable "output budget exhausted before any text" error instead of silently returning `""`.
+
+### Live model verification (new `scripts/verify-models.ts`)
+- Exercises recent catalog models through the REAL path (manager → routing → credential → adapter → retry): anthropic claude-haiku/sonnet/opus-4-5, openai gpt-5.5/5.4 (Codex), gemini 2.5-flash/2.5-pro/flash-latest, ollama qwen2.5.
+- Results: haiku-4-5 OK · gpt-5.5 OK · gpt-5.4 OK · gemini-2.5-flash OK · qwen2.5 OK; sonnet/opus-4-5 + gemini-2.5-pro/flash-latest hit account-level rate/usage windows (credential + routing verified, distinguished from hard failures).
+
+### Verification (pass 879)
+- New tests: thinking-budget matrix + `thinkingConfig` request wiring (`test/gemini.test.ts`), OAuth concurrent-refresh lock (`test/oauth.test.ts`), atomic config save (`test/config-save.test.ts`), context hierarchy walk/budget (`test/context-files.test.ts`), stream-retry budgets (`test/retry.test.ts`), SKILL.md embed round-trip (`test/skills.test.ts`).
+- Full: `bun run typecheck` → 0 errors; `bun test` → **743 pass / 0 fail** (94 files); `bun run build` → ok; `bun scripts/verify-models.ts` → 0 hard failures.
+
+## 880. Review follow-up — stream retry semantics and picker branding coverage (pass 880)
+
+**Date:** 2026-06-10 · **Dimension: code-review follow-up / retry semantics / UI test coverage.**
+
+### Review outcome
+- Reviewed the pass-879 local diff as a backend/platform change. Highest-risk path was provider retry semantics: `streamMaxRetries` must not duplicate already-emitted stream chunks.
+- Confirmed `retryableStream` retries only through the initial/pre-first-chunk phase; failures after the first yielded chunk propagate, so using the stream retry budget at that site is replay-safe.
+- Kept `resolveCall(kind)` explicit: request calls use `requestMaxRetries`; stream calls use the stream site's replay-safe budget. Both still fall back through `maxRetries`; unset stream budgets keep the conservative default.
+
+### Coverage additions
+- `companyLabel` catalog mapping tested directly.
+- Config panel, provider picker, and model picker tests assert company-branded labels/groups so TUI UX drift is caught.
+
+### Verification (pass 880)
+- Focused: `bun run typecheck && bun test test/retry.test.ts test/model-catalog.test.ts test/config-panel.test.ts test/pickers.test.ts` → **49 pass / 0 fail**.
+- Full: `bun test` → **744 pass / 0 fail**; `bun run build` → ok; `bun scripts/verify-models.ts` → 0 hard failures.
+
+## 881. Deep-dive gjc parity execution — native skills, hooks, compaction, Antigravity branding (pass 881)
+
+**Date:** 2026-06-10 · **Dimension: skill/workflow fidelity, hook safety, context management, provider/model UX.**
+
+### Deep-dive driven changes
+- Ran a trace→spec pipeline against upstream gjc behavior and crystallized `.omc/specs/deep-dive-spec-joc-gjc-parity-improvement.md` plus consensus plan `.omc/plans/ralplan-joc-gjc-parity-improvement.md`.
+- `/skill deep-interview|ralplan|team|ultragoal` now routes to native workflow engines inside `joc launch` instead of LLM-guidance imitation. Workflow start/finish/abort markers are persisted in session history.
+- Bundled workflow docs are source `SKILL.md` files under `src/prompts/skills/<name>/SKILL.md` and are embedded through Bun text imports; `joc skills --write` materializes those originals.
+- Configured user/project skills are now advertised in a bounded `Configured skills` prompt section while reserved-name hijack guards remain intact.
+- AGENTS/rule context discovery now supports hierarchy (parent walk + nested `AGENTS.md`) under bounded budgets.
+- Executable pre-tool/post-turn hooks are opt-in (`hooks.enabled`) and run through `Bun.spawn` with timeout/AbortSignal; pre-tool can veto, post-turn is advisory.
+
+### Provider/model and memory fixes
+- Retry config now consumes `streamMaxRetries` at the stream site and `maxRetries` as fallback without replaying already-emitted stream chunks.
+- OAuth config saves are temp+rename atomic, and OAuth refresh is serialized with a cross-process lock plus in-lock freshness recheck.
+- `gpt-oss:20b`-style unprefixed Ollama ids are normalized at setup/config-load boundaries; OpenAI OAuth + non-Codex model combinations fail fast with a clear message.
+- Antigravity/Cloud Code Assist is represented as an Antigravity provider using Gemini OAuth/project id, with curated Antigravity catalog entries.
+- `/model`, `/provider`, and `/config` display provider/company labels consistently (`OpenAI`, `Google`, `Antigravity`, `Ollama`, etc.).
+- Compaction is token-estimate based (CJK weighted, system prompt included), model context windows are injected via `contextTokens`, team workers compact histories, and session JSONL receives append-only compaction markers for resume/list boundedness.
+- TUI footer now surfaces estimated context usage (`ctx NN%`) alongside the live step/evolution status.
+- In-flight launch/subagent/workflow runs now install an abort harness: first `Ctrl-C` cancels the active run, `Esc` cancels live TUI turns, and a second `Ctrl-C` hard-exits after restoring the terminal.
+
+### Verification (pass 881)
+- Typecheck: `bun run typecheck` → 0 errors.
+- Full: `bun test` → **831 pass / 0 fail** across 107 files.
+- Build + smoke: `bun run build` → ok; `JOC_DEFAULT_MODEL=claude-haiku-4-5 bun src/cli.ts launch --no-tui --max-steps 4 "Use the done tool with reason smoke ok."` → `smoke ok`.
+
+## Pass 876 — Gemini OAuth: no more post-sign-in FAILED + dangling paste prompt
+
+- **876a.** ROOT CAUSE of "`joc setup` OAuth 완료 후에도 [FAILED]": the Google flow's client secret was env-ONLY (`GEMINI_OAUTH_CLIENT_SECRET ?? ""`), and the check fired inside `exchangeToken` — i.e. AFTER the user completed the entire browser sign-in. The public gemini-cli installed-app client secret (not confidential per RFC 8252 §8.5; gemini-cli ships it in source) is now bundled base64-encoded like the client id, with `GEMINI_OAUTH_CLIENT_SECRET` as an override (`googleClientSecret()` in `src/auth/flows/google.ts`; blank env falls through to the default). Google OAuth login now completes out of the box.
+- **876b.** Dangling "Paste redirect URL or code…" prompt fixed: the manual-paste readline question survived the flow result, reprinted its prompt over the [SUCCESS]/[FAILED] line, and — in `joc setup` — QUEUED IN FRONT of the API-key fallback question (setup looked hung; readline/promises serializes questions). `interactiveOAuthLogin` (`src/commands/auth.ts`) and the setup OAuth branch (`src/commands/setup.ts`) now pass an `AbortController` signal into both `ctrl.signal` and `rl.question(query, { signal })` and abort the moment the login settles (in setup, BEFORE the fallback question). `OAuthPrompt` accepts the options bag.
+- **876c.** `OAuthCallbackFlow.#waitForCallback` manual loop gained an abort guard: an aborted `ask()` rejects instantly → maps to null → the old `while(true)` re-asked in a hot microtask loop forever; the loop now exits when the combined controller/timeout signal is aborted.
+- **876d.** Fixed a Bun-incompatible assertion in the (concurrent-work) `test/gemini-import.test.ts`: Bun's `process.exitCode = undefined` setter cannot CLEAR a previously-set value (verified: stays 0), so `expect(process.exitCode).toBeUndefined()` could never hold in a full-suite run — replaced with the file's own `?? 0 === 0` success pattern.
+
+### Verification (pass 876)
+- New tests: `googleClientSecret` env override / blank-env fallback / bundled default shape (`test/oauth.test.ts`), manual re-prompt loop stops after ctrl-signal abort (would previously spin; counts `ask()` invocations across the abort).
+- Full: `bun run typecheck` → 0 errors; `bun test` → **850 pass / 0 fail** (111 files; suite grew via concurrent gemini transparent-import work).
+
+## Pass 881 — GJC parity command surface + OAuth/TUI runtime fixes (2026-06-10)
+
+- Added gjc-parity commands: `joc state` (`read/write/clear/handoff`), `joc session` (`list/attach/rm`), `joc update`, `joc skills list|read --json`, and `joc export --html`.
+- Extended `joc launch` parity flags: `-p/--print`, `-c/--continue`, `--append-system-prompt`, `--system-prompt`, `--no-skills`, `--skills`, `--no-tools`, and `--tools`.
+- Fixed the Anthropic/OpenAI/Antigravity “model after setting” path: `joc chat --model ...` now parses model flags instead of swallowing them into the prompt; persisted Anthropic default was verified through both `chat` and `launch -p`.
+- Added Antigravity provider/catalog/status coverage and Gemini CLI OAuth import (`joc auth import gemini`, `joc auth login gemini --import`) with hermetic test-mode fallback; model listing now shows `antigravity/*` catalog models when Gemini OAuth exists and directs denied calls to `joc auth login antigravity`.
+- Fixed the JSON-tool apology leak: pure prose model replies are salvaged as final answers; malformed JSON retries explicitly forbid apology text and stop after bounded bounces.
+- Improved gjc-style observability: plain-mode `[STEP]` stream includes target, elapsed minute-scale duration, and token usage; TUI summary reports duration + token usage and animates truecolor status gradients.
+- Verification: `bun run typecheck` → 0; `bun test` → 850 pass / 0 fail; `bun run build` → 0. Live checks: OpenAI OAuth `gpt-5.5` → OK, Anthropic OAuth persisted default (`claude-haiku-4-5`) → OK in `chat` and `launch -p`; Antigravity model list visible, Gemini-token call returns expected 403 with dedicated-login guidance.
+
+## Pass 877 — Gemini OAuth served end-to-end via Cloud Code Assist (no API key)
+
+- **877a.** `joc auth login gemini` OAuth tokens now RUN turns, not just store: the gemini adapter (`src/ai/providers/gemini.ts`) routes OAuth credentials to the Cloud Code Assist backend (`cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse`, gemini-cli/gjc parity) with GeminiCLI identification headers and the `{ project, model, request }` envelope. The shared payload builder (`buildGeminiPayload`) keeps the alternating-turn coalescing, thinkingConfig, and generationConfig identical across both paths; CCA chunks (`{ response: {...} }`) are unwrapped, thought tokens count as output usage. The projectId comes from the stored credential → env → lazy loadCodeAssist/onboardUser discovery (`resolveAntigravityProjectId`, persisted). API-key credentials keep using the public generativelanguage API and, when set, still take precedence.
+- **877b.** Gating removed: `OAUTH_FLOW_REGISTRY.gemini.verifiedEndToEnd` → `true` (note rewritten), the gemini-specific "use a GEMINI_API_KEY" throw in `effectiveCredentialForProvider` deleted (generic guard retained for future unverified flows), provider-status reports gemini OAuth as READY with label `OAuth (Gemini CLI / Cloud Code Assist)`, and `joc doctor` probes the REAL OAuth call path (`POST v1internal:loadCodeAssist`) instead of the generativelanguage list that rejects these tokens.
+- **877c.** Tests: CCA envelope/header shape + OAuth-routes-to-CCA adapter test (mocked SSE, stored projectId short-circuits discovery, thought-token usage) + api_key-stays-on-generativelanguage guard (`test/gemini.test.ts`); gemini oauth-only ready status (`test/provider-status.test.ts`); doctor CCA probe (`test/doctor.test.ts`); flows AGENTS.md note updated.
+
+### Verification (pass 877)
+- `bun run typecheck` → 0 errors; `bun test` → **857 pass / 0 fail** (112 files).
+- LIVE end-to-end with the real Google OAuth credential and NO GEMINI_API_KEY: `describeProvider("gemini")` → ready/OAuth (Cloud Code Assist); `mgr.call(gemini-2.5-flash)` → real CCA reply; `joc doctor --json` → gemini ok via loadCodeAssist (802ms); full `joc launch --no-tui --model gemini-2.5-flash` agent turn executed a bash tool call and reported usage (25k in / 165 out).
+- Operator config: removed the stored gemini API key from `~/.joc/config.json` and the `GEMINI_API_KEY` export from `~/.zshrc` per request — OAuth is now the active Gemini path.
+
+## 882. Antigravity OAuth parity + remove `/subagent` surface (pass 882)
+
+**Date:** 2026-06-10 · **Dimension: Google OAuth parity, Antigravity usability, command-surface cleanup.**
+
+### Antigravity / Google OAuth
+- Added a shared Cloud Code Assist project-discovery module (`src/auth/flows/google-project.ts`) that mirrors gjc/gemini-cli behavior: `loadCodeAssist` → existing project, otherwise `onboardUser` + LRO polling to provision one.
+- `joc auth login gemini` now best-effort auto-discovers/stores `projectId`, so older gemini OAuth logins no longer fail immediately on Antigravity calls just because the env variable was missing.
+- Added a dedicated `antigravity` OAuth flow (`src/auth/flows/antigravity.ts`) using the Antigravity desktop-app client/scopes/metadata. `model-manager` now prefers `joc auth login antigravity`, with gemini OAuth kept only as a fallback when that token is actually authorized.
+- Antigravity runtime project resolution is lazy and self-healing: stored credential → env → live `loadCodeAssist`/`onboardUser` discovery, then persist the discovered id back into the owning OAuth record.
+- Improved the user-visible 403 guidance from a raw projectId error to a credential/actionable message: prefer `/provider login antigravity`; gemini login is only a backend-dependent fallback.
+
+### Command surface / role-model UX
+- Removed the direct `/subagent` and `/subagents` command surfaces from launch/slash/autocomplete/help.
+- Kept subagent role configuration through `/agents`, and added `/model subagent <role> [model|#N]` (alias `/model role <role> ...`) so role-model preparation can happen directly from the model chooser flow.
+
+### Verification (pass 882)
+- Focused: `bun run typecheck && bun test test/google-project.test.ts test/antigravity.test.ts test/antigravity-login.test.ts test/provider-status.test.ts test/model-discovery.test.ts test/autocomplete.test.ts test/slash.test.ts test/launch-role-model.test.ts` → **96 pass / 0 fail**.
+- Live UX check: `bun src/cli.ts auth status` shows `antigravity — via gemini fallback`; `bun src/cli.ts chat --model antigravity/gemini-3-pro-high ...` now fails with the improved 403 guidance instead of the old raw projectId error.
+- Full: `bun run typecheck && bun test && bun run build` → **858 pass / 0 fail**, build ok.
+
+## 883. Antigravity selectable in /model + role-pin verification (pass 883)
+
+**Date:** 2026-06-10 · **Dimension: model-picker UX, subagent role-model flow verification.**
+
+### Why antigravity was "not ready" in /model
+- `describeProvider("antigravity")` honestly reports `ready=false` when only the gemini-cli OAuth fallback exists (the agent backend 403s those tokens), but the `/model`, `/provider <name> <model>`, `/agents <role> ...`, and `/model subagent <role> ...` paths treated `!ready` as a hard selection REFUSAL — a dead end.
+- Fix: antigravity with ANY Google OAuth (own login or gemini fallback) is now **selectable with a warning** (`! antigravity is not call-ready yet (…) — run /provider login antigravity before the first turn.`) instead of refused, across all five guards and the live-picker disabled list. Other providers keep the strict refusal.
+
+### Verification (pass 883)
+- New REPL test: with a gemini-fallback-only config, `/model antigravity/gemini-3-pro-high` sets the session model (warned, not refused) and `/model subagent executor antigravity/claude-sonnet-4-5` persists `subagents.executor.model` (test/launch-role-model.test.ts).
+- Deterministic TUI stage test: pinned a 200x40 viewport via property descriptors (was flaky on narrow runner terminals).
+- Full: `bun run typecheck` → 0; `bun test` → **859 pass / 0 fail** (113 files); `bun run build` → ok.
+
+## 884. Mouse-wheel scroll no longer corrupts the TUI/prompt (tmux + plain terminals) (pass 884)
+
+**Date:** 2026-06-10 · **Dimension: TUI input robustness.**
+
+### Root cause
+- With "alternate scroll" (DECSET 1007, on by default in most terminals AND honored by tmux), a mouse-wheel scroll inside the alt-screen live turn is translated into Up/Down arrow key sequences. Readline buffers those into its pending line, so the next prompt rendered/executed garbage (`[A[A…`) — the "broken TUI text".
+
+### Fix
+- `enterAltScreen()` now emits `?1049h` + `?1007l` (disable alternate scroll inside the live turn); `leaveAltScreen()` restores `?1007h` + `?1049l` so vim/less keep their wheel behavior afterward. Works identically inside tmux (tmux forwards DECSET 1007).
+- Belt-and-braces: the REPL drains pending tty input and clears readline's buffered line of escape/arrow noise before every prompt (`drainPendingTtyInput`), so any sequence that still slips through mid-turn cannot leak into the next input.
+
+### Verification (pass 884)
+- tui-app test asserts the wheel-guard sequences on alt-screen enter/leave.
+- Full: `bun run typecheck` → 0; `bun test` → **859 pass / 0 fail**; `bun run build` → ok.
+
+## 885. Automatic TUI self-repair — no manual redraw needed (pass 885)
+
+**Date:** 2026-06-10 · **Dimension: TUI resilience (auto-heal).**
+
+### Auto-repair layers (all automatic, no keypress required)
+1. **Periodic resync**: the 120ms live-turn ticker drops the differential baseline every 25 ticks (~3s), so the next draw rewrites EVERY line — any corruption from stray child output, wheel noise, or terminal glitches heals itself within ~3s.
+2. **Resize repaint**: `process.stdout` "resize" is now observed during live turns (registered in `start()`, removed in `finish()`); rows/cols changes trigger an immediate full repaint instead of diffing against stale positions.
+3. **Noise-triggered repaint**: the in-flight abort harness now distinguishes input classes in raw mode — bare ESC aborts, `\u0003` (raw-mode Ctrl-C data) routes through the SIGINT path, and any other escape-sequence burst (mouse-wheel arrows) fires `onNoise` → `LaunchTui.repaint()` immediately.
+
+### Verification (pass 885)
+- New tests: harness noise/Ctrl-C-data classification (launch-toggles), `repaint()` full-frame rewrite + resize listener add/remove lifecycle (tui-app).
+- Full: `bun run typecheck` → 0; `bun test` → **863 pass / 0 fail**; `bun run build` → ok.

@@ -1,3 +1,13 @@
+import deepInterviewSkillRaw from "../prompts/skills/deep-interview/SKILL.md" with { type: "text" };
+import ralplanSkillRaw from "../prompts/skills/ralplan/SKILL.md" with { type: "text" };
+import teamSkillRaw from "../prompts/skills/team/SKILL.md" with { type: "text" };
+import ultragoalSkillRaw from "../prompts/skills/ultragoal/SKILL.md" with { type: "text" };
+
+const MAX_SKILL_SUMMARY_CHARS = 180;
+const MAX_SKILL_DETAILS_CHARS = 8_000;
+const MAX_SKILLS_PROMPT_LINES = 40;
+const MAX_SKILLS_PROMPT_CHARS = 6_000;
+
 export interface SkillDoc {
   name: string;          // e.g. "deep-interview"
   command: string;       // e.g. "joc deep-interview \"<idea>\""
@@ -6,46 +16,32 @@ export interface SkillDoc {
   details: string;       // 2-5 lines of guidance
   /** Slash aliases that invoke this skill directly, e.g. `/speckit.plan`. */
   aliases?: string[];
+  raw?: string;
 }
 
 export const SKILLS: SkillDoc[] = [
-  {
-    name: "deep-interview",
-    command: 'joc deep-interview "<idea>"',
-    summary: "Socratic ambiguity gate; freezes a seed only when clarity is sufficient, with --auto for non-interactive clarification.",
-    whenToUse: "When an idea is vague and needs requirement gathering and refinement before planning.",
-    details: "Initiates a Socratic dialogue to ask clarifying questions about a vague idea.\nScores the ambiguity of the proposal and iterates until it is under 20%.\nFreezes a structured requirements seed only after concrete acceptance criteria exist.\nSupports an --auto flag for non-interactive clarification without bypassing the ambiguity gate."
-  },
-  {
-    name: "ralplan",
-    command: "joc ralplan",
-    summary: "Planner/Architect/Critic blueprint from the seed.",
-    whenToUse: "When requirements are clear (e.g. from deep-interview) and you need a robust execution blueprint.",
-    details: "Executes a multi-agent critique and planning process to generate a structured implementation plan.\nCombines views from a Planner, an Architect, and a Critic to identify risks, define tasks, and specify files.\nSaves the blueprint for execution."
-  },
-  {
-    name: "team",
-    command: "joc team",
-    summary: "Per-task executor loop against the plan.",
-    whenToUse: "When you have a blueprint/plan and need to execute the concrete implementation tasks.",
-    details: "Coordinates execution of individual tasks defined in the blueprint.\nSpawns per-task executor subagents or loops to implement code changes.\nEnsures task-level isolation and tracks implementation status."
-  },
-  {
-    name: "ultragoal",
-    command: "joc ultragoal",
-    summary: "Verify acceptance criteria, write report.",
-    whenToUse: "When tasks are implemented and you need a final, high-level verification and summary report.",
-    details: "Verifies the implementation against the acceptance criteria specified in the plan.\nRuns checks, tests, or validations to ensure correctness.\nGenerates a final completion report outlining the changes and verification evidence."
-  }
+  parseSkillMarkdown("deep-interview", deepInterviewSkillRaw),
+  parseSkillMarkdown("ralplan", ralplanSkillRaw),
+  parseSkillMarkdown("team", teamSkillRaw),
+  parseSkillMarkdown("ultragoal", ultragoalSkillRaw),
 ];
 export const BUILTIN_SKILL_NAMES = SKILLS.map(s => s.name.toLowerCase());
 
 export function workflowSkillsForPrompt(skills?: SkillDoc[]): SkillDoc[] {
-  // Return the bundled SKILLS entries verbatim.
-  // This is used to build the system prompt section for "Bundled workflow skills",
-  // ignoring any same-named user-doc overrides to avoid collisions with foreign
-  // ecosystems for prompt advertisement, while keeping user skills loadable/invocable elsewhere.
-  return SKILLS;
+  if (!skills) {
+    return SKILLS;
+  }
+  const result: SkillDoc[] = [];
+  const bundleNames = new Set(BUILTIN_SKILL_NAMES);
+  
+  result.push(...SKILLS);
+
+  for (const s of skills) {
+    if (!bundleNames.has(s.name.toLowerCase())) {
+      result.push(s);
+    }
+  }
+  return result;
 }
 
 
@@ -108,26 +104,75 @@ export function buildSkillTask(skill: SkillDoc, intent: string, invokedAs?: stri
         : "Carry out this skill's workflow now. If it needs a concrete target you weren't given, make a reasonable assumption or ask the user via done."),
   ].join("\n");
 }
-
 export function skillsPromptSection(skills: SkillDoc[] = SKILLS): string {
+  const bundleSkills: SkillDoc[] = [];
+  const configuredSkills: SkillDoc[] = [];
+
+  const bundleNames = new Set(BUILTIN_SKILL_NAMES);
+  for (const s of skills) {
+    if (bundleNames.has(s.name.toLowerCase())) {
+      bundleSkills.push(s);
+    } else {
+      configuredSkills.push(s);
+    }
+  }
+
   const lines: string[] = [];
   let used = 0;
-  for (const [i, s] of skills.entries()) {
-    if (lines.length >= MAX_SKILLS_PROMPT_LINES) {
-      const remaining = skills.length - i;
-      if (remaining > 0) lines.push(`- … ${remaining} more skill(s) omitted for brevity`);
-      break;
-    }
-    const aliases = skillSlashAliases(s);
-    const line = `- ${s.name}${aliases.length ? ` (${aliases.join(", ")})` : ""} — ${s.summary}`;
-    if (used + line.length + 1 > MAX_SKILLS_PROMPT_CHARS) {
-      const remaining = skills.length - i;
-      if (remaining > 0) lines.push(`- … ${remaining} more skill(s) omitted for brevity`);
-      break;
-    }
+
+  function tryAppend(line: string): boolean {
+    if (lines.length >= MAX_SKILLS_PROMPT_LINES) return false;
+    if (used + line.length + 1 > MAX_SKILLS_PROMPT_CHARS) return false;
     lines.push(line);
     used += line.length + 1;
+    return true;
   }
+
+  // 1. Bundled workflow skills
+  if (bundleSkills.length > 0) {
+    if (tryAppend("Bundled workflow skills:")) {
+      for (const [i, s] of bundleSkills.entries()) {
+        const aliases = skillSlashAliases(s);
+        const line = `- ${s.name}${aliases.length ? ` (${aliases.join(", ")})` : ""} — ${s.summary}`;
+        if (!tryAppend(line)) {
+          const remaining = bundleSkills.length - i;
+          lines.push(`- … ${remaining} more skill(s) omitted for brevity`);
+          break;
+        }
+      }
+    } else {
+      lines.push(`- … ${bundleSkills.length} more skill(s) omitted for brevity`);
+    }
+  }
+
+  // 2. Configured skills
+  if (configuredSkills.length > 0) {
+    const isBudgetFull = lines.length >= MAX_SKILLS_PROMPT_LINES || used >= MAX_SKILLS_PROMPT_CHARS;
+    if (isBudgetFull) {
+      lines.push(`- … ${configuredSkills.length} more skill(s) omitted for brevity`);
+    } else {
+      const spaceAdded = tryAppend("");
+      const titleAdded = tryAppend("Configured skills:");
+      
+      if (titleAdded) {
+        for (const [i, s] of configuredSkills.entries()) {
+          const aliases = skillSlashAliases(s);
+          const line = `- ${s.name}${aliases.length ? ` (${aliases.join(", ")})` : ""} — ${s.summary}`;
+          if (!tryAppend(line)) {
+            const remaining = configuredSkills.length - i;
+            lines.push(`- … ${remaining} more skill(s) omitted for brevity`);
+            break;
+          }
+        }
+      } else {
+        if (spaceAdded && lines[lines.length - 1] === "") {
+          lines.pop();
+        }
+        lines.push(`- … ${configuredSkills.length} more skill(s) omitted for brevity`);
+      }
+    }
+  }
+
   return lines.join("\n");
 }
 
@@ -169,7 +214,7 @@ export function tryResolveSkillFromFilePath(filePath: string): SkillDoc | null {
 }
 const BUILTIN_SLASH_ALIASES = new Set([
   "/help", "/clear", "/compact", "/model", "/models", "/provider", "/logout",
-  "/agents", "/subagent", "/subagents", "/config", "/roles", "/thinking",
+  "/agents", "/config", "/roles", "/thinking",
   "/view", "/diff", "/find", "/search", "/sessions", "/skill", "/evolve",
   "/exit", "/quit",
 ]);
@@ -234,10 +279,6 @@ export function skillSlashAliases(skill: SkillDoc): string[] {
 }
 
 
-const MAX_SKILL_SUMMARY_CHARS = 180;
-const MAX_SKILL_DETAILS_CHARS = 8_000;
-const MAX_SKILLS_PROMPT_LINES = 40;
-const MAX_SKILLS_PROMPT_CHARS = 6_000;
 /** Global + per-project skill-doc directories (user-configurable SKILL.md files). */
 export function skillDirs(cwd: string = process.cwd()): string[] {
   const home = process.env.JOC_CONFIG_DIR || path.join(os.homedir(), ".joc");
@@ -335,6 +376,7 @@ export function parseSkillMarkdown(name: string, content: string): SkillDoc {
     whenToUse: meta.whentouse ?? meta.when ?? meta.use ?? "",
     details,
     aliases: dedupeAliases([...explicitAliases, ...inferSlashAliases(content, name)]),
+    raw: content,
   };
 }
 

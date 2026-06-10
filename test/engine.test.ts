@@ -84,7 +84,7 @@ test("runAgentLoop: invalid JSON is fed back to the model for repair", async () 
   await mock.module("../src/agent/loop", () => ({
     callLlm: async () => {
       turn++;
-      if (turn === 1) return "I am thinking out loud with no JSON.";
+      if (turn === 1) return '{"tool":"done","arguments":{"reason":"broken"';
       return JSON.stringify({ tool: "done", arguments: { reason: "recovered" } });
     },
   }));

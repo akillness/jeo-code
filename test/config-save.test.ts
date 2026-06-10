@@ -104,6 +104,17 @@ test("readGlobalConfig: on-disk provider key wins over the env key (env never ov
   expect(cfg.providers.gemini).toBe("disk-gemini-key"); // disk wins
 });
 
+test("saveConfigPatch on a fresh install bakes the runtime default model, not a divergent one", async () => {
+  // No config.json on disk; an unrelated patch (e.g. auth login / /agents) must persist the SAME
+  // default the runtime resolves (envDefaultConfig), never a different built-in.
+  delete process.env.JOC_DEFAULT_MODEL;
+  await saveConfigPatch(raw => ({ subagents: { ...(raw.subagents ?? {}), executor: { maxSteps: 12 } } }));
+  const onDisk = JSON.parse(await fs.readFile(path.join(dir, "config.json"), "utf-8"));
+  expect(onDisk.defaultModel).toBe("claude-sonnet-4-5"); // matches the runtime no-file default
+  const cfg = await readGlobalConfig();
+  expect(cfg.defaultModel).toBe("claude-sonnet-4-5"); // and the effective runtime default is unchanged
+});
+
 test("readGlobalConfig treats blank on-disk provider keys as env-fillable gaps", async () => {
   await fs.writeFile(
     path.join(dir, "config.json"),

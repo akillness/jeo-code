@@ -62,7 +62,7 @@ test("runTeamCommand routes each step to its declared subagent role and complete
   expect(out).toContain("Subagent: Planner");
   expect(out).toContain("Subagent: Architect");
   expect(out).toContain("Subagent: Executor"); // role-less step fell back
-  expect(out).toContain("[SUCCESS] All tasks in the plan executed successfully!");
+  expect(out).toContain("[DONE] All tasks in the plan executed successfully!");
 
   // team state advanced to complete.
   const teamState = JSON.parse(await fs.readFile(path.join(tmp, ".joc", "state", "team-state.json"), "utf-8"));
@@ -146,7 +146,7 @@ test("runTeamCommand normalizes mixed-case plan roles", async () => {
 
   const out = logs.join("\n");
   expect(out).toContain("Subagent: Architect");
-  expect(out).toContain("[SUCCESS] All tasks in the plan executed successfully!");
+  expect(out).toContain("[DONE] All tasks in the plan executed successfully!");
 });
 
 test("runTeamCommand surfaces the engine stop reason on subagent failure", async () => {
@@ -200,7 +200,7 @@ test("runTeamCommand halts when an architect review returns a blocking verdict",
 
   const out = logs.join("\n");
   expect(out).toContain("architect gated execution");
-  expect(out).toContain("[TASK FAILED]");
+  expect(out).toContain("[ERR] Failed on task:");
   expect(process.exitCode).toBe(1);
 });
 
@@ -220,7 +220,7 @@ test("runTeamCommand halts when a critic returns REJECT", async () => {
 
   const out = logs.join("\n");
   expect(out).toContain("critic gated execution");
-  expect(out).toContain("[TASK FAILED]");
+  expect(out).toContain("[ERR] Failed on task:");
   expect(process.exitCode).toBe(1);
 });
 
@@ -237,6 +237,6 @@ test("runTeamCommand halts when a planner report misses required sections", asyn
 
   const out = logs.join("\n");
   expect(out).toContain("Planner report incomplete");
-  expect(out).toContain("[TASK FAILED]");
+  expect(out).toContain("[ERR] Failed on task:");
   expect(process.exitCode).toBe(1);
 });

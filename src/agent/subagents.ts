@@ -112,7 +112,7 @@ export type SubagentConfig = NonNullable<Config["subagents"]>;
 /** Per-role model override → falls back to the global default model. */
 export function resolveSubagentModel(roleId: string, config: Pick<Config, "defaultModel" | "subagents">): string {
   const entry = config.subagents?.[normalizeRoleId(roleId)];
-  return entry?.model ?? config.defaultModel;
+  return entry?.model || config.defaultModel;
 }
 
 /** Per-role step budget → config override, else the role default, else 15. */

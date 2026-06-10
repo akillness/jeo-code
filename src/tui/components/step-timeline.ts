@@ -137,7 +137,19 @@ export function formatStepTimeline(steps: TimelineStep[], opts: TimelineOptions 
     let label = step.label;
     if (step.detail) label += ` ${step.detail}`;
     if (opts.maxWidth && label.length > opts.maxWidth) label = label.slice(0, opts.maxWidth - 1) + "…";
-    if (color && opts.highlightActive && step.state === "active") label = chalk.bold(label);
+    if (color) {
+      if (step.state === "done") {
+        label = `\x1b[9m${chalk.gray(chalk.dim(label))}\x1b[29m`;
+      } else if (step.state === "failed") {
+        label = chalk.red(label);
+      } else if (step.state === "active") {
+        if (opts.highlightActive) {
+          label = chalk.cyan.bold(label);
+        }
+      } else if (step.state === "pending") {
+        label = chalk.dim(label);
+      }
+    }
     const cat: UiCategory = step.state === "active" ? "progress" : step.state === "done" ? "done" : step.state === "failed" ? "error" : "tool";
     const badge = categoryBadge(cat, { index: i + 1, color });
     out.push(`  ${conn} ${paint(glyph)} ${badge} ${label}`);

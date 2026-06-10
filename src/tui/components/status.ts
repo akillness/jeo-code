@@ -2,6 +2,7 @@ import chalk from "chalk";
 import { meter } from "./meter";
 import { categoryBadge } from "./category-index";
 import { animatedGradientText, ColorLevel } from "./color";
+import { formatUsage } from "./duration";
 
 export interface JocStatusData {
   colorLevel?: number;
@@ -26,6 +27,8 @@ export interface JocStatusData {
   stage?: string;
   stepElapsedMs?: number;
   avgStepMs?: number;
+  /** Cumulative turn token usage (engine onUsage) shown live on the [STEP] row. */
+  usage?: { inputTokens: number; outputTokens: number } | null;
 
 }
 
@@ -72,6 +75,10 @@ export function renderJocStatus(data: JocStatusData): string[] {
   }
   if (Number.isFinite(data.avgStepMs)) {
     extraStats += ` · avg ${(data.avgStepMs! / 1000).toFixed(1)}s`;
+  }
+  // Live token spend for the turn — visible per step, not only in the final summary.
+  if (data.usage && (data.usage.inputTokens || data.usage.outputTokens)) {
+    extraStats += ` · ${formatUsage(data.usage)}`;
   }
 
 

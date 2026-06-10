@@ -50,7 +50,7 @@ joc setup
 | `/roles [tier model]` | 모델 역할 티어(smol/slow/plan) 표시·설정 |
 | `/thinking [level]` | 사고 예산(minimal/low/medium/high/xhigh) |
 | `/config` | 현재 런타임 설정 표시 |
-| `/skill [name [intent]]` · `/speckit.plan` 등 | 워크플로우 skill 목록·표시·실행 (사용자 SKILL.md는 **명시적 호출일 때만** 실행) |
+| `/skill [name [intent]]` · `$<skill> [intent]` · `/speckit.plan` 등 | 워크플로우 skill 목록·표시·실행 — `$team "작업"` 처럼 **`$스킬명`으로 직접 호출**(Codex/gjc 스타일, Tab 자동완성) (사용자 SKILL.md는 **명시적 호출일 때만** 실행) |
 | `/view <file> [a-b]` · `/diff [file]` · `/find <glob>` · `/search <pat>` | 코드뷰 / git diff / 파일·패턴 검색 |
 | `/new` · `/drop` · `/session [info\|delete]` · `/rename <title>` · `/resume [id]` | 세션 시작/삭제/정보/이름변경/재개 (gjc parity) |
 | `/retry` · `/btw <question>` | 마지막 요청 재시도 · 히스토리를 건드리지 않는 사이드 질문 |
@@ -59,7 +59,9 @@ joc setup
 | `/theme [name]` · `/settings` | TUI 테마(cosmic/matrix/solar/red-claw/blue-crab/mono) · 런타임 설정(=`/config`) |
 | `/sessions` · `/compact` · `/clear` · `/help` · `/exit` | 세션·컨텍스트 관리 |
 
-TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다. 푸터에는 현재 모델/프로바이더, 단계, ETA, 진화 트랙과 함께 **추정 컨텍스트 사용량(`ctx NN%`)**도 표시되어 긴 세션에서 컨텍스트가 언제 커지는지 바로 볼 수 있습니다. 입력창에 `/`로 시작하는 키워드를 타이핑하면 일치하는 명령 목록이 **실시간 미리보기**로 아래에 표시되고, **방향키(↑/↓)로 선택**한 뒤 Enter로 실행할 수 있습니다(`❯` 표시). `/model subagent `·`/provider login `처럼 공백 뒤 인자를 입력할 때도 사용 가능한 role/provider/subcommand 목록이 계속 보입니다. `/provider login`은 방향키 프로바이더 선택기를 열고, `/provider gemini` 또는 빈 `/model`은 화면 폭에 맞는 **방향키 모델 선택기**를 열어 Enter로 바로 모델을 설정합니다. `진행중/완료/subagent/tool/diff/file/command` 같은 UI 범주는 색인형 배지(`[AGENT]`, `[01:CMD]`, `[FILE]`, `[DIFF]`, `[STEP]`)로 구분되어 진행중 항목, 완료 항목, subagent 스트림, forge 박스, 코드뷰 헤더를 빠르게 스캔할 수 있습니다. 입력은 하단 푸터의 **박스형 입력란 하나로만** 노출됩니다 — 박스에는 `[CMD] input` 같은 제목 줄 없이 입력 내용만 표시되고, 박스 모드에서는 기존 readline 에코(`joc> …` 원시 입력 줄)를 숨기므로 입력창이 중복으로 보이지 않으며, 폭을 넘기면 자연스럽게 여러 줄로 감싸집니다.
+TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다. 하단 상태는 **세 행으로 분리**됩니다 — `[STEP]`(step n/m · 진행 미터 · 경과(분 단위) · 평균 · **라이브 토큰 사용량 `12.3k in / 1.2k out`**), `[STATUS]`(지금 실제로 하는 일: 작업 중 파일/명령, rate-limit 자동재시도 카운트다운 — 로그로 쌓이지 않고 이 행에서만 갱신), `[TOOL]`(forge·tool 집계). 푸터에는 현재 모델/프로바이더, 단계, ETA, 진화 트랙과 함께 **추정 컨텍스트 사용량(`ctx NN%`)**도 표시됩니다. 턴이 끝나면 alt-screen에서 복귀하면서 잔존 행을 지우고(clear-to-EOL + clear-below) 요약·`joc>` 응답·입력 박스가 깨끗하게 이어지므로 **연속으로 요청을 입력**할 수 있습니다. 입력창에 `/`로 시작하는 키워드를 타이핑하면 일치하는 명령 목록이 **실시간 미리보기**로 아래에 표시되고, **방향키(↑/↓)로 선택**한 뒤 Enter로 실행할 수 있습니다(`❯` 표시). `진행중/완료/subagent/tool/diff/file/command` 같은 UI 범주는 색인형 배지(`[AGENT]`, `[01:CMD]`, `[FILE]`, `[DIFF]`, `[STEP]`, `[STATUS]`)로 구분됩니다. 입력은 하단 푸터의 **박스형 입력란 하나로만** 노출됩니다.
+
+워크플로우 단계는 **HUD 행**으로 노출됩니다 — `✔ thinking → ● planning → ○ executing → ○ reporting → ○ done`처럼 현재 단계가 강조되고 지난 단계는 체크로 표시되며, 그라데이션 [STATUS] 행 그룹은 위아래 빈 줄로 분리되어 gjc처럼 읽힙니다. 턴이 끝나면 `[DONE] thinking → planning → executing → done · N steps · 시간 · 토큰` 한 줄로 단계 플로우가 정리 보고됩니다. 스텝 타임라인과 Plan 체크리스트의 **완료 항목은 체크 아이콘 + 취소선 + dim**, 실패는 빨강, 진행 중은 시안 볼드로 색상 대조되어 한눈에 구분됩니다.
 
 대화형 에이전트는 내부 `todo` tool로 작업 계획을 선언하면 TUI에 **Plan 체크리스트**를 유지하고, `task` tool로 executor/planner/architect/critic 서브에이전트에 bounded 작업을 위임할 수 있습니다. 서브에이전트의 **모델/프로바이더 준비는 `/agents` 또는 `/model subagent <role> ...`**로 하고, planner/architect/critic은 read/find/search/ls 전용이라 파일을 수정하지 못하며, role 오타는 mutating executor로 조용히 fallback되지 않고 실패합니다. planner/architect/critic은 이제 각각 **계획/아키텍처 리뷰/비판 verdict** 형식의 구조화된 `done.reason` 계약을 따라야 하며, 계약이 빠지면 성공으로 처리되지 않습니다.
 
@@ -74,7 +76,7 @@ TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행
 >
 > **파일 검색(`/find` · `find` tool):** 슬래시 없는 이름 패턴(`*.ts`, `engine.ts`)은 하위 디렉터리까지 재귀 basename 매칭이고, `/`나 `**`를 포함한 **경로 글로브**(`src/**/*.ts`, `src/agent/*.ts`, 정확한 상대경로 `src/skills/catalog.ts`)는 실제 glob 의미로 해석됩니다. 이전에는 `find -name`이 basename만 보기 때문에 경로 글로브가 항상 매칭 0건이었습니다(문서의 `/find src/**/*.ts` 예시조차 동작 안 함). `node_modules`/`.git`/`dist` 등 무시 디렉터리는 양쪽 경로 모두에서 제외됩니다.
 >
-> **사용자 skill 문서:** `~/.joc/skills`·`.joc/skills`의 평면 `<name>.md`와 `~/.agents/skills/<name>/SKILL.md`·`.agents/skills/<name>/SKILL.md` 폴더형 문서는 계속 로드되며 `/skill`, Tab 자동완성, `/speckit.*` 같은 **직접 슬래시 호출**에서 실행할 수 있습니다(이름이 같으면 뒤쪽 문서가 우선). `/skill:/path/to/file.md`처럼 명시적 파일 경로도 읽을 수 있지만, `skill`·`model`·`provider`처럼 `joc` 내장 명령과 충돌하는 외부 meta-skill 이름은 로드/실행하지 않습니다. 시스템 프롬프트는 번들 workflow skill 4개와 별도의 **Configured skills** 섹션을 구분해 광고하며, 예산을 넘는 사용자 스킬은 생략 표시로 줄입니다. 번들 4개(`deep-interview`, `ralplan`, `team`, `ultragoal`)는 SKILL.md 원문에서 임베드되고, 세션 내 `/skill <번들>` 호출은 LLM 즉흥 실행이 아니라 네이티브 workflow 엔진으로 라우팅됩니다. `aliases:`/`slash:` 헤더 또는 본문에 언급된 **해당 skill 소유의** `/name.step` 패턴을 자동 인식합니다.
+> **사용자 skill 문서:** `~/.joc/skills`·`.joc/skills`의 평면 `<name>.md`와 `~/.agents/skills/<name>/SKILL.md`·`.agents/skills/<name>/SKILL.md` 폴더형 문서는 계속 로드되며(`JOC_SKILLS_DIR`로 추가 디렉터리 지정 가능, `path.delimiter` 구분) `/skill`, Tab 자동완성, `/speckit.*` 같은 **직접 슬래시 호출**, 그리고 **`$스킬명 [intent]` 직접 호출**(`$team "3개 레인으로 나눠 실행"` — 첫 토큰이 로드된 skill 이름과 정확히 일치할 때만 발동, `$HOME` 같은 일반 텍스트는 평범한 프롬프트로 전달)에서 실행할 수 있습니다(이름이 같으면 뒤쪽 문서가 우선). `/skill:/path/to/file.md`처럼 명시적 파일 경로도 읽을 수 있지만, `skill`·`model`·`provider`처럼 `joc` 내장 명령과 충돌하는 외부 meta-skill 이름은 로드/실행하지 않습니다. 시스템 프롬프트는 번들 workflow skill 4개와 별도의 **Configured skills** 섹션을 구분해 광고하며, 예산을 넘는 사용자 스킬은 생략 표시로 줄입니다. 번들 4개(`deep-interview`, `ralplan`, `team`, `ultragoal`)는 SKILL.md 원문에서 임베드되고, 세션 내 `/skill <번들>` 호출은 LLM 즉흥 실행이 아니라 네이티브 workflow 엔진으로 라우팅됩니다. `aliases:`/`slash:` 헤더 또는 본문에 언급된 **해당 skill 소유의** `/name.step` 패턴을 자동 인식합니다.
 >
 > **hook/rule 프로젝트 가이던스 + 메모리 관리:** `.agents/rules/*.md`·`.joc/rules/*.md`·`.agents/hooks/**`의 텍스트 설정/문서(`.md`, `.json`, `.jsonc`, `.yaml`, `.yml`, `.toml`)는 skill 문서와 별개로 **bounded project context**에 들어갑니다(프로젝트 root 컨텍스트와 별도 reserve budget, 파일별/총량 cap 적용). AGENTS.md 계열 컨텍스트는 cwd 기준 부모 walk와 하위 중첩 스캔으로 계층 적용됩니다. 실행형 pre-tool/post-turn hook은 별도 config에서 `hooks.enabled`를 켠 경우에만 동작하는 opt-in 표면이며, pre-tool hook은 tool 실행을 veto할 수 있고 post-turn hook은 advisory notice로만 처리됩니다. 대형 SKILL.md·deep-dive·graphify 패킷을 몇 번 붙여도 메시지 수 40개를 기다리지 않고 **토큰 추정 예산(CJK 가중, system prompt 포함)** 기준으로 compaction이 실행되며, compaction 결과는 session JSONL에 marker로 append되어 resume/list에서 무한 재적재되지 않습니다.
 >
@@ -91,6 +93,7 @@ TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행
 /models caps                # 로그인된 프로바이더의 실제 모델 + capability
 /model #3                   # 방금 표시된 목록에서 3번 모델 선택
 /speckit.plan "OAuth 모델 표시 고장 수정"  # ~/.agents/skills/spec-kit/SKILL.md 별칭으로 skill 실행
+$spec-kit specify init부터 진행해줘            # $스킬명으로 직접 호출 (Tab: $sp → $spec-kit)
 review @src/commands/launch.ts and @src/tui/  # @ 입력 시 상대 경로 후보/폴더 경로 미리보기
 ```
 

@@ -7,3 +7,4 @@ export * from "./forge";
 export * from "./status";
 export * from "./category-index";
 export * from "./input-box";
+export * from "./hud";

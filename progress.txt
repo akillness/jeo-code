@@ -33,6 +33,12 @@
 - TUI: status split into [STEP] (metrics: step n/m · meter · elapsed · avg) / [STATUS] (live insight: current file, retry backoff) / [TOOL] (forge). Retry notices pinned to [STATUS] only — never appended to the stream log (no more repeated "rate limited" rows).
 - Live proof: `joc models` → antigravity (oauth): 8 agent models (exact product picker set); `joc chat --model antigravity/gemini-3-flash` → "OK" (6 in / 95 out tokens) on dedicated Antigravity OAuth.
 - Gate: typecheck 0; 864 pass / 0 fail. Keep/revert events this pass: deprecatedModelIds object-shape spread crash caught by live run and fixed + regression test.
+[2026-06-10] Pass 883 — $skill 호출 + HUD phase flow + TUI 연속입력/스타일
+- skills: `$스킬명 [intent]` 직접 호출(첫 토큰 정확 일치만 발동; $HOME 등은 모델로 통과) + Tab 자동완성($sp → $spec-kit) + `joc skills`에 디스커버리 경로/호출법 노출.
+- TUI: finish()가 alt-screen 복귀 후 clear-to-EOL + clear-below로 잔존 행 제거 — 요약 겹침/깨진 이중 입력박스 해소, 연속 요청 입력 구조 검증(tmux 라이브 2턴). [STEP] 행에 라이브 토큰 사용량(`4.1k in / 42 out`).
+- HUD: thinking→planning→executing→reporting→done phase 행(완료 체크/현재 강조/미래 dim) + [STATUS] 그룹 위아래 간격; 턴 종료시 `[DONE] thinking → … · steps · 시간 · 토큰` 정리 보고.
+- 스텝/Plan 체크리스트: 완료=체크+취소선+dim, 실패=빨강, 진행=시안 볼드 (color:false 경로 바이트 동일 유지).
+- Gate: typecheck 0; 883→885 pass / 0 fail. 라이브: tmux 2연속 턴 + phase report 클린 출력 확인.
 [2026-06-10] Pass 881 — deep-dive gjc parity execution
 - Native workflow routing in launch: `/skill deep-interview|ralplan|team|ultragoal` now hits real engines; bundled workflow docs live in `src/prompts/skills/*/SKILL.md`.
 - Hook surface: opt-in `hooks.enabled` + safe pre-tool/post-turn execution via `Bun.spawn`; AGENTS hierarchy walk + configured-skill prompt advertising landed.
@@ -59,4 +65,9 @@
 - runSelectPicker: 진입 시 rl.pause() + raw mode 강제 적용 / leave 시 rl.resume() 복원. 피커 작동 중 readline 입력 수신 및 에코 간섭 완벽 격리.
 - GATED_OUTPUT_METHODS: _write, _writev 추가로 Bun 저수준 스트림 우회 차단.
 - drawFooter: 시작/끝에 toColumn(1) 강제하여 한글 CJK 너비 오판으로 인한 커서 오프셋 밀림 차단.
+- Verified: typecheck 0; bun test 871 pass / 0 fail; build ok.
+[2026-06-10] Pass 887 — 실제 PTY(tmux) 동작검증 + 피커 버그 2건 추가 수정
+- 검증법: 100x30 tmux PTY에서 joc launch → /model 피커 → 방향키+한글필터(너의페르소나) → capture-pane 단언.
+- 발견/수정: ① rl.pause()는 피커 keypress까지 굶겨 행 위험 → 출력 게이트(previewArmed||pickerActive) 방식으로 교체, ② repaint/clear off-by-one(cursorUp(rendered)→rendered-1)로 매 키입력마다 힌트행 잔상 누적되던 실버그 수정 + 기존 행 이동은 \n 대신 CUD, ③ 피커 종료 시 rl.line/cursor 클리어(다음 프롬프트 보이지 않는 필터텍스트 누출 차단).
+- 라이브 결과: 필터행 1개/잔상 0, BSpace 후 목록 복귀(행 없음), ESC 후 박스 1개 복원, /exit 정상.
 - Verified: typecheck 0; bun test 871 pass / 0 fail; build ok.

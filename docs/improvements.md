@@ -6054,3 +6054,10 @@ User-impact bug: completing the entire Google browser sign-in still failed at th
 ### Verification (pass 885)
 - New tests: harness noise/Ctrl-C-data classification (launch-toggles), `repaint()` full-frame rewrite + resize listener add/remove lifecycle (tui-app).
 - Full: `bun run typecheck` → 0; `bun test` → **863 pass / 0 fail**; `bun run build` → ok.
+
+## Pass 882 — Mock/fallback purge: Antigravity live discovery + TUI insight rows (2026-06-10)
+
+- Removed the `ANTIGRAVITY_MODELS` static catalog fallback entirely: `joc models` now queries the live Cloud Code Assist `v1internal:fetchAvailableModels` endpoint (POST, gjc parity) and surfaces failures honestly ("auth rejected", "unreachable") instead of mock rows. `catalogOr` falls back only for OpenAI/Codex OAuth.
+- Decoded the real Antigravity payload (live verification, not docs): the model map KEY is the callable id; `entry.model` is an internal `MODEL_PLACEHOLDER_*` enum that must never leak; `agentModelSorts` groups are the API's own positive agent/chat set (preferred selection); `tab/image/transcription/commit/mquery` role lists and the object-shaped `deprecatedModelIds` drive data-driven exclusion.
+- TUI status decomposed into separate insight rows: `[STEP]` (metrics only), `[STATUS]` (live current activity incl. rate-limit backoff), `[TOOL]` (forge). Retry notices stay pinned in `[STATUS]` and are no longer appended to the stream log.
+- Verification: typecheck 0; `bun test` 864 pass / 0 fail. Live: antigravity list = exactly the 8 product agent models; `joc chat --model antigravity/gemini-3-flash` → "OK" (6 in / 95 out tokens).

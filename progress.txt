@@ -28,6 +28,11 @@
 - Engine: prose-salvage fix — pure-prose LLM replies become done.reason instead of bounced corrections (killed the "죄송합니다… JSON tool call" apology-as-reply bug); correction text now forbids apologies + offers done-resend; MAX_PARSE_BOUNCES=2 then salvage. New onUsage event (cumulative per-call).
 - TUI: formatDuration/formatTokenCount/formatUsage (duration.ts) — "took 3 steps in 1m 45s · 14.2k in / 1.1k out tokens" summary; per-turn usage tracked via onUsage.
 - Gate: typecheck 0; 831 pass / 0 fail (+42). Wave 3 in flight: plain-stream live status, gradient status animation, gemini-cli credential import (antigravity unlock).
+[2026-06-10] Mock/fallback purge + TUI insight rows (pass 882)
+- model-discovery: ANTIGRAVITY_MODELS static catalog fallback REMOVED. Antigravity lists models from the live Cloud Code Assist `v1internal:fetchAvailableModels` (POST) — gjc parity. Response decoded from real payload: map KEY is the callable id (entry.model is an internal MODEL_PLACEHOLDER_* enum); `agentModelSorts` groups are the API's positive agent set (preferred); non-chat role lists (tab/image/transcription/commit/mquery/deprecated-as-object) excluded data-driven. catalogOr now falls back ONLY for OpenAI/Codex.
+- TUI: status split into [STEP] (metrics: step n/m · meter · elapsed · avg) / [STATUS] (live insight: current file, retry backoff) / [TOOL] (forge). Retry notices pinned to [STATUS] only — never appended to the stream log (no more repeated "rate limited" rows).
+- Live proof: `joc models` → antigravity (oauth): 8 agent models (exact product picker set); `joc chat --model antigravity/gemini-3-flash` → "OK" (6 in / 95 out tokens) on dedicated Antigravity OAuth.
+- Gate: typecheck 0; 864 pass / 0 fail. Keep/revert events this pass: deprecatedModelIds object-shape spread crash caught by live run and fixed + regression test.
 [2026-06-10] Pass 881 — deep-dive gjc parity execution
 - Native workflow routing in launch: `/skill deep-interview|ralplan|team|ultragoal` now hits real engines; bundled workflow docs live in `src/prompts/skills/*/SKILL.md`.
 - Hook surface: opt-in `hooks.enabled` + safe pre-tool/post-turn execution via `Bun.spawn`; AGENTS hierarchy walk + configured-skill prompt advertising landed.

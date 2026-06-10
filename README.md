@@ -97,7 +97,7 @@ review @src/commands/launch.ts and @src/tui/  # @ 입력 시 상대 경로 후�
 | gemini | ✅ `GEMINI_API_KEY` (AI Studio, 무료) | ⚠️ Gemini CLI/Cloud Code Assist 토큰은 managed-project 온보딩이 필요해 joc 번들 어댑터가 아직 호출하지 않음 → **키 사용** | `gemini-2.5-flash` · `gemini-2.5-pro` (별칭 `flash`) |
 | ollama | — | — (keyless 로컬, 레이트리밋 없음) | `ollama/qwen2.5:0.5b` (별칭 `fast`/`local`) |
 
-- **키 + OAuth 둘 다 있으면 API 키가 우선**(표준 엔드포인트·전체 모델). OAuth 전용이면 위 백엔드로 동작합니다.
+- **키 + OAuth 둘 다 있으면 API 키가 우선**(표준 엔드포인트·전체 모델). OAuth 전용이면 위 백엔드로 동작합니다. `~/.joc/config.json`에 provider 키가 없거나 빈 문자열이면 `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY` 환경변수가 그 gap을 채우며, 비어 있지 않은 저장 키는 env보다 우선합니다.
 - 별칭/카탈로그 canonical은 호출 직전 실제 provider 모델 id로 매핑됩니다(예: `sonnet` → `claude-sonnet-4-5-20250929`).
 - `model not found(404)`가 나면 모델 id가 구형일 수 있습니다 — `/models`·`/provider <name>`로 현재 모델을 확인해 `#N`으로 고르세요(라이브 목록이 권위 소스).
 - 레이트리밋(HTTP 429)은 친절 안내로 정리되고, 서버가 본문에 준 재시도 지연(예: Anthropic/OpenAI의 `Retry-After`, Gemini `retryDelay`/"retry in 8.6s")을 honor해 일시적 RPM 제한은 루프가 스스로 대기·복구합니다. 429에 한해 **자동 재시도 예산이 더 큽니다**(서버 지연이 없으면 최소 2초 간격으로 최대 5회 시도) — 분당 토큰/요청(RPM·OTPM) 윈도우가 풀릴 시간을 벌어, 첫 요청이 곧바로 "auto-retry exhausted"로 끝나지 않습니다(503 등 다른 일시 오류는 기존 기본값 유지). `~/.joc/config.json`의 `retry.requestMaxRetries`/`retry.maxDelayMs`를 지정하면 그 값이 우선합니다. 그래도 지속되면 `/model`로 다른 모델(로컬 ollama 등)로 전환하세요.

@@ -1,12 +1,2 @@
-node_modules/
-# Ignore local hidden directories by default; keep repository-owned CI metadata.
-.*/
+**/.*
 !.github/
-!.github/**
-.joc/
-.DS_Store
-*.log
-.antigravitycli/
-.omc/
-.serena/
-dist/

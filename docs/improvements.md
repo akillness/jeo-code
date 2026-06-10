@@ -6143,3 +6143,30 @@ Eager fixed reservation:
 - Live tmux (100×30): typed `@src/ai/providers/` then `gemini.ts is the file I want to review` then a 130-char tail that wraps the input body across 3 rows + cwdLabel + borders (6 footer rows). Box stayed pinned to the bottom every keystroke; `(fetching models…)` line above the box was preserved across all keystrokes; Ctrl-U cleared back to placeholder cleanly.
 - `bun run typecheck` → 0 errors.
 - `bun test` → **871 pass / 0 fail** (113 files).
+
+## 887. `/model` picker no longer freezes; off-by-one repaint duplication fixed (pass 887)
+
+**Date:** 2026-06-10 · **Dimension: TUI input-loop reliability.**
+
+### Repro
+1. `joc` → REPL prompt.
+2. Type `/model` + Enter.
+3. **Bug 1**: picker rendered but ↑/↓/Esc/Enter were ignored — process appeared frozen.
+4. **Bug 2** (cosmetic, surfaced after bug 1 was fixed): every ↑/↓ duplicated the trailing `type to filter — ↑/↓ move · enter select · esc cancel` hint row.
+
+### Root cause
+- **Freeze**: `runSelectPicker` called `rl.pause()` before registering its keypress handler. `rl.pause()` halts the underlying stdin stream that backs the `emitKeypressEvents` decoder — without data flow, no `keypress` events fire. The picker's own `process.stdin.on("keypress", handler)` was registered against a silent channel.
+- **Duplicated hint**: `repaint()` / `clear()` used `cursorUp(rendered)` to return to the top of the prior block. After the previous paint, the cursor sits on the LAST written row, so going up `rendered` rows lands ONE row above the block. Each subsequent paint started one row too high and rewrote N-1 rows of the block plus pushed an extra trailing row down, leaving the hint line replicated.
+
+### Fix (`src/commands/launch.ts` `runSelectPicker`)
+- Remove `rl.pause()`. Keep `setRawMode(true)` + `process.stdin.resume()` to drive the picker; the slash-preview keypress handler's `if (pickerActive) return` guard prevents double-handling.
+- `cursorUp(rendered - 1)` instead of `cursorUp(rendered)` in both `repaint` and `clear`, and pad the `s = ""` branch for `rendered === 1` (no move needed). `clear` additionally parks cursor back at the first cleared row so post-picker output starts there.
+
+### Verification (pass 887)
+- Live tmux 110×32:
+  - `/model` opens picker; ↑/↓/Esc/Enter all respond.
+  - 3× Down then captured pane shows ONE hint line, no duplication.
+  - Enter selects `claude-opus-4-1-20250805 (anthropic · Anthropic)`, prints capabilities, box re-arms at the bottom.
+- `bun run typecheck` → 0 errors.
+- `bun test` → **871 pass / 0 fail** (113 files).
+- README "단일 입력 박스" section refreshed; new "인터랙티브 picker" paragraph documents the rawMode/resume contract and the off-by-one fix.

@@ -696,7 +696,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     } finally {
       process.removeListener("SIGINT", onSigint);
     }
-    const reply = result.doneReason || `(reached the ${result.steps}-step limit without signaling done)`;
+    // A completed turn with an empty done-reason must NOT masquerade as a step-limit
+    // failure ("reached the 3-step limit" after the model called done at step 3).
+    const reply = result.doneReason
+      || (result.done
+        ? `(done in ${result.steps} step${result.steps === 1 ? "" : "s"} — the model returned no summary)`
+        : `(reached the ${result.steps}-step limit without signaling done)`);
     // Full-fidelity persistence: append every message the engine added this turn
     // (user prompt + intermediate tool-call/tool-result turns), then the final reply.
     if (sessionId) {
@@ -918,25 +923,38 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
   let previewPending = false;
 
-  // Arm the reserved footer region without moving the visible cursor (ESC7/ESC8
-  // absorb DECSTBM's home jump).
+  // Inline boxed-footer rendering (same repaint pattern as runSelectPicker): the
+  // footer is drawn at the cursor as ordinary lines and repainted in place with
+  // relative cursor moves. The previous implementation reserved the bottom rows
+  // via a DEC scroll region (DECSTBM) and cleared them on every redraw — which
+  // ERASED any command output that had scrolled into those rows (long `/help`,
+  // `/theme`, `/hotkeys` listings lost their tails). Inline repaint never touches
+  // scrollback, so command output is always preserved.
+  let footerRendered = 0; // rows the footer currently occupies (cursor parks on the last one)
   const armPreview = () => {
     if (!previewEnabled || previewArmed) return;
-    const rows = process.stdout.rows ?? 24;
-    footerRows = previewRowsFor(rows);
-    out.write(`\x1b7\x1b[1;${rows - footerRows}r\x1b8`);
+    footerRows = previewRowsFor(process.stdout.rows ?? 24);
     previewArmed = true;
   };
-  // Clear the footer rows and reset the scroll region to the full screen.
+  // Clear the footer rows and park the cursor back at the footer's first row so
+  // subsequent command output starts exactly where the box was.
   const disarmPreview = () => {
     if (!previewArmed) return;
     previewArmed = false;
     lastFooterKey = "";
-    const rows = process.stdout.rows ?? 24;
-    let s = "\x1b7";
-    for (let i = 0; i < footerRows; i++) s += `\x1b[${rows - footerRows + 1 + i};1H\x1b[2K`;
-    s += "\x1b[r\x1b8\x1b[?25h"; // reset region, restore cursor, ensure it is visible
-    out.write(s);
+    if (footerRendered > 0) {
+      let s = footerRendered > 1 ? cursorUp(footerRendered - 1) : "";
+      for (let i = 0; i < footerRendered; i++) {
+        s += toColumn(1) + clearLine();
+        if (i < footerRendered - 1) s += "\x1b[1B"; // cursor-down: no scroll at the bottom margin
+      }
+      if (footerRendered > 1) s += cursorUp(footerRendered - 1);
+      s += toColumn(1) + "\x1b[?25h";
+      out.write(s);
+      footerRendered = 0;
+    } else {
+      out.write("\x1b[?25h");
+    }
   };
   const previewLines = (line: string, selected = -1): string[] => {
     const cols = Math.max(24, (process.stdout.columns ?? 80) - 1);
@@ -958,15 +976,23 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const key = lines.join("\n");
     if (key === lastFooterKey) return;
     lastFooterKey = key;
-    const rows = process.stdout.rows ?? 24;
-    const base = rows - footerRows;
-    let s = "\x1b7";
-    for (let i = 0; i < footerRows; i++) {
-      s += `\x1b[${base + 1 + i};1H\x1b[2K`;
+    const total = Math.max(footerRendered, lines.length);
+    if (total === 0) return;
+    let s = footerRendered > 1 ? cursorUp(footerRendered - 1) : "";
+    for (let i = 0; i < total; i++) {
+      s += toColumn(1) + clearLine();
       if (i < lines.length) s += lines[i]!;
+      // Move down: over rows the footer already occupies use CUD (no scroll at the
+      // bottom margin → no anchor drift); for newly appended rows use a real
+      // newline (scrolls uniformly, keeping the drawn block contiguous).
+      if (i < total - 1) s += i < footerRendered - 1 ? "\x1b[1B" + toColumn(1) : "\n";
     }
-    s += "\x1b8\x1b[?25h";
+    // Park the cursor on the footer's last VISIBLE row (or its first row when empty).
+    const parkRow = Math.max(lines.length - 1, 0);
+    if (total - 1 > parkRow) s += cursorUp(total - 1 - parkRow);
+    s += "\x1b[?25h";
     out.write(s);
+    footerRendered = lines.length;
   };
 
   const runSelectPicker = async <T>(
@@ -1175,7 +1201,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
 
   if (previewEnabled) {
-    process.once("exit", () => out.write("\x1b[r")); // safety net: always reset region
+    process.once("exit", () => out.write("\x1b[?25h")); // safety net: never leave the cursor hidden
     process.stdin.on("keypress", (_ch: string, key: { name?: string } | undefined) => {
       if (pickerActive || previewPending) return;
       previewPending = true;
@@ -1213,14 +1239,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         } catch { /* ignore render races */ }
       });
     });
-    // Idle-prompt resize: the live-turn path is covered by the 120ms tick + the
-    // renderer's width-change clear, but at the idle prompt no timer runs — re-sync
-    // the reserved footer scroll region to the new terminal height and redraw.
+    // Idle-prompt resize: recompute the footer height budget and repaint the
+    // inline box at the new width (no scroll region to re-sync anymore).
     process.stdout.on("resize", () => {
       if (!previewArmed) return;
       try {
-        disarmPreview();
-        armPreview();
+        footerRows = previewRowsFor(process.stdout.rows ?? 24);
+        lastFooterKey = "";
         drawFooter(previewLines(typedLine, navIdx));
       } catch { /* ignore resize render races */ }
     });

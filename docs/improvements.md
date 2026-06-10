@@ -5776,3 +5776,106 @@ User-reported: `/model` to Anthropic (OAuth) hit `Rate limited by Anthropic (HTT
 ### Verification (pass 874)
 - New tests: escalating 429 floor capped at 30s spanning ~60s over the default budget, `Retry-After:0` floor escalation, `onRetry` delay payload (`test/retry.test.ts`); engine `onNotice` retry surfacing + single error record (`test/engine.test.ts`); regression guard updated to the 6-attempt budget (`test/round-b.test.ts`).
 - Full: `bun run typecheck` → 0 errors; `bun test` → **716 pass / 0 fail**.
+
+## Pass 875 — Subagent provider/model routing fix, gjc slash-menu parity, inline footer
+
+- **875a.** ROOT CAUSE of "subagent provider/model 설정이 동작하지 않음": every numbered/`#N`/picker pin path saved the BARE live model id, and `resolveProvider` heuristics misroute uncatalogued bare ids (ollama `qwen2.5:0.5b` → anthropic, ollama `gpt-oss:20b` → openai). New `qualifyModelId(model, provider)` (`src/ai/model-manager.ts`) prefixes the id with the source list's provider (`ollama/`, `openai/`, `google/`, `anthropic/`) ONLY when routing disagrees — catalog ids, aliases, and already-prefixed ids pass through. Wired at all seven pin sites in `launch.ts`: `/model` picker + `#N`, `/model save`, `/provider` picker + explicit selection, `/agents <role> <model|#N>`, `/roles <tier> <model|#N>`. Adapters already strip the prefixes on the wire; `findCatalogEntry` tolerates them.
+- **875b.** `/agents <role> provider <name> [model|#N]` pins a subagent role to a provider directly (readiness-guarded, provider-qualified id persisted; defaults to the provider's first live model, else the provider alias default). `subagents` config schema additionally tolerates a `provider` tag. `/subagent run` header + TUI now show the role's ACTUAL resolved model (per-role override → session/default) instead of the session model. Implemented `providerModelFor(model)` (canonical → wire id; pass-through otherwise) that pass-874 tests referenced but never landed.
+- **875c.** gjc slash-menu parity (gjc builtin registry mapped 1:1 where joc has a backing subsystem): NEW `/new`, `/drop`, `/session [info|delete]`, `/rename <title>`, `/resume [id]` (in-REPL session switch), `/retry`, `/export [path] [json|markdown]`, `/dump` (pbcopy/wl-copy/xclip, prints when no clipboard), `/btw <question>` (ephemeral side question via direct `callLlm`, history untouched), `/usage` (cumulative per-REPL token usage), `/context` (~4 chars/token per-role breakdown + catalog context-window %), `/tools` (live TOOL_PROTOCOL + task/todo lines), `/hotkeys`, `/theme [name]` (sets `JOC_TUI_THEME` for the run), aliases `/login` → `/provider login`, `/settings` → `/config`. Sessions gained `title` (`renameSession`/`deleteSession` in `src/agent/session.ts`); `/sessions`+`/resume` mark the current session and show titles. gjc menus WITHOUT a joc backing subsystem are intentionally not stubbed: `/goal`, `/fast`, `/jobs`, `/tree`, `/ssh`, `/background`, `/debug`, `/memory`, `/move`, `/contribute-pr` (no goal ledger / async job manager / session tree / SSH / memory bank in joc; stubs would violate the no-fake-feature rule).
+- **875d.** Inline boxed-input footer: the DECSTBM reserved-region footer CLEARED its bottom rows on every redraw, erasing the tail of any long command output that had scrolled into them (`/help`, `/theme`, `/hotkeys` lost their endings — reproduced via tmux). The footer now repaints INLINE at the cursor (same pattern as `runSelectPicker`): CUD (no-scroll) moves over existing rows, real newlines only for appended rows, cursor parked on the last visible row; disarm clears the box and parks at its first row so command output starts exactly where the box was. No scroll region is set at all (exit safety net now only restores cursor visibility). The input box itself no longer renders the `[CMD] input` title row — body only, with the `@`-mention dir label as a dim trailing row (`src/tui/components/input-box.ts`).
+- **875e.** TUI classification polish: `onToolResult` stream lines now carry the real invocation target (`[FILE] [DONE] read src/cli.ts`, `[CMD] [ERR] bash: bun test`) instead of the bare tool name; autocomplete gained `/session`, `/theme`, `/login`, `/export` argument completion; slash palette groups the new commands under Session/System.
+
+### Verification (pass 875)
+- Unit: `test/qualify-model.test.ts` (misroute qualification matrix), session rename/delete/title round-trip (`test/session.test.ts`), subagents `provider` schema tolerance (`test/config-schema.test.ts`), input-box header removal (`test/input-box.test.ts`), stream target lines (`test/tui-app.test.ts`), new autocomplete/slash coverage (`test/autocomplete.test.ts`, `test/slash.test.ts`).
+- Full: `bun run typecheck` → 0 errors; `bun test` → **724 pass / 0 fail** (93 files).
+- Repeated: `bun test/verify-100.ts` → 100 consecutive full-suite runs (concurrency 15).
+- Live (tmux-driven real TTY + ollama qwen2.5:0.5b): `/theme`/`/hotkeys`/`/help` output no longer truncated; `/se` preview + ↑/↓ selection + Enter execution; `/rename`→`/session info` shows the title; `/agents executor provider ollama` pins `ollama/qwen2.5:0.5b`; `/agents planner #1` pins a provider-qualified id and `/subagent run planner …` actually executes on `ollama/qwen2.5:0.5b` (pre-fix this routed to anthropic); `/session delete`, `/usage`, `/context` verified; one-shot `--no-tui` turn shows categorized `[STEP]`/`[ERR]` stream + token usage; gjc 0.2.4 `--help` smoke OK.
+
+## 876. Skill-echo reply fix + live Anthropic model ids + TUI status/forge polish (pass 876)
+
+**Date:** 2026-06-09 · **Dimension: launch reply correctness / model routing / tui.** 50+ improvements in 5 batches.
+
+### Batch A — "reply is only skill docs" bug (the reported cmd-input issue)
+1. **Root cause #1 (prompt hijack):** `workflowSkillsForPrompt` let user docs from `~/.agents/skills` named `team`/`ralplan` REPLACE the bundled workflow summaries — on real machines the system prompt advertised "ralplan — Alias for /plan --consensus" and an OMX `team` doc, steering models into skill-brief replies.
+2. Fix: the "Bundled workflow skills" prompt surface now always uses the bundled `SKILLS` verbatim; user skills stay loadable/invocable via `/skill` + aliases.
+3. **Root cause #2 (echo bait):** `buildSkillTask` injected up to 8,000 chars of skill `details`; weak models recited it back as the final reply. Guidance now clamps to 2,400 chars.
+4. `buildSkillTask` adds an explicit anti-recite directive: the done reason must describe actual work, never quote the guidance.
+5. New pure detector `looksLikeSkillEcho(reply, skills)`: flags replies containing `<skill_guidance`, `Skill:` + `When to use:` header pairs, ≥3 near-verbatim skill summary/prompt-list lines, or a ≥160-char verbatim chunk of any skill's details (bounded: 50 skills × 3 probes).
+6. Trivially-false guard for replies <80 chars (cheap negative path).
+7. `runTurn` echo guard: a done-reply that trips the detector gets ONE corrective retry on a small step budget (≤6), with the correction visible to the model in history.
+8. Retry usage is folded into the turn's token totals; steps accumulate.
+9. System prompt routing hardened: "Answer the user's request DIRECTLY. Never reply with a catalog/list/summary of skills unless explicitly asked."
+10. System prompt: "Your done reason must describe YOUR work or answer — never recite skill documentation."
+11. Regression tests: prompt-surface hijack prevention (user doc named `team` no longer leaks), guidance clamp, anti-recite line presence.
+12. Detector tests: pasted-doc echo (200-char verbatim chunk) → true; 3 bundled summary lines → true; normal coding answer naming one skill → false; short replies → false.
+
+### Batch B — dead Anthropic model ids (live-reproduced HTTP 404)
+13. **Reproduced live:** `--model claude-3-5-sonnet` → `HTTP 404 model: claude-3-5-sonnet`; the account's live list has only `claude-sonnet-4-5-20250929`, `claude-haiku-4-5-20251001`, `claude-opus-4-5-20251101`, …
+14. Catalog gains current entries: `claude-sonnet-4-5`, `claude-haiku-4-5`, `claude-opus-4-5` (200k ctx, 64k out, full thinking ladder, images).
+15. New `providerModelFor(model)` in model-manager: canonical id → exact wire id (e.g. `claude-sonnet-4-5` → `claude-sonnet-4-5-20250929`).
+16. `resolveCall` now sends the wire id to adapters — the catalog's `providerModel` column is finally applied at request time.
+17. Explicit-prefix ids (`ollama/…`, `openai/…`, `anthropic/…`, `google/…`) and unknown/live ids pass through unchanged.
+18. Alias defaults updated: `sonnet → claude-sonnet-4-5` (both ALIAS_DEFAULTS and registry DEFAULT_ALIASES).
+19. New aliases: `haiku → claude-haiku-4-5`, `opus → claude-opus-4-5`.
+20. Env-fallback default model: `claude-3-5-sonnet` → `claude-sonnet-4-5` (state.ts DEFAULT_MODEL).
+21. `joc setup` anthropic default → `claude-sonnet-4-5`.
+22. Catalog-compat RECOMMENDED set: anthropic recommendation now `claude-sonnet-4-5`.
+23. `test/model-provider-mapping.test.ts`: catalog entries, wire-id mapping, prefix passthrough, unknown-id passthrough, alias resolution.
+24. Existing default-assertion tests updated narrowly (catalog-compat/routing/registry-alias/config-schema).
+
+### Batch C — Anthropic `temperature` deprecation 400 (ralph/subagent killer)
+25. **Reproduced from user report:** HTTP 400 `"`temperature` is deprecated for this model."` aborted agent turns.
+26. Shared `postAnthropic()` request path for both `call` and `stream`.
+27. Payload builder gains `includeTemperature`; temperature only sent when defined.
+28. On the documented 400, the request is auto-retried ONCE without `temperature` — transparent to callers.
+29. Other failures still throw status-carrying `ProviderHttpError` with `Retry-After` (retry layer behavior unchanged).
+30. Stream-context errors keep the `(stream)` marker.
+31. Test: call path — 400-then-200, asserts 2 fetches, first body has `"temperature":0.2`, second body without it.
+32. Test: stream path — same shape over SSE, text assembled from the retried stream.
+
+### Batch D — TUI progress status / joc thinking / joc forge / code boxes
+33. `renderJocStatus` gains `stepElapsedMs` — the thinking row shows the CURRENT step's elapsed seconds (1 decimal).
+34. `renderJocStatus` gains `avgStepMs` — average seconds per step so long turns are legible.
+35. Non-finite guards on both new fields (no NaN segments).
+36. `LaunchTui.draw` wires `stepElapsedMs` from `currentStepStartedAt` and `avgStepMs` = elapsed/steps into the status row.
+37. Forge bash result boxes now lead with a compact `# exit ok` / `# exit fail` marker.
+38. Forge write boxes tag the content language from the file extension (15-entry local map; no code-view coupling).
+39. Forge bash invocation boxes note cwd-like args (`# cwd-relative`) when present.
+40. Forge read boxes mark full-file previews (`# preview`) when no lineRange is given.
+41. Secret redaction + 8-line preview budget regression-locked in tests.
+42. Status/forge additions are additive-only — all prior fields/rows unchanged (verified by existing forge-status suite).
+
+### Batch E — verification & docs
+43. Focused suites: `skill-echo-guard`, `anthropic-stream` (+2 retry tests), `forge-status` (+polish tests), `model-provider-mapping` — all green.
+44. `bun run typecheck` → 0 errors.
+45. `bun test` → **724 pass / 0 fail** across 93 files.
+46. Live smoke (real Anthropic OAuth): `--model haiku` one-shot in a scratch repo → tools ran (`ls`, `read`), reply was a direct Korean answer — NOT skill docs.
+47. Live smoke: `--model sonnet` resolves to `claude-sonnet-4-5-20250929` (no 404; only account-level 429 rate limiting observed, with the auto-retry/backoff path engaging).
+48. Live check: prompt section now renders the 4 bundled workflow summaries verbatim even with 312 user skills installed in `~/.agents/skills`.
+49. Ollama smoke (`ollama/qwen2.5:0.5b`): tool loop + no-progress guard behave; no skill-doc echo on plain requests.
+50. This changelog entry (pass 876) documents the run; README untouched (no user-facing install/usage changes).
+
+## 877. Rate-limit (HTTP 429) handling + live-status accuracy (pass 877)
+
+**Date:** 2026-06-09 · **Dimension: provider retry / TUI status truthfulness.** Driven by a user-reported screenshot (429 ladder + status-row artifacts), verified against joc runtime behavior and gjc 0.2.4's `rate-limit-utils` (`@gajae-code/ai`).
+
+### Diagnosis (what the screenshot showed)
+- The 2s→4s→8s→16s ladder is joc's designed escalating 429 floor (`DEFAULT_RATE_LIMIT_MIN_DELAY_MS`, no server `Retry-After` present) — retry itself was working.
+- gjc parity gap: gjc CLASSIFIES rate-limit reasons (`QUOTA_EXHAUSTED` 30min / `RATE_LIMIT_EXCEEDED` 30s / `MODEL_CAPACITY` 45s±jitter); joc treated every 429 identically, so persistent usage/quota limits (Claude subscription windows, experimental models like `claude-fable-5`) burned the whole ~60s ladder for nothing.
+- TUI defects in the same frame: duplicated percent (`4% [..........] 4%`), nonsense `eta 442s` at step 1, retry waits invisible in the [STEP] row ("calling model (18.4s)…"), and the evolution track triplicated (center + footer + forge row) so copies could visibly disagree.
+
+### Fixes
+1. `isUsageLimitError()` (gjc parity, minus the ambiguous `resource_exhausted`): usage-limit/quota-exceeded phrasings detected from the error body.
+2. `defaultRetryable` fails FAST on usage-limit 429s — no wasted backoff ladder; per-minute 429s keep the escalating-floor retry budget.
+3. `friendlyProviderError` adds a usage-limit-specific message ("switch model with /model … or wait for the window to reset") distinct from the generic 429 line.
+4. [STEP] thinking row now pins the live retry notice ("rate limited (HTTP 429) — auto-retry #2 in 4s (6.1s)") instead of an opaque growing "calling model…"; cleared on the next step/reply.
+5. Duplicate percent removed — the meter renders the percentage exactly once.
+6. Footer ETA requires ≥1 COMPLETED step (`step > 1`): no more `eta 442s` extrapolated from a single backoff-dominated step.
+7. Evolution track de-triplicated: removed from the forge row (kept in the centered track + footer tag) so stage copies can never disagree.
+8. Art cache made transactional: cache keys commit only AFTER a successful render, so a throwing render can no longer freeze the header at a stale stage (the screenshot's Primordial-vs-DoubleHelix mismatch shape).
+9. Empty `done` reason no longer masquerades as a step-limit failure: "(done in N steps — the model returned no summary)" vs "(reached the N-step limit…)" (live-reproduced with claude-haiku-4-5).
+
+### Verification
+- New `test/rate-limit-handling.test.ts` (7 tests): usage-limit classification (+ RESOURCE_EXHAUSTED stays retryable), fail-fast budget (1 attempt), friendly message split, single-percent regression, ETA gating, TUI retry-notice pin/clear.
+- `bun run typecheck` → 0 errors; `bun test` → **731 pass / 0 fail** (94 files).
+- Live smoke (`--model haiku`, real Anthropic OAuth): tool loop + honest empty-done fallback verified; `--model sonnet` confirms wire-id mapping with only account-level 429s remaining.

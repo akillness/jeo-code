@@ -59,7 +59,9 @@ export function renderFooter(d: FooterData): string {
   if (
     d.showEta &&
     d.step !== undefined &&
-    d.step > 0 &&
+    // ETA from a single in-flight step is dominated by model-call/backoff latency and
+    // produces nonsense like "eta 442s" — require at least one COMPLETED step.
+    d.step > 1 &&
     d.maxSteps !== undefined &&
     d.step < d.maxSteps &&
     d.elapsedMs !== undefined &&

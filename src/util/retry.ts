@@ -27,6 +27,13 @@ export function defaultRetryable(err: unknown): boolean {
   if (!err) {
     return false;
   }
+  // Persistent usage/quota limits (e.g. a subscription window exhausted) never clear
+  // within a retry budget — fail fast so the caller can switch model/provider instead
+  // of sitting through the whole backoff ladder (gjc parity: QUOTA_EXHAUSTED is not
+  // retried like a per-minute 429).
+  if (isUsageLimitError(err)) {
+    return false;
+  }
 
   let message = "";
   if (err instanceof Error) {
@@ -143,4 +150,26 @@ export function isRateLimitError(err: unknown): boolean {
   }
   const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
   return /\b429\b/.test(message) || /rate[ _]?limit/i.test(message);
+}
+
+/** Message text of an unknown error (Error / string / object with message). */
+function errorMessageOf(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  if (typeof err === "object" && err !== null && typeof (err as { message?: unknown }).message === "string") {
+    return (err as { message: string }).message;
+  }
+  return "";
+}
+
+/**
+ * Persistent usage/quota-limit detection (gjc parity: `isUsageLimitError`). These are
+ * subscription/window limits ("usage limit reached", "quota exceeded") that need a model
+ * or credential switch — retrying within seconds is pure waste, unlike a per-minute 429.
+ * Deliberately excludes the ambiguous "resource exhausted" (Gemini uses it for windows
+ * that often DO clear within a retry budget).
+ */
+const USAGE_LIMIT_PATTERN = /usage.?limit|usage_limit_reached|usage_not_included|limit_reached|quota.?exceeded|exceeded your/i;
+export function isUsageLimitError(err: unknown): boolean {
+  return USAGE_LIMIT_PATTERN.test(errorMessageOf(err));
 }

@@ -36,7 +36,6 @@ function seconds(ms: number | undefined): number {
 export function renderJocStatus(data: JocStatusData): string[] {
   const step = Number.isFinite(data.step) ? Math.max(0, Math.trunc(data.step ?? 0)) : 0;
   const max = Number.isFinite(data.maxSteps) && (data.maxSteps ?? 0) > 0 ? Math.trunc(data.maxSteps ?? 0) : 0;
-  const pct = progressPercent(step, max);
   const useColor = data.color !== false;
   const bar = meter(step, max || 1, 10, { unicode: data.unicode !== false, color: useColor });
   const elapsed = `${seconds(data.elapsedMs)}s`;
@@ -67,7 +66,7 @@ export function renderJocStatus(data: JocStatusData): string[] {
 
 
   return [
-    `  ${categoryBadge("progress", { color: useColor })} ${cyanBold("joc thinking")} · ${msg} · step ${step}/${max} · ${pct}% ${bar} · ${elapsed}${extraStats}`,
+    `  ${categoryBadge("progress", { color: useColor })} ${cyanBold("joc thinking")} · ${msg} · step ${step}/${max} · ${bar} · ${elapsed}${extraStats}`,
     `  ${categoryBadge("tool", { color: useColor })} ${magentaBold("joc forge")} · ${stage}${current} · tools ${total} (${toolCounts})${guard}`,
   ];
 }

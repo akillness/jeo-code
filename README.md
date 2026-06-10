@@ -22,7 +22,9 @@
 
 ## What is jeo-code?
 
-jeo-code (**joc**) is a pure-TypeScript coding-agent runner. It follows a rigorous **deep-interview -> ralplan -> ultragoal** workflow to ensure requirements are clarified and plans are critiqued before any code is mutated.
+jeo-code () is an external coding-agent harness. It follows a rigorous **deep-interview -> ralplan -> ultragoal** workflow to ensure requirements are clarified and plans are critiqued before any code is mutated.
+
+
 
 It is designed to be an external orchestrator that works beside your existing tools, providing structured planning, persistent evidence, and isolated worktree support.
 
@@ -30,23 +32,13 @@ It is designed to be an external orchestrator that works beside your existing to
 
 
 
-The scoped package is also available as .
+The binary  will be available in your path.
 
 ## Quick start
 
 
 
-
-
-
-
-
-
-
 Inside a **joc** session, use the public workflow surface:
-
-
-
 
 
 
@@ -58,27 +50,28 @@ Add  only when coordinated tmux workers materially help.
 - **Plan before mutation**:  reviews the approach before code changes.
 - **Execute with evidence**:  tracks goals, revisions, checks, and completion evidence.
 - **Self-Evolution**: Integrated  loop for continuous self-improvement and correction.
+- **Provider Registry**: Decoupled LLM provider management for flexible model switching.
 - **Interactive Visibility**: Real-time status dashboard and tmux-backed parallel execution.
 
 ## Workflow surface
 
 jeo-code ships four default workflow skills:
 
-| Skill | What it does |
-| :--- | :--- |
-| **deep-interview** | Clarifies ambiguous requirements before planning or code changes. |
-| **ralplan** | Builds and critiques an implementation plan before mutation. |
-| **ultragoal** | Tracks goals through execution, revision, verification, and evidence. |
-| **team** | Coordinates tmux-backed workers for parallel execution. |
+| Skill            | What it does                                                          |
+| ---------------- | --------------------------------------------------------------------- |
+|  | Clarifies ambiguous requirements before planning or code changes.     |
+|         | Builds and critiques an implementation plan before mutation.          |
+|       | Tracks goals through execution, revision, verification, and evidence. |
+|            | Coordinates tmux-backed workers for parallel execution.               |
 
 And four bundled role agents:
 
-| Agent | What it does |
-| :--- | :--- |
-| **executor** | Bounded implementation, fixes, and refactors. |
-| **architect** | Read-only architecture and code-review assessment. |
-| **planner** | Read-only sequencing and acceptance criteria. |
-| **critic** | Read-only plan critique and actionability review. |
+| Agent       | What it does                                       |
+| ----------- | -------------------------------------------------- |
+|   | Bounded implementation, fixes, and refactors.      |
+|  | Read-only architecture and code-review assessment. |
+|    | Read-only sequencing and acceptance criteria.      |
+|     | Read-only plan critique and actionability review.  |
 
 ## Core Engine & Hierarchy
 
@@ -96,7 +89,6 @@ Provider settings and retry budgets live in  (or ):
 ## Development
 
 Install dependencies and run from source:
-
 
 
 

@@ -55,3 +55,8 @@
 - 주기 리싱크: 라이브 턴 틱 25회(~3s)마다 차등 베이스라인 리셋 → 모든 라인 재기록으로 화면 오염 자동 치유.
 - resize 자동 리페인트(start 등록/finish 해제), 휠 노이즈 감지 시 즉시 repaint(onNoise), raw-mode Ctrl-C(\u0003) 데이터도 abort 경로로 정합.
 - Verified: typecheck 0; bun test 863 pass / 0 fail; build ok.
+[2026-06-10] Pass 886 — TUI 에코 억제 및 인풋 박스 중첩 버그 수정
+- runSelectPicker: 진입 시 rl.pause() + raw mode 강제 적용 / leave 시 rl.resume() 복원. 피커 작동 중 readline 입력 수신 및 에코 간섭 완벽 격리.
+- GATED_OUTPUT_METHODS: _write, _writev 추가로 Bun 저수준 스트림 우회 차단.
+- drawFooter: 시작/끝에 toColumn(1) 강제하여 한글 CJK 너비 오판으로 인한 커서 오프셋 밀림 차단.
+- Verified: typecheck 0; bun test 871 pass / 0 fail; build ok.

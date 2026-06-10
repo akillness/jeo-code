@@ -3,10 +3,11 @@ import { openaiRequest } from "../src/ai/providers/openai";
 import { thinkingToReasoningEffort } from "../src/ai/model-manager";
 import { retryableStream, resolveRetryOptions } from "../src/ai/model-manager";
 import { nearestToolName } from "../src/agent/engine";
-import { anthropicPayload, totalInputTokens } from "../src/ai/providers/anthropic";
+import { anthropicPayload, anthropicRequest, totalInputTokens } from "../src/ai/providers/anthropic";
 import { defaultRetryable } from "../src/util/retry";
 
 const apiKey = { kind: "api_key" as const, provider: "openai" as const, token: "k" };
+const anthropicOauth = { kind: "oauth" as const, provider: "anthropic" as const, token: "tok" };
 
 test("thinkingToReasoningEffort: maps levels to o-series-safe tiers", () => {
   expect(thinkingToReasoningEffort("minimal")).toBe("low");
@@ -160,6 +161,61 @@ test("anthropicPayload: marks the system prompt cache_control:ephemeral and drop
   expect(payload.messages).toEqual([{ role: "user", content: "hi" }]);
 });
 
+test("anthropicPayload: OAuth calls include Claude Code prelude before the real system prompt", () => {
+  const payload = JSON.parse(anthropicPayload(
+    [
+      { role: "system" as const, content: "SYS" },
+      { role: "user" as const, content: "hi" },
+    ],
+    { model: "claude-sonnet-4-5", maxTokens: 100 } as any,
+    false,
+    true,
+    anthropicOauth,
+  ));
+  expect(payload.system).toHaveLength(3);
+  expect(payload.system[0].text).toStartWith("x-anthropic-billing-header: cc_version=2.1.63.");
+  expect(payload.system[0].cache_control).toBeUndefined();
+  expect(payload.system[1]).toEqual({ type: "text", text: "You are a Claude agent, built on Anthropic's Claude Agent SDK." });
+  expect(payload.system[2]).toEqual({ type: "text", text: "SYS", cache_control: { type: "ephemeral" } });
+  expect(payload.messages).toEqual([{ role: "user", content: "hi" }]);
+  expect(payload.metadata?.user_id).toMatch(/^user_[0-9a-f]{64}_account_[0-9a-f-]{36}_session_[0-9a-f-]{36}$/);
+});
+
+test("anthropicPayload: OAuth calls without a user system prompt still include the Claude Code prelude", () => {
+  const payload = JSON.parse(anthropicPayload(
+    [{ role: "user" as const, content: "hi" }],
+    { model: "claude-sonnet-4-5", maxTokens: 100 } as any,
+    false,
+    true,
+    anthropicOauth,
+  ));
+  expect(payload.system).toHaveLength(2);
+  expect(payload.system[0].text).toStartWith("x-anthropic-billing-header:");
+  expect(payload.system[1]).toEqual({
+    type: "text",
+    text: "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+    cache_control: { type: "ephemeral" },
+  });
+  expect(payload.metadata?.user_id).toMatch(/^user_[0-9a-f]{64}_account_[0-9a-f-]{36}_session_[0-9a-f-]{36}$/);
+});
+
+test("anthropicRequest: OAuth headers use Claude Code-compatible Anthropic beta set", () => {
+  const { headers } = anthropicRequest(
+    [{ role: "user" as const, content: "hi" }],
+    { model: "claude-sonnet-4-5", maxTokens: 100 } as any,
+    anthropicOauth,
+    true,
+    true,
+  );
+  expect(headers.authorization).toBe("Bearer tok");
+  expect(headers.accept).toBe("text/event-stream");
+  expect(headers["anthropic-beta"]).toContain("claude-code-20250219");
+  expect(headers["anthropic-beta"]).toContain("oauth-2025-04-20");
+  expect(headers["anthropic-beta"]).toContain("prompt-caching-scope-2026-01-05");
+  expect(headers["user-agent"]).toBe("claude-cli/2.1.63 (external, cli)");
+  expect(headers["x-stainless-runtime"]).toBe("node");
+});
+
 // --- 823: configurable 429 budget ---
 
 test("resolveRetryOptions: explicit rate-limit overrides win", () => {
@@ -172,5 +228,6 @@ test("resolveRetryOptions: defaults still engage when unset (regression guard)",
   const o = resolveRetryOptions(undefined);
   expect(o.rateLimitRetries).toBe(6);
   expect(o.rateLimitMinDelayMs).toBe(2000);
+  expect(o.rateLimitMaxServerDelayMs).toBe(5 * 60 * 1000);
   expect(o.retries).toBeUndefined();
 });

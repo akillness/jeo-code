@@ -6061,3 +6061,85 @@ User-impact bug: completing the entire Google browser sign-in still failed at th
 - Decoded the real Antigravity payload (live verification, not docs): the model map KEY is the callable id; `entry.model` is an internal `MODEL_PLACEHOLDER_*` enum that must never leak; `agentModelSorts` groups are the API's own positive agent/chat set (preferred selection); `tab/image/transcription/commit/mquery` role lists and the object-shaped `deprecatedModelIds` drive data-driven exclusion.
 - TUI status decomposed into separate insight rows: `[STEP]` (metrics only), `[STATUS]` (live current activity incl. rate-limit backoff), `[TOOL]` (forge). Retry notices stay pinned in `[STATUS]` and are no longer appended to the stream log.
 - Verification: typecheck 0; `bun test` 864 pass / 0 fail. Live: antigravity list = exactly the 8 product agent models; `joc chat --model antigravity/gemini-3-flash` → "OK" (6 in / 95 out tokens).
+
+## 886. Anthropic OAuth uses Claude Code/gjc request shape (pass 886)
+
+**Date:** 2026-06-10 · **Dimension: provider / Anthropic OAuth reliability.**
+
+### Root cause
+- Anthropic OAuth credentials were sent to `api.anthropic.com/v1/messages` with only `oauth-2025-04-20` and a normal Messages payload. The backend returned an opaque `rate_limit_error` (HTTP 429), so auto-retry correctly backed off but could never clear the deterministic rejection.
+- GJC/Claude Code OAuth requests include the Claude Code beta set, Claude CLI-style headers, a billing prelude block, and the Claude Agent SDK system instruction before the user/project system prompt.
+
+### Fix
+- `anthropicRequest` now builds OAuth calls with the Claude Code/gjc-compatible header set (`claude-code-20250219`, `oauth-2025-04-20`, interleaved thinking, context management, prompt-caching scope, Claude CLI user-agent, X-Stainless metadata).
+- `anthropicPayload` injects the billing header + Claude Agent SDK instruction for OAuth models, then applies a single `cache_control: { type: "ephemeral" }` breakpoint on the last system block so the prelude and real system prompt cache together.
+- API-key calls keep the documented `x-api-key` path; the OAuth prelude is skipped for the known haiku exception.
+
+### Verification (pass 886)
+- Focused: `bun test test/round-b.test.ts` → **20 pass / 0 fail** (payload prelude + OAuth header assertions).
+- Live regression: `bun src/cli.ts chat --model sonnet "Reply with exactly: pong"` → `pong` with the same stored Anthropic OAuth credential that previously exhausted HTTP 429 auto-retry; `claude-haiku-4-5` also replied `ok`.
+- Full: `bun run typecheck` → 0; `bun test` → **867 pass / 0 fail** (113 files).
+
+## 887. Anthropic OAuth live verification exposes model-window limits (pass 887)
+
+**Date:** 2026-06-10 · **Dimension: provider / Anthropic OAuth verification.**
+
+### Improvements
+- Added GJC-style OAuth `metadata.user_id` cloaking to Anthropic requests so the billing prelude hash is computed over the same session-shaped payload Claude Code sends.
+- Added a five-minute server-directed 429 budget: short `Retry-After` windows still auto-retry, but long account/model reset windows fail fast with the provider's reset hint instead of being silently capped to 30s and replayed until timeout.
+- `joc chat` now accepts `--max-tokens <n>` for tiny live smoke checks; `--thinking <level>` also constrains the stream max-token budget when no explicit cap is supplied.
+
+### Verification (pass 887)
+- Focused: `bun test test/retry.test.ts test/provider-error.test.ts test/round-b.test.ts test/chat-flags.test.ts` → **48 pass / 0 fail**.
+- Live OAuth discovery: `joc auth status` shows Anthropic OAuth only (no API key); `joc models anthropic` lists 9 live Anthropic models.
+- Live `joc` model smoke with `--max-tokens 16`: `claude-sonnet-4-6` replied `OK`; the other 8 live Anthropic models returned Anthropic HTTP 429 with `Retry-After ~51–52m`, now surfaced immediately instead of hanging through an exhausted retry ladder.
+- Post-reset live retest: all 9 Anthropic OAuth models passed via `joc chat --model <id> --max-tokens 16 "Reply with exactly: OK"` (`ANTHROPIC_RETEST_DONE total=9 pass=9 fail=0`).
+- Full: `bun run typecheck` → 0; `bun test` → **871 pass / 0 fail** (113 files).
+
+## 886. Complete echo suppression for all TUI pickers and inputs (pass 886)
+
+**Date:** 2026-06-10 · **Dimension: TUI layout robustness (anti-corruption).**
+
+### Root cause of input border duplication
+- When a TUI picker (like `/model`, `/provider`) was active, `rl.question` was not paused, so the background readline interface continued to capture user keystrokes and echo them to the screen (local tty echo).
+- Furthermore, under Bun/Node.js readline, typing wide characters (Korean CJK) triggers internal layout recalculation. Realline miscalculates terminal wrapping width based on UTF-16 code units instead of actual visible column width, forcing the cursor down by one row and breaking the differential TUI's offset arithmetic.
+
+### Fix
+- `runSelectPicker` now explicitly **pauses the readline interface (`rl.pause()`) and forces TTY raw mode** on entry, then restores them (`rl.resume()`) on exit. This completely disables the background readline loop and local terminal echo, preventing layout-disrupting text from spilling onto the screen.
+- `GATED_OUTPUT_METHODS` now intercepts `_write` and `_writev` to guarantee no low-level Bun streams can bypass the gated proxy.
+- `drawFooter` now hardcodes `toColumn(1)` prefixing and clear-line buffering for all rows to immediately recover from any client-side IME offset drift.
+
+### Verification (pass 886)
+- Verified all 871 tests pass green; tui-app viewport assertions and autocomplete preview mocks validated.
+
+## 886. Fixed-reservation boxed footer — `@-mention typing pushes the box down` fix (pass 886)
+
+**Date:** 2026-06-10 · **Dimension: TUI stability.**
+
+### Repro
+1. `joc` REPL prompt with the boxed input footer armed.
+2. Type `@src/ai/providers/` — the `Paths:` argument preview grows under the box.
+3. Type any text after that (e.g. `gemini.ts is the file I want to review`).
+4. **Bug**: the input box visibly slid down and broke alignment; lines of prior command output above the box (e.g. `(fetching models from logged-in providers…)`) were eaten one at a time.
+
+### Root cause
+`drawFooter` in `src/commands/launch.ts` grew the footer on demand with `\n` whenever `lines.length > footerRendered`:
+
+```ts
+if (i < total - 1) s += i < footerRendered - 1 ? "\x1b[1B" + toColumn(1) : "\n";
+```
+
+At the terminal's bottom margin, `\n` is a line-feed that **scrolls** the entire screen up by one row. Every keystroke that wrapped the input body or grew the `Paths:` preview emitted one or more `\n`s — each ate a row of prior output, and the cursor-park accounting (`cursorUp(total - 1 - parkRow)`) was based on the pre-scroll position, so subsequent redraws painted at the wrong row → "TUI 입력창이 밀려내려오면서 깨지는 현상".
+
+### Fix
+Eager fixed reservation:
+
+- `armPreview` now reserves `footerRows` bottom rows ONCE by writing `"\n".repeat(footerRows - 1) + cursorUp(footerRows - 1)`. The terminal scrolls exactly once here (when the prompt first appears), never on a keystroke.
+- `drawFooter` paints exactly `footerRendered` rows every time using CUD (`\x1b[1B`) only — no `\n` is ever emitted. Output is padded to `footerRows` with empty strings via a new `padToFooter` helper so the reservation is always fully covered.
+- The resize handler now `disarmPreview()` + `armPreview()` to re-reserve at the new terminal height so `footerRendered` and `footerRows` stay in sync.
+- `disarmPreview` already used CUD-only clear; left intact and now also serves the resize path.
+
+### Verification (pass 886)
+- Live tmux (100×30): typed `@src/ai/providers/` then `gemini.ts is the file I want to review` then a 130-char tail that wraps the input body across 3 rows + cwdLabel + borders (6 footer rows). Box stayed pinned to the bottom every keystroke; `(fetching models…)` line above the box was preserved across all keystrokes; Ctrl-U cleared back to placeholder cleanly.
+- `bun run typecheck` → 0 errors.
+- `bun test` → **871 pass / 0 fail** (113 files).

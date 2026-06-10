@@ -10,6 +10,14 @@ test("friendlyProviderError maps a 429 to an actionable rate-limit line (no raw 
   expect(out).not.toContain("rate_limit_error"); // raw JSON body is dropped
 });
 
+test("friendlyProviderError includes Retry-After reset hints for long 429 windows", () => {
+  const err = new ProviderHttpError("Anthropic", 429, "slow down", undefined, 57 * 60 * 1000);
+  const out = friendlyProviderError(err);
+  expect(out).toContain("Rate limited by Anthropic");
+  expect(out).toContain("~57m");
+  expect(out).not.toContain("slow down");
+});
+
 test("friendlyProviderError detects 429 from the message when status is absent", () => {
   const out = friendlyProviderError(new Error("OpenAI request failed (HTTP 429): rate limit"));
   expect(out).toContain("Rate limited by OpenAI");

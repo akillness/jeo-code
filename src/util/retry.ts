@@ -17,6 +17,10 @@ export interface RetryOptions {
    *  When higher than `retries`, rate-limit errors get extra attempts so a transient
    *  per-minute window can reset; non-rate-limit errors still use `retries`. */
   rateLimitRetries?: number;
+  /** If a 429 carries a server-directed retry delay above this budget, fail fast
+   * instead of capping the wait and replaying a request the server already said
+   * cannot succeed soon. */
+  rateLimitMaxServerDelayMs?: number;
 }
 
 // Default retryable predicate: true for transient network errors, transient/overload
@@ -77,11 +81,14 @@ export function defaultRetryable(err: unknown): boolean {
 
 // Server-directed `Retry-After` is honored but capped so a CLI never hangs on a hostile header.
 const RETRY_AFTER_CAP_MS = 30_000;
+// Long account/subscription windows should be reported, not silently compressed to 30s.
 
 // Run fn; on a retryable error, back off and retry up to `retries` attempts. Backoff is
 // exponential (baseDelay * 2^(attempt-1), capped at maxDelay) with equal jitter (the wait lands in
 // [0.5x, 1x] of that cap), unless the error carries a `retryAfterMs` (server `Retry-After`), which
-// takes precedence (capped at RETRY_AFTER_CAP_MS). Re-throws the last error when exhausted.
+// takes precedence (capped at RETRY_AFTER_CAP_MS). A 429 with a server delay beyond
+// `rateLimitMaxServerDelayMs` is not retried because the provider has identified a
+// long account-wide window; callers can surface the reset time instead of hanging.
 export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): Promise<T> {
   const retries = opts?.retries ?? 3;
   const baseDelayMs = opts?.baseDelayMs ?? 250;
@@ -92,6 +99,7 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
   const onRetry = opts?.onRetry;
   const rateLimitMinDelayMs = opts?.rateLimitMinDelayMs ?? 0;
   const rateLimitRetries = opts?.rateLimitRetries;
+  const rateLimitMaxServerDelayMs = opts?.rateLimitMaxServerDelayMs;
 
   let attempt = 1;
   while (true) {
@@ -99,8 +107,19 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
       return await fn();
     } catch (err) {
       // Rate-limit (429) errors may use a higher attempt cap so a transient
-      // per-minute window can reset before we surface the failure.
+      // per-minute window can reset before we surface the failure. If the server
+      // says the window is much longer than our retry budget, fail fast with the
+      // original error so the UI can show the real reset delay.
       const rateLimited = isRateLimitError(err);
+      const serverDelay = retryAfterOf(err);
+      if (
+        rateLimited &&
+        typeof rateLimitMaxServerDelayMs === "number" &&
+        serverDelay !== undefined &&
+        serverDelay > rateLimitMaxServerDelayMs
+      ) {
+        throw err;
+      }
       const cap = rateLimited && typeof rateLimitRetries === "number" ? Math.max(retries, rateLimitRetries) : retries;
       if (attempt >= cap || !isRetryable(err, attempt)) {
         throw err;
@@ -109,7 +128,6 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
       const capped = Math.min(baseDelayMs * Math.pow(2, attempt - 1), maxDelayMs);
       // Equal jitter: half fixed + half random → [0.5x, 1x] of the capped backoff.
       const jittered = capped / 2 + random() * (capped / 2);
-      const serverDelay = retryAfterOf(err);
       // Server `Retry-After` wins (capped); else jitter. For rate limits, apply the
       // floor in BOTH cases so a 0/near-0 Retry-After (or sub-second jitter) doesn't
       // burn the 429 budget back-to-back with no real pause. The floor escalates per

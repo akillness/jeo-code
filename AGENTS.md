@@ -91,7 +91,7 @@ launch / 15 in team), and `AbortSignal` (Ctrl-C cancels the in-flight turn).
 | `src/agent/` | Tool engine (`engine.ts`), tools + MutationGuard (`tools.ts`), `loop.ts`, `json.ts`, `session.ts`, `compaction.ts`, `context-files.ts`, `state.ts` |
 | `src/ai/` | `model-manager.ts` (catalog-authoritative routing/credentials + `describeModelDetailed`), `model-registry.ts` (aliases + reverse-alias/validation), `model-catalog.ts` (curated models: provider/context/reasoning/recommended + fuzzy `suggestModels`), `provider-status.ts` (credential readiness), `types.ts`, `sse.ts`, `providers/{anthropic,openai,gemini,ollama,errors}.ts` |
 | `src/auth/` | OAuth PKCE, callback-server, token storage + auto-refresh, `flows/{anthropic,openai,google}` |
-| `src/commands/` | `launch, setup, auth, deep-interview, ralplan, approve, team, ultragoal, doctor, mcp, models, skills, resume, chat, evolve` (15) |
+| `src/commands/` | `launch, setup, auth, deep-interview, ralplan, approve, team, ultragoal, doctor, mcp, models, skills, resume, chat, evolve` (16) |
 | `src/tui/` | `app.ts` (`LaunchTui`, fills terminal width+height on a TTY), `renderer.ts` (differential ANSI), `terminal.ts` (ANSI-aware `truncate`), `components/` (`evolution.ts` = canonical 5-stage model + sub-stage/transition helpers, `color.ts` = capability + truecolor gradient, `capability.ts` = unicode detection, `layout.ts` = fit/center/box, `themes.ts` = cosmic/matrix/solar/mono, `select-list.ts` = keyboard-navigable picker, `model-picker.ts`/`provider-picker.ts` = catalog-driven choosers, `autocomplete.ts` = `<Tab>` completion (slash names + live model/provider/role args), `config-panel.ts` = `/model`·`/provider`·`/config` formatters, footer, meter+sparkline, ascii-art (+frames), tool-list, spinner, stream, slash) |
 | `src/mcp/` | MCP stdio server (`server.ts`, `tools.ts`, `protocol.ts`); set `JOC_MCP_PIPELINE=1` to expose pipeline tools |
 | `src/skills/` | `catalog.ts` — `SKILLS` docs + `skillsPromptSection()` injected into the launch prompt |
@@ -203,3 +203,10 @@ Google OAuth ships a bundled gemini-cli installed-app client secret; `GEMINI_OAU
 - **Gate before yielding:** `bun run typecheck` → 0 and `bun test` → all green. For agent/provider
   changes, prefer a real local check (e.g. `JOC_DEFAULT_MODEL=fast joc launch --no-tui --max-steps 4 "…"`
   against Ollama) over claims.
+\n\n## New Structural Components\n
+| Directory | Purpose |
+|-----------|---------|
+| `src/agent/dev/` | Detachable self-improvement and evolution logic (Dev Mode only). |
+| `.specify/` | Spec-kit artifacts: Constitution, Specification, Plan. |
+| `.ouroboros/` | OOO seeds and workflow state. |
+| `.joc/state/` | Real-time evolution logs and bridge files. |

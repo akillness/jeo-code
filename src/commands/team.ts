@@ -8,6 +8,8 @@ import {
   type WorkflowState,
 } from "../agent/state";
 import { runAgentLoop } from "../agent/engine";
+import { maybeCompact } from "../agent/compaction";
+import { catalogMetadata } from "../ai";
 import { readGlobalConfig } from "../agent/state";
 import {
   defaultSubagentRole,
@@ -152,59 +154,83 @@ export function parseRoleGateVerdict(roleId: string, reason: string): { ok: bool
 }
 
 
-export async function runTeamCommand(): Promise<void> {
-  const cwd = process.cwd();
+export interface TeamEngineOptions {
+  cwd?: string;
+  signal?: AbortSignal;
+  onProgress?: (e: { skill: string; phase: string; detail?: string }) => void;
+  io?: {
+    output?: (line: string) => void;
+  };
+}
+
+export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok: boolean; reason?: string }> {
+  const cwd = opts.cwd ?? process.cwd();
+
+  const log = (msg?: any) => {
+    const str = msg !== undefined ? String(msg) : "";
+    if (opts.io?.output) {
+      const lines = str.split("\n");
+      for (const line of lines) {
+        opts.io.output(line);
+      }
+    } else {
+      console.log(str);
+    }
+  };
+
+  if (opts.onProgress) {
+    opts.onProgress({ skill: "team", phase: "start" });
+  }
+
+  if (opts.signal?.aborted) {
+    return { ok: false, reason: "aborted" };
+  }
 
   // Read ralplan state
   const planState = await readWorkflowState("ralplan", cwd);
   if (!planState || planState.current_phase !== "complete" || !planState.plan_path) {
-    console.log(
+    log(
       `[ERROR] No completed plan found. Please run 'joc ralplan' to generate a plan first.`
     );
-    process.exitCode = 1;
-    return;
+    return { ok: false, reason: "No completed plan found" };
   }
 
   if (!planState.approved) {
-    console.log(
+    log(
       `[ERROR] Plan is not approved. Please approve the plan before executing.`
     );
-    process.exitCode = 1;
-    return;
+    return { ok: false, reason: "Plan is not approved" };
   }
 
   const planPath = planState.plan_path;
-  console.log(`\n=== Starting Team Execution Stage ===`);
-  console.log(`Reading plan from: ${planPath}`);
+  log(`\n=== Starting Team Execution Stage ===`);
+  log(`Reading plan from: ${planPath}`);
 
   let planContent = "";
   try {
     planContent = await fs.readFile(planPath, "utf-8");
   } catch (err: any) {
-    console.log(`[ERROR] Failed to read plan file: ${err.message}`);
-    process.exitCode = 1;
-    return;
+    log(`[ERROR] Failed to read plan file: ${err.message}`);
+    return { ok: false, reason: err.message };
   }
 
   let rawPlan: any;
   try {
     rawPlan = parseYaml(planContent);
   } catch (err: any) {
-    console.log(`[ERROR] Failed to parse plan YAML: ${err.message}`);
-    process.exitCode = 1;
-    return;
+    log(`[ERROR] Failed to parse plan YAML: ${err.message}`);
+    return { ok: false, reason: err.message };
   }
 
   const parsed = PlanSchema.safeParse(normalizePlanShape(rawPlan));
   if (!parsed.success) {
     const shape = Array.isArray(rawPlan) ? "a top-level list" : typeof rawPlan;
-    console.log(
+    log(
       `[ERROR] The plan is not in the expected shape — it needs a top-level object with a 'steps:' list ` +
       `(each step: { name, role?, ... }), but the plan file is ${shape}.\n` +
       `  The planning model likely produced malformed YAML. Review ${planPath} or re-run 'joc ralplan' (with a more capable model).`
     );
-    process.exitCode = 1;
-    return;
+    return { ok: false, reason: "Plan is not in the expected shape" };
   }
 
   const unknownRoles = parsed.data.steps
@@ -212,25 +238,18 @@ export async function runTeamCommand(): Promise<void> {
     .filter((role): role is string => !!role && !getSubagentRole(role));
   if (unknownRoles.length > 0) {
     const unique = [...new Set(unknownRoles)];
-    console.log(
+    log(
       `[ERROR] Plan references unknown subagent role(s): ${unique.join(", ")}. ` +
       `Known roles: ${subagentRoleIds().join(", ")}. Fix ${planPath} or re-run 'joc ralplan'.`
     );
-    process.exitCode = 1;
-    return;
+    return { ok: false, reason: "Plan references unknown subagent role(s)" };
   }
 
   const tasks = parsed.data.steps.map(step => step.name);
-  // Keep roles by STEP INDEX, not task name: generated plans may contain duplicate
-  // names, and those duplicates must still route to their own role.
   const roleByIndex = parsed.data.steps.map(step => getSubagentRole(step.role)?.id);
 
-  console.log(`Loaded ${tasks.length} tasks for execution.`);
+  log(`Loaded ${tasks.length} tasks for execution.`);
 
-
-  // Initialize team state. Use the STRICT reader so a corrupt team-state.json is a
-  // distinct error rather than being treated as "no state" — which would silently
-  // re-run already-completed tasks from scratch and lose progress.
   let teamState: WorkflowState;
   try {
     teamState = (await readWorkflowStateStrict("team", cwd)) ?? {
@@ -243,25 +262,31 @@ export async function runTeamCommand(): Promise<void> {
       pending_tasks: [...tasks],
     };
   } catch {
-    console.log(
+    log(
       `[ERROR] .joc/state/team-state.json is corrupt. Fix or delete it before re-running 'joc team' ` +
       `(refusing to silently restart and re-run already-completed tasks).`,
     );
-    process.exitCode = 1;
-    return;
+    return { ok: false, reason: "team-state.json is corrupt" };
   }
 
   await writeWorkflowState("team", teamState, cwd);
   const renderOpts: RalphRenderOptions = { color: !!process.stdout.isTTY, indexed: true };
-  for (const line of formatRalphTodoGuide(tasks, activeStepIndex(tasks.length, teamState.pending_tasks), teamState.completed_tasks ?? [], renderOpts)) console.log(line);
+  for (const line of formatRalphTodoGuide(tasks, activeStepIndex(tasks.length, teamState.pending_tasks), teamState.completed_tasks ?? [], renderOpts)) log(line);
 
   while (teamState.pending_tasks && teamState.pending_tasks.length > 0) {
-    const currentTask = teamState.pending_tasks[0];
-    console.log(`\n${categoryBadge("progress")} Current task: "${currentTask}"`);
-    const activeIndex = activeStepIndex(tasks.length, teamState.pending_tasks);
-    for (const line of formatRalphTodoGuide(tasks, activeIndex, teamState.completed_tasks ?? [], renderOpts)) console.log(line);
+    if (opts.signal?.aborted) {
+      return { ok: false, reason: "aborted" };
+    }
 
-    // Run the Executor loop
+    const currentTask = teamState.pending_tasks[0];
+    log(`\n${categoryBadge("progress")} Current task: "${currentTask}"`);
+    const activeIndex = activeStepIndex(tasks.length, teamState.pending_tasks);
+    for (const line of formatRalphTodoGuide(tasks, activeIndex, teamState.completed_tasks ?? [], renderOpts)) log(line);
+
+    if (opts.onProgress) {
+      opts.onProgress({ skill: "team", phase: "executing", detail: `Current task: ${currentTask}` });
+    }
+
     const success = await executeTaskWithAgent({
       task: currentTask,
       tasks,
@@ -270,24 +295,38 @@ export async function runTeamCommand(): Promise<void> {
       cwd,
       roleId: roleByIndex[activeIndex],
     });
-    
+
+    if (opts.signal?.aborted) {
+      return { ok: false, reason: "aborted" };
+    }
+
     if (success) {
       teamState.completed_tasks = [...(teamState.completed_tasks ?? []), currentTask];
       teamState.pending_tasks = teamState.pending_tasks.slice(1);
       await writeWorkflowState("team", teamState, cwd);
-      console.log(`${categoryBadge("done")} Completed: "${currentTask}"`);
+      log(`${categoryBadge("done")} Completed: "${currentTask}"`);
     } else {
-      console.log(`${categoryBadge("error")} Failed on task: "${currentTask}". Halting execution.`);
-      process.exitCode = 1;
-      break;
+      log(`${categoryBadge("error")} Failed on task: "${currentTask}". Halting execution.`);
+      return { ok: false, reason: `Failed on task: "${currentTask}"` };
     }
   }
 
   if (teamState.pending_tasks && teamState.pending_tasks.length === 0) {
     teamState.current_phase = "complete";
     await writeWorkflowState("team", teamState, cwd);
-    console.log(`\n${categoryBadge("done")} All tasks in the plan executed successfully!`);
-    console.log("Run 'joc ultragoal' to run verify tests and evaluate metrics.");
+    log(`\n${categoryBadge("done")} All tasks in the plan executed successfully!`);
+    log("Run 'joc ultragoal' to run verify tests and evaluate metrics.");
+    if (opts.onProgress) {
+      opts.onProgress({ skill: "team", phase: "complete" });
+    }
+  }
+  return { ok: true };
+}
+
+export async function runTeamCommand(): Promise<void> {
+  const res = await runTeamEngine();
+  if (!res.ok) {
+    process.exitCode = 1;
   }
 }
 
@@ -299,10 +338,18 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
   const maxSteps = resolveSubagentMaxSteps(role.id, config);
   console.log(`  └─ Subagent: ${role.title} · model ${model} · ≤${maxSteps} steps`);
 
+  const contextTokens = catalogMetadata(model)?.contextTokens;
+
   const history: Message[] = [
     { role: "system", content: subagentSystemPrompt(role) },
     { role: "user", content: buildRalphSubagentPrompt(ctx) },
   ];
+
+  try {
+    await maybeCompact(history, { model, contextTokens });
+  } catch (err) {
+    // LLM summary failure does not halt team
+  }
 
   const result = await runAgentLoop(history, {
     cwd: ctx.cwd,
@@ -317,7 +364,14 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
           console.log(formatRalphStreamEvent("step", `tool ${invocation.tool} requested`, renderOpts));
         }
       },
-      onStep: step => console.log(formatRalphStreamEvent("step", `${role.title} thinking ${step}/${maxSteps}`, renderOpts)),
+      onStep: async step => {
+        console.log(formatRalphStreamEvent("step", `${role.title} thinking ${step}/${maxSteps}`, renderOpts));
+        try {
+          await maybeCompact(history, { model, contextTokens });
+        } catch (err) {
+          // LLM summary failure does not halt team
+        }
+      },
       onToolResult: (tool, ok) => console.log(formatRalphStreamEvent(ok ? "complete" : "error", `tool ${tool}`, renderOpts)),
       onNotice: msg => console.log(formatRalphStreamEvent("step", msg, renderOpts)),
     },

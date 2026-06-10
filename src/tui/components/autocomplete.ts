@@ -145,15 +145,16 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
   switch (cmd) {
     case "/model": {
       if (token.startsWith("#")) return { completions: [], token, kind: "none" }; // numbered pick
-      if (argIndex === 0) return finish(["save", ...rankedModelPool(ctx)], "model");
-      // `/model save <id>` second arg → models
-      if (argIndex === 1 && tokens[1]?.toLowerCase() === "save") return finish(rankedModelPool(ctx), "model");
+      if (argIndex === 0) return finish(["save", "subagent", "role", ...rankedModelPool(ctx)], "model");
+      if (argIndex === 1 && (tokens[1]?.toLowerCase() === "save")) return finish(rankedModelPool(ctx), "model");
+      if (argIndex === 1 && (tokens[1]?.toLowerCase() === "subagent" || tokens[1]?.toLowerCase() === "role")) return finish(ctx.roleIds, "role");
+      if (argIndex === 2 && (tokens[1]?.toLowerCase() === "subagent" || tokens[1]?.toLowerCase() === "role")) return finish(rankedModelPool(ctx), "model");
       return { completions: [], token, kind: "none" };
     }
     case "/models":
       return argIndex === 0 ? finish(["refresh", "caps", "catalog"], "subcommand") : { completions: [], token, kind: "none" };
     case "/provider": {
-      const cloud = ["anthropic", "openai", "gemini"];
+      const cloud = ["anthropic", "openai", "gemini", "antigravity"];
       if (argIndex === 0) return finish(["login", "auth", ...ctx.providers], "provider");
       // `/provider login|auth <name>` → cloud provider names (OAuth-capable).
       if (argIndex === 1 && (tokens[1]?.toLowerCase() === "login" || tokens[1]?.toLowerCase() === "auth")) return finish(cloud, "provider");
@@ -161,18 +162,10 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       return { completions: [], token, kind: "none" };
     }
     case "/logout":
-      return argIndex === 0 ? finish(["anthropic", "openai", "gemini"], "provider") : { completions: [], token, kind: "none" };
-    case "/agents":
-    case "/subagents": {
+      return argIndex === 0 ? finish(["anthropic", "openai", "gemini", "antigravity"], "provider") : { completions: [], token, kind: "none" };
+    case "/agents": {
       if (argIndex === 0) return finish(ctx.roleIds, "role");
       if (argIndex === 1) return finish(["reset", "maxSteps", ...rankedModelPool(ctx)], "model");
-      if (argIndex === 2 && (tokens[2]?.toLowerCase() === "maxsteps" || tokens[2]?.toLowerCase() === "steps")) return { completions: [], token, kind: "none" };
-      return { completions: [], token, kind: "none" };
-    }
-    case "/subagent": {
-      if (argIndex === 0) return finish(["run", ...ctx.roleIds], "subcommand");
-      if (argIndex === 1 && tokens[1]?.toLowerCase() === "run") return finish(ctx.roleIds, "role");
-      if (argIndex === 1) return finish(["--", "reset", "maxSteps", ...rankedModelPool(ctx)], "model");
       if (argIndex === 2 && (tokens[2]?.toLowerCase() === "maxsteps" || tokens[2]?.toLowerCase() === "steps")) return { completions: [], token, kind: "none" };
       return { completions: [], token, kind: "none" };
     }
@@ -191,7 +184,7 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     case "/theme":
       return argIndex === 0 ? finish(listThemes().map(t => t.name), "subcommand") : { completions: [], token, kind: "none" };
     case "/login":
-      return argIndex === 0 ? finish(["anthropic", "openai", "gemini"], "provider") : { completions: [], token, kind: "none" };
+      return argIndex === 0 ? finish(["anthropic", "openai", "gemini", "antigravity"], "provider") : { completions: [], token, kind: "none" };
     case "/export":
       return argIndex <= 1 ? finish(["json", "markdown"], "subcommand") : { completions: [], token, kind: "none" };
     default:

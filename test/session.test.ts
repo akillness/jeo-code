@@ -170,3 +170,90 @@ test("session rename and delete lifecycle", async () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("session resume with compaction marker and legacy compatibility", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-sess-compat-"));
+  const { appendCompaction } = await import("../src/agent/session");
+
+  try {
+    const id = newSessionId();
+    await createSession(tempDir, id);
+
+    // 1. system prompt + 5 user/assistant messages
+    const sysPrompt: Message = { role: "system", content: "You are helpful." };
+    const m1: Message = { role: "user", content: "one" };
+    const m2: Message = { role: "assistant", content: "two" };
+    const m3: Message = { role: "user", content: "three" };
+    const m4: Message = { role: "assistant", content: "four" };
+    const m5: Message = { role: "user", content: "five" };
+
+    await appendMessage(id, sysPrompt, tempDir); // index 0
+    await appendMessage(id, m1, tempDir);        // index 1
+    await appendMessage(id, m2, tempDir);        // index 2
+    await appendMessage(id, m3, tempDir);        // index 3
+    await appendMessage(id, m4, tempDir);        // index 4
+    await appendMessage(id, m5, tempDir);        // index 5
+
+    // 2. Append compaction marker.
+    // replacesThrough: 3 (system, m1, m2, m3) -> index 0, 1, 2, 3
+    await appendCompaction(id, 1, "SUMMARY-MARKER", 3, tempDir);
+
+    // 3. loadSession should return [system, summaryMessage, m4, m5]
+    const loaded = await loadSession(id, tempDir);
+    expect(loaded.messages.length).toBe(4);
+    expect(loaded.messages[0]).toEqual(sysPrompt); // System prompt is preserved
+    expect(loaded.messages[1]).toEqual({
+      role: "user",
+      content: "[Earlier conversation summary]\nSUMMARY-MARKER",
+    });
+    expect(loaded.messages[2]).toEqual(m4);
+    expect(loaded.messages[3]).toEqual(m5);
+
+    // 4. listSessions should show correct messageCount
+    const summaries = await listSessions(tempDir);
+    expect(summaries.length).toBe(1);
+    expect(summaries[0].messageCount).toBe(3); // summaryMessage + m4 + m5 = 3 (since system is not counted in messageCount, or if system is message type, 4)
+    // index 0(sys), 1(m1), 2(m2), 3(m3) are replaced. msgIndex for m4 is 4, which is > 3, so m4, m5 are counted (2 messages) plus summaryMessage (1 message) = 3 messages.
+    // preview should be first user message ("one")
+    expect(summaries[0].preview).toBe("one");
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("listSessions uses lightweight parser (avoids full JSON.parse)", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-sess-light-"));
+  try {
+    const id = newSessionId();
+    await createSession(tempDir, id);
+
+    // Append 50 messages
+    for (let i = 0; i < 50; i++) {
+      await appendMessage(id, { role: "user", content: `message ${i}` }, tempDir);
+    }
+
+    // Wrap JSON.parse in a spy
+    const originalParse = JSON.parse;
+    let parseCalls = 0;
+    JSON.parse = (text: string, reviver?: any) => {
+      parseCalls++;
+      return originalParse(text, reviver);
+    };
+
+    try {
+      const summaries = await listSessions(tempDir);
+      expect(summaries.length).toBe(1);
+      expect(summaries[0].messageCount).toBe(50);
+      expect(summaries[0].preview).toBe("message 0");
+    } finally {
+      JSON.parse = originalParse;
+    }
+
+    // If we parsed the whole file, it would call JSON.parse at least 51 times (1 header + 50 messages).
+    // With lightweight parser, it should only parse the header, look for compaction (none), and first user message.
+    // So parseCalls should be exactly 2 (or very low).
+    expect(parseCalls).toBeLessThanOrEqual(5);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});

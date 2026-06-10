@@ -45,7 +45,7 @@ test("forge summaries never throw on an undefined/empty tool name (malformed mod
   expect(() => formatForgeBox(inv, { width: 40, unicode: false, paint: s => s })).not.toThrow();
 });
 
-test("renderJocStatus exposes progress status, joc thinking, and joc forge", () => {
+test("renderJocStatus separates progress, insight status, and forge rows", () => {
   expect(progressPercent(3, 10)).toBe(30);
   const lines = renderJocStatus({
     step: 3,
@@ -60,11 +60,15 @@ test("renderJocStatus exposes progress status, joc thinking, and joc forge", () 
     mutationGuarded: true,
     unicode: false,
   }).map(stripAnsi);
-  expect(lines[0]).toContain("joc thinking");
+  expect(lines[0]).toContain("[STEP]");
   expect(lines[0]).toContain("step 3/10");
-  expect(lines[1]).toContain("joc forge");
-  expect(lines[1]).toContain("tools 4 (2 ok / 1 fail / 1 running)");
-  expect(lines[1]).toContain("mutation locked");
+  expect(lines[0]).not.toContain("Resolving type boundaries");
+  expect(lines[1]).toContain("[STATUS]");
+  expect(lines[1]).toContain("joc status");
+  expect(lines[1]).toContain("Resolving type boundaries");
+  expect(lines[2]).toContain("joc forge");
+  expect(lines[2]).toContain("tools 4 (2 ok / 1 fail / 1 running)");
+  expect(lines[2]).toContain("mutation locked");
 });
 
 test("renderJocStatus colorizes the forge count segments when color is on", () => {
@@ -85,8 +89,8 @@ test("renderJocStatus colorizes the forge count segments when color is on", () =
       unicode: false,
       color: true,
     });
-    expect(lines[1]).toContain("\x1b[");
-    expect(stripAnsi(lines[1]!)).toContain("tools 4 (2 ok / 1 fail / 1 running)");
+    expect(lines[2]).toContain("\x1b[");
+    expect(stripAnsi(lines[2]!)).toContain("tools 4 (2 ok / 1 fail / 1 running)");
   } finally {
     chalk.level = prev;
   }
@@ -162,13 +166,13 @@ test("renderJocStatus: forge line exposes the evolution stage (double helix) whe
     stage: "●●○○○ Double Helix (DNA) [2/5]",
     color: false, unicode: true,
   });
-  const forgeLine = lines[1] ?? "";
+  const forgeLine = lines[2] ?? "";
   expect(forgeLine).toContain("joc forge");
   expect(forgeLine).toContain("Double Helix (DNA)"); // stage identity exposed
   expect(forgeLine).toContain("forging read");        // current tool still shown
   // without a stage, the forge line omits it (no leading separator noise)
   const plain = renderJocStatus({ step: 1, maxSteps: 25, color: false });
-  expect(plain[1] ?? "").not.toContain("Double Helix");
+  expect(plain[2] ?? "").not.toContain("Double Helix");
 });
 
 test("summarizeForgeInvocation and summarizeForgeResult polish and status step stats", () => {

@@ -9,3 +9,44 @@
 - engine: terminal LLM error reported once (doneReason only); onError removed.
 - launch: boxed input footer adaptive 5–12 rows (short terminals keep the box), empty readline prompt in box mode — raw `joc>` input never visible.
 - Verified: tsc 0; build ok; bun test 724 pass / 0 fail. Committed eb37122.
+[2026-06-10] Pass 878 — Google OAuth bundled client secret
+- google.ts: requireClientSecret() (env-only, broke login at token exchange) → googleClientSecret(): GEMINI_OAUTH_CLIENT_SECRET override → bundled gemini-cli default (b64). Test in oauth.test.ts; AGENTS.md note corrected.
+- Verified: typecheck 0; bun test 732 pass / 0 fail.
+[2026-06-10] Pass 879 — gjc-parity + Gemini thinking-budget + live model verification
+- SKILL.md embeds (src/prompts/skills), hierarchical AGENTS.md context walk, OAuth refresh file-lock + atomic config save, streamMaxRetries consumed, picker company branding.
+- gemini.ts: geminiThinkingBudget() — flash default 0, pro floor 128, pre-2.5 omitted, effort-mapped + clamped; empty MAX_TOKENS now errors (fixed live empty-reply on gemini-flash-latest).
+- scripts/verify-models.ts: live per-provider recent-model verification → 0 hard failures (rate-limited models distinguished).
+- Verified: typecheck 0; bun test 743 pass / 0 fail; build ok.
+[2026-06-10] Ratchet loop — gjc-parity wave 1 (parallel subagents)
+- Baseline: typecheck 0, 758 pass. gjc v0.4.3 surface diffed against joc → gap list.
+- Wave 1 (4 parallel executors): joc state (read/write/clear/handoff over .joc/state), joc session (tmux list/attach/rm with injectable runTmux), launch -p/--print + -c/--continue + --append-system-prompt (@file), joc update (--check/--install/--json/--strict, injectable deps).
+- Registry wired in runner.ts (state/session/update). 1 keep/revert event: update.ts string|null narrowing fixed at gate.
+- Gate: typecheck 0; 789 pass / 0 fail (+31). Live smoke: state write/handoff/read + unknown-skill exit 1; session list; update --json all verified.
+[2026-06-10] Ratchet loop — wave 2 + OAuth operability + UX fixes
+- Wave 2 (3 parallel executors): launch toggles (--no-skills/--skills globs/--no-tools/--tools/--system-prompt + buildToolProtocol/filterToolMap), joc skills list|read --json, joc export --html (renderSessionHtml).
+- ROOT CAUSE found by live verification: `joc chat --model X` swallowed the flag into the message → always chatted with the DEFAULT model. This masked anthropic/antigravity selection entirely ("OAuth 모델이 동작 안 함"). Fixed via parseChatArgs + test; claude-haiku-4-5 OAuth now answers live (12in/4out tokens).
+- Engine: prose-salvage fix — pure-prose LLM replies become done.reason instead of bounced corrections (killed the "죄송합니다… JSON tool call" apology-as-reply bug); correction text now forbids apologies + offers done-resend; MAX_PARSE_BOUNCES=2 then salvage. New onUsage event (cumulative per-call).
+- TUI: formatDuration/formatTokenCount/formatUsage (duration.ts) — "took 3 steps in 1m 45s · 14.2k in / 1.1k out tokens" summary; per-turn usage tracked via onUsage.
+- Gate: typecheck 0; 831 pass / 0 fail (+42). Wave 3 in flight: plain-stream live status, gradient status animation, gemini-cli credential import (antigravity unlock).
+[2026-06-10] Pass 881 — deep-dive gjc parity execution
+- Native workflow routing in launch: `/skill deep-interview|ralplan|team|ultragoal` now hits real engines; bundled workflow docs live in `src/prompts/skills/*/SKILL.md`.
+- Hook surface: opt-in `hooks.enabled` + safe pre-tool/post-turn execution via `Bun.spawn`; AGENTS hierarchy walk + configured-skill prompt advertising landed.
+- Provider/model/memory: OpenAI OAuth non-Codex fail-fast, Antigravity provider/catalog wiring, company labels in `/model`·`/provider`·`/config`, token-based compaction + session compaction markers + team compaction.
+- TUI/UX: footer `ctx NN%`, red-claw/blue-crab themes, in-flight abort harness (Ctrl-C cancel, ESC cancel in live TUI, second Ctrl-C hard exit).
+- Verified: typecheck 0; bun test 831 pass / 0 fail; build ok; live smoke with `claude-haiku-4-5` => smoke ok.
+[2026-06-10] Pass 882 — Antigravity OAuth parity + role-model UX cleanup
+- Antigravity: shared Cloud Code Assist project discovery (`loadCodeAssist`/`onboardUser`), dedicated `joc auth login antigravity`, lazy projectId self-heal/persist, improved 403 guidance.
+- Command surface: removed `/subagent` and `/subagents`; keep role config in `/agents` and new `/model subagent <role> [model|#N]`.
+- Verified: typecheck 0; focused 96 pass / 0 fail; full bun test 858 pass / 0 fail; build ok.
+[2026-06-10] Pass 883 — antigravity selectable in /model + role-pin verified
+- /model·/provider·/agents·/model subagent: antigravity(OAuth 보유 시) 선택 거부 → 경고+허용으로 전환; 다른 provider는 기존 거부 유지.
+- REPL 검증 테스트 추가(gemini-fallback config에서 /model 선택 + /model subagent 핀 영속); TUI stage 테스트 뷰포트 200x40 고정으로 플레이크 제거.
+- Verified: typecheck 0; bun test 859 pass / 0 fail; build ok.
+[2026-06-10] Pass 884 — mouse-wheel scroll TUI corruption fix
+- enterAltScreen: ?1049h+?1007l (alt screen + alternate-scroll OFF) / leaveAltScreen: ?1007h+?1049l — 휠이 화살표 시퀀스로 주입돼 다음 프롬프트를 깨뜨리던 문제 제거(tmux 동일 적용).
+- REPL은 매 프롬프트 전 pending tty input drain + readline 버퍼의 escape/arrow 노이즈 정리.
+- Verified: typecheck 0; bun test 859 pass / 0 fail; build ok.
+[2026-06-10] Pass 885 — TUI 자동 복구 (수동 키 불필요)
+- 주기 리싱크: 라이브 턴 틱 25회(~3s)마다 차등 베이스라인 리셋 → 모든 라인 재기록으로 화면 오염 자동 치유.
+- resize 자동 리페인트(start 등록/finish 해제), 휠 노이즈 감지 시 즉시 repaint(onNoise), raw-mode Ctrl-C(\u0003) 데이터도 abort 경로로 정합.
+- Verified: typecheck 0; bun test 863 pass / 0 fail; build ok.

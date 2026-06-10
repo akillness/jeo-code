@@ -1,3 +1,5 @@
+import { qualifyModelId } from "../ai/model-manager";
+import type { ProviderName } from "../ai/types";
 import { createInterface } from "node:readline/promises";
 import { saveGlobalConfig, readGlobalConfig, readRawGlobalConfig, type Config } from "../agent/state";
 import {
@@ -70,7 +72,7 @@ export async function runSetupCommand(): Promise<void> {
     console.log(
       "joc setup needs an interactive terminal (TTY).\n" +
       "Non-interactive options: set env vars (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY, JOC_DEFAULT_MODEL, OLLAMA_HOST),\n" +
-      "run 'joc auth login <anthropic|openai|gemini>' for OAuth, or edit ~/.joc/config.json directly. Verify with 'joc doctor'.",
+      "run 'joc auth login <anthropic|openai|gemini|antigravity>' for OAuth, or edit ~/.joc/config.json directly. Verify with 'joc doctor'.",
     );
     return;
   }
@@ -118,7 +120,12 @@ export async function runSetupCommand(): Promise<void> {
     } else {
       const flow = OAUTH_FLOW_REGISTRY[choice as AuthProvider];
       if (!flow.verifiedEndToEnd && flow.note) console.log(`Note: ${flow.note}`);
+      // Abort the pending "Paste redirect URL…" question once the flow settles —
+      // otherwise it survives the SUCCESS/FAILED result, reprints its prompt, and
+      // QUEUES IN FRONT of the API-key fallback question below (setup looked hung).
+      const ac = new AbortController();
       const ctrl: OAuthController = {
+        signal: ac.signal,
         onAuth: ({ url, instructions }) => {
           console.log(`Opening browser:\n  ${url}\n`);
           if (instructions) console.log(instructions + "\n");
@@ -126,10 +133,17 @@ export async function runSetupCommand(): Promise<void> {
         },
         onProgress: msg => console.log(`  … ${msg}`),
         onManualCodeInput: async () =>
-          (await rl.question("Paste redirect URL or code (or wait for the browser callback): ")).trim(),
+          (await rl.question("Paste redirect URL or code (or wait for the browser callback): ", { signal: ac.signal })).trim(),
       };
       try {
-        const { email } = await interactiveLogin(choice as AuthProvider, ctrl);
+        let email: string | undefined;
+        try {
+          ({ email } = await interactiveLogin(choice as AuthProvider, ctrl));
+        } finally {
+          // Must fire BEFORE the catch's API-key question below, or that
+          // question queues behind the stale paste prompt.
+          ac.abort();
+        }
         const stored = await getStoredOAuth(choice as AuthProvider);
         if (stored) next.oauth[choice] = stored;
         console.log(`[SUCCESS] OAuth login complete for ${choice}${email ? ` (${email})` : ""}.`);
@@ -146,7 +160,9 @@ export async function runSetupCommand(): Promise<void> {
     console.log(`\nRecommended ${choice}${openAiCodexOnly ? " Codex OAuth" : ""} models:`);
     for (const m of recommended) console.log(`  - ${m}`);
     const dm = await rl.question(`Default model for ${choice} [${fallbackModel}]: `);
-    const picked = chooseDefaultModel(dm.trim() || fallbackModel, choice);
+    const rawInput = dm.trim();
+    const qualified = rawInput ? qualifyModelId(rawInput, choice as ProviderName) : fallbackModel;
+    const picked = chooseDefaultModel(qualified, choice as ProviderName);
     reportModelChoice(picked);
     next.defaultModel = picked.model || fallbackModel;
   } else if (choice === "ollama") {
@@ -158,11 +174,15 @@ export async function runSetupCommand(): Promise<void> {
       console.log("Detected local Ollama models:");
       models.slice(0, 20).forEach((m, i) => console.log(`  - ${m}`));
       const def = await rl.question(`Default model (ollama/<name>) [${"ollama/" + (models[0] ?? "llama3.1:8b")}]: `);
-      next.defaultModel = def.trim() || `ollama/${models[0] ?? "llama3.1:8b"}`;
+      const rawInput = def.trim();
+      const qualified = rawInput ? qualifyModelId(rawInput, "ollama") : `ollama/${models[0] ?? "llama3.1:8b"}`;
+      next.defaultModel = qualified;
       reportModelChoice(chooseDefaultModel(next.defaultModel, "ollama"));
     } else {
       console.log("  (no models detected — Ollama not reachable, defaulting to llama3.1:8b)");
-      const picked = chooseDefaultModel(await rl.question(`Default model [${DEFAULT_MODELS.ollama}]: `), "ollama");
+      const rawInput = (await rl.question(`Default model [${DEFAULT_MODELS.ollama}]: `)).trim();
+      const qualified = rawInput ? qualifyModelId(rawInput, "ollama") : DEFAULT_MODELS.ollama;
+      const picked = chooseDefaultModel(qualified, "ollama");
       reportModelChoice(picked);
       next.defaultModel = picked.model || DEFAULT_MODELS.ollama;
     }
@@ -180,11 +200,15 @@ export async function runSetupCommand(): Promise<void> {
       console.log("Detected models:");
       models.slice(0, 20).forEach(m => console.log(`  - ${m}`));
       const def = await rl.question(`Default model (openai/<name>) [openai/${models[0]}]: `);
-      next.defaultModel = def.trim() || `openai/${models[0]}`;
+      const rawInput = def.trim();
+      const qualified = rawInput ? qualifyModelId(rawInput, "openai") : `openai/${models[0]}`;
+      next.defaultModel = qualified;
       reportModelChoice(chooseDefaultModel(next.defaultModel, "openai"));
     } else {
       console.log("  (no models detected — endpoint not reachable yet)");
-      const picked = chooseDefaultModel(await rl.question(`Default model [${DEFAULT_MODELS[choice]}]: `), "openai");
+      const rawInput = (await rl.question(`Default model [${DEFAULT_MODELS[choice]}]: `)).trim();
+      const qualified = rawInput ? qualifyModelId(rawInput, "openai") : DEFAULT_MODELS[choice];
+      const picked = chooseDefaultModel(qualified, "openai");
       reportModelChoice(picked);
       next.defaultModel = picked.model || DEFAULT_MODELS[choice];
     }

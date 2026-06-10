@@ -1,8 +1,8 @@
-import { test, expect, beforeEach, afterEach } from "bun:test";
+import { test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { saveConfigPatch, readRawGlobalConfig, readGlobalConfig } from "../src/agent/state";
+import { saveConfigPatch, readRawGlobalConfig, readGlobalConfig, saveGlobalConfig } from "../src/agent/state";
 import { setApiKey, setOauthToken } from "../src/auth/storage";
 
 let dir: string;
@@ -123,4 +123,24 @@ test("readGlobalConfig treats blank on-disk provider keys as env-fillable gaps",
   process.env.GEMINI_API_KEY = "env-gemini-key";
   const cfg = await readGlobalConfig();
   expect(cfg.providers.gemini).toBe("env-gemini-key");
+});
+test("saveGlobalConfig writes to a temp file first and then atomically renames to config.json", async () => {
+  const writeFileSpy = spyOn(fs, "writeFile");
+  const renameSpy = spyOn(fs, "rename");
+
+  try {
+    await saveGlobalConfig({ providers: {}, defaultModel: "test-model" });
+    
+    expect(writeFileSpy).toHaveBeenCalled();
+    const writePath = writeFileSpy.mock.calls[0][0] as string;
+    expect(writePath).toContain(".tmp");
+    expect(writePath).not.toBe(path.join(dir, "config.json"));
+
+    expect(renameSpy).toHaveBeenCalled();
+    expect(renameSpy.mock.calls[0][0]).toBe(writePath);
+    expect(renameSpy.mock.calls[0][1]).toBe(path.join(dir, "config.json"));
+  } finally {
+    writeFileSpy.mockRestore();
+    renameSpy.mockRestore();
+  }
 });

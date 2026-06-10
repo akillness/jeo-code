@@ -115,13 +115,31 @@ test("skillsPromptSection caps an oversized skill catalog and reports omitted en
   expect(section.split("\n").length).toBeLessThanOrEqual(41);
 });
 
-test("workflowSkillsForPrompt advertises only bundled workflow skills", () => {
+test("workflowSkillsForPrompt advertises user skills but blocks reserved-name override (hijack guard)", () => {
   const ralplan = SKILLS.find(s => s.name === "ralplan")!;
   const external = parseSkillMarkdown("spec-kit", "summary: SDD wrapper\naliases: /speckit.plan\n\nUse spec-kit.");
   const routed = workflowSkillsForPrompt([...SKILLS, external, { ...ralplan, summary: "custom ralplan" }]);
-  expect(routed.map(s => s.name)).toEqual(SKILLS.map(s => s.name));
-  expect(routed.some(s => s.name === "spec-kit")).toBe(false);
+  expect(routed.some(s => s.name === "spec-kit")).toBe(true);
   expect(routed.find(s => s.name === "ralplan")?.summary).toBe("Planner/Architect/Critic blueprint from the seed.");
+});
+
+test("skillsPromptSection includes configured skills and respects budget limits", () => {
+  const external = parseSkillMarkdown("spec-kit", "summary: SDD wrapper\naliases: /speckit.plan\n\nUse spec-kit.");
+  const section = skillsPromptSection([...SKILLS, external]);
+  expect(section).toContain("Bundled workflow skills:");
+  expect(section).toContain("Configured skills:");
+  expect(section).toContain("spec-kit");
+
+  const many = Array.from({ length: 80 }, (_, i) => ({
+    name: `user-skill-${i}`,
+    command: `/skill user-skill-${i}`,
+    summary: `Summary ${i}`,
+    whenToUse: "",
+    details: "",
+  }));
+  const truncated = skillsPromptSection([...SKILLS, ...many]);
+  expect(truncated).toContain("omitted for brevity");
+  expect(truncated.split("\n").length).toBeLessThanOrEqual(41);
 });
 
 test("parseSkillInvocation only matches explicit slash invocations", () => {
@@ -182,5 +200,19 @@ test("runSkillsCommand --write: materializes one .md per skill", async () => {
     expect(sample).toContain("joc deep-interview");
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+test("SKILLS is derived from SKILL.md embeds", () => {
+  expect(SKILLS.length).toBe(4);
+  for (const s of SKILLS) {
+    expect(s.raw).toBeDefined();
+    expect(typeof s.raw).toBe("string");
+    expect(s.raw).toContain(s.details.split("\n")[0]!);
+    const parsed = parseSkillMarkdown(s.name, s.raw!);
+    expect(parsed.name).toBe(s.name);
+    expect(parsed.command).toBe(s.command);
+    expect(parsed.summary).toBe(s.summary);
+    expect(parsed.whenToUse).toBe(s.whenToUse);
+    expect(parsed.details).toBe(s.details);
   }
 });

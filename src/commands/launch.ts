@@ -3,6 +3,10 @@ import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, TOOL_PROTOCOL, type 
 import { createTaskTool, TASK_TOOL_PROTOCOL_LINE, type TaskSubEvent } from "../agent/task-tool";
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { LaunchTui } from "../tui/app";
+import { runDeepInterviewEngine } from "./deep-interview";
+import { runRalplanEngine } from "./ralplan";
+import { runTeamEngine } from "./team";
+import { runUltragoalEngine } from "./ultragoal";
 import { skillsPromptSection, loadSkills, formatSkill, buildSkillTask, getSkillFrom, skillSlashAliases, workflowSkillsForPrompt, parseSkillInvocation, looksLikeSkillEcho, type SkillDoc } from "../skills/catalog";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
@@ -42,9 +46,11 @@ import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBl
 import { categoryBadge } from "../tui/components/category-index";
 import { renderInputBox } from "../tui/components/input-box";
 import { summarizeForgeInvocation } from "../tui/components/forge";
+import { formatDuration, formatUsage } from "../tui/components/duration";
+
 import { findTool, searchTool } from "../agent/tools";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
-import { maybeCompact } from "../agent/compaction";
+import { maybeCompact, historyTokens } from "../agent/compaction";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { listThemes, resolveTheme } from "../tui/components/themes";
@@ -58,6 +64,7 @@ import {
   renameSession,
   deleteSession,
   sessionPath,
+  appendCompaction,
 } from "../agent/session";
 import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize } from "../tui/terminal";
 
@@ -76,9 +83,18 @@ export interface LaunchFlags {
   modelRole?: ModelRole;
   thinking?: ThinkLevel;
   errors: string[];
+  print?: boolean;
+  appendSystemPromptRaw?: string;
+  appendSystemPrompt?: string;
+  noSkills: boolean;
+  skills?: string;
+  noTools: boolean;
+  tools?: string;
+  systemPromptRaw?: string;
+  systemPrompt?: string;
 }
 
-const PROVIDER_DEFAULT: Record<ProviderName, string> = { anthropic: "sonnet", openai: "gpt-5.5", gemini: "flash", ollama: "fast" };
+const PROVIDER_DEFAULT: Record<ProviderName, string> = { anthropic: "sonnet", openai: "gpt-5.5", gemini: "flash", antigravity: "antigravity/gemini-3-pro-high", ollama: "fast" };
 
 function takeValue(args: string[], index: number, inlinePrefix: string): { value?: string; nextIndex: number } {
   const current = args[index]!;
@@ -89,7 +105,7 @@ function takeValue(args: string[], index: number, inlinePrefix: string): { value
 }
 
 function isProviderName(input: string | undefined): input is ProviderName {
-  return input === "anthropic" || input === "openai" || input === "gemini" || input === "ollama";
+  return input === "anthropic" || input === "openai" || input === "gemini" || input === "antigravity" || input === "ollama";
 }
 
 function isThinkingLevel(input: string | undefined): input is ThinkLevel {
@@ -230,32 +246,6 @@ function logTaskSubEvent(e: TaskSubEvent, log: (line: string) => void = (s: stri
   log(formatTaskSubEvent(e));
 }
 
-export function parseDirectSubagentInput(input: string): { roleId: string; task: string } | null {
-  const trimmed = input.trim();
-  const command =
-    trimmed === "/subagent" || trimmed.startsWith("/subagent ") ? "/subagent" :
-    trimmed === "/agents" || trimmed.startsWith("/agents ") ? "/agents" :
-    trimmed === "/subagents" || trimmed.startsWith("/subagents ") ? "/subagents" :
-    "";
-  if (!command) return null;
-  const tokens = trimmed.slice(command.length).trim().split(/\s+/).filter(Boolean);
-  const first = tokens[0]?.toLowerCase();
-  if (first === "run" || first === "exec" || first === "start") {
-    let i = 1;
-    let roleId = "executor";
-    if (getSubagentRole(tokens[i])) {
-      roleId = tokens[i]!.toLowerCase();
-      i++;
-    }
-    return { roleId, task: tokens.slice(i).join(" ").trim() };
-  }
-  const sep = tokens.indexOf("--");
-  if (sep >= 0) {
-    const roleId = sep > 0 ? tokens[0]!.toLowerCase() : "executor";
-    return { roleId, task: tokens.slice(sep + 1).join(" ").trim() };
-  }
-  return null;
-}
 
 /**
  * Plain (non-TTY / `--no-tui`) progress sink — the cmd-mode equivalent of the live TUI, and
@@ -269,16 +259,29 @@ export function parseDirectSubagentInput(input: string): { roleId: string; task:
 export function createStreamEvents(
   maxSteps: number,
   log: (line: string) => void = (s: string) => console.log(s),
+  now: () => number = Date.now,
 ): AgentLoopEvents {
   let step = 0;
   let pending = "";
+  let latestUsage: { inputTokens: number; outputTokens: number } | undefined;
+  const startTime = now();
+
   return {
-    onStep: (n: number) => { step = n; },
+    onStep: (n: number) => {
+      // Lazy header: recorded here, printed once the tool call is known (onAssistant).
+      // A `done` / invalid reply therefore emits no step line at all.
+      step = n;
+    },
     onAssistant: (_raw: string, invocation: { tool?: string; arguments?: unknown } | null) => {
       const tool = typeof invocation?.tool === "string" ? invocation.tool.trim() : "";
       if (!tool || tool === "done") return;
       pending = summarizeForgeInvocation(tool, invocation?.arguments).title;
-      log(`${categoryBadge("progress")} ${chalk.cyan(`[step ${step}/${maxSteps}]`)} ${pending}`);
+      // gjc-style live status unit: step header + tool target + elapsed + token usage.
+      const elapsedMs = now() - startTime;
+      let suffix = "";
+      if (elapsedMs >= 1000) suffix += ` · ${formatDuration(elapsedMs)}`;
+      if (latestUsage) suffix += ` · ${formatUsage(latestUsage)}`;
+      log(`${categoryBadge("progress")} ${chalk.cyan(`[step ${step}/${maxSteps}]`)} ${pending}${suffix ? chalk.dim(suffix) : ""}`);
     },
     onToolResult: (tool: string, ok: boolean, output?: string) => {
       const label = pending || tool;
@@ -287,6 +290,9 @@ export function createStreamEvents(
       pending = "";
     },
     onNotice: (msg: string) => log(`  ${categoryBadge("progress")} ${chalk.yellow(msg)}`),
+    onUsage: (usage: { inputTokens: number; outputTokens: number }) => {
+      latestUsage = usage;
+    },
   };
 }
 
@@ -294,8 +300,94 @@ export function shouldUseOneShotTui(noTui: boolean): boolean {
   return LaunchTui.usable(noTui);
 }
 
-export function parseFlags(args: string[]): LaunchFlags {
-  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 25, message: "", tmux: false, errors: [] };
+export interface InFlightAbortHarness {
+  controller: AbortController;
+  handleSigint(): void;
+  handleData(chunk: string | Uint8Array): void;
+  dispose(): void;
+}
+
+interface AbortHarnessOptions {
+  controller?: AbortController;
+  captureEsc?: boolean;
+  stdin?: {
+    isTTY?: boolean;
+    isRaw?: boolean;
+    setRawMode?(raw: boolean): void;
+    resume?(): void;
+    on(event: "data", listener: (chunk: string | Uint8Array) => void): unknown;
+    off(event: "data", listener: (chunk: string | Uint8Array) => void): unknown;
+  };
+  onAbortNotice?: (message: string) => void;
+  onHardExit?: () => void;
+  /** Invoked when stray escape-sequence noise (wheel scroll etc.) arrives mid-turn. */
+  onNoise?: () => void;
+}
+
+export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFlightAbortHarness {
+  const controller = opts.controller ?? new AbortController();
+  const stdin = opts.stdin ?? process.stdin;
+  const captureEsc = opts.captureEsc === true && !!stdin.isTTY;
+  const wasRaw = !!stdin.isRaw;
+  let rawChanged = false;
+
+  const abortNow = (message: string) => {
+    if (controller.signal.aborted) return false;
+    opts.onAbortNotice?.(message);
+    controller.abort();
+    return true;
+  };
+
+  const handleSigint = () => {
+    if (abortNow("Cancelling current run… Press Ctrl-C again to exit.")) return;
+    opts.onHardExit?.();
+  };
+
+  const handleData = (chunk: string | Uint8Array) => {
+    if (!captureEsc || controller.signal.aborted) return;
+    const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    if (text === "\u001b") {
+      abortNow("ESC pressed — cancelling current run…");
+      return;
+    }
+    // Raw mode swallows the terminal's SIGINT generation: Ctrl-C arrives as data.
+    if (text.includes("\u0003")) {
+      handleSigint();
+      return;
+    }
+    // Anything else arriving mid-turn (mouse-wheel arrow bursts, stray escape
+    // sequences) may have disturbed the screen — auto-heal with a full repaint.
+    if (text.includes("\u001b")) {
+      opts.onNoise?.();
+    }
+  };
+
+  process.on("SIGINT", handleSigint);
+  if (captureEsc) {
+    stdin.on("data", handleData);
+    if (stdin.setRawMode && !wasRaw) {
+      stdin.setRawMode(true);
+      rawChanged = true;
+    }
+    stdin.resume?.();
+  }
+
+  return {
+    controller,
+    handleSigint,
+    handleData,
+    dispose() {
+      process.removeListener("SIGINT", handleSigint);
+      if (captureEsc) {
+        stdin.off("data", handleData);
+        if (rawChanged) stdin.setRawMode?.(false);
+      }
+    },
+  };
+}
+
+export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchFlags {
+  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 25, message: "", tmux: false, errors: [], print: false, noSkills: false, noTools: false };
   const rest: string[] = [];
   const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (let i = 0; i < args.length; i++) {
@@ -306,6 +398,9 @@ export function parseFlags(args: string[]): LaunchFlags {
     }
     if (a === "--list") {
       flags.list = true;
+    } else if (a === "-p" || a === "--print") {
+      flags.print = true;
+      flags.noTui = true;
     } else if (a === "--tmux") {
       flags.tmux = true;
     } else if (a === "--worktree") {
@@ -362,27 +457,155 @@ export function parseFlags(args: string[]): LaunchFlags {
       else flags.errors.push("--thinking must be one of: minimal, low, medium, high, xhigh");
     } else if (a === "--smol" || a === "--slow" || a === "--plan") {
       flags.modelRole = a.slice(2) as ModelRole;
-    } else if (a === "--resume") {
+    } else if (a === "--resume" || a === "--continue" || a === "-c") {
       flags.resume = true;
       const next = args[i + 1];
       if (next && UUID_REGEX.test(next)) {
         flags.resumeId = next;
         i++;
       }
-    } else if (a.startsWith("--resume=")) {
+    } else if (a.startsWith("--resume=") || a.startsWith("--continue=") || a.startsWith("-c=")) {
       flags.resume = true;
-      const val = a.slice(9);
+      const eqIdx = a.indexOf("=");
+      const val = a.slice(eqIdx + 1);
       if (UUID_REGEX.test(val)) {
         flags.resumeId = val;
       } else {
         rest.push(val);
       }
+    } else if (a === "--append-system-prompt") {
+      const { value, nextIndex } = takeValue(args, i, "--append-system-prompt=");
+      if (value) {
+        flags.appendSystemPromptRaw = value;
+      } else {
+        flags.errors.push("--append-system-prompt requires a value");
+      }
+      i = nextIndex;
+    } else if (a.startsWith("--append-system-prompt=")) {
+      const { value } = takeValue(args, i, "--append-system-prompt=");
+      if (value) {
+        flags.appendSystemPromptRaw = value;
+      } else {
+        flags.errors.push("--append-system-prompt requires a value");
+      }
+    } else if (a === "--no-skills") {
+      flags.noSkills = true;
+    } else if (a === "--skills") {
+      const { value, nextIndex } = takeValue(args, i, "--skills=");
+      if (value) flags.skills = value;
+      else flags.errors.push("--skills requires a value");
+      i = nextIndex;
+    } else if (a.startsWith("--skills=")) {
+      const { value } = takeValue(args, i, "--skills=");
+      if (value) flags.skills = value;
+      else flags.errors.push("--skills requires a value");
+    } else if (a === "--no-tools") {
+      flags.noTools = true;
+    } else if (a === "--tools") {
+      const { value, nextIndex } = takeValue(args, i, "--tools=");
+      if (value) flags.tools = value;
+      else flags.errors.push("--tools requires a value");
+      i = nextIndex;
+    } else if (a.startsWith("--tools=")) {
+      const { value } = takeValue(args, i, "--tools=");
+      if (value) flags.tools = value;
+      else flags.errors.push("--tools requires a value");
+    } else if (a === "--system-prompt") {
+      const { value, nextIndex } = takeValue(args, i, "--system-prompt=");
+      if (value) flags.systemPromptRaw = value;
+      else flags.errors.push("--system-prompt requires a value");
+      i = nextIndex;
+    } else if (a.startsWith("--system-prompt=")) {
+      const { value } = takeValue(args, i, "--system-prompt=");
+      if (value) flags.systemPromptRaw = value;
+      else flags.errors.push("--system-prompt requires a value");
     } else {
       rest.push(a);
     }
   }
   flags.message = rest.join(" ").trim();
+
+  if (flags.print && !flags.message) {
+    flags.errors.push("-p/--print requires a message argument");
+  }
+
+  if (flags.appendSystemPromptRaw) {
+    if (flags.appendSystemPromptRaw.startsWith("@")) {
+      const filePath = flags.appendSystemPromptRaw.slice(1);
+      const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+      try {
+        flags.appendSystemPrompt = fs.readFileSync(absPath, "utf8");
+      } catch (err) {
+        flags.errors.push(`failed to read system prompt file: ${(err as Error).message}`);
+      }
+    } else {
+      flags.appendSystemPrompt = flags.appendSystemPromptRaw;
+    }
+  }
+  if (flags.systemPromptRaw) {
+    if (flags.systemPromptRaw.startsWith("@")) {
+      const filePath = flags.systemPromptRaw.slice(1);
+      const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+      try {
+        flags.systemPrompt = fs.readFileSync(absPath, "utf8");
+      } catch (err) {
+        flags.errors.push(`failed to read system prompt file: ${(err as Error).message}`);
+      }
+    } else {
+      flags.systemPrompt = flags.systemPromptRaw;
+    }
+  }
+
   return flags;
+}
+export function matchSkillGlob(pattern: string, name: string): boolean {
+  const p = pattern.toLowerCase();
+  const n = name.toLowerCase();
+  if (!p.includes("*")) {
+    return p === n;
+  }
+  const escaped = p.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const regexStr = "^" + escaped.replace(/\*/g, ".*") + "$";
+  const regex = new RegExp(regexStr);
+  return regex.test(n);
+}
+
+export function filterToolMap(
+  tools: Record<string, any>,
+  allowlist: string[]
+): Record<string, any> {
+  const result: Record<string, any> = {};
+  for (const name of allowlist) {
+    if (name in tools) {
+      result[name] = tools[name];
+    }
+  }
+  return result;
+}
+export const TOOL_DESCRIPTIONS: Record<string, string> = {
+  read: "read   {filePath, lineRange?, raw?} — read a file (lineRange \"a-b\",\"a-\",\"a\",\"a+n\",\"a-b,c-d\"; raw: verbatim, no line numbers)",
+  write: "write  {filePath, content}         — create/overwrite a file",
+  edit: "edit   {filePath, editBlock}       — ≔A..B replace lines; ≔A+ insert after line A; ≔$ append EOF (payload on next line)",
+  bash: "bash   {command, timeoutMs?, cwd?, env?} — run a shell command (cwd: subdir; env: extra vars)",
+  find: "find   {globPattern}               — find files by name",
+  search: "search {pattern, globPattern?, ignoreCase?, context?, maxMatches?} — grep (context: N lines around each match)",
+  ls: "ls     {dirPath}                   — list a directory's entries (dirs first)",
+};
+
+export function buildToolProtocol(allowedTools: Set<string>): string {
+  const lines: string[] = ["You have these tools (call exactly ONE per step):"];
+  let num = 1;
+  for (const name of ["read", "write", "edit", "bash", "find", "search", "ls"]) {
+    if (allowedTools.has(name)) {
+      lines.push(`${num}. ${TOOL_DESCRIPTIONS[name]}`);
+      num++;
+    }
+  }
+  lines.push(`${num}. done   {reason?}                   — call when the task is fully implemented AND verified`);
+  lines.push("");
+  lines.push("Reply with STRICT JSON only — no prose, no code fences:");
+  lines.push('{ "tool": "<name>", "arguments": { ... } }');
+  return lines.join("\n");
 }
 
 /**
@@ -422,9 +645,12 @@ function resolveWorktree(cwd: string, wt: string): string {
 
 export async function runLaunchCommand(args: string[]): Promise<void> {
   let cwd = process.cwd();
-  const flags = parseFlags(args);
+  const flags = parseFlags(args, cwd);
   if (flags.errors.length) {
-    for (const err of flags.errors) console.log(`error: ${err}`);
+    for (const err of flags.errors) {
+      console.error(`error: ${err}`);
+    }
+    process.exitCode = 1;
     return;
   }
 
@@ -537,7 +763,38 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   // pi-style: load project context (JEO.md / AGENTS.md / .joc/context.md / CLAUDE.md) into the prompt.
   const contextFiles = await loadProjectContext(cwd);
-  const resolvedSkills = await loadSkills(cwd); // bundled + user/project SKILL.md docs
+
+  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "todo"]);
+  let allowedTools = new Set(KNOWN_TOOLS);
+
+  if (flags.noTools) {
+    allowedTools = new Set();
+  } else if (flags.tools) {
+    const list = flags.tools.split(",").map(t => t.trim()).filter(Boolean);
+    const valid: string[] = [];
+    for (const name of list) {
+      if (KNOWN_TOOLS.has(name)) {
+        valid.push(name);
+      } else {
+        console.error(`Warning: Unknown tool name ignored: ${name}`);
+      }
+    }
+    allowedTools = new Set(valid);
+  }
+
+  let resolvedSkills: SkillDoc[] = [];
+  if (!flags.noSkills) {
+    const loaded = await loadSkills(cwd);
+    if (flags.skills) {
+      const patterns = flags.skills.split(",").map(p => p.trim()).filter(Boolean);
+      resolvedSkills = loaded.filter(s => patterns.some(p => matchSkillGlob(p, s.name)));
+    } else {
+      resolvedSkills = loaded;
+    }
+  }
+
+  const effectiveNoSkills = flags.noSkills || resolvedSkills.length === 0;
+
   const workflowSkills = workflowSkillsForPrompt(resolvedSkills);
   const resolvedSkillNames = resolvedSkills.map(s => s.name);
   const skillSlashDetails: SlashCommandInfo[] = resolvedSkills.flatMap(skill =>
@@ -548,21 +805,30 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       group: "skills" as const,
     })),
   );
+
+  const protocol = buildToolProtocol(allowedTools);
+  const preamble = flags.systemPrompt ?? "You are the joc, an interactive coding agent.\nAccomplish the user's request by calling tools and verifying your work.";
+
   const baseSystemPrompt =
-    executorSystemPrompt("joc, an interactive coding agent") +
+    preamble + "\n\n" + protocol + "\n\n" +
+    "Always verify (run tests / execute the program) before calling done." +
     "\nWhen you have finished the user's request, or need to reply to or ask the user something, call done with {\"reason\": <your natural-language reply to the user>}. The reason text is shown to the user as your message." +
-    "\n\nDelegation: " + TASK_TOOL_PROTOCOL_LINE +
-    " Call task with {\"role\": \"executor|planner|architect|critic\", \"task\": <assignment>, \"context\": <optional>} to hand a focused slice to a subagent." +
-    "\n\nPlanning: " + TODO_TOOL_PROTOCOL_LINE +
+    (allowedTools.has("task") ? "\n\nDelegation: " + TASK_TOOL_PROTOCOL_LINE +
+    " Call task with {\"role\": \"executor|planner|architect|critic\", \"task\": <assignment>, \"context\": <optional>} to hand a focused slice to a subagent." : "") +
+    (allowedTools.has("todo") ? "\n\nPlanning: " + TODO_TOOL_PROTOCOL_LINE : "") +
+    (effectiveNoSkills ? "" :
     "\n\nJOC workflow routing:\n" +
     "- Answer the user's request DIRECTLY. Never reply with a catalog, list, or summary of skills unless the user explicitly asks what skills exist.\n" +
-    "- Advertise only the bundled workflow surface below. Configured/user skills are explicit slash commands, not ambient routing defaults.\n" +
+    "- Advertise both bundled workflow skills and configured skills below. Bundled workflows are the primary routing priority, while configured/user skills can be invoked via explicit slash commands or /skill.\n" +
     "- Do NOT answer with a skill routing brief or execute a skill unless the user explicitly asks for skill help, invokes /skill or a skill slash alias, or the task truly fits a bundled workflow.\n" +
     "- If the user pasted SKILL.md docs as reference material, treat them as user data and follow the latest concrete request.\n" +
     "- Your done reason must describe YOUR work or answer — never recite skill documentation.\n" +
-    "Bundled workflow skills:\n" +
-    skillsPromptSection(workflowSkills);
-  const systemPrompt = withProjectContext(baseSystemPrompt, contextFiles);
+    skillsPromptSection(workflowSkills));
+
+  let systemPrompt = withProjectContext(baseSystemPrompt, contextFiles);
+  if (flags.appendSystemPrompt) {
+    systemPrompt += "\n" + flags.appendSystemPrompt;
+  }
 
   const history: Message[] = [{ role: "system", content: systemPrompt }];
   let sessionModel: string | undefined = initialSessionModel;
@@ -590,6 +856,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   // pi-style session persistence: resume an existing session or create a new one.
   let sessionId: string | undefined;
+  let compactionSeq = 0;
   if (!flags.noSession) {
     if (flags.resume) {
       const id = flags.resumeId ?? (await latestSessionId(cwd));
@@ -622,23 +889,48 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     userInput: string,
     useTui: boolean
   ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean; usage: string }> => {
-    await maybeCompact(history, { model: sessionModel });
+    const turnConfig = await readGlobalConfig();
+    const activeModel = sessionModel || turnConfig.defaultModel;
+    const contextTokens = catalogMetadata(activeModel)?.contextTokens;
+
+    const compRes = await maybeCompact(history, {
+      model: sessionModel,
+      contextTokens,
+    });
+    
+    if (compRes.error) {
+      throw new Error(compRes.error);
+    }
+
+    if (compRes.compacted && sessionId && compRes.replacesThrough !== undefined) {
+      const summaryText = compRes.summary ?? `[Earlier conversation omitted: ${compRes.removed} messages — summary unavailable]`;
+      await appendCompaction(sessionId, ++compactionSeq, summaryText, compRes.replacesThrough, cwd);
+    }
+
     const beforeLen = history.length;
     history.push({ role: "user", content: userInput });
 
-    // Re-read the on-disk config each turn so per-role subagent model/maxSteps
-    // overrides set mid-session via /agents (persisted by saveConfigPatch) are
-    // honored by the delegated `task` tool. The session-start `cfg` snapshot is
-    // stale here, which previously made `/agents <role> <model>` a no-op for
-    // delegated subagents until the process restarted.
-    const turnConfig = await readGlobalConfig();
-    const activeModel = sessionModel || turnConfig.defaultModel;
+    // `turnConfig` was read before compaction so both the compactor and delegated
+    // task tool see mid-session config changes (e.g. `/agents <role> <model>`).
     const { provider: activeProvider } = await describeModel(activeModel);
     const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: flags.maxSteps }) : null;
+    tui?.setContextUsage(historyTokens(history), contextTokens);
     if (tui) tui.start();
     let result;
-    const ac = new AbortController();
-    const tools = {
+    const harness = createInFlightAbortHarness({
+      captureEsc: !!tui,
+      onNoise: () => tui?.repaint(),
+      onAbortNotice: msg => {
+        if (tui) tui.events().onNotice?.(msg);
+        else console.log(msg);
+      },
+      onHardExit: () => {
+        if (tui) tui.finish("Cancelled.");
+        process.exit(130);
+      },
+    });
+    const ac = harness.controller;
+    const fullTools = {
       ...DEFAULT_TOOLS,
       task: createTaskTool({
         config: { ...turnConfig, defaultModel: activeModel },
@@ -649,8 +941,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }),
       todo: createTodoTool({ onChange: items => tui?.setTodos(items) }),
     };
-    const onSigint = () => ac.abort();
-    process.once("SIGINT", onSigint);
+    const tools = filterToolMap(fullTools, Array.from(allowedTools));
     try {
       result = await runAgentLoop(history, {
         cwd,
@@ -694,7 +985,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (tui) tui.finish(`! ${friendlyProviderError(err)}`);
       throw err;
     } finally {
-      process.removeListener("SIGINT", onSigint);
+      harness.dispose();
     }
     // A completed turn with an empty done-reason must NOT masquerade as a step-limit
     // failure ("reached the 3-step limit" after the model called done at step 3).
@@ -719,49 +1010,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     return { done: result.done, steps: result.steps, reply, rendered: !!tui, usage };
   };
 
-  const runDirectSubagent = async (roleId: string, taskText: string, useTuiForRun: boolean): Promise<void> => {
-    if (!taskText) {
-      console.log("Usage: /subagent run [executor|planner|architect|critic] <task>  (or /subagent <role> -- <task>)");
-      return;
-    }
-    const role = getSubagentRole(roleId);
-    if (!role) {
-      console.log(`Unknown subagent role '${roleId}'. Known: ${SUBAGENT_ROLES.map(r => r.id).join(", ")}.`);
-      return;
-    }
-    const cfgNow = await readGlobalConfig();
-    const activeModel = sessionModel || cfgNow.defaultModel;
-    // The model the subagent will ACTUALLY run on: per-role override → session/default.
-    const roleModel = resolveSubagentModel(role.id, { ...cfgNow, defaultModel: activeModel });
-    const { provider } = await describeModel(roleModel);
-    const maxSteps = resolveSubagentMaxSteps(role.id, cfgNow);
-    const tui = useTuiForRun ? new LaunchTui({ model: roleModel, provider, sessionId, maxSteps }) : null;
-    if (tui) tui.start();
-    else console.log(`${categoryBadge("subagent")} Subagent: ${role.title} · model ${roleModel} (${provider}) · ≤${maxSteps} steps`);
-    const ac = new AbortController();
-    const onSigint = () => ac.abort();
-    process.once("SIGINT", onSigint);
-    try {
-      const tool = createTaskTool({
-        config: { ...cfgNow, defaultModel: activeModel },
-        signal: ac.signal,
-        onEvent: tui ? (e => tui.onSubagentEvent(e)) : (e => logTaskSubEvent(e)),
-      });
-      const res = await tool({ role: role.id, task: taskText }, cwd);
-      const text = res.success ? res.output : `! ${res.error || res.output || "subagent failed"}`;
-      if (tui) tui.finish(text);
-      else console.log(text);
-    } catch (err) {
-      const text = `! ${friendlyProviderError(err)}`;
-      if (tui) tui.finish(text);
-      else console.log(text);
-    } finally {
-      process.removeListener("SIGINT", onSigint);
-    }
-  };
 
   const joinedArgs = flags.message;
-  const isOneShot = joinedArgs.length > 0 || !process.stdin.isTTY;
+  const isOneShot = flags.print || joinedArgs.length > 0 || !process.stdin.isTTY;
 
   if (isOneShot) {
     let messageContent = joinedArgs;
@@ -772,13 +1023,73 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       console.log("No input provided.");
       return;
     }
-    const directSubagent = parseDirectSubagentInput(messageContent);
-    if (directSubagent) {
-      await runDirectSubagent(directSubagent.roleId, directSubagent.task, shouldUseOneShotTui(flags.noTui));
-      return;
-    }
     const skillInvocation = parseSkillInvocation(messageContent, resolvedSkills);
     if (skillInvocation) {
+      const isBundleWorkflow = ["deep-interview", "ralplan", "team", "ultragoal"].includes(skillInvocation.skill.name);
+      if (isBundleWorkflow) {
+        const startMsg: Message = {
+          role: "system",
+          content: `[workflow:${skillInvocation.skill.name}:start]${skillInvocation.intent ? ` intent: ${skillInvocation.intent}` : ""}`
+        };
+        history.push(startMsg);
+        if (sessionId) {
+          await appendMessage(sessionId, startMsg, cwd);
+        }
+
+        const harness = createInFlightAbortHarness({
+          captureEsc: false,
+          onAbortNotice: msg => console.log(msg),
+          onHardExit: () => process.exit(130),
+        });
+        const ac = harness.controller;
+
+        const opts = {
+          cwd,
+          signal: ac.signal,
+          onProgress: (e: { skill: string; phase: string; detail?: string }) => console.log(`[workflow:${e.skill}] ${e.phase}${e.detail ? ` — ${e.detail}` : ""}`),
+          io: {
+            output: (line: string) => {
+              console.log(line);
+            }
+          },
+          args: skillInvocation.skill.name === "deep-interview" ? (skillInvocation.intent ? skillInvocation.intent.split(/\s+/) : []) : undefined
+        };
+
+        let ok = false;
+        let reason: string | undefined;
+        try {
+          let res: { ok: boolean; reason?: string };
+          if (skillInvocation.skill.name === "deep-interview") {
+            res = await runDeepInterviewEngine(opts);
+          } else if (skillInvocation.skill.name === "ralplan") {
+            res = await runRalplanEngine(opts);
+          } else if (skillInvocation.skill.name === "team") {
+            res = await runTeamEngine(opts);
+          } else {
+            res = await runUltragoalEngine(opts);
+          }
+          ok = res.ok;
+          reason = res.reason;
+        } catch (err: any) {
+          ok = false;
+          reason = err.message;
+        } finally {
+          harness.dispose();
+        }
+
+        const endMsg: Message = {
+          role: "system",
+          content: ok 
+            ? `[workflow:${skillInvocation.skill.name}:finish]` 
+            : `[workflow:${skillInvocation.skill.name}:abort]${reason ? ` reason: ${reason}` : ""}`
+        };
+        history.push(endMsg);
+        if (sessionId) {
+          await appendMessage(sessionId, endMsg, cwd);
+        }
+        return;
+      }
+
       const useOneShotTui = shouldUseOneShotTui(flags.noTui);
       if (!useOneShotTui) {
         console.log(`▶ Running skill: ${skillInvocation.skill.name}${skillInvocation.intent ? ` — ${skillInvocation.intent}` : ""}`);
@@ -808,18 +1119,97 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   console.log(`Model: ${activeStartModel} (${startProvider})  ·  thinking: ${sessionThinking ?? "medium"}`);
   if (sessionId) console.log(`Session: ${sessionId}`);
   if (contextFiles.length > 0) console.log(`Project context: ${contextFiles.map(f => f.path).join(", ")}`);
-  console.log("Type your request. Slash: /help /model /models /provider /agents /subagent run /roles /thinking /skill /view /diff /find /search /sessions /exit  (type / for the full ↑/↓ palette)" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
+  console.log("Type your request. Slash: /help /model /models /provider /agents /roles /thinking /skill /view /diff /find /search /sessions /exit  (type / for the full ↑/↓ palette)" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
 
   const useTui = LaunchTui.usable(flags.noTui);
   const runSkillInvocation = async (skill: SkillDoc, intent: string, invokedAs?: string): Promise<void> => {
-    // Drive the agent loop to EXECUTE the skill (don't just dump the doc). A concise
-    // banner replaces the old full-doc print; the live TUI shows progress, and the
-    // final reply is the skill's result.
-    if (!useTui) console.log(`▶ Running skill: ${skill.name}${intent ? ` — ${intent}` : ""}`);
-    const task = buildSkillTask(skill, intent, invokedAs);
-    const { reply, rendered, usage } = await runTurn(task, useTui);
-    if (!rendered) console.log(`joc> ${reply}${usage}`);
-    else if (usage) console.log(usage.trim());
+    const isBundleWorkflow = ["deep-interview", "ralplan", "team", "ultragoal"].includes(skill.name);
+    if (isBundleWorkflow) {
+      const startMsg: Message = {
+        role: "system",
+        content: `[workflow:${skill.name}:start]${intent ? ` intent: ${intent}` : ""}`
+      };
+      history.push(startMsg);
+      if (sessionId) {
+        await appendMessage(sessionId, startMsg, cwd);
+      }
+
+      const harness = createInFlightAbortHarness({
+        captureEsc: false,
+        onAbortNotice: msg => console.log(msg),
+        onHardExit: () => process.exit(130),
+      });
+      const ac = harness.controller;
+
+      const opts = {
+        cwd,
+        signal: ac.signal,
+        onProgress: (e: { skill: string; phase: string; detail?: string }) => console.log(`[workflow:${e.skill}] ${e.phase}${e.detail ? ` — ${e.detail}` : ""}`),
+        io: {
+          output: (line: string) => {
+            console.log(line);
+          },
+          input: async () => {
+            const wasPreviewArmed = previewArmed;
+            if (wasPreviewArmed) {
+              disarmPreview();
+              previewArmed = false;
+            }
+            try {
+              return await rl.question("");
+            } finally {
+              if (wasPreviewArmed) {
+                previewArmed = true;
+                armPreview();
+              }
+            }
+          }
+        },
+        args: skill.name === "deep-interview" ? (intent ? intent.split(/\s+/) : []) : undefined
+      };
+
+      let ok = false;
+      let reason: string | undefined;
+      try {
+        let res: { ok: boolean; reason?: string };
+        if (skill.name === "deep-interview") {
+          res = await runDeepInterviewEngine(opts);
+        } else if (skill.name === "ralplan") {
+          res = await runRalplanEngine(opts);
+        } else if (skill.name === "team") {
+          res = await runTeamEngine(opts);
+        } else {
+          res = await runUltragoalEngine(opts);
+        }
+        ok = res.ok;
+        reason = res.reason;
+      } catch (err: any) {
+        ok = false;
+        reason = err.message;
+      } finally {
+        harness.dispose();
+      }
+
+      const endMsg: Message = {
+        role: "system",
+        content: ok 
+          ? `[workflow:${skill.name}:finish]` 
+          : `[workflow:${skill.name}:abort]${reason ? ` reason: ${reason}` : ""}`
+      };
+      history.push(endMsg);
+      if (sessionId) {
+        await appendMessage(sessionId, endMsg, cwd);
+      }
+    } else {
+      // Drive the agent loop to EXECUTE the skill (don't just dump the doc). A concise
+      // banner replaces the old full-doc print; the live TUI shows progress, and the
+      // final reply is the skill's result.
+      if (!useTui) console.log(`▶ Running skill: ${skill.name}${intent ? ` — ${intent}` : ""}`);
+      const task = buildSkillTask(skill, intent, invokedAs);
+      const { reply, rendered, usage } = await runTurn(task, useTui);
+      if (!rendered) console.log(`joc> ${reply}${usage}`);
+      else if (usage) console.log(usage.trim());
+    }
   };
 
   // Tab autocomplete: alias names snapshotted once; live models come from the
@@ -877,6 +1267,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     output: gatedStdout(process.stdout, () => previewArmed),
     completer: (line: string) => readlineCompleter(line, completionContext()),
   });
+
+  // Mouse-wheel scroll during a live turn (tmux or plain terminal) can inject
+  // arrow/scroll escape sequences into stdin; readline buffers them into its
+  // pending line and the NEXT prompt then shows/executes garbage. Drain any
+  // pending tty input and clear readline's buffered line before each prompt.
+  const drainPendingTtyInput = (): void => {
+    if (!process.stdin.isTTY) return;
+    try {
+      while (process.stdin.read() !== null) { /* discard wheel/arrow noise typed mid-turn */ }
+    } catch { /* stream not readable in this state — nothing buffered */ }
+    const r = rl as unknown as { line?: string; cursor?: number };
+    if (typeof r.line === "string" && r.line.length > 0 && /\x1b|\[[ABCD]/.test(r.line)) {
+      r.line = "";
+      r.cursor = 0;
+    }
+  };
 
   // Live slash preview pinned to a reserved bottom footer via a DEC scroll region
   // (DECSTBM). The region is armed ONLY while waiting for input, and disarmed for
@@ -1046,6 +1452,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
   };
 
+  // Antigravity with ANY Google OAuth (own login or the gemini-cli fallback) stays
+  // SELECTABLE in pickers even when not call-ready: picking the model is how users
+  // reach the flow, and the auth layer gives actionable login guidance on the first
+  // call if the fallback token is rejected (403). Refusing selection was a dead end.
+  const selectableThoughNotReady = (st?: { name: string; kind: string }): boolean =>
+    !!st && st.name === "antigravity" && st.kind === "oauth";
+  const notReadyWarning = (st: { name: string; label: string }): string =>
+    `  ! ${st.name} is not call-ready yet (${st.label}) — run /provider login antigravity before the first turn.`;
+
   const pickLiveProviderModel = async (
     providerName: string,
     entries: PickEntry[],
@@ -1151,7 +1566,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
 
   const pickCloudProvider = async (statuses: Awaited<ReturnType<typeof describeAllProviders>>): Promise<AuthProvider | undefined> => {
-    const cloud = new Set(["anthropic", "openai", "gemini"]);
+    const cloud = new Set(["anthropic", "openai", "gemini", "antigravity"]);
     const list = providerPicker(statuses.filter(s => cloud.has(s.name)), true);
     let chosen: ProviderName | undefined;
     await runSelectPicker(
@@ -1251,8 +1666,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     });
   }
 
-  try {
-    while (true) {
+  while (true) {
+      drainPendingTtyInput();
       armPreview();
       // Render the boxed input immediately (placeholder) so the prompt is visible
       // even though readline's own "joc>" echo is now suppressed in box mode.
@@ -1290,8 +1705,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
       if (input === "/compact") {
-        const res = await maybeCompact(history, { model: sessionModel, force: true });
-        console.log(res.compacted ? `(compacted ${res.removed} older messages)` : "(nothing to compact)");
+        const turnConfig = await readGlobalConfig();
+        const activeModel = sessionModel || turnConfig.defaultModel;
+        const contextTokens = catalogMetadata(activeModel)?.contextTokens;
+        const res = await maybeCompact(history, { model: sessionModel, force: true, contextTokens });
+        if (res.error) {
+          console.error(chalk.red(res.error));
+        } else if (res.compacted && sessionId && res.replacesThrough !== undefined) {
+          const summaryText = res.summary ?? `[Earlier conversation omitted: ${res.removed} messages — summary unavailable]`;
+          await appendCompaction(sessionId, ++compactionSeq, summaryText, res.replacesThrough, cwd);
+          console.log(`(compacted ${res.removed} older messages)`);
+        } else {
+          console.log("(nothing to compact)");
+        }
         continue;
       }
       if (input === "/sessions") {
@@ -1605,7 +2031,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const explicitModel = tokens[1];
         // `/provider login|auth [name]` → run OAuth login from the REPL.
         if (name === "login" || name === "auth") {
-          const cloud = ["anthropic", "openai", "gemini"] as const;
+          const cloud = ["anthropic", "openai", "gemini", "antigravity"] as const;
           let target = tokens.slice(1).map(t => t.toLowerCase()).find(t => (cloud as readonly string[]).includes(t));
           if (!target) {
             const statuses = await describeAllProviders();
@@ -1672,7 +2098,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         let pickedFromPicker = false;
         let target = explicitModel ?? PROVIDER_DEFAULT[name];
         if (!explicitModel && providerPick.length && process.stdin.isTTY && process.stdout.isTTY) {
-          const picked = await pickLiveProviderModel(name, providerPick, currentResolved, st && !st.ready ? [name] : []);
+          const picked = await pickLiveProviderModel(name, providerPick, currentResolved, st && !st.ready && !selectableThoughNotReady(st) ? [name] : []);
           if (!picked) {
             console.log("(cancelled)");
             continue;
@@ -1684,8 +2110,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (sel.kind === "index" || sel.kind === "match") {
             target = qualifyModelId(sel.entry.model, sel.entry.provider);
             if (st && !st.ready) {
-              console.log(`Cannot select ${sel.entry.model}: ${name} is not ready (${st.label}). Set ${st.envVar ?? "the provider key"} first.`);
-              continue;
+              if (selectableThoughNotReady(st)) {
+                console.log(notReadyWarning(st));
+              } else {
+                console.log(`Cannot select ${sel.entry.model}: ${name} is not ready (${st.label}). Set ${st.envVar ?? "the provider key"} first.`);
+                continue;
+              }
             }
           } else if (sel.kind === "ambiguous") {
             console.log(`'${explicitModel}' matches ${sel.matches.length} ${name} models — be more specific:`);
@@ -1718,10 +2148,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
       if (input.startsWith("/logout") && (input === "/logout" || input[7] === " ")) {
-        const cloud = ["anthropic", "openai", "gemini"];
+        const cloud = ["anthropic", "openai", "gemini", "antigravity"];
         const target = input.substring(7).trim().split(/\s+/).map(t => t.toLowerCase()).find(t => cloud.includes(t));
         if (!target) {
-          console.log("Usage: /logout <anthropic|openai|gemini>");
+          console.log("Usage: /logout <anthropic|openai|gemini|antigravity>");
           continue;
         }
         const removed = await logoutOAuth(target as AuthProvider);
@@ -1731,16 +2161,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       const agentsCommand =
         input === "/agents" || input.startsWith("/agents ") ? "/agents" :
-        input === "/subagents" || input.startsWith("/subagents ") ? "/subagents" :
-        input === "/subagent" || input.startsWith("/subagent ") ? "/subagent" :
         undefined;
       if (agentsCommand) {
         const tokens = input.substring(agentsCommand.length).trim().split(/\s+/).filter(Boolean);
-        const directSubagent = parseDirectSubagentInput(input);
-        if (directSubagent) {
-          await runDirectSubagent(directSubagent.roleId, directSubagent.task, useTui);
-          continue;
-        }
         const roleArg = tokens[0];
         const modelArg = tokens[1];
         const cfgNow = await readGlobalConfig();
@@ -1751,9 +2174,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             maxSteps: resolveSubagentMaxSteps(r.id, cfgNow),
           }))) console.log(line);
           console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  provider: /agents <role> provider <name> [model]  ·  steps: /agents <role> maxSteps <N>");
-          console.log("Run now: /subagent run [role] <task>  ·  /subagent <role> -- <task>");
+          console.log("Tip: set a role while choosing models with /model subagent <role> [model|#N]");
           console.log("Available: executor, planner, architect, critic");
-          console.log("Subcommands: run, <role> <model|#N>, <role> provider <name> [model], <role> maxSteps <N>, <role> reset");
+          console.log("Subcommands: <role> <model|#N>, <role> provider <name> [model], <role> maxSteps <N>, <role> reset");
           continue;
         }
         const role = getSubagentRole(roleArg);
@@ -1779,13 +2202,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (modelArg?.toLowerCase() === "provider") {
           const want = (tokens[2] ?? "").toLowerCase();
           if (!isProviderName(want)) {
-            console.log(`Usage: /agents ${role.id} provider <anthropic|openai|gemini|ollama> [model|#N]`);
+            console.log(`Usage: /agents ${role.id} provider <anthropic|openai|gemini|antigravity|ollama> [model|#N]`);
             continue;
           }
           const st = (await describeAllProviders()).find(s => s.name === want);
           if (st && !st.ready) {
-            console.log(`Cannot pin ${role.title} to ${want}: not ready (${st.label}). Set ${st.envVar ?? "the provider key"} first.`);
-            continue;
+            if (selectableThoughNotReady(st)) {
+              console.log(notReadyWarning(st));
+            } else {
+              console.log(`Cannot pin ${role.title} to ${want}: not ready (${st.label}). Set ${st.envVar ?? "the provider key"} first.`);
+              continue;
+            }
           }
           const live = await getLiveModels();
           const forProvider = flattenModels(live.filter(r => r.provider === want));
@@ -1834,8 +2261,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               chosenModel = qualifyModelId(sel.entry.model, sel.entry.provider);
               const bad = (await describeAllProviders()).find(s => s.name === sel.entry.provider && !s.ready);
               if (bad) {
-                console.log(`Cannot pin ${sel.entry.model}: ${sel.entry.provider} is not ready (${bad.label}). Set ${bad.envVar ?? "the provider key"} first.`);
-                continue;
+                if (selectableThoughNotReady(bad)) {
+                  console.log(notReadyWarning(bad));
+                } else {
+                  console.log(`Cannot pin ${sel.entry.model}: ${sel.entry.provider} is not ready (${bad.label}). Set ${bad.envVar ?? "the provider key"} first.`);
+                  continue;
+                }
               }
             } else if (sel.kind === "ambiguous") {
               console.log(`'${modelArg}' matches ${sel.matches.length} live models — be more specific:`);
@@ -1987,7 +2418,66 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           continue;
         }
         const statuses = await describeAllProviders();
-        const disabledModelProviders = statuses.filter(s => !s.ready).map(s => s.name);
+        const disabledModelProviders = statuses.filter(s => !s.ready && !selectableThoughNotReady(s)).map(s => s.name);
+        const roleMatch = /^(subagent|role)\s+(\S+)(?:\s+(.+))?$/i.exec(arg);
+        if (roleMatch) {
+          const role = getSubagentRole(roleMatch[2] ?? "");
+          if (!role) {
+            console.log("Usage: /model subagent <executor|planner|architect|critic> [model|#N]");
+            continue;
+          }
+          let roleModelArg = (roleMatch[3] ?? "").trim();
+          if (!roleModelArg && process.stdin.isTTY && process.stdout.isTTY) {
+            const live = await getLiveModels();
+            lastPickIndex = flattenModels(live);
+            if (lastPickIndex.length) {
+              const currentResolved = (await describeModel(resolveSubagentModel(role.id, await readGlobalConfig()))).resolved;
+              const picked = await pickLiveProviderModel(role.id, lastPickIndex, currentResolved, disabledModelProviders);
+              if (!picked) {
+                console.log("(cancelled)");
+                continue;
+              }
+              roleModelArg = qualifyModelId(picked.model, picked.provider);
+            }
+          }
+          if (roleModelArg && lastPickIndex.length) {
+            const sel = resolveSelection(lastPickIndex, roleModelArg);
+            if (sel.kind === "index" || sel.kind === "match") {
+              if (disabledModelProviders.includes(sel.entry.provider)) {
+                const bad = statuses.find(s => s.name === sel.entry.provider);
+                console.log(`Cannot select ${sel.entry.model}: ${sel.entry.provider} is not ready (${bad?.label ?? "not ready"}). Set ${bad?.envVar ?? "the provider key"} first.`);
+                continue;
+              }
+              roleModelArg = qualifyModelId(sel.entry.model, sel.entry.provider);
+            } else if (sel.kind === "ambiguous") {
+              console.log(`'${roleModelArg}' matches ${sel.matches.length} models — be more specific:`);
+              for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
+              continue;
+            } else if (sel.kind === "out-of-range") {
+              console.log(`#${roleModelArg.slice(1)} is out of range (1-${sel.max}). Run /models first.`);
+              continue;
+            }
+          } else if (roleModelArg.startsWith("#")) {
+            console.log("Run /models (or /provider <name>) first to build the numbered list.");
+            continue;
+          }
+          if (roleModelArg) {
+            await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: roleModelArg }) }));
+            const { provider } = await describeModel(roleModelArg);
+            console.log(`${role.title} model set to ${roleModelArg} (${provider}) — saved to ~/.joc/config.json`);
+          } else {
+            const current = resolveSubagentModel(role.id, await readGlobalConfig());
+            const { resolved, provider } = await describeModel(current);
+            console.log(`${role.title} model: ${formatModelLine({ label: current, resolved, provider })}`);
+            const live = await getLiveModels();
+            lastPickIndex = flattenModels(live);
+            if (lastPickIndex.length) {
+              console.log(`Live models for ${role.title} — set with /model subagent ${role.id} #N:`);
+              for (const line of formatPickListWithCapabilities(lastPickIndex, { current: resolved, cap: 20 })) console.log(line);
+            }
+          }
+          continue;
+        }
         if (!arg && process.stdin.isTTY && process.stdout.isTTY) {
           const live = await getLiveModels();
           lastPickIndex = flattenModels(live);
@@ -2123,8 +2613,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       const skillEntrypoint = input.startsWith("/skill:") ? "/skill:" : input.startsWith("/skill") && (input === "/skill" || input[6] === " ") ? "/skill" : "";
       if (skillEntrypoint) {
+        if (flags.noSkills) {
+          console.log("Skills are disabled.");
+          continue;
+        }
         const rest = skillEntrypoint === "/skill:" ? input.substring(7).trim() : input.substring(6).trim();
-        const skills = await loadSkills(cwd);
+        let skills = await loadSkills(cwd);
+        if (flags.skills) {
+          const patterns = flags.skills.split(",").map(p => p.trim()).filter(Boolean);
+          skills = skills.filter(s => patterns.some(p => matchSkillGlob(p, s.name)));
+        }
         if (!rest) {
           if (process.stdin.isTTY && process.stdout.isTTY) {
             const picked = await pickSkillFromList(skills);
@@ -2132,11 +2630,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               console.log("(cancelled)");
               continue;
             }
-            try {
-              await runSkillInvocation(picked, "");
-            } catch (err) {
-              console.log(`! ${(err as Error).message}`);
-            }
+            await runSkillInvocation(picked, "");
             continue;
           }
           console.log("Skills (bundled + configured docs) — run with /skill <name> [intent] or a skill slash alias:");
@@ -2193,8 +2687,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         console.log(`! ${friendlyProviderError(err)}`);
       }
     }
-  } finally {
-    disarmPreview(); // clear footer + restore full-screen scrolling before leaving the REPL
-    rl.close();
-  }
+  disarmPreview(); // clear footer + restore full-screen scrolling before leaving the REPL
+  rl.close();
 }

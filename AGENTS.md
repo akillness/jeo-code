@@ -111,7 +111,7 @@ bun run build                # bun build src/cli.ts --compile --outfile dist/joc
 ```
 
 There is **no linter/formatter** configured — `bun run typecheck` + `bun test` are the gates.
-`GEMINI_OAUTH_CLIENT_SECRET` is needed for the Google OAuth tests.
+Google OAuth ships a bundled gemini-cli installed-app client secret; `GEMINI_OAUTH_CLIENT_SECRET` only overrides it for self-provisioned clients.
 
 ## Code Conventions & Common Patterns
 

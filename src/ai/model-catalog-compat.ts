@@ -18,10 +18,11 @@ export interface ModelCatalogEntry {
   reasoning: boolean;
   recommended?: boolean;
   note?: string;
+  company?: string;
 }
 
 /** Canonical ids that should be surfaced as a provider's recommended default. */
-const RECOMMENDED = new Set(["claude-sonnet-4-5", "gpt-4o", "gemini-2.0-flash", "qwen2.5"]);
+const RECOMMENDED = new Set(["claude-sonnet-4-5", "gpt-4o", "gemini-2.0-flash", "antigravity/gemini-3-pro-low", "qwen2.5"]);
 
 export function normalizeModelId(id: string): string {
   return (id ?? "").trim().toLowerCase();
@@ -36,6 +37,7 @@ function adapt(m: CatalogModel): ModelCatalogEntry {
     reasoning,
     recommended: RECOMMENDED.has(m.canonical),
     note: `${formatTokens(m.contextTokens)} ctx${reasoning ? ", reasoning" : ""}`,
+    company: m.company,
   };
 }
 

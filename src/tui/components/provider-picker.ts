@@ -6,6 +6,7 @@
 import { SelectList, renderSelectList, type SelectItem, type RenderSelectOptions } from "./select-list";
 import type { ProviderStatus } from "../../ai/provider-status";
 import type { ProviderName } from "../../ai/types";
+import { companyLabel } from "../../ai/model-catalog";
 
 /** Right-aligned hint for a provider row: credential kind + base URL + readiness. */
 export function providerHint(s: ProviderStatus, unicode = true): string {
@@ -20,7 +21,7 @@ export function buildProviderChoices(statuses: ProviderStatus[], unicode = true)
   const sorted = [...statuses].sort((a, b) => (a.ready === b.ready ? 0 : a.ready ? -1 : 1));
   return sorted.map(s => ({
     value: s.name,
-    label: s.name,
+    label: `${s.name} (${companyLabel(s.name)})`,
     group: s.ready ? "ready" : "needs setup",
     hint: providerHint(s, unicode),
   }));

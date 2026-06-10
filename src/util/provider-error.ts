@@ -9,13 +9,15 @@ import { isUsageLimitError } from "./retry";
 export function friendlyProviderError(err: unknown): string {
   const msg = (err as Error)?.message ?? String(err);
   const status = (err as { status?: number })?.status;
-  const provider = /anthropic/i.test(msg)
-    ? "Anthropic"
-    : /openai/i.test(msg)
-      ? "OpenAI"
-      : /gemini|google/i.test(msg)
-        ? "Gemini"
-        : "the provider";
+  const provider = /antigravity/i.test(msg)
+    ? "Antigravity"
+    : /anthropic/i.test(msg)
+      ? "Anthropic"
+      : /openai/i.test(msg)
+        ? "OpenAI"
+        : /gemini|google/i.test(msg)
+          ? "Gemini"
+          : "the provider";
 
   if (isUsageLimitError(err)) {
     return `${provider} usage/quota limit reached — this window will not clear in seconds, so auto-retry was skipped. Switch model with /model (e.g. a local ollama model), use another provider, or wait for the limit window to reset.`;
@@ -24,7 +26,7 @@ export function friendlyProviderError(err: unknown): string {
     return `Rate limited by ${provider} (HTTP 429). Auto-retry was exhausted — wait a moment and resend, slow your request rate, or switch model with /model (a local ollama model never rate-limits).`;
   }
   if (status === 401 || status === 403 || /\b40[13]\b/.test(msg)) {
-    return `${provider} rejected the credential (HTTP ${status ?? "401/403"}). Run 'joc auth status', re-login with /provider login <name>, or set the provider API key — then retry.`;
+    return `${provider} rejected the credential (HTTP ${status ?? "401/403"}). Run 'joc auth status', re-login with /provider login <name>, and for Antigravity prefer '/provider login antigravity' (gemini login only works when the Cloud Code Assist backend authorizes that token).`;
   }
   return msg;
 }

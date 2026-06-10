@@ -4,7 +4,7 @@ import { readGlobalConfig } from "../agent/state";
 import type { ToolDefinition, ToolResult } from "./protocol";
 import { effectiveCredentialForProvider } from "../ai/model-manager";
 
-const AUTH_PROVIDERS: AuthProvider[] = ["anthropic", "openai", "gemini"];
+const AUTH_PROVIDERS: AuthProvider[] = ["anthropic", "openai", "gemini", "antigravity"]
 
 function textResult(text: string, isError = false): ToolResult {
   return { content: [{ type: "text", text }], isError };

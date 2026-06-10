@@ -9,7 +9,7 @@ import {
   type CompletionContext,
 } from "../src/tui/components/autocomplete";
 const ctx = (over: Partial<CompletionContext> = {}): CompletionContext => ({
-  slashCommands: ["/model", "/models", "/provider", "/agents", "/subagent", "/subagents", "/thinking", "/help"],
+  slashCommands: ["/model", "/models", "/provider", "/agents", "/thinking", "/help"],
   liveModels: ["claude-3-5-sonnet-live", "gpt-4o-live"],
   aliases: ["fast", "sonnet", "gpt"],
   catalogModels: ["claude-3-5-sonnet", "gpt-4o", "gemini-2.0-flash"],
@@ -82,26 +82,26 @@ test("/models completes model-list subcommands", () => {
 test("/provider completes login/auth + names, then that provider's live models", () => {
   expect(complete("/provider ", ctx()).completions).toEqual(["login", "auth", "anthropic", "openai", "gemini", "ollama"]);
   // `/provider login ` → OAuth-capable cloud providers
-  expect(complete("/provider login ", ctx()).completions).toEqual(["anthropic", "openai", "gemini"]);
+  expect(complete("/provider login ", ctx()).completions).toEqual(["anthropic", "openai", "gemini", "antigravity"]);
   const second = complete("/provider openai ", ctx());
   expect(second.kind).toBe("model");
   expect(second.completions).toEqual(["gpt-4o-live", "gpt-4o-mini-live"]);
 });
 
 test("/logout completes cloud provider names", () => {
-  expect(complete("/logout ", ctx()).completions).toEqual(["anthropic", "openai", "gemini"]);
+  expect(complete("/logout ", ctx()).completions).toEqual(["anthropic", "openai", "gemini", "antigravity"]);
 });
 
-test("/agents completes role ids, then models + maxSteps keyword", () => {
+test("/agents and /model subagent complete role ids, then models + maxSteps keyword", () => {
   expect(complete("/agents ", ctx()).completions).toEqual(["executor", "planner", "architect", "critic"]);
   expect(complete("/agents exec", ctx()).completions).toEqual(["executor"]);
   const m = complete("/agents executor ", ctx());
   expect(m.completions).toContain("reset");
   expect(m.completions).toContain("maxSteps");
   expect(m.completions).toContain("gpt-4o-live");
-  expect(complete("/subagent ", ctx()).completions).toEqual(["run", "executor", "planner", "architect", "critic"]);
-  expect(complete("/subagent run ", ctx()).completions).toEqual(["executor", "planner", "architect", "critic"]);
-  expect(complete("/subagents executor ", ctx()).completions).toContain("maxSteps");
+  expect(complete("/model subagent ", ctx()).completions).toEqual(["executor", "planner", "architect", "critic"]);
+  expect(complete("/model role pla", ctx()).completions).toEqual(["planner"]);
+  expect(complete("/model subagent executor ", ctx()).completions).toContain("gpt-4o-live");
 });
 
 test("/skill completes resolved skill names (bundled + user) from the context", () => {
@@ -119,10 +119,10 @@ test("/skill: completes GJC-style skill entrypoint names", () => {
 });
 
 test("formatCompletionPreview lists argument completions after slash commands", () => {
-  const sub = formatCompletionPreview("/subagent ", ctx()).join("\n");
-  expect(sub).toContain("Subcommands:");
-  expect(sub).toContain("run");
+  const sub = formatCompletionPreview("/model subagent ", ctx()).join("\n");
+  expect(sub).toContain("Subagent roles:");
   expect(sub).toContain("executor");
+  expect(sub).toContain("planner");
 
   const login = formatCompletionPreview("/provider login ", ctx()).join("\n");
   expect(login).toContain("Providers:");
@@ -193,14 +193,14 @@ test("/session completes its subcommands", () => {
 test("/theme completes the bundled theme names", () => {
   const r = complete("/theme ", ctx());
   expect(r.kind).toBe("subcommand");
-  expect(r.completions).toEqual(["cosmic", "matrix", "solar", "mono"]);
+  expect(r.completions).toEqual(["cosmic", "matrix", "solar", "red-claw", "blue-crab", "mono"]);
   expect(complete("/theme m", ctx()).completions).toEqual(["matrix", "mono"]);
 });
 
 test("/login completes the OAuth-capable cloud providers", () => {
   const r = complete("/login ", ctx());
   expect(r.kind).toBe("provider");
-  expect(r.completions).toEqual(["anthropic", "openai", "gemini"]);
+  expect(r.completions).toEqual(["anthropic", "openai", "gemini", "antigravity"]);
   expect(complete("/login o", ctx()).completions).toEqual(["openai"]);
 });
 

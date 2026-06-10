@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { geminiRequest } from "../src/ai/providers/gemini";
+import { geminiRequest, geminiThinkingBudget } from "../src/ai/providers/gemini";
 
 const cred = { kind: "api_key" as const, provider: "gemini" as const, token: "k" };
 
@@ -42,4 +42,115 @@ test("geminiRequest: URL-encodes the model name and api key", () => {
   expect(url).toContain("models/gemini-2.5-flash%2F..%2Fevil%3Fx%3D1:generateContent");
   expect(url).toContain("key=k%26y%3D1");
   expect(url).not.toContain("key=k&y=1");
+});
+
+test("geminiThinkingBudget: off by default on flash-class, floored on pro, omitted on pre-2.5", () => {
+  // No effort requested → thinking disabled on flash-class thinking models.
+  expect(geminiThinkingBudget("gemini-2.5-flash")).toBe(0);
+  expect(geminiThinkingBudget("gemini-flash-latest")).toBe(0);
+  // Pro-class cannot disable thinking — keeps the API floor.
+  expect(geminiThinkingBudget("gemini-2.5-pro")).toBe(128);
+  expect(geminiThinkingBudget("gemini-pro-latest")).toBe(128);
+  // Pre-2.5 models reject thinkingConfig → omit entirely.
+  expect(geminiThinkingBudget("gemini-2.0-flash")).toBeUndefined();
+  expect(geminiThinkingBudget("gemini-1.5-pro")).toBeUndefined();
+});
+
+test("geminiThinkingBudget: effort maps to budget and clamps below maxTokens", () => {
+  expect(geminiThinkingBudget("gemini-2.5-flash", "low")).toBe(1024);
+  expect(geminiThinkingBudget("gemini-2.5-flash", "medium")).toBe(4096);
+  expect(geminiThinkingBudget("gemini-2.5-flash", "high")).toBe(8192);
+  expect(geminiThinkingBudget("gemini-2.5-flash", "minimal")).toBe(0);
+  // Clamp: medium (4096) against a 4000-token output cap leaves ~1K for text.
+  expect(geminiThinkingBudget("gemini-2.5-flash", "medium", 4000)).toBe(2976);
+  // Tiny output budgets kill thinking entirely (the live empty-reply repro).
+  expect(geminiThinkingBudget("gemini-flash-latest", "medium", 16)).toBe(0);
+  // Pro never clamps below its floor.
+  expect(geminiThinkingBudget("gemini-2.5-pro", "medium", 16)).toBe(128);
+});
+
+test("geminiRequest: wires thinkingConfig for thinking models only", () => {
+  const messages = [{ role: "user" as const, content: "hi" }];
+  const thinking = JSON.parse(
+    geminiRequest(messages, { model: "gemini-flash-latest", maxTokens: 16 } as any, cred, "generateContent").body,
+  );
+  expect(thinking.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+  const legacy = JSON.parse(
+    geminiRequest(messages, { model: "gemini-2.0-flash" } as any, cred, "generateContent").body,
+  );
+  expect(legacy.generationConfig.thinkingConfig).toBeUndefined();
+});
+
+import { geminiCliRequest, geminiAdapter, getGeminiCliHeaders } from "../src/ai/providers/gemini";
+
+test("geminiCliRequest: wraps the payload in a Cloud Code Assist envelope", () => {
+  const messages = [
+    { role: "system" as const, content: "sys" },
+    { role: "user" as const, content: "hi" },
+  ];
+  const { url, headers, body } = geminiCliRequest(messages, { model: "google/gemini-2.5-flash", maxTokens: 100 } as any, "tok-1", "proj-1");
+  expect(url).toBe("https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse");
+  expect(headers.authorization).toBe("Bearer tok-1");
+  expect(headers["User-Agent"]).toContain("GeminiCLI/");
+  expect(headers["Client-Metadata"]).toContain("pluginType=GEMINI");
+  const payload = JSON.parse(body);
+  expect(payload.project).toBe("proj-1");
+  expect(payload.model).toBe("gemini-2.5-flash"); // provider prefix stripped
+  expect(payload.request.contents).toEqual([{ role: "user", parts: [{ text: "hi" }] }]);
+  expect(payload.request.systemInstruction).toEqual({ parts: [{ text: "sys" }] });
+  expect(payload.request.generationConfig.maxOutputTokens).toBe(100);
+});
+
+test("getGeminiCliHeaders: includes the requested model in the user agent", () => {
+  expect(getGeminiCliHeaders("gemini-2.0-flash")["User-Agent"]).toContain("/gemini-2.0-flash ");
+});
+
+test("geminiAdapter: OAuth credential routes to Cloud Code Assist and unwraps response chunks", async () => {
+  const prevFetch = globalThis.fetch;
+  const calls: { url: string; init?: RequestInit }[] = [];
+  const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
+  globalThis.fetch = (async (url: any, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    const body = sse({ response: { candidates: [{ content: { parts: [{ text: "hel" }] } }] } }) +
+      sse({ response: { candidates: [{ content: { parts: [{ text: "lo" }] } }], usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 2, thoughtsTokenCount: 3 } } });
+    return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+  }) as any;
+  try {
+    const usage: any[] = [];
+    const out = await geminiAdapter.call(
+      [{ role: "user", content: "hi" }],
+      { model: "gemini-2.5-flash", onUsage: (u: any) => usage.push(u) } as any,
+      { kind: "oauth", provider: "gemini", token: "tok-2", projectId: "proj-2" } as any,
+    );
+    expect(out).toBe("hello");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toContain("cloudcode-pa.googleapis.com/v1internal:streamGenerateContent");
+    const sent = JSON.parse(String(calls[0]!.init?.body));
+    expect(sent.project).toBe("proj-2"); // stored projectId short-circuits discovery (no extra fetch)
+    // Thought tokens count as output (gjc parity).
+    expect(usage).toEqual([{ inputTokens: 7, outputTokens: 5 }]);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("geminiAdapter: api_key credential keeps using the public generativelanguage API", async () => {
+  const prevFetch = globalThis.fetch;
+  let calledUrl = "";
+  globalThis.fetch = (async (url: any) => {
+    calledUrl = String(url);
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] } }] }), { status: 200 });
+  }) as any;
+  try {
+    const out = await geminiAdapter.call(
+      [{ role: "user", content: "hi" }],
+      { model: "gemini-2.5-flash" } as any,
+      { kind: "api_key", provider: "gemini", token: "AIza-x" } as any,
+    );
+    expect(out).toBe("ok");
+    expect(calledUrl).toContain("generativelanguage.googleapis.com");
+    expect(calledUrl).toContain("key=AIza-x");
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
 });

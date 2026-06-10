@@ -18,6 +18,13 @@ export interface SessionEntry {
   message: Message;
 }
 
+export interface CompactionEntry {
+  type: "compaction";
+  timestamp: string;
+  seq: number;
+  summary: string;
+  replacesThrough: number;
+}
 export interface SessionSummary {
   id: string;
   timestamp: string;
@@ -78,6 +85,25 @@ export async function appendMessage(
   await fs.appendFile(file, JSON.stringify(entry) + "\n", "utf8");
 }
 
+export async function appendCompaction(
+  id: string,
+  seq: number,
+  summary: string,
+  replacesThrough: number,
+  cwd = process.cwd()
+): Promise<void> {
+  const file = sessionPath(id, cwd);
+  const entry: CompactionEntry = {
+    type: "compaction",
+    timestamp: new Date().toISOString(),
+    seq,
+    summary,
+    replacesThrough,
+  };
+
+  await fs.appendFile(file, JSON.stringify(entry) + "\n", "utf8");
+}
+
 export async function loadSession(
   id: string,
   cwd = process.cwd()
@@ -95,7 +121,8 @@ export async function loadSession(
 
   const lines = content.split("\n");
   let header: SessionHeader | undefined;
-  const messages: Message[] = [];
+  const rawMessages: Message[] = [];
+  const compactions: CompactionEntry[] = [];
 
   for (const line of lines) {
     if (!line.trim()) continue;
@@ -105,7 +132,9 @@ export async function loadSession(
         if (entry.type === "session" && !header) {
           header = entry as SessionHeader;
         } else if (entry.type === "message") {
-          messages.push(entry.message);
+          rawMessages.push(entry.message);
+        } else if (entry.type === "compaction") {
+          compactions.push(entry as CompactionEntry);
         }
       }
     } catch (err) {
@@ -118,6 +147,23 @@ export async function loadSession(
 
   if (!header) {
     throw new Error(`Session header missing in session ${id}`);
+  }
+
+  let messages = rawMessages;
+  if (compactions.length > 0) {
+    const lastComp = compactions[compactions.length - 1];
+    const { summary, replacesThrough } = lastComp;
+    
+    const hasSystem = rawMessages.length > 0 && rawMessages[0].role === "system";
+    const systemPrompt = hasSystem ? [rawMessages[0]] : [];
+    
+    const summaryMessage: Message = {
+      role: "user",
+      content: `[Earlier conversation summary]\n${summary}`,
+    };
+    
+    const remaining = rawMessages.slice(replacesThrough + 1);
+    messages = [...systemPrompt, summaryMessage, ...remaining];
   }
 
   return { header, messages };
@@ -145,33 +191,76 @@ export async function listSessions(cwd = process.cwd()): Promise<SessionSummary[
       const content = await fs.readFile(filePath, "utf8");
       const lines = content.split("\n");
       let header: SessionHeader | undefined;
-      let messageCount = 0;
-      let firstUserMessageContent: string | undefined;
 
+      // 1. 헤더만 JSON.parse하여 획득 (가장 첫 valid JSON)
       for (const line of lines) {
         if (!line.trim()) continue;
-        try {
-          const entry = JSON.parse(line);
-          if (entry && typeof entry === "object") {
-            if (entry.type === "session" && !header) {
-              header = entry as SessionHeader;
-            } else if (entry.type === "message") {
-              messageCount++;
-              if (!firstUserMessageContent && entry.message?.role === "user") {
-                firstUserMessageContent = entry.message.content;
-              }
-            }
+        if (line.includes('"type":"session"')) {
+          try {
+            header = JSON.parse(line);
+            break;
+          } catch {
+            // continue
           }
-        } catch (err) {
-          if (!header) {
-            throw err;
-          }
-          continue;
         }
       }
 
       if (!header) {
         continue;
+      }
+
+      // 2. 마지막 compaction 마커 라인을 역순 탐색
+      let lastCompaction: CompactionEntry | undefined;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i];
+        if (line.includes('"type":"compaction"')) {
+          try {
+            lastCompaction = JSON.parse(line);
+            break;
+          } catch {
+            // continue
+          }
+        }
+      }
+
+      // 3. JSON.parse 오버헤드 최소화하며 카운팅 및 프리뷰 추출
+      let messageCount = 0;
+      let firstUserMessageContent: string | undefined;
+
+      if (lastCompaction) {
+        let msgIndex = 0;
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          if (line.includes('"type":"message"')) {
+            if (msgIndex > lastCompaction.replacesThrough) {
+              messageCount++;
+            }
+            msgIndex++;
+          }
+        }
+        messageCount += 1; // summary message
+      } else {
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          if (line.includes('"type":"message"')) {
+            messageCount++;
+          }
+        }
+      }
+
+      // 4. preview를 위한 첫 user message 추출
+      for (const line of lines) {
+        if (line.includes('"type":"message"') && line.includes('"role":"user"')) {
+          try {
+            const parsed = JSON.parse(line);
+            if (parsed?.message?.content) {
+              firstUserMessageContent = parsed.message.content;
+              break;
+            }
+          } catch {
+            // continue
+          }
+        }
       }
 
       const preview = firstUserMessageContent ? firstUserMessageContent.slice(0, 60) : "";

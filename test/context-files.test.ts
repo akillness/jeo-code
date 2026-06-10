@@ -205,3 +205,168 @@ test("loadProjectContext also scans global ~/.agents guidance files", async () =
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("loadProjectContext walks up to parent to find AGENTS.md, JEO.md, CLAUDE.md", async () => {
+  const tmpDir = await createTempDir();
+  const subDir = path.join(tmpDir, "level1", "level2");
+  await fs.mkdir(subDir, { recursive: true });
+
+  try {
+    // Create AGENTS.md at tmpDir (parent of level1)
+    await fs.writeFile(path.join(tmpDir, "AGENTS.md"), "parent agents content", "utf-8");
+    // Create JEO.md at level1
+    await fs.writeFile(path.join(tmpDir, "level1", "JEO.md"), "level1 jeo content", "utf-8");
+    // Create CLAUDE.md at level2 (CWD)
+    await fs.writeFile(path.join(subDir, "CLAUDE.md"), "cwd claude content", "utf-8");
+
+    const context = await loadProjectContext(subDir);
+    expect(context.map(c => c.path)).toEqual([
+      "CLAUDE.md",
+      "../JEO.md",
+      "../../AGENTS.md"
+    ]);
+    expect(context[0].content).toBe("cwd claude content");
+    expect(context[1].content).toBe("level1 jeo content");
+    expect(context[2].content).toBe("parent agents content");
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadProjectContext stops parent walk at git root", async () => {
+  const tmpDir = await createTempDir();
+  const gitRoot = path.join(tmpDir, "git-project");
+  const subDir = path.join(gitRoot, "src", "sub");
+  await fs.mkdir(subDir, { recursive: true });
+  await fs.mkdir(path.join(gitRoot, ".git"), { recursive: true });
+
+  try {
+    // Write AGENTS.md outside git root
+    await fs.writeFile(path.join(tmpDir, "AGENTS.md"), "outside git content", "utf-8");
+    // Write AGENTS.md at git root
+    await fs.writeFile(path.join(gitRoot, "AGENTS.md"), "git root agents", "utf-8");
+    // Write CLAUDE.md in CWD
+    await fs.writeFile(path.join(subDir, "CLAUDE.md"), "cwd claude", "utf-8");
+
+    const context = await loadProjectContext(subDir);
+    expect(context.map(c => c.path)).toEqual([
+      "CLAUDE.md",
+      "../../AGENTS.md" // gitRoot/AGENTS.md
+    ]);
+    // The one outside git root should NOT be collected
+    expect(context.some(c => c.content === "outside git content")).toBe(false);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadProjectContext stops parent walk at $HOME and excludes $HOME itself", async () => {
+  const tmpDir = await createTempDir();
+  const fakeHome = path.join(tmpDir, "fake-home");
+  const subDir = path.join(fakeHome, "project", "src");
+  await fs.mkdir(subDir, { recursive: true });
+  
+  process.env.HOME = fakeHome;
+
+  try {
+    // Write AGENTS.md at fakeHome ($HOME)
+    await fs.writeFile(path.join(fakeHome, "AGENTS.md"), "home agents content", "utf-8");
+    // Write AGENTS.md at project level
+    await fs.writeFile(path.join(fakeHome, "project", "AGENTS.md"), "project agents content", "utf-8");
+    // Write JEO.md in CWD
+    await fs.writeFile(path.join(subDir, "JEO.md"), "cwd jeo content", "utf-8");
+
+    const context = await loadProjectContext(subDir);
+    expect(context.map(c => c.path)).toEqual([
+      "JEO.md",
+      "../AGENTS.md" // project/AGENTS.md
+    ]);
+    // The one in $HOME should NOT be collected
+    expect(context.some(c => c.content === "home agents content")).toBe(false);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadProjectContext recursively scans down for nested AGENTS.md up to depth 3 and respects IGNORED_DIRS", async () => {
+  const tmpDir = await createTempDir();
+  const d1 = path.join(tmpDir, "d1");
+  const d2 = path.join(d1, "d2");
+  const d3 = path.join(d2, "d3");
+  const d4 = path.join(d3, "d4");
+  const ignored = path.join(tmpDir, "node_modules");
+
+  await fs.mkdir(d4, { recursive: true });
+  await fs.mkdir(ignored, { recursive: true });
+
+  try {
+    await fs.writeFile(path.join(tmpDir, "CLAUDE.md"), "cwd content", "utf-8");
+    await fs.writeFile(path.join(d1, "AGENTS.md"), "d1 content", "utf-8");
+    await fs.writeFile(path.join(d2, "AGENTS.md"), "d2 content", "utf-8");
+    await fs.writeFile(path.join(d3, "AGENTS.md"), "d3 content", "utf-8");
+    await fs.writeFile(path.join(d4, "AGENTS.md"), "d4 content", "utf-8");
+    await fs.writeFile(path.join(ignored, "AGENTS.md"), "ignored content", "utf-8");
+
+    const context = await loadProjectContext(tmpDir);
+    const paths = context.map(c => c.path);
+
+    expect(paths).toContain("CLAUDE.md");
+    expect(paths).toContain("d1/AGENTS.md");
+    expect(paths).toContain("d1/d2/AGENTS.md");
+    expect(paths).toContain("d1/d2/d3/AGENTS.md");
+    
+    // depth 4 should NOT be loaded
+    expect(paths).not.toContain("d1/d2/d3/d4/AGENTS.md");
+    // node_modules should NOT be loaded
+    expect(paths).not.toContain("node_modules/AGENTS.md");
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadProjectContext prioritizes closer and deeper files when budget is exceeded", async () => {
+  const tmpDir = await createTempDir();
+  
+  const grandparentDir = tmpDir;
+  const parentDir = path.join(grandparentDir, "parent");
+  const cwdDir = path.join(parentDir, "cwd");
+  const d1 = path.join(cwdDir, "d1");
+  const d2 = path.join(d1, "d2");
+  const d3 = path.join(d2, "d3");
+
+  await fs.mkdir(d3, { recursive: true });
+
+  try {
+    const content15k = "A".repeat(15000);
+    await fs.writeFile(path.join(cwdDir, "CLAUDE.md"), content15k, "utf-8");
+    await fs.writeFile(path.join(d3, "AGENTS.md"), content15k, "utf-8");
+    await fs.writeFile(path.join(d2, "AGENTS.md"), content15k, "utf-8");
+    await fs.writeFile(path.join(d1, "AGENTS.md"), content15k, "utf-8");
+    await fs.writeFile(path.join(parentDir, "AGENTS.md"), content15k, "utf-8");
+    await fs.writeFile(path.join(grandparentDir, "AGENTS.md"), content15k, "utf-8");
+
+    const context = await loadProjectContext(cwdDir);
+    
+    expect(context.map(c => c.path)).toEqual([
+      "CLAUDE.md",
+      "d1/d2/d3/AGENTS.md",
+      "d1/d2/AGENTS.md",
+      "d1/AGENTS.md"
+    ]);
+
+    const clFile = context.find(c => c.path === "CLAUDE.md")!;
+    expect(clFile.content).toBe(content15k);
+
+    const d3File = context.find(c => c.path === "d1/d2/d3/AGENTS.md")!;
+    expect(d3File.content).toBe(content15k);
+
+    const d2File = context.find(c => c.path === "d1/d2/AGENTS.md")!;
+    expect(d2File.content).toBe(content15k);
+
+    const d1File = context.find(c => c.path === "d1/AGENTS.md")!;
+    expect(d1File.content.length).toBe(3000 + "\n…(truncated)".length);
+    expect(d1File.content.endsWith("\n…(truncated)")).toBe(true);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});

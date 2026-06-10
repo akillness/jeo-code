@@ -40,10 +40,11 @@ afterAll(async () => {
   await fs.rm(dir, { recursive: true, force: true });
 });
 
-test("providerEnvVar maps cloud providers to <NAME>_API_KEY; ollama has none", () => {
+test("providerEnvVar maps API-key cloud providers to <NAME>_API_KEY; ollama/antigravity have none", () => {
   expect(providerEnvVar("anthropic")).toBe("ANTHROPIC_API_KEY");
   expect(providerEnvVar("openai")).toBe("OPENAI_API_KEY");
   expect(providerEnvVar("gemini")).toBe("GEMINI_API_KEY");
+  expect(providerEnvVar("antigravity")).toBeUndefined();
   expect(providerEnvVar("ollama")).toBeUndefined();
 });
 
@@ -113,7 +114,7 @@ test("describeProvider: openai oauth path hides local base URL because Codex bac
   expect(s.baseUrl).toBeUndefined();
 });
 
-test("describeProvider: gemini oauth-only → ready=false, label contains 'API key' (no Codex-style backend)", async () => {
+test("describeProvider: gemini oauth-only → READY via Cloud Code Assist (no API key needed)", async () => {
   await fs.writeFile(
     path.join(dir, "config.json"),
     JSON.stringify({
@@ -123,8 +124,42 @@ test("describeProvider: gemini oauth-only → ready=false, label contains 'API k
     }),
   );
   const s = await describeProvider("gemini");
+  expect(s.ready).toBe(true);
+  expect(s.kind).toBe("oauth");
+  expect(s.label).toContain("Cloud Code Assist");
+});
+
+test("describeProvider: antigravity shows Gemini OAuth as catalog-only, not call-ready", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: { gemini: "AIza-gem" },
+      oauth: { gemini: { access: "oauth-gem", projectId: "proj-1" } },
+      defaultModel: "antigravity/gemini-3-pro-low",
+    }),
+  );
+  const s = await describeProvider("antigravity");
   expect(s.ready).toBe(false);
-  expect(s.label).toContain("API key");
+  expect(s.kind).toBe("oauth");
+  expect(s.label).toContain("catalog via Gemini CLI");
+  expect(s.label).toContain("joc auth login antigravity");
+  expect(s.envVar).toBeUndefined();
+});
+
+test("describeProvider: antigravity own OAuth is call-ready", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: {},
+      oauth: { antigravity: { access: "oauth-ag", projectId: "proj-1" } },
+      defaultModel: "antigravity/gemini-3-pro-low",
+    }),
+  );
+  const s = await describeProvider("antigravity");
+  expect(s.ready).toBe(true);
+  expect(s.kind).toBe("oauth");
+  expect(s.label).toContain("Antigravity Cloud Code Assist");
+  expect(s.envVar).toBeUndefined();
 });
 
 test("describeProvider: openai oauth+key reports the effective API-key path", async () => {

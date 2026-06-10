@@ -10,6 +10,7 @@ import {
   rgbToAnsi256,
   rgbToAnsi16,
   applyGradient,
+  detectAppearance,
 } from "../src/tui/components/color";
 import { renderAsciiArt, getStageByIndex } from "../src/tui/components/ascii-art";
 import { stageGradient } from "../src/tui/components/evolution";
@@ -33,6 +34,33 @@ test("detectColorLevel honors NO_COLOR / FORCE_COLOR / COLORTERM / TERM", () => 
   expect(detectColorLevel({ TERM: "dumb" })).toBe(ColorLevel.None);
   expect(detectColorLevel({}, false)).toBe(ColorLevel.None);
   expect(detectColorLevel({}, true)).toBe(ColorLevel.Basic);
+});
+test("detectAppearance honors COLORFGBG environment variable and falls back", () => {
+  // COLORFGBG parsing test
+  // dark colors
+  expect(detectAppearance({ COLORFGBG: "15;0" })).toBe("dark");
+  expect(detectAppearance({ COLORFGBG: "15;6" })).toBe("dark");
+  expect(detectAppearance({ COLORFGBG: "15;8" })).toBe("dark");
+  expect(detectAppearance({ COLORFGBG: "15;235" })).toBe("dark");
+
+  // light colors
+  expect(detectAppearance({ COLORFGBG: "0;7" })).toBe("light");
+  expect(detectAppearance({ COLORFGBG: "0;11" })).toBe("light");
+  expect(detectAppearance({ COLORFGBG: "0;15" })).toBe("light");
+  expect(detectAppearance({ COLORFGBG: "0;248" })).toBe("light");
+
+  // color cube
+  expect(detectAppearance({ COLORFGBG: "0;16" })).toBe("dark");
+  expect(detectAppearance({ COLORFGBG: "0;231" })).toBe("light");
+
+  // invalid format or missing COLORFGBG
+  if (process.platform === "darwin") {
+    expect(["light", "dark"]).toContain(detectAppearance({}));
+    expect(["light", "dark"]).toContain(detectAppearance({ COLORFGBG: "invalid" }));
+  } else {
+    expect(detectAppearance({})).toBeUndefined();
+    expect(detectAppearance({ COLORFGBG: "invalid" })).toBeUndefined();
+  }
 });
 
 test("hexToRgb parses #rrggbb and #rgb; bad input → black", () => {

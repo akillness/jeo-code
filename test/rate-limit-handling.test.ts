@@ -49,9 +49,9 @@ test("friendlyProviderError: usage-limit gets a switch-model message, not the ge
   expect(friendlyProviderError(perMinute)).toContain("Rate limited by Anthropic");
 });
 
-test("joc thinking row shows the meter percent exactly once", () => {
-  const [thinkingRow] = renderJocStatus({ step: 1, maxSteps: 25, elapsedMs: 18_000, unicode: false, color: false });
-  const percents = stripAnsi(thinkingRow!).match(/\d+%/g) ?? [];
+test("[STEP] row shows the meter percent exactly once", () => {
+  const [stepRow] = renderJocStatus({ step: 1, maxSteps: 25, elapsedMs: 18_000, unicode: false, color: false });
+  const percents = stripAnsi(stepRow!).match(/\d+%/g) ?? [];
   expect(percents.length).toBe(1); // was "4% [..........] 4%" — duplicated
 });
 
@@ -62,7 +62,7 @@ test("footer ETA needs at least one completed step (no eta at step 1)", () => {
   expect(atStep2).toContain("eta 16s");
 });
 
-test("LaunchTui pins the rate-limit retry notice into the live status line", () => {
+test("LaunchTui pins rate-limit retry notice in status without appending log spam", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
   tui.start();
@@ -71,6 +71,7 @@ test("LaunchTui pins the rate-limit retry notice into the live status line", () 
   ev.onNotice!("rate limited (HTTP 429) — auto-retry #2 in 4s");
   const text = stripAnsi(out.join(""));
   expect(text).toContain("auto-retry #2 in 4s");
+  expect((text.match(/auto-retry #2 in 4s/g) ?? []).length).toBe(1);
   // The model reply clears the pinned notice.
   ev.onAssistant!("", { tool: "read" });
   out.length = 0;

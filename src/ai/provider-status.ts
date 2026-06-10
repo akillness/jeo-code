@@ -9,10 +9,10 @@ import type { AuthProvider, Credential } from "../auth";
 import { OAUTH_FLOW_REGISTRY } from "../auth/flows";
 import type { ProviderName } from "./types";
 
-export const PROVIDER_NAMES: readonly ProviderName[] = ["anthropic", "openai", "gemini", "ollama"];
+export const PROVIDER_NAMES: readonly ProviderName[] = ["anthropic", "openai", "gemini", "antigravity", "ollama"];
 
 /** Cloud providers that authenticate via API key / OAuth. Ollama is keyless. */
-export const CLOUD_PROVIDERS: readonly AuthProvider[] = ["anthropic", "openai", "gemini"];
+export const CLOUD_PROVIDERS: readonly AuthProvider[] = ["anthropic", "openai", "gemini", "antigravity"];
 
 export type CredentialKind = "api_key" | "oauth" | "keyless" | "none";
 
@@ -31,7 +31,7 @@ export interface ProviderStatus {
 
 /** The uppercase `<PROVIDER>_API_KEY` env var name for a cloud provider. */
 export function providerEnvVar(name: ProviderName): string | undefined {
-  if (name === "ollama") return undefined;
+  if (name === "ollama" || name === "antigravity") return undefined;
   return `${name.toUpperCase()}_API_KEY`;
 }
 
@@ -55,8 +55,9 @@ function oauthAccess(stored: string | StoredOAuth | undefined): string | undefin
 }
 
 function configuredCredential(provider: AuthProvider, cfg: Config): Credential {
-  const oauth = oauthAccess(cfg.oauth?.[provider]);
-  if (oauth) return { kind: "oauth", provider, token: oauth };
+  const stored = cfg.oauth?.[provider];
+  const oauth = oauthAccess(stored);
+  if (oauth) return { kind: "oauth", provider, token: oauth, projectId: typeof stored === "object" ? stored.projectId : undefined };
   const key = cfg.providers?.[provider];
   if (key) return { kind: "api_key", provider, token: key };
   return { kind: "none", provider };
@@ -77,18 +78,31 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
     const baseUrl = cfg.ollamaBaseUrl ?? "http://localhost:11434";
     return { name, kind: "keyless", label: credentialLabel("keyless"), baseUrl, ready: true };
   }
-  const prov = name as AuthProvider;
-  const cred = configuredCredential(prov, cfg);
-  const effective = effectiveCredential(prov, cred, cfg);
+  const ownProvider = name as AuthProvider;
+  const ownCred = configuredCredential(ownProvider, cfg);
+  // Antigravity prefers its own login but accepts a gemini-cli OAuth fallback.
+  const cred = name === "antigravity" && ownCred.kind === "none" ? configuredCredential("gemini", cfg) : ownCred;
+  const credentialProvider: AuthProvider = name === "antigravity" && ownCred.kind === "none" ? "gemini" : ownProvider;
+  const effective = name === "antigravity" ? cred : effectiveCredential(credentialProvider, cred, cfg);
   const kind: CredentialKind = effective.kind === "api_key" ? "api_key" : effective.kind === "oauth" ? "oauth" : "none";
   const baseUrl = name === "openai" && kind !== "oauth" ? cfg.openaiBaseUrl : undefined;
   let ready = kind !== "none" || (name === "openai" && !!cfg.openaiBaseUrl);
   let label = ready && kind === "none" ? "keyless (local base URL)" : credentialLabel(kind);
-  if (kind === "oauth" && OAUTH_FLOW_REGISTRY[prov]?.verifiedEndToEnd === false) {
+  if (name === "antigravity") {
+    const hasOwnOAuth = ownCred.kind === "oauth";
+    const hasGeminiFallback = !hasOwnOAuth && configuredCredential("gemini", cfg).kind === "oauth";
+    ready = hasOwnOAuth;
+    label = hasOwnOAuth
+      ? "OAuth (Antigravity Cloud Code Assist)"
+      : hasGeminiFallback
+        ? "OAuth catalog via Gemini CLI; calls need 'joc auth login antigravity'"
+        : "none (run 'joc auth login antigravity')";
+  } else if (kind === "oauth" && OAUTH_FLOW_REGISTRY[credentialProvider]?.verifiedEndToEnd === false) {
     ready = false;
-    label = name === "gemini"
-      ? "OAuth — Gemini needs an API key (Cloud Code Assist not served)"
-      : "OAuth (API key needed)";
+    label = "OAuth (API key needed)";
+  } else if (name === "gemini" && kind === "oauth") {
+    // gemini-cli OAuth is served end-to-end via Cloud Code Assist — no API key.
+    label = "OAuth (Gemini CLI / Cloud Code Assist)";
   }
   return {
     name,

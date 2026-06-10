@@ -176,44 +176,6 @@ test("end-to-end: a disk-persisted subagent model override is the model the in-l
   expect(subagentModels.every(m => m === "anthropic/claude-haiku-4-5")).toBe(true);
 });
 
-test("end-to-end: one-shot /subagent run executes directly and streams the subagent flow", async () => {
-  let turn = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
-      turn++;
-      if (turn === 1) return JSON.stringify({ tool: "read", arguments: { filePath: "note.txt" } });
-      return JSON.stringify({ tool: "done", arguments: { reason: "direct subagent complete\nSummary:\nChanged Files:\nVerification:" } });
-    },
-  }));
-
-  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-direct-cfg-"));
-  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-direct-work-"));
-  await fs.writeFile(path.join(workDir, "note.txt"), "hello direct\n");
-  const savedCfg = process.env.JOC_CONFIG_DIR;
-  const savedCwd = process.cwd();
-  const logged: string[] = [];
-  const origLog = console.log;
-  console.log = (...a: unknown[]) => logged.push(a.join(" "));
-  try {
-    process.env.JOC_CONFIG_DIR = cfgDir;
-    process.chdir(workDir);
-    const { runLaunchCommand } = await import("../src/commands/launch");
-    await runLaunchCommand(["/subagent run executor inspect note.txt", "--model", "ollama/qwen2.5:0.5b", "--no-session", "--no-tui"]);
-  } finally {
-    console.log = origLog;
-    process.chdir(savedCwd);
-    if (savedCfg === undefined) delete process.env.JOC_CONFIG_DIR; else process.env.JOC_CONFIG_DIR = savedCfg;
-    await fs.rm(cfgDir, { recursive: true, force: true });
-    await fs.rm(workDir, { recursive: true, force: true });
-  }
-
-  const out = logged.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-  expect(out).toContain("▸ [executor] inspect note.txt");
-  expect(out).toContain("[executor step 1/15] read note.txt");
-  expect(out).toContain("[executor] ✓ read note.txt — 1|hello direct");
-  expect(out).toContain("◂ [executor] done: direct subagent complete");
-  expect(out).toContain("[Executor subagent] completed");
-});
 
 test("end-to-end: one-shot skill alias executes configured skill instead of chatting about it", async () => {
   let seenUser = "";

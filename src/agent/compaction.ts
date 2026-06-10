@@ -2,11 +2,15 @@ import { callLlm, type Message } from "./loop";
 
 export interface CompactionOptions {
   maxMessages?: number;
-  /** Compact even a short history when pasted/tool content exceeds this many characters. */
+  /** Compact even a short history when pasted/tool content exceeds this many tokens. */
+  maxTokens?: number;
+  /** Char-based backward compatible fallback option */
   maxChars?: number;
+  contextTokens?: number;
   keepRecent?: number;
   model?: string;
   /** Cap the summarizer prompt so compaction itself cannot balloon context. */
+  maxSummaryInputTokens?: number;
   maxSummaryInputChars?: number;
   /** User-initiated `/compact`: lower the trigger floor so it actually compacts a small history. */
   force?: boolean;
@@ -18,27 +22,59 @@ export interface CompactionResult {
   summary?: string;
   /** True when the LLM summary failed and a deterministic placeholder was used. */
   summaryFailed?: boolean;
+  /** Clear error context when limits are exceeded even after compaction. */
+  error?: string;
+  /** The 0-based index of the last message in history replaced by this compaction. */
+  replacesThrough?: number;
 }
 
-const DEFAULT_MAX_CHARS = 120_000;
-const DEFAULT_SUMMARY_INPUT_CHARS = 80_000;
+export const DEFAULT_MAX_TOKENS = 30_000;
+export const DEFAULT_SUMMARY_INPUT_TOKENS = 20_000;
 
-function messageChars(messages: Message[]): number {
-  return messages.reduce((sum, msg) => sum + msg.role.length + msg.content.length + 4, 0);
+export function estimateTokens(text: string): number {
+  let tokens = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code <= 127) {
+      tokens += 0.25;
+    } else if (
+      (code >= 0xac00 && code <= 0xd7a3) || // 한글 가~힣
+      (code >= 0x1100 && code <= 0x11ff) || // 한글 자모
+      (code >= 0x3130 && code <= 0x318f) || // 한글 호환 자모
+      (code >= 0x4e00 && code <= 0x9fff) || // CJK 통합 한자
+      (code >= 0x3400 && code <= 0x4dbf) || // CJK 통합 한자 확장 A
+      (code >= 0x3040 && code <= 0x309f) || // 히라가나
+      (code >= 0x30a0 && code <= 0x30ff) || // 가타카나
+      (code >= 0xff00 && code <= 0xffef)    // 전각 문자
+    ) {
+      tokens += 1 / 1.5;
+    } else {
+      tokens += 1 / 1.5; // Default CJK-like weight for non-ASCII
+    }
+  }
+  return tokens;
 }
 
-function formatMessagesForSummary(messages: Message[], maxChars: number): string {
+export function estimateMessageTokens(msg: Message): number {
+  return estimateTokens(msg.role) + estimateTokens(msg.content) + 1;
+}
+
+export function historyTokens(history: Message[]): number {
+  return history.reduce((sum, msg) => sum + estimateMessageTokens(msg), 0);
+}
+
+function formatMessagesForSummaryByTokens(messages: Message[], maxTokens: number): string {
   const out: string[] = [];
   let used = 0;
   let omitted = 0;
   for (const msg of messages) {
     const line = `[${msg.role}] ${msg.content}`;
-    const needed = line.length + 1;
-    if (used + needed > maxChars) {
-      const remaining = Math.max(0, maxChars - used);
-      if (remaining > 80) {
-        out.push(line.slice(0, remaining - 1) + "…");
-        used = maxChars;
+    const needed = estimateTokens(line) + 1;
+    if (used + needed > maxTokens) {
+      const remaining = Math.max(0, maxTokens - used);
+      if (remaining > 20) {
+        out.push(truncateRecentContentByTokens(line, remaining - 1) + "…");
+        used = maxTokens;
       }
       omitted++;
       continue;
@@ -50,27 +86,51 @@ function formatMessagesForSummary(messages: Message[], maxChars: number): string
   return out.join("\n");
 }
 
-function truncateRecentContent(content: string, maxChars: number): string {
-  if (content.length <= maxChars) return content;
-  if (maxChars <= 0) return "";
+export function truncateRecentContentByTokens(content: string, maxTokens: number): string {
+  if (maxTokens <= 0) return "";
+  if (estimateTokens(content) <= maxTokens) return content;
+  
   const marker = "\n…(recent message truncated to bound context)";
-  if (maxChars <= marker.length + 16) return content.slice(0, Math.max(0, maxChars - 1)) + "…";
-  return content.slice(0, maxChars - marker.length) + marker;
+  const markerTokens = estimateTokens(marker);
+  const targetTokens = maxTokens - markerTokens;
+  
+  if (targetTokens <= 0) {
+    let curTokens = 0;
+    let i = 0;
+    for (; i < content.length; i++) {
+      const code = content.charCodeAt(i);
+      const t = code <= 127 ? 0.25 : 1 / 1.5;
+      if (curTokens + t > maxTokens) break;
+      curTokens += t;
+    }
+    return content.slice(0, i);
+  }
+
+  let curTokens = 0;
+  let i = 0;
+  for (; i < content.length; i++) {
+    const code = content.charCodeAt(i);
+    const t = code <= 127 ? 0.25 : 1 / 1.5;
+    if (curTokens + t > targetTokens) break;
+    curTokens += t;
+  }
+  return content.slice(0, i) + marker;
 }
 
-function truncateSummary(summary: string, maxChars: number): string {
+function truncateSummaryByTokens(summary: string, maxTokens: number): string {
   const prefix = "[Earlier conversation summary]\n";
-  return truncateRecentContent(summary, Math.max(0, maxChars - prefix.length));
+  const prefixTokens = estimateTokens(prefix);
+  return truncateRecentContentByTokens(summary, Math.max(0, maxTokens - prefixTokens));
 }
 
-function clampRecentMessages(messages: Message[], budgetChars: number): Message[] {
+function clampRecentMessagesByTokens(messages: Message[], budgetTokens: number): Message[] {
   if (messages.length === 0) return messages;
-  const overhead = messages.reduce((sum, msg) => sum + msg.role.length + 4, 0);
-  const contentBudget = Math.max(0, budgetChars - overhead);
+  const overhead = messages.reduce((sum, msg) => sum + estimateTokens(msg.role) + 1, 0);
+  const contentBudget = Math.max(0, budgetTokens - overhead);
   const perMessageBudget = Math.floor(contentBudget / messages.length);
   return messages.map(msg => ({
     ...msg,
-    content: truncateRecentContent(msg.content, perMessageBudget),
+    content: truncateRecentContentByTokens(msg.content, perMessageBudget),
   }));
 }
 
@@ -88,33 +148,41 @@ export async function maybeCompact(
   history: Message[],
   opts: CompactionOptions = {}
 ): Promise<CompactionResult> {
-  // `force` only lowers the trigger floor; the OUTPUT budget stays at DEFAULT_MAX_CHARS
-  // so a user-initiated `/compact` cannot shred recent messages down to one character.
   const maxMessages = opts.maxMessages ?? (opts.force ? 1 : 40);
-  const maxChars = opts.maxChars ?? DEFAULT_MAX_CHARS;
+  
+  // opts.contextTokens가 제공되면 그것의 70%를 예산으로 사용하고, 없으면 opts.maxTokens 혹은 DEFAULT_MAX_TOKENS를 사용한다.
+  // maxChars가 구버전에서 넘어온 경우의 fallback도 지원한다.
+  const budgetTokens = opts.contextTokens
+    ? opts.contextTokens * 0.7
+    : (opts.maxTokens ?? (opts.maxChars ? Math.max(opts.maxChars / 4, 60) : DEFAULT_MAX_TOKENS));
+
   const keepRecent = opts.keepRecent ?? (opts.force ? 4 : 12);
-  const maxSummaryInputChars = opts.maxSummaryInputChars ?? DEFAULT_SUMMARY_INPUT_CHARS;
+  const maxSummaryInputTokens = opts.maxSummaryInputTokens ?? 
+    (opts.maxSummaryInputChars ? opts.maxSummaryInputChars / 4 : DEFAULT_SUMMARY_INPUT_TOKENS);
 
   const hasSystem = history.length > 0 && history[0].role === "system";
   const systemCount = hasSystem ? 1 : 0;
   const body = history.slice(systemCount);
+  
   const overMessages = opts.force || body.length > maxMessages;
-  const overChars = messageChars(body) > maxChars;
+  const overTokens = historyTokens(history) > budgetTokens;
 
-  if (!overMessages && !overChars) {
+  if (!overMessages && !overTokens) {
     return { compacted: false, removed: 0 };
   }
 
-  // Idempotence guard: if the first body message is already a compaction marker
-  // and the remaining body fits within keepRecent, a repeated force-compact would
-  // just re-summarize the previous summary and progressively lose detail. Skip.
-  if (alreadyCompacted(body) && body.length <= keepRecent + 1 && !overChars) {
-    return { compacted: false, removed: 0 };
+  // Idempotence guard: once the body is `[summary|omitted] + recent`, another
+  // compaction pass can only summarize the summary and lose information. If a
+  // hard context window is still exceeded, report it; otherwise leave history
+  // unchanged so repeated auto-/manual compaction converges.
+  if (alreadyCompacted(body) && body.length <= keepRecent + 1) {
+    const finalTokens = historyTokens(history);
+    const error = opts.contextTokens && finalTokens > opts.contextTokens
+      ? `Context window limit exceeded even after compaction. Remaining content size: ${Math.round(finalTokens)} tokens, Window limit: ${opts.contextTokens} tokens.`
+      : undefined;
+    return { compacted: false, removed: 0, error };
   }
 
-  // `keepRecent` is best-effort. If a short history contains huge pasted skill docs or tool
-  // output, still summarize at least the oldest body message so a session cannot balloon
-  // indefinitely while staying below the message-count threshold.
   const recentCount = Math.min(keepRecent, Math.max(0, body.length - 1));
   const olderCount = body.length - recentCount;
   if (olderCount <= 0) {
@@ -124,7 +192,7 @@ export async function maybeCompact(
   const older = body.slice(0, olderCount);
   const recent = body.slice(olderCount);
 
-  const olderFormatted = formatMessagesForSummary(older, maxSummaryInputChars);
+  const olderFormatted = formatMessagesForSummaryByTokens(older, maxSummaryInputTokens);
 
   const systemPrompt =
     "Summarize the following coding-agent conversation so work can continue. Capture decisions, files changed, current task state, and open TODOs. Be concise.";
@@ -141,9 +209,11 @@ export async function maybeCompact(
     );
 
     const systemMessages = hasSystem ? [history[0]] : [];
-    const boundedSummary = truncateSummary(summary, Math.min(maxChars, maxSummaryInputChars));
+    const boundedSummary = truncateSummaryByTokens(summary, Math.min(budgetTokens, maxSummaryInputTokens));
     const summaryMessage: Message = { role: "user", content: SUMMARY_PREFIX + boundedSummary };
-    const boundedRecent = clampRecentMessages(recent, Math.max(0, maxChars - messageChars([summaryMessage])));
+    const systemTokens = historyTokens(systemMessages);
+    const summaryMessageTokens = historyTokens([summaryMessage]);
+    const boundedRecent = clampRecentMessagesByTokens(recent, Math.max(0, budgetTokens - summaryMessageTokens - systemTokens));
     const next: Message[] = [
       ...systemMessages,
       summaryMessage,
@@ -152,21 +222,29 @@ export async function maybeCompact(
 
     history.splice(0, history.length, ...next);
 
+    const finalTokens = historyTokens(history);
+    let error: string | undefined;
+    if (opts.contextTokens && finalTokens > opts.contextTokens) {
+      error = `Context window limit exceeded even after compaction. Remaining content size: ${Math.round(finalTokens)} tokens, Window limit: ${opts.contextTokens} tokens.`;
+    }
+
     return {
       compacted: true,
       removed: older.length,
       summary,
+      error,
+      replacesThrough: systemCount + older.length - 1,
     };
   } catch (err) {
-    // Summarizer LLM unavailable (provider/auth/rate-limit/offline). Still bound
-    // in-memory history with a deterministic placeholder so it never grows
-    // unbounded across a session (and the prompt doesn't balloon every turn).
+    // Summarizer LLM unavailable. Still bound in-memory history
     const systemMessages = hasSystem ? [history[0]] : [];
     const placeholderMessage: Message = {
       role: "user",
       content: `[Earlier conversation omitted: ${older.length} messages — summary unavailable]`,
     };
-    const boundedRecent = clampRecentMessages(recent, Math.max(0, maxChars - messageChars([placeholderMessage])));
+    const systemTokens = historyTokens(systemMessages);
+    const placeholderTokens = historyTokens([placeholderMessage]);
+    const boundedRecent = clampRecentMessagesByTokens(recent, Math.max(0, budgetTokens - placeholderTokens - systemTokens));
     const next: Message[] = [
       ...systemMessages,
       placeholderMessage,
@@ -174,6 +252,19 @@ export async function maybeCompact(
     ];
     history.splice(0, history.length, ...next);
     process.stderr.write(`[joc] compaction summary failed (${(err as Error)?.message ?? "error"}); dropped ${older.length} older messages to bound memory.\n`);
-    return { compacted: true, removed: older.length, summaryFailed: true };
+    
+    const finalTokens = historyTokens(history);
+    let error: string | undefined;
+    if (opts.contextTokens && finalTokens > opts.contextTokens) {
+      error = `Context window limit exceeded even after compaction. Remaining content size: ${Math.round(finalTokens)} tokens, Window limit: ${opts.contextTokens} tokens.`;
+    }
+
+    return {
+      compacted: true,
+      removed: older.length,
+      summaryFailed: true,
+      error,
+      replacesThrough: systemCount + older.length - 1,
+    };
   }
 }

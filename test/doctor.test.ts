@@ -61,7 +61,7 @@ test("runDoctorCommand --json: openai without credential is skipped instead of p
   expect(urls.some(u => u.includes("api.openai.com"))).toBe(false);
 });
 
-test("runDoctorCommand --json: gemini oauth-only diagnostic does not leak an unrelated default model id", async () => {
+test("runDoctorCommand --json: gemini oauth-only probes Cloud Code Assist (the real call path)", async () => {
   await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
     providers: {},
     oauth: { gemini: "oauth-gem" },
@@ -82,7 +82,8 @@ test("runDoctorCommand --json: gemini oauth-only diagnostic does not leak an unr
 
   const report = JSON.parse(lines.join("\n"));
   const gemini = report.providers.find((p: any) => p.name === "gemini");
-  expect(gemini.status).toBe("fail");
-  expect(gemini.detail).toContain("Gemini OAuth");
+  expect(gemini.status).toBe("ok");
+  // OAuth tokens are served via Cloud Code Assist, not generativelanguage.
+  expect(gemini.detail).toContain("loadCodeAssist");
   expect(gemini.detail).not.toContain("claude-3-5-sonnet");
 });

@@ -11,7 +11,7 @@ import type { ProviderModelsResult } from "../../ai/model-discovery";
 import type { PickEntry } from "../../ai/model-picker";
 import type { CatalogModel } from "../../ai/model-catalog";
 import type { EnrichedModel } from "../../ai/model-enrich";
-import { catalogMetadata, formatTokens } from "../../ai/model-catalog";
+import { catalogMetadata, formatTokens, companyLabel } from "../../ai/model-catalog";
 
 /** A single "Model: alias → resolved (provider)" status line. */
 export function formatModelLine(d: {
@@ -22,7 +22,7 @@ export function formatModelLine(d: {
 }): string {
   const expansion = d.resolved !== d.label ? ` → ${d.resolved}` : "";
   const readyMark = d.ready === undefined ? "" : d.ready ? ` ${chalk.green("✓")}` : ` ${chalk.yellow("· no credential")}`;
-  return `${chalk.bold(d.label)}${expansion} ${chalk.gray(`(${d.provider})`)}${readyMark}`;
+  return `${chalk.bold(d.label)}${expansion} ${chalk.gray(`(${d.provider} · ${companyLabel(d.provider)})`)}${readyMark}`;
 }
 
 /** Aliases section: ` alias      → target` lines, sorted by alias. */
@@ -36,12 +36,13 @@ export function formatAliasLines(aliases: Record<string, string>): string[] {
 /** Provider credential table: ` name      ✓ label  [baseUrl]`. */
 export function formatProviderPanel(statuses: ProviderStatus[]): string[] {
   if (statuses.length === 0) return ["  (no providers)"];
-  const width = Math.max(...statuses.map(s => s.name.length), 6);
+  const nameWithCompany = (name: string) => `${name} (${companyLabel(name)})`;
+  const width = Math.max(...statuses.map(s => nameWithCompany(s.name).length), 6);
   return statuses.map(s => {
     const mark = s.ready ? chalk.green("✓") : chalk.gray("·");
     const base = s.baseUrl ? chalk.gray(`  [${s.baseUrl}]`) : "";
     const label = s.ready ? s.label : chalk.yellow(s.label);
-    return `  ${s.name.padEnd(width)} ${mark} ${label}${base}`;
+    return `  ${nameWithCompany(s.name).padEnd(width)} ${mark} ${label}${base}`;
   });
 }
 

@@ -78,6 +78,8 @@ test("maybeCompact: above threshold with system message", async () => {
     compacted: true,
     removed: 10,
     summary: "MOCK-SUMMARY",
+    error: undefined,
+    replacesThrough: 10,
   });
 
   // Verify history mutation
@@ -109,6 +111,8 @@ test("maybeCompact: above threshold without system message", async () => {
     compacted: true,
     removed: 6,
     summary: "MOCK-SUMMARY-NOSYS",
+    error: undefined,
+    replacesThrough: 5,
   });
 
   expect(history.length).toBe(3); // 1 summary + 2 recent
@@ -284,4 +288,52 @@ test("maybeCompact: truncates oversized recent messages so char-budget compactio
 
   const second = await maybeCompact(history, { maxMessages: 40, maxChars: 120, keepRecent: 1 });
   expect(second.compacted).toBe(false);
+});
+
+test("maybeCompact: CJK heavy history triggers compaction earlier than ASCII (token estimator check)", async () => {
+  mockCallLlm = async () => "CJK-SUMMARY";
+
+  // Case 1: CJK history. 250 characters of CJK.
+  // 250 characters * 0.67 tokens/char = ~167 tokens. (Plus structure overhead)
+  // With maxTokens: 120, this should trigger compaction.
+  const cjkHistory: Message[] = [
+    { role: "user", content: "한글".repeat(125) }, // 250 characters
+    { role: "assistant", content: "ack" },
+  ];
+  const cjkRes = await maybeCompact(cjkHistory, { maxMessages: 40, maxTokens: 120, keepRecent: 1 });
+  expect(cjkRes.compacted).toBe(true);
+
+  // Case 2: ASCII history. 250 characters of ASCII.
+  // 250 characters * 0.25 tokens/char = ~62 tokens. (Plus structure overhead)
+  // With maxTokens: 120, this should NOT trigger compaction.
+  const asciiHistory: Message[] = [
+    { role: "user", content: "a".repeat(250) },
+    { role: "assistant", content: "ack" },
+  ];
+  const asciiRes = await maybeCompact(asciiHistory, { maxMessages: 40, maxTokens: 120, keepRecent: 1 });
+  expect(asciiRes.compacted).toBe(false);
+});
+
+test("maybeCompact: system prompt size is included in token budget", async () => {
+  mockCallLlm = async () => "SYS-SUMMARY";
+
+  // maxTokens: 150.
+  // User message has 60 tokens (240 ASCII chars).
+  // Without system prompt: total ~62 tokens. Below 150 -> no compaction.
+  const noSysHistory: Message[] = [
+    { role: "user", content: "a".repeat(240) },
+    { role: "assistant", content: "ack" },
+  ];
+  const noSysRes = await maybeCompact(noSysHistory, { maxMessages: 40, maxTokens: 150, keepRecent: 1 });
+  expect(noSysRes.compacted).toBe(false);
+
+  // With a large system prompt: 150 tokens (600 ASCII chars).
+  // Total ~210 tokens. Above 150 -> compaction triggers.
+  const sysHistory: Message[] = [
+    { role: "system", content: "s".repeat(600) },
+    { role: "user", content: "a".repeat(240) },
+    { role: "assistant", content: "ack" },
+  ];
+  const sysRes = await maybeCompact(sysHistory, { maxMessages: 40, maxTokens: 150, keepRecent: 1 });
+  expect(sysRes.compacted).toBe(true);
 });

@@ -11,6 +11,11 @@
  * and testable regardless of chalk's own TTY auto-detection.
  */
 
+import { execSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
+
 /** Color capability tiers. */
 export enum ColorLevel {
   None = 0,
@@ -169,4 +174,106 @@ export function applyGradient(text: string, from: RGB, to: RGB, level: ColorLeve
     out += fgEscape(stops[i]!, level) + ch;
   }
   return out + resetEscape(level);
+}
+
+/**
+ * Apply a flowing color gradient across the visible characters of `text`,
+ * shifted by `phase` (0..1 wraps) around the palette.
+ * If colorLevel < 3 (or opts.colorLevel < 3), return the text unchanged.
+ */
+export function animatedGradientText(
+  text: string,
+  palette: readonly string[],
+  phase: number,
+  opts: { colorLevel: number }
+): string {
+  if (opts.colorLevel < 3) {
+    return text;
+  }
+  const plain = stripAnsi(text);
+  if (plain.length === 0) {
+    return plain;
+  }
+
+  const rgbPalette = palette.map(hex => hexToRgb(hex));
+  const M = rgbPalette.length;
+  if (M === 0) {
+    return plain;
+  }
+
+  let out = "";
+  const N = plain.length;
+
+  for (let i = 0; i < N; i++) {
+    const ch = plain[i]!;
+    if (ch === " ") {
+      out += ch;
+      continue;
+    }
+
+    const x = N > 1 ? i / (N - 1) : 0;
+    let t = (x + phase) % 1;
+    if (t < 0) t += 1;
+
+    let color: RGB;
+    if (M === 1) {
+      color = rgbPalette[0]!;
+    } else {
+      const rawSegment = t * M;
+      const index = Math.floor(rawSegment);
+      const fraction = rawSegment - index;
+      const colorA = rgbPalette[index % M]!;
+      const colorB = rgbPalette[(index + 1) % M]!;
+      color = lerpColor(colorA, colorB, fraction);
+    }
+
+    out += fgEscape(color, ColorLevel.TrueColor) + ch;
+  }
+
+  return out + resetEscape(ColorLevel.TrueColor);
+}
+export function detectAppearance(env: EnvLike = process.env): "light" | "dark" | undefined {
+  const colorfgbg = env.COLORFGBG;
+  if (colorfgbg) {
+    const parts = colorfgbg.split(";");
+    if (parts.length > 1) {
+      const bgStr = parts[parts.length - 1]!.trim();
+      const bg = parseInt(bgStr, 10);
+      if (!isNaN(bg)) {
+        if (bg >= 0 && bg <= 6) return "dark";
+        if (bg === 8) return "dark";
+        if (bg === 7) return "light";
+        if (bg >= 9 && bg <= 15) return "light";
+        if (bg >= 232 && bg <= 243) return "dark";
+        if (bg >= 244 && bg <= 255) return "light";
+        if (bg >= 16 && bg <= 231) {
+          const code = bg - 16;
+          const b = code % 6;
+          const g = Math.floor((code % 36) / 6);
+          const r = Math.floor(code / 36);
+          const R = r * 51;
+          const G = g * 51;
+          const B = b * 51;
+          const Y = 0.299 * R + 0.587 * G + 0.114 * B;
+          return Y < 128 ? "dark" : "light";
+        }
+      }
+    }
+  }
+
+  if (process.platform === "darwin") {
+    try {
+      const style = execSync("defaults read -g AppleInterfaceStyle", { stdio: ["ignore", "pipe", "ignore"] })
+        .toString()
+        .trim();
+      if (style === "Dark") {
+        return "dark";
+      }
+      return "light";
+    } catch (e) {
+      return "light";
+    }
+  }
+
+  return undefined;
 }

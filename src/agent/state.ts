@@ -14,11 +14,22 @@ export interface StoredOAuth {
   projectId?: string;
 }
 
+export interface HookConfig {
+  enabled?: boolean;
+  hooks?: Array<{
+    event: "pre-tool" | "post-turn";
+    match?: { tool?: string };
+    run: string;
+    timeoutMs?: number;
+  }>;
+}
+
 export interface Config {
   providers: {
     anthropic?: string;
     openai?: string;
     gemini?: string;
+    antigravity?: string;
   };
   /**
    * OAuth credentials. `resolveCredential()` returns these before API keys so refresh
@@ -29,6 +40,7 @@ export interface Config {
     anthropic?: string | StoredOAuth;
     openai?: string | StoredOAuth;
     gemini?: string | StoredOAuth;
+    antigravity?: string | StoredOAuth;
   };
   /** Base URL for the local Ollama server (keyless). */
   ollamaBaseUrl?: string;
@@ -65,6 +77,7 @@ export interface Config {
    * `defaultModel`. Env `JOC_SMOL_MODEL`/`JOC_SLOW_MODEL`/`JOC_PLAN_MODEL` fill gaps.
    */
   roles?: { smol?: string; slow?: string; plan?: string };
+  hooks?: HookConfig;
 }
 
 export interface WorkflowTopologyComponent {
@@ -199,9 +212,18 @@ export async function readGlobalConfig(): Promise<Config> {
 }
 
 export async function saveGlobalConfig(config: Config): Promise<void> {
-  await fs.mkdir(globalConfigDir(), { recursive: true, mode: 0o700 });
-  await fs.writeFile(globalConfigPath(), JSON.stringify(config, null, 2), { encoding: "utf-8", mode: 0o600 });
-  await fs.chmod(globalConfigPath(), 0o600).catch(() => {}); // ensure mode even if file pre-existed
+  const dir = globalConfigDir();
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  const target = globalConfigPath();
+  const tmpPath = `${target}.${Math.random().toString(36).slice(2)}.tmp`;
+  try {
+    await fs.writeFile(tmpPath, JSON.stringify(config, null, 2), { encoding: "utf-8", mode: 0o600 });
+    await fs.chmod(tmpPath, 0o600).catch(() => {});
+    await fs.rename(tmpPath, target);
+  } catch (err) {
+    await fs.unlink(tmpPath).catch(() => {});
+    throw err;
+  }
 }
 
 /** Read the on-disk config WITHOUT the env overlay. Used as the base for

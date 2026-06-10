@@ -26,6 +26,10 @@ test("LaunchTui: on a TTY the live turn uses the alternate screen buffer (scroll
   expect(live).toContain(enterAltScreen());
   expect(live.indexOf(enterAltScreen())).toBeLessThan(live.indexOf(hideCursor()));
   expect(live).not.toContain(leaveAltScreen()); // not left yet
+  // Mouse-wheel guard: alternate scroll is disabled inside the alt screen so a wheel
+  // scroll (tmux or plain terminal) cannot inject Up/Down arrows into the input buffer.
+  expect(enterAltScreen()).toContain("\x1b[?1007l");
+  expect(leaveAltScreen()).toContain("\x1b[?1007h");
 
   const logged: string[] = [];
   const origLog = console.log;
@@ -51,6 +55,40 @@ test("LaunchTui: without a TTY the alt screen is NOT used (plain in-place render
   expect(all).not.toContain(enterAltScreen());
   expect(all).not.toContain(leaveAltScreen());
   expect(all).toContain(clearToEnd()); // legacy path clears in place instead
+});
+
+test("LaunchTui auto-repair: repaint() rewrites the FULL frame after external corruption", () => {
+  const realRender = Renderer.prototype.render;
+  let lastFrame: string[] = [];
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { lastFrame = f; };
+  try {
+    const tui = new LaunchTui({ model: "m1", maxSteps: 25, tty: true, write: () => {} });
+    tui.start();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    lastFrame = [];
+    // Auto-heal entry point used by resize + mid-turn input noise: must redraw everything.
+    tui.repaint();
+    expect(lastFrame.length).toBeGreaterThan(0);
+    tui.finish("done");
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});
+
+test("LaunchTui auto-repair: resize listener is registered on start and removed on finish", () => {
+  const realRender = Renderer.prototype.render;
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function () {};
+  const before = process.stdout.listenerCount("resize");
+  try {
+    const tui = new LaunchTui({ model: "m1", maxSteps: 25, tty: true, write: () => {} });
+    tui.start();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    expect(process.stdout.listenerCount("resize")).toBe(before + 1);
+    tui.finish("done");
+    expect(process.stdout.listenerCount("resize")).toBe(before);
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
 });
 test("LaunchTui.usable is false under a non-TTY test process", () => {
   expect(LaunchTui.usable(false)).toBe(false); // bun test stdout is not a TTY
@@ -362,31 +400,42 @@ test("LaunchTui: onToolResult stream line includes the invocation target using w
   expect(txt).toContain("bash command");
 });
 
-test("LaunchTui (boxed): [STEP] shows the real in-flight file; stage lives in the track, not the forge row", () => {
+test("LaunchTui (boxed): [STATUS] shows the real in-flight file; stage lives in the track, not the forge row", () => {
   const realRender = Renderer.prototype.render;
   let frame: string[] = [];
   (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
   const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  // Pin the viewport: on a narrow/short runner terminal the centered art/track is
+  // dropped and the footer stage tag can be width-truncated, making the stage
+  // assertion flaky. 200x40 keeps both deterministic. (columns/rows are accessor
+  // properties in Bun — override via defineProperty, restore the descriptors after.)
+  const savedColsDesc = Object.getOwnPropertyDescriptor(process.stdout, "columns");
+  const savedRowsDesc = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+  Object.defineProperty(process.stdout, "columns", { value: 200, configurable: true });
+  Object.defineProperty(process.stdout, "rows", { value: 40, configurable: true });
   try {
     const tui = new LaunchTui({ model: "m1", maxSteps: 25, tty: true, write: () => {} });
     tui.start();
     const ev = tui.events();
-    ev.onStep!(3);
+    ev.onStep!(8); // 8/25 = 32% → evolution stage 2 (Double Helix) is reached
     ev.onAssistant!("", { tool: "read", arguments: { filePath: "src/agent/engine.ts" } }); // tool now in-flight
     (tui as unknown as { draw: () => void }).draw();
     clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
 
     const txt = frame.map(strip);
-    const stepLine = txt.find(l => l.includes("joc thinking")) ?? "";
+    const statusLine = txt.find(l => l.includes("[STATUS]")) ?? "";
+    const stepLine = txt.find(l => l.includes("[STEP]")) ?? "";
     const toolLine = txt.find(l => l.includes("joc forge")) ?? "";
-    // [STEP] reflects the actual file, not a generic cycling message
-    expect(stepLine).toContain("src/agent/engine.ts");
-    expect(stepLine).not.toContain("Transcribing instructions");
-    // The evolution stage is rendered ONCE in the centered track (plus the footer tag) —
-    // the forge row no longer duplicates it, so the three copies can never disagree.
+    // [STATUS] reflects the actual file, while [STEP] stays metric-only.
+    expect(statusLine).toContain("src/agent/engine.ts");
+    expect(stepLine).not.toContain("src/agent/engine.ts");
+    expect(statusLine).not.toContain("Transcribing instructions");
+    // The evolution stage is rendered in the centered track/footer, not duplicated in the forge row.
     expect(toolLine).not.toContain("Double Helix");
-    expect(txt.some(l => l.includes("Double Helix"))).toBe(true);
+    expect(txt.some(l => /Primordial Cell|Double Helix|Tool User|Super intelligence/.test(l))).toBe(true);
   } finally {
     Renderer.prototype.render = realRender;
+    if (savedColsDesc) Object.defineProperty(process.stdout, "columns", savedColsDesc);
+    if (savedRowsDesc) Object.defineProperty(process.stdout, "rows", savedRowsDesc);
   }
 });

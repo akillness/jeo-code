@@ -1,8 +1,13 @@
 import chalk from "chalk";
 import { meter } from "./meter";
 import { categoryBadge } from "./category-index";
+import { animatedGradientText, ColorLevel } from "./color";
 
 export interface JocStatusData {
+  colorLevel?: number;
+  phase?: number;
+  palette?: readonly string[];
+  isThinking?: boolean;
   step?: number;
   maxSteps?: number;
   elapsedMs?: number;
@@ -39,7 +44,12 @@ export function renderJocStatus(data: JocStatusData): string[] {
   const useColor = data.color !== false;
   const bar = meter(step, max || 1, 10, { unicode: data.unicode !== false, color: useColor });
   const elapsed = `${seconds(data.elapsedMs)}s`;
-  const msg = data.message ?? "thinking through the next tool call";
+  let msg = data.message ?? "thinking through the next tool call";
+  const level = data.colorLevel ?? (useColor ? ColorLevel.TrueColor : ColorLevel.None);
+  if (useColor && data.isThinking && level === ColorLevel.TrueColor && data.palette && data.palette.length > 0) {
+    const phase = data.phase ?? 0;
+    msg = animatedGradientText(msg, data.palette, phase, { colorLevel: level });
+  }
   const current = data.currentTool ? `forging ${data.currentTool}` : "forge idle";
   const stage = data.stage ? `${data.stage} · ` : "";
   const ok = data.okCount ?? 0;
@@ -66,7 +76,8 @@ export function renderJocStatus(data: JocStatusData): string[] {
 
 
   return [
-    `  ${categoryBadge("progress", { color: useColor })} ${cyanBold("joc thinking")} · ${msg} · step ${step}/${max} · ${bar} · ${elapsed}${extraStats}`,
+    `  ${categoryBadge("progress", { color: useColor })} step ${step}/${max} · ${bar} · elapsed ${elapsed}${extraStats}`,
+    `  ${categoryBadge("status", { color: useColor })} ${cyanBold("joc status")} · ${msg}`,
     `  ${categoryBadge("tool", { color: useColor })} ${magentaBold("joc forge")} · ${stage}${current} · tools ${total} (${toolCounts})${guard}`,
   ];
 }

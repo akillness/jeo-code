@@ -20,7 +20,7 @@ None.
 ## For AI Agents
 
 ### Working In This Directory
-- `verifiedEndToEnd` determines if the minted OAuth token can run directly with joc's bundled adapter. Set to `false` for OpenAI/Google (which prefer API keys for chat completions but support OAuth for discovery).
+- `verifiedEndToEnd` determines if the minted OAuth token can run directly with joc's bundled adapter. All bundled flows are now `true`: Anthropic (Messages), OpenAI (Codex Responses backend), Gemini (Cloud Code Assist via cloudcode-pa), Antigravity (Cloud Code Assist agent). An API key, when set, still takes precedence over OAuth.
 
 ## Dependencies
 

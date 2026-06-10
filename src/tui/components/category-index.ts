@@ -1,6 +1,6 @@
 import chalk from "chalk";
 
-export type UiCategory = "progress" | "done" | "diff" | "subagent" | "code" | "file" | "cmd" | "tool" | "error" | "search";
+export type UiCategory = "progress" | "status" | "done" | "diff" | "subagent" | "code" | "file" | "cmd" | "tool" | "error" | "search";
 
 interface CategoryMeta {
   token: string;
@@ -10,6 +10,7 @@ interface CategoryMeta {
 
 const META: Record<UiCategory, CategoryMeta> = {
   progress: { token: "STEP", label: "progress", paint: chalk.cyan.bold },
+  status: { token: "STATUS", label: "status", paint: chalk.cyan.bold },
   done: { token: "DONE", label: "completed", paint: chalk.green.bold },
   diff: { token: "DIFF", label: "diff", paint: chalk.magenta.bold },
   subagent: { token: "AGENT", label: "subagent", paint: chalk.blue.bold },

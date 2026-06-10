@@ -260,3 +260,33 @@ test("runTeamCommand refuses to run when team-state.json is corrupt (no silent r
   // The corrupt file must not be overwritten/reset behind the user's back.
   expect(await fs.readFile(path.join(tmp, ".joc", "state", "team-state.json"), "utf-8")).toBe("{ not json !!!");
 });
+
+test("runTeamCommand invokes maybeCompact on subagent execution", async () => {
+  const realCompaction = { ...(await import("../src/agent/compaction")) };
+
+  const compactionSpy = mock(async (history: any, opts: any) => {
+    return { compacted: false, removed: 0 };
+  });
+
+  mock.module("../src/agent/compaction", () => ({
+    ...realCompaction,
+    maybeCompact: compactionSpy,
+  }));
+
+  try {
+    const { runTeamCommand } = await import("../src/commands/team");
+    await seedPlan([{ name: "implement it", role: "executor" }]);
+
+    mock.module("../src/agent/loop", () => ({
+      callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nChanged Files:\nVerification:\nOpen Risks:" } }),
+    }));
+
+    console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+    await runTeamCommand();
+    console.log = origLog;
+
+    expect(compactionSpy).toHaveBeenCalled();
+  } finally {
+    mock.module("../src/agent/compaction", () => realCompaction);
+  }
+});

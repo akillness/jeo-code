@@ -21,9 +21,9 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 test("formatModelLine shows alias expansion, provider, and credential mark", () => {
   expect(strip(formatModelLine({ label: "fast", resolved: "ollama/qwen2.5:0.5b", provider: "ollama" })))
-    .toBe("fast → ollama/qwen2.5:0.5b (ollama)");
+    .toBe("fast → ollama/qwen2.5:0.5b (ollama · Ollama)");
   expect(strip(formatModelLine({ label: "gpt-4o", resolved: "gpt-4o", provider: "openai" })))
-    .toBe("gpt-4o (openai)");
+    .toBe("gpt-4o (openai · OpenAI)");
   expect(strip(formatModelLine({ label: "claude", resolved: "claude", provider: "anthropic", ready: false })))
     .toContain("no credential");
   expect(strip(formatModelLine({ label: "claude", resolved: "claude", provider: "anthropic", ready: true })))
@@ -46,6 +46,8 @@ test("formatProviderPanel marks ready vs not and shows base URL", () => {
   expect(out[0]).toContain("·"); // not ready
   expect(out[1]).toContain("✓");
   expect(out[1]).toContain("http://localhost:11434");
+  expect(out[0]).toContain("anthropic (Anthropic)");
+  expect(out[1]).toContain("ollama (Ollama)");
 });
 
 test("formatAgentsPanel lists roles with resolved model/steps and read-only tag", () => {

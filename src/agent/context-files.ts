@@ -1,6 +1,17 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
+import { IGNORED_DIRS } from "./tools";
+
+interface ContextItem {
+  filePath: string;
+  displayPath: string;
+  type: "cwd" | "nested" | "parent";
+  depth?: number;
+  distance?: number;
+  candidateName: string;
+}
+
 export interface ProjectContextFile {
   path: string;
   content: string;
@@ -83,12 +94,6 @@ export async function loadProjectContext(cwd = process.cwd()): Promise<ProjectCo
   const result: ProjectContextFile[] = [];
   let baseChars = 0;
   let guidanceChars = 0;
-  const addBaseFile = async (relPath: string) => {
-    const file = await readContextFile(path.join(cwd, relPath), relPath, BASE_CONTEXT_CHARS - baseChars);
-    if (!file) return;
-    result.push(file);
-    baseChars += file.content.length;
-  };
   const addGuidanceFile = async (filePath: string, displayPath: string) => {
     const file = await readContextFile(filePath, displayPath, GUIDANCE_CONTEXT_CHARS - guidanceChars);
     if (!file) return;
@@ -96,8 +101,143 @@ export async function loadProjectContext(cwd = process.cwd()): Promise<ProjectCo
     guidanceChars += file.content.length;
   };
 
-  for (const candidate of CONTEXT_CANDIDATES) {
-    await addBaseFile(candidate);
+  const resolvedCwd = path.resolve(cwd);
+  const home = process.env.HOME ? path.resolve(process.env.HOME) : null;
+  const collectedItems: ContextItem[] = [];
+
+  // 1. CWD 및 부모 walk
+  let curr = resolvedCwd;
+  let distance = 0;
+  while (true) {
+    if (home && curr === home) {
+      break;
+    }
+
+    for (const candidate of CONTEXT_CANDIDATES) {
+      const filePath = path.join(curr, candidate);
+      try {
+        const stat = await fs.stat(filePath);
+        if (stat.isFile() && stat.size > 0) {
+          const displayPath = path.relative(resolvedCwd, filePath).replace(/\\/g, "/");
+          collectedItems.push({
+            filePath,
+            displayPath: displayPath || candidate,
+            type: distance === 0 ? "cwd" : "parent",
+            distance: distance === 0 ? undefined : distance,
+            candidateName: candidate,
+          });
+        }
+      } catch {
+        // 무시
+      }
+    }
+
+    let isGitRoot = false;
+    try {
+      const gitStat = await fs.stat(path.join(curr, ".git"));
+      if (gitStat.isDirectory() || gitStat.isFile()) {
+        isGitRoot = true;
+      }
+    } catch {
+      // 무시
+    }
+
+    if (isGitRoot) {
+      break;
+    }
+
+    const parent = path.dirname(curr);
+    if (parent === curr) {
+      break;
+    }
+    curr = parent;
+    distance++;
+  }
+
+  // 2. CWD 하위 중첩 AGENTS.md 수집 (depth <= 3)
+  const nestedFiles: Array<{ filePath: string; displayPath: string; depth: number }> = [];
+  async function walkDown(dir: string, currentDepth: number): Promise<void> {
+    if (currentDepth > 3) return;
+
+    let entries: import("node:fs").Dirent[] = [];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (IGNORED_DIRS.includes(entry.name)) {
+          continue;
+        }
+        const subDir = path.join(dir, entry.name);
+        await walkDown(subDir, currentDepth + 1);
+      } else if (entry.isFile()) {
+        if (entry.name === "AGENTS.md") {
+          const filePath = path.join(dir, entry.name);
+          const displayPath = path.relative(resolvedCwd, filePath).replace(/\\/g, "/");
+          nestedFiles.push({ filePath, displayPath, depth: currentDepth });
+        }
+      }
+    }
+  }
+
+  await walkDown(resolvedCwd, 0);
+
+  for (const nf of nestedFiles) {
+    collectedItems.push({
+      filePath: nf.filePath,
+      displayPath: nf.displayPath,
+      type: "nested",
+      depth: nf.depth,
+      candidateName: "AGENTS.md",
+    });
+  }
+
+  // 3. 우선순위 정렬
+  const typeOrder = { cwd: 1, nested: 2, parent: 3 };
+  collectedItems.sort((a, b) => {
+    if (a.type !== b.type) {
+      return typeOrder[a.type] - typeOrder[b.type];
+    }
+    if (a.type === "cwd") {
+      return CONTEXT_CANDIDATES.indexOf(a.candidateName) - CONTEXT_CANDIDATES.indexOf(b.candidateName);
+    } else if (a.type === "nested") {
+      if (a.depth !== b.depth) {
+        return (b.depth ?? 0) - (a.depth ?? 0);
+      }
+      return a.displayPath.localeCompare(b.displayPath);
+    } else {
+      if (a.distance !== b.distance) {
+        return (a.distance ?? 0) - (b.distance ?? 0);
+      }
+      return CONTEXT_CANDIDATES.indexOf(a.candidateName) - CONTEXT_CANDIDATES.indexOf(b.candidateName);
+    }
+  });
+
+  // 중복 경로 제거 (Set 사용)
+  const seenPaths = new Set<string>();
+  const uniqueItems: ContextItem[] = [];
+  for (const item of collectedItems) {
+    const key = path.resolve(item.filePath);
+    if (!seenPaths.has(key)) {
+      seenPaths.add(key);
+      uniqueItems.push(item);
+    }
+  }
+
+  // 4. 예산 내에서 로드
+  for (const item of uniqueItems) {
+    if (baseChars >= BASE_CONTEXT_CHARS) {
+      break;
+    }
+    const file = await readContextFile(item.filePath, item.displayPath, BASE_CONTEXT_CHARS - baseChars);
+    if (!file) continue;
+    result.push(file);
+    baseChars += file.content.length;
   }
 
   // GJC/OMA parity: skill docs are loaded by `skills/catalog.ts`; hook/rule guidance is

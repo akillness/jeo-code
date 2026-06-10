@@ -36,6 +36,14 @@ export const OAUTH_FLOWS: Record<AuthProvider, OauthFlowDef> = {
       "Note: the minted token targets Cloud Code Assist; the public Gemini API prefers an API key.",
     ],
   },
+  antigravity: {
+    label: "Google Antigravity (Cloud Code Assist agent)",
+    authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+    instructions: [
+      "Real Google OAuth with the Antigravity desktop-app client and localhost:51121 callback.",
+      "Use this for antigravity/* models; Gemini CLI OAuth can be imported separately but may not satisfy Antigravity backend permissions.",
+    ],
+  },
 };
 
 export async function openInBrowser(url: string): Promise<void> {

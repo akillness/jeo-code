@@ -209,6 +209,52 @@ test("deep-interview captures brownfield repo evidence for modification ideas", 
   await fs.rm(cwd, { recursive: true, force: true });
 });
 
+test("deep-interview: empty directory stays greenfield even for modification-style ideas", async () => {
+  const cwd = await tempDir();
+  mockCallLlm = async () => JSON.stringify({
+    ambiguityScore: 0.1,
+    assessment: "Clear enough",
+    nextQuestion: "none",
+    goal: "Fix the login flow",
+    constraints: [],
+    acceptance_criteria: ["Login works"],
+  });
+
+  process.chdir(cwd);
+  await runDeepInterviewCommand(["--auto", "fix the existing login flow"]);
+
+  const state = await readState(cwd);
+  expect(state.type).toBe("greenfield");
+  expect(state.codebase_context).toBeUndefined();
+
+  await fs.rm(cwd, { recursive: true, force: true });
+});
+
+test("deep-interview: brownfield with no keyword hits asks for the target surface instead of citing paths", async () => {
+  const cwd = await tempDir();
+  await fs.mkdir(path.join(cwd, "src"), { recursive: true });
+  await fs.writeFile(path.join(cwd, "package.json"), "{\"name\":\"demo\"}", "utf-8");
+  await fs.writeFile(path.join(cwd, "src", "billing.ts"), "export function bill() {}", "utf-8");
+  mockCallLlm = async () => JSON.stringify({
+    ambiguityScore: 0.1,
+    assessment: "Clear enough",
+    nextQuestion: "none",
+    goal: "Fix the login flow",
+    constraints: [],
+    acceptance_criteria: ["Login works"],
+  });
+
+  process.chdir(cwd);
+  await runDeepInterviewCommand(["--auto", "fix the existing zzzz-flow"]);
+
+  const state = await readState(cwd);
+  expect(state.type).toBe("brownfield");
+  expect(state.codebase_context).toContain("no keyword-matching files found yet");
+  expect(state.codebase_context).not.toContain("billing.ts");
+
+  await fs.rm(cwd, { recursive: true, force: true });
+});
+
 test("deep-interview: brownfield scanner sanitizes file names and skips symlinked dirs", async () => {
   const cwd = await tempDir();
   await fs.mkdir(path.join(cwd, "src"), { recursive: true });

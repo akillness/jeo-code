@@ -17,6 +17,8 @@ import { providerHttpError } from "./errors";
 
 export const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 
+export const VALID_REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high"]);
+
 /** Extract `chatgpt_account_id` from a ChatGPT/Codex OAuth access JWT. */
 export function extractChatgptAccountId(token: string): string | undefined {
   const parts = token.split(".");
@@ -55,7 +57,10 @@ export function codexResponsesRequest(
     store: false,
   };
   // Map thinkingLevel → reasoning effort for Codex reasoning models (gjc parity).
-  if (options.reasoningEffort) payload.reasoning = { effort: options.reasoningEffort };
+  // Drop out-of-enum values instead of forwarding them — the backend 400s on unknown efforts.
+  if (options.reasoningEffort && VALID_REASONING_EFFORTS.has(options.reasoningEffort)) {
+    payload.reasoning = { effort: options.reasoningEffort };
+  }
   const accountId = extractChatgptAccountId(token);
   const headers: Record<string, string> = {
     "content-type": "application/json",

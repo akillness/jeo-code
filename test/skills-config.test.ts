@@ -36,6 +36,14 @@ test("parseSkillMarkdown ignores inferred slash aliases owned by other skills", 
   expect(skillSlashAliases(s)).toEqual(["/speckit.plan"]);
 });
 
+test("parseSkillMarkdown infers aliases for the last segment of a namespaced skill name", () => {
+  const s = parseSkillMarkdown(
+    "oh-my-claudecode:teamx",
+    "summary: team orchestration\n\nInvoke with `/teamx` or `/teamx.run`; `/commit` belongs elsewhere.",
+  );
+  expect(skillSlashAliases(s)).toEqual(["/teamx", "/teamx.run"]);
+});
+
 test("parseSkillMarkdown skips YAML frontmatter and uses folded description as summary", () => {
   const s = parseSkillMarkdown("spec-kit", "---\nname: spec-kit\ndescription: >\n  Spec-driven workflow via specify.\n  Supports /speckit.plan.\n---\n\n# spec-kit\n\nBody starts here.");
   expect(s.summary).toBe("Spec-driven workflow via specify. Supports /speckit.plan.");
@@ -107,6 +115,19 @@ test("parseSkillMarkdown round-trips the formatSkill (joc skills --write) decora
   expect(back.command).toBe(bundled.command);
   expect(back.whenToUse).toBe(bundled.whenToUse);
   expect(back.details.split("\n")[0]).toBe(bundled.details.split("\n")[0]);
+});
+
+test("loadSkills loads skills from JOC_SKILLS_DIR (positive path)", async () => {
+  const extra = await fs.mkdtemp(path.join(os.tmpdir(), "joc-skills-extra-"));
+  await fs.writeFile(path.join(extra, "envskill.md"), "summary: from env dir\n\nSteps here.");
+  process.env.JOC_SKILLS_DIR = extra;
+  try {
+    const skills = await loadSkills(dir);
+    expect(getSkillFrom(skills, "envskill")?.summary).toBe("from env dir");
+  } finally {
+    delete process.env.JOC_SKILLS_DIR;
+    await fs.rm(extra, { recursive: true, force: true });
+  }
 });
 
 test("loadSkills overrides bundled skills case-insensitively by filename", async () => {

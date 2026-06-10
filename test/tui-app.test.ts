@@ -314,7 +314,8 @@ test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result i
   try { tui.finish("done"); } finally { console.log = origLog; }
   const txt = logged.join("\n");
   expect(txt).toContain("[AGENT]"); // every nested line carries the subagent category badge
-  expect(txt).toContain("executor > start: Add a retry guard to engine.ts"); // assignment
+  // Glyph is "▸" on unicode-capable terminals, ">" otherwise — accept both.
+  expect(txt).toMatch(/executor [>▸] start: Add a retry guard to engine\.ts/); // assignment
   expect(txt).toContain("[AGENT] executor step 1/15:"); // step header
   expect(txt).toContain("read src/agent/engine.ts");
   expect(txt).toContain("1|const ok = true;");

@@ -15,6 +15,13 @@ test("codexResponsesRequest: forwards reasoningEffort as reasoning.effort", () =
   expect(without.reasoning).toBeUndefined();
 });
 
+test("codexResponsesRequest: drops out-of-enum reasoningEffort instead of forwarding it", () => {
+  const invalid = JSON.parse(
+    codexResponsesRequest([{ role: "user", content: "hi" }], { model: "gpt-5.5", reasoningEffort: "max" } as any, oauth).body,
+  );
+  expect(invalid.reasoning).toBeUndefined();
+});
+
 test("parseResponsesEvent: captures usage on response.incomplete (not just completed)", () => {
   const incomplete = parseResponsesEvent(
     JSON.stringify({ type: "response.incomplete", response: { usage: { input_tokens: 12, output_tokens: 3 } } }),

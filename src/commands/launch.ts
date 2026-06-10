@@ -1259,12 +1259,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     };
   };
   let previewArmed = false;
+  let pickerActive = false;
   const rl = createInterface({
     input: process.stdin,
     // Single-box input: gate readline's output while the boxed footer is armed so its own
     // `joc>` prompt/echo is suppressed and ONLY our box shows. (Bun exposes no
     // `_writeToOutput` to patch, so gating the shared output stream is the portable fix.)
-    output: gatedStdout(process.stdout, () => previewArmed),
+    // The gate also covers active select pickers: they disarm the preview, which
+    // previously OPENED the gate and let readline echo typed filter characters
+    // (CJK wide chars especially) straight onto the picker frame — the
+    // "stacked input-box borders" corruption.
+    output: gatedStdout(process.stdout, () => previewArmed || pickerActive),
     completer: (line: string) => readlineCompleter(line, completionContext()),
   });
 
@@ -1313,7 +1318,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // same value the arm computed, even if the terminal was resized in between.
   let footerRows = MAX_PREVIEW_ROWS;
   const out = process.stdout;
-  let pickerActive = false;
   // Arrow-key selection over the slash preview list.
   let navMatches: string[] = []; // command names matching the typed keyword (display order)
   let navIdx = -1; // highlighted row, -1 = none
@@ -1420,35 +1424,51 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     render: (cols: number, rows: number) => string[],
     onKey: (ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => boolean | undefined,
   ): Promise<void> => {
-    pickerActive = true;
+    pickerActive = true; // closes the readline output gate for the picker's lifetime
     disarmPreview();
-    rl.pause();
+    // NOTE: deliberately NOT rl.pause() — pausing stops the underlying stdin stream,
+    // which would also starve the picker's own "keypress" listener (picker hang).
+    // Echo suppression is handled by the output gate above; raw mode (kept below)
+    // prevents terminal-driver local echo.
     const wasRaw = process.stdin.isRaw;
     if (process.stdin.setRawMode && !wasRaw) {
       process.stdin.setRawMode(true);
     }
+    process.stdin.resume();
     const cols = Math.max(40, terminalSize().cols - 2);
     const rows = Math.max(6, terminalSize().rows - 6);
     let rendered = 0;
     const repaint = () => {
       const lines = render(cols, rows).map(line => truncateAnsi(line, cols));
-      let s = rendered > 0 ? cursorUp(rendered) : "\n";
       const total = Math.max(rendered, lines.length);
+      // First paint: drop down ONCE to start on a fresh row; subsequent paints:
+      // cursor sits on the LAST rendered row, so cursorUp(rendered - 1) returns
+      // to row 0 of the prior block (off-by-one fix — the old `cursorUp(rendered)`
+      // landed ABOVE the block, so each repaint duplicated the trailing hint
+      // line below the picker instead of overwriting it).
+      let s = rendered > 0 ? (rendered > 1 ? cursorUp(rendered - 1) : "") + toColumn(1) : "\n";
       for (let i = 0; i < total; i++) {
         s += toColumn(1) + clearLine();
         if (i < lines.length) s += lines[i]!;
-        if (i < total - 1) s += "\n";
+        // Rows the block already occupies move with CUD (no scroll at the bottom
+        // margin → no anchor drift); only genuinely NEW rows use a real newline.
+        if (i < total - 1) s += i < rendered - 1 ? "\x1b[1B" + toColumn(1) : "\n";
       }
       out.write(s + "\x1b[?25h");
       rendered = total;
     };
     const clear = () => {
       if (rendered <= 0) return;
-      let s = cursorUp(rendered);
+      // Same off-by-one: from last row, cursorUp(rendered - 1) reaches row 0.
+      let s = (rendered > 1 ? cursorUp(rendered - 1) : "") + toColumn(1);
       for (let i = 0; i < rendered; i++) {
         s += toColumn(1) + clearLine();
-        if (i < rendered - 1) s += "\n";
+        // Every row here already exists — CUD only, never a scrolling newline.
+        if (i < rendered - 1) s += "\x1b[1B" + toColumn(1);
       }
+      // Park back at the first cleared row so post-picker output starts there.
+      if (rendered > 1) s += cursorUp(rendered - 1);
+      s += toColumn(1);
       out.write(s + "\x1b[?25h");
       rendered = 0;
     };
@@ -1471,7 +1491,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (process.stdin.setRawMode && !wasRaw) {
         process.stdin.setRawMode(false);
       }
-      rl.resume();
+      // Keys typed while the picker was open also landed in readline's hidden
+      // line buffer; without this the NEXT prompt starts pre-filled with the
+      // picker's filter text (invisible until submitted as garbage input).
+      const rli = rl as unknown as { line?: string; cursor?: number };
+      if (typeof rli.line === "string" && rli.line.length > 0) {
+        rli.line = "";
+        rli.cursor = 0;
+      }
       pickerActive = false;
     }
   };

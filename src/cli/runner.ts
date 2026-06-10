@@ -63,6 +63,14 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: "ooo-ralph",
+    summary: "Execute and monitor ooo ralph implementation loop.",
+    loader: async () => {
+      const m = await import("../commands/ooo-ralph");
+      return args => m.runOooRalphCommand(args);
+    },
+  },
+  {
     name: "doctor",
     summary: "Check connectivity.",
     loader: async () => {

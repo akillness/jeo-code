@@ -243,3 +243,11 @@ Required npm token permissions:
 
 ---
 *V2 Evolution Update: 2026-06-11 (Level 3 Evolution In Progress)*
+
+## Monitoring HUD
+ now features a Sovereign Monitoring HUD for real-time visibility:
+- **Phase Tracking**: Thinking → Planning → Executing → Reporting → Done
+- **Evolution Stages**: Primordial Cell to Singularity (based on tool usage)
+- **Self-Analysis**: Automated detection of monolithic files and performance bottlenecks
+
+Run  (future) or use the  module in your TUI integrations.

@@ -29,6 +29,7 @@ import { categoryBadge, categoryForTool } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
 import { formatDuration, formatUsage } from "./components/duration";
+import { renderHud, derivePhase, type JocPhase } from "./components/hud";
 import chalk from "chalk";
 
 export interface LaunchTuiOptions {
@@ -52,6 +53,19 @@ export interface AgentEventsLike {
 }
 
 const DEFAULT_MAX_STEPS = 25;
+function todoListChanged(
+  oldItems: { title: string; status: string }[],
+  newItems: { title: string; status: string }[]
+): boolean {
+  if (oldItems.length !== newItems.length) return true;
+  for (let i = 0; i < oldItems.length; i++) {
+    if (oldItems[i].title !== newItems[i].title || oldItems[i].status !== newItems[i].status) {
+      return true;
+    }
+  }
+  return false;
+}
+
 
 // Registered once per process: if we exit while still in the alternate screen
 // (e.g. an uncaught crash mid-turn), restore the main buffer + cursor so the
@@ -77,6 +91,8 @@ export class LaunchTui {
   // True between a step start and the model's reply — i.e. we're waiting on the model.
   // Surfaced in the status line ("calling model…") so the wait isn't an opaque pause.
   private thinking = false;
+  private hudPhase: JocPhase = "thinking";
+  private runningTool = false;
   // Latest transient provider notice (rate-limit auto-retry countdown); pinned into the
   // [STEP] status row while waiting so backoff is visible at a glance. Cleared on the
   // next step / model reply.
@@ -131,6 +147,11 @@ export class LaunchTui {
 
   /** Update the agent-declared task plan (driven by the `todo` tool). */
   setTodos(items: { title: string; status: "pending" | "in_progress" | "done" }[]): void {
+    const hasInProgress = items.some(item => item.status === "in_progress");
+    const changed = todoListChanged(this.todos, items);
+    if (hasInProgress && changed && !this.runningTool) {
+      this.hudPhase = "planning";
+    }
     this.todos = items;
     this.draw();
   }
@@ -158,6 +179,7 @@ export class LaunchTui {
       onStep: step => {
         this.footer.step = step;
         this.thinking = true; // waiting on the model for this step
+        this.hudPhase = "thinking";
         this.retryNotice = null; // a new step starts a fresh model call
         this.currentStepStartedAt = Date.now();
         this.spinner.updateStep(step, this.footer.maxSteps);
@@ -168,15 +190,20 @@ export class LaunchTui {
         this.thinking = false; // model replied; now dispatching the tool
         this.retryNotice = null; // the call got through — clear any backoff notice
         if (invocation && invocation.tool !== "done") {
+          this.runningTool = true;
+          this.hudPhase = "executing";
           const toolName = invocation.tool || "(no tool)";
           this.pendingIndex = this.tools.start(toolName);
           const summary = summarizeForgeInvocation(toolName, invocation.arguments);
           this.pendingTitle = summary.title;
           this.rememberForge(summary);
           this.draw();
+        } else {
+          this.hudPhase = "reporting";
         }
       },
       onToolResult: (tool, success, output) => {
+        this.runningTool = false;
         if (this.pendingIndex !== null) {
           this.tools.finish(this.pendingIndex, success);
           this.pendingIndex = null;
@@ -364,6 +391,7 @@ export class LaunchTui {
   /** Collapse the live region to static final output. */
   finish(reply: string): void {
     this.finished = true;
+    this.hudPhase = "done";
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
@@ -396,13 +424,33 @@ export class LaunchTui {
     }
     for (const line of this.stream.render(size().cols)) finalLines.push(line);
     for (const line of this.renderForge(size().cols, 3)) finalLines.push(line);
+    if (timelineSteps.length > 0) {
+      const arrow = this.unicode ? " → " : " -> ";
+      const flow = ["thinking", "planning", "executing", "done"].join(arrow);
+      const stepsCount = this.footer.step || 0;
+      const durationStr = formatDuration(Date.now() - this.startedAt);
+      const usageStr = this.turnUsage ? ` · ${formatUsage(this.turnUsage)}` : "";
+      const doneBadge = categoryBadge("done", { color: this.theme.color });
+      finalLines.push(`${doneBadge} ${flow} · ${stepsCount} steps · ${durationStr}${usageStr}`);
+    }
     // Show how far the agent evolved this turn (monotonic peak) with rich statistics.
     const steps = this.footer.step || 0;
     const peak = this.progress.current();
     const usageSuffix = this.turnUsage ? ` · ${formatUsage(this.turnUsage)}` : "";
     finalLines.push(`Evolved to: ${evolutionTrack(peak, { unicode: this.unicode, color: this.theme.color })} (took ${steps} steps in ${formatDuration(Date.now() - this.startedAt)}${usageSuffix})`);
     finalLines.push(`joc> ${reply}`);
-    console.log(finalLines.join("\n"));
+    if (this.tty) {
+      // Main-buffer hygiene after leaving the alt screen: the cursor lands on rows
+      // that still hold pre-turn content (old footer box, project-context lines).
+      // Without clear-to-EOL every summary line visually MERGES with that stale
+      // text, and the leftover footer reservation below renders as a torn, dead-
+      // looking input box. Clear each line's tail, then everything below.
+      this.write("\r\x1b[K");
+      this.write(finalLines.map(l => `${l}\x1b[K`).join("\n") + "\n");
+      this.write("\x1b[0J");
+    } else {
+      console.log(finalLines.join("\n"));
+    }
   }
 
   private rememberForge(summary: ForgeSummary): void {
@@ -483,6 +531,9 @@ export class LaunchTui {
       const palette = [grad.from, grad.to];
 
       if (fit) {
+        bottom.push("");
+        bottom.push(`  ${renderHud(this.hudPhase, { unicode: this.unicode, color: this.theme.color })}`);
+        bottom.push("");
         const stats = this.tools.stats();
         for (const line of renderJocStatus({
           step: stepNow,

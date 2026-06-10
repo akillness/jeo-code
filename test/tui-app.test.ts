@@ -31,19 +31,17 @@ test("LaunchTui: on a TTY the live turn uses the alternate screen buffer (scroll
   expect(enterAltScreen()).toContain("\x1b[?1007l");
   expect(leaveAltScreen()).toContain("\x1b[?1007h");
 
-  const logged: string[] = [];
-  const origLog = console.log;
-  console.log = (...a: unknown[]) => logged.push(a.join(" "));
-  try {
-    tui.finish("ok");
-  } finally {
-    console.log = origLog;
-  }
+  tui.finish("ok");
   const tail = out.join("");
   expect(tail).toContain(leaveAltScreen()); // restored main buffer on finish
   expect(tail).toContain(showCursor());
-  // Final summary is printed to the main buffer (scrollback), not the alt screen.
-  expect(logged.join("\n")).toContain("joc> ok");
+  // Final summary is WRITTEN to the main buffer (scrollback) AFTER leaving the alt
+  // screen, with clear-to-EOL per line + clear-below so stale pre-turn rows (old
+  // footer box, context lines) never merge into the summary or leave a torn box.
+  const afterLeave = tail.slice(tail.indexOf(leaveAltScreen()));
+  expect(afterLeave).toContain("joc> ok");
+  expect(afterLeave).toContain("\x1b[K");
+  expect(afterLeave).toContain("\x1b[0J");
 });
 
 test("LaunchTui: without a TTY the alt screen is NOT used (plain in-place render)", () => {

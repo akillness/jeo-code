@@ -130,3 +130,38 @@ test("formatStepTimeline: maxRows keeps recent + (+N earlier); highlightActive b
     chalk.level = prev;
   }
 });
+test("formatStepTimeline: gjc-style visual states when color is on", () => {
+  const steps: TimelineStep[] = [
+    { label: "read", state: "done" },
+    { label: "bash", state: "active" },
+    { label: "edit", state: "failed" },
+    { label: "write", state: "pending" },
+  ];
+  const prev = chalk.level;
+  chalk.level = 3;
+  try {
+    const colored = formatStepTimeline(steps, { color: true, highlightActive: true });
+    const plain = formatStepTimeline(steps, { color: false, highlightActive: true });
+
+    // 1. done label wrapped in \x1b[9m… and has \x1b[29m
+    expect(colored[0]).toContain("\x1b[9m");
+    expect(colored[0]).toContain("\x1b[29m");
+
+    // 2. failed label contains red code \x1b[31m
+    expect(colored[2]).toContain("\x1b[31m");
+
+    // 3. active label contains cyan \x1b[36m and bold \x1b[1m
+    expect(colored[1]).toContain("\x1b[36m");
+    expect(colored[1]).toContain("\x1b[1m");
+
+    // 4. pending label contains dim \x1b[2m
+    expect(colored[3]).toContain("\x1b[2m");
+
+    // 5. stripping ANSI yields the same text as color:false
+    for (let i = 0; i < steps.length; i++) {
+      expect(strip(colored[i])).toBe(plain[i]);
+    }
+  } finally {
+    chalk.level = prev;
+  }
+});

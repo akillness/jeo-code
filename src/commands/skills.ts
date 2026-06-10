@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { SKILLS, getSkillFrom, formatSkill, loadSkills } from "../skills/catalog";
+import { SKILLS, getSkillFrom, formatSkill, loadSkills, skillDirs } from "../skills/catalog";
 import { getLocalJocDir } from "../agent/state";
 
 function editDistance(a: string, b: string): number {
@@ -59,6 +59,9 @@ export async function runSkillsCommand(args: string[] = []): Promise<void> {
       for (const s of skills) {
         console.log(`  ${s.name.padEnd(16)} ${s.summary}`);
       }
+      console.log("\nInvoke: /skill <name> [intent]  ·  $<name> [intent]  ·  skill-owned slash aliases (e.g. /speckit.plan)");
+      console.log("Discovery dirs (later wins on name clash; JOC_SKILLS_DIR adds more):");
+      for (const d of skillDirs(cwd)) console.log(`  ${d}`);
       console.log("");
     }
     return;

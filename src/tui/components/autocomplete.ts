@@ -116,6 +116,12 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       const pool = (ctx.mentionPaths?.(prefix) ?? []).map(p => (p.startsWith("@") ? p : `@${p}`));
       return { completions: dedupeCap(prefixHits(pool, token)), token, kind: "path" };
     }
+    // `$skill` exact-name entrypoint (gjc/Codex style) — complete the FIRST token only,
+    // matching the parser rule that only a leading `$name` invokes a skill.
+    if (tokens.length <= 1 && token.startsWith("$") && line.startsWith("$")) {
+      const names = ctx.skillNames ?? skillNames();
+      return { completions: dedupeCap(prefixHits(names.map(n => `$${n}`), token)), token, kind: "skill" };
+    }
     return { completions: [], token: line, kind: "none" };
   }
 

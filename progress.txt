@@ -71,3 +71,4 @@
 - 발견/수정: ① rl.pause()는 피커 keypress까지 굶겨 행 위험 → 출력 게이트(previewArmed||pickerActive) 방식으로 교체, ② repaint/clear off-by-one(cursorUp(rendered)→rendered-1)로 매 키입력마다 힌트행 잔상 누적되던 실버그 수정 + 기존 행 이동은 \n 대신 CUD, ③ 피커 종료 시 rl.line/cursor 클리어(다음 프롬프트 보이지 않는 필터텍스트 누출 차단).
 - 라이브 결과: 필터행 1개/잔상 0, BSpace 후 목록 복귀(행 없음), ESC 후 박스 1개 복원, /exit 정상.
 - Verified: typecheck 0; bun test 871 pass / 0 fail; build ok.
+2026-06-10: Executed deepinit and code-refactoring for V2. Extracted output-util and tool-registry. Lean engine.ts loop finalized. Updated AGENTS.md files.

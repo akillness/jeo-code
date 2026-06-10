@@ -1,39 +1,22 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-07 | Updated: 2026-06-07 -->
+<!-- Generated: 2026-06-10 | Updated: 2026-06-10 -->
 
 # agent
 
 ## Purpose
-Agent runtime loop and tool-use executor layer. It manages agent state, tool execution, session messages persistence, and message compaction.
+Agent runtime loop and tool-use executor layer. V2 features a refactored Lean Loop.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `engine.ts` | The core `runAgentLoop` function which polls LLM and executes JSON tool calls |
-| `tools.ts` | Implementation of the 6 default tools (read, write, edit, bash, find, search) + MutationGuard |
-| `state.ts` | Config files I/O, config merging with environment, and active workflow state parser |
-| `config-schema.ts` | Zod validation schemas for global `config.json` |
-| `subagents.ts` | Subagent role system prompts and toolsets definitions |
-| `compaction.ts` | Summarizes older conversation history to fit within context limits |
-| `session.ts` | Session directory file writer (saves messages as JSONL) |
-| `context-files.ts` | Detects and loads workspace context files (JEO.md, AGENTS.md, CLAUDE.md) |
-| `loop.ts` | Small wrapper to call the LLM manager |
-| `json.ts` | Safe JSON parsing utilities |
-
-## Subdirectories
-None.
+| `engine.ts` | **Lean Loop**: Core `runAgentLoop` function; handles polling and dispatch only. |
+| `tool-registry.ts` | Centralized tool definitions and protocols. |
+| `output-util.ts` | Utilities for output truncation, spilling, and performance logging. |
+| `tools.ts` | Implementation of default tools + MutationGuard. |
+| `dev/` | Evolution and self-analysis tools (V2 components). |
 
 ## For AI Agents
-
-### Working In This Directory
-- `tools.ts` enforces the MutationGuard (prevents modifications when ambiguity > 20%).
-- Read-only subagents must not have mutating tools in their toolsets; define their toolsets in `subagents.ts`.
-- Maintain atomic JSON tool-call schema (`{ tool, arguments }`) in `engine.ts`.
-
-## Dependencies
-
-### Internal
-- `src/ai/` (uses the model manager to call the LLM)
-- `src/tui/` (sends tool-execution hooks to update TUI logs/footer)
+- Maintain the separation between tool registration (`tool-registry.ts`) and loop logic (`engine.ts`).
+- Use `src/agent/dev/` components for evolution-related tasks.
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

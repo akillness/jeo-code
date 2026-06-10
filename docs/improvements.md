@@ -6170,3 +6170,21 @@ Eager fixed reservation:
 - `bun run typecheck` → 0 errors.
 - `bun test` → **871 pass / 0 fail** (113 files).
 - README "단일 입력 박스" section refreshed; new "인터랙티브 picker" paragraph documents the rawMode/resume contract and the off-by-one fix.
+
+## 887. Live PTY verification of the picker fixes + two real bugs found & fixed (pass 887)
+
+**Date:** 2026-06-10 · **Dimension: TUI verification (real tmux PTY), picker repaint correctness.**
+
+### Verification method
+- Behavioral, not just unit: spawned a real `joc launch` inside a 100x30 tmux PTY, opened the `/model` picker, sent arrow keys and a Korean filter (`너의페르소나`), captured panes, and asserted frame integrity (`grep -c '╭'`, hint-row counts).
+
+### Bugs the live run exposed (and their fixes)
+1. **`rl.pause()` regression risk removed**: pausing readline stops the underlying stdin stream, which would ALSO starve the picker's own `keypress` listener (picker hang). Replaced with a gate-based design: `gatedStdout(process.stdout, () => previewArmed || pickerActive)` keeps readline echo suppressed during pickers WITHOUT touching stream flow; raw mode + `process.stdin.resume()` keep keys flowing. `pickerActive` declaration moved above the readline construction.
+2. **Picker repaint off-by-one (the actual trail corruption)**: after a paint the cursor sits on the block's LAST row, so the anchor return is `cursorUp(rendered - 1)` — the old `cursorUp(rendered)` overshot one row per repaint, crawling upward and leaving a stale hint row behind on every keystroke (live-reproduced: 4 stacked `type to filter` rows). Fixed in both `repaint()` and `clear()` (parallel-session fix preserved), plus CUD (`ESC[1B`) instead of scrolling `\n` for rows the block already occupies.
+3. **Readline buffer hygiene**: keys typed while a picker is open also land in readline's hidden line buffer; the picker now clears `rl.line`/`rl.cursor` on close so the next prompt never starts pre-filled with invisible filter text.
+
+### Live PTY results (after fix)
+- Open picker → ONE frame; Down×3 + `너의페르소나` → exactly one `filter:` row, zero stale rows; BSpace×6 → full list returns in one frame, highlight intact (no hang); ESC → `(cancelled)` + boxed prompt restored, box count = 1, no CJK leakage into the input box; `/exit` clean.
+
+### Verification (pass 887)
+- Full: `bun run typecheck` → 0; `bun test` → **871 pass / 0 fail** (113 files); `bun run build` → ok.

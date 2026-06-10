@@ -453,6 +453,16 @@ export function parseSkillInvocation(input: string, skills: SkillDoc[]): SkillIn
   }
 
   const command = trimmed.split(/\s+/, 1)[0] ?? "";
+  // Codex/gjc-style exact-name entrypoint: `$team [intent]` invokes the skill
+  // named "team" directly (case-insensitive). Only the FIRST token counts, and
+  // only when a skill with that exact name is loaded — `$HOME is what?` or any
+  // unknown `$word` falls through to the model as an ordinary prompt.
+  if (command.length > 1 && command.startsWith("$")) {
+    const dollarSkill = getSkillFrom(skills, command.slice(1));
+    if (dollarSkill) {
+      return { skill: dollarSkill, intent: trimmed.slice(command.length).trim(), invokedAs: command };
+    }
+  }
   let skill = getSkillBySlash(skills, command);
   if (!skill) {
     if (command.startsWith("/") || command.startsWith(".") || command.includes("/")) {

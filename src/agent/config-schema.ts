@@ -62,6 +62,8 @@ export const ConfigSchema = z
       .record(
         z.object({
           model: z.string().optional(),
+          // Tolerated, informational provider tag (model ids are persisted provider-qualified)
+          provider: z.enum(["anthropic", "openai", "gemini", "ollama"]).optional(),
           maxSteps: z.number().int().min(1).optional(),
         }),
       )

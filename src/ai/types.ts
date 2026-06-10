@@ -28,6 +28,9 @@ export interface CallOptions {
   signal?: AbortSignal;
   /** Reasoning effort for reasoning models (o-series / gpt-5), mapped from thinkingLevel. */
   reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  /** Notified before each auto-retry backoff wait (rate limits / transient errors).
+   *  NOT forwarded to provider adapters — consumed by the manager's retry layer. */
+  onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
 }
 
 export interface ProviderAdapter {

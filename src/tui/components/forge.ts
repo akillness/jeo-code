@@ -21,6 +21,24 @@ export interface ForgeBoxOptions {
 
 const SECRET_VALUE_RE = /(api[_-]?key|authorization|bearer|password|secret|token)(\s*[:=]\s*)(["']?)[^"'\s,}]+/gi;
 const SECRET_JSON_RE = /("(?:api[_-]?key|authorization|password|secret|token)"\s*:\s*")[^"]+(")/gi;
+const EXT_TO_LANG: Record<string, string> = {
+  ts: "typescript",
+  js: "javascript",
+  tsx: "typescript",
+  jsx: "javascript",
+  json: "json",
+  md: "markdown",
+  sh: "bash",
+  py: "python",
+  yaml: "yaml",
+  yml: "yaml",
+  toml: "toml",
+  css: "css",
+  html: "html",
+  rs: "rust",
+  go: "go",
+};
+
 
 export function redactSecrets(input: string): string {
   return input
@@ -73,6 +91,13 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown): ForgeS
     const command = stringArg(args, "command", "cmd") ?? "";
     const timeout = stringArg(args, "timeoutMs", "timeout");
     const lines = [...previewLines(command, 8, 800)];
+    const cwdKey = Object.keys(args).find(k => /^(cwd|workingdir|workingdirectory|subdir|dir)$/i.test(k));
+    if (cwdKey !== undefined) {
+      const cwdVal = args[cwdKey];
+      if (cwdVal !== undefined && cwdVal !== null && cwdVal !== "") {
+        lines.push(`# cwd-relative: ${cwdVal}`);
+      }
+    }
     if (timeout) lines.unshift(`# timeoutMs: ${timeout}`);
     return { title: "bash command", language: "bash", lines };
   }
@@ -83,7 +108,7 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown): ForgeS
     return {
       title: `read ${filePath}`,
       language: "path",
-      lines: [`path: ${filePath}`, range ? `range: ${range}` : "range: full/default preview"],
+      lines: [`path: ${filePath}`, range ? `range: ${range}` : "range: full/default preview # preview"],
     };
   }
 
@@ -91,10 +116,13 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown): ForgeS
     const filePath = stringArg(args, "filePath", "path") ?? "<missing path>";
     const content = typeof args.content === "string" ? args.content : "";
     const lineCount = content.length === 0 ? 0 : content.split("\n").length;
+    const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+    const lang = EXT_TO_LANG[ext];
+    const langTag = lang ? ` · ${lang}` : "";
     return {
       title: `write ${filePath}`,
       language: "text",
-      lines: [`# ${content.length} bytes · ${lineCount} line(s) -> ${filePath}`, ...previewLines(content, 8, 800)],
+      lines: [`# ${content.length} bytes · ${lineCount} line(s)${langTag} -> ${filePath}`, ...previewLines(content, 8, 800)],
     };
   }
 
@@ -135,10 +163,16 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown): ForgeS
 
 export function summarizeForgeResult(tool: string, success: boolean, output: string): ForgeSummary {
   const status = success ? "ok" : "failed";
+  const safeTool = tool || "(no tool)";
+  const normalized = safeTool.toLowerCase();
+  const lines = previewLines(output || "<no output>", success ? 5 : 10, success ? 600 : 1200);
+  if (normalized === "bash") {
+    lines.unshift(success ? "# exit ok" : "# exit fail");
+  }
   return {
-    title: `${tool || "(no tool)"} result ${status}`,
+    title: `${safeTool} result ${status}`,
     language: "output",
-    lines: previewLines(output || "<no output>", success ? 5 : 10, success ? 600 : 1200),
+    lines,
   };
 }
 

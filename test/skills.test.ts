@@ -121,7 +121,7 @@ test("workflowSkillsForPrompt advertises only bundled workflow skills", () => {
   const routed = workflowSkillsForPrompt([...SKILLS, external, { ...ralplan, summary: "custom ralplan" }]);
   expect(routed.map(s => s.name)).toEqual(SKILLS.map(s => s.name));
   expect(routed.some(s => s.name === "spec-kit")).toBe(false);
-  expect(routed.find(s => s.name === "ralplan")?.summary).toBe("custom ralplan");
+  expect(routed.find(s => s.name === "ralplan")?.summary).toBe("Planner/Architect/Critic blueprint from the seed.");
 });
 
 test("parseSkillInvocation only matches explicit slash invocations", () => {

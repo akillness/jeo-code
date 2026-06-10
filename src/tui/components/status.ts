@@ -19,6 +19,9 @@ export interface JocStatusData {
    *  forge line so the current stage — the double helix — is always exposed, even when the
    *  large ASCII art is dropped on short terminals. */
   stage?: string;
+  stepElapsedMs?: number;
+  avgStepMs?: number;
+
 }
 
 export function progressPercent(step: number | undefined, maxSteps: number | undefined): number {
@@ -54,9 +57,17 @@ export function renderJocStatus(data: JocStatusData): string[] {
   const toolCounts = `${green(`${ok} ok`)} / ${red(`${fail} fail`)} / ${yellow(`${running} running`)}`;
 
   const guard = data.mutationGuarded ? ` · ${redBold("mutation locked")}` : "";
+  let extraStats = "";
+  if (Number.isFinite(data.stepElapsedMs)) {
+    extraStats += ` · step ${(data.stepElapsedMs! / 1000).toFixed(1)}s`;
+  }
+  if (Number.isFinite(data.avgStepMs)) {
+    extraStats += ` · avg ${(data.avgStepMs! / 1000).toFixed(1)}s`;
+  }
+
 
   return [
-    `  ${categoryBadge("progress", { color: useColor })} ${cyanBold("joc thinking")} · ${msg} · step ${step}/${max} · ${pct}% ${bar} · ${elapsed}`,
+    `  ${categoryBadge("progress", { color: useColor })} ${cyanBold("joc thinking")} · ${msg} · step ${step}/${max} · ${pct}% ${bar} · ${elapsed}${extraStats}`,
     `  ${categoryBadge("tool", { color: useColor })} ${magentaBold("joc forge")} · ${stage}${current} · tools ${total} (${toolCounts})${guard}`,
   ];
 }

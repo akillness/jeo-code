@@ -11,7 +11,9 @@ import {
   latestSessionId,
   sessionPath,
   sessionsDir,
-  newSessionId
+  newSessionId,
+  renameSession,
+  deleteSession
 } from "../src/agent/session";
 
 test("session lifecycle and logic with custom cwd", async () => {
@@ -112,6 +114,59 @@ test("session default cwd behavior", async () => {
     expect(latest).toBe(sess.id);
   } finally {
     process.chdir(originalCwd);
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("session rename and delete lifecycle", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-sess-manage-"));
+  try {
+    const id = newSessionId();
+    const sess = await createSession(tempDir, id);
+    const msg: Message = { role: "user", content: "Hello for management" };
+    await appendMessage(id, msg, tempDir);
+
+    // Verify initial load has no title
+    const initial = await loadSession(id, tempDir);
+    expect(initial.header.title).toBeUndefined();
+
+    // Rename session
+    await renameSession(id, "My Cool Session", tempDir);
+
+    // Verify load has title and messages are intact
+    const loaded = await loadSession(id, tempDir);
+    expect(loaded.header.title).toBe("My Cool Session");
+    expect(loaded.messages.length).toBe(1);
+    expect(loaded.messages[0]).toEqual(msg);
+
+    // Verify listSessions surfaces title
+    const list = await listSessions(tempDir);
+    expect(list.length).toBe(1);
+    expect(list[0].id).toBe(id);
+    expect(list[0].title).toBe("My Cool Session");
+    expect(list[0].preview).toBe("Hello for management");
+
+    // Renaming a missing id rejects
+    let threw = false;
+    try {
+      await renameSession("non-existent-id", "Failed Title", tempDir);
+    } catch (err) {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+
+    // Delete session
+    const deletedTrue = await deleteSession(id, tempDir);
+    expect(deletedTrue).toBe(true);
+
+    // Delete again (missing file) returns false
+    const deletedFalse = await deleteSession(id, tempDir);
+    expect(deletedFalse).toBe(false);
+
+    // Verify it is gone
+    const listEmpty = await listSessions(tempDir);
+    expect(listEmpty.length).toBe(0);
+  } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });

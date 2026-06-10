@@ -5762,3 +5762,17 @@ Addressing user-reported issues: (1) subagent model/provider setting changes mad
 - Focused: `bun test test/skills.test.ts test/tui-app.test.ts test/step-timeline.test.ts` → **33 pass / 0 fail**.
 - Parallel stress test: `bun test/verify-100.ts` → **100/100 runs passed** (concurrency 15).
 - Full: `bun run typecheck` → 0 errors; `bun test` → **697 pass / 0 fail**; `bun run build` → ok.
+## Ralph Pass 874 — Anthropic 429 resilience + single boxed input (2026-06-10)
+
+User-reported: `/model` to Anthropic (OAuth) hit `Rate limited by Anthropic (HTTP 429). Auto-retry was exhausted` almost immediately, the same error printed TWICE (stream `✗ error:` line + `joc> Error:` reply), and the raw `joc>` CLI prompt was still visible alongside the boxed input.
+
+- **874a.** Root cause of the instant exhaustion: the default 429 budget (5 attempts, flat 2s floor, 4s backoff cap) waited only ~8s total while Anthropic per-minute/OAuth rate-limit windows need ≥60s. `withRetry` (`src/util/retry.ts`) now ESCALATES the rate-limit floor per attempt (`rateLimitMinDelayMs × 2^(attempt-1)`, capped at 30s), and the default 429 budget (`src/ai/model-manager.ts`) is 6 attempts — waits 2s → 4s → 8s → 16s → 30s ≈ 60s total, spanning a realistic per-minute window. Server `Retry-After` still wins (capped); explicit config still disables the defaults.
+- **874b.** Auto-retry is now VISIBLE: `RetryOptions.onRetry` gained the applied `delayMs`, `CallOptions`/`ChatOptions` carry an `onRetry` sink threaded through `resolveCall` → `withRetry`, and `runAgentLoop` surfaces each wait as a new `AgentLoopEvents.onNotice` (`rate limited (HTTP 429) — auto-retry #N in Ss`). Consumers: TUI stream (progress badge), plain stream sink (yellow), `joc team` (step event), task-tool (subagent `step` beat).
+- **874c.** Duplicate error display removed: the engine no longer emits a separate error event when a thrown LLM error becomes the turn's `doneReason` — every caller (TUI `finish`, `joc>` reply line, team reason line) already displays that, so the failure now leaves exactly ONE record. The dead `AgentLoopEvents.onError` was replaced by `onNotice` across `engine.ts`, `tui/app.ts`, `launch.ts`, `team.ts`, `task-tool.ts`.
+- **874d.** Single boxed input: the boxed-input footer height is now ADAPTIVE (`previewRowsFor`: 5–12 rows based on terminal height) so short terminals/panes keep the box instead of silently falling back to the raw `joc>` prompt (previously any terminal under 17 rows lost it). The armed height is snapshotted (`footerRows`) so arm/draw/disarm always agree across resizes.
+- **874e.** In box mode the REPL passes an EMPTY readline prompt (`rl.question("")`) — no raw `joc>` prompt can ever flash; the legacy `\njoc> ` prompt only renders when the box is off (non-TTY / `JOC_NO_SLASH_PREVIEW=1` / tiny terminal).
+- **874f.** Aligned stale test expectations with the in-flight slash-command additions (`/context`, `/tools`, `/theme`, `/drop`, `/dump`) and the ToolList `✔` success glyph (`test/slash.test.ts`, `test/category-index.test.ts`).
+
+### Verification (pass 874)
+- New tests: escalating 429 floor capped at 30s spanning ~60s over the default budget, `Retry-After:0` floor escalation, `onRetry` delay payload (`test/retry.test.ts`); engine `onNotice` retry surfacing + single error record (`test/engine.test.ts`); regression guard updated to the 6-attempt budget (`test/round-b.test.ts`).
+- Full: `bun run typecheck` → 0 errors; `bun test` → **716 pass / 0 fail**.

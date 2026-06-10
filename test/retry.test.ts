@@ -22,7 +22,7 @@ test("resolveRetryOptions maps a gjc retry budget to withRetry options", () => {
 test("resolveRetryOptions: rate-limit defaults engage only when not explicitly configured", () => {
   // Unset → generous 429 budget + a backoff floor so the first 429 doesn't instantly exhaust.
   const base = resolveRetryOptions(undefined);
-  expect(base.rateLimitRetries).toBe(5);
+  expect(base.rateLimitRetries).toBe(6);
   expect(base.rateLimitMinDelayMs).toBe(2000);
 
   // Explicit requestMaxRetries wins: rate-limit gets no bonus beyond the budget.
@@ -97,15 +97,49 @@ test("withRetry: a non-rate-limit error is NOT floored by rateLimitMinDelayMs", 
   expect(sleeps).toEqual([100]); // jitter only, no 429 floor
 });
 
-test("withRetry: a 429 Retry-After:0 is still floored by rateLimitMinDelayMs", async () => {
+test("withRetry: a 429 Retry-After:0 is still floored, and the floor escalates per attempt", async () => {
   const sleeps: number[] = [];
   await withRetry(
     async () => { throw { status: 429, message: "slow", retryAfterMs: 0 }; },
     { retries: 1, rateLimitRetries: 3, rateLimitMinDelayMs: 2000, baseDelayMs: 1, sleep: async ms => { sleeps.push(ms); } },
   ).catch(() => {});
   // Without the floor a Retry-After:0 would sleep 0 and burn the budget instantly.
-  expect(sleeps.length).toBe(2);
-  for (const ms of sleeps) expect(ms).toBe(2000);
+  // The floor doubles each retry so the total wait spans a realistic 429 window.
+  expect(sleeps).toEqual([2000, 4000]);
+});
+
+test("withRetry: the escalating 429 floor is capped at 30s and spans ~a minute over the default budget", async () => {
+  const sleeps: number[] = [];
+  await withRetry(
+    async () => { throw { status: 429, message: "slow down" }; },
+    {
+      retries: 1,
+      rateLimitRetries: 6, // the resolveRetryOptions default budget
+      rateLimitMinDelayMs: 2000,
+      baseDelayMs: 100,
+      maxDelayMs: 100,
+      random: () => 1,
+      sleep: async ms => { sleeps.push(ms); },
+    },
+  ).catch(() => {});
+  // 2s → 4s → 8s → 16s → 30s (32s capped): ≈60s total, covering a per-minute window.
+  expect(sleeps).toEqual([2000, 4000, 8000, 16000, 30000]);
+});
+
+test("withRetry: onRetry receives the actually-applied delay", async () => {
+  const seen: Array<{ attempt: number; delayMs: number }> = [];
+  await withRetry(
+    async () => { throw { status: 429, message: "slow" }; },
+    {
+      retries: 1,
+      rateLimitRetries: 2,
+      rateLimitMinDelayMs: 2000,
+      baseDelayMs: 1,
+      sleep: async () => {},
+      onRetry: (attempt, _err, delayMs) => { seen.push({ attempt, delayMs }); },
+    },
+  ).catch(() => {});
+  expect(seen).toEqual([{ attempt: 1, delayMs: 2000 }]);
 });
 
 test("withRetry honors a resolved requestMaxRetries budget (attempt count)", async () => {

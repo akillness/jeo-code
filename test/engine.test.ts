@@ -172,6 +172,30 @@ test("runAgentLoop: a thrown LLM error becomes the doneReason (not a step-limit 
   expect(result.doneReason).toContain("HTTP 401");
 });
 
+test("runAgentLoop: provider auto-retry surfaces as onNotice and the terminal error is reported ONCE (via doneReason)", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_h: unknown, options: { onRetry?: (attempt: number, err: unknown, delayMs: number) => void }) => {
+      // Simulate the model-manager retry layer: one 429 backoff wait, then exhaustion.
+      options.onRetry?.(1, { status: 429, message: "rate limited" }, 4000);
+      throw { status: 429, message: "Anthropic request failed (HTTP 429): rate limited" };
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const notices: string[] = [];
+  const history = [{ role: "system" as const, content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 5,
+    events: { onNotice: msg => notices.push(msg) },
+  });
+  // The retry wait is visible while it happens…
+  expect(notices).toEqual(["rate limited (HTTP 429) — auto-retry #1 in 4s"]);
+  // …and the final failure is carried ONLY by doneReason (no duplicate error event).
+  expect(result.done).toBe(false);
+  expect(result.doneReason).toContain("Rate limited");
+  expect(result.doneReason).toContain("429");
+});
+
 test("truncateToolOutput: keeps head and tail (tail holds the decisive part)", () => {
   const short = "all good";
   expect(truncateToolOutput(short, 100)).toBe(short);

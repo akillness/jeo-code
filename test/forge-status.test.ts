@@ -170,3 +170,51 @@ test("renderJocStatus: forge line exposes the evolution stage (double helix) whe
   const plain = renderJocStatus({ step: 1, maxSteps: 25, color: false });
   expect(plain[1] ?? "").not.toContain("Double Helix");
 });
+
+test("summarizeForgeInvocation and summarizeForgeResult polish and status step stats", () => {
+  // 1. bash cwd-relative note and line budget
+  const bashInv = summarizeForgeInvocation("bash", { command: "echo line1\necho line2", cwd: "my-subdir" });
+  expect(bashInv.lines).toContain("# cwd-relative: my-subdir");
+  expect(bashInv.lines.filter(l => !l.startsWith("#"))).toHaveLength(2);
+
+  // Check no cwd-relative when absent
+  const bashNoCwd = summarizeForgeInvocation("bash", { command: "echo hello" });
+  expect(bashNoCwd.lines.some(l => l.includes("cwd-relative"))).toBe(false);
+
+  // 2. write language tag from extension
+  const writeTs = summarizeForgeInvocation("write", { path: "src/main.ts", content: "const a = 1;" });
+  expect(writeTs.lines[0]).toContain("· typescript -> src/main.ts");
+
+  const writeUnknown = summarizeForgeInvocation("write", { path: "foo.unknown", content: "hello" });
+  expect(writeUnknown.lines[0]).toBe("# 5 bytes · 1 line(s) -> foo.unknown");
+
+  // 3. read with absent lineRange has # preview marker
+  const readNoRange = summarizeForgeInvocation("read", { filePath: "src/app.ts" });
+  expect(readNoRange.lines[1]).toBe("range: full/default preview # preview");
+
+  // Regression check: read with present lineRange does not have # preview, and contains range: 1-20
+  const readWithRange = summarizeForgeInvocation("read", { filePath: "src/app.ts", lineRange: "1-20" });
+  expect(readWithRange.lines).toEqual(["path: src/app.ts", "range: 1-20"]);
+
+  // 4. bash exit ok / fail and redaction regression
+  const bashResultOk = summarizeForgeResult("bash", true, "success api-key=abc12345");
+  expect(bashResultOk.lines[0]).toBe("# exit ok");
+  expect(bashResultOk.lines[1]).toContain("<redacted>");
+
+  const bashResultFail = summarizeForgeResult("bash", false, "error token: mysecret");
+  expect(bashResultFail.lines[0]).toBe("# exit fail");
+  expect(bashResultFail.lines[1]).toContain("<redacted>");
+
+  // 5. renderJocStatus with stepElapsedMs and avgStepMs
+  const statusLines = renderJocStatus({
+    step: 5,
+    maxSteps: 10,
+    elapsedMs: 5000,
+    stepElapsedMs: 12300,
+    avgStepMs: 8100,
+    color: false,
+  }).map(stripAnsi);
+  expect(statusLines[0]).toContain("step 5/10");
+  expect(statusLines[0]).toContain("step 12.3s");
+  expect(statusLines[0]).toContain("avg 8.1s");
+});

@@ -13,6 +13,7 @@ import { callLlm, type Message } from "./loop";
 import { extractJsonObject } from "./json";
 import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, type ToolResult } from "./tools";
 import { friendlyProviderError } from "../util/provider-error";
+import { isRateLimitError } from "../util/retry";
 
 export interface ToolInvocation {
   tool: string;
@@ -80,7 +81,8 @@ export interface AgentLoopEvents {
   onStep?(step: number): void;
   onAssistant?(raw: string, invocation: ToolInvocation | null): void;
   onToolResult?(tool: string, success: boolean, output: string): void;
-  onError?(message: string): void;
+  /** Transient progress notice (e.g. "rate limited — retrying in Ns"); NOT a terminal error. */
+  onNotice?(message: string): void;
 }
 
 export interface AgentLoopOptions {
@@ -224,11 +226,19 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               maxTokens: opts.maxTokens,
               signal: opts.signal,
               onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
+              // Make provider auto-retry visible: previously a rate-limited call sat in a
+              // silent backoff wait, then surfaced "auto-retry was exhausted" with no trace
+              // of the retries that DID happen.
+              onRetry: (attempt, err, delayMs) => {
+                const wait = Math.max(1, Math.round(delayMs / 1000));
+                const what = isRateLimitError(err) ? "rate limited (HTTP 429)" : "transient provider error";
+                ev.onNotice?.(`${what} — auto-retry #${attempt} in ${wait}s`);
+              },
             });
     } catch (err) {
       const message = friendlyProviderError(err);
-      ev.onError?.(message);
-      // Surface the real cause so callers don't print a misleading "step limit" message.
+      // The error IS the turn's doneReason and every caller displays that — emitting a
+      // separate error event here printed the same message twice (live stream + reply).
       return finish({ done: false, steps: step, doneReason: `Error: ${message}` });
     }
 

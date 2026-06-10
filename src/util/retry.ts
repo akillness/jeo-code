@@ -5,10 +5,13 @@ export interface RetryOptions {
   isRetryable?: (err: unknown, attempt: number) => boolean;
   sleep?: (ms: number) => Promise<void>;   // injectable for tests (default real setTimeout)
   random?: () => number;   // injectable RNG for jitter (default Math.random); equal-jitter in [0.5x, 1x]
-  onRetry?: (attempt: number, err: unknown) => void;
-  /** Minimum backoff (ms) applied specifically to rate-limit (429) errors when the
-   *  server sends no `Retry-After`. A burst limit rarely clears in <1s, so a sub-second
-   *  retry just burns the budget; default 0 (no floor) preserves generic behavior. */
+  /** Notified before each backoff wait; `delayMs` is the wait actually applied. */
+  onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
+  /** Minimum backoff (ms) applied specifically to rate-limit (429) errors. The floor
+   *  ESCALATES per attempt (floor × 2^(attempt-1), capped at RETRY_AFTER_CAP_MS) because a
+   *  rate-limit window rarely clears in <1s and often needs tens of seconds — a flat
+   *  sub-second retry cadence just burns the budget; default 0 (no floor) preserves
+   *  generic behavior. */
   rateLimitMinDelayMs?: number;
   /** Total attempt cap used specifically when the current error is a rate limit (429).
    *  When higher than `retries`, rate-limit errors get extra attempts so a transient
@@ -102,13 +105,18 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
       const serverDelay = retryAfterOf(err);
       // Server `Retry-After` wins (capped); else jitter. For rate limits, apply the
       // floor in BOTH cases so a 0/near-0 Retry-After (or sub-second jitter) doesn't
-      // burn the 429 budget back-to-back with no real pause.
+      // burn the 429 budget back-to-back with no real pause. The floor escalates per
+      // attempt (×2 each retry, capped) so the total wait across the 429 budget spans
+      // a realistic rate-limit window (~a minute) instead of ~8s.
       const cappedServer = serverDelay !== undefined ? Math.min(serverDelay, RETRY_AFTER_CAP_MS) : undefined;
       const base = cappedServer !== undefined ? cappedServer : jittered;
-      const delay = rateLimited ? Math.max(base, rateLimitMinDelayMs) : base;
+      const floor = rateLimited
+        ? Math.min(rateLimitMinDelayMs * Math.pow(2, attempt - 1), RETRY_AFTER_CAP_MS)
+        : 0;
+      const delay = Math.max(base, floor);
 
       if (onRetry) {
-        onRetry(attempt, err);
+        onRetry(attempt, err, delay);
       }
 
       await sleep(delay);

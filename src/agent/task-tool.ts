@@ -157,7 +157,9 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
           opts.onEvent?.({ role: role.id, kind: "tool", detail: label, success, summary, step: currentStep, maxSteps, model });
           lastTarget = "";
         },
-        onError: msg => opts.onEvent?.({ role: role.id, kind: "error", detail: msg, step: currentStep, maxSteps, model }),
+        // Retry notices (rate-limit backoff etc.) surface as live "step" beats so the
+        // parent's monitor shows WHY a subagent is pausing instead of going silent.
+        onNotice: msg => opts.onEvent?.({ role: role.id, kind: "step", detail: msg, step: currentStep, maxSteps, model }),
       },
     });
     const reason = result.doneReason?.trim() || `(subagent reached the ${result.steps}-step limit without signaling done)`;

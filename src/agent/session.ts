@@ -9,6 +9,7 @@ export interface SessionHeader {
   id: string;
   timestamp: string;
   cwd: string;
+  title?: string;
 }
 
 export interface SessionEntry {
@@ -24,6 +25,7 @@ export interface SessionSummary {
   messageCount: number;
   preview: string;
   mtimeMs?: number;
+  title?: string;
 }
 
 export const SESSION_VERSION = 1;
@@ -181,6 +183,7 @@ export async function listSessions(cwd = process.cwd()): Promise<SessionSummary[
         messageCount,
         preview,
         mtimeMs: stat.mtimeMs,
+        title: header.title,
       });
     } catch {
       // Tolerate malformed files (skip them)
@@ -195,6 +198,67 @@ export async function listSessions(cwd = process.cwd()): Promise<SessionSummary[
 export async function latestSessionId(cwd = process.cwd()): Promise<string | undefined> {
   const list = await listSessions(cwd);
   return list[0]?.id;
+}
+
+/**
+ * Rename a session by updating the title in its JSONL header.
+ * Throws a clear Error if the session file does not exist.
+ */
+export async function renameSession(id: string, title: string, cwd = process.cwd()): Promise<void> {
+  const file = sessionPath(id, cwd);
+  let content: string;
+  try {
+    content = await fs.readFile(file, "utf8");
+  } catch (err: any) {
+    if (err.code === "ENOENT") {
+      throw new Error(`Session ${id} does not exist: ${err.message}`);
+    }
+    throw err;
+  }
+
+  const lines = content.split("\n");
+  let headerIndex = -1;
+  let header: SessionHeader | undefined;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim()) {
+      try {
+        const parsed = JSON.parse(lines[i]);
+        if (parsed && typeof parsed === "object" && parsed.type === "session") {
+          header = parsed as SessionHeader;
+          headerIndex = i;
+          break;
+        }
+      } catch {
+        // tolerate parsing error or check next line
+      }
+    }
+  }
+
+  if (headerIndex === -1 || !header) {
+    throw new Error(`Session header missing in session ${id}`);
+  }
+
+  header.title = title;
+  lines[headerIndex] = JSON.stringify(header);
+  await fs.writeFile(file, lines.join("\n"), "utf8");
+}
+
+/**
+ * Delete a session file.
+ * Returns false on ENOENT, true on success.
+ */
+export async function deleteSession(id: string, cwd = process.cwd()): Promise<boolean> {
+  const file = sessionPath(id, cwd);
+  try {
+    await fs.unlink(file);
+    return true;
+  } catch (err: any) {
+    if (err.code === "ENOENT") {
+      return false;
+    }
+    throw err;
+  }
 }
 
 export interface ExportOptions {

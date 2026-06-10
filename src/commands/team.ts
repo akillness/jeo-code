@@ -319,7 +319,7 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
       },
       onStep: step => console.log(formatRalphStreamEvent("step", `${role.title} thinking ${step}/${maxSteps}`, renderOpts)),
       onToolResult: (tool, ok) => console.log(formatRalphStreamEvent(ok ? "complete" : "error", `tool ${tool}`, renderOpts)),
-      onError: msg => console.log(formatRalphStreamEvent("error", msg, renderOpts)),
+      onNotice: msg => console.log(formatRalphStreamEvent("step", msg, renderOpts)),
     },
   });
 

@@ -3,7 +3,7 @@ import { matchSlash, isSlashAttempt, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, form
 
 test("matchSlash: prefix-matches slash commands, case-insensitive", () => {
   expect(matchSlash("/")).toEqual(SLASH_COMMANDS);
-  expect(matchSlash("/c")).toEqual(["/clear", "/compact", "/config"]);
+  expect(matchSlash("/c")).toEqual(["/clear", "/compact", "/config", "/context"]);
   expect(matchSlash("/MO")).toEqual(["/model", "/models"]);
   expect(matchSlash("/exit")).toEqual(["/exit"]);
   expect(matchSlash("/zzz")).toEqual([]);
@@ -31,7 +31,7 @@ test("matchSlash distinguishes /model from /models", () => {
   expect(matchSlash("/model")).toEqual(["/model", "/models"]);
   expect(matchSlash("/models")).toEqual(["/models"]);
   expect(matchSlash("/p")).toEqual(["/provider"]);
-  expect(matchSlash("/t")).toEqual(["/thinking"]);
+  expect(matchSlash("/t")).toEqual(["/thinking", "/tools", "/theme"]);
   expect(matchSlash("/sub")).toEqual(["/subagent", "/subagents"]);
 });
 
@@ -43,7 +43,7 @@ test("SLASH_COMMANDS includes the code-view commands (view/diff/find/search)", (
 
 test("matchSlash resolves the code-view command prefixes", () => {
   expect(matchSlash("/v")).toEqual(["/view"]);
-  expect(matchSlash("/d")).toEqual(["/diff"]);
+  expect(matchSlash("/d")).toEqual(["/drop", "/dump", "/diff"]);
   expect(matchSlash("/sea")).toEqual(["/search"]);
 });
 

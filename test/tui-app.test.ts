@@ -338,6 +338,28 @@ test("LaunchTui: onToolResult categorizes the result in the stream with both cat
   const txt = logged.join("\n");
   expect(txt).toContain("[FILE]"); // category of read
   expect(txt).toContain("[DONE]"); // success status
+  expect(txt).toContain("read src/cli.ts");
+});
+
+test("LaunchTui: onToolResult stream line includes the invocation target using write-sink pattern", () => {
+  const buf: string[] = [];
+  const tui = new LaunchTui({ model: "m", tty: false, write: s => buf.push(s) });
+  tui.start();
+  const ev = tui.events();
+  ev.onStep!(1);
+  ev.onAssistant!("", { tool: "bash", arguments: { command: "bun test" } });
+  ev.onToolResult!("bash", false, "1 fail");
+
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => logged.push(a.join(" "));
+  try {
+    tui.finish("done");
+  } finally {
+    console.log = origLog;
+  }
+  const txt = logged.join("\n");
+  expect(txt).toContain("bash command");
 });
 
 test("LaunchTui (boxed): [STEP] shows the real in-flight file and [TOOL] exposes the double helix", () => {

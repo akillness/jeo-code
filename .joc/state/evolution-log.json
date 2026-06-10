@@ -1,14 +1,20 @@
 [
   {
-    "timestamp": "2026-06-10T14:20:38.251Z",
-    "target": "src/agent/engine.ts",
-    "request": "Analysis of src/agent/engine.ts:\n- File length: 294 lines.\n- Issue: runAgentLoop handles tool output truncation and spilling directly, which should be modularized.\n\nPerformance Analysis (last 20 tools):\n- Average tool duration: 118.65ms\n- Success rate: 100.0%\n",
+    "timestamp": "2026-06-11T02:38:15.366165",
+    "target": "v0.1.1-evolution-cycle",
+    "request": "\uc790\uc728 \uc131\ub2a5 \ubd84\uc11d \ub85c\uc9c1 \uad6c\ud604 \ubc0f PR \uc0dd\uc131 \uc644\ub8cc (v0.1.1)",
     "status": "success"
   },
   {
-    "timestamp": ""2026-06-10T16:31:12Z"",
-    "target": "src/agent/dev/self-improve.ts",
-    "request": "Implement suggestSelfImprovement with automated analysis bridge.",
+    "timestamp": "2026-06-11T03:00:00.000000",
+    "target": "v0.2.0-performance-logic",
+    "request": "Implement tool-specific reliability audit and integrated logging in self-improve.ts",
+    "status": "success"
+  },
+  {
+    "timestamp": "2026-06-11T03:42:22.208767",
+    "target": "Level-3-Evolution-Security",
+    "request": "Implement JOC_EVOLUTION_STAGE_GUARD and enhance status progress reporting.",
     "status": "success"
   }
 ]

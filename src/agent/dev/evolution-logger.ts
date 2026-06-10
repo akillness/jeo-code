@@ -20,6 +20,23 @@ export async function logEvolution(entry: EvolutionEntry) {
     logs = JSON.parse(content);
   } catch {}
   
-  logs.push(entry);
+  // If entry is in_progress, check if we should replace an existing one for the same target
+  if (entry.status === "in_progress") {
+    const existingIdx = logs.findIndex(l => l.target === entry.target && l.status === "in_progress");
+    if (existingIdx !== -1) {
+      logs[existingIdx] = entry;
+    } else {
+      logs.push(entry);
+    }
+  } else {
+    // If it's success/failed, update the corresponding in_progress entry or just push
+    const existingIdx = logs.findIndex(l => l.target === entry.target && l.status === "in_progress");
+    if (existingIdx !== -1) {
+      logs[existingIdx] = { ...logs[existingIdx], ...entry };
+    } else {
+      logs.push(entry);
+    }
+  }
+
   await fs.writeFile(logPath, JSON.stringify(logs, null, 2), "utf-8");
 }

@@ -51,6 +51,7 @@ export function renderHud(phase: JocPhase, opts: HudOptions = {}): string {
 
 export interface DerivePhaseInput {
   evolving: boolean;
+  evolvingStageLocked?: boolean;
   thinking: boolean;
   runningTool: boolean;
   todosActive: boolean;

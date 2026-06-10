@@ -1,6 +1,7 @@
 import { isDevMode } from "../state";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { logEvolution } from "./evolution-logger";
 
 /**
  * Logic for the agent to analyze its own performance and suggest improvements.
@@ -9,7 +10,7 @@ import * as path from "node:path";
 export async function suggestSelfImprovement() {
   if (!isDevMode()) return null;
   
-  console.log("[DEV] Analyzing joc for self-improvement...");
+  console.log("[joc-Core] Analyzing engine performance for self-improvement...");
   
   const cwd = process.cwd();
   const perfPath = path.join(cwd, ".joc", "state", "performance-metrics.json");
@@ -24,6 +25,8 @@ export async function suggestSelfImprovement() {
       const successRate = (recent.filter((m: any) => m.success).length / recent.length) * 100;
       
       let suggestion = "";
+      let target = "self-analysis";
+      
       if (avgDuration > 500) {
         suggestion = "Tool latency is high. Consider optimizing tool-registry.ts or reducing compaction thresholds.";
       } else if (successRate < 90) {
@@ -32,32 +35,28 @@ export async function suggestSelfImprovement() {
         suggestion = "Core engine is stable. Focus on UX enhancements in src/commands/status.ts.";
       }
 
-      await recordEvolutionLog("self-analysis", suggestion);
+      // Check for specific tool failures
+      const failures = recent.filter(m => !m.success);
+      if (failures.length > 3) {
+        const mostFrequentFailure = failures.reduce((acc, m) => {
+          acc[m.tool] = (acc[m.tool] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>);
+        const topTool = Object.entries(mostFrequentFailure).sort((a, b) => b[1] - a[1])[0][0];
+        suggestion = "High failure rate detected in tool: " + topTool + ". Proposing reliability audit.";
+        target = "reliability-audit:" + topTool;
+      }
+
+      await logEvolution({
+        timestamp: new Date().toISOString(),
+        target,
+        request: suggestion,
+        status: "success"
+      });
+      
       return suggestion;
     }
   } catch (e) {
     return "No metrics found to analyze.";
-  }
-}
-
-async function recordEvolutionLog(target: string, request: string) {
-  const logPath = path.join(process.cwd(), ".joc", "state", "evolution-log.json");
-  try {
-    let logs = [];
-    try {
-      const data = await fs.readFile(logPath, "utf-8");
-      logs = JSON.parse(data);
-    } catch {}
-    
-    logs.push({
-      timestamp: new Date().toISOString(),
-      target,
-      request,
-      status: "success"
-    });
-    
-    await fs.writeFile(logPath, JSON.stringify(logs, null, 2), "utf-8");
-  } catch (err) {
-    console.error("Failed to record evolution log:", err);
   }
 }

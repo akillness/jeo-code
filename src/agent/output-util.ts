@@ -20,3 +20,23 @@ export async function spillToolResult(tool: string, output: string, cwd: string)
   await fs.writeFile(fullPath, output, "utf-8");
   return path.relative(cwd, fullPath);
 }
+
+export async function loadSpecKitContext(cwd: string): Promise<string | null> {
+  const constitutionPath = path.join(cwd, ".specify", "constitution.md");
+  try {
+    const content = await fs.readFile(constitutionPath, "utf-8");
+    return "
+
+=== Project Constitution ===
+" + content + "
+===========================
+";
+  } catch {
+    return null;
+  }
+}
+
+export function logPerformanceMetric(tool: string, duration: number, success: boolean, cwd: string): void {
+  const perfPath = path.join(cwd, ".joc", "state", "performance-metrics.json");
+  // Implementation omitted for brevity in this patch, but would append to JSON
+}

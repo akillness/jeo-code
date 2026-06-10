@@ -55,6 +55,11 @@ export interface AgentLoopResult {
 
 export async function runAgentLoop(history: Message[], opts: AgentLoopOptions) {
   const specKitContext = await loadSpecKitContext(opts.cwd);
+  if (process.env.JOC_EVOLUTION_STAGE_GUARD === "1" && opts.systemPrompt) {
+    opts.systemPrompt += "
+
+[SAFETY] Evolution Stage Guard ACTIVE. Do not mutate core agent logic without explicit evolution-token.";
+  }
   if (specKitContext) opts.systemPrompt = (opts.systemPrompt || "") + specKitContext;
 
   const { cwd } = opts;

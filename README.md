@@ -1,51 +1,80 @@
-# jeo-code V2
+# jeo-code
 
-`joc` is a pure-TypeScript AI coding agent that runs on Bun with zero native dependencies. V2 represents the "Level 2" evolution, focusing on modularity, visibility, and a spec-first workflow.
+Encode intention. Decode software.
+A clean, highly optimized AI coding agent using a spec-first loop, tmux-native execution, and durable verification.
 
-## Key Features
+> [!IMPORTANT]
+> jeo-code is currently in V2 (Level 2) evolution. Expect active development and verify outputs before relying on it for critical production work.
 
-- **Core Engine Evolution**: Refactored `joc` with a robust, minimal tool-use loop and `gjc` (Global Jeo-Code) hierarchy for system-wide orchestration.
-- **Spec-First Workflow**: Deep integration with `ooo` (Ouroboros) and `spec-kit` via .specify/ for rigorous requirement clarification.
-- **Provider & Tool) Registry**: A modular architecture that decouples LLM providers and tool implementations, allowing for easy extensibility.
-- **Interactive Dashboard**: Enhanced `joc status` command providing real-time visibility into agent progress with interactive bars and state tracking.
-- **Performance Monitoring**: Automated capture of system health and execution efficiency stored in `.joc/state/performance-metrics.json`.
+## What is jeo-code?
 
-## Project Setup
+jeo-code (**joc**) is a pure-TypeScript coding-agent runner. It follows a rigorous **deep-interview -> ralplan -> ultragoal** workflow to ensure requirements are clarified and plans are critiqued before any code is mutated.
 
-### Prerequisites
-- [Bun](https://bun.sh) runtime installed.
+It is designed to be an external orchestrator that works beside your existing tools, providing structured planning, persistent evidence, and isolated worktree support.
 
-### Installation
-Clone the repository and installe dependencies:
-```bash
-git clone <repository-url>
-cd jeo-code bun install
+## Install
 
-```
 
-### Configuration
-1. **Environment Variables**: Create a .env file in the root directory and add your provider API keys:
-   ```bash
-   OPENAI_API_KEY=***   ANTHROPIC_API_KEY=***   ```J2. **Global Config**: Ensure `.joc/config.json` is configured for your environment (this is typically managed via `joc init`).
 
-### Running the Agent
-Launch the `joc` environment:
-```bash
-bun run joc launch
-```
+The scoped package is also available as .
 
-## Architecture
+## Quick start
 
-V2 introduces a decoupled architecture where the agent loop is separated from tool implementations and provider logic.
 
-### Key Components
-- **.specify**: Rigourous requirement clarification.
-- **.ouroboros**: Self-analysis and improvement cycles.
-- **Registry System**: Decoupled management of LLM providers and tools.
+
+Inside a **joc** session, the public workflow surface is exposed:
+
+
+
+## Core Engine & Hierarchy
+
+jeo-code maintains a clear hierarchy between the **Core Engine (joc)** and the **Global Jeo-Code (gjc)** orchestrator:
+
+- **joc (Core Engine)**: The minimal tool-use loop and agent runner. Refactored for modularity and visibility.
+- **gjc (Guide/Global)**: The higher-level hierarchy for system-wide orchestration, session management, and multi-agent coordination.
+
+## Core capabilities
+
+- **Interview before guessing**:  turns vague requests into concrete requirements via .
+- **Plan before mutation**:  reviews the approach before code changes.
+- **Execute with evidence**:  tracks goals, revisions, checks, and completion evidence.
+- **Interactive Visibility**: Real-time status dashboard with .
+- **Registry System**: Decoupled management of LLM providers (OpenAI, Anthropic, Gemini, etc.) and tools.
+
+## Workflow surface
+
+| Skill | What it does |
+| :--- | :--- |
+| **deep-interview** | Clarifies ambiguous requirements before planning or code changes. |
+| **ralplan** | Builds and critiques an implementation plan before mutation. |
+| **ultragoal** | Tracks goals through execution, revision, verification, and evidence. |
+| **team** | Coordinates tmux-backed workers for parallel execution. |
+
+### Bundled role agents
+
+- **executor**: Bounded implementation, fixes, and refactors.
+- **architect**: Read-only architecture and code-review assessment.
+- **planner**: Read-only sequencing and acceptance criteria.
+- **critic**: Read-only plan critique and actionability review.
+
+## Configuration
+
+Provider settings and retry budgets live in  (or ):
+
+
+
+## Development
+
+Install dependencies and run from source:
+
+
+
+To compile a standalone binary:
+
 
 ## Documentation
 
-See hierarchical `AGENTS.md` files in each directory for detailed component documentation.
+See hierarchical  files in each directory for detailed component documentation.
 
 - [Core Engine](src/agent/AGENTS.md)
 - [AI Providers](src/ai/AGENTS.md)

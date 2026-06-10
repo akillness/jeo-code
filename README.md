@@ -14,11 +14,21 @@ It is designed to be an external orchestrator that works beside your existing to
 
 ## Install
 
+Install globally via Bun:
+
+
+
+The scoped package is also available as .
+
 
 
 The scoped package is also available as .
 
 ## Quick start
+
+Run the CLI directly:
+
+
 
 
 

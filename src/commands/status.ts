@@ -60,7 +60,7 @@ export async function runStatusCommand(): Promise<void> {
     const metrics = JSON.parse(perfContent);
     if (metrics.length > 0) {
       const recent = metrics.slice(-50);
-      const avgDuration = recent.reduce((sum, m: any) => sum + m.duration, 0) / recent.length;
+      const avgDuration = recent.reduce((sum: number, m: any) => sum + m.duration, 0) / recent.length;
       const successRate = (recent.filter((m: any) => m.success).length / recent.length) * 100;
       
       console.log("Average Tool Time: " + chalk.magenta(avgDuration.toFixed(0) + "ms"));

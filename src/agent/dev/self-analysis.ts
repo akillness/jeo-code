@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isDevMode } from "../state";
+import type { PerfMetric } from "../output-util";
 
 /**
  * joc-Centric Analysis: joc looks at its own performance and engine.
@@ -9,7 +10,7 @@ export async function runSelfAnalysis(cwd: string): Promise<string> {
   if (!isDevMode()) throw new Error("Self-analysis only available in Dev Mode");
 
   const perfPath = path.join(cwd, ".joc/state/performance-metrics.json");
-  let perfData = [];
+  let perfData: PerfMetric[] = [];
   try {
     const content = await fs.readFile(perfPath, "utf-8");
     perfData = JSON.parse(content);

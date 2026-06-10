@@ -2,11 +2,11 @@
   <img src="assets/hero.png" alt="jeo-code autonomous coding-agent hero illustration" width="100%" />
 </p>
 
-<h1 align="center">jeo-code</h1>
+<h1 align="center">jeo-code (joc)</h1>
 
 <p align="center">
   <strong>Encode intention. Decode software.</strong><br />
-  A focused coding-agent runner for interviews, reviewed plans, tmux-native execution, and durable verification.
+  Bun 기반 AI 코딩 에이전트 CLI — interviews, reviewed plans, tmux-native execution, durable verification.
 </p>
 
 <p align="center">
@@ -19,153 +19,196 @@
   <img src="assets/character.png" alt="jeo-code character mascot" width="320" />
 </p>
 
-> [!IMPORTANT]
-> jeo-code is currently in V2 (Level 2) evolution. Expect active development and verify outputs before relying on it for critical production work.
+Bun 기반 AI 코딩 에이전트 CLI입니다. 저장소 안에서 `joc`를 실행하면 파일을 읽고, 수정하고, 명령을 실행하며 작업을 끝까지 진행합니다.
+진행 중에는 ASCII 진화 아트·스텝 타임라인·툴 forge 박스(bash/read/write/edit/task)·라이브 상태 푸터가 한 화면에 표시되고, 입력창에서 `/`로 시작하면 명령 미리보기가 하단에 노출됩니다. `[STEP] joc thinking` 줄은 매 틱 바뀌는 장식 문구 대신 **지금 실제로 하는 일**(진행 중인 파일·명령, 활성 plan 단계, plan 진행도, 레이트리밋 백오프 중에는 `rate limited (HTTP 429) — auto-retry #2 in 4s` 카운트다운)을 현재 step 경과·step당 평균 시간과 함께 보여주고, 진화 단계 트랙은 중앙 헤더와 푸터 태그 **한 곳씩만** 표시되어 복사본끼리 어긋나지 않습니다. `task`로 위임된 **서브에이전트의 진행 상황**(할당·`step N/M`·중첩 툴 호출의 실제 대상 `read src/x.ts`·`bash: …`·결과 요약)도 gjc처럼 스트림에 실시간 표시됩니다.
+`joc "요청"`처럼 cmd 인자로 한 번에 실행해도 TTY에서는 같은 라이브 TUI가 뜨고, `--no-tui`/파이프 모드에서는 `[step N/M] <tool target>` + 결과 라인이 스트리밍되어 전체 동작 흐름이 보입니다.
+TUI는 **차등(differential) 렌더러**로 화면을 제자리에서 갱신해 스크롤백을 늘리지 않고(턴당 최종 출력 1회만 기록), 화면 크기 변경 시 폭이 바뀌면 전체 재도색·idle 프롬프트에서도 리사이즈로 푸터 영역을 재동기화합니다. 스트림/툴 목록은 **고정 크기 링 버퍼**라 긴 세션에서도 메모리·프레임당 렌더 비용이 평탄하며(요약 LLM 실패 시에도 히스토리는 결정적으로 압축돼 무한 증가하지 않음), 진화 아트는 애니메이션 프레임 단위로 캐시돼 매 틱 재렌더하지 않습니다. 화면이 짧아 모든 섹션이 다 들어가지 못할 때는 **하단 상태/키힌트/푸터(라이브 진행 표시: 스텝·ETA·스피너)를 항상 먼저 확보**하고, 가치가 낮은 순서(장식용 ASCII 아트 → forge 상세 박스 → 스트림)대로 줄여 표시합니다 — 푸터가 화면 밖으로 잘려 사라지지 않습니다. forge 박스는 테두리가 있어 **통째로 들어갈 때만**(최근 것 우선) 표시하고 반쪽짜리 박스를 만들지 않습니다.
 
-## What is jeo-code?
+## 설치
 
-jeo-code () is an external coding-agent harness, a pure-TypeScript re-implementation of the [gajae-code](https://github.com/Yeachan-Heo/gajae-code) () spec-first workflow contract that runs on Bun with **zero native dependencies**. It follows a rigorous **deep-interview → ralplan → team → ultragoal** workflow so requirements are clarified and plans are critiqued before any code is mutated.
+요구사항: Bun `1.3.14+`
 
+```bash
+bun install -g jeo-code
+```
 
+설치 확인:
 
-It is designed to be an external orchestrator that works beside your existing tools (Codex CLI, Claude Code, Gemini CLI), providing structured planning, persistent evidence under , and isolated worktree support.
+```bash
+joc --version
+```
 
-## Install
+## 기본 사용법
 
-요구사항: [Bun](https://bun.sh)  (Node.js 불필요 — Bun 전용 런타임)
+```bash
+# 대화형 코딩 에이전트 실행
+joc
 
+# 한 번의 요청을 바로 실행
+joc "README를 정리하고 테스트를 실행해줘"
 
+# 현재 설정과 모델 연결 상태 확인 (실제 호출 경로로 점검: Anthropic=GET /v1/models, OpenAI OAuth=Codex 백엔드, Gemini OAuth=Cloud Code Assist loadCodeAssist)
+joc doctor
 
-### Bun global install (권장)
+# API 키 / OAuth / 로컬 모델 설정
+joc setup
+```
 
+## 대화형 슬래시 명령어
 
+`joc` REPL 입력창에서 사용할 수 있는 명령입니다 (`<Tab>` 자동완성 지원).
 
- 바이너리가 에 노출됩니다(호환용 심링크  포함).
+| 명령 | 설명 |
+| --- | --- |
+| `/model [id\|#N\|save]` | 세션 모델 설정(라이브 #N 선택·퍼지 매칭·기본값 저장; 목록/상태는 회사명 Anthropic/OpenAI/Google/Antigravity/Ollama 병기) |
+| `/models [refresh\|caps\|catalog]` | 로그인된 OAuth/API 모델 목록(+capability/카탈로그 표) |
+| `/provider [name] [model\|#N]` | 프로바이더 자격증명·전환, 해당 프로바이더 라이브 모델 목록(회사명 병기) |
+| `/provider login <name>` | **입력창에서 바로 OAuth 로그인** (anthropic/openai/gemini/antigravity; antigravity가 권장, gemini는 fallback) |
+| `/login [name]` · `/logout <name>` | OAuth 로그인 별칭(`/provider login`) · 저장된 OAuth 토큰 제거 |
+| `/agents [role] [model\|#N]` · `/agents <role> provider <name> [model]` · `/model subagent <role> [model\|#N]` | 서브에이전트(executor/planner/architect/critic) 역할 모델/프로바이더 설정(저장 즉시 현재 세션의 `task` 위임에도 반영; 모델 선택 중에도 role target을 준비 가능) |
+| `/roles [tier model]` | 모델 역할 티어(smol/slow/plan) 표시·설정 |
+| `/thinking [level]` | 사고 예산(minimal/low/medium/high/xhigh) |
+| `/config` | 현재 런타임 설정 표시 |
+| `/skill [name [intent]]` · `$<skill> [intent]` · `/speckit.plan` 등 | 워크플로우 skill 목록·표시·실행 — `$team "작업"` 처럼 **`$스킬명`으로 직접 호출**(Codex/gjc 스타일, Tab 자동완성) (사용자 SKILL.md는 **명시적 호출일 때만** 실행) |
+| `/view <file> [a-b]` · `/diff [file]` · `/find <glob>` · `/search <pat>` | 코드뷰 / git diff / 파일·패턴 검색 |
+| `/new` · `/drop` · `/session [info\|delete]` · `/rename <title>` · `/resume [id]` | 세션 시작/삭제/정보/이름변경/재개 (gjc parity) |
+| `/retry` · `/btw <question>` | 마지막 요청 재시도 · 히스토리를 건드리지 않는 사이드 질문 |
+| `/export [path] [json]` · `/dump` | 세션 트랜스크립트 파일 내보내기 · 클립보드 복사 |
+| `/usage` · `/context` · `/tools` · `/hotkeys` | 누적 토큰 사용량 · 컨텍스트 토큰 분해 · 노출 tool 목록 · 단축키 |
+| `/theme [name]` · `/settings` | TUI 테마(cosmic/matrix/solar/red-claw/blue-crab/mono) · 런타임 설정(=`/config`) |
+| `/sessions` · `/compact` · `/clear` · `/help` · `/exit` | 세션·컨텍스트 관리 |
 
-### 설치 스크립트
+TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다. 하단 상태는 **세 행으로 분리**됩니다 — `[STEP]`(step n/m · 진행 미터 · 경과(분 단위) · 평균 · **라이브 토큰 사용량 `12.3k in / 1.2k out`**), `[STATUS]`(지금 실제로 하는 일: 작업 중 파일/명령, rate-limit 자동재시도 카운트다운 — 로그로 쌓이지 않고 이 행에서만 갱신), `[TOOL]`(forge·tool 집계). 푸터에는 현재 모델/프로바이더, 단계, ETA, 진화 트랙과 함께 **추정 컨텍스트 사용량(`ctx NN%`)**도 표시됩니다. 턴이 끝나면 alt-screen에서 복귀하면서 잔존 행을 지우고(clear-to-EOL + clear-below) 요약·`joc>` 응답·입력 박스가 깨끗하게 이어지므로 **연속으로 요청을 입력**할 수 있습니다. 입력창에 `/`로 시작하는 키워드를 타이핑하면 일치하는 명령 목록이 **실시간 미리보기**로 아래에 표시되고, **방향키(↑/↓)로 선택**한 뒤 Enter로 실행할 수 있습니다(`❯` 표시). `진행중/완료/subagent/tool/diff/file/command` 같은 UI 범주는 색인형 배지(`[AGENT]`, `[01:CMD]`, `[FILE]`, `[DIFF]`, `[STEP]`, `[STATUS]`)로 구분됩니다. 입력은 하단 푸터의 **박스형 입력란 하나로만** 노출됩니다.
 
+워크플로우 단계는 **HUD 행**으로 노출됩니다 — `✔ thinking → ● planning → ○ executing → ○ reporting → ○ done`처럼 현재 단계가 강조되고 지난 단계는 체크로 표시되며, 그라데이션 [STATUS] 행 그룹은 위아래 빈 줄로 분리되어 gjc처럼 읽힙니다. 턴이 끝나면 `[DONE] thinking → planning → executing → done · N steps · 시간 · 토큰` 한 줄로 단계 플로우가 정리 보고됩니다. 스텝 타임라인과 Plan 체크리스트의 **완료 항목은 체크 아이콘 + 취소선 + dim**, 실패는 빨강, 진행 중은 시안 볼드로 색상 대조되어 한눈에 구분됩니다.
 
+대화형 에이전트는 내부 `todo` tool로 작업 계획을 선언하면 TUI에 **Plan 체크리스트**를 유지하고, `task` tool로 executor/planner/architect/critic 서브에이전트에 bounded 작업을 위임할 수 있습니다. 서브에이전트의 **모델/프로바이더 준비는 `/agents` 또는 `/model subagent <role> ...`**로 하고, planner/architect/critic은 read/find/search/ls 전용이라 파일을 수정하지 못하며, role 오타는 mutating executor로 조용히 fallback되지 않고 실패합니다. planner/architect/critic은 이제 각각 **계획/아키텍처 리뷰/비판 verdict** 형식의 구조화된 `done.reason` 계약을 따라야 하며, 계약이 빠지면 성공으로 처리되지 않습니다.
 
-### 설치 확인 · 업데이트 · 제거
+> **OpenAI(ChatGPT/Codex) OAuth로 실제 실행:** ChatGPT/Codex OAuth 토큰은 `api.openai.com/v1`(chat/completions·models)을 거부합니다. joc는 OpenAI가 **OAuth로만 로그인**된 경우(별도 API 키 없음) Codex 구독 백엔드(`chatgpt.com/backend-api/codex/responses`)로 turn 실행을 라우팅하고, 모델 discovery도 `chatgpt.com/backend-api/codex/models`를 직접 조회해 실제 Codex 구독 모델(`gpt-5.5`, `gpt-5.4` 등)을 표시합니다. `OPENAI_API_KEY`가 설정돼 있으면 표준 `api.openai.com/v1` 경로가 우선합니다. OpenAI OAuth로 `gpt-4o` 같은 비-Codex 모델을 호출하면 provider 호출 전 명확히 실패시켜 불투명한 400을 피합니다.
+> `OPENAI_API_KEY`가 설정돼 있으면 그 키(표준 `api.openai.com/v1`, 전체 모델)가 우선합니다. **Gemini OAuth도 end-to-end로 서빙됩니다**: `joc auth login gemini`(gemini-cli OAuth)만으로 turn 실행이 **Cloud Code Assist 백엔드**(`cloudcode-pa.googleapis.com/v1internal:streamGenerateContent`)로 라우팅되고, project id는 `loadCodeAssist`/`onboardUser`로 자동 발견·저장됩니다 — `GEMINI_API_KEY` 불필요(키가 설정돼 있으면 public generativelanguage 경로가 우선). `joc auth login antigravity`는 gjc와 같은 전용 Antigravity desktop-app OAuth client로 `antigravity/*` 모델(Gemini 3, Claude 등)을 서빙합니다.
 
+> **모델 목록은 채팅 가능한 모델만 + 회사명 병기:** live discovery가 임베딩·TTS·이미지·moderation 같은 비대화 모델을 걸러냅니다(OpenAI 패밀리 denylist, Gemini는 `generateContent` 지원 + 이름 필터). 그래서 `/models`·`/provider <name>`·`#N` 선택 목록에는 실제로 대화에 쓸 수 있는 모델만 나오며, `/model`·`/provider`·`/config`는 `openai — OpenAI`, `antigravity — Antigravity`, `(gemini · Google)`처럼 회사명을 함께 표시합니다.
+>
+> **모델 id 매핑(404 방지):** 별칭(`sonnet`/`opus`/`haiku`/`gpt`/`flash`)과 카탈로그 canonical은 호출 직전에 실제 provider 모델 id로 매핑됩니다 — 예: `sonnet` → `claude-sonnet-4-5` → 와이어 id `claude-sonnet-4-5-20250929`. 카탈로그/별칭은 현재 제공되는 모델로 유지되며, 구형 id를 직접 지정해 `model not found(404)`가 나오면 `/models` 또는 `/provider <name>`로 지금 사용 가능한 모델을 골라 `#N`으로 선택하세요(라이브 목록이 권위 소스).
+>
+> **코드뷰 안전:** `/view`·`/diff`는 파일/diff의 신뢰할 수 없는 제어 바이트(ANSI 이스케이프, `\r`, 탭, C0)를 렌더 전에 제거합니다 — 임의 파일을 열어도 화면이 깨지거나 커서가 튀지 않습니다.
+>
+> **파일 검색(`/find` · `find` tool):** 슬래시 없는 이름 패턴(`*.ts`, `engine.ts`)은 하위 디렉터리까지 재귀 basename 매칭이고, `/`나 `**`를 포함한 **경로 글로브**(`src/**/*.ts`, `src/agent/*.ts`, 정확한 상대경로 `src/skills/catalog.ts`)는 실제 glob 의미로 해석됩니다. 이전에는 `find -name`이 basename만 보기 때문에 경로 글로브가 항상 매칭 0건이었습니다(문서의 `/find src/**/*.ts` 예시조차 동작 안 함). `node_modules`/`.git`/`dist` 등 무시 디렉터리는 양쪽 경로 모두에서 제외됩니다.
+>
+> **사용자 skill 문서:** `~/.joc/skills`·`.joc/skills`의 평면 `<name>.md`와 `~/.agents/skills/<name>/SKILL.md`·`.agents/skills/<name>/SKILL.md` 폴더형 문서는 계속 로드되며(`JOC_SKILLS_DIR`로 추가 디렉터리 지정 가능, `path.delimiter` 구분) `/skill`, Tab 자동완성, `/speckit.*` 같은 **직접 슬래시 호출**, 그리고 **`$스킬명 [intent]` 직접 호출**(`$team "3개 레인으로 나눠 실행"` — 첫 토큰이 로드된 skill 이름과 정확히 일치할 때만 발동, `$HOME` 같은 일반 텍스트는 평범한 프롬프트로 전달)에서 실행할 수 있습니다(이름이 같으면 뒤쪽 문서가 우선). `/skill:/path/to/file.md`처럼 명시적 파일 경로도 읽을 수 있지만, `skill`·`model`·`provider`처럼 `joc` 내장 명령과 충돌하는 외부 meta-skill 이름은 로드/실행하지 않습니다. 시스템 프롬프트는 번들 workflow skill 4개와 별도의 **Configured skills** 섹션을 구분해 광고하며, 예산을 넘는 사용자 스킬은 생략 표시로 줄입니다. 번들 4개(`deep-interview`, `ralplan`, `team`, `ultragoal`)는 SKILL.md 원문에서 임베드되고, 세션 내 `/skill <번들>` 호출은 LLM 즉흥 실행이 아니라 네이티브 workflow 엔진으로 라우팅됩니다. `aliases:`/`slash:` 헤더 또는 본문에 언급된 **해당 skill 소유의** `/name.step` 패턴을 자동 인식합니다.
+>
+> **hook/rule 프로젝트 가이던스 + 메모리 관리:** `.agents/rules/*.md`·`.joc/rules/*.md`·`.agents/hooks/**`의 텍스트 설정/문서(`.md`, `.json`, `.jsonc`, `.yaml`, `.yml`, `.toml`)는 skill 문서와 별개로 **bounded project context**에 들어갑니다(프로젝트 root 컨텍스트와 별도 reserve budget, 파일별/총량 cap 적용). AGENTS.md 계열 컨텍스트는 cwd 기준 부모 walk와 하위 중첩 스캔으로 계층 적용됩니다. 실행형 pre-tool/post-turn hook은 별도 config에서 `hooks.enabled`를 켠 경우에만 동작하는 opt-in 표면이며, pre-tool hook은 tool 실행을 veto할 수 있고 post-turn hook은 advisory notice로만 처리됩니다. 대형 SKILL.md·deep-dive·graphify 패킷을 몇 번 붙여도 메시지 수 40개를 기다리지 않고 **토큰 추정 예산(CJK 가중, system prompt 포함)** 기준으로 compaction이 실행되며, compaction 결과는 session JSONL에 marker로 append되어 resume/list에서 무한 재적재되지 않습니다.
+>
+> **단일 입력 박스(single-box):** 입력 프롬프트는 하단에 그려지는 박스형 입력창 하나로만 동작합니다 — readline 자체의 원시 `joc>` 줄은 박스가 떠 있는 동안 억제되어 박스와 동시에 두 개가 노출되지 않습니다(gjc와 동일한 형태). 박스/미리보기 푸터는 arm 시점에 `footerRows` 만큼 **한 번 예약(reservation)** 하고 이후 모든 repaint 는 CUD(cursor-down)만 사용 — `@폴더`+긴 텍스트 입력으로 입력 박스 본문이 wrap 되거나 `Paths:` 후보 행이 늘어도 박스가 위로 밀려 깨지거나 위쪽 출력이 잘리지 않습니다. 박스 미리보기는 TTY에서만 켜지고, 짧은 터미널이나 `JOC_NO_SLASH_PREVIEW=1`에서는 박스 없이 표준 readline 한 줄로만 동작합니다.
+>
+> **인터랙티브 picker:** `/model`(인자 없이)·`/provider <name>`·`/provider login`은 화면 폭에 맞는 **방향키 picker**를 엽니다 — `setRawMode(true)` + `process.stdin.resume()` 로 키스트로크를 직접 받고(readline 을 pause 하면 keypress 디코더까지 멎어 picker 가 freeze 되던 회귀를 방지), `cursorUp(rendered-1)` off-by-one 을 바로잡아 ↑/↓ 마다 하단 hint 행이 중복되지 않습니다. Enter 로 선택, Esc 로 취소.
+>
+> **tmux 독립 세션:** `joc --tmux`는 매 실행마다 자신만의 tmux 세션을 만들어, 서로 다른 프로세스에서 동시에 띄워도 한 세션에 묶여(미러링되어) 잡히지 않습니다. 세션 이름은 작업 디렉터리+브랜치+런타임 플래그 기반의 base이고, 같은 base가 이미 살아있으면 `base-2`, `base-3` …로 자동 분리됩니다. 생성 자체가 잠금이라(`tmux new-session`의 `duplicate session` 충돌 시 다음 접미사로 재시도) 완전히 동시에 시작한 두 프로세스도 base를 동시에 차지하지 못합니다. joc 프로세스가 끝나면 세션도 사라지므로 순차 재실행은 깨끗한 base 이름을 다시 씁니다. 이미 tmux 안에서 `joc --tmux`를 실행하면 중첩 없이 현재 pane에서 그대로 동작합니다. 나중에 다시 붙으려면 `tmux attach -t <세션명>`.
 
+```bash
+# REPL 안에서
+/provider login gemini      # 브라우저 OAuth 로그인 → 토큰 저장 → 모델 목록 자동 갱신
+/provider gemini            # ↑/↓로 실제 live model 선택 → Enter로 즉시 설정
+/models caps                # 로그인된 프로바이더의 실제 모델 + capability
+/model #3                   # 방금 표시된 목록에서 3번 모델 선택
+/speckit.plan "OAuth 모델 표시 고장 수정"  # ~/.agents/skills/spec-kit/SKILL.md 별칭으로 skill 실행
+$spec-kit specify init부터 진행해줘            # $스킬명으로 직접 호출 (Tab: $sp → $spec-kit)
+review @src/commands/launch.ts and @src/tui/  # @ 입력 시 상대 경로 후보/폴더 경로 미리보기
+```
 
-## Quick start
+## 인증 · 모델 빠른 안내
 
-
-
-Inside a **joc** session, use the public workflow surface:
-
-
-
-Add  only when coordinated tmux workers materially help.
-
-## Core capabilities
-
-- **Interview before guessing**:  turns vague requests into concrete requirements (ambiguity gate ≤ 20% before the MutationGuard unlocks code edits).
-- **Plan before mutation**:  builds a Planner→Architect→Critic consensus plan that waits for .
-- **Execute with evidence**:  tracks goals, revisions, checks, and completion evidence under .
-- **Parallelize when useful**:  coordinates executor/planner/architect/critic subagents;  gives every run its own session.
-- **Live visibility**: HUD phase row (), // rows with live token usage, step timeline with done-strikethrough, and an end-of-turn  phase report.
-- **Skills**: bundled workflow skills + user skills from , , project dirs — invoked via , slash aliases, or  (Codex/gjc style).
-
-## Workflow surface
-
-jeo-code ships four default workflow skills:
-
-| Skill            | What it does                                                           |
-| ---------------- | ---------------------------------------------------------------------- |
-|  | Clarifies ambiguous requirements before planning or code changes.      |
-|         | Builds and critiques an implementation plan before mutation.           |
-|       | Tracks goals through execution, revision, verification, and evidence.  |
-|            | Coordinates subagent workers for parallel execution.                   |
-
-And four bundled role agents:
-
-| Agent       | What it does                                       |
-| ----------- | -------------------------------------------------- |
-|   | Bounded implementation, fixes, and refactors.      |
-|  | Read-only architecture and code-review assessment. |
-|    | Read-only sequencing and acceptance criteria.      |
-|     | Read-only plan critique and actionability review.  |
-
-
-
-## Providers & models
-
-| Provider | API key | OAuth (subscription) | 권장 모델 |
+| Provider | API 키 | OAuth(구독) 로그인 | 현재 권장 모델 |
 | --- | --- | --- | --- |
-| anthropic |  | Claude Pro/Max — Messages API 직접 호출 |  /  /  |
-| openai |  (전체 모델) | ChatGPT/Codex — Codex Responses 백엔드 자동 라우팅 |  (별칭 ) |
-| gemini |  (선택) | Gemini CLI OAuth — Cloud Code Assist 백엔드 + project 자동 발견 |  (별칭 ) |
-| antigravity | — | 전용 Antigravity OAuth —  모델 (Gemini 3, Claude 등), 모델 목록은 라이브  |  |
-| ollama | — (keyless local) | — |  (별칭 ) |
+| anthropic | ✅ `ANTHROPIC_API_KEY` | ✅ Claude Pro/Max — Messages API 직접 호출 | `claude-sonnet-4-5` · `claude-opus-4-5` · `claude-haiku-4-5` (별칭 `sonnet`/`opus`/`haiku`) |
+| openai | ✅ `OPENAI_API_KEY` (전체 모델) | ✅ ChatGPT/Codex — Codex Responses 백엔드 자동 라우팅 | OAuth는 Codex가 실제 서빙하는 `gpt-5.5` · `gpt-5.4`만 노출(별칭 `gpt`) |
+| gemini | ✅ `GEMINI_API_KEY` (AI Studio, 무료 — 선택) | ✅ Gemini CLI OAuth — Cloud Code Assist 백엔드 자동 라우팅 + project 자동 발견(키 불필요) | `gemini-2.5-flash` · `gemini-2.5-pro` (별칭 `flash`) |
+| ollama | — | — (keyless 로컬, 레이트리밋 없음) | `ollama/qwen2.5:0.5b` (별칭 `fast`/`local`) |
 
+- **키 + OAuth 둘 다 있으면 API 키가 우선**(표준 엔드포인트·전체 모델). OAuth 전용이면 위 백엔드로 동작합니다. `~/.joc/config.json`에 provider 키가 없거나 빈 문자열이면 `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY` 환경변수가 그 gap을 채우며, 비어 있지 않은 저장 키는 env보다 우선합니다.
+- 별칭/카탈로그 canonical은 호출 직전 실제 provider 모델 id로 매핑됩니다(예: `sonnet` → `claude-sonnet-4-5-20250929`).
+- `model not found(404)`가 나면 모델 id가 구형일 수 있습니다 — `/models`·`/provider <name>`로 현재 모델을 확인해 `#N`으로 고르세요(라이브 목록이 권위 소스).
+- 레이트리밋(HTTP 429)은 친절 안내로 정리되고, 서버가 본문에 준 재시도 지연(예: Anthropic/OpenAI의 `Retry-After`, Gemini `retryDelay`/"retry in 8.6s")을 honor해 일시적 RPM 제한은 루프가 스스로 대기·복구합니다. 429에 한해 **자동 재시도 예산이 더 큽니다**(서버 지연이 없으면 최소 2초 간격으로 최대 5회 시도) — 분당 토큰/요청(RPM·OTPM) 윈도우가 풀릴 시간을 벌어, 첫 요청이 곧바로 "auto-retry exhausted"로 끝나지 않습니다(503 등 다른 일시 오류는 기존 기본값 유지). `~/.joc/config.json`의 `retry.requestMaxRetries`/`retry.maxDelayMs`를 지정하면 그 값이 우선합니다. 그래도 지속되면 `/model`로 다른 모델(로컬 ollama 등)로 전환하세요.
+- 단, **usage/quota limit**(구독 사용량 한도 소진 — "usage limit reached", "quota exceeded")으로 분류되는 429는 몇 초 안에 풀리지 않으므로 **재시도 사다리를 태우지 않고 즉시** "다른 모델로 전환(/model)하거나 윈도우 리셋을 기다리라"는 전용 안내로 끝납니다(gjc의 QUOTA_EXHAUSTED 분류와 동일한 정책). 재시도가 진행 중일 때는 `[STEP]` 상태 줄에 백오프 카운트다운이 그대로 표시되고, ETA는 최소 1 step이 완료된 뒤에만 계산되어 백오프 대기시간으로 부풀려진 값(`eta 442s` 같은)이 나오지 않습니다.
+- 막힘은 명확히 알립니다: 모델이 유효한 tool 호출(JSON `tool` 필드)을 못 내면 "더 강한 모델로 전환(/model)" 안내로 중단합니다(약한 로컬 모델 대비).
+- 연결 상태는 `joc doctor`가 **실제 호출 경로**로 점검합니다(anthropic=`GET /v1/models`, openai OAuth=Codex 백엔드 도달 확인, gemini OAuth=Cloud Code Assist `loadCodeAssist`, 크레딧 미소모).
 
+## 자주 쓰는 명령
 
-키 + OAuth가 둘 다 있으면 API 키가 우선합니다. 레이트리밋(429)은 서버 지연( 등)을 honor해 자동 재시도하고, usage/quota 한도 소진은 재시도 없이 즉시 모델 전환 안내로 끝납니다.
+```bash
+# 저장된 세션 보기 / 재개
+joc launch --list
+joc launch --resume
 
-## Local models
+# tmux 세션에서 실행 — 매 실행마다 독립 세션 (같은 디렉터리·브랜치에서 동시에 여러 번 띄워도 base, base-2, base-3 …로 분리)
+joc --tmux
+joc --tmux --model gemini-2.5-flash --thinking high
+joc --tmux --models --catalog gpt
+
+# 별도 worktree에서 실행
+joc --tmux --worktree ../joc-work
+
+# 모델 목록 확인
+joc models
+
+# GJC 스타일 모델 카탈로그(정적 capability)
+joc --list-models=gemini
+joc --models --catalog gpt
+
+# 실행 시 모델/프로바이더/사고 예산 지정
+joc --model gemini-2.5-flash --thinking high "코드 분석해줘"
+joc --provider gemini --plan "구현 계획 세워줘"
+# 슬래시 명령어 팔레트
+# REPL에서 "/" 또는 "/m"처럼 prefix를 입력하면 카테고리별 명령/옵션이 리스트업됩니다.
+# subagent 설정은 /agents 와 /model subagent <role> ... 로 지원합니다.
+
+# 인증 관리
+joc auth login anthropic
+joc auth status
+```
+
+## Spec-first 워크플로우
+
+요구사항을 먼저 정리하고 계획, 실행, 검증까지 진행할 때 사용합니다. 단계는 상태(`.joc/state/`)로 이어지며 게이트가 있습니다: deep-interview가 먼저 **top-level topology를 확인**하고, 입력 언어(한국어/영어/일본어/중국어)를 보존해 질문·평가·인수 기준을 작성하며, brownfield 요청이면 **repo marker + path evidence**를 수집한 뒤, 그 다음 **시드를 동결**(ambiguity ≤ 20%; `--auto`/non-TTY도 이 게이트를 우회하지 못하며, 기준 미달이면 시드를 동결하지 않음)해야 MutationGuard가 코드 수정을 허용하고 ralplan이 진행됩니다 → ralplan은 **Planner→Architect→Critic 합의**(3단계 연쇄 패스)로 **승인 대기** 플랜을 만들고(스키마 자체검증·보정 포함) → `joc approve <plan>`로 승인해야 → team이 실행하며(손상된 team 상태는 무시하지 않고 거부, 알 수 없는 subagent role은 실행 전 거부, 동일한 task 이름도 step index 기준으로 올바른 role에 라우팅, planner/architect/critic report가 계약을 못 지키거나 architect가 `BLOCK`/`REQUEST CHANGES`, critic이 `[REJECT]`/`[ITERATE]`를 내면 즉시 중단) → ultragoal이 team 실행을 검증합니다.
+
+```bash
+joc deep-interview "만들고 싶은 기능 설명"
+joc ralplan
+joc approve <plan-path>
+joc team
+joc ultragoal
+```
+
+## 로컬 모델 사용
 
 Ollama를 사용하면 API 키 없이 로컬에서 실행할 수 있습니다.
 
+```bash
+ollama pull qwen2.5:0.5b
+export JOC_DEFAULT_MODEL=ollama/qwen2.5:0.5b
+joc doctor
+joc
+```
 
+## 설정 파일
 
-## Configuration
-
-Provider settings and retry budgets live in  (override dir with ); per-project state lives in  (, , , ).
-
-
+- 전역 설정: `~/.joc/config.json`
+- 프로젝트 상태/세션: `<project>/.joc/`
 
 주요 환경 변수:
 
-
-
-## Core Engine & Hierarchy
-
-jeo-code maintains a clear hierarchy between the **Core Engine (joc)** and the **Global Jeo-Code (gjc)** orchestrator:
-
-- **joc (Core Engine)**: The minimal tool-use loop and agent runner. Refactored for modularity and visibility.
-- **gjc (Guide/Global)**: The higher-level hierarchy for system-wide orchestration, session management, and multi-agent coordination.
-
-## Development
-
-Install dependencies and run from source:
-
-
-
-Gates (no linter/formatter — these two are the bar):
-
-
-
-To compile a standalone binary:
-
-
-
-## Documentation
-
-See hierarchical  files in each directory for detailed component documentation.
-
-- [Core Engine](src/agent/AGENTS.md)
-- [AI Providers](src/ai/AGENTS.md)
-- [CLI Runner](src/cli/AGENTS.md)
+```bash
+ANTHROPIC_API_KEY=...
+OPENAI_API_KEY=...
+GEMINI_API_KEY=...
+JOC_DEFAULT_MODEL=...
+OLLAMA_HOST=http://localhost:11434
+```
 
 ## Publishing
 
 Required npm token permissions:
 
-- Use an npm **Granular Access Token** stored as .
+- Use an npm **Granular Access Token** stored as `NPM_TOKEN`.
 - Token type: **Automation** so CI can publish with provenance.
 - npm account/package settings must allow publish automation to **bypass 2FA** for the workflow.
-
----
-*V2 Evolution Update: 2026-06-11 (Level 3 Evolution In Progress)*
-
-## Monitoring HUD
- now features a Sovereign Monitoring HUD for real-time visibility:
-- **Phase Tracking**: Thinking → Planning → Executing → Reporting → Done
-- **Evolution Stages**: Primordial Cell to Singularity (based on tool usage)
-- **Self-Analysis**: Automated detection of monolithic files and performance bottlenecks
-- **Evolution Logs**: Detailed logs now stored in  for enhanced visibility.
-
-Run  or use the  module in your TUI integrations.

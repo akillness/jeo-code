@@ -1,3 +1,6 @@
+
+import { truncateToolOutput, spillToolResult, TOOL_SPILL_THRESHOLD } from "./output-util";
+export { truncateToolOutput, spillToolResult, TOOL_SPILL_THRESHOLD };
 /**
  * Reusable agentic tool-call loop — the shared core behind `joc team`
  * (per-task executor) and `joc launch` (interactive coding agent).
@@ -101,6 +104,7 @@ export interface AgentLoopEvents {
 }
 
 export interface AgentLoopOptions {
+  systemPrompt?: string;
   cwd: string;
   maxSteps?: number;
   model?: string;
@@ -124,17 +128,11 @@ export interface AgentLoopResult {
  * start (e.g. a file's top / a command's invocation) and the tail holds what's
  * usually decisive (test summaries, the final error). A pure head-cut loses that.
  */
-export function truncateToolOutput(s: string, max = 4000): string {
-  if (s.length <= max) return s;
-  const head = Math.floor(max * 0.6);
-  const tail = max - head;
-  return `${s.slice(0, head)}\n…(${s.length - max} chars truncated)…\n${s.slice(s.length - tail)}`;
-}
+
 
 /** Tool output larger than this is spilled to a recoverable artifact file. Aligned
  *  with `truncateToolOutput`'s 4000-char cap so that whenever the model-visible
  *  result drops content, the full output is recoverable via the artifact. */
-export const TOOL_SPILL_THRESHOLD = 4_000;
 
 /**
  * Write an oversized tool result verbatim under `.joc/artifacts/tool-results/` and
@@ -157,17 +155,7 @@ async function pruneToolArtifacts(dir: string): Promise<void> {
   }
 }
 
-export async function spillToolResult(tool: string, output: string, cwd: string): Promise<string> {
-  const dir = path.join(cwd, ".joc", "artifacts", "tool-results");
-  await fs.mkdir(dir, { recursive: true });
-  const safeTool = tool.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 32) || "tool";
-  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const rel = path.join(".joc", "artifacts", "tool-results", `${stamp}-${safeTool}.txt`);
-  await fs.writeFile(path.join(cwd, rel), output, "utf-8");
-  // Retention so a long session can't grow the artifact dir without bound.
-  await pruneToolArtifacts(dir);
-  return rel;
-}
+
 
 /** Levenshtein distance (small inputs: tool/command names). */
 function editDistance(a: string, b: string): number {
@@ -205,7 +193,25 @@ export function nearestToolName(name: string, known: string[]): string | undefin
  * Drive `history` through the tool-call loop, mutating it in place so callers
  * (e.g. an interactive REPL) can keep the conversation across multiple turns.
  */
-export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): Promise<AgentLoopResult> {
+
+async function loadSpecKitContext(cwd: string): Promise<string> {
+  const specDir = path.join(cwd, ".specify");
+  try {
+    const constitution = await fs.readFile(path.join(specDir, "constitution.md"), "utf-8").catch(() => "");
+    const specification = await fs.readFile(path.join(specDir, "specification.md"), "utf-8").catch(() => "");
+    if (!constitution && !specification) return "";
+    return `\n<spec-kit_context>\n${constitution}\n${specification}\n</spec-kit_context>\n`;
+  } catch { return ""; }
+}
+
+export async function runAgentLoop(history: Message[], opts: AgentLoopOptions) {
+  const specKitContext = await loadSpecKitContext(opts.cwd);
+  if (specKitContext) opts.systemPrompt = (opts.systemPrompt || "") + specKitContext;
+  if (specKitContext) {
+    // Inject into the system prompt message in history if it exists, or prepend to opts.systemPrompt
+    opts.systemPrompt = (opts.systemPrompt || "") + specKitContext;
+  }
+
   const { cwd } = opts;
   const tools = opts.tools ?? DEFAULT_TOOLS;
   const maxSteps = opts.maxSteps ?? 15;

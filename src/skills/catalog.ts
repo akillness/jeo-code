@@ -2,6 +2,7 @@ import deepInterviewSkillRaw from "../prompts/skills/deep-interview/SKILL.md" wi
 import ralplanSkillRaw from "../prompts/skills/ralplan/SKILL.md" with { type: "text" };
 import teamSkillRaw from "../prompts/skills/team/SKILL.md" with { type: "text" };
 import ultragoalSkillRaw from "../prompts/skills/ultragoal/SKILL.md" with { type: "text" };
+import gjcSkillRaw from "../prompts/skills/gjc/SKILL.md" with { type: "text" };
 
 const MAX_SKILL_SUMMARY_CHARS = 180;
 const MAX_SKILL_DETAILS_CHARS = 8_000;
@@ -24,6 +25,7 @@ export const SKILLS: SkillDoc[] = [
   parseSkillMarkdown("ralplan", ralplanSkillRaw),
   parseSkillMarkdown("team", teamSkillRaw),
   parseSkillMarkdown("ultragoal", ultragoalSkillRaw),
+  parseSkillMarkdown("gjc", gjcSkillRaw),
 ];
 export const BUILTIN_SKILL_NAMES = SKILLS.map(s => s.name.toLowerCase());
 

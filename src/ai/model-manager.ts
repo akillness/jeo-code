@@ -1,3 +1,4 @@
+import { providerRegistry } from "./provider-registry";
 import { OAUTH_FLOW_REGISTRY } from "../auth/flows";
 import { readGlobalConfig } from "../agent/state";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
@@ -13,13 +14,14 @@ import { toProviderModel, CODEX_MODELS } from "./model-catalog";
 import { withRetry, defaultRetryable, type RetryOptions } from "../util/retry";
 import type { Config } from "../agent/state";
 
-const ADAPTERS: Record<ProviderName, ProviderAdapter> = {
-  anthropic: anthropicAdapter,
-  openai: openaiAdapter,
-  gemini: geminiAdapter,
-  antigravity: antigravityAdapter,
-  ollama: ollamaAdapter,
-};
+
+// Initialize Provider Registry
+providerRegistry.register("anthropic", anthropicAdapter);
+providerRegistry.register("openai", openaiAdapter);
+providerRegistry.register("gemini", geminiAdapter);
+providerRegistry.register("antigravity", antigravityAdapter);
+providerRegistry.register("ollama", ollamaAdapter);
+
 
 export function resolveProvider(model: string): ProviderName {
   // Catalog is authoritative for known ids (correct even when heuristics would
@@ -260,7 +262,7 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
   const aliases = { ...((config as { modelAliases?: Record<string, string> }).modelAliases ?? {}) };
   const model = expandAlias(options.model ?? config.defaultModel, { ...ALIAS_DEFAULTS, ...aliases });
   const provider = resolveProvider(model);
-  const adapter = ADAPTERS[provider];
+  const adapter = providerRegistry.get(provider)!;
 
   const baseUrl =
     options.baseUrl ??

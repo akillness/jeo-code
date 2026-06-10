@@ -202,3 +202,40 @@ export async function runPostTurnHooks(
     onNotice?.(`Error executing post-turn hooks (advisory): ${err.message}`);
   }
 }
+
+export async function runPostImplementationHooks(
+  cwd: string,
+  request: string,
+  signal?: AbortSignal,
+  onNotice?: (msg: string) => void
+): Promise<{ success: boolean; output: string }> {
+  try {
+    const hooks = await loadHooks(cwd);
+    const postImplHooks = hooks.filter(h => h.event === "post-implementation");
+    
+    let combinedOutput = "";
+    let allSuccess = true;
+
+    for (const hook of postImplHooks) {
+      const payload = {
+        event: "post-implementation",
+        request,
+      };
+
+      const timeoutMs = hook.timeoutMs || 60000; // Implementation hooks get longer timeout
+      const result = await runHookCommand(hook.run, payload, cwd, timeoutMs, signal);
+      combinedOutput += result.output + "\n";
+      
+      if (result.exitCode !== 0) {
+        allSuccess = false;
+        onNotice?.(`Post-implementation hook "${hook.run}" failed (exit code ${result.exitCode}).`);
+      }
+    }
+    
+    return { success: allSuccess, output: combinedOutput.trim() };
+  } catch (err: any) {
+    const msg = `Error executing post-implementation hooks: ${err.message}`;
+    onNotice?.(msg);
+    return { success: false, output: msg };
+  }
+}

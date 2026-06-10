@@ -17,7 +17,7 @@ export interface StoredOAuth {
 export interface HookConfig {
   enabled?: boolean;
   hooks?: Array<{
-    event: "pre-tool" | "post-turn";
+    event: "pre-tool" | "post-turn" | "post-implementation";
     match?: { tool?: string };
     run: string;
     timeoutMs?: number;
@@ -319,4 +319,9 @@ export async function clearWorkflowState(
   try {
     await fs.unlink(statePath);
   } catch {}
+}
+
+/** Returns true if the agent is running in development mode (enables self-improvement). */
+export function isDevMode(): boolean {
+  return process.env.JOC_DEV_MODE === "1" || process.env.NODE_ENV === "development";
 }

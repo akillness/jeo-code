@@ -190,3 +190,19 @@ Required npm token permissions:
 - Use an npm **Granular Access Token** stored as `NPM_TOKEN`.
 - Token type: **Automation** so CI can publish with provenance.
 - npm account/package settings must allow publish automation to **bypass 2FA** for the workflow.
+\n
+## Core Engine Evolution (`joc`)
+
+`jeo-code` now features a self-improving core engine guided by `spec-kit` and `ooo` (Ouroboros) workflows.
+
+- **joc Core Engine**: The central orchestrator and sovereign authority of the project.
+- **gjc Expert Guide**: Specialized implementation engine (jeoclaw) that guides `joc` during its self-improvement phases.
+- **Provider Registry**: A decoupled architecture for dynamic LLM provider loading.
+- **Evolution Loop**: `joc self-analyze` → `joc consult-gjc` → `joc verify` → `joc status`.
+
+### Key Commands
+- `joc gjc "<request>"`: Delegate implementation tasks to the expert guide.
+- `joc evolve-adv`: Trigger advanced architectural evolution.
+- `joc status`: Monitor real-time evolution logs and engine metrics.
+- `joc spec-kit`: Access SDD (Spec-Driven Development) artifacts under `.specify/`.
+\n

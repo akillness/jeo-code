@@ -154,6 +154,14 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: "ooo-seed",
+    summary: "Sync .specify/specification.md to an ooo seed.",
+    loader: async () => {
+      const m = await import("../commands/ooo-seed");
+      return args => m.runOooSeedCommand(args);
+    },
+  },
+  {
     name: "session",
     summary: "List, attach, or remove joc-managed tmux sessions.",
     usage: "session [list|attach <name>|rm <name>] [--json]",
@@ -250,7 +258,7 @@ const VALUE_FLAGS = new Set(["--worktree", "--model", "--provider", "--thinking"
 const OPTIONAL_UUID_FLAGS = new Set(["--resume", "--continue", "-c"]);
 const VALUE_PREFIXES = ["--worktree=", "--model=", "--provider=", "--thinking=", "--max-steps=", "--append-system-prompt=", "--skills=", "--tools=", "--system-prompt="];
 const LAUNCH_ONLY_FLAGS = new Set(["--tmux", "--no-tui", "--no-session", "--list", "--smol", "--slow", "--plan", "-p", "--print", "--no-skills", "--no-tools"]);
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function flagName(arg: string): string {
   const eq = arg.indexOf("=");

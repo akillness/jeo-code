@@ -113,3 +113,10 @@ See hierarchical  files in each directory for detailed component documentation.
 
 ## Recent Changes
 - [Evolution v0.1.1] 자율 성능 분석 로직() 구현 완료
+
+## 🚀 Evolution Roadmap
+### Level 1: Core Engine (Done)
+### Level 2: Interface & Monitoring (Done)
+### Level 3: Autonomous Security & Deep Sync (In Progress)
+- [x] Evolution Stage Guard
+- [x] Project-wide Progress HUD

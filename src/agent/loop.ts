@@ -2,6 +2,9 @@ import { createModelManager, type Message as AiMessage } from "../ai";
 
 export type Message = AiMessage;
 
+/** Back-compat alias: engine and callers import the call options under this name. */
+export type CallLlmOptions = ChatOptions;
+
 export interface ChatOptions {
   model?: string;
   systemPrompt?: string;

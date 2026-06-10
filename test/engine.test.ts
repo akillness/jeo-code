@@ -205,7 +205,7 @@ test("truncateToolOutput: keeps head and tail (tail holds the decisive part)", (
   expect(out.length).toBeLessThan(body.length);
   expect(out).toContain("HEAD_MARKER");
   expect(out).toContain("TAIL_MARKER"); // would be lost by a pure head-cut
-  expect(out).toContain("elided");
+  expect(out).toContain("chars truncated");
 });
 
 test("runAgentLoop: a model that never emits a 'tool' field stops with a clear, actionable reason", async () => {

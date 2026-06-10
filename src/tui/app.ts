@@ -46,7 +46,7 @@ export interface AgentEventsLike {
   onStep?(step: number): void;
   onAssistant?(raw: string, invocation: { tool: string; arguments?: unknown } | null): void;
   onToolResult?(tool: string, success: boolean, output: string): void;
-  onError?(message: string): void;
+  onNotice?(message: string): void;
 }
 
 const DEFAULT_MAX_STEPS = 25;
@@ -71,6 +71,7 @@ export class LaunchTui {
   private finished = false;
   private timer: ReturnType<typeof setInterval> | undefined;
   private pendingIndex: number | null = null;
+  private pendingTitle: string | null = null;
   // True between a step start and the model's reply — i.e. we're waiting on the model.
   // Surfaced in the status line ("calling model…") so the wait isn't an opaque pause.
   private thinking = false;
@@ -151,7 +152,9 @@ export class LaunchTui {
         if (invocation && invocation.tool !== "done") {
           const toolName = invocation.tool || "(no tool)";
           this.pendingIndex = this.tools.start(toolName);
-          this.rememberForge(summarizeForgeInvocation(toolName, invocation.arguments));
+          const summary = summarizeForgeInvocation(toolName, invocation.arguments);
+          this.pendingTitle = summary.title;
+          this.rememberForge(summary);
           this.draw();
         }
       },
@@ -165,11 +168,15 @@ export class LaunchTui {
         // [DONE] for success, [ERR] for failure — consistent with the forge/tool-list badges.
         const catBadge = categoryBadge(categoryForTool(tool), { color: this.theme.color });
         const resBadge = categoryBadge(success ? "done" : "error", { color: this.theme.color });
-        this.stream.append(`${catBadge} ${resBadge} ${tool}\n`);
+        const target = this.pendingTitle || tool;
+        this.pendingTitle = null;
+        this.stream.append(`${catBadge} ${resBadge} ${target}\n`);
         this.draw();
       },
-      onError: msg => {
-        this.stream.append(`${categoryBadge("error", { color: this.theme.color })} ${msg}\n`);
+      onNotice: msg => {
+        // Transient progress notice (e.g. rate-limit auto-retry countdown) — informational,
+        // styled as progress, not as a terminal error.
+        this.stream.append(`${categoryBadge("progress", { color: this.theme.color })} ${msg}\n`);
         this.draw();
       },
     };
@@ -405,6 +412,8 @@ export class LaunchTui {
           step: stepNow,
           maxSteps: this.footer.maxSteps,
           elapsedMs,
+          stepElapsedMs: this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined,
+          avgStepMs: stepNow > 0 ? elapsedMs / stepNow : undefined,
           message: statusMsg,
           stage: stageTrack,
           currentTool: this.tools.currentTool(),

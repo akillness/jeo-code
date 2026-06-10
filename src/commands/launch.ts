@@ -1,9 +1,9 @@
 import { createInterface } from "node:readline/promises";
-import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, type AgentLoopEvents } from "../agent/engine";
+import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, TOOL_PROTOCOL, type AgentLoopEvents } from "../agent/engine";
 import { createTaskTool, TASK_TOOL_PROTOCOL_LINE, type TaskSubEvent } from "../agent/task-tool";
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { LaunchTui } from "../tui/app";
-import { skillsPromptSection, loadSkills, formatSkill, buildSkillTask, getSkillFrom, skillSlashAliases, workflowSkillsForPrompt, parseSkillInvocation, type SkillDoc } from "../skills/catalog";
+import { skillsPromptSection, loadSkills, formatSkill, buildSkillTask, getSkillFrom, skillSlashAliases, workflowSkillsForPrompt, parseSkillInvocation, looksLikeSkillEcho, type SkillDoc } from "../skills/catalog";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
@@ -12,10 +12,10 @@ import { staticCompletionContext, readlineCompleter, formatCompletionPreview, to
 import { EVOLUTION_STAGES, renderAsciiArt, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
 import chalk from "chalk";
-import type { Message } from "../agent/loop";
+import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch } from "../agent/state";
-import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, enrichAll, sortByCapability, knownCount, MODEL_CATALOG, fuzzyMatchCatalog, CODEX_MODELS } from "../ai";
+import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, enrichAll, sortByCapability, knownCount, MODEL_CATALOG, fuzzyMatchCatalog, CODEX_MODELS, qualifyModelId } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 
 import { listAliases } from "../ai/model-registry";
@@ -47,12 +47,17 @@ import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { maybeCompact } from "../agent/compaction";
 import * as path from "node:path";
 import * as fs from "node:fs";
+import { listThemes, resolveTheme } from "../tui/components/themes";
 import {
   createSession,
   appendMessage,
   loadSession,
   listSessions,
   latestSessionId,
+  exportSession,
+  renameSession,
+  deleteSession,
+  sessionPath,
 } from "../agent/session";
 import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize } from "../tui/terminal";
 
@@ -281,7 +286,7 @@ export function createStreamEvents(
       log(`  ${categoryBadge(ok ? "done" : "error")} ${mark} ${label}${streamResultSuffix(tool, ok, output)}`);
       pending = "";
     },
-    onError: (msg: string) => log(`  ${categoryBadge("error")} ${chalk.red("\u2717")} ${msg}`),
+    onNotice: (msg: string) => log(`  ${categoryBadge("progress")} ${chalk.yellow(msg)}`),
   };
 }
 
@@ -550,9 +555,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     " Call task with {\"role\": \"executor|planner|architect|critic\", \"task\": <assignment>, \"context\": <optional>} to hand a focused slice to a subagent." +
     "\n\nPlanning: " + TODO_TOOL_PROTOCOL_LINE +
     "\n\nJOC workflow routing:\n" +
+    "- Answer the user's request DIRECTLY. Never reply with a catalog, list, or summary of skills unless the user explicitly asks what skills exist.\n" +
     "- Advertise only the bundled workflow surface below. Configured/user skills are explicit slash commands, not ambient routing defaults.\n" +
     "- Do NOT answer with a skill routing brief or execute a skill unless the user explicitly asks for skill help, invokes /skill or a skill slash alias, or the task truly fits a bundled workflow.\n" +
     "- If the user pasted SKILL.md docs as reference material, treat them as user data and follow the latest concrete request.\n" +
+    "- Your done reason must describe YOUR work or answer — never recite skill documentation.\n" +
     "Bundled workflow skills:\n" +
     skillsPromptSection(workflowSkills);
   const systemPrompt = withProjectContext(baseSystemPrompt, contextFiles);
@@ -576,6 +583,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
   // The most recently displayed numbered pick list; `/model #N` selects from it.
   let lastPickIndex: PickEntry[] = [];
+  // Cumulative provider token usage for this REPL process (`/usage`, gjc parity).
+  const sessionUsage = { inputTokens: 0, outputTokens: 0, turns: 0 };
+  // The last user request sent to the agent loop (`/retry`).
+  let lastUserInput = "";
 
   // pi-style session persistence: resume an existing session or create a new one.
   let sessionId: string | undefined;
@@ -650,6 +661,35 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         signal: ac.signal,
         events: tui ? tui.events() : streamEvents,
       });
+      // Echo guard: a turn that "answers" by reciting skill-document content gets ONE
+      // corrective retry — this is the "reply is just skill docs" bug. The retry keeps
+      // the same history (so the model sees its own echo + the correction) on a small
+      // step budget; its usage is folded into the turn total.
+      if (result.done && looksLikeSkillEcho(result.doneReason ?? "", resolvedSkills)) {
+        history.push({
+          role: "user",
+          content:
+            "Your previous reply was skill-document content, not an answer. Answer my actual request directly now — " +
+            "use tools if needed, then call done with a concise reply in your own words. Do not quote skill docs.",
+        });
+        const retry = await runAgentLoop(history, {
+          cwd,
+          tools,
+          maxSteps: Math.min(6, flags.maxSteps),
+          model: sessionModel,
+          maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
+          signal: ac.signal,
+          events: tui ? tui.events() : streamEvents,
+        });
+        const usage =
+          result.usage && retry.usage
+            ? {
+                inputTokens: result.usage.inputTokens + retry.usage.inputTokens,
+                outputTokens: result.usage.outputTokens + retry.usage.outputTokens,
+              }
+            : retry.usage ?? result.usage;
+        result = { ...retry, steps: result.steps + retry.steps, usage };
+      }
     } catch (err) {
       if (tui) tui.finish(`! ${friendlyProviderError(err)}`);
       throw err;
@@ -665,6 +705,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     history.push({ role: "assistant", content: reply });
     if (sessionId) await appendMessage(sessionId, { role: "assistant", content: reply }, cwd);
     if (tui) tui.finish(reply);
+    if (result.usage) {
+      sessionUsage.inputTokens += result.usage.inputTokens;
+      sessionUsage.outputTokens += result.usage.outputTokens;
+    }
+    sessionUsage.turns++;
     const usage = result.usage ? `  (${result.usage.inputTokens} in / ${result.usage.outputTokens} out tokens)` : "";
     return { done: result.done, steps: result.steps, reply, rendered: !!tui, usage };
   };
@@ -681,11 +726,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     const cfgNow = await readGlobalConfig();
     const activeModel = sessionModel || cfgNow.defaultModel;
-    const { provider } = await describeModel(activeModel);
+    // The model the subagent will ACTUALLY run on: per-role override → session/default.
+    const roleModel = resolveSubagentModel(role.id, { ...cfgNow, defaultModel: activeModel });
+    const { provider } = await describeModel(roleModel);
     const maxSteps = resolveSubagentMaxSteps(role.id, cfgNow);
-    const tui = useTuiForRun ? new LaunchTui({ model: activeModel, provider, sessionId, maxSteps }) : null;
+    const tui = useTuiForRun ? new LaunchTui({ model: roleModel, provider, sessionId, maxSteps }) : null;
     if (tui) tui.start();
-    else console.log(`${categoryBadge("subagent")} Subagent: ${role.title} · model ${activeModel} · ≤${maxSteps} steps`);
+    else console.log(`${categoryBadge("subagent")} Subagent: ${role.title} · model ${roleModel} (${provider}) · ≤${maxSteps} steps`);
     const ac = new AbortController();
     const onSigint = () => ac.abort();
     process.once("SIGINT", onSigint);
@@ -841,11 +888,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const dir = path.posix.dirname(norm);
     return `@ ${dir === "." ? norm : dir}`;
   };
-  const PREVIEW_ROWS = 12;
+  // Boxed-input footer height — ADAPTIVE so short terminals/panes still get the single
+  // boxed input instead of silently falling back to the raw `joc>` prompt (previously
+  // any terminal under 17 rows lost the box entirely and showed bare CLI input).
+  const MAX_PREVIEW_ROWS = 12;
+  const MIN_PREVIEW_ROWS = 5; // input box (3 rows) + 2 preview rows
+  const previewRowsFor = (rows: number): number => Math.max(MIN_PREVIEW_ROWS, Math.min(MAX_PREVIEW_ROWS, rows - 6));
   const previewEnabled =
     process.stdin.isTTY &&
     process.env.JOC_NO_SLASH_PREVIEW !== "1" &&
-    (process.stdout.rows ?? 24) > PREVIEW_ROWS + 4;
+    (process.stdout.rows ?? 24) >= MIN_PREVIEW_ROWS + 6; // box + ≥6 scrollable content rows
+  // Footer height reserved by the CURRENTLY armed region; disarm/draw must use the
+  // same value the arm computed, even if the terminal was resized in between.
+  let footerRows = MAX_PREVIEW_ROWS;
   const out = process.stdout;
   let pickerActive = false;
   // Arrow-key selection over the slash preview list.
@@ -868,7 +923,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const armPreview = () => {
     if (!previewEnabled || previewArmed) return;
     const rows = process.stdout.rows ?? 24;
-    out.write(`\x1b7\x1b[1;${rows - PREVIEW_ROWS}r\x1b8`);
+    footerRows = previewRowsFor(rows);
+    out.write(`\x1b7\x1b[1;${rows - footerRows}r\x1b8`);
     previewArmed = true;
   };
   // Clear the footer rows and reset the scroll region to the full screen.
@@ -878,7 +934,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     lastFooterKey = "";
     const rows = process.stdout.rows ?? 24;
     let s = "\x1b7";
-    for (let i = 0; i < PREVIEW_ROWS; i++) s += `\x1b[${rows - PREVIEW_ROWS + 1 + i};1H\x1b[2K`;
+    for (let i = 0; i < footerRows; i++) s += `\x1b[${rows - footerRows + 1 + i};1H\x1b[2K`;
     s += "\x1b[r\x1b8\x1b[?25h"; // reset region, restore cursor, ensure it is visible
     out.write(s);
   };
@@ -889,13 +945,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       color: true,
       unicode: true,
       cwdLabel: currentAtLabel(line),
-      maxBodyRows: Math.max(1, PREVIEW_ROWS - 5),
+      maxBodyRows: Math.max(1, footerRows - 5),
     }).map(l => truncateAnsi(l, cols));
-    const budget = Math.max(0, PREVIEW_ROWS - input.length);
+    const budget = Math.max(0, footerRows - input.length);
     const slash = budget > 0 ? formatSlashPreview(line, budget, selected, skillSlashDetails) : [];
     const args = !slash.length && budget > 0 ? formatCompletionPreview(line, completionContext(), budget) : [];
     const preview = (slash.length ? slash : args).map(l => chalk.gray(truncateAnsi(l, cols)));
-    return [...input, ...preview].slice(0, PREVIEW_ROWS);
+    return [...input, ...preview].slice(0, footerRows);
   };
   const drawFooter = (lines: string[]) => {
     if (!previewArmed) return;
@@ -903,9 +959,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (key === lastFooterKey) return;
     lastFooterKey = key;
     const rows = process.stdout.rows ?? 24;
-    const base = rows - PREVIEW_ROWS;
+    const base = rows - footerRows;
     let s = "\x1b7";
-    for (let i = 0; i < PREVIEW_ROWS; i++) {
+    for (let i = 0; i < footerRows; i++) {
       s += `\x1b[${base + 1 + i};1H\x1b[2K`;
       if (i < lines.length) s += lines[i]!;
     }
@@ -1179,12 +1235,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       navMatches = [];
       navIdx = -1;
       drawFooter(previewLines(""));
-      const raw = (await rl.question("\njoc> ")).trim();
+      // Box mode: NO raw `joc>` prompt at all — the boxed footer IS the input UI
+      // (gating already suppresses readline echo, the empty prompt guarantees no
+      // raw CLI input line can ever flash). Legacy prompt only without the box.
+      const raw = (await rl.question(previewEnabled ? "" : "\njoc> ")).trim();
       disarmPreview();
       // If an arrow-key selection was made over the slash preview, run that command.
-      const input = pendingSelection && isSlashAttempt(raw) && pendingSelection.startsWith(raw)
+      let input = pendingSelection && isSlashAttempt(raw) && pendingSelection.startsWith(raw)
         ? pendingSelection
         : raw;
+      // gjc-parity command aliases (full behavior reuse, no duplicated handlers).
+      if (input === "/login" || input.startsWith("/login ")) input = `/provider login${input.slice("/login".length)}`;
+      else if (input === "/settings") input = "/config";
       pendingSelection = undefined;
       navMatches = [];
       navIdx = -1;
@@ -1210,7 +1272,255 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (input === "/sessions") {
         const sessions = await listSessions(cwd);
         if (sessions.length === 0) console.log("(no saved sessions)");
-        for (const s of sessions) console.log(`  ${s.id}  (${s.messageCount} msgs)  ${s.preview}`);
+        for (const s of sessions) {
+          const marker = s.id === sessionId ? "*" : " ";
+          const title = s.title ? `[${s.title}] ` : "";
+          console.log(` ${marker}${s.id}  (${s.messageCount} msgs)  ${title}${s.preview}`);
+        }
+        continue;
+      }
+      // ---- gjc-parity session management ------------------------------------
+      const startFreshSession = async (verb: string): Promise<void> => {
+        history.length = 1;
+        if (!flags.noSession) {
+          sessionId = (await createSession(cwd)).id;
+          console.log(`(${verb} — new session ${sessionId})`);
+        } else {
+          sessionId = undefined;
+          console.log(`(${verb} — sessions disabled)`);
+        }
+      };
+      if (input === "/new") {
+        await startFreshSession("started fresh");
+        continue;
+      }
+      if (input === "/drop") {
+        if (sessionId) {
+          const removed = await deleteSession(sessionId, cwd);
+          console.log(removed ? `(deleted session ${sessionId})` : `(session ${sessionId} already gone)`);
+        }
+        await startFreshSession("dropped");
+        continue;
+      }
+      if (input === "/session" || input.startsWith("/session ")) {
+        const sub = input.substring(8).trim().toLowerCase();
+        if (sub === "delete") {
+          if (!sessionId) {
+            console.log("(sessions are disabled — nothing to delete)");
+            continue;
+          }
+          const removed = await deleteSession(sessionId, cwd);
+          console.log(removed ? `(deleted session ${sessionId})` : `(session ${sessionId} already gone)`);
+          await startFreshSession("dropped");
+          continue;
+        }
+        if (sub && sub !== "info") {
+          console.log("Usage: /session [info|delete]");
+          continue;
+        }
+        if (!sessionId) {
+          console.log("Session: disabled (--no-session)");
+          continue;
+        }
+        const all = await listSessions(cwd);
+        const current = all.find(s => s.id === sessionId);
+        console.log("Session info:");
+        console.log(`  id        ${sessionId}`);
+        if (current?.title) console.log(`  title     ${current.title}`);
+        console.log(`  file      ${sessionPath(sessionId, cwd)}`);
+        console.log(`  started   ${current?.timestamp ?? "(this run)"}`);
+        console.log(`  messages  ${current?.messageCount ?? Math.max(0, history.length - 1)} persisted · ${history.length - 1} in context`);
+        console.log(`  workspace ${cwd}`);
+        continue;
+      }
+      if (input === "/rename" || input.startsWith("/rename ")) {
+        const title = input.substring(7).trim();
+        if (!title) {
+          console.log("Usage: /rename <title>");
+          continue;
+        }
+        if (!sessionId) {
+          console.log("(sessions are disabled — nothing to rename)");
+          continue;
+        }
+        try {
+          await renameSession(sessionId, title, cwd);
+          console.log(`(session renamed to '${title}')`);
+        } catch (err) {
+          console.log(`! rename failed: ${(err as Error).message}`);
+        }
+        continue;
+      }
+      if (input === "/resume" || input.startsWith("/resume ")) {
+        const id = input.substring(7).trim();
+        if (!id) {
+          const sessions = await listSessions(cwd);
+          if (sessions.length === 0) {
+            console.log("(no saved sessions)");
+            continue;
+          }
+          console.log("Saved sessions — resume with /resume <id>:");
+          for (const s of sessions.slice(0, 15)) {
+            const marker = s.id === sessionId ? "*" : " ";
+            console.log(` ${marker}${s.id}  (${s.messageCount} msgs)  ${s.title ? `[${s.title}] ` : ""}${s.preview}`);
+          }
+          continue;
+        }
+        try {
+          const { messages } = await loadSession(id, cwd);
+          history.length = 1;
+          for (const m of messages) history.push(m);
+          sessionId = id;
+          console.log(`Resumed session ${id} (${messages.length} messages).`);
+        } catch (err) {
+          console.log(`! ${(err as Error).message}`);
+        }
+        continue;
+      }
+      if (input === "/retry") {
+        if (!lastUserInput) {
+          console.log("(nothing to retry yet — send a request first)");
+          continue;
+        }
+        console.log(`(retrying: ${lastUserInput.slice(0, 80)}${lastUserInput.length > 80 ? "…" : ""})`);
+        try {
+          const { done, steps, reply, rendered, usage } = await runTurn(lastUserInput, useTui);
+          if (!rendered) {
+            console.log(`joc> ${reply}${usage}`);
+            if (!done) console.log(`(agent did not converge in ${steps} steps)`);
+          } else if (usage) {
+            console.log(usage.trim());
+          }
+        } catch (err) {
+          console.log(`! ${friendlyProviderError(err)}`);
+        }
+        continue;
+      }
+      if (input === "/export" || input.startsWith("/export ")) {
+        if (!sessionId) {
+          console.log("(sessions are disabled — nothing to export)");
+          continue;
+        }
+        const tokens = input.substring(7).trim().split(/\s+/).filter(Boolean);
+        const fmtToken = tokens.find(t => t.toLowerCase() === "json" || t.toLowerCase() === "markdown");
+        const format = fmtToken?.toLowerCase() === "json" ? "json" as const : "markdown" as const;
+        const pathToken = tokens.find(t => t !== fmtToken);
+        const outPath = path.resolve(cwd, pathToken ?? `joc-session-${sessionId.slice(0, 8)}.${format === "json" ? "json" : "md"}`);
+        try {
+          const text = await exportSession(sessionId, format, cwd);
+          await fs.promises.writeFile(outPath, text, "utf-8");
+          console.log(`${categoryBadge("file")} exported ${format} transcript → ${outPath}`);
+        } catch (err) {
+          console.log(`! export failed: ${(err as Error).message}`);
+        }
+        continue;
+      }
+      if (input === "/dump") {
+        if (!sessionId) {
+          console.log("(sessions are disabled — nothing to dump)");
+          continue;
+        }
+        try {
+          const text = await exportSession(sessionId, "markdown", cwd);
+          const clip = process.platform === "darwin" ? "pbcopy" : Bun.which("wl-copy") ? "wl-copy" : Bun.which("xclip") ? "xclip" : "";
+          if (clip && Bun.which(clip)) {
+            const proc = Bun.spawn(clip === "xclip" ? [clip, "-selection", "clipboard"] : [clip], { stdin: "pipe" });
+            proc.stdin.write(text);
+            await proc.stdin.end();
+            await proc.exited;
+            console.log(`(transcript copied to clipboard — ${text.length} chars)`);
+          } else {
+            console.log(text);
+            console.log("(no clipboard tool found — transcript printed above)");
+          }
+        } catch (err) {
+          console.log(`! dump failed: ${(err as Error).message}`);
+        }
+        continue;
+      }
+      if (input === "/btw" || input.startsWith("/btw ")) {
+        const q = input.substring(4).trim();
+        if (!q) {
+          console.log("Usage: /btw <question>   (ephemeral side question — history stays untouched)");
+          continue;
+        }
+        try {
+          const side: Message[] = [
+            { role: "system", content: "You are joc. Answer the user's side question concisely in plain text using the conversation context. Do not call tools; reply directly." },
+            ...history.slice(1).filter(m => m.role === "user" || m.role === "assistant").slice(-20),
+            { role: "user", content: q },
+          ];
+          const answer = await callLlm(side, { model: sessionModel, maxTokens: thinkingMaxTokens(sessionThinking) });
+          console.log(`btw> ${answer.trim()}`);
+        } catch (err) {
+          console.log(`! ${friendlyProviderError(err)}`);
+        }
+        continue;
+      }
+      // ---- gjc-parity inspection commands ------------------------------------
+      if (input === "/usage") {
+        const total = sessionUsage.inputTokens + sessionUsage.outputTokens;
+        console.log("Provider token usage (this REPL):");
+        console.log(`  turns   ${sessionUsage.turns}`);
+        console.log(`  input   ${sessionUsage.inputTokens}`);
+        console.log(`  output  ${sessionUsage.outputTokens}`);
+        console.log(`  total   ${total}${total === 0 ? "  (providers report usage per turn; run a request first)" : ""}`);
+        continue;
+      }
+      if (input === "/context") {
+        // Token estimate (~4 chars/token) over the in-memory history, by role.
+        const est = (s: string) => Math.ceil(s.length / 4);
+        const byRole: Record<string, { msgs: number; tokens: number }> = {};
+        for (const m of history) {
+          const slot = (byRole[m.role] ??= { msgs: 0, tokens: 0 });
+          slot.msgs++;
+          slot.tokens += est(m.content);
+        }
+        const total = Object.values(byRole).reduce((sum, r) => sum + r.tokens, 0);
+        const { resolved } = await describeModel(sessionModel || (await readGlobalConfig()).defaultModel);
+        const window = catalogMetadata(resolved)?.contextTokens;
+        console.log("Context usage (estimated, ~4 chars/token):");
+        for (const [role, r] of Object.entries(byRole)) {
+          console.log(`  ${role.padEnd(9)} ${String(r.msgs).padStart(3)} msg${r.msgs === 1 ? " " : "s"}  ~${r.tokens} tokens`);
+        }
+        console.log(`  ${"total".padEnd(9)} ${String(history.length).padStart(3)} msgs  ~${total} tokens${window ? `  (${Math.round((total / window) * 100)}% of ${resolved}'s ${window}-token window)` : ""}`);
+        console.log("  Free context with /compact or /clear.");
+        continue;
+      }
+      if (input === "/tools") {
+        console.log("Tools visible to the agent:");
+        for (const line of TOOL_PROTOCOL.split("\n")) console.log(`  ${line}`);
+        console.log(`  ${TASK_TOOL_PROTOCOL_LINE}`);
+        console.log(`  ${TODO_TOOL_PROTOCOL_LINE}`);
+        continue;
+      }
+      if (input === "/hotkeys") {
+        console.log("Keyboard shortcuts:");
+        console.log("  Tab        complete slash commands, models, roles, @paths");
+        console.log("  ↑ / ↓      navigate the slash-command preview (Enter runs the highlighted one)");
+        console.log("  Enter      submit input / confirm picker selection");
+        console.log("  Esc        cancel an open picker");
+        console.log("  Ctrl-C     cancel the in-flight turn (press again at the prompt to exit)");
+        console.log("  Ctrl-D     exit the REPL");
+        console.log("  /          open the slash-command palette");
+        console.log("  @path      mention a file (Tab completes relative paths)");
+        continue;
+      }
+      if (input === "/theme" || input.startsWith("/theme ")) {
+        const want = input.substring(6).trim().toLowerCase();
+        const themes = listThemes();
+        if (!want) {
+          const active = resolveTheme().name;
+          console.log("TUI themes (set with /theme <name>, persists for this run via JOC_TUI_THEME):");
+          for (const t of themes) console.log(`  ${t.name === active ? "*" : " "} ${t.name.padEnd(7)} ${t.description}`);
+          continue;
+        }
+        if (!themes.some(t => t.name === want)) {
+          console.log(`Unknown theme '${want}'. Known: ${themes.map(t => t.name).join(", ")}.`);
+          continue;
+        }
+        process.env.JOC_TUI_THEME = want;
+        console.log(`Theme set to ${want} (applies from the next turn).`);
         continue;
       }
       if (input === "/evolve") {
@@ -1343,11 +1653,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             continue;
           }
           pickedFromPicker = true;
-          target = picked.model;
+          target = qualifyModelId(picked.model, picked.provider);
         } else if (explicitModel && providerPick.length) {
           const sel = resolveSelection(providerPick, explicitModel);
           if (sel.kind === "index" || sel.kind === "match") {
-            target = sel.entry.model;
+            target = qualifyModelId(sel.entry.model, sel.entry.provider);
             if (st && !st.ready) {
               console.log(`Cannot select ${sel.entry.model}: ${name} is not ready (${st.label}). Set ${st.envVar ?? "the provider key"} first.`);
               continue;
@@ -1415,10 +1725,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             model: resolveSubagentModel(r.id, cfgNow),
             maxSteps: resolveSubagentMaxSteps(r.id, cfgNow),
           }))) console.log(line);
-          console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  steps: /agents <role> maxSteps <N>");
+          console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  provider: /agents <role> provider <name> [model]  ·  steps: /agents <role> maxSteps <N>");
           console.log("Run now: /subagent run [role] <task>  ·  /subagent <role> -- <task>");
           console.log("Available: executor, planner, architect, critic");
-          console.log("Subcommands: run, <role> <model|#N>, <role> maxSteps <N>, <role> reset");
+          console.log("Subcommands: run, <role> <model|#N>, <role> provider <name> [model], <role> maxSteps <N>, <role> reset");
           continue;
         }
         const role = getSubagentRole(roleArg);
@@ -1441,6 +1751,51 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`${role.title} maxSteps set to ${maxSteps} → ~/.joc/config.json`);
           continue;
         }
+        if (modelArg?.toLowerCase() === "provider") {
+          const want = (tokens[2] ?? "").toLowerCase();
+          if (!isProviderName(want)) {
+            console.log(`Usage: /agents ${role.id} provider <anthropic|openai|gemini|ollama> [model|#N]`);
+            continue;
+          }
+          const st = (await describeAllProviders()).find(s => s.name === want);
+          if (st && !st.ready) {
+            console.log(`Cannot pin ${role.title} to ${want}: not ready (${st.label}). Set ${st.envVar ?? "the provider key"} first.`);
+            continue;
+          }
+          const live = await getLiveModels();
+          const forProvider = flattenModels(live.filter(r => r.provider === want));
+          const explicit = tokens[3];
+          let chosenModel: string;
+          if (explicit && forProvider.length) {
+            const sel = resolveSelection(forProvider, explicit);
+            if (sel.kind === "index" || sel.kind === "match") chosenModel = qualifyModelId(sel.entry.model, want);
+            else if (sel.kind === "ambiguous") {
+              console.log(`'${explicit}' matches ${sel.matches.length} ${want} models — be more specific:`);
+              for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model}`);
+              continue;
+            } else if (sel.kind === "out-of-range") {
+              console.log(`#${explicit.slice(1)} is out of range for ${want} (1-${sel.max}).`);
+              continue;
+            } else {
+              chosenModel = qualifyModelId(explicit, want);
+            }
+          } else if (explicit) {
+            chosenModel = qualifyModelId(explicit, want);
+          } else if (forProvider.length) {
+            // No model given → the provider's first live model, provider-qualified.
+            chosenModel = qualifyModelId(forProvider[0]!.model, want);
+          } else {
+            chosenModel = PROVIDER_DEFAULT[want];
+          }
+          await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: chosenModel }) }));
+          console.log(`${role.title} pinned to ${want} via model ${chosenModel} — saved to ~/.joc/config.json`);
+          if (forProvider.length) {
+            lastPickIndex = forProvider;
+            console.log(`Live ${want} models — refine with /agents ${role.id} #N:`);
+            for (const line of formatPickListWithCapabilities(lastPickIndex, { current: chosenModel, cap: 12 })) console.log(line);
+          }
+          continue;
+        }
         if (modelArg) {
           let chosenModel = modelArg;
           let entries = lastPickIndex;
@@ -1451,7 +1806,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (entries.length) {
             const sel = resolveSelection(entries, modelArg);
             if (sel.kind === "index" || sel.kind === "match") {
-              chosenModel = sel.entry.model;
+              chosenModel = qualifyModelId(sel.entry.model, sel.entry.provider);
               const bad = (await describeAllProviders()).find(s => s.name === sel.entry.provider && !s.ready);
               if (bad) {
                 console.log(`Cannot pin ${sel.entry.model}: ${sel.entry.provider} is not ready (${bad.label}). Set ${bad.envVar ?? "the provider key"} first.`);
@@ -1524,7 +1879,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (entries.length) {
             const sel = resolveSelection(entries, chosenModel);
             if (sel.kind === "index" || sel.kind === "match") {
-              chosenModel = sel.entry.model;
+              chosenModel = qualifyModelId(sel.entry.model, sel.entry.provider);
               const bad = (await describeAllProviders()).find(s => s.name === sel.entry.provider && !s.ready);
               if (bad) {
                 console.log(`Cannot set role ${tier} to ${sel.entry.model}: ${sel.entry.provider} is not ready (${bad.label}). Set ${bad.envVar ?? "the provider key"} first.`);
@@ -1584,7 +1939,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // persist a literal token like "#2" as defaultModel (which then fails to route).
           if (toSave && lastPickIndex.length) {
             const sel = resolveSelection(lastPickIndex, toSave);
-            if (sel.kind === "index" || sel.kind === "match") toSave = sel.entry.model;
+            if (sel.kind === "index" || sel.kind === "match") toSave = qualifyModelId(sel.entry.model, sel.entry.provider);
             else if (sel.kind === "ambiguous") {
               console.log(`'${toSave}' matches ${sel.matches.length} models — be more specific:`);
               for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
@@ -1618,7 +1973,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               console.log("(cancelled)");
               continue;
             }
-            arg = picked.model;
+            arg = qualifyModelId(picked.model, picked.provider);
           }
         }
         // Selection from the last numbered pick list (`#N`) or a fuzzy substring.
@@ -1630,7 +1985,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               console.log(`Cannot select ${sel.entry.model}: ${sel.entry.provider} is not ready (${bad?.label ?? "not ready"}). Set ${bad?.envVar ?? "the provider key"} first.`);
               continue;
             }
-            arg = sel.entry.model;
+            arg = qualifyModelId(sel.entry.model, sel.entry.provider);
           } else if (sel.kind === "ambiguous") {
             console.log(`'${arg}' matches ${sel.matches.length} models — be more specific:`);
             for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
@@ -1800,6 +2155,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
 
+      lastUserInput = input;
       try {
         const { done, steps, reply, rendered, usage } = await runTurn(input, useTui);
         if (!rendered) {

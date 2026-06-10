@@ -31,6 +31,42 @@ export function resolveProvider(model: string): ProviderName {
   if (m.startsWith("google/") || m.includes("gemini")) return "gemini";
   return "anthropic";
 }
+const PROVIDER_ID_PREFIX: Record<ProviderName, string> = {
+  anthropic: "anthropic/",
+  openai: "openai/",
+  gemini: "google/",
+  ollama: "ollama/",
+};
+
+/**
+ * Pin-time provider qualification: when a picked live model id would route to a
+ * DIFFERENT provider than the list it came from (e.g. ollama's `qwen2.5:0.5b` → anthropic,
+ * ollama's `gpt-oss:20b` → openai), prefix it so resolveProvider routes correctly.
+ * Adapters strip these prefixes on the wire. Ids that already route correctly
+ * (catalog ids, aliases, prefixed ids) pass through unchanged.
+ */
+export function qualifyModelId(model: string, provider: ProviderName): string {
+  const id = (model ?? "").trim();
+  if (!id) return id;
+  return resolveProvider(id) === provider ? id : `${PROVIDER_ID_PREFIX[provider]}${id}`;
+}
+
+/**
+ * Wire id for a (possibly provider-qualified) model id: a catalog canonical maps
+ * to the exact provider id (claude-sonnet-4-5 → claude-sonnet-4-5-20250929);
+ * live/provider/prefixed ids pass through unchanged (adapters strip prefixes).
+ */
+export function providerModelFor(model: string): string {
+  if (
+    model.startsWith("ollama/") ||
+    model.startsWith("openai/") ||
+    model.startsWith("anthropic/") ||
+    model.startsWith("google/")
+  ) {
+    return model;
+  }
+  return toProviderModel(model, resolveProvider(model));
+}
 
 /** Map the configured thinking level to a default max-token budget. */
 export function thinkingMaxTokens(level?: "minimal" | "low" | "medium" | "high" | "xhigh"): number {
@@ -109,8 +145,10 @@ const ALIAS_DEFAULTS = { fast: "ollama/qwen2.5:0.5b", local: "ollama/qwen2.5:0.5
  * wins and disables the matching rate-limit default.
  * `maxDelayMs` caps backoff when provided.
  */
-const DEFAULT_RATE_LIMIT_RETRIES = 5; // total attempts for 429 (initial + 4 retries)
-const DEFAULT_RATE_LIMIT_MIN_DELAY_MS = 2000; // 429 floor when the server sends no Retry-After
+const DEFAULT_RATE_LIMIT_RETRIES = 6; // total attempts for 429 (initial + 5 retries)
+// 429 floor when the server sends no Retry-After. Escalates per attempt inside
+// withRetry (2s → 4s → 8s → 16s → 30s ≈ 60s total), spanning a per-minute window.
+const DEFAULT_RATE_LIMIT_MIN_DELAY_MS = 2000;
 export function resolveRetryOptions(retry: Config["retry"]): RetryOptions {
   const opts: RetryOptions = { isRetryable: defaultRetryable };
   if (typeof retry?.requestMaxRetries === "number") opts.retries = retry.requestMaxRetries + 1;
@@ -197,7 +235,7 @@ async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
   const callOptions: CallOptions = {
     // Map a catalog canonical (e.g. claude-3-5-sonnet) to the exact wire id the
     // provider accepts (claude-3-5-sonnet-20241022); live/provider ids pass through.
-    model: toProviderModel(model, provider),
+    model: providerModelFor(model),
     systemPrompt: options.systemPrompt,
     temperature: options.temperature ?? 0.2,
     maxTokens: options.maxTokens ?? thinkingMaxTokens(config.thinkingLevel),
@@ -207,9 +245,12 @@ async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
     signal: options.signal,
     reasoningEffort: options.reasoningEffort ?? thinkingToReasoningEffort(config.thinkingLevel),
   };
+  // Caller-supplied retry sink rides on the config-derived retry budget so the
+  // engine/TUI can surface "rate limited — retrying in Ns" instead of a silent wait.
+  const retry: RetryOptions = { ...resolveRetryOptions(config.retry), ...(options.onRetry ? { onRetry: options.onRetry } : {}) };
 
   if (provider === "ollama") {
-    return { adapter, callOptions, credential: { kind: "none", provider: "openai" }, retry: resolveRetryOptions(config.retry) };
+    return { adapter, callOptions, credential: { kind: "none", provider: "openai" }, retry };
   }
 
   const credential = await resolveCredential(provider as AuthProvider);
@@ -221,7 +262,7 @@ async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
       `No credential for provider '${provider}'. Run 'joc setup', 'joc auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
     );
   }
-  return { adapter, callOptions, credential: credentialForCall(provider, effective, config, baseUrl), retry: resolveRetryOptions(config.retry) };
+  return { adapter, callOptions, credential: credentialForCall(provider, effective, config, baseUrl), retry };
 }
 
 /** Hard cap for a single non-streaming provider request (service-readiness: a

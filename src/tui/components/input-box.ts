@@ -1,6 +1,5 @@
 import chalk from "chalk";
 import { BOX_ASCII, BOX_UNICODE, boxBlock } from "./layout";
-import { categoryBadge } from "./category-index";
 
 export interface InputBoxOptions {
   cols?: number;
@@ -26,6 +25,10 @@ function wrapPlain(text: string, width: number): string[] {
   return out;
 }
 
+/**
+ * Renders a boxed input box enclosing either the current typed text or a placeholder.
+ * If opts.cwdLabel is provided, a dim gray label line is appended after the text inside the box.
+ */
 export function renderInputBox(line: string, opts: InputBoxOptions = {}): string[] {
   const cols = Math.max(24, Math.trunc(opts.cols ?? 80));
   const placeholder = opts.placeholder ?? "Type a request, /help, or @path";
@@ -35,8 +38,12 @@ export function renderInputBox(line: string, opts: InputBoxOptions = {}): string
   const body = wrapped.length > maxBodyRows
     ? [`…${wrapped[wrapped.length - maxBodyRows] ?? ""}`.slice(0, bodyWidth), ...wrapped.slice(-(maxBodyRows - 1))]
     : wrapped;
-  const title = `${categoryBadge("cmd", { color: opts.color })} input${opts.cwdLabel ? ` · ${opts.cwdLabel}` : ""}`;
+  const content = [...body];
+  if (opts.cwdLabel) {
+    const label = opts.color === false ? opts.cwdLabel : chalk.gray(opts.cwdLabel);
+    content.push(label);
+  }
   const glyphs = opts.unicode === false ? BOX_ASCII : BOX_UNICODE;
   const paint = opts.color === false ? (s: string) => s : chalk.blue;
-  return boxBlock([title, "DIVIDER", ...body], cols, { glyphs, paint, align: "left" });
+  return boxBlock(content, cols, { glyphs, paint, align: "left" });
 }

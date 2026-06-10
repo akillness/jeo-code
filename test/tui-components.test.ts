@@ -25,25 +25,25 @@ test("ToolList start->render shows running, finish(ok=true)->ok, finish(ok=false
   
   const idx1 = list.start("read");
   expect(idx1).toBe(0);
-  expect(list.render().map(stripAnsi)).toEqual(["  · read running..."]);
+  expect(list.render().map(stripAnsi)).toEqual(["  ◓ read running..."]);
 
   const idx2 = list.start("bash");
   expect(idx2).toBe(1);
   expect(list.render().map(stripAnsi)).toEqual([
-    "  · read running...",
-    "  · bash running..."
+    "  ◓ read running...",
+    "  ◓ bash running..."
   ]);
 
   list.finish(idx1, true);
   expect(list.render().map(stripAnsi)).toEqual([
-    "  · read ok",
-    "  · bash running..."
+    "  ✔ read ok",
+    "  ◓ bash running..."
   ]);
 
   list.finish(idx2, false);
   expect(list.render().map(stripAnsi)).toEqual([
-    "  · read ok",
-    "  · bash FAILED"
+    "  ✔ read ok",
+    "  ✖ bash FAILED"
   ]);
 
   expect(list.currentTool()).toBeUndefined();

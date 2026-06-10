@@ -180,3 +180,39 @@ test("staticCompletionContext is wired to the real registries", () => {
   expect(s.catalogModels).toContain("gpt-4o");
   expect(s.thinkingLevels).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
 });
+
+test("/session completes its subcommands", () => {
+  const r = complete("/session ", ctx());
+  expect(r.kind).toBe("subcommand");
+  expect(r.completions).toEqual(["info", "delete"]);
+  expect(complete("/session d", ctx()).completions).toEqual(["delete"]);
+  // Only the first argument is completed.
+  expect(complete("/session info x", ctx()).completions).toEqual([]);
+});
+
+test("/theme completes the bundled theme names", () => {
+  const r = complete("/theme ", ctx());
+  expect(r.kind).toBe("subcommand");
+  expect(r.completions).toEqual(["cosmic", "matrix", "solar", "mono"]);
+  expect(complete("/theme m", ctx()).completions).toEqual(["matrix", "mono"]);
+});
+
+test("/login completes the OAuth-capable cloud providers", () => {
+  const r = complete("/login ", ctx());
+  expect(r.kind).toBe("provider");
+  expect(r.completions).toEqual(["anthropic", "openai", "gemini"]);
+  expect(complete("/login o", ctx()).completions).toEqual(["openai"]);
+});
+
+test("/export completes format keywords for the first two args", () => {
+  expect(complete("/export ", ctx()).completions).toEqual(["json", "markdown"]);
+  expect(complete("/export out.md j", ctx()).completions).toEqual(["json"]);
+  expect(complete("/export out.md json x", ctx()).completions).toEqual([]);
+});
+
+test("staticCompletionContext includes the gjc-parity commands", () => {
+  const base = staticCompletionContext();
+  for (const cmd of ["/new", "/session", "/rename", "/resume", "/retry", "/export", "/dump", "/btw", "/usage", "/context", "/tools", "/hotkeys", "/theme", "/settings", "/login"]) {
+    expect(base.slashCommands).toContain(cmd);
+  }
+});

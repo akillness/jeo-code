@@ -170,7 +170,7 @@ test("resolveRetryOptions: explicit rate-limit overrides win", () => {
 
 test("resolveRetryOptions: defaults still engage when unset (regression guard)", () => {
   const o = resolveRetryOptions(undefined);
-  expect(o.rateLimitRetries).toBe(5);
+  expect(o.rateLimitRetries).toBe(6);
   expect(o.rateLimitMinDelayMs).toBe(2000);
   expect(o.retries).toBeUndefined();
 });

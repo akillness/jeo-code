@@ -69,3 +69,35 @@ test("readGlobalConfig: loads a valid on-disk config", async () => {
   expect(cfg.defaultModel).toBe("claude-3-5-haiku");
   await fs.rm(dir, { recursive: true, force: true });
 });
+
+test("parseConfig: accepts valid subagents config and rejects invalid provider", () => {
+  const r = parseConfig({
+    defaultModel: "m",
+    subagents: {
+      executor: {
+        model: "ollama/qwen2.5:0.5b",
+        provider: "ollama",
+        maxSteps: 5,
+      },
+    },
+  });
+  expect(r.ok).toBe(true);
+  if (r.ok) {
+    expect(r.config.subagents?.executor?.provider).toBe("ollama");
+  }
+
+  const r2 = parseConfig({
+    defaultModel: "m",
+    subagents: {
+      executor: {
+        model: "ollama/qwen2.5:0.5b",
+        provider: "not-a-valid-provider",
+        maxSteps: 5,
+      },
+    },
+  });
+  expect(r2.ok).toBe(false);
+  if (!r2.ok) {
+    expect(r2.message).toContain("provider");
+  }
+});

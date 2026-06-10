@@ -40,9 +40,12 @@ export const SKILLS: SkillDoc[] = [
 ];
 export const BUILTIN_SKILL_NAMES = SKILLS.map(s => s.name.toLowerCase());
 
-export function workflowSkillsForPrompt(skills: SkillDoc[] = SKILLS): SkillDoc[] {
-  const byName = new Map(skills.map(s => [s.name.toLowerCase(), s]));
-  return SKILLS.map(s => byName.get(s.name.toLowerCase()) ?? s);
+export function workflowSkillsForPrompt(skills?: SkillDoc[]): SkillDoc[] {
+  // Return the bundled SKILLS entries verbatim.
+  // This is used to build the system prompt section for "Bundled workflow skills",
+  // ignoring any same-named user-doc overrides to avoid collisions with foreign
+  // ecosystems for prompt advertisement, while keeping user skills loadable/invocable elsewhere.
+  return SKILLS;
 }
 
 
@@ -69,13 +72,17 @@ export function formatSkill(s: SkillDoc): string {
 
 function compactSkillExecutionBrief(skill: SkillDoc): string {
   const aliases = skillSlashAliases(skill);
+  let details = skill.details;
+  if (details.length > 2400) {
+    details = details.slice(0, 2400) + "…";
+  }
   return [
     `Name: ${skill.name}`,
     aliases.length ? `Slash aliases: ${aliases.join(", ")}` : undefined,
     `Summary: ${skill.summary}`,
     skill.whenToUse ? `When to use: ${skill.whenToUse}` : undefined,
     "Guidance:",
-    ...skill.details.split("\n").map(line => `  ${line}`),
+    ...details.split("\n").map(line => `  ${line}`),
   ].filter(Boolean).join("\n");
 }
 
@@ -89,6 +96,7 @@ export function buildSkillTask(skill: SkillDoc, intent: string, invokedAs?: stri
   return [
     `You are now executing the "${skill.name}" workflow skill in this repository.`,
     `IMPORTANT: this skill is GUIDANCE for you — it is NOT a callable tool. Do NOT emit a tool call named "${skill.name}". Use your real tools (read, write, edit, bash, find, search, ls, task, todo) to carry out the work, then call done with a short summary.`,
+    `You must never quote or recite the guidance text as your reply; the done reason must describe actual work/outcome.`,
     "",
     `<skill_guidance name="${skill.name}">`,
     compactSkillExecutionBrief(skill),
@@ -411,4 +419,65 @@ export function parseSkillInvocation(input: string, skills: SkillDoc[]): SkillIn
     }
   }
   return skill ? { skill, intent: trimmed.slice(command.length).trim(), invokedAs: command } : null;
+}
+export function looksLikeSkillEcho(reply: string, skills: SkillDoc[]): boolean {
+  if (reply.length < 80) {
+    return false;
+  }
+
+  const lines = reply.split(/\r?\n/);
+
+  // Heuristic 1: Contains <skill_guidance or a line starting with "Skill: " AND a line starting with "When to use:"
+  if (reply.includes("<skill_guidance")) {
+    return true;
+  }
+  const hasSkillLine = lines.some(l => l.trim().startsWith("Skill: "));
+  const hasWhenToUseLine = lines.some(l => l.trim().startsWith("When to use:"));
+  if (hasSkillLine && hasWhenToUseLine) {
+    return true;
+  }
+
+  // Heuristic 2: >= 3 reply lines are near-verbatim matches (trimmed, case-insensitive)
+  // of skill summary lines or of "- <name> — <summary>" lines that skillsPromptSection would emit
+  const targets = new Set<string>();
+  for (const s of skills) {
+    if (s.summary) {
+      targets.add(s.summary.trim().toLowerCase());
+    }
+    const aliases = skillSlashAliases(s);
+    const promptLine = `- ${s.name}${aliases.length ? ` (${aliases.join(", ")})` : ""} — ${s.summary}`;
+    targets.add(promptLine.trim().toLowerCase());
+  }
+
+  let matchCount = 0;
+  for (const line of lines) {
+    const trimmedLine = line.trim().toLowerCase();
+    if (targets.has(trimmedLine)) {
+      matchCount++;
+    }
+  }
+  if (matchCount >= 3) {
+    return true;
+  }
+
+  // Heuristic 3: Contains a verbatim chunk (>= 160 consecutive chars) of any skill's details
+  // (only check first 50 skills, and only those with details length >= 160, using start/middle/end probes)
+  const checkedSkills = skills.slice(0, 50);
+  for (const s of checkedSkills) {
+    const details = s.details;
+    if (!details || details.length < 160) {
+      continue;
+    }
+    const len = details.length;
+    const startProbe = details.slice(0, 160);
+    const midStart = Math.floor((len - 160) / 2);
+    const midProbe = details.slice(midStart, midStart + 160);
+    const endProbe = details.slice(len - 160);
+
+    if (reply.includes(startProbe) || reply.includes(midProbe) || reply.includes(endProbe)) {
+      return true;
+    }
+  }
+
+  return false;
 }

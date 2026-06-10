@@ -22,8 +22,8 @@ test("categoryForTool classifies command, file, diff, search, subagent, and gene
 test("ToolList indexed render preserves default but can add category indexes", () => {
   const list = new ToolList();
   list.finish(list.start("bash"), true);
-  expect(list.render(undefined, { color: false }).map(stripAnsi)).toEqual(["  · bash ok"]);
-  expect(list.render(undefined, { color: false, indexed: true }).map(stripAnsi)).toEqual(["  · [01:CMD] bash ok"]);
+  expect(list.render(undefined, { color: false }).map(stripAnsi)).toEqual(["  ✔ bash ok"]);
+  expect(list.render(undefined, { color: false, indexed: true }).map(stripAnsi)).toEqual(["  ✔ [01:CMD] bash ok"]);
 });
 
 test("forge box title can include a category index without exceeding width", () => {

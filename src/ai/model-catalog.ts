@@ -35,6 +35,7 @@ const STD: ThinkLevel[] = ["minimal", "low", "medium", "high"];
 /** A curated set of common public models with their documented capabilities. */
 export const MODEL_CATALOG: readonly CatalogModel[] = [
   // Anthropic
+  { canonical: "claude-3-5-sonnet", provider: "anthropic", providerModel: "claude-3-5-sonnet-20241022", contextTokens: 200_000, maxOutputTokens: 8192, thinking: [], images: true },
   { canonical: "claude-haiku-4-5", provider: "anthropic", providerModel: "claude-haiku-4-5-20251001", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
   { canonical: "claude-sonnet-4-5", provider: "anthropic", providerModel: "claude-sonnet-4-5-20250929", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
   { canonical: "claude-opus-4-1", provider: "anthropic", providerModel: "claude-opus-4-1-20250805", contextTokens: 200_000, maxOutputTokens: 32_000, thinking: FULL, images: true },

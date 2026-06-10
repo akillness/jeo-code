@@ -18,6 +18,7 @@ import { catalogIds } from "../../ai/model-catalog-compat";
 import { PROVIDER_NAMES } from "../../ai/provider-status";
 import { SUBAGENT_ROLES } from "../../agent/subagents";
 import { skillNames } from "../../skills/catalog";
+import { listThemes } from "./themes";
 
 export interface CompletionContext {
   slashCommands: string[];
@@ -185,6 +186,14 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     }
     case "/thinking":
       return argIndex === 0 ? finish(ctx.thinkingLevels, "thinking") : { completions: [], token, kind: "none" };
+    case "/session":
+      return argIndex === 0 ? finish(["info", "delete"], "subcommand") : { completions: [], token, kind: "none" };
+    case "/theme":
+      return argIndex === 0 ? finish(listThemes().map(t => t.name), "subcommand") : { completions: [], token, kind: "none" };
+    case "/login":
+      return argIndex === 0 ? finish(["anthropic", "openai", "gemini"], "provider") : { completions: [], token, kind: "none" };
+    case "/export":
+      return argIndex <= 1 ? finish(["json", "markdown"], "subcommand") : { completions: [], token, kind: "none" };
     default:
       return { completions: [], token, kind: "none" };
   }

@@ -63,22 +63,23 @@ export class ToolList {
         : this.rows;
     const hidden = this.dropped + (this.rows.length - rows.length);
 
-    const yellowDot = color ? chalk.yellow("·") : "·";
-    const yellowRunning = color ? chalk.yellow.bold("running...") : "running...";
-    const redDot = color ? chalk.red("·") : "·";
+    const cyanBullet = color ? chalk.cyan("◓") : "◓";
+    const cyanRunning = color ? chalk.cyan.bold("running...") : "running...";
+    const greenCheck = color ? chalk.green("✔") : "✔";
+    const redCross = color ? chalk.red("✖") : "✖";
     const redFailed = color ? chalk.red.bold("FAILED") : "FAILED";
     const grayLine = (s: string) => color ? chalk.gray(s) : s;
 
     const lines = rows.map((row, i) => {
       const badge = indexed ? `${categoryBadge(categoryForTool(row.tool), { index: hidden + i + 1, color })} ` : "";
       if (row.status === "running") {
-        return `  ${yellowDot} ${badge}${row.tool} ${yellowRunning}`;
+        return `  ${cyanBullet} ${badge}${row.tool} ${cyanRunning}`;
       } else if (row.status === "ok") {
         // Faded decay for completed successful tools
-        return grayLine(`  · ${badge}${row.tool} ok`);
+        return `  ${greenCheck} ${badge}${grayLine(row.tool + " ok")}`;
       } else {
         // Bright red for failures
-        return `  ${redDot} ${badge}${row.tool} ${redFailed}`;
+        return `  ${redCross} ${badge}${row.tool} ${redFailed}`;
       }
     });
     if (hidden > 0) {

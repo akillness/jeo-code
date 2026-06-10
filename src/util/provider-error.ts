@@ -6,6 +6,16 @@
  */
 import { isUsageLimitError } from "./retry";
 
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.ceil(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.ceil(totalSeconds / 60);
+  if (minutes < 60) return `~${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const rem = minutes % 60;
+  return rem ? `~${hours}h ${rem}m` : `~${hours}h`;
+}
+
 export function friendlyProviderError(err: unknown): string {
   const msg = (err as Error)?.message ?? String(err);
   const status = (err as { status?: number })?.status;
@@ -23,7 +33,11 @@ export function friendlyProviderError(err: unknown): string {
     return `${provider} usage/quota limit reached — this window will not clear in seconds, so auto-retry was skipped. Switch model with /model (e.g. a local ollama model), use another provider, or wait for the limit window to reset.`;
   }
   if (status === 429 || /\b429\b/.test(msg) || /rate[ _]?limit/i.test(msg)) {
-    return `Rate limited by ${provider} (HTTP 429). Auto-retry was exhausted — wait a moment and resend, slow your request rate, or switch model with /model (a local ollama model never rate-limits).`;
+    const retryAfterMs = (err as { retryAfterMs?: number })?.retryAfterMs;
+    const retry = typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+      ? ` Server requested retry after ${formatDuration(retryAfterMs)}.`
+      : "";
+    return `Rate limited by ${provider} (HTTP 429).${retry} Auto-retry cannot clear this window right now — slow your request rate, wait for the reset, or switch model with /model (a local ollama model never rate-limits).`;
   }
   if (status === 401 || status === 403 || /\b40[13]\b/.test(msg)) {
     return `${provider} rejected the credential (HTTP ${status ?? "401/403"}). Run 'joc auth status', re-login with /provider login <name>, and for Antigravity prefer '/provider login antigravity' (gemini login only works when the Cloud Code Assist backend authorizes that token).`;

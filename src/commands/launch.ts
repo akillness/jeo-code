@@ -191,7 +191,7 @@ function shellQuote(arg: string): string {
  * works on both runtimes. Our footer is written straight to `process.stdout`, never through
  * this proxy, so it always renders. Geometry/everything else is forwarded unchanged.
  */
-const GATED_OUTPUT_METHODS = new Set(["write", "cursorTo", "moveCursor", "clearLine", "clearScreenDown"]);
+const GATED_OUTPUT_METHODS = new Set(["write", "cursorTo", "moveCursor", "clearLine", "clearScreenDown", "_write", "_writev"]);
 export function gatedStdout(real: NodeJS.WriteStream, gated: () => boolean): NodeJS.WriteStream {
   return new Proxy(real, {
     get(target, prop, _receiver) {
@@ -1329,30 +1329,45 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
   let previewPending = false;
 
-  // Inline boxed-footer rendering (same repaint pattern as runSelectPicker): the
-  // footer is drawn at the cursor as ordinary lines and repainted in place with
-  // relative cursor moves. The previous implementation reserved the bottom rows
-  // via a DEC scroll region (DECSTBM) and cleared them on every redraw — which
-  // ERASED any command output that had scrolled into those rows (long `/help`,
-  // `/theme`, `/hotkeys` listings lost their tails). Inline repaint never touches
-  // scrollback, so command output is always preserved.
-  let footerRendered = 0; // rows the footer currently occupies (cursor parks on the last one)
+  // Inline boxed-footer rendering with a FIXED reservation (the "@-mention typing
+  // pushes the box down" fix). The footer reserves its full `footerRows` height
+  // eagerly on arm (one-time scroll cost), and every redraw paints inside that
+  // reservation with CUD (cursor-down) only — never `\n`. The old grow path emitted
+  // `\n` whenever lines.length > footerRendered, and `\n` at the bottom margin
+  // SCROLLS the terminal: every keystroke that wrapped the input box body or grew
+  // the `Paths:` preview ate a row of prior output and misaligned the next repaint.
+  // With a fixed reservation, footer height is constant for the lifetime of the
+  // prompt, so the box can never grow, scroll, or break alignment.
+  let footerRendered = 0; // rows of the reserved region (= footerRows once armed)
+  const padToFooter = (lines: string[]): string[] => {
+    if (lines.length >= footerRows) return lines.slice(0, footerRows);
+    return [...lines, ...new Array(footerRows - lines.length).fill("")];
+  };
   const armPreview = () => {
     if (!previewEnabled || previewArmed) return;
     footerRows = previewRowsFor(process.stdout.rows ?? 24);
+    // Reserve `footerRows` bottom rows: write blank newlines (the terminal scrolls
+    // ONCE here, not on every keystroke), then park the cursor at the top of the
+    // reservation. Every subsequent drawFooter call stays inside this region.
+    if (footerRows > 1) {
+      out.write("\n".repeat(footerRows - 1) + cursorUp(footerRows - 1));
+    }
+    out.write(toColumn(1));
+    footerRendered = footerRows;
     previewArmed = true;
+    lastFooterKey = "";
   };
-  // Clear the footer rows and park the cursor back at the footer's first row so
-  // subsequent command output starts exactly where the box was.
+  // Clear the reserved region and park the cursor at its top row so subsequent
+  // command output starts where the box was (and inherits the existing scrollback).
   const disarmPreview = () => {
     if (!previewArmed) return;
     previewArmed = false;
     lastFooterKey = "";
     if (footerRendered > 0) {
-      let s = footerRendered > 1 ? cursorUp(footerRendered - 1) : "";
+      let s = "";
       for (let i = 0; i < footerRendered; i++) {
         s += toColumn(1) + clearLine();
-        if (i < footerRendered - 1) s += "\x1b[1B"; // cursor-down: no scroll at the bottom margin
+        if (i < footerRendered - 1) s += "\x1b[1B"; // CUD: no scroll at bottom margin
       }
       if (footerRendered > 1) s += cursorUp(footerRendered - 1);
       s += toColumn(1) + "\x1b[?25h";
@@ -1378,27 +1393,27 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     return [...input, ...preview].slice(0, footerRows);
   };
   const drawFooter = (lines: string[]) => {
-    if (!previewArmed) return;
-    const key = lines.join("\n");
+    if (!previewArmed || footerRendered === 0) return;
+    // ALWAYS paint exactly footerRendered rows so the reservation is fully covered
+    // and no row can spill past it — the bug fix that kept `@folder<more text>`
+    // typing from scrolling the input box (and prior output) off the top.
+    const padded = padToFooter(lines);
+    const key = padded.join("\n");
     if (key === lastFooterKey) return;
     lastFooterKey = key;
-    const total = Math.max(footerRendered, lines.length);
-    if (total === 0) return;
-    let s = footerRendered > 1 ? cursorUp(footerRendered - 1) : "";
-    for (let i = 0; i < total; i++) {
+    // Cursor is parked at the top of the reservation (set by armPreview or by the
+    // tail of the previous drawFooter). Paint top→bottom using CUD only.
+    let s = toColumn(1);
+    for (let i = 0; i < footerRendered; i++) {
       s += toColumn(1) + clearLine();
-      if (i < lines.length) s += lines[i]!;
-      // Move down: over rows the footer already occupies use CUD (no scroll at the
-      // bottom margin → no anchor drift); for newly appended rows use a real
-      // newline (scrolls uniformly, keeping the drawn block contiguous).
-      if (i < total - 1) s += i < footerRendered - 1 ? "\x1b[1B" + toColumn(1) : "\n";
+      if (padded[i]) s += padded[i];
+      if (i < footerRendered - 1) s += "\x1b[1B"; // CUD: never scroll
     }
-    // Park the cursor on the footer's last VISIBLE row (or its first row when empty).
-    const parkRow = Math.max(lines.length - 1, 0);
-    if (total - 1 > parkRow) s += cursorUp(total - 1 - parkRow);
-    s += "\x1b[?25h";
+    // Return the cursor to the top of the reservation so the next drawFooter call
+    // can start painting at row 0 with no cursorUp accounting.
+    if (footerRendered > 1) s += cursorUp(footerRendered - 1);
+    s += toColumn(1) + "\x1b[?25h";
     out.write(s);
-    footerRendered = lines.length;
   };
 
   const runSelectPicker = async <T>(
@@ -1407,6 +1422,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   ): Promise<void> => {
     pickerActive = true;
     disarmPreview();
+    rl.pause();
+    const wasRaw = process.stdin.isRaw;
+    if (process.stdin.setRawMode && !wasRaw) {
+      process.stdin.setRawMode(true);
+    }
     const cols = Math.max(40, terminalSize().cols - 2);
     const rows = Math.max(6, terminalSize().rows - 6);
     let rendered = 0;
@@ -1448,6 +1468,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         process.stdin.on("keypress", handler);
       });
     } finally {
+      if (process.stdin.setRawMode && !wasRaw) {
+        process.stdin.setRawMode(false);
+      }
+      rl.resume();
       pickerActive = false;
     }
   };
@@ -1654,13 +1678,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         } catch { /* ignore render races */ }
       });
     });
-    // Idle-prompt resize: recompute the footer height budget and repaint the
-    // inline box at the new width (no scroll region to re-sync anymore).
+    // Idle-prompt resize: re-reserve the footer at the new terminal height so the
+    // fixed reservation stays accurate (otherwise the next paint would target the
+    // old row count and either over-shoot or under-paint the reserved region).
     process.stdout.on("resize", () => {
       if (!previewArmed) return;
       try {
-        footerRows = previewRowsFor(process.stdout.rows ?? 24);
-        lastFooterKey = "";
+        disarmPreview();
+        armPreview();
         drawFooter(previewLines(typedLine, navIdx));
       } catch { /* ignore resize render races */ }
     });

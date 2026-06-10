@@ -23,6 +23,19 @@ test("parseChatArgs: --thinking extracted alongside model", () => {
   expect(r.message).toBe("explain this");
 });
 
+test("parseChatArgs: --max-tokens is extracted for tiny smoke checks", () => {
+  const r = parseChatArgs(["--model", "sonnet", "--max-tokens=16", "ok?"]);
+  expect(r.model).toBe("sonnet");
+  expect(r.maxTokens).toBe(16);
+  expect(r.message).toBe("ok?");
+});
+
+test("parseChatArgs: --max-tokens space form ignores invalid values", () => {
+  const r = parseChatArgs(["--max-tokens", "nope", "hi"]);
+  expect(r.maxTokens).toBeUndefined();
+  expect(r.message).toBe("hi");
+});
+
 test("parseChatArgs: no flags — message passthrough unchanged", () => {
   const r = parseChatArgs(["just", "a", "question"]);
   expect(r.model).toBeUndefined();

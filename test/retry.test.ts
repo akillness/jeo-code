@@ -44,6 +44,7 @@ test("resolveRetryOptions: rate-limit defaults engage only when not explicitly c
   const base = resolveRetryOptions(undefined);
   expect(base.rateLimitRetries).toBe(6);
   expect(base.rateLimitMinDelayMs).toBe(2000);
+  expect(base.rateLimitMaxServerDelayMs).toBe(5 * 60 * 1000);
 
   // Explicit requestMaxRetries wins: rate-limit gets no bonus beyond the budget.
   const explicit = resolveRetryOptions({ requestMaxRetries: 2 });
@@ -126,6 +127,25 @@ test("withRetry: a 429 Retry-After:0 is still floored, and the floor escalates p
   // Without the floor a Retry-After:0 would sleep 0 and burn the budget instantly.
   // The floor doubles each retry so the total wait spans a realistic 429 window.
   expect(sleeps).toEqual([2000, 4000]);
+});
+
+test("withRetry: a 429 Retry-After beyond the configured budget fails fast", async () => {
+  const sleeps: number[] = [];
+  let attempts = 0;
+  await withRetry(
+    async () => {
+      attempts++;
+      throw { status: 429, message: "slow", retryAfterMs: 10 * 60 * 1000 };
+    },
+    {
+      retries: 5,
+      rateLimitRetries: 6,
+      rateLimitMaxServerDelayMs: 5 * 60 * 1000,
+      sleep: async ms => { sleeps.push(ms); },
+    },
+  ).catch(() => {});
+  expect(attempts).toBe(1);
+  expect(sleeps).toEqual([]);
 });
 
 test("withRetry: the escalating 429 floor is capped at 30s and spans ~a minute over the default budget", async () => {

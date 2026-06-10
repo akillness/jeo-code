@@ -75,6 +75,10 @@ export class LaunchTui {
   // True between a step start and the model's reply — i.e. we're waiting on the model.
   // Surfaced in the status line ("calling model…") so the wait isn't an opaque pause.
   private thinking = false;
+  // Latest transient provider notice (rate-limit auto-retry countdown); pinned into the
+  // [STEP] status row while waiting so backoff is visible at a glance. Cleared on the
+  // next step / model reply.
+  private retryNotice: string | null = null;
   // True while the live turn renders in the alternate screen buffer (TTY only);
   // drives leaving it on finish so terminal scroll never fights the repaint.
   private usedAltScreen = false;
@@ -142,6 +146,7 @@ export class LaunchTui {
       onStep: step => {
         this.footer.step = step;
         this.thinking = true; // waiting on the model for this step
+        this.retryNotice = null; // a new step starts a fresh model call
         this.currentStepStartedAt = Date.now();
         this.spinner.updateStep(step, this.footer.maxSteps);
         this.spinner.next();
@@ -149,6 +154,7 @@ export class LaunchTui {
       },
       onAssistant: (_raw, invocation) => {
         this.thinking = false; // model replied; now dispatching the tool
+        this.retryNotice = null; // the call got through — clear any backoff notice
         if (invocation && invocation.tool !== "done") {
           const toolName = invocation.tool || "(no tool)";
           this.pendingIndex = this.tools.start(toolName);
@@ -175,7 +181,9 @@ export class LaunchTui {
       },
       onNotice: msg => {
         // Transient progress notice (e.g. rate-limit auto-retry countdown) — informational,
-        // styled as progress, not as a terminal error.
+        // styled as progress, not as a terminal error. Also pinned into the [STEP] status
+        // row via currentActivity() so the wait is legible without scanning the stream.
+        this.retryNotice = msg;
         this.stream.append(`${categoryBadge("progress", { color: this.theme.color })} ${msg}\n`);
         this.draw();
       },
@@ -193,6 +201,10 @@ export class LaunchTui {
     // Waiting on the model and no tool is mid-flight → make the pause legible.
     if (this.thinking && !running) {
       const elapsed = this.currentStepStartedAt ? ((Date.now() - this.currentStepStartedAt) / 1000).toFixed(1) : "0.0";
+      // A provider backoff wait is the REAL current activity — show the retry notice
+      // (e.g. "rate limited (HTTP 429) — auto-retry #2 in 4s") instead of an opaque
+      // ever-growing "calling model (18.4s)…".
+      if (this.retryNotice) return `${this.retryNotice} (${elapsed}s)`;
       return `calling model (${this.footer.model}) (${elapsed}s)…`;
     }
     if (running) {
@@ -372,9 +384,9 @@ export class LaunchTui {
     }
     const effFrame = isThinking ? this.tickCount % stageBlocks(getStageByIndex(idx)).length : 0;
     if (idx !== this.cachedStageIndex || cols !== this.cachedCols || effFrame !== this.cachedFrame) {
-      this.cachedStageIndex = idx;
-      this.cachedCols = cols;
-      this.cachedFrame = effFrame;
+      // Commit the cache keys only AFTER the render succeeds: if renderAsciiArt ever
+      // throws (resize race, bad gradient level), pre-committed keys would mark the
+      // STALE art as current and freeze the header at an old stage forever.
       const art = renderAsciiArt(getStageByIndex(idx), {
         height: stageHeight(),
         width: stageWidth(),
@@ -388,6 +400,9 @@ export class LaunchTui {
       this.cachedArt = fit ? centerBlock(art, innerWidth) : art;
       const track = evolutionTrack(idx, { unicode: this.unicode, color: this.theme.color });
       this.cachedTrack = fit ? padLineTo(track, innerWidth, "center") : track;
+      this.cachedStageIndex = idx;
+      this.cachedCols = cols;
+      this.cachedFrame = effFrame;
     }
 
     const showArt = fit && rows >= 18 && cols >= 40;
@@ -404,7 +419,6 @@ export class LaunchTui {
     // Bottom-pinned status + footer.
     const bottom: string[] = [];
     const statusMsg = this.currentActivity();
-    const stageTrack = evolutionTrack(idx, { unicode: this.unicode, color: this.theme.color });
     if (isThinking) {
       if (fit) {
         const stats = this.tools.stats();
@@ -415,7 +429,6 @@ export class LaunchTui {
           stepElapsedMs: this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined,
           avgStepMs: stepNow > 0 ? elapsedMs / stepNow : undefined,
           message: statusMsg,
-          stage: stageTrack,
           currentTool: this.tools.currentTool(),
           okCount: stats.ok,
           failCount: stats.fail,

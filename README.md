@@ -1,7 +1,7 @@
 # jeo-code (`joc`)
 
 Bun 기반 AI 코딩 에이전트 CLI입니다. 저장소 안에서 `joc`를 실행하면 파일을 읽고, 수정하고, 명령을 실행하며 작업을 끝까지 진행합니다.
-진행 중에는 ASCII 진화 아트·스텝 타임라인·툴 forge 박스(bash/read/write/edit/task)·라이브 상태 푸터가 한 화면에 표시되고, 입력창에서 `/`로 시작하면 명령 미리보기가 하단에 노출됩니다. `[STEP] joc thinking` 줄은 매 틱 바뀌는 장식 문구 대신 **지금 실제로 하는 일**(진행 중인 파일·명령, 활성 plan 단계, plan 진행도)을 보여주고, `[TOOL] joc forge` 줄에는 현재 진화 단계(**double helix** 등)가 항상 노출됩니다. `task`로 위임하거나 `/subagent run …`으로 직접 실행한 **서브에이전트의 진행 상황**(할당·`step N/M`·중첩 툴 호출의 실제 대상 `read src/x.ts`·`bash: …`·결과 요약)도 gjc처럼 스트림에 실시간 표시됩니다.
+진행 중에는 ASCII 진화 아트·스텝 타임라인·툴 forge 박스(bash/read/write/edit/task)·라이브 상태 푸터가 한 화면에 표시되고, 입력창에서 `/`로 시작하면 명령 미리보기가 하단에 노출됩니다. `[STEP] joc thinking` 줄은 매 틱 바뀌는 장식 문구 대신 **지금 실제로 하는 일**(진행 중인 파일·명령, 활성 plan 단계, plan 진행도, 레이트리밋 백오프 중에는 `rate limited (HTTP 429) — auto-retry #2 in 4s` 카운트다운)을 현재 step 경과·step당 평균 시간과 함께 보여주고, 진화 단계 트랙은 중앙 헤더와 푸터 태그 **한 곳씩만** 표시되어 복사본끼리 어긋나지 않습니다. `task`로 위임하거나 `/subagent run …`으로 직접 실행한 **서브에이전트의 진행 상황**(할당·`step N/M`·중첩 툴 호출의 실제 대상 `read src/x.ts`·`bash: …`·결과 요약)도 gjc처럼 스트림에 실시간 표시됩니다.
 `joc "요청"`처럼 cmd 인자로 한 번에 실행해도 TTY에서는 같은 라이브 TUI가 뜨고, `--no-tui`/파이프 모드에서는 `[step N/M] <tool target>` + 결과 라인이 스트리밍되어 전체 동작 흐름이 보입니다. `joc "/subagent run executor <작업>" --no-tui`처럼 서브에이전트를 cmd에서 직접 실행해도 동일하게 nested step/result가 출력됩니다.
 TUI는 **차등(differential) 렌더러**로 화면을 제자리에서 갱신해 스크롤백을 늘리지 않고(턴당 최종 출력 1회만 기록), 화면 크기 변경 시 폭이 바뀌면 전체 재도색·idle 프롬프트에서도 리사이즈로 푸터 영역을 재동기화합니다. 스트림/툴 목록은 **고정 크기 링 버퍼**라 긴 세션에서도 메모리·프레임당 렌더 비용이 평탄하며(요약 LLM 실패 시에도 히스토리는 결정적으로 압축돼 무한 증가하지 않음), 진화 아트는 애니메이션 프레임 단위로 캐시돼 매 틱 재렌더하지 않습니다. 화면이 짧아 모든 섹션이 다 들어가지 못할 때는 **하단 상태/키힌트/푸터(라이브 진행 표시: 스텝·ETA·스피너)를 항상 먼저 확보**하고, 가치가 낮은 순서(장식용 ASCII 아트 → forge 상세 박스 → 스트림)대로 줄여 표시합니다 — 푸터가 화면 밖으로 잘려 사라지지 않습니다. forge 박스는 테두리가 있어 **통째로 들어갈 때만**(최근 것 우선) 표시하고 반쪽짜리 박스를 만들지 않습니다.
 
@@ -45,17 +45,22 @@ joc setup
 | `/models [refresh\|caps\|catalog]` | 로그인된 OAuth/API 모델 목록(+capability/카탈로그 표) |
 | `/provider [name] [model\|#N]` | 프로바이더 자격증명·전환, 해당 프로바이더 라이브 모델 목록 |
 | `/provider login <name>` | **입력창에서 바로 OAuth 로그인** (anthropic/openai/gemini) |
-| `/logout <name>` | 저장된 OAuth 토큰 제거 |
-| `/agents [role] [model]` · `/subagents ...` | 서브에이전트(executor/planner/architect/critic) 역할 모델 설정(저장 즉시 현재 세션의 `task` 위임에도 반영) |
+| `/login [name]` · `/logout <name>` | OAuth 로그인 별칭(`/provider login`) · 저장된 OAuth 토큰 제거 |
+| `/agents [role] [model\|#N]` · `/agents <role> provider <name> [model]` · `/subagents ...` | 서브에이전트(executor/planner/architect/critic) 역할 모델/프로바이더 설정(저장 즉시 현재 세션의 `task` 위임에도 반영; `#N`/picker 선택은 프로바이더-한정 id로 저장되어 라우팅이 어긋나지 않음) |
 | `/subagent run [role] <task>` · `/subagent <role> -- <task>` | 서브에이전트 직접 실행(단계·툴·결과 스트림 표시) |
 | `/roles [tier model]` | 모델 역할 티어(smol/slow/plan) 표시·설정 |
 | `/thinking [level]` | 사고 예산(minimal/low/medium/high/xhigh) |
 | `/config` | 현재 런타임 설정 표시 |
 | `/skill [name [intent]]` · `/speckit.plan` 등 | 워크플로우 skill 목록·표시·실행 (사용자 SKILL.md는 **명시적 호출일 때만** 실행) |
 | `/view <file> [a-b]` · `/diff [file]` · `/find <glob>` · `/search <pat>` | 코드뷰 / git diff / 파일·패턴 검색 |
+| `/new` · `/drop` · `/session [info\|delete]` · `/rename <title>` · `/resume [id]` | 세션 시작/삭제/정보/이름변경/재개 (gjc parity) |
+| `/retry` · `/btw <question>` | 마지막 요청 재시도 · 히스토리를 건드리지 않는 사이드 질문 |
+| `/export [path] [json]` · `/dump` | 세션 트랜스크립트 파일 내보내기 · 클립보드 복사 |
+| `/usage` · `/context` · `/tools` · `/hotkeys` | 누적 토큰 사용량 · 컨텍스트 토큰 분해 · 노출 tool 목록 · 단축키 |
+| `/theme [name]` · `/settings` | TUI 테마(cosmic/matrix/solar/mono) · 런타임 설정(=`/config`) |
 | `/sessions` · `/compact` · `/clear` · `/help` · `/exit` | 세션·컨텍스트 관리 |
 
-TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다. 입력창에 `/`로 시작하는 키워드를 타이핑하면 일치하는 명령 목록이 **실시간 미리보기**로 아래에 표시되고, **방향키(↑/↓)로 선택**한 뒤 Enter로 실행할 수 있습니다(`❯` 표시). `/subagent `·`/provider login `처럼 공백 뒤 인자를 입력할 때도 사용 가능한 role/provider/subcommand 목록이 계속 보입니다. `/provider login`은 방향키 프로바이더 선택기를 열고, `/provider gemini` 또는 빈 `/model`은 화면 폭에 맞는 **방향키 모델 선택기**를 열어 Enter로 바로 모델을 설정합니다. `진행중/완료/subagent/tool/diff/file/command` 같은 UI 범주는 색인형 배지(`[AGENT]`, `[01:CMD]`, `[FILE]`, `[DIFF]`, `[STEP]`)로 구분되어 진행중 항목, 완료 항목, subagent 스트림, forge 박스, 코드뷰 헤더를 빠르게 스캔할 수 있습니다. 입력은 하단 푸터의 **박스형 입력란 하나로만** 노출됩니다 — 박스 모드에서는 기존 readline 에코(`joc> …` 원시 입력 줄)를 숨기므로 입력창이 중복으로 보이지 않으며, 폭을 넘기면 자연스럽게 여러 줄로 감싸집니다. `@src/`처럼 입력하면 현재 워크스페이스 기준 상대 경로 후보가 `Paths:` 섹션에 표시되고, 폴더 경로는 `src/.../`처럼 슬래시로 구분됩니다. Skill 문서에서 선언/언급한 `/speckit.plan` 같은 직접 슬래시 별칭도 팔레트와 Tab 자동완성에 나타나며, Enter 실행 시 해당 skill 문서를 세션에 주입합니다.
+TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다. 입력창에 `/`로 시작하는 키워드를 타이핑하면 일치하는 명령 목록이 **실시간 미리보기**로 아래에 표시되고, **방향키(↑/↓)로 선택**한 뒤 Enter로 실행할 수 있습니다(`❯` 표시). `/subagent `·`/provider login `처럼 공백 뒤 인자를 입력할 때도 사용 가능한 role/provider/subcommand 목록이 계속 보입니다. `/provider login`은 방향키 프로바이더 선택기를 열고, `/provider gemini` 또는 빈 `/model`은 화면 폭에 맞는 **방향키 모델 선택기**를 열어 Enter로 바로 모델을 설정합니다. `진행중/완료/subagent/tool/diff/file/command` 같은 UI 범주는 색인형 배지(`[AGENT]`, `[01:CMD]`, `[FILE]`, `[DIFF]`, `[STEP]`)로 구분되어 진행중 항목, 완료 항목, subagent 스트림, forge 박스, 코드뷰 헤더를 빠르게 스캔할 수 있습니다. 입력은 하단 푸터의 **박스형 입력란 하나로만** 노출됩니다 — 박스에는 `[CMD] input` 같은 제목 줄 없이 입력 내용만 표시되고, 박스 모드에서는 기존 readline 에코(`joc> …` 원시 입력 줄)를 숨기므로 입력창이 중복으로 보이지 않으며, 폭을 넘기면 자연스럽게 여러 줄로 감싸집니다. 박스/미리보기 푸터는 스크롤 영역 예약 대신 **인라인 repaint** 방식이라 `/help`·`/theme`처럼 긴 명령 출력의 끝부분을 지우지 않습니다. `@src/`처럼 입력하면 현재 워크스페이스 기준 상대 경로 후보가 `Paths:` 섹션에 표시되고, 폴더 경로는 `src/.../`처럼 슬래시로 구분됩니다. Skill 문서에서 선언/언급한 `/speckit.plan` 같은 직접 슬래시 별칭도 팔레트와 Tab 자동완성에 나타나며, Enter 실행 시 해당 skill 문서를 세션에 주입합니다.
 
 대화형 에이전트는 내부 `todo` tool로 작업 계획을 선언하면 TUI에 **Plan 체크리스트**를 유지하고, `task` tool로 executor/planner/architect/critic 서브에이전트에 bounded 작업을 위임할 수 있습니다. `/subagent run [role] <task>` 또는 `joc "/subagent run executor <task>" --no-tui`는 모델에게 위임 판단을 맡기지 않고 지정 role의 서브에이전트를 즉시 실행하며, `step N/M`·중첩 툴 대상·결과 요약·최종 요약을 그대로 노출합니다. planner/architect/critic은 read/find/search/ls 전용이라 파일을 수정하지 못하며, role 오타는 mutating executor로 조용히 fallback되지 않고 실패합니다. planner/architect/critic은 이제 각각 **계획/아키텍처 리뷰/비판 verdict** 형식의 구조화된 `done.reason` 계약을 따라야 하며, 계약이 빠지면 성공으로 처리되지 않습니다.
 
@@ -101,6 +106,7 @@ review @src/commands/launch.ts and @src/tui/  # @ 입력 시 상대 경로 후�
 - 별칭/카탈로그 canonical은 호출 직전 실제 provider 모델 id로 매핑됩니다(예: `sonnet` → `claude-sonnet-4-5-20250929`).
 - `model not found(404)`가 나면 모델 id가 구형일 수 있습니다 — `/models`·`/provider <name>`로 현재 모델을 확인해 `#N`으로 고르세요(라이브 목록이 권위 소스).
 - 레이트리밋(HTTP 429)은 친절 안내로 정리되고, 서버가 본문에 준 재시도 지연(예: Anthropic/OpenAI의 `Retry-After`, Gemini `retryDelay`/"retry in 8.6s")을 honor해 일시적 RPM 제한은 루프가 스스로 대기·복구합니다. 429에 한해 **자동 재시도 예산이 더 큽니다**(서버 지연이 없으면 최소 2초 간격으로 최대 5회 시도) — 분당 토큰/요청(RPM·OTPM) 윈도우가 풀릴 시간을 벌어, 첫 요청이 곧바로 "auto-retry exhausted"로 끝나지 않습니다(503 등 다른 일시 오류는 기존 기본값 유지). `~/.joc/config.json`의 `retry.requestMaxRetries`/`retry.maxDelayMs`를 지정하면 그 값이 우선합니다. 그래도 지속되면 `/model`로 다른 모델(로컬 ollama 등)로 전환하세요.
+- 단, **usage/quota limit**(구독 사용량 한도 소진 — "usage limit reached", "quota exceeded")으로 분류되는 429는 몇 초 안에 풀리지 않으므로 **재시도 사다리를 태우지 않고 즉시** "다른 모델로 전환(/model)하거나 윈도우 리셋을 기다리라"는 전용 안내로 끝납니다(gjc의 QUOTA_EXHAUSTED 분류와 동일한 정책). 재시도가 진행 중일 때는 `[STEP]` 상태 줄에 백오프 카운트다운이 그대로 표시되고, ETA는 최소 1 step이 완료된 뒤에만 계산되어 백오프 대기시간으로 부풀려진 값(`eta 442s` 같은)이 나오지 않습니다.
 - 막힘은 명확히 알립니다: 모델이 유효한 tool 호출(JSON `tool` 필드)을 못 내면 "더 강한 모델로 전환(/model)" 안내로 중단합니다(약한 로컬 모델 대비).
 - 연결 상태는 `joc doctor`가 **실제 호출 경로**로 점검합니다(anthropic=`GET /v1/models`, openai OAuth=Codex 백엔드 도달 확인, 크레딧 미소모).
 

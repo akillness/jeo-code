@@ -362,7 +362,7 @@ test("LaunchTui: onToolResult stream line includes the invocation target using w
   expect(txt).toContain("bash command");
 });
 
-test("LaunchTui (boxed): [STEP] shows the real in-flight file and [TOOL] exposes the double helix", () => {
+test("LaunchTui (boxed): [STEP] shows the real in-flight file; stage lives in the track, not the forge row", () => {
   const realRender = Renderer.prototype.render;
   let frame: string[] = [];
   (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
@@ -382,8 +382,10 @@ test("LaunchTui (boxed): [STEP] shows the real in-flight file and [TOOL] exposes
     // [STEP] reflects the actual file, not a generic cycling message
     expect(stepLine).toContain("src/agent/engine.ts");
     expect(stepLine).not.toContain("Transcribing instructions");
-    // [TOOL] forge line exposes the current evolution stage (double helix at the DNA step)
-    expect(toolLine).toContain("Double Helix");
+    // The evolution stage is rendered ONCE in the centered track (plus the footer tag) —
+    // the forge row no longer duplicates it, so the three copies can never disagree.
+    expect(toolLine).not.toContain("Double Helix");
+    expect(txt.some(l => l.includes("Double Helix"))).toBe(true);
   } finally {
     Renderer.prototype.render = realRender;
   }

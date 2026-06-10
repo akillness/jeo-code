@@ -7,7 +7,7 @@ import {
   getLocalJocDir,
   type WorkflowState,
 } from "../agent/state";
-import { PlanSchema, normalizePlanShape, parseYaml } from "./team";
+import { PlanSchema, normalizePlanShape, parseYaml } from "../agent/plan";
 
 export async function runRalplanCommand(): Promise<void> {
   const cwd = process.cwd();

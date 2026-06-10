@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseYaml, PlanSchema, normalizePlanShape } from "../src/commands/team";
+import { parseYaml, PlanSchema, normalizePlanShape } from "../src/agent/plan";
 
 test("parseYaml & PlanSchema: validates a well-formed YAML plan", () => {
   const validYaml = `

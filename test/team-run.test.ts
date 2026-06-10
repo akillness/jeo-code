@@ -240,3 +240,23 @@ test("runTeamCommand halts when a planner report misses required sections", asyn
   expect(out).toContain("[ERR] Failed on task:");
   expect(process.exitCode).toBe(1);
 });
+
+test("runTeamCommand refuses to run when team-state.json is corrupt (no silent restart)", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nChanged Files:\nVerification:" } }),
+  }));
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "implement it" }]);
+  await fs.writeFile(path.join(tmp, ".joc", "state", "team-state.json"), "{ not json !!!");
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand();
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  expect(out).toContain("team-state.json is corrupt");
+  expect(out).not.toContain("[DONE]");
+  expect(process.exitCode).toBe(1);
+  // The corrupt file must not be overwritten/reset behind the user's back.
+  expect(await fs.readFile(path.join(tmp, ".joc", "state", "team-state.json"), "utf-8")).toBe("{ not json !!!");
+});

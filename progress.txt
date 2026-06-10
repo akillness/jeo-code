@@ -1,0 +1,6 @@
+
+[2026-06-10] P2-7 + P2-10 iteration
+- P2-7: src/agent/task-tool.ts — fenceSubagentReport() wraps echoed done.reason in <<<subagent-report ... >>> DATA fence; <<< / >>> inside the report neutralized to ‹‹‹ / ›››. Test added in test/task-tool.test.ts.
+- P2-10: PlanSchema/StepSchema/normalizePlanShape/parseYaml moved from src/commands/team.ts to new src/agent/plan.ts; team.ts, ralplan.ts, test/team-schema.test.ts import the shared module. team.ts no longer imports zod.
+- Also this session (pre-ralph): catalog substring offsets, namespaced alias owners, reasoningEffort enum guard, gemini URL-encoding, 7 new tests, TUI glyph flake fix.
+- Verified: build exit 0; 705 pass / 0 fail.

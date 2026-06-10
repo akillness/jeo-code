@@ -30,3 +30,16 @@ test("geminiRequest: single turns map through unchanged (no spurious merging)", 
   expect(payload.contents.map((c: any) => c.role)).toEqual(["user", "model", "user"]);
   expect(payload.contents.every((c: any) => c.parts.length === 1)).toBe(true);
 });
+
+test("geminiRequest: URL-encodes the model name and api key", () => {
+  const evilCred = { kind: "api_key" as const, provider: "gemini" as const, token: "k&y=1" };
+  const { url } = geminiRequest(
+    [{ role: "user" as const, content: "hi" }],
+    { model: "gemini-2.5-flash/../evil?x=1" } as any,
+    evilCred,
+    "generateContent",
+  );
+  expect(url).toContain("models/gemini-2.5-flash%2F..%2Fevil%3Fx%3D1:generateContent");
+  expect(url).toContain("key=k%26y%3D1");
+  expect(url).not.toContain("key=k&y=1");
+});

@@ -1,136 +1,38 @@
 {
-  "title": "Code Review: Recent 5 commits (team review)",
-  "task": "Run /team 5 /code-review across the last 5 commits and surface a verified review report",
-  "scope": {
-    "commits": [
-      "99323cf feat(team): gate review steps on role verdicts",
-      "b980ecb Harden skill routing and context bounds",
-      "cd14c89 feat(subagents): add role prompt contracts",
-      "f2be084 feat(interview): inject brownfield repo evidence",
-      "68d6a03 fix(codex): forward reasoning effort + capture incomplete-response usage"
-    ],
-    "primaryFiles": [
-      "src/agent/subagents.ts",
-      "src/agent/compaction.ts",
-      "src/agent/task-tool.ts",
-      "src/agent/state.ts",
-      "src/commands/team.ts",
-      "src/commands/launch.ts",
-      "src/commands/deep-interview.ts",
-      "src/ai/providers/gemini.ts",
-      "src/ai/providers/openai-responses.ts",
-      "src/skills/catalog.ts",
-      "src/tui/app.ts",
-      "src/prompts/agents/*.md"
-    ]
-  },
-  "report": "docs/code-review-team5.md",
+  "project": "jeo-code",
+  "task": "Complete remaining code-review punch-list items P2-7 and P2-10, verify, and commit",
   "stories": [
     {
       "id": "US-001",
-      "title": "Security review of recent changes",
+      "title": "P2-7: mitigate done.reason verdict spoofing in chained subagent output",
       "priority": 1,
       "passes": true,
-      "verdict": "APPROVE-WITH-FIXES",
-      "topFindings": [
-        "M: Brownfield evidence injected as instruction-shaped text (deep-interview.ts:376-383)",
-        "M: done.reason verdict markers spoofable across roles (task-tool.ts:145-150)",
-        "L: gemini model name not URL-encoded (providers/gemini.ts:39)",
-        "L: collectCandidateFiles follows symlinks (deep-interview.ts:147-167)"
-      ],
       "acceptanceCriteria": [
-        "No new injection, SSRF, auth-bypass, or secret-leak vectors in changed files",
-        "Provider URL handling in gemini.ts and openai-responses.ts is safe (no scheme confusion, SSE leaks)",
-        "Subagent prompt assembly does not allow prompt-injection escalation across role boundaries",
-        "Findings reported with severity (Critical/High/Medium/Low) and file:line refs"
+        "In src/agent/task-tool.ts the subagent done.reason echoed back to the parent agent is wrapped in a fenced DATA block labelled as report data, not instructions",
+        "Fence-delimiter sequences occurring inside the echoed reason are neutralized so the fence cannot be broken from inside",
+        "A test in test/task-tool.test.ts asserts the fenced wrapper and delimiter neutralization"
       ]
     },
     {
       "id": "US-002",
-      "title": "Architecture and design review",
+      "title": "P2-10: extract PlanSchema + YAML parser into src/agent/plan.ts",
       "priority": 2,
       "passes": true,
-      "verdict": "APPROVE-WITH-FIXES",
-      "topFindings": [
-        "H: requiredDoneMarkers drift from prompt contracts (subagents.ts:54,63 vs architect.md:31, planner.md:29-37)",
-        "H: force-compaction floor destroys recent content (compaction.ts:81-83,127,150)",
-        "M: critic [OKAY] verdict is implicit pass — closes implicit-approval loophole (team.ts:115-121)",
-        "M: PlanSchema + YAML parser inlined in team.ts (team.ts:318-485)"
-      ],
       "acceptanceCriteria": [
-        "Role gating in team.ts review steps cleanly separates planner/architect/critic/executor responsibilities",
-        "subagents.ts role-prompt contracts are coherent and non-overlapping",
-        "skills/catalog.ts routing has bounded context (no unbounded text growth)",
-        "compaction.ts changes preserve invariants under repeated compaction",
-        "Findings reported with severity and file:line refs"
+        "src/agent/plan.ts exports StepSchema, PlanSchema, normalizePlanShape, parseYaml with behavior identical to the previous team.ts implementations",
+        "src/commands/team.ts and src/commands/ralplan.ts import these from src/agent/plan.ts; team.ts no longer defines them",
+        "test/team-schema.test.ts imports from the new module and still passes unchanged in substance"
       ]
     },
     {
       "id": "US-003",
-      "title": "Code quality and SOLID review",
+      "title": "Verify and commit",
       "priority": 3,
       "passes": true,
-      "verdict": "APPROVE-WITH-FIXES",
-      "topFindings": [
-        "H: architect gate whitespace/markdown fragility (team.ts:99-113)",
-        "H: brownfield path traversal not constrained (deep-interview.ts:148-167)",
-        "M: TUI render try/catch swallows errors (tui/app.ts:270-279)",
-        "M: parseSkillInvocation magic-number offsets (catalog.ts:326-335)",
-        "M: inferSlashAliases drops namespaced skill aliases (catalog.ts:135-147)"
-      ],
       "acceptanceCriteria": [
-        "No dead code, duplicated logic, or god-functions introduced in changed files",
-        "Error handling is appropriate (no swallowed errors, no over-broad catches)",
-        "Public APIs in subagents.ts / team.ts / deep-interview.ts have stable shapes and named types",
-        "Findings reported with severity and file:line refs"
-      ]
-    },
-    {
-      "id": "US-004",
-      "title": "Test adequacy review",
-      "priority": 4,
-      "passes": true,
-      "verdict": "APPROVE-WITH-FIXES",
-      "topFindings": [
-        "H: parseRoleGateVerdict has no unit tests; [ITERATE] verdict untested (team.ts:104-123)",
-        "H: validateSubagentDoneReason untested for executor + planner roles (subagents.test.ts:105)",
-        "M: onUsage on response.incomplete not exercised through call/stream path (openai-responses.ts:111,130)",
-        "M: greenfield + no-keyword-match brownfield paths untested (deep-interview.test.ts)",
-        "M: corrupt team-state.json + partial-resume untested (team-run.test.ts)"
-      ],
-      "acceptanceCriteria": [
-        "team-run.test.ts covers role-verdict gating success + reject paths",
-        "subagents.test.ts covers role-prompt contract regressions",
-        "codex-responses.test.ts covers reasoning-effort forwarding and incomplete-response usage capture",
-        "skills.test.ts / skills-config.test.ts cover the hardened routing bounds",
-        "Findings reported with severity and file:line refs"
-      ]
-    },
-    {
-      "id": "US-005",
-      "title": "Aggregated report + verification",
-      "priority": 5,
-      "passes": true,
-      "verdict": "APPROVE-WITH-FIXES",
-      "consensus": "APPROVE-WITH-FIXES",
-      "report": "docs/code-review-team5.md",
-      "verification": {
-        "build": "npm run build → exit 0",
-        "test": "npm test → 661 pass / 0 fail, 88 files, 2520 expect() calls"
-      },
-      "topPriority": [
-        "P0: Critic gate fail-open — team.ts:115-121 (require firstLine === '[OKAY]')",
-        "P0: force-compaction shreds recent context — compaction.ts:81-83",
-        "P1: Architect gate parser fragile to markdown emphasis — team.ts:99-113 + subagents.ts:62",
-        "P1: requiredDoneMarkers ↔ prompt contract drift — subagents.ts:54,63",
-        "P1: Brownfield evidence injection / symlink traversal — deep-interview.ts",
-        "P1: Test gaps on parseRoleGateVerdict + executor/planner validation"
-      ],
-      "acceptanceCriteria": [
-        "All four review domains aggregated into one prioritized punch list",
-        "Each finding has: severity, file:line, evidence, recommendation",
-        "npm run build passes on current tree",
-        "npm test passes on current tree"
+        "npm run build exits 0",
+        "npm test shows 0 fail with the new tests included",
+        "All session changes committed with a descriptive message"
       ]
     }
   ]

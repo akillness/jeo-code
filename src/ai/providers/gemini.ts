@@ -36,9 +36,9 @@ export function geminiRequest(messages: Message[], options: CallOptions, credent
 
   const oauth = credential.kind === "oauth" ? credential.token : undefined;
   const apiKey = credential.kind === "api_key" ? credential.token : undefined;
-  let url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:${action}`;
+  let url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:${action}`;
   const query = action === "streamGenerateContent" ? "alt=sse" : "";
-  if (!oauth) url += `?${query ? query + "&" : ""}key=${apiKey ?? ""}`;
+  if (!oauth) url += `?${query ? query + "&" : ""}key=${encodeURIComponent(apiKey ?? "")}`;
   else if (query) url += `?${query}`;
   const headers: Record<string, string> = oauth
     ? { "content-type": "application/json", authorization: `Bearer ${oauth}` }

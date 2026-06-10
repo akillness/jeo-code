@@ -185,18 +185,25 @@ function aliasOwner(alias: string): string {
   return alias.slice(1).split(".", 1)[0]?.toLowerCase().replace(/[^a-z0-9]/g, "") ?? "";
 }
 
-function skillAliasOwner(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+function skillAliasOwners(name: string): Set<string> {
+  const sanitize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const owners = new Set([sanitize(name)]);
+  // Namespaced skills (e.g. "oh-my-claudecode:team") also own aliases for their
+  // last segment, so "/team" inside that skill's doc is still self-owned.
+  const last = name.split(/[:/]/).pop();
+  if (last) owners.add(sanitize(last));
+  owners.delete("");
+  return owners;
 }
 
 function inferSlashAliases(content: string, skillName: string): string[] {
   const aliases: string[] = [];
-  const owner = skillAliasOwner(skillName);
+  const owners = skillAliasOwners(skillName);
   const re = /(?:^|[\s`([{])((\/[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*))/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(content))) {
     const alias = normalizeSlashAlias(match[1] ?? "");
-    if (!alias || aliasOwner(alias) !== owner) continue;
+    if (!alias || !owners.has(aliasOwner(alias))) continue;
     if (!aliases.some(a => a.toLowerCase() === alias.toLowerCase())) aliases.push(alias);
   }
   return aliases;
@@ -383,7 +390,7 @@ export function parseSkillInvocation(input: string, skills: SkillDoc[]): SkillIn
     ? "/skill:"
     : (trimmed === "/skill" || trimmed.startsWith("/skill ")) ? "/skill" : "";
   if (explicitEntrypoint) {
-    const rest = explicitEntrypoint === "/skill:" ? trimmed.substring(7).trim() : trimmed.substring(6).trim();
+    const rest = trimmed.substring(explicitEntrypoint.length).trim();
     if (!rest) return null;
     const [name, ...intentParts] = rest.split(/\s+/);
     let skill = getSkillFrom(skills, name ?? "");

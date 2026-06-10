@@ -4,3 +4,8 @@
 - P2-10: PlanSchema/StepSchema/normalizePlanShape/parseYaml moved from src/commands/team.ts to new src/agent/plan.ts; team.ts, ralplan.ts, test/team-schema.test.ts import the shared module. team.ts no longer imports zod.
 - Also this session (pre-ralph): catalog substring offsets, namespaced alias owners, reasoningEffort enum guard, gemini URL-encoding, 7 new tests, TUI glyph flake fix.
 - Verified: build exit 0; 705 pass / 0 fail.
+[2026-06-10] Pass 874 — 429 resilience + box-only input
+- retry: escalating 429 floor (2s→30s cap), default budget 6 attempts (~60s total), onRetry delay surfaced end-to-end as AgentLoopEvents.onNotice (TUI/plain/team/subagent).
+- engine: terminal LLM error reported once (doneReason only); onError removed.
+- launch: boxed input footer adaptive 5–12 rows (short terminals keep the box), empty readline prompt in box mode — raw `joc>` input never visible.
+- Verified: tsc 0; build ok; bun test 724 pass / 0 fail. Committed eb37122.

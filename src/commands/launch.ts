@@ -15,7 +15,7 @@ import chalk from "chalk";
 import type { Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch } from "../agent/state";
-import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, enrichAll, sortByCapability, knownCount, MODEL_CATALOG, fuzzyMatchCatalog } from "../ai";
+import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, enrichAll, sortByCapability, knownCount, MODEL_CATALOG, fuzzyMatchCatalog, CODEX_MODELS } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 
 import { listAliases } from "../ai/model-registry";
@@ -685,6 +685,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const maxSteps = resolveSubagentMaxSteps(role.id, cfgNow);
     const tui = useTuiForRun ? new LaunchTui({ model: activeModel, provider, sessionId, maxSteps }) : null;
     if (tui) tui.start();
+    else console.log(`${categoryBadge("subagent")} Subagent: ${role.title} · model ${activeModel} · ≤${maxSteps} steps`);
     const ac = new AbortController();
     const onSigint = () => ac.abort();
     process.once("SIGINT", onSigint);
@@ -1597,7 +1598,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             console.log("Run /models (or /provider <name>) first to build the numbered list.");
             continue;
           }
-          const finalSave = toSave || sessionModel || defaultModel;
+          // Fall back to the FRESH on-disk default (not the stale session-start snapshot) so a
+          // bare `/model save` after a prior `/model save <id>` never reverts the saved default.
+          const finalSave = toSave || sessionModel || (await readGlobalConfig()).defaultModel;
           await saveConfigPatch(() => ({ defaultModel: finalSave }));
           const { resolved, provider } = await describeModel(finalSave);
           console.log(`Default model saved: ${formatModelLine({ label: finalSave, resolved, provider })} → ~/.joc/config.json`);
@@ -1647,6 +1650,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const st = statuses.find(s => s.name === provider);
         console.log(`${arg ? "Model set to" : "Current model"}: ${formatModelLine({ label, resolved, provider, ready: st?.ready })}`);
         if (st && !st.ready) console.log(`  ! ${provider} is not ready (${st.label}) — set ${st.envVar ?? "the provider key"} or run 'joc setup'.`);
+        // ChatGPT OAuth only serves the Codex models; warn before the turn fails if the user
+        // pins a non-Codex id with no local base URL to fall back to (gjc-parity readiness guard).
+        if (arg && provider === "openai" && st?.kind === "oauth" && !CODEX_MODELS.includes(resolved)) {
+          const hasLocalBase = !!((await readGlobalConfig()).openaiBaseUrl || process.env.OPENAI_BASE_URL);
+          if (!hasLocalBase) {
+            console.log(`  ! ChatGPT OAuth serves only Codex models (${CODEX_MODELS.join(", ")}); '${resolved}' will be rejected at runtime — pick one of those, or set OPENAI_API_KEY / OPENAI_BASE_URL.`);
+          }
+        }
         if (arg && liveModelsCache && resolved === label && !liveModelKnown(liveModelsCache, resolved)) {
           console.log(`  (note: '${resolved}' is not in the live ${provider} catalog — run /models to see valid ids)`);
         }
@@ -1712,6 +1723,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log("Usage: /find <glob>   (e.g. /find src/**/*.ts)");
           continue;
         }
+        console.log(`${categoryBadge("search")} find files matching '${glob}':`);
         const res = await findTool(glob, cwd);
         console.log(res.success ? (res.output || "(no matches)") : `! ${res.error}`);
         continue;
@@ -1724,6 +1736,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log("Usage: /search <pattern> [glob]   (e.g. /search resolveProvider src/**/*.ts)");
           continue;
         }
+        console.log(`${categoryBadge("search")} search pattern '${pattern}' in '${glob}':`);
         const res = await searchTool(pattern, glob, cwd);
         console.log(res.success ? (res.output || "(no matches)") : `! ${res.error}`);
         continue;

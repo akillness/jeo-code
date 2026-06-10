@@ -108,6 +108,11 @@ export interface WorkflowState {
   total?: number;
 }
 
+/** The built-in default model when neither disk config nor JOC_DEFAULT_MODEL provides one.
+ *  Shared by envDefaultConfig (runtime) and readRawGlobalConfig (persistence base) so a
+ *  fresh-install saveConfigPatch never bakes a DIFFERENT default than the runtime resolves. */
+const DEFAULT_MODEL = "claude-sonnet-4-5";
+
 /**
  * Resolve the global config directory at call time (not import time) so that a
  * `JOC_CONFIG_DIR` override or a runtime `HOME` change is always honored.
@@ -164,7 +169,7 @@ function envDefaultConfig(): Config {
       openai: process.env.OPENAI_API_KEY,
       gemini: process.env.GEMINI_API_KEY,
     },
-    defaultModel: process.env.JOC_DEFAULT_MODEL || "claude-sonnet-4-5",
+    defaultModel: process.env.JOC_DEFAULT_MODEL || DEFAULT_MODEL,
     thinkingLevel: "medium",
   };
 }
@@ -204,7 +209,7 @@ export async function saveGlobalConfig(config: Config): Promise<void> {
  *  JOC_*_MODEL role tiers, OLLAMA_HOST/OPENAI_BASE_URL) are never baked into
  *  ~/.joc/config.json by an unrelated `/agents`/`/roles`/`/model save`. */
 export async function readRawGlobalConfig(): Promise<Config> {
-  const clean: Config = { providers: {}, defaultModel: "claude-3-5-sonnet", thinkingLevel: "medium" };
+  const clean: Config = { providers: {}, defaultModel: DEFAULT_MODEL, thinkingLevel: "medium" };
   let data: string;
   try {
     data = await fs.readFile(globalConfigPath(), "utf-8");

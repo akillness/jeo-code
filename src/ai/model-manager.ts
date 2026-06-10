@@ -160,6 +160,28 @@ interface Resolved {
   retry: RetryOptions;
 }
 
+/**
+ * The credential to actually use for a provider call. A configured local OpenAI-compatible base
+ * URL must use the standard /chat/completions path, but the openai adapter dispatches on
+ * `credential.kind === "oauth"` → the hardcoded Codex backend, which drops the base URL. So when a
+ * base URL is set we downgrade an OAuth credential to the configured api key, else keyless — making
+ * discovery (which honors the base URL) and execution agree. All other cases pass through unchanged.
+ */
+export function credentialForCall(
+  provider: ProviderName,
+  effective: Credential,
+  config: Pick<Config, "providers">,
+  baseUrl: string | undefined,
+): Credential {
+  const isLocalOpenAi = provider === "openai" && !!baseUrl;
+  if (isLocalOpenAi && effective.kind === "oauth") {
+    return config.providers.openai
+      ? { kind: "api_key", provider: "openai", token: config.providers.openai }
+      : { kind: "none", provider: "openai" };
+  }
+  return effective;
+}
+
 async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
   const config = await readGlobalConfig();
   const aliases = { ...((config as { modelAliases?: Record<string, string> }).modelAliases ?? {}) };
@@ -199,7 +221,7 @@ async function resolveCall(options: Partial<CallOptions>): Promise<Resolved> {
       `No credential for provider '${provider}'. Run 'joc setup', 'joc auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
     );
   }
-  return { adapter, callOptions, credential: effective, retry: resolveRetryOptions(config.retry) };
+  return { adapter, callOptions, credential: credentialForCall(provider, effective, config, baseUrl), retry: resolveRetryOptions(config.retry) };
 }
 
 /** Hard cap for a single non-streaming provider request (service-readiness: a

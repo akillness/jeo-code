@@ -6,6 +6,7 @@
  * list (color via chalk), so they unit-test with an ANSI-stripping helper.
  */
 import chalk from "chalk";
+import { categoryBadge, type UiCategory } from "./category-index";
 import type { ToolStatus } from "./tool-list";
 
 export type StepState = "pending" | "active" | "done" | "failed";
@@ -133,13 +134,13 @@ export function formatStepTimeline(steps: TimelineStep[], opts: TimelineOptions 
     const conn = connectors ? (last ? corner : vbar) : " ";
     const glyph = stepGlyph(step.state, { unicode, frame: opts.frame });
     const paint = colorForState(step.state, color);
-    const num = String(i + 1).padStart(idxW);
     let label = step.label;
     if (step.detail) label += ` ${step.detail}`;
     if (opts.maxWidth && label.length > opts.maxWidth) label = label.slice(0, opts.maxWidth - 1) + "…";
     if (color && opts.highlightActive && step.state === "active") label = chalk.bold(label);
-    const numCell = color ? chalk.gray(num) : num;
-    out.push(`  ${conn} ${paint(glyph)} ${numCell} ${label}`);
+    const cat: UiCategory = step.state === "active" ? "progress" : step.state === "done" ? "done" : step.state === "failed" ? "error" : "tool";
+    const badge = categoryBadge(cat, { index: i + 1, color });
+    out.push(`  ${conn} ${paint(glyph)} ${badge} ${label}`);
   }
   return out;
 }

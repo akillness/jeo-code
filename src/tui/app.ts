@@ -25,7 +25,7 @@ import { resolveTheme, themeGradient } from "./components/themes";
 import { detectColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, type ForgeSummary } from "./components/forge";
 import { renderJocStatus } from "./components/status";
-import { categoryBadge } from "./components/category-index";
+import { categoryBadge, categoryForTool } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
 import chalk from "chalk";
@@ -163,8 +163,9 @@ export class LaunchTui {
         this.rememberForge(summarizeForgeResult(tool, success, output));
         // Categorize the result so the stream reads as a classified ledger:
         // [DONE] for success, [ERR] for failure — consistent with the forge/tool-list badges.
+        const catBadge = categoryBadge(categoryForTool(tool), { color: this.theme.color });
         const resBadge = categoryBadge(success ? "done" : "error", { color: this.theme.color });
-        this.stream.append(`${resBadge} ${tool}\n`);
+        this.stream.append(`${catBadge} ${resBadge} ${tool}\n`);
         this.draw();
       },
       onError: msg => {

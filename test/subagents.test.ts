@@ -38,6 +38,12 @@ test("resolveSubagentModel: per-role override wins, else default model", () => {
   expect(resolveSubagentModel("PLANNER", cfg)).toBe("fast"); // normalized
 });
 
+test("resolveSubagentModel: a blank (empty-string) override falls back to the default, not ''", () => {
+  const cfg = { defaultModel: "claude-sonnet-4-5", subagents: { planner: { model: "" } } };
+  // A hand-edited empty model id must not be passed verbatim to the provider (would 400).
+  expect(resolveSubagentModel("planner", cfg)).toBe("claude-sonnet-4-5");
+});
+
 test("resolveSubagentMaxSteps: override → role default → 15 fallback", () => {
   expect(resolveSubagentMaxSteps("executor", {})).toBe(15);
   expect(resolveSubagentMaxSteps("critic", {})).toBe(8);

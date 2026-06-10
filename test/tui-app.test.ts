@@ -321,6 +321,24 @@ test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result i
   expect(txt).toContain("done: completed in 4 steps: guard added"); // result summary
 });
 
+test("LaunchTui: onToolResult categorizes the result in the stream with both category and status badges", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
+  tui.start();
+  const ev = tui.events();
+  ev.onStep!(1);
+  ev.onAssistant!("", { tool: "read", arguments: { filePath: "src/cli.ts" } });
+  ev.onToolResult!("read", true, "1|const ok = true;");
+
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => logged.push(a.join(" "));
+  try { tui.finish("done"); } finally { console.log = origLog; }
+  const txt = logged.join("\n");
+  expect(txt).toContain("[FILE]"); // category of read
+  expect(txt).toContain("[DONE]"); // success status
+});
+
 test("LaunchTui (boxed): [STEP] shows the real in-flight file and [TOOL] exposes the double helix", () => {
   const realRender = Renderer.prototype.render;
   let frame: string[] = [];

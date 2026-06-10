@@ -63,9 +63,9 @@ test("formatStepSummary renders counts / total; ascii fallback", () => {
 test("formatStepTimeline: numbered, connector gutter, last uses corner", () => {
   const out = formatStepTimeline(STEPS, { color: false }).map(strip);
   expect(out[0]).toContain("│"); // non-last connector
-  expect(out[0]).toContain("1 read");
+  expect(out[0]).toContain("[01:DONE] read");
   expect(out[3]).toContain("└"); // last connector corner
-  expect(out[3]).toContain("4 write");
+  expect(out[3]).toContain("[04:TOOL] write");
 });
 
 test("formatStepTimeline: ascii connectors + title + empty", () => {

@@ -257,7 +257,7 @@ export async function runTeamCommand(): Promise<void> {
 
   while (teamState.pending_tasks && teamState.pending_tasks.length > 0) {
     const currentTask = teamState.pending_tasks[0];
-    console.log(`\n[TASK] Current: "${currentTask}"`);
+    console.log(`\n${categoryBadge("progress")} Current task: "${currentTask}"`);
     const activeIndex = activeStepIndex(tasks.length, teamState.pending_tasks);
     for (const line of formatRalphTodoGuide(tasks, activeIndex, teamState.completed_tasks ?? [], renderOpts)) console.log(line);
 
@@ -275,9 +275,9 @@ export async function runTeamCommand(): Promise<void> {
       teamState.completed_tasks = [...(teamState.completed_tasks ?? []), currentTask];
       teamState.pending_tasks = teamState.pending_tasks.slice(1);
       await writeWorkflowState("team", teamState, cwd);
-      console.log(`[TASK SUCCESS] Completed: "${currentTask}"`);
+      console.log(`${categoryBadge("done")} Completed: "${currentTask}"`);
     } else {
-      console.log(`[TASK FAILED] Failed on task: "${currentTask}". Halting execution.`);
+      console.log(`${categoryBadge("error")} Failed on task: "${currentTask}". Halting execution.`);
       process.exitCode = 1;
       break;
     }
@@ -286,7 +286,7 @@ export async function runTeamCommand(): Promise<void> {
   if (teamState.pending_tasks && teamState.pending_tasks.length === 0) {
     teamState.current_phase = "complete";
     await writeWorkflowState("team", teamState, cwd);
-    console.log("\n[SUCCESS] All tasks in the plan executed successfully!");
+    console.log(`\n${categoryBadge("done")} All tasks in the plan executed successfully!`);
     console.log("Run 'joc ultragoal' to run verify tests and evaluate metrics.");
   }
 }

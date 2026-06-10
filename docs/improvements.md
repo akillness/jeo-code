@@ -2006,6 +2006,51 @@ Live (real providers): direct `/subagent run executor` ran on the pinned `ollama
 subagent ran cross-provider on the ollama override — confirming the exact fixed path. Files:
 `src/commands/launch.ts`, `src/agent/state.ts`, `src/tui/app.ts`, `test/{task-tool,stream-events,config-save,provider-status,doctor,tui-app}.test.ts`.
 
+## 46. Ralph pass 38 — audit-driven provider/model fixes + team ledger categorization
+
+**Date:** 2026-06-09 · gjc dimensions: **provider** / **model** (bugfix), **tui** (readability).
+
+Parallel read-only `architect` subagents audited (a) provider/model/credential/subagent resolution and
+(b) TUI category-index coverage. Acting on the findings:
+
+1. **BLOCK — fresh-install default model drift.** `readRawGlobalConfig()`'s no-file clean default
+   (`claude-3-5-sonnet`) diverged from `envDefaultConfig()`'s runtime default (`claude-sonnet-4-5`), so the
+   first `saveConfigPatch` on a machine with no `~/.joc/config.json` (auth login, `/agents`, `/roles`, …)
+   baked a DIFFERENT default than the runtime resolves — silently changing the effective model. Fixed by a
+   single shared `DEFAULT_MODEL` constant used by both (`src/agent/state.ts`). Live-verified: fresh dir +
+   unrelated `saveConfigPatch` now bakes `claude-sonnet-4-5` (= effective default).
+
+2. **WATCH — stale `/model save` fallback.** Bare `/model save` fell back to the session-start
+   `defaultModel` snapshot, reverting a prior in-session `/model save <id>`. Now re-reads
+   `readGlobalConfig()` for the fallback (`src/commands/launch.ts`).
+
+3. **LOW — blank subagent model override.** `resolveSubagentModel` used `??`, passing a hand-edited empty
+   `model: ""` verbatim to the provider (400). Switched to `||` so blank falls back to the default.
+
+4. **TUI — `joc team` lifecycle ledger** now uses shared category badges
+   (`[STEP]` current task, `[DONE]` completed/all-done, `[ERR]` failed) instead of ad-hoc `[TASK]`/
+   `[SUCCESS]`/`[TASK FAILED]` markers — consistent with the rest of the agent (`src/commands/team.ts`).
+
+5. **WATCH — OpenAI OAuth ignored a configured local base URL.** With `OPENAI_BASE_URL` (or
+   `config.openaiBaseUrl`) + a ChatGPT OAuth token, the adapter dispatched on `credential.kind ===
+   "oauth"` → the hardcoded Codex backend, dropping the base URL (discovery used the local server,
+   execution did not). Extracted a pure `credentialForCall()` (`src/ai/model-manager.ts`) that
+   downgrades OAuth to the configured api key, else keyless, when a base URL is set — so a local
+   OpenAI-compatible server is actually reached.
+
+6. **WATCH — OpenAI OAuth `/model <non-Codex>` had no warning.** ChatGPT OAuth serves only
+   `CODEX_MODELS` (gpt-5.5/gpt-5.4); typing `/model gpt-4o` passed the readiness gate then failed at
+   runtime. `/model` now warns when an OAuth-only OpenAI session pins a non-Codex id with no local
+   base URL (`src/commands/launch.ts`).
+
+(Env-API-key providers gap-fill from pass 37 was independently refined to treat blank on-disk keys as
+gaps — disk non-empty still wins; converged with concurrent work.)
+
+**Verification:** `tsc` 0; `bun test` **695/695** (+: fresh-install default bake, blank-override fallback,
+updated team ledger assertions, pure `credentialForCall` routing matrix incl. local-base-URL OAuth
+downgrade). Files: `src/agent/state.ts`, `src/ai/model-manager.ts`, `src/commands/{launch,team}.ts`,
+`src/agent/subagents.ts`, `test/{config-save,subagents,team-run,openai-local-base-url}.test.ts`.
+
 ---
 
 ## 42. Objective completion summary — gjc-comparison improvement program
@@ -5698,3 +5743,22 @@ data instead of a native interview and could leak English acceptance criteria in
 - Focused: `bun test test/deep-interview.test.ts` → **7 pass / 0 fail**.
 - Typecheck: `bun run typecheck` → 0 errors.
 - Full: `bun test` → **688 pass / 0 fail**; `bun run build` → ok.
+
+## Subagent config dynamic resolution + direct skill path execution + TUI classification indexing — pass 873
+
+**Date:** 2026-06-09 · **Dimensions: subagent configuration, skill execution correctness, TUI progress legibility, TUI category indexing.**
+
+Addressing user-reported issues: (1) subagent model/provider setting changes made mid-session (via `/agents`) were not picked up by delegated subagent turns. (2) specifying a skill file by path only read the file instead of running the agent. (3) waiting for the model is an opaque, frustrating pause. (4) TUI/UI visual classification of step types/tool categories needed clearer indexing.
+
+- **873a.** `src/commands/launch.ts` now dynamically resolves `activeModel` using `turnConfig.defaultModel` on every turn, and passes the fresh `turnConfig` (read mid-session) to the `task` subagent tool instead of using the stale startup config `cfg`. This ensures subagent model/provider overrides take effect immediately in the REPL.
+- **873b.** `parseSkillInvocation()` in `src/skills/catalog.ts` now checks if the command/first word is a file path (starts with `/`, `.`, or contains `/`) and resolves it dynamically as a `SkillDoc` via a new helper `tryResolveSkillFromFilePath()`. This enables direct execution (`joc "/path/to/my-skill.md"` or `/skill path/to/my-skill.md`) rather than falling back to a plain file read.
+- **873c.** `LaunchTui` in `src/tui/app.ts` now tracks `currentStepStartedAt` on `onStep` events. `currentActivity()` uses this to show the ticking elapsed call time in real-time (e.g. `calling model (gemini-2.0-flash) (4.2s)…`) during the thinking phase.
+- **873d.** `formatStepTimeline()` in `src/tui/components/step-timeline.ts` now displays status-colored, indexed category badges (`[01:STEP]`, `[01:DONE]`, `[01:ERR]`, `[01:TOOL]`) instead of bare line numbers.
+- **873e.** Prefix `/find` and `/search` outputs with `[SRCH]` search category badge, and prefix `runDirectSubagent` non-TTY output with `[AGENT]` badge in `launch.ts`.
+- **873f.** `LaunchTui.events().onToolResult` in `src/tui/app.ts` now prepends both the tool-specific category badge (`[FILE]`, `[CMD]`, `[DIFF]`, etc.) and the done/error badge in the TUI stream for visual scannability.
+- **873g.** Added `test/verify-100.ts` script to run the full test suite 100 times in parallel. Verified 100/100 passed successfully with no flaky failures.
+
+### Verification (pass 873)
+- Focused: `bun test test/skills.test.ts test/tui-app.test.ts test/step-timeline.test.ts` → **33 pass / 0 fail**.
+- Parallel stress test: `bun test/verify-100.ts` → **100/100 runs passed** (concurrency 15).
+- Full: `bun run typecheck` → 0 errors; `bun test` → **697 pass / 0 fail**; `bun run build` → ok.

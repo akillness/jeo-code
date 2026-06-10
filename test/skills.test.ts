@@ -157,6 +157,20 @@ test("parseSkillInvocation can load an explicit skill file path but still blocks
   }
 });
 
+test("parseSkillInvocation: direct file path invocation (without /skill: prefix)", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-skill-direct-"));
+  try {
+    const skillPath = path.join(dir, "reviewer.md");
+    await fs.writeFile(skillPath, "summary: Reviewer wrapper\n\nReview the target.");
+    const invocation = parseSkillInvocation(`${skillPath} src/app.ts`, SKILLS);
+    expect(invocation?.skill.name).toBe("reviewer");
+    expect(invocation?.intent).toBe("src/app.ts");
+    expect(invocation?.invokedAs).toBe(skillPath);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("runSkillsCommand --write: materializes one .md per skill", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-skills-"));
   try {

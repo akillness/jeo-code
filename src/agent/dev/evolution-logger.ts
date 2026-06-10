@@ -8,6 +8,7 @@ export interface EvolutionEntry {
   status: "success" | "failed" | "in_progress";
   verificationOutput?: string;
   driftScore?: number;
+  logFile?: string;
 }
 
 export async function logEvolution(entry: EvolutionEntry) {
@@ -22,4 +23,15 @@ export async function logEvolution(entry: EvolutionEntry) {
   
   logs.push(entry);
   await fs.writeFile(logPath, JSON.stringify(logs, null, 2), "utf-8");
+}
+
+/**
+ * Level 3: Stream implementation logs to a dedicated file for TUI visibility.
+ */
+export async function streamEvolutionLogs(executionId: string, output: string) {
+  const logDir = path.join(process.cwd(), ".joc", "logs", "evolution");
+  await fs.mkdir(logDir, { recursive: true });
+  const logFile = path.join(logDir, `${executionId}.log`);
+  await fs.appendFile(logFile, output + "\n", "utf-8");
+  return logFile;
 }

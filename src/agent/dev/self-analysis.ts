@@ -30,17 +30,33 @@ export async function runSelfAnalysis(cwd: string): Promise<string> {
   if (hasTooManyResponsibilities) report += "- Issue: runAgentLoop handles tool output truncation and spilling directly, which should be modularized.\n";
   
   if (perfData.length > 0) {
-    const recent = perfData.slice(-20);
-    const avgDuration = recent.reduce((sum, m) => sum + m.duration, 0) / recent.length;
+    const recent = perfData.slice(-50);
+    const avgDuration = recent.reduce((sum, m) => sum + (m as any).duration, 0) / recent.length;
     const failures = recent.filter((m) => !m.success).length;
     
-    report += "\nPerformance Analysis (last " + recent.length + " tools):\n";
+    report += "\nPerformance & Error Analysis (last " + recent.length + " tools):\n";
     report += "- Average tool duration: " + avgDuration.toFixed(2) + "ms\n";
     report += "- Success rate: " + (((recent.length - failures) / recent.length) * 100).toFixed(1) + "%\n";
     
-    const slowTools = recent.filter((m) => m.duration > 2000);
+    const slowTools = recent.filter((m) => (m as any).duration > 2000);
     if (slowTools.length > 0) {
-      report += "- Notice: " + slowTools.length + " tools took > 2s. Slowest: " + slowTools.sort((a, b) => b.duration - a.duration)[0].tool + "\n";
+      report += "- Notice: " + slowTools.length + " tools took > 2s. Slowest: " + slowTools.sort((a, b) => (b as any).duration - (a as any).duration)[0].tool + "\n";
+    }
+
+    const recentErrors = recent.filter(m => !m.success && (m as any).error).map(m => (m as any).error!);
+    if (recentErrors.length > 0) {
+      report += "- Top Error Patterns:\n";
+      const counts: Record<string, number> = {};
+      for (const err of recentErrors) {
+        const key = err.substring(0, 60);
+        counts[key] = (counts[key] || 0) + 1;
+      }
+      Object.entries(counts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .forEach(([err, count]) => {
+          report += "  * [" + count + "x] " + err + "...\n";
+        });
     }
   }
 

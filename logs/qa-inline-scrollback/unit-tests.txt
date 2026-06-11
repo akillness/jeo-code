@@ -1,0 +1,11 @@
+bun test v1.3.14 (0d9b296a)
+
+test/tui-app.test.ts:
+  (no steps)
+Evolved to: #---- Primordial Cell [1/5] (took 0 steps in 0s)
+joc> done
+
+ 36 pass
+ 0 fail
+ 120 expect() calls
+Ran 36 tests across 2 files. [70.00ms]

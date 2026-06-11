@@ -78,7 +78,7 @@ joc setup
 | `/theme [name]` · `/settings` | TUI 테마(cosmic/matrix/solar/red-claw/blue-crab/mono) · 런타임 설정(=`/config`) |
 | `/sessions` · `/compact` · `/clear` · `/help` · `/exit` | 세션·컨텍스트 관리 |
 
-TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다. 하단 상태는 **세 행으로 분리**됩니다 — `[STEP]`(step n/m · 진행 미터 · 경과(분 단위) · 평균 · **라이브 토큰 사용량 `12.3k in / 1.2k out`**), `[STATUS]`(지금 실제로 하는 일: 작업 중 파일/명령, rate-limit 자동재시도 카운트다운 — 로그로 쌓이지 않고 이 행에서만 갱신), `[TOOL]`(forge·tool 집계). 푸터에는 현재 모델/프로바이더, 단계, ETA, 진화 트랙과 함께 **추정 컨텍스트 사용량(`ctx NN%`)**도 표시됩니다. 라이브 턴은 gjc처럼 **메인 버퍼에서 인라인으로** 렌더링됩니다: 완료된 진행 레저 라인(tool 결과·subagent 이벤트·워크플로 상태)은 즉시 일반 스크롤백으로 흘러 들어가므로, **턴이 진행되는 중에도 tmux/터미널 마우스 휠로 이전 진행 내용을 스크롤해 볼 수 있습니다** (`JOC_TUI_ALT_SCREEN=1`로 레거시 alt-screen 모드 복귀 가능). 턴이 끝나면 잔존 행을 지우고(clear-to-EOL + clear-below) 요약·`joc>` 응답·입력 박스가 깨끗하게 이어지므로 **연속으로 요청을 입력**할 수 있습니다. 입력창에 `/`로 시작하는 키워드를 타이핑하면 일치하는 명령 목록이 **실시간 미리보기**로 아래에 표시되고, **방향키(↑/↓)로 선택**한 뒤 Enter로 실행할 수 있습니다(`❯` 표시). `진행중/완료/subagent/tool/diff/file/command` 같은 UI 범주는 색인형 배지(`[AGENT]`, `[01:CMD]`, `[FILE]`, `[DIFF]`, `[STEP]`, `[STATUS]`)로 구분됩니다. 입력은 하단 푸터의 **박스형 입력란 하나로만** 노출됩니다.
+TUI는 단계별 진행을 **스텝 타임라인**(번호·상태 색상·진행 애니메이션)과 푸터의 라이브 스텝 스트립·키 힌트 바로 표시합니다. 하단 상태는 **세 행으로 분리**됩니다 — `[STEP]`(step n/m · 진행 미터 · 경과(분 단위) · 평균 · **라이브 토큰 사용량 `12.3k in / 1.2k out`**), `[STATUS]`(지금 실제로 하는 일: 작업 중 파일/명령, rate-limit 자동재시도 카운트다운 — 로그로 쌓이지 않고 이 행에서만 갱신), `[TOOL]`(forge·tool 집계). 푸터에는 현재 모델/프로바이더, 단계, ETA, 진화 트랙과 함께 **추정 컨텍스트 사용량(`ctx NN%`)**도 표시됩니다. 라이브 턴은 gjc처럼 **메인 버퍼에서 인라인으로** 렌더링됩니다: 완료된 진행 레저 라인(tool 결과·subagent 이벤트·워크플로 상태)은 즉시 일반 스크롤백으로 흘러 들어가므로, **턴이 진행되는 중에도 tmux/터미널 마우스 휠로 이전 진행 내용을 스크롤해 볼 수 있습니다** (`JOC_TUI_ALT_SCREEN=1`로 레거시 alt-screen 모드 복귀 가능). 레저 flush와 프레임 repaint는 **DECSET 2026 동기화 업데이트**로 원자적으로 그려져 중간 상태 깜빡임이 없고, 지우기는 항상 줄 단위 EL(`ESC[2K`)만 사용합니다 — tmux는 ED(`ESC[0J`)로 지운 행을 스크롤백에 복사하므로, ED를 쓰면 flush마다 프레임 사본이 히스토리를 가득 채워 실제 레저가 묻혀 버립니다. 턴이 끝나면 잔존 행을 지우고(clear-to-EOL + clear-below) 요약·`joc>` 응답·입력 박스가 깨끗하게 이어지므로 **연속으로 요청을 입력**할 수 있습니다(이미 flush된 레저 라인은 요약에서 재출력하지 않아 스크롤백에 정확히 한 번만 남습니다). 입력창에 `/`로 시작하는 키워드를 타이핑하면 일치하는 명령 목록이 **실시간 미리보기**로 아래에 표시되고, **방향키(↑/↓)로 선택**한 뒤 Enter로 실행할 수 있습니다(`❯` 표시). `진행중/완료/subagent/tool/diff/file/command` 같은 UI 범주는 색인형 배지(`[AGENT]`, `[01:CMD]`, `[FILE]`, `[DIFF]`, `[STEP]`, `[STATUS]`)로 구분됩니다. 입력은 하단 푸터의 **박스형 입력란 하나로만** 노출됩니다.
 
 워크플로우 단계는 **HUD 행**으로 노출됩니다 — `✔ thinking → ● planning → ○ executing → ○ reporting → ○ done`처럼 현재 단계가 강조되고 지난 단계는 체크로 표시되며, 그라데이션 [STATUS] 행 그룹은 위아래 빈 줄로 분리되어 gjc처럼 읽힙니다. 턴이 끝나면 `[DONE] thinking → planning → executing → done · N steps · 시간 · 토큰` 한 줄로 단계 플로우가 정리 보고됩니다. 스텝 타임라인과 Plan 체크리스트의 **완료 항목은 체크 아이콘 + 취소선 + dim**, 실패는 빨강, 진행 중은 시안 볼드로 색상 대조되어 한눈에 구분됩니다.
 
@@ -203,6 +203,8 @@ OPENAI_API_KEY=...
 GEMINI_API_KEY=...
 JOC_DEFAULT_MODEL=...
 OLLAMA_HOST=http://localhost:11434
+JOC_TUI_THEME=cosmic        # TUI 테마 (cosmic/matrix/solar/red-claw/blue-crab/mono)
+JOC_TUI_ALT_SCREEN=1        # 레거시 alt-screen 라이브 턴으로 복귀 (기본: 메인 버퍼 인라인 + tmux 휠 스크롤백)
 ```
 
 ## Publishing

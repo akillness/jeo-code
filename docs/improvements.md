@@ -6228,3 +6228,45 @@ has none), so mid-turn history was unreachable by design.
   growth only; `insertAbove` forces a full next repaint; reserve-off renderers emit no
   newlines.
 - Full: `bun run typecheck` → 0; `bun test` → **889 pass / 0 fail** (116 files).
+
+## Inline scrollback hardening: review blockers + tmux ED history-push fix — pass 888b
+
+**Date:** 2026-06-11 · **Dimension: tui (architect-review blockers on pass 888).**
+
+Architect review of pass 888 returned WATCH/COMMENT with two MEDIUM findings; fixing
+the flicker one exposed a third, far more serious tmux interaction during QA rerun.
+
+### Fixes
+- **888b-1. In-frame dedupe.** Inline frames no longer render the StreamRegion tail
+  (`draw()` gates `streamLines` on `!inline`): each ledger line lives exactly once —
+  in scrollback. Tool list + forge boxes keep live activity visible in-frame.
+- **888b-2. Atomic flush (DECSET 2026).** `insertAbove()` opens a synchronized update;
+  the next `render()`/`clear()` closes it after the repaint, so the overwrite → flush
+  → repaint triplet presents as ONE atomic update (no per-flush blank flicker).
+  Unsupported terminals ignore the sequences; supporting ones time out (~150ms).
+- **888b-3. tmux ED history-push flood (CRITICAL, found by QA rerun).** tmux (3.6)
+  PUSHES ED-erased rows into scrollback. The original `insertAbove` cleared the frame
+  with `\x1b[0J`, so every ledger flush copied one FULL frame (~30 rows) into history,
+  burying the actual ledger lines (QA happy-path captured only the last 10 of 60
+  markers). Fix: `insertAbove` now overwrites only the frame's first row(s) with
+  per-line EL (`\x1b[2K`, never history-pushed) and the next render EL-covers stale
+  rows via `coverRows`; inline `clear()` EL-walks the known frame rows instead of ED.
+  ED remains the fast path for alt-screen/non-TTY renderers (no history there).
+  Controlled tmux experiment: ED flow ⇒ ~31 history lines/flush; EL flow ⇒ 1.
+- **888b-4. Exit-safety mode flag is mutable** (`exitSafetyAltScreen` refreshed per
+  start()) and the inline exit path also closes any open synchronized update.
+- **888b-5. Reserve guard:** frames taller than the viewport are not reserved
+  (cursor-up would clamp and mis-anchor); caller invariant documented.
+
+### Verification (pass 888b)
+- Unit: 35 tui-app/tui-renderer tests pass (new: no-ED flush cycle, EL clear walk,
+  ED fast path kept for non-reserve, sync open/close pairing, reserve shrink,
+  post-insertAbove growth, taller-than-viewport guard, in-frame dedupe).
+- tmux e2e/red-team (logs/qa-inline-scrollback/runner.sh): all 6 cases PASSED —
+  mid-turn history reachable (LEDGER-001..010 of 60), copy-mode at scroll_position=65
+  shows the oldest markers, alternate_on 0/1 (default/JOC_TUI_ALT_SCREEN=1), resize
+  safe, 200-event burst keeps first+last markers with exactly one footer, finish
+  dedupe exactly-once.
+- Full `bun test`: 918 pass / 1 fail — the failure (`tmux.test.ts` session naming) and
+  the `welcome.ts` typecheck error belong to a concurrent session's in-flight work,
+  disjoint from this change (suite was 895/0 with typecheck 0 on this change alone).

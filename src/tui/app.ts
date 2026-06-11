@@ -42,6 +42,8 @@ export interface LaunchTuiOptions {
   maxSteps?: number;
   /** Whether to treat the output as a TTY (drives alt-screen use). Defaults to isTTY(). */
   tty?: boolean;
+  cwd?: string;
+  branch?: string;
 }
 
 export interface AgentEventsLike {
@@ -68,15 +70,19 @@ function todoListChanged(
 
 
 // Armed once per process: if we exit mid-turn (e.g. an uncaught crash), restore the
-// terminal — leave the alt screen when the legacy alt-screen turn was active, and
-// always bring the cursor back — so the TTY is never left hidden-cursor or stuck
-// on a blank alt screen.
+// terminal — leave the alt screen when the CURRENT turn mode is alt-screen, close any
+// open synchronized update, and always bring the cursor back — so the TTY is never
+// left hidden-cursor, sync-frozen, or stuck on a blank alt screen. The mode flag is
+// mutable and refreshed on every start() so a later turn in a different mode (e.g. a
+// test flipping JOC_TUI_ALT_SCREEN) is restored correctly.
 let exitSafetyArmed = false;
+let exitSafetyAltScreen = false;
 function armExitSafety(altScreen: boolean): void {
+  exitSafetyAltScreen = altScreen;
   if (exitSafetyArmed) return;
   exitSafetyArmed = true;
   process.once("exit", () => {
-    try { process.stdout.write((altScreen ? leaveAltScreen() : "") + showCursor()); } catch { /* terminal gone */ }
+    try { process.stdout.write((exitSafetyAltScreen ? leaveAltScreen() : "\x1b[?2026l") + showCursor()); } catch { /* terminal gone */ }
   });
 }
 
@@ -154,6 +160,8 @@ export class LaunchTui {
       unicode: this.unicode,
       showEta: true,
       showProgress: true,
+      cwd: opts.cwd,
+      branch: opts.branch,
     };
   }
 
@@ -361,7 +369,9 @@ export class LaunchTui {
     // but with no scrollback until the turn ends).
     if (this.tty) {
       if (this.inline) {
-        // Clear below the anchor once so stale pre-turn rows never bleed into the frame.
+        // Reset the renderer baseline at the anchor (with prev=[] this clears
+        // nothing — the first frame's per-line EL paint + row reservation
+        // overwrite/scroll every viewport row, so stale pre-turn rows can't bleed).
         this.renderer.clear();
       } else {
         this.usedAltScreen = true;
@@ -620,7 +630,12 @@ export class LaunchTui {
     const overhead = fit ? 4 : 0; // 2 borders + 2 dividers
     const fixedHeight = headerHeight + planHeight + toolListHeight + forgeHeight + bottomHeight + overhead;
     const maxStreamLines = fit ? Math.max(0, rows - fixedHeight) : undefined;
-    const streamLines = this.stream.render(innerWidth, maxStreamLines);
+    // Inline mode: ledger lines were already flushed into scrollback (appendLedger →
+    // insertAbove); rendering the StreamRegion tail inside the frame too would show
+    // every recent line TWICE the moment the user wheel-scrolls back. Tool list +
+    // forge boxes keep live activity visible in-frame; the stream feeds only the
+    // non-TTY / alt-screen frames and their final summaries.
+    const streamLines = this.inline ? [] : this.stream.render(innerWidth, maxStreamLines);
 
     let frame: string[] = [];
 

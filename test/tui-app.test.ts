@@ -25,20 +25,25 @@ test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll
   // gjc-style inline rendering: NO alt screen — tmux/terminal scrollback keeps working mid-turn.
   expect(live).not.toContain(enterAltScreen());
   expect(live).toContain(hideCursor());
-  expect(live).toContain(clearToEnd()); // anchor cleared once so stale rows can't bleed in
+  // Every frame row is painted with per-line EL — never an ED clear, which tmux
+  // would copy into scrollback (one full frame per repaint = flooded history).
+  expect(live).toContain("\x1b[2K");
 
   // A completed tool result is FLUSHED into normal scrollback while the turn runs:
-  // clear the live frame from its anchor, write the static ledger line + "\n", then
-  // repaint the frame below it (the next reserve scrolls the line into history).
+  // overwrite the frame's first row with the static ledger line + "\n" inside a
+  // synchronized update, then repaint the frame below it (the next reserve scrolls
+  // the line into history). No \x1b[0J — tmux pushes ED-erased rows into history.
   out.length = 0;
   const ev = tui.events();
   ev.onStep!(1);
   ev.onAssistant!("", { tool: "read", arguments: { filePath: "src/cli.ts" } });
   ev.onToolResult!("read", true, "1|const ok = true;");
   const ledger = out.join("");
-  const flushIdx = ledger.indexOf("\x1b[0J");
+  const flushIdx = ledger.indexOf("\x1b[?2026h"); // BSU opens the atomic flush
   expect(flushIdx).toBeGreaterThanOrEqual(0);
   expect(ledger.slice(flushIdx)).toContain("read src/cli.ts\n"); // static line, newline-terminated
+  expect(ledger.slice(flushIdx)).toContain("\x1b[?2026l");       // ESU after the repaint
+  expect(ledger).not.toContain("\x1b[0J");                       // never ED mid-turn (history flood)
 
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
   out.length = 0;
@@ -101,6 +106,30 @@ test("LaunchTui: subagent progress lines are flushed into scrollback mid-turn on
   expect(ledger).toContain("start: Add a retry guard\n");
   expect(ledger).toContain("read src/agent/engine.ts\n");
   tui.finish("done");
+});
+
+test("LaunchTui (inline): flushed ledger lines are NOT duplicated inside the live frame", () => {
+  const realRender = Renderer.prototype.render;
+  let frame: string[] = [];
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  try {
+    const tui = new LaunchTui({ model: "m1", tty: true, write: () => {} });
+    tui.start();
+    const ev = tui.events();
+    ev.onStep!(1);
+    ev.onAssistant!("", { tool: "read", arguments: { filePath: "src/cli.ts" } });
+    ev.onToolResult!("read", true, "ok");
+    (tui as unknown as { draw: () => void }).draw();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    // The flushed stream line carries both badges; the frame must not repeat it
+    // (tool list + forge boxes keep showing the activity in their own formats).
+    const txt = frame.map(strip);
+    expect(txt.some(l => l.includes("[FILE]") && l.includes("[DONE]"))).toBe(false);
+    tui.finish("done");
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
 });
 
 test("LaunchTui: without a TTY the alt screen is NOT used (plain in-place render)", () => {

@@ -261,7 +261,103 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
     };
   }
 
+  if (normalized === "web_search") {
+    const query = stringArg(args, "query") ?? "<missing query>";
+    const recency = stringArg(args, "recency");
+    const lines = [`query: ${query}`];
+    if (recency) lines.push(`recency: ${recency}`);
+    return {
+      title: `Web Search: ${query.length > 60 ? `${query.slice(0, 59)}…` : query}`,
+      language: "text",
+      lines,
+    };
+  }
+
   return { title: `${safeTool} arguments`, language: "json", lines: jsonPreview(args) };
+}
+
+/** Parsed gjc-style Web Search card pieces, reconstructed from the structured
+ *  `web_search` tool output (see `formatWebSearchOutput` in agent/web-search.ts). */
+export interface WebSearchCard {
+  /** `Provider · N sources` header meta for the card title (e.g. `Anthropic · 18 sources`). */
+  titleMeta: string;
+  lines: string[];
+}
+
+/**
+ * Build the gjc-style Web Search card body from the tool's structured output:
+ * `Query:` line, then `Answer` / `Sources` / `Metadata` divider sections with
+ * tree-glyph (`├─`/`└─`) rows and `… N more` truncation — visually mirroring
+ * gjc's web_search renderer. Returns null when the output does not carry the
+ * structured shape (errors fall back to the generic result card).
+ */
+export function webSearchCardLines(output: string, opts: { unicode?: boolean } = {}): WebSearchCard | null {
+  if (!output.startsWith("Query: ")) return null;
+  const uni = opts.unicode !== false;
+  const branch = uni ? "├─" : "|-";
+  const last = uni ? "└─" : "`-";
+  const cont = uni ? "│ " : "| ";
+  const ellipsis = uni ? "…" : "...";
+
+  // Section split on "## " heads; everything before the first head is the Query line(s).
+  const sections = new Map<string, string[]>();
+  let current = "__head__";
+  sections.set(current, []);
+  for (const line of output.split("\n")) {
+    const m = /^## (\w+)/.exec(line);
+    if (m) {
+      current = m[1]!;
+      sections.set(current, []);
+      continue;
+    }
+    sections.get(current)!.push(line);
+  }
+  const answer = (sections.get("Answer") ?? []).filter(l => l.trim());
+  const metadata = (sections.get("Metadata") ?? []).filter(l => l.trim());
+  if (answer.length === 0 && metadata.length === 0) return null;
+
+  const lines: string[] = [];
+  const queryLine = (sections.get("__head__") ?? []).find(l => l.startsWith("Query: "));
+  if (queryLine) lines.push(queryLine);
+
+  // Answer: tree-glyph preview, capped like gjc's collapsed card.
+  const MAX_ANSWER = 3;
+  lines.push(forgeDivider("Answer"));
+  const answerShown = answer.slice(0, MAX_ANSWER);
+  answerShown.forEach((l, i) => {
+    const glyph = i === answerShown.length - 1 && answer.length <= MAX_ANSWER ? last : branch;
+    lines.push(`${glyph} ${l}`);
+  });
+  if (answer.length > MAX_ANSWER) lines.push(`${ellipsis} ${answer.length - MAX_ANSWER} more lines`);
+
+  // Sources: `[n] title (domain) · age` + indented url, capped.
+  const sourceRaw = (sections.get("Sources") ?? []).filter(l => l.trim());
+  const entries: { title: string; url?: string }[] = [];
+  for (const line of sourceRaw) {
+    const head = /^\[\d+\] (.*)$/.exec(line);
+    if (head) entries.push({ title: head[1]! });
+    else if (entries.length > 0 && line.startsWith("    ") && !entries[entries.length - 1]!.url) {
+      entries[entries.length - 1]!.url = line.trim();
+    }
+  }
+  const MAX_SOURCES = 6;
+  lines.push(forgeDivider("Sources"));
+  if (entries.length === 0) lines.push(`${last} No sources returned`);
+  const shown = entries.slice(0, MAX_SOURCES);
+  shown.forEach((src, i) => {
+    const isLast = i === shown.length - 1 && entries.length <= MAX_SOURCES;
+    lines.push(`${isLast && !src.url ? last : branch} ${src.title}`);
+    if (src.url) lines.push(`${isLast ? last : cont} ${src.url}`);
+  });
+  if (entries.length > MAX_SOURCES) lines.push(`${last} ${ellipsis} ${entries.length - MAX_SOURCES} more sources`);
+
+  // Metadata: verbatim key/value lines.
+  lines.push(forgeDivider("Metadata"));
+  lines.push(...metadata);
+
+  const sourceCount = entries.length;
+  const provider = metadata.find(l => l.startsWith("Provider: "))?.slice("Provider: ".length) ?? "web";
+  return { titleMeta: `${provider} · ${sourceCount} source${sourceCount === 1 ? "" : "s"}`, lines };
 }
 
 export function summarizeForgeResult(tool: string, success: boolean, output: string): ForgeSummary {

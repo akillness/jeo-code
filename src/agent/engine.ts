@@ -12,11 +12,13 @@ import * as path from "node:path";
 import type { Message } from "./loop";
 import { extractJsonObject } from "./json";
 import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, type ToolResult } from "./tools";
+import { webSearchTool } from "./web-search";
 import { friendlyProviderError } from "../util/provider-error";
 import { isRateLimitError } from "../util/retry";
 import { runPreToolHooks, runPostTurnHooks } from "./hooks";
 import { minimizeToolOutput } from "./output-minimizer";
 import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, type StepBudgetConfig } from "./step-budget";
+import { historyTokens, trimToolResultsInPlace } from "./compaction";
 
 
 async function invokeCallLlm(history: Message[], options: {
@@ -47,6 +49,7 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
   find: (a, cwd) => findTool(a.globPattern ?? a.pattern, cwd),
   search: (a, cwd) => searchTool(a.pattern, a.globPattern ?? "*", cwd, !!(a.ignoreCase ?? a.i), { before: a.before, after: a.after, context: a.context, maxMatches: a.maxMatches }),
   ls: (a, cwd) => lsTool(a.dirPath ?? a.path ?? a.dir ?? ".", cwd),
+  web_search: (a, cwd) => webSearchTool(a, cwd),
 };
 
 /** Tool-protocol description injected into the system prompt. */
@@ -59,7 +62,8 @@ export const TOOL_PROTOCOL = [
   "5. find   {globPattern}               — find files by name",
   "6. search {pattern, globPattern?, ignoreCase?, context?, maxMatches?} — grep (context: N lines around each match)",
   "7. ls     {dirPath}                   — list a directory's entries (dirs first)",
-  "8. done   {reason?}                   — call when the task is fully implemented AND verified",
+  "8. web_search {query, recency?, limit?} — search the web (Anthropic-native: synthesized answer + sources + citations)",
+  "9. done   {reason?}                   — call when the task is fully implemented AND verified",
   "",
   "Reply with STRICT JSON only — no code fences. You MAY include an optional leading",
   '"reasoning" string (one short sentence on your plan) before "tool":',
@@ -79,7 +83,8 @@ export const READONLY_TOOL_PROTOCOL = [
   "2. find   {globPattern}               — find files by name",
   "3. search {pattern, globPattern?, ignoreCase?} — grep for a pattern",
   "4. ls     {dirPath}                   — list a directory's entries",
-  "5. done   {reason?}                   — call when your review/analysis is complete",
+  "5. web_search {query, recency?, limit?} — search the web (answer + sources + citations)",
+  "6. done   {reason?}                   — call when your review/analysis is complete",
   "",
   "Reply with STRICT JSON only — no prose, no code fences:",
   '{ "tool": "<name>", "arguments": { ... } }',
@@ -87,6 +92,23 @@ export const READONLY_TOOL_PROTOCOL = [
   "Alternatively, you may batch up to 6 independent calls in a single turn using the following format:",
   '{ "tools": [{ "tool": "<name>", "arguments": { ... } }, ...] }',
   "Batch only independent calls; NEVER batch 'done'.",
+].join("\n");
+
+/** gjc-inherited working discipline (plan/gjc-inheritance.md B3): the completion
+ *  contract and tool-priority rules distilled from gjc's system prompt — compact
+ *  (<300 tokens) per the pi-mono budget so the core prompt stays lean. */
+export const WORKING_DISCIPLINE = [
+  "Working discipline:",
+  "- Correctness first, maintainability second, brevity third. Prefer boring, explicit code.",
+  "- Never present partial work as complete; never suppress tests or warnings to make code pass.",
+  "- Never fabricate tool results or test outcomes; verification claims must match what was actually run.",
+  "- Never ship stubs, placeholders, or TODO-only code as a delivered feature.",
+  "- Never substitute the requested problem with an easier adjacent one.",
+  "- Update directly affected callsites, tests, and docs — or state why they are unchanged.",
+  "- Reuse existing patterns; parallel conventions are prohibited. Fix problems at their source.",
+  "- You are not alone in the repository: treat unexpected changes as user work; never revert or delete them.",
+  "- Re-read before acting if a tool fails or a file may have changed.",
+  "- Prefer dedicated tools over shell pipelines: read (not cat), search (not grep), edit (not sed).",
 ].join("\n");
 
 export function executorSystemPrompt(
@@ -98,6 +120,7 @@ export function executorSystemPrompt(
     `You are the ${role}.\n` +
     `Accomplish the user's request by calling tools and verifying your work.\n\n` +
     `${protocol}\n\n` +
+    `${WORKING_DISCIPLINE}\n\n` +
     verificationDirective
   );
 }
@@ -121,6 +144,10 @@ export interface AgentLoopEvents {
 export interface AgentLoopOptions {
   /** Optional system prompt: prepended to `history` when it has no system message. */
   systemPrompt?: string;
+  /** Mid-turn context budget (estimated tokens). When the in-turn history grows
+   *  past this, the OLDEST tool-result bodies are deterministically elided so a
+   *  long turn cannot snowball into multi-million-token prompts. Default 80k. */
+  maxHistoryTokens?: number;
   cwd: string;
   /** Base step budget (default 15). Non-finite or `<= 0` selects the DYNAMIC budget:
    *  the budget keeps extending while the recent tool window shows NOVEL progress,
@@ -234,6 +261,9 @@ export function nearestToolName(name: string, known: string[]): string | undefin
  */
 export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): Promise<AgentLoopResult> {
   const { cwd } = opts;
+  // Active-model gate for web_search's provider chain (gjc parity): the chain
+  // prefers the active model's native search backend, never credential-scanning.
+  setWebSearchActiveModel(opts.model);
   // Honor an explicit system prompt for callers that build history without one.
   if (opts.systemPrompt && history[0]?.role !== "system") {
     history.unshift({ role: "system", content: opts.systemPrompt });
@@ -255,6 +285,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // Why the loop stopped at the limit — folded into the consolidation message.
   let budgetStopReason = "";
   const ev = opts.events ?? {};
+  const maxHistoryTokens = Math.max(10_000, opts.maxHistoryTokens ?? 80_000);
 
   let step = 1;
   const acc = { inputTokens: 0, outputTokens: 0 };
@@ -291,6 +322,19 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       return finish({ done: false, steps: step - 1, doneReason: "Cancelled." });
     }
     await ev.onStep?.(step);
+
+    // MID-TURN context guard: a single long turn (60+ steps) otherwise grows the
+    // history without bound — turn-boundary compaction never runs inside a turn,
+    // and field evidence shows multi-million-token prompts degrading the model
+    // into repeat loops while cost compounds. Deterministically elide the OLDEST
+    // tool-result bodies once the estimate crosses the budget; recent evidence
+    // and all assistant/user content stay intact.
+    if (historyTokens(history) > maxHistoryTokens) {
+      const res = trimToolResultsInPlace(history, { budgetTokens: maxHistoryTokens });
+      if (res.trimmed > 0) {
+        ev.onNotice?.(`context guard: elided ${res.trimmed} older tool result(s) mid-turn (~${Math.round(res.tokens / 1000)}k tokens kept)`);
+      }
+    }
 
     // Stream the response into the live reasoning view ONLY when a consumer is attached
     // (a TUI). Non-interactive/test callers leave onModelStream unset → a single
@@ -409,9 +453,15 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       return finish({ done: true, steps: step, doneReason: (toolCalls[0].arguments?.reason as string) ?? "" });
     }
 
-    // Anti-spin guard, checked BEFORE execution: a repeated identical step must be
-    // stopped without running its calls again — a repeated mutating bash/edit must
-    // not execute a third time merely to be detected.
+    // Anti-spin guard, checked BEFORE execution: a repeated identical step must
+    // not run its calls again — a repeated mutating bash/edit must not execute
+    // a third time merely to be detected.
+    //  - 2nd identical step → ONE corrective bounce (skip execution, tell the
+    //    model its previous identical call already ran and to either act
+    //    differently or call done). Field evidence: long turns died here right
+    //    after a SUCCESSFUL write because nothing ever told the model to stop
+    //    repeating — a recovery prompt resolves that without killing the turn.
+    //  - 3rd identical step (repeated through the explicit correction) → stop.
     const callSigs = toolCalls.map(c => `${c.tool}:${JSON.stringify(c.arguments ?? {})}`);
     const sig = callSigs.join(" | ");
     if (sig === lastSig) repeatCount++;
@@ -419,12 +469,26 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       repeatCount = 1;
       lastSig = sig;
     }
+    if (repeatCount === 2) {
+      const what = toolCalls.length === 1 ? `'${toolCalls[0].tool}' call` : "tool batch";
+      history.push({ role: "assistant", content: responseText });
+      history.push({
+        role: "user",
+        content:
+          `You just repeated the EXACT same ${what} you already ran in the previous step — it was not re-executed. ` +
+          `Its result has not changed. If the task is complete, reply {"tool":"done","arguments":{"reason":"<summary of what was accomplished>"}}; ` +
+          `otherwise take a DIFFERENT next action (verify the result, move to the next file, or fix something new).`,
+      });
+      ev.onNotice?.(`repeated ${what} skipped — asked the model to act differently or call done`);
+      step++;
+      continue;
+    }
     if (repeatCount >= MAX_REPEAT) {
       const what = toolCalls.length === 1 ? `the same '${toolCalls[0].tool}' call` : "the same tool calls";
       return finish({
         done: false,
         steps: step,
-        doneReason: `Stopped: repeated ${what} ${MAX_REPEAT}× with no new progress (the model never signaled done).`,
+        doneReason: `Stopped: repeated ${what} ${MAX_REPEAT}× even after an explicit correction (the model never signaled done).`,
       });
     }
 
@@ -470,7 +534,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       return { success, output };
     };
 
-    const READONLY_TOOLS = new Set(["read", "find", "search", "ls"]);
+    const READONLY_TOOLS = new Set(["read", "find", "search", "ls", "web_search"]);
     const groups: { isParallel: boolean; calls: { tool: string; arguments?: Record<string, any>; index: number }[] }[] = [];
     for (let i = 0; i < toolCalls.length; i++) {
       const call = toolCalls[i];

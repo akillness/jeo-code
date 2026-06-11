@@ -1016,6 +1016,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const baseSystemPrompt =
     preamble + "\n\n" + protocol + "\n\n" +
+    WORKING_DISCIPLINE + "\n\n" +
     "Always verify (run tests / execute the program) before calling done." +
     "\nWhen you have finished the user's request, or need to reply to or ask the user something, call done with {\"reason\": <your natural-language reply to the user>}. The reason text is shown to the user as your message." +
     (allowedTools.has("task") ? "\n\nDelegation: " + TASK_TOOL_PROTOCOL_LINE +

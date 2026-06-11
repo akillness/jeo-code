@@ -84,6 +84,57 @@ export function historyTokens(history: Message[]): number {
   return history.reduce((sum, msg) => sum + estimateMessageTokens(msg), 0);
 }
 
+/** Engine tool-feedback message prefix (`Tool [name] result (ok|fail):`). */
+const TOOL_RESULT_RE = /^Tool \[[^\]]+\] result \((ok|fail)\):/;
+
+/**
+ * MID-TURN deterministic context trim: when a single long agent turn grows the
+ * history past `budgetTokens`, elide the BODIES of the OLDEST tool-result
+ * feedback messages in place (newest `keepRecent` kept verbatim) until the
+ * estimate fits the budget. This is what keeps a 60+-step turn from snowballing
+ * to multi-million-token prompts (degrading the model into repeat loops and
+ * compounding cost): turn-boundary compaction (`maybeCompact`) never runs
+ * mid-turn, so without this the per-step input grew without bound.
+ *  - Deterministic, zero LLM calls — safe to run between any two steps.
+ *  - Only tool-result feedback is elided; system / real user prompts /
+ *    assistant messages are never touched (the model keeps its own reasoning).
+ *  - Messages are REPLACED with new objects (never mutated) so the
+ *    identity-keyed token caches stay truthful.
+ * Returns the number of elided messages and the resulting token estimate.
+ */
+export function trimToolResultsInPlace(
+  history: Message[],
+  opts: { budgetTokens: number; keepRecent?: number },
+): { trimmed: number; tokens: number } {
+  const keepRecent = Math.max(0, opts.keepRecent ?? 8);
+  let tokens = historyTokens(history);
+  if (tokens <= opts.budgetTokens) return { trimmed: 0, tokens };
+
+  // Candidate indices: tool-result user messages, oldest first, excluding the
+  // newest `keepRecent` of them (the model still needs its recent evidence).
+  const candidates: number[] = [];
+  for (let i = 0; i < history.length; i++) {
+    const m = history[i]!;
+    if (m.role === "user" && TOOL_RESULT_RE.test(m.content)) candidates.push(i);
+  }
+  const trimmable = candidates.slice(0, Math.max(0, candidates.length - keepRecent));
+
+  let trimmed = 0;
+  for (const i of trimmable) {
+    if (tokens <= opts.budgetTokens) break;
+    const m = history[i]!;
+    const header = m.content.match(TOOL_RESULT_RE)?.[0] ?? "Tool result:";
+    const stub = `${header} [elided mid-turn to free context — re-run the tool if this result is needed again]`;
+    if (m.content.length <= stub.length) continue; // already tiny — nothing to win
+    const replacement: Message = { ...m, content: stub };
+    tokens -= estimateMessageTokens(m);
+    history[i] = replacement;
+    tokens += estimateMessageTokens(replacement);
+    trimmed++;
+  }
+  return { trimmed, tokens };
+}
+
 /**
  * Accurate BPE token total for a history, summing `countTokensAccurate` per
  * message (+1 per message for role/separator overhead, mirroring

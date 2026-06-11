@@ -47,8 +47,6 @@ Forge boxes are bordered, so they are shown **only when a whole box fits** (most
 
 Requirement: Bun `1.3.14+`
 
-> **Rename note**: the binary is now `jeo` (formerly `joc`). The `joc` command keeps working as a compatibility alias, legacy `JOC_*` environment variables are still honored (the `JEO_*` spelling is preferred), and existing `~/.joc` / `.joc` runtime state is used as-is.
-
 ```bash
 bun install -g jeo-code
 ```
@@ -213,21 +211,6 @@ else is decided exactly as before.
   }
 }
 ```
-
-### Step budget (retry flow)
-
-The per-turn step limit is a flexible **budget**, not a bare counter (gjc retry-flow
-parity). When the counter reaches the current limit, the engine scores the recent
-tool-call window: if the turn is demonstrably progressing (≥50% of recent calls ok
-on ≥2 distinct targets), the budget **extends itself** — bounded by
-`JEO_STEP_EXTENSIONS` (default 2) and an absolute `JEO_STEP_HARD_CAP` (default 3×
-the base) — emitting a `↻ step budget extended to M (extension k/n)` ledger line and
-updating the live `step N/M` denominator. A stalled window (mostly failures, or one
-signature spinning) **fails fast** into the consolidation wrap-up instead, with the
-explicit decline reason in the final message. The early guards are unchanged
-(3× identical call, 5 consecutive failures, parse-bounce salvage). Subagent
-delegation (`task`, `jeo team`) keeps an exact step contract — extensions are
-disabled there, the parent owns retries.
 
 ## Publishing
 

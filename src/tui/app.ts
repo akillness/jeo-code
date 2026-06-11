@@ -11,7 +11,7 @@
  */
 import { Renderer } from "./renderer";
 import { readWorkflowStateStrict } from "../agent/state";
-import { size, isTTY, hideCursor, showCursor } from "./terminal";
+import { size, isTTY, hideCursor, showCursor, enterAltScreen, leaveAltScreen } from "./terminal";
 import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
@@ -118,13 +118,13 @@ function todoListChanged(
 // mutable and refreshed on every start() so a later turn in a different mode (e.g. a
 // test flipping JOC_TUI_ALT_SCREEN) is restored correctly.
 let exitSafetyArmed = false;
-
-function armExitSafety(): void {
-  
+let exitSafetyAltScreen = false;
+function armExitSafety(altScreen: boolean): void {
+  exitSafetyAltScreen = altScreen;
   if (exitSafetyArmed) return;
   exitSafetyArmed = true;
   process.once("exit", () => {
-    try { process.stdout.write("\x1b[?2026l" + showCursor()); } catch { /* terminal gone */ }
+    try { process.stdout.write((exitSafetyAltScreen ? leaveAltScreen() : "\x1b[?2026l") + showCursor()); } catch { /* terminal gone */ }
   });
 }
 
@@ -175,7 +175,7 @@ export class LaunchTui {
   private flushedReasoning = "";
   // True while the live turn renders in the alternate screen buffer (TTY only);
   // drives leaving it on finish so terminal scroll never fights the repaint.
-  
+  private usedAltScreen = false;
   // Agent-declared task plan (the `todo` tool), rendered as a live checklist.
   private todos: { title: string; status: "pending" | "in_progress" | "done" }[] = [];
   // Cache the rendered art + track per stage so the 120ms spinner tick reuses
@@ -208,7 +208,7 @@ export class LaunchTui {
   constructor(opts: LaunchTuiOptions) {
     this.write = opts.write ?? ((s: string) => process.stdout.write(s));
     this.tty = opts.tty ?? isTTY();
-    this.inline = this.tty;
+    this.inline = this.tty && process.env.JOC_TUI_ALT_SCREEN !== "1";
     // Row reservation is only needed (and only safe) for the inline main-buffer frame;
     // the alt screen starts at the top with a full-height frame.
     this.renderer = new Renderer(this.write, undefined, { reserve: this.inline });
@@ -590,11 +590,11 @@ export class LaunchTui {
         // overwrite/scroll every viewport row, so stale pre-turn rows can't bleed).
         this.renderer.clear();
       } else {
-        
-        
+        this.usedAltScreen = true;
+        this.write(enterAltScreen());
         this.renderer.reset();
       }
-      armExitSafety();
+      armExitSafety(this.usedAltScreen);
     }
     this.write(hideCursor());
     this.draw();
@@ -661,7 +661,7 @@ export class LaunchTui {
       // Leave the alt screen (restores the main buffer + scrollback), then print the
       // static summary below the prior output so the turn leaves exactly one record.
       this.renderer.reset();
-      
+      this.write(leaveAltScreen());
       this.write(showCursor());
     } else {
       this.renderer.clear();

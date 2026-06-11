@@ -2046,7 +2046,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // Box mode: NO raw `jeo>` prompt at all — the boxed footer IS the input UI
       // (gating already suppresses readline echo, the empty prompt guarantees no
       // raw CLI input line can ever flash). Legacy prompt only without the box.
-      const raw = (await promptInput(previewEnabled ? "" : "\njoc> ")).trim();
+      const raw = (await promptInput(previewEnabled ? "" : "\njeo> ")).trim();
       disarmPreview();
       // If an arrow-key selection was made over the slash/skill preview, run it.
       let input = pendingSelection && (isSlashAttempt(raw) || raw.startsWith("$")) && pendingSelection.startsWith(raw)

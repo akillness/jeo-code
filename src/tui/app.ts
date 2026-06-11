@@ -28,6 +28,8 @@ import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForg
 import { renderJocStatus, renderStatusBar, renderStatusBox } from "./components/status";
 import { costForUsage, formatCost } from "../ai/pricing";
 import { renderMarkdownTables } from "./components/markdown-table";
+ 
+import { stripMarkdown } from "./components/markdown-text";
 import { visibleWidth, wrapTextWithAnsi } from "./components/width";
 import { categoryBadge } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
@@ -720,7 +722,7 @@ export class LaunchTui {
     }
     // Render any GFM markdown tables in the reply as box-drawn tables (B8). Plain
     // replies are returned unchanged by the cheap no-`|` guard.
-    const renderedReply = renderMarkdownTables(reply, { unicode: this.unicode });
+    const renderedReply = stripMarkdown(renderMarkdownTables(reply, { unicode: this.unicode }));
     const steps = this.footer.step || 0;
     const peak = this.progress.current();
     const usageSuffix = this.turnUsage ? ` · ${formatUsage(this.turnUsage)}` : "";

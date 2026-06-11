@@ -59,6 +59,8 @@ import { readClipboardImage } from "../util/clipboard-image";
 import { formatTranscript } from "../tui/components/transcript";
 import type { ImageAttachment } from "../ai/types";
 import { renderMarkdownTables } from "../tui/components/markdown-table";
+ 
+import { stripMarkdown } from "../tui/components/markdown-text";
 import { summarizeForgeInvocation } from "../tui/components/forge";
 import { formatDuration, formatUsage } from "../tui/components/duration";
 
@@ -1346,7 +1348,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             ? `[workflow:${skillInvocation.skill.name}:finish]` 
             : `[workflow:${skillInvocation.skill.name}:abort]${reason ? ` reason: ${reason}` : ""}`
         };
-        history.push(endMsg);
         if (sessionId) {
           await appendMessage(sessionId, endMsg, cwd);
         }
@@ -1359,13 +1360,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       const task = buildSkillTask(skillInvocation.skill, skillInvocation.intent, skillInvocation.invokedAs);
       const { reply, rendered, usage } = await runTurn(task, useOneShotTui);
-      if (!rendered) console.log(reply + usage);
+      if (!rendered) console.log(stripMarkdown(renderMarkdownTables(reply)) + usage);
       else if (usage) console.log(usage.trim());
       return;
     }
     try {
       const { reply, rendered, usage } = await runTurn(messageContent, shouldUseOneShotTui(flags.noTui));
-      if (!rendered) console.log(reply + usage);
+      if (!rendered) console.log(stripMarkdown(renderMarkdownTables(reply)) + usage);
       else if (usage) console.log(usage.trim());
     } catch (err) {
       console.log(`! ${friendlyProviderError(err)}`);
@@ -1494,7 +1495,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (!useTui) console.log(`▶ Running skill: ${skill.name}${intent ? ` — ${intent}` : ""}`);
       const task = buildSkillTask(skill, intent, invokedAs);
       const { reply, rendered, usage } = await runTurn(task, useTui);
-      if (!rendered) console.log(`jeo> ${renderMarkdownTables(reply)}${usage}`);
+      if (!rendered) console.log(`jeo> ${stripMarkdown(renderMarkdownTables(reply))}${usage}`);
       else if (usage) console.log(usage.trim());
     }
   };

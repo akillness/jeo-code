@@ -3,11 +3,14 @@ import {
   DNA_CLAW_ART,
   DNA_CLAW_FRAMES,
   DNA_CLAW_FRAMES_ASCII,
+  DNA_FLOW_PALETTE,
+  dnaClawBeat,
   dnaClawFrameCount,
   dnaClawHeight,
   renderDnaClaw,
 } from "../src/tui/components/ascii-art";
 import { ColorLevel } from "../src/tui/components/color";
+import { formatForgeBox, type ForgeSummary } from "../src/tui/components/forge";
 import { estimateMessageTokens, historyTokens } from "../src/agent/compaction";
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -64,4 +67,66 @@ test("estimateMessageTokens: identity-cached, replacement-keyed (no stale, no gr
   const t1 = historyTokens(history);
   const t2 = historyTokens(history); // second pass: all cache hits
   expect(t2).toBe(t1);
+});
+
+// ---- Forge DNA-flow border (live in-flight card animation) ------------------
+
+const flowSummary: ForgeSummary = { title: "bash running", lines: ["$ bun test", "working…"] };
+
+test("forge flow: gradient borders animate with phase; glyph geometry is unchanged", () => {
+  const id = (s: string) => s;
+  const base = formatForgeBox(flowSummary, { width: 40, unicode: false, paint: id, paintShadow: id, color: true });
+  const f0 = formatForgeBox(flowSummary, {
+    width: 40, unicode: false, paint: id, paintShadow: id, color: true,
+    flow: { palette: DNA_FLOW_PALETTE, phase: 0, colorLevel: ColorLevel.TrueColor },
+  });
+  const f5 = formatForgeBox(flowSummary, {
+    width: 40, unicode: false, paint: id, paintShadow: id, color: true,
+    flow: { palette: DNA_FLOW_PALETTE, phase: 0.5, colorLevel: ColorLevel.TrueColor },
+  });
+  // Animation: borders carry truecolor codes and MOVE between phases.
+  expect(f0[0]).toContain("38;2;");
+  expect(f0[f0.length - 1]).toContain("38;2;");
+  expect(f0[0]).not.toBe(f5[0]);
+  // Accuracy: stripped glyphs are byte-identical to the static render — the flow
+  // changes colors only, never geometry (no width drift, no row growth).
+  expect(f0.map(stripAnsi)).toEqual(base.map(stripAnsi));
+  expect(f5.map(stripAnsi)).toEqual(base.map(stripAnsi));
+  // Content rows stay un-animated (only the border runs are painted per tick).
+  expect(stripAnsi(f0[1]!)).toBe(stripAnsi(base[1]!));
+});
+
+test("forge flow: below TrueColor the static paint path is used byte-identically", () => {
+  const id = (s: string) => s;
+  const base = formatForgeBox(flowSummary, { width: 36, unicode: false, paint: id, paintShadow: id, color: true });
+  const lowColor = formatForgeBox(flowSummary, {
+    width: 36, unicode: false, paint: id, paintShadow: id, color: true,
+    flow: { palette: DNA_FLOW_PALETTE, phase: 0.3, colorLevel: ColorLevel.Ansi256 },
+  });
+  expect(lowColor).toEqual(base);
+});
+
+test("forge flow: color:false ignores flow entirely (plain pipelines stay plain)", () => {
+  const plain = formatForgeBox(flowSummary, { width: 36, unicode: false, color: false });
+  const plainFlow = formatForgeBox(flowSummary, {
+    width: 36, unicode: false, color: false,
+    flow: { palette: DNA_FLOW_PALETTE, phase: 0.7, colorLevel: ColorLevel.TrueColor },
+  });
+  expect(plainFlow).toEqual(plain);
+});
+
+test("forge titleMark: claw beat rides the border title without breaking width", () => {
+  const id = (s: string) => s;
+  const marked = formatForgeBox(flowSummary, { width: 40, unicode: false, paint: id, paintShadow: id, color: false, titleMark: dnaClawBeat(0, false) });
+  expect(stripAnsi(marked[0]!)).toContain("* bash running");
+  // Every row keeps the exact box width — the mark is absorbed by the title budget.
+  for (const row of marked) expect(stripAnsi(row).length).toBe(40);
+});
+
+test("dnaClawBeat cycles width-1 claw motifs and wraps", () => {
+  const seen = new Set([dnaClawBeat(0), dnaClawBeat(1), dnaClawBeat(2)]);
+  expect(seen.size).toBe(3);
+  expect(dnaClawBeat(3)).toBe(dnaClawBeat(0)); // wraps
+  expect(dnaClawBeat(1, false)).toBe("X"); // ASCII fallback
+  for (const beat of seen) expect(beat.length).toBe(1);
 });

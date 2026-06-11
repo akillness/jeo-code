@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { BOX_ASCII, BOX_UNICODE, boxBlock } from "./layout";
+import { visibleWidth, wrapTextWithAnsi } from "./width";
 
 export interface InputBoxOptions {
   cols?: number;
@@ -20,7 +21,11 @@ function wrapPlain(text: string, width: number): string[] {
       out.push("");
       continue;
     }
-    for (let i = 0; i < line.length; i += cap) out.push(line.slice(i, i + cap));
+    // Wrap by DISPLAY width (CJK/emoji count 2) so wide input never overflows the box
+    // border — the "입력창 깨짐" corruption was char-length wrapping miscounting wide
+    // glyphs and pushing the text past the right edge.
+    if (visibleWidth(line) <= cap) out.push(line);
+    else for (const seg of wrapTextWithAnsi(line, cap)) out.push(seg);
   }
   return out;
 }

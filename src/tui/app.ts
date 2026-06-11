@@ -27,6 +27,7 @@ import { detectColorLevel, animatedGradientText, ColorLevel } from "./components
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, type ForgeSummary } from "./components/forge";
 import { renderJocStatus } from "./components/status";
 import { costForUsage } from "../ai/pricing";
+import { renderMarkdownTables } from "./components/markdown-table";
 import { categoryBadge, categoryForTool } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
@@ -120,6 +121,11 @@ export class LaunchTui {
   private turnUsage: { inputTokens: number; outputTokens: number } | null = null;
   // True while a delegated subagent turn is in flight — drives the `(sub)` status marker.
   private subagentActive = false;
+  // Auto-derived turn title (no LLM call): seeded from the first user message, refined
+  // once to the first tool's verb+target. Shown in the HUD and synced to the tmux pane
+  // title under --tmux so multiple sessions are distinguishable at a glance (gjc parity).
+  private turnTitle: string | null = null;
+  private turnTitleRefined = false;
   // True while the live turn renders in the alternate screen buffer (TTY only);
   // drives leaving it on finish so terminal scroll never fights the repaint.
   private usedAltScreen = false;
@@ -195,6 +201,25 @@ export class LaunchTui {
     this.draw();
   }
 
+  /** Seed the turn title (no LLM call) and sync it to the terminal/tmux pane title.
+   *  Called once per turn from the REPL with the user's input; refined to the first
+   *  tool's verb+target on the first tool call. */
+  setTurnTitle(raw: string): void {
+    const first = (raw ?? "").split("\n").map(s => s.trim()).find(s => s.length > 0) ?? "";
+    const title = first.length > 50 ? first.slice(0, 49) + "…" : first;
+    this.turnTitle = title || null;
+    this.turnTitleRefined = false;
+    this.emitPaneTitle();
+    this.draw();
+  }
+
+  /** Write an OSC window/pane title (`ESC]2;joc: <title>BEL`). tmux maps this to the
+   *  pane title, so multiple --tmux sessions are distinguishable at a glance. TTY only. */
+  private emitPaneTitle(): void {
+    if (!this.tty || !this.turnTitle) return;
+    try { this.write(`\x1b]2;joc: ${this.turnTitle}\x07`); } catch { /* terminal gone */ }
+  }
+
   /** Render the task plan as a status-colored checklist; empty when no plan. */
   private renderPlan(color: boolean): string[] {
     if (this.todos.length === 0) return [];
@@ -228,6 +253,13 @@ export class LaunchTui {
           this.pendingIndex = this.tools.start(toolName);
           const summary = summarizeForgeInvocation(toolName, invocation.arguments);
           this.pendingTitle = summary.title;
+          // Refine the turn title once to the first tool's verb+target (e.g. "read
+          // package.json"), gjc-style, then lock — sharper than the raw user message.
+          if (!this.turnTitleRefined) {
+            this.turnTitle = summary.title.length > 50 ? summary.title.slice(0, 49) + "…" : summary.title;
+            this.turnTitleRefined = true;
+            this.emitPaneTitle();
+          }
           this.rememberForge(summary);
           this.draw();
         } else {
@@ -499,7 +531,10 @@ export class LaunchTui {
     const peak = this.progress.current();
     const usageSuffix = this.turnUsage ? ` · ${formatUsage(this.turnUsage)}` : "";
     finalLines.push(`Evolved to: ${evolutionTrack(peak, { unicode: this.unicode, color: this.theme.color })} (took ${steps} steps in ${formatDuration(Date.now() - this.startedAt)}${usageSuffix})`);
-    finalLines.push(`joc> ${reply}`);
+    // Render any GFM markdown tables in the reply as box-drawn tables (B8). Plain
+    // replies are returned unchanged by the cheap no-`|` guard.
+    const renderedReply = renderMarkdownTables(reply, { unicode: this.unicode });
+    finalLines.push(`joc> ${renderedReply}`);
     if (this.tty) {
       // Main-buffer hygiene after leaving the alt screen: the cursor lands on rows
       // that still hold pre-turn content (old footer box, project-context lines).
@@ -599,6 +634,11 @@ export class LaunchTui {
       if (fit) {
         bottom.push("");
         bottom.push(`  ${renderHud(this.hudPhase, { unicode: this.unicode, color: this.theme.color })}`);
+        if (this.turnTitle) {
+          const arrow = this.unicode ? "▸" : ">";
+          const titleLine = `  ${arrow} ${this.turnTitle}`;
+          bottom.push(this.theme.color ? chalk.dim(titleLine) : titleLine);
+        }
         bottom.push("");
         const stats = this.tools.stats();
         for (const line of renderJocStatus({

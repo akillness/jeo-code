@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import { BOX_ASCII, BOX_UNICODE, padLineTo, type BoxGlyphs } from "./layout";
 import { stripAnsi, visibleWidth } from "./color";
+import { truncateToWidth } from "./width";
 import { categoryBadge, categoryForTool, type UiCategory } from "./category-index";
 
 export interface ForgeSummary {
@@ -46,6 +47,19 @@ export function redactSecrets(input: string): string {
     .replace(SECRET_JSON_RE, "$1<redacted>$2");
 }
 
+/**
+ * Sentinel for a labeled in-box divider (e.g. the gjc-style `Output` rule between a command
+ * echo and its output body). It is `#`-prefixed so app-side helpers that scan summary lines for
+ * the command (skipping `#` notes) never surface it; formatForgeBox rewrites it into a real
+ * bordered divider row at render time, where the unicode/ASCII glyph set is known.
+ */
+const FORGE_DIVIDER_PREFIX = "#\u0000fdiv:";
+
+/** Build a labeled-divider sentinel line for inclusion in a ForgeSummary's `lines`. */
+export function forgeDivider(label: string): string {
+  return FORGE_DIVIDER_PREFIX + label;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
@@ -83,14 +97,16 @@ function jsonPreview(args: Record<string, unknown>): string[] {
   }
 }
 
-export function summarizeForgeInvocation(tool: string, rawArgs: unknown): ForgeSummary {
+export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: { unicode?: boolean } = {}): ForgeSummary {
   const args = asRecord(rawArgs);
   const safeTool = tool || "(no tool)";
   const normalized = safeTool.toLowerCase();
   if (normalized === "bash") {
     const command = stringArg(args, "command", "cmd") ?? "";
     const timeout = stringArg(args, "timeoutMs", "timeout");
-    const lines = [...previewLines(command, 8, 800)];
+    // gjc-style command echo: prefix the (redacted, capped) command with `$ `.
+    const commandLines = previewLines(command, 8, 800);
+    const lines = [`$ ${commandLines[0] ?? ""}`, ...commandLines.slice(1)];
     const cwdKey = Object.keys(args).find(k => /^(cwd|workingdir|workingdirectory|subdir|dir)$/i.test(k));
     if (cwdKey !== undefined) {
       const cwdVal = args[cwdKey];
@@ -98,7 +114,13 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown): ForgeS
         lines.push(`# cwd-relative: ${cwdVal}`);
       }
     }
-    if (timeout) lines.unshift(`# timeoutMs: ${timeout}`);
+    if (timeout) {
+      const ms = Number(timeout);
+      const secs = Number.isFinite(ms) ? (ms % 1000 === 0 ? String(ms / 1000) : (ms / 1000).toFixed(1)) : timeout;
+      const open = opts.unicode === false ? "[" : "⟦";
+      const close = opts.unicode === false ? "]" : "⟧";
+      lines.push(`${open}Timeout: ${secs}s${close}`);
+    }
     return { title: "bash command", language: "bash", lines };
   }
 
@@ -167,6 +189,8 @@ export function summarizeForgeResult(tool: string, success: boolean, output: str
   const normalized = safeTool.toLowerCase();
   const lines = previewLines(output || "<no output>", success ? 5 : 10, success ? 600 : 1200);
   if (normalized === "bash") {
+    // gjc-style result card: exit note, an `Output` divider, then the output body.
+    lines.unshift(forgeDivider("Output"));
     lines.unshift(success ? "# exit ok" : "# exit fail");
   }
   return {
@@ -238,16 +262,34 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
   const badge = categoryBadge(category, { index: opts.index, color: opts.color });
   const label = summary.language ? `${badge} ${summary.title} · ${summary.language}` : `${badge} ${summary.title}`;
   const title = `${opts.color === false ? label : chalk.bold(label)}`;
-  const rendered: string[] = [top, paint(glyphs.v) + padLineTo(title, inner, "left") + paint(glyphs.v)];
+  // Truncate the title to the inner width BEFORE padding — padLineTo only pads, so a
+  // long title/badge would otherwise overflow the right border (box wider than `width`).
+  const rendered: string[] = [top, paint(glyphs.v) + padLineTo(truncateToWidth(title, inner), inner, "left") + paint(glyphs.v)];
   const separator = paint(glyphs.v) + paint(glyphs.h.repeat(inner)) + paint(glyphs.v);
   rendered.push(separator);
 
+  // A labeled divider counts as a single content row; everything else word-wraps to the
+  // inner width before clipping so the box framing stays column-correct.
   const content: string[] = [];
   for (const line of summary.lines) {
+    if (line.startsWith(FORGE_DIVIDER_PREFIX)) { content.push(line); continue; }
     for (const wrapped of wrapPlainLine(line, inner)) content.push(wrapped);
   }
+  const renderDivider = (rawLabel: string): string => {
+    const text = rawLabel ? ` ${rawLabel} ` : "";
+    const lead = glyphs.h.repeat(Math.min(2, inner));
+    const rest = Math.max(0, inner - visibleWidth(lead) - visibleWidth(text));
+    const bar = `${lead}${text}${glyphs.h.repeat(rest)}`;
+    return paint(glyphs.v) + paint(padLineTo(bar, inner, "left")) + paint(glyphs.v);
+  };
   const clipped = content.slice(0, maxLines);
-  for (const line of clipped) rendered.push(paint(glyphs.v) + padLineTo(line, inner, "left") + paint(glyphs.v));
+  for (const line of clipped) {
+    if (line.startsWith(FORGE_DIVIDER_PREFIX)) {
+      rendered.push(renderDivider(line.slice(FORGE_DIVIDER_PREFIX.length)));
+    } else {
+      rendered.push(paint(glyphs.v) + padLineTo(line, inner, "left") + paint(glyphs.v));
+    }
+  }
   if (content.length > clipped.length) {
     rendered.push(paint(glyphs.v) + padLineTo(`… ${content.length - clipped.length} hidden line(s)`, inner, "left") + paint(glyphs.v));
   }

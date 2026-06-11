@@ -15,6 +15,7 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { visibleWidth as widthOf } from "./width";
 
 /** Color capability tiers. */
 export enum ColorLevel {
@@ -41,9 +42,13 @@ export function stripAnsi(s: string): string {
   return s.replace(ANSI_RE, "");
 }
 
-/** Visible (printable) width of a string, ignoring SGR escapes. */
+/** Visible DISPLAY width of a string, ignoring SGR escapes. Delegates to the
+ *  width-aware implementation (consensus-seed P2.B9) so CJK/emoji glyphs count 2
+ *  columns — every box/pad that calls this (input box, forge cards, welcome,
+ *  tables) now aligns correctly for wide-character content instead of overflowing
+ *  the right border (the "입력창 깨짐" corruption). */
 export function visibleWidth(s: string): number {
-  return stripAnsi(s).length;
+  return widthOf(s);
 }
 
 /**

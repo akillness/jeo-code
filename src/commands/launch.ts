@@ -50,6 +50,7 @@ import { providerPicker, renderProviderPicker } from "../tui/components/provider
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff } from "../tui/components/code-view";
 import { categoryBadge } from "../tui/components/category-index";
 import { renderInputBox } from "../tui/components/input-box";
+import { renderMarkdownTables } from "../tui/components/markdown-table";
 import { summarizeForgeInvocation } from "../tui/components/forge";
 import { formatDuration, formatUsage } from "../tui/components/duration";
 
@@ -958,6 +959,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const turnDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
     const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: flags.maxSteps, cwd, branch, dirtyCount: turnDirtyCount }) : null;
     tui?.setContextUsage(historyTokens(history), contextTokens);
+    tui?.setTurnTitle(userInput); // gjc-parity turn title → HUD + tmux pane title (no LLM call)
     if (tui) tui.start();
     let result;
     const harness = createInFlightAbortHarness({
@@ -1260,7 +1262,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (!useTui) console.log(`▶ Running skill: ${skill.name}${intent ? ` — ${intent}` : ""}`);
       const task = buildSkillTask(skill, intent, invokedAs);
       const { reply, rendered, usage } = await runTurn(task, useTui);
-      if (!rendered) console.log(`joc> ${reply}${usage}`);
+      if (!rendered) console.log(`joc> ${renderMarkdownTables(reply)}${usage}`);
       else if (usage) console.log(usage.trim());
     }
   };
@@ -1942,7 +1944,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         try {
           const { done, steps, reply, rendered, usage } = await runTurn(lastUserInput, useTui);
           if (!rendered) {
-            console.log(`joc> ${reply}${usage}`);
+            console.log(`joc> ${renderMarkdownTables(reply)}${usage}`);
             if (!done) console.log(`(agent did not converge in ${steps} steps)`);
           } else if (usage) {
             console.log(usage.trim());
@@ -2783,7 +2785,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       try {
         const { done, steps, reply, rendered, usage } = await runTurn(input, useTui);
         if (!rendered) {
-          console.log(`joc> ${reply}${usage}`);
+          console.log(`joc> ${renderMarkdownTables(reply)}${usage}`);
           if (!done) console.log(`(agent did not converge in ${steps} steps)`);
         } else if (usage) {
           console.log(usage.trim());

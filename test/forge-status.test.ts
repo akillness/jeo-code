@@ -16,7 +16,7 @@ test("summarizeForgeInvocation renders bash, read, and write as code-box summari
   const bash = summarizeForgeInvocation("bash", { command: "echo hello", timeoutMs: 5000 });
   expect(bash.title).toBe("bash command");
   expect(bash.language).toBe("bash");
-  expect(bash.lines).toContain("echo hello");
+  expect(bash.lines).toContain("$ echo hello");
 
   const read = summarizeForgeInvocation("read", { filePath: "src/app.ts", lineRange: "1-20" });
   expect(read.title).toBe("read src/app.ts");
@@ -203,11 +203,11 @@ test("summarizeForgeInvocation and summarizeForgeResult polish and status step s
   // 4. bash exit ok / fail and redaction regression
   const bashResultOk = summarizeForgeResult("bash", true, "success api-key=abc12345");
   expect(bashResultOk.lines[0]).toBe("# exit ok");
-  expect(bashResultOk.lines[1]).toContain("<redacted>");
+  expect(bashResultOk.lines[2]).toContain("<redacted>");
 
   const bashResultFail = summarizeForgeResult("bash", false, "error token: mysecret");
   expect(bashResultFail.lines[0]).toBe("# exit fail");
-  expect(bashResultFail.lines[1]).toContain("<redacted>");
+  expect(bashResultFail.lines[2]).toContain("<redacted>");
 
   // 5. renderJocStatus with stepElapsedMs and avgStepMs
   const statusLines = renderJocStatus({
@@ -221,4 +221,52 @@ test("summarizeForgeInvocation and summarizeForgeResult polish and status step s
   expect(statusLines[0]).toContain("step 5/10");
   expect(statusLines[0]).toContain("step 12.3s");
   expect(statusLines[0]).toContain("avg 8.1s");
+});
+test("bash invocation card echoes `$ <command>` and a unicode ⟦Timeout⟧ annotation", () => {
+  const inv = summarizeForgeInvocation("bash", { command: "echo hi", timeoutMs: 5000 });
+  expect(inv.lines[0]).toBe("$ echo hi");
+  expect(inv.lines.some(l => l === "⟦Timeout: 5s⟧")).toBe(true);
+
+  // No timeout → no annotation; non-integer seconds keep one decimal.
+  const noTimeout = summarizeForgeInvocation("bash", { command: "ls" });
+  expect(noTimeout.lines.some(l => l.includes("Timeout"))).toBe(false);
+  const odd = summarizeForgeInvocation("bash", { command: "ls", timeoutMs: 1500 });
+  expect(odd.lines.some(l => l === "⟦Timeout: 1.5s⟧")).toBe(true);
+});
+
+test("bash invocation card falls back to ASCII [Timeout: …] when unicode is off", () => {
+  const inv = summarizeForgeInvocation("bash", { command: "echo hi", timeoutMs: 300000 }, { unicode: false });
+  expect(inv.lines[0]).toBe("$ echo hi");
+  expect(inv.lines.some(l => l === "[Timeout: 300s]")).toBe(true);
+  expect(inv.lines.some(l => l.includes("⟦"))).toBe(false);
+});
+
+test("bash result card draws an `Output` divider between exit note and body, framing intact", () => {
+  const summary = summarizeForgeResult("bash", true, "build complete");
+  const box = formatForgeBox(summary, { width: 40, unicode: true, paint: s => s, color: false }).map(stripAnsi);
+  // matched unicode borders
+  expect(box[0]!.startsWith("╭")).toBe(true);
+  expect(box[0]!.endsWith("╮")).toBe(true);
+  expect(box[box.length - 1]!.startsWith("╰")).toBe(true);
+  expect(box[box.length - 1]!.endsWith("╯")).toBe(true);
+  // title/badge row present
+  expect(box[1]).toContain("bash result ok");
+  // a labeled divider rule appears, carrying the Output label, and no raw sentinel leaks
+  const divider = box.find(l => l.includes(" Output ") && l.includes("─"));
+  expect(divider).toBeDefined();
+  expect(box.some(l => l.includes("fdiv:"))).toBe(false);
+  expect(box.some(l => l.includes("build complete"))).toBe(true);
+  // every row is exactly the box width (column-correct framing)
+  expect(box.every(l => l.length === 40)).toBe(true);
+});
+
+test("bash result divider uses ASCII rules under unicode:false and stays width-bounded", () => {
+  const summary = summarizeForgeResult("bash", false, "boom\nmore");
+  const box = formatForgeBox(summary, { width: 32, unicode: false, paint: s => s, color: false }).map(stripAnsi);
+  expect(box[0]).toBe("+" + "-".repeat(30) + "+");
+  expect(box[box.length - 1]).toBe("+" + "-".repeat(30) + "+");
+  const divider = box.find(l => l.includes(" Output ") && l.includes("-"));
+  expect(divider).toBeDefined();
+  expect(divider!.startsWith("|") && divider!.endsWith("|")).toBe(true);
+  expect(box.every(l => l.length <= 32)).toBe(true);
 });

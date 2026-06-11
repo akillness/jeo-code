@@ -59,25 +59,137 @@ async function collectTextFiles(rootDir: string, displayPrefix: string, maxDepth
   }
 }
 
-export async function discoverAgentGuidanceFiles(cwd = process.cwd()): Promise<Array<{ filePath: string; displayPath: string }>> {
-  const out: Array<{ filePath: string; displayPath: string }> = [];
-  const home = path.join(process.env.HOME || "", "");
-  for (const rel of [".agents/oma-config.yaml", ".agents/oma-config.yml", ".agents/hooks/core/triggers.json"]) {
-    const filePath = path.join(cwd, rel);
+interface WorkspaceScan {
+  // Nested AGENTS.md found by the downward walk (depth 0..3, skipping IGNORED_DIRS).
+  nested: Array<{ filePath: string; displayPath: string; depth: number }>;
+  // Local (cwd-rooted) guidance files in canonical order: explicit oma-config/triggers
+  // first, then `.agents/rules`, `.joc/rules`, `.agents/hooks` buckets. Pre-dedupe/cap.
+  localGuidance: Array<{ filePath: string; displayPath: string }>;
+}
+
+// Guidance roots relative to cwd, mirroring AGENT_GUIDANCE_DIRS order. Each is the
+// directory collectTextFiles used to traverse (maxDepth 2).
+const GUIDANCE_ROOTS = AGENT_GUIDANCE_DIRS.map((dir) => ({
+  segs: dir.split("/"),
+  prefix: dir,
+}));
+
+const EXPLICIT_GUIDANCE_FILES = [".agents/oma-config.yaml", ".agents/oma-config.yml", ".agents/hooks/core/triggers.json"];
+
+// Module-level cache of the downward scan, keyed by resolved cwd. The scan is
+// independent of $HOME (it only walks the cwd subtree), so caching by cwd is safe.
+const workspaceScanCache = new Map<string, WorkspaceScan>();
+
+function segsEqual(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function isStrictPrefix(prefix: readonly string[], full: readonly string[]): boolean {
+  if (prefix.length >= full.length) return false;
+  for (let i = 0; i < prefix.length; i++) if (prefix[i] !== full[i]) return false;
+  return true;
+}
+
+interface GuidanceCtx {
+  bucket: number;
+  prefix: string;
+  remaining: number; // mirrors collectTextFiles maxDepth: root=2, then decremented
+}
+
+// Single downward traversal from resolvedCwd that, in ONE readdir per directory,
+// collects BOTH nested AGENTS.md files and the local `.agents`/`.joc` guidance files.
+// Replaces the previous separate walkDown + per-root collectTextFiles recursions
+// (which re-read the overlapping `.agents/rules` and `.agents/hooks` subtrees).
+async function scanWorkspaceDownwards(resolvedCwd: string): Promise<WorkspaceScan> {
+  const nested: WorkspaceScan["nested"] = [];
+  const buckets: Array<Array<{ filePath: string; displayPath: string }>> = GUIDANCE_ROOTS.map(() => []);
+
+  async function walk(dir: string, depth: number, relSegs: string[], nestedActive: boolean, guidance: GuidanceCtx | null): Promise<void> {
+    let entries: import("node:fs").Dirent[] = [];
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      const name = entry.name;
+      const childPath = path.join(dir, name);
+      if (entry.isDirectory()) {
+        const childSegs = [...relSegs, name];
+        let childGuidance: GuidanceCtx | null = null;
+        const rootIdx = GUIDANCE_ROOTS.findIndex((r) => segsEqual(childSegs, r.segs));
+        if (rootIdx >= 0) {
+          childGuidance = { bucket: rootIdx, prefix: GUIDANCE_ROOTS[rootIdx].prefix, remaining: 2 };
+        } else if (guidance && guidance.remaining >= 1) {
+          childGuidance = { bucket: guidance.bucket, prefix: `${guidance.prefix}/${name}`, remaining: guidance.remaining - 1 };
+        }
+        const childNestedActive = nestedActive && !IGNORED_DIRS.includes(name);
+        const childDepth = depth + 1;
+        const nestedWantsDescend = childNestedActive && childDepth <= 3;
+        const guidanceWantsDescend = childGuidance !== null;
+        const ancestorWantsDescend = GUIDANCE_ROOTS.some((r) => isStrictPrefix(childSegs, r.segs));
+        if (nestedWantsDescend || guidanceWantsDescend || ancestorWantsDescend) {
+          await walk(childPath, childDepth, childSegs, childNestedActive, childGuidance);
+        }
+      } else if (entry.isFile()) {
+        if (nestedActive && depth <= 3 && name === "AGENTS.md") {
+          const displayPath = path.relative(resolvedCwd, childPath).replace(/\\/g, "/");
+          nested.push({ filePath: childPath, displayPath, depth });
+        }
+        if (guidance && guidance.remaining >= 0 && AGENT_GUIDANCE_EXTENSIONS.has(path.extname(name).toLowerCase())) {
+          buckets[guidance.bucket].push({ filePath: childPath, displayPath: `${guidance.prefix}/${name}`.replace(/\\/g, "/") });
+        }
+      }
+    }
+  }
+
+  await walk(resolvedCwd, 0, [], true, null);
+
+  // Explicit cwd-rooted guidance files (kept as cheap stat checks, fixed order, first).
+  const explicit: Array<{ filePath: string; displayPath: string }> = [];
+  for (const rel of EXPLICIT_GUIDANCE_FILES) {
+    const filePath = path.join(resolvedCwd, rel);
     try {
       const st = await fs.stat(filePath);
-      if (st.isFile() && st.size > 0) out.push({ filePath, displayPath: rel.replace(/\\/g, "/") });
+      if (st.isFile() && st.size > 0) explicit.push({ filePath, displayPath: rel.replace(/\\/g, "/") });
     } catch { /* optional */ }
   }
-  const roots = [
-    { rootDir: path.join(cwd, ".agents", "rules"), displayPrefix: ".agents/rules" },
-    { rootDir: path.join(cwd, ".joc", "rules"), displayPrefix: ".joc/rules" },
-    { rootDir: path.join(cwd, ".agents", "hooks"), displayPrefix: ".agents/hooks" },
+
+  return { nested, localGuidance: [...explicit, ...buckets.flat()] };
+}
+
+async function getWorkspaceScan(cwd: string): Promise<WorkspaceScan> {
+  const resolvedCwd = path.resolve(cwd);
+  const cached = workspaceScanCache.get(resolvedCwd);
+  if (cached) return cached;
+  const scan = await scanWorkspaceDownwards(resolvedCwd);
+  workspaceScanCache.set(resolvedCwd, scan);
+  return scan;
+}
+
+/**
+ * Invalidate the cached single-pass workspace scan. Pass a `cwd` to clear just that
+ * entry (resolved), or omit to clear the entire cache. Call this after the workspace's
+ * AGENTS.md / `.agents` / `.joc` guidance files change on disk.
+ */
+export function invalidateWorkspaceScan(cwd?: string): void {
+  if (cwd === undefined) {
+    workspaceScanCache.clear();
+    return;
+  }
+  workspaceScanCache.delete(path.resolve(cwd));
+}
+
+export async function discoverAgentGuidanceFiles(cwd = process.cwd()): Promise<Array<{ filePath: string; displayPath: string }>> {
+  const scan = await getWorkspaceScan(cwd);
+  const out: Array<{ filePath: string; displayPath: string }> = [...scan.localGuidance];
+  const home = path.join(process.env.HOME || "", "");
+  const homeRoots = [
     { rootDir: path.join(home, ".agents", "rules"), displayPrefix: "~/.agents/rules" },
     { rootDir: path.join(home, ".joc", "rules"), displayPrefix: "~/.joc/rules" },
     { rootDir: path.join(home, ".agents", "hooks"), displayPrefix: "~/.agents/hooks" },
   ];
-  for (const root of roots) {
+  for (const root of homeRoots) {
     await collectTextFiles(root.rootDir, root.displayPrefix, 2, out);
   }
   const seen = new Set<string>();
@@ -154,40 +266,9 @@ export async function loadProjectContext(cwd = process.cwd()): Promise<ProjectCo
     distance++;
   }
 
-  // 2. CWD 하위 중첩 AGENTS.md 수집 (depth <= 3)
-  const nestedFiles: Array<{ filePath: string; displayPath: string; depth: number }> = [];
-  async function walkDown(dir: string, currentDepth: number): Promise<void> {
-    if (currentDepth > 3) return;
-
-    let entries: import("node:fs").Dirent[] = [];
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        if (IGNORED_DIRS.includes(entry.name)) {
-          continue;
-        }
-        const subDir = path.join(dir, entry.name);
-        await walkDown(subDir, currentDepth + 1);
-      } else if (entry.isFile()) {
-        if (entry.name === "AGENTS.md") {
-          const filePath = path.join(dir, entry.name);
-          const displayPath = path.relative(resolvedCwd, filePath).replace(/\\/g, "/");
-          nestedFiles.push({ filePath, displayPath, depth: currentDepth });
-        }
-      }
-    }
-  }
-
-  await walkDown(resolvedCwd, 0);
-
-  for (const nf of nestedFiles) {
+  // 2. CWD 하위 중첩 AGENTS.md 수집 (depth <= 3) — 캐시된 단일 스캔에서 읽음
+  const scan = await getWorkspaceScan(resolvedCwd);
+  for (const nf of scan.nested) {
     collectedItems.push({
       filePath: nf.filePath,
       displayPath: nf.displayPath,

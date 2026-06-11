@@ -5,7 +5,9 @@ import * as os from "node:os";
 import {
   loadProjectContext,
   withProjectContext,
-  CONTEXT_CANDIDATES
+  CONTEXT_CANDIDATES,
+  discoverAgentGuidanceFiles,
+  invalidateWorkspaceScan,
 } from "../src/agent/context-files";
 
 const savedHome = process.env.HOME;
@@ -367,6 +369,87 @@ test("loadProjectContext prioritizes closer and deeper files when budget is exce
     expect(d1File.content.length).toBe(3000 + "\n…(truncated)".length);
     expect(d1File.content.endsWith("\n…(truncated)")).toBe(true);
   } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+test("loadProjectContext discovers root + nested AGENTS.md + .agents/rules guidance in stable order (single-pass parity)", async () => {
+  const tmpDir = await createTempDir();
+  try {
+    await fs.mkdir(path.join(tmpDir, "src"), { recursive: true });
+    await fs.mkdir(path.join(tmpDir, ".agents", "rules"), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, "AGENTS.md"), "root rules", "utf-8");
+    await fs.writeFile(path.join(tmpDir, "src", "AGENTS.md"), "nested src rules", "utf-8");
+    await fs.writeFile(path.join(tmpDir, ".agents", "rules", "frontend.md"), "frontend rule", "utf-8");
+
+    invalidateWorkspaceScan(tmpDir);
+    const context = await loadProjectContext(tmpDir);
+
+    expect(context.map(c => c.path)).toEqual([
+      "AGENTS.md",
+      "src/AGENTS.md",
+      ".agents/rules/frontend.md",
+    ]);
+    expect(context[0].content).toBe("root rules");
+    expect(context[1].content).toBe("nested src rules");
+    expect(context[2].content).toBe("frontend rule");
+
+    // discoverAgentGuidanceFiles parity: only local guidance (HOME unset), canonical order.
+    const guidance = await discoverAgentGuidanceFiles(tmpDir);
+    expect(guidance.map(g => g.displayPath)).toEqual([".agents/rules/frontend.md"]);
+  } finally {
+    invalidateWorkspaceScan(tmpDir);
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadProjectContext caches the downward scan; invalidateWorkspaceScan forces a fresh walk", async () => {
+  const tmpDir = await createTempDir();
+  try {
+    await fs.mkdir(path.join(tmpDir, "alpha"), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, "alpha", "AGENTS.md"), "alpha rules", "utf-8");
+
+    invalidateWorkspaceScan(tmpDir);
+    const first = await loadProjectContext(tmpDir);
+    expect(first.map(c => c.path)).toEqual(["alpha/AGENTS.md"]);
+
+    // Add a new nested AGENTS.md AFTER the first (cache-populating) call.
+    await fs.mkdir(path.join(tmpDir, "beta"), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, "beta", "AGENTS.md"), "beta rules", "utf-8");
+
+    // Cached scan must NOT re-walk: the new file is invisible.
+    const cached = await loadProjectContext(tmpDir);
+    expect(cached.map(c => c.path)).toEqual(["alpha/AGENTS.md"]);
+
+    // Invalidating the entry forces a fresh walk that now sees the new file.
+    invalidateWorkspaceScan(tmpDir);
+    const fresh = await loadProjectContext(tmpDir);
+    expect(fresh.map(c => c.path).sort()).toEqual(["alpha/AGENTS.md", "beta/AGENTS.md"]);
+  } finally {
+    invalidateWorkspaceScan(tmpDir);
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("invalidateWorkspaceScan() with no argument clears all cached scans", async () => {
+  const tmpDir = await createTempDir();
+  try {
+    await fs.mkdir(path.join(tmpDir, ".agents", "rules"), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, ".agents", "rules", "a.md"), "a", "utf-8");
+
+    invalidateWorkspaceScan();
+    const first = await discoverAgentGuidanceFiles(tmpDir);
+    expect(first.map(g => g.displayPath)).toEqual([".agents/rules/a.md"]);
+
+    // New guidance file is invisible until the cache is cleared.
+    await fs.writeFile(path.join(tmpDir, ".agents", "rules", "b.md"), "b", "utf-8");
+    const cached = await discoverAgentGuidanceFiles(tmpDir);
+    expect(cached.map(g => g.displayPath)).toEqual([".agents/rules/a.md"]);
+
+    invalidateWorkspaceScan();
+    const fresh = await discoverAgentGuidanceFiles(tmpDir);
+    expect(fresh.map(g => g.displayPath)).toEqual([".agents/rules/a.md", ".agents/rules/b.md"]);
+  } finally {
+    invalidateWorkspaceScan();
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });

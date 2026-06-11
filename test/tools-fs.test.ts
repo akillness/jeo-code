@@ -46,20 +46,20 @@ test("readTool: multi-range selector emits both ranges with a gap marker", async
   await fs.writeFile(f, Array.from({ length: 20 }, (_, i) => `line${i + 1}`).join("\n"));
   const res = await readTool(f, "2-3,8-9");
   expect(res.success).toBe(true);
-  expect(res.output).toContain("2|line2");
-  expect(res.output).toContain("3|line3");
+  expect(res.output).toMatch(/2[a-z0-9]{2}\|line2/);
+  expect(res.output).toMatch(/3[a-z0-9]{2}\|line3/);
   expect(res.output).toContain("…"); // gap between the two ranges
-  expect(res.output).toContain("8|line8");
-  expect(res.output).not.toContain("5|line5");
+  expect(res.output).toMatch(/8[a-z0-9]{2}\|line8/);
+  expect(res.output).not.toContain("|line5");
 });
 
 test("readTool: a+n selector reads n lines from a", async () => {
   const f = path.join(dir, "count.txt");
   await fs.writeFile(f, Array.from({ length: 20 }, (_, i) => `L${i + 1}`).join("\n"));
   const res = await readTool(f, "5+3");
-  expect(res.output).toContain("5|L5");
-  expect(res.output).toContain("7|L7");
-  expect(res.output).not.toContain("8|L8");
+  expect(res.output).toMatch(/5[a-z0-9]{2}\|L5/);
+  expect(res.output).toMatch(/7[a-z0-9]{2}\|L7/);
+  expect(res.output).not.toContain("|L8");
 });
 
 test("lsTool: lists dirs first (slash-suffixed) then files", async () => {
@@ -112,7 +112,7 @@ test("readTool: raw mode returns verbatim content with no line prefixes", async 
   const f = path.join(dir, "raw.txt");
   await fs.writeFile(f, "alpha\nbeta\n");
   const annotated = await readTool(f);
-  expect(annotated.output).toContain("1|alpha");
+  expect(annotated.output).toMatch(/1[a-z0-9]{2}\|alpha/);
   const raw = await readTool(f, undefined, dir, true);
   expect(raw.output).toBe("alpha\nbeta\n");
   expect(raw.output).not.toContain("|");
@@ -412,13 +412,13 @@ test("readTool: open-ended range, single line, and out-of-order error", async ()
 
   const open = await readTool("src/big.ts", "595-", dir);
   expect(open.success).toBe(true);
-  expect(open.output).toContain("595|line 595");
-  expect(open.output).toContain("600|line 600");
-  expect(open.output).not.toContain("594|");
+  expect(open.output).toMatch(/595[a-z0-9]{2}\|line 595/);
+  expect(open.output).toMatch(/600[a-z0-9]{2}\|line 600/);
+  expect(open.output).not.toContain("|line 594");
 
   const single = await readTool("src/big.ts", "10", dir);
   expect(single.success).toBe(true);
-  expect(single.output).toBe("10|line 10");
+  expect(single.output).toMatch(/^10[a-z0-9]{2}\|line 10$/);
 
   const bad = await readTool("src/big.ts", "abc", dir);
   expect(bad.success).toBe(false);
@@ -430,7 +430,7 @@ test("readTool: appends a truncation notice past 500 lines", async () => {
   expect(res.success).toBe(true);
   expect(res.output).toContain("showing lines 1-500 of 600");
   expect(res.output).toContain('lineRange "501-"');
-  expect(res.output).not.toContain("501|line 501");
+  expect(res.output).not.toContain("|line 501");
 });
 
 test("bashTool: runs a command and captures stdout", async () => {

@@ -144,6 +144,89 @@ export function parseLineSelector(spec: string, total: number): { ranges: [numbe
   return { ranges: merged };
 }
 
+// ── hashline-lite (plan/gjc-inheritance.md B2, gjc hashline 경량 계승) ──
+// Every annotated read line carries a 2-char CONTENT anchor: `42ab|text`. The
+// hash depends only on the line's content (trailing whitespace/CR ignored), so
+// sibling edits that shift line numbers keep the anchor valid. The edit tool
+// accepts the anchors on `≔` ranges (`≔12ab..15cd`) and verifies them before
+// mutating — a mismatch means the model is editing content it has not seen.
+// The anchor ALWAYS leads with a letter ([a-z]) so a directive like `≔1ab` is
+// unambiguous: the `\d+` line number can never swallow the anchor. (A purely
+// numeric anchor such as `68` would make `≔1`+`68` parse as line 168 with no
+// anchor, silently skipping verification — exactly what hashline must prevent.)
+const ANCHOR_FIRST = 26; // a-z
+const ANCHOR_SECOND = 36; // 0-9a-z
+export function lineAnchor(line: string): string {
+  const normalized = line.replace(/\r$/, "").replace(/[ \t]+$/, "");
+  const n = Number(BigInt(Bun.hash(normalized)) % BigInt(ANCHOR_FIRST * ANCHOR_SECOND));
+  const first = String.fromCharCode(97 + Math.floor(n / ANCHOR_SECOND)); // a-z, never a digit
+  return first + (n % ANCHOR_SECOND).toString(36); // second char 0-9a-z
+}
+
+/** A read-output anchor prefix at line start: `42ab|` (hashed) or legacy `42|`. */
+const ANCHOR_PREFIX_RE = /^\d+(?:[a-z0-9]{2})?\|/;
+
+/** Strip read-output anchor prefixes from a block IF every non-empty line carries
+ *  one — the signature of content copy-pasted from read output into a SEARCH
+ *  block (the dual-protocol trap: anchors are display chrome, not file bytes). */
+function stripAnchorPrefixes(block: string): string | null {
+  const lines = block.split("\n");
+  if (!lines.some(l => l.trim() !== "")) return null;
+  if (!lines.every(l => l.trim() === "" || ANCHOR_PREFIX_RE.test(l))) return null;
+  return lines.map(l => l.replace(ANCHOR_PREFIX_RE, "")).join("\n");
+}
+// ── File-freshness guard (plan/gjc-inheritance.md B7, gjc edit/file-read-cache 계승) ──
+// `read` records each file's stat fingerprint; `edit`/`write` verify it before
+// mutating. A file changed by someone else (concurrent agent, user, formatter)
+// between the read and the edit is REJECTED once — with the CURRENT content
+// re-presented so the model can retry immediately (recovery, not just a guard).
+const lastReadSnapshots = new Map<string, { mtimeMs: number; size: number }>();
+const MAX_SNAPSHOT_ENTRIES = 64;
+
+function recordReadSnapshot(absPath: string, st: { mtimeMs: number; size: number } | null): void {
+  if (!st) return;
+  if (lastReadSnapshots.size >= MAX_SNAPSHOT_ENTRIES && !lastReadSnapshots.has(absPath)) {
+    const oldest = lastReadSnapshots.keys().next().value;
+    if (oldest !== undefined) lastReadSnapshots.delete(oldest);
+  }
+  lastReadSnapshots.delete(absPath); // re-insert to refresh LRU order
+  lastReadSnapshots.set(absPath, { mtimeMs: st.mtimeMs, size: st.size });
+}
+
+/** Annotated excerpt of the file's CURRENT content for recovery errors (read-format `N|`). */
+function excerptForRecovery(content: string, centerLine?: number): string {
+  const lines = content.split("\n");
+  const SPAN = 60;
+  let start = 1;
+  let end = Math.min(lines.length, 2 * SPAN);
+  if (centerLine && centerLine >= 1 && centerLine <= lines.length) {
+    start = Math.max(1, centerLine - SPAN);
+    end = Math.min(lines.length, centerLine + SPAN);
+  }
+  const body = lines.slice(start - 1, end).map((l, i) => `${start + i}${lineAnchor(l)}|${l}`).join("\n");
+  const note = lines.length > end - start + 1 ? `\n…(showing lines ${start}-${end} of ${lines.length})` : "";
+  return body + note;
+}
+
+/** Returns a recovery error when `absPath` changed since the agent last read it; null when fresh.
+ *  Refreshes the snapshot to CURRENT so the immediate retry (model just saw fresh content) passes. */
+async function staleReadError(absPath: string, filePath: string, verb: string): Promise<ToolResult | null> {
+  const snap = lastReadSnapshots.get(absPath);
+  if (!snap) return null; // never read → no guard (back-compat; read-first is advisory)
+  const st = await fs.stat(absPath).catch(() => null);
+  if (!st || !st.isFile()) return null; // deleted/replaced-by-dir: let the op surface its own error
+  if (st.mtimeMs === snap.mtimeMs && st.size === snap.size) return null;
+  const content = await fs.readFile(absPath, "utf-8").catch(() => null);
+  recordReadSnapshot(absPath, st); // the model sees the fresh content below → retry passes
+  const excerpt = content !== null ? `\nCurrent content:\n${excerptForRecovery(content)}` : "";
+  return {
+    success: false,
+    output: "",
+    error:
+      `${verb} rejected: ${filePath} changed on disk since you last read it (another agent, the user, or a formatter touched it). ` +
+      `Re-target your ${verb.toLowerCase()} against the CURRENT content below, then retry.${excerpt}`,
+  };
+}
 export async function readTool(
   filePath: string,
   lineRange?: string,
@@ -164,6 +247,7 @@ export async function readTool(
       return lsTool(filePath, cwd);
     }
     const content = await fs.readFile(absPath, "utf-8");
+    if (st?.isFile()) recordReadSnapshot(absPath, st); // arm the edit/write freshness guard
 
     if (raw) {
       // Verbatim bytes, no "N|" line prefixes (gjc `:raw`), char-capped for context safety.
@@ -193,7 +277,7 @@ export async function readTool(
         if (i > 0) out.push("…"); // gap marker between non-contiguous ranges
         for (let ln = start; ln <= end; ln++) {
           if (emitted >= MAX_RANGE_LINES) { capped = true; break outer; }
-          out.push(`${ln}|${lines[ln - 1] ?? ""}`);
+          out.push(`${ln}${lineAnchor(lines[ln - 1] ?? "")}|${lines[ln - 1] ?? ""}`);
           emitted++;
         }
       }
@@ -202,7 +286,7 @@ export async function readTool(
     }
 
     const MAX_LINES = 500;
-    const annotated = lines.slice(0, MAX_LINES).map((l, i) => `${i + 1}|${l}`).join("\n");
+    const annotated = lines.slice(0, MAX_LINES).map((l, i) => `${i + 1}${lineAnchor(l)}|${l}`).join("\n");
     if (lines.length > MAX_LINES) {
       const notice = `\n…(showing lines 1-${MAX_LINES} of ${lines.length}; pass lineRange "${MAX_LINES + 1}-" to read the rest)`;
       return { success: true, output: annotated + notice };
@@ -224,8 +308,11 @@ export async function writeTool(
     }
     await assertMutationAllowed(filePath, cwd);
     const absPath = path.resolve(cwd, filePath);
+    const stale = await staleReadError(absPath, filePath, "Write");
+    if (stale) return stale;
     await fs.mkdir(path.dirname(absPath), { recursive: true });
     await fs.writeFile(absPath, content, "utf-8");
+    recordReadSnapshot(absPath, await fs.stat(absPath).catch(() => null)); // own change ≠ stale
     return { success: true, output: `Successfully wrote ${content.length} characters to ${filePath}` };
   } catch (err: any) {
     return { success: false, output: "", error: err.message };
@@ -274,45 +361,126 @@ export async function editTool(
     }
     await assertMutationAllowed(filePath, cwd);
     const absPath = path.resolve(cwd, filePath);
+    const stale = await staleReadError(absPath, filePath, "Edit");
+    if (stale) return stale;
     let content = await fs.readFile(absPath, "utf-8");
 
     // Line-anchored edit parser. Modes (payload follows the directive's newline):
     //   ≔A..B   replace lines A..B          ≔A    replace line A
     //   ≔A+     insert AFTER line A (A=0 prepends)
     //   ≔$      append to end of file
+    // Line numbers MAY carry the 2-char content anchors from read output
+    // (`≔12ab..15cd`, `≔7xy+`) — hashline-lite verifies them against the CURRENT
+    // content before mutating, so an edit aimed at moved/changed lines is
+    // rejected with the fresh content instead of silently corrupting the file.
     // Falls back to <<<<<<< SEARCH / ======= / >>>>>>> substring replacement.
     const lines = content.split("\n");
+
+    /** Verify a model-supplied anchor against the current line; null = ok. */
+    const anchorMismatch = (lineNo: number, anchor: string | undefined): ToolResult | null => {
+      if (!anchor) return null; // anchors are optional — plain ≔A..B stays valid
+      const actual = lineAnchor(lines[lineNo - 1] ?? "");
+      if (actual === anchor) return null;
+      return {
+        success: false,
+        output: "",
+        error:
+          `Edit rejected: anchor mismatch at line ${lineNo} — you sent ${lineNo}${anchor} but the current line hashes to ${lineNo}${actual}. ` +
+          `The content moved or changed since you read it. Re-target against the CURRENT content below and retry.\n` +
+          `Current content:\n${excerptForRecovery(content, lineNo)}`,
+      };
+    };
+    // hashline 3-way re-map (plan/gjc-inheritance.md cycle 9): content-only
+    // hashes mean a line that sibling edits SHIFTED still carries its anchor.
+    // When a supplied anchor no longer sits at its line number, look within a
+    // ±window for the UNIQUE line carrying that anchor and relocate the edit
+    // there. Ambiguous (>1 match) or absent → null, so the caller falls back to
+    // the existing reject+re-present path rather than guessing.
+    const ANCHOR_REMAP_WINDOW = 64;
+    const locateAnchor = (anchor: string, near: number): number | null => {
+      const lo = Math.max(1, near - ANCHOR_REMAP_WINDOW);
+      const hi = Math.min(lines.length, near + ANCHOR_REMAP_WINDOW);
+      let found = -1;
+      for (let i = lo; i <= hi; i++) {
+        if (lineAnchor(lines[i - 1] ?? "") === anchor) {
+          if (found !== -1) return null; // ambiguous — refuse to guess
+          found = i;
+        }
+      }
+      return found === -1 ? null : found;
+    };
 
     let updated = false;
     if (editBlock.startsWith("≔")) {
       const appendMatch = editBlock.match(/^≔\$\n?([\s\S]*)$/);
-      const insertMatch = editBlock.match(/^≔(\d+)\+\n?([\s\S]*)$/);
-      const replaceMatch = editBlock.match(/^≔(\d+)(?:\.\.(\d+))?\n([\s\S]*)$/);
+      const insertMatch = editBlock.match(/^≔(\d+)([a-z0-9]{2})?\+\n?([\s\S]*)$/);
+      const replaceMatch = editBlock.match(/^≔(\d+)([a-z0-9]{2})?(?:\.\.(\d+)([a-z0-9]{2})?)?\n([\s\S]*)$/);
       if (appendMatch) {
         const payload = appendMatch[1];
         content = content === "" || content.endsWith("\n") ? content + payload : content + "\n" + payload;
         updated = true;
       } else if (insertMatch) {
-        const at = parseInt(insertMatch[1]); // insert AFTER line `at`; 0 prepends
-        const payload = insertMatch[2];
+        let at = parseInt(insertMatch[1]); // insert AFTER line `at`; 0 prepends
+        const payload = insertMatch[3];
         if (at < 0 || at > lines.length) {
           return { success: false, output: "", error: `Invalid insert position ${at}: out of bounds (file has ${lines.length} lines)` };
+        }
+        const anchor = insertMatch[2];
+        if (at >= 1 && anchor && lineAnchor(lines[at - 1] ?? "") !== anchor) {
+          const moved = locateAnchor(anchor, at); // shifted line → re-map the insert point
+          if (moved !== null) at = moved;
+        }
+        if (at >= 1) {
+          const mismatch = anchorMismatch(at, anchor);
+          if (mismatch) return mismatch;
         }
         lines.splice(at, 0, payload);
         content = lines.join("\n");
         updated = true;
       } else if (replaceMatch) {
         const startLine = parseInt(replaceMatch[1]);
-        const endLine = replaceMatch[2] ? parseInt(replaceMatch[2]) : startLine;
-        const payload = replaceMatch[3];
-        if (startLine < 1 || endLine < startLine || endLine > lines.length) {
+        const endLine = replaceMatch[3] ? parseInt(replaceMatch[3]) : startLine;
+        const payload = replaceMatch[5];
+        const aStart = replaceMatch[2];
+        const aEnd = replaceMatch[4];
+        // 3-way re-map: when the anchors no longer match their line numbers,
+        // relocate the WHOLE range by one uniform delta. Both ends must agree
+        // (preserves range length + contiguity), else fall through to reject.
+        let s = startLine;
+        let e = endLine;
+        const sBad = !!aStart && lineAnchor(lines[s - 1] ?? "") !== aStart;
+        const eBad = !!aEnd && lineAnchor(lines[e - 1] ?? "") !== aEnd;
+        if (sBad || eBad) {
+          let delta: number | null = null;
+          if (sBad) {
+            const moved = locateAnchor(aStart!, s);
+            if (moved !== null) delta = moved - s;
+          }
+          if (delta === null && eBad) {
+            const moved = locateAnchor(aEnd!, e);
+            if (moved !== null) delta = moved - e;
+          }
+          if (delta !== null && delta !== 0) {
+            const ns = s + delta;
+            const ne = e + delta;
+            const okStart = !aStart || (ns >= 1 && ns <= lines.length && lineAnchor(lines[ns - 1] ?? "") === aStart);
+            const okEnd = !aEnd || (ne >= 1 && ne <= lines.length && lineAnchor(lines[ne - 1] ?? "") === aEnd);
+            if (okStart && okEnd && ns >= 1 && ne >= ns && ne <= lines.length) {
+              s = ns;
+              e = ne;
+            }
+          }
+        }
+        if (s < 1 || e < s || e > lines.length) {
           return {
             success: false,
             output: "",
             error: `Invalid edit range ${startLine}..${endLine}: out of bounds or reversed (file has ${lines.length} lines)`,
           };
         }
-        lines.splice(startLine - 1, endLine - startLine + 1, payload);
+        const mismatch = anchorMismatch(s, aStart) ?? anchorMismatch(e, aEnd);
+        if (mismatch) return mismatch;
+        lines.splice(s - 1, e - s + 1, payload);
         content = lines.join("\n");
         updated = true;
       }
@@ -324,9 +492,19 @@ export async function editTool(
       const hunks = parseEditHunks(editBlock);
       if (hunks) {
         let working = content;
-        for (const [i, h] of hunks.entries()) {
+        for (let [i, h] of hunks.entries()) {
           if (h.search === "") {
             return { success: false, output: "", error: `Failed to apply edit: hunk ${i + 1} has an empty SEARCH block.` };
+          }
+          // Anchor-strip fixup (B2 dual-protocol trap): a SEARCH block copied from
+          // read output carries `42ab|` display prefixes that are not file bytes.
+          // When the raw block misses but a fully-prefixed variant strips clean,
+          // apply the stripped hunk (replace side stripped by the same rule).
+          if (!working.includes(h.search)) {
+            const strippedSearch = stripAnchorPrefixes(h.search);
+            if (strippedSearch !== null && working.includes(strippedSearch)) {
+              h = { search: strippedSearch, replace: stripAnchorPrefixes(h.replace) ?? h.replace };
+            }
           }
           if (working.includes(h.search)) {
             // Function replacer: bypasses String.replace's `$`-pattern substitution
@@ -340,10 +518,19 @@ export async function editTool(
               ? " A whitespace-trimmed version DOES match — fix leading/trailing spaces or indentation."
               : "";
             const anchorHit = !trimmedHit && firstLine.trim() && working.includes(firstLine)
-              ? " The first search line IS present, so the mismatch is below it — re-read the exact bytes with read, then retry."
+              ? " The first search line IS present, so the mismatch is below it."
               : "";
             const which = hunks.length > 1 ? ` (hunk ${i + 1}/${hunks.length})` : "";
-            return { success: false, output: "", error: `Failed to apply edit: Search block not found in file${which}.${trimmedHit}${anchorHit}` };
+            // gjc-style recovery (plan/gjc-inheritance.md B3.5): re-present the CURRENT
+            // content around the best anchor so the failed edit costs ONE retry, not a
+            // separate read round-trip — failed edits are the #1 step-budget waste.
+            const anchorIdx = firstLine.trim() ? working.split("\n").findIndex(l => l.includes(firstLine.trim())) : -1;
+            const excerpt = `\nCurrent content near the target:\n${excerptForRecovery(working, anchorIdx >= 0 ? anchorIdx + 1 : undefined)}`;
+            return {
+              success: false,
+              output: "",
+              error: `Failed to apply edit: Search block not found in file${which}.${trimmedHit}${anchorHit} Re-target against the content below and retry.${excerpt}`,
+            };
           }
         }
         content = working;
@@ -369,6 +556,7 @@ export async function editTool(
     }
 
     await fs.writeFile(absPath, content, "utf-8");
+    recordReadSnapshot(absPath, await fs.stat(absPath).catch(() => null)); // own change ≠ stale
     return { success: true, output: `Successfully updated ${filePath}` };
   } catch (err: any) {
     return { success: false, output: "", error: err.message };

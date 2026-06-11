@@ -19,6 +19,7 @@ import { runPreToolHooks, runPostTurnHooks } from "./hooks";
 import { minimizeToolOutput } from "./output-minimizer";
 import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, type StepBudgetConfig } from "./step-budget";
 import { historyTokens, trimToolResultsInPlace } from "./compaction";
+import { jeoEnv } from "../util/env";
 
 
 async function invokeCallLlm(history: Message[], options: {
@@ -55,9 +56,9 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
 /** Tool-protocol description injected into the system prompt. */
 export const TOOL_PROTOCOL = [
   "You have these tools (call exactly ONE per step, or batch multiple independent calls):",
-  "1. read   {filePath, lineRange?, raw?} — read a file (lineRange \"a-b\",\"a-\",\"a\",\"a+n\",\"a-b,c-d\"; raw: verbatim, no line numbers)",
+  "1. read   {filePath, lineRange?, raw?} — read a file; lines are prefixed `LINEhh|` (hh = 2-char content anchor; the | is a separator, not file bytes)",
   "2. write  {filePath, content}         — create/overwrite a file",
-  "3. edit   {filePath, editBlock}       — ≔A..B replace lines; ≔A+ insert after line A; ≔$ append EOF (payload on next line)",
+  "3. edit   {filePath, editBlock}       — ≔A..B replace lines (append read anchors for safety: ≔12ab..15cd — rejected with fresh content if the lines changed); ≔A+ insert after line A; ≔$ append EOF (payload on next line). NEVER copy the `LINEhh|` prefixes into SEARCH blocks or payloads",
   "4. bash   {command, timeoutMs?, cwd?, env?} — run a shell command (cwd: subdir; env: extra vars)",
   "5. find   {globPattern}               — find files by name",
   "6. search {pattern, globPattern?, ignoreCase?, context?, maxMatches?} — grep (context: N lines around each match)",
@@ -173,12 +174,21 @@ export interface AgentLoopResult {
   usage?: { inputTokens: number; outputTokens: number };
 }
 
+/** Env-tunable output budget (plan/gjc-inheritance.md B10, gjc settings-driven
+ *  output handling 계승): JOC_TOOL_OUTPUT_MAX caps the model-visible tool result;
+ *  the spill threshold tracks it so anything truncated stays artifact-recoverable. */
+function envOutputMax(): number {
+  const raw = Number(jeoEnv("TOOL_OUTPUT_MAX") ?? "");
+  return Number.isFinite(raw) && raw >= 500 && raw <= 200_000 ? Math.trunc(raw) : 4_000;
+}
+export const TOOL_OUTPUT_MAX = envOutputMax();
+
 /**
  * Cap a tool result fed back to the model, keeping both ends: the head holds the
  * start (e.g. a file's top / a command's invocation) and the tail holds what's
  * usually decisive (test summaries, the final error). A pure head-cut loses that.
  */
-export function truncateToolOutput(s: string, max = 4000): string {
+export function truncateToolOutput(s: string, max = TOOL_OUTPUT_MAX): string {
   if (s.length <= max) return s;
   const head = Math.floor(max * 0.6);
   const tail = max - head;
@@ -186,9 +196,9 @@ export function truncateToolOutput(s: string, max = 4000): string {
 }
 
 /** Tool output larger than this is spilled to a recoverable artifact file. Aligned
- *  with `truncateToolOutput`'s 4000-char cap so that whenever the model-visible
- *  result drops content, the full output is recoverable via the artifact. */
-export const TOOL_SPILL_THRESHOLD = 4_000;
+ *  with `truncateToolOutput`'s cap so that whenever the model-visible result drops
+ *  content, the full output is recoverable via the artifact. */
+export const TOOL_SPILL_THRESHOLD = TOOL_OUTPUT_MAX;
 
 /**
  * Write an oversized tool result verbatim under `.joc/artifacts/tool-results/` and

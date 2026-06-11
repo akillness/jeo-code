@@ -51,4 +51,21 @@
 - **native tool-use 비도입 근거 보강**: JSON-in-text의 parse-bounce 오버헤드(~수 스텝/턴)는 인정. 전환 비용 = 5개 프로바이더 어댑터 + 엔진 디스패치 전면 재작성 + 프로바이더 불문 균일 프롬프트 상실. 현 가드(MAX_PARSE_BOUNCES/salvage)로 완화된 상태에서 전환 편익이 비용을 하회 — 재평가 트리거: 신규 프로바이더의 JSON 모드 미지원.
 
 ## 사이클 렛저 (계속)
-- cycle 2: B3 — WORKING_DISCIPLINE 엔진 landed + launch/subagent 배선. 검증: typecheck 0, 43 tests green.
+- cycle 2 (2026-06-12): B3 — WORKING_DISCIPLINE 3곳 배선(engine/launch/subagent). typecheck 0, suites green.
+- cycle 3 (2026-06-12): B7+B3.5 — file-freshness guard(거부+재제시+스냅샷 갱신) + SEARCH mismatch 현행 발췌 동봉. 신규 테스트 5종.
+- cycle 4 (2026-06-12): B4 — done-verification guard(1회 푸시백+escape hatch). 신규 테스트 4종. full 1128 pass / 0 fail.
+- cycle 5 (2026-06-12): B2 hashline-lite — read `LINEhh|` 앵커 + ≔ 앵커 검증(거부+재제시) + SEARCH 앵커 스트립 픽스업. 신규 테스트 6종. full 1134 pass / 0 fail.
+- cycle 6 (2026-06-12): B6 경험 증류 — src/agent/memory.ts(.joc/memory/MEMORY.md 증류+주입, JOC_NO_MEMORY 옵트아웃). 신규 테스트 3종.
+- cycle 7 (2026-06-12): B8 — extractTouchedFiles로 컴팩션 요약에 변이 파일 목록 핀. 신규 테스트 2종. full 1139 pass / 0 fail.
+- cycle 8 (2026-06-12): B9 spawn-gate lite(fan-out>4 정당화 강제) + B10 출력 캡 설정화(JOC_TOOL_OUTPUT_MAX). full 1141 pass / 0 fail.
+- **라운드 1 종료** — 8사이클, 신규 테스트 25종, B1~B10 소진(B5는 critic 판정으로 라운드 2 재설계). 라운드 2 진입 시 critic 합의 라운드 2 선행: 후보 = task-spawn bashPrefixes(B5 재설계), 도구 동시성 확대(shared/exclusive), 컴팩션 핸드오프 전략, _i intent 텔레메트리, LSP-lite(편집 후 진단), 3-way merge 복구(hashline 후속).
+
+## 합의 라운드 2 (critic, 2026-06-12 — agent ref 3-Round2Critic)
+
+**확정 배치 (cycle 9~12)**:
+- **cycle 9 (f) hashline 3-way 재매핑**: anchor mismatch 시 즉시 거부 대신 ±윈도 내 동일 anchor 라인 탐색(content-only 해시라 이동된 줄도 동일) — 유일 매치면 자동 재매핑+적용(범위는 양끝 동일 delta 요구), 충돌/미발견이면 기존 거부+재제시 fallback. 파일: tools.ts.
+- **cycle 10 (a) B5 재설계**: SubagentRole.bashAllowedPrefixes — 설정 시 subagentToolset()이 bash를 prefix-검사 래퍼로 교체. 레지스트리 정의 = 런타임 제약(config 전달 불필요). 기존 역할 동작 불변.
+- **cycle 11 (c) 컴팩션 핸드오프**: extractTouchedFiles에 bash 보수 패턴(/(?:created|wrote|written to|deleted)\s+([\w./-]+)/i) 확장 + 요약 앞 기계적 "Files touched:" 헤더 강제 + CompactionResult.touchedFiles 표면화.
+- **cycle 12 (b) 쓰기 병렬화 — 조건부**: 다른 파일 대상 write/edit 배치 병렬화(파일 겹침 시 순차, bash는 항상 exclusive 유지). 실측 이득 미미하면 revert 허용.
+
+**탈락**: (d) _i intent — jeo 프로토콜에 부재, 코어 비대화(pi-mono 위반); hooks가 이미 tool+args 관찰 가능. 재검토: 외부 텔레메트리 수집기 도입 시. (e) LSP-lite — 의존성 제로 원칙 충돌; done-guard+B3.5+minimizer가 동일 영역 커버. 재검토: Bun 내장 TS 진단 API / 의존성 정책 완화 / 편집 실패율 미개선 증거. 대안 후보(라운드 3): post-edit bash tsc 훅.

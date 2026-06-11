@@ -123,7 +123,7 @@ test("end-to-end: cmd-mode task subagent prints nested steps and result summarie
   expect(out).toMatch(/\[step 1\/4\] [Tt]ask\s*:?\s*executor/);
   expect(out).toContain("▸ [executor] inspect note.txt");
   expect(out).toContain("[executor step 1/15] read note.txt");
-  expect(out).toContain("[executor] ✓ read note.txt — 1|hello from note");
+  expect(out).toMatch(/\[executor\] ✓ read note\.txt — 1[a-z0-9]{2}\|hello from note/);
   expect(out).toContain("◂ [executor] done: subagent read it");
   expect(out).toMatch(/\u2713 [Tt]ask\s*:?\s*executor \u2014 \[Executor subagent\] completed/);
   expect(out).toContain("[AGENT]"); // nested subagent lines carry the category badge

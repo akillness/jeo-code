@@ -432,3 +432,18 @@ test("tmux launch applies the gjc-parity profile to the CREATED session before a
     process.env = originalEnv;
   }
 });
+
+import { tmuxLaunchCommand } from "../src/commands/launch";
+
+test("tmuxLaunchCommand: compiled standalone binary runs ITSELF (bunfs virtual argv[1])", () => {
+  // Field failure: `jeo --tmux` printed "can't find session" — the inner command
+  // was the nonexistent /$bunfs virtual path, so the session died on spawn.
+  expect(tmuxLaunchCommand("/$bunfs/root/cli", "/Users/me/dist/jeo", "/repo")).toEqual(["/Users/me/dist/jeo"]);
+  expect(tmuxLaunchCommand(undefined, "/Users/me/dist/jeo", "/repo")).toEqual(["/Users/me/dist/jeo"]);
+});
+
+test("tmuxLaunchCommand: source runs re-enter through the runtime; shims run directly", () => {
+  expect(tmuxLaunchCommand("/repo/src/cli.ts", "/usr/local/bin/bun", "/repo")).toEqual(["/usr/local/bin/bun", "/repo/src/cli.ts"]);
+  expect(tmuxLaunchCommand("src/cli.ts", "/usr/local/bin/bun", "/repo")).toEqual(["/usr/local/bin/bun", "/repo/src/cli.ts"]);
+  expect(tmuxLaunchCommand("/Users/me/.local/bin/jeo", "/usr/local/bin/bun", "/repo")).toEqual(["/Users/me/.local/bin/jeo"]);
+});

@@ -252,6 +252,26 @@ function alreadyCompacted(body: Message[]): boolean {
   return first.content.startsWith(SUMMARY_PREFIX) || first.content.startsWith(FALLBACK_SUMMARY_PREFIX);
 }
 
+/** File paths the agent mutated in `messages` — parsed mechanically from the
+ *  assistant's write/edit tool-call JSON (capped, deduped, insertion order). */
+export function extractTouchedFiles(messages: Message[], max = 20): string[] {
+  const seen = new Set<string>();
+  const re = /"tool"\s*:\s*"(?:write|edit)"[^}]*?"filePath"\s*:\s*"((?:[^"\\]|\\.){1,300})"/g;
+  for (const msg of messages) {
+    if (msg.role !== "assistant") continue;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(msg.content))) {
+      try {
+        const p = JSON.parse(`"${m[1]}"`) as string;
+        if (p && !seen.has(p)) seen.add(p);
+      } catch { /* malformed escape — skip this path */ }
+      if (seen.size >= max) return [...seen];
+    }
+    re.lastIndex = 0;
+  }
+  return [...seen];
+}
+
 export async function maybeCompact(
   history: Message[],
   opts: CompactionOptions = {}
@@ -308,8 +328,18 @@ export async function maybeCompact(
 
   const olderFormatted = formatMessagesForSummaryByTokens(older, maxSummaryInputTokens);
 
+  // gjc-style file-operation preservation (plan/gjc-inheritance.md B8, gjc
+  // CompactionDetails 계승): the summary model may drop WHICH files were touched —
+  // extract them mechanically from the to-be-summarized messages and pin them
+  // into the prompt so post-compaction turns keep their file context.
+  const touched = extractTouchedFiles(older);
+  const touchedNote = touched.length
+    ? `\nFiles touched in the summarized span (PRESERVE this list verbatim in the summary): ${touched.join(", ")}`
+    : "";
+
   const systemPrompt =
-    "Summarize the following coding-agent conversation so work can continue. Capture decisions, files changed, current task state, and open TODOs. Be concise.";
+    "Summarize the following coding-agent conversation so work can continue. Capture decisions, files changed, current task state, and open TODOs. Be concise." +
+    touchedNote;
 
   // Degradation ladder: (1) RETRY the summary a few times with short, abort-aware
   // backoff; (2) on persistent failure KEEP the recent messages verbatim and drop the

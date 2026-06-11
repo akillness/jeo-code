@@ -198,6 +198,21 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       if (items.length === 0) {
         return { success: false, output: "", error: "task fan-out requires a non-empty 'tasks' array of assignments." };
       }
+      // Spawn-gate lite (plan/gjc-inheritance.md B9, gjc spawn-gate 계승): a batch
+      // wider than MAX_FANOUT is refused BEFORE any subagent launches unless the
+      // model justifies the parallelism — silent capping hid the cost decision.
+      if (items.length > MAX_FANOUT) {
+        const justification = typeof args.justification === "string" ? args.justification.trim() : "";
+        if (justification.length < 20) {
+          return {
+            success: false,
+            output: "",
+            error:
+              `Fan-out of ${items.length} tasks exceeds the default gate of ${MAX_FANOUT}. ` +
+              `Either reduce the batch, or resend with a "justification" string (≥20 chars) explaining why these tasks are independent and must run in one batch.`,
+          };
+        }
+      }
       // Read-only roles fan out concurrently (bounded). The mutating executor is serialized
       // (concurrency 1) so parallel subagents can't race on the same files.
       const limit = role.readOnly ? Math.min(items.length, MAX_FANOUT) : 1;

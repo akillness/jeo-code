@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
-import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, TOOL_PROTOCOL, type AgentLoopEvents } from "../agent/engine";
+import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, type AgentLoopEvents } from "../agent/engine";
 import { initialDynamicStepLimit } from "../agent/step-budget";
+import { memoryPromptSection, distillSessionMemory } from "../agent/memory";
 import { createTaskTool, TASK_TOOL_PROTOCOL_LINE, type TaskSubEvent } from "../agent/task-tool";
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { LaunchTui } from "../tui/app";
@@ -231,6 +232,27 @@ export function shouldEnableCurrentTmuxMouse(env: Record<string, string | undefi
   return !!env.TMUX
     && (env.JEO_TMUX_LAUNCHED ?? env.JOC_TMUX_LAUNCHED) !== "1"
     && (env.JEO_TMUX_MOUSE ?? env.JOC_TMUX_MOUSE) !== "0";
+}
+
+/**
+ * The runnable command for the INNER `jeo launch` a `--tmux` session executes.
+ * Pure — testable. Three runtime shapes:
+ *  - compiled standalone binary: `argv[1]` is a Bun VIRTUAL path (`/$bunfs/…`)
+ *    that does not exist on disk; the binary itself (`execPath`) is the
+ *    entrypoint. Passing the virtual path made the inner command crash on
+ *    spawn, so `tmux new-session` died instantly and the follow-up attach
+ *    failed with "can't find session".
+ *  - source run (`bun src/cli.ts`): re-run the script through the runtime.
+ *  - anything else (a shim/binary path on disk): run it directly.
+ */
+export function tmuxLaunchCommand(argv1: string | undefined, execPath: string, cwd: string): string[] {
+  const entrypoint = argv1 ?? "";
+  if (entrypoint === "" || entrypoint.startsWith("/$bunfs/") || entrypoint.startsWith("B:\\~BUN\\")) {
+    return [execPath];
+  }
+  const resolved = path.isAbsolute(entrypoint) ? entrypoint : path.resolve(cwd, entrypoint);
+  if (/\.(ts|js|mjs)$/.test(entrypoint)) return [execPath, resolved];
+  return [resolved];
 }
 
 /** One tmux configuration step applied to a jeo-owned session after creation. */
@@ -755,9 +777,9 @@ export function filterToolMap(
   return result;
 }
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
-  read: "read   {filePath, lineRange?, raw?} — read a file (lineRange \"a-b\",\"a-\",\"a\",\"a+n\",\"a-b,c-d\"; raw: verbatim, no line numbers)",
+  read: "read   {filePath, lineRange?, raw?} — read a file; lines are prefixed `LINEhh|` (hh = 2-char content anchor; the | is a separator, not file bytes)",
   write: "write  {filePath, content}         — create/overwrite a file",
-  edit: "edit   {filePath, editBlock}       — ≔A..B replace lines; ≔A+ insert after line A; ≔$ append EOF (payload on next line)",
+  edit: "edit   {filePath, editBlock}       — ≔A..B replace lines (append read anchors for safety: ≔12ab..15cd — rejected with fresh content if the lines changed); ≔A+ insert after line A; ≔$ append EOF (payload on next line). NEVER copy the `LINEhh|` prefixes into SEARCH blocks or payloads",
   bash: "bash   {command, timeoutMs?, cwd?, env?} — run a shell command (cwd: subdir; env: extra vars)",
   find: "find   {globPattern}               — find files by name",
   search: "search {pattern, globPattern?, ignoreCase?, context?, maxMatches?} — grep (context: N lines around each match)",
@@ -889,14 +911,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (a.startsWith("--worktree=")) continue;
           innerArgs.push(a);
         }
-        const entrypoint = process.argv[1] || "jeo";
-        const resolvedEntrypoint = path.isAbsolute(entrypoint) ? entrypoint : path.resolve(cwd, entrypoint);
-        let cmd: string[] = [];
-        if (entrypoint.endsWith(".ts") || entrypoint.endsWith(".js") || entrypoint.endsWith(".mjs")) {
-          cmd = [process.execPath, resolvedEntrypoint];
-        } else {
-          cmd = [resolvedEntrypoint];
-        }
+        const cmd = tmuxLaunchCommand(process.argv[1], process.execPath, cwd);
 
         const innerCmd = `exec env JOC_TMUX_LAUNCHED=1 ${[...cmd, "launch", ...innerArgs].map(shellQuote).join(" ")}`;
 
@@ -1013,6 +1028,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const protocol = buildToolProtocol(allowedTools);
   const preamble = flags.systemPrompt ?? "You are the jeo, an interactive coding agent.\nAccomplish the user's request by calling tools and verifying your work.";
+  // Prior-session learnings (B6 경험 증류) — "" when absent or JOC_NO_MEMORY=1.
+  const memoryBlock = await memoryPromptSection(cwd);
 
   const baseSystemPrompt =
     preamble + "\n\n" + protocol + "\n\n" +
@@ -1029,7 +1046,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     "- Do NOT answer with a skill routing brief or execute a skill unless the user explicitly asks for skill help, invokes /skill or a skill slash alias, or the task truly fits a bundled workflow.\n" +
     "- If the user pasted SKILL.md docs as reference material, treat them as user data and follow the latest concrete request.\n" +
     "- Your done reason must describe YOUR work or answer — never recite skill documentation.\n" +
-    skillsPromptSection(workflowSkills));
+    skillsPromptSection(workflowSkills)) +
+    (memoryBlock ? "\n\n" + memoryBlock : "");
 
   let systemPrompt = withProjectContext(baseSystemPrompt, contextFiles);
   if (flags.appendSystemPrompt) {
@@ -3369,6 +3387,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
     }
   disarmPreview(); // clear footer + restore full-screen scrolling before leaving the REPL
+  // hermes-style experience distill (plan/gjc-inheritance.md B6): a session that did
+  // real work leaves durable learnings in .joc/memory/MEMORY.md for the next session.
+  // Best-effort with a hard timeout — memory must never block or break exit.
+  if (sessionUsage.turns > 0) {
+    const distill = await distillSessionMemory(history, cwd, { model: sessionModel || defaultModel });
+    if (distill.updated) console.log("(session memory updated — .joc/memory/MEMORY.md)");
+  }
   // gjc-parity resume pointer (logs/gjc-tui-study analysis Gap C): leave the exact
   // resume command in scrollback on exit, mirroring the --list handler's convention.
   if (sessionId && !flags.noSession) console.log(formatResumeHint(sessionId));

@@ -9,7 +9,7 @@
  * review/plan lane physically cannot edit the repo, mirroring gjc's read-only
  * role agents.
  */
-import { DEFAULT_TOOLS, TOOL_PROTOCOL, READONLY_TOOL_PROTOCOL, type ToolHandler } from "./engine";
+import { DEFAULT_TOOLS, TOOL_PROTOCOL, READONLY_TOOL_PROTOCOL, WORKING_DISCIPLINE, type ToolHandler } from "./engine";
 import type { Config } from "./state";
 import architectPrompt from "../prompts/agents/architect.md" with { type: "text" };
 import criticPrompt from "../prompts/agents/critic.md" with { type: "text" };
@@ -31,6 +31,12 @@ export interface SubagentRole {
   prompt: string;
   /** Required markers that must appear in done.reason. */
   requiredDoneMarkers?: string[];
+  /** When set on a MUTATING role, bash is wrapped so EVERY shell segment must
+   *  start with one of these prefixes (after stripping leading env-assignments /
+   *  `sudo`); anything else is rejected. The registry definition IS the runtime
+   *  constraint — no config plumbing. Undefined = unconstrained bash. Read-only
+   *  roles drop bash entirely regardless. (plan/gjc-inheritance.md cycle 10, B5) */
+  bashAllowedPrefixes?: string[];
 }
 
 /** The four bundled subagent roles. `executor` is the only mutating role. */
@@ -124,7 +130,7 @@ export function resolveSubagentMaxSteps(roleId: string, config: Pick<Config, "su
 
 function renderRolePrompt(template: string, role: SubagentRole): string {
   return template
-    .replaceAll("{{TOOL_PROTOCOL}}", TOOL_PROTOCOL)
+    .replaceAll("{{TOOL_PROTOCOL}}", `${TOOL_PROTOCOL}\n\n${WORKING_DISCIPLINE}`)
     .replaceAll("{{READONLY_TOOL_PROTOCOL}}", READONLY_TOOL_PROTOCOL)
     .replaceAll("{{ROLE_TITLE}}", role.title)
     .trim();
@@ -152,19 +158,67 @@ export function subagentSystemPrompt(role: SubagentRole): string {
 }
 
 /**
- * Toolset for a role: read-only roles drop ALL mutating tools (write/edit and
- * bash) so a review/plan lane physically cannot change the repo — bash can run
- * arbitrary mutating shell, so it is excluded for read-only roles too.
+ * True when EVERY shell segment of `command` starts with one of `prefixes`
+ * (after stripping leading env-assignments and a leading `sudo`). Splitting on
+ * `; && || |` means a chained `… && rm -rf` cannot smuggle an un-vetted command
+ * past a single allowed head. Command substitution (`$(…)`, backticks) can't be
+ * statically vetted, so it is rejected outright. Empty allowlist = unconstrained.
+ */
+export function bashCommandAllowed(command: string, prefixes: string[]): boolean {
+  if (prefixes.length === 0) return true;
+  if (/[`]|\$\(/.test(command)) return false; // un-vettable command substitution
+  const matches = (seg: string, p: string) =>
+    seg === p || seg.startsWith(p + " ") || seg.startsWith(p + "\t");
+  for (const raw of command.split(/(?:&&|\|\||[;|])/)) {
+    let seg = raw.trim();
+    if (seg === "") continue;
+    seg = seg
+      .replace(/^(?:\w+=(?:"[^"]*"|'[^']*'|\S+)\s+)+/, "") // FOO=bar BAZ=qux cmd
+      .replace(/^sudo\s+/, "")
+      .trim();
+    if (seg === "" || !prefixes.some(p => matches(seg, p))) return false;
+  }
+  return true;
+}
+
+/**
+ * Toolset for a role:
+ *  - Read-only roles drop ALL mutating tools (write/edit AND bash) so a
+ *    review/plan lane physically cannot change the repo.
+ *  - A mutating role with `bashAllowedPrefixes` gets bash replaced by a
+ *    prefix-checking wrapper (registry definition = runtime constraint).
+ *  - Otherwise the full default toolset (unconstrained bash) is returned.
  */
 export function subagentToolset(role: SubagentRole): Record<string, ToolHandler> {
-  if (!role.readOnly) return DEFAULT_TOOLS;
-  const MUTATING = new Set(["write", "edit", "bash"]);
-  const ro: Record<string, ToolHandler> = {};
-  for (const [name, handler] of Object.entries(DEFAULT_TOOLS)) {
-    if (MUTATING.has(name)) continue;
-    ro[name] = handler;
+  if (role.readOnly) {
+    const MUTATING = new Set(["write", "edit", "bash"]);
+    const ro: Record<string, ToolHandler> = {};
+    for (const [name, handler] of Object.entries(DEFAULT_TOOLS)) {
+      if (MUTATING.has(name)) continue;
+      ro[name] = handler;
+    }
+    return ro;
   }
-  return ro;
+  const prefixes = role.bashAllowedPrefixes;
+  if (prefixes && prefixes.length > 0) {
+    const inner = DEFAULT_TOOLS.bash;
+    const guarded: Record<string, ToolHandler> = { ...DEFAULT_TOOLS };
+    guarded.bash = async (a, cwd) => {
+      const command = String(a.command ?? a.cmd ?? "");
+      if (!bashCommandAllowed(command, prefixes)) {
+        return {
+          success: false,
+          output: "",
+          error:
+            `bash rejected for role '${role.id}': every command segment must start with one of [${prefixes.join(", ")}]. ` +
+            `Received: ${command.trim().slice(0, 120)}`,
+        };
+      }
+      return inner(a, cwd);
+    };
+    return guarded;
+  }
+  return DEFAULT_TOOLS;
 }
 
 /** All role ids (for `/agents` autocomplete + validation). */

@@ -197,3 +197,31 @@
 - 수정 ②(engine+compaction): trimToolResultsInPlace — 추정 토큰이 maxHistoryTokens(기본 80k, 옵션) 초과 시 가장 오래된 Tool-result 본문을 결정적으로 스텁화(최근 8개 보존, system/실프롬프트/assistant 불가침, 메시지는 교체-비변이로 identity 토큰캐시 정합). 매 스텝 시작에 가드 + onNotice 1줄.
 - Tests: repeat-bounce-and-trim(교정 후 done 성공 / 교정 관통 시 정지 / write 단일 실행 보장 / trim 예산·최근보존·불가침·no-op), engine.test 반복 계약 갱신.
 - Verified: tsc 0; bun test 1105 pass / 0 fail.
+[2026-06-12] gjc-계승 마라톤 cycles 2-4 (합의 문서: plan/gjc-inheritance.md)
+- Evidence: gjc v0.4.3 소스 심층분석 2건(architect 서브에이전트 — hashline/도구프로토콜/task경계 + 검증가드/메모리/확장성) + pi-mono/hermes/nullclaw/zeroclaw 철학 리서치. critic 합의 라운드 1(ITERATE→반영): 순서 B3→[B7+B3.5]→B4→B2→B6 확정, B2 dual-protocol 리스크 명세, B4 escape hatch 명세.
+- cycle 2 (B3): WORKING_DISCIPLINE(gjc completion-contract+tool-priority, ~180tok) — engine executorSystemPrompt + launch 인터랙티브 프롬프트 + subagent 템플릿 3곳 배선.
+- cycle 3 (B7+B3.5): file-freshness guard — read가 mtime/size 스냅샷 기록(LRU 64), edit/write가 외부 변경 감지 시 1회 거부+현행 내용 재제시(recovery)+스냅샷 갱신으로 즉시 재시도 허용; 자기 변경은 비-stale. SEARCH mismatch 에러에 앵커 주변 현행 발췌 동봉. test/edit-freshness.test.ts 5종.
+- cycle 4 (B4): done-verification guard — write/edit 성공 턴에서 검증 신호 없이 done → 1회 푸시백, 2번째 done 통과(escape hatch). test/done-verification-guard.test.ts 4종.
+- Verified: typecheck 0; full bun test 1128 pass / 0 fail.
+[2026-06-12] gjc-계승 마라톤 cycle 5 (B2 hashline-lite)
+- read 출력 전 라인에 2자 콘텐츠 앵커 부여: `42ab|text` (lineAnchor: trailing ws/CR 무시, Bun.hash 36^2 버킷 — 내용만으로 해시되어 형제 편집으로 라인이 밀려도 유효).
+- edit ≔ 경로 앵커 검증: `≔12ab..15cd`/`≔7xy+` — 모델이 인용한 앵커가 현행 라인 해시와 불일치하면 거부 + 현행 발췌 재제시(silent corruption 차단). 앵커 없는 ≔A..B는 기존 그대로(back-compat).
+- dual-protocol 픽스업(critic 합의): SEARCH/REPLACE 블록에 read 앵커 prefix가 통째로 복사된 경우(전 라인 prefix 패턴) 스트립 후 매칭 — 약한 모델의 copy-paste 함정 무해화.
+- 프로토콜 문서 갱신(engine TOOL_PROTOCOL + launch TOOL_DESCRIPTIONS), 포맷 고정 테스트 7곳 anchor-agnostic 전환, test/hashline-lite.test.ts 6종 신규.
+- Verified: typecheck 0; full bun test 1134 pass / 0 fail.
+[2026-06-12] gjc-계승 마라톤 cycles 6-7
+- cycle 6 (B6, hermes 경험→증류): src/agent/memory.ts 신규 — 세션 종료 시(턴≥1) 1콜 증류로 .joc/memory/MEMORY.md에 누적 학습(repo facts/동작 명령/gotchas/유저 선호, 기존 문서와 merge, 6K자 캡, atomic write, 20s 타임아웃, 실패 무해). 다음 세션 시스템 프롬프트에 <project_memory> 블록 3K자 캡 주입. JOC_NO_MEMORY=1 비활성. launch 종료 경로+프롬프트 조립 배선. test/memory.test.ts 3종.
+- cycle 7 (B8, gjc CompactionDetails 계승): extractTouchedFiles — 요약될 메시지에서 write/edit tool-call의 filePath를 기계 추출(중복 제거, 20개 캡)해 컴팩션 요약 프롬프트에 "PRESERVE verbatim"으로 핀 — 요약 후에도 파일 맥락 유지. test/compaction-touched-files.test.ts 2종.
+- Verified: typecheck 0; full bun test 1139 pass / 0 fail. 잔여 백로그: B5(task-spawn bashPrefixes), B9(fan-out 정당화), B10(spill 설정화) 후 critic 합의 라운드 2.
+[2026-06-12] gjc-계승 마라톤 cycle 8 (B9+B10) — 라운드 1 백로그 소진
+- B9 spawn-gate lite: task fan-out >4는 런칭 전 거부, "justification"(≥20자) 동봉 시 허용 — gjc spawn-gate의 정당화 강제를 프로토콜 레벨로 경량 계승(기존 silent capping 제거).
+- B10: JOC_TOOL_OUTPUT_MAX 환경변수로 모델 가시 출력 캡 조정(500..200K 클램프, 기본 4000); TOOL_SPILL_THRESHOLD가 캡을 추적해 잘린 내용은 항상 artifact 복구 가능.
+- Verified: typecheck 0; full bun test 1141 pass / 0 fail. test/spawn-gate-lite.test.ts 2종 신규.
+- 라운드 1 결산: 8사이클 / 신규 테스트 25종 / 계승 완료 = 생태계 관용·completion-contract·freshness+복구·done 가드·hashline-lite·경험 증류·컴팩션 파일보존·spawn-gate·출력 설정화. B5(task-spawn bashPrefixes)는 critic 판정대로 라운드 2 재설계 대상. 라운드 2 후보: 도구 동시성 확대, 컴팩션 핸드오프, _i intent, LSP-lite.
+[2026-06-12] Pass — `jeo --tmux` 동작 복구 (compiled-binary 가상 argv 버그)
+- 증상: `jeo --tmux` → "Starting new tmux session: …" 직후 "can't find session" — 세션이 생성 즉시 사망.
+- 근본 원인: 컴파일 standalone 바이너리에서 process.argv[1]은 디스크에 존재하지 않는 Bun 가상 경로(/$bunfs/root/cli) — 기존 코드가 이를 inner 명령 엔트리포인트로 그대로 사용해 `tmux new-session`의 명령이 spawn 즉시 실패, 세션이 죽고 후속 attach가 "can't find session"으로 표면화. (소스 실행 bun src/cli.ts 경로에서는 재현 안 됨 — dist/jeo 전환 후 노출된 버그.)
+- 수정: tmuxLaunchCommand(argv1, execPath, cwd) 순수 헬퍼 — /$bunfs(또는 Windows B:\~BUN) 가상 경로/빈 argv1이면 바이너리 자신(execPath)을 실행, .ts/.js/.mjs는 런타임 경유, 그 외 shim/바이너리는 직접 실행.
+- 실동작 검증(plain PTY, TMUX unset): jeo --tmux → 세션 jeo-projects-* 생성·생존, 페인에 입력박스 렌더, `mouse on`+@jeo-profile/@jeo-project 프로파일 적용 확인. dist/jeo 재빌드로 즉시 반영.
+- Tests: tmuxLaunchCommand 3형태(가상/소스/shim) 계약 고정.
+- Verified: tsc 0; bun test 1150 pass / 0 fail.

@@ -721,13 +721,22 @@ export class LaunchTui {
       finalLines.push(`joc> ${renderedReply}`);
     }
     if (this.tty) {
+      // Width-wrap every summary line to the terminal FIRST. A line wider than the
+      // terminal hard-wraps into 2+ physical rows, corrupting the result screen and
+      // throwing off the trailing `\x1b[0J` cursor math (the reported "화면깨짐").
+      // Split embedded newlines (multi-line replies / the budget consolidation
+      // wrap-up), then wrap each physical line to the column count.
+      const wrapCols = Math.max(20, size().cols);
+      const physicalLines = finalLines.flatMap(l =>
+        l.split("\n").flatMap(sub => (visibleWidth(sub) <= wrapCols ? [sub] : wrapTextWithAnsi(sub, wrapCols))),
+      );
       // Main-buffer hygiene after leaving the alt screen: the cursor lands on rows
       // that still hold pre-turn content (old footer box, project-context lines).
       // Without clear-to-EOL every summary line visually MERGES with that stale
       // text, and the leftover footer reservation below renders as a torn, dead-
       // looking input box. Clear each line's tail, then everything below.
       this.write("\r\x1b[K");
-      this.write(finalLines.map(l => `${l}\x1b[K`).join("\n") + "\n");
+      this.write(physicalLines.map(l => `${l}\x1b[K`).join("\n") + "\n");
       this.write("\x1b[0J");
     } else {
       console.log(finalLines.join("\n"));

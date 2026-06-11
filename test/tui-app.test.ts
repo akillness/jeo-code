@@ -642,3 +642,23 @@ test("LaunchTui: ledger lines longer than the terminal are width-wrapped before 
   }
   tui.finish("done");
 });
+
+test("LaunchTui.finish: a long reply is width-wrapped — no physical line exceeds the terminal (result-screen 화면깨짐 fix)", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  tui.events().onStep!(1);
+  const cols = Math.max(20, process.stdout.columns || 80);
+  // A consolidation-style wrap-up: one long logical line far wider than the terminal.
+  const longReply = "Consolidated: " + "scanned and refactored the parser and wired tests ".repeat(8);
+  out.length = 0;
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  tui.finish(longReply);
+  // Strip ANSI/OSC, then a leading carriage-return (cursor-to-col-0, zero display width).
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
+  const physical = strip(out.join("")).split("\n").map(l => l.replace(/^\r/, ""));
+  const over = physical.filter(l => visibleWidth(l) > cols);
+  expect(over).toEqual([]); // every result-screen row fits the terminal width
+  // And the reply content actually survived the wrap (not truncated away).
+  expect(strip(out.join("")).replace(/\r/g, "")).toContain("Consolidated:");
+});

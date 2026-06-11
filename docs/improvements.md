@@ -6547,3 +6547,15 @@ that extends itself while the turn demonstrably progresses and fails fast when s
 
 ### Verification (round 5)
 - typecheck 0; `bun test` **1190 pass / 0 fail** across 154 files (+11 new: provider-empty-completion ×9 incl. discovery-deadline/outer-abort, engine-multitool F6 ×2; 1 legacy double-report assertion updated to the report-once contract). Deferred to round 6: context-overflow taxonomy → reactive compaction+retry (#4), `stream_options` compat for non-OpenAI backends (#5), overall stream wall-clock (#7).
+
+---
+
+**Date:** 2026-06-12 · **Dimension: gjc-inheritance marathon round 6 — reactive context-overflow recovery + error taxonomy.**
+
+### Context-overflow recovery (#4, deferred from round 5)
+- **Detection.** New `isContextOverflowError` recognizes the provider-authoritative overflow family (`context_length_exceeded`, `prompt is too long`, `input is too long`, `maximum context`, HTTP 413) — previously these surfaced as opaque raw 400 bodies.
+- **Reaction.** On a classified overflow the engine performs ONE in-place `trimToolResultsInPlace` (half the history budget, `keepRecent: 2` — more aggressive than the proactive guard's 8, since the provider already rejected this prompt and elided results can be re-run) and retries the SAME step for free. A second overflow, or nothing trimmable, surfaces the friendly error. One-shot per turn.
+- **Taxonomy.** `friendlyProviderError` now maps overflow → "conversation no longer fits the model's context window — run /compact…" and HTTP 404 → "provider does not recognize the requested model — pick another with /model", instead of collapsing both into raw bodies.
+
+### Verification (round 6)
+- typecheck 0; `bun test` **1194 pass / 0 fail** across 155 files (+4: detector patterns, taxonomy wording, trim+retry success path, second-overflow surfacing). Remaining deferred: `stream_options` compat (#5, LOW), slow-drip overall deadline (#7, LOW/WATCH).

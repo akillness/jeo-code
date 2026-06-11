@@ -265,3 +265,7 @@
 - #3 anthropic usage report-once(MED): message_start 2회보고 → input 2배 과대계상 제거(start=캐시만, delta=1회 보고). 옛 계약 고정 테스트 1건 갱신.
 - F6(라운드4 보류): 스텝 성패를 non-trivial 콜로 판정 — read(ok)+edit(fail) 반복의 MAX_FAILURES 우회 봉합. engine-multitool 테스트 2종.
 - Verified: typecheck 0; full bun test 1190 pass / 0 fail (+13: provider-empty-completion 9종 신규 등). plan 라운드5 렛저, improvements.md 갱신.
+[2026-06-12] gjc-계승 마라톤 라운드 6 (cycle 16) — 컨텍스트 오버플로 반응적 복구
+- #4(라운드5 보류분): isContextOverflowError(context_length/prompt too long/413 등) 신설 + friendlyProviderError에 overflow→"/compact" 안내·404→model-not-found "/model" 안내 케이스 추가 — 불투명한 raw 400/404 본문 수집 종료.
+- 엔진 반응적 복구: provider가 overflow를 보고하면(로컬 추정이 빗나간 케이스 — 이미지/토크나이저 편차) trimToolResultsInPlace(예산 절반, keepRecent 2)로 1회 트림 후 같은 스텝 free retry. 2번째 overflow 또는 트림 불가 시 friendly 에러로 턴 종료(one-shot 플래그).
+- Verified: typecheck 0; full bun test 1194 pass / 0 fail (+4종 provider-error-taxonomy: 감지기 패턴/taxonomy 문구/트림+재시도 성공/2차 overflow 표면화).

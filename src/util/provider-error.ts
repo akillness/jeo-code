@@ -6,6 +6,18 @@
  */
 import { isUsageLimitError } from "./retry";
 
+/** Provider-authoritative context-overflow signal (HTTP 400/413 family). The
+ *  local token estimate can drift under the real count (images, tokenizer
+ *  mismatch) — when the PROVIDER says the prompt doesn't fit, the loop can react
+ *  (reactive trim + one retry) instead of dying on an opaque 400 (round-6 #4). */
+export function isContextOverflowError(err: unknown): boolean {
+  const msg = (err as Error)?.message ?? String(err);
+  const status = (err as { status?: number })?.status;
+  const pattern = /context[ _-]?length|context window|prompt is too long|input is too long|too many tokens|maximum (input|context)|exceeds.{0,30}(context|token)/i;
+  if (pattern.test(msg)) return true;
+  return status === 413; // payload-too-large is always an overflow signal
+}
+
 function formatDuration(ms: number): string {
   const totalSeconds = Math.ceil(ms / 1000);
   if (totalSeconds < 60) return `${totalSeconds}s`;
@@ -41,6 +53,12 @@ export function friendlyProviderError(err: unknown): string {
   }
   if (status === 401 || status === 403 || /\b40[13]\b/.test(msg)) {
     return `${provider} rejected the credential (HTTP ${status ?? "401/403"}). Run 'jeo auth status', re-login with /provider login <name>, and for Antigravity prefer '/provider login antigravity' (gemini login only works when the Cloud Code Assist backend authorizes that token).`;
+  }
+  if (isContextOverflowError(err)) {
+    return `${provider} rejected the request: the conversation no longer fits the model's context window. Run /compact, drop large attachments, or start a fresh session.`;
+  }
+  if (status === 404) {
+    return `${provider} does not recognize the requested model (HTTP 404). The id may be retired, gated, or mistyped — pick another with /model.`;
   }
   return msg;
 }

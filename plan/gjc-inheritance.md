@@ -109,3 +109,7 @@
 ## 사이클 렛저 (라운드 5)
 - cycle 15 (2026-06-12): #1 빈완료 균일 계약(4 어댑터) + #2 디스커버리 데드라인 + #3 usage report-once + F6. 기존 테스트 1건이 옛 2회보고 계약 고정 → report-once로 갱신. 신규 테스트 11종(provider-empty-completion 9, engine-multitool F6 2). full 1190 pass / 0 fail, typecheck 0.
 - **라운드 5 종료** — 누적 15사이클. 라운드 6 후보: #4 컨텍스트 오버플로 신호→반응적 컴팩션+재시도, model-not-found(404) taxonomy.
+
+## 사이클 렛저 (라운드 6)
+- cycle 16 (2026-06-12): #4 컨텍스트 오버플로 — isContextOverflowError(메시지 패턴+413) + friendlyProviderError에 overflow("/compact" 안내)·404(model-not-found, "/model" 안내) 케이스 + 엔진 1회 반응적 트림+재시도(provider 신호가 로컬 추정 우선; keepRecent 2로 공격적 트림, 스텝 미소모 free retry, 2번째 overflow는 friendly 에러 표면화). 신규 테스트 4종(provider-error-taxonomy.test.ts). full 1194 pass / 0 fail, typecheck 0.
+- **라운드 6 종료** — 누적 16사이클. 잔여 보류: #5 stream_options 호환(LOW), #7 슬로우드립 데드라인(LOW/WATCH), F5 잔여.

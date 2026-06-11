@@ -13,7 +13,7 @@ import type { Message } from "./loop";
 import { extractJsonObject } from "./json";
 import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, type ToolResult } from "./tools";
 import { webSearchTool, setWebSearchActiveModel } from "./web-search";
-import { friendlyProviderError } from "../util/provider-error";
+import { friendlyProviderError, isContextOverflowError } from "../util/provider-error";
 import { isRateLimitError } from "../util/retry";
 import { runPreToolHooks, runPostTurnHooks } from "./hooks";
 import { minimizeToolOutput } from "./output-minimizer";
@@ -320,6 +320,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // clears it). The done guard treats this as "verification missing" — the hook
   // exit code is the strongest correctness signal in the loop.
   let pendingHookFailure: string | null = null;
+  // Round-6 #4: ONE reactive recovery when the PROVIDER reports context overflow
+  // (authoritative where the local estimate drifted — images, tokenizer mismatch).
+  let contextOverflowRetryUsed = false;
   const VERIFY_SIGNAL_RE = /\b(test|tests|tsc|typecheck|lint|build|check|spec|pytest|vitest|jest)\b/i;
   let lastSig = "";
   let repeatCount = 0;
@@ -386,6 +389,19 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               },
             });
     } catch (err) {
+      // Reactive context recovery: trim older tool results in place and retry the
+      // SAME step once. The provider's overflow signal beats the local estimate;
+      // a second overflow (or nothing left to trim) surfaces the friendly error.
+      if (isContextOverflowError(err) && !contextOverflowRetryUsed) {
+        contextOverflowRetryUsed = true;
+        // keepRecent 2 (vs the proactive guard's 8): the provider already REJECTED
+        // this prompt — freeing real space beats keeping evidence that can be re-run.
+        const res = trimToolResultsInPlace(history, { budgetTokens: Math.max(1, Math.floor(maxHistoryTokens / 2)), keepRecent: 2 });
+        if (res.trimmed > 0) {
+          ev.onNotice?.(`provider reported context overflow — elided ${res.trimmed} older tool result(s), retrying once`);
+          continue; // free retry: the step counter is unchanged
+        }
+      }
       const message = friendlyProviderError(err);
       // The error IS the turn's doneReason and every caller displays that — emitting a
       // separate error event here printed the same message twice (live stream + reply).

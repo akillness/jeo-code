@@ -184,6 +184,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { existsSync, statSync, readFileSync } from "node:fs";
+import { jeoEnv } from "../util/env";
 
 export function tryResolveSkillFromFilePath(filePath: string): SkillDoc | null {
   try {
@@ -285,8 +286,8 @@ export function skillSlashAliases(skill: SkillDoc): string[] {
 
 /** Global + per-project skill-doc directories (user-configurable SKILL.md files). */
 export function skillDirs(cwd: string = process.cwd()): string[] {
-  const home = (process.env.JEO_CONFIG_DIR ?? process.env.JOC_CONFIG_DIR) || path.join(os.homedir(), ".joc");
-  const configured = ((process.env.JEO_SKILLS_DIR ?? process.env.JOC_SKILLS_DIR) ?? "")
+  const home = jeoEnv("CONFIG_DIR") || path.join(os.homedir(), ".joc");
+  const configured = (jeoEnv("SKILLS_DIR") ?? "")
     .split(path.delimiter)
     .map(s => s.trim())
     .filter(Boolean);

@@ -2,6 +2,7 @@ import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
+import { jeoEnv } from "../../util/env";
 
 /** Gemini 2.5+/latest models think by default and BILL thought tokens against
  *  `maxOutputTokens` — a small-budget call can burn its entire budget on thoughts
@@ -89,7 +90,7 @@ const CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com";
 
 /** gemini-cli identification headers Cloud Code Assist expects (gjc parity). */
 export function getGeminiCliHeaders(modelId?: string): Record<string, string> {
-  const version = (process.env.JEO_GEMINI_CLI_VERSION ?? process.env.JOC_GEMINI_CLI_VERSION) || "0.45.2";
+  const version = jeoEnv("GEMINI_CLI_VERSION") || "0.45.2";
   return {
     "User-Agent": `GeminiCLI/${version}/${modelId ?? "gemini-2.5-flash"} (${process.platform}; ${process.arch}; terminal)`,
     "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",

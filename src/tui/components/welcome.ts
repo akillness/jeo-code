@@ -129,28 +129,34 @@ export function renderWelcome(d: WelcomeData): string[] {
 }
 
 /**
- * One-shot launch animation: sweep the DNA Claw's gradient through a full
- * palette cycle by re-printing the welcome box in place (cursor-up rewrites,
- * same row count every frame). The FINAL frame is phase 0 — byte-identical to
- * the static `renderWelcome` — so the resting banner matches non-animated
- * output exactly. `write`/`sleep` are injectable for tests; callers gate on
- * TTY + truecolor before invoking.
+ * Launch animation: sweep the DNA Claw's gradient through `cycles` FULL palette
+ * cycles by re-printing the welcome box in place (cursor-up rewrites, same row
+ * count every frame). The loop is SEAMLESS — the phase wraps exactly at each
+ * cycle boundary with a constant frame delay, so consecutive cycles join with
+ * no pause or color jump — and every repaint is wrapped in a DECSET 2026
+ * synchronized update so frames land atomically (no tearing/flicker on slow
+ * terminals). The FINAL frame is phase 0 — byte-identical to the static
+ * `renderWelcome` — so the resting banner matches non-animated output exactly.
+ * `write`/`sleep` are injectable for tests; callers gate on TTY + truecolor.
  */
 export async function playWelcomeSweep(
   d: WelcomeData,
-  opts: { write?: (s: string) => void; sleep?: (ms: number) => Promise<unknown>; frames?: number; delayMs?: number } = {},
+  opts: { write?: (s: string) => void; sleep?: (ms: number) => Promise<unknown>; frames?: number; delayMs?: number; cycles?: number } = {},
 ): Promise<void> {
   const write = opts.write ?? ((s: string) => process.stdout.write(s));
   const sleep = opts.sleep ?? ((ms: number) => new Promise(r => setTimeout(r, ms)));
   const frames = Math.max(1, Math.trunc(opts.frames ?? 10));
+  const cycles = Math.max(1, Math.trunc(opts.cycles ?? 2));
   const delay = opts.delayMs ?? 50;
+  const total = frames * cycles;
   let lineCount = 0;
-  for (let f = 0; f <= frames; f++) {
-    const phase = (f / frames) % 1; // …last frame wraps to 0 (the static banner)
+  for (let f = 0; f <= total; f++) {
+    const phase = (f % frames) / frames; // wraps each cycle; f === total → 0 (the static banner)
     const lines = renderWelcome({ ...d, phase });
-    if (f > 0) write(`\x1b[${lineCount}A`);
-    write(lines.map(l => `${l}\x1b[K`).join("\n") + "\n");
+    const rewind = f > 0 ? `\x1b[${lineCount}A` : "";
+    // BSU/ESU: the whole repaint (rewind + every row) applies atomically.
+    write(`\x1b[?2026h${rewind}${lines.map(l => `${l}\x1b[K`).join("\n")}\n\x1b[?2026l`);
     lineCount = lines.length;
-    if (f < frames && delay > 0) await sleep(delay);
+    if (f < total && delay > 0) await sleep(delay);
   }
 }

@@ -2,6 +2,7 @@ import { applyBashFixups } from "./bash-fixups";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { readWorkflowState, readWorkflowStateStrict, type WorkflowState } from "./state";
+import { jeoEnv } from "../util/env";
 
 /** Read the deep-interview lock; on corrupt state fail CLOSED (treat as active lock). */
 async function readMutationLock(cwd: string): Promise<WorkflowState | null> {
@@ -381,7 +382,7 @@ export async function bashTool(
   subdir?: string,
   env?: Record<string, string>
 ): Promise<ToolResult> {
-  if ((process.env.JEO_BASH_FIXUPS ?? process.env.JOC_BASH_FIXUPS) === "1") {
+  if (jeoEnv("BASH_FIXUPS") === "1") {
     const fx = applyBashFixups(command);
     command = fx.command;
   }

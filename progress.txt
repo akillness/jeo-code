@@ -172,3 +172,9 @@
 - forge.ts editBlockDiffLines(): the Edit forge card now renders the editBlock as a gjc-style diff — SEARCH/REPLACE hunks become `- old` / `+ new` rows (capped, secret-redacted) closed by a `~N hunk(s) · +A −R line(s)` Summary divider; `≔` directives show the directive head + payload as `+` rows with a `+A line(s)` summary. Unknown/malformed formats fall back to the raw preview (never throw). Plain +/- prefixes — ANSI-free in every color mode. Mirrors agent/tools.ts parse rules locally so the TUI layer does not import the agent layer.
 - Closes the last gap of the history-ledger request: Task / bash / status gradient / jeo reason / Write(path+lines+summary) / Search tree / Edit(diff lines) / Read paths / hud / conclude all render typed ledger entries now.
 - Verified: tsc 0; bun test 1085 pass / 0 fail (139 files).
+[2026-06-11] Pass — seamless looping welcome sweep + jeoEnv codemod (refactor) + MRU verified
+- Forge 애니메이션 "끊김 없는 반복": playWelcomeSweep v2 — (a) 사이클 루프(기본 2, JEO_WELCOME_ANIM_CYCLES 1-10): phase가 사이클 경계에서 정확히 래핑하고 프레임 딜레이가 일정해 사이클 간 멈춤/색 점프 없이 이어짐, (b) 매 리페인트를 DECSET 2026 BSU/ESU로 원자화 — 느린 터미널에서도 티어링/플리커 없음(= 끊김 없음), (c) 최종 프레임은 phase 0으로 정적 배너와 바이트 동일. in-turn 헤더(트위스트×그라데이션)는 120ms 틱으로 이미 무한 루프.
+- Refactor (repetitive-migration-codemod): src/util/env.ts jeoEnv(suffix, env?) — `(process.env.JEO_X ?? process.env.JOC_X)` 인라인 이중 읽기를 단일 헬퍼로 치환(storage 4, state 7, tools 1, mcp/tools 1, gemini 1, auth 1, catalog 2 + launch 스윕 게이트 2). ?? 시맨틱 보존(빈 문자열은 값). 동시 패스가 편집 중인 핫 파일(slash/autocomplete/markdown-text + launch 잔여 사이트)은 이번 라운드 제외 — 다음 패스에서 마저 이관.
+- MRU 기본값(요청 재확인): rememberModelPatch → defaultModel/recentModels 영속 경로 무변경, model-recency·subagent-apply-target 테스트 스위트 내 통과로 검증.
+- Tests: env-helper(우선순위/폴백/?? 시맨틱), sweep v2(BSU/ESU 원자성·리와인드 높이·frames*cycles+1 리페인트·일정 케이던스·최종 프레임 패리티).
+- Verified: tsc 0; bun test 1096 pass / 0 fail (140 files).

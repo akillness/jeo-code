@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { parseConfig } from "./config-schema";
+import { jeoEnv } from "../util/env";
 
 /** Persisted OAuth credential set (access + refresh + expiry) for a provider. */
 export interface StoredOAuth {
@@ -140,7 +141,7 @@ const DEFAULT_MODEL = "claude-sonnet-4-5";
  * `JOC_CONFIG_DIR` takes precedence; otherwise `~/.joc`.
  */
 function globalConfigDir(): string {
-  return (process.env.JEO_CONFIG_DIR ?? process.env.JOC_CONFIG_DIR) || path.join(os.homedir(), ".joc");
+  return jeoEnv("CONFIG_DIR") || path.join(os.homedir(), ".joc");
 }
 function globalConfigPath(): string {
   return path.join(globalConfigDir(), "config.json");
@@ -172,13 +173,13 @@ function withEnvOverlay(cfg: Config): Config {
     ...cfg,
     providers,
     oauth,
-    defaultModel: (process.env.JEO_DEFAULT_MODEL ?? process.env.JOC_DEFAULT_MODEL) || cfg.defaultModel,
+    defaultModel: jeoEnv("DEFAULT_MODEL") || cfg.defaultModel,
     ollamaBaseUrl: cfg.ollamaBaseUrl || process.env.OLLAMA_HOST || "http://localhost:11434",
     openaiBaseUrl: cfg.openaiBaseUrl || process.env.OPENAI_BASE_URL,
     roles: {
-      smol: cfg.roles?.smol || (process.env.JEO_SMOL_MODEL ?? process.env.JOC_SMOL_MODEL),
-      slow: cfg.roles?.slow || (process.env.JEO_SLOW_MODEL ?? process.env.JOC_SLOW_MODEL),
-      plan: cfg.roles?.plan || (process.env.JEO_PLAN_MODEL ?? process.env.JOC_PLAN_MODEL),
+      smol: cfg.roles?.smol || jeoEnv("SMOL_MODEL"),
+      slow: cfg.roles?.slow || jeoEnv("SLOW_MODEL"),
+      plan: cfg.roles?.plan || jeoEnv("PLAN_MODEL"),
     },
   };
 }
@@ -190,7 +191,7 @@ function envDefaultConfig(): Config {
       openai: process.env.OPENAI_API_KEY,
       gemini: process.env.GEMINI_API_KEY,
     },
-    defaultModel: (process.env.JEO_DEFAULT_MODEL ?? process.env.JOC_DEFAULT_MODEL) || DEFAULT_MODEL,
+    defaultModel: jeoEnv("DEFAULT_MODEL") || DEFAULT_MODEL,
     thinkingLevel: "medium",
   };
 }
@@ -362,5 +363,5 @@ export async function clearWorkflowState(
 
 /** Returns true if the agent is running in development mode (enables self-improvement). */
 export function isDevMode(): boolean {
-  return (process.env.JEO_DEV_MODE ?? process.env.JOC_DEV_MODE) === "1" || process.env.NODE_ENV === "development";
+  return jeoEnv("DEV_MODE") === "1" || process.env.NODE_ENV === "development";
 }

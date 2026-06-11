@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import { type StoredOAuth } from "../agent/state";
 import { createInterface } from "node:readline/promises";
 import { readGlobalConfig } from "../agent/state";
+import { jeoEnv } from "../util/env";
 import {
   OAUTH_FLOWS,
   OAUTH_FLOW_REGISTRY,
@@ -135,7 +136,7 @@ async function runAuthImport(rest: string[]): Promise<void> {
   }
 
   try {
-    const credsPath = (process.env.JEO_GEMINI_CREDS_PATH ?? process.env.JOC_GEMINI_CREDS_PATH) || path.join(os.homedir(), ".gemini", "oauth_creds.json");
+    const credsPath = jeoEnv("GEMINI_CREDS_PATH") || path.join(os.homedir(), ".gemini", "oauth_creds.json");
     let content: string;
     try {
       content = await fs.readFile(credsPath, "utf-8");

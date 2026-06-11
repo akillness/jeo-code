@@ -2,6 +2,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs/promises";
 import { readGlobalConfig, readRawGlobalConfig, saveConfigPatch, type StoredOAuth } from "../agent/state";
+import { jeoEnv } from "../util/env";
 
 
 export type AuthProvider = "anthropic" | "openai" | "gemini" | "antigravity";
@@ -22,7 +23,7 @@ export interface AuthSnapshot {
 
 const inFlightRefresh = new Map<AuthProvider, Promise<any>>();
 function getLockPath(provider: AuthProvider): string {
-  const dir = (process.env.JEO_CONFIG_DIR ?? process.env.JOC_CONFIG_DIR) || path.join(os.homedir(), ".joc");
+  const dir = jeoEnv("CONFIG_DIR") || path.join(os.homedir(), ".joc");
   return path.join(dir, `oauth-${provider}.lock`);
 }
 
@@ -101,11 +102,11 @@ export async function resolveCredential(provider: AuthProvider): Promise<Credent
   // under tests/custom config sandboxes: if JOC_CONFIG_DIR is explicitly set, only an
   // explicit JOC_GEMINI_CREDS_PATH opts in, so tests never read the developer's real
   // credentials or refresh real tokens.
-  const credsOverride = (process.env.JEO_GEMINI_CREDS_PATH ?? process.env.JOC_GEMINI_CREDS_PATH);
-  const configDirOverridden = !!(process.env.JEO_CONFIG_DIR ?? process.env.JOC_CONFIG_DIR);
+  const credsOverride = jeoEnv("GEMINI_CREDS_PATH");
+  const configDirOverridden = !!jeoEnv("CONFIG_DIR");
   if (!stored && provider === "gemini" && (credsOverride || !configDirOverridden)) {
     try {
-      const credsPath = (process.env.JEO_GEMINI_CREDS_PATH ?? process.env.JOC_GEMINI_CREDS_PATH) || path.join(os.homedir(), ".gemini", "oauth_creds.json");
+      const credsPath = jeoEnv("GEMINI_CREDS_PATH") || path.join(os.homedir(), ".gemini", "oauth_creds.json");
       const content = await fs.readFile(credsPath, "utf-8");
       const creds = JSON.parse(content);
       if (creds && creds.access_token) {

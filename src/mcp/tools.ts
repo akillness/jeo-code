@@ -3,6 +3,7 @@ import { resolveCredential, type AuthProvider } from "../auth";
 import { readGlobalConfig } from "../agent/state";
 import type { ToolDefinition, ToolResult } from "./protocol";
 import { effectiveCredentialForProvider } from "../ai/model-manager";
+import { jeoEnv } from "../util/env";
 
 const AUTH_PROVIDERS: AuthProvider[] = ["anthropic", "openai", "gemini", "antigravity"]
 
@@ -170,6 +171,6 @@ const PIPELINE_TOOLS: ToolDefinition[] = [
   },
 ];
 
-if ((process.env.JEO_MCP_PIPELINE ?? process.env.JOC_MCP_PIPELINE) === "1") {
+if (jeoEnv("MCP_PIPELINE") === "1") {
   TOOLS.push(...PIPELINE_TOOLS);
 }

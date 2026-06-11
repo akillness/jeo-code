@@ -18,6 +18,7 @@ import { EVOLUTION_STAGES, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
 import { renderWelcome, playWelcomeSweep } from "../tui/components/welcome";
 import { checkForUpdate } from "../util/update-check";
+import { jeoEnv } from "../util/env";
 import { renderUpdateBox } from "../tui/components/update-box";
 import { supportsUnicode } from "../tui/components/capability";
 import pkg from "../../package.json";

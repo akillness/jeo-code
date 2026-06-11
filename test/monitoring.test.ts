@@ -4,17 +4,19 @@ import { stripAnsi } from "../src/tui/components/color";
 
 test("renderMonitorView: correctly combines HUD, Evolution, and Analysis", () => {
   const state = {
-    phase: "executing" as const,
+    phase: "executing" as any,
     step: 5,
     maxSteps: 20,
+    tickCount: 0,
     analysisReport: "- File length: 450 lines.\n- Issue: monolithic."
   };
   
   const view = stripAnsi(renderMonitorView(state));
-  expect(view).toContain("=== joc Sovereign Monitoring HUD ===");
+  expect(view).toContain("ooo ralph Sovereign Monitoring HUD");
+  expect(view).toContain("PHASE:");
   expect(view).toContain("executing"); // Phase
-  expect(view).toContain("Evolution:"); // Check header
-  expect(view).toContain("Double Helix"); // Evolution stage for 5/20 (ratio 0.25 -> stage 1)
-  expect(view).toContain("--- Self-Analysis Report ---");
-  expect(view).toContain("monolithic");
+  expect(view).toContain("EVO  :");
+  expect(view).toContain("Double Helix"); // Evolution stage for 5/20
+  expect(view).toContain("- File length: 450 lines.");
+  expect(view).toContain("- Issue: monolithic.");
 });

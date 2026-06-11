@@ -1,0 +1,35 @@
+bun src/cli.ts launch
+jangyoung@MacBook-Pro-2 jeo-code % bun src/cli.ts launch
+[90m╭─── joc v0.1.0 · evolution forge ─────────────────────────────────────────────────────────────────╮[39m
+[90m│[39m                                [90m│[1m[39mFlow keys[0m                                                        [90m│[39m
+[90m│[39m            [1m[36mjeo-code[0m            [90m│[2m[39m/ commands · /model model[0m                                        [90m│[39m
+[90m│[39m      [2mevolve · act · prove[0m      [90m│[2m[39m/skill skills · /sessions history[0m                                [90m│[39m
+[90m│[39m                                [90m│[2m[39m/exit quit · /help all[0m                                           [90m│[39m
+[90m│[39m       [36m      .---.       [39m       [90m│[2m[39m─────────────────────────────────────────────────────────────────[0m[90m│[39m
+[90m│[39m       [36m     / o o \      [39m       [90m│[1m[39mWorkspace[0m                                                        [90m│[39m
+[90m│[39m       [36m     \  -  /      [39m       [90m│[2m[39mcwd [0m~/.superset/projects/jeo-code                                [90m│[39m
+[90m│[39m       [36m      '---'       [39m       [90m│[2m[39mthinking [0mhigh                                                    [90m│[39m
+[90m│[39m       [1m[36m [Primordial Cell][0m       [90m│[2m[39msession [0m65d277aa                                                 [90m│[39m
+[90m│[39m                                [90m│[2m[39mcontext 19 file(s): [0mAGENTS.md                                    [90m│[39m
+[90m│[39m   [36m[ ◆ gemini-flash-latest ][39m    [90m│[2m[39m─────────────────────────────────────────────────────────────────[0m[90m│[39m
+[90m│[39m          [34m[ ◇ gemini ][39m          [90m│[1m[39mSession trail[0m                                                    [90m│[39m
+[90m│[39m                                [90m│[2m[39mNo saved trails[0m                                                  [90m│[39m
+[90m╰──────────────────────────────────────────────────────────────────────────────────────────────────╯[39m
+Type your request. Slash: /help /model /models /provider /agents /roles /thinking /skill /view /diff /find /search /sess
+ions /exit  (type / for the full ↑/↓ palette)
+(fetching models from logged-in providers…)
+[34m╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮[39m
+[34m│[39mType a request, /help, or @path                                                                                      [34m│[39m
+[34m╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯[39m
+
+
+
+
+
+
+
+
+
+
+
+

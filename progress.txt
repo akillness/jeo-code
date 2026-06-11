@@ -91,3 +91,8 @@
 - app.ts: ledgerTree() — find/search/ls results flush gjc-style ' · N files/matches' count suffix + up to 6 dim '├─' child rows + '└─ … N more' into scrollback (wheel-history reads like gjc's '✓ Find: pattern  39 files' block).
 - Aligned stale stream-events assertions to the concurrent session's new 'Read :' title format (tolerant regexes accepting both).
 - Live tmux proof: cursor_x=3 at start point after '>', =8 after 'hello', =6 after 2x Left, =3 after Ctrl-A. Gate: typecheck 0; bun test 981 pass / 0 fail.
+[2026-06-11] Pass 896 — $ skill popup + ESC/^C input clear
+- slash.ts: formatSlashPreview/slashPreviewMatches handle a leading '$' — live skill popup ($name [intent] + summary, shared highlight/scroll-window renderer with '/'), arrow-key nav + Enter selection wired in launch (pendingSelection now applies to $ prefixes).
+- launch.ts: clearTypedInput() — ESC (lone-ESC decodes with meta set; accepted) and Ctrl+C (rl SIGINT listener) wipe the typed line + pending clipboard images and redraw the placeholder box; empty-line ^C shows '^C — nothing to clear · /exit to quit' (generic keypress redraw skips ^C so the hint survives). Cmd+C never reaches terminal apps (OS copy) — meta-mapped variants accepted.
+- Live tmux proof: ESC/^C → placeholder + caret x=3; empty ^C hint row; '$' popup lists 4 workflow skills with summaries.
+- Gate: typecheck 0; bun test 997 pass / 0 fail (slash $-popup +2 tests).

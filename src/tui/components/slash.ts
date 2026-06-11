@@ -103,21 +103,21 @@ export function formatSlashCommandList(input = "/", extra: readonly SlashCommand
   return lines;
 }
 
-/**
- * Compact live preview shown beneath the input box as the user types a slash
- * keyword (before any space). Returns matching command usages + descriptions,
- * capped, or [] for non-slash / argument input (a space means it is a real
- * command being typed, not a keyword probe).
- */
-export function formatSlashPreview(line: string, max = 6, selected = -1, extra: readonly SlashCommandInfo[] = []): string[] {
-  const trimmed = line.trimStart();
-  if (!trimmed.startsWith("/") || trimmed.includes(" ")) return [];
-  const details = mergeSlashCommandDetails(extra);
-  const matches = matchSlash(trimmed, details.map(c => c.command));
-  if (matches.length === 0) return [];
-  const rows = details.filter(c => matches.includes(c.command));
+/** Minimal skill shape for the `$` popup (name + one-line summary). */
+export interface SkillPreviewItem {
+  name: string;
+  summary?: string;
+}
+
+/** Shared row renderer for the live popup: highlight + scroll window + counters. */
+function renderPreviewRows(
+  rows: readonly { usage: string; description: string }[],
+  max: number,
+  selected: number,
+): string[] {
+  if (rows.length === 0) return [];
   const usageWidth = Math.max(...rows.map(r => r.usage.length), 6);
-  const fmt = (r: SlashCommandInfo, isSel: boolean): string => {
+  const fmt = (r: { usage: string; description: string }, isSel: boolean): string => {
     const body = `${r.usage.padEnd(usageWidth)}  ${r.description}`;
     return isSel ? `❯ ${chalk.cyan.bold(body)}` : `  ${body}`;
   };
@@ -140,10 +140,54 @@ export function formatSlashPreview(line: string, max = 6, selected = -1, extra: 
   return lines;
 }
 
-/** The matching command names for a slash-keyword prefix, in display order. Empty otherwise. */
-export function slashPreviewMatches(line: string, extra: readonly SlashCommandInfo[] = []): string[] {
+/** Skills whose names prefix-match a `$keyword` probe (no space yet), display order. */
+function dollarMatches(trimmed: string, skills: readonly SkillPreviewItem[]): SkillPreviewItem[] {
+  const prefix = trimmed.slice(1).toLowerCase();
+  return skills.filter(s => s.name.toLowerCase().startsWith(prefix));
+}
+
+/**
+ * Compact live preview shown beneath the input box as the user types a slash
+ * keyword (before any space). Returns matching command usages + descriptions,
+ * capped, or [] for non-slash / argument input (a space means it is a real
+ * command being typed, not a keyword probe). A leading `$` previews SKILLS the
+ * same way (`$name [intent]` direct invocation, gjc/Codex style).
+ */
+export function formatSlashPreview(
+  line: string,
+  max = 6,
+  selected = -1,
+  extra: readonly SlashCommandInfo[] = [],
+  skills: readonly SkillPreviewItem[] = [],
+): string[] {
   const trimmed = line.trimStart();
-  if (!trimmed.startsWith("/") || trimmed.includes(" ")) return [];
+  if (trimmed.includes(" ")) return [];
+  if (trimmed.startsWith("$")) {
+    const rows = dollarMatches(trimmed, skills).map(s => ({
+      usage: `$${s.name} [intent]`,
+      description: s.summary?.trim() || "run this skill directly",
+    }));
+    return renderPreviewRows(rows, max, selected);
+  }
+  if (!trimmed.startsWith("/")) return [];
+  const details = mergeSlashCommandDetails(extra);
+  const matches = matchSlash(trimmed, details.map(c => c.command));
+  if (matches.length === 0) return [];
+  const rows = details.filter(c => matches.includes(c.command));
+  return renderPreviewRows(rows, max, selected);
+}
+
+/** The matching command names for a slash-keyword (`/cmd`) or skill (`$name`)
+ *  prefix, in display order. Empty otherwise. */
+export function slashPreviewMatches(
+  line: string,
+  extra: readonly SlashCommandInfo[] = [],
+  skills: readonly SkillPreviewItem[] = [],
+): string[] {
+  const trimmed = line.trimStart();
+  if (trimmed.includes(" ")) return [];
+  if (trimmed.startsWith("$")) return dollarMatches(trimmed, skills).map(s => `$${s.name}`);
+  if (!trimmed.startsWith("/")) return [];
   const details = mergeSlashCommandDetails(extra);
   return matchSlash(trimmed, details.map(c => c.command));
 }

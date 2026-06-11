@@ -50,6 +50,10 @@ import { providerPicker, renderProviderPicker } from "../tui/components/provider
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff } from "../tui/components/code-view";
 import { categoryBadge } from "../tui/components/category-index";
 import { renderInputFrame } from "../tui/components/input-box";
+import { renderStatusBar } from "../tui/components/status";
+import { detectColorLevel } from "../tui/components/color";
+import { readClipboardImage } from "../util/clipboard-image";
+import type { ImageAttachment } from "../ai/types";
 import { renderMarkdownTables } from "../tui/components/markdown-table";
 import { summarizeForgeInvocation } from "../tui/components/forge";
 import { formatDuration, formatUsage } from "../tui/components/duration";
@@ -59,7 +63,7 @@ import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { maybeCompact, historyTokens } from "../agent/compaction";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { listThemes, resolveTheme } from "../tui/components/themes";
+import { listThemes, resolveTheme, themeGradient, accentPaint } from "../tui/components/themes";
 import {
   createSession,
   appendMessage,
@@ -414,7 +418,7 @@ export function formatResumeHint(sessionId: string): string {
   return `Resume with: joc launch --resume ${sessionId}`;
 }
 export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchFlags {
-  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 25, message: "", tmux: false, errors: [], print: false, noSkills: false, noTools: false };
+  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 100, message: "", tmux: false, errors: [], print: false, noSkills: false, noTools: false };
   const rest: string[] = [];
   const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (let i = 0; i < args.length; i++) {
@@ -880,7 +884,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let liveModelsCache: ProviderModelsResult[] | null = null;
   const getLiveModels = async (force = false): Promise<ProviderModelsResult[]> => {
     if (force || !liveModelsCache) {
-      process.stdout.write("(fetching models from logged-in providers…)\n");
       liveModelsCache = await discoverModels({ timeoutMs: 4000 });
     }
     return liveModelsCache;
@@ -931,7 +934,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // When `useTui`, a live TUI renders the turn and prints the final reply itself (rendered=true).
   const runTurn = async (
     userInput: string,
-    useTui: boolean
+    useTui: boolean,
+    images?: ImageAttachment[]
   ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean; usage: string }> => {
     const turnConfig = await readGlobalConfig();
     const activeModel = sessionModel || turnConfig.defaultModel;
@@ -952,7 +956,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
 
     const beforeLen = history.length;
-    history.push({ role: "user", content: userInput });
+    if (images?.length && catalogMetadata(activeModel)?.images === false) {
+      console.log(`! ${activeModel} does not advertise image input — sending the attachment anyway.`);
+    }
+    history.push(images?.length ? { role: "user", content: userInput, images } : { role: "user", content: userInput });
 
     // `turnConfig` was read before compaction so both the compactor and delegated
     // task tool see mid-session config changes (e.g. `/agents <role> <model>`).
@@ -960,7 +967,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // Dirty count is recomputed at each turn start (gjc parity P1.B5: per-turn, not
     // per-render) so `?N` grows as the agent edits files; one spawn/turn, not per frame.
     const turnDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
-    const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: flags.maxSteps, cwd, branch, dirtyCount: turnDirtyCount }) : null;
+    const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: flags.maxSteps, cwd, branch, dirtyCount: turnDirtyCount, thinking: sessionThinking }) : null;
     tui?.setContextUsage(historyTokens(history), contextTokens);
     tui?.setTurnTitle(userInput); // gjc-parity turn title → HUD + tmux pane title (no LLM call)
     if (tui) tui.start();
@@ -1177,7 +1184,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const upd = await Promise.race([updatePromise, new Promise<null>(r => setTimeout(() => r(null), 1200))]);
   if (upd?.updateAvailable) console.log(renderUpdateBox(upd.current, upd.latest).join("\n"));
-  console.log("Type your request. Slash: /help /model /models /provider /agents /roles /thinking /skill /view /diff /find /search /sessions /exit  (type / for the full ↑/↓ palette)" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
+  if (!LaunchTui.usable(flags.noTui)) console.log("(plain output)");
 
   const useTui = LaunchTui.usable(flags.noTui);
   const runSkillInvocation = async (skill: SkillDoc, intent: string, invokedAs?: string): Promise<void> => {
@@ -1366,7 +1373,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // boxed input instead of silently falling back to the raw `joc>` prompt (previously
   // any terminal under 17 rows lost the box entirely and showed bare CLI input).
   const MAX_PREVIEW_ROWS = 12;
-  const MIN_PREVIEW_ROWS = 5; // input box (3 rows) + 2 preview rows
+  const MIN_PREVIEW_ROWS = 6; // status bar (1) + input box (3 rows) + 2 preview rows
   const previewRowsFor = (rows: number): number => Math.max(MIN_PREVIEW_ROWS, Math.min(MAX_PREVIEW_ROWS, rows - 6));
   const previewEnabled =
     process.stdin.isTTY &&
@@ -1381,6 +1388,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let navIdx = -1; // highlighted row, -1 = none
   let typedLine = ""; // the user-typed line (restored after readline's history nav)
   let pendingSelection: string | undefined; // command chosen via arrows, applied on Enter
+  let pendingImages: ImageAttachment[] = []; // clipboard images attached to the next message (ctrl+v)
+  let pasteInFlight = false; // guard concurrent ctrl+v clipboard reads
+  let idleDirtyCount: number | undefined; // git dirty count refreshed once per prompt
   let lastFooterKey = "";
   const logLines = (lines: string | string[]) => {
     const arr = Array.isArray(lines) ? lines : [lines];
@@ -1450,6 +1460,28 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       out.write("\x1b[?25h");
     }
   };
+  // The gjc-layout status bar pinned directly ABOVE the input box: bg-gradient
+  // identity block (model · thinking / branch / cwd) left, live ctx% right.
+  const statusBarLine = (cols: number): string => {
+    const activeModel = sessionModel || defaultModel;
+    const meta = catalogMetadata(activeModel);
+    const used = historyTokens(history);
+    const theme = resolveTheme(process.env);
+    return renderStatusBar({
+      model: activeModel,
+      thinking: sessionThinking,
+      branch,
+      dirtyCount: idleDirtyCount,
+      cwd,
+      ctxPct: meta?.contextTokens ? (used / meta.contextTokens) * 100 : undefined,
+      ctxMaxTokens: meta?.contextTokens,
+      cols,
+      unicode: true,
+      color: theme.color,
+      colorLevel: detectColorLevel(process.env, true),
+      gradient: themeGradient(theme, 2),
+    });
+  };
   const previewLines = (line: string, selected = -1): string[] => {
     const cols = Math.max(24, (process.stdout.columns ?? 80) - 1);
     // Caret offset comes from readline's live cursor when it matches the rendered
@@ -1461,20 +1493,25 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       cols,
       color: true,
       unicode: true,
+      accent: accentPaint(resolveTheme(process.env)),
       cwdLabel: currentAtLabel(line),
-      maxBodyRows: Math.max(1, footerRows - 5),
+      attachmentLabel: pendingImages.length
+        ? `⧉ ${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""} attached — sent with the next message`
+        : undefined,
+      maxBodyRows: Math.max(1, footerRows - 6),
       cursor: caret,
     });
     const input = frame.lines.map(l => truncateAnsi(l, cols));
+    // Row 0 is the status bar, so the caret (and everything else) shifts down one row.
     footerCursor = {
-      row: Math.max(0, Math.min(frame.cursorRow, footerRows - 1)),
+      row: Math.max(0, Math.min(frame.cursorRow + 1, footerRows - 1)),
       col: Math.max(1, Math.min(frame.cursorCol, cols)),
     };
-    const budget = Math.max(0, footerRows - input.length);
-    const slash = budget > 0 ? formatSlashPreview(line, budget, selected, skillSlashDetails) : [];
+    const budget = Math.max(0, footerRows - 1 - input.length);
+    const slash = budget > 0 ? formatSlashPreview(line, budget, selected, skillSlashDetails, resolvedSkills) : [];
     const args = !slash.length && budget > 0 ? formatCompletionPreview(line, completionContext(), budget) : [];
     const preview = (slash.length ? slash : args).map(l => chalk.gray(truncateAnsi(l, cols)));
-    return [...input, ...preview].slice(0, footerRows);
+    return [statusBarLine(cols), ...input, ...preview].slice(0, footerRows);
   };
   const drawFooter = (lines: string[]) => {
     if (!previewArmed || footerRendered === 0) return;
@@ -1507,6 +1544,37 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     footerParkedRow = tRow;
     out.write(s);
   };
+
+  // ESC / Ctrl+C at the prompt: wipe the typed text (and detach any pending
+  // clipboard images — their `[image #N]` tags live in that text) instead of
+  // leaving stale input. Returns true when something was actually cleared.
+  const clearTypedInput = (): boolean => {
+    const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
+    if ((rli.line?.length ?? 0) === 0 && pendingImages.length === 0) return false;
+    rli.line = "";
+    rli.cursor = 0;
+    rli._refreshLine?.();
+    pendingImages = [];
+    typedLine = "";
+    navMatches = [];
+    navIdx = -1;
+    pendingSelection = undefined;
+    if (previewArmed) drawFooter(previewLines(""));
+    return true;
+  };
+  // Ctrl+C while typing: readline raises SIGINT on the interface — first press
+  // clears the line (zsh/gjc-style) rather than killing the process; with
+  // nothing typed it shows a quiet quit hint. Mid-turn ^C aborts are handled by
+  // the separate raw-mode turn harness, not this listener.
+  rl.on("SIGINT", () => {
+    if (pickerActive) return;
+    if (clearTypedInput()) return;
+    if (previewArmed) {
+      const lines = previewLines("");
+      lines.push(chalk.gray("  ^C — nothing to clear · /exit to quit"));
+      drawFooter(lines);
+    }
+  });
 
   const runSelectPicker = async <T>(
     render: (cols: number, rows: number) => string[],
@@ -1756,7 +1824,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   if (previewEnabled) {
     process.once("exit", () => out.write("\x1b[?25h")); // safety net: never leave the cursor hidden
-    process.stdin.on("keypress", (_ch: string, key: { name?: string; ctrl?: boolean } | undefined) => {
+    process.stdin.on("keypress", (_ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
       // Ctrl+O: dump the FULL last assistant reply (untruncated, tables rendered) into
       // scrollback as a detail view, then restore the boxed footer. (Cmd+O is intercepted
       // by the OS/terminal and never reaches the app, so Ctrl+O is the portable binding.)
@@ -1769,7 +1837,43 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (wasArmed) { armPreview(); drawFooter(previewLines(typedLine, navIdx)); }
         return;
       }
+      // Ctrl+V: attach a clipboard IMAGE to the next message. Terminal text paste
+      // never arrives as a ctrl+v keypress (it streams as plain stdin data), so this
+      // binding is image-only; when the clipboard holds no image it's a silent no-op.
+      if (key?.ctrl && key.name === "v") {
+        if (pasteInFlight) return;
+        pasteInFlight = true;
+        void (async () => {
+          try {
+            const img = await readClipboardImage();
+            if (!img) return;
+            pendingImages.push(img);
+            const tag = `[image #${pendingImages.length}]`;
+            const rli = rl as unknown as { line: string; cursor: number };
+            const at = typeof rli.cursor === "number" ? rli.cursor : rli.line.length;
+            const sep = rli.line.length > 0 && at > 0 && rli.line[at - 1] !== " " ? " " : "";
+            rli.line = rli.line.slice(0, at) + sep + tag + " " + rli.line.slice(at);
+            rli.cursor = at + sep.length + tag.length + 1;
+            typedLine = rli.line;
+            if (previewArmed) drawFooter(previewLines(typedLine, navIdx));
+          } finally {
+            pasteInFlight = false;
+          }
+        })();
+        return;
+      }
       if (pickerActive || previewPending) return;
+      // ESC (or a meta-mapped Cmd+C) at the prompt: wipe the typed text. A bare
+      // ESC decodes as `escape` (meta is set for a lone ESC byte — accept both)
+      // only after readline's escape-sequence timeout, so arrow/wheel sequences
+      // never trigger this.
+      if (key && ((key.name === "escape" && !key.ctrl) || (key.meta && key.name === "c"))) {
+        clearTypedInput();
+        return;
+      }
+      // Ctrl+C is owned end-to-end by the rl SIGINT listener (clear or quit hint);
+      // skipping the generic redraw here keeps that hint from being overwritten.
+      if (key?.ctrl && key.name === "c") return;
       previewPending = true;
       setImmediate(() => {
         previewPending = false;
@@ -1798,7 +1902,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // Any other key edits the line: refresh the slash-keyword matches (if any),
           // reset the highlight, and show either the command preview or argument preview.
           typedLine = rl.line;
-          navMatches = slashPreviewMatches(typedLine, skillSlashDetails);
+          navMatches = slashPreviewMatches(typedLine, skillSlashDetails, resolvedSkills);
           navIdx = -1;
           pendingSelection = undefined;
           drawFooter(previewLines(typedLine));
@@ -1820,6 +1924,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   while (true) {
       drainPendingTtyInput();
+      // Refresh the status bar's dirty flag once per prompt (one git spawn, not per frame).
+      idleDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
       armPreview();
       // Render the boxed input immediately (placeholder) so the prompt is visible
       // even though readline's own "joc>" echo is now suppressed in box mode.
@@ -1832,8 +1938,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // raw CLI input line can ever flash). Legacy prompt only without the box.
       const raw = (await rl.question(previewEnabled ? "" : "\njoc> ")).trim();
       disarmPreview();
-      // If an arrow-key selection was made over the slash preview, run that command.
-      let input = pendingSelection && isSlashAttempt(raw) && pendingSelection.startsWith(raw)
+      // If an arrow-key selection was made over the slash/skill preview, run it.
+      let input = pendingSelection && (isSlashAttempt(raw) || raw.startsWith("$")) && pendingSelection.startsWith(raw)
         ? pendingSelection
         : raw;
       // gjc-parity command aliases (full behavior reuse, no duplicated handlers).
@@ -1843,7 +1949,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       navMatches = [];
       navIdx = -1;
       if (input === "/exit" || input === "/quit") break;
-      if (input === "") continue;
+      if (input === "") {
+        if (pendingImages.length === 0) continue;
+        input = "Please look at the attached image(s)."; // image-only submit
+      }
       if (input === "/" || input === "/?" || input === "/help") {
         logLines(formatSlashCommandList(input === "/help" ? "/" : input, skillSlashDetails));
         console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .joc/sessions/.");
@@ -2832,8 +2941,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
 
       lastUserInput = input;
+      // Hand pending clipboard images to this turn and clear them — a failed turn
+      // does not resurrect attachments (the [image #N] tags stay in the text).
+      const turnImages = pendingImages.length ? [...pendingImages] : undefined;
+      pendingImages = [];
       try {
-        const { done, steps, reply, rendered, usage } = await runTurn(input, useTui);
+        const { done, steps, reply, rendered, usage } = await runTurn(input, useTui, turnImages);
         lastReply = reply;
         if (!rendered) {
           console.log(`joc> ${renderMarkdownTables(reply)}${usage}`);

@@ -157,3 +157,39 @@ test("formatSlashPreview: overflow shows an (i/total) position counter that trac
   expect(last.length).toBeLessThanOrEqual(3);
   expect(last.some(l => l.includes(`(${total}/${total})`))).toBe(true);
 });
+
+const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+test("$ prefix pops up matching skills with summaries (live popup)", () => {
+  const skills = [
+    { name: "spec-kit", summary: "Spec-first workflow kit" },
+    { name: "speckit-extra", summary: "" },
+    { name: "team", summary: "Coordinated execution" },
+  ];
+  // Bare `$` lists every skill.
+  const all = formatSlashPreview("$", 6, -1, [], skills).map(stripAnsi);
+  expect(all.length).toBe(3);
+  expect(all[0]).toContain("$spec-kit [intent]");
+  expect(all[0]).toContain("Spec-first workflow kit");
+  expect(all[1]).toContain("run this skill directly"); // empty summary fallback
+  // Prefix narrows: `$sp` → the two spec* skills only.
+  const sp = formatSlashPreview("$sp", 6, -1, [], skills).map(stripAnsi);
+  expect(sp.length).toBe(2);
+  expect(sp.join("\n")).not.toContain("$team");
+  // Selection highlight marker on the chosen row.
+  const sel = formatSlashPreview("$", 6, 2, [], skills).map(stripAnsi);
+  expect(sel[2]).toContain("❯");
+  expect(sel[2]).toContain("$team");
+  // A space means a real invocation is being typed — popup closes.
+  expect(formatSlashPreview("$team build it", 6, -1, [], skills)).toEqual([]);
+});
+
+test("slashPreviewMatches returns $skill names for arrow-key navigation", () => {
+  const skills = [{ name: "spec-kit" }, { name: "team" }];
+  expect(slashPreviewMatches("$", [], skills)).toEqual(["$spec-kit", "$team"]);
+  expect(slashPreviewMatches("$te", [], skills)).toEqual(["$team"]);
+  expect(slashPreviewMatches("$zzz", [], skills)).toEqual([]);
+  expect(slashPreviewMatches("$team go", [], skills)).toEqual([]);
+  // `/` behavior unchanged
+  expect(slashPreviewMatches("/he", [], skills).length).toBeGreaterThan(0);
+});

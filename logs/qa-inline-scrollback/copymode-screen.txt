@@ -2,29 +2,29 @@ mode
 jangyoung@MacBook-Pro-2 jeo-code % cd /Users/jangyoung/.superset/projects/jeo-code && bun run logs/q
 a-inline-scrollback/driver.ts copy-mode
 Starting driver for case: copy-mode
-✔ [TOOL] [DONE] LEDGER-001
+✓ LEDGER-001
   [AGENT] executor ✓ LEDGER-002
-✔ [TOOL] [DONE] LEDGER-003
+✓ LEDGER-003
   [AGENT] executor ✓ LEDGER-004
-✔ [TOOL] [DONE] LEDGER-005
+✓ LEDGER-005
   [AGENT] executor ✓ LEDGER-006
-✔ [TOOL] [DONE] LEDGER-007
+✓ LEDGER-007
   [AGENT] executor ✓ LEDGER-008
-✔ [TOOL] [DONE] LEDGER-009
+✓ LEDGER-009
   [AGENT] executor ✓ LEDGER-010
-✔ [TOOL] [DONE] LEDGER-011
+✓ LEDGER-011
   [AGENT] executor ✓ LEDGER-012
-✔ [TOOL] [DONE] LEDGER-013
+✓ LEDGER-013
   [AGENT] executor ✓ LEDGER-014
-✔ [TOOL] [DONE] LEDGER-015
+✓ LEDGER-015
   [AGENT] executor ✓ LEDGER-016
-✔ [TOOL] [DONE] LEDGER-017
+✓ LEDGER-017
   [AGENT] executor ✓ LEDGER-018
-✔ [TOOL] [DONE] LEDGER-019
+✓ LEDGER-019
   [AGENT] executor ✓ LEDGER-020
-✔ [TOOL] [DONE] LEDGER-021
+✓ LEDGER-021
   [AGENT] executor ✓ LEDGER-022
-✔ [TOOL] [DONE] LEDGER-023
+✓ LEDGER-023
   [AGENT] executor ✓ LEDGER-024
-✔ [TOOL] [DONE] LEDGER-025
+✓ LEDGER-025
   [AGENT] executor ✓ LEDGER-026

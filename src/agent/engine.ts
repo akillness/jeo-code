@@ -16,6 +16,7 @@ import { friendlyProviderError } from "../util/provider-error";
 import { isRateLimitError } from "../util/retry";
 import { runPreToolHooks, runPostTurnHooks } from "./hooks";
 import { minimizeToolOutput } from "./output-minimizer";
+import { StepBudget, resolveStepBudgetConfig, type StepBudgetConfig } from "./step-budget";
 
 
 async function invokeCallLlm(history: Message[], options: {
@@ -104,6 +105,9 @@ export interface AgentLoopEvents {
   /** Accumulated streamed model response so far — drives the live reasoning view. Only
    *  requested when a consumer sets it (the engine streams solely for the TUI). */
   onModelStream?(textSoFar: string): void;
+  /** Step-budget change (gjc-style retry flow): the limit was extended because the
+   *  turn is making progress. `limit` is the new max; `reason` is display-ready. */
+  onBudget?(limit: number, reason: string): void;
 }
 
 export interface AgentLoopOptions {
@@ -117,6 +121,9 @@ export interface AgentLoopOptions {
   tools?: Record<string, ToolHandler>;
   signal?: AbortSignal;
   events?: AgentLoopEvents;
+  /** Step-budget overrides (gjc-style retry flow). `{ maxExtensions: 0 }` restores the
+   *  legacy fixed counter — used by bounded subagent delegation. */
+  budget?: Partial<StepBudgetConfig>;
 }
 
 export interface AgentLoopResult {
@@ -221,6 +228,12 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   }
   const tools = opts.tools ?? DEFAULT_TOOLS;
   const maxSteps = opts.maxSteps ?? 15;
+  // gjc-style retry flow: the step limit is a flexible BUDGET, not a bare counter.
+  // While the recent window shows real progress the budget extends itself (bounded
+  // extensions, hard cap); a stalled turn fails fast into the consolidation wrap-up.
+  const budget = new StepBudget(resolveStepBudgetConfig(maxSteps, process.env, opts.budget));
+  // Why the loop stopped at the limit — folded into the consolidation message.
+  let budgetStopReason = "";
   const ev = opts.events ?? {};
 
   let step = 1;
@@ -243,7 +256,16 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // model's text as the final answer instead of burning the whole step budget.
   const MAX_PARSE_BOUNCES = 2;
   let parseFailures = 0;
-  while (step <= maxSteps) {
+  while (true) {
+    if (step > budget.limit()) {
+      const decision = budget.tryExtend();
+      if (!decision.extend) {
+        budgetStopReason = decision.reason;
+        break;
+      }
+      ev.onNotice?.(decision.reason);
+      ev.onBudget?.(decision.limit, decision.reason);
+    }
     if (opts.signal?.aborted) {
       return finish({ done: false, steps: step - 1, doneReason: "Cancelled." });
     }
@@ -419,5 +441,35 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     step++;
   }
 
+  // Step budget exhausted without `done`. Instead of dying with a bare
+  // "(reached the N-step limit)" error, dynamically CONSOLIDATE: one final
+  // no-tools model call summarizes what was accomplished, key findings, and
+  // what remains — so the turn ends with a useful wrap-up, not a failure line.
+  try {
+    if (!opts.signal?.aborted) {
+      const wrapUp = await invokeCallLlm(
+        [
+          ...history,
+          {
+            role: "user",
+            content:
+              "The step budget for this turn is exhausted. Do NOT call any tool. " +
+              "Reply with plain prose (no JSON): consolidate what you accomplished this turn, " +
+              "the key findings/changes so far, and what remains to be done next.",
+          },
+        ],
+        { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: opts.signal },
+      );
+      const consolidated = wrapUp.trim();
+      if (consolidated) {
+        history.push({ role: "assistant", content: consolidated });
+        return finish({
+          done: false,
+          steps: maxSteps,
+          doneReason: `${consolidated}\n\n(step budget of ${maxSteps} reached — consolidated wrap-up above; continue with a follow-up request)`,
+        });
+      }
+    }
+  } catch { /* wrap-up is best-effort; fall through to the plain budget message */ }
   return finish({ done: false, steps: maxSteps });
 }

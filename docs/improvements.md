@@ -6419,3 +6419,44 @@ loop is unchanged when no TUI consumes it.
   corruption) → all fixed → round-2 all-CLEAR APPROVE, no blocking AI-slop.
 - Ultragoal Phase-3 goal complete (final-aggregate receipt). Consensus-seed Phases 1–3
   are now all delivered.
+
+## gjc-layout TUI redesign: badge-free ledger + flat inline frame (pass 896)
+
+**Date:** 2026-06-11 · **Dimension: tui (user-requested screen relayout to the gjc reference).**
+
+Reorganized the live screen to the gjc reference layout and removed the noise phrases.
+
+- **Phrases removed.** The long `Type your request. Slash: /help …` startup hint line and the
+  `(fetching models from logged-in providers…)` notice are gone (the fetch stays silent; non-TTY
+  prints only `(plain output)`). Input placeholder is now `Type your message...`. Ledger lines
+  dropped the `[FILE] [DONE]`-style double badges; forge box headers dropped the
+  `[NN:CAT]` badge and the `· language` suffix.
+- **gjc-form tool titles.** `Read path:1-20`, `Write path`, `Edit path`, `Find: glob`,
+  `Search: pattern`, `Task: role`, `Bash` (`src/tui/components/forge.ts`).
+- **Merged Bash card.** Invocation + result are one card: `✗/✓ Bash` title, `$ command` echo,
+  `── Output ──` divider, output body, trailing `Command exited with code N` (parsed from the
+  engine's `Exit code N` prefix and moved to the end).
+- **Light tools = one-liners.** read/find/search/ls/todo never render cards; completion is a
+  single glyph-led `✓ target` ledger line (find/search keep the `· N files` + `├─` tree);
+  failures still surface an error card.
+- **Flat inline frame.** The inline live turn dropped the outer border box, mascot art,
+  Activity/Output section labels, hint bar, and the 3-row `[STEP]/[STATUS]/[TOOL]` block —
+  replaced by: live tool card → one spinner status line (real target + step · elapsed ·
+  tokens · `$` cost) → `Todos` checklist (badge-free rows, `badges:false` timeline option) →
+  `◆ hud` line → bg-tinted model status bar (`renderStatusBar`, now also used in-turn with
+  `thinking` plumbed through `LaunchTuiOptions`). The tail is bottom-anchored; cards get the
+  leftover rows. Completed cards flush into scrollback (`flushForgeCard`), so the final
+  summary slims to Todos + `Evolved to:` + `joc>` reply in inline mode.
+- **Theme accents.** `EvolutionTheme.accent` + `accentPaint()` drive forge-card borders, the
+  input-box border/prompt, and the boxed-mode frame (red-claw → `#e25656`, the gjc red).
+  The idle model bar gradient moved to stage 2 (visible red under red-claw).
+- **Status truthfulness.** `currentActivity()` prefers the in-flight tool target over the
+  workflow banner (the `◆ hud` line carries workflow identity) and falls back to
+  `pendingTitle` for cardless light tools.
+
+### Verification (pass 896)
+- typecheck 0; `bun test` 993 pass / 0 fail (updated stale expectations across
+  forge-status / tui-app / stream-status / stream-events / category-index / input-box).
+- tmux visual QA (`logs/joc-redesign/gjc-layout-driver.ts`, 110x32, red-claw): live frame,
+  final scrollback, and idle prompt captured (`gjc-live*.txt`, `gjc-final*.txt`,
+  `gjc-idle.txt`) and matched against the gjc reference screenshot layout.

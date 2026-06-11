@@ -7,6 +7,7 @@
  * layout — only the look. `cosmic` is the default; `mono` is the colorless
  * fallback for plain terminals.
  */
+import chalk from "chalk";
 import { EVOLUTION_STAGE_GRADIENTS, EVOLUTION_STAGE_COUNT, type StageGradient } from "./evolution";
 import { clampStageIndex } from "./evolution";
 import { detectColorLevel, ColorLevel, detectAppearance, type EnvLike } from "./color";
@@ -21,6 +22,8 @@ export interface EvolutionTheme {
   gradients: readonly StageGradient[];
   /** Whether the theme emits color at all (`mono` = false → plain output). */
   color: boolean;
+  /** Accent hex for UI chrome — borders, prompt mark, model status bar (gjc-style). */
+  accent: string;
 }
 
 const COSMIC: EvolutionTheme = {
@@ -28,6 +31,7 @@ const COSMIC: EvolutionTheme = {
   description: "Default — deep-space arc from cyan tide to white-hot singularity.",
   gradients: EVOLUTION_STAGE_GRADIENTS,
   color: true,
+  accent: "#48dbfb",
 };
 
 const MATRIX: EvolutionTheme = {
@@ -41,6 +45,7 @@ const MATRIX: EvolutionTheme = {
     { from: "#00ff41", to: "#ccffcc" },
   ],
   color: true,
+  accent: "#39ff14",
 };
 
 const SOLAR: EvolutionTheme = {
@@ -54,6 +59,7 @@ const SOLAR: EvolutionTheme = {
     { from: "#ff8c00", to: "#fff5cc" },
   ],
   color: true,
+  accent: "#ff8c00",
 };
 
 const RED_CLAW: EvolutionTheme = {
@@ -67,6 +73,7 @@ const RED_CLAW: EvolutionTheme = {
     { from: "#dc143c", to: "#ff0000" },
   ],
   color: true,
+  accent: "#e25656",
 };
 
 const BLUE_CRAB: EvolutionTheme = {
@@ -80,6 +87,7 @@ const BLUE_CRAB: EvolutionTheme = {
     { from: "#006d77", to: "#023e8a" },
   ],
   color: true,
+  accent: "#118ab2",
 };
 
 const MONO: EvolutionTheme = {
@@ -87,6 +95,7 @@ const MONO: EvolutionTheme = {
   description: "Colorless — plain text for NO_COLOR / minimal terminals.",
   gradients: EVOLUTION_STAGE_GRADIENTS,
   color: false,
+  accent: "#ffffff",
 };
 
 export const THEMES: readonly EvolutionTheme[] = [COSMIC, MATRIX, SOLAR, RED_CLAW, BLUE_CRAB, MONO];
@@ -146,4 +155,11 @@ export function resolveTheme(
 export function themeGradient(theme: EvolutionTheme, index: number): StageGradient {
   const i = clampStageIndex(index);
   return theme.gradients[i] ?? theme.gradients[EVOLUTION_STAGE_COUNT - 1]!;
+}
+
+/** A chalk-style painter for the theme's accent color; identity when the theme is colorless. */
+export function accentPaint(theme: EvolutionTheme): (s: string) => string {
+  if (!theme.color) return (s: string) => s;
+  const hex = theme.accent;
+  return (s: string) => chalk.hex(hex)(s);
 }

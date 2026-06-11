@@ -13,6 +13,11 @@ export interface InputBoxOptions {
   maxBodyRows?: number;
   /** Caret offset in CHARACTERS into `line` (readline's rl.cursor). Defaults to end. */
   cursor?: number;
+  /** Accent painter for the border + `>` prompt mark (theme accent); default red/blue. */
+  accent?: (s: string) => string;
+  /** Shadow painter for the bottom/right "shaded" edges; defaults to a dim accent.
+   *  The lit-vs-shaded two-tone contrast gives the box visible depth. */
+  accentShadow?: (s: string) => string;
 }
 
 export interface InputFrame {
@@ -78,7 +83,7 @@ function wrapWithCursor(
 export function renderInputFrame(line: string, opts: InputBoxOptions = {}): InputFrame {
   const cols = Math.max(24, Math.trunc(opts.cols ?? 80));
   const useColor = opts.color !== false;
-  const placeholder = opts.placeholder ?? "Type a request, /help, or @path";
+  const placeholder = opts.placeholder ?? "Type your message...";
   const bodyWidth = Math.max(1, cols - 4);
   const textWidth = Math.max(1, bodyWidth - 2); // "> " / "  " prefix columns
 
@@ -110,7 +115,7 @@ export function renderInputFrame(line: string, opts: InputBoxOptions = {}): Inpu
   if (crow - hidden < 0) { visRow = 0; ccol = 0; }
 
   const promptMark = "> ";
-  const paintPrompt = useColor ? chalk.red : (s: string) => s;
+  const paintPrompt = useColor ? (opts.accent ?? chalk.red) : (s: string) => s;
   const paintGhost = useColor ? chalk.dim : (s: string) => s;
   const body = rows.map((r, i) => {
     const content = placeholderRow ? paintGhost(r) : r;
@@ -125,8 +130,10 @@ export function renderInputFrame(line: string, opts: InputBoxOptions = {}): Inpu
     content.push(useColor ? chalk.gray(opts.cwdLabel) : opts.cwdLabel);
   }
   const glyphs = opts.unicode === false ? BOX_ASCII : BOX_UNICODE;
-  const paint = useColor ? chalk.blue : (s: string) => s;
-  const lines = boxBlock(content, cols, { glyphs, paint, align: "left" });
+  // Depth cue: lit top/left edge (bright accent) vs shaded bottom/right edge (dim).
+  const paint = useColor ? (opts.accent ?? chalk.blueBright) : (s: string) => s;
+  const paintShadow = useColor ? (opts.accentShadow ?? ((s: string) => chalk.blue.dim(s))) : (s: string) => s;
+  const lines = boxBlock(content, cols, { glyphs, paint, paintShadow, align: "left" });
 
   // Terminal columns: border at col 1, content starts col 2, text after "> " at col 4.
   const cursorRow = 1 + visRow;

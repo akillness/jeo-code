@@ -2,7 +2,7 @@ import chalk from "chalk";
 import { BOX_ASCII, BOX_UNICODE, padLineTo, type BoxGlyphs } from "./layout";
 import { stripAnsi, visibleWidth } from "./color";
 import { truncateToWidth } from "./width";
-import { categoryBadge, categoryForTool, type UiCategory } from "./category-index";
+import { type UiCategory } from "./category-index";
 
 export interface ForgeSummary {
   title: string;
@@ -121,15 +121,14 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
       const close = opts.unicode === false ? "]" : "⟧";
       lines.push(`${open}Timeout: ${secs}s${close}`);
     }
-    return { title: "bash command", language: "bash", lines };
+    return { title: "Bash", language: "bash", lines };
   }
 
   if (normalized === "read") {
     const filePath = stringArg(args, "filePath", "path") ?? "<missing path>";
     const range = stringArg(args, "lineRange", "range");
-    const rangeText = range ? ` (lines: ${range})` : "";
     return {
-      title: `Read : ${filePath}${rangeText}`,
+      title: `Read ${filePath}${range ? `:${range}` : ""}`,
       language: "path",
       lines: [`path: ${filePath}`],
     };
@@ -143,7 +142,7 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
     const lang = EXT_TO_LANG[ext];
     const langTag = lang ? ` · ${lang}` : "";
     return {
-      title: `write : ${filePath}`,
+      title: `Write ${filePath}`,
       language: lang || "text",
       lines: [
         ...previewLines(content, 8, 800),
@@ -164,13 +163,13 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
   }
   if (normalized === "find") {
     const pattern = stringArg(args, "globPattern", "pattern") ?? "<missing glob>";
-    return { title: "find files", language: "glob", lines: [`glob: ${pattern}`] };
+    return { title: `Find: ${pattern}`, language: "glob", lines: [`glob: ${pattern}`] };
   }
 
   if (normalized === "search") {
     const pattern = stringArg(args, "pattern") ?? "<missing pattern>";
     const glob = stringArg(args, "globPattern", "path") ?? "*";
-    return { title: `search : ${pattern}`, language: "regex", lines: [`glob: ${glob}`] };
+    return { title: `Search: ${pattern}`, language: "regex", lines: [`glob: ${glob}`] };
   }
 
   if (normalized === "task") {
@@ -178,7 +177,7 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
     const task = stringArg(args, "task", "prompt", "assignment") ?? "<missing task>";
     const context = stringArg(args, "context");
     return {
-      title: `Task : ${role}`,
+      title: `Task: ${role}`,
       language: "text",
       lines: [...previewLines(task, 4, 500), ...(context ? ["context:", ...previewLines(context, 3, 300)] : [])],
     };
@@ -191,11 +190,23 @@ export function summarizeForgeResult(tool: string, success: boolean, output: str
   const status = success ? "ok" : "failed";
   const safeTool = tool || "(no tool)";
   const normalized = safeTool.toLowerCase();
-  const lines = previewLines(output || "<no output>", success ? 5 : 10, success ? 600 : 1200);
+  let body = output || "<no output>";
+  let exitNote: string | null = null;
   if (normalized === "bash") {
-    // gjc-style result card: exit note, an `Output` divider, then the output body.
+    // gjc-style: the engine prefixes failed bash output with `Exit code N` — surface it
+    // as a trailing `Command exited with code N` line below the output body instead.
+    const m = body.match(/^Exit code (-?\d+)\n?/);
+    if (m) {
+      exitNote = `Command exited with code ${m[1]}`;
+      body = body.slice(m[0].length) || "<no output>";
+    } else if (!success) {
+      exitNote = "Command failed";
+    }
+  }
+  const lines = previewLines(body, success ? 5 : 10, success ? 600 : 1200);
+  if (normalized === "bash") {
     lines.unshift(forgeDivider("Output"));
-    lines.unshift(success ? "# exit ok" : "# exit fail");
+    if (exitNote) lines.push("", exitNote);
   }
   return {
     title: `${safeTool} result ${status}`,
@@ -262,9 +273,9 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
   const inner = Math.max(1, width - 2);
   const top = paint(glyphs.tl + glyphs.h.repeat(inner) + glyphs.tr);
   const bottom = paint(glyphs.bl + glyphs.h.repeat(inner) + glyphs.br);
-  const category = opts.category ?? categoryForTool(summary.title.split(/\s+/, 1)[0] ?? summary.language ?? "");
-  const badge = categoryBadge(category, { index: opts.index, color: opts.color });
-  const label = summary.language ? `${badge} ${summary.title} · ${summary.language}` : `${badge} ${summary.title}`;
+  // gjc-style header: just the title (e.g. `✗ Bash`, `Write src/app.ts`) — no
+  // category badge, no `· language` suffix; the box content speaks for itself.
+  const label = summary.title;
   const title = `${opts.color === false ? label : chalk.bold(label)}`;
   // Truncate the title to the inner width BEFORE padding — padLineTo only pads, so a
   // long title/badge would otherwise overflow the right border (box wider than `width`).

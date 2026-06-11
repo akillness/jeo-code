@@ -3,82 +3,67 @@ cd /Users/jangyoung/.superset/projects/jeo-code && bun run logs/qa-inline-scroll
 jangyoung@MacBook-Pro-2 jeo-code % cd /Users/jangyoung/.superset/projects/jeo-code && bun run logs/q
 a-inline-scrollback/driver.ts happy-path
 Starting driver for case: happy-path
-✔ [TOOL] [DONE] LEDGER-001
+✓ LEDGER-001
   [AGENT] executor ✓ LEDGER-002
-✔ [TOOL] [DONE] LEDGER-003
+✓ LEDGER-003
   [AGENT] executor ✓ LEDGER-004
-✔ [TOOL] [DONE] LEDGER-005
+✓ LEDGER-005
   [AGENT] executor ✓ LEDGER-006
-✔ [TOOL] [DONE] LEDGER-007
+✓ LEDGER-007
   [AGENT] executor ✓ LEDGER-008
-✔ [TOOL] [DONE] LEDGER-009
+✓ LEDGER-009
   [AGENT] executor ✓ LEDGER-010
-✔ [TOOL] [DONE] LEDGER-011
+✓ LEDGER-011
   [AGENT] executor ✓ LEDGER-012
-✔ [TOOL] [DONE] LEDGER-013
+✓ LEDGER-013
   [AGENT] executor ✓ LEDGER-014
-✔ [TOOL] [DONE] LEDGER-015
+✓ LEDGER-015
   [AGENT] executor ✓ LEDGER-016
-✔ [TOOL] [DONE] LEDGER-017
+✓ LEDGER-017
   [AGENT] executor ✓ LEDGER-018
-✔ [TOOL] [DONE] LEDGER-019
+✓ LEDGER-019
   [AGENT] executor ✓ LEDGER-020
-✔ [TOOL] [DONE] LEDGER-021
+✓ LEDGER-021
   [AGENT] executor ✓ LEDGER-022
-✔ [TOOL] [DONE] LEDGER-023
+✓ LEDGER-023
   [AGENT] executor ✓ LEDGER-024
-✔ [TOOL] [DONE] LEDGER-025
+✓ LEDGER-025
   [AGENT] executor ✓ LEDGER-026
-✔ [TOOL] [DONE] LEDGER-027
+✓ LEDGER-027
   [AGENT] executor ✓ LEDGER-028
-✔ [TOOL] [DONE] LEDGER-029
+✓ LEDGER-029
   [AGENT] executor ✓ LEDGER-030
-✔ [TOOL] [DONE] LEDGER-031
+✓ LEDGER-031
   [AGENT] executor ✓ LEDGER-032
-✔ [TOOL] [DONE] LEDGER-033
+✓ LEDGER-033
   [AGENT] executor ✓ LEDGER-034
-✔ [TOOL] [DONE] LEDGER-035
+✓ LEDGER-035
   [AGENT] executor ✓ LEDGER-036
-✔ [TOOL] [DONE] LEDGER-037
+✓ LEDGER-037
   [AGENT] executor ✓ LEDGER-038
-✔ [TOOL] [DONE] LEDGER-039
+✓ LEDGER-039
   [AGENT] executor ✓ LEDGER-040
-✔ [TOOL] [DONE] LEDGER-041
+✓ LEDGER-041
   [AGENT] executor ✓ LEDGER-042
-✔ [TOOL] [DONE] LEDGER-043
+✓ LEDGER-043
   [AGENT] executor ✓ LEDGER-044
-✔ [TOOL] [DONE] LEDGER-045
+✓ LEDGER-045
   [AGENT] executor ✓ LEDGER-046
-✔ [TOOL] [DONE] LEDGER-047
+✓ LEDGER-047
   [AGENT] executor ✓ LEDGER-048
-✔ [TOOL] [DONE] LEDGER-049
-╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│── Output ──────────────────────────────────────────────────────────────────────────────────────  │
-│╭──────────────────────────────────────────────────────────────────────────────────────────────╮  │
-││[01:TOOL] LEDGER-047 result ok · output                                                       │  │
-││──────────────────────────────────────────────────────────────────────────────────────────────│  │
-││<no output>                                                                                   │  │
-│╰──────────────────────────────────────────────────────────────────────────────────────────────╯  │
-│                                                                                                  │
-│╭──────────────────────────────────────────────────────────────────────────────────────────────╮  │
-││[02:TOOL] LEDGER-049 result ok · output                                                       │  │
-││──────────────────────────────────────────────────────────────────────────────────────────────│  │
-││<no output>                                                                                   │  │
-│╰──────────────────────────────────────────────────────────────────────────────────────────────╯  │
-├──────────────────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                                  │
-│  ● thinking → ○ planning → ○ executing → ○ reporting → ○ done                                    │
-│                                                                                                  │
-│  [STEP] step 0/25 · [..........] 0% · elapsed 3s                                                 │
-│  [STATUS] joc status · thinking through the next tool call                                       │
-│  [TOOL] joc forge · forge idle · tools 0 (0 ok / 0 fail / 0 running)                             │
-│  ^C cancel · Tab complete · /help commands · /model switch · ^O detail · /exit quit              │
-│.... qa · 3s                                                                                      │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+✓ LEDGER-049
+  [AGENT] executor ✓ LEDGER-050
+✓ LEDGER-051
+  [AGENT] executor ✓ LEDGER-052
+✓ LEDGER-053
+  [AGENT] executor ✓ LEDGER-054
+✓ LEDGER-055
+  [AGENT] executor ✓ LEDGER-056
+✓ LEDGER-057
+  [AGENT] executor ✓ LEDGER-058
+✓ LEDGER-059
+  [AGENT] executor ✓ LEDGER-060
+...  thinking through the next tool call (step 0/100 · 3s)
+
+◆ hud ● thinking → ○ planning → ○ executing → ○ reporting → ○ done
+ ⬢ qa

@@ -20,10 +20,10 @@ test("createStreamEvents: step header + tool target are logged on each step, not
   const out = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
   // STEP headers with the real tool target — the whole point of the gjc-parity fix
   expect(out).toMatch(/\[step 1\/4\] [Rr]ead\s*:?\s*src\/agent\/engine\.ts/);
-  expect(out).toContain("[step 2/4] bash command");
+  expect(out).toContain("[step 2/4] Bash");
   // results, with the failing output tail surfaced
   expect(out).toMatch(/\u2713 [Rr]ead\s*:?\s*src\/agent\/engine\.ts/);
-  expect(out).toContain("\u2717 bash command \u2014 exit 1");
+  expect(out).toContain("\u2717 Bash \u2014 exit 1");
 });
 
 test("createStreamEvents: 'done' and invalid responses do not emit a step line", () => {

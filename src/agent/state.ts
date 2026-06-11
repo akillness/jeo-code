@@ -50,6 +50,8 @@ export interface Config {
   thinkingLevel?: "minimal" | "low" | "medium" | "high" | "xhigh";
   /** Friendly model aliases, e.g. { fast: "ollama/qwen2.5:0.5b" }. Override built-ins. */
   modelAliases?: { [alias: string]: string };
+  /** Most-recently-selected models, newest first (MRU; head == defaultModel). */
+  recentModels?: string[];
   /**
    * Provider retry budgets (gjc parity). `requestMaxRetries` is the number of
    * retries (excluding the initial request) for a provider request; `maxDelayMs`

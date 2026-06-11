@@ -145,12 +145,21 @@ function simulateTerminal(writes: string[]): string[] {
         i = nextEsc;
         
         if (text) {
-          lines[cursorRow] = text;
+          const parts = text.split("\n");
+          for (let p = 0; p < parts.length; p++) {
+            if (p > 0) {
+              cursorRow++;
+            }
+            const part = parts[p];
+            if (part) {
+              lines[cursorRow] = part;
+            }
+          }
         }
       }
     }
   }
-  return lines;
+  return lines.filter(l => l !== undefined);
 }
 
 // --- TUI Review Fixes ---
@@ -184,6 +193,8 @@ test("FIX 1: clamp composed frame to terminal rows", () => {
     ev.onAssistant!("", { tool: "dummy" });
 
     const lines = simulateTerminal(out);
+    console.log("LINES LENGTH:", lines.length);
+    console.log("LINES:", JSON.stringify(lines, null, 2));
     expect(lines.length).toBeLessThanOrEqual(15);
   } finally {
     Object.defineProperty(process.stdout, "isTTY", { value: originalIsTTY, configurable: true });

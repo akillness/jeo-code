@@ -220,3 +220,27 @@ test("runAgentLoop: a model that never emits a 'tool' field stops with a clear, 
   expect(result.doneReason).toContain("/model"); // points the user at a stronger model
   expect(result.steps).toBeLessThanOrEqual(3); // stops at the guard, not the step cap
 });
+
+test("runAgentLoop: exhausted step budget triggers a no-tools consolidation wrap-up", async () => {
+  let calls = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_h: unknown, options: { jsonMode?: boolean }) => {
+      calls++;
+      // Tool-call JSON while jsonMode is on; PROSE for the final wrap-up call (jsonMode:false).
+      if (options?.jsonMode === false) return "Consolidated: read 2 files, found the bug in x.ts; next: apply the fix.";
+      return JSON.stringify({ tool: "spin", arguments: { n: calls } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const result = await runAgentLoop([{ role: "user", content: "go" }], {
+    cwd: process.cwd(),
+    maxSteps: 3,
+    tools: { spin: async () => ({ success: true, output: "ok" }) },
+  });
+  expect(result.done).toBe(false);
+  expect(result.steps).toBe(3);
+  // The reply is the consolidated wrap-up, not a bare "(reached the limit)" failure.
+  expect(result.doneReason).toContain("Consolidated: read 2 files");
+  expect(result.doneReason).toContain("step budget of 3 reached");
+  expect(calls).toBe(4); // 3 tool steps + 1 wrap-up
+});

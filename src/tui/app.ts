@@ -22,13 +22,14 @@ import type { TaskSubEvent } from "../agent/task-tool";
 import { supportsUnicode } from "./components/capability";
 import { centerBlock, padLineTo, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
 import { SECTION_GAP, stackSections } from "./components/section";
-import { resolveTheme, themeGradient } from "./components/themes";
+import { resolveTheme, themeGradient, accentPaint } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, type ForgeSummary } from "./components/forge";
-import { renderJocStatus } from "./components/status";
-import { costForUsage } from "../ai/pricing";
+import { renderJocStatus, renderStatusBar } from "./components/status";
+import { costForUsage, formatCost } from "../ai/pricing";
 import { renderMarkdownTables } from "./components/markdown-table";
-import { categoryBadge, categoryForTool } from "./components/category-index";
+import { visibleWidth, wrapTextWithAnsi } from "./components/width";
+import { categoryBadge } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
 import { formatDuration, formatUsage } from "./components/duration";
@@ -49,6 +50,8 @@ export interface LaunchTuiOptions {
   branch?: string;
   /** Uncommitted-change count for the `⑂ branch ?N` dirty flag; omit/0 = clean. */
   dirtyCount?: number;
+  /** Thinking-level label ("high", …) for the gjc-style model status bar. */
+  thinking?: string;
 }
 
 export interface AgentEventsLike {
@@ -75,7 +78,10 @@ function extractStreamingReasoning(buf: string): string {
   catch { return m[1].replace(/\\\\/g, "\\").replace(/\\n/g, " ").replace(/\\"/g, '"'); }
 }
 
-const DEFAULT_MAX_STEPS = 25;
+const DEFAULT_MAX_STEPS = 100;
+// Tools light enough that they never get a forge card (gjc parity): completion is a
+// single ✓/✗ ledger line; only failures surface a result card with the error body.
+const LIGHT_TOOLS = new Set(["read", "find", "search", "ls", "todo"]);
 function todoListChanged(
   oldItems: { title: string; status: string }[],
   newItems: { title: string; status: string }[]
@@ -123,6 +129,7 @@ export class LaunchTui {
   private timer: ReturnType<typeof setInterval> | undefined;
   private pendingIndex: number | null = null;
   private pendingTitle: string | null = null;
+  private pendingForge: ForgeSummary | null = null;
   // True between a step start and the model's reply — i.e. we're waiting on the model.
   // Surfaced in the status line ("calling model…") so the wait isn't an opaque pause.
   private thinking = false;
@@ -176,6 +183,8 @@ export class LaunchTui {
   // mid-turn. JOC_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen turn
   // (scroll-isolated, but no mid-turn scrollback).
   private readonly inline: boolean;
+  // Thinking-level label for the gjc-style model status bar.
+  private readonly thinkingLevel?: string;
 
   constructor(opts: LaunchTuiOptions) {
     this.write = opts.write ?? ((s: string) => process.stdout.write(s));
@@ -185,6 +194,7 @@ export class LaunchTui {
     // the alt screen starts at the top with a full-height frame.
     this.renderer = new Renderer(this.write, undefined, { reserve: this.inline });
     this.spinner = new Spinner(undefined, { unicode: this.unicode });
+    this.thinkingLevel = opts.thinking;
     this.footer = {
       model: opts.model,
       provider: opts.provider,
@@ -248,8 +258,8 @@ export class LaunchTui {
       label: t.title,
       state: (t.status === "done" ? "done" : t.status === "in_progress" ? "active" : "pending") as StepState,
     }));
-    const header = formatStepHeader(steps, { unicode: this.unicode, color, label: "Plan" });
-    return [header, ...formatStepTimeline(steps, { unicode: this.unicode, color, highlightActive: true, maxRows: 8 })];
+    const header = formatStepHeader(steps, { unicode: this.unicode, color, label: "Todos" });
+    return [header, ...formatStepTimeline(steps, { unicode: this.unicode, color, highlightActive: true, maxRows: 8, badges: false })];
   }
   /** The events object to hand to runAgentLoop. */
   events(): AgentEventsLike {
@@ -281,8 +291,8 @@ export class LaunchTui {
         // (the durable record), then stop showing the transient live reasoning row.
         if (this.streamingReasoning && this.streamingReasoning !== this.flushedReasoning) {
           this.flushedReasoning = this.streamingReasoning;
-          const badge = categoryBadge("progress", { color: this.theme.color });
-          this.appendLedger(`${badge} jeo · ${this.streamingReasoning}\n`);
+          const dim = this.theme.color ? chalk.dim : (s: string) => s;
+          this.appendLedger(dim(`jeo · ${this.streamingReasoning}`) + "\n");
         }
         this.streamingReasoning = "";
         if (invocation && invocation.tool !== "done") {
@@ -299,7 +309,15 @@ export class LaunchTui {
             this.turnTitleRefined = true;
             this.emitPaneTitle();
           }
-          this.rememberForge(summary);
+          // Light tools (read/find/search/…) never get a live card — their completion
+          // is a single ✓ ledger line (gjc parity). Heavier tools show the invocation
+          // card live, and the completed card is flushed into scrollback on result.
+          if (LIGHT_TOOLS.has(toolName.toLowerCase())) {
+            this.pendingForge = null;
+          } else {
+            this.pendingForge = summary;
+            this.rememberForge(summary);
+          }
           this.draw();
         } else {
           this.hudPhase = "reporting";
@@ -311,24 +329,39 @@ export class LaunchTui {
           this.tools.finish(this.pendingIndex, success);
           this.pendingIndex = null;
         }
-        this.rememberForge(summarizeForgeResult(tool, success, output));
-        // Categorize the result so the stream reads as a classified ledger:
-        // [DONE] for success, [ERR] for failure — consistent with the forge/tool-list badges.
-        const catBadge = categoryBadge(categoryForTool(tool), { color: this.theme.color });
-        const resBadge = categoryBadge(success ? "done" : "error", { color: this.theme.color });
+        const t = (tool || "").toLowerCase();
         const target = this.pendingTitle || tool;
         this.pendingTitle = null;
-        // gjc-parity glyph-first ledger line (logs/gjc-tui-study analysis Gap A):
-        // a colored ✔/✗ leads the flushed scrollback line so a wheel-scroll back
-        // through history scans like gjc's tool checklist; the category/status
-        // badges stay for grep-ability and the non-TTY summary.
-        const mark = this.unicode ? (success ? "✔" : "✗") : success ? "v" : "x";
+        // gjc-parity glyph-first ledger line: a colored ✓/✗ leads the flushed
+        // scrollback line so a wheel-scroll back through history scans like gjc's
+        // tool checklist — no category/status badge clutter.
+        const mark = this.unicode ? (success ? "✓" : "✗") : success ? "v" : "x";
         const paintedMark = this.theme.color ? (success ? chalk.green(mark) : chalk.red(mark)) : mark;
-        // gjc-style result tree: list tools (find/search/ls) flush a count suffix
-        // plus dim `├─` child rows (sampled results + `… N more`) into scrollback,
-        // so the ledger reads like gjc's `✓ Find: pattern  39 files` block.
-        const { suffix, children } = this.ledgerTree(tool, success, output);
-        this.appendLedger(`${paintedMark} ${catBadge} ${resBadge} ${target}${suffix}\n${children.map(c => `${c}\n`).join("")}`);
+        const result = summarizeForgeResult(tool, success, output);
+        const card = this.pendingForge;
+        this.pendingForge = null;
+        if (card && t === "bash") {
+          // gjc-style single Bash card: command echo + `Output` divider + body + exit
+          // note, under one ✓/✗-marked header — mutated in place so the live frame and
+          // the non-TTY summary both show the merged card.
+          card.title = `${paintedMark} Bash`;
+          card.lines.push(...result.lines);
+          this.flushForgeCard(card);
+        } else if (card) {
+          card.title = `${paintedMark} ${card.title}`;
+          if (!success) this.rememberForge(result);
+          this.flushForgeCard(card);
+          if (!success) this.flushForgeCard(result);
+        } else {
+          // Light tool: one ✓/✗ line, plus a dim result tree for list-shaped output
+          // (find/search/ls) and an error card when the tool failed.
+          const { suffix, children } = this.ledgerTree(tool, success, output);
+          this.appendLedger(`${paintedMark} ${target}${suffix}\n${children.map(c => `${c}\n`).join("")}`);
+          if (!success) {
+            this.rememberForge(result);
+            this.flushForgeCard(result);
+          }
+        }
         this.draw();
       },
       onNotice: msg => {
@@ -351,11 +384,21 @@ export class LaunchTui {
    *  straight into normal scrollback ABOVE the live frame, so tmux / terminal
    *  mouse-wheel can review the full progress history mid-turn (gjc-style); the
    *  StreamRegion copy still feeds the in-frame tail and the non-TTY / alt-screen
-   *  final summary. */
+   *  final summary.
+   *  CRITICAL: every flushed line is width-wrapped to the terminal columns first.
+   *  A line longer than the terminal hard-wraps into 2+ PHYSICAL rows, which breaks
+   *  the renderer's 1-line=1-row reservation math — the live frame then repaints at
+   *  the wrong rows (the "screen tearing + garbled scrollback" corruption). */
   private appendLedger(text: string): void {
     this.stream.append(text);
     if (this.inline && !this.finished) {
-      this.renderer.insertAbove(text.endsWith("\n") ? text : `${text}\n`);
+      const cols = Math.max(20, size().cols);
+      const body = text.endsWith("\n") ? text.slice(0, -1) : text;
+      const wrapped = body
+        .split("\n")
+        .flatMap(line => (visibleWidth(line) <= cols ? [line] : wrapTextWithAnsi(line, cols)))
+        .join("\n");
+      this.renderer.insertAbove(`${wrapped}\n`);
     }
   }
 
@@ -393,7 +436,8 @@ export class LaunchTui {
     this.workflowStatus = status;
     if (status) {
       const detail = status.detail ? ` — ${status.detail}` : "";
-      this.appendLedger(`${categoryBadge("progress", { color: this.theme.color })} workflow ${status.skill}: ${status.phase}${detail}\n`);
+      const diamond = this.unicode ? "◆" : "*";
+      this.appendLedger(`${diamond} workflow ${status.skill}: ${status.phase}${detail}\n`);
     }
     this.draw();
   }
@@ -405,11 +449,14 @@ export class LaunchTui {
    * about a real file/step) instead of churning decorative messages every 120ms.
    */
   private currentActivity(): string {
-    if (this.workflowStatus) {
+    const running = this.tools.currentTool();
+    // An in-flight tool's real target beats the workflow phase banner (gjc-style:
+    // the status row shows what is happening RIGHT NOW; the ◆ hud line carries
+    // the workflow identity).
+    if (this.workflowStatus && !running) {
       const detail = this.workflowStatus.detail ? ` — ${this.workflowStatus.detail}` : "";
       return `workflow ${this.workflowStatus.skill}: ${this.workflowStatus.phase}${detail}`;
     }
-    const running = this.tools.currentTool();
     // Waiting on the model and no tool is mid-flight → make the pause legible.
     if (this.thinking && !running) {
       const elapsed = this.currentStepStartedAt ? ((Date.now() - this.currentStepStartedAt) / 1000).toFixed(1) : "0.0";
@@ -425,7 +472,8 @@ export class LaunchTui {
         const cmd = last.lines.map(l => l.trim()).find(l => l.length > 0 && !l.startsWith("#"));
         return cmd ? `bash: ${cmd}` : "bash command";
       }
-      return last?.title ?? `running ${running}`;
+      // Light tools have no live card; pendingTitle still carries the real target.
+      return this.pendingTitle ?? last?.title ?? `running ${running}`;
     }
     const active = this.todos.find(t => t.status === "in_progress");
     if (active) return `step: ${active.title}`;
@@ -574,22 +622,30 @@ export class LaunchTui {
     const totalElapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
     const finalLines: string[] = [];
     for (const line of this.renderPlan(this.theme.color)) finalLines.push(line);
-    if (timelineSteps.length) {
-      finalLines.push(formatStepHeader(timelineSteps, { elapsedMs: totalElapsedMs, unicode: this.unicode, color: this.theme.color }));
-    }
-    for (const line of formatStepTimeline(timelineSteps, { unicode: this.unicode, color: this.theme.color, highlightActive: true, maxRows: 12 })) {
-      finalLines.push(line);
-    }
-    if (timelineSteps.length > 1) {
-      finalLines.push(`  ${formatStepTimelineCompact(timelineSteps, { unicode: this.unicode, color: this.theme.color })}`);
+    if (!this.inline) {
+      // Inline scrollback already reads as a ✓/✗ checklist; the step timeline +
+      // compact strip + flow line would just repeat it (gjc-style slim summary).
+      if (timelineSteps.length) {
+        finalLines.push(formatStepHeader(timelineSteps, { elapsedMs: totalElapsedMs, unicode: this.unicode, color: this.theme.color }));
+      }
+      for (const line of formatStepTimeline(timelineSteps, { unicode: this.unicode, color: this.theme.color, highlightActive: true, maxRows: 12 })) {
+        finalLines.push(line);
+      }
+      if (timelineSteps.length > 1) {
+        finalLines.push(`  ${formatStepTimelineCompact(timelineSteps, { unicode: this.unicode, color: this.theme.color })}`);
+      }
     }
     if (!this.inline) {
       // Inline turns already flushed every ledger line into scrollback live; re-printing
       // the stream here would duplicate the whole history right below itself.
       for (const line of this.stream.render(size().cols)) finalLines.push(line);
     }
-    for (const line of this.renderForge(size().cols, 3)) finalLines.push(line);
-    if (timelineSteps.length > 0) {
+    if (!this.inline) {
+      // Inline turns flushed every completed card into scrollback live; re-printing
+      // the cards here would duplicate them right below themselves.
+      for (const line of this.renderForge(size().cols, 3)) finalLines.push(line);
+    }
+    if (!this.inline && timelineSteps.length > 0) {
       const arrow = this.unicode ? " → " : " -> ";
       const flow = ["thinking", "planning", "executing", "done"].join(arrow);
       const stepsCount = this.footer.step || 0;
@@ -598,15 +654,23 @@ export class LaunchTui {
       const doneBadge = categoryBadge("done", { color: this.theme.color });
       finalLines.push(`${doneBadge} ${flow} · ${stepsCount} steps · ${durationStr}${usageStr}`);
     }
-    // Show how far the agent evolved this turn (monotonic peak) with rich statistics.
-    const steps = this.footer.step || 0;
-    const peak = this.progress.current();
-    const usageSuffix = this.turnUsage ? ` · ${formatUsage(this.turnUsage)}` : "";
-    finalLines.push(`Evolved to: ${evolutionTrack(peak, { unicode: this.unicode, color: this.theme.color })} (took ${steps} steps in ${formatDuration(Date.now() - this.startedAt)}${usageSuffix})`);
     // Render any GFM markdown tables in the reply as box-drawn tables (B8). Plain
     // replies are returned unchanged by the cheap no-`|` guard.
     const renderedReply = renderMarkdownTables(reply, { unicode: this.unicode });
-    finalLines.push(`joc> ${renderedReply}`);
+    const steps = this.footer.step || 0;
+    const peak = this.progress.current();
+    const usageSuffix = this.turnUsage ? ` · ${formatUsage(this.turnUsage)}` : "";
+    if (this.inline) {
+      // gjc-style clean ending: the ANSWER leads, followed by exactly ONE compact dim
+      // status line (steps · time · usage · evolution track). The live ledger above
+      // already recorded every step, so no timeline/flow repetition here.
+      finalLines.push(`joc> ${renderedReply}`);
+      const statusLine = `${categoryBadge("done", { color: this.theme.color })} ${steps} steps · ${formatDuration(Date.now() - this.startedAt)}${usageSuffix} · ${evolutionTrack(peak, { unicode: this.unicode, color: this.theme.color })}`;
+      finalLines.push(this.theme.color ? chalk.dim(statusLine) : statusLine);
+    } else {
+      finalLines.push(`Evolved to: ${evolutionTrack(peak, { unicode: this.unicode, color: this.theme.color })} (took ${steps} steps in ${formatDuration(Date.now() - this.startedAt)}${usageSuffix})`);
+      finalLines.push(`joc> ${renderedReply}`);
+    }
     if (this.tty) {
       // Main-buffer hygiene after leaving the alt screen: the cursor lands on rows
       // that still hold pre-turn content (old footer box, project-context lines).
@@ -626,12 +690,30 @@ export class LaunchTui {
     if (this.forgeSummaries.length > 8) this.forgeSummaries.shift();
   }
 
+  /** Flush a completed forge card into scrollback (inline mode) and retire it from the
+   *  live array so the in-frame card region and the final summary never repeat it.
+   *  Non-inline modes keep the card in `forgeSummaries` for the final static summary. */
+  private flushForgeCard(summary: ForgeSummary): void {
+    if (!this.inline || this.finished) return;
+    const width = Math.max(24, Math.min(120, size().cols));
+    const lines = formatForgeBox(summary, {
+      width,
+      maxLines: 12,
+      unicode: this.unicode,
+      paint: accentPaint(this.theme),
+      color: this.theme.color,
+    });
+    this.appendLedger(lines.join("\n") + "\n");
+    const i = this.forgeSummaries.indexOf(summary);
+    if (i >= 0) this.forgeSummaries.splice(i, 1);
+  }
+
   private renderForge(width: number, maxEntries: number): string[] {
     const floor = Math.min(24, width);
     // Fill the available width (cap at formatForgeBox's own 120 ceiling) so an
     // in-frame box does not leave a dead right-margin column inside the outer panel.
     const boxWidth = Math.max(floor, Math.min(120, width));
-    const paint = this.theme.color ? chalk.gray : (s: string) => s;
+    const paint = this.theme.color ? accentPaint(this.theme) : (s: string) => s;
     const lines: string[] = [];
     for (const [i, summary] of this.forgeSummaries.slice(-maxEntries).entries()) {
       if (lines.length > 0) lines.push("");
@@ -640,12 +722,111 @@ export class LaunchTui {
     return lines;
   }
 
+  /**
+   * The gjc-style inline live frame: a flat stack with no outer border —
+   *   <live forge card(s)> · <spinner status line> · <todos> · <hud line> · <model bar>
+   * Completed cards and ✓ ledger lines were already flushed into scrollback above.
+   */
+  private composeInlineFrame(args: {
+    cols: number;
+    rows: number;
+    stepNow: number;
+    elapsedMs: number;
+    idx: number;
+    isThinking: boolean;
+    planLines: string[];
+  }): string[] {
+    const { cols, rows, stepNow, elapsedMs, idx, isThinking } = args;
+    const dim = this.theme.color ? chalk.dim : (s: string) => s;
+
+    // Assemble the bottom-pinned tail FIRST (status line → todos → hud → model bar):
+    // it is the live heartbeat and must always be visible; the in-flight card gets
+    // whatever rows remain above it.
+    const tail: string[] = [];
+
+    // Single status line: spinner + the real current activity + compact turn stats.
+    if (isThinking) {
+      let msg = this.currentActivity();
+      const colorLevel = detectColorLevel(process.env, isTTY());
+      if (this.theme.color && colorLevel === ColorLevel.TrueColor) {
+        const grad = themeGradient(this.theme, idx);
+        msg = animatedGradientText(msg, [grad.from, grad.to], (this.tickCount * 0.05) % 1, { colorLevel });
+      }
+      const costUsd = costForUsage(this.footer.model, this.turnUsage) ?? undefined;
+      const bits: string[] = [`step ${stepNow}/${this.footer.maxSteps}`, formatDuration(elapsedMs)];
+      if (this.turnUsage && (this.turnUsage.inputTokens || this.turnUsage.outputTokens)) {
+        bits.push(formatUsage(this.turnUsage));
+      }
+      if (typeof costUsd === "number" && Number.isFinite(costUsd) && costUsd > 0) bits.push(formatCost(costUsd));
+      if (this.subagentActive) bits.push("sub");
+      if (this.mutationGuarded) bits.push("mutation locked");
+      tail.push(`${this.spinner.current()} ${msg} ${dim(`(${bits.join(" · ")})`)}`);
+      if (this.streamingReasoning) {
+        tail.push(dim(`  ${this.unicode ? "💭" : "*"} ${this.streamingReasoning}`));
+      }
+    }
+
+    // Agent task plan (the `todo` tool) as a Todos checklist.
+    if (args.planLines.length) {
+      tail.push("");
+      tail.push(...args.planLines);
+    }
+
+    // hud line + model status bar pinned at the bottom of the live frame (gjc layout).
+    const diamond = this.unicode ? "◆" : "*";
+    const hudTail = this.workflowStatus
+      ? `${this.workflowStatus.skill}:${this.workflowStatus.phase}`
+      : renderHud(this.hudPhase, { unicode: this.unicode, color: this.theme.color });
+    tail.push("");
+    tail.push(`${diamond} ${dim("hud")} ${hudTail}`);
+    tail.push(this.renderModelBar(cols, elapsedMs));
+
+    // Bottom-anchor: on a too-short terminal drop tail rows from the TOP so the
+    // status/todos/hud/model-bar end stays visible; spend leftover rows on the
+    // in-flight tool card (whole boxes only — never half a card).
+    const tailKeep = tail.length > rows ? tail.slice(tail.length - rows) : tail;
+    const budget = Math.max(0, rows - tailKeep.length - 1);
+    const forgeK = budget > 0 ? fitForgeBoxes(this.renderForge(cols, 2), budget) : [];
+    const frame: string[] = [];
+    if (forgeK.length) {
+      frame.push(...forgeK);
+      frame.push("");
+    }
+    frame.push(...tailKeep);
+    return frame;
+  }
+
+  /** The gjc-style one-row model status bar: ⬢ model (provider) · ◔ thinking / ⑂ branch / ▸ cwd. */
+  private renderModelBar(cols: number, elapsedMs: number): string {
+    const usage = this.turnUsage;
+    const rate = usage && elapsedMs >= 1000 && usage.outputTokens > 0 ? usage.outputTokens / (elapsedMs / 1000) : undefined;
+    const ctxPct =
+      this.footer.contextUsedTokens !== undefined && this.footer.contextMaxTokens && this.footer.contextMaxTokens > 0
+        ? Math.round((this.footer.contextUsedTokens / this.footer.contextMaxTokens) * 100)
+        : undefined;
+    return renderStatusBar({
+      model: `${this.footer.model}${this.footer.provider ? ` (${this.footer.provider})` : ""}`,
+      thinking: this.thinkingLevel,
+      branch: this.footer.branch,
+      dirtyCount: this.footer.dirtyCount,
+      cwd: this.footer.cwd,
+      rate,
+      ctxPct,
+      ctxMaxTokens: this.footer.contextMaxTokens,
+      cols,
+      unicode: this.unicode,
+      color: this.theme.color,
+      colorLevel: detectColorLevel(process.env, isTTY()),
+      gradient: themeGradient(this.theme, 2),
+    });
+  }
+
   private draw(): void {
     if (this.finished) return; // never repaint a live frame after the final static output
     const { cols, rows } = size();
     const fit = this.tty; // boxed full-screen layout only on a TTY (defaults to isTTY())
     const elapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
-    const innerWidth = fit ? cols - 4 : cols;
+    const innerWidth = fit && !this.inline ? cols - 4 : cols;
 
     // Resolve the current (monotonic) stage; announce a transition once when it
     // first advances. The art + track are cached per stage index/cols so the
@@ -653,12 +834,13 @@ export class LaunchTui {
     const stepNow = this.footer.step || 0;
     const idx = this.progress.observe(stepNow, this.footer.maxSteps ?? DEFAULT_MAX_STEPS);
     const isThinking = this.timer !== undefined;
-    if (fit && this.progress.advanced() && idx > 0) {
+    if (fit && !this.inline && this.progress.advanced() && idx > 0) {
       const arrow = this.unicode ? "\u27f6" : "->";
       this.appendLedger(`${arrow} ${transitionMessage(idx)}\n`);
     }
+    const showArt = fit && !this.inline && rows >= 18 && cols >= 40;
     const effFrame = isThinking ? this.tickCount % stageBlocks(getStageByIndex(idx)).length : 0;
-    if (idx !== this.cachedStageIndex || cols !== this.cachedCols || effFrame !== this.cachedFrame) {
+    if (showArt && (idx !== this.cachedStageIndex || cols !== this.cachedCols || effFrame !== this.cachedFrame)) {
       // Commit the cache keys only AFTER the render succeeds: if renderAsciiArt ever
       // throws (resize race, bad gradient level), pre-committed keys would mark the
       // STALE art as current and freeze the header at an old stage forever.
@@ -679,8 +861,6 @@ export class LaunchTui {
       this.cachedCols = cols;
       this.cachedFrame = effFrame;
     }
-
-    const showArt = fit && rows >= 18 && cols >= 40;
     const artLinesCount = showArt ? stageHeight() : 0;
     const trackCount = showArt ? 1 : 0;
     const headerHeight = artLinesCount + trackCount + (showArt ? 1 : 0);
@@ -690,6 +870,14 @@ export class LaunchTui {
 
     const planLines = this.renderPlan(this.theme.color);
     const planHeight = planLines.length;
+
+    // gjc-style inline frame: a flat stack (live card → status line → todos → hud →
+    // model bar), no outer border, no mascot art — completed work lives in scrollback.
+    if (fit && this.inline) {
+      const inlineFrame = this.composeInlineFrame({ cols, rows, stepNow, elapsedMs, idx, isThinking, planLines });
+      this.renderer.render(inlineFrame.slice(0, rows));
+      return;
+    }
 
     // Bottom-pinned status + footer.
     const bottom: string[] = [];
@@ -851,7 +1039,7 @@ export class LaunchTui {
       for (const line of trailingDivider) boxedContent.push(line);
       for (const line of bottomKeep) boxedContent.push(line);
 
-      const paint = this.theme.color ? (this.theme.name === "red-claw" ? chalk.red : chalk.blue) : (s: string) => s;
+      const paint = this.theme.color ? accentPaint(this.theme) : (s: string) => s;
       frame = boxBlock(boxedContent, cols, {
         glyphs: this.unicode ? BOX_UNICODE : BOX_ASCII,
         paint,

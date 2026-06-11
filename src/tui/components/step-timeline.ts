@@ -101,6 +101,8 @@ export interface TimelineOptions {
   highlightActive?: boolean;
   /** Keep only the most recent N rows (older collapse to a "(+M earlier)" line). */
   maxRows?: number;
+  /** Render the [NN:CAT] badge per row (default true); false → gjc-style bare rows. */
+  badges?: boolean;
 }
 
 /**
@@ -151,8 +153,8 @@ export function formatStepTimeline(steps: TimelineStep[], opts: TimelineOptions 
       }
     }
     const cat: UiCategory = step.state === "active" ? "progress" : step.state === "done" ? "done" : step.state === "failed" ? "error" : "tool";
-    const badge = categoryBadge(cat, { index: i + 1, color });
-    out.push(`  ${conn} ${paint(glyph)} ${badge} ${label}`);
+    const badge = opts.badges === false ? "" : ` ${categoryBadge(cat, { index: i + 1, color })}`;
+    out.push(`  ${conn} ${paint(glyph)}${badge} ${label}`);
   }
   return out;
 }

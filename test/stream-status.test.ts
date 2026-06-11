@@ -19,7 +19,7 @@ test("step header carries duration and usage suffixes once available", () => {
   expect(logs.length).toBe(0); // lazy: nothing until the tool is known
   ev.onAssistant!("", { tool: "read", arguments: { filePath: "src/a.ts" } });
   expect(logs.length).toBe(1);
-  expect(logs[0]).toContain("[step 1/25] Read : src/a.ts");
+  expect(logs[0]).toContain("[step 1/25] Read src/a.ts");
   expect(logs[0]).not.toContain("tokens");
 
   // Usage arrives, time passes 72s: step 2 header shows both suffixes.
@@ -49,7 +49,7 @@ test("tool results keep the classified ok/fail badges", () => {
   ev.onAssistant!("", { tool: "bash", arguments: { command: "bun test" } });
   ev.onToolResult!("bash", false, "exit 1\nboom");
   const out = logs.join("\n");
-  expect(out).toContain("[step 1/4] bash command");
+  expect(out).toContain("[step 1/4] Bash");
   expect(out).toContain("✗");
   expect(out).toContain("exit 1");
 });

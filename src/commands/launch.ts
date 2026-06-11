@@ -24,6 +24,7 @@ import chalk from "chalk";
 import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch } from "../agent/state";
+import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
 import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, enrichAll, sortByCapability, knownCount, MODEL_CATALOG, fuzzyMatchCatalog, CODEX_MODELS, qualifyModelId } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 
@@ -53,6 +54,7 @@ import { renderInputFrame } from "../tui/components/input-box";
 import { renderStatusBar } from "../tui/components/status";
 import { detectColorLevel } from "../tui/components/color";
 import { readClipboardImage } from "../util/clipboard-image";
+import { formatTranscript } from "../tui/components/transcript";
 import type { ImageAttachment } from "../ai/types";
 import { renderMarkdownTables } from "../tui/components/markdown-table";
 import { summarizeForgeInvocation } from "../tui/components/forge";
@@ -2109,6 +2111,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         continue;
       }
+      if (input === "/history" || input.startsWith("/history ")) {
+        // Re-print the worked history into scrollback (tmux-friendly review of
+        // past prompts / tool steps / replies without terminal scrollback access).
+        const arg = input.slice("/history".length).trim().toLowerCase();
+        const maxTurns = arg === "all" ? undefined : Math.max(1, Number.parseInt(arg, 10) || 5);
+        const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
+        logLines([sep, `history · last ${maxTurns ?? "all"} turn(s) (/history all for everything)`, sep,
+          ...formatTranscript(history, { maxTurns, color: true, unicode: true }), sep]);
+        continue;
+      }
       if (input === "/export" || input.startsWith("/export ")) {
         if (!sessionId) {
           console.log("(sessions are disabled — nothing to export)");
@@ -2402,7 +2414,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           continue;
         }
         sessionModel = target;
-        console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}`);
+        // MRU persistence: a provider/model pick becomes the default for EVERY
+        // future session and the head of the recents rotation.
+        await saveConfigPatch(raw => rememberModelPatch(raw, target));
+        console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })} — saved as default`);
         // Show the provider's live, credentialed catalog so the user can pick a concrete id.
         if (providerPick.length) {
           lastPickIndex = providerPick;
@@ -2678,7 +2693,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // Fall back to the FRESH on-disk default (not the stale session-start snapshot) so a
           // bare `/model save` after a prior `/model save <id>` never reverts the saved default.
           const finalSave = toSave || sessionModel || (await readGlobalConfig()).defaultModel;
-          await saveConfigPatch(() => ({ defaultModel: finalSave }));
+          await saveConfigPatch(raw => rememberModelPatch(raw, finalSave));
           const { resolved, provider } = await describeModel(finalSave);
           console.log(`Default model saved: ${formatModelLine({ label: finalSave, resolved, provider })} → ~/.joc/config.json`);
           continue;
@@ -2781,10 +2796,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           continue;
         }
         const label = arg || (sessionModel || defaultModel);
-        if (arg) sessionModel = arg;
+        if (arg) {
+          sessionModel = arg;
+          // MRU persistence: picking a model IS saving it — the newest pick wins
+          // as the global default; recents keep the rotation for every session.
+          await saveConfigPatch(raw => rememberModelPatch(raw, arg));
+        }
         const { resolved, provider } = await describeModel(label);
         const st = statuses.find(s => s.name === provider);
-        console.log(`${arg ? "Model set to" : "Current model"}: ${formatModelLine({ label, resolved, provider, ready: st?.ready })}`);
+        console.log(`${arg ? "Model set to" : "Current model"}: ${formatModelLine({ label, resolved, provider, ready: st?.ready })}${arg ? " — saved as default" : ""}`);
         if (st && !st.ready) console.log(`  ! ${provider} is not ready (${st.label}) — set ${st.envVar ?? "the provider key"} or run 'joc setup'.`);
         // ChatGPT OAuth only serves the Codex models; warn before the turn fails if the user
         // pins a non-Codex id with no local base URL to fall back to (gjc-parity readiness guard).
@@ -2800,12 +2820,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const meta = catalogMetadata(resolved);
         if (meta) console.log(`  ${formatCapabilityLine(meta)}`);
         if (!arg) {
+          const recents = recentModelsForDisplay(await readGlobalConfig());
+          if (recents.length > 1) {
+            console.log("Recent models (newest first):");
+            recents.slice(0, 5).forEach((m, i) => console.log(`  ${i + 1}. ${m}${i === 0 ? "  ◀ default" : ""}`));
+          }
           const live = await getLiveModels();
           lastPickIndex = flattenModels(live);
           console.log("Live models (logged-in providers) — set with /model #N:");
           for (const line of formatPickListWithCapabilities(lastPickIndex, { current: resolved, cap: 20 })) console.log(line);
         }
-        console.log("  (persist as default: /model save)");
+        console.log("  (model picks persist automatically — newest selection is the default everywhere)");
         continue;
       }
       if (input.startsWith("/view") && (input === "/view" || input[5] === " ")) {

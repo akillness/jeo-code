@@ -14,16 +14,16 @@ const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 test("summarizeForgeInvocation renders bash, read, and write as code-box summaries", () => {
   const bash = summarizeForgeInvocation("bash", { command: "echo hello", timeoutMs: 5000 });
-  expect(bash.title).toBe("bash command");
+  expect(bash.title).toBe("Bash");
   expect(bash.language).toBe("bash");
   expect(bash.lines).toContain("$ echo hello");
 
   const read = summarizeForgeInvocation("read", { filePath: "src/app.ts", lineRange: "1-20" });
-  expect(read.title).toBe("Read : src/app.ts (lines: 1-20)");
+  expect(read.title).toBe("Read src/app.ts:1-20");
   expect(read.lines).toEqual(["path: src/app.ts"]);
 
   const write = summarizeForgeInvocation("write", { path: "out.txt", content: "a\nb" });
-  expect(write.title).toBe("write : out.txt");
+  expect(write.title).toBe("Write out.txt");
   expect(write.lines).toContain("wrote 2 lines, 3 bytes");
 });
 
@@ -202,14 +202,15 @@ test("summarizeForgeInvocation and summarizeForgeResult polish and status step s
   const readWithRange = summarizeForgeInvocation("read", { filePath: "src/app.ts", lineRange: "1-20" });
   expect(readWithRange.lines).toEqual(["path: src/app.ts"]);
 
-  // 4. bash exit ok / fail and redaction regression
+  // 4. bash result: trailing exit note only on failure, redaction regression
   const bashResultOk = summarizeForgeResult("bash", true, "success api-key=abc12345");
-  expect(bashResultOk.lines[0]).toBe("# exit ok");
-  expect(bashResultOk.lines[2]).toContain("<redacted>");
+  expect(bashResultOk.lines[0]).toContain("fdiv:Output");
+  expect(bashResultOk.lines[1]).toContain("<redacted>");
+  expect(bashResultOk.lines.some(l => l.includes("Command"))).toBe(false);
 
-  const bashResultFail = summarizeForgeResult("bash", false, "error token: mysecret");
-  expect(bashResultFail.lines[0]).toBe("# exit fail");
-  expect(bashResultFail.lines[2]).toContain("<redacted>");
+  const bashResultFail = summarizeForgeResult("bash", false, "Exit code 1\nerror token: mysecret");
+  expect(bashResultFail.lines[1]).toContain("<redacted>");
+  expect(bashResultFail.lines[bashResultFail.lines.length - 1]).toBe("Command exited with code 1");
 
   // 5. renderJocStatus with stepElapsedMs and avgStepMs
   const statusLines = renderJocStatus({

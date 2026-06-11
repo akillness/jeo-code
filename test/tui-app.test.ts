@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { LaunchTui } from "../src/tui/app";
+import { visibleWidth } from "../src/tui/components/width";
 import { hideCursor, showCursor, clearToEnd, enterAltScreen, leaveAltScreen } from "../src/tui/terminal";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -41,7 +42,7 @@ test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll
   const ledger = out.join("");
   const flushIdx = ledger.indexOf("\x1b[?2026h"); // BSU opens the atomic flush
   expect(flushIdx).toBeGreaterThanOrEqual(0);
-  expect(ledger.slice(flushIdx)).toContain("Read : src/cli.ts\n"); // static line, newline-terminated
+  expect(ledger.slice(flushIdx)).toContain("Read src/cli.ts\n"); // static line, newline-terminated
   expect(ledger.slice(flushIdx)).toContain("\x1b[?2026l");       // ESU after the repaint
   expect(ledger).not.toContain("\x1b[0J");                       // never ED mid-turn (history flood)
 
@@ -56,7 +57,7 @@ test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll
   expect(tail).toContain("\x1b[K");
   expect(tail).toContain("\x1b[0J");
   // …but WITHOUT re-printing the ledger lines already flushed into scrollback live.
-  expect(tail).not.toContain("Read : src/cli.ts\n\x1b[K");
+  expect(tail).not.toContain("Read src/cli.ts\n\x1b[K");
 });
 
 test("LaunchTui: JOC_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen turn", () => {
@@ -146,9 +147,9 @@ test("LaunchTui: flushed tool-result ledger lines lead with a gjc-style ✔/✗ 
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
   const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
   const ledger = strip(out.join(""));
-  // Glyph leads the line; badges follow (unicode terminals → ✔/✗, ASCII → v/x).
-  expect(ledger).toMatch(/[✔v] \[FILE\] \[DONE\] Read : src\/cli\.ts/);
-  expect(ledger).toMatch(/[✗x] \[CMD\] \[ERR\]/);
+  // Glyph leads the line (unicode terminals → ✓/✗, ASCII → v/x); no badge clutter.
+  expect(ledger).toMatch(/[✓v] Read src\/cli\.ts/);
+  expect(ledger).toMatch(/[✗x] Bash/);
   tui.finish("done");
 });
 
@@ -170,12 +171,12 @@ test("LaunchTui: ledger glyphs fall back to v/x on ASCII-only terminals", () => 
     clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
     const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
     const ledger = strip(out.join(""));
-    expect(ledger).toMatch(/v \[FILE\] \[DONE\] Read : src\/cli\.ts/);
-    expect(ledger).toMatch(/x \[CMD\] \[ERR\]/);
+    expect(ledger).toMatch(/v Read src\/cli\.ts/);
+    expect(ledger).toMatch(/x Bash/);
     // Ledger lines specifically must not use the unicode marks (other frame
     // components own their own glyph fallbacks).
-    expect(ledger).not.toMatch(/✔ \[FILE\]/);
-    expect(ledger).not.toMatch(/✗ \[CMD\]/);
+    expect(ledger).not.toMatch(/✓ Read/);
+    expect(ledger).not.toMatch(/✗ Bash/);
     tui.finish("done");
   } finally {
     if (origTerm === undefined) delete process.env.TERM;
@@ -240,12 +241,12 @@ test("LaunchTui: footer step denominator reflects the configured maxSteps", () =
   expect(out.join("")).toContain("step 1/50");
 });
 
-test("LaunchTui: footer defaults to 25 steps when maxSteps is omitted", () => {
+test("LaunchTui: footer defaults to 100 steps when maxSteps is omitted", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
   tui.start();
   tui.events().onStep!(3);
-  expect(out.join("")).toContain("step 3/25");
+  expect(out.join("")).toContain("step 3/100");
 });
 
 test("LaunchTui: setTodos renders a plan checklist in live and final output", () => {
@@ -258,7 +259,7 @@ test("LaunchTui: setTodos renders a plan checklist in live and final output", ()
     { title: "Run suite", status: "pending" },
   ]);
   const live = out.join("");
-  expect(live).toContain("Plan");
+  expect(live).toContain("Todos");
   expect(live).toContain("Scaffold module");
   expect(live).toContain("Write tests");
 
@@ -435,13 +436,13 @@ function simulateTerminal(writes: string[]): string[] {
 
 import { Renderer } from "../src/tui/renderer";
 
-test("LaunchTui (boxed): bottom status/footer is never cut off when content overflows the terminal", () => {
+test("LaunchTui (inline): status line and model bar are never cut off when content overflows the terminal", () => {
   const realRender = Renderer.prototype.render;
   let frame: string[] = [];
   (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
   const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
   try {
-    // tty:true forces the boxed full-screen layout; size() defaults to 80x24.
+    // tty:true uses the gjc-style inline layout; size() defaults to 80x24.
     const tui = new LaunchTui({ model: "m1", provider: "ollama", sessionId: "sess1234", maxSteps: 25, tty: true, write: () => {} });
     tui.start();
     const ev = tui.events();
@@ -461,11 +462,10 @@ test("LaunchTui (boxed): bottom status/footer is never cut off when content over
 
     const txt = frame.map(strip);
     expect(frame.length).toBeLessThanOrEqual(24);          // fits inside the terminal height
-    // The live footer (model + step counter) and the key-hint bar must both survive at the bottom.
-    expect(txt.some(l => l.includes("m1") && l.includes("step"))).toBe(true);
-    expect(txt.some(l => /\/exit|\/help/i.test(l))).toBe(true);
-    // The very last content row (above the bottom border) is the footer, not a forge box / blank.
-    const lastContent = txt[txt.length - 2] ?? "";
+    // The status line (step counter) and the model bar must both survive at the bottom.
+    expect(txt.some(l => l.includes("step"))).toBe(true);
+    // The very last row of the inline frame is the gjc-style model bar.
+    const lastContent = txt[txt.length - 1] ?? "";
     expect(lastContent).toContain("m1");
   } finally {
     Renderer.prototype.render = realRender;
@@ -497,7 +497,7 @@ test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result i
   expect(txt).toContain("done: completed in 4 steps: guard added"); // result summary
 });
 
-test("LaunchTui: onToolResult categorizes the result in the stream with both category and status badges", () => {
+test("LaunchTui: onToolResult flushes a gjc-style glyph-led ledger line for the target", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
   tui.start();
@@ -511,9 +511,7 @@ test("LaunchTui: onToolResult categorizes the result in the stream with both cat
   console.log = (...a: unknown[]) => logged.push(a.join(" "));
   try { tui.finish("done"); } finally { console.log = origLog; }
   const txt = logged.join("\n");
-  expect(txt).toContain("[FILE]"); // category of read
-  expect(txt).toContain("[DONE]"); // success status
-  expect(txt).toContain("Read : src/cli.ts");
+  expect(txt).toMatch(/[✓v] Read src\/cli\.ts/); // glyph-led, badge-free ledger line
 });
 
 test("LaunchTui: onToolResult stream line includes the invocation target using write-sink pattern", () => {
@@ -534,10 +532,11 @@ test("LaunchTui: onToolResult stream line includes the invocation target using w
     console.log = origLog;
   }
   const txt = logged.join("\n");
-  expect(txt).toContain("bash command");
+  expect(txt).toContain("Bash");        // merged gjc-style card title
+  expect(txt).toContain("$ bun test");  // command echo inside the card
 });
 
-test("LaunchTui (boxed): [STATUS] shows the real in-flight file; stage lives in the track, not the forge row", () => {
+test("LaunchTui (alt-screen boxed): [STATUS] shows the real in-flight file; stage lives in the track, not the forge row", () => {
   const realRender = Renderer.prototype.render;
   let frame: string[] = [];
   (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
@@ -550,6 +549,8 @@ test("LaunchTui (boxed): [STATUS] shows the real in-flight file; stage lives in 
   const savedRowsDesc = Object.getOwnPropertyDescriptor(process.stdout, "rows");
   Object.defineProperty(process.stdout, "columns", { value: 200, configurable: true });
   Object.defineProperty(process.stdout, "rows", { value: 40, configurable: true });
+  const savedAlt = process.env.JOC_TUI_ALT_SCREEN;
+  process.env.JOC_TUI_ALT_SCREEN = "1";
   try {
     const tui = new LaunchTui({ model: "m1", maxSteps: 25, tty: true, write: () => {} });
     tui.start();
@@ -571,6 +572,8 @@ test("LaunchTui (boxed): [STATUS] shows the real in-flight file; stage lives in 
     expect(toolLine).not.toContain("Double Helix");
     expect(txt.some(l => /Primordial Cell|Double Helix|Tool User|Super intelligence/.test(l))).toBe(true);
   } finally {
+    if (savedAlt === undefined) delete process.env.JOC_TUI_ALT_SCREEN;
+    else process.env.JOC_TUI_ALT_SCREEN = savedAlt;
     Renderer.prototype.render = realRender;
     if (savedColsDesc) Object.defineProperty(process.stdout, "columns", savedColsDesc);
     if (savedRowsDesc) Object.defineProperty(process.stdout, "rows", savedRowsDesc);
@@ -600,5 +603,32 @@ test("LaunchTui: find/search results flush a gjc-style count suffix + dim tree c
   const readFlushed = out.join("").replace(/\x1b\[[0-9;]*m/g, "");
   expect(readFlushed).not.toMatch(/(?:├─|\|-) /);
   expect(readFlushed).not.toContain("· 3 files");
+  tui.finish("done");
+});
+
+test("LaunchTui: ledger lines longer than the terminal are width-wrapped before flush (no row-accounting tear)", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  const ev = tui.events();
+  ev.onStep!(1);
+  const colsNow = Math.max(20, process.stdout.columns || 80);
+  const longPath = "src/" + "deeply/nested/".repeat(Math.ceil((colsNow * 2) / 14)) + "file.ts"; // ≥ 2× terminal width
+  ev.onAssistant!("", { tool: "read", arguments: { filePath: longPath } });
+  out.length = 0;
+  ev.onToolResult!("read", true, "ok");
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  const cols = Math.max(20, process.stdout.columns || 80);
+  // The ledger lines carrying the over-long target must be width-wrapped to the
+  // terminal: an over-wide flushed line hard-wraps into 2+ physical rows and breaks
+  // the renderer's 1-line=1-row reservation (the screen-tear bug).
+  const flushed = out.join("");
+  expect(flushed.indexOf("\x1b[?2026h")).toBeGreaterThanOrEqual(0);
+  const stripA = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\x1b\]2;[^\x07]*\x07/g, "");
+  const ledgerLines = stripA(flushed).split("\n").filter(l => l.includes("deeply/nested"));
+  expect(ledgerLines.length).toBeGreaterThanOrEqual(2); // long target wrapped across rows
+  for (const line of ledgerLines) {
+    expect(visibleWidth(line)).toBeLessThanOrEqual(cols);
+  }
   tui.finish("done");
 });

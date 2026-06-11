@@ -60,6 +60,8 @@ export const ConfigSchema = z
     defaultModel: z.string().min(1),
     thinkingLevel: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
     modelAliases: z.record(z.string()).optional(),
+    /** Most-recently-selected models, newest first (drives the default + pickers). */
+    recentModels: z.array(z.string()).optional(),
     /**
      * Provider retry budgets (gjc parity). `requestMaxRetries` is used for non-stream
      * calls and stream initial connections; `streamMaxRetries` is used for stream retries.

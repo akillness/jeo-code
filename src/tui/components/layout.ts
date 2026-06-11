@@ -83,16 +83,22 @@ export interface BoxGlyphs {
 export const BOX_UNICODE: BoxGlyphs = { tl: "\u256d", tr: "\u256e", bl: "\u2570", br: "\u256f", h: "\u2500", v: "\u2502" };
 export const BOX_ASCII: BoxGlyphs = { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" };
 
+/**
+ * `paintShadow` (optional) paints the bottom border and right vertical edge —
+ * the "shaded" edges — while `paint` keeps the top border and left vertical
+ * "lit". The two-tone contrast gives flat boxes a pseudo-3D depth cue.
+ */
 export function boxBlock(
   lines: string[],
   width: number,
-  opts: { glyphs?: BoxGlyphs; paint?: (s: string) => string; align?: HAlign } = {},
+  opts: { glyphs?: BoxGlyphs; paint?: (s: string) => string; paintShadow?: (s: string) => string; align?: HAlign } = {},
 ): string[] {
   const g = opts.glyphs ?? BOX_UNICODE;
   const paint = opts.paint ?? ((s: string) => s);
+  const shadow = opts.paintShadow ?? paint;
   const inner = Math.max(0, width - 2);
   const top = paint(g.tl + g.h.repeat(inner) + g.tr);
-  const bottom = paint(g.bl + g.h.repeat(inner) + g.br);
+  const bottom = shadow(g.bl + g.h.repeat(inner) + g.br);
   const mid = lines.map(l => {
     if (l === "DIVIDER") {
       const leftChar = g.tl === "+" ? "+" : "├";
@@ -101,7 +107,7 @@ export function boxBlock(
     }
     const truncated = truncate(l, inner);
     const align = opts.align ?? "left";
-    return paint(g.v) + padLineTo(truncated, inner, align) + paint(g.v);
+    return paint(g.v) + padLineTo(truncated, inner, align) + shadow(g.v);
   });
   return [top, ...mid, bottom];
 }

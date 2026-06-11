@@ -18,6 +18,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/rename", usage: "/rename <title>", description: "Rename the current session", group: "session" },
   { command: "/resume", usage: "/resume [id]", description: "Resume a saved session in this REPL", group: "session" },
   { command: "/retry", usage: "/retry", description: "Retry the last request", group: "session" },
+  { command: "/history", usage: "/history [n|all]", description: "Re-print the worked turn history (prompts, tool steps, replies) into scrollback", group: "session" },
   { command: "/export", usage: "/export [path] [json]", description: "Export the session transcript to a file", group: "session" },
   { command: "/dump", usage: "/dump", description: "Copy the session transcript to the clipboard", group: "session" },
   { command: "/btw", usage: "/btw <question>", description: "Ask an ephemeral side question (history untouched)", group: "session" },

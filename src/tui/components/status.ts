@@ -202,12 +202,9 @@ export function renderJocStatus(data: JocStatusData): string[] {
   if (data.subagentActive) {
     extraStats += " (sub)";
   }
-
-
-  const bgPaint = data.palette && data.palette.length > 0 && data.palette[0] === "#2b0000" ? chalk.bgRed.white : (s: string) => s;
   return [
     `  ${categoryBadge("progress", { color: useColor })} step ${step}/${max} · ${bar} · elapsed ${elapsed}${extraStats}`,
-    bgPaint(`  ${categoryBadge("status", { color: useColor })} ${cyanBold("joc status")} · ${msg}`),
+    `  ${categoryBadge("status", { color: useColor })} ${cyanBold("joc status")} · ${msg}`,
     `  ${categoryBadge("tool", { color: useColor })} ${magentaBold("joc forge")} · ${stage}${current} · tools ${total} (${toolCounts})${guard}`,
   ];
 

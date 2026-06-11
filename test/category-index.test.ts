@@ -26,8 +26,10 @@ test("ToolList indexed render preserves default but can add category indexes", (
   expect(list.render(undefined, { color: false, indexed: true }).map(stripAnsi)).toEqual(["  ✔ [01:CMD] bash ok"]);
 });
 
-test("forge box title can include a category index without exceeding width", () => {
+test("forge box header is the gjc-style bare title (no badge, no language suffix)", () => {
   const box = formatForgeBox(summarizeForgeInvocation("bash", { command: "echo hi" }), { width: 44, unicode: false, paint: s => s, color: false, index: 2 }).map(stripAnsi);
-  expect(box.join("\n")).toContain("[02:CMD] bash command · bash");
+  expect(box.join("\n")).toContain("Bash");
+  expect(box.join("\n")).not.toContain("[02:CMD]");
+  expect(box.join("\n")).not.toContain("· bash");
   expect(box.every(line => line.length <= 44)).toBe(true);
 });

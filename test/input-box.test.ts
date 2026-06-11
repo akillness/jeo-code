@@ -38,7 +38,7 @@ test("renderInputFrame: empty line shows `>` + dim placeholder with the caret ri
   const { renderInputFrame } = require("../src/tui/components/input-box");
   const frame = renderInputFrame("", { cols: 40, color: false, unicode: false });
   const body = frame.lines.map(stripAnsi);
-  expect(body[1]).toContain("> Type a request");
+  expect(body[1]).toContain("> Type your message");
   expect(frame.cursorRow).toBe(1); // first body row (0 = top border)
   expect(frame.cursorCol).toBe(4); // border(1) + content(2) + "> "(2) → col 4
 });

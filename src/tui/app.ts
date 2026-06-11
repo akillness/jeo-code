@@ -16,7 +16,7 @@ import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
 import { renderFooter, type FooterData } from "./components/footer";
-import { getStageByIndex, renderAsciiArt, stageHeight, stageWidth, stageBlocks } from "./components/ascii-art";
+import { renderDnaClaw, dnaClawHeight, dnaClawFrameCount } from "./components/ascii-art";
 import { evolutionTrack, createStageProgress, type StageProgress, transitionMessage } from "./components/evolution";
 import type { TaskSubEvent } from "../agent/task-tool";
 import { supportsUnicode } from "./components/capability";
@@ -901,9 +901,11 @@ export class LaunchTui {
     const elapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
     const innerWidth = fit && !this.inline ? cols - 4 : cols;
 
-    // Resolve the current (monotonic) stage; announce a transition once when it
-    // first advances. The art + track are cached per stage index/cols so the
-    // 120ms spinner tick does not re-render the block every frame.
+    // Resolve the current (monotonic) stage for the track; announce a transition
+    // once when it first advances. The header art is the DNA Claw brand symbol —
+    // a twist-frame helix rotation combined with the flowing gradient phase.
+    // Both are quantized (3 twist frames × 20 gradient phases), so the cache
+    // recomputes at most once per changed tick and stays a single slot (O(1)).
     const stepNow = this.footer.step || 0;
     const idx = this.progress.observe(stepNow, this.footer.maxSteps ?? DEFAULT_MAX_STEPS);
     const isThinking = this.timer !== undefined;
@@ -912,19 +914,21 @@ export class LaunchTui {
       this.appendLedger(`${arrow} ${transitionMessage(idx)}\n`);
     }
     const showArt = fit && !this.inline && rows >= 18 && cols >= 40;
-    const effFrame = isThinking ? this.tickCount % stageBlocks(getStageByIndex(idx)).length : 0;
+    // One int key folds both animation axes: twist frame advances every 3 ticks,
+    // gradient phase cycles 20 quantized steps (tickCount*0.05 % 1).
+    const twist = isThinking ? Math.trunc(this.tickCount / 3) % dnaClawFrameCount() : 0;
+    const qPhase = isThinking ? this.tickCount % 20 : 0;
+    const effFrame = twist * 100 + qPhase;
     if (showArt && (idx !== this.cachedStageIndex || cols !== this.cachedCols || effFrame !== this.cachedFrame)) {
-      // Commit the cache keys only AFTER the render succeeds: if renderAsciiArt ever
+      // Commit the cache keys only AFTER the render succeeds: if renderDnaClaw ever
       // throws (resize race, bad gradient level), pre-committed keys would mark the
-      // STALE art as current and freeze the header at an old stage forever.
-      const art = renderAsciiArt(getStageByIndex(idx), {
-        height: stageHeight(),
-        width: stageWidth(),
+      // STALE art as current and freeze the header at an old frame forever.
+      const art = renderDnaClaw({
         cols: innerWidth,
-        firing: isThinking,
-        frame: isThinking ? this.tickCount : 0,
+        phase: qPhase * 0.05,
+        frame: twist,
+        unicode: this.unicode,
         color: this.theme.color,
-        gradient: themeGradient(this.theme, idx),
         colorLevel: detectColorLevel(process.env, isTTY()),
       });
       this.cachedArt = fit ? centerBlock(art, innerWidth) : art;
@@ -934,7 +938,7 @@ export class LaunchTui {
       this.cachedCols = cols;
       this.cachedFrame = effFrame;
     }
-    const artLinesCount = showArt ? stageHeight() : 0;
+    const artLinesCount = showArt ? dnaClawHeight() : 0;
     const trackCount = showArt ? 1 : 0;
     const headerHeight = artLinesCount + trackCount + (showArt ? 1 : 0);
 

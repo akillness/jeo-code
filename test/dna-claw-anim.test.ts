@@ -1,0 +1,67 @@
+import { test, expect } from "bun:test";
+import {
+  DNA_CLAW_ART,
+  DNA_CLAW_FRAMES,
+  DNA_CLAW_FRAMES_ASCII,
+  dnaClawFrameCount,
+  dnaClawHeight,
+  renderDnaClaw,
+} from "../src/tui/components/ascii-art";
+import { ColorLevel } from "../src/tui/components/color";
+import { estimateMessageTokens, historyTokens } from "../src/agent/compaction";
+
+const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+test("twist frames: frame 0 is the static symbol; all frames share dimensions", () => {
+  expect(DNA_CLAW_FRAMES[0]).toBe(DNA_CLAW_ART);
+  expect(dnaClawFrameCount()).toBeGreaterThanOrEqual(2);
+  for (const frames of [DNA_CLAW_FRAMES, DNA_CLAW_FRAMES_ASCII]) {
+    const height = frames[0]!.length;
+    const width = Math.max(...frames[0]!.map(l => l.length));
+    for (const frame of frames) {
+      expect(frame.length).toBe(height);
+      for (const line of frame) expect(line.length).toBeLessThanOrEqual(width);
+    }
+  }
+  expect(dnaClawHeight()).toBe(DNA_CLAW_ART.length);
+});
+
+test("twist frames actually differ (the helix rotates) and wrap", () => {
+  const f0 = renderDnaClaw({ color: false, frame: 0 }).join("\n");
+  const f1 = renderDnaClaw({ color: false, frame: 1 }).join("\n");
+  expect(f1).not.toBe(f0);
+  // Wrapping: frame N === frame N % count.
+  const wrapped = renderDnaClaw({ color: false, frame: dnaClawFrameCount() }).join("\n");
+  expect(wrapped).toBe(f0);
+});
+
+test("gradient animates across phases at TrueColor; plain output is phase-stable", () => {
+  const a = renderDnaClaw({ phase: 0, frame: 0, colorLevel: ColorLevel.TrueColor }).join("\n");
+  const b = renderDnaClaw({ phase: 0.5, frame: 0, colorLevel: ColorLevel.TrueColor }).join("\n");
+  expect(a).not.toBe(b); // flowing gradient
+  expect(stripAnsi(a)).toBe(stripAnsi(b)); // same glyphs — only colors move
+  const p0 = renderDnaClaw({ color: false, phase: 0 }).join("\n");
+  const p1 = renderDnaClaw({ color: false, phase: 0.5 }).join("\n");
+  expect(p0).toBe(p1);
+});
+
+test("grand variant ignores the twist frame (static welcome hero)", () => {
+  const g0 = renderDnaClaw({ color: false, grand: true, frame: 0 }).join("\n");
+  const g1 = renderDnaClaw({ color: false, grand: true, frame: 1 }).join("\n");
+  expect(g1).toBe(g0);
+});
+
+test("estimateMessageTokens: identity-cached, replacement-keyed (no stale, no growth)", () => {
+  const msg = { role: "user" as const, content: "hello ".repeat(1000) };
+  const first = estimateMessageTokens(msg);
+  expect(estimateMessageTokens(msg)).toBe(first); // cached hit, same value
+  // Replacement object with different content computes a DIFFERENT count —
+  // the cache keys by identity, and the codebase replaces (never mutates) messages.
+  const replacement = { role: "user" as const, content: "hi" };
+  expect(estimateMessageTokens(replacement)).not.toBe(first);
+  // historyTokens over a long history is consistent across repeated calls.
+  const history = Array.from({ length: 500 }, (_, i) => ({ role: "user" as const, content: `msg ${i} ${"x".repeat(50)}` }));
+  const t1 = historyTokens(history);
+  const t2 = historyTokens(history); // second pass: all cache hits
+  expect(t2).toBe(t1);
+});

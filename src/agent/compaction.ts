@@ -64,8 +64,20 @@ export function estimateTokens(text: string): number {
  *  Keeps the context meter and compaction trigger honest when images are attached. */
 const IMAGE_TOKEN_ESTIMATE = 1100;
 
+/** Per-message estimate cache keyed by OBJECT IDENTITY. Engine/compaction always
+ *  replace messages with new objects (never mutate `content` in place), so a
+ *  cached count can never go stale; a WeakMap holds no reference once a message
+ *  is dropped from history, so the cache CANNOT grow cumulatively. This turns
+ *  the per-turn `historyTokens(history)` context meter from O(total chars) into
+ *  O(new messages) on long sessions. */
+const messageTokenCache = new WeakMap<Message, number>();
+
 export function estimateMessageTokens(msg: Message): number {
-  return estimateTokens(msg.role) + estimateTokens(msg.content) + (msg.images?.length ?? 0) * IMAGE_TOKEN_ESTIMATE + 1;
+  const hit = messageTokenCache.get(msg);
+  if (hit !== undefined) return hit;
+  const n = estimateTokens(msg.role) + estimateTokens(msg.content) + (msg.images?.length ?? 0) * IMAGE_TOKEN_ESTIMATE + 1;
+  messageTokenCache.set(msg, n);
+  return n;
 }
 
 export function historyTokens(history: Message[]): number {

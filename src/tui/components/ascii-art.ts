@@ -434,6 +434,63 @@ export const DNA_CLAW_ART_ASCII: string[] = [
   "   [ DNA Claw ]   "
 ];
 
+/** Twist animation frames for the compact DNA Claw: the claw silhouette stays
+ *  fixed while the inner helix lattice rotates. Frame 0 === DNA_CLAW_ART, so a
+ *  frameless render is byte-identical to the static symbol. All lines are the
+ *  same width (18) and every glyph is display-width 1. */
+export const DNA_CLAW_FRAMES: string[][] = [
+  DNA_CLAW_ART,
+  [
+    "  ╭╯   ◆  ◆   ╰╮  ",
+    " ╭╯   ╲╱  ╲╱   ╰╮ ",
+    " ║     ╳ ╳      ║ ",
+    " ╰╮   ╱ ╳ ╲    ╭╯ ",
+    "  ╰╮   ╳ ╳    ╭╯  ",
+    "   ╚══○   ○══╝    ",
+    "      ║   ║       ",
+    "   [ DNA Claw ]   "
+  ],
+  [
+    "  ╭╯   ◆  ◆   ╰╮  ",
+    " ╭╯   ╱╲  ╱╲   ╰╮ ",
+    " ║     ╳ ╳      ║ ",
+    " ╰╮   ╲ ╳ ╱    ╭╯ ",
+    "  ╰╮    ╳ ╳   ╭╯  ",
+    "   ╚══○   ○══╝    ",
+    "      ║   ║       ",
+    "   [ DNA Claw ]   "
+  ]
+];
+
+export const DNA_CLAW_FRAMES_ASCII: string[][] = [
+  DNA_CLAW_ART_ASCII,
+  [
+    "  /{   *  *   }\\  ",
+    " /{   \\ / \\ /  }\\ ",
+    " |     X X      | ",
+    " \\{   / X \\    }/ ",
+    "  \\{   X X    }/  ",
+    "   \\==o   o==/    ",
+    "      |   |       ",
+    "   [ DNA Claw ]   "
+  ],
+  [
+    "  /{   *  *   }\\  ",
+    " /{   / \\ / \\  }\\ ",
+    " |     X X      | ",
+    " \\{   \\ X /    }/ ",
+    "  \\{    X X   }/  ",
+    "   \\==o   o==/    ",
+    "      |   |       ",
+    "   [ DNA Claw ]   "
+  ]
+];
+
+/** Number of twist frames in the compact DNA Claw animation cycle. */
+export function dnaClawFrameCount(): number {
+  return DNA_CLAW_FRAMES.length;
+}
+
 /** Grand hero variant for the welcome forge box (gjc-style spacious banner):
  *  a wide claw whose pincers frame a twisting DNA helix. Width-1 glyphs only
  *  (box drawing + diagonals + geometrics) so padding/centering math stays exact. */
@@ -475,11 +532,20 @@ export function renderDnaClaw(opts: {
   colorLevel?: ColorLevel;
   /** Grand hero variant (welcome forge box); default is the compact in-turn symbol. */
   grand?: boolean;
+  /** Twist-animation frame (compact symbol only; wraps). The helix lattice rotates
+   *  while the claw silhouette stays fixed — combined with the flowing gradient
+   *  `phase` this animates the forge identity without any frame-count growth. */
+  frame?: number;
 }): string[] {
   const useUnicode = opts.unicode !== false;
-  const source = opts.grand
-    ? (useUnicode ? DNA_CLAW_ART_GRAND : DNA_CLAW_ART_GRAND_ASCII)
-    : (useUnicode ? DNA_CLAW_ART : DNA_CLAW_ART_ASCII);
+  let source: string[];
+  if (opts.grand) {
+    source = useUnicode ? DNA_CLAW_ART_GRAND : DNA_CLAW_ART_GRAND_ASCII;
+  } else {
+    const frames = useUnicode ? DNA_CLAW_FRAMES : DNA_CLAW_FRAMES_ASCII;
+    const f = Math.abs(Math.trunc(opts.frame ?? 0)) % frames.length;
+    source = frames[f]!;
+  }
   const width = Math.max(0, ...source.map(l => l.length));
 
   if (opts.cols !== undefined && opts.cols < width) {

@@ -2787,27 +2787,49 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (providerPick.length) logLines(formatPickListWithCapabilities(providerPick, { cap: 20 }));
           continue;
         }
-        // gjc parity: an INTERACTIVE pick also asks WHO the model applies to —
-        // the global default or one subagent role (the hint column shows each
-        // target's current model, so this doubles as a change-existing panel).
-        // ESC / non-TTY / explicit `/provider <name> <model>` keep the legacy
-        // behavior: apply as the global default.
+        // gjc parity 3-step pick: WHO uses the model (default / subagent role),
+        // then HOW HARD it thinks (reasoning level — gjc's "Reasoning for <role>"
+        // menu). ESC at either step keeps the current value; non-TTY / explicit
+        // `/provider <name> <model>` keep the legacy default-apply behavior.
         let applyTo = "default";
+        const cfgForPick = await readGlobalConfig();
         if (pickedFromPicker) {
-          const choice = await pickFromOptions(`Apply ${target} to`, applyTargetChoices(await readGlobalConfig()));
+          const choice = await pickFromOptions(`Apply ${target} to`, applyTargetChoices(cfgForPick));
           if (choice) applyTo = choice;
         }
         const roleTarget = applyTo !== "default" ? getSubagentRole(applyTo) : undefined;
+        const pickThinking = async (forRole: boolean, current: string | undefined): Promise<string | undefined> => {
+          if (!pickedFromPicker) return undefined;
+          const mark = (lvl: string): string => (current === lvl ? "current" : "");
+          const levels: { value: string; label: string; hint?: string }[] = [
+            ...(forRole ? [{ value: "inherit", label: `inherit — follow default (${cfgForPick.thinkingLevel ?? "medium"})`, hint: current === undefined ? "current" : "" }] : []),
+            { value: "minimal", label: "minimal — lightest reasoning", hint: mark("minimal") },
+            { value: "low", label: `low — light reasoning (~${Math.round(thinkingMaxTokens("low") / 1000)}k tokens)`, hint: mark("low") },
+            { value: "medium", label: `medium — moderate reasoning (~${Math.round(thinkingMaxTokens("medium") / 1000)}k tokens)`, hint: mark("medium") },
+            { value: "high", label: `high — deep reasoning (~${Math.round(thinkingMaxTokens("high") / 1000)}k tokens)`, hint: mark("high") },
+            { value: "xhigh", label: `xhigh — maximum reasoning (~${Math.round(thinkingMaxTokens("xhigh") / 1000)}k tokens)`, hint: mark("xhigh") },
+          ];
+          return pickFromOptions(`Reasoning for ${forRole ? roleTarget!.title : "default"}: ${target}`, levels);
+        };
+        type Lvl = "minimal" | "low" | "medium" | "high" | "xhigh";
         if (roleTarget) {
-          await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, roleTarget.id, { model: target }) }));
-          console.log(`Subagent '${roleTarget.id}' model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })} — saved (change anytime via /agents or this picker)`);
+          const lvl = await pickThinking(true, cfgForPick.subagents?.[roleTarget.id]?.thinking);
+          const thinkPatch = lvl === "inherit" ? { thinking: undefined } : lvl ? { thinking: lvl as Lvl } : {};
+          await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, roleTarget.id, { model: target, ...thinkPatch }) }));
+          const thinkNote = lvl ? ` · thinking ${lvl}` : "";
+          console.log(`Subagent '${roleTarget.id}' model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${thinkNote} — saved (change anytime via /agents or this picker)`);
           continue;
         }
         sessionModel = target;
+        const lvl = await pickThinking(false, sessionThinking ?? cfgForPick.thinkingLevel);
+        if (lvl && lvl !== "inherit") {
+          sessionThinking = lvl as Lvl;
+          await saveConfigPatch(() => ({ thinkingLevel: lvl as Lvl }));
+        }
         // MRU persistence: a provider/model pick becomes the default for EVERY
         // future session and the head of the recents rotation.
         await saveConfigPatch(raw => rememberModelPatch(raw, target));
-        console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })} — saved as default`);
+        console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${lvl && lvl !== "inherit" ? ` · thinking ${lvl}` : ""} — saved as default`);
         // Show the provider's live, credentialed catalog so the user can pick a concrete id.
         if (providerPick.length) {
           lastPickIndex = providerPick;

@@ -48,6 +48,15 @@ export function openaiRequest(messages: Message[], options: CallOptions, credent
   };
 }
 
+/** Round-5 #1: surface the finish_reason when a 200 carries no text — an empty
+ *  reply only bounces in the JSON loop (billed) until the step budget dies. */
+function emptyCompletionError(finishReason: string | undefined): Error {
+  const hint = finishReason === "length"
+    ? " — output budget exhausted before any text (often reasoning tokens); raise maxTokens or lower reasoning effort"
+    : "";
+  return new Error(`OpenAI returned no content${finishReason ? ` (finish_reason=${finishReason})` : ""}${hint}.`);
+}
+
 export const openaiAdapter: ProviderAdapter = {
   name: "openai",
   async call(messages, options, credential) {
@@ -56,9 +65,11 @@ export const openaiAdapter: ProviderAdapter = {
     const { url, headers, body } = openaiRequest(messages, options, credential, false);
     const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) throw await providerHttpError("OpenAI", response);
-    const result = (await response.json()) as { choices: { message: { content: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+    const result = (await response.json()) as { choices: { message: { content: string }; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     if (result.usage) options.onUsage?.({ inputTokens: result.usage.prompt_tokens, outputTokens: result.usage.completion_tokens });
-    return result.choices[0]?.message?.content ?? "";
+    const text = result.choices[0]?.message?.content ?? "";
+    if (!text) throw emptyCompletionError(result.choices[0]?.finish_reason);
+    return text;
   },
   async *stream(messages, options, credential) {
     if (credential.kind === "oauth") {
@@ -69,17 +80,24 @@ export const openaiAdapter: ProviderAdapter = {
     const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) throw await providerHttpError("OpenAI", response, "(stream)");
     if (!response.body) return;
+    let yieldedAny = false;
+    let finishReason: string | undefined;
     for await (const data of readSse(response.body)) {
-      let chunk: { choices?: { delta?: { content?: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+      let chunk: { choices?: { delta?: { content?: string }; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
       try {
         chunk = JSON.parse(data);
       } catch {
         continue;
       }
       const delta = chunk.choices?.[0]?.delta?.content;
-      if (delta) yield delta;
+      if (delta) {
+        yieldedAny = true;
+        yield delta;
+      }
+      if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
       if (chunk.usage) options.onUsage?.({ inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens });
     }
+    if (!yieldedAny) throw emptyCompletionError(finishReason);
   },
 };
 

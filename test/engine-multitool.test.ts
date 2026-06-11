@@ -251,3 +251,73 @@ test("runAgentLoop: all-fail batch increments the consecutive-failure guard", as
   expect(calls).toBe(10);
   expect(result.steps).toBe(5);
 });
+
+test("runAgentLoop: trivial read success cannot reset the failure streak (F6)", async () => {
+  // read(ok)+edit(fail) with VARYING targets each turn: pre-F6 the green read
+  // reset consecutiveFailures every step, so this looped to maxSteps. Now the
+  // step is judged by its non-trivial (mutating) calls and stops at MAX_FAILURES.
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      return JSON.stringify({
+        tools: [
+          { tool: "read", arguments: { filePath: `a${turn}.txt` } },
+          { tool: "edit", arguments: { filePath: `b${turn}.ts`, editBlock: `x${turn}` } },
+        ],
+      });
+    },
+  }));
+
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history = [{ role: "system" as const, content: "sys" }];
+
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 12,
+    budget: { maxExtensions: 0 },
+    tools: {
+      read: async () => ({ success: true, output: "file content" }),
+      edit: async () => ({ success: false, output: "Failed to apply edit" }),
+    },
+  });
+
+  expect(result.done).toBe(false);
+  expect(result.doneReason).toContain("consecutive failing tool steps");
+  expect(result.steps).toBe(5); // stopped at MAX_FAILURES, not maxSteps
+});
+
+test("runAgentLoop: read-only-only failing steps still trip the guard; mixed ok-edit resets", async () => {
+  // Sanity for the F6 boundary: a step whose MUTATING call SUCCEEDS resets the
+  // streak even if a read in the same batch failed.
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      if (turn <= 8) {
+        return JSON.stringify({
+          tools: [
+            { tool: "read", arguments: { filePath: `missing${turn}.txt` } },
+            { tool: "edit", arguments: { filePath: `ok${turn}.ts`, editBlock: `y${turn}` } },
+          ],
+        });
+      }
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok Changed Files: x Verification: y" } });
+    },
+  }));
+
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history = [{ role: "system" as const, content: "sys" }];
+
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 12,
+    budget: { maxExtensions: 0 },
+    tools: {
+      read: async () => ({ success: false, output: "not found" }),
+      edit: async () => ({ success: true, output: "updated, tests pass" }),
+    },
+  });
+
+  expect(result.done).toBe(true); // edits kept succeeding → no failure stop
+});

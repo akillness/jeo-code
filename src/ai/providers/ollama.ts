@@ -34,34 +34,51 @@ function ollamaRequest(messages: Message[], options: CallOptions, stream: boolea
   return { url: `${base}/api/chat`, body: JSON.stringify(payload) };
 }
 
+/** Round-5 #1: surface done_reason when a 200 carries no text (uniform contract). */
+function emptyCompletionError(doneReason: string | undefined): Error {
+  const hint = doneReason === "length"
+    ? " — output budget exhausted before any text; raise maxTokens"
+    : "";
+  return new Error(`Ollama returned no content${doneReason ? ` (done_reason=${doneReason})` : ""}${hint}.`);
+}
+
 export const ollamaAdapter: ProviderAdapter = {
   name: "ollama",
   async call(messages, options) {
     const { url, body } = ollamaRequest(messages, options, false);
     const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body, signal: options.signal });
     if (!response.ok) throw await providerHttpError("Ollama", response, `at ${url}`);
-    const result = (await response.json()) as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number; total_duration?: number };
+    const result = (await response.json()) as { message?: { content?: string }; done_reason?: string; prompt_eval_count?: number; eval_count?: number; total_duration?: number };
     options.onUsage?.({ inputTokens: result.prompt_eval_count, outputTokens: result.eval_count, durationMs: result.total_duration ? Math.round(result.total_duration / 1e6) : undefined });
-    return result.message?.content ?? "";
+    const text = result.message?.content ?? "";
+    if (!text) throw emptyCompletionError(result.done_reason);
+    return text;
   },
   async *stream(messages, options) {
     const { url, body } = ollamaRequest(messages, options, true);
     const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body, signal: options.signal });
     if (!response.ok) throw await providerHttpError("Ollama", response, `(stream) at ${url}`);
     if (!response.body) return;
+    let yieldedAny = false;
+    let doneReason: string | undefined;
     for await (const line of readLines(response.body)) {
-      let chunk: { message?: { content?: string }; done?: boolean; prompt_eval_count?: number; eval_count?: number; total_duration?: number };
+      let chunk: { message?: { content?: string }; done?: boolean; done_reason?: string; prompt_eval_count?: number; eval_count?: number; total_duration?: number };
       try {
         chunk = JSON.parse(line);
       } catch {
         continue;
       }
       const delta = chunk.message?.content;
-      if (delta) yield delta;
+      if (delta) {
+        yieldedAny = true;
+        yield delta;
+      }
       if (chunk.done) {
+        if (chunk.done_reason) doneReason = chunk.done_reason;
         options.onUsage?.({ inputTokens: chunk.prompt_eval_count, outputTokens: chunk.eval_count, durationMs: chunk.total_duration ? Math.round(chunk.total_duration / 1e6) : undefined });
         break;
       }
     }
+    if (!yieldedAny) throw emptyCompletionError(doneReason);
   },
 };

@@ -32,6 +32,9 @@ const discoveredProjects = new Map<string, string>();
 export interface ResolveProjectOptions {
   discover?: (accessToken: string) => Promise<string>;
   persist?: (projectId: string) => Promise<void>;
+  /** Turn abort — threaded into discovery fetches so a stalled loadCodeAssist
+   *  can never hang the first OAuth turn forever (round-5 #2). */
+  signal?: AbortSignal;
 }
 
 /**
@@ -57,8 +60,8 @@ export async function resolveAntigravityProjectId(
     // Antigravity-client tokens discover with ANTIGRAVITY metadata; gemini-cli
     // tokens use the default gemini-cli metadata shape.
     return discoverGoogleProjectId(token, credential.provider === "antigravity"
-      ? { metadata: { ...ANTIGRAVITY_DISCOVERY_METADATA }, extraHeaders: { "User-Agent": getAntigravityUserAgent() } }
-      : {});
+      ? { metadata: { ...ANTIGRAVITY_DISCOVERY_METADATA }, extraHeaders: { "User-Agent": getAntigravityUserAgent() }, signal: opts.signal }
+      : { signal: opts.signal });
   });
   let projectId: string;
   try {
@@ -169,7 +172,7 @@ function textOf(chunk: CcaChunk): string {
 async function fetchAntigravity(messages: Message[], options: CallOptions, credential: Credential): Promise<Response> {
   // Resolve the project id up front: stored credential → env → lazy
   // loadCodeAssist/onboardUser discovery (persisted for future sessions).
-  const projectId = await resolveAntigravityProjectId(credential);
+  const projectId = await resolveAntigravityProjectId(credential, { signal: options.signal });
   let last: Response | undefined;
   for (const endpoint of ENDPOINTS) {
     const { url, headers, body } = antigravityRequest(messages, options, credential, endpoint, projectId);

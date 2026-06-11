@@ -51,6 +51,20 @@ export interface DiscoverProjectOptions {
   metadata?: Record<string, string>;
   /** Extra request headers (e.g. the Antigravity User-Agent). */
   extraHeaders?: Record<string, string>;
+  /** Outer abort (the turn's signal) — composed with the per-request timeout. */
+  signal?: AbortSignal;
+  /** Per-request deadline; a stalled discovery fetch must NEVER hang the turn
+   *  forever (round-5 #2 — this path runs BEFORE the manager's guarded call). */
+  requestTimeoutMs?: number;
+}
+
+const DISCOVERY_REQUEST_TIMEOUT_MS = 30_000;
+
+/** Per-request signal: outer turn abort + bounded timeout (whichever first). */
+function boundedSignal(outer: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timer = AbortSignal.timeout(timeoutMs);
+  if (!outer) return timer;
+  return typeof AbortSignal.any === "function" ? AbortSignal.any([outer, timer]) : timer;
 }
 
 function readProjectId(value: string | { id?: string } | undefined): string | undefined {
@@ -91,6 +105,8 @@ export async function discoverGoogleProjectId(
   const maxPollAttempts = opts.maxPollAttempts ?? DEFAULT_MAX_POLL_ATTEMPTS;
   const envProjectId = env.GOOGLE_CLOUD_PROJECT || env.GOOGLE_CLOUD_PROJECT_ID || undefined;
   const metadata = opts.metadata ?? GEMINI_CLI_METADATA;
+  const requestTimeoutMs = opts.requestTimeoutMs ?? DISCOVERY_REQUEST_TIMEOUT_MS;
+  const nextSignal = () => boundedSignal(opts.signal, requestTimeoutMs);
 
   const headers: Record<string, string> = {
     authorization: `Bearer ${accessToken}`,
@@ -106,6 +122,7 @@ export async function discoverGoogleProjectId(
       cloudaicompanionProject: envProjectId,
       metadata: { ...metadata, duetProject: envProjectId },
     }),
+    signal: nextSignal(),
   });
 
   let data: LoadCodeAssistPayload;
@@ -150,6 +167,7 @@ export async function discoverGoogleProjectId(
     method: "POST",
     headers,
     body: JSON.stringify(onboardBody),
+    signal: nextSignal(),
   });
   if (!onboardRes.ok) {
     throw new Error(`onboardUser failed (HTTP ${onboardRes.status}): ${await onboardRes.text()}`);
@@ -159,7 +177,7 @@ export async function discoverGoogleProjectId(
   for (let attempt = 1; !lro.done && lro.name && attempt <= maxPollAttempts; attempt++) {
     opts.onProgress?.(`Waiting for project provisioning (attempt ${attempt}/${maxPollAttempts})…`);
     await sleep(POLL_INTERVAL_MS);
-    const pollRes = await fetchImpl(`${CODE_ASSIST_ENDPOINT}/v1internal/${lro.name}`, { method: "GET", headers });
+    const pollRes = await fetchImpl(`${CODE_ASSIST_ENDPOINT}/v1internal/${lro.name}`, { method: "GET", headers, signal: nextSignal() });
     if (!pollRes.ok) throw new Error(`Polling onboardUser operation failed (HTTP ${pollRes.status}).`);
     lro = (await pollRes.json()) as LongRunningOperationResponse;
   }

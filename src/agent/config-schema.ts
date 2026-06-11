@@ -89,6 +89,8 @@ export const ConfigSchema = z
           // Tolerated, informational provider tag (model ids are persisted provider-qualified)
           provider: z.enum(["anthropic", "openai", "gemini", "antigravity", "ollama"]).optional(),
           maxSteps: z.number().int().min(1).optional(),
+          /** Per-role reasoning budget; absent = inherit the global thinkingLevel. */
+          thinking: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
         }),
       )
       .optional(),

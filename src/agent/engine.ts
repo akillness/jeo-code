@@ -728,7 +728,16 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         if (VERIFY_SIGNAL_RE.test(cmd) || VERIFY_SIGNAL_RE.test(results[i].output.slice(0, 2000))) sawVerification = true;
       }
     }
-    const stepSuccess = results.some(r => r.success);
+    // F6 (round 4 architect, Low): judge the step by its NON-TRIVIAL calls — a
+    // batch of read(ok)+edit(fail) repeated with varying targets previously
+    // never tripped MAX_FAILURES because the trivial read reset the streak.
+    // Read-only-only steps keep the old any-success rule.
+    const nonTrivial = toolCalls
+      .map((c, i) => ({ tool: c.tool, r: results[i] }))
+      .filter(x => !READONLY_TOOLS.has(x.tool) && x.r.executed);
+    const stepSuccess = nonTrivial.length > 0
+      ? nonTrivial.some(x => x.r.success)
+      : results.some(r => r.success);
 
     if (stepSuccess) {
       consecutiveFailures = 0;

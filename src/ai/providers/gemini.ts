@@ -159,7 +159,7 @@ function blockedReason(chunk: GeminiChunk): string | undefined {
  */
 async function* ccaTurn(messages: Message[], options: CallOptions, credential: Credential & { kind: "oauth" }): AsyncGenerator<string> {
   const { resolveAntigravityProjectId } = await import("./antigravity");
-  const projectId = await resolveAntigravityProjectId(credential);
+  const projectId = await resolveAntigravityProjectId(credential, { signal: options.signal });
   const { url, headers, body } = geminiCliRequest(messages, options, credential.token, projectId);
   const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
   if (!response.ok) throw await providerHttpError("Gemini (Cloud Code Assist)", response);

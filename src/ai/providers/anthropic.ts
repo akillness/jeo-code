@@ -180,22 +180,36 @@ interface AnthropicUsage {
 export function totalInputTokens(u: AnthropicUsage): number {
   return (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
 }
+
+/** Round-5 #1: HTTP-200-with-no-text must surface its CAUSE (stop_reason) instead
+ *  of returning "" — an empty reply just bounces in the JSON loop, burning billed
+ *  calls until the step budget dies. Mirrors gemini's blockedReason contract. */
+function emptyCompletionError(stopReason: string | undefined): Error {
+  const hint = stopReason === "max_tokens"
+    ? " — output budget exhausted before any text; raise maxTokens or lower the thinking level"
+    : "";
+  return new Error(`Anthropic returned no content${stopReason ? ` (stop_reason=${stopReason})` : ""}${hint}.`);
+}
 export const anthropicAdapter: ProviderAdapter = {
   name: "anthropic",
   async call(messages, options, credential) {
     const response = await postAnthropic(messages, options, credential, false);
-    const result = (await response.json()) as { content: { type: string; text: string }[]; usage?: AnthropicUsage };
+    const result = (await response.json()) as { content: { type: string; text: string }[]; stop_reason?: string; usage?: AnthropicUsage };
     if (result.usage) options.onUsage?.({ inputTokens: totalInputTokens(result.usage), outputTokens: result.usage.output_tokens });
-    return result.content.find(c => c.type === "text")?.text ?? "";
+    const text = result.content.find(c => c.type === "text")?.text ?? "";
+    if (!text) throw emptyCompletionError(result.stop_reason);
+    return text;
   },
   async *stream(messages, options, credential) {
     const response = await postAnthropic(messages, options, credential, true);
     if (!response.body) return;
     let cachedInput: number | undefined;
+    let yieldedAny = false;
+    let stopReason: string | undefined;
     for await (const data of readSse(response.body)) {
       let evt: {
         type?: string;
-        delta?: { type?: string; text?: string };
+        delta?: { type?: string; text?: string; stop_reason?: string };
         message?: { usage?: AnthropicUsage };
         usage?: { output_tokens?: number };
       };
@@ -205,14 +219,19 @@ export const anthropicAdapter: ProviderAdapter = {
         continue;
       }
       if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta" && evt.delta.text) {
+        yieldedAny = true;
         yield evt.delta.text;
       } else if (evt.type === "message_start" && evt.message?.usage) {
+        // Cache only — usage is reported ONCE at message_delta so an accumulating
+        // sink can't double-count input (and a pre-first-chunk retry that replays
+        // message_start is harmless).
         cachedInput = totalInputTokens(evt.message.usage);
-        options.onUsage?.({ inputTokens: cachedInput, outputTokens: evt.message.usage.output_tokens });
-      } else if (evt.type === "message_delta" && evt.usage) {
-        options.onUsage?.({ inputTokens: cachedInput, outputTokens: evt.usage.output_tokens });
+      } else if (evt.type === "message_delta") {
+        if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason;
+        if (evt.usage) options.onUsage?.({ inputTokens: cachedInput, outputTokens: evt.usage.output_tokens });
       }
     }
+    if (!yieldedAny) throw emptyCompletionError(stopReason);
   },
 };
 function mapStainlessOs(platform: string): "MacOS" | "Windows" | "Linux" | "FreeBSD" | `Other::${string}` {

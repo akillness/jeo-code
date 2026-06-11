@@ -41,7 +41,7 @@ test("anthropicAdapter.stream: yields text_delta content, ignores other events",
   }
 });
 
-test("anthropicAdapter.stream: reports usage from message_start/message_delta", async () => {
+test("anthropicAdapter.stream: reports usage ONCE at message_delta (no double-count)", async () => {
   const prevFetch = globalThis.fetch;
   globalThis.fetch = (async () =>
     new Response(
@@ -58,8 +58,9 @@ test("anthropicAdapter.stream: reports usage from message_start/message_delta", 
     let text = "";
     for await (const d of anthropicAdapter.stream!([{ role: "user", content: "x" }], { model: "claude-3-5-sonnet", onUsage: u => usages.push(u) }, cred)) text += d;
     expect(text).toBe("hi");
-    expect(usages).toContainEqual({ inputTokens: 12, outputTokens: 0 });
-    expect(usages).toContainEqual({ inputTokens: 12, outputTokens: 5 });
+    // Round-5 #3: message_start only CACHES input; the single report happens at
+    // message_delta — an accumulating sink must see exactly one event.
+    expect(usages).toEqual([{ inputTokens: 12, outputTokens: 5 }]);
   } finally {
     globalThis.fetch = prevFetch;
   }

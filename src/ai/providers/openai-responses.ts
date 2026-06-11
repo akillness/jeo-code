@@ -84,6 +84,9 @@ export interface ResponsesEvent {
   delta?: string;
   usage?: { inputTokens?: number; outputTokens?: number };
   error?: string;
+  /** `response.incomplete` cause (e.g. max_output_tokens) — surfaced when the
+   *  whole response produced no text (round-5 #1). */
+  incompleteReason?: string;
 }
 
 /** Parse one Responses SSE `data:` payload into a delta / usage / error. */
@@ -91,7 +94,11 @@ export function parseResponsesEvent(data: string): ResponsesEvent {
   let o: {
     type?: string;
     delta?: unknown;
-    response?: { usage?: { input_tokens?: number; output_tokens?: number }; error?: { message?: string } };
+    response?: {
+      usage?: { input_tokens?: number; output_tokens?: number };
+      error?: { message?: string };
+      incomplete_details?: { reason?: string };
+    };
     error?: { message?: string };
   };
   try {
@@ -102,12 +109,23 @@ export function parseResponsesEvent(data: string): ResponsesEvent {
   if (o.type === "response.output_text.delta" && typeof o.delta === "string") return { delta: o.delta };
   // `response.incomplete` (max_output_tokens / content filter) also carries usage — don't drop it.
   if ((o.type === "response.completed" || o.type === "response.incomplete") && o.response?.usage) {
-    return { usage: { inputTokens: o.response.usage.input_tokens, outputTokens: o.response.usage.output_tokens } };
+    return {
+      usage: { inputTokens: o.response.usage.input_tokens, outputTokens: o.response.usage.output_tokens },
+      ...(o.type === "response.incomplete" ? { incompleteReason: o.response.incomplete_details?.reason ?? "incomplete" } : {}),
+    };
   }
   if (o.type === "response.failed" || o.type === "error") {
     return { error: o.response?.error?.message ?? o.error?.message ?? "Codex response failed" };
   }
   return {};
+}
+
+/** Round-5 #1: no-text completions surface their cause instead of returning "". */
+function emptyCompletionError(reason: string | undefined): Error {
+  const hint = reason === "max_output_tokens"
+    ? " — output budget exhausted before any text (often reasoning tokens); raise maxTokens or lower reasoning effort"
+    : "";
+  return new Error(`OpenAI Codex returned no content${reason ? ` (${reason})` : ""}${hint}.`);
 }
 
 /** Non-streaming call over the Codex backend (collects the streamed output). */
@@ -117,12 +135,15 @@ export async function codexResponsesCall(messages: Message[], options: CallOptio
   if (!response.ok) throw await providerHttpError("OpenAI", response);
   if (!response.body) return "";
   let out = "";
+  let incompleteReason: string | undefined;
   for await (const data of readSse(response.body)) {
     const ev = parseResponsesEvent(data);
     if (ev.delta) out += ev.delta;
     if (ev.usage) options.onUsage?.(ev.usage);
+    if (ev.incompleteReason) incompleteReason = ev.incompleteReason;
     if (ev.error) throw new Error(`OpenAI Codex response failed: ${ev.error}`);
   }
+  if (!out) throw emptyCompletionError(incompleteReason);
   return out;
 }
 
@@ -136,10 +157,17 @@ export async function* codexResponsesStream(
   const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
   if (!response.ok) throw await providerHttpError("OpenAI", response, "(stream)");
   if (!response.body) return;
+  let yieldedAny = false;
+  let incompleteReason: string | undefined;
   for await (const data of readSse(response.body)) {
     const ev = parseResponsesEvent(data);
-    if (ev.delta) yield ev.delta;
+    if (ev.delta) {
+      yieldedAny = true;
+      yield ev.delta;
+    }
     if (ev.usage) options.onUsage?.(ev.usage);
+    if (ev.incompleteReason) incompleteReason = ev.incompleteReason;
     if (ev.error) throw new Error(`OpenAI Codex response failed: ${ev.error}`);
   }
+  if (!yieldedAny) throw emptyCompletionError(incompleteReason);
 }

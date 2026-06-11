@@ -2,25 +2,25 @@ import { test, expect } from "bun:test";
 import { applyTargetChoices, SUBAGENT_ROLES } from "../src/agent/subagents";
 import { renderWelcome, playWelcomeSweep } from "../src/tui/components/welcome";
 
-test("applyTargetChoices: default first, then every role with its CURRENT model as hint", () => {
+test("applyTargetChoices: default first, then every role with its CURRENT model + thinking as hint", () => {
   const cfg = {
     defaultModel: "claude-sonnet-4-5",
     subagents: { planner: { model: "gemini-2.5-flash" } },
   };
   const choices = applyTargetChoices(cfg);
-  expect(choices[0]).toEqual({ value: "default", label: "default — every session", hint: "claude-sonnet-4-5" });
+  expect(choices[0]).toEqual({ value: "default", label: "default — every session", hint: "claude-sonnet-4-5 (medium)" });
   expect(choices.length).toBe(1 + SUBAGENT_ROLES.length);
   const planner = choices.find(c => c.value === "planner")!;
-  expect(planner.hint).toBe("gemini-2.5-flash"); // explicit override → no "(default)" tag
+  expect(planner.hint).toBe("gemini-2.5-flash (inherit)"); // explicit model, inherited thinking
   const executor = choices.find(c => c.value === "executor")!;
-  expect(executor.hint).toBe("claude-sonnet-4-5 (default)"); // falls back + tagged
+  expect(executor.hint).toBe("claude-sonnet-4-5 (default) (inherit)"); // falls back + tagged
 });
 
 test("applyTargetChoices doubles as a change-existing viewer (hints reflect new config)", () => {
   const before = applyTargetChoices({ defaultModel: "m1", subagents: {} });
   const after = applyTargetChoices({ defaultModel: "m1", subagents: { critic: { model: "m2" } } });
-  expect(before.find(c => c.value === "critic")!.hint).toBe("m1 (default)");
-  expect(after.find(c => c.value === "critic")!.hint).toBe("m2");
+  expect(before.find(c => c.value === "critic")!.hint).toBe("m1 (default) (inherit)");
+  expect(after.find(c => c.value === "critic")!.hint).toBe("m2 (inherit)");
 });
 
 test("playWelcomeSweep: synchronized in-place frames, seamless cycle loop, final frame === static banner", async () => {
@@ -61,4 +61,27 @@ test("playWelcomeSweep: cycles loop seamlessly — frames*cycles+1 repaints, pha
   // Constant cadence: exactly one sleep between consecutive frames — no pause
   // at the cycle boundary (the "seamless" contract).
   expect(phases.length).toBe(6);
+});
+
+import { resolveSubagentThinking, withSubagentSetting } from "../src/agent/subagents";
+
+test("per-role thinking: explicit override resolves; absent = inherit (undefined)", () => {
+  const subs = withSubagentSetting({ subagents: {} }, "executor", { model: "m1", thinking: "xhigh" });
+  expect(resolveSubagentThinking("executor", { subagents: subs })).toBe("xhigh");
+  expect(resolveSubagentThinking("planner", { subagents: subs })).toBeUndefined(); // inherit
+  // Re-pick with "inherit" clears the override (undefined patch value).
+  const cleared = withSubagentSetting({ subagents: subs }, "executor", { model: "m1", thinking: undefined });
+  expect(resolveSubagentThinking("executor", { subagents: cleared })).toBeUndefined();
+});
+
+test("applyTargetChoices hints carry gjc-style thinking tags: (level) for overrides, (inherit) for roles, default shows its level", () => {
+  const cfg = {
+    defaultModel: "claude-sonnet-4-5",
+    thinkingLevel: "high" as const,
+    subagents: { architect: { model: "claude-opus-4-5", thinking: "xhigh" as const } },
+  };
+  const choices = applyTargetChoices(cfg);
+  expect(choices[0]!.hint).toBe("claude-sonnet-4-5 (high)");
+  expect(choices.find(c => c.value === "architect")!.hint).toContain("(xhigh)");
+  expect(choices.find(c => c.value === "executor")!.hint).toContain("(inherit)");
 });

@@ -237,10 +237,21 @@ export function parseMaxSteps(input: string | undefined): number | undefined {
  * maxSteps). Pure — does not mutate `config`. Unknown roles are rejected by the
  * caller via `getSubagentRole`; this helper trusts the id it is given.
  */
+export type ThinkLevelValue = "minimal" | "low" | "medium" | "high" | "xhigh";
+
+/** Per-role reasoning level → explicit role override, else undefined (= INHERIT
+ *  the global thinkingLevel at call time — gjc's "(inherit)" semantics). */
+export function resolveSubagentThinking(
+  roleId: string,
+  config: Pick<Config, "subagents">,
+): ThinkLevelValue | undefined {
+  return config.subagents?.[normalizeRoleId(roleId)]?.thinking;
+}
+
 export function withSubagentSetting(
   config: Pick<Config, "subagents">,
   roleId: string,
-  patch: { model?: string; maxSteps?: number },
+  patch: { model?: string; maxSteps?: number; thinking?: ThinkLevelValue },
 ): SubagentConfig {
   const id = normalizeRoleId(roleId);
   const subs: SubagentConfig = { ...(config.subagents ?? {}) };
@@ -272,18 +283,22 @@ export interface ApplyTargetChoice {
  * read-and-change panel for existing role assignments. Pure — testable.
  */
 export function applyTargetChoices(
-  config: Pick<Config, "defaultModel" | "subagents">,
+  config: Pick<Config, "defaultModel" | "subagents" | "thinkingLevel">,
 ): ApplyTargetChoice[] {
+  const roleThink = (id: string): string => {
+    const t = resolveSubagentThinking(id, config);
+    return t ? ` (${t})` : " (inherit)";
+  };
   return [
     {
       value: "default",
       label: "default — every session",
-      hint: config.defaultModel,
+      hint: `${config.defaultModel} (${config.thinkingLevel ?? "medium"})`,
     },
     ...SUBAGENT_ROLES.map(role => ({
       value: role.id,
       label: `subagent ${role.id} — ${role.title}`,
-      hint: resolveSubagentModel(role.id, config) + (config.subagents?.[role.id]?.model ? "" : " (default)"),
+      hint: resolveSubagentModel(role.id, config) + (config.subagents?.[role.id]?.model ? "" : " (default)") + roleThink(role.id),
     })),
   ];
 }

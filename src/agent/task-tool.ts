@@ -20,9 +20,11 @@ import {
   subagentToolset,
   resolveSubagentModel,
   resolveSubagentMaxSteps,
+  resolveSubagentThinking,
   subagentRoleIds,
   validateSubagentDoneReason,
 } from "./subagents";
+import { thinkingMaxTokens } from "../ai/model-manager";
 
 /** Lifecycle event emitted while a delegated subagent runs. */
 export interface TaskSubEvent {
@@ -42,7 +44,8 @@ export interface TaskSubEvent {
 
 export interface TaskToolOptions {
   /** Resolves per-role model + step overrides; `defaultModel` is the fallback. */
-  config: Pick<Config, "defaultModel" | "subagents">;
+  /** Resolves per-role model/step/thinking overrides; `defaultModel` is the fallback. */
+  config: Pick<Config, "defaultModel" | "subagents" | "thinkingLevel">;
   /** Forwarded to the subagent loop so Ctrl-C cancels nested work too. */
   signal?: AbortSignal;
   /** Optional live sink (e.g. plain-stream rendering of nested progress). */
@@ -126,6 +129,9 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
   ): Promise<ToolResult> => {
     const model = resolveSubagentModel(role.id, opts.config);
     const maxSteps = resolveSubagentMaxSteps(role.id, opts.config);
+    // gjc parity: a role may pin its own reasoning budget; absent = inherit the
+    // session/global thinking level (the "(inherit)" row in the picker).
+    const thinking = resolveSubagentThinking(role.id, opts.config) ?? opts.config.thinkingLevel;
     const history: Message[] = [
       { role: "system", content: subagentSystemPrompt(role) },
       { role: "user", content: `${taskText}${context}` },
@@ -138,6 +144,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       cwd,
       model,
       maxSteps,
+      maxTokens: thinking ? thinkingMaxTokens(thinking) : undefined,
       // Bounded delegation: a subagent's step contract stays exact — the parent
       // owns any retry/extension decision, so the gjc retry flow is disabled here.
       budget: { maxExtensions: 0 },

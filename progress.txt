@@ -250,3 +250,11 @@
 - 14a match.tool `|`-다중매칭(hookMatchesTool) — 라운드3 critic 명시 승인 follow-up.
 - Verified: typecheck 0; full bun test 1177 pass / 0 fail (+8종: post-turn-feedback F1 2종+반환형 갱신, write-parallel 별칭/대소문자 2종, memory 펜스 1종, state-command 원자성 1종). 렛저: plan 라운드4, improvements.md.
 - 커밋: cycle 13은 67218e6로 푸시 완료. cycle 14는 본 패스에서 커밋·푸시.
+[2026-06-12] Pass — 모델 선택 3단계 완성: role 타깃 + Reasoning(thinking) 메뉴 (gjc 실관찰 이식)
+- gjc /model 실행·관찰(tmux): 모델 리스트(역할 태그 + "(xhigh)/(inherit)" 표기) → "Action for <model>"(DEFAULT/EXECUTOR/ARCHITECT/PLANNER/CRITIC) → "Reasoning for <Role>"(off~xhigh, 토큰 설명) 3단계 확인.
+- jeo 이식: /provider 인터랙티브 픽 → 기존 apply-target(역할) 피커 다음에 Reasoning 피커 추가 — minimal/low/medium/high/xhigh(+역할 대상엔 "inherit — follow default"), 현재 레벨 hint 마킹, 라벨에 thinkingMaxTokens 기반 ~Nk tokens 설명. ESC=현행 유지.
+- 영속: default 대상 → sessionThinking 즉시 반영 + config.thinkingLevel 저장; 역할 대상 → subagents[role].thinking(스키마/Config 타입 확장; inherit 선택 시 override 제거). task-tool이 스폰 시 resolveSubagentThinking ?? thinkingLevel → thinkingMaxTokens로 maxTokens 적용 — 역할별 추론 예산이 실제 서브에이전트 실행에 반영.
+- applyTargetChoices 힌트가 gjc식 "(level)/(inherit)" 표기 — 피커가 역할별 모델+추론 현황판 역할.
+- 병행 패스의 provider Round-5(usage 단일 보고, 빈 응답 원인 표면화)와 합산 그린.
+- Tests: resolveSubagentThinking/withSubagentSetting(override·inherit·clear), applyTargetChoices thinking 태그, 기존 힌트 테스트 신계약 갱신.
+- Verified: tsc 0; bun test 1181 pass / 0 fail.

@@ -80,7 +80,7 @@ export interface Config {
    * (executor / planner / architect / critic); each may pin a model and/or a
    * tool-loop step budget.
    */
-  subagents?: { [roleId: string]: { model?: string; maxSteps?: number } };
+  subagents?: { [roleId: string]: { model?: string; maxSteps?: number; thinking?: "minimal" | "low" | "medium" | "high" | "xhigh" } };
   /**
    * Model role tiers (gjc `--smol`/`--slow`/`--plan` parity). Each falls back to
    * `defaultModel`. Env `JOC_SMOL_MODEL`/`JOC_SLOW_MODEL`/`JOC_PLAN_MODEL` fill gaps.

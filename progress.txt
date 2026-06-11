@@ -241,3 +241,12 @@
 - 수정 3중: ① color.ts detectAppearance 프로세스-수명 메모(COLORFGBG 키드 — 팔레트 광고 터미널은 env별 존중; resetAppearanceCache 테스트 훅), ② themes.ts getExplicitThemeFromConfig 메모(env 테마가 항상 우선이라 /theme 즉시성 유지; resetThemeConfigCache 훅), ③ launch.ts 키-핫 콜사이트 호이스팅 — uiTheme/uiAccent/uiAccentShadow 1회 해석, /theme 변경 시 refreshUiTheme()로만 갱신(상태바·입력박스 즉시 반영으로 UX도 개선).
 - Tests: 워밍 50회 < 콜드 1회(스폰 1회 보장), resolveTheme 300회(≈100키×3) < 30ms(구버전 1키 예산 미만), COLORFGBG dark/light 판정 유지.
 - Verified: tsc 0; bun test 1163 pass / 0 fail.
+[2026-06-12] gjc-계승 마라톤 라운드 4 (cycle 14) — architect 발굴 4픽스 + 다중매칭
+- architect 리뷰(agent://5-Round4Discovery, WATCH): 에이전트 코어 심각도 평가 → Med 4건 채택.
+- F1 훅↔done guard 결합: 이전 스텝 bash 검증이 있어도 최신 편집의 red tsc 훅이면 done 푸시백(훅 명명, escape hatch 유지). runPostTurnHooks {diags, ran} 반환, pendingHookFailure 추적(red=설정, clean 완주=해제).
+- F2 원자적 workflow state: writeWorkflowState temp+rename — torn write가 fail-closed mutation guard를 영구 wedge하던 zeroclaw 위반 해소.
+- F3 쓰기병렬화 dedup 키 정규화: raw 문자열 → path.resolve+lowercase. `./x.ts` vs `x.ts`/대소문자 변형의 사일런트 lost-update(macOS 실워크스테이션) 차단.
+- F4 메모리 주입 방어: MEMORY.md 주입 시 </project_memory> 태그 중화 + DATA-not-instructions 프레이밍(지속형 prompt-injection 벡터 차단).
+- 14a match.tool `|`-다중매칭(hookMatchesTool) — 라운드3 critic 명시 승인 follow-up.
+- Verified: typecheck 0; full bun test 1177 pass / 0 fail (+8종: post-turn-feedback F1 2종+반환형 갱신, write-parallel 별칭/대소문자 2종, memory 펜스 1종, state-command 원자성 1종). 렛저: plan 라운드4, improvements.md.
+- 커밋: cycle 13은 67218e6로 푸시 완료. cycle 14는 본 패스에서 커밋·푸시.

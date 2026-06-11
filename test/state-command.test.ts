@@ -305,3 +305,25 @@ test("state command: read, write, clear, handoff, error handling, help", async (
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("writeWorkflowState is atomic: valid JSON round-trip, no temp leftovers (F2)", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-state-atomic-"));
+  try {
+    // Repeated rewrites (the mid-workflow pattern that made torn writes dangerous —
+    // the mutation guard fails CLOSED on corrupt JSON).
+    for (let i = 0; i < 5; i++) {
+      await writeWorkflowState("deep-interview", {
+        active: true,
+        current_phase: `phase-${i}`,
+        skill: "deep-interview",
+      } as any, tempDir);
+    }
+    const state = await readWorkflowState("deep-interview", tempDir);
+    expect(state?.current_phase).toBe("phase-4");
+    const stateDir = path.join(tempDir, ".joc", "state");
+    const leftovers = (await fs.readdir(stateDir)).filter(f => f.endsWith(".tmp"));
+    expect(leftovers).toEqual([]); // temp files renamed away or cleaned up
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});

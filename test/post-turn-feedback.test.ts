@@ -41,7 +41,8 @@ afterAll(async () => {
 
 test("non-zero post-turn hook returns its output as a model-facing diagnostic", async () => {
   await setHook({ event: "post-turn", match: { tool: "edit" }, run: "echo 'TS2304 cannot find name foo' && exit 2" });
-  const diags = await runPostTurnHooks(projectDir, "edit", { filePath: "x.ts" }, true, "ok", undefined, () => {});
+  const { diags, ran } = await runPostTurnHooks(projectDir, "edit", { filePath: "x.ts" }, true, "ok", undefined, () => {});
+  expect(ran).toBe(1);
   expect(diags.length).toBe(1);
   expect(diags[0].exitCode).toBe(2);
   expect(diags[0].output).toContain("TS2304 cannot find name foo");
@@ -49,22 +50,24 @@ test("non-zero post-turn hook returns its output as a model-facing diagnostic", 
 
 test("clean (exit 0) post-turn hook yields no diagnostic", async () => {
   await setHook({ event: "post-turn", run: "echo 'all good'" });
-  const diags = await runPostTurnHooks(projectDir, "edit", {}, true, "ok", undefined, () => {});
+  const { diags, ran } = await runPostTurnHooks(projectDir, "edit", {}, true, "ok", undefined, () => {});
+  expect(ran).toBe(1); // hook RAN clean — distinct from "no hook matched"
   expect(diags).toEqual([]);
 });
 
 test("timed-out post-turn hook surfaces only the advisory notice, no partial output", async () => {
   await setHook({ event: "post-turn", run: "echo partial && sleep 1 && exit 1", timeoutMs: 10 });
   let notice = "";
-  const diags = await runPostTurnHooks(projectDir, "edit", {}, true, "ok", undefined, (m) => { notice = m; });
+  const { diags, ran } = await runPostTurnHooks(projectDir, "edit", {}, true, "ok", undefined, (m) => { notice = m; });
   expect(diags).toEqual([]);
+  expect(ran).toBe(0); // timed out ≠ ran to completion
   expect(notice).toContain("timed out");
 });
 
 test("match.tool gates which tool the hook fires for (strict equality)", async () => {
   await setHook({ event: "post-turn", match: { tool: "edit" }, run: "echo nope && exit 1" });
-  expect(await runPostTurnHooks(projectDir, "read", {}, true, "ok", undefined, () => {})).toEqual([]);
-  expect((await runPostTurnHooks(projectDir, "edit", {}, true, "ok", undefined, () => {})).length).toBe(1);
+  expect((await runPostTurnHooks(projectDir, "read", {}, true, "ok", undefined, () => {})).diags).toEqual([]);
+  expect((await runPostTurnHooks(projectDir, "edit", {}, true, "ok", undefined, () => {})).diags.length).toBe(1);
 });
 
 test("engine appends hook diagnostics to the edit result block; tool stays (ok)", async () => {
@@ -109,4 +112,93 @@ test("identical hook diagnostics across a batch are shown once, cross-referenced
   // Full diagnostic block (`exit 1]:`) appears exactly once; the second is a cross-ref.
   expect(toolMsg.content.split("exit 1]:").length - 1).toBe(1);
   expect(toolMsg.content).toContain("same diagnostics as above");
+});
+
+// cycle 14a (plan/gjc-inheritance.md round 4): match.tool accepts `|`-separated
+// multi-tool values so one post-edit hook covers edit AND write in one entry
+// (round-3 critic A5 follow-up, explicitly endorsed as separable).
+
+test("hookMatchesTool: exact, |-separated, whitespace-tolerant, no partials", async () => {
+  const { hookMatchesTool } = await import("../src/agent/hooks");
+  expect(hookMatchesTool(undefined, "edit")).toBe(true); // no match = all tools
+  expect(hookMatchesTool("edit", "edit")).toBe(true);
+  expect(hookMatchesTool("edit|write", "write")).toBe(true);
+  expect(hookMatchesTool("edit | write", "edit")).toBe(true); // trimmed
+  expect(hookMatchesTool("edit|write", "read")).toBe(false);
+  expect(hookMatchesTool("edit", "edi")).toBe(false); // no prefix matching
+});
+
+test("a single edit|write hook fires for both tools, not for read", async () => {
+  await setHook({ event: "post-turn", match: { tool: "edit|write" }, run: "echo multi && exit 1" });
+  expect((await runPostTurnHooks(projectDir, "edit", {}, true, "ok", undefined, () => {})).diags.length).toBe(1);
+  expect((await runPostTurnHooks(projectDir, "write", {}, true, "ok", undefined, () => {})).diags.length).toBe(1);
+  expect((await runPostTurnHooks(projectDir, "read", {}, true, "ok", undefined, () => {})).diags).toEqual([]);
+});
+
+// F1 (round 4, architect agent://5-Round4Discovery): a RED post-turn hook is a
+// pending failure the done guard enforces — done after a failing hook gets ONE
+// pushback naming the hook, even when an earlier bash "verification" succeeded.
+// A later CLEAN hook run clears the pending failure.
+
+test("done after a red hook gets a pushback naming the hook; second done passes", async () => {
+  await setHook({ event: "post-turn", match: { tool: "edit" }, run: "echo 'TS999 broken' && exit 1" });
+  let calls = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      calls++;
+      if (calls === 1) return JSON.stringify({ tool: "bash", arguments: { command: "bun test ok" } });
+      if (calls === 2) return JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history = [{ role: "system" as const, content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: projectDir,
+    maxSteps: 8,
+    budget: { maxExtensions: 0 },
+    tools: {
+      bash: async () => ({ success: true, output: "1 pass 0 fail" }), // sawVerification=true
+      edit: async () => ({ success: true, output: "updated a.ts" }),
+    },
+  });
+  expect(result.done).toBe(true);
+  const pushback = history.find(m => m.role === "user" && m.content.includes("FAILING (non-zero exit)"));
+  expect(pushback).toBeDefined(); // guard fired DESPITE the earlier green bash
+  expect(pushback!.content).toContain('post-turn hook "echo');
+  expect(calls).toBe(4); // bash, edit, done(pushed back), done(escape hatch)
+});
+
+test("a later clean hook run clears the pending failure — done passes first try", async () => {
+  const flag = path.join(projectDir, "fixed.flag");
+  try { await fs.unlink(flag); } catch {}
+  await setHook({ event: "post-turn", match: { tool: "edit" }, run: `[ -f ${flag} ] || { echo red; exit 1; }` });
+  let calls = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      calls++;
+      if (calls === 1) return JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } }); // hook red
+      if (calls === 2) return JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "y" } }); // fix → hook green
+      if (calls === 3) return JSON.stringify({ tool: "bash", arguments: { command: "bun test" } }); // verification
+      return JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history = [{ role: "system" as const, content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: projectDir,
+    maxSteps: 8,
+    budget: { maxExtensions: 0 },
+    tools: {
+      edit: async (a: any) => {
+        if (a.editBlock === "y") await fs.writeFile(flag, "ok"); // the "fix"
+        return { success: true, output: "updated a.ts" };
+      },
+      bash: async () => ({ success: true, output: "5 pass 0 fail" }),
+    },
+  });
+  expect(result.done).toBe(true);
+  expect(calls).toBe(4); // edit(red), edit(fix→green), bash verify, done — NO pushback
+  expect(history.some(m => m.role === "user" && m.content.includes("FAILING (non-zero exit)"))).toBe(false);
+  await fs.unlink(flag).catch(() => {});
 });

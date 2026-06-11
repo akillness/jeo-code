@@ -315,6 +315,11 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   let sawMutation = false;
   let sawVerification = false;
   let donePushbackUsed = false;
+  // F1 (round 4): the run-command of the most recent post-turn hook FAILURE whose
+  // diagnostics the model saw but has not yet resolved (a later clean hook run
+  // clears it). The done guard treats this as "verification missing" — the hook
+  // exit code is the strongest correctness signal in the loop.
+  let pendingHookFailure: string | null = null;
   const VERIFY_SIGNAL_RE = /\b(test|tests|tsc|typecheck|lint|build|check|spec|pytest|vitest|jest)\b/i;
   let lastSig = "";
   let repeatCount = 0;
@@ -468,15 +473,18 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     ev.onAssistant?.(responseText, toolCalls[0]);
 
     if (toolCalls.length === 1 && toolCalls[0].tool === "done") {
-      if (sawMutation && !sawVerification && !donePushbackUsed) {
+      if (sawMutation && (!sawVerification || pendingHookFailure !== null) && !donePushbackUsed) {
         donePushbackUsed = true; // second done always passes — escape hatch
         history.push({ role: "assistant", content: responseText });
         history.push({
           role: "user",
-          content:
-            "You modified files this turn but ran NO verification (no test/build/typecheck command succeeded). " +
-            "Run the narrowest command that proves your change works, then call done. " +
-            "If verification is genuinely not applicable (docs/config-only change), call done again and say why in the reason.",
+          content: pendingHookFailure !== null
+            ? `Your latest mutation left the post-turn hook "${pendingHookFailure}" FAILING (non-zero exit) — its diagnostics were shown in the tool result above. ` +
+              "Fix the reported problems (the hook re-runs on your next mutation), then call done. " +
+              "If the hook failure is a false positive, call done again and say why in the reason."
+            : "You modified files this turn but ran NO verification (no test/build/typecheck command succeeded). " +
+              "Run the narrowest command that proves your change works, then call done. " +
+              "If verification is genuinely not applicable (docs/config-only change), call done again and say why in the reason.",
         });
         step++;
         continue;
@@ -580,9 +588,14 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       files?: Set<string>;
     };
     const groups: ToolGroup[] = [];
+    // Dedup key = RESOLVED, case-folded path (F3): `./x.ts` vs `x.ts` vs
+    // `src/../x.ts` — and case variants on the (default case-insensitive) macOS
+    // FS — must collapse to ONE key, or two spellings of the same file run in
+    // parallel and the second write silently clobbers the first. Folding case on
+    // a case-sensitive FS merely serializes two genuinely-distinct files — safe.
     const targetFile = (call: { arguments?: Record<string, any> }): string | null => {
       const p = call.arguments?.filePath ?? call.arguments?.path;
-      return typeof p === "string" && p.trim() !== "" ? p : null;
+      return typeof p === "string" && p.trim() !== "" ? path.resolve(cwd, p).toLowerCase() : null;
     };
     for (let i = 0; i < toolCalls.length; i++) {
       const entry = { ...toolCalls[i], index: i };
@@ -649,7 +662,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           }
         }
 
-        const hookDiags = await runPostTurnHooks(
+        const { diags: hookDiags, ran: hooksRan } = await runPostTurnHooks(
           cwd,
           call.tool,
           call.arguments ?? {},
@@ -658,6 +671,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           opts.signal,
           ev.onNotice
         );
+        // F1: a red hook becomes a pending failure the done guard enforces; a
+        // later hook run that completes CLEAN (ran > 0, zero diags) clears it.
+        if (hookDiags.length > 0) pendingHookFailure = hookDiags[hookDiags.length - 1].run;
+        else if (hooksRan > 0) pendingHookFailure = null;
 
         // Append non-zero-exit hook diagnostics to THIS tool's result block so the
         // model can self-correct. The tool's own ok/fail is unchanged (guard).

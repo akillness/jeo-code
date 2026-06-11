@@ -125,6 +125,14 @@ async function runHookCommand(
   };
 }
 
+/** True when a hook's `match.tool` selects `tool`. Accepts a single name or a
+ *  `|`-separated list (`"edit|write"`) — so one post-edit tsc hook can cover
+ *  every mutating tool without duplicate entries. No match = all tools. */
+export function hookMatchesTool(matchTool: string | undefined, tool: string): boolean {
+  if (!matchTool) return true;
+  return matchTool.split("|").some(t => t.trim() === tool);
+}
+
 export async function runPreToolHooks(
   cwd: string,
   tool: string,
@@ -135,7 +143,7 @@ export async function runPreToolHooks(
   try {
     const hooks = await loadHooks(cwd);
     const preToolHooks = hooks.filter(
-      h => h.event === "pre-tool" && (!h.match?.tool || h.match.tool === tool)
+      h => h.event === "pre-tool" && hookMatchesTool(h.match?.tool, tool)
     );
 
     for (const hook of preToolHooks) {
@@ -180,12 +188,15 @@ export async function runPostTurnHooks(
   output: string,
   signal?: AbortSignal,
   onNotice?: (msg: string) => void
-): Promise<PostTurnHookDiag[]> {
+): Promise<{ diags: PostTurnHookDiag[]; ran: number }> {
   const diags: PostTurnHookDiag[] = [];
+  // Hooks that ran to COMPLETION (not timed out/aborted) — lets the engine treat
+  // "hooks ran clean" (clear a pending failure) differently from "no hook ran".
+  let ran = 0;
   try {
     const hooks = await loadHooks(cwd);
     const postTurnHooks = hooks.filter(
-      h => h.event === "post-turn" && (!h.match?.tool || h.match.tool === tool)
+      h => h.event === "post-turn" && hookMatchesTool(h.match?.tool, tool)
     );
 
     const outputPreview = output.length > 10000 ? output.slice(0, 10000) + "\n... (truncated)" : output;
@@ -206,6 +217,7 @@ export async function runPostTurnHooks(
       } else if (result.aborted) {
         onNotice?.(`Post-turn hook "${hook.run}" was aborted (advisory).`);
       } else if (result.exitCode !== 0) {
+        ran++;
         onNotice?.(`Post-turn hook "${hook.run}" exited with non-zero code ${result.exitCode} (advisory).`);
         // Feed the hook's diagnostics back to the MODEL so a post-edit
         // `tsc --noEmit`/lint/test hook drives in-loop self-correction. The
@@ -213,12 +225,14 @@ export async function runPostTurnHooks(
         // is an advisory downstream signal. Engine truncates + dedupes per batch.
         const text = result.output.trim();
         if (text) diags.push({ run: hook.run, exitCode: result.exitCode ?? -1, output: text });
+      } else {
+        ran++;
       }
     }
   } catch (err: any) {
     onNotice?.(`Error executing post-turn hooks (advisory): ${err.message}`);
   }
-  return diags;
+  return { diags, ran };
 }
 
 export async function runPostImplementationHooks(

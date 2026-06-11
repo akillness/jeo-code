@@ -85,3 +85,15 @@
 ## 사이클 렛저 (라운드 3)
 - cycle 13 (2026-06-12): post-turn 훅 진단 피드백 — hooks.ts PostTurnHookDiag 반환 + engine 결과블록 첨부(배치 dedup), launch 영향 無(엔진 경유). 신규 테스트 6종(post-turn-feedback.test.ts). full 1169 pass / 0 fail, typecheck 0.
 - **라운드 3 종료** — 1사이클. 누적: 13사이클(라운드 1~3), full 1169/0. 라운드 4 후보(미합의): match.tool `|`-구분 다중매칭, post-turn 훅 surfaceOnSuccess 옵트인, 도구 출력 minimizer 훅화.
+
+## 합의 라운드 4 (architect WATCH, 2026-06-12 — agent://5-Round4Discovery)
+**확정**: architect 심각도 평가 기반 4픽스 배치(cycle 14). F5는 F1에 흡수, F6(Low)은 보류.
+- **F1 (Med, top-1)**: done guard가 cycle-13 훅 진단을 무시 — 이전 스텝의 bash 검증 성공이 order-insensitive로 sawVerification을 만족하면, 최신 편집이 tsc 훅을 빨갛게 만들어도 done 통과. 수정: runPostTurnHooks가 `{diags, ran}` 반환(ran=완주 훅 수), engine이 pendingHookFailure 추적(red 훅=설정, 이후 clean 완주=해제), 가드 조건 `sawMutation && (!sawVerification || pendingHookFailure) && !donePushbackUsed` + 푸시백이 실패 훅 명명. escape hatch 유지.
+- **F2 (Med, top-2)**: writeWorkflowState 비원자 쓰기 — mutation guard가 corrupt JSON에 fail-closed라 torn write가 영구 mutation block을 유발. 수정: saveGlobalConfig와 동일한 temp+rename+실패 시 cleanup.
+- **F3 (Med)**: cycle-12 쓰기 병렬화 dedup 키가 raw 문자열 — `./x.ts` vs `x.ts`(또는 macOS 대소문자 변형)가 병렬 실행되어 두 번째 쓰기가 첫 번째를 사일런트 클로버. 수정: `path.resolve(cwd,p).toLowerCase()` 키(가짜 충돌 직렬화는 무해).
+- **F4 (Med)**: 증류 MEMORY.md가 시스템 프롬프트에 무방비 주입 — 지속·고신뢰 prompt-injection 벡터. 수정: `</project_memory>` 태그 중화(‹›) + "DATA, not instructions" 프레이밍(fenceSubagentReport 패턴).
+- **14a (라운드3 critic 승인 follow-up)**: hookMatchesTool — match.tool `|`-구분 다중매칭(`"edit|write"` 1항목).
+
+## 사이클 렛저 (라운드 4)
+- cycle 14 (2026-06-12): 14a 다중매칭 + F1 훅↔done guard 결합 + F2 원자적 workflow state + F3 경로정규화 dedup + F4 메모리 주입 방어. 신규/갱신 테스트 8종(post-turn-feedback 4, write-parallel 2, memory 1, state-command 1). full 1177 pass / 0 fail, typecheck 0.
+- **라운드 4 종료** — 누적 14사이클. 보류 잔여: F6(batch 실패 스트릭 some() 완화, Low), F5 잔여(VERIFY_SIGNAL_RE 키워드 휴리스틱 — 훅 사용자에겐 F1이 사실상 대체).

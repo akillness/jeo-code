@@ -77,3 +77,21 @@ test("a path-less write does not parallelize (treated as a collision)", async ()
   ]);
   expect(maxActive).toBe(1); // undetermined path → sequential boundary each time
 });
+
+test("aliased spellings of the SAME file serialize (F3: ./x vs x lost-update fix)", async () => {
+  const { maxActive, order } = await runBatch([
+    { tool: "write", arguments: { filePath: "x.txt", content: "1" } },
+    { tool: "write", arguments: { filePath: "./x.txt", content: "2" } },
+    { tool: "edit", arguments: { filePath: "sub/../x.txt", editBlock: "z" } },
+  ]);
+  expect(maxActive).toBe(1); // all three resolve to one physical file → strictly sequential
+  expect(order.filter(s => s.startsWith("start")).length).toBe(3);
+});
+
+test("case-variant paths serialize too (macOS case-insensitive FS safety)", async () => {
+  const { maxActive } = await runBatch([
+    { tool: "write", arguments: { filePath: "Foo.ts", content: "1" } },
+    { tool: "write", arguments: { filePath: "foo.ts", content: "2" } },
+  ]);
+  expect(maxActive).toBe(1); // over-approximation: safe on every FS
+});

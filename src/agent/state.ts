@@ -347,7 +347,17 @@ export async function writeWorkflowState(
   const stateDir = path.join(getLocalJocDir(cwd), "state");
   await fs.mkdir(stateDir, { recursive: true });
   const statePath = path.join(stateDir, `${skill}-state.json`);
-  await fs.writeFile(statePath, JSON.stringify(state, null, 2), "utf-8");
+  // Atomic temp+rename (zeroclaw crash-durability): workflow state is rewritten
+  // repeatedly mid-workflow, and the mutation guard fails CLOSED on corrupt JSON —
+  // a torn write would otherwise wedge the agent into a permanent mutation block.
+  const tmpPath = `${statePath}.${Math.random().toString(36).slice(2)}.tmp`;
+  try {
+    await fs.writeFile(tmpPath, JSON.stringify(state, null, 2), "utf-8");
+    await fs.rename(tmpPath, statePath);
+  } catch (err) {
+    await fs.unlink(tmpPath).catch(() => {});
+    throw err;
+  }
   return statePath;
 }
 

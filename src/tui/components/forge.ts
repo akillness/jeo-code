@@ -99,6 +99,69 @@ function previewLines(text: string, maxLines: number, maxChars: number): string[
   return out.length > 0 ? out : [""];
 }
 
+/**
+ * Render an edit tool's `editBlock` as gjc-style diff lines for the forge card:
+ *  - SEARCH/REPLACE hunks → `- old` / `+ new` rows per hunk (capped), closed by a
+ *    `~N hunk(s) · +A −R line(s)` summary divider row.
+ *  - `≔` line-directives → the payload as `+ added` rows with a `+A line(s)` summary.
+ * Returns null for formats it does not recognize (caller falls back to a raw preview).
+ * Mirrors agent/tools.ts' parse rules WITHOUT importing the agent layer (TUI stays
+ * dependency-light); plain +/- prefixes keep the card ANSI-free in every color mode.
+ */
+export function editBlockDiffLines(editBlock: string, maxRows = 10): string[] | null {
+  const block = editBlock.replace(/\r\n/g, "\n");
+  const trimFrame = (s: string): string => {
+    let t = s;
+    if (t.startsWith("\n")) t = t.slice(1);
+    if (t.endsWith("\n")) t = t.slice(0, -1);
+    return t;
+  };
+  const rows: string[] = [];
+  let added = 0;
+  let removed = 0;
+  const push = (prefix: "+" | "-", text: string): void => {
+    if (prefix === "+") added++;
+    else removed++;
+    if (rows.length < maxRows) rows.push(redactSecrets(`${prefix} ${text}`));
+  };
+
+  if (block.includes("<<<<<<< SEARCH")) {
+    const segs = block.split("<<<<<<< SEARCH").slice(1);
+    let hunks = 0;
+    for (const seg of segs) {
+      const eq = seg.indexOf("=======");
+      if (eq === -1) return null; // malformed — let the raw preview show it
+      const gt = seg.indexOf(">>>>>>>", eq);
+      if (gt === -1) return null;
+      hunks++;
+      const search = trimFrame(seg.slice(0, eq));
+      const replace = trimFrame(seg.slice(eq + 7, gt));
+      if (search) for (const l of search.split("\n")) push("-", l);
+      if (replace) for (const l of replace.split("\n")) push("+", l);
+    }
+    if (hunks === 0) return null;
+    const hidden = added + removed - rows.length;
+    if (hidden > 0) rows.push(`… ${hidden} more change line(s)`);
+    rows.push(FORGE_DIVIDER_PREFIX + "Summary");
+    rows.push(`~${hunks} hunk(s) · +${added} −${removed} line(s)`);
+    return rows;
+  }
+
+  if (block.startsWith("≔")) {
+    const directive = block.split("\n", 1)[0] ?? "≔";
+    const payload = block.includes("\n") ? block.slice(block.indexOf("\n") + 1) : "";
+    rows.push(redactSecrets(directive));
+    if (payload) for (const l of payload.split("\n")) push("+", l);
+    const hidden = added - Math.max(0, rows.length - 1);
+    if (hidden > 0) rows.push(`… ${hidden} more line(s)`);
+    rows.push(FORGE_DIVIDER_PREFIX + "Summary");
+    rows.push(`${directive.slice(0, 24)} · +${added} line(s)`);
+    return rows;
+  }
+
+  return null;
+}
+
 function jsonPreview(args: Record<string, unknown>): string[] {
   try {
     return previewLines(JSON.stringify(args, null, 2), 6, 500);
@@ -165,10 +228,15 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
   if (normalized === "edit") {
     const filePath = stringArg(args, "filePath", "path") ?? "<missing path>";
     const editBlock = stringArg(args, "editBlock", "edit") ?? "";
+    // gjc-style diff view: SEARCH/REPLACE hunks render as -old/+new lines with a
+    // hunk/line summary; ≔ directives render their payload as +added lines. Raw
+    // fallback keeps unknown formats visible. Plain +/- prefixes (no ANSI) keep
+    // the card byte-stable across color modes.
+    const diff = editBlockDiffLines(editBlock);
     return {
       title: `Edit : ${filePath}`,
       language: "patch",
-      lines: [...previewLines(editBlock, 8, 800)],
+      lines: diff ?? [...previewLines(editBlock, 8, 800)],
     };
   }
   if (normalized === "find") {

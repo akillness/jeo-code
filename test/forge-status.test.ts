@@ -306,3 +306,24 @@ test("forge box color:false keeps single-tone borders byte-stable", () => {
     expect(row).not.toContain("\x1b[");
   }
 });
+
+test("edit card renders SEARCH/REPLACE hunks as -/+ diff lines with a hunk summary", () => {
+  const block = "<<<<<<< SEARCH\nconst a = 1;\n=======\nconst a = 2;\nconst b = 3;\n>>>>>>>";
+  const card = summarizeForgeInvocation("edit", { filePath: "src/x.ts", editBlock: block });
+  expect(card.title).toBe("Edit : src/x.ts");
+  expect(card.lines).toContain("- const a = 1;");
+  expect(card.lines).toContain("+ const a = 2;");
+  expect(card.lines).toContain("+ const b = 3;");
+  expect(card.lines[card.lines.length - 1]).toBe("~1 hunk(s) · +2 −1 line(s)");
+});
+
+test("edit card renders ≔ directives as +added lines; unknown formats fall back to raw preview", () => {
+  const card = summarizeForgeInvocation("edit", { filePath: "a.ts", editBlock: "≔3..4\nnew line one\nnew line two" });
+  expect(card.lines[0]).toBe("≔3..4");
+  expect(card.lines).toContain("+ new line one");
+  expect(card.lines).toContain("+ new line two");
+  expect(card.lines[card.lines.length - 1]).toContain("+2 line(s)");
+  // Malformed hunk (no divider) → raw preview fallback, never a throw.
+  const raw = summarizeForgeInvocation("edit", { filePath: "a.ts", editBlock: "<<<<<<< SEARCH\noops" });
+  expect(raw.lines.join("\n")).toContain("oops");
+});

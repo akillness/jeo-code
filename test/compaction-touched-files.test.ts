@@ -39,3 +39,37 @@ test("maybeCompact pins the touched-file list into the summary prompt", async ()
   expect(seenSystemPrompt).toContain("Files touched in the summarized span");
   expect(seenSystemPrompt).toContain("src/agent/engine.ts");
 });
+
+// cycle 11 (plan/gjc-inheritance.md): extend extraction to conservative bash
+// mutation mentions, force a "Files touched:" header, surface touchedFiles.
+
+test("extractTouchedFiles also captures conservative bash mutation mentions", () => {
+  const messages = [
+    { role: "user" as const, content: "Tool [bash] result (ok): created src/gen/out.ts and wrote dist/bundle.js" },
+    { role: "user" as const, content: "Tool [bash] result (ok): wrote 1234 bytes to disk" }, // not path-shaped → ignored
+    { role: "user" as const, content: "Tool [bash] result (ok): deleted tmp/old.log" },
+    { role: "user" as const, content: "Tool [read] result (ok): file text mentions created not-a-real.ts" }, // not bash → ignored
+  ];
+  expect(extractTouchedFiles(messages)).toEqual(["src/gen/out.ts", "dist/bundle.js", "tmp/old.log"]);
+});
+
+test("maybeCompact surfaces touchedFiles and prepends a Files touched: header", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => "summary body only, no file list",
+  }));
+  const { maybeCompact } = await import("../src/agent/compaction");
+  const history = [
+    { role: "system" as const, content: "sys" },
+    { role: "user" as const, content: "task" },
+    { role: "assistant" as const, content: '{"tool":"write","arguments":{"filePath":"src/x.ts","content":"a"}}' },
+    { role: "user" as const, content: "Tool [write] result (ok): ok" },
+    { role: "assistant" as const, content: "did it" },
+    { role: "user" as const, content: "next" },
+    { role: "assistant" as const, content: "recent context here" },
+  ];
+  const res = await maybeCompact(history, { force: true, keepRecent: 2 });
+  expect(res.compacted).toBe(true);
+  expect(res.touchedFiles).toEqual(["src/x.ts"]);
+  const summaryMsg = history.find(m => m.content.includes("[Earlier conversation summary]"));
+  expect(summaryMsg?.content).toContain("Files touched: src/x.ts");
+});

@@ -31,6 +31,9 @@ export interface CompactionResult {
   error?: string;
   /** The 0-based index of the last message in history replaced by this compaction. */
   replacesThrough?: number;
+  /** Files mutated in the span this compaction dropped — surfaced so callers
+   *  (engine/session) can keep file context even when the LLM summary omits it. */
+  touchedFiles?: string[];
 }
 
 export const DEFAULT_MAX_TOKENS = 30_000;
@@ -252,22 +255,40 @@ function alreadyCompacted(body: Message[]): boolean {
   return first.content.startsWith(SUMMARY_PREFIX) || first.content.startsWith(FALLBACK_SUMMARY_PREFIX);
 }
 
-/** File paths the agent mutated in `messages` — parsed mechanically from the
- *  assistant's write/edit tool-call JSON (capped, deduped, insertion order). */
+/** File paths the agent mutated in `messages` — parsed mechanically (capped,
+ *  deduped, insertion order) from two sources:
+ *   1. the assistant's write/edit tool-call JSON (`"tool":"write"…"filePath":…`);
+ *   2. CONSERVATIVE bash mutation mentions in `Tool [bash] result` feedback
+ *      (`created/wrote/written to/deleted/removed <path>`) — gated to bash output
+ *      and filtered to path-shaped tokens so prose ("wrote 123 bytes") is ignored. */
+const BASH_RESULT_RE = /^Tool \[bash\] result \((?:ok|fail)\):/;
 export function extractTouchedFiles(messages: Message[], max = 20): string[] {
   const seen = new Set<string>();
-  const re = /"tool"\s*:\s*"(?:write|edit)"[^}]*?"filePath"\s*:\s*"((?:[^"\\]|\\.){1,300})"/g;
+  const writeRe = /"tool"\s*:\s*"(?:write|edit)"[^}]*?"filePath"\s*:\s*"((?:[^"\\]|\\.){1,300})"/g;
+  const bashRe = /(?:created|wrote|written to|deleted|removed)\s+(['"`]?)([\w./@+-]{1,200})\1/gi;
+  const looksLikePath = (p: string) => /\//.test(p) || /[\w-]\.[A-Za-z0-9]{1,8}$/.test(p);
+  const add = (p: string): boolean => {
+    if (p && !seen.has(p)) seen.add(p);
+    return seen.size >= max;
+  };
   for (const msg of messages) {
-    if (msg.role !== "assistant") continue;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(msg.content))) {
-      try {
-        const p = JSON.parse(`"${m[1]}"`) as string;
-        if (p && !seen.has(p)) seen.add(p);
-      } catch { /* malformed escape — skip this path */ }
-      if (seen.size >= max) return [...seen];
+    if (msg.role === "assistant") {
+      let m: RegExpExecArray | null;
+      while ((m = writeRe.exec(msg.content))) {
+        try {
+          const p = JSON.parse(`"${m[1]}"`) as string;
+          if (add(p)) return [...seen];
+        } catch { /* malformed escape — skip this path */ }
+      }
+      writeRe.lastIndex = 0;
     }
-    re.lastIndex = 0;
+    if (BASH_RESULT_RE.test(msg.content)) {
+      let m: RegExpExecArray | null;
+      while ((m = bashRe.exec(msg.content))) {
+        if (looksLikePath(m[2]) && add(m[2])) return [...seen];
+      }
+      bashRe.lastIndex = 0;
+    }
   }
   return [...seen];
 }
@@ -378,7 +399,10 @@ export async function maybeCompact(
     // Rung 1 success: behave exactly as before — summary message + bounded recent.
     const systemMessages = hasSystem ? [history[0]] : [];
     const boundedSummary = truncateSummaryByTokens(summary, Math.min(budgetTokens, maxSummaryInputTokens));
-    const summaryMessage: Message = { role: "user", content: SUMMARY_PREFIX + boundedSummary };
+    // Force a mechanical "Files touched:" header at the FRONT of the summary so
+    // the file list survives even if the LLM dropped it from its prose (cycle 11).
+    const filesHeader = touched.length ? `Files touched: ${touched.join(", ")}\n\n` : "";
+    const summaryMessage: Message = { role: "user", content: SUMMARY_PREFIX + filesHeader + boundedSummary };
     const systemTokens = historyTokens(systemMessages);
     const summaryMessageTokens = historyTokens([summaryMessage]);
     const boundedRecent = clampRecentMessagesByTokens(recent, Math.max(0, budgetTokens - summaryMessageTokens - systemTokens));
@@ -402,6 +426,7 @@ export async function maybeCompact(
       summary,
       error,
       replacesThrough: systemCount + older.length - 1,
+      touchedFiles: touched.length ? touched : undefined,
     };
   }
 
@@ -436,5 +461,6 @@ export async function maybeCompact(
     summaryFailed: true,
     error,
     replacesThrough: systemCount + older.length - 1,
+    touchedFiles: touched.length ? touched : undefined,
   };
 }

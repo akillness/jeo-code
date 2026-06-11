@@ -11,8 +11,8 @@ export interface EvolutionEntry {
   logFile?: string;
 }
 
-export async function logEvolution(entry: EvolutionEntry) {
-  const logPath = path.join(process.cwd(), "logs", "evolution-log.json");
+export async function logEvolution(entry: EvolutionEntry, cwd: string = process.cwd()) {
+  const logPath = path.join(cwd, "logs", "evolution-log.json");
   await fs.mkdir(path.dirname(logPath), { recursive: true });
   
   let logs: EvolutionEntry[] = [];
@@ -28,8 +28,8 @@ export async function logEvolution(entry: EvolutionEntry) {
 /**
  * Level 3: Stream implementation logs to a dedicated file for TUI visibility.
  */
-export async function streamEvolutionLogs(executionId: string, output: string) {
-  const logDir = path.join(process.cwd(), "logs", "evolution");
+export async function streamEvolutionLogs(executionId: string, output: string, cwd: string = process.cwd()) {
+  const logDir = path.join(cwd, "logs", "evolution");
   await fs.mkdir(logDir, { recursive: true });
   const logFile = path.join(logDir, `${executionId}.log`);
   await fs.appendFile(logFile, output + "\n", "utf-8");

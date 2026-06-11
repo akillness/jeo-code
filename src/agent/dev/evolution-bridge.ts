@@ -10,7 +10,7 @@ export async function consultGjcForAdvancedEvolution(cwd: string) {
     timestamp,
     target: "src/ai/model-manager.ts",
     request: report,
-    status: "in_progress"
+    status: "in_progress" }, cwd
   });
 
   console.log(`\n[joc-Core] [${timestamp}] Starting Advanced Evolution Loop...`);
@@ -33,7 +33,7 @@ As my implementation guide (gjc), please:
       timestamp: new Date().toISOString(),
       target: "src/ai/model-manager.ts",
       request,
-      status: "success"
+      status: "success" }, cwd
     });
     console.log("[joc-Core] Advanced Provider Registry refactor SUCCESSFUL.");
   } catch (err: any) {
@@ -42,7 +42,7 @@ As my implementation guide (gjc), please:
       target: "src/ai/model-manager.ts",
       request,
       status: "failed",
-      verificationOutput: err.message
+      verificationOutput: err.message }, cwd
     });
     throw err;
   }
@@ -57,7 +57,7 @@ export async function consultGjcForEvolution(cwd: string) {
     timestamp,
     target: "src/agent/engine.ts",
     request: report,
-    status: "in_progress"
+    status: "in_progress" }, cwd
   });
 
   console.log(`\n[joc-Core] [${timestamp}] Starting evolution loop...`);
@@ -67,7 +67,7 @@ export async function consultGjcForEvolution(cwd: string) {
       timestamp: new Date().toISOString(),
       target: "src/agent/engine.ts",
       request: report,
-      status: "success"
+      status: "success" }, cwd
     });
   } catch (err: any) {
     await logEvolution({
@@ -75,7 +75,7 @@ export async function consultGjcForEvolution(cwd: string) {
       target: "src/agent/engine.ts",
       request: report,
       status: "failed",
-      verificationOutput: err.message
+      verificationOutput: err.message }, cwd
     });
     throw err;
   }

@@ -894,6 +894,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const sessionUsage = { inputTokens: 0, outputTokens: 0, turns: 0 };
   // The last user request sent to the agent loop (`/retry`).
   let lastUserInput = "";
+  // Full untruncated text of the last assistant reply — surfaced in detail by Ctrl+O.
+  let lastReply = "";
 
   // pi-style session persistence: resume an existing session or create a new one.
   let sessionId: string | undefined;
@@ -1723,7 +1725,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   if (previewEnabled) {
     process.once("exit", () => out.write("\x1b[?25h")); // safety net: never leave the cursor hidden
-    process.stdin.on("keypress", (_ch: string, key: { name?: string } | undefined) => {
+    process.stdin.on("keypress", (_ch: string, key: { name?: string; ctrl?: boolean } | undefined) => {
+      // Ctrl+O: dump the FULL last assistant reply (untruncated, tables rendered) into
+      // scrollback as a detail view, then restore the boxed footer. (Cmd+O is intercepted
+      // by the OS/terminal and never reaches the app, so Ctrl+O is the portable binding.)
+      if (key?.ctrl && key.name === "o") {
+        if (!lastReply) return;
+        const wasArmed = previewArmed;
+        if (wasArmed) disarmPreview();
+        const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
+        logLines([sep, "detail · full last response (ctrl+o)", sep, ...renderMarkdownTables(lastReply).split("\n"), sep]);
+        if (wasArmed) { armPreview(); drawFooter(previewLines(typedLine, navIdx)); }
+        return;
+      }
       if (pickerActive || previewPending) return;
       previewPending = true;
       setImmediate(() => {
@@ -1943,6 +1957,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         console.log(`(retrying: ${lastUserInput.slice(0, 80)}${lastUserInput.length > 80 ? "…" : ""})`);
         try {
           const { done, steps, reply, rendered, usage } = await runTurn(lastUserInput, useTui);
+        lastReply = reply;
           if (!rendered) {
             console.log(`joc> ${renderMarkdownTables(reply)}${usage}`);
             if (!done) console.log(`(agent did not converge in ${steps} steps)`);
@@ -2784,6 +2799,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       lastUserInput = input;
       try {
         const { done, steps, reply, rendered, usage } = await runTurn(input, useTui);
+        lastReply = reply;
         if (!rendered) {
           console.log(`joc> ${renderMarkdownTables(reply)}${usage}`);
           if (!done) console.log(`(agent did not converge in ${steps} steps)`);

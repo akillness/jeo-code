@@ -21,6 +21,7 @@ export const DEFAULT_HINTS: readonly KeyHint[] = [
   { key: "Tab", label: "complete" },
   { key: "/help", label: "commands" },
   { key: "/model", label: "switch" },
+  { key: "^O", label: "detail" },
   { key: "/exit", label: "quit" },
 ];
 

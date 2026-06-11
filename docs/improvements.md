@@ -6337,3 +6337,25 @@ adopting gjc's missing behavior in PURE-TS without breaking jeo-code's zero-nati
   all-CLEAR APPROVE, no blocking AI-slop. Executor QA: 5/5 tmux + 4/4 unit + 3/3 adversarial.
 - Ultragoal Phase-1 goal complete (final-aggregate receipt). Phases 2 (UX depth + scan perf)
   and 3 (opt-in breadth) remain pending in consensus-seed.yaml.
+
+## Ctrl+O detail view + ledger discoverability — pass 892
+
+**Date:** 2026-06-11 · **Dimension: tui (history detail review).**
+
+- **Ctrl+O detail view.** A keypress binding dumps the FULL untruncated last assistant
+  reply (markdown tables rendered) into scrollback as a labeled detail block, then
+  restores the boxed input footer. Cmd+O is intercepted by the OS/terminal and never
+  reaches the app, so Ctrl+O is the portable binding. `launch.ts` keypress handler +
+  `lastReply` store; hint bar gains `^O detail`.
+
+### Verification (pass 892)
+- typecheck 0; focused tui/slash/cli/launch/input/width/hints suites pass;
+  inline-scrollback regression 6/6.
+
+### Remaining (next focused pass)
+- **Streaming the model's reasoning text into history** is deferred deliberately: jeo's
+  agent protocol is a single JSON tool-call response, so there is no separate prose
+  "reason text" to stream today. Delivering gjc-style streamed reasoning needs a
+  reasoning-text channel in the protocol/prompt PLUS wiring the model manager's
+  `.stream()` through `callLlm → engine → a TUI streaming region` — a bounded but
+  design-carrying change best done as its own reviewed pass rather than half-shipped.

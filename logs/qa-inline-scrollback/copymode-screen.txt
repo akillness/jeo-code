@@ -1,4 +1,3 @@
-cd /Users/jangyoung/.superset/projects/jeo-code && bun run logs/qa-inline-scrollback/driver.ts copy-
 mode
 jangyoung@MacBook-Pro-2 jeo-code % cd /Users/jangyoung/.superset/projects/jeo-code && bun run logs/q
 a-inline-scrollback/driver.ts copy-mode
@@ -28,3 +27,4 @@ Starting driver for case: copy-mode
 ✔ [TOOL] [DONE] LEDGER-023
   [AGENT] executor ✓ LEDGER-024
 ✔ [TOOL] [DONE] LEDGER-025
+  [AGENT] executor ✓ LEDGER-026

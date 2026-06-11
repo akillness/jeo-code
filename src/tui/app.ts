@@ -21,6 +21,7 @@ import { evolutionTrack, createStageProgress, type StageProgress, transitionMess
 import type { TaskSubEvent } from "../agent/task-tool";
 import { supportsUnicode } from "./components/capability";
 import { centerBlock, padLineTo, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
+import { SECTION_GAP, stackSections } from "./components/section";
 import { resolveTheme, themeGradient } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, type ForgeSummary } from "./components/forge";
@@ -512,7 +513,9 @@ export class LaunchTui {
 
   private renderForge(width: number, maxEntries: number): string[] {
     const floor = Math.min(24, width);
-    const boxWidth = Math.max(floor, Math.min(96, width));
+    // Fill the available width (cap at formatForgeBox's own 120 ceiling) so an
+    // in-frame box does not leave a dead right-margin column inside the outer panel.
+    const boxWidth = Math.max(floor, Math.min(120, width));
     const paint = this.theme.color ? chalk.gray : (s: string) => s;
     const lines: string[] = [];
     for (const [i, summary] of this.forgeSummaries.slice(-maxEntries).entries()) {
@@ -675,19 +678,47 @@ export class LaunchTui {
         budget -= headerHeight;
       }
 
-      // Display order: art header → plan → tools → stream → forge → trailing divider.
-      const innerLines = [...headerK, ...planK, ...toolsK, ...streamK, ...forgeK];
+      // Stage-grouped activity cards (shadcn-style rhythm + muted card headers): the
+      // plan and forge boxes already self-label, so only the tool block ("Activity")
+      // and the forge group ("Output") get a muted divider. Adjacent non-empty
+      // sections are separated by SECTION_GAP blank lines so the live stages read as
+      // distinct cards instead of one cramped wall.
+      const activity = stackSections(
+        [
+          { lines: planK },
+          { title: "Activity", lines: toolsK },
+          { lines: streamK },
+          { title: "Output", lines: forgeK },
+        ],
+        { width: innerWidth, gap: SECTION_GAP, color: this.theme.color, unicode: this.unicode },
+      );
+      // The labels + gaps add structural rows; spend them from the leftover budget
+      // (what would otherwise be dead filler) and trim the group if the terminal is
+      // too short so the assembled height never exceeds `avail`.
+      const rawLen = planK.length + toolsK.length + streamK.length + forgeK.length;
+      const overhead = Math.max(0, activity.length - rawLen);
+      let activityGroup = activity;
+      if (overhead > budget) {
+        activityGroup = activity.slice(0, rawLen + budget);
+        budget = 0;
+      } else {
+        budget -= overhead;
+      }
       let trailingDivider: string[] = [];
-      if (innerLines.length && budget > 0) {
+      if (activityGroup.length && budget > 0) {
         trailingDivider = ["DIVIDER"];
         budget--;
       }
       const fillerCount = Math.max(0, budget);
 
+      // Display order (shadcn header / spacer / content+footer): the decorative art
+      // banner sits at the top, breathing room follows, then the live activity cards
+      // hug the bottom status panel — no dead gap between the work area and the HUD.
       const boxedContent: string[] = [];
-      for (const line of innerLines) boxedContent.push(line);
-      for (const line of trailingDivider) boxedContent.push(line);
+      for (const line of headerK) boxedContent.push(line);
       for (let i = 0; i < fillerCount; i++) boxedContent.push("");
+      for (const line of activityGroup) boxedContent.push(line);
+      for (const line of trailingDivider) boxedContent.push(line);
       for (const line of bottomKeep) boxedContent.push(line);
 
       const paint = this.theme.color ? chalk.blue : (s: string) => s;

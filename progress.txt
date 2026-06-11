@@ -79,3 +79,9 @@
 - Footer: cwd?(~축약, 32자 middle-truncate)+branch?(git symbolic-ref — tmux 세션 네이밍과 동일 호출) 세그먼트, ctx 세그먼트 gjc 포맷 'ctx {pct}%/{200k}'(k/M 포맷, ≥60% yellow ≥85% red, (auto) 표시). launch.ts:936 setContextUsage 라이브 공급 확인.
 - Verified: typecheck 0; bun test 920 pass / 0 fail (신규 tui-welcome 11 + update-box + footer 케이스 포함); tmux QA 6/6.
 [2026-06-11] Pass 890 — scrollback goal closure: README documents pass-889 surface (glyph-first ✔/✗ ledger, [STEP] ⤴ tok/s, /exit resume pointer, copy-mode wheel note); QA harness re-run on current build 6/6 PASSED (tmux 3.6a); typecheck 0, 926 pass / 0 fail; pushed.
+[2026-06-11] Pass 891 — shadcn-inspired stage-grouped card layout (gjc reference)
+- Captured live gjc (logs/gjc-sample) + current joc (logs/joc-tui-study via subagent) TUIs in tmux; found 3 real flaws: giant outer box with (a) ~20-col dead right margin on nested forge boxes (capped 96 inside ~116), (b) 7+ blank filler rows of dead space between content and HUD, (c) no section rhythm/stage grouping.
+- New src/tui/components/section.ts: SECTION_GAP + sectionLabel (muted '── Output ──' card-header divider, gjc '├─ Output ─┤' style) + stackSections (consistent blank-line rhythm, drop-empties). Unit-tested (test/section.test.ts, 6 cases).
+- app.ts renderForge: in-frame forge boxes now fill width (cap 120 not 96) — dead right margin gone. draw() fit branch reassembled shadcn header/spacer/content+footer: art banner top → breathing filler → stage cards (Plan / ── Activity ── / ── Output ──) hugging the bottom status panel → ├──┤ divider → HUD. Budget-accounted so total never exceeds rows.
+- Verified live (logs/joc-redesign/layout-driver.ts in tmux): alternate_on=0, stage cards render, forge boxes full-width, dead filler eliminated, glyph-first ✔ ledger still flushed into scrollback above the frame (mouse-wheel contract intact).
+- Verified: typecheck 0; bun test 932 pass / 0 fail (+6); inline-scrollback QA 6/6 PASS (tmux 3.6a).

@@ -1,0 +1,10 @@
+ - Publishing: public npm package; ships src/, install/uninstall scripts, tsconfig, and four localized READMEs
+ (en/ko/ja/zh).
+ - Repo: github.com/akillness/jeo-code. Keywords: ai, coding-agent, bun, cli, spec-first, gjc.
+ ⬢ Opus 4.8 · ◕ high / ⑂ main ?1 / 📁 ~/.superset/projects/jeo-code ─── Summarize package.json / ⤴ 41.3/s / ◫ 6.3%/1M ⟲
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ > list src then run echo hi                                                                                          │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+

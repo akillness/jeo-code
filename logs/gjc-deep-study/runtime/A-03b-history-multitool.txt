@@ -1,0 +1,113 @@
+cd ~/.superset/projects/jeo-code && gjc
+jangyoung@MacBook-Pro-2 jeo-code % cd ~/.superset/projects/jeo-code && gjc
+
+╭─── gjc v0.4.3 · GJC forge ───────────────────────────────────────────────────────────────────────╮
+│                                                                                                  │
+│                                           Gajae forge                                            │
+│                                       shape · act · prove                                        │
+│                                                                                                  │
+│                               ╭────────────────╮        ╭────────╮                               │
+│                               ╰──────╮      ╭──╯     ╭──╯  ╭─────╯                               │
+│                                      ╰──────╯    ╭───╯  ╭──╯                                     │
+│                                      ╭──────╮    ╰───╮  ╰──╮                                     │
+│                               ╭──────╯      ╰──╮     ╰──╮  ╰─────╮                               │
+│                               ╰────────────────╯        ╰────────╯                               │
+│                                                                                                  │
+│                                      [ ⬢ Claude Opus 4.8 ]                                       │
+│                                         [ 📦 anthropic ]                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Update Available
+ New version 0.4.4 is available. Run: gjc update
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ user
+
+ read package.json and summarize it
+
+
+ gajae
+ I'll check the package.json file to see what's there.
+ ✔ Read package.json
+ ✔ Read package.json:raw
+
+ gajae
+ jeo-code (binary joc) — v0.1.0, MIT-licensed AI coding agent.
+
+ - What it is: "Clean, highly optimized AI coding agent using spec-first loop," ESM ("type": "module"), entry
+ src/cli.ts.
+ - Runtime: Bun ≥ 1.3.14. Pure TypeScript, near-zero deps.
+ - Dependencies: zod ^3.24.1 (schema validation), chalk ^5.3.0 (terminal color). Dev: @types/bun, typescript ^5.6.3.
+ - Scripts:
+     - start → bun src/cli.ts
+     - typecheck → tsc --noEmit
+     - build → bun build … --compile to a standalone dist/joc binary
+     - test → bun test
+     - pack:check / publish:npm → npm packaging & publish helpers
+ - Publishing: public npm package; ships src/, install/uninstall scripts, tsconfig, and four localized READMEs
+ (en/ko/ja/zh).
+ - Repo: github.com/akillness/jeo-code. Keywords: ai, coding-agent, bun, cli, spec-first, gjc.
+
+ user
+
+ list src then run echo hi
+
+
+ gajae
+ I'm planning to execute two separate operations: reading the contents of the src directory and running a bash echo
+ command.
+ ✔ Read src
+
+
+ ┌─── ✔ Bash ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ $ echo hi                                                                                                          │
+ ├─── Output ─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ hi                                                                                                                 │
+ │ ⟦Timeout: 300s⟧                                                                                                    │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+
+ gajae
+ Done.
+
+ src/ top-level layout (binary joc):
+
+ ┌──────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ Dir/File     │ Role                                                                                                │
+ ├──────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ cli.ts, cli/ │ Entry point + runner                                                                                │
+ ├──────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ commands/    │ Subcommands: launch (124KB, the big one), team, ultragoal, update, setup, session, skills, state,   │
+ │              │ etc.                                                                                                │
+ ├──────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ agent/       │ Core agent loop: tools.ts (25KB), task-tool.ts, subagents.ts, session.ts, state.ts, plan.ts,        │
+ │              │ hooks.ts                                                                                            │
+ ├──────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ ai/          │ LLM layer: provider registry/status, model catalog/discovery/manager/picker, SSE streaming,         │
+ │              │ providers/                                                                                          │
+ ├──────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ tui/         │ Terminal UI: app.ts (34KB), renderer.ts, terminal.ts, components/, monitoring/                      │
+ ├──────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ auth/        │ OAuth/PKCE auth: oauth.ts, pkce.ts, storage.ts, refresh.ts, callback-server.ts, flows/              │
+ ├──────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ skills/      │ catalog.ts (20KB) skill definitions                                                                 │
+ ├──────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ mcp/         │ MCP server: protocol.ts, server.ts, tools.ts                                                        │
+ ├──────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ prompts/     │ agents/ + skills/ prompt templates                                                                  │
+ ├──────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ index.ts     │ Package barrel                                                                                      │
+ └──────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+ echo hi → hi.
+
+ Most directories have their own AGENTS.md rules to read before editing.
+ ⬢ Opus 4.8 · ◕ high / ⑂ main ?1 / 📁 ~/.superset/projects/jeo-code ─── Summarize package.json / ⤴ 65.9/s / ◫ 6.4%/1M ⟲
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ > Type your message...                                                                                               │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+

@@ -1,0 +1,35 @@
+ - Scripts:
+     - start → bun src/cli.ts
+     - typecheck → tsc --noEmit
+     - build → bun build … --compile to a standalone dist/joc binary
+     - test → bun test
+     - pack:check / publish:npm → npm packaging & publish helpers
+ - Publishing: public npm package; ships src/, install/uninstall scripts, tsconfig, and four localized READMEs
+ (en/ko/ja/zh).
+ - Repo: github.com/akillness/jeo-code. Keywords: ai, coding-agent, bun, cli, spec-first, gjc.
+
+ user
+
+ list src then run echo hi
+
+
+ gajae
+ I'm planning to execute two separate operations: reading the contents of the src directory and running a bash echo
+ command.
+ ✔ Read src
+
+
+ ┌─── ✔ Bash ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ $ echo hi                                                                                                          │
+ ├─── Output ─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ hi                                                                                                                 │
+ │ ⟦Timeout: 300s⟧                                                                                                    │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+
+ ⠧ Running echo ⟦esc⟧
+ ⬢ Opus 4.8 · ◕ high / ⑂ main ?1 / 📁 ~/.superset/projects/jeo-code ─── Summarize package.json / ⤴ 48.5/s / ◫ 6.4%/1M ⟲
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ > Type your message...                                                                                               │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

@@ -1,0 +1,7 @@
+# spawned session: gajae_code_mq945sls_yogzx53a
+window name: bun
+pane title: π: projects
+pane count: 1
+session size: 120x34
+alternate_on: 0
+status (driver shows nested bar): default tmux status, green bar

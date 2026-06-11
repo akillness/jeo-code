@@ -31,7 +31,10 @@ test("forge boxes are width-bounded and redact secret-like values", () => {
   expect(redactSecrets("API_KEY=abcdef token: secret-value")).toContain("<redacted>");
   const summary = summarizeForgeResult("bash", false, "password=abc123\nline two");
   const box = formatForgeBox(summary, { width: 36, unicode: false, paint: s => s }).map(stripAnsi);
-  expect(box[0]).toBe("+----------------------------------+");
+  // joc-ref anatomy: the title rides ON the top border instead of its own row.
+  expect(box[0]!.startsWith("+--")).toBe(true);
+  expect(box[0]!.endsWith("+")).toBe(true);
+  expect(box[0]).toContain("bash result failed");
   expect(box.some(line => line.includes("<redacted>"))).toBe(true);
   expect(box.every(line => line.length <= 36)).toBe(true);
 });
@@ -252,13 +255,16 @@ test("bash result card draws an `Output` divider between exit note and body, fra
   expect(box[0]!.endsWith("╮")).toBe(true);
   expect(box[box.length - 1]!.startsWith("╰")).toBe(true);
   expect(box[box.length - 1]!.endsWith("╯")).toBe(true);
-  // title/badge row present
-  expect(box[1]).toContain("bash result ok");
+  // joc-ref anatomy: the title rides ON the top border (`╭── ✓ bash … ──╮`)
+  expect(box[0]).toContain("bash result ok");
   // a labeled divider rule appears, carrying the Output label, and no raw sentinel leaks
   const divider = box.find(l => l.includes(" Output ") && l.includes("─"));
   expect(divider).toBeDefined();
   expect(box.some(l => l.includes("fdiv:"))).toBe(false);
-  expect(box.some(l => l.includes("build complete"))).toBe(true);
+  // content rows carry a 1-column gutter so text never touches the frame
+  const contentRow = box.find(l => l.includes("build complete"));
+  expect(contentRow).toBeDefined();
+  expect(contentRow!.startsWith("│ ")).toBe(true);
   // every row is exactly the box width (column-correct framing)
   expect(box.every(l => l.length === 40)).toBe(true);
 });
@@ -266,7 +272,10 @@ test("bash result card draws an `Output` divider between exit note and body, fra
 test("bash result divider uses ASCII rules under unicode:false and stays width-bounded", () => {
   const summary = summarizeForgeResult("bash", false, "boom\nmore");
   const box = formatForgeBox(summary, { width: 32, unicode: false, paint: s => s, color: false }).map(stripAnsi);
-  expect(box[0]).toBe("+" + "-".repeat(30) + "+");
+  // title-in-border: leading rule, label, trailing rule — full width preserved
+  expect(box[0]!.startsWith("+--")).toBe(true);
+  expect(box[0]!.endsWith("+")).toBe(true);
+  expect(box[0]).toContain("bash result failed");
   expect(box[box.length - 1]).toBe("+" + "-".repeat(30) + "+");
   const divider = box.find(l => l.includes(" Output ") && l.includes("-"));
   expect(divider).toBeDefined();

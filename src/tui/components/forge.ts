@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { BOX_ASCII, BOX_UNICODE, padLineTo, type BoxGlyphs } from "./layout";
-import { stripAnsi, visibleWidth } from "./color";
+import { stripAnsi, visibleWidth, animatedGradientText } from "./color";
 import { truncateToWidth } from "./width";
 import { type UiCategory } from "./category-index";
 
@@ -21,6 +21,13 @@ export interface ForgeBoxOptions {
   index?: number;
   category?: UiCategory;
   color?: boolean;
+  /** DNA-flow border animation: a flowing gradient painted over the top/bottom
+   *  border glyphs (content rows untouched). Stateless — the caller drives
+   *  `phase` per tick, so nothing is retained between frames. Below TrueColor
+   *  (`colorLevel < 3`) this degrades to the static `paint`/`paintShadow`. */
+  flow?: { palette: readonly string[]; phase: number; colorLevel: number };
+  /** Width-1 mark prepended to the border title (e.g. the DNA claw beat glyph). */
+  titleMark?: string;
 }
 
 const SECRET_VALUE_RE = /(api[_-]?key|authorization|bearer|password|secret|token)(\s*[:=]\s*)(["']?)[^"'\s,}]+/gi;
@@ -274,43 +281,62 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
   const glyphs = borderGlyphs(opts.unicode);
   const paint = opts.paint ?? chalk.gray;
   const shadow = opts.paintShadow ?? (opts.color === false ? paint : (s: string) => chalk.dim(paint(s)));
+  // DNA-flow border painters: a flowing gradient over the border glyph runs, the
+  // bottom offset half a cycle so the helix appears to travel around the card.
+  // Pure functions of (text, phase) — no per-frame state is retained — and below
+  // TrueColor animatedGradientText returns the text unchanged, so the static
+  // paint/shadow path takes over byte-identically.
+  const flowOn = !!opts.flow && opts.color !== false;
+  const flowTop = (s: string): string => {
+    if (!flowOn) return paint(s);
+    const g = animatedGradientText(s, opts.flow!.palette, opts.flow!.phase, { colorLevel: opts.flow!.colorLevel });
+    return g === s ? paint(s) : g;
+  };
+  const flowBottom = (s: string): string => {
+    if (!flowOn) return shadow(s);
+    const g = animatedGradientText(s, opts.flow!.palette, opts.flow!.phase + 0.5, { colorLevel: opts.flow!.colorLevel });
+    return g === s ? shadow(s) : g;
+  };
   const inner = Math.max(1, width - 2);
-  const top = paint(glyphs.tl + glyphs.h.repeat(inner) + glyphs.tr);
-  const bottom = shadow(glyphs.bl + glyphs.h.repeat(inner) + glyphs.br);
-  // gjc-style header: just the title (e.g. `✗ Bash`, `Write src/app.ts`) — no
-  // category badge, no `· language` suffix; the box content speaks for itself.
-  const label = summary.title;
-  const title = `${opts.color === false ? label : chalk.bold(label)}`;
-  // Truncate the title to the inner width BEFORE padding — padLineTo only pads, so a
-  // long title/badge would otherwise overflow the right border (box wider than `width`).
-  const rendered: string[] = [top, paint(glyphs.v) + padLineTo(truncateToWidth(title, inner), inner, "left") + shadow(glyphs.v)];
-  const separator = paint(glyphs.v) + paint(glyphs.h.repeat(inner)) + shadow(glyphs.v);
-  rendered.push(separator);
+  // joc-ref layout: the title rides ON the top border (`╭── ✗ Bash ──────╮`)
+  // instead of occupying a title row + separator — two chrome rows become one,
+  // and the card scans like the reference's labeled panel.
+  const mark = opts.titleMark ? `${opts.titleMark} ` : "";
+  const label = truncateToWidth(summary.title, Math.max(1, inner - 4 - visibleWidth(mark)));
+  const titleText = ` ${mark}${opts.color === false ? label : chalk.bold(label)} `;
+  const lead = glyphs.h.repeat(Math.min(2, inner));
+  const tail = Math.max(0, inner - visibleWidth(lead) - visibleWidth(titleText));
+  const top = flowTop(glyphs.tl + lead) + titleText + flowTop(glyphs.h.repeat(tail) + glyphs.tr);
+  const bottom = flowBottom(glyphs.bl + glyphs.h.repeat(inner) + glyphs.br);
+  const rendered: string[] = [top];
 
-  // A labeled divider counts as a single content row; everything else word-wraps to the
-  // inner width before clipping so the box framing stays column-correct.
+  // joc-ref readability: a one-column gutter between the left border and the
+  // content (`│ $ cmd …`), so text never touches the frame. Content word-wraps
+  // to the guttered width; a labeled divider still counts as one content row.
+  const gutterWidth = Math.max(1, inner - 1);
   const content: string[] = [];
   for (const line of summary.lines) {
     if (line.startsWith(FORGE_DIVIDER_PREFIX)) { content.push(line); continue; }
-    for (const wrapped of wrapPlainLine(line, inner)) content.push(wrapped);
+    for (const wrapped of wrapPlainLine(line, gutterWidth)) content.push(wrapped);
   }
   const renderDivider = (rawLabel: string): string => {
     const text = rawLabel ? ` ${rawLabel} ` : "";
-    const lead = glyphs.h.repeat(Math.min(2, inner));
     const rest = Math.max(0, inner - visibleWidth(lead) - visibleWidth(text));
     const bar = `${lead}${text}${glyphs.h.repeat(rest)}`;
     return paint(glyphs.v) + paint(padLineTo(bar, inner, "left")) + shadow(glyphs.v);
   };
+  const contentRow = (line: string): string =>
+    paint(glyphs.v) + padLineTo(` ${line}`, inner, "left") + shadow(glyphs.v);
   const clipped = content.slice(0, maxLines);
   for (const line of clipped) {
     if (line.startsWith(FORGE_DIVIDER_PREFIX)) {
       rendered.push(renderDivider(line.slice(FORGE_DIVIDER_PREFIX.length)));
     } else {
-      rendered.push(paint(glyphs.v) + padLineTo(line, inner, "left") + shadow(glyphs.v));
+      rendered.push(contentRow(line));
     }
   }
   if (content.length > clipped.length) {
-    rendered.push(paint(glyphs.v) + padLineTo(`… ${content.length - clipped.length} hidden line(s)`, inner, "left") + shadow(glyphs.v));
+    rendered.push(contentRow(`… ${content.length - clipped.length} hidden line(s)`));
   }
   rendered.push(bottom);
   return rendered;

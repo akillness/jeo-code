@@ -1,6 +1,16 @@
 /** Slash-command palette/autocomplete for the interactive REPL (TUI M3). */
 import chalk from "chalk";
 
+/** Order-preserving subsequence test: every char of `needle` appears in `hay`
+ *  left-to-right (gjc-style fuzzy match, e.g. "expt" ⊑ "export"). */
+function subsequence(needle: string, hay: string): boolean {
+  if (needle === "") return true;
+  let i = 0;
+  for (let j = 0; j < hay.length && i < needle.length; j++) {
+    if (hay[j] === needle[i]) i++;
+  }
+  return i === needle.length;
+}
 
 export interface SlashCommandInfo {
   command: string;
@@ -25,27 +35,27 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/compact", usage: "/compact", description: "Summarize older turns to free context", group: "session" },
   { command: "/model", usage: "/model [id|#N|save|subagent <role> <model|#N>]", description: "Show/set the session model, or pin a subagent role model while choosing models", group: "models" },
   { command: "/models", usage: "/models [refresh|caps|catalog]", description: "Live OAuth/API-key models; caps/catalog add capability tables", group: "models" },
-  { command: "/provider", usage: "/provider [name] [model|#N]", description: "Credentials, switch provider, list live models; `login <name>` starts OAuth", group: "models" },
-  { command: "/logout", usage: "/logout <anthropic|openai|gemini|antigravity>", description: "Remove the stored OAuth token for a provider", group: "models" },
+  { command: "/provider", usage: "/provider [name] [model|#N]", description: "Credentials, switch provider, set model; `login <name>` starts OAuth", group: "models" },
   { command: "/login", usage: "/login [provider]", description: "OAuth login (alias of /provider login)", group: "models" },
-  { command: "/agents", usage: "/agents [role] [model|#N|maxSteps N|reset]", description: "List subagent roles or pin role model/settings", group: "subagents" },
-  { command: "/config", usage: "/config", description: "Show the effective runtime configuration", group: "models" },
+  { command: "/logout", usage: "/logout <anthropic|openai|gemini|antigravity>", description: "Remove the stored OAuth token for a provider", group: "models" },
   { command: "/roles", usage: "/roles [tier model]", description: "Show or set model role tiers (smol/slow/plan)", group: "models" },
   { command: "/thinking", usage: "/thinking [level]", description: "Show or set thinking budget (minimal/low/medium/high/xhigh)", group: "models" },
+  { command: "/agents", usage: "/agents [role] [model|#N|maxSteps N|reset]", description: "List subagent roles, edit interactively, or pin role model/settings", group: "subagents" },
+  { command: "/view", usage: "/view <file> [a-b]", description: "Render a file with line numbers + light highlight", group: "code" },
+  { command: "/diff", usage: "/diff [file]", description: "Render `git diff` with +/- coloring", group: "code" },
+  { command: "/find", usage: "/find <glob>", description: "List files matching a glob", group: "code" },
+  { command: "/search", usage: "/search <pat> [glob]", description: "Search the repo for a pattern", group: "code" },
+  { command: "/skill", usage: "/skill [name [intent]]", description: "List, show, or run a workflow skill", group: "skills" },
+  { command: "/skill:", usage: "/skill:<name> [intent]", description: "Run a workflow skill by GJC-style entrypoint", group: "skills" },
+  { command: "/sessions", usage: "/sessions", description: "List saved sessions", group: "session" },
   { command: "/usage", usage: "/usage", description: "Show cumulative token usage for this session", group: "system" },
   { command: "/context", usage: "/context", description: "Show context token usage breakdown", group: "system" },
   { command: "/tools", usage: "/tools", description: "Show the tools currently visible to the agent", group: "system" },
   { command: "/hotkeys", usage: "/hotkeys", description: "Show keyboard shortcuts", group: "system" },
   { command: "/theme", usage: "/theme [name]", description: "Show or set the TUI theme (cosmic/matrix/solar/mono)", group: "system" },
   { command: "/settings", usage: "/settings", description: "Show effective runtime configuration (alias of /config)", group: "system" },
-  { command: "/view", usage: "/view <file> [a-b]", description: "Render a file with line numbers + light highlight", group: "code" },
-  { command: "/diff", usage: "/diff [file]", description: "Render `git diff` with +/- coloring", group: "code" },
-  { command: "/find", usage: "/find <glob>", description: "List files matching a glob", group: "code" },
-  { command: "/search", usage: "/search <pat> [glob]", description: "Search the repo for a pattern", group: "code" },
-  { command: "/sessions", usage: "/sessions", description: "List saved sessions", group: "session" },
-  { command: "/skill", usage: "/skill [name [intent]]", description: "List, show, or run a workflow skill (bundled + configured docs)", group: "skills" },
-  { command: "/skill:", usage: "/skill:<name> [intent]", description: "Run a workflow skill by GJC-style entrypoint", group: "skills" },
   { command: "/evolve", usage: "/evolve", description: "Simulate and view the agent's evolutionary gallery", group: "system" },
+  { command: "/config", usage: "/config", description: "Show the effective runtime configuration", group: "system" },
   { command: "/exit", usage: "/exit", description: "Exit the agent", group: "system" },
   { command: "/quit", usage: "/quit", description: "Exit the agent", group: "system" },
 ];
@@ -58,11 +68,18 @@ export function mergeSlashCommandDetails(extra: readonly SlashCommandInfo[] = []
   return [...byCommand.values()];
 }
 
-/** Return the slash commands that prefix-match `input` (case-insensitive). Empty for non-slash input. */
+/** Return the slash commands that match `input` (case-insensitive). Prefix matches
+ *  come first; a fuzzy subsequence fallback (gjc-style, e.g. `/expt` → `/export`)
+ *  follows so typos / abbreviations still surface a command. A bare `/` lists every
+ *  command. Empty for non-slash input. */
 export function matchSlash(input: string, commands: string[] = SLASH_COMMANDS): string[] {
   if (!input.startsWith("/")) return [];
   const q = input.toLowerCase();
-  return commands.filter(c => c.startsWith(q));
+  const body = q.slice(1);
+  if (body === "") return [...commands];
+  const starts = commands.filter(c => c.toLowerCase().startsWith(q));
+  const fuzzy = commands.filter(c => !starts.includes(c) && subsequence(body, c.slice(1).toLowerCase()));
+  return [...starts, ...fuzzy];
 }
 
 /** True when `input` looks like a slash command (starts with "/" and has no space). */
@@ -100,33 +117,32 @@ export function formatSlashCommandList(input = "/", extra: readonly SlashCommand
     lines.push(`  ${GROUP_LABELS[group]}:`);
     for (const c of groupRows) lines.push(`    ${c.usage.padEnd(usageWidth)} - ${c.description}`);
   }
-  lines.push("Tip: type a slash prefix like /m to narrow, or press Tab for inline completion.");
+  lines.push("Tip: type a slash prefix like '/mod' and press Tab to autocomplete.");
   return lines;
 }
 
-/** Minimal skill shape for the `$` popup (name + one-line summary). */
 export interface SkillPreviewItem {
   name: string;
   summary?: string;
 }
 
-/** Shared row renderer for the live popup: highlight + scroll window + counters. */
 function renderPreviewRows(
-  rows: readonly { usage: string; description: string }[],
+  rows: { usage: string; description: string }[],
   max: number,
   selected: number,
 ): string[] {
-  if (rows.length === 0) return [];
-  const usageWidth = Math.max(...rows.map(r => r.usage.length), 6);
-  const fmt = (r: { usage: string; description: string }, isSel: boolean): string => {
-    const body = `${r.usage.padEnd(usageWidth)}  ${r.description}`;
-    return isSel ? `❯ ${chalk.cyan.bold(body)}` : `  ${body}`;
+  const fmt = (r: { usage: string; description: string }, on: boolean): string => {
+    const head = on ? chalk.cyan(`▸ ${r.usage}`) : `  ${r.usage}`;
+    return `${head}  ${chalk.dim(r.description)}`;
   };
   const n = rows.length;
-  if (n <= max) return rows.map((r, i) => fmt(r, i === selected));
-  // Overflow: scroll a window that always keeps the selected row visible, and
-  // reserve up to two rows for ↑/↓ "more" markers so the total stays within `max`.
-  const slots = Math.max(1, max - 2);
+  if (n === 0) return [];
+  // HARD row-budget contract: the returned lines NEVER exceed `max` — the caller
+  // reserves exactly that many footer rows, and one extra line shifts the input
+  // box / caret math (the "broken input box" corruption). When the list overflows,
+  // up to two slots are spent on ↑/↓ "more" markers INSIDE the budget.
+  const overflowing = n > max;
+  const slots = overflowing ? Math.max(1, max - 2) : n;
   const sel = selected < 0 ? 0 : Math.min(selected, n - 1);
   const start = Math.max(0, Math.min(sel - Math.floor(slots / 2), n - slots));
   const lines: string[] = [];
@@ -141,10 +157,15 @@ function renderPreviewRows(
   return lines;
 }
 
-/** Skills whose names prefix-match a `$keyword` probe (no space yet), display order. */
+/** Skills matching a `$keyword` probe (no space yet). Prefix matches come first,
+ *  then a fuzzy subsequence fallback (gjc-style, e.g. `$dintv` → `$deep-interview`).
+ *  A bare `$` lists every skill. */
 function dollarMatches(trimmed: string, skills: readonly SkillPreviewItem[]): SkillPreviewItem[] {
   const prefix = trimmed.slice(1).toLowerCase();
-  return skills.filter(s => s.name.toLowerCase().startsWith(prefix));
+  if (prefix === "") return [...skills];
+  const starts = skills.filter(s => s.name.toLowerCase().startsWith(prefix));
+  const fuzzy = skills.filter(s => !starts.includes(s) && subsequence(prefix, s.name.toLowerCase()));
+  return [...starts, ...fuzzy];
 }
 
 /**
@@ -152,7 +173,8 @@ function dollarMatches(trimmed: string, skills: readonly SkillPreviewItem[]): Sk
  * keyword (before any space). Returns matching command usages + descriptions,
  * capped, or [] for non-slash / argument input (a space means it is a real
  * command being typed, not a keyword probe). A leading `$` previews SKILLS the
- * same way (`$name [intent]` direct invocation, gjc/Codex style).
+ * same way (`$name [intent]` direct invocation, gjc/Codex style). Match ORDER is
+ * preserved from matchSlash/dollarMatches so prefix hits sit above fuzzy hits.
  */
 export function formatSlashPreview(
   line: string,
@@ -172,14 +194,16 @@ export function formatSlashPreview(
   }
   if (!trimmed.startsWith("/")) return [];
   const details = mergeSlashCommandDetails(extra);
-  const matches = matchSlash(trimmed, details.map(c => c.command));
-  if (matches.length === 0) return [];
-  const rows = details.filter(c => matches.includes(c.command));
+  const byCommand = new Map(details.map(c => [c.command, c] as const));
+  const rows = matchSlash(trimmed, details.map(c => c.command))
+    .map(cmd => byCommand.get(cmd))
+    .filter((c): c is SlashCommandInfo => Boolean(c));
+  if (rows.length === 0) return [];
   return renderPreviewRows(rows, max, selected);
 }
 
 /** The matching command names for a slash-keyword (`/cmd`) or skill (`$name`)
- *  prefix, in display order. Empty otherwise. */
+ *  prefix, in display order (prefix-first, then fuzzy). Empty otherwise. */
 export function slashPreviewMatches(
   line: string,
   extra: readonly SlashCommandInfo[] = [],

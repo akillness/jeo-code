@@ -19,6 +19,12 @@ function coarseTokens(text: string): number {
  */
 
 const MEMO_CAP = 512;
+/** Texts longer than this are NOT memoized: the memo key would pin a (possibly
+ *  compaction-dropped) multi-hundred-KB string in memory for the process
+ *  lifetime, and building the `${encoding}\u0000${text}` key itself copies the
+ *  whole text per lookup. One direct encode of a large text is cheaper than
+ *  cumulative retention — bounded memory beats a cache hit here. */
+const MEMO_MAX_TEXT = 16_384;
 
 // Lazily-instantiated encoders, cached by encoding name. js-tiktoken ships the
 // rank tables as pure JS, so loading is a one-time cost per encoding.
@@ -30,6 +36,13 @@ const memo = new Map<string, number>();
 function encodingForModel(model?: string): TiktokenEncoding {
   if (model && /gpt-4o|gpt-5|o\d/i.test(model)) return "o200k_base";
   return "cl100k_base";
+}
+
+/** Stable cache-partition key for `model`'s tokenizer family. Exposed so callers
+ *  (e.g. compaction's per-message accurate cache) can key caches without
+ *  duplicating the model→encoding mapping. */
+export function encodingFamilyForModel(model?: string): string {
+  return encodingForModel(model);
 }
 
 function getEncoder(encoding: TiktokenEncoding): Tiktoken | null {
@@ -64,13 +77,16 @@ function getEncoder(encoding: TiktokenEncoding): Tiktoken | null {
 export function countTokensAccurate(text: string, model?: string): number {
   if (!text) return 0;
   const encoding = encodingForModel(model);
-  const key = `${encoding}\u0000${text}`;
-  const hit = memo.get(key);
-  if (hit !== undefined) {
-    // Refresh recency: re-insert so eviction drops the genuinely-oldest.
-    memo.delete(key);
-    memo.set(key, hit);
-    return hit;
+  const memoizable = text.length <= MEMO_MAX_TEXT;
+  const key = memoizable ? `${encoding}\u0000${text}` : "";
+  if (memoizable) {
+    const hit = memo.get(key);
+    if (hit !== undefined) {
+      // Refresh recency: re-insert so eviction drops the genuinely-oldest.
+      memo.delete(key);
+      memo.set(key, hit);
+      return hit;
+    }
   }
 
   let count: number;
@@ -81,11 +97,13 @@ export function countTokensAccurate(text: string, model?: string): number {
     count = coarseTokens(text);
   }
 
-  if (memo.size >= MEMO_CAP) {
-    const oldest = memo.keys().next().value;
-    if (oldest !== undefined) memo.delete(oldest);
+  if (memoizable) {
+    if (memo.size >= MEMO_CAP) {
+      const oldest = memo.keys().next().value;
+      if (oldest !== undefined) memo.delete(oldest);
+    }
+    memo.set(key, count);
   }
-  memo.set(key, count);
   return count;
 }
 

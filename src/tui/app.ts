@@ -16,7 +16,7 @@ import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
 import { renderFooter, type FooterData } from "./components/footer";
-import { renderDnaClaw, dnaClawHeight, dnaClawFrameCount } from "./components/ascii-art";
+import { renderDnaClaw, dnaClawHeight, dnaClawFrameCount, dnaClawBeat, DNA_FLOW_PALETTE } from "./components/ascii-art";
 import { evolutionTrack, createStageProgress, type StageProgress, transitionMessage } from "./components/evolution";
 import type { TaskSubEvent } from "../agent/task-tool";
 import { supportsUnicode } from "./components/capability";
@@ -399,7 +399,7 @@ export class LaunchTui {
           // Light tool: one ✓/✗ line, plus a dim result tree for list-shaped output
           // (find/search/ls) and an error card when the tool failed.
           const { suffix, children } = this.ledgerTree(tool, success, output);
-          this.appendLedger(`${paintedMark} ${target}${suffix}\n${children.map(c => `${c}\n`).join("")}`);
+          this.appendLedger(`${paintedMark} ${target}${suffix}\n${children.map(c => `${c}\n`).join("")}`, "tool");
           if (!success) {
             this.rememberForge(result);
             this.flushForgeCard(result);
@@ -586,6 +586,7 @@ export class LaunchTui {
   start(): void {
     this.startedAt = Date.now();
     this.turnUsage = null;
+    this.lastLedgerKind = null; // fresh turn: no leading spacer before the first ledger line
     this.spinner.updateStep(0, this.footer.maxSteps);
     // On a real TTY the live turn renders gjc-style in the MAIN buffer by default:
     // completed ledger lines are flushed into normal scrollback as they happen, so a
@@ -702,8 +703,11 @@ export class LaunchTui {
     }
     if (!this.inline) {
       // Inline turns flushed every completed card into scrollback live; re-printing
-      // the cards here would duplicate them right below themselves.
-      for (const line of this.renderForge(size().cols, 3)) finalLines.push(line);
+      // the cards here would duplicate them right below themselves. A spacer row
+      // keeps the card block from gluing to the stream above (joc-ref rhythm).
+      const forge = this.renderForge(size().cols, 3);
+      if (forge.length && finalLines.length) finalLines.push("");
+      finalLines.push(...forge);
     }
     if (!this.inline && timelineSteps.length > 0) {
       const arrow = this.unicode ? " → " : " -> ";
@@ -723,7 +727,9 @@ export class LaunchTui {
     if (this.inline) {
       // gjc-style clean ending: the ANSWER leads, followed by exactly ONE compact dim
       // status line (steps · time · usage · evolution track). The live ledger above
-      // already recorded every step, so no timeline/flow repetition here.
+      // already recorded every step, so no timeline/flow repetition here. A blank
+      // spacer row separates the ledger from the answer (joc-ref vertical rhythm).
+      finalLines.push("");
       finalLines.push(`jeo> ${renderedReply}`);
       const statusLine = `${categoryBadge("done", { color: this.theme.color })} ${steps} steps · ${formatDuration(Date.now() - this.startedAt)}${usageSuffix} · ${evolutionTrack(peak, { unicode: this.unicode, color: this.theme.color })}`;
       finalLines.push(this.theme.color ? chalk.dim(statusLine) : statusLine);
@@ -777,7 +783,11 @@ export class LaunchTui {
     if (i >= 0) this.forgeSummaries.splice(i, 1);
   }
 
-  private renderForge(width: number, maxEntries: number): string[] {
+  private renderForge(
+    width: number,
+    maxEntries: number,
+    anim?: { phase: number; colorLevel: ColorLevel; beat: string },
+  ): string[] {
     const floor = Math.min(24, width);
     // Fill the available width (cap at formatForgeBox's own 120 ceiling) so an
     // in-frame box does not leave a dead right-margin column inside the outer panel.
@@ -786,7 +796,20 @@ export class LaunchTui {
     const lines: string[] = [];
     for (const [i, summary] of this.forgeSummaries.slice(-maxEntries).entries()) {
       if (lines.length > 0) lines.push("");
-      lines.push(...formatForgeBox(summary, { width: boxWidth, maxLines: 8, unicode: this.unicode, paint, index: i + 1, color: this.theme.color }));
+      lines.push(...formatForgeBox(summary, {
+        width: boxWidth,
+        maxLines: 8,
+        unicode: this.unicode,
+        paint,
+        index: i + 1,
+        color: this.theme.color,
+        // DNA-flow identity on LIVE cards only: the flowing helix gradient rides
+        // the card border and the claw beat marks the title. Flushed/final cards
+        // stay static — scrollback never carries animation frames.
+        ...(anim
+          ? { flow: { palette: DNA_FLOW_PALETTE, phase: anim.phase, colorLevel: anim.colorLevel }, titleMark: anim.beat }
+          : {}),
+      }));
     }
     return lines;
   }
@@ -807,6 +830,12 @@ export class LaunchTui {
   }): string[] {
     const { cols, rows, stepNow, elapsedMs, idx, isThinking } = args;
     const dim = this.theme.color ? chalk.dim : (s: string) => s;
+    const colorLevel = detectColorLevel(process.env, isTTY());
+    // One quantized animation clock for the whole frame: gradient phase cycles 20
+    // steps, the claw beat advances every 3 ticks. Quantization keeps repaints
+    // coherent (status box + forge border move together) and bounds per-tick work.
+    const phase = (this.tickCount * 0.05) % 1;
+    const beat = dnaClawBeat(Math.trunc(this.tickCount / 3), this.unicode);
 
     // Assemble the bottom-pinned tail FIRST (status line → todos → hud → model bar):
     // it is the live heartbeat and must always be visible; the in-flight card gets
@@ -818,7 +847,6 @@ export class LaunchTui {
     // activity (uniform across providers via streamingActivity) on the spinner
     // row with the ⟦esc⟧ cancel hint, and one compact metrics row.
     if (isThinking) {
-      const colorLevel = detectColorLevel(process.env, isTTY());
       const grad = themeGradient(this.theme, idx);
       const costUsd = costForUsage(this.footer.model, this.turnUsage) ?? undefined;
       const stats = this.tools.stats();
@@ -841,7 +869,7 @@ export class LaunchTui {
         unicode: this.unicode,
         color: this.theme.color,
         colorLevel,
-        phase: (this.tickCount * 0.05) % 1,
+        phase,
         palette: [grad.from, grad.to],
         isThinking: true,
         usage: this.turnUsage,
@@ -870,7 +898,10 @@ export class LaunchTui {
     // in-flight tool card (whole boxes only — never half a card).
     const tailKeep = tail.length > rows ? tail.slice(tail.length - rows) : tail;
     const budget = Math.max(0, rows - tailKeep.length - 1);
-    const forgeK = budget > 0 ? fitForgeBoxes(this.renderForge(cols, 2), budget) : [];
+    const forgeAnim = isThinking && this.theme.color && colorLevel >= ColorLevel.TrueColor
+      ? { phase, colorLevel, beat }
+      : undefined;
+    const forgeK = budget > 0 ? fitForgeBoxes(this.renderForge(cols, 2, forgeAnim), budget) : [];
     const frame: string[] = [];
     if (forgeK.length) {
       frame.push(...forgeK);

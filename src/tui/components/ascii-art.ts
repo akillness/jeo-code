@@ -555,7 +555,7 @@ export function renderDnaClaw(opts: {
   const phase = opts.phase ?? 0;
   const useColor = opts.color !== false;
   const colorLevel = opts.colorLevel ?? ColorLevel.TrueColor;
-  const palette = ["#10ac84", "#48dbfb", "#8e44ad"];
+  const palette = DNA_FLOW_PALETTE;
 
   return source.map((line, idx) => {
     const padded = line.length < width ? line + " ".repeat(width - line.length) : line;
@@ -564,6 +564,17 @@ export function renderDnaClaw(opts: {
     }
     return animatedGradientText(padded, palette, phase + idx * 0.07, { colorLevel });
   });
+}
+
+/** The DNA Claw identity palette (emerald → cyan → violet helix flow). Shared by
+ *  the claw art and the forge-card border flow so the brand gradient is uniform. */
+export const DNA_FLOW_PALETTE: readonly string[] = ["#10ac84", "#48dbfb", "#8e44ad"];
+
+/** Width-1 "claw beat" glyph for an animation tick — the ◆/╳/○ motifs of the
+ *  claw art cycling in place. Used as the live forge-card title mark. */
+export function dnaClawBeat(frame: number, unicode = true): string {
+  const beats = unicode ? ["◆", "╳", "○"] : ["*", "X", "o"];
+  return beats[Math.abs(Math.trunc(frame)) % beats.length]!;
 }
 
 export function dnaClawHeight(): number {

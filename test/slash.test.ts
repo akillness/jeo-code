@@ -1,13 +1,16 @@
 import { test, expect } from "bun:test";
 import { matchSlash, isSlashAttempt, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, type SlashCommandInfo } from "../src/tui/components/slash";
 
-test("matchSlash: prefix-matches slash commands, case-insensitive", () => {
+test("matchSlash: prefix matches lead, fuzzy subsequence hits trail (case-insensitive)", () => {
   expect(matchSlash("/")).toEqual(SLASH_COMMANDS);
-  expect(matchSlash("/c")).toEqual(["/clear", "/compact", "/config", "/context"]);
-  expect(matchSlash("/MO")).toEqual(["/model", "/models"]);
+  // Prefix block comes first, in palette order; fuzzy hits may follow.
+  expect(matchSlash("/c").slice(0, 4)).toEqual(["/clear", "/compact", "/context", "/config"]);
+  expect(matchSlash("/MO").slice(0, 2)).toEqual(["/model", "/models"]);
   expect(matchSlash("/exit")).toEqual(["/exit"]);
   expect(matchSlash("/zzz")).toEqual([]);
   expect(matchSlash("hello")).toEqual([]); // non-slash → no matches
+  // Fuzzy fallback: an abbreviation with no prefix match still finds its command.
+  expect(matchSlash("/expt")).toEqual(["/export"]);
 });
 
 test("isSlashAttempt: slash without a space", () => {
@@ -27,12 +30,12 @@ test("slash command details stay in sync with command names", () => {
   expect(SLASH_COMMAND_DETAILS.find(c => c.command === "/agents")?.usage).toContain("maxSteps");
 });
 
-test("matchSlash distinguishes /model from /models", () => {
-  expect(matchSlash("/model")).toEqual(["/model", "/models"]);
-  expect(matchSlash("/models")).toEqual(["/models"]);
-  expect(matchSlash("/p")).toEqual(["/provider"]);
-  expect(matchSlash("/t")).toEqual(["/thinking", "/tools", "/theme"]);
-  expect(matchSlash("/ag")).toEqual(["/agents"]);
+test("matchSlash distinguishes /model from /models; prefix beats fuzzy", () => {
+  expect(matchSlash("/model").slice(0, 2)).toEqual(["/model", "/models"]);
+  expect(matchSlash("/models")[0]).toBe("/models");
+  expect(matchSlash("/p")[0]).toBe("/provider");
+  expect(matchSlash("/t").slice(0, 3)).toEqual(["/thinking", "/tools", "/theme"]);
+  expect(matchSlash("/ag")[0]).toBe("/agents");
 });
 
 test("SLASH_COMMANDS includes the code-view commands (view/diff/find/search)", () => {
@@ -42,9 +45,9 @@ test("SLASH_COMMANDS includes the code-view commands (view/diff/find/search)", (
 });
 
 test("matchSlash resolves the code-view command prefixes", () => {
-  expect(matchSlash("/v")).toEqual(["/view"]);
-  expect(matchSlash("/d")).toEqual(["/drop", "/dump", "/diff"]);
-  expect(matchSlash("/sea")).toEqual(["/search"]);
+  expect(matchSlash("/v")[0]).toBe("/view");
+  expect(matchSlash("/d").slice(0, 3)).toEqual(["/drop", "/dump", "/diff"]);
+  expect(matchSlash("/sea")[0]).toBe("/search");
 });
 
 test("formatSlashCommandList lists all commands for bare slash and narrows by prefix", () => {
@@ -98,29 +101,29 @@ test("formatSlashPreview: a far-down selection stays visible inside the scroll w
   const last = matches.length - 1;
   const out = formatSlashPreview("/", 8, last).map(l => l.replace(/\x1b\[[0-9;]*m/g, ""));
   expect(out.length).toBeLessThanOrEqual(8);
-  // The selected (last) command is rendered AND carries the ❯ cursor.
-  const sel = out.find(l => l.startsWith("❯ "));
+  // The selected (last) command is rendered AND carries the ▸ cursor.
+  const sel = out.find(l => l.startsWith("▸ "));
   expect(sel).toBeDefined();
   expect(sel!).toContain(matches[last]!.slice(1)); // usage starts with the command name sans leading marker
   // Scrolled past the top → an ↑ marker is present.
   expect(out.some(l => l.includes("↑"))).toBe(true);
 });
 
-test("formatSlashPreview: selected index marks the highlighted row with ❯", () => {
+test("formatSlashPreview: selected index marks the highlighted row with ▸", () => {
   const out = formatSlashPreview("/m", 6, 1).map(l => l.replace(/\x1b\[[0-9;]*m/g, ""));
   // /m → /model (row 0), /models (row 1) → row 1 selected
   expect(out[0].startsWith("  ")).toBe(true);
-  expect(out[1].startsWith("❯ ")).toBe(true);
+  expect(out[1].startsWith("▸ ")).toBe(true);
   expect(out[1]).toContain("/models");
 });
 
 test("slashPreviewMatches: command names in display order; empty for args/non-slash", () => {
-  expect(slashPreviewMatches("/m")).toEqual(["/model", "/models"]);
+  expect(slashPreviewMatches("/m").slice(0, 2)).toEqual(["/model", "/models"]); // prefix hits lead; fuzzy may trail
   expect(slashPreviewMatches("/model gpt")).toEqual([]); // has a space
   expect(slashPreviewMatches("hello")).toEqual([]);
   // index alignment: matches[i] corresponds to formatSlashPreview row i
   const matches = slashPreviewMatches("/c");
-  const rows = formatSlashPreview("/c", 20).map(l => l.replace(/❯ |  /, ""));
+  const rows = formatSlashPreview("/c", 20).map(l => l.replace(/▸ |  /, ""));
   matches.forEach((cmd, i) => expect(rows[i]).toContain(cmd));
 });
 
@@ -131,7 +134,7 @@ test("dynamic skill slash aliases appear in palette, preview, and selection orde
   ];
   expect(matchSlash("/speckit.p", dynamic.map(d => d.command))).toEqual(["/speckit.plan"]);
   expect(formatSlashCommandList("/speckit", dynamic).join("\n")).toContain("Skills:");
-  expect(formatSlashPreview("/speckit.t", 6, 0, dynamic).join("\n")).toContain("❯ /speckit.tasks");
+  expect(formatSlashPreview("/speckit.t", 6, 0, dynamic).join("\n")).toContain("▸ /speckit.tasks");
   expect(slashPreviewMatches("/speckit", dynamic)).toEqual(["/speckit.plan", "/speckit.tasks"]);
 });
 
@@ -178,7 +181,7 @@ test("$ prefix pops up matching skills with summaries (live popup)", () => {
   expect(sp.join("\n")).not.toContain("$team");
   // Selection highlight marker on the chosen row.
   const sel = formatSlashPreview("$", 6, 2, [], skills).map(stripAnsi);
-  expect(sel[2]).toContain("❯");
+  expect(sel[2]).toContain("▸");
   expect(sel[2]).toContain("$team");
   // A space means a real invocation is being typed — popup closes.
   expect(formatSlashPreview("$team build it", 6, -1, [], skills)).toEqual([]);

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseFlags, gatedStdout, shouldUseOneShotTui, createInFlightAbortHarness, queuePromptInputChunk } from "../src/commands/launch";
+import { parseFlags, gatedStdout, shouldUseOneShotTui, createInFlightAbortHarness, queuePromptInputChunk, formatResumeHint } from "../src/commands/launch";
 import { createInterface } from "node:readline/promises";
 import { Readable, Writable } from "node:stream";
 
@@ -144,6 +144,10 @@ test("in-flight abort harness forwards printable live-turn input for the next pr
   expect(noise).toBe(1);
   expect(chunks).toEqual(["작업내용 확인해줘\r"]);
 
+  harness.handleData("다음\u001b[D");
+  expect(noise).toBe(2);
+  expect(chunks).toEqual(["작업내용 확인해줘\r", "다음"]);
+
   harness.dispose();
   expect(rawModes).toEqual([true, false]);
   expect(listeners.size).toBe(0);
@@ -151,7 +155,6 @@ test("in-flight abort harness forwards printable live-turn input for the next pr
 
 // gjc-parity (logs/gjc-tui-study analysis Gap C): the /exit path prints a resume
 // pointer using the same convention as the --list handler.
-import { formatResumeHint } from "../src/commands/launch";
 
 test("formatResumeHint matches the --list handler convention", () => {
   expect(formatResumeHint("019eb4b5-17fe-7000-a9d5-d6c9d7923f45"))

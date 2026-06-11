@@ -1,5 +1,5 @@
 import { callLlm, type Message } from "./loop";
-import { countTokensAccurate } from "./tokenizer";
+import { countTokensAccurate, encodingFamilyForModel } from "./tokenizer";
 
 export interface CompactionOptions {
   maxMessages?: number;
@@ -91,16 +91,33 @@ export function historyTokens(history: Message[]): number {
  * and summary-budget points — never in the per-render footer path, which must
  * stay on the cheap `historyTokens` heuristic.
  */
+const accurateMessageTokenCache = new WeakMap<Message, Map<string, number>>();
+
+/** Accurate BPE count for ONE message, cached by message IDENTITY (same contract
+ *  as `messageTokenCache`: messages are replaced, never mutated in place) and
+ *  partitioned by tokenizer family so a mid-session model switch can never serve
+ *  a count from the wrong encoder. The WeakMap holds no reference once a message
+ *  leaves history — the cache CANNOT grow cumulatively. */
+export function accurateMessageTokens(msg: Message, model?: string): number {
+  const family = encodingFamilyForModel(model);
+  let perFamily = accurateMessageTokenCache.get(msg);
+  const hit = perFamily?.get(family);
+  if (hit !== undefined) return hit;
+  const n =
+    countTokensAccurate(msg.role, model) +
+    countTokensAccurate(msg.content, model) +
+    (msg.images?.length ?? 0) * IMAGE_TOKEN_ESTIMATE +
+    1;
+  if (!perFamily) {
+    perFamily = new Map();
+    accurateMessageTokenCache.set(msg, perFamily);
+  }
+  perFamily.set(family, n);
+  return n;
+}
+
 export function accurateHistoryTokens(history: Message[], model?: string): number {
-  return history.reduce(
-    (sum, msg) =>
-      sum +
-      countTokensAccurate(msg.role, model) +
-      countTokensAccurate(msg.content, model) +
-      (msg.images?.length ?? 0) * IMAGE_TOKEN_ESTIMATE +
-      1,
-    0
-  );
+  return history.reduce((sum, msg) => sum + accurateMessageTokens(msg, model), 0);
 }
 
 function formatMessagesForSummaryByTokens(messages: Message[], maxTokens: number): string {

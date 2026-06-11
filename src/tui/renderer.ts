@@ -121,12 +121,30 @@ export class Renderer {
    *  Inline-mode only by convention — the alt screen has no scrollback to flush into. */
   insertAbove(text: string): void {
     this.syncOpen = true;
-    this.coverRows = Math.max(this.coverRows, this.prev.length);
-    const body = text
-      .split("\n")
+    const rows = text.split("\n");
+    // Rows the body actually writes (the trailing "" from the final "\n" emits nothing).
+    const written = rows.length - (rows[rows.length - 1] === "" ? 1 : 0);
+    const body = rows
       .map((line, i, arr) => (i === arr.length - 1 && line === "" ? "" : toColumn(1) + clearLine() + line))
       .join("\n");
-    this.write(BEGIN_SYNC + body);
+    let out = BEGIN_SYNC + body;
+    // Eagerly EL-clear the old frame rows the inserted block did NOT cover, then hop
+    // back to the row right below the insert (where the next render() anchors).
+    // The geometry is provably safe HERE: when stale > 0 the body write never hit
+    // the bottom margin (the old frame fit on screen and the insert is shorter), so
+    // every stale row exists and cursor-down cannot clamp. Deferring this clear to
+    // the next render() via coverRows walked PAST the bottom margin, where the
+    // clamped cursor-down desynced the row bookkeeping — each subsequent frame then
+    // painted one row higher, devouring the flushed scrollback content above (the
+    // "truncated card" corruption).
+    const stale = this.prev.length - written;
+    if (stale > 0) {
+      for (let i = 0; i < stale; i++) {
+        out += toColumn(1) + clearLine() + (i < stale - 1 ? cursorDown(1) : "");
+      }
+      out += (stale > 1 ? cursorUp(stale - 1) : "") + toColumn(1);
+    }
+    this.write(out);
     this.prev = [];
   }
 

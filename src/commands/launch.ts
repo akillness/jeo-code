@@ -501,16 +501,23 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
   const handleData = (chunk: string | Uint8Array) => {
     if (!captureEsc || controller.signal.aborted) return;
     const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    if (text === "\u001b") {
-      abortNow("ESC pressed — cancelling current run…");
-      return;
-    }
-    // Raw mode swallows the terminal's SIGINT generation: Ctrl-C arrives as data.
-    if (text.includes("\u0003")) {
-      handleSigint();
-      return;
-    }
-    if (text.includes("\u001b")) {
+    const escAt = text.indexOf("\u001b");
+    const sigintAt = text.indexOf("\u0003");
+    const controlAt =
+      escAt === -1 ? sigintAt :
+      sigintAt === -1 ? escAt :
+      Math.min(escAt, sigintAt);
+    if (controlAt >= 0) {
+      const printablePrefix = text.slice(0, controlAt);
+      if (printablePrefix) opts.onBufferedInput?.(printablePrefix);
+      if (text[controlAt] === "\u0003") {
+        handleSigint();
+        return;
+      }
+      if (text === "\u001b") {
+        abortNow("ESC pressed — cancelling current run…");
+        return;
+      }
       opts.onNoise?.();
       return;
     }
@@ -1081,6 +1088,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // Plain (non-TTY / --no-tui) progress sink — the cmd-mode equivalent of the live TUI.
   const streamEvents = createStreamEvents(initialStepLimit);
   let queueBusyInput: ((chunk: string) => boolean) | undefined;
+  let interactiveTurnActive = false;
 
 
   // Run one conversational turn: compact, persist user msg, run the loop, persist + return the reply.
@@ -1125,14 +1133,21 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     tui?.setTurnTitle(userInput); // gjc-parity turn title → HUD + tmux pane title (no LLM call)
     let result;
     try {
-      if (tui) tui.start();
+      if (tui) {
+        interactiveTurnActive = true;
+        tui.start();
+      }
+      let queuedInputNotified = false;
       const harness = createInFlightAbortHarness({
         captureEsc: !!tui,
         onNoise: () => tui?.repaint(),
         onBufferedInput: chunk => {
           if (!tui) return;
           const queued = queueBusyInput?.(chunk) ?? false;
-          if (queued) tui.events().onNotice?.("Keyboard input queued for the next prompt…");
+          if (queued && !queuedInputNotified) {
+            queuedInputNotified = true;
+            tui.events().onNotice?.("Keyboard input queued for the next prompt…");
+          }
         },
         onAbortNotice: msg => {
           if (tui) tui.events().onNotice?.(msg);
@@ -1196,7 +1211,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         harness.dispose();
       }
     } catch (err) {
-      if (tui) tui.finish(`! ${friendlyProviderError(err)}`);
+      if (tui) {
+        tui.finish(`! ${friendlyProviderError(err)}`);
+        interactiveTurnActive = false;
+      }
       throw err;
     }
     // A completed turn with an empty done-reason must NOT masquerade as a step-limit
@@ -1207,13 +1225,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         : `(reached the ${result.steps}-step limit without signaling done)`);
     // Full-fidelity persistence: append every message the engine added this turn
     // (user prompt + intermediate tool-call/tool-result turns), then the final reply.
-    if (sessionId) {
-      // One batched fs append for the whole turn (was: one awaited append per message).
-      await appendMessages(sessionId, history.slice(beforeLen), cwd);
+    try {
+      if (sessionId) {
+        // One batched fs append for the whole turn (was: one awaited append per message).
+        await appendMessages(sessionId, history.slice(beforeLen), cwd);
+      }
+      history.push({ role: "assistant", content: reply });
+      if (sessionId) await appendMessage(sessionId, { role: "assistant", content: reply }, cwd);
+      if (tui) tui.finish(reply);
+    } finally {
+      if (tui) interactiveTurnActive = false;
     }
-    history.push({ role: "assistant", content: reply });
-    if (sessionId) await appendMessage(sessionId, { role: "assistant", content: reply }, cwd);
-    if (tui) tui.finish(reply);
     if (result.usage) {
       sessionUsage.inputTokens += result.usage.inputTokens;
       sessionUsage.outputTokens += result.usage.outputTokens;
@@ -1424,8 +1446,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               return await promptInput("");
             } finally {
               if (wasPreviewArmed) {
-                previewArmed = true;
                 armPreview();
+                drawFooter(previewLines(typedLine, navIdx));
               }
             }
           }
@@ -1534,7 +1556,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // previously OPENED the gate and let readline echo typed filter characters
     // (CJK wide chars especially) straight onto the picker frame — the
     // "stacked input-box borders" corruption.
-    output: gatedStdout(process.stdout, () => previewArmed || pickerActive),
+    output: gatedStdout(process.stdout, () => previewArmed || pickerActive || interactiveTurnActive),
     completer: (line: string) => readlineCompleter(line, completionContext()),
   });
   // Stdin EOF must END the REPL, not hang it: under Bun a pending `rl.question`
@@ -1544,7 +1566,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // only captures the line submitted while it is registered; orphan lines emit
   // 'line' instead), so queue those and serve them before prompting again.
   const pendingStdinLines: string[] = [];
-  rl.on("line", l => { pendingStdinLines.push(l); });
+  rl.on("line", l => { if (!interactiveTurnActive) pendingStdinLines.push(l); });
   const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: "" };
   queueBusyInput = (chunk: string) => queuePromptInputChunk(queuedPromptInput, chunk);
   let stdinClosed = false;
@@ -1607,7 +1629,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // boxed input instead of silently falling back to the raw `jeo>` prompt (previously
   // any terminal under 17 rows lost the box entirely and showed bare CLI input).
   const MAX_PREVIEW_ROWS = 12;
-  const MIN_PREVIEW_ROWS = 6; // status bar (1) + input box (3 rows) + 2 preview rows
+  const MIN_PREVIEW_ROWS = 7; // status bar (1) + spacer (1) + input box (3 rows) + 2 preview rows
   const previewRowsFor = (rows: number): number => Math.max(MIN_PREVIEW_ROWS, Math.min(MAX_PREVIEW_ROWS, rows - 6));
   const previewEnabled =
     process.stdin.isTTY &&
@@ -1733,20 +1755,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       attachmentLabel: pendingImages.length
         ? `⧉ ${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""} attached — sent with the next message`
         : undefined,
-      maxBodyRows: Math.max(1, footerRows - 6),
+      maxBodyRows: Math.max(1, footerRows - 7),
       cursor: caret,
     });
     const input = frame.lines.map(l => truncateAnsi(l, cols));
-    // Row 0 is the status bar, so the caret (and everything else) shifts down one row.
+    // joc-ref layout: a blank spacer row between the status bar (row 0) and the
+    // input box, so the box breathes instead of gluing to the bar — the caret
+    // (and everything below) therefore shifts down TWO rows.
     footerCursor = {
-      row: Math.max(0, Math.min(frame.cursorRow + 1, footerRows - 1)),
+      row: Math.max(0, Math.min(frame.cursorRow + 2, footerRows - 1)),
       col: Math.max(1, Math.min(frame.cursorCol, cols)),
     };
-    const budget = Math.max(0, footerRows - 1 - input.length);
+    const budget = Math.max(0, footerRows - 2 - input.length);
     const slash = budget > 0 ? formatSlashPreview(line, budget, selected, skillSlashDetails, resolvedSkills) : [];
     const args = !slash.length && budget > 0 ? formatCompletionPreview(line, completionContext(), budget) : [];
     const preview = (slash.length ? slash : args).map(l => chalk.gray(truncateAnsi(l, cols)));
-    return [statusBarLine(cols), ...input, ...preview].slice(0, footerRows);
+    return [statusBarLine(cols), "", ...input, ...preview].slice(0, footerRows);
   };
   const drawFooter = (lines: string[]) => {
     if (!previewArmed || footerRendered === 0) return;

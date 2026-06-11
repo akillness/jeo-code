@@ -191,15 +191,24 @@ test("Renderer reserve mode: frames taller than the viewport are not reserved", 
   expect(out.join("")).not.toContain("\n"); // guard: degrade to in-place painting
 });
 
-test("Renderer coverRows: shorter render after insertAbove EL-clears the stale lower rows", () => {
+test("Renderer insertAbove eagerly EL-clears the old frame's uncovered rows (no margin desync)", () => {
   const out: string[] = [];
   const r = new Renderer(s => out.push(s), () => 40, { reserve: true });
   r.render(["a", "b", "c", "d", "e"]); // 5-row frame
-  r.insertAbove("L\n");                // baseline dropped, coverRows=5
   out.length = 0;
-  r.render(["x", "y"]);                // shorter frame: rows 2-4 are stale
+  r.insertAbove("L\n"); // 1 written row; rows 2-5 of the old frame are stale
+  const flush = out.join("");
+  // The flush itself clears the 4 uncovered rows (1 insert EL + 4 stale ELs)…
+  expect(flush.split(clearLine()).length - 1).toBe(5);
+  // …and hops back up to the row right below the insert (the next frame's anchor).
+  expect(flush).toContain("\x1b[3A");
+  out.length = 0;
+  r.render(["x", "y"]); // shorter frame paints WITHOUT walking past its own height
   const repaint = out.join("");
   expect(repaint).not.toContain("\x1b[0J"); // never ED in reserve mode
-  // 2 painted rows + ≥3 stale rows EL-cleared via coverRows
-  expect(repaint.split(clearLine()).length - 1).toBeGreaterThanOrEqual(5);
+  // Exactly the 2 frame rows are EL-painted — no deferred stale walk remains. The
+  // old coverRows walk cursor-downed past the bottom margin here, where clamping
+  // desynced the anchor and every later frame painted one row higher, devouring
+  // the flushed ledger/card lines above (the truncated-card corruption).
+  expect(repaint.split(clearLine()).length - 1).toBe(2);
 });

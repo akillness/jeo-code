@@ -1,0 +1,160 @@
+================================================================================
+G001 STUDY ARTIFACTS VALIDATION REPORT
+================================================================================
+CWD: /Users/jangyoung/.superset/projects/jeo-code
+Report Generated: 2026-06-11
+
+This report presents the adversarial validation of the G001 study artifacts in
+jeo-code/logs/gjc-tui-study/ against observations.md, analysis.md, and the
+jeo-code codebase at HEAD.
+
+--------------------------------------------------------------------------------
+1. alternate_on claim
+--------------------------------------------------------------------------------
+Claim: observations.md records value 0 for alternate_on. Capture/notes support
+it, and 03-history.txt contains pre-launch shell content (proof of normal-buffer
+scrollback).
+
+Evidence:
+- File: jeo-code/logs/gjc-tui-study/03-history.txt
+- Line 2:
+  "jangyoung@MacBook-Pro-2 jeo-code % gjc"
+- Explanation: The capture includes the pre-launch shell prompt and command.
+  Because alternate screen buffers do not mix with or preserve the normal buffer's
+  pre-launch history, capturing this line in the pane scrollback history
+  proves GJC ran in the normal screen buffer.
+- File: jeo-code/logs/gjc-tui-study/capture.sh
+- Line 34:
+  "tmux display -p -t "$SESSION" '#{alternate_on}' > "$LOG_DIR/alternate_on.txt""
+  (Confirms the study recorded the variable, which resulted in 0).
+
+Verdict: PASS
+
+--------------------------------------------------------------------------------
+2. Tool checklist claim
+--------------------------------------------------------------------------------
+Claim: ✓/⏳ style lines exist in 02-live-1.txt and/or 05-live-2.txt as cited.
+
+Evidence:
+- File: jeo-code/logs/gjc-tui-study/02-live-1.txt
+- Line 19:
+  "✔ Read package.json"
+- Line 20:
+  "✔ Read package.json:1-10:raw"
+
+- File: jeo-code/logs/gjc-tui-study/05-live-2.txt
+- Line 24:
+  "⏳ Read src/tui"
+- Line 27:
+  "⏳ Bash: $ echo hello"
+
+Verdict: PASS
+
+--------------------------------------------------------------------------------
+3. Boxed Bash block claim
+--------------------------------------------------------------------------------
+Claim: Box-drawing + `$ echo hello` + Output separator exist in 05-live-3.txt.
+
+Evidence:
+- File: jeo-code/logs/gjc-tui-study/05-live-3.txt
+- Lines 22-27:
+  "┌─── ✔ Bash ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐"
+  "│ $ echo hello                                                                                                       │"
+  "├─── Output ─────────────────────────────────────────────────────────────────────────────────────────────────────────┤"
+  "│ hello                                                                                                              │"
+  "│ ⟦Timeout: 300s⟧                                                                                                    │"
+  "└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
+
+Verdict: PASS
+
+--------------------------------------------------------------------------------
+4. Status HUD claim
+--------------------------------------------------------------------------------
+Claim: A line containing git branch glyph/cwd/rate/ctx/cost elements exists in the
+cited captures (01-startup.txt L~23, 05-live-4.txt).
+
+Evidence:
+- File: jeo-code/logs/gjc-tui-study/01-startup.txt
+- Line 23:
+  " ⬢ Fable 5 · ◕ high / ⑂ main / 📁 ~/.superset/projects/jeo-code ─────────────────────────────────── ◫ 6.2%/1M ⟲ / (sub)"
+
+- File: jeo-code/logs/gjc-tui-study/05-live-4.txt
+- Line 29:
+  " ⬢ Fable 5 · ◕ high / ⑂ main ?1 / 📁 ~/.superset/projects/jeo-code ─────────────── ⤴ 38.7/s / ◫ 6.3%/1M ⟲ / $0.90 (sub)"
+  - git branch glyph and name: "⑂ main ?1"
+  - cwd glyph and path: "📁 ~/.superset/projects/jeo-code"
+  - rate glyph and speed: "⤴ 38.7/s"
+  - ctx glyph and usage: "◫ 6.3%/1M ⟲"
+  - cost: "$0.90 (sub)"
+
+Verdict: PASS
+
+--------------------------------------------------------------------------------
+5. Update box and resume-hint claims
+--------------------------------------------------------------------------------
+Claim: Present in 01-startup.txt and 07-exit.txt respectively.
+
+Evidence:
+- File: jeo-code/logs/gjc-tui-study/01-startup.txt
+- Lines 20-21 (Update Box):
+  " Update Available"
+  " New version 0.4.4 is available. Run: gjc update"
+
+- File: jeo-code/logs/gjc-tui-study/07-exit.txt
+- Line 34 (Resume Hint):
+  "Resume this session with gjc --resume 019eb4f0-8818-7000-94e6-1cb7cf281509"
+
+Verdict: PASS
+
+--------------------------------------------------------------------------------
+6. joc-side claims in analysis.md §1
+--------------------------------------------------------------------------------
+Claims:
+(a) Ledger lines today are badge-style text (find the appendLedger call in
+    src/tui/app.ts onToolResult and quote it).
+(b) renderJocStatus today has NO git branch / cwd / tok-rate elements
+    (grep src/tui/components/status.ts).
+(c) welcome.ts and update-box.ts exist.
+
+Evidence:
+- (a) File: jeo-code/src/tui/app.ts (Lines 239-243):
+      "        const catBadge = categoryBadge(categoryForTool(tool), { color: this.theme.color });"
+      "        const resBadge = categoryBadge(success ? "done" : "error", { color: this.theme.color });"
+      "        const target = this.pendingTitle || tool;"
+      "        this.pendingTitle = null;"
+      "        this.appendLedger(`${catBadge} ${resBadge} ${target}\n`);"
+
+- (b) File: jeo-code/src/tui/components/status.ts:
+      No search matches for git branch, cwd, or token transmission rate (⤴ N/s)
+      elements are rendered inside renderJocStatus(). Only step numbers, progress bar,
+      elapsed time, elapsed step/average time stats, and total/ok/fail/running tool counts
+      are present.
+
+- (c) Filesystem existence check:
+      - jeo-code/src/tui/components/welcome.ts (Exists, header lines 1-18 read successfully)
+      - jeo-code/src/tui/components/update-box.ts (Exists, header lines 1-18 read successfully)
+
+Verdict: PASS
+
+--------------------------------------------------------------------------------
+7. Adversarial check for contradicting evidence
+--------------------------------------------------------------------------------
+Claim: Search ALL captures for any evidence contradicting the analysis.
+
+Evidence / Findings:
+- Checked all capture files for alternate screen buffer terminal escape sequences.
+  - A search of 01-startup-ansi.txt and 04-final-ansi.txt for alternate screen
+    sequences or the "?" character (necessary for VT100 DECSET/DECRST alternate
+    buffer codes like "\x1b[?1049h" or "\x1b[?1049l") yielded no results inside
+    01-startup-ansi.txt, and the only "?" in 04-final-ansi.txt is the git status
+    "?1" in the status line.
+  - Pre-launch shell prompt is successfully captured in 03-history.txt, proving
+    normal screen buffer usage.
+  - All elements of the status HUD are verified as described.
+  - No contradictions found.
+
+Verdict: PASS
+
+================================================================================
+FINAL OVERALL VERDICT: PASS
+================================================================================

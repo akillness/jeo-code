@@ -132,6 +132,57 @@ test("LaunchTui (inline): flushed ledger lines are NOT duplicated inside the liv
   }
 });
 
+test("LaunchTui: flushed tool-result ledger lines lead with a gjc-style ✔/✗ glyph", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  const ev = tui.events();
+  ev.onStep!(1);
+  out.length = 0;
+  ev.onAssistant!("", { tool: "read", arguments: { filePath: "src/cli.ts" } });
+  ev.onToolResult!("read", true, "ok");
+  ev.onAssistant!("", { tool: "bash", arguments: { command: "false" } });
+  ev.onToolResult!("bash", false, "boom");
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  const ledger = strip(out.join(""));
+  // Glyph leads the line; badges follow (unicode terminals → ✔/✗, ASCII → v/x).
+  expect(ledger).toMatch(/[✔v] \[FILE\] \[DONE\] read src\/cli\.ts/);
+  expect(ledger).toMatch(/[✗x] \[CMD\] \[ERR\]/);
+  tui.finish("done");
+});
+
+test("LaunchTui: ledger glyphs fall back to v/x on ASCII-only terminals", () => {
+  // supportsUnicode() reads env; pin an ASCII terminal deterministically.
+  const origTerm = process.env.TERM;
+  process.env.TERM = "dumb";
+  try {
+    const out: string[] = [];
+    const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+    tui.start();
+    const ev = tui.events();
+    ev.onStep!(1);
+    out.length = 0;
+    ev.onAssistant!("", { tool: "read", arguments: { filePath: "src/cli.ts" } });
+    ev.onToolResult!("read", true, "ok");
+    ev.onAssistant!("", { tool: "bash", arguments: { command: "false" } });
+    ev.onToolResult!("bash", false, "boom");
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    const ledger = strip(out.join(""));
+    expect(ledger).toMatch(/v \[FILE\] \[DONE\] read src\/cli\.ts/);
+    expect(ledger).toMatch(/x \[CMD\] \[ERR\]/);
+    // Ledger lines specifically must not use the unicode marks (other frame
+    // components own their own glyph fallbacks).
+    expect(ledger).not.toMatch(/✔ \[FILE\]/);
+    expect(ledger).not.toMatch(/✗ \[CMD\]/);
+    tui.finish("done");
+  } finally {
+    if (origTerm === undefined) delete process.env.TERM;
+    else process.env.TERM = origTerm;
+  }
+});
+
 test("LaunchTui: without a TTY the alt screen is NOT used (plain in-place render)", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", tty: false, write: s => out.push(s) });

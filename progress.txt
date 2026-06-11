@@ -178,3 +178,12 @@
 - MRU 기본값(요청 재확인): rememberModelPatch → defaultModel/recentModels 영속 경로 무변경, model-recency·subagent-apply-target 테스트 스위트 내 통과로 검증.
 - Tests: env-helper(우선순위/폴백/?? 시맨틱), sweep v2(BSU/ESU 원자성·리와인드 높이·frames*cycles+1 리페인트·일정 케이던스·최종 프레임 패리티).
 - Verified: tsc 0; bun test 1096 pass / 0 fail (140 files).
+[2026-06-12] Vercel agent-skills ecosystem tolerance (gjc-계승 cycle 1)
+- skillDirs: +~/.claude/skills, +~/.gjc/agent/skills, +<cwd>/.claude/skills (Vercel `npx skills add` agent-targeted installs + gjc skill tree); $HOME now wins over Bun's cached os.homedir() for all home-rooted dirs.
+- loadSkills: SYMLINKED skill dirs/files followed via fs.stat (Dirent.isDirectory() is false for links — every `npx skills add` linked skill was silently dropped); broken symlinks skipped.
+- parseSkillMarkdown: opt-in preferMetaName — frontmatter `name:` is the authoritative identity for EXTERNAL skills (agent-skills standard); sanitized to a bare token, bundled skills keep constructor names. byName keying + /skill command + alias inference follow the resolved name.
+- Verified: typecheck 0; skills suites 39 pass / 0 fail (+5 new in test/skills-vercel-compat.test.ts); live `jeo skills` now lists the full ~/.agents/skills catalog (300+ skills incl. ooo/autopilot/survey/spec-stack) + gjc spec-stack, prompt injection stays capped by MAX_SKILLS_PROMPT_LINES.
+[2026-06-11] Pass — startup mouse-tracking hygiene ("실행 시 마우스 클릭된 상태" 수정)
+- 원인: jeo 자신은 xterm 마우스 트래킹을 켜지 않지만, 이전 프로그램 크래시/스테일 tmux 페인이 ?9/?1000/?1002/?1003(+?1005/?1006/?1015/?1016 인코딩)을 켜둔 채 남기면 첫 프롬프트부터 클릭·모션이 이스케이프 시퀀스로 stdin에 보고됨 — "시작부터 마우스가 눌린 상태"로 보이는 `[<0;…M` 가비지의 정체.
+- 수정: terminal.ts resetMouseTracking() — 8개 모드 전부 reset(l) 폼으로 방어적 해제(클린 터미널에선 no-op, enable(h) 폼 절대 미포함을 테스트로 고정); launch 인터랙티브 시작 시 어떤 렌더보다 먼저 1회 방출(TTY 전용). 기존 가드와 합산: queuePromptInputChunk의 ESC 청크 거부 + 프롬프트 전 tty 드레인이 누출 경로를 이미 차단.
+- Verified: tsc 0; bun test 1102 pass / 0 fail (141 files).

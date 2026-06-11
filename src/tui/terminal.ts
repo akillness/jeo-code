@@ -30,6 +30,20 @@ export function showCursor(): string {
   return `${ESC}?25h`;
 }
 
+/**
+ * Defensively DISABLE every xterm mouse-tracking mode + coordinate encoding.
+ * jeo never enables these itself, but a previous program that crashed (or a
+ * stale tmux pane) can leave them ON — the terminal then reports clicks/motion
+ * as escape sequences from the very first prompt, which reads as "the mouse
+ * starts out clicked/held" and sprays `[<0;…M`-style garbage into input.
+ * Emitting the `l` (reset) forms is harmless when the modes are already off.
+ *   ?9 X10 · ?1000 normal · ?1002 button-motion · ?1003 any-motion
+ *   ?1005 UTF-8 · ?1006 SGR · ?1015 urxvt · ?1016 SGR-pixel
+ */
+export function resetMouseTracking(): string {
+  return `${ESC}?9l${ESC}?1000l${ESC}?1002l${ESC}?1003l${ESC}?1005l${ESC}?1006l${ESC}?1015l${ESC}?1016l`;
+}
+
 /** Enter the alternate screen buffer (xterm `?1049h`): a separate, scrollback-free
  *  screen. Used for the transient live-turn UI so terminal scroll (mouse wheel) can't
  *  fight the in-place repaint — and the main buffer / scrollback is left untouched.

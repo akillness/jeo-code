@@ -84,7 +84,7 @@ import {
   sessionPath,
   appendCompaction,
 } from "../agent/session";
-import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize } from "../tui/terminal";
+import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize, resetMouseTracking } from "../tui/terminal";
 
 export interface LaunchFlags {
   list: boolean;
@@ -1377,6 +1377,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   // INTERACTIVE mode
   const updatePromise = checkForUpdate({ timeoutMs: 2500 });
+  // Terminal hygiene BEFORE anything renders: a previous program (or stale tmux
+  // pane) can leave xterm mouse-tracking ON, so the terminal reports clicks and
+  // motion as escape sequences from the very first prompt — the "starts out
+  // mouse-clicked" corruption. jeo never enables these modes; resetting them is
+  // a no-op on a clean terminal.
+  if (process.stdout.isTTY) process.stdout.write(resetMouseTracking());
   const activeStartModel = sessionModel || defaultModel;
   const { provider: startProvider } = await describeModel(activeStartModel);
   const welcomeTheme = resolveTheme(process.env);

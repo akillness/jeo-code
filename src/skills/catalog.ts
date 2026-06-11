@@ -211,7 +211,7 @@ export function tryResolveSkillFromFilePath(filePath: string): SkillDoc | null {
       // Use the directory name if the filename is generic
       skillName = path.basename(path.dirname(targetPath));
     }
-    const parsed = parseSkillMarkdown(skillName, content);
+    const parsed = parseSkillMarkdown(skillName, content, { preferMetaName: true });
     return isSupportedExternalSkill(parsed) ? parsed : null;
   } catch {
     return null;
@@ -284,20 +284,39 @@ export function skillSlashAliases(skill: SkillDoc): string[] {
 }
 
 
-/** Global + per-project skill-doc directories (user-configurable SKILL.md files). */
+/** Global + per-project skill-doc directories (user-configurable SKILL.md files).
+ *  Ordered lowest → highest precedence (a later dir's skill overrides an earlier
+ *  one with the same name): foreign-ecosystem roots first, jeo-native last.
+ *  Covered install layouts:
+ *  - Vercel `npx skills add [-g]` canonical store: `.agents/skills/` (project + ~)
+ *  - Vercel agent-targeted installs (`-a claude-code`): `.claude/skills/` (project + ~)
+ *  - gjc bundled/user agent skills: `~/.gjc/agent/skills/`
+ *  - jeo-native: `<config>/skills/`, `<cwd>/.joc/skills/`, then `JEO_SKILLS_DIR`. */
 export function skillDirs(cwd: string = process.cwd()): string[] {
-  const home = jeoEnv("CONFIG_DIR") || path.join(os.homedir(), ".joc");
+  // $HOME wins over os.homedir(): Bun caches the system home, so tests (and
+  // sandboxed runs) that re-point HOME would otherwise still scan the real one.
+  const userHome = process.env.HOME || os.homedir();
+  const home = jeoEnv("CONFIG_DIR") || path.join(userHome, ".joc");
   const configured = (jeoEnv("SKILLS_DIR") ?? "")
     .split(path.delimiter)
     .map(s => s.trim())
     .filter(Boolean);
   return [
-    path.join(os.homedir(), ".agents", "skills"),
+    path.join(userHome, ".claude", "skills"),
+    path.join(userHome, ".gjc", "agent", "skills"),
+    path.join(userHome, ".agents", "skills"),
     path.join(home, "skills"),
+    path.join(cwd, ".claude", "skills"),
     path.join(cwd, ".agents", "skills"),
     path.join(cwd, ".joc", "skills"),
     ...configured,
   ];
+}
+
+/** A frontmatter `name:` usable as a skill identity: one bare token, no spaces. */
+function sanitizeSkillName(raw: string | undefined): string | undefined {
+  const m = (raw ?? "").trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(m) ? m : undefined;
 }
 
 /** Parse a user skill markdown file into a SkillDoc. Recognizes both the documented
@@ -305,7 +324,7 @@ export function skillDirs(cwd: string = process.cwd()): string[] {
  *  decorated form emitted by `jeo skills --write` (`Skill:` / `When to use:` /
  *  `Details:`), tolerating a leading `# title` and blank separators. Falls back to
  *  inferring the summary from the first body line. */
-export function parseSkillMarkdown(name: string, content: string): SkillDoc {
+export function parseSkillMarkdown(name: string, content: string, opts?: { preferMetaName?: boolean }): SkillDoc {
   const meta: Record<string, string> = {};
   const lines = content.split(/\r?\n/);
   const HEADER = /^(summary|command|when to use|when|whentouse|use|skill|alias|aliases|slash|slashes)\s*:\s*(.*)$/i;
@@ -374,13 +393,17 @@ export function parseSkillMarkdown(name: string, content: string): SkillDoc {
   const details = body
     ? (body.length > MAX_SKILL_DETAILS_CHARS ? body.slice(0, MAX_SKILL_DETAILS_CHARS - 1) + "…" : body)
     : "(no details)";
+  // External (Vercel/agent-skills standard) SKILL.md files carry their identity in
+  // the frontmatter `name:`; honor it over the directory/file name when the caller
+  // opts in — bundled skills keep their fixed constructor names.
+  const docName = (opts?.preferMetaName ? sanitizeSkillName(meta.name) : undefined) ?? name;
   return {
-    name,
-    command: meta.command ?? `/skill ${name}`,
+    name: docName,
+    command: meta.command ?? `/skill ${docName}`,
     summary,
     whenToUse: meta.whentouse ?? meta.when ?? meta.use ?? "",
     details,
-    aliases: dedupeAliases([...explicitAliases, ...inferSlashAliases(content, name)]),
+    aliases: dedupeAliases([...explicitAliases, ...inferSlashAliases(content, docName)]),
     raw: content,
   };
 }
@@ -397,19 +420,31 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
     try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
-      if (entry.isFile() && entry.name.endsWith(".md")) {
+      let isFile = entry.isFile();
+      let isDir = entry.isDirectory();
+      // Vercel `npx skills add` links agent dirs (.claude/skills/x) to its canonical
+      // store — a symlinked skill reports NEITHER isFile nor isDirectory on the
+      // Dirent, which silently dropped every linked skill. Follow the link.
+      if (entry.isSymbolicLink()) {
+        try {
+          const st = await fs.stat(path.join(dir, entry.name));
+          isFile = st.isFile();
+          isDir = st.isDirectory();
+        } catch { continue; /* broken symlink */ }
+      }
+      if (isFile && entry.name.endsWith(".md")) {
         const nm = entry.name.slice(0, -3);
         try {
-          const parsed = parseSkillMarkdown(nm, await fs.readFile(path.join(dir, entry.name), "utf-8"));
-          if (isSupportedExternalSkill(parsed)) byName.set(nm.toLowerCase(), parsed);
+          const parsed = parseSkillMarkdown(nm, await fs.readFile(path.join(dir, entry.name), "utf-8"), { preferMetaName: true });
+          if (isSupportedExternalSkill(parsed)) byName.set(parsed.name.toLowerCase(), parsed);
         } catch { /* skip unreadable file */ }
         continue;
       }
-      if (entry.isDirectory()) {
+      if (isDir) {
         const skillPath = path.join(dir, entry.name, "SKILL.md");
         try {
-          const parsed = parseSkillMarkdown(entry.name, await fs.readFile(skillPath, "utf-8"));
-          if (isSupportedExternalSkill(parsed)) byName.set(entry.name.toLowerCase(), parsed);
+          const parsed = parseSkillMarkdown(entry.name, await fs.readFile(skillPath, "utf-8"), { preferMetaName: true });
+          if (isSupportedExternalSkill(parsed)) byName.set(parsed.name.toLowerCase(), parsed);
         } catch { /* skip dirs without SKILL.md or unreadable files */ }
       }
     }

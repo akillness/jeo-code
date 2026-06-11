@@ -325,7 +325,9 @@ log_report "Capturing full history..."
 tmux capture-pane -p -S -200 -t "$SESS" > "$OUT_DIR/dedupe-history.txt"
 
 # Count occurrences of a unique marker (e.g. LEDGER-001)
-marker_count=$(sed 's/\x1b\[[0-9;]*m//g' "$OUT_DIR/dedupe-history.txt" | grep -c -E '^\[TOOL\] \[DONE\] LEDGER-001$' || true)
+# Pass-889 prepends a gjc-style ✔/✗ (or v/x) glyph to flushed ledger lines, so the
+# line is no longer badge-first; anchor on the marker itself, count exact lines.
+marker_count=$(sed 's/\x1b\[[0-9;]*m//g' "$OUT_DIR/dedupe-history.txt" | grep -c -E '^([✔✗vx] )?\[TOOL\] \[DONE\] LEDGER-001$' || true)
 log_report "Found static ledger line '[TOOL] [DONE] LEDGER-001' $marker_count times in history"
 
 passed_dedupe=true

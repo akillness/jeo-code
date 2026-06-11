@@ -174,6 +174,8 @@ JEO_STEP_EXTENSIONS=2       # 限制每回合的延长次数（默认：在有�
 JEO_STEP_EXTENSION_SIZE=10  # 每次延长授予的 step 数（默认：基础预算的一半，最少 4）
 JEO_STEP_HARD_CAP=75        # 绝对 step 上限（默认：600 —— 仅作为终止保证，而不是任务停止）
 JEO_STEP_WINDOW=8           # 用于评估进度的最近工具调用窗口
+JEO_TMUX_MOUSE=0            # 关闭 jeo 自有 tmux 会话的鼠标模式（默认开启：滚轮上滚进入 copy-mode 查看真实回滚历史）
+JEO_TMUX_PROFILE=0          # 关闭附加 tmux 配置（剪贴板集成 + copy-mode 选区可读样式）
 ```
 
 ```jsonc

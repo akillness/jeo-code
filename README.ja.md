@@ -176,6 +176,8 @@ JEO_STEP_EXTENSIONS=2       # ターンあたりの延長回数の制限（既�
 JEO_STEP_EXTENSION_SIZE=10  # 1 回の延長あたりに付与されるステップ数（既定: ベースの半分、最小 4）
 JEO_STEP_HARD_CAP=75        # 絶対ステップ上限（既定: 600 — タスクの停止ではなく、終了保証のみ）
 JEO_STEP_WINDOW=8           # 進捗判定にスコア付けする直近のツール呼び出しウィンドウ
+JEO_TMUX_MOUSE=0            # jeo 所有の tmux セッションでマウスモードを無効化（既定 on: ホイールアップで copy-mode に入り実スクロールバック履歴を閲覧）
+JEO_TMUX_PROFILE=0          # 追加の tmux プロファイルを無効化（クリップボード連携 + copy-mode 選択の可読スタイル）
 ```
 
 ```jsonc

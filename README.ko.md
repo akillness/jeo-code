@@ -177,6 +177,8 @@ JEO_STEP_EXTENSIONS=2       # 턴당 예산 연장 횟수 제한 (기본값: 진
 JEO_STEP_EXTENSION_SIZE=10  # 연장 1회당 부여되는 step 수 (기본값: 베이스의 절반, 최소 4)
 JEO_STEP_HARD_CAP=75        # 절대 step 상한 (기본값: 600 — 작업 중단이 아닌 강제 종료 보장용)
 JEO_STEP_WINDOW=8           # 진행 여부 판정에 사용되는 최근 도구 호출 윈도
+JEO_TMUX_MOUSE=0            # jeo 소유 tmux 세션의 마우스 모드 비활성화 (기본 on: 휠 업으로 copy-mode 진입해 실제 스크롤백 히스토리 확인)
+JEO_TMUX_PROFILE=0          # 추가 tmux 프로파일 비활성화 (클립보드 연동 + copy-mode 선택 영역 가독 스타일)
 ```
 
 ```jsonc

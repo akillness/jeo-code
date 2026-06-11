@@ -230,6 +230,78 @@ export function shouldEnableCurrentTmuxMouse(env: Record<string, string | undefi
     && (env.JEO_TMUX_MOUSE ?? env.JOC_TMUX_MOUSE) !== "0";
 }
 
+/** One tmux configuration step applied to a jeo-owned session after creation. */
+export interface TmuxProfileCommand {
+  description: string;
+  args: string[];
+}
+
+/**
+ * gjc-parity tmux profile for jeo-OWNED sessions (mirrors gjc's
+ * `buildGjcTmuxProfileCommands`). Applied right after `new-session`, before attach:
+ *  - `mouse on` (session-scoped): wheel-up enters copy-mode over the REAL pane
+ *    history — this is what makes the mid-turn scrollback (ledger lines flushed
+ *    above the inline live frame) reachable with the mouse wheel. Wheel-down at
+ *    the bottom drops back out. `JEO_TMUX_MOUSE=0` opts out.
+ *  - ownership/identity markers (`@jeo-profile`, `@jeo-branch`, `@jeo-project`):
+ *    lets tooling tell jeo-owned sessions apart from user sessions (gjc parity
+ *    with `@gjc-*`). Never applied to foreign sessions.
+ *  - `set-clipboard on` + a readable copy-mode `mode-style`: text selected while
+ *    wheel-scrolled back is visibly highlighted and lands on the system clipboard
+ *    (OSC52). `JEO_TMUX_PROFILE=0` opts out of these cosmetic extras while keeping
+ *    mouse + markers.
+ */
+export function tmuxProfileCommands(
+  target: string,
+  env: Record<string, string | undefined>,
+  meta: { branch?: string; project?: string } = {},
+): TmuxProfileCommand[] {
+  // Exact-name session target. `=name:` (explicit session:window form), NOT bare
+  // `=name`: tmux 3.6 rejects bare `=name` for set-option/show-options with
+  // "no such session" even while the session is live (has-session/attach accept
+  // it). The trailing colon makes cmd-find parse `=name` as the session part —
+  // exact-matched, never prefix-matched — and resolves the session's current
+  // window for set-window-option. This was the silent failure that left
+  // `mouse on` unset, killing wheel-up scrollback in jeo-owned sessions.
+  const t = `=${target}:`;
+  const commands: TmuxProfileCommand[] = [];
+  if ((env.JEO_TMUX_MOUSE ?? env.JOC_TMUX_MOUSE) !== "0") {
+    commands.push({
+      description: "enable tmux mouse scrolling (wheel-up → copy-mode over real history)",
+      args: ["set-option", "-t", t, "mouse", "on"],
+    });
+  }
+  commands.push({
+    description: "mark jeo tmux ownership",
+    args: ["set-option", "-t", t, "@jeo-profile", "1"],
+  });
+  if (meta.branch) {
+    commands.push({
+      description: "record jeo branch identity",
+      args: ["set-option", "-t", t, "@jeo-branch", meta.branch],
+    });
+  }
+  if (meta.project) {
+    commands.push({
+      description: "record jeo project identity",
+      args: ["set-option", "-t", t, "@jeo-project", meta.project],
+    });
+  }
+  if ((env.JEO_TMUX_PROFILE ?? env.JOC_TMUX_PROFILE) !== "0") {
+    commands.push(
+      {
+        description: "enable tmux clipboard integration",
+        args: ["set-option", "-t", t, "set-clipboard", "on"],
+      },
+      {
+        description: "make copy-mode selection readable",
+        args: ["set-window-option", "-t", t, "mode-style", "fg=colour231,bg=colour60"],
+      },
+    );
+  }
+  return commands;
+}
+
 /**
  * A `process.stdout` view whose visible-output methods become no-ops while `gated()` is
  * true. Used as readline's `output` so that, while the boxed slash-preview footer is armed,
@@ -831,12 +903,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           process.exit(1);
         }
         const sessionName = alloc.name;
-        // Wheel scrolling inside jeo-owned tmux sessions: enable tmux mouse mode
-        // (session-scoped — never -g) so wheel-up enters copy-mode over the REAL
-        // pane history and wheel-down at the bottom drops back out. Opt out with
-        // JOC_TMUX_MOUSE=0. Best-effort: an old tmux without the option is fine.
-        if ((process.env.JEO_TMUX_MOUSE ?? process.env.JOC_TMUX_MOUSE) !== "0") {
-          try { Bun.spawnSync([tmuxBin, "set-option", "-t", `=${sessionName}`, "mouse", "on"]); } catch { /* best-effort */ }
+        // gjc-parity session profile (mouse / clipboard / copy-mode style / @jeo-*
+        // markers): wheel-up enters copy-mode over the REAL pane history, so the
+        // mid-turn scrollback (ledger lines flushed above the live frame) is
+        // reachable with the mouse wheel. Session-scoped (`-t =name`, never -g).
+        // Best-effort per command: an old tmux missing an option is fine.
+        for (const profileCmd of tmuxProfileCommands(sessionName, process.env, { branch: branch || undefined, project: cwd })) {
+          try { Bun.spawnSync([tmuxBin, ...profileCmd.args]); } catch { /* best-effort */ }
         }
         console.log(
           sessionName === sessionBase

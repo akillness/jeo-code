@@ -175,6 +175,8 @@ JEO_STEP_EXTENSIONS=2       # Bound extensions per turn (default: unlimited whil
 JEO_STEP_EXTENSION_SIZE=10  # Steps granted per extension (default: half the base, min 4)
 JEO_STEP_HARD_CAP=75        # Absolute step ceiling (default: 600 — a termination guarantee, not a task stop)
 JEO_STEP_WINDOW=8           # Recent tool-call window scored for progress
+JEO_TMUX_MOUSE=0            # Opt out of tmux mouse mode in jeo-owned sessions (default on: wheel-up enters copy-mode over real scrollback)
+JEO_TMUX_PROFILE=0          # Opt out of the extra tmux profile (clipboard integration + readable copy-mode selection)
 ```
 
 ```jsonc

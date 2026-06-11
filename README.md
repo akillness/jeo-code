@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Encode intention. Decode software.</strong><br />
-  Bun 기반 AI 코딩 에이전트 CLI — interviews, reviewed plans, tmux-native execution, durable verification.
+  A Bun-based AI coding-agent CLI — interviews, reviewed plans, tmux-native execution, durable verification.
 </p>
 
 <p align="center">
@@ -19,120 +19,127 @@
   <img src="assets/character.png" alt="jeo-code character mascot" width="320" />
 </p>
 
-Bun 기반 AI 코딩 에이전트 CLI입니다. 저장소 안에서 `joc`를 실행하면 파일을 읽고, 수정하고, 명령을 실행하며 작업을 끝까지 진행합니다.
-진행 중에는 ASCII 진화 아트·스텝 타임라인·툴 forge 박스(bash/read/write/edit/task)·라이브 상태 푸터가 한 화면에 표시되고, 입력창에서 `/`로 시작하면 명령 미리보기가 하단에 노출됩니다.
+<p align="center">
+  <b>English</b> ·
+  <a href="README.ko.md">한국어</a> ·
+  <a href="README.ja.md">日本語</a> ·
+  <a href="README.zh.md">中文</a>
+</p>
 
- `[STEP] joc thinking` 줄은 매 틱 바뀌는 장식 문구 대신 **지금 실제로 하는 일**(진행 중인 파일·명령, 활성 plan 단계, plan 진행도, 레이트리밋 백오프 중에는 `rate limited (HTTP 429) — auto-retry #2 in 4s` 카운트다운)을 현재 step 경과·step당 평균 시간과 함께 보여주고, 진화 단계 트랙은 중앙 헤더와 푸터 태그 **한 곳씩만** 표시되어 복사본끼리 어긋나지 않습니다. `task`로 위임된 **서브에이전트의 진행 상황**(할당·`step N/M`·중첩 툴 호출의 실제 대상 `read src/x.ts`·`bash: …`·결과 요약)도 gjc처럼 스트림에 실시간 표시됩니다.
+A Bun-based AI coding-agent CLI. Run `joc` inside a repository and it reads files, edits them, runs commands, and drives the task to completion.
+While it works, a single screen shows the ASCII evolution art, the step timeline, tool forge boxes (bash/read/write/edit/task), and a live status footer; typing `/` in the input box reveals a command preview below.
 
-`joc "요청"`처럼 cmd 인자로 한 번에 실행해도 TTY에서는 같은 라이브 TUI가 뜨고, `--no-tui`/파이프 모드에서는 `[step N/M] <tool target>` + 결과 라인이 스트리밍되어 전체 동작 흐름이 보입니다.
+The `[STEP] joc thinking` line shows **what it is actually doing right now** (the in-flight file/command, the active plan step, plan progress, and during rate-limit backoff a `rate limited (HTTP 429) — auto-retry #2 in 4s` countdown) together with the current step's elapsed time and the per-step average — instead of decorative text that churns every tick. The evolution-stage track is shown in exactly **one place each** (the center header and the footer tag) so copies never drift out of sync. Progress of **subagents delegated via `task`** (the assignment, `step N/M`, the real target of nested tool calls — `read src/x.ts`, `bash: …` — and the result summary) is streamed live, just like gjc.
 
-TUI는 **차등(differential) 렌더러**로 화면을 제자리에서 갱신해 스크롤백을 늘리지 않고(턴당 최종 출력 1회만 기록), 화면 크기 변경 시 폭이 바뀌면 전체 재도색·idle 프롬프트에서도 리사이즈로 푸터 영역을 재동기화합니다. 스트림/툴 목록은 **고정 크기 링 버퍼**라 긴 세션에서도 메모리·프레임당 렌더 비용이 평탄하며(요약 LLM 실패 시에도 히스토리는 결정적으로 압축돼 무한 증가하지 않음), 진화 아트는 애니메이션 프레임 단위로 캐시돼 매 틱 재렌더하지 않습니다. 화면이 짧아 모든 섹션이 다 들어가지 못할 때는 **하단 상태/키힌트/푸터(라이브 진행 표시: 스텝·ETA·스피너)를 항상 먼저 확보**하고, 가치가 낮은 순서(장식용 ASCII 아트 → forge 상세 박스 → 스트림)대로 줄여 표시합니다 — 푸터가 화면 밖으로 잘려 사라지지 않습니다.
+Running a one-shot request as a command argument — `joc "request"` — still brings up the same live TUI on a TTY; in `--no-tui`/pipe mode the `[step N/M] <tool target>` plus result lines are streamed so the full flow stays visible.
 
- forge 박스는 테두리가 있어 **통째로 들어갈 때만**(최근 것 우선) 표시하고 반쪽짜리 박스를 만들지 않습니다.
+The TUI uses a **differential renderer** that updates the screen in place without growing the scrollback (only one final record per turn); on a resize it repaints fully when the width changes and re-syncs the footer region even at an idle prompt. The stream/tool list is a **fixed-size ring buffer**, so memory and per-frame render cost stay flat across long sessions (even if the summarizer LLM fails, history is compacted deterministically and never grows unbounded), and the evolution art is cached per animation frame so it is not re-rendered every tick. When the screen is too short to fit every section, the **bottom status/key-hints/footer (the live progress: step · ETA · spinner) is always reserved first**, and lower-value content is shed in order (decorative ASCII art → forge detail boxes → stream) — the footer is never clipped off-screen.
 
-## 설치
+Forge boxes are bordered, so they are shown **only when a whole box fits** (most-recent first) and never rendered as half a box.
 
-요구사항: Bun `1.3.14+`
+## Install
+
+Requirement: Bun `1.3.14+`
 
 ```bash
 bun install -g jeo-code
 ```
 
-설치 확인:
+Verify the install:
 
 ```bash
 joc --version
 ```
 
-## 기본 사용법
+## Basic usage
 
 ```bash
-# 대화형 코딩 에이전트 실행
+# Run the interactive coding agent
 joc
 
-# 한 번의 요청을 바로 실행
-joc "README를 정리하고 테스트를 실행해줘"
+# Run a single request immediately
+joc "Tidy up the README and run the tests"
 
-# 현재 설정과 모델 연결 상태 확인 (실제 호출 경로로 점검: Anthropic=GET /v1/models, OpenAI OAuth=Codex 백엔드, Gemini OAuth=Cloud Code Assist loadCodeAssist)
+# Check current config and model connectivity (probed via the real call path: Anthropic=GET /v1/models, OpenAI OAuth=Codex backend, Gemini OAuth=Cloud Code Assist loadCodeAssist)
 joc doctor
 
-# API 키 / OAuth / 로컬 모델 설정
+# Configure API keys / OAuth / local models
 joc setup
 ```
 
-## 대화형 슬래시 명령어
+## Interactive slash commands
 
-`joc` REPL 입력창에서 사용할 수 있는 명령입니다 (`<Tab>` 자동완성 지원).
+Commands available in the `joc` REPL input box (`<Tab>` autocompletion supported).
 
-| 명령 | 설명 |
+| Command | Description |
 | --- | --- |
-| `/model [id\|#N\|save]` | 세션 모델 설정(라이브 #N 선택·퍼지 매칭·기본값 저장; 목록/상태는 회사명 Anthropic/OpenAI/Google/Antigravity/Ollama 병기) |
-| `/models [refresh\|caps\|catalog]` | 로그인된 OAuth/API 모델 목록(+capability/카탈로그 표) |
-| `/provider [name] [model\|#N]` | 프로바이더 자격증명·전환, 해당 프로바이더 라이브 모델 목록(회사명 병기) |
-| `/provider login <name>` | **입력창에서 바로 OAuth 로그인** (anthropic/openai/gemini/antigravity; antigravity가 권장, gemini는 fallback) |
-| `/login [name]` · `/logout <name>` | OAuth 로그인 별칭(`/provider login`) · 저장된 OAuth 토큰 제거 |
-| `/agents [role] [model\|#N]` · `/agents <role> provider <name> [model]` · `/model subagent <role> [model\|#N]` | 서브에이전트(executor/planner/architect/critic) 역할 모델/프로바이더 설정(저장 즉시 현재 세션의 `task` 위임에도 반영; 모델 선택 중에도 role target을 준비 가능) |
-| `/roles [tier model]` | 모델 역할 티어(smol/slow/plan) 표시·설정 |
-| `/thinking [level]` | 사고 예산(minimal/low/medium/high/xhigh) |
-| `/config` | 현재 런타임 설정 표시 |
-| `/skill [name [intent]]` · `$<skill> [intent]` · `/speckit.plan` 등 | 워크플로우 skill 목록·표시·실행 — `$team "작업"` 처럼 **`$스킬명`으로 직접 호출**(Codex/gjc 스타일, Tab 자동완성) (사용자 SKILL.md는 **명시적 호출일 때만** 실행) |
-| `/view <file> [a-b]` · `/diff [file]` · `/find <glob>` · `/search <pat>` | 코드뷰 / git diff / 파일·패턴 검색 |
-| `/new` · `/drop` · `/session [info\|delete]` · `/rename <title>` · `/resume [id]` | 세션 시작/삭제/정보/이름변경/재개 (gjc parity) |
-| `/retry` · `/btw <question>` | 마지막 요청 재시도 · 히스토리를 건드리지 않는 사이드 질문 |
-| `/export [path] [json]` · `/dump` | 세션 트랜스크립트 파일 내보내기 · 클립보드 복사 |
-| `/usage` · `/context` · `/tools` · `/hotkeys` | 누적 토큰 사용량 · 컨텍스트 토큰 분해 · 노출 tool 목록 · 단축키 |
-| `/theme [name]` · `/settings` | TUI 테마(cosmic/matrix/solar/red-claw/blue-crab/mono) · 런타임 설정(=`/config`) |
-| `/sessions` · `/compact` · `/clear` · `/help` · `/exit` | 세션·컨텍스트 관리 |
+| `/model [id\|#N\|save]` | Set the session model (live `#N` selection · fuzzy match · save as default; lists/status annotate the company — Anthropic/OpenAI/Google/Antigravity/Ollama) |
+| `/models [refresh\|caps\|catalog]` | List logged-in OAuth/API models (+capability/catalog table) |
+| `/provider [name] [model\|#N]` | Provider credentials/switching, and the provider's live model list (with company name) |
+| `/provider login <name>` | **OAuth login straight from the input box** (anthropic/openai/gemini/antigravity; antigravity recommended, gemini as fallback) |
+| `/login [name]` · `/logout <name>` | OAuth login alias (`/provider login`) · remove a stored OAuth token |
+| `/agents [role] [model\|#N]` · `/agents <role> provider <name> [model]` · `/model subagent <role> [model\|#N]` | Set the model/provider for subagent roles (executor/planner/architect/critic) — applied to the current session's `task` delegation immediately on save; a role target can be prepared even while selecting a model |
+| `/roles [tier model]` | Show/set model role tiers (smol/slow/plan) |
+| `/thinking [level]` | Thinking budget (minimal/low/medium/high/xhigh) |
+| `/config` | Show the current runtime configuration |
+| `/skill [name [intent]]` · `$<skill> [intent]` · `/speckit.plan`, etc. | List/show/run workflow skills — call directly with **`$<skill>`** like `$team "task"` (Codex/gjc style, Tab autocompletion) (user SKILL.md runs **only on explicit invocation**) |
+| `/view <file> [a-b]` · `/diff [file]` · `/find <glob>` · `/search <pat>` | Code view / git diff / file & pattern search |
+| `/new` · `/drop` · `/session [info\|delete]` · `/rename <title>` · `/resume [id]` | Start/delete/info/rename/resume a session (gjc parity) |
+| `/retry` · `/btw <question>` | Retry the last request · ask a side question without touching history |
+| `/export [path] [json]` · `/dump` | Export the session transcript to a file · copy to clipboard |
+| `/usage` · `/context` · `/tools` · `/hotkeys` | Cumulative token usage · context-token breakdown · exposed tool list · shortcuts |
+| `/theme [name]` · `/settings` | TUI theme (cosmic/matrix/solar/red-claw/blue-crab/mono) · runtime settings (=`/config`) |
+| `/sessions` · `/compact` · `/clear` · `/help` · `/exit` | Session/context management |
 
-## 자주 쓰는 명령
+## Common commands
 
 ```bash
-# 저장된 세션 보기 / 재개
+# View / resume saved sessions
 joc launch --list
 joc launch --resume
 
-# tmux 세션에서 실행 — 매 실행마다 독립 세션 (같은 디렉터리·브랜치에서 동시에 여러 번 띄워도 base, base-2, base-3 …로 분리)
+# Run inside a tmux session — an independent session per run (launching several times in the same dir/branch splits into base, base-2, base-3 …)
 joc --tmux
 joc --tmux --model gemini-2.5-flash --thinking high
 joc --tmux --models --catalog gpt
 
-# 별도 worktree에서 실행
+# Run in a separate worktree
 joc --tmux --worktree ../joc-work
 
-# 모델 목록 확인
+# List models
 joc models
 
-# GJC 스타일 모델 카탈로그(정적 capability)
+# GJC-style model catalog (static capability)
 joc --list-models=gemini
 joc --models --catalog gpt
 
-# 실행 시 모델/프로바이더/사고 예산 지정
-joc --model gemini-2.5-flash --thinking high "코드 분석해줘"
-joc --provider gemini --plan "구현 계획 세워줘"
-# 슬래시 명령어 팔레트
-# REPL에서 "/" 또는 "/m"처럼 prefix를 입력하면 카테고리별 명령/옵션이 리스트업됩니다.
-# subagent 설정은 /agents 와 /model subagent <role> ... 로 지원합니다.
+# Specify model/provider/thinking budget on launch
+joc --model gemini-2.5-flash --thinking high "Analyze this code"
+joc --provider gemini --plan "Draft an implementation plan"
+# Slash-command palette
+# Typing a prefix like "/" or "/m" in the REPL lists commands/options by category.
+# Subagent setup is supported via /agents and /model subagent <role> ...
 
-# 인증 관리
+# Auth management
 joc auth login anthropic
 joc auth status
 ```
 
-## Spec-first 워크플로우
+## Spec-first workflow
 
-요구사항을 먼저 정리하고 계획, 실행, 검증까지 진행할 때 사용합니다. 단계는 상태(`.joc/state/`)로 이어지며 게이트가 있습니다: deep-interview가 먼저 **top-level topology를 확인**하고, 입력 언어(한국어/영어/일본어/중국어)를 보존해 질문·평가·인수 기준을 작성하며, brownfield 요청이면 **repo marker + path evidence**를 수집한 뒤, 그 다음 **시드를 동결**(ambiguity ≤ 20%; `--auto`/non-TTY도 이 게이트를 우회하지 못하며, 기준 미달이면 시드를 동결하지 않음)해야 MutationGuard가 코드 수정을 허용하고 ralplan이 진행됩니다 → ralplan은 **Planner→Architect→Critic 합의**(3단계 연쇄 패스)로 **승인 대기** 플랜을 만들고(스키마 자체검증·보정 포함) → `joc approve <plan>`로 승인해야 → team이 실행하며(손상된 team 상태는 무시하지 않고 거부, 알 수 없는 subagent role은 실행 전 거부, 동일한 task 이름도 step index 기준으로 올바른 role에 라우팅, planner/architect/critic report가 계약을 못 지키거나 architect가 `BLOCK`/`REQUEST CHANGES`, critic이 `[REJECT]`/`[ITERATE]`를 내면 즉시 중단) → ultragoal이 team 실행을 검증합니다.
+Use this to clarify requirements first, then plan, execute, and verify. The stages are carried through state (`.joc/state/`) and gated: deep-interview first **confirms the top-level topology**, preserves the input language (Korean/English/Japanese/Chinese) when writing questions, evaluations and acceptance criteria, and for brownfield requests collects **repo markers + path evidence**; then it must **freeze the seed** (ambiguity ≤ 20%; `--auto`/non-TTY cannot bypass this gate, and the seed is not frozen if the bar is not met) before MutationGuard allows code edits and ralplan proceeds → ralplan builds an **approval-pending** plan via **Planner→Architect→Critic consensus** (a 3-stage chained pass, with schema self-validation/repair) → it must be approved with `joc approve <plan>` → team executes (corrupt team state is rejected rather than ignored, unknown subagent roles are rejected before execution, identical task names are routed to the correct role by step index, and execution stops immediately if a planner/architect/critic report breaks its contract or architect returns `BLOCK`/`REQUEST CHANGES` or critic returns `[REJECT]`/`[ITERATE]`) → ultragoal verifies the team execution.
 
 ```bash
-joc deep-interview "만들고 싶은 기능 설명"
+joc deep-interview "Describe the feature you want to build"
 joc ralplan
 joc approve <plan-path>
 joc team
 joc ultragoal
 ```
 
-## 로컬 모델 사용
+## Using local models
 
-Ollama를 사용하면 API 키 없이 로컬에서 실행할 수 있습니다.
+With Ollama you can run locally without an API key.
 
 ```bash
 ollama pull qwen2.5:0.5b
@@ -141,12 +148,12 @@ joc doctor
 joc
 ```
 
-## 설정 파일
+## Configuration files
 
-- 전역 설정: `~/.joc/config.json`
-- 프로젝트 상태/세션: `<project>/.joc/`
+- Global config: `~/.joc/config.json`
+- Project state/sessions: `<project>/.joc/`
 
-주요 환경 변수:
+Key environment variables:
 
 ```bash
 ANTHROPIC_API_KEY=...
@@ -154,8 +161,8 @@ OPENAI_API_KEY=...
 GEMINI_API_KEY=...
 JOC_DEFAULT_MODEL=...
 OLLAMA_HOST=http://localhost:11434
-JOC_TUI_THEME=cosmic        # TUI 테마 (cosmic/matrix/solar/red-claw/blue-crab/mono)
-JOC_TUI_ALT_SCREEN=1        # 레거시 alt-screen 라이브 턴으로 복귀 (기본: 메인 버퍼 인라인 + tmux 휠 스크롤백)
+JOC_TUI_THEME=cosmic        # TUI theme (cosmic/matrix/solar/red-claw/blue-crab/mono)
+JOC_TUI_ALT_SCREEN=1        # Revert to the legacy alt-screen live turn (default: main-buffer inline + tmux wheel scrollback)
 ```
 
 ## Publishing

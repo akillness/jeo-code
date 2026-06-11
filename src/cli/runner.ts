@@ -145,6 +145,14 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: 'evolve-core',
+    summary: 'Trigger a self-evolution turn using gjc as a guide.',
+    loader: async () => {
+      const m = await import('../commands/evolve-core');
+      return args => m.runEvolveCoreCommand(args);
+    },
+  },
+  {
     name: 'state',
     summary: 'Read or update workflow state receipts under .joc/state (gjc-state parity).',
     usage: 'state <deep-interview|ralplan|team|ultragoal> <read|write|clear|handoff> [--input \'<json>\'] [--to <skill>] [--json]',
@@ -226,17 +234,17 @@ export interface DispatchContext {
 export function renderHelp(ctx: DispatchContext): string {
   const lines: string[] = [];
   lines.push('');
-  lines.push();
+  lines.push(ctx.appName + ' v' + ctx.version);
   lines.push('Clean, highly optimized AI coding agent using a Socratic spec-first loop.');
   lines.push('');
   lines.push('Usage:');
-  lines.push();
+  lines.push('  ' + ctx.appName + ' [command] [options]');
   lines.push('');
   lines.push('Commands:');
   const width = Math.max(...COMMANDS.map(c => (c.usage ?? c.name).length));
   for (const c of COMMANDS) {
     const label = (c.usage ?? c.name).padEnd(width);
-    lines.push();
+    lines.push('  ' + label + '  ' + c.summary);
   }
   lines.push('');
   lines.push('Options:');
@@ -246,7 +254,7 @@ export function renderHelp(ctx: DispatchContext): string {
   lines.push('      --provider <name>        Start launch on a provider default (anthropic/openai/gemini/antigravity/ollama).');
   lines.push('      --smol|--slow|--plan     Start launch with the configured model role tier.');
   lines.push('      --thinking <level>       Set thinking budget (minimal/low/medium/high/xhigh).');
-  lines.push('      --models                 List live OAuth/API-key models (same as ).');
+  lines.push('      --models                 List live OAuth/API-key models (same as auth models).');
   lines.push('      --list-models[=<query>]  List GJC-style model catalog (or fuzzy query).');
   lines.push('');
   return lines.join('\n');
@@ -255,7 +263,7 @@ export function renderHelp(ctx: DispatchContext): string {
 export function renderCommandHelp(spec: CommandSpec, ctx: DispatchContext): string {
   return [
     '',
-    ,
+    'Usage: ' + ctx.appName + ' ' + (spec.usage ?? spec.name),
     '',
     spec.summary,
     '',
@@ -348,7 +356,7 @@ export async function dispatch(argv: string[], ctx: DispatchContext): Promise<nu
   const first = argv[0];
 
   if (first === '--version' || first === '-v') {
-    console.log();
+    console.log(ctx.appName + ' v' + ctx.version);
     return 0;
   }
   if (first === '--help' || first === '-h') {
@@ -356,7 +364,7 @@ export async function dispatch(argv: string[], ctx: DispatchContext): Promise<nu
     return 0;
   }
   if (leadingGlobalFlag(argv, ['--version', '-v'])) {
-    console.log();
+    console.log(ctx.appName + ' v' + ctx.version);
     return 0;
   }
   if (leadingGlobalFlag(argv, ['--help', '-h'])) {
@@ -377,9 +385,9 @@ export async function dispatch(argv: string[], ctx: DispatchContext): Promise<nu
 
   const spec = findCommand(first);
   if (!spec) {
-    console.log();
+    console.log('error: unknown command \'' + first + '\'');
     const near = suggestCommands(first);
-    if (near.length) console.log();
+    if (near.length) console.log('did you mean: ' + near.join(', ') + '?');
     console.log(renderHelp(ctx));
     return 1;
   }

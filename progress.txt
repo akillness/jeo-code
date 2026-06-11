@@ -96,3 +96,8 @@
 - launch.ts: clearTypedInput() — ESC (lone-ESC decodes with meta set; accepted) and Ctrl+C (rl SIGINT listener) wipe the typed line + pending clipboard images and redraw the placeholder box; empty-line ^C shows '^C — nothing to clear · /exit to quit' (generic keypress redraw skips ^C so the hint survives). Cmd+C never reaches terminal apps (OS copy) — meta-mapped variants accepted.
 - Live tmux proof: ESC/^C → placeholder + caret x=3; empty ^C hint row; '$' popup lists 4 workflow skills with summaries.
 - Gate: typecheck 0; bun test 997 pass / 0 fail (slash $-popup +2 tests).
+[2026-06-11] Pass 897 — /history in-app turn-history viewer
+- src/tui/components/transcript.ts: formatTranscript() folds engine history (prompts / JSON tool calls / 'Tool [x] result' feedback / bounces) into a gjc-style transcript — 'user ▸' blocks, compact ✔/✗ tool ledger lines (verdict from the paired result message, title via summarizeForgeInvocation), 'joc ◂' reply blocks; maxTurns slices whole prompt-anchored exchanges with an '… N earlier turn(s) hidden' marker; bodies clipped with '(+N more lines)'.
+- launch.ts: '/history [n|all]' (default last 5) re-prints the worked history into scrollback so past work can be reviewed by scrolling up even where terminal scrollback can't reach (tmux w/o mouse, cleared screens, resumed sessions); registered in the '/' popup + /help (group session).
+- Restored test/review-fixes.test.ts FIX 3 block (concurrent-session paste corruption left an unbalanced brace breaking the whole suite file).
+- Live tmux proof: /history with no turns → '(no worked history yet)'; after a turn → header + user ▸ + ✔/✗ ledger + joc ◂. Gate: typecheck 0; bun test 1004 pass / 0 fail (+4 transcript tests).

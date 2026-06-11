@@ -15,11 +15,11 @@ export async function syncSpecificationToSeed(cwd: string) {
   try {
     const spec = await fs.readFile(specPath, "utf-8");
     
-    // Simple extraction logic for demo/Phase 3
-    const goalsMatch = spec.match(/## Purpose\n([\s\S]+?)\n\n/);
+    // Improved extraction logic for complex specs
+    const goalsMatch = spec.match(/## Purpose\n([\s\S]+?)(?=\n##|$)/);
     const goals = goalsMatch ? goalsMatch[1].trim() : "Autonomous Evolution";
-    const reqsMatch = spec.match(/## Requirements\n([\s\S]+?)\n\n/);
-    const reqs = reqsMatch ? reqsMatch[1].split("\n").map(l => l.replace(/^[*-]\d+./, "").trim()).filter(Boolean) : [];
+    const reqsMatch = spec.match(/## Requirements\n([\s\S]+?)(?=\n##|$)/);
+    const reqs = reqsMatch ? reqsMatch[1].split("\n").map(l => l.replace(/^[*-]\d*./, "").trim()).filter(Boolean) : [];
 
     const seedContent = `
 goal: "${goals.replace(/"/g, '\\\\\\\\"')}"
@@ -38,8 +38,9 @@ ${reqs.map(r => `  - "${r.replace(/"/g, '\\\\\\\\"')}"`).join("\n")}
       timestamp: new Date().toISOString(),
       target: ".ouroboros/seeds/generated-seed.yaml",
       request: "Automated seed generation from .specify/specification.md",
-      status: "success"
-    });
+      status: "success",
+      stage: "verification"
+    }, cwd);
     
     console.log("[joc-Core] Successfully generated seed.");
   } catch (err: any) {

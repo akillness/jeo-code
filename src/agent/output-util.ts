@@ -6,7 +6,7 @@ export const TOOL_SPILL_THRESHOLD = 32_000;
 export function truncateToolOutput(output: string, limit = 8000): string {
   if (output.length <= limit) return output;
   const half = Math.floor(limit / 2);
-  return output.slice(0, half) + `\n\n... (elided ${output.length - limit} chars) ...\n\n` + output.slice(-half);
+  return output.slice(0, half) + "\n\n... (elided " + (output.length - limit) + " chars) ...\n\n" + output.slice(-half);
 }
 
 export async function spillToolResult(tool: string, output: string, cwd: string): Promise<string> {
@@ -14,7 +14,7 @@ export async function spillToolResult(tool: string, output: string, cwd: string)
   await fs.mkdir(artifactsDir, { recursive: true });
 
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
-  const filename = `result-${tool}-${ts}.txt`;
+  const filename = "result-" + tool + "-" + ts + ".txt";
   const fullPath = path.join(artifactsDir, filename);
 
   await fs.writeFile(fullPath, output, "utf-8");
@@ -26,6 +26,7 @@ export interface PerfMetric {
   tool: string;
   duration: number;
   success: boolean;
+  error?: string;
 }
 
 /** Append a tool performance metric to `.joc/state/performance-metrics.json`

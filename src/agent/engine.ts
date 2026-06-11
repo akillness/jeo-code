@@ -25,6 +25,7 @@ async function invokeCallLlm(history: Message[], options: {
   signal?: AbortSignal;
   onUsage?: (u: { inputTokens?: number; outputTokens?: number }) => void;
   onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
+  onToken?: (delta: string) => void;
 }): Promise<string> {
   const mod = await import("./loop");
   return mod.callLlm(history, options);
@@ -59,8 +60,9 @@ export const TOOL_PROTOCOL = [
   "7. ls     {dirPath}                   — list a directory's entries (dirs first)",
   "8. done   {reason?}                   — call when the task is fully implemented AND verified",
   "",
-  "Reply with STRICT JSON only — no prose, no code fences:",
-  '{ "tool": "<name>", "arguments": { ... } }',
+  "Reply with STRICT JSON only — no code fences. You MAY include an optional leading",
+  '"reasoning" string (one short sentence on your plan) before "tool":',
+  '{ "reasoning": "<one short sentence>", "tool": "<name>", "arguments": { ... } }',
 ].join("\n");
 
 /** Restricted protocol for read-only subagent roles (planner/architect/critic):
@@ -99,6 +101,9 @@ export interface AgentLoopEvents {
   onNotice?(message: string): void;
   /** Cumulative token usage after each LLM call — drives live usage meters. */
   onUsage?(usage: { inputTokens: number; outputTokens: number }): void;
+  /** Accumulated streamed model response so far — drives the live reasoning view. Only
+   *  requested when a consumer sets it (the engine streams solely for the TUI). */
+  onModelStream?(textSoFar: string): void;
 }
 
 export interface AgentLoopOptions {
@@ -244,6 +249,14 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     }
     await ev.onStep?.(step);
 
+    // Stream the response into the live reasoning view ONLY when a consumer is attached
+    // (a TUI). Non-interactive/test callers leave onModelStream unset → a single
+    // non-streaming call(), unchanged. The accumulated text is still parsed as one JSON
+    // tool call below, so streaming changes nothing about loop semantics.
+    let streamBuf = "";
+    const onToken = ev.onModelStream
+      ? (delta: string) => { streamBuf += delta; ev.onModelStream!(streamBuf); }
+      : undefined;
     let responseText: string;
     try {
       responseText = await invokeCallLlm(history, {
@@ -252,6 +265,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               maxTokens: opts.maxTokens,
               signal: opts.signal,
               onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
+              onToken,
               // Make provider auto-retry visible: previously a rate-limited call sat in a
               // silent backoff wait, then surfaced "auto-retry was exhausted" with no trace
               // of the retries that DID happen.

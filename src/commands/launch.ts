@@ -630,8 +630,9 @@ export function buildToolProtocol(allowedTools: Set<string>): string {
   }
   lines.push(`${num}. done   {reason?}                   — call when the task is fully implemented AND verified`);
   lines.push("");
-  lines.push("Reply with STRICT JSON only — no prose, no code fences:");
-  lines.push('{ "tool": "<name>", "arguments": { ... } }');
+  lines.push("Reply with STRICT JSON only — no code fences. You MAY include an optional leading");
+  lines.push('"reasoning" string (one short sentence on your plan, shown live to the user) before "tool":');
+  lines.push('{ "reasoning": "<one short sentence>", "tool": "<name>", "arguments": { ... } }');
   return lines.join("\n");
 }
 

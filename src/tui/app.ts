@@ -57,6 +57,22 @@ export interface AgentEventsLike {
   onToolResult?(tool: string, success: boolean, output: string): void;
   onNotice?(message: string): void;
   onUsage?(usage: { inputTokens: number; outputTokens: number }): void;
+  onModelStream?(textSoFar: string): void;
+
+}
+
+/** Pull the (possibly partial) `reasoning` string value out of a streaming JSON tool
+ *  call so the live view can show the model's plan as it forms. Returns "" until a
+ *  `"reasoning": "…` field starts. Tolerates the unterminated tail mid-stream. */
+function extractStreamingReasoning(buf: string): string {
+  // `reasoning` is a documented LEADING field, so only scan the head of the (growing)
+  // buffer — avoids an O(n²) full rescan per delta when reasoning is absent on a large
+  // streamed write/edit payload.
+  const head = buf.length > 512 ? buf.slice(0, 512) : buf;
+  const m = head.match(/"reasoning"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  if (!m) return "";
+  try { return JSON.parse('"' + m[1] + '"'); }
+  catch { return m[1].replace(/\\\\/g, "\\").replace(/\\n/g, " ").replace(/\\"/g, '"'); }
 }
 
 const DEFAULT_MAX_STEPS = 25;
@@ -126,6 +142,11 @@ export class LaunchTui {
   // title under --tmux so multiple sessions are distinguishable at a glance (gjc parity).
   private turnTitle: string | null = null;
   private turnTitleRefined = false;
+  // Live "reasoning" text streamed from the model's response this step (the optional
+  // `"reasoning"` field of the forming tool-call JSON). Shown dim under the HUD while
+  // the model responds, then flushed once into scrollback as a `jeo · …` ledger line.
+  private streamingReasoning = "";
+  private flushedReasoning = "";
   // True while the live turn renders in the alternate screen buffer (TTY only);
   // drives leaving it on finish so terminal scroll never fights the repaint.
   private usedAltScreen = false;
@@ -238,14 +259,32 @@ export class LaunchTui {
         this.thinking = true; // waiting on the model for this step
         this.hudPhase = "thinking";
         this.retryNotice = null; // a new step starts a fresh model call
+        this.streamingReasoning = ""; // fresh model response this step
+        this.flushedReasoning = "";
         this.currentStepStartedAt = Date.now();
         this.spinner.updateStep(step, this.footer.maxSteps);
         this.spinner.next();
         this.draw();
       },
+      onModelStream: textSoFar => {
+        // Surface the model's reasoning live as its JSON tool call streams in.
+        const r = extractStreamingReasoning(textSoFar);
+        if (r && r !== this.streamingReasoning) {
+          this.streamingReasoning = r;
+          this.draw();
+        }
+      },
       onAssistant: (_raw, invocation) => {
         this.thinking = false; // model replied; now dispatching the tool
         this.retryNotice = null; // the call got through — clear any backoff notice
+        // Flush the streamed reasoning once into scrollback as a `jeo · …` ledger line
+        // (the durable record), then stop showing the transient live reasoning row.
+        if (this.streamingReasoning && this.streamingReasoning !== this.flushedReasoning) {
+          this.flushedReasoning = this.streamingReasoning;
+          const badge = categoryBadge("progress", { color: this.theme.color });
+          this.appendLedger(`${badge} jeo · ${this.streamingReasoning}\n`);
+        }
+        this.streamingReasoning = "";
         if (invocation && invocation.tool !== "done") {
           this.runningTool = true;
           this.hudPhase = "executing";
@@ -638,6 +677,11 @@ export class LaunchTui {
           const arrow = this.unicode ? "▸" : ">";
           const titleLine = `  ${arrow} ${this.turnTitle}`;
           bottom.push(this.theme.color ? chalk.dim(titleLine) : titleLine);
+        }
+        if (this.streamingReasoning) {
+          const bulb = this.unicode ? "💭" : "*";
+          const rLine = `  ${bulb} ${this.streamingReasoning}`;
+          bottom.push(this.theme.color ? chalk.gray(rLine) : rLine);
         }
         bottom.push("");
         const stats = this.tools.stats();

@@ -6359,3 +6359,32 @@ adopting gjc's missing behavior in PURE-TS without breaking jeo-code's zero-nati
   reasoning-text channel in the protocol/prompt PLUS wiring the model manager's
   `.stream()` through `callLlm → engine → a TUI streaming region` — a bounded but
   design-carrying change best done as its own reviewed pass rather than half-shipped.
+
+## Streaming model reasoning into history (pass 893)
+
+**Date:** 2026-06-11 · **Dimension: agent loop + tui (live reasoning stream).**
+
+The calling-model response now streams into the live history, surfacing the model's
+reasoning as it forms — the deferred item from pass 892, implemented opt-in so the core
+loop is unchanged when no TUI consumes it.
+
+- **Opt-in streaming.** `ChatOptions.onToken` + `callLlm` consume `manager.stream()`
+  (accumulate full text + emit deltas) ONLY when `onToken` is set; else `manager.call()`
+  unchanged. `runAgentLoop` builds `onToken` only when `ev.onModelStream` is set, so
+  non-TUI/`-p` turns (createStreamEvents has no onModelStream) keep the exact prior path.
+  jsonMode + single-JSON-tool-call parsing preserved; a throwing consumer is swallowed
+  without losing accumulation (for-await is outside the try).
+- **Optional `reasoning` field.** TOOL_PROTOCOL + buildToolProtocol invite an optional
+  leading `"reasoning"` string in the tool-call JSON; `ToolInvocation` parsing ignores
+  it (present or absent → zero risk). `extractStreamingReasoning` pulls the partial value
+  from the forming JSON with a ReDoS-safe regex, scanning only the leading bytes.
+- **Live + durable.** The reasoning renders as a dim `💭` row under the HUD while the
+  model responds, then flushes ONCE into scrollback as a `jeo · …` ledger line on tool
+  dispatch (reset per step, no double-flush). Ctrl+O (pass 892) shows the full detail.
+
+### Verification (pass 893)
+- typecheck 0; `bun test` 967 pass / 0 fail (+3 streaming tests); inline-scrollback 6/6;
+  `bun build --compile` green.
+- Architect (23-ArchStreaming): architecture/product/code all CLEAR, APPROVE, no blocking
+  AI-slop; all 7 core-loop safety claims VERIFIED. Three LOW polish nits (comment
+  accuracy, bound the reasoning scan to leading bytes, unescape order) fixed.

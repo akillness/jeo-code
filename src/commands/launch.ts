@@ -2076,6 +2076,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         console.log("  Esc        cancel an open picker");
         console.log("  Ctrl-C     cancel the in-flight turn (press again at the prompt to exit)");
         console.log("  Ctrl-D     exit the REPL");
+        console.log("  Ctrl-O     dump the full last response (untruncated, tables rendered) into scrollback");
+        console.log("  Ctrl-K / Ctrl-U / Ctrl-W   kill to end / start of line / previous word (emacs kill-ring)");
+        console.log("  Ctrl-Y / Alt-Y             yank / yank-pop the killed text");
+        console.log("  Ctrl-A / Ctrl-E            move to start / end of line");
         console.log("  /          open the slash-command palette");
         console.log("  @path      mention a file (Tab completes relative paths)");
         continue;

@@ -124,11 +124,13 @@ test("maybeCompact: above threshold without system message", async () => {
   expect(history[2].content).toBe("Message 7");
 });
 
-test("maybeCompact: callLlm failure still bounds history with a deterministic placeholder", async () => {
+test("maybeCompact: persistent summarizer failure retries then keeps recent verbatim (no placeholder)", async () => {
   const history = makeHistory(15, true);
   const originalHistory = [...history];
 
+  let calls = 0;
   mockCallLlm = async () => {
+    calls++;
     throw new Error("LLM failed");
   };
 
@@ -137,14 +139,29 @@ test("maybeCompact: callLlm failure still bounds history with a deterministic pl
     keepRecent: 4,
   });
 
-  // Old behavior swallowed the error and left history unbounded. Now it must still
-  // trim so a persistently-failing summarizer can't grow memory across a session.
+  // (a) The summary call was retried, not attempted only once.
+  expect(calls).toBeGreaterThan(1);
+
+  // (b) Degraded compaction is signaled.
   expect(result.compacted).toBe(true);
   expect(result.summaryFailed).toBe(true);
-  expect(result.removed).toBe(11); // body 15 - keepRecent 4
-  expect(history.length).toBe(6); // system + placeholder + 4 recent
+
+  // (d) Older messages were dropped: body 15 - keepRecent 4.
+  expect(result.removed).toBe(11);
+  // system + 4 recent (NO placeholder message).
+  expect(history.length).toBe(5);
   expect(history[0]).toEqual(originalHistory[0]); // system preserved
-  expect(history[1].content).toContain("Earlier conversation omitted");
+
+  // (c) The N most-recent messages remain VERBATIM (Message 11..14).
+  expect(history[1].content).toBe("Message 11");
+  expect(history[2].content).toBe("Message 12");
+  expect(history[3].content).toBe("Message 13");
+  expect(history[4].content).toBe("Message 14");
+
+  // (e) No lossy placeholder was injected anywhere.
+  for (const msg of history) {
+    expect(msg.content).not.toContain("Earlier conversation omitted");
+  }
 });
 
 test("maybeCompact: force lowers the trigger floor for a small history", async () => {
@@ -335,4 +352,21 @@ test("maybeCompact: system prompt size is included in token budget", async () =>
   ];
   const sysRes = await maybeCompact(sysHistory, { maxMessages: 40, maxTokens: 150, keepRecent: 1 });
   expect(sysRes.compacted).toBe(true);
+});
+
+test("maybeCompact: an aborted signal is a clean no-op — history is not mutated", async () => {
+  // force triggers compaction even on a short history; an already-aborted signal must
+  // leave history untouched (no summary, no drop) and report no compaction.
+  let called = 0;
+  mockCallLlm = async () => { called++; return "SUMMARY-TEXT"; };
+  const history = makeHistory(20, true);
+  const original = [...history];
+  const ac = new AbortController();
+  ac.abort();
+
+  const result = await maybeCompact(history, { force: true, keepRecent: 4, signal: ac.signal });
+
+  expect(result).toEqual({ compacted: false, removed: 0 });
+  expect(history).toEqual(original); // not mutated
+  expect(called).toBe(0); // summary call skipped before the abort check
 });

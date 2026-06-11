@@ -6388,3 +6388,34 @@ loop is unchanged when no TUI consumes it.
 - Architect (23-ArchStreaming): architecture/product/code all CLEAR, APPROVE, no blocking
   AI-slop; all 7 core-loop safety claims VERIFIED. Three LOW polish nits (comment
   accuracy, bound the reasoning scan to leading bytes, unescape order) fixed.
+
+## gjc-parity Phase 3: robustness + opt-in breadth (pass 894)
+
+**Date:** 2026-06-11 · **Dimension: agent loop + tools (consensus-seed P3).**
+
+- **B15 compaction hardening.** Replaced the lossy `[Earlier conversation omitted]`
+  placeholder with a degradation ladder: retry the summary up to 3× with abort-aware
+  backoff; on persistent failure keep the N most-recent messages (token-bounded) and
+  drop older ones (no misleading placeholder), setting `summaryFailed`. An aborted
+  signal is a clean no-op (history unmutated). `compaction.ts`.
+- **B10 opt-in bash fixups.** New `bash-fixups.ts` with ≥5 conservative,
+  intent-preserving rules (strip-trailing, operator-guarded useless-cat, dev-null-merge,
+  collapse-dot-slash, grep `-r`/`-R` default-path), gated behind `JOC_BASH_FIXUPS=1`
+  (OFF by default). The intent-CHANGING stderr-merge rule was rejected; useless-cat bails
+  on any downstream `| & ;` so it can never corrupt a multi-stage pipeline.
+- **B14 kill-ring.** The emacs kill-ring (C-k/C-u/C-w/C-y/M-y/C-a/C-e) is readline-native
+  and live (terminal mode confirmed via `gatedStdout` forwarding `isTTY`); `/hotkeys` now
+  documents it. No new code path.
+- **C2 search accelerator — REMOVED.** An rg accelerator was prototyped but dropped:
+  true output-identity with grep is unachievable (ignore-dirs, dotfiles, regex dialect,
+  and traversal order all diverge), making it a non-deterministic behavior switch keyed
+  on host tooling. `search` stays deterministic grep-only — the correct call for a
+  grounding tool.
+
+### Verification (pass 894)
+- typecheck 0; `bun test` 977 pass / 0 fail; inline-scrollback regression 6/6;
+  `bun build --compile` green.
+- Architect: round-1 REQUEST CHANGES (2 HIGH: rg divergence, useless-cat pipeline
+  corruption) → all fixed → round-2 all-CLEAR APPROVE, no blocking AI-slop.
+- Ultragoal Phase-3 goal complete (final-aggregate receipt). Consensus-seed Phases 1–3
+  are now all delivered.

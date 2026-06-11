@@ -1,3 +1,4 @@
+import { applyBashFixups } from "./bash-fixups";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { readWorkflowState, readWorkflowStateStrict, type WorkflowState } from "./state";
@@ -380,6 +381,10 @@ export async function bashTool(
   subdir?: string,
   env?: Record<string, string>
 ): Promise<ToolResult> {
+  if (process.env.JOC_BASH_FIXUPS === "1") {
+    const fx = applyBashFixups(command);
+    command = fx.command;
+  }
   try {
     // The mutation lock is keyed on the PROJECT cwd, not the run subdir.
     await assertBashAllowed(cwd);

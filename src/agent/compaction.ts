@@ -15,13 +15,17 @@ export interface CompactionOptions {
   maxSummaryInputChars?: number;
   /** User-initiated `/compact`: lower the trigger floor so it actually compacts a small history. */
   force?: boolean;
+
+  /** When set, the summary `callLlm` is aborted/short-circuited and retries stop. */
+  signal?: AbortSignal;
 }
 
 export interface CompactionResult {
   compacted: boolean;
   removed: number;
   summary?: string;
-  /** True when the LLM summary failed and a deterministic placeholder was used. */
+  /** True when the LLM summary persistently failed; recent messages were kept
+   *  (token-bounded) and older ones dropped (no summary message). Signals degraded compaction. */
   summaryFailed?: boolean;
   /** Clear error context when limits are exceeded even after compaction. */
   error?: string;
@@ -218,17 +222,41 @@ export async function maybeCompact(
   const systemPrompt =
     "Summarize the following coding-agent conversation so work can continue. Capture decisions, files changed, current task state, and open TODOs. Be concise.";
 
-  try {
-    const summary = await callLlm(
-      [
-        { role: "user", content: olderFormatted }
-      ],
-      {
-        model: opts.model,
-        systemPrompt,
+  // Degradation ladder: (1) RETRY the summary a few times with short, abort-aware
+  // backoff; (2) on persistent failure KEEP the recent messages verbatim and drop the
+  // older ones — no misleading placeholder — and surface summaryFailed.
+  const maxSummaryAttempts = 3; // initial attempt + up to 2 retries
+  const summaryBackoffMs = 200;
+  let summary: string | undefined;
+  let summaryError: unknown;
+  for (let attempt = 1; attempt <= maxSummaryAttempts; attempt++) {
+    if (opts.signal?.aborted) {
+      summaryError = new Error("aborted");
+      break;
+    }
+    try {
+      summary = await callLlm(
+        [
+          { role: "user", content: olderFormatted }
+        ],
+        {
+          model: opts.model,
+          systemPrompt,
+          signal: opts.signal,
+        }
+      );
+      summaryError = undefined;
+      break;
+    } catch (err) {
+      summaryError = err;
+      if (attempt < maxSummaryAttempts && !opts.signal?.aborted) {
+        await new Promise<void>(resolve => setTimeout(resolve, summaryBackoffMs * attempt));
       }
-    );
+    }
+  }
 
+  if (summary !== undefined) {
+    // Rung 1 success: behave exactly as before — summary message + bounded recent.
     const systemMessages = hasSystem ? [history[0]] : [];
     const boundedSummary = truncateSummaryByTokens(summary, Math.min(budgetTokens, maxSummaryInputTokens));
     const summaryMessage: Message = { role: "user", content: SUMMARY_PREFIX + boundedSummary };
@@ -256,36 +284,38 @@ export async function maybeCompact(
       error,
       replacesThrough: systemCount + older.length - 1,
     };
-  } catch (err) {
-    // Summarizer LLM unavailable. Still bound in-memory history
-    const systemMessages = hasSystem ? [history[0]] : [];
-    const placeholderMessage: Message = {
-      role: "user",
-      content: `[Earlier conversation omitted: ${older.length} messages — summary unavailable]`,
-    };
-    const systemTokens = historyTokens(systemMessages);
-    const placeholderTokens = historyTokens([placeholderMessage]);
-    const boundedRecent = clampRecentMessagesByTokens(recent, Math.max(0, budgetTokens - placeholderTokens - systemTokens));
-    const next: Message[] = [
-      ...systemMessages,
-      placeholderMessage,
-      ...boundedRecent,
-    ];
-    history.splice(0, history.length, ...next);
-    process.stderr.write(`[joc] compaction summary failed (${(err as Error)?.message ?? "error"}); dropped ${older.length} older messages to bound memory.\n`);
-    
-    const finalTokens = accurateHistoryTokens(history, opts.model);
-    let error: string | undefined;
-    if (opts.contextTokens && finalTokens > opts.contextTokens) {
-      error = `Context window limit exceeded even after compaction. Remaining content size: ${Math.round(finalTokens)} tokens, Window limit: ${opts.contextTokens} tokens.`;
-    }
-
-    return {
-      compacted: true,
-      removed: older.length,
-      summaryFailed: true,
-      error,
-      replacesThrough: systemCount + older.length - 1,
-    };
   }
+
+  // Aborted (user cancelled the turn): do NOT mutate history as a side effect of a
+  // cancelled compaction — leave it untouched and report no compaction.
+  if (opts.signal?.aborted) {
+    return { compacted: false, removed: 0 };
+  }
+
+  // Rung 2: KEEP-RECENT fallback. The summarizer persistently failed, so rather than inject
+  // a placeholder the model could mistake for real conversation, keep the N most-recent
+  // messages (token-bounded, like the success path) and drop the older ones (system kept).
+  const systemMessages = hasSystem ? [history[0]] : [];
+  const systemTokens = historyTokens(systemMessages);
+  const boundedRecent = clampRecentMessagesByTokens(recent, Math.max(0, budgetTokens - systemTokens));
+  const next: Message[] = [
+    ...systemMessages,
+    ...boundedRecent,
+  ];
+  history.splice(0, history.length, ...next);
+  process.stderr.write(`[joc] compaction summary failed (${(summaryError as Error)?.message ?? "error"}); kept ${boundedRecent.length} recent messages (token-bounded) and dropped ${older.length} older messages.\n`);
+
+  const finalTokens = accurateHistoryTokens(history, opts.model);
+  let error: string | undefined;
+  if (opts.contextTokens && finalTokens > opts.contextTokens) {
+    error = `Context window limit exceeded even after compaction. Remaining content size: ${Math.round(finalTokens)} tokens, Window limit: ${opts.contextTokens} tokens.`;
+  }
+
+  return {
+    compacted: true,
+    removed: older.length,
+    summaryFailed: true,
+    error,
+    replacesThrough: systemCount + older.length - 1,
+  };
 }

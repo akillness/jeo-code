@@ -1,3 +1,4 @@
+import chalk from "chalk";
 /**
  * Strip markdown formatting from text, returning plain text.
  */
@@ -36,4 +37,61 @@ export function stripMarkdown(text: string): string {
   out = out.replace(/^[-\*_]{3,}\s*$/gm, "");
 
   return out.trim();
+}
+
+export interface MarkdownAnsiOptions {
+  /** Heading painter (theme accent + bold); default chalk.bold. */
+  accent?: (s: string) => string;
+}
+
+/**
+ * Render markdown as styled ANSI text (joc-ref final-report format): headings
+ * become painted section titles, **bold** / `inline code` keep visual weight,
+ * fences/links/quotes degrade exactly like stripMarkdown. Fenced code BODIES are
+ * passed through untouched (only the ``` fence rows are dropped) so code samples
+ * are never reformatted. Pure + stateless — safe for the one-shot finish path.
+ */
+export function renderMarkdownAnsi(text: string, opts: MarkdownAnsiOptions = {}): string {
+  if (!text) return "";
+  const accent = opts.accent ?? ((s: string) => chalk.bold(s));
+
+  // Links/images FIRST: bold/code styling injects ANSI escapes whose `[` would
+  // otherwise be swallowed by the `[label](url)` matcher (corrupting both).
+  const styleInline = (line: string): string =>
+    line
+      .replace(/!\[([^\]]*)\]\(([^\)]+)\)/g, "$1")
+      .replace(/\[([^\]]+)\]\(([^\)]+)\)/g, (_m, label: string, url: string) => `${label} ${chalk.dim(`(${url})`)}`)
+      .replace(/`([^`]+)`/g, (_m, code: string) => chalk.cyan(code))
+      .replace(/\*\*\*([^\*]+)\*\*\*/g, (_m, t: string) => chalk.bold.italic(t))
+      .replace(/\*\*([^\*]+)\*\*/g, (_m, t: string) => chalk.bold(t))
+      .replace(/__([^\_]+)__/g, (_m, t: string) => chalk.bold(t));
+
+  const out: string[] = [];
+  let inFence = false;
+  for (const line of text.split("\n")) {
+    if (/^```/.test(line.trim())) {
+      inFence = !inFence;
+      continue; // drop the fence row itself (stripMarkdown parity)
+    }
+    if (inFence) {
+      out.push(line); // code bodies verbatim — never styled or reflowed
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      out.push(accent(styleInline(heading[2]!)));
+      continue;
+    }
+    const quote = line.match(/^>\s+(.+)$/);
+    if (quote) {
+      out.push(chalk.dim(`▎ ${styleInline(quote[1]!)}`));
+      continue;
+    }
+    if (/^[-\*_]{3,}\s*$/.test(line)) {
+      out.push(chalk.dim("─".repeat(24)));
+      continue;
+    }
+    out.push(styleInline(line));
+  }
+  return out.join("\n").trim();
 }

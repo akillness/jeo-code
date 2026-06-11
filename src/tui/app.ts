@@ -29,7 +29,7 @@ import { renderJocStatus, renderStatusBar, renderStatusBox } from "./components/
 import { costForUsage, formatCost } from "../ai/pricing";
 import { renderMarkdownTables } from "./components/markdown-table";
  
-import { stripMarkdown } from "./components/markdown-text";
+import { stripMarkdown, renderMarkdownAnsi } from "./components/markdown-text";
 import { visibleWidth, wrapTextWithAnsi } from "./components/width";
 import { categoryBadge } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
@@ -684,7 +684,9 @@ export class LaunchTui {
     const timelineSteps = stepsFromTools(this.tools.snapshot());
     const totalElapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
     const finalLines: string[] = [];
-    for (const line of this.renderPlan(this.theme.color)) finalLines.push(line);
+    // joc-ref final-report order: the ANSWER leads; the Todos checklist follows it
+    // (done = checked + struck through), so the plan reads as a completion receipt.
+    const planLines = this.renderPlan(this.theme.color);
     if (!this.inline) {
       // Inline scrollback already reads as a ✓/✗ checklist; the step timeline +
       // compact strip + flow line would just repeat it (gjc-style slim summary).
@@ -720,24 +722,35 @@ export class LaunchTui {
       const doneBadge = categoryBadge("done", { color: this.theme.color });
       finalLines.push(`${doneBadge} ${flow} · ${stepsCount} steps · ${durationStr}${usageStr}`);
     }
-    // Render any GFM markdown tables in the reply as box-drawn tables (B8). Plain
-    // replies are returned unchanged by the cheap no-`|` guard.
-    const renderedReply = stripMarkdown(renderMarkdownTables(reply, { unicode: this.unicode }));
+    // joc-ref final-report rendering: GFM tables become box-drawn tables, then
+    // headings/bold/inline-code are styled (theme accent) instead of stripped.
+    // color:false keeps the plain stripMarkdown text for pipes/tests.
+    const tabled = renderMarkdownTables(reply, { unicode: this.unicode });
+    const renderedReply = this.theme.color
+      ? renderMarkdownAnsi(tabled, { accent: s => chalk.bold(accentPaint(this.theme)(s)) })
+      : stripMarkdown(tabled);
     const steps = this.footer.step || 0;
     const peak = this.progress.current();
     const usageSuffix = this.turnUsage ? ` · ${formatUsage(this.turnUsage)}` : "";
     if (this.inline) {
-      // gjc-style clean ending: the ANSWER leads, followed by exactly ONE compact dim
-      // status line (steps · time · usage · evolution track). The live ledger above
-      // already recorded every step, so no timeline/flow repetition here. A blank
-      // spacer row separates the ledger from the answer (joc-ref vertical rhythm).
+      // joc-ref clean ending: the ANSWER leads, then the Todos completion receipt,
+      // then exactly ONE compact dim status line (steps · time · usage · evolution
+      // track). The live ledger above already recorded every step. A blank spacer
+      // row separates the ledger from the answer (joc-ref vertical rhythm).
       finalLines.push("");
       finalLines.push(`jeo> ${renderedReply}`);
+      if (planLines.length) {
+        finalLines.push("");
+        finalLines.push(...planLines);
+      }
       const statusLine = `${categoryBadge("done", { color: this.theme.color })} ${steps} steps · ${formatDuration(Date.now() - this.startedAt)}${usageSuffix} · ${evolutionTrack(peak, { unicode: this.unicode, color: this.theme.color })}`;
       finalLines.push(this.theme.color ? chalk.dim(statusLine) : statusLine);
     } else {
       finalLines.push(`Evolved to: ${evolutionTrack(peak, { unicode: this.unicode, color: this.theme.color })} (took ${steps} steps in ${formatDuration(Date.now() - this.startedAt)}${usageSuffix})`);
       finalLines.push(`jeo> ${renderedReply}`);
+      if (planLines.length) {
+        finalLines.push(...planLines);
+      }
     }
     if (this.tty) {
       // Width-wrap every summary line to the terminal FIRST. A line wider than the

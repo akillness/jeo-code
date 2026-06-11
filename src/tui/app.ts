@@ -240,7 +240,13 @@ export class LaunchTui {
         const resBadge = categoryBadge(success ? "done" : "error", { color: this.theme.color });
         const target = this.pendingTitle || tool;
         this.pendingTitle = null;
-        this.appendLedger(`${catBadge} ${resBadge} ${target}\n`);
+        // gjc-parity glyph-first ledger line (logs/gjc-tui-study analysis Gap A):
+        // a colored ✔/✗ leads the flushed scrollback line so a wheel-scroll back
+        // through history scans like gjc's tool checklist; the category/status
+        // badges stay for grep-ability and the non-TTY summary.
+        const mark = this.unicode ? (success ? "✔" : "✗") : success ? "v" : "x";
+        const paintedMark = this.theme.color ? (success ? chalk.green(mark) : chalk.red(mark)) : mark;
+        this.appendLedger(`${paintedMark} ${catBadge} ${resBadge} ${target}\n`);
         this.draw();
       },
       onNotice: msg => {
@@ -600,6 +606,7 @@ export class LaunchTui {
           phase,
           palette,
           isThinking: true,
+          usage: this.turnUsage,
         })) bottom.push(line);
       } else {
         // Compact fallback still keeps progress and insight separate: no decorative

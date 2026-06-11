@@ -391,6 +391,11 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
   };
 }
 
+/** The exact resume command printed on REPL exit (and testable in isolation) —
+ *  same convention as the `--list` handler's hint. */
+export function formatResumeHint(sessionId: string): string {
+  return `Resume with: joc launch --resume ${sessionId}`;
+}
 export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchFlags {
   const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 25, message: "", tmux: false, errors: [], print: false, noSkills: false, noTools: false };
   const rest: string[] = [];
@@ -2769,5 +2774,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
     }
   disarmPreview(); // clear footer + restore full-screen scrolling before leaving the REPL
+  // gjc-parity resume pointer (logs/gjc-tui-study analysis Gap C): leave the exact
+  // resume command in scrollback on exit, mirroring the --list handler's convention.
+  if (sessionId && !flags.noSession) console.log(formatResumeHint(sessionId));
   rl.close();
 }

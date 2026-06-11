@@ -94,3 +94,12 @@ test("gatedStdout: readline's own prompt/echo is suppressed while gated (single-
   expect(joined).not.toContain("joc>"); // no duplicated raw CLI prompt line
   expect(joined).not.toContain("hi");   // no raw echo either — only our box would show it
 });
+
+// gjc-parity (logs/gjc-tui-study analysis Gap C): the /exit path prints a resume
+// pointer using the same convention as the --list handler.
+import { formatResumeHint } from "../src/commands/launch";
+
+test("formatResumeHint matches the --list handler convention", () => {
+  expect(formatResumeHint("019eb4b5-17fe-7000-a9d5-d6c9d7923f45"))
+    .toBe("Resume with: joc launch --resume 019eb4b5-17fe-7000-a9d5-d6c9d7923f45");
+});

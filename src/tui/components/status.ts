@@ -79,6 +79,16 @@ export function renderJocStatus(data: JocStatusData): string[] {
   // Live token spend for the turn — visible per step, not only in the final summary.
   if (data.usage && (data.usage.inputTokens || data.usage.outputTokens)) {
     extraStats += ` · ${formatUsage(data.usage)}`;
+    // gjc-parity live output-token rate (logs/gjc-tui-study analysis Gap B):
+    // `⤴ N.N/s` like gjc's HUD. Derived purely from existing usage + elapsed —
+    // no new data sources; gated past the first second so a fresh turn doesn't
+    // flash a meaningless spike.
+    const elapsedSec = (data.elapsedMs ?? 0) / 1000;
+    if (elapsedSec >= 1 && (data.usage.outputTokens ?? 0) > 0) {
+      const rate = data.usage.outputTokens / elapsedSec;
+      const glyph = data.unicode !== false ? "⤴" : "^";
+      extraStats += ` · ${glyph} ${rate >= 100 ? rate.toFixed(0) : rate.toFixed(1)}/s`;
+    }
   }
 
 

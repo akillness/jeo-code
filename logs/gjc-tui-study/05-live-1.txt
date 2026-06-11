@@ -1,0 +1,35 @@
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Update Available
+ New version 0.4.4 is available. Run: gjc update
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ user
+
+ read package.json and tell me the name and version
+
+ ✔ Read package.json
+ ✔ Read package.json:1-10:raw
+
+ gajae
+ name: jeo-code · version: 0.1.0
+
+ user
+
+ read package.json and tell me the name and version
+
+
+ gajae
+ Already read it — name: jeo-code, version: 0.1.0.
+
+ user
+
+ list the files in src/tui and then run: echo hello
+
+
+ ⠸ Working… ⟦esc⟧
+ ⬢ Fable 5 · ◕ high / ⑂ main ?1 / 📁 ~/.superset/projects/jeo-code ──────────────── ⤴ 7.6/s / ◫ 6.2%/1M ⟲ / $0.77 (sub)
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ > Type your message...                                                                                               │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

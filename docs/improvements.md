@@ -6270,3 +6270,38 @@ the flicker one exposed a third, far more serious tmux interaction during QA rer
 - Full `bun test`: 918 pass / 1 fail — the failure (`tmux.test.ts` session naming) and
   the `welcome.ts` typecheck error belong to a concurrent session's in-flight work,
   disjoint from this change (suite was 895/0 with typecheck 0 on this change alone).
+
+## gjc TUI parity study + three bounded improvements — pass 889
+
+**Date:** 2026-06-11 · **Dimension: tui (gjc-parity, evidence-driven).**
+
+A subagent drove the REAL gjc v0.4.3 binary in tmux (120x35), captured its full TUI
+lifecycle (14 transcripts incl. ANSI), and produced a 12-element feature inventory
+(`logs/gjc-tui-study/observations.md`, `alternate_on=0` confirmed). The leader's
+comparison + ranking (`logs/gjc-tui-study/analysis.md`) went through three architect
+rounds — round 1 caught a false claim (joc was said to lack git branch + cwd; the
+footer already renders both), which forced a rescope before implementation.
+
+### Shipped (analysis §2, all architect-approved scopes)
+- **889a. Glyph-first ledger lines (Gap A).** Flushed tool-result scrollback lines now
+  lead with a colored ✔/✗ (ASCII v/x) before the `[CAT] [STATUS]` badges, so wheel-
+  scroll history scans like gjc's tool checklist. `app.ts onToolResult`.
+- **889b. Live output-token rate (Gap B, rescoped).** The boxed `[STEP]` row appends
+  gjc-style `⤴ N.N/s` (output tokens / elapsed; `^` ASCII fallback; ≥100/s drops
+  decimals; gated ≥1s and >0 output tokens). Pure derivation from existing
+  `turnUsage` + `elapsedMs` — no new data sources; branch/cwd stay footer-owned.
+  `status.ts` + a `usage` plumb in `app.ts`.
+- **889c. Resume pointer on exit (Gap C).** `/exit`/`/quit` with a persisted session
+  prints `Resume with: joc launch --resume <id>` (exact `--list`-handler convention)
+  via the new exported `formatResumeHint()`. `launch.ts`.
+
+### Verification (pass 889)
+- Unit: glyph (unicode + deterministic TERM=dumb ASCII fallback), rate (unicode/ASCII,
+  1s gate, zero-output suppression, ≥100/s decimals), hint convention; typecheck 0;
+  full `bun test` 925→926 pass / 0 fail.
+- Real-surface tmux QA (logs/gjc-tui-study/qa/): 4/4 PASS — ✔/✗ lines in live
+  scrollback, `⤴ 213/s` in the boxed [STEP] row (and absent with 0 output tokens),
+  real REPL `/exit` prints the resume hint with a uuid (absent under --no-session),
+  and the pass-888b contract held (alternate_on=0, no ED mid-turn).
+- Architect: all-CLEAR APPROVE (7-ArchReviewParityImpl); the single P3 test-depth nit
+  (ASCII ledger fallback) fixed with a deterministic TERM=dumb test.

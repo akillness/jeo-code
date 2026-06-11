@@ -20,7 +20,7 @@ import { getStageByIndex, renderAsciiArt, stageHeight, stageWidth, stageBlocks }
 import { evolutionTrack, createStageProgress, type StageProgress, transitionMessage } from "./components/evolution";
 import type { TaskSubEvent } from "../agent/task-tool";
 import { supportsUnicode } from "./components/capability";
-import { centerBlock, padLineTo, fillScreen, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
+import { centerBlock, padLineTo, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
 import { resolveTheme, themeGradient } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, type ForgeSummary } from "./components/forge";
@@ -67,10 +67,18 @@ function todoListChanged(
 }
 
 
-// Registered once per process: if we exit while still in the alternate screen
-// (e.g. an uncaught crash mid-turn), restore the main buffer + cursor so the
-// terminal is never left stuck on a blank alt screen.
-let altScreenExitSafetyArmed = false;
+// Armed once per process: if we exit mid-turn (e.g. an uncaught crash), restore the
+// terminal — leave the alt screen when the legacy alt-screen turn was active, and
+// always bring the cursor back — so the TTY is never left hidden-cursor or stuck
+// on a blank alt screen.
+let exitSafetyArmed = false;
+function armExitSafety(altScreen: boolean): void {
+  if (exitSafetyArmed) return;
+  exitSafetyArmed = true;
+  process.once("exit", () => {
+    try { process.stdout.write((altScreen ? leaveAltScreen() : "") + showCursor()); } catch { /* terminal gone */ }
+  });
+}
 
 export class LaunchTui {
   private readonly renderer: Renderer;
@@ -123,11 +131,20 @@ export class LaunchTui {
   private readonly theme = resolveTheme(process.env);
   // Whether the live turn may use the alternate screen buffer (real TTY only).
   private readonly tty: boolean;
+  // gjc-style inline rendering (default on a TTY): the live frame repaints in place in
+  // the MAIN buffer and every completed ledger line is flushed into normal scrollback
+  // first, so tmux / terminal mouse-wheel can scroll back through earlier progress
+  // mid-turn. JOC_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen turn
+  // (scroll-isolated, but no mid-turn scrollback).
+  private readonly inline: boolean;
 
   constructor(opts: LaunchTuiOptions) {
     this.write = opts.write ?? ((s: string) => process.stdout.write(s));
     this.tty = opts.tty ?? isTTY();
-    this.renderer = new Renderer(this.write);
+    this.inline = this.tty && process.env.JOC_TUI_ALT_SCREEN !== "1";
+    // Row reservation is only needed (and only safe) for the inline main-buffer frame;
+    // the alt screen starts at the top with a full-height frame.
+    this.renderer = new Renderer(this.write, undefined, { reserve: this.inline });
     this.spinner = new Spinner(undefined, { unicode: this.unicode });
     this.footer = {
       model: opts.model,
@@ -215,7 +232,7 @@ export class LaunchTui {
         const resBadge = categoryBadge(success ? "done" : "error", { color: this.theme.color });
         const target = this.pendingTitle || tool;
         this.pendingTitle = null;
-        this.stream.append(`${catBadge} ${resBadge} ${target}\n`);
+        this.appendLedger(`${catBadge} ${resBadge} ${target}\n`);
         this.draw();
       },
       onNotice: msg => {
@@ -234,12 +251,24 @@ export class LaunchTui {
     };
   }
 
+  /** Append a completed progress-ledger line. In inline mode the line is flushed
+   *  straight into normal scrollback ABOVE the live frame, so tmux / terminal
+   *  mouse-wheel can review the full progress history mid-turn (gjc-style); the
+   *  StreamRegion copy still feeds the in-frame tail and the non-TTY / alt-screen
+   *  final summary. */
+  private appendLedger(text: string): void {
+    this.stream.append(text);
+    if (this.inline && !this.finished) {
+      this.renderer.insertAbove(text.endsWith("\n") ? text : `${text}\n`);
+    }
+  }
+
   /** Surface native workflow-engine progress (`/skill deep-interview`, etc.). */
   setWorkflowStatus(status: { skill: string; phase: string; detail?: string } | null): void {
     this.workflowStatus = status;
     if (status) {
       const detail = status.detail ? ` — ${status.detail}` : "";
-      this.stream.append(`${categoryBadge("progress", { color: this.theme.color })} workflow ${status.skill}: ${status.phase}${detail}\n`);
+      this.appendLedger(`${categoryBadge("progress", { color: this.theme.color })} workflow ${status.skill}: ${status.phase}${detail}\n`);
     }
     this.draw();
   }
@@ -301,19 +330,19 @@ export class LaunchTui {
     const step = e.step && e.maxSteps ? ` step ${e.step}/${e.maxSteps}` : "";
     switch (e.kind) {
       case "start":
-        this.stream.append(`${badge} ${role} ${this.unicode ? "▸" : ">"} start: ${detail}\n`);
+        this.appendLedger(`${badge} ${role} ${this.unicode ? "▸" : ">"} start: ${detail}\n`);
         break;
       case "step":
-        this.stream.append(`  ${badge} ${role}${step}: ${detail || "working"}\n`);
+        this.appendLedger(`  ${badge} ${role}${step}: ${detail || "working"}\n`);
         break;
       case "tool":
-        this.stream.append(`  ${badge} ${role} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`);
+        this.appendLedger(`  ${badge} ${role} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`);
         break;
       case "error":
-        this.stream.append(`  ${badge} ${role} ${bad} ${detail || "error"}\n`);
+        this.appendLedger(`  ${badge} ${role} ${bad} ${detail || "error"}\n`);
         break;
       case "done":
-        this.stream.append(`${badge} ${role} ${this.unicode ? "◂" : "<"} done${e.success === false ? " (incomplete)" : ""}: ${detail}\n`);
+        this.appendLedger(`${badge} ${role} ${this.unicode ? "◂" : "<"} done${e.success === false ? " (incomplete)" : ""}: ${detail}\n`);
         break;
     }
     this.draw();
@@ -323,20 +352,23 @@ export class LaunchTui {
     this.startedAt = Date.now();
     this.turnUsage = null;
     this.spinner.updateStep(0, this.footer.maxSteps);
-    // On a real TTY, render the transient live turn in the alternate screen buffer.
-    // It has no scrollback, so mouse-wheel scroll can't fight the 120ms in-place
-    // repaint (the old "scroll → flicker / screen disappears" bug); the main buffer
-    // + scrollback stay intact and the final summary is printed there in finish().
+    // On a real TTY the live turn renders gjc-style in the MAIN buffer by default:
+    // completed ledger lines are flushed into normal scrollback as they happen, so a
+    // tmux / terminal mouse-wheel scroll can review earlier progress mid-turn. The
+    // differential renderer reserves frame rows with real newlines, keeping the
+    // in-place repaint anchored even at the bottom of the viewport.
+    // JOC_TUI_ALT_SCREEN=1 restores the legacy alternate-screen turn (scroll-isolated,
+    // but with no scrollback until the turn ends).
     if (this.tty) {
-      this.usedAltScreen = true;
-      this.write(enterAltScreen());
-      this.renderer.reset();
-      if (!altScreenExitSafetyArmed) {
-        altScreenExitSafetyArmed = true;
-        process.once("exit", () => {
-          try { process.stdout.write(leaveAltScreen() + showCursor()); } catch { /* terminal gone */ }
-        });
+      if (this.inline) {
+        // Clear below the anchor once so stale pre-turn rows never bleed into the frame.
+        this.renderer.clear();
+      } else {
+        this.usedAltScreen = true;
+        this.write(enterAltScreen());
+        this.renderer.reset();
       }
+      armExitSafety(this.usedAltScreen);
     }
     this.write(hideCursor());
     this.draw();
@@ -422,7 +454,11 @@ export class LaunchTui {
     if (timelineSteps.length > 1) {
       finalLines.push(`  ${formatStepTimelineCompact(timelineSteps, { unicode: this.unicode, color: this.theme.color })}`);
     }
-    for (const line of this.stream.render(size().cols)) finalLines.push(line);
+    if (!this.inline) {
+      // Inline turns already flushed every ledger line into scrollback live; re-printing
+      // the stream here would duplicate the whole history right below itself.
+      for (const line of this.stream.render(size().cols)) finalLines.push(line);
+    }
     for (const line of this.renderForge(size().cols, 3)) finalLines.push(line);
     if (timelineSteps.length > 0) {
       const arrow = this.unicode ? " → " : " -> ";
@@ -485,7 +521,7 @@ export class LaunchTui {
     const isThinking = this.timer !== undefined;
     if (fit && this.progress.advanced() && idx > 0) {
       const arrow = this.unicode ? "\u27f6" : "->";
-      this.stream.append(`${arrow} ${transitionMessage(idx)}\n`);
+      this.appendLedger(`${arrow} ${transitionMessage(idx)}\n`);
     }
     const effFrame = isThinking ? this.tickCount % stageBlocks(getStageByIndex(idx)).length : 0;
     if (idx !== this.cachedStageIndex || cols !== this.cachedCols || effFrame !== this.cachedFrame) {

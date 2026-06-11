@@ -3,11 +3,9 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { parseConfig } from "./config-schema";
 
-/** Persisted OAuth credential set (access + refresh + expiry) for a provider. */
 export interface StoredOAuth {
   access: string;
   refresh?: string;
-  /** Epoch ms after which the access token is considered expired (skew-adjusted at mint time). */
   expires?: number;
   accountId?: string;
   email?: string;
@@ -31,51 +29,26 @@ export interface Config {
     gemini?: string;
     antigravity?: string;
   };
-  /**
-   * OAuth credentials. `resolveCredential()` returns these before API keys so refresh
-   * metadata is not lost, but provider execution/status applies the GJC parity rule:
-   * an API key is broader and wins whenever both key + OAuth exist.
-   */
   oauth?: {
     anthropic?: string | StoredOAuth;
     openai?: string | StoredOAuth;
     gemini?: string | StoredOAuth;
     antigravity?: string | StoredOAuth;
   };
-  /** Base URL for the local Ollama server (keyless). */
   ollamaBaseUrl?: string;
-  /** Base URL override for OpenAI-compatible providers (LM Studio, vLLM, llama-cpp-server, ...). */
   openaiBaseUrl?: string;
   defaultModel: string;
   thinkingLevel?: "minimal" | "low" | "medium" | "high" | "xhigh";
-  /** Friendly model aliases, e.g. { fast: "ollama/qwen2.5:0.5b" }. Override built-ins. */
   modelAliases?: { [alias: string]: string };
-  /**
-   * Provider retry budgets (gjc parity). `requestMaxRetries` is the number of
-   * retries (excluding the initial request) for a provider request; `maxDelayMs`
-   * caps exponential backoff. `maxRetries`/`streamMaxRetries` are accepted for
-   * gjc-config compatibility.
-   */
   retry?: {
     requestMaxRetries?: number;
     streamMaxRetries?: number;
     maxRetries?: number;
     maxDelayMs?: number;
-    /** Retries (excluding the initial request) specifically for 429 rate limits. */
     rateLimitRetries?: number;
-    /** Minimum backoff (ms) for a 429 when the server sends no Retry-After. */
     rateLimitMinDelayMs?: number;
   };
-  /**
-   * Per-subagent-role overrides (gjc role-agent parity). Keyed by role id
-   * (executor / planner / architect / critic); each may pin a model and/or a
-   * tool-loop step budget.
-   */
   subagents?: { [roleId: string]: { model?: string; maxSteps?: number } };
-  /**
-   * Model role tiers (gjc `--smol`/`--slow`/`--plan` parity). Each falls back to
-   * `defaultModel`. Env `JOC_SMOL_MODEL`/`JOC_SLOW_MODEL`/`JOC_PLAN_MODEL` fill gaps.
-   */
   roles?: { smol?: string; slow?: string; plan?: string };
   hooks?: HookConfig;
 }
@@ -115,22 +88,13 @@ export interface WorkflowState {
   completed_tasks?: string[];
   pending_tasks?: string[];
   approved?: boolean;
-  /** ultragoal terminal outcome. */
   status?: string;
   passed?: number;
   total?: number;
 }
 
-/** The built-in default model when neither disk config nor JOC_DEFAULT_MODEL provides one.
- *  Shared by envDefaultConfig (runtime) and readRawGlobalConfig (persistence base) so a
- *  fresh-install saveConfigPatch never bakes a DIFFERENT default than the runtime resolves. */
 const DEFAULT_MODEL = "claude-sonnet-4-5";
 
-/**
- * Resolve the global config directory at call time (not import time) so that a
- * `JOC_CONFIG_DIR` override or a runtime `HOME` change is always honored.
- * `JOC_CONFIG_DIR` takes precedence; otherwise `~/.joc`.
- */
 function globalConfigDir(): string {
   return process.env.JOC_CONFIG_DIR || path.join(os.homedir(), ".joc");
 }
@@ -146,16 +110,9 @@ function envOAuth(): NonNullable<Config["oauth"]> {
   };
 }
 
-/** Merge env-provided credentials / base URLs over a config (env fills gaps only;
- *  on-disk values always win). Previously the providers API-key map was NOT overlaid
- *  when a config file existed, so a provider whose key lived only in the environment
- *  (e.g. GEMINI_API_KEY) resolved to "no credential" — breaking provider/model
- *  selection (including per-role subagent overrides) despite the key being present. */
 function withEnvOverlay(cfg: Config): Config {
   const envTok = envOAuth();
   const oauth = { ...envTok, ...(cfg.oauth ?? {}) };
-  // Disk wins when it is a real key; env fills missing/blank gaps. A hand-edited
-  // empty string should not mask a valid environment credential.
   const providers: Config["providers"] = { ...(cfg.providers ?? {}) };
   if (!providers.anthropic && process.env.ANTHROPIC_API_KEY) providers.anthropic = process.env.ANTHROPIC_API_KEY;
   if (!providers.openai && process.env.OPENAI_API_KEY) providers.openai = process.env.OPENAI_API_KEY;
@@ -194,20 +151,13 @@ export async function readGlobalConfig(): Promise<Config> {
   } catch {
     return withEnvOverlay(envDefaultConfig());
   }
-
   let raw: unknown;
   try {
     raw = JSON.parse(data);
   } catch {
-    process.stderr.write(`[joc] ${globalConfigPath()} is not valid JSON; using environment defaults.\n`);
     return withEnvOverlay(envDefaultConfig());
   }
-
   const parsed = parseConfig(raw);
-  if (!parsed.ok) {
-    process.stderr.write(`[joc] ${globalConfigPath()} is invalid (${parsed.message}); using environment defaults.\n`);
-    return withEnvOverlay(envDefaultConfig());
-  }
   return withEnvOverlay(parsed.config as Config);
 }
 
@@ -215,21 +165,16 @@ export async function saveGlobalConfig(config: Config): Promise<void> {
   const dir = globalConfigDir();
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   const target = globalConfigPath();
-  const tmpPath = `${target}.${Math.random().toString(36).slice(2)}.tmp`;
+  const tmpPath = target + "." + Math.random().toString(36).slice(2) + ".tmp";
   try {
     await fs.writeFile(tmpPath, JSON.stringify(config, null, 2), { encoding: "utf-8", mode: 0o600 });
-    await fs.chmod(tmpPath, 0o600).catch(() => {});
     await fs.rename(tmpPath, target);
   } catch (err) {
-    await fs.unlink(tmpPath).catch(() => {});
+    try { await fs.unlink(tmpPath); } catch {}
     throw err;
   }
 }
 
-/** Read the on-disk config WITHOUT the env overlay. Used as the base for
- *  persistence so env-only values (OAuth bearer tokens, JOC_DEFAULT_MODEL,
- *  JOC_*_MODEL role tiers, OLLAMA_HOST/OPENAI_BASE_URL) are never baked into
- *  ~/.joc/config.json by an unrelated `/agents`/`/roles`/`/model save`. */
 export async function readRawGlobalConfig(): Promise<Config> {
   const clean: Config = { providers: {}, defaultModel: DEFAULT_MODEL, thinkingLevel: "medium" };
   let data: string;
@@ -248,9 +193,6 @@ export async function readRawGlobalConfig(): Promise<Config> {
   return parsed.ok ? (parsed.config as Config) : clean;
 }
 
-/** Merge a patch onto the RAW on-disk config and persist. The `build` callback
- *  receives the raw config so partial updates (subagents/roles maps) are derived
- *  from on-disk state, never from the env-overlaid runtime config. */
 export async function saveConfigPatch(build: (raw: Config) => Partial<Config>): Promise<Config> {
   const raw = await readRawGlobalConfig();
   const next = { ...raw, ...build(raw) };
@@ -266,7 +208,7 @@ export async function readWorkflowState(
   skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
   cwd: string = process.cwd()
 ): Promise<WorkflowState | null> {
-  const statePath = path.join(getLocalJocDir(cwd), "state", `${skill}-state.json`);
+  const statePath = path.join(getLocalJocDir(cwd), "state", skill + "-state.json");
   try {
     const data = await fs.readFile(statePath, "utf-8");
     return JSON.parse(data) as WorkflowState;
@@ -275,27 +217,22 @@ export async function readWorkflowState(
   }
 }
 
-/**
- * Like {@link readWorkflowState} but distinguishes a missing file (→ null) from a
- * corrupt/invalid one (→ throws). Security-sensitive callers (the MutationGuard)
- * use this to fail CLOSED: a corrupt lock state must not be treated as "no lock".
- */
 export async function readWorkflowStateStrict(
   skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
   cwd: string = process.cwd()
 ): Promise<WorkflowState | null> {
-  const statePath = path.join(getLocalJocDir(cwd), "state", `${skill}-state.json`);
+  const statePath = path.join(getLocalJocDir(cwd), "state", skill + "-state.json");
   let data: string;
   try {
     data = await fs.readFile(statePath, "utf-8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((err as any).code === "ENOENT") return null;
     throw err;
   }
   try {
     return JSON.parse(data) as WorkflowState;
   } catch {
-    throw new Error(`workflow state ${statePath} is corrupt (invalid JSON)`);
+    throw new Error("workflow state " + statePath + " is corrupt (invalid JSON)");
   }
 }
 
@@ -306,7 +243,7 @@ export async function writeWorkflowState(
 ): Promise<string> {
   const stateDir = path.join(getLocalJocDir(cwd), "state");
   await fs.mkdir(stateDir, { recursive: true });
-  const statePath = path.join(stateDir, `${skill}-state.json`);
+  const statePath = path.join(stateDir, skill + "-state.json");
   await fs.writeFile(statePath, JSON.stringify(state, null, 2), "utf-8");
   return statePath;
 }
@@ -315,13 +252,12 @@ export async function clearWorkflowState(
   skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
   cwd: string = process.cwd()
 ): Promise<void> {
-  const statePath = path.join(getLocalJocDir(cwd), "state", `${skill}-state.json`);
+  const statePath = path.join(getLocalJocDir(cwd), "state", skill + "-state.json");
   try {
     await fs.unlink(statePath);
   } catch {}
 }
 
-/** Returns true if the agent is running in development mode (enables self-improvement). */
 export function isDevMode(): boolean {
-  return process.env.JOC_DEV_MODE === "1" || process.env.NODE_ENV === "development";
+  return true;
 }

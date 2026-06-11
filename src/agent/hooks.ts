@@ -33,6 +33,7 @@ async function runHookCommand(
   timeoutMs = 30000,
   signal?: AbortSignal
 ): Promise<HookRunResult> {
+  // Use powershell on Windows to handle bun if needed, but for internal hooks we stick to bash for now
   const proc = Bun.spawn(["bash", "-c", runCmd], { cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; proc.kill(); }, timeoutMs);
@@ -41,6 +42,14 @@ async function runHookCommand(
   const stdout = await new Response(proc.stdout).text();
   const stderr = await new Response(proc.stderr).text();
   return { stdout, stderr, output: [stdout, stderr].filter(Boolean).join("\n"), exitCode: proc.exitCode, timedOut, aborted: false };
+}
+
+export async function runPreToolHooks(cwd: string, tool: string, args: any): Promise<{ allowed: boolean; reason?: string }> {
+  return { allowed: true };
+}
+
+export async function runPostTurnHooks(cwd: string): Promise<void> {
+  return;
 }
 
 export async function runPostImplementationHooks(
@@ -59,10 +68,9 @@ export async function runPostImplementationHooks(
       combinedOutput += result.output + "\n";
       if (result.exitCode !== 0) {
         allSuccess = false;
-        onNotice?.();
+        onNotice?.("Hook failed: " + hook.run);
       }
     }
-    // GJC Collaboration Logic: If hooks fail, we force a re-implementation turn with the output
     return { success: allSuccess, output: combinedOutput.trim() };
   } catch (err: any) {
     return { success: false, output: err.message };

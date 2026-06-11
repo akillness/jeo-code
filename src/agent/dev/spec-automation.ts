@@ -16,10 +16,10 @@ export async function syncSpecificationToSeed(cwd: string) {
     const spec = await fs.readFile(specPath, "utf-8");
     
     // Simple extraction logic for demo/Phase 3
-    const goalsMatch = spec.match(/## Goal\n([\s\S]+?)\n\n/);
+    const goalsMatch = spec.match(/## Purpose\n([\s\S]+?)\n\n/);
     const goals = goalsMatch ? goalsMatch[1].trim() : "Autonomous Evolution";
-    const reqsMatch = spec.match(/## Functional Requirements\n([\s\S]+?)\n\n/);
-    const reqs = reqsMatch ? reqsMatch[1].split("\n").map(l => l.replace(/^- /, "").trim()).filter(Boolean) : [];
+    const reqsMatch = spec.match(/## Requirements\n([\s\S]+?)\n\n/);
+    const reqs = reqsMatch ? reqsMatch[1].split("\n").map(l => l.replace(/^[*-]\d+./, "").trim()).filter(Boolean) : [];
 
     const seedContent = `
 goal: "${goals.replace(/"/g, '\\\\\\\\"')}"

@@ -15,6 +15,7 @@ import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, 
 import { friendlyProviderError } from "../util/provider-error";
 import { isRateLimitError } from "../util/retry";
 import { runPreToolHooks, runPostTurnHooks } from "./hooks";
+import { minimizeToolOutput } from "./output-minimizer";
 
 
 async function invokeCallLlm(history: Message[], options: {
@@ -367,7 +368,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
 
     ev.onToolResult?.(invocation.tool, success, output);
     history.push({ role: "assistant", content: responseText });
-    let resultBody = truncateToolOutput(output);
+    const minimized = minimizeToolOutput(output, invocation.tool);
+    const visible = minimized.text;
+    let resultBody = truncateToolOutput(visible);
     // Spill oversized tool output to a recoverable artifact so the decisive middle
     // (test logs, long searches) isn't lost to the head+tail cap — the model can
     // `read` the full file when the preview elides what it needs.

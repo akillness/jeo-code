@@ -6305,3 +6305,35 @@ footer already renders both), which forced a rescope before implementation.
   and the pass-888b contract held (alternate_on=0, no ED mid-turn).
 - Architect: all-CLEAR APPROVE (7-ArchReviewParityImpl); the single P3 test-depth nit
   (ASCII ledger fallback) fixed with a deterministic TERM=dumb test.
+
+## gjc-parity Phase 1: token-efficiency + usability — pass 890
+
+**Date:** 2026-06-11 · **Dimension: agent loop + tui (gjc-parity, consensus-seed P1).**
+
+Phase 1 of the architect+critic-approved consensus seed (logs/gjc-deep-study/consensus-seed.yaml),
+adopting gjc's missing behavior in PURE-TS without breaking jeo-code's zero-native-deps concept.
+
+- **890.B1 tokenizer-accurate context accounting.** New `src/agent/tokenizer.ts` (pure-JS
+  js-tiktoken, lazy-loaded + memoized, cl100k/o200k by family). `compaction.ts` uses accurate
+  BPE at the decision boundary; the cheap char heuristic stays for the per-frame footer ctx%
+  (perf guard). Char-budget (legacy maxChars) path keeps the heuristic so its basis matches.
+- **890.B2 output noise minimizer.** New `src/agent/output-minimizer.ts` strips passing test
+  rows (bun-test/jest/vitest/cargo) while keeping failures+summary+diagnostics; runs before
+  truncate, original still spilled to artifact. Summary-gated so plain output is untouched.
+- **890.B3 cost accounting.** New `src/ai/pricing.ts` static per-model price table; footer +
+  `[STEP]` show live `$` cost (unknown/local model → tokens only, never fabricated) and a
+  `(sub)` marker during subagent turns.
+- **890.B5 git dirty-flag.** Footer shows `⑂ <branch> ?N`; `gitDirtyCount()` recomputed per
+  turn start (one `git status --porcelain`/turn, not per render).
+- **890.B11 retry fail-fast classes.** `Config.retry.failFastStatuses`/`failFastPatterns`
+  layer non-retryable overrides on `defaultRetryable`; documented in README.
+- **890.B12 slash `(i/total)` counter** in the slash preview.
+
+### Verification (pass 890)
+- typecheck 0; `bun test` 952 pass / 0 fail (+26 new); inline-scrollback regression 6/6 PASS;
+  `bun build --compile` green (js-tiktoken is pure-JS, base64-js only — no .node/.wasm).
+- Architect: round-1 WATCH/COMMENT (MEDIUM B5 session-cached staleness + LOW nits), all fixed
+  (per-turn dirty recompute, tokenizer↔compaction cycle broken, comment honesty) → round-2
+  all-CLEAR APPROVE, no blocking AI-slop. Executor QA: 5/5 tmux + 4/4 unit + 3/3 adversarial.
+- Ultragoal Phase-1 goal complete (final-aggregate receipt). Phases 2 (UX depth + scan perf)
+  and 3 (opt-in breadth) remain pending in consensus-seed.yaml.

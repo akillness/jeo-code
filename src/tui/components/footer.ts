@@ -10,6 +10,7 @@ import {
   evolutionTrack,
   EVOLUTION_STAGE_COUNT,
 } from "./evolution";
+import { formatCost } from "../../ai/pricing";
 
 export interface FooterData {
   model: string;
@@ -34,6 +35,10 @@ export interface FooterData {
   contextMaxTokens?: number;
   cwd?: string;
   branch?: string;
+  /** Uncommitted-change count for the `⑂ branch ?N` dirty flag (gjc parity); omit/0 = clean. */
+  dirtyCount?: number;
+  /** Live USD cost for the turn (price table × usage); omit when the model has no known price. */
+  costUsd?: number;
   autoCompact?: boolean;
 }
 
@@ -87,7 +92,8 @@ export function renderFooter(d: FooterData): string {
     }
     displayCwd = middleTruncate(displayCwd, 32, unicode);
     if (d.branch) {
-      parts.push(`${displayCwd} (${d.branch})`);
+      const dirty = d.dirtyCount && d.dirtyCount > 0 ? ` ?${d.dirtyCount}` : "";
+      parts.push(`${displayCwd} (${d.branch}${dirty})`);
     } else {
       parts.push(displayCwd);
     }
@@ -164,6 +170,11 @@ export function renderFooter(d: FooterData): string {
   // Session ID
   if (d.sessionId) {
     parts.push(d.sessionId.slice(0, 8));
+  }
+
+  // Live turn cost (gjc parity): only when a known price produced a figure.
+  if (d.costUsd !== undefined && Number.isFinite(d.costUsd) && d.costUsd > 0) {
+    parts.push(formatCost(d.costUsd));
   }
 
   // Compact evolution-stage tag, e.g. "●●●○○ Tool User (Homo Habilis) [3/5]".

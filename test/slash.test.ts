@@ -134,3 +134,26 @@ test("dynamic skill slash aliases appear in palette, preview, and selection orde
   expect(formatSlashPreview("/speckit.t", 6, 0, dynamic).join("\n")).toContain("❯ /speckit.tasks");
   expect(slashPreviewMatches("/speckit", dynamic)).toEqual(["/speckit.plan", "/speckit.tasks"]);
 });
+
+test("formatSlashPreview: overflow shows an (i/total) position counter that tracks selected", () => {
+  const total = slashPreviewMatches("/").length;
+  expect(total).toBeGreaterThan(3); // ensure the list overflows a budget of 3
+
+  // No selection → window starts at the top → (1/total) on the ↓ marker.
+  const top = formatSlashPreview("/", 3, -1);
+  expect(top.length).toBeLessThanOrEqual(3);
+  const topMore = top.find(l => l.includes("↓") && l.includes("more"));
+  expect(topMore).toBeDefined();
+  expect(topMore!).toContain(`(1/${total})`);
+
+  // Selecting row 2 (0-based) → counter reads (3/total) and the index follows.
+  const mid = formatSlashPreview("/", 3, 2).map(l => l.replace(/\x1b\[[0-9;]*m/g, ""));
+  expect(mid.length).toBeLessThanOrEqual(3);
+  expect(mid.some(l => l.includes(`(3/${total})`))).toBe(true);
+  expect(mid.some(l => l.includes(`(1/${total})`))).toBe(false);
+
+  // Selecting the last row → counter reads (total/total) on whichever marker is shown.
+  const last = formatSlashPreview("/", 3, total - 1).map(l => l.replace(/\x1b\[[0-9;]*m/g, ""));
+  expect(last.length).toBeLessThanOrEqual(3);
+  expect(last.some(l => l.includes(`(${total}/${total})`))).toBe(true);
+});

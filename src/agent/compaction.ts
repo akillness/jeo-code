@@ -1,4 +1,5 @@
 import { callLlm, type Message } from "./loop";
+import { countTokensAccurate } from "./tokenizer";
 
 export interface CompactionOptions {
   maxMessages?: number;
@@ -61,6 +62,20 @@ export function estimateMessageTokens(msg: Message): number {
 
 export function historyTokens(history: Message[]): number {
   return history.reduce((sum, msg) => sum + estimateMessageTokens(msg), 0);
+}
+
+/**
+ * Accurate BPE token total for a history, summing `countTokensAccurate` per
+ * message (+1 per message for role/separator overhead, mirroring
+ * `estimateMessageTokens`). Use this ONLY at the compaction decision boundary
+ * and summary-budget points — never in the per-render footer path, which must
+ * stay on the cheap `historyTokens` heuristic.
+ */
+export function accurateHistoryTokens(history: Message[], model?: string): number {
+  return history.reduce(
+    (sum, msg) => sum + countTokensAccurate(msg.role, model) + countTokensAccurate(msg.content, model) + 1,
+    0
+  );
 }
 
 function formatMessagesForSummaryByTokens(messages: Message[], maxTokens: number): string {
@@ -165,7 +180,13 @@ export async function maybeCompact(
   const body = history.slice(systemCount);
   
   const overMessages = opts.force || body.length > maxMessages;
-  const overTokens = historyTokens(history) > budgetTokens;
+  // Decision boundary: use accurate BPE counts against a real TOKEN budget so we neither
+  // compact prematurely nor blow past the window on heuristic error. But when the budget
+  // is CHAR-derived (legacy `maxChars` → chars/4), measure with the matching char heuristic
+  // so the basis is consistent (accurate BPE under-counts repeated-char runs vs the heuristic).
+  const budgetFromChars = !opts.contextTokens && opts.maxTokens === undefined && opts.maxChars !== undefined;
+  const measuredTokens = budgetFromChars ? historyTokens(history) : accurateHistoryTokens(history, opts.model);
+  const overTokens = measuredTokens > budgetTokens;
 
   if (!overMessages && !overTokens) {
     return { compacted: false, removed: 0 };
@@ -176,7 +197,7 @@ export async function maybeCompact(
   // hard context window is still exceeded, report it; otherwise leave history
   // unchanged so repeated auto-/manual compaction converges.
   if (alreadyCompacted(body) && body.length <= keepRecent + 1) {
-    const finalTokens = historyTokens(history);
+    const finalTokens = accurateHistoryTokens(history, opts.model);
     const error = opts.contextTokens && finalTokens > opts.contextTokens
       ? `Context window limit exceeded even after compaction. Remaining content size: ${Math.round(finalTokens)} tokens, Window limit: ${opts.contextTokens} tokens.`
       : undefined;
@@ -222,7 +243,7 @@ export async function maybeCompact(
 
     history.splice(0, history.length, ...next);
 
-    const finalTokens = historyTokens(history);
+    const finalTokens = accurateHistoryTokens(history, opts.model);
     let error: string | undefined;
     if (opts.contextTokens && finalTokens > opts.contextTokens) {
       error = `Context window limit exceeded even after compaction. Remaining content size: ${Math.round(finalTokens)} tokens, Window limit: ${opts.contextTokens} tokens.`;
@@ -253,7 +274,7 @@ export async function maybeCompact(
     history.splice(0, history.length, ...next);
     process.stderr.write(`[joc] compaction summary failed (${(err as Error)?.message ?? "error"}); dropped ${older.length} older messages to bound memory.\n`);
     
-    const finalTokens = historyTokens(history);
+    const finalTokens = accurateHistoryTokens(history, opts.model);
     let error: string | undefined;
     if (opts.contextTokens && finalTokens > opts.contextTokens) {
       error = `Context window limit exceeded even after compaction. Remaining content size: ${Math.round(finalTokens)} tokens, Window limit: ${opts.contextTokens} tokens.`;

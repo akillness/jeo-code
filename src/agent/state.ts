@@ -65,6 +65,12 @@ export interface Config {
     rateLimitRetries?: number;
     /** Minimum backoff (ms) for a 429 when the server sends no Retry-After. */
     rateLimitMinDelayMs?: number;
+    /** HTTP statuses to treat as NON-retryable even when defaultRetryable would
+     *  retry them (e.g. pin 503 to fail fast instead of riding the backoff ladder). */
+    failFastStatuses?: number[];
+    /** Case-insensitive substrings; an error whose message matches any of these
+     *  fails fast (non-retryable) even when the chosen predicate would retry it. */
+    failFastPatterns?: string[];
   };
   /**
    * Per-subagent-role overrides (gjc role-agent parity). Keyed by role id

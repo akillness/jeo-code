@@ -3,6 +3,7 @@ import { meter } from "./meter";
 import { categoryBadge } from "./category-index";
 import { animatedGradientText, ColorLevel } from "./color";
 import { formatUsage } from "./duration";
+import { formatCost } from "../../ai/pricing";
 
 export interface JocStatusData {
   colorLevel?: number;
@@ -29,6 +30,10 @@ export interface JocStatusData {
   avgStepMs?: number;
   /** Cumulative turn token usage (engine onUsage) shown live on the [STEP] row. */
   usage?: { inputTokens: number; outputTokens: number } | null;
+  /** Live USD cost for the turn (price table × usage); omit when the model has no known price. */
+  costUsd?: number;
+  /** True while a delegated subagent turn is in flight — renders gjc's `(sub)` marker. */
+  subagentActive?: boolean;
 
 }
 
@@ -89,6 +94,13 @@ export function renderJocStatus(data: JocStatusData): string[] {
       const glyph = data.unicode !== false ? "⤴" : "^";
       extraStats += ` · ${glyph} ${rate >= 100 ? rate.toFixed(0) : rate.toFixed(1)}/s`;
     }
+  }
+  // Live USD cost (gjc parity `$0.42 (sub)`): only when a known price produced a figure.
+  if (typeof data.costUsd === "number" && Number.isFinite(data.costUsd) && data.costUsd > 0) {
+    extraStats += ` · ${formatCost(data.costUsd)}`;
+  }
+  if (data.subagentActive) {
+    extraStats += " (sub)";
   }
 
 

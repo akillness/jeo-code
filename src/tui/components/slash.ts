@@ -129,10 +129,14 @@ export function formatSlashPreview(line: string, max = 6, selected = -1, extra: 
   const sel = selected < 0 ? 0 : Math.min(selected, n - 1);
   const start = Math.max(0, Math.min(sel - Math.floor(slots / 2), n - slots));
   const lines: string[] = [];
-  if (start > 0) lines.push(`  ↑ ${start} more`);
-  for (let i = start; i < start + slots && i < n; i++) lines.push(fmt(rows[i]!, i === selected));
+  // Position counter (1-based) of the selected row within the full match list,
+  // shown on a "more" marker so an overflowing list reads like gjc's `(3/33)`.
+  // When nothing is selected, the window starts at the top → `(1/total)`.
+  const counter = `(${sel + 1}/${n})`;
   const below = n - (start + slots);
-  if (below > 0) lines.push(`  ↓ ${below} more`);
+  if (start > 0) lines.push(below > 0 ? `  ↑ ${start} more` : `  ↑ ${start} more   ${counter}`);
+  for (let i = start; i < start + slots && i < n; i++) lines.push(fmt(rows[i]!, i === selected));
+  if (below > 0) lines.push(`  ↓ ${below} more   ${counter}`);
   return lines;
 }
 

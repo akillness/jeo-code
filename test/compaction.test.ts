@@ -303,9 +303,10 @@ test("maybeCompact: CJK heavy history triggers compaction earlier than ASCII (to
   const cjkRes = await maybeCompact(cjkHistory, { maxMessages: 40, maxTokens: 120, keepRecent: 1 });
   expect(cjkRes.compacted).toBe(true);
 
-  // Case 2: ASCII history. 250 characters of ASCII.
-  // 250 characters * 0.25 tokens/char = ~62 tokens. (Plus structure overhead)
-  // With maxTokens: 120, this should NOT trigger compaction.
+  // Case 2: ASCII history. 250 ASCII chars. The maxTokens path now counts with
+  // BPE-accurate tokens (js-tiktoken), where a run of repeated ASCII merges to well
+  // under maxTokens: 120 — so this should NOT trigger compaction. (CJK above counts
+  // far higher per char and DOES exceed the budget.)
   const asciiHistory: Message[] = [
     { role: "user", content: "a".repeat(250) },
     { role: "assistant", content: "ack" },
@@ -317,9 +318,8 @@ test("maybeCompact: CJK heavy history triggers compaction earlier than ASCII (to
 test("maybeCompact: system prompt size is included in token budget", async () => {
   mockCallLlm = async () => "SYS-SUMMARY";
 
-  // maxTokens: 150.
-  // User message has 60 tokens (240 ASCII chars).
-  // Without system prompt: total ~62 tokens. Below 150 -> no compaction.
+  // maxTokens: 150 (BPE-accurate path). The user message alone counts under 150, so
+  // without the system prompt there is no compaction.
   const noSysHistory: Message[] = [
     { role: "user", content: "a".repeat(240) },
     { role: "assistant", content: "ack" },
@@ -327,8 +327,7 @@ test("maybeCompact: system prompt size is included in token budget", async () =>
   const noSysRes = await maybeCompact(noSysHistory, { maxMessages: 40, maxTokens: 150, keepRecent: 1 });
   expect(noSysRes.compacted).toBe(false);
 
-  // With a large system prompt: 150 tokens (600 ASCII chars).
-  // Total ~210 tokens. Above 150 -> compaction triggers.
+  // Adding a large system prompt pushes the accurate total over 150 -> compaction.
   const sysHistory: Message[] = [
     { role: "system", content: "s".repeat(600) },
     { role: "user", content: "a".repeat(240) },

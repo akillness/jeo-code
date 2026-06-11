@@ -378,3 +378,32 @@ test("exponential backoff with cap", async () => {
   // attempt 4: 100 * 2^3 = 800 -> capped at 350
   expect(sleepCalls).toEqual([100, 200, 350, 350]);
 });
+
+test("resolveRetryOptions: failFastStatuses forces a normally-retried status non-retryable", () => {
+  // Baseline: 503 is in the default retryable set, so it would normally retry.
+  expect(defaultRetryable({ status: 503 })).toBe(true);
+  expect(resolveRetryOptions({}).isRetryable!({ status: 503 }, 1)).toBe(true);
+  // Pinned: 503 now fails fast, but other transient statuses still retry.
+  const opts = resolveRetryOptions({ failFastStatuses: [503] });
+  expect(opts.isRetryable!({ status: 503 }, 1)).toBe(false);
+  expect(opts.isRetryable!({ status: 500 }, 1)).toBe(true);
+  // failFastStatuses keys off the STRUCTURED `.status` field only, so a 503 embedded
+  // only in the message text is NOT failed fast — it still retries via defaultRetryable.
+  expect(opts.isRetryable!(new Error("upstream returned HTTP 503"), 1)).toBe(true);
+});
+
+test("resolveRetryOptions: failFastPatterns makes a matching message non-retryable (case-insensitive)", () => {
+  // Baseline: an "overloaded" message is retryable by default.
+  expect(defaultRetryable(new Error("server Overloaded"))).toBe(true);
+  const opts = resolveRetryOptions({ failFastPatterns: ["overloaded"] });
+  expect(opts.isRetryable!(new Error("server Overloaded"), 1)).toBe(false);
+  // A non-matching but otherwise-retryable error still retries.
+  expect(opts.isRetryable!(new Error("network timeout"), 1)).toBe(true);
+});
+
+test("resolveRetryOptions: unset fail-fast overrides leave isRetryable unchanged (defaultRetryable)", () => {
+  expect(resolveRetryOptions({}).isRetryable).toBe(defaultRetryable);
+  expect(resolveRetryOptions({ requestMaxRetries: 2 }).isRetryable).toBe(defaultRetryable);
+  // Empty arrays are a no-op too.
+  expect(resolveRetryOptions({ failFastStatuses: [], failFastPatterns: [] }).isRetryable).toBe(defaultRetryable);
+});

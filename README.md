@@ -165,6 +165,42 @@ JOC_TUI_THEME=cosmic        # TUI theme (cosmic/matrix/solar/red-claw/blue-crab/
 JOC_TUI_ALT_SCREEN=1        # Revert to the legacy alt-screen live turn (default: main-buffer inline + tmux wheel scrollback)
 ```
 
+### Provider retry budget
+
+The optional `retry` block in `~/.joc/config.json` tunes how provider requests are
+auto-retried on transient failures (gjc parity). All fields are optional; unset
+fields fall back to the built-in defaults (3 attempts, with a more generous 429
+rate-limit budget + backoff floor).
+
+| Field | Meaning |
+| --- | --- |
+| `requestMaxRetries` | Retries (excluding the initial request) for a non-streaming request. Total attempts = this + 1. |
+| `streamMaxRetries` | Same, for streaming requests. |
+| `maxRetries` | Fallback budget applied to both request + stream when the specific field is unset. |
+| `maxDelayMs` | Caps per-attempt exponential backoff. |
+| `rateLimitRetries` | Retries specifically for 429 rate limits (lets a per-minute window clear). |
+| `rateLimitMinDelayMs` | Minimum 429 backoff floor when the server sends no `Retry-After`. |
+| `failFastStatuses` | HTTP statuses to treat as **non-retryable** even when they would normally retry (e.g. pin `503` to abort instead of riding the backoff ladder). |
+| `failFastPatterns` | Case-insensitive substrings; an error message matching any of these **fails fast** instead of retrying. |
+
+`failFastStatuses` / `failFastPatterns` are layered on top of the normal retry
+classifier: a matching status or message is forced non-retryable, and everything
+else is decided exactly as before.
+
+```jsonc
+{
+  "retry": {
+    "requestMaxRetries": 4,
+    "streamMaxRetries": 2,
+    "maxDelayMs": 8000,
+    "rateLimitRetries": 6,
+    "rateLimitMinDelayMs": 2000,
+    "failFastStatuses": [503],
+    "failFastPatterns": ["model not found", "context length exceeded"]
+  }
+}
+```
+
 ## Publishing
 
 Required npm token permissions:

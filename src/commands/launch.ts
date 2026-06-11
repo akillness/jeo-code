@@ -158,6 +158,22 @@ export function tmuxSessionName(cwd: string, branch: string, flags: LaunchFlags)
 }
 
 /**
+ * Count uncommitted git entries for the `⑂ <branch> ?N` footer dirty flag (gjc parity).
+ * One `git status --porcelain` spawn per CALL; callers invoke it once per turn start, not
+ * per render. Returns undefined when not a repo / git absent / clean.
+ */
+export function gitDirtyCount(cwd: string): number | undefined {
+  try {
+    const res = Bun.spawnSync(["git", "status", "--porcelain"], { cwd, stdout: "pipe", stderr: "ignore" });
+    if (res.exitCode !== 0) return undefined;
+    const n = res.stdout.toString().split("\n").filter(l => l.trim().length > 0).length;
+    return n || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Allocate + create an INDEPENDENT tmux session from a base name. Each separate,
  * concurrent `joc --tmux` invocation gets its OWN session instead of attaching to (and
  * mirroring) one another process already created: try `base`, then `base-2`, `base-3`, …
@@ -937,7 +953,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // `turnConfig` was read before compaction so both the compactor and delegated
     // task tool see mid-session config changes (e.g. `/agents <role> <model>`).
     const { provider: activeProvider } = await describeModel(activeModel);
-    const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: flags.maxSteps, cwd, branch }) : null;
+    // Dirty count is recomputed at each turn start (gjc parity P1.B5: per-turn, not
+    // per-render) so `?N` grows as the agent edits files; one spawn/turn, not per frame.
+    const turnDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
+    const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: flags.maxSteps, cwd, branch, dirtyCount: turnDirtyCount }) : null;
     tui?.setContextUsage(historyTokens(history), contextTokens);
     if (tui) tui.start();
     let result;

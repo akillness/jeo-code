@@ -200,6 +200,35 @@ export function resolveRetryOptions(retry: Config["retry"], kind: "request" | "s
   else if (typeof retry?.maxDelayMs !== "number") opts.rateLimitMinDelayMs = DEFAULT_RATE_LIMIT_MIN_DELAY_MS;
   opts.rateLimitMaxServerDelayMs = DEFAULT_RATE_LIMIT_MAX_SERVER_DELAY_MS;
 
+  // Config-driven fail-fast overrides: a status in `failFastStatuses` or a message
+  // matching any `failFastPattern` is forced non-retryable, layered on top of the
+  // chosen predicate (which still decides everything else). gjc parity for pinning a
+  // normally-transient class (e.g. 503) to abort instead of riding the backoff ladder.
+  const failFastStatuses = retry?.failFastStatuses;
+  const failFastPatterns = retry?.failFastPatterns;
+  if ((failFastStatuses && failFastStatuses.length > 0) || (failFastPatterns && failFastPatterns.length > 0)) {
+    const base = opts.isRetryable ?? defaultRetryable;
+    const statusSet = new Set(failFastStatuses ?? []);
+    const lowered = (failFastPatterns ?? []).map(p => p.toLowerCase());
+    opts.isRetryable = (err: unknown, attempt: number): boolean => {
+      if (err && typeof err === "object") {
+        const raw = (err as { status?: unknown }).status;
+        const status = typeof raw === "number" ? raw : (typeof raw === "string" ? Number(raw) : NaN);
+        if (!Number.isNaN(status) && statusSet.has(status)) return false;
+      }
+      if (lowered.length > 0) {
+        const msg = err instanceof Error
+          ? err.message
+          : (typeof err === "object" && err !== null && typeof (err as { message?: unknown }).message === "string"
+            ? (err as { message: string }).message
+            : String(err));
+        const lowerMsg = msg.toLowerCase();
+        if (lowered.some(p => lowerMsg.includes(p))) return false;
+      }
+      return base(err, attempt);
+    };
+  }
+
   return opts;
 }
 

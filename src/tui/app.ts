@@ -26,6 +26,7 @@ import { resolveTheme, themeGradient } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, type ForgeSummary } from "./components/forge";
 import { renderJocStatus } from "./components/status";
+import { costForUsage } from "../ai/pricing";
 import { categoryBadge, categoryForTool } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
@@ -45,6 +46,8 @@ export interface LaunchTuiOptions {
   tty?: boolean;
   cwd?: string;
   branch?: string;
+  /** Uncommitted-change count for the `⑂ branch ?N` dirty flag; omit/0 = clean. */
+  dirtyCount?: number;
 }
 
 export interface AgentEventsLike {
@@ -115,6 +118,8 @@ export class LaunchTui {
   private workflowStatus: { skill: string; phase: string; detail?: string } | null = null;
   // Cumulative token usage for the live turn (engine onUsage event).
   private turnUsage: { inputTokens: number; outputTokens: number } | null = null;
+  // True while a delegated subagent turn is in flight — drives the `(sub)` status marker.
+  private subagentActive = false;
   // True while the live turn renders in the alternate screen buffer (TTY only);
   // drives leaving it on finish so terminal scroll never fights the repaint.
   private usedAltScreen = false;
@@ -163,6 +168,7 @@ export class LaunchTui {
       showProgress: true,
       cwd: opts.cwd,
       branch: opts.branch,
+      dirtyCount: opts.dirtyCount,
     };
   }
 
@@ -345,6 +351,7 @@ export class LaunchTui {
     const step = e.step && e.maxSteps ? ` step ${e.step}/${e.maxSteps}` : "";
     switch (e.kind) {
       case "start":
+        this.subagentActive = true;
         this.appendLedger(`${badge} ${role} ${this.unicode ? "▸" : ">"} start: ${detail}\n`);
         break;
       case "step":
@@ -357,6 +364,7 @@ export class LaunchTui {
         this.appendLedger(`  ${badge} ${role} ${bad} ${detail || "error"}\n`);
         break;
       case "done":
+        this.subagentActive = false;
         this.appendLedger(`${badge} ${role} ${this.unicode ? "◂" : "<"} done${e.success === false ? " (incomplete)" : ""}: ${detail}\n`);
         break;
     }
@@ -579,6 +587,9 @@ export class LaunchTui {
     // Bottom-pinned status + footer.
     const bottom: string[] = [];
     const statusMsg = this.currentActivity();
+    // Live USD cost from turn usage × the model's price (undefined when the model has no
+    // known price — then no $ is shown). Computed once per draw, fed to status + footer.
+    const costUsd = costForUsage(this.footer.model, this.turnUsage) ?? undefined;
     if (isThinking) {
       const colorLevel = detectColorLevel(process.env, isTTY());
       const phase = (this.tickCount * 0.05) % 1;
@@ -610,6 +621,8 @@ export class LaunchTui {
           palette,
           isThinking: true,
           usage: this.turnUsage,
+          costUsd,
+          subagentActive: this.subagentActive,
         })) bottom.push(line);
       } else {
         // Compact fallback still keeps progress and insight separate: no decorative
@@ -631,7 +644,7 @@ export class LaunchTui {
     const strip = liveSteps.length
       ? `  ${formatStepTimelineCompact(liveSteps, { unicode: this.unicode, color: this.theme.color, frame: this.tickCount, cap: 16 })}`
       : "";
-    bottom.push(`${this.spinner.current()} ${renderFooter({ ...this.footer, elapsedMs, color: this.theme.color })}${strip}`);
+    bottom.push(`${this.spinner.current()} ${renderFooter({ ...this.footer, elapsedMs, costUsd, color: this.theme.color })}${strip}`);
     const bottomHeight = bottom.length;
 
     const forgeLines = fit ? this.renderForge(innerWidth, 2) : [];

@@ -1,4 +1,5 @@
 import deepInterviewSkillRaw from "../prompts/skills/deep-interview/SKILL.md" with { type: "text" };
+import deepDiveSkillRaw from "../prompts/skills/deep-dive/SKILL.md" with { type: "text" };
 import ralplanSkillRaw from "../prompts/skills/ralplan/SKILL.md" with { type: "text" };
 import teamSkillRaw from "../prompts/skills/team/SKILL.md" with { type: "text" };
 import ultragoalSkillRaw from "../prompts/skills/ultragoal/SKILL.md" with { type: "text" };
@@ -22,6 +23,7 @@ export interface SkillDoc {
 
 export const SKILLS: SkillDoc[] = [
   parseSkillMarkdown("deep-interview", deepInterviewSkillRaw),
+  parseSkillMarkdown("deep-dive", deepDiveSkillRaw),
   parseSkillMarkdown("ralplan", ralplanSkillRaw),
   parseSkillMarkdown("team", teamSkillRaw),
   parseSkillMarkdown("ultragoal", ultragoalSkillRaw),

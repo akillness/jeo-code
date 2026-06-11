@@ -12,7 +12,7 @@ import { skillsPromptSection, loadSkills, formatSkill, buildSkillTask, getSkillF
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
-import { matchSlash, isSlashAttempt, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, type SlashCommandInfo } from "../tui/components/slash";
+import { matchSlash, isSlashAttempt, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, type SlashCommandInfo } from "../tui/components/slash";
 import { staticCompletionContext, readlineCompleter, formatCompletionPreview, tokenize, type CompletionContext } from "../tui/components/autocomplete";
 import { EVOLUTION_STAGES, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
@@ -1393,14 +1393,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     accent: accentPaint(welcomeTheme),
     accentShadow: accentShadowPaint(welcomeTheme),
   };
-  // Launch sweep: animate the DNA Claw's gradient once (~0.5s), ending on the
-  // static banner. Truecolor TTYs only; JEO_NO_WELCOME_ANIM=1 opts out.
+  // Launch sweep: the DNA Claw's gradient loops seamlessly (default 2 full
+  // cycles, JEO_WELCOME_ANIM_CYCLES overrides), ending on the static banner.
+  // Truecolor TTYs only; JEO_NO_WELCOME_ANIM=1 opts out.
   const sweepable =
     !!process.stdout.isTTY &&
     welcomeTheme.color &&
     detectColorLevel(process.env, true) === ColorLevel.TrueColor &&
-    (process.env.JEO_NO_WELCOME_ANIM ?? process.env.JOC_NO_WELCOME_ANIM) !== "1";
-  if (sweepable) await playWelcomeSweep(welcomeData);
+    jeoEnv("NO_WELCOME_ANIM") !== "1";
+  const sweepCycles = Math.min(10, Math.max(1, Number(jeoEnv("WELCOME_ANIM_CYCLES")) || 2));
+  if (sweepable) await playWelcomeSweep(welcomeData, { cycles: sweepCycles });
   else console.log(renderWelcome(welcomeData).join("\n"));
 
   const upd = await Promise.race([updatePromise, new Promise<null>(r => setTimeout(() => r(null), 1200))]);
@@ -2265,9 +2267,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // raw CLI input line can ever flash). Legacy prompt only without the box.
       const raw = (await promptInput(previewEnabled ? "" : "\njeo> ")).trim();
       disarmPreview();
-      // If an arrow-key selection was made over the slash/skill preview, run it.
-      let input = pendingSelection && (isSlashAttempt(raw) || raw.startsWith("$")) && pendingSelection.startsWith(raw)
-        ? pendingSelection
+      // If an arrow-key selection was made over the slash/skill preview, apply it
+      // to the ACTIVE trigger token (which may sit anywhere in the line —
+      // mention-style): only the token is replaced, surrounding text survives.
+      // A leading-token selection therefore still replaces the whole line and
+      // runs as a command, exactly as before.
+      const trigger = activeTriggerToken(raw);
+      let input = pendingSelection && trigger && pendingSelection.startsWith(trigger.token)
+        ? raw.slice(0, trigger.start) + pendingSelection
         : raw;
       // gjc-parity command aliases (full behavior reuse, no duplicated handlers).
       if (input === "/login" || input.startsWith("/login ")) input = `/provider login${input.slice("/login".length)}`;

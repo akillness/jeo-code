@@ -58,7 +58,12 @@ test("autocomplete: leading $ completes skill names", () => {
   expect(all.completions).toEqual(["$team", "$spec-kit", "$ultragoal"]);
 });
 
-test("autocomplete: $ beyond the first token does not complete", () => {
+test("autocomplete: $ completes skill names at any position (mention-style)", () => {
   const r = complete("explain $sp", ctx());
-  expect(r.completions).toEqual([]);
+  expect(r.completions).toEqual(["$spec-kit"]);
+  expect(r.token).toBe("$sp");
+  // A finished `$name` (space after) is no longer the active token.
+  expect(complete("$team build it", ctx()).completions).toEqual([]);
+  // Glued $ inside a word (env vars) never completes.
+  expect(complete("echo FOO$BAR", ctx()).completions).toEqual([]);
 });

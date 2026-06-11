@@ -116,11 +116,16 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       const pool = (ctx.mentionPaths?.(prefix) ?? []).map(p => (p.startsWith("@") ? p : `@${p}`));
       return { completions: dedupeCap(prefixHits(pool, token)), token, kind: "path" };
     }
-    // `$skill` exact-name entrypoint (gjc/Codex style) — complete the FIRST token only,
-    // matching the parser rule that only a leading `$name` invokes a skill.
-    if (tokens.length <= 1 && token.startsWith("$") && line.startsWith("$")) {
+    // `$skill` mention completion at ANY position in the line (mention-style;
+    // a leading `$name` is additionally the direct-invocation entrypoint).
+    if (token.startsWith("$")) {
       const names = ctx.skillNames ?? skillNames();
       return { completions: dedupeCap(prefixHits(names.map(n => `$${n}`), token)), token, kind: "skill" };
+    }
+    // `/command` mention completion mid-line (the leading-token case is the
+    // dedicated command branch below, which also completes arguments).
+    if (token.startsWith("/")) {
+      return { completions: dedupeCap(prefixHits(ctx.slashCommands, token)), token, kind: "command" };
     }
     return { completions: [], token: line, kind: "none" };
   }

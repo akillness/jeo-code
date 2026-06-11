@@ -216,3 +216,28 @@ test("staticCompletionContext includes the gjc-parity commands", () => {
     expect(base.slashCommands).toContain(cmd);
   }
 });
+
+test("$skill mention completes at any position in the line", () => {
+  const c = ctx({ skillNames: ["spec-kit", "team"] } as Partial<CompletionContext>);
+  const lead = complete("$te", c);
+  expect(lead.kind).toBe("skill");
+  expect(lead.completions).toEqual(["$team"]);
+  const mid = complete("please run $te", c);
+  expect(mid.kind).toBe("skill");
+  expect(mid.token).toBe("$te");
+  expect(mid.completions).toEqual(["$team"]);
+  // A finished token (space after) completes nothing.
+  expect(complete("$team build it", c).completions).toEqual([]);
+});
+
+test("/command mention completes mid-line against the plugin command list", () => {
+  const mid = complete("do X then /mo", ctx());
+  expect(mid.kind).toBe("command");
+  expect(mid.token).toBe("/mo");
+  expect(mid.completions).toEqual(["/model", "/models"]);
+  // Dynamic plugin/skill aliases in the context surface mid-line too.
+  const dyn = complete("then /speckit.p", ctx({ slashCommands: ["/model", "/speckit.plan", "/speckit.tasks"] }));
+  expect(dyn.completions).toEqual(["/speckit.plan"]);
+  // Plain words and paths stay untouched.
+  expect(complete("open src/cli.ts", ctx()).completions).toEqual([]);
+});

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { matchSlash, isSlashAttempt, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, type SlashCommandInfo } from "../src/tui/components/slash";
+import { matchSlash, isSlashAttempt, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, type SlashCommandInfo } from "../src/tui/components/slash";
 
 test("matchSlash: prefix matches lead, fuzzy subsequence hits trail (case-insensitive)", () => {
   expect(matchSlash("/")).toEqual(SLASH_COMMANDS);
@@ -195,4 +195,51 @@ test("slashPreviewMatches returns $skill names for arrow-key navigation", () => 
   expect(slashPreviewMatches("$team go", [], skills)).toEqual([]);
   // `/` behavior unchanged
   expect(slashPreviewMatches("/he", [], skills).length).toBeGreaterThan(0);
+});
+
+test("activeTriggerToken: finds /cmd and $skill tokens anywhere in the line", () => {
+  // Leading tokens (classic behavior).
+  expect(activeTriggerToken("/mo")).toEqual({ kind: "/", token: "/mo", start: 0 });
+  expect(activeTriggerToken("$te")).toEqual({ kind: "$", token: "$te", start: 0 });
+  expect(activeTriggerToken("/")).toEqual({ kind: "/", token: "/", start: 0 });
+  expect(activeTriggerToken("$")).toEqual({ kind: "$", token: "$", start: 0 });
+  // Mid-text tokens (mention-style, position-independent).
+  expect(activeTriggerToken("fix the bug /mo")).toEqual({ kind: "/", token: "/mo", start: 12 });
+  expect(activeTriggerToken("explain $te")).toEqual({ kind: "$", token: "$te", start: 8 });
+  expect(activeTriggerToken("  /he")).toEqual({ kind: "/", token: "/he", start: 2 });
+  // No trigger once the token is finished (space follows) or the active word is plain.
+  expect(activeTriggerToken("/model gpt")).toBeUndefined();
+  expect(activeTriggerToken("$team build it")).toBeUndefined();
+  expect(activeTriggerToken("/model ")).toBeUndefined();
+  // Glued / and $ inside a word are paths/vars, never triggers.
+  expect(activeTriggerToken("see src/cli")).toBeUndefined();
+  expect(activeTriggerToken("echo FOO$BAR")).toBeUndefined();
+  expect(activeTriggerToken("hello")).toBeUndefined();
+  expect(activeTriggerToken("")).toBeUndefined();
+});
+
+test("formatSlashPreview: command popup opens for a /token at any position", () => {
+  const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+  const mid = formatSlashPreview("fix the bug then /mo", 6, -1).map(stripAnsi).join("\n");
+  expect(mid).toContain("/model");
+  expect(mid).toContain("/models");
+  // Path-looking words do not pop the command list.
+  expect(formatSlashPreview("open src/cli.ts", 6, -1)).toEqual([]);
+});
+
+test("formatSlashPreview: skill popup opens for a $token at any position", () => {
+  const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+  const skills = [{ name: "spec-kit", summary: "Spec writing" }, { name: "team", summary: "Coordinated execution" }];
+  const mid = formatSlashPreview("please run $te", 6, -1, [], skills).map(stripAnsi).join("\n");
+  expect(mid).toContain("$team");
+  expect(mid).not.toContain("$spec-kit");
+  // Env-var-looking words do not pop the skill list.
+  expect(formatSlashPreview("echo $HOME stuff", 6, -1, [], skills)).toEqual([]);
+});
+
+test("slashPreviewMatches: arrow-selection matches follow the mid-text token", () => {
+  const skills = [{ name: "spec-kit" }, { name: "team" }];
+  expect(slashPreviewMatches("do X then $te", [], skills)).toEqual(["$team"]);
+  expect(slashPreviewMatches("do X then /mo", [], skills).slice(0, 2)).toEqual(["/model", "/models"]);
+  expect(slashPreviewMatches("do X then $te done", [], skills)).toEqual([]);
 });

@@ -168,12 +168,37 @@ function dollarMatches(trimmed: string, skills: readonly SkillPreviewItem[]): Sk
   return [...starts, ...fuzzy];
 }
 
+/** The `/command` or `$skill` token actively being typed, ANYWHERE in the line. */
+export interface ActiveTrigger {
+  kind: "/" | "$";
+  /** The trigger token itself (`/mo`, `$te`, bare `/`, bare `$`, …). */
+  token: string;
+  /** Index of the token's first character in `line` — for in-place replacement. */
+  start: number;
+}
+
 /**
- * Compact live preview shown beneath the input box as the user types a slash
- * keyword (before any space). Returns matching command usages + descriptions,
- * capped, or [] for non-slash / argument input (a space means it is a real
- * command being typed, not a keyword probe). A leading `$` previews SKILLS the
- * same way (`$name [intent]` direct invocation, gjc/Codex style). Match ORDER is
+ * Find the trigger token the user is typing, regardless of where it sits in the
+ * line (mention-style): the LAST whitespace-delimited word, when it starts with
+ * `/` or `$` and the caret is still on it (the word ends the line — no space
+ * after it yet). `"fix the bug /mo"` → `/mo`, `"explain $te"` → `$te`,
+ * `"/model"` → `/model`. No trigger once a space follows (`"/model gpt"` →
+ * the active word is `gpt`), and never for `/`/`$` glued inside a word
+ * (`"src/cli"`, `"FOO$BAR"` — paths/vars stay popup-free).
+ */
+export function activeTriggerToken(line: string): ActiveTrigger | undefined {
+  const m = /(^|\s)([/$]\S*)$/.exec(line);
+  if (!m) return undefined;
+  const token = m[2]!;
+  return { kind: token[0] as "/" | "$", token, start: (m.index ?? 0) + m[1]!.length };
+}
+
+/**
+ * Compact live preview shown beneath the input box while a `/command` or
+ * `$skill` keyword is being typed — at any position in the line (mention-style,
+ * gjc/Codex parity): `"do X then /mo"` previews commands, `"…then $te"`
+ * previews skills. Returns matching usages + descriptions, capped, or [] when
+ * no trigger token is active (finished words stay popup-free). Match ORDER is
  * preserved from matchSlash/dollarMatches so prefix hits sit above fuzzy hits.
  */
 export function formatSlashPreview(
@@ -183,36 +208,34 @@ export function formatSlashPreview(
   extra: readonly SlashCommandInfo[] = [],
   skills: readonly SkillPreviewItem[] = [],
 ): string[] {
-  const trimmed = line.trimStart();
-  if (trimmed.includes(" ")) return [];
-  if (trimmed.startsWith("$")) {
-    const rows = dollarMatches(trimmed, skills).map(s => ({
+  const trigger = activeTriggerToken(line);
+  if (!trigger) return [];
+  if (trigger.kind === "$") {
+    const rows = dollarMatches(trigger.token, skills).map(s => ({
       usage: `$${s.name} [intent]`,
       description: s.summary?.trim() || "run this skill directly",
     }));
     return renderPreviewRows(rows, max, selected);
   }
-  if (!trimmed.startsWith("/")) return [];
   const details = mergeSlashCommandDetails(extra);
   const byCommand = new Map(details.map(c => [c.command, c] as const));
-  const rows = matchSlash(trimmed, details.map(c => c.command))
+  const rows = matchSlash(trigger.token, details.map(c => c.command))
     .map(cmd => byCommand.get(cmd))
     .filter((c): c is SlashCommandInfo => Boolean(c));
   if (rows.length === 0) return [];
   return renderPreviewRows(rows, max, selected);
 }
 
-/** The matching command names for a slash-keyword (`/cmd`) or skill (`$name`)
- *  prefix, in display order (prefix-first, then fuzzy). Empty otherwise. */
+/** The matching command names for an active `/cmd` or `$name` trigger token
+ *  (anywhere in the line), in display order (prefix-first, then fuzzy). */
 export function slashPreviewMatches(
   line: string,
   extra: readonly SlashCommandInfo[] = [],
   skills: readonly SkillPreviewItem[] = [],
 ): string[] {
-  const trimmed = line.trimStart();
-  if (trimmed.includes(" ")) return [];
-  if (trimmed.startsWith("$")) return dollarMatches(trimmed, skills).map(s => `$${s.name}`);
-  if (!trimmed.startsWith("/")) return [];
+  const trigger = activeTriggerToken(line);
+  if (!trigger) return [];
+  if (trigger.kind === "$") return dollarMatches(trigger.token, skills).map(s => `$${s.name}`);
   const details = mergeSlashCommandDetails(extra);
-  return matchSlash(trimmed, details.map(c => c.command));
+  return matchSlash(trigger.token, details.map(c => c.command));
 }

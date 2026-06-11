@@ -78,3 +78,4 @@
 - Update Available 박스: src/util/update-check.ts(npm latest, 2.5s 타임아웃, never-throws) + src/tui/components/update-box.ts(warning 보더). 배너 직후 1.2s race로만 출력 — 라이브 프레임 오염 금지.
 - Footer: cwd?(~축약, 32자 middle-truncate)+branch?(git symbolic-ref — tmux 세션 네이밍과 동일 호출) 세그먼트, ctx 세그먼트 gjc 포맷 'ctx {pct}%/{200k}'(k/M 포맷, ≥60% yellow ≥85% red, (auto) 표시). launch.ts:936 setContextUsage 라이브 공급 확인.
 - Verified: typecheck 0; bun test 920 pass / 0 fail (신규 tui-welcome 11 + update-box + footer 케이스 포함); tmux QA 6/6.
+[2026-06-11] Pass 890 — scrollback goal closure: README documents pass-889 surface (glyph-first ✔/✗ ledger, [STEP] ⤴ tok/s, /exit resume pointer, copy-mode wheel note); QA harness re-run on current build 6/6 PASSED (tmux 3.6a); typecheck 0, 926 pass / 0 fail; pushed.

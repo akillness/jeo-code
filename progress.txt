@@ -258,3 +258,10 @@
 - 병행 패스의 provider Round-5(usage 단일 보고, 빈 응답 원인 표면화)와 합산 그린.
 - Tests: resolveSubagentThinking/withSubagentSetting(override·inherit·clear), applyTargetChoices thinking 태그, 기존 힌트 테스트 신계약 갱신.
 - Verified: tsc 0; bun test 1181 pass / 0 fail.
+[2026-06-12] gjc-계승 마라톤 라운드 5 (cycle 15) — 프로바이더/스트리밍 레이어 (architect 발굴)
+- 축 전환: 에이전트 코어(라운드 1~4) → 프로바이더 경계. architect 리뷰(agent ref 6-Round5Providers, WATCH) HIGH 2건+MED 1건 채택.
+- #1 빈완료 균일 계약(HIGH): anthropic/openai/codex/ollama가 200-with-no-text를 ""로 반환 → 엔진 bounce가 자기종료 불가, reasoning+작은 maxTokens 조합이 과금 스텝버짓 전소. 4개 어댑터 모두 gemini 계약 미러링: no-text 시 stop_reason/finish_reason/incomplete_details/done_reason 동봉 throw + "raise maxTokens" 힌트.
+- #2 디스커버리 데드라인(HIGH): Cloud Code Assist 프로젝트 디스커버리 fetch 3개에 boundedSignal(턴 abort ∧ 30s/요청) — 첫 OAuth 턴이 stalled TCP로 영구 행하던 벡터 봉합. antigravity/gemini 호출자 options.signal 스레딩.
+- #3 anthropic usage report-once(MED): message_start 2회보고 → input 2배 과대계상 제거(start=캐시만, delta=1회 보고). 옛 계약 고정 테스트 1건 갱신.
+- F6(라운드4 보류): 스텝 성패를 non-trivial 콜로 판정 — read(ok)+edit(fail) 반복의 MAX_FAILURES 우회 봉합. engine-multitool 테스트 2종.
+- Verified: typecheck 0; full bun test 1190 pass / 0 fail (+13: provider-empty-completion 9종 신규 등). plan 라운드5 렛저, improvements.md 갱신.

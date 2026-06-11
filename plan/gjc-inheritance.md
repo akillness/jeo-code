@@ -97,3 +97,15 @@
 ## 사이클 렛저 (라운드 4)
 - cycle 14 (2026-06-12): 14a 다중매칭 + F1 훅↔done guard 결합 + F2 원자적 workflow state + F3 경로정규화 dedup + F4 메모리 주입 방어. 신규/갱신 테스트 8종(post-turn-feedback 4, write-parallel 2, memory 1, state-command 1). full 1177 pass / 0 fail, typecheck 0.
 - **라운드 4 종료** — 누적 14사이클. 보류 잔여: F6(batch 실패 스트릭 some() 완화, Low), F5 잔여(VERIFY_SIGNAL_RE 키워드 휴리스틱 — 훅 사용자에겐 F1이 사실상 대체).
+
+## 합의 라운드 5 (architect WATCH, 2026-06-12 — agent ref 6-Round5Providers)
+**축 전환**: 에이전트 코어(라운드 1~4 소진) → 프로바이더/스트리밍 레이어. HIGH 2건 + MEDIUM 1건 채택, F6(라운드4 보류분)도 본 라운드에서 처리.
+- **#1 (HIGH)**: anthropic/openai/codex/ollama가 200-with-no-text를 빈 문자열로 반환 → 엔진 parse-bounce는 빈 응답에서 자기종료 불가 → reasoning 모델+작은 maxTokens 조합이 과금되는 스텝버짓 전소. 수정: 4개 어댑터 모두 gemini blockedReason 계약 미러링 — no-text 완료 시 stop_reason/finish_reason/incomplete_details/done_reason을 동봉한 묘사적 throw("output budget exhausted before any text; raise maxTokens…").
+- **#2 (HIGH)**: Cloud Code Assist 프로젝트 디스커버리(첫 OAuth 사용) fetch가 signal/timeout 無 — 매니저 120s 가드 이전에 실행되어 stalled TCP가 비대화 턴/서브에이전트/팀 워커를 영구 행. 수정: DiscoverProjectOptions에 signal+requestTimeoutMs(기본 30s), boundedSignal(outer turn abort ∧ per-request timeout), 3개 fetch 전부 적용, antigravity/gemini 호출자가 options.signal 스레딩.
+- **#3 (MED)**: anthropic 스트림 usage가 message_start+message_delta 2회 보고 → 누산 sink에서 input 2배 과대계상. 수정: message_start는 캐시만, message_delta에서 1회 보고(report-once — pre-first-chunk 재시도 리플레이도 무해화, #6 흡수).
+- **F6 (라운드4 Low 보류분)**: 배치 스텝 성패를 non-trivial(비읽기) 콜로 판정 — read(ok)+edit(fail) 반복이 MAX_FAILURES를 영원히 우회하던 구멍 봉합.
+- **보류**: #4 컨텍스트 오버플로 taxonomy+반응적 컴팩션(MED, 20-40 LoC — 라운드 6 후보), #5 stream_options 호환(LOW), #7 슬로우드립 전체 데드라인(LOW/WATCH).
+
+## 사이클 렛저 (라운드 5)
+- cycle 15 (2026-06-12): #1 빈완료 균일 계약(4 어댑터) + #2 디스커버리 데드라인 + #3 usage report-once + F6. 기존 테스트 1건이 옛 2회보고 계약 고정 → report-once로 갱신. 신규 테스트 11종(provider-empty-completion 9, engine-multitool F6 2). full 1190 pass / 0 fail, typecheck 0.
+- **라운드 5 종료** — 누적 15사이클. 라운드 6 후보: #4 컨텍스트 오버플로 신호→반응적 컴팩션+재시도, model-not-found(404) taxonomy.

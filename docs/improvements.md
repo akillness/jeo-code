@@ -6534,3 +6534,16 @@ that extends itself while the turn demonstrably progresses and fails fast when s
 
 ### Verification (round 4)
 - typecheck 0; `bun test` **1177 pass / 0 fail** (+8 tests: F1 guard integration ×2, alias/case-variant serialization ×2, memory fence ×1, atomic state ×1, return-shape updates). Deferred: F6 (batch failure-streak `some()` softness, Low) and the residual `VERIFY_SIGNAL_RE` keyword heuristic (subsumed by F1 for hook users).
+
+---
+
+**Date:** 2026-06-12 · **Dimension: gjc-inheritance marathon round 5 — provider/streaming boundary (architect-driven, axis shift from agent core).**
+
+### Provider boundary fixes (architect ref 6-Round5Providers, status WATCH)
+- **Uniform empty-completion contract (#1, HIGH).** anthropic/openai/codex/ollama could return an HTTP-200 completion with NO text as a silent `""` — the engine's parse-bounce never self-terminates on empties, so a reasoning model with a small `maxTokens` burned the whole step budget in billed, confusing "not a valid tool call" loops. All four adapters now mirror gemini's `blockedReason` contract: a no-text completion throws with the captured cause (`stop_reason=max_tokens` / `finish_reason=length` / `incomplete_details.reason` / `done_reason`) and the actionable hint "output budget exhausted before any text; raise maxTokens or lower the thinking level".
+- **Deadline-bound project discovery (#2, HIGH).** Cloud Code Assist project discovery (first gemini-OAuth/antigravity use) fetched with no signal/timeout and runs BEFORE the manager's 120s-guarded call — a stalled TCP/TLS handshake hung non-interactive turns, subagents, and team workers forever. `discoverGoogleProjectId` now composes the turn's AbortSignal with a per-request 30s deadline (`AbortSignal.any` + `AbortSignal.timeout`) across all three fetches (loadCodeAssist/onboardUser/poll); antigravity/gemini callers thread `options.signal`.
+- **Anthropic usage report-once (#3, MED).** The stream adapter reported `inputTokens` at BOTH `message_start` and `message_delta` against an accumulating sink — ~2x input overstatement on the flagship provider (and a pre-first-chunk retry could replay `message_start`). `message_start` now only caches; the single report happens at `message_delta`.
+- **Failure-streak integrity (F6, deferred from round 4).** A batch step is now judged by its non-trivial (non-read-only) calls — `read(ok)+edit(fail)` repeated with varying targets previously reset `consecutiveFailures` every step and never tripped MAX_FAILURES.
+
+### Verification (round 5)
+- typecheck 0; `bun test` **1190 pass / 0 fail** across 154 files (+11 new: provider-empty-completion ×9 incl. discovery-deadline/outer-abort, engine-multitool F6 ×2; 1 legacy double-report assertion updated to the report-once contract). Deferred to round 6: context-overflow taxonomy → reactive compaction+retry (#4), `stream_options` compat for non-OpenAI backends (#5), overall stream wall-clock (#7).

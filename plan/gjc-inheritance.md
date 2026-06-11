@@ -76,3 +76,12 @@
 - cycle 11 (2026-06-12): 컴팩션 핸드오프 — extractTouchedFiles에 `Tool [bash] result` 보수 패턴(created/wrote/written to/deleted/removed + path-shape 필터) 확장 + 요약 앞 "Files touched:" 헤더 강제 + CompactionResult.touchedFiles 표면화 + launch.ts 양 경로 소비(요약 실패 placeholder에 파일목록 보존). 신규 테스트 2종.
 - cycle 12 (2026-06-12): 쓰기 병렬화 — 엔진 배치 그룹핑을 read/write/exclusive 3종으로 재설계. 서로 다른 파일 write/edit는 병렬, 같은 파일(또는 경로미상)은 순차 경계, bash는 항상 exclusive. read·write 그룹 분리로 read-write 레이스 불가. 신규 테스트 4종(write-parallel.test.ts).
 - **라운드 2 종료** — 4사이클(+1 버그픽스), 신규 테스트 18종. full 1161 pass / 0 fail, typecheck 0. 라운드 3 후보: 전수치 anchor 픽스 외 잔여 hashline 강건성, post-edit bash tsc 훅(LSP-lite 대안), _i intent 외부 텔레메트리, 도구 동시성 추가 확대(cross-file read+write 혼합 그룹).
+
+## 합의 라운드 3 (critic ITERATE→OKAY, 2026-06-12 — agent://4-Round3Critic)
+**확정**: 단일 사이클 라운드. cycle 13만 실행, (b)(c)(d)는 정당화된 보류/탈락.
+- **cycle 13 (post-turn 훅 진단 피드백, 후보 (a) 재구성)**: runPostTurnHooks가 비정상종료(exit≠0) 훅의 출력을 반환 → engine이 해당 도구 결과 블록에 `[post-turn hook "<run>" — exit N]:\n<output>`로 첨부(모델 가시). gjc post-edit 진단 가치를 **기존 hooks 확장점**으로 실현 — 신규 의존성/코어 변경 0 (pi-mono). critic 5개 명확화 반영: (A1) exit≠0에만 표면화(exit0 출력 폐기), (A2) 배치 내 동일 출력 엔진측 dedup(중복은 "same diagnostics as above" 교차참조), (A3) timeout/abort는 기존 notice만(부분출력 없음), (A4) JOC_TOOL_OUTPUT_MAX로 독립 truncate, (A5) match.tool은 정확일치(edit+write는 항목 2개). 가드: 훅 실패가 도구 ok/fail 불변·budget 중립.
+- **보류/탈락 (critic 합의)**: (b) 잔여 hashline — cycle 9+letter-leading로 주요 사일런트 손상 차단, 잔여 실패 클래스 증거 無 → 보류. (c) _i intent — 코어 비대화, hooks가 tool+args 관찰 → 탈락. (d) cross-file read+write 혼합 동시성 — cycle 12가 distinct-file write 병렬화+read 격리 완료, 혼합은 read↔write 레이스 표면 생성 / 이득 미미 → 보류.
+
+## 사이클 렛저 (라운드 3)
+- cycle 13 (2026-06-12): post-turn 훅 진단 피드백 — hooks.ts PostTurnHookDiag 반환 + engine 결과블록 첨부(배치 dedup), launch 영향 無(엔진 경유). 신규 테스트 6종(post-turn-feedback.test.ts). full 1169 pass / 0 fail, typecheck 0.
+- **라운드 3 종료** — 1사이클. 누적: 13사이클(라운드 1~3), full 1169/0. 라운드 4 후보(미합의): match.tool `|`-구분 다중매칭, post-turn 훅 surfaceOnSuccess 옵트인, 도구 출력 minimizer 훅화.

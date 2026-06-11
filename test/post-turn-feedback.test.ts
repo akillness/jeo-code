@@ -1,0 +1,112 @@
+import { test, expect, beforeAll, afterAll, mock } from "bun:test";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import { runPostTurnHooks } from "../src/agent/hooks";
+
+// cycle 13 (plan/gjc-inheritance.md): post-turn hook output FEEDBACK. A post-turn
+// hook (e.g. `tsc --noEmit`) that exits non-zero now feeds its diagnostics back to
+// the model so it can self-correct in-loop — realized via the EXISTING hooks
+// extension point (no new dependency, no core bloat). The tool's own ok/fail is
+// unchanged; output is surfaced only on non-zero exit; timeouts surface nothing.
+
+const testDir = path.join(os.tmpdir(), `jeo-ptf-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+const globalConfigDir = path.join(testDir, "global-config");
+const projectDir = path.join(testDir, "project");
+let originalConfigDir: string | undefined;
+
+async function setHook(hook: Record<string, any>): Promise<void> {
+  const globalConfig = {
+    defaultModel: "claude-sonnet-4-5",
+    providers: {},
+    hooks: { enabled: true, hooks: [hook] },
+  };
+  await fs.writeFile(path.join(globalConfigDir, "config.json"), JSON.stringify(globalConfig), "utf-8");
+  // No local override — exercise the global hook path.
+  try { await fs.unlink(path.join(projectDir, ".joc", "hooks.json")); } catch {}
+}
+
+beforeAll(async () => {
+  originalConfigDir = process.env.JOC_CONFIG_DIR;
+  await fs.mkdir(globalConfigDir, { recursive: true });
+  await fs.mkdir(path.join(projectDir, ".joc"), { recursive: true });
+  process.env.JOC_CONFIG_DIR = globalConfigDir;
+});
+
+afterAll(async () => {
+  if (originalConfigDir === undefined) delete process.env.JOC_CONFIG_DIR;
+  else process.env.JOC_CONFIG_DIR = originalConfigDir;
+  await fs.rm(testDir, { recursive: true, force: true });
+});
+
+test("non-zero post-turn hook returns its output as a model-facing diagnostic", async () => {
+  await setHook({ event: "post-turn", match: { tool: "edit" }, run: "echo 'TS2304 cannot find name foo' && exit 2" });
+  const diags = await runPostTurnHooks(projectDir, "edit", { filePath: "x.ts" }, true, "ok", undefined, () => {});
+  expect(diags.length).toBe(1);
+  expect(diags[0].exitCode).toBe(2);
+  expect(diags[0].output).toContain("TS2304 cannot find name foo");
+});
+
+test("clean (exit 0) post-turn hook yields no diagnostic", async () => {
+  await setHook({ event: "post-turn", run: "echo 'all good'" });
+  const diags = await runPostTurnHooks(projectDir, "edit", {}, true, "ok", undefined, () => {});
+  expect(diags).toEqual([]);
+});
+
+test("timed-out post-turn hook surfaces only the advisory notice, no partial output", async () => {
+  await setHook({ event: "post-turn", run: "echo partial && sleep 1 && exit 1", timeoutMs: 10 });
+  let notice = "";
+  const diags = await runPostTurnHooks(projectDir, "edit", {}, true, "ok", undefined, (m) => { notice = m; });
+  expect(diags).toEqual([]);
+  expect(notice).toContain("timed out");
+});
+
+test("match.tool gates which tool the hook fires for (strict equality)", async () => {
+  await setHook({ event: "post-turn", match: { tool: "edit" }, run: "echo nope && exit 1" });
+  expect(await runPostTurnHooks(projectDir, "read", {}, true, "ok", undefined, () => {})).toEqual([]);
+  expect((await runPostTurnHooks(projectDir, "edit", {}, true, "ok", undefined, () => {})).length).toBe(1);
+});
+
+test("engine appends hook diagnostics to the edit result block; tool stays (ok)", async () => {
+  await setHook({ event: "post-turn", match: { tool: "edit" }, run: "echo 'TS2345 type error' && exit 1" });
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } }),
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history = [{ role: "system" as const, content: "sys" }];
+  await runAgentLoop(history, {
+    cwd: projectDir,
+    maxSteps: 1,
+    budget: { maxExtensions: 0 },
+    tools: { edit: async () => ({ success: true, output: "Successfully updated a.ts" }) },
+  });
+  const toolMsg = history.find(m => m.role === "user" && m.content.includes("Tool [edit] result"));
+  expect(toolMsg).toBeDefined();
+  expect(toolMsg!.content).toContain("Tool [edit] result (ok):"); // guard: edit succeeded
+  expect(toolMsg!.content).toContain("[post-turn hook");
+  expect(toolMsg!.content).toContain("TS2345 type error"); // diagnostics surfaced to model
+});
+
+test("identical hook diagnostics across a batch are shown once, cross-referenced after", async () => {
+  await setHook({ event: "post-turn", match: { tool: "edit" }, run: "echo dupdiag && exit 1" });
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({
+      tools: [
+        { tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } },
+        { tool: "edit", arguments: { filePath: "b.ts", editBlock: "y" } },
+      ],
+    }),
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history = [{ role: "system" as const, content: "sys" }];
+  await runAgentLoop(history, {
+    cwd: projectDir,
+    maxSteps: 1,
+    budget: { maxExtensions: 0 },
+    tools: { edit: async (a: any) => ({ success: true, output: `updated ${a.filePath}` }) },
+  });
+  const toolMsg = history.find(m => m.role === "user" && m.content.includes("Tool [edit] result"))!;
+  // Full diagnostic block (`exit 1]:`) appears exactly once; the second is a cross-ref.
+  expect(toolMsg.content.split("exit 1]:").length - 1).toBe(1);
+  expect(toolMsg.content).toContain("same diagnostics as above");
+});

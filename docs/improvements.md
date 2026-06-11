@@ -6497,3 +6497,26 @@ that extends itself while the turn demonstrably progresses and fails fast when s
   consolidates at base with no extension, extensions stop exactly at the hard cap with
   the flow named in the wrap-up). Existing consolidation/subagent budget tests pinned
   to `maxExtensions: 0` to keep asserting the legacy fixed-counter contract.
+
+---
+
+**Date:** 2026-06-12 · **Dimension: gjc-inheritance marathon — edit integrity, capability boundaries, compaction handoff, batch concurrency, verification feedback (rounds 2-3).**
+
+### Edit integrity (hashline)
+- 3-way anchor re-map: when an `≔A..B` / `≔A+` edit's content anchor no longer sits at its line number (sibling edits shifted the file), the tool searches a ±64-line window for the UNIQUE line carrying that content anchor and relocates the edit (ranges require both ends to agree on one delta). Ambiguous/missing → the existing reject + re-present-current-content path. Content-only hashes make a moved line keep its anchor.
+- Closed a silent-corruption hole: ~7.7% of anchors were two digits (e.g. `68`), so `≔1`+`68` parsed as line 168 with NO anchor → verification skipped. `lineAnchor` now always leads with a letter (`a-z` then `0-9a-z`, 936-space), making the line number and anchor unambiguous.
+
+### Capability boundary (subagent bash allowlist)
+- `SubagentRole.bashAllowedPrefixes`: a mutating role MAY declare a bash allowlist; `subagentToolset()` then wraps bash so EVERY shell segment (`; && || |`-split, env-assignment/`sudo` stripped, `$()`/backtick command-substitution rejected) must start with an allowed prefix. Registry definition = runtime constraint (no config plumbing). Read-only roles still drop bash entirely; bundled roles are unchanged (executor keeps full bash).
+
+### Compaction handoff
+- `extractTouchedFiles` now also harvests CONSERVATIVE `Tool [bash] result` mutation mentions (`created/wrote/written to/deleted/removed <path>`, path-shape filtered) in addition to write/edit tool-call JSON. The compaction summary message is prefixed with a mechanical `Files touched:` header, `CompactionResult.touchedFiles` is surfaced, and the launch consumer folds the file list into the persisted placeholder even when the LLM summary fails.
+
+### Batch concurrency
+- Engine batch grouping is now `read` / `write` / `exclusive`. Consecutive read-only calls run in parallel (unchanged); consecutive write/edit calls to DISTINCT files now run in parallel while same-file (or path-less) collisions force a sequential boundary; bash is always exclusive. Reads and writes never share a group, so a read can never race a write.
+
+### Verification feedback (post-turn hook diagnostics)
+- Post-turn hooks are still advisory (never flip a tool's ok/fail), but a non-zero-exit hook's output is now fed back to the MODEL: it is appended to that tool's result block as `[post-turn hook "<run>" — exit N]: <output>` (truncated at `JOC_TOOL_OUTPUT_MAX`, deduped per batch with a "same diagnostics as above" cross-reference). A user can configure a post-edit `tsc --noEmit`/eslint/test hook (`match.tool` is strict — one entry per tool) and the agent self-corrects in-loop. Timeouts/aborts surface only the existing notice (no partial output). This realizes gjc's post-edit-diagnostics value through the EXISTING hooks extension point — no new dependency, no core protocol change (pi-mono).
+
+### Verification (gjc-inheritance rounds 2-3)
+- typecheck 0; `bun test` **1169 pass / 0 fail** across 153 files (+~38 tests: hashline-remap 7, subagent-bash-allowlist 5, write-parallel 4, compaction +2, post-turn-feedback 6, and round-1/earlier additions). Critic consensus gated each round (round 3 = single cycle after [ITERATE] clarifications incorporated).

@@ -629,6 +629,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
 
     const processAndPushResults = async (indices: number[]) => {
       const resultBlocks: string[] = [];
+      // Per-batch dedup of post-turn hook diagnostics: a whole-project `tsc` hook
+      // matching every edit in a batch yields identical output N times — show it
+      // once, cross-reference the rest (cycle 13).
+      const seenHookFeedback = new Set<string>();
       for (const idx of indices) {
         const call = toolCalls[idx];
         const res = results[idx];
@@ -645,7 +649,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           }
         }
 
-        await runPostTurnHooks(
+        const hookDiags = await runPostTurnHooks(
           cwd,
           call.tool,
           call.arguments ?? {},
@@ -655,7 +659,19 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           ev.onNotice
         );
 
-        resultBlocks.push(`Tool [${call.tool}] result (${res.success ? "ok" : "fail"}):\n${resultBody}`);
+        // Append non-zero-exit hook diagnostics to THIS tool's result block so the
+        // model can self-correct. The tool's own ok/fail is unchanged (guard).
+        let resultBlock = `Tool [${call.tool}] result (${res.success ? "ok" : "fail"}):\n${resultBody}`;
+        for (const d of hookDiags) {
+          const key = `${d.run}\u0000${d.output}`;
+          if (seenHookFeedback.has(key)) {
+            resultBlock += `\n[post-turn hook "${d.run}" — exit ${d.exitCode}: same diagnostics as above]`;
+          } else {
+            seenHookFeedback.add(key);
+            resultBlock += `\n[post-turn hook "${d.run}" — exit ${d.exitCode}]:\n${truncateToolOutput(d.output)}`;
+          }
+        }
+        resultBlocks.push(resultBlock);
       }
 
       history.push({ role: "assistant", content: responseText });

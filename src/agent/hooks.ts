@@ -12,6 +12,16 @@ interface HookRunResult {
   aborted: boolean;
 }
 
+/** A post-turn hook diagnostic the model should SEE (cycle 13): the run command,
+ *  its non-zero exit code, and its (trimmed) output. Only emitted for hooks that
+ *  ran to completion with a non-zero exit and non-empty output — a clean exit has
+ *  nothing to fix, and timed-out/aborted hooks surface only the advisory notice. */
+export interface PostTurnHookDiag {
+  run: string;
+  exitCode: number;
+  output: string;
+}
+
 export async function loadHooks(cwd: string): Promise<NonNullable<HookConfig["hooks"]>> {
   const config = await readGlobalConfig();
   if (!config.hooks?.enabled) {
@@ -170,7 +180,8 @@ export async function runPostTurnHooks(
   output: string,
   signal?: AbortSignal,
   onNotice?: (msg: string) => void
-): Promise<void> {
+): Promise<PostTurnHookDiag[]> {
+  const diags: PostTurnHookDiag[] = [];
   try {
     const hooks = await loadHooks(cwd);
     const postTurnHooks = hooks.filter(
@@ -196,11 +207,18 @@ export async function runPostTurnHooks(
         onNotice?.(`Post-turn hook "${hook.run}" was aborted (advisory).`);
       } else if (result.exitCode !== 0) {
         onNotice?.(`Post-turn hook "${hook.run}" exited with non-zero code ${result.exitCode} (advisory).`);
+        // Feed the hook's diagnostics back to the MODEL so a post-edit
+        // `tsc --noEmit`/lint/test hook drives in-loop self-correction. The
+        // tool's own ok/fail is unaffected (the mutation already happened); this
+        // is an advisory downstream signal. Engine truncates + dedupes per batch.
+        const text = result.output.trim();
+        if (text) diags.push({ run: hook.run, exitCode: result.exitCode ?? -1, output: text });
       }
     }
   } catch (err: any) {
     onNotice?.(`Error executing post-turn hooks (advisory): ${err.message}`);
   }
+  return diags;
 }
 
 export async function runPostImplementationHooks(

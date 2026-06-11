@@ -24,7 +24,7 @@ import { centerBlock, padLineTo, boxBlock, BOX_ASCII, BOX_UNICODE } from "./comp
 import { SECTION_GAP, stackSections } from "./components/section";
 import { resolveTheme, themeGradient, accentPaint } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
-import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, type ForgeSummary } from "./components/forge";
+import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, webSearchCardLines, type ForgeSummary } from "./components/forge";
 import { renderJocStatus, renderStatusBar, renderStatusBox } from "./components/status";
 import { costForUsage, formatCost } from "../ai/pricing";
 import { renderMarkdownTables } from "./components/markdown-table";
@@ -391,6 +391,15 @@ export class LaunchTui {
           // the non-TTY summary both show the merged card.
           card.title = `${paintedMark} Bash`;
           card.lines.push(...result.lines);
+          this.flushForgeCard(card);
+        } else if (card && t === "web_search" && success && webSearchCardLines(output, { unicode: this.unicode })) {
+          // gjc-style Web Search card: `✓ Web Search: <provider> · N sources` header
+          // over Query / Answer / Sources / Metadata divider sections rebuilt from
+          // the structured tool output (provider chain — Anthropic native or the
+          // keyless DuckDuckGo fallback).
+          const ws = webSearchCardLines(output, { unicode: this.unicode })!;
+          card.title = `${paintedMark} Web Search: ${ws.titleMeta}`;
+          card.lines = ws.lines;
           this.flushForgeCard(card);
         } else if (card) {
           card.title = `${paintedMark} ${card.title}`;

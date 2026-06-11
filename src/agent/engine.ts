@@ -12,7 +12,7 @@ import * as path from "node:path";
 import type { Message } from "./loop";
 import { extractJsonObject } from "./json";
 import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, type ToolResult } from "./tools";
-import { webSearchTool } from "./web-search";
+import { webSearchTool, setWebSearchActiveModel } from "./web-search";
 import { friendlyProviderError } from "../util/provider-error";
 import { isRateLimitError } from "../util/retry";
 import { runPreToolHooks, runPostTurnHooks } from "./hooks";
@@ -298,6 +298,14 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // calls (bad edits, failing commands) would otherwise burn the whole step budget.
   const MAX_FAILURES = 5;
   let consecutiveFailures = 0;
+  // done-verification guard (plan/gjc-inheritance.md B4, gjc ultragoal-guard 경량 계승):
+  // a turn that MUTATED files but shows no verification signal gets ONE pushback on
+  // `done` — run the relevant test/build, or call done again (the escape hatch for
+  // doc/config changes where verification is genuinely not applicable).
+  let sawMutation = false;
+  let sawVerification = false;
+  let donePushbackUsed = false;
+  const VERIFY_SIGNAL_RE = /\b(test|tests|tsc|typecheck|lint|build|check|spec|pytest|vitest|jest)\b/i;
   let lastSig = "";
   let repeatCount = 0;
   // Invalid-tool-call guard: a model that returns JSON without a usable `tool`
@@ -450,6 +458,19 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     ev.onAssistant?.(responseText, toolCalls[0]);
 
     if (toolCalls.length === 1 && toolCalls[0].tool === "done") {
+      if (sawMutation && !sawVerification && !donePushbackUsed) {
+        donePushbackUsed = true; // second done always passes — escape hatch
+        history.push({ role: "assistant", content: responseText });
+        history.push({
+          role: "user",
+          content:
+            "You modified files this turn but ran NO verification (no test/build/typecheck command succeeded). " +
+            "Run the narrowest command that proves your change works, then call done. " +
+            "If verification is genuinely not applicable (docs/config-only change), call done again and say why in the reason.",
+        });
+        step++;
+        continue;
+      }
       return finish({ done: true, steps: step, doneReason: (toolCalls[0].arguments?.reason as string) ?? "" });
     }
 
@@ -633,6 +654,19 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     // step to the extension heuristic (that loophole earned endless extensions).
     for (let i = 0; i < toolCalls.length; i++) {
       if (results[i].executed) budget.record(callSigs[i], results[i].success);
+    }
+    // done-verification guard bookkeeping: write/edit successes mark the turn as
+    // mutating; a successful bash whose command/output looks like a test/build run
+    // counts as verification. A verification AFTER the last mutation is what the
+    // done guard wants, but order-insensitive tracking keeps it one-pushback simple.
+    for (let i = 0; i < toolCalls.length; i++) {
+      if (!results[i].executed || !results[i].success) continue;
+      const t = toolCalls[i].tool;
+      if (t === "write" || t === "edit") sawMutation = true;
+      else if (t === "bash") {
+        const cmd = String(toolCalls[i].arguments?.command ?? "");
+        if (VERIFY_SIGNAL_RE.test(cmd) || VERIFY_SIGNAL_RE.test(results[i].output.slice(0, 2000))) sawVerification = true;
+      }
     }
     const stepSuccess = results.some(r => r.success);
 

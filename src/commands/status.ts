@@ -4,7 +4,7 @@ import chalk from "chalk";
 
 export async function runStatusCommand(): Promise<void> {
   const cwd = process.cwd();
-  const logPath = path.join(cwd, ".joc", "state", "evolution-log.json");
+  const logPath = path.join(cwd, "logs", "evolution-log.json");
   const perfPath = path.join(cwd, ".joc", "state", "performance-metrics.json");
   const planPath = path.join(cwd, ".specify", "plan.md");
   

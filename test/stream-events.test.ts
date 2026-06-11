@@ -19,10 +19,10 @@ test("createStreamEvents: step header + tool target are logged on each step, not
 
   const out = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
   // STEP headers with the real tool target — the whole point of the gjc-parity fix
-  expect(out).toContain("[step 1/4] read src/agent/engine.ts");
+  expect(out).toMatch(/\[step 1\/4\] [Rr]ead\s*:?\s*src\/agent\/engine\.ts/);
   expect(out).toContain("[step 2/4] bash command");
   // results, with the failing output tail surfaced
-  expect(out).toContain("\u2713 read src/agent/engine.ts");
+  expect(out).toMatch(/\u2713 [Rr]ead\s*:?\s*src\/agent\/engine\.ts/);
   expect(out).toContain("\u2717 bash command \u2014 exit 1");
 });
 
@@ -81,8 +81,8 @@ test("end-to-end: a piped one-shot turn prints the per-step flow (not just the f
 
   const out = logged.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
   // The whole flow is visible: a step header naming the tool target, then its result.
-  expect(out).toContain("[step 1/3] read note.txt");
-  expect(out).toMatch(/\u2713 read note\.txt/);
+  expect(out).toMatch(/\[step 1\/3\] [Rr]ead\s*:?\s*note\.txt/);
+  expect(out).toMatch(/\u2713 [Rr]ead\s*:?\s*note\.txt/);
   expect(out).toContain("read complete"); // final reply still printed
 });
 
@@ -120,12 +120,12 @@ test("end-to-end: cmd-mode task subagent prints nested steps and result summarie
   }
 
   const out = logged.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-  expect(out).toContain("[step 1/4] task executor");
+  expect(out).toMatch(/\[step 1\/4\] [Tt]ask\s*:?\s*executor/);
   expect(out).toContain("▸ [executor] inspect note.txt");
   expect(out).toContain("[executor step 1/15] read note.txt");
   expect(out).toContain("[executor] ✓ read note.txt — 1|hello from note");
   expect(out).toContain("◂ [executor] done: subagent read it");
-  expect(out).toContain("✓ task executor — [Executor subagent] completed");
+  expect(out).toMatch(/\u2713 [Tt]ask\s*:?\s*executor \u2014 \[Executor subagent\] completed/);
   expect(out).toContain("[AGENT]"); // nested subagent lines carry the category badge
   expect(out).toContain("[STEP]"); // parent step lines carry the progress badge
   expect(out).toContain("[DONE]"); // successful tool results carry the completed badge

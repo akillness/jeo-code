@@ -49,7 +49,7 @@ import { skillPicker, renderSkillPicker } from "../tui/components/skill-picker";
 import { providerPicker, renderProviderPicker } from "../tui/components/provider-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff } from "../tui/components/code-view";
 import { categoryBadge } from "../tui/components/category-index";
-import { renderInputBox } from "../tui/components/input-box";
+import { renderInputFrame } from "../tui/components/input-box";
 import { renderMarkdownTables } from "../tui/components/markdown-table";
 import { summarizeForgeInvocation } from "../tui/components/forge";
 import { formatDuration, formatUsage } from "../tui/components/duration";
@@ -1401,6 +1401,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // With a fixed reservation, footer height is constant for the lifetime of the
   // prompt, so the box can never grow, scroll, or break alignment.
   let footerRendered = 0; // rows of the reserved region (= footerRows once armed)
+  // Caret cell of the boxed input (row relative to the reservation top, 1-based col),
+  // recomputed by previewLines from readline's live rl.cursor. drawFooter parks the
+  // REAL terminal cursor there, so the blinking caret sits right after the `>` prompt
+  // and visibly follows arrow-key movement.
+  let footerCursor = { row: 0, col: 1 };
+  // Row (within the reservation) where the real cursor was last parked; the next
+  // drawFooter/disarmPreview must hop back to the top from here before painting.
+  let footerParkedRow = 0;
   const padToFooter = (lines: string[]): string[] => {
     if (lines.length >= footerRows) return lines.slice(0, footerRows);
     return [...lines, ...new Array(footerRows - lines.length).fill("")];
@@ -1416,6 +1424,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     out.write(toColumn(1));
     footerRendered = footerRows;
+    footerParkedRow = 0;
     previewArmed = true;
     lastFooterKey = "";
   };
@@ -1426,7 +1435,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     previewArmed = false;
     lastFooterKey = "";
     if (footerRendered > 0) {
-      let s = "";
+      // Hop back to the reservation top from wherever the caret was parked.
+      let s = footerParkedRow > 0 ? cursorUp(footerParkedRow) : "";
+      footerParkedRow = 0;
       for (let i = 0; i < footerRendered; i++) {
         s += toColumn(1) + clearLine();
         if (i < footerRendered - 1) s += "\x1b[1B"; // CUD: no scroll at bottom margin
@@ -1441,13 +1452,24 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
   const previewLines = (line: string, selected = -1): string[] => {
     const cols = Math.max(24, (process.stdout.columns ?? 80) - 1);
-    const input = renderInputBox(line, {
+    // Caret offset comes from readline's live cursor when it matches the rendered
+    // line (arrow keys/Home/End move it); otherwise (history nav mismatch) caret
+    // sits at the end of the text.
+    const rli = rl as unknown as { line?: string; cursor?: number };
+    const caret = rli.line === line && typeof rli.cursor === "number" ? rli.cursor : line.length;
+    const frame = renderInputFrame(line, {
       cols,
       color: true,
       unicode: true,
       cwdLabel: currentAtLabel(line),
       maxBodyRows: Math.max(1, footerRows - 5),
-    }).map(l => truncateAnsi(l, cols));
+      cursor: caret,
+    });
+    const input = frame.lines.map(l => truncateAnsi(l, cols));
+    footerCursor = {
+      row: Math.max(0, Math.min(frame.cursorRow, footerRows - 1)),
+      col: Math.max(1, Math.min(frame.cursorCol, cols)),
+    };
     const budget = Math.max(0, footerRows - input.length);
     const slash = budget > 0 ? formatSlashPreview(line, budget, selected, skillSlashDetails) : [];
     const args = !slash.length && budget > 0 ? formatCompletionPreview(line, completionContext(), budget) : [];
@@ -1460,21 +1482,29 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // and no row can spill past it — the bug fix that kept `@folder<more text>`
     // typing from scrolling the input box (and prior output) off the top.
     const padded = padToFooter(lines);
-    const key = padded.join("\n");
+    // Pure caret moves (arrow keys) change no content — include the caret cell in
+    // the repaint key so they still reposition the terminal cursor.
+    const tRow = lines.length ? Math.min(footerCursor.row, footerRendered - 1) : 0;
+    const tCol = lines.length ? footerCursor.col : 1;
+    const key = `${padded.join("\n")}\u0000${tRow}:${tCol}`;
     if (key === lastFooterKey) return;
     lastFooterKey = key;
-    // Cursor is parked at the top of the reservation (set by armPreview or by the
-    // tail of the previous drawFooter). Paint top→bottom using CUD only.
-    let s = toColumn(1);
+    // Hop back to the reservation top from the previously parked caret row, then
+    // paint top→bottom using CUD only.
+    let s = footerParkedRow > 0 ? cursorUp(footerParkedRow) : "";
+    s += toColumn(1);
     for (let i = 0; i < footerRendered; i++) {
       s += toColumn(1) + clearLine();
       if (padded[i]) s += padded[i];
       if (i < footerRendered - 1) s += "\x1b[1B"; // CUD: never scroll
     }
-    // Return the cursor to the top of the reservation so the next drawFooter call
-    // can start painting at row 0 with no cursorUp accounting.
     if (footerRendered > 1) s += cursorUp(footerRendered - 1);
-    s += toColumn(1) + "\x1b[?25h";
+    // Park the REAL cursor at the caret cell (right after the `>` prompt) so the
+    // blinking terminal cursor marks the insertion point and follows arrow keys.
+    s += toColumn(1);
+    if (tRow > 0) s += `\x1b[${tRow}B`;
+    s += toColumn(tCol) + "\x1b[?25h";
+    footerParkedRow = tRow;
     out.write(s);
   };
 

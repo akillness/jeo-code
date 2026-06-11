@@ -41,7 +41,7 @@ test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll
   const ledger = out.join("");
   const flushIdx = ledger.indexOf("\x1b[?2026h"); // BSU opens the atomic flush
   expect(flushIdx).toBeGreaterThanOrEqual(0);
-  expect(ledger.slice(flushIdx)).toContain("read src/cli.ts\n"); // static line, newline-terminated
+  expect(ledger.slice(flushIdx)).toContain("Read : src/cli.ts\n"); // static line, newline-terminated
   expect(ledger.slice(flushIdx)).toContain("\x1b[?2026l");       // ESU after the repaint
   expect(ledger).not.toContain("\x1b[0J");                       // never ED mid-turn (history flood)
 
@@ -56,7 +56,7 @@ test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll
   expect(tail).toContain("\x1b[K");
   expect(tail).toContain("\x1b[0J");
   // …but WITHOUT re-printing the ledger lines already flushed into scrollback live.
-  expect(tail).not.toContain("read src/cli.ts\n\x1b[K");
+  expect(tail).not.toContain("Read : src/cli.ts\n\x1b[K");
 });
 
 test("LaunchTui: JOC_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen turn", () => {
@@ -147,7 +147,7 @@ test("LaunchTui: flushed tool-result ledger lines lead with a gjc-style ✔/✗ 
   const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
   const ledger = strip(out.join(""));
   // Glyph leads the line; badges follow (unicode terminals → ✔/✗, ASCII → v/x).
-  expect(ledger).toMatch(/[✔v] \[FILE\] \[DONE\] read src\/cli\.ts/);
+  expect(ledger).toMatch(/[✔v] \[FILE\] \[DONE\] Read : src\/cli\.ts/);
   expect(ledger).toMatch(/[✗x] \[CMD\] \[ERR\]/);
   tui.finish("done");
 });
@@ -170,7 +170,7 @@ test("LaunchTui: ledger glyphs fall back to v/x on ASCII-only terminals", () => 
     clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
     const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
     const ledger = strip(out.join(""));
-    expect(ledger).toMatch(/v \[FILE\] \[DONE\] read src\/cli\.ts/);
+    expect(ledger).toMatch(/v \[FILE\] \[DONE\] Read : src\/cli\.ts/);
     expect(ledger).toMatch(/x \[CMD\] \[ERR\]/);
     // Ledger lines specifically must not use the unicode marks (other frame
     // components own their own glyph fallbacks).
@@ -513,7 +513,7 @@ test("LaunchTui: onToolResult categorizes the result in the stream with both cat
   const txt = logged.join("\n");
   expect(txt).toContain("[FILE]"); // category of read
   expect(txt).toContain("[DONE]"); // success status
-  expect(txt).toContain("read src/cli.ts");
+  expect(txt).toContain("Read : src/cli.ts");
 });
 
 test("LaunchTui: onToolResult stream line includes the invocation target using write-sink pattern", () => {
@@ -575,4 +575,30 @@ test("LaunchTui (boxed): [STATUS] shows the real in-flight file; stage lives in 
     if (savedColsDesc) Object.defineProperty(process.stdout, "columns", savedColsDesc);
     if (savedRowsDesc) Object.defineProperty(process.stdout, "rows", savedRowsDesc);
   }
+});
+
+test("LaunchTui: find/search results flush a gjc-style count suffix + dim tree children into the ledger", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  const ev = tui.events();
+  ev.onStep!(1);
+  ev.onAssistant!("", { tool: "find", arguments: { globPattern: "src/**/*.ts" } });
+  out.length = 0;
+  const files = Array.from({ length: 8 }, (_, i) => `./src/file-${i}.ts`).join("\n");
+  ev.onToolResult!("find", true, files);
+  const flushed = out.join("").replace(/\x1b\[[0-9;]*m/g, "");
+  expect(flushed).toContain("· 8 files");          // count suffix on the summary line
+  // sampled child rows + overflow tail — unicode (├─/└─) or ASCII (|-/`-) per terminal capability
+  expect(flushed).toMatch(/(?:├─|\|-) \.\/src\/file-0\.ts/);
+  expect(flushed).toMatch(/(?:└─|`-) (?:…|\.\.\.) 2 more files/);
+  // read results stay single-line — no tree decoration
+  ev.onAssistant!("", { tool: "read", arguments: { filePath: "a.ts" } });
+  out.length = 0;
+  ev.onToolResult!("read", true, "1|x\n2|y\n3|z");
+  const readFlushed = out.join("").replace(/\x1b\[[0-9;]*m/g, "");
+  expect(readFlushed).not.toMatch(/(?:├─|\|-) /);
+  expect(readFlushed).not.toContain("· 3 files");
+  tui.finish("done");
 });

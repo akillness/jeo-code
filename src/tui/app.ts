@@ -324,7 +324,11 @@ export class LaunchTui {
         // badges stay for grep-ability and the non-TTY summary.
         const mark = this.unicode ? (success ? "✔" : "✗") : success ? "v" : "x";
         const paintedMark = this.theme.color ? (success ? chalk.green(mark) : chalk.red(mark)) : mark;
-        this.appendLedger(`${paintedMark} ${catBadge} ${resBadge} ${target}\n`);
+        // gjc-style result tree: list tools (find/search/ls) flush a count suffix
+        // plus dim `├─` child rows (sampled results + `… N more`) into scrollback,
+        // so the ledger reads like gjc's `✓ Find: pattern  39 files` block.
+        const { suffix, children } = this.ledgerTree(tool, success, output);
+        this.appendLedger(`${paintedMark} ${catBadge} ${resBadge} ${target}${suffix}\n${children.map(c => `${c}\n`).join("")}`);
         this.draw();
       },
       onNotice: msg => {
@@ -353,6 +357,35 @@ export class LaunchTui {
     if (this.inline && !this.finished) {
       this.renderer.insertAbove(text.endsWith("\n") ? text : `${text}\n`);
     }
+  }
+
+  /** gjc-style ledger tree for list-shaped tool results (find / search / ls): a dim
+   *  ` · N files` / ` · N matches` count suffix for the summary line plus up to six
+   *  dim `├─` child rows sampling the results, closed by `└─ … N more`. Children are
+   *  flushed into scrollback with the summary, so wheel-scroll history reads like
+   *  gjc's `✓ Find: pattern  39 files` block. Other tools return no decoration. */
+  private ledgerTree(tool: string, success: boolean, output: string): { suffix: string; children: string[] } {
+    const t = (tool || "").toLowerCase();
+    if (!success || (t !== "find" && t !== "search" && t !== "ls")) return { suffix: "", children: [] };
+    const rows = (output || "")
+      .split("\n")
+      .map(l => l.trim())
+      .filter(l => l.length > 0 && !/^no match/i.test(l) && !l.startsWith("…("));
+    if (rows.length === 0) return { suffix: "", children: [] };
+    const dim = this.theme.color ? chalk.dim : (s: string) => s;
+    const noun = t === "search" ? (rows.length === 1 ? "match" : "matches") : rows.length === 1 ? "file" : "files";
+    const suffix = dim(` · ${rows.length} ${noun}`);
+    const MAX_CHILDREN = 6;
+    const shown = rows.slice(0, MAX_CHILDREN);
+    const more = rows.length - shown.length;
+    const tee = this.unicode ? "├─" : "|-";
+    const end = this.unicode ? "└─" : "`-";
+    const ell = this.unicode ? "…" : "...";
+    const children = shown.map((l, i) =>
+      dim(`  ${i === shown.length - 1 && more <= 0 ? end : tee} ${l.length > 96 ? `${l.slice(0, 95)}${ell}` : l}`),
+    );
+    if (more > 0) children.push(dim(`  ${end} ${ell} ${more} more ${noun}`));
+    return { suffix, children };
   }
 
   /** Surface native workflow-engine progress (`/skill deep-interview`, etc.). */
@@ -818,11 +851,12 @@ export class LaunchTui {
       for (const line of trailingDivider) boxedContent.push(line);
       for (const line of bottomKeep) boxedContent.push(line);
 
-      const paint = this.theme.color ? chalk.blue : (s: string) => s;
+      const paint = this.theme.color ? (this.theme.name === "red-claw" ? chalk.red : chalk.blue) : (s: string) => s;
       frame = boxBlock(boxedContent, cols, {
         glyphs: this.unicode ? BOX_UNICODE : BOX_ASCII,
         paint,
       });
+
     } else {
       // Unboxed Mode (fallback for tests/non-TTY)
       const header = showArt ? [...this.cachedArt, this.cachedTrack, ""] : [];

@@ -33,3 +33,34 @@ test("renderInputBox wraps long input across multiple rows", () => {
   expect(out.length).toBeGreaterThan(5);
   expect(out.every(line => line.length <= 24)).toBe(true);
 });
+
+test("renderInputFrame: empty line shows `>` + dim placeholder with the caret right after `>`", () => {
+  const { renderInputFrame } = require("../src/tui/components/input-box");
+  const frame = renderInputFrame("", { cols: 40, color: false, unicode: false });
+  const body = frame.lines.map(stripAnsi);
+  expect(body[1]).toContain("> Type a request");
+  expect(frame.cursorRow).toBe(1); // first body row (0 = top border)
+  expect(frame.cursorCol).toBe(4); // border(1) + content(2) + "> "(2) → col 4
+});
+
+test("renderInputFrame: caret column follows the cursor offset (arrow-key movement)", () => {
+  const { renderInputFrame } = require("../src/tui/components/input-box");
+  const atEnd = renderInputFrame("hello", { cols: 40, color: false, unicode: false, cursor: 5 });
+  expect(atEnd.cursorCol).toBe(4 + 5);
+  const mid = renderInputFrame("hello", { cols: 40, color: false, unicode: false, cursor: 2 });
+  expect(mid.cursorCol).toBe(4 + 2);
+  const home = renderInputFrame("hello", { cols: 40, color: false, unicode: false, cursor: 0 });
+  expect(home.cursorCol).toBe(4);
+  // CJK is 2 columns wide
+  const cjk = renderInputFrame("한글", { cols: 40, color: false, unicode: true, cursor: 1 });
+  expect(cjk.cursorCol).toBe(4 + 2);
+});
+
+test("renderInputFrame: caret wraps to continuation rows on long input", () => {
+  const { renderInputFrame } = require("../src/tui/components/input-box");
+  const frame = renderInputFrame("x".repeat(50), { cols: 24, color: false, unicode: false, cursor: 50 });
+  expect(frame.cursorRow).toBeGreaterThan(1);
+  const body = frame.lines.map(stripAnsi);
+  expect(body[1]!.startsWith("|> x")).toBe(true);  // first row carries the prompt
+  expect(body[2]!.startsWith("|  x")).toBe(true);  // continuation rows align under it
+});

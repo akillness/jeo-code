@@ -1,33 +1,137 @@
 import chalk from "chalk";
 import { BOX_ASCII, BOX_UNICODE, boxBlock } from "./layout";
-import { visibleWidth, wrapTextWithAnsi } from "./width";
+import { visibleWidth } from "./width";
 
 export interface InputBoxOptions {
   cols?: number;
   color?: boolean;
   unicode?: boolean;
   cwdLabel?: string;
+  /** Pending clipboard-image attachments hint (e.g. "⧉ 1 image attached — ctrl+v"). */
+  attachmentLabel?: string;
   placeholder?: string;
   maxBodyRows?: number;
+  /** Caret offset in CHARACTERS into `line` (readline's rl.cursor). Defaults to end. */
+  cursor?: number;
 }
 
-function wrapPlain(text: string, width: number): string[] {
-  const out: string[] = [];
-  const lines = text.replace(/\r/g, "").split("\n");
-  const cap = Math.max(1, width);
-  for (const raw of lines) {
-    const line = raw.replace(/\t/g, "  ");
-    if (line.length === 0) {
-      out.push("");
+export interface InputFrame {
+  lines: string[];
+  /** Caret row relative to the box's FIRST line (0 = top border, 1 = first body row). */
+  cursorRow: number;
+  /** 1-based terminal column of the caret cell. */
+  cursorCol: number;
+}
+
+/**
+ * Wrap plain input text (readline lines carry no ANSI) by DISPLAY width and map the
+ * caret's character offset to its (row, columnWidth) cell in the same pass — so the
+ * box prompt can place the real terminal cursor exactly where the next glyph lands,
+ * and arrow-key movement (readline updates rl.cursor) repositions it visibly.
+ */
+function wrapWithCursor(
+  text: string,
+  cursor: number,
+  width: number,
+): { rows: string[]; row: number; col: number } {
+  const rows: string[] = [];
+  let cur = "";
+  let curW = 0;
+  let row = 0;
+  let col = 0;
+  const chars = Array.from(text.replace(/\r/g, ""));
+  const pos = Math.max(0, Math.min(cursor, chars.length));
+  for (let i = 0; i <= chars.length; i++) {
+    const ch = i < chars.length ? chars[i]! : "";
+    const rendered = ch === "\t" ? "  " : ch;
+    const w = ch === "" || ch === "\n" ? 0 : ch === "\t" ? 2 : visibleWidth(ch);
+    // Wrap BEFORE recording the caret so a caret on a wrapping char follows it down.
+    if (w > 0 && curW + w > width && curW > 0) {
+      rows.push(cur);
+      cur = "";
+      curW = 0;
+    }
+    if (i === pos) {
+      row = rows.length;
+      col = curW;
+    }
+    if (ch === "\n") {
+      rows.push(cur);
+      cur = "";
+      curW = 0;
       continue;
     }
-    // Wrap by DISPLAY width (CJK/emoji count 2) so wide input never overflows the box
-    // border — the "입력창 깨짐" corruption was char-length wrapping miscounting wide
-    // glyphs and pushing the text past the right edge.
-    if (visibleWidth(line) <= cap) out.push(line);
-    else for (const seg of wrapTextWithAnsi(line, cap)) out.push(seg);
+    if (ch !== "") {
+      cur += rendered;
+      curW += w;
+    }
   }
-  return out;
+  rows.push(cur);
+  return { rows, row, col };
+}
+
+/**
+ * Boxed input prompt (gjc-style): a `>` marker leads the first body row, the typed
+ * text (or a dim placeholder) follows, and the caret cell is reported so the caller
+ * can park the REAL terminal cursor right after `>` — moving with the arrow keys.
+ */
+export function renderInputFrame(line: string, opts: InputBoxOptions = {}): InputFrame {
+  const cols = Math.max(24, Math.trunc(opts.cols ?? 80));
+  const useColor = opts.color !== false;
+  const placeholder = opts.placeholder ?? "Type a request, /help, or @path";
+  const bodyWidth = Math.max(1, cols - 4);
+  const textWidth = Math.max(1, bodyWidth - 2); // "> " / "  " prefix columns
+
+  let rows: string[];
+  let crow = 0;
+  let ccol = 0;
+  let placeholderRow = false;
+  if (line.length === 0) {
+    rows = [placeholder];
+    placeholderRow = true;
+  } else {
+    const wrapped = wrapWithCursor(line, opts.cursor ?? line.length, textWidth);
+    rows = wrapped.rows;
+    crow = wrapped.row;
+    ccol = wrapped.col;
+  }
+
+  // Tail-truncate to maxBodyRows (caret usually edits near the end); the first
+  // visible row carries an `…` marker when earlier rows are hidden.
+  const maxBodyRows = Math.max(1, Math.trunc(opts.maxBodyRows ?? rows.length));
+  let hidden = 0;
+  if (rows.length > maxBodyRows) {
+    hidden = rows.length - maxBodyRows;
+    rows = rows.slice(hidden);
+    rows[0] = `…${rows[0] ?? ""}`.slice(0, textWidth);
+  }
+  let visRow = Math.max(0, Math.min(crow - hidden, rows.length - 1));
+  if (hidden > 0 && crow - hidden === 0) ccol += 1; // shifted by the `…` marker
+  if (crow - hidden < 0) { visRow = 0; ccol = 0; }
+
+  const promptMark = "> ";
+  const paintPrompt = useColor ? chalk.red : (s: string) => s;
+  const paintGhost = useColor ? chalk.dim : (s: string) => s;
+  const body = rows.map((r, i) => {
+    const content = placeholderRow ? paintGhost(r) : r;
+    return i === 0 ? paintPrompt(promptMark) + content : "  " + r;
+  });
+
+  const content = [...body];
+  if (opts.attachmentLabel) {
+    content.push(useColor ? chalk.cyan(opts.attachmentLabel) : opts.attachmentLabel);
+  }
+  if (opts.cwdLabel) {
+    content.push(useColor ? chalk.gray(opts.cwdLabel) : opts.cwdLabel);
+  }
+  const glyphs = opts.unicode === false ? BOX_ASCII : BOX_UNICODE;
+  const paint = useColor ? chalk.blue : (s: string) => s;
+  const lines = boxBlock(content, cols, { glyphs, paint, align: "left" });
+
+  // Terminal columns: border at col 1, content starts col 2, text after "> " at col 4.
+  const cursorRow = 1 + visRow;
+  const cursorCol = 4 + (placeholderRow ? 0 : ccol);
+  return { lines, cursorRow, cursorCol };
 }
 
 /**
@@ -35,20 +139,5 @@ function wrapPlain(text: string, width: number): string[] {
  * If opts.cwdLabel is provided, a dim gray label line is appended after the text inside the box.
  */
 export function renderInputBox(line: string, opts: InputBoxOptions = {}): string[] {
-  const cols = Math.max(24, Math.trunc(opts.cols ?? 80));
-  const placeholder = opts.placeholder ?? "Type a request, /help, or @path";
-  const bodyWidth = Math.max(1, cols - 4);
-  const wrapped = wrapPlain(line || placeholder, bodyWidth);
-  const maxBodyRows = Math.max(1, Math.trunc(opts.maxBodyRows ?? wrapped.length));
-  const body = wrapped.length > maxBodyRows
-    ? [`…${wrapped[wrapped.length - maxBodyRows] ?? ""}`.slice(0, bodyWidth), ...wrapped.slice(-(maxBodyRows - 1))]
-    : wrapped;
-  const content = [...body];
-  if (opts.cwdLabel) {
-    const label = opts.color === false ? opts.cwdLabel : chalk.gray(opts.cwdLabel);
-    content.push(label);
-  }
-  const glyphs = opts.unicode === false ? BOX_ASCII : BOX_UNICODE;
-  const paint = opts.color === false ? (s: string) => s : chalk.blue;
-  return boxBlock(content, cols, { glyphs, paint, align: "left" });
+  return renderInputFrame(line, opts).lines;
 }

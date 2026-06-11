@@ -1,30 +1,38 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-07 | Updated: 2026-06-07 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
 # mcp
 
 ## Purpose
-Model Context Protocol stdio/SSE server integration. It enables external LLM IDEs (e.g. Cursor, Claude Desktop) to invoke `joc` tools and workflows.
+Model Context Protocol (MCP) integration, allowing `jeo-code` to expose tools or consume context from external MCP servers.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `index.ts` | Exports public MCP server entry points |
-| `server.ts` | Configures and launches the MCP protocol server |
-| `tools.ts` | Registers the Ouroboros pipeline tools (`ouroboros_execute_seed`, `session_status`, etc.) |
-| `protocol.ts` | Message frame serialization and transport handlers |
+| `server.ts` | MCP server implementation (if exposing tools) |
+| `client.ts` | MCP client implementation (for consuming external tools) |
 
 ## Subdirectories
-None.
+*(None)*
 
 ## For AI Agents
 
 ### Working In This Directory
-- To enable workspace pipeline tools via MCP, ensure the environment flag `JOC_MCP_PIPELINE=1` is set.
+- Adhere strictly to the MCP specification.
+- Handle JSON-RPC serialization and deserialization safely.
+
+### Testing Requirements
+- Unit test protocol messaging.
+
+### Common Patterns
+- Transport layer abstraction (stdio vs SSE).
 
 ## Dependencies
 
 ### Internal
-- `src/agent/` (drives agent loops and reads/saves workflow state files)
+- Connects external capabilities into `src/agent/tools.ts`.
 
-<!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+### External
+- Protocol dependencies if not implemented natively.
+
+<!-- MANUAL: -->

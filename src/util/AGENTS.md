@@ -1,29 +1,39 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-07 | Updated: 2026-06-07 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
 # util
 
 ## Purpose
-Common utility functions. It includes retry helpers and custom error formatting modules.
+General utilities, helper functions, and shared types used across the application.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `retry.ts` | Exponential backoff logic (`withRetry`) retrying transient network errors |
-| `provider-error.ts` | Formatter for API HTTP status codes and detail outputs |
+| `update-check.ts` | Async check for newer npm versions |
+| `retry.ts` | Rate-limit backoff and generic retry mechanisms |
+| `provider-error.ts` | Error normalization helpers |
 
 ## Subdirectories
-None.
+*(None)*
 
 ## For AI Agents
 
 ### Working In This Directory
-- Keep utilities pure and highly unit-tested.
-- Implement only domain-agnostic helpers here.
+- Keep utilities pure and stateless where possible.
+- Avoid circular dependencies.
+
+### Testing Requirements
+- High unit test coverage expected.
+
+### Common Patterns
+- Retry loops use exponential backoff respecting `Retry-After` headers.
 
 ## Dependencies
 
-### External
-- None.
+### Internal
+- Used globally.
 
-<!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+### External
+*(None)*
+
+<!-- MANUAL: -->

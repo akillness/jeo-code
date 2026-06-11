@@ -1,44 +1,40 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-07 | Updated: 2026-06-07 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
 # commands
 
 ## Purpose
-Collection of CLI subcommand modules. Each module implements one command (e.g. `launch`, `deep-interview`, `ralplan`, `team`) as a free function.
+Concrete implementations of `joc` subcommands (e.g., launch, setup, team, ultragoal, models).
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `launch.ts` | The main interactive agent command (REPL, slash commands, autocomplete, live previews) |
-| `setup.ts` | Step-by-step interactive picker for provider API keys, OAuth, or local models |
-| `setup-helpers.ts` | Formatters and terminal prompt helper utilities for setup |
-| `auth.ts` | Authenticates against cloud providers via browser PKCE |
-| `doctor.ts` | Performs health checks on API keys, local Ollama, and network latency |
-| `models.ts` | Prints model capability tables, aliases, local models, and checks credentials status |
-| `deep-interview.ts` | Drives the Socratic requirements gathering loop until ambiguity <= 20% |
-| `ralplan.ts` | Runs the planning pipeline and generates blueprint designs |
-| `approve.ts` | Approves a plan, unlocking it for execution |
-| `team.ts` | Drives the multi-agent task execution queue using subagent roles |
-| `ultragoal.ts` | Verifies final work against acceptance criteria |
-| `skills.ts` | Lists or describes custom project skills |
-| `resume.ts` | Resumes a previous interactive session from history |
-| `chat.ts` | Single-shot streaming conversation without tools |
-| `evolve.ts` | Renders a simulation of TUI evolution stages |
+| `launch.ts` | The primary interactive/one-shot execution command |
+| `setup.ts` | Guided configuration command |
+| `team.ts` | Multi-agent coordination command |
+| `status.ts` / `update.ts` | Inspection and maintenance commands |
 
 ## Subdirectories
-None.
+*(None)*
 
 ## For AI Agents
 
 ### Working In This Directory
-- Every command must export `runXCommand(args: string[]): Promise<void>`.
-- Keep command inputs, flags, and outputs compatible with `gjc` CLI options.
+- Commands should handle their own specific setup but delegate core logic to `src/agent/` or `src/tui/`.
+- Maintain clean separation between interactive (TTY) and non-interactive modes.
+
+### Testing Requirements
+- Mock standard streams (stdout/stdin) to test command outputs.
+
+### Common Patterns
+- Command handlers take parsed options, initialize context, and run the main loop or utility function.
 
 ## Dependencies
 
 ### Internal
-- `src/agent/` (calls agent tool loop and loads config/sessions)
-- `src/ai/` (queries model discovery and catalog)
-- `src/tui/` (builds TUI layout, select lists, and welcome animations)
+- Connects `src/cli/` routing to `src/agent/` and `src/tui/`.
 
-<!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+### External
+*(None)*
+
+<!-- MANUAL: -->

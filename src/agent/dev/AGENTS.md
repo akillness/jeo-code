@@ -1,15 +1,15 @@
 <!-- Parent: ../../AGENTS.md -->
 <!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
-# gem
+# dev
 
 ## Purpose
-Detailed specifications and blueprints for specific feature modules ("gems").
+Developer-specific agent tooling and spec automation.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `*.md` | Module-specific implementation plans |
+| `spec-automation.ts` | Tools to sync `.specify/` artifacts to ooo seeds |
 
 ## Subdirectories
 *(None)*
@@ -17,15 +17,20 @@ Detailed specifications and blueprints for specific feature modules ("gems").
 ## For AI Agents
 
 ### Working In This Directory
-- Similar rules to the parent `plan/` directory.
+- Tools here are for internal workflow automation rather than core end-user features.
 
 ### Testing Requirements
-- N/A
+- Mock filesystem operations.
 
 ### Common Patterns
-- Focused, bounded feature specifications.
+*(None)*
 
 ## Dependencies
+
+### Internal
+- `src/agent/` state management.
+
+### External
 *(None)*
 
 <!-- MANUAL: -->

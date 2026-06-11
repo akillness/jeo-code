@@ -1,30 +1,32 @@
-<!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-07 | Updated: 2026-06-07 -->
+<!-- Parent: ../../AGENTS.md -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
 # flows
 
 ## Purpose
-Provider-specific OAuth login flows configurations.
+Specific OAuth flow implementations for various providers.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `index.ts` | Exports all cloud OAuth configs and sets `verifiedEndToEnd` compat flags |
-| `anthropic.ts` | Configures PKCE endpoints and token exchange for Anthropic |
-| `openai.ts` | Configures login endpoints and exchange formatting for OpenAI |
-| `google.ts` | Configures login endpoints and exchange formatting for Google Gemini |
+| `oauth.ts` / `pkce.ts` | Generic OAuth and PKCE utilities |
+| `*.ts` | Provider-specific login flows (e.g., anthropic, openai, gemini) |
 
 ## Subdirectories
-None.
+*(None)*
 
 ## For AI Agents
 
 ### Working In This Directory
-- `verifiedEndToEnd` determines if the minted OAuth token can run directly with joc's bundled adapter. All bundled flows are now `true`: Anthropic (Messages), OpenAI (Codex Responses backend), Gemini (Cloud Code Assist via cloudcode-pa), Antigravity (Cloud Code Assist agent). An API key, when set, still takes precedence over OAuth.
+- Handle browser launching and local callback servers securely.
+
+### Testing Requirements
+- Ensure ports and servers are closed cleanly in tests.
+
+### Common Patterns
+- Loopback HTTP servers for receiving OAuth callbacks.
 
 ## Dependencies
+*(None)*
 
-### Internal
-- `src/auth/` (used during PKCE callback server exchanges)
-
-<!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+<!-- MANUAL: -->

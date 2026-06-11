@@ -1,35 +1,42 @@
-<!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-07 | Updated: 2026-06-07 -->
+<!-- Parent: ../../AGENTS.md -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
 # providers
 
 ## Purpose
-Concrete provider adapter modules that format request payloads, authorize connections, and stream server responses.
+Concrete implementations for various LLM providers, translating generic requests into provider-specific API calls.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `anthropic.ts` | Adapter for Anthropic Messages API (handles thinking budget, versioning, and usage metrics) |
-| `openai.ts` | Adapter for OpenAI Chat Completions API (handles JSON mode and usage metadata) |
-| `gemini.ts` | Adapter for Google Generative Language API (strips prefixes and formats requests) |
-| `ollama.ts` | Adapter for keyless local Ollama server |
-| `errors.ts` | Defines `ProviderHttpError` and HTTP error wrappers |
+| `anthropic.ts` | Anthropic Claude integration |
+| `openai.ts` | OpenAI (and Codex backend) integration |
+| `gemini.ts` | Google Gemini (and Cloud Code Assist) integration |
+| `antigravity.ts` | Antigravity desktop-app OAuth client integration |
+| `ollama.ts` | Local Ollama integration |
 
 ## Subdirectories
-None.
+*(None)*
 
 ## For AI Agents
 
 ### Working In This Directory
-- Model-id rewrites must only strip the provider prefixes (e.g. `google/` or `gemini/` in Gemini, `openai/` in OpenAI, etc.).
-- Ensure streamed chunks yield text increments and sink accurate token usages to `onUsage`.
+- Each provider must handle its specific tool-calling syntax and streaming chunk format.
+- Ensure strict parsing of SSE (Server-Sent Events) streams.
+
+### Testing Requirements
+- Unit test stream parsing with mock payloads.
+
+### Common Patterns
+- Native fetch calls with `for await` loops over text decoding streams.
 
 ## Dependencies
 
 ### Internal
-- `src/ai/` (uses the adapter interfaces and types)
+- `src/ai/types.ts` for interfaces.
+- `src/auth/` for retrieving tokens.
 
 ### External
-- `@types/bun`
+- HTTP `fetch`.
 
-<!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+<!-- MANUAL: -->

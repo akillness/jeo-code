@@ -1,15 +1,15 @@
-<!-- Parent: ../../AGENTS.md -->
+<!-- Parent: ../AGENTS.md -->
 <!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
-# gem
+# deep-interview
 
 ## Purpose
-Detailed specifications and blueprints for specific feature modules ("gems").
+Bundled SKILL.md for the `deep-interview` workflow.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `*.md` | Module-specific implementation plans |
+| `SKILL.md` | The primary skill definition |
 
 ## Subdirectories
 *(None)*
@@ -17,13 +17,13 @@ Detailed specifications and blueprints for specific feature modules ("gems").
 ## For AI Agents
 
 ### Working In This Directory
-- Similar rules to the parent `plan/` directory.
+- Do not modify this without understanding the broader workflow implications.
 
 ### Testing Requirements
 - N/A
 
 ### Common Patterns
-- Focused, bounded feature specifications.
+*(None)*
 
 ## Dependencies
 *(None)*

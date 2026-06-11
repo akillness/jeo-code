@@ -1,48 +1,50 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-07 | Updated: 2026-06-07 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
 # src
 
 ## Purpose
-Main application source directory containing the TypeScript codebase for the `joc` agent.
+Core application source code for the `jeo-code` CLI and agent runtime. It orchestrates user commands, TUI rendering, agent intelligence, tool execution, and workspace integrations.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `cli.ts` | CLI entrypoint, Bun version validation, imports and runs dispatcher |
-| `index.ts` | Library entrypoint re-exporting key agent capabilities |
+| `cli.ts` | The main binary entrypoint |
+| `index.ts` | Library exports |
+| `bun-imports.d.ts` / `md-modules.d.ts` | TypeScript declarations for Bun built-ins and raw module imports |
 
 ## Subdirectories
 | Directory | Purpose |
 |-----------|---------|
-| `agent/` | Core JSON tool-loop engine, state, session, and MutationGuard (see `agent/AGENTS.md`) |
-| `ai/` | Providers adapters, model catalog, aliases registry, and model manager (see `ai/AGENTS.md`) |
-| `auth/` | OAuth PKCE callbacks, bearer token storage, and key management (see `auth/AGENTS.md`) |
-| `cli/` | CLI command runner registry and dispatcher (see `cli/AGENTS.md`) |
-| `commands/` | Implementations of individual CLI subcommands (launch, setup, deep-interview...) (see `commands/AGENTS.md`) |
-| `mcp/` | Model Context Protocol stdio server integration (see `mcp/AGENTS.md`) |
-| `skills/` | Socratic requirements and planning skill catalogs (see `skills/AGENTS.md`) |
-| `tui/` | differential TUI rendering, autocompletion, and layout components (see `tui/AGENTS.md`) |
-| `util/` | Shared utilities (transient retry, http error formatting) (see `util/AGENTS.md`) |
+| `agent/` | Agent execution loop, tool registry, session state, and subagent management (see `agent/AGENTS.md`) |
+| `ai/` | LLM client interactions, provider abstractions, and token management (see `ai/AGENTS.md`) |
+| `auth/` | OAuth flows and credential management (see `auth/AGENTS.md`) |
+| `cli/` | Command-line interface definitions and arg parsing (see `cli/AGENTS.md`) |
+| `commands/` | Implementations for all `joc` subcommands (launch, setup, team, etc.) (see `commands/AGENTS.md`) |
+| `mcp/` | Model Context Protocol integration (see `mcp/AGENTS.md`) |
+| `prompts/` | Bundled system prompts and skills (see `prompts/AGENTS.md`) |
+| `skills/` | Skill execution framework and discovery (see `skills/AGENTS.md`) |
+| `tui/` | Terminal User Interface, layout, and rendering (see `tui/AGENTS.md`) |
+| `util/` | General utilities, retry logic, and update checking (see `util/AGENTS.md`) |
 
 ## For AI Agents
 
 ### Working In This Directory
-- Place any new subcommands under `commands/` and register them in `cli/runner.ts`.
-- Place general helper logic in `util/`.
+- Entrypoints reside here, but domain logic should be pushed into appropriate subdirectories.
+- Adhere strictly to the Bun execution environment (no Node.js-specific modules unless polyfilled by Bun).
 
 ### Testing Requirements
-- Unit tests for new source components should be co-located in the `test/` directory.
+- Code touched here is highly central; verify with `bun test` and `bun run typecheck`.
 
 ### Common Patterns
-- Follow TypeScript ESM structure with explicit `.ts` imports.
+- Fast startup: limit top-level imports that execute expensive initialization.
 
 ## Dependencies
 
 ### Internal
-- Depends on `test/` for unit tests and verification.
+- Depends heavily on all subdirectories (`agent`, `tui`, `ai`, etc.).
 
 ### External
-- Bun >= 1.3.14
+- Bun runtime APIs.
 
-<!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+<!-- MANUAL: -->

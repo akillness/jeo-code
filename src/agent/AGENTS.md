@@ -1,22 +1,48 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-10 | Updated: 2026-06-10 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
 # agent
 
 ## Purpose
-Agent runtime loop and tool-use executor layer. V2 features a refactored Lean Loop.
+The core runtime loop, tool registry, session management, and state persistence for the `jeo-code` agent.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `engine.ts` | **Lean Loop**: Core `runAgentLoop` function; handles polling and dispatch only. |
-| `tool-registry.ts` | Centralized tool definitions and protocols. |
-| `output-util.ts` | Utilities for output truncation, spilling, and performance logging. |
-| `tools.ts` | Implementation of default tools + MutationGuard. |
-| `dev/` | Evolution and self-analysis tools (V2 components). |
+| `loop.ts` | The primary execution loop orchestrating model calls and tool execution |
+| `tools.ts` | Built-in tool definitions (bash, read, write, edit, etc.) |
+| `state.ts` | File-backed state and session persistence (`.joc/state/`) |
+| `session.ts` | Session context building, compaction, and history management |
+| `plan.ts` | Subagent planning structures and validation |
+| `subagents.ts` / `task-tool.ts` | Delegation mechanisms and background execution of task subagents |
+
+## Subdirectories
+| Directory | Purpose |
+|-----------|---------|
+| `dev/` | Developer-specific agent tooling and spec automation (see `dev/AGENTS.md`) |
 
 ## For AI Agents
-- Maintain the separation between tool registration (`tool-registry.ts`) and loop logic (`engine.ts`).
-- Use `src/agent/dev/` components for evolution-related tasks.
 
-<!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+### Working In This Directory
+- Modifications here affect the fundamental capabilities of the agent. Proceed with extreme caution.
+- Ensure state writes are atomic and safe for concurrent execution.
+- Tool schemas must remain strict and well-documented.
+
+### Testing Requirements
+- Extensive unit testing required. Use mock tools to test the loop logic without side effects.
+- Verify session compaction does not lose critical context.
+
+### Common Patterns
+- Tool results are fenced properly to prevent prompt injection.
+- The loop is decoupled from the UI (events are emitted to be consumed by the TUI).
+
+## Dependencies
+
+### Internal
+- `src/ai/` for model inference.
+- `src/tui/` consumes events emitted by the loop.
+
+### External
+- System APIs (fs, child_process) via Bun.
+
+<!-- MANUAL: -->

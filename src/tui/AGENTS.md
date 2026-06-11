@@ -1,36 +1,43 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-07 | Updated: 2026-06-07 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
 # tui
 
 ## Purpose
-TUI layout engine and rendering layers. Renders live step timeline meters, progress spinners, interactive selection pickers, and color gradients.
+Terminal User Interface logic, layout systems, and the differential renderer. Responsible for visualizing the agent's state, tools, and streams.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `app.ts` | The main `LaunchTui` controller coordinating tool streams, state evolution, and footers |
-| `renderer.ts` | Differential ANSI terminal updater |
-| `terminal.ts` | Truncates colored strings, shows/hides cursors, and queries terminal window size |
-| `index.ts` | Standard module exports |
+| `app.ts` | High-level TUI orchestrator (`LaunchTui`) |
+| `renderer.ts` | The differential, atomic terminal renderer (handles scrollback, resizing, DECSET 2026) |
+| `terminal.ts` | Low-level ANSI escape codes and terminal size utilities |
 
 ## Subdirectories
 | Directory | Purpose |
 |-----------|---------|
-| `components/` | Custom UI modules (ASCII art, select lists, autocomplete, capability indicators) (see `components/AGENTS.md`) |
+| `components/` | Reusable UI widgets (footer, forge boxes, timeline, layouts) (see `components/AGENTS.md`) |
+| `monitoring/` | Specialized HUD views (see `monitoring/AGENTS.md`) |
 
 ## For AI Agents
 
 ### Working In This Directory
-- Clamp all layout lines to terminal column limits using `terminal.ts` utilities to prevent wrapping bugs.
-- Reset terminal scroll regions (`\x1b[r`) and restore cursors (`\x1b[?25h`) on process exit to keep TTY healthy.
+- The differential renderer (`renderer.ts`) is critical for the "scrollback-friendly inline live turn" feature. DO NOT introduce full-screen clears (`\x1b[0J` mid-turn) as they flood tmux scrollback.
+- Maintain visual parity with `gjc` design patterns (e.g., shadcn-inspired stage-grouped card layouts, muted card headers).
+
+### Testing Requirements
+- Test rendering logic using mocked stdout.
+- Verify resize behavior and atomic flushes.
+
+### Common Patterns
+- Separation of UI from engine: `app.ts` listens to `AgentLoopEvents` but does not import engine loop directly.
 
 ## Dependencies
 
 ### Internal
-- `src/util/` (uses helpers)
+- Driven by events from `src/agent/loop.ts`.
 
 ### External
-- Chalk (for ANSI styling)
+- ANSI escape sequence management.
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->

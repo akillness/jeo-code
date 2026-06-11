@@ -1,34 +1,42 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-07 | Updated: 2026-06-07 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
 # scripts
 
 ## Purpose
-Utility scripts directory containing shell helpers for installation, uninstallation, and local checks.
+Utility, maintenance, and installation scripts for `jeo-code`. Contains standalone operational tools that don't belong in the core runtime.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `install.sh` | Bun global install script exposing `joc` globally and linking locally |
-| `uninstall.sh` | Uninstall script removing global binaries and purifying local configuration |
-| `smoke-test.sh` | Local health check executing basic commands to verify installation |
+| `install.sh` | Global installation script for macOS/Linux |
+| `uninstall.sh` | Uninstallation script |
+| `smoke-test.sh` | Basic sanity verification script |
+| `verify-models.ts` | Tests connectivity and model availability across providers |
 
 ## Subdirectories
-None.
+*(None)*
 
 ## For AI Agents
 
 ### Working In This Directory
-- Keep shell scripts POSIX-compliant.
-- Do not mutate system configuration files directly without warning.
+- Shell scripts should be POSIX compliant where possible, or explicitly declare `#!/bin/bash`.
+- TypeScript scripts should be executable via `bun run`.
+- Keep scripts standalone with minimal complex dependencies.
 
 ### Testing Requirements
-- Run `bash scripts/smoke-test.sh` to quickly verify installation health.
+- Run shell scripts manually or via `bun test` wrappers if available.
+
+### Common Patterns
+- Direct OS-level interactions (file copying, symlinking, env checks).
 
 ## Dependencies
 
-### External
-- POSIX-compliant shell / Bash
-- Bun (for local package linking)
+### Internal
+- May invoke `joc` binary or `src/cli.ts`.
 
-<!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+### External
+- System utilities (bash, curl, rm, ln).
+- Bun runtime.
+
+<!-- MANUAL: -->

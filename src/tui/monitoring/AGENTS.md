@@ -1,15 +1,15 @@
 <!-- Parent: ../../AGENTS.md -->
 <!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
-# gem
+# monitoring
 
 ## Purpose
-Detailed specifications and blueprints for specific feature modules ("gems").
+Specialized HUD views and sovereign monitoring interfaces.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `*.md` | Module-specific implementation plans |
+| `hud-view.ts` | Real-time evolution tracking and self-analysis visibility |
 
 ## Subdirectories
 *(None)*
@@ -17,13 +17,13 @@ Detailed specifications and blueprints for specific feature modules ("gems").
 ## For AI Agents
 
 ### Working In This Directory
-- Similar rules to the parent `plan/` directory.
+- Ensure compatibility with the differential renderer.
 
 ### Testing Requirements
-- N/A
+- Unit tests with mock state.
 
 ### Common Patterns
-- Focused, bounded feature specifications.
+*(None)*
 
 ## Dependencies
 *(None)*

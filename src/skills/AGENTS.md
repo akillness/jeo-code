@@ -1,27 +1,38 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-07 | Updated: 2026-06-07 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
 # skills
 
 ## Purpose
-Skill configuration catalog containing markdown guidelines for Socratic specs, planning consensus, and team execution.
+Framework for discovering, loading, and executing workflow skills (both bundled and user-provided).
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `catalog.ts` | Loader and parser mapping custom skill files (`*.md`) into agent launch prompts |
+| `registry.ts` | Discovers and catalogs available skills |
+| `executor.ts` | Mechanism to inject skill prompts into the active session |
 
 ## Subdirectories
-None.
+*(None)*
 
 ## For AI Agents
 
 ### Working In This Directory
-- Custom skill prompts are loaded from the project directory (`.joc/skills/`) or global directory (`~/.joc/skills/`) and combined with the default catalog.
+- Skills are primarily markdown files (`SKILL.md`).
+- Ensure native workflow routing (e.g., `/skill ralplan` running `src/commands/ralplan.ts`) functions alongside simple prompt injection.
+
+### Testing Requirements
+- Test skill resolution order (user directory vs bundled).
+
+### Common Patterns
+- Direct slash invocation (`/skill deep-interview`) and CLI equivalent (`joc deep-interview`).
 
 ## Dependencies
 
 ### Internal
-- `src/agent/` (prompts are injected into the agent system context)
+- Reads from `src/prompts/skills/`.
 
-<!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+### External
+*(None)*
+
+<!-- MANUAL: -->

@@ -1,29 +1,39 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-07 | Updated: 2026-06-07 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
 # cli
 
 ## Purpose
-CLI runner registry and command dispatcher.
+Command-line interface routing, argument parsing, and initialization logic. Defines the shape of the `joc` binary interface.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `index.ts` | Exports public dispatcher function |
-| `runner.ts` | Maintains the `COMMANDS` registry, Levenshtein command name suggestions, help renderer, and global flag pre-router |
+| `parser.ts` | Argument parsing and flag validation |
+| `router.ts` | Dispatches CLI commands to their respective implementations |
 
 ## Subdirectories
-None.
+*(None)*
 
 ## For AI Agents
 
 ### Working In This Directory
-- When adding a subcommand, register its summary, loader, and options in `COMMANDS` (`runner.ts`).
-- Global flags (e.g. `--list-models`, `--models`) are handled here before forwarding arguments to subcommands.
+- Keep parsing logic declarative.
+- Ensure all flags have clear help text and defaults.
+- Delegate actual command execution to `src/commands/`.
+
+### Testing Requirements
+- Test CLI arg parsing with various flag combinations.
+
+### Common Patterns
+- Early exit for `--help` and `--version`.
 
 ## Dependencies
 
 ### Internal
-- `src/commands/` (imports subcommands lazily to keep CLI startup fast)
+- Routes to `src/commands/`.
 
-<!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+### External
+- Standard CLI arg parsing libraries or custom minimal parsers.
+
+<!-- MANUAL: -->

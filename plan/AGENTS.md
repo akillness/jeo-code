@@ -1,32 +1,42 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-07 | Updated: 2026-06-07 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
 # plan
 
 ## Purpose
-Implementation blueprints and design documents for milestones.
+Implementation blueprints, product requirement documents, and historical planning artifacts. Serves as the source of truth for upcoming features and system design goals.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `README.md` | Master plan index mapping out milestones |
-| `TEMPLATE.md` | Blueprint template for designing milestones |
-| `01-tui.md` | TUI capabilities milestone details |
-| `05-provider.md` | Provider credentials and routing milestone details |
+| `README.md` | Overview of the planning structure |
+| `TEMPLATE.md` | Template for creating new plans |
+| `*.md` | Individual feature or phase plans |
 
 ## Subdirectories
 | Directory | Purpose |
 |-----------|---------|
-| `gem/` | Blueprint backups and original milestone specs (see `plan/gem/AGENTS.md`) |
+| `gem/` | Artifacts related to specific feature gems/modules (see `gem/AGENTS.md`) |
 
 ## For AI Agents
 
 ### Working In This Directory
-- BLUEPRINTS are read-only once frozen or checked in as static documentation.
+- Consult these documents before implementing new features to ensure alignment with original specifications.
+- Use `todo` or checkbox lists to mark completion of planned items.
+- Plans should be immutable once completed, acting as historical records.
+
+### Testing Requirements
+- N/A (Documentation only)
+
+### Common Patterns
+- Spec-first documentation format.
 
 ## Dependencies
 
 ### Internal
-- `src/` (blueprints map out implementation targets for the source code)
+- Influences the development of `src/`.
 
-<!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+### External
+*(None)*
+
+<!-- MANUAL: -->

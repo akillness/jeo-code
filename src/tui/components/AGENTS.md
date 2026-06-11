@@ -1,40 +1,42 @@
-<!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-07 | Updated: 2026-06-07 -->
+<!-- Parent: ../../AGENTS.md -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
 
 # components
 
 ## Purpose
-TUI view components. It formats, lays out, and displays terminal elements including ASCII evolution animations, code syntax highlighting, autocomplete selectors, and capability tables.
+Reusable UI widgets and layout primitives for the terminal interface.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `select-list.ts` | The generic keyboard-navigable selection list controller and viewport renderer |
-| `live-model-picker.ts` | Displays live discovered models in a SelectItem list with capability annotations |
-| `model-picker.ts` / `provider-picker.ts` | Builds select lists from the static model catalog and provider statuses |
-| `autocomplete.ts` | Interactive autocomplete completer and line keypress listener |
-| `slash.ts` | Slash command registry and live previews builder |
-| `config-panel.ts` | Panel formatters for effective configuration, alias lists, and subagents panels |
-| `code-view.ts` | Syntax highlighting code formatter and line range slicer |
-| `step-timeline.ts` | Numbered, colored horizontal/vertical process timeline indicator |
-| `ascii-art.ts` | Renders ASCII animation frames for evolution stages |
-| `evolution.ts` | Canonical 5-stage evolution progress model |
-| `footer.ts` / `spinner.ts` / `status.ts` / `tool-list.ts` / `meter.ts` | Status bars and animation components |
-| `color.ts` / `themes.ts` / `layout.ts` | Color palettes, layouts, and Unicode capability utilities |
+| `forge.ts` | Formats the boxed tool execution outputs |
+| `status.ts` | The `[STEP]` / `[STATUS]` / `[TOOL]` HUD lines |
+| `section.ts` | Shadcn-inspired card layout and spacing tokens |
+| `layout.ts` | Low-level padding, boxing, and alignment math |
+| `ascii-art.ts` | Cellular evolution graphics |
 
 ## Subdirectories
-None.
+*(None)*
 
 ## For AI Agents
 
 ### Working In This Directory
-- All printed lines must fit terminal dimensions; truncate strings to column size to prevent screen corruption.
-- Keep components pure and decouple UI rendering from network/file I/O.
+- Prioritize deterministic width/height calculations.
+- Always strip ANSI codes (`\x1b[...m`) before measuring string lengths.
+- Components should return string arrays (`string[]`) representing lines, not perform direct stdout writes.
+
+### Testing Requirements
+- Snapshot or exact string matching in unit tests.
+
+### Common Patterns
+- Theming via `themes.ts` and `chalk`.
 
 ## Dependencies
 
 ### Internal
-- `src/tui/` (the main renderer renders these components)
-- `src/ai/` (queries model metadata for capability indicator badges)
+- Consumed by `src/tui/app.ts`.
 
-<!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+### External
+*(None)*
+
+<!-- MANUAL: -->

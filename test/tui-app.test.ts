@@ -12,7 +12,8 @@ test("LaunchTui: shows a 'calling model' status while waiting on the model, then
   tui.start();
   const ev = tui.events();
   ev.onStep!(1); // step begins → waiting on the model
-  expect(out.join("")).toContain("calling model (m1)");
+  const cleanOut = out.join("").replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+  expect(cleanOut).toContain("calling model (m1)");
   out.length = 0;
   ev.onAssistant!("", { tool: "bash", arguments: { command: "echo hi" } }); // model replied → tool runs
   const afterAssistant = out.join("");
@@ -364,9 +365,8 @@ test("LaunchTui: multiple onStep renders do not produce duplicate footers in out
     expect(footerCount).toBeLessThanOrEqual(1);
   }
 
-  // 3. Verify that there are no duplicate footers in the simulated terminal screen lines.
   const lines = simulateTerminal(out);
-  const footerLines = lines.filter(l => l.includes("m1"));
+  const footerLines = lines.filter(l => l.includes("m1") && l.includes("step"));
   expect(footerLines.length).toBeLessThanOrEqual(1);
 });
 
@@ -426,12 +426,21 @@ function simulateTerminal(writes: string[]): string[] {
         i = nextEsc;
         
         if (text) {
-          lines[cursorRow] = text;
+          const parts = text.split("\n");
+          for (let p = 0; p < parts.length; p++) {
+            if (p > 0) {
+              cursorRow++;
+            }
+            const part = parts[p];
+            if (part) {
+              lines[cursorRow] = part;
+            }
+          }
         }
       }
     }
   }
-  return lines;
+  return lines.filter(l => l !== undefined);
 }
 
 import { Renderer } from "../src/tui/renderer";
@@ -536,7 +545,7 @@ test("LaunchTui: onToolResult stream line includes the invocation target using w
   expect(txt).toContain("$ bun test");  // command echo inside the card
 });
 
-test("LaunchTui (alt-screen boxed): [STATUS] shows the real in-flight file; stage lives in the track, not the forge row", () => {
+test("LaunchTui (alt-screen boxed): status box shows the in-flight file; steps in the title; stage in the track", () => {
   const realRender = Renderer.prototype.render;
   let frame: string[] = [];
   (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
@@ -561,15 +570,16 @@ test("LaunchTui (alt-screen boxed): [STATUS] shows the real in-flight file; stag
     clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
 
     const txt = frame.map(strip);
-    const statusLine = txt.find(l => l.includes("[STATUS]")) ?? "";
-    const stepLine = txt.find(l => l.includes("[STEP]")) ?? "";
-    const toolLine = txt.find(l => l.includes("joc forge")) ?? "";
-    // [STATUS] reflects the actual file, while [STEP] stays metric-only.
-    expect(statusLine).toContain("src/agent/engine.ts");
-    expect(stepLine).not.toContain("src/agent/engine.ts");
-    expect(statusLine).not.toContain("Transcribing instructions");
-    // The evolution stage is rendered in the centered track/footer, not duplicated in the forge row.
-    expect(toolLine).not.toContain("Double Helix");
+    // gjc status-box contract: steps live in the TITLE border row…
+    const titleLine = txt.find(l => /step 8\/25/.test(l)) ?? "";
+    expect(titleLine).toMatch(/executing|thinking/);
+    expect(titleLine).not.toContain("src/agent/engine.ts");
+    // …and the activity row inside the box names the real in-flight file.
+    const activityLine = txt.find(l => /[Rr]ead.*src\/agent\/engine\.ts.*(⟦esc⟧|\[esc\])/.test(l)) ?? "";
+    expect(activityLine).not.toBe("");
+    expect(activityLine).not.toContain("Transcribing instructions");
+    // The evolution stage is rendered in the centered track/footer, not in the status box.
+    expect(titleLine).not.toContain("Double Helix");
     expect(txt.some(l => /Primordial Cell|Double Helix|Tool User|Super intelligence/.test(l))).toBe(true);
   } finally {
     if (savedAlt === undefined) delete process.env.JOC_TUI_ALT_SCREEN;

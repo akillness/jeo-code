@@ -25,7 +25,7 @@ import { SECTION_GAP, stackSections } from "./components/section";
 import { resolveTheme, themeGradient, accentPaint } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, type ForgeSummary } from "./components/forge";
-import { renderJocStatus, renderStatusBar } from "./components/status";
+import { renderJocStatus, renderStatusBar, renderStatusBox } from "./components/status";
 import { costForUsage, formatCost } from "../ai/pricing";
 import { renderMarkdownTables } from "./components/markdown-table";
 import { visibleWidth, wrapTextWithAnsi } from "./components/width";
@@ -61,6 +61,7 @@ export interface AgentEventsLike {
   onNotice?(message: string): void;
   onUsage?(usage: { inputTokens: number; outputTokens: number }): void;
   onModelStream?(textSoFar: string): void;
+  onBudget?(limit: number, reason: string): void;
 
 }
 
@@ -76,6 +77,20 @@ function extractStreamingReasoning(buf: string): string {
   if (!m) return "";
   try { return JSON.parse('"' + m[1] + '"'); }
   catch { return m[1].replace(/\\\\/g, "\\").replace(/\\n/g, " ").replace(/\\"/g, '"'); }
+}
+
+/** Uniform live-activity fallback for models that stream no `reasoning` field: derive
+ *  what the model is doing from the forming JSON (`"tool":"x"` → "calling x…") or, for
+ *  prose-replying models, show the reply head — so the status box behaves identically
+ *  across providers/models instead of staying silent for some of them. */
+function extractStreamingActivity(buf: string): string {
+  const head = buf.length > 512 ? buf.slice(0, 512) : buf;
+  const tool = head.match(/"tool"\s*:\s*"([^"]+)"/)?.[1];
+  if (tool) return tool === "done" ? "writing the reply…" : `calling ${tool}…`;
+  const t = head.trim();
+  if (!t) return "";
+  if (t.startsWith("{") || t.startsWith("```")) return "forming the next tool call…";
+  return t.replace(/\s+/g, " ").slice(0, 140);
 }
 
 const DEFAULT_MAX_STEPS = 100;
@@ -153,6 +168,10 @@ export class LaunchTui {
   // `"reasoning"` field of the forming tool-call JSON). Shown dim under the HUD while
   // the model responds, then flushed once into scrollback as a `jeo · …` ledger line.
   private streamingReasoning = "";
+  /** Uniform live-activity text for the status box (reasoning OR derived fallback). */
+  private streamingActivity = "";
+  /** Last stream-driven draw (ms epoch) — throttles per-delta repaints to ≤10/s. */
+  private lastStreamDraw = 0;
   private flushedReasoning = "";
   // True while the live turn renders in the alternate screen buffer (TTY only);
   // drives leaving it on finish so terminal scroll never fights the repaint.
@@ -270,6 +289,7 @@ export class LaunchTui {
         this.hudPhase = "thinking";
         this.retryNotice = null; // a new step starts a fresh model call
         this.streamingReasoning = ""; // fresh model response this step
+        this.streamingActivity = "";
         this.flushedReasoning = "";
         this.currentStepStartedAt = Date.now();
         this.spinner.updateStep(step, this.footer.maxSteps);
@@ -277,10 +297,28 @@ export class LaunchTui {
         this.draw();
       },
       onModelStream: textSoFar => {
-        // Surface the model's reasoning live as its JSON tool call streams in.
+        // Surface the model's LIVE activity uniformly for every model/provider:
+        // the streamed `reasoning` field when the model emits one, else a derived
+        // fallback (tool being formed / reply prose head) — so no model leaves the
+        // status box silent while it streams.
+        // Draws are THROTTLED to one per 100ms: the old per-delta draw() rendered
+        // the full frame hundreds of times per response (a real chunk of joc's
+        // per-step latency); the 120ms timer tick covers the gaps anyway.
         const r = extractStreamingReasoning(textSoFar);
-        if (r && r !== this.streamingReasoning) {
+        let changed = false;
+        if (r) {
+          changed = r !== this.streamingReasoning;
           this.streamingReasoning = r;
+          this.streamingActivity = r;
+        } else {
+          const fallback = extractStreamingActivity(textSoFar);
+          if (fallback && fallback !== this.streamingActivity) {
+            this.streamingActivity = fallback;
+            changed = true;
+          }
+        }
+        if (changed && Date.now() - this.lastStreamDraw >= 100) {
+          this.lastStreamDraw = Date.now();
           this.draw();
         }
       },
@@ -295,6 +333,7 @@ export class LaunchTui {
           this.appendLedger(dim(`jeo · ${this.streamingReasoning}`) + "\n");
         }
         this.streamingReasoning = "";
+        this.streamingActivity = "";
         if (invocation && invocation.tool !== "done") {
           this.runningTool = true;
           this.hudPhase = "executing";
@@ -369,6 +408,16 @@ export class LaunchTui {
         // state, not ledger content. Pin it in the status row only; do NOT append
         // repeated retry notices into the stream/log area.
         this.retryNotice = msg;
+        this.draw();
+      },
+      onBudget: (limit: number, reason: string) => {
+        // gjc-style retry flow: the step budget extended itself — update the live
+        // `step N/M` denominators and leave one durable ledger line.
+        this.footer.maxSteps = limit;
+        this.spinner.updateStep(this.footer.step ?? 0, limit);
+        const mark = this.unicode ? "↻" : "~";
+        const dim = this.theme.color ? chalk.dim : (s: string) => s;
+        this.appendLedger(dim(`${mark} ${reason}`) + "\n");
         this.draw();
       },
       onUsage: (u: { inputTokens: number; outputTokens: number }) => {
@@ -744,26 +793,41 @@ export class LaunchTui {
     // whatever rows remain above it.
     const tail: string[] = [];
 
-    // Single status line: spinner + the real current activity + compact turn stats.
+    // gjc status box: the live thinking process renders in a bordered box —
+    // phase + step n/m embedded in the title border, the model's streamed
+    // activity (uniform across providers via streamingActivity) on the spinner
+    // row with the ⟦esc⟧ cancel hint, and one compact metrics row.
     if (isThinking) {
-      let msg = this.currentActivity();
       const colorLevel = detectColorLevel(process.env, isTTY());
-      if (this.theme.color && colorLevel === ColorLevel.TrueColor) {
-        const grad = themeGradient(this.theme, idx);
-        msg = animatedGradientText(msg, [grad.from, grad.to], (this.tickCount * 0.05) % 1, { colorLevel });
-      }
+      const grad = themeGradient(this.theme, idx);
       const costUsd = costForUsage(this.footer.model, this.turnUsage) ?? undefined;
-      const bits: string[] = [`step ${stepNow}/${this.footer.maxSteps}`, formatDuration(elapsedMs)];
-      if (this.turnUsage && (this.turnUsage.inputTokens || this.turnUsage.outputTokens)) {
-        bits.push(formatUsage(this.turnUsage));
-      }
-      if (typeof costUsd === "number" && Number.isFinite(costUsd) && costUsd > 0) bits.push(formatCost(costUsd));
-      if (this.subagentActive) bits.push("sub");
-      if (this.mutationGuarded) bits.push("mutation locked");
-      tail.push(`${this.spinner.current()} ${msg} ${dim(`(${bits.join(" · ")})`)}`);
-      if (this.streamingReasoning) {
-        tail.push(dim(`  ${this.unicode ? "💭" : "*"} ${this.streamingReasoning}`));
-      }
+      const stats = this.tools.stats();
+      tail.push(...renderStatusBox({
+        cols: Math.max(24, Math.min(120, cols)),
+        phaseLabel: this.workflowStatus ? `${this.workflowStatus.skill}:${this.workflowStatus.phase}` : this.hudPhase,
+        spinner: this.spinner.current(),
+        activity: this.retryNotice ?? (this.streamingActivity || this.currentActivity()),
+        escHint: true,
+        step: stepNow,
+        maxSteps: this.footer.maxSteps,
+        elapsedMs,
+        stepElapsedMs: this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined,
+        avgStepMs: stepNow > 0 ? elapsedMs / stepNow : undefined,
+        okCount: stats.ok,
+        failCount: stats.fail,
+        runningCount: stats.running,
+        totalCount: stats.total,
+        mutationGuarded: this.mutationGuarded,
+        unicode: this.unicode,
+        color: this.theme.color,
+        colorLevel,
+        phase: (this.tickCount * 0.05) % 1,
+        palette: [grad.from, grad.to],
+        isThinking: true,
+        usage: this.turnUsage,
+        costUsd,
+        subagentActive: this.subagentActive,
+      }));
     }
 
     // Agent task plan (the `todo` tool) as a Todos checklist.
@@ -893,27 +957,27 @@ export class LaunchTui {
 
       if (fit) {
         bottom.push("");
-        bottom.push(`  ${renderHud(this.hudPhase, { unicode: this.unicode, color: this.theme.color })}`);
         if (this.turnTitle) {
           const arrow = this.unicode ? "▸" : ">";
           const titleLine = `  ${arrow} ${this.turnTitle}`;
           bottom.push(this.theme.color ? chalk.dim(titleLine) : titleLine);
         }
-        if (this.streamingReasoning) {
-          const bulb = this.unicode ? "💭" : "*";
-          const rLine = `  ${bulb} ${this.streamingReasoning}`;
-          bottom.push(this.theme.color ? chalk.gray(rLine) : rLine);
-        }
-        bottom.push("");
+        // gjc status box: the live thinking process renders inside a bordered box —
+        // phase + step n/m embedded in the title border, the streamed activity
+        // (uniform for every model) on the spinner row with the ⟦esc⟧ cancel hint,
+        // and one compact metrics row (meter/timing/usage/rate/cost/tool counts).
         const stats = this.tools.stats();
-        for (const line of renderJocStatus({
+        for (const line of renderStatusBox({
+          cols: innerWidth,
+          phaseLabel: this.workflowStatus ? `${this.workflowStatus.skill}:${this.workflowStatus.phase}` : this.hudPhase,
+          spinner: this.spinner.current(),
+          activity: this.retryNotice ?? (this.streamingActivity || statusMsg),
+          escHint: true,
           step: stepNow,
           maxSteps: this.footer.maxSteps,
           elapsedMs,
           stepElapsedMs: this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined,
           avgStepMs: stepNow > 0 ? elapsedMs / stepNow : undefined,
-          message: statusMsg,
-          currentTool: this.tools.currentTool(),
           okCount: stats.ok,
           failCount: stats.fail,
           runningCount: stats.running,

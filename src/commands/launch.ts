@@ -69,6 +69,7 @@ import { listThemes, resolveTheme, themeGradient, accentPaint } from "../tui/com
 import {
   createSession,
   appendMessage,
+  appendMessages,
   loadSession,
   listSessions,
   latestSessionId,
@@ -290,6 +291,7 @@ export function createStreamEvents(
   now: () => number = Date.now,
 ): AgentLoopEvents {
   let step = 0;
+  let cap = maxSteps;
   let pending = "";
   let latestUsage: { inputTokens: number; outputTokens: number } | undefined;
   const startTime = now();
@@ -309,7 +311,7 @@ export function createStreamEvents(
       let suffix = "";
       if (elapsedMs >= 1000) suffix += ` · ${formatDuration(elapsedMs)}`;
       if (latestUsage) suffix += ` · ${formatUsage(latestUsage)}`;
-      log(`${categoryBadge("progress")} ${chalk.cyan(`[step ${step}/${maxSteps}]`)} ${pending}${suffix ? chalk.dim(suffix) : ""}`);
+      log(`${categoryBadge("progress")} ${chalk.cyan(`[step ${step}/${cap}]`)} ${pending}${suffix ? chalk.dim(suffix) : ""}`);
     },
     onToolResult: (tool: string, ok: boolean, output?: string) => {
       const label = pending || tool;
@@ -318,6 +320,11 @@ export function createStreamEvents(
       pending = "";
     },
     onNotice: (msg: string) => log(`  ${categoryBadge("progress")} ${chalk.yellow(msg)}`),
+    onBudget: (limit: number, reason: string) => {
+      // gjc-style retry flow: keep the `[step N/M]` denominator honest after an extension.
+      cap = limit;
+      log(`  ${categoryBadge("progress")} ${chalk.yellow(reason)}`);
+    },
     onUsage: (usage: { inputTokens: number; outputTokens: number }) => {
       latestUsage = usage;
     },
@@ -774,6 +781,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           process.exit(1);
         }
         const sessionName = alloc.name;
+        // Wheel scrolling inside joc-owned tmux sessions: enable tmux mouse mode
+        // (session-scoped — never -g) so wheel-up enters copy-mode over the REAL
+        // pane history and wheel-down at the bottom drops back out. Opt out with
+        // JOC_TMUX_MOUSE=0. Best-effort: an old tmux without the option is fine.
+        if (process.env.JOC_TMUX_MOUSE !== "0") {
+          try { Bun.spawnSync([tmuxBin, "set-option", "-t", `=${sessionName}`, "mouse", "on"]); } catch { /* best-effort */ }
+        }
         console.log(
           sessionName === sessionBase
             ? `Starting new tmux session: ${sessionName}`
@@ -1024,6 +1038,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           cwd,
           tools,
           maxSteps: Math.min(6, flags.maxSteps),
+          // Corrective echo retry is deliberately tiny — no budget extensions.
+          budget: { maxExtensions: 0 },
           model: sessionModel,
           maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
           signal: ac.signal,
@@ -1053,7 +1069,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // Full-fidelity persistence: append every message the engine added this turn
     // (user prompt + intermediate tool-call/tool-result turns), then the final reply.
     if (sessionId) {
-      for (const m of history.slice(beforeLen)) await appendMessage(sessionId, m, cwd);
+      // One batched fs append for the whole turn (was: one awaited append per message).
+      await appendMessages(sessionId, history.slice(beforeLen), cwd);
     }
     history.push({ role: "assistant", content: reply });
     if (sessionId) await appendMessage(sessionId, { role: "assistant", content: reply }, cwd);
@@ -1564,16 +1581,45 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (previewArmed) drawFooter(previewLines(""));
     return true;
   };
-  // Ctrl+C while typing: readline raises SIGINT on the interface — first press
-  // clears the line (zsh/gjc-style) rather than killing the process; with
-  // nothing typed it shows a quiet quit hint. Mid-turn ^C aborts are handled by
-  // the separate raw-mode turn harness, not this listener.
+  // Ctrl+C at the prompt: the FIRST press clears the typed line (zsh/gjc-style)
+  // — and pressing ^C again in quick succession (≤2s, nothing left to clear)
+  // EXITS the process gracefully by resolving the pending prompt as /exit, so
+  // the normal quit path (session save, resume pointer) runs. Mid-turn ^C
+  // aborts stay with the separate raw-mode turn harness, not this listener.
+  let lastSigintAt = 0;
+  const SIGINT_EXIT_WINDOW_MS = 2000;
   rl.on("SIGINT", () => {
     if (pickerActive) return;
-    if (clearTypedInput()) return;
+    const now = Date.now();
+    const consecutive = now - lastSigintAt <= SIGINT_EXIT_WINDOW_MS;
+    lastSigintAt = now;
+    if (clearTypedInput()) {
+      if (previewArmed) {
+        const lines = previewLines("");
+        lines.push(chalk.gray("  ^C cleared input — press ^C again to exit"));
+        drawFooter(lines);
+      }
+      return;
+    }
+    if (consecutive) {
+      // Second consecutive ^C with nothing to clear → graceful /exit: inject the
+      // command through readline's own input path (rl.write submits the line and
+      // resolves the pending rl.question), so the normal quit path — session save,
+      // resume pointer — runs exactly as if the user typed /exit.
+      try {
+        rl.write("/exit\n");
+      } catch {
+        // Input path unavailable (stream closing) — exit directly but restore the
+        // terminal first so the shell prompt isn't left on a hidden cursor.
+        disarmPreview();
+        out.write("\x1b[?25h\n");
+        process.exit(0);
+      }
+      return;
+    }
     if (previewArmed) {
       const lines = previewLines("");
-      lines.push(chalk.gray("  ^C — nothing to clear · /exit to quit"));
+      lines.push(chalk.gray("  ^C — press ^C again to exit · /exit to quit"));
       drawFooter(lines);
     }
   });

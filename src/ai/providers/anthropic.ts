@@ -82,15 +82,32 @@ export function anthropicPayload(
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
   // Image attachments (clipboard paste) become Anthropic content blocks; plain
   // string content is kept for text-only messages (the overwhelmingly common case).
-  const anthropicMessages = messages.filter(m => m.role !== "system").map(m => ({
-    role: m.role,
-    content: m.images?.length
-      ? [
-          ...m.images.map(img => ({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } })),
-          ...(m.content ? [{ type: "text", text: m.content }] : []),
-        ]
-      : m.content,
-  }));
+  type ContentBlock = Record<string, unknown>;
+  const anthropicMessages: { role: string; content: string | ContentBlock[] }[] =
+    messages.filter(m => m.role !== "system").map(m => ({
+      role: m.role,
+      content: m.images?.length
+        ? [
+            ...m.images.map((img): ContentBlock => ({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } })),
+            ...(m.content ? [{ type: "text", text: m.content } as ContentBlock] : []),
+          ]
+        : m.content,
+    }));
+  // Conversation prompt caching (gjc parity — the main same-model latency gap):
+  // one breakpoint on the LAST message caches the entire conversation prefix, so
+  // each agent-loop step only pays input processing for the new tail instead of
+  // re-ingesting the whole growing history. Combined with the system-block
+  // breakpoint this uses 2 of Anthropic's 4 slots. Sub-minimum prompts (<1024
+  // tokens) ignore the marker harmlessly.
+  const last = anthropicMessages[anthropicMessages.length - 1];
+  if (last) {
+    if (typeof last.content === "string") {
+      if (last.content) last.content = [{ type: "text", text: last.content, cache_control: { type: "ephemeral" } }];
+    } else if (last.content.length > 0) {
+      const tail = last.content[last.content.length - 1]!;
+      last.content[last.content.length - 1] = { ...tail, cache_control: { type: "ephemeral" } };
+    }
+  }
   const payload: Record<string, unknown> = {
     model,
     messages: anthropicMessages,

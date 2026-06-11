@@ -85,6 +85,22 @@ export async function appendMessage(
   await fs.appendFile(file, JSON.stringify(entry) + "\n", "utf8");
 }
 
+/** Append a batch of messages with ONE fs append (turn-end persistence: a long
+ *  turn previously issued one sequential appendFile per intermediate message). */
+export async function appendMessages(
+  id: string,
+  messages: readonly Message[],
+  cwd = process.cwd()
+): Promise<void> {
+  if (messages.length === 0) return;
+  const file = sessionPath(id, cwd);
+  const timestamp = new Date().toISOString();
+  const chunk = messages
+    .map(message => JSON.stringify({ type: "message", timestamp, message } satisfies SessionEntry))
+    .join("\n") + "\n";
+  await fs.appendFile(file, chunk, "utf8");
+}
+
 export async function appendCompaction(
   id: string,
   seq: number,

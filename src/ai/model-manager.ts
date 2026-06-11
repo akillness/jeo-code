@@ -370,7 +370,14 @@ function composeAbort(a: AbortSignal | undefined, b: AbortSignal): AbortSignal {
   if (typeof AbortSignal.any === "function") return AbortSignal.any([a, b]);
   if (a.aborted || b.aborted) return AbortSignal.abort();
   const ctrl = new AbortController();
-  const onAbort = () => ctrl.abort();
+  // Memory hygiene: `a` is typically the TURN-long abort signal — a once-listener
+  // per model call would otherwise accumulate on it for the whole turn. Detach
+  // BOTH listeners as soon as either side fires.
+  const onAbort = () => {
+    a.removeEventListener("abort", onAbort);
+    b.removeEventListener("abort", onAbort);
+    ctrl.abort();
+  };
   a.addEventListener("abort", onAbort, { once: true });
   b.addEventListener("abort", onAbort, { once: true });
   return ctrl.signal;

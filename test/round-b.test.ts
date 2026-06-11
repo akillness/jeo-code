@@ -158,7 +158,11 @@ test("anthropicPayload: marks the system prompt cache_control:ephemeral and drop
   expect(payload.system[0].cache_control).toEqual({ type: "ephemeral" });
   expect(payload.system[0].text).toBe("SYS");
   // system role is not duplicated into messages
-  expect(payload.messages).toEqual([{ role: "user", content: "hi" }]);
+  // system role is not duplicated into messages; the LAST message carries the
+  // conversation prompt-cache breakpoint (block form).
+  expect(payload.messages).toEqual([
+    { role: "user", content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral" } }] },
+  ]);
 });
 
 test("anthropicPayload: OAuth calls include Claude Code prelude before the real system prompt", () => {
@@ -177,7 +181,9 @@ test("anthropicPayload: OAuth calls include Claude Code prelude before the real 
   expect(payload.system[0].cache_control).toBeUndefined();
   expect(payload.system[1]).toEqual({ type: "text", text: "You are a Claude agent, built on Anthropic's Claude Agent SDK." });
   expect(payload.system[2]).toEqual({ type: "text", text: "SYS", cache_control: { type: "ephemeral" } });
-  expect(payload.messages).toEqual([{ role: "user", content: "hi" }]);
+  expect(payload.messages).toEqual([
+    { role: "user", content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral" } }] },
+  ]);
   expect(payload.metadata?.user_id).toMatch(/^user_[0-9a-f]{64}_account_[0-9a-f-]{36}_session_[0-9a-f-]{36}$/);
 });
 

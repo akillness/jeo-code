@@ -195,28 +195,70 @@ function envDefaultConfig(): Config {
   };
 }
 
+/**
+ * Parsed-config read cache keyed by path and validated by stat (mtimeMs + size).
+ * `readGlobalConfig`/`readRawGlobalConfig` run on EVERY model call (resolveCall,
+ * credential resolution, per-turn config reads), so an uncached read paid a disk
+ * read + JSON.parse + zod validation per agent-loop step. The cache is bounded
+ * (≤8 paths — one per JOC_CONFIG_DIR seen) and invalidated by `saveGlobalConfig`;
+ * any external write changes mtime/size, so a stale entry is never served. Reads
+ * return a structuredClone so callers can never poison the cached object.
+ */
+type ParsedFile =
+  | { kind: "ok"; config: Config }
+  | { kind: "missing" }
+  | { kind: "bad-json"; warned: boolean }
+  | { kind: "invalid"; message: string; warned: boolean };
+const configReadCache = new Map<string, { mtimeMs: number; size: number; parsed: ParsedFile }>();
+const CONFIG_CACHE_CAP = 8;
+
+/** Drop all cached config reads (tests / explicit invalidation). */
+export function clearConfigReadCache(): void {
+  configReadCache.clear();
+}
+
+async function readParsedConfigFile(): Promise<ParsedFile> {
+  const p = globalConfigPath();
+  let st: { mtimeMs: number; size: number };
+  try {
+    st = await fs.stat(p);
+  } catch {
+    configReadCache.delete(p);
+    return { kind: "missing" };
+  }
+  const hit = configReadCache.get(p);
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.parsed;
+  let parsed: ParsedFile;
+  try {
+    const raw = JSON.parse(await fs.readFile(p, "utf-8"));
+    const result = parseConfig(raw);
+    parsed = result.ok
+      ? { kind: "ok", config: result.config as Config }
+      : { kind: "invalid", message: result.message, warned: false };
+  } catch {
+    parsed = { kind: "bad-json", warned: false };
+  }
+  if (configReadCache.size >= CONFIG_CACHE_CAP && !configReadCache.has(p)) {
+    const oldest = configReadCache.keys().next().value;
+    if (oldest !== undefined) configReadCache.delete(oldest);
+  }
+  configReadCache.set(p, { mtimeMs: st.mtimeMs, size: st.size, parsed });
+  return parsed;
+}
+
 export async function readGlobalConfig(): Promise<Config> {
-  let data: string;
-  try {
-    data = await fs.readFile(globalConfigPath(), "utf-8");
-  } catch {
+  const parsed = await readParsedConfigFile();
+  if (parsed.kind === "bad-json" || parsed.kind === "invalid") {
+    // Warn once per file VERSION (mtime/size change resets the entry), not per read.
+    if (!parsed.warned) {
+      parsed.warned = true;
+      const detail = parsed.kind === "invalid" ? ` is invalid (${parsed.message})` : " is not valid JSON";
+      process.stderr.write(`[joc] ${globalConfigPath()}${detail}; using environment defaults.\n`);
+    }
     return withEnvOverlay(envDefaultConfig());
   }
-
-  let raw: unknown;
-  try {
-    raw = JSON.parse(data);
-  } catch {
-    process.stderr.write(`[joc] ${globalConfigPath()} is not valid JSON; using environment defaults.\n`);
-    return withEnvOverlay(envDefaultConfig());
-  }
-
-  const parsed = parseConfig(raw);
-  if (!parsed.ok) {
-    process.stderr.write(`[joc] ${globalConfigPath()} is invalid (${parsed.message}); using environment defaults.\n`);
-    return withEnvOverlay(envDefaultConfig());
-  }
-  return withEnvOverlay(parsed.config as Config);
+  if (parsed.kind === "missing") return withEnvOverlay(envDefaultConfig());
+  return withEnvOverlay(structuredClone(parsed.config));
 }
 
 export async function saveGlobalConfig(config: Config): Promise<void> {
@@ -228,6 +270,7 @@ export async function saveGlobalConfig(config: Config): Promise<void> {
     await fs.writeFile(tmpPath, JSON.stringify(config, null, 2), { encoding: "utf-8", mode: 0o600 });
     await fs.chmod(tmpPath, 0o600).catch(() => {});
     await fs.rename(tmpPath, target);
+    configReadCache.delete(target); // the next read re-parses the fresh file
   } catch (err) {
     await fs.unlink(tmpPath).catch(() => {});
     throw err;
@@ -240,20 +283,8 @@ export async function saveGlobalConfig(config: Config): Promise<void> {
  *  ~/.joc/config.json by an unrelated `/agents`/`/roles`/`/model save`. */
 export async function readRawGlobalConfig(): Promise<Config> {
   const clean: Config = { providers: {}, defaultModel: DEFAULT_MODEL, thinkingLevel: "medium" };
-  let data: string;
-  try {
-    data = await fs.readFile(globalConfigPath(), "utf-8");
-  } catch {
-    return clean;
-  }
-  let raw: unknown;
-  try {
-    raw = JSON.parse(data);
-  } catch {
-    return clean;
-  }
-  const parsed = parseConfig(raw);
-  return parsed.ok ? (parsed.config as Config) : clean;
+  const parsed = await readParsedConfigFile();
+  return parsed.kind === "ok" ? structuredClone(parsed.config) : clean;
 }
 
 /** Merge a patch onto the RAW on-disk config and persist. The `build` callback

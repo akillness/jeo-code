@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { boxBlock, BOX_UNICODE, BOX_ASCII, padLineTo } from "./layout";
 import { meter } from "./meter";
 import { categoryBadge } from "./category-index";
 import { animatedGradientText, applyBgGradient, hexToRgb, visibleWidth, ColorLevel } from "./color";
@@ -208,4 +209,103 @@ export function renderJocStatus(data: JocStatusData): string[] {
     `  ${categoryBadge("tool", { color: useColor })} ${magentaBold("joc forge")} · ${stage}${current} · tools ${total} (${toolCounts})${guard}`,
   ];
 
+}
+
+export interface StatusBoxData extends JocStatusData {
+  /** Inner frame width the box should fill. */
+  cols: number;
+  /** Phase label embedded in the title border (thinking/planning/executing/reporting). */
+  phaseLabel?: string;
+  /** Current spinner frame glyph. */
+  spinner?: string;
+  /** Live streamed model activity (reasoning/uniform fallback); overrides `message`. */
+  activity?: string;
+  /** Append gjc's ⟦esc⟧ cancel hint to the activity row. */
+  escHint?: boolean;
+}
+
+/**
+ * gjc-style live STATUS BOX — replaces the [STEP]/[STATUS]/[TOOL] triple rows.
+ * The thinking process renders inside a bordered box (gjc status-box format):
+ *
+ *   ╭─ ● thinking · step 3/25 ────────────────────────────╮
+ *   │ ⠙ <live reasoning / current activity>         ⟦esc⟧ │
+ *   │ ▰▰▱▱ 12% · 12s · avg 2.5s · 8.2k in / 30 out · ⤴ 6/s · 2 ok │
+ *   ╰──────────────────────────────────────────────────────╯
+ *
+ * Steps are part of the TITLE (`step n/m`), the activity row carries the live
+ * thinking text uniformly for every model, and one compact metrics row folds
+ * meter/timing/usage/rate/cost/tool-counts together.
+ */
+export function renderStatusBox(data: StatusBoxData): string[] {
+  const unicode = data.unicode !== false;
+  const useColor = data.color !== false;
+  const cols = Math.max(24, Math.trunc(data.cols));
+  const inner = cols - 2;
+  const step = Number.isFinite(data.step) ? Math.max(0, Math.trunc(data.step ?? 0)) : 0;
+  const max = Number.isFinite(data.maxSteps) && (data.maxSteps ?? 0) > 0 ? Math.trunc(data.maxSteps ?? 0) : 0;
+  const dim = useColor ? chalk.dim : (s: string) => s;
+  const gray = useColor ? chalk.gray : (s: string) => s;
+
+  // Activity row: spinner + live thinking text (+ right-aligned ⟦esc⟧, gjc parity).
+  let activity = (data.activity?.trim() || data.message || "thinking through the next tool call").replace(/\s+/g, " ");
+  const level = data.colorLevel ?? (useColor ? ColorLevel.TrueColor : ColorLevel.None);
+  const esc = data.escHint ? (unicode ? "⟦esc⟧" : "[esc]") : "";
+  const spin = data.spinner ?? "";
+  const headWidth = visibleWidth(`${spin} `) + (esc ? visibleWidth(esc) + 1 : 0);
+  const room = Math.max(8, inner - 2 - headWidth);
+  if (visibleWidth(activity) > room) {
+    let w = 0; let cut = "";
+    for (const ch of activity) {
+      const cw = visibleWidth(ch);
+      if (w + cw > room - 1) break;
+      cut += ch; w += cw;
+    }
+    activity = cut + (unicode ? "…" : "...");
+  }
+  if (useColor && data.isThinking && level === ColorLevel.TrueColor && data.palette && data.palette.length > 0) {
+    activity = animatedGradientText(activity, data.palette, data.phase ?? 0, { colorLevel: level });
+  }
+  const escPad = esc ? " ".repeat(Math.max(1, inner - 2 - visibleWidth(`${spin} `) - visibleWidth(activity.replace(/\x1b\[[0-9;]*m/g, "")) - visibleWidth(esc))) + dim(esc) : "";
+  const activityRow = ` ${spin} ${activity}${escPad}`;
+
+  // Compact metrics row: meter · elapsed · step/avg · usage · rate · cost · tools.
+  const bar = meter(step, max || 1, 10, { unicode, color: useColor });
+  const bits: string[] = [`${bar}`, `${seconds(data.elapsedMs)}s`];
+  if (Number.isFinite(data.stepElapsedMs)) bits.push(`step ${(data.stepElapsedMs! / 1000).toFixed(1)}s`);
+  if (Number.isFinite(data.avgStepMs)) bits.push(`avg ${(data.avgStepMs! / 1000).toFixed(1)}s`);
+  if (data.usage && (data.usage.inputTokens || data.usage.outputTokens)) {
+    bits.push(formatUsage(data.usage));
+    const elapsedSec = (data.elapsedMs ?? 0) / 1000;
+    if (elapsedSec >= 1 && (data.usage.outputTokens ?? 0) > 0) {
+      const rate = data.usage.outputTokens / elapsedSec;
+      bits.push(`${unicode ? "⤴" : "^"} ${rate >= 100 ? rate.toFixed(0) : rate.toFixed(1)}/s`);
+    }
+  }
+  if (typeof data.costUsd === "number" && Number.isFinite(data.costUsd) && data.costUsd > 0) bits.push(formatCost(data.costUsd));
+  const ok = data.okCount ?? 0;
+  const fail = data.failCount ?? 0;
+  const running = data.runningCount ?? 0;
+  if (ok + fail + running > 0) {
+    const counts: string[] = [];
+    if (ok) counts.push(useColor ? chalk.green(`${ok} ok`) : `${ok} ok`);
+    if (fail) counts.push(useColor ? chalk.red(`${fail} fail`) : `${fail} fail`);
+    if (running) counts.push(useColor ? chalk.yellow(`${running} run`) : `${running} run`);
+    bits.push(counts.join(" / "));
+  }
+  if (data.subagentActive) bits.push("(sub)");
+  if (data.mutationGuarded) bits.push(useColor ? chalk.red.bold("mutation locked") : "mutation locked");
+  const metricsRow = ` ${gray(bits.join(" · "))}`;
+
+  // Title border: ─ ● thinking · step 3/25 ─ (steps live in the TITLE now).
+  const g = unicode ? BOX_UNICODE : BOX_ASCII;
+  const phaseGlyph = unicode ? "●" : "*";
+  const title = ` ${phaseGlyph} ${data.phaseLabel ?? "thinking"}${max ? ` · step ${step}/${max}` : ""} `;
+  const body = boxBlock([activityRow, metricsRow], cols, { glyphs: g, paint: gray, align: "left" });
+  // Embed the title into the top border (welcome-box style).
+  const titleText = `${g.h}${title}`;
+  const room2 = inner - visibleWidth(titleText);
+  const top = g.tl + titleText + (room2 > 0 ? g.h.repeat(room2) : "") + g.tr;
+  body[0] = useColor ? gray(g.tl + g.h) + chalk.cyan.bold(title) + gray(g.h.repeat(Math.max(0, room2)) + g.tr) : top;
+  return body;
 }

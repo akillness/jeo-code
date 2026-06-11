@@ -24,10 +24,13 @@ test("anthropic: image attachments become content blocks; text-only stays a plai
   const content = payload.messages[0].content;
   expect(Array.isArray(content)).toBe(true);
   expect(content[0]).toEqual({ type: "image", source: { type: "base64", media_type: "image/png", data: IMG.data } });
-  expect(content[1]).toEqual({ type: "text", text: "what is in [image #1]?" });
+  // The image message is the LAST message here, so its tail text block also
+  // carries the conversation prompt-cache breakpoint (see perf-fixes.test.ts).
+  expect(content[1]).toMatchObject({ type: "text", text: "what is in [image #1]?" });
 
   const plain = JSON.parse(anthropicPayload(textOnly, { model: "claude-sonnet-4-5" } as any, false, true));
-  expect(plain.messages[0].content).toBe("hello");
+  // Text-only LAST message becomes a single cached text block; the text is intact.
+  expect(plain.messages[0].content[0]).toMatchObject({ type: "text", text: "hello" });
 });
 
 test("openai: image attachments use content parts with a data URL; text-only stays a string", () => {

@@ -20,3 +20,34 @@ test("resetMouseTracking disables every xterm mouse mode + coordinate encoding (
   // Defensive reset must never ENABLE anything.
   expect(seq).not.toContain("h");
 });
+
+import { detectAppearance, resetAppearanceCache } from "../src/tui/components/color";
+import { resolveTheme, resetThemeConfigCache } from "../src/tui/components/themes";
+
+test("detectAppearance is process-memoized: the expensive darwin probe runs at most once per env key", () => {
+  resetAppearanceCache();
+  const t0 = performance.now();
+  detectAppearance({}); // first call may shell out (≈12ms on macOS)
+  const cold = performance.now() - t0;
+  const t1 = performance.now();
+  for (let i = 0; i < 50; i++) detectAppearance({});
+  const warm50 = performance.now() - t1;
+  // 50 cached calls must be far cheaper than ONE cold probe (keystroke-hot path).
+  expect(warm50).toBeLessThan(Math.max(1, cold));
+  // COLORFGBG-keyed: an advertising terminal is honored without the probe.
+  expect(detectAppearance({ COLORFGBG: "15;0" })).toBe("dark");
+  expect(detectAppearance({ COLORFGBG: "0;15" })).toBe("light");
+});
+
+test("resolveTheme stays fast on the keystroke-hot path (config read memoized)", () => {
+  resetThemeConfigCache();
+  resetAppearanceCache();
+  const env = {}; // no explicit theme → worst path (config + appearance)
+  resolveTheme(env); // cold: populates both memos
+  const t0 = performance.now();
+  for (let i = 0; i < 300; i++) resolveTheme(env); // ≈100 keystrokes × 3 calls
+  const elapsed = performance.now() - t0;
+  // Pre-fix this path cost ≈35ms PER KEYSTROKE; 300 warm calls must stay far
+  // under one old keystroke's budget.
+  expect(elapsed).toBeLessThan(30);
+});

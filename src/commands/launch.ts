@@ -1134,7 +1134,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
 
     if (compRes.compacted && sessionId && compRes.replacesThrough !== undefined) {
-      const summaryText = compRes.summary ?? `[Earlier conversation omitted: ${compRes.removed} messages — summary unavailable]`;
+      const touchedNote = compRes.touchedFiles?.length ? ` Files touched: ${compRes.touchedFiles.join(", ")}.` : "";
+      const summaryText = compRes.summary ?? `[Earlier conversation omitted: ${compRes.removed} messages — summary unavailable.${touchedNote}]`;
       await appendCompaction(sessionId, ++compactionSeq, summaryText, compRes.replacesThrough, cwd);
     }
 
@@ -1745,13 +1746,26 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       out.write("\x1b[?25h");
     }
   };
+  // KEYSTROKE-HOT theme handle: `previewLines`/`statusBarLine` run on EVERY
+  // keypress, and an uncached `resolveTheme` walks config-file I/O and (on
+  // macOS without a configured theme) an execSync `defaults read` appearance
+  // probe ≈ 12ms/call — ×3 calls/key was the visible typing delay. Resolve
+  // once, refresh ONLY when `/theme` changes the env.
+  let uiTheme = resolveTheme(process.env);
+  let uiAccent = accentPaint(uiTheme);
+  let uiAccentShadow = accentShadowPaint(uiTheme);
+  const refreshUiTheme = (): void => {
+    uiTheme = resolveTheme(process.env);
+    uiAccent = accentPaint(uiTheme);
+    uiAccentShadow = accentShadowPaint(uiTheme);
+  };
   // The gjc-layout status bar pinned directly ABOVE the input box: bg-gradient
   // identity block (model · thinking / branch / cwd) left, live ctx% right.
   const statusBarLine = (cols: number): string => {
     const activeModel = sessionModel || defaultModel;
     const meta = catalogMetadata(activeModel);
     const used = historyTokens(history);
-    const theme = resolveTheme(process.env);
+    const theme = uiTheme;
     return renderStatusBar({
       model: activeModel,
       thinking: sessionThinking,
@@ -1778,8 +1792,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       cols,
       color: true,
       unicode: true,
-      accent: accentPaint(resolveTheme(process.env)),
-      accentShadow: accentShadowPaint(resolveTheme(process.env)),
+      accent: uiAccent,
+      accentShadow: uiAccentShadow,
       cwdLabel: currentAtLabel(line),
       attachmentLabel: pendingImages.length
         ? `⧉ ${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""} attached — sent with the next message`
@@ -2333,9 +2347,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (res.error) {
           console.error(chalk.red(res.error));
         } else if (res.compacted && sessionId && res.replacesThrough !== undefined) {
-          const summaryText = res.summary ?? `[Earlier conversation omitted: ${res.removed} messages — summary unavailable]`;
+          const touchedNote = res.touchedFiles?.length ? ` Files touched: ${res.touchedFiles.join(", ")}.` : "";
+          const summaryText = res.summary ?? `[Earlier conversation omitted: ${res.removed} messages — summary unavailable.${touchedNote}]`;
           await appendCompaction(sessionId, ++compactionSeq, summaryText, res.replacesThrough, cwd);
-          console.log(`(compacted ${res.removed} older messages)`);
+          console.log(`(compacted ${res.removed} older messages${res.touchedFiles?.length ? `; kept ${res.touchedFiles.length} file refs` : ""})`);
         } else {
           console.log("(nothing to compact)");
         }
@@ -2607,7 +2622,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           continue;
         }
         process.env.JEO_TUI_THEME = want;
-        console.log(`Theme set to ${want} (applies from the next turn).`);
+        refreshUiTheme(); // re-resolve the keystroke-hot theme handle immediately
+        console.log(`Theme set to ${want} (input box/status bar update now; turn UI from the next turn).`);
         continue;
       }
       if (input === "/evolve") {

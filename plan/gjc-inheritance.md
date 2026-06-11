@@ -69,3 +69,10 @@
 - **cycle 12 (b) 쓰기 병렬화 — 조건부**: 다른 파일 대상 write/edit 배치 병렬화(파일 겹침 시 순차, bash는 항상 exclusive 유지). 실측 이득 미미하면 revert 허용.
 
 **탈락**: (d) _i intent — jeo 프로토콜에 부재, 코어 비대화(pi-mono 위반); hooks가 이미 tool+args 관찰 가능. 재검토: 외부 텔레메트리 수집기 도입 시. (e) LSP-lite — 의존성 제로 원칙 충돌; done-guard+B3.5+minimizer가 동일 영역 커버. 재검토: Bun 내장 TS 진단 API / 의존성 정책 완화 / 편집 실패율 미개선 증거. 대안 후보(라운드 3): post-edit bash tsc 훅.
+
+## 사이클 렛저 (라운드 2)
+- cycle 9 (2026-06-12): hashline 3-way 재매핑 — anchor mismatch 시 ±64 윈도 유일매치 재매핑(범위는 양끝 동일 delta 강제), 충돌/미발견 시 기존 거부+재제시 fallback. **추가 발굴**: 전수치 anchor(`68` 등 ~7.7%)가 `≔1`+`68`→`≔168`로 병합돼 검증 무력화되던 잠재 사일런트 손상 버그 — lineAnchor를 letter-leading(a-z 선두)으로 변경해 근본 차단. 신규 테스트 7종(hashline-remap.test.ts).
+- cycle 10 (2026-06-12): B5 재설계 — SubagentRole.bashAllowedPrefixes + subagentToolset() prefix-검사 래퍼(세그먼트 단위 `; && || |` 분해, env/sudo 스트립, 커맨드 치환 거부). bashCommandAllowed export. 번들 역할은 미옵트인(executor=full bash, RO=bash 제거) — 메커니즘+테스트 5종(subagent-bash-allowlist.test.ts).
+- cycle 11 (2026-06-12): 컴팩션 핸드오프 — extractTouchedFiles에 `Tool [bash] result` 보수 패턴(created/wrote/written to/deleted/removed + path-shape 필터) 확장 + 요약 앞 "Files touched:" 헤더 강제 + CompactionResult.touchedFiles 표면화 + launch.ts 양 경로 소비(요약 실패 placeholder에 파일목록 보존). 신규 테스트 2종.
+- cycle 12 (2026-06-12): 쓰기 병렬화 — 엔진 배치 그룹핑을 read/write/exclusive 3종으로 재설계. 서로 다른 파일 write/edit는 병렬, 같은 파일(또는 경로미상)은 순차 경계, bash는 항상 exclusive. read·write 그룹 분리로 read-write 레이스 불가. 신규 테스트 4종(write-parallel.test.ts).
+- **라운드 2 종료** — 4사이클(+1 버그픽스), 신규 테스트 18종. full 1161 pass / 0 fail, typecheck 0. 라운드 3 후보: 전수치 anchor 픽스 외 잔여 hashline 강건성, post-edit bash tsc 훅(LSP-lite 대안), _i intent 외부 텔레메트리, 도구 동시성 추가 확대(cross-file read+write 혼합 그룹).

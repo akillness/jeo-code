@@ -225,3 +225,14 @@
 - 실동작 검증(plain PTY, TMUX unset): jeo --tmux → 세션 jeo-projects-* 생성·생존, 페인에 입력박스 렌더, `mouse on`+@jeo-profile/@jeo-project 프로파일 적용 확인. dist/jeo 재빌드로 즉시 반영.
 - Tests: tmuxLaunchCommand 3형태(가상/소스/shim) 계약 고정.
 - Verified: tsc 0; bun test 1150 pass / 0 fail.
+[2026-06-12] gjc-계승 마라톤 라운드 2 (cycles 9-12) — critic 합의 배치 소진
+- cycle 9 (hashline 3-way 재매핑): editTool ≔ 경로에서 anchor mismatch 시 ±64 윈도 내 동일 content-anchor 라인 탐색 → 유일매치면 재매핑(범위는 양끝 동일 delta 강제, 충돌/미발견은 기존 거부+현행 재제시 fallback). **추가 발굴/근본수정**: 전수치 anchor(`68` 등, 약 7.7%)가 `≔1`+`68`→`≔168`로 병합되어 검증 자체를 무력화하던 사일런트 손상 버그 — lineAnchor를 letter-leading(a-z 선두 + 0-9a-z) 인코딩으로 변경(26×36=936 공간). test/hashline-remap.test.ts 7종.
+- cycle 10 (B5 재설계): SubagentRole.bashAllowedPrefixes — 설정된 mutating 역할은 subagentToolset()이 bash를 prefix-검사 래퍼로 교체. bashCommandAllowed()는 `; && || |` 세그먼트 분해 후 각 세그먼트 검사(env-assignment/sudo 스트립, `$(`·백틱 거부). 레지스트리 정의=런타임 제약(config 불필요), 번들 역할 동작 불변(executor=full bash, RO=bash 제거). test/subagent-bash-allowlist.test.ts 5종.
+- cycle 11 (컴팩션 핸드오프): extractTouchedFiles가 `Tool [bash] result` 보수 패턴(created/wrote/written to/deleted/removed + path-shape 필터)도 수집 + 요약 메시지 선두 "Files touched:" 헤더 강제 + CompactionResult.touchedFiles 표면화 + launch.ts 자동/수동 양 경로에서 요약 실패 placeholder에 파일목록 보존·콘솔 표기. test +2종.
+- cycle 12 (쓰기 병렬화): 엔진 배치 그룹핑 read/write/exclusive 3종 재설계 — 서로 다른 파일 write/edit 병렬, 같은 파일/경로미상은 순차 경계, bash는 항상 exclusive. read·write 그룹 분리로 read↔write 레이스 원천 차단. test/write-parallel.test.ts 4종(동시성 실측).
+- Verified: typecheck 0; full bun test 1161 pass / 0 fail. 라운드 2 결산: 4사이클(+1 버그픽스), 신규 테스트 18종. 라운드 3 후보: 잔여 hashline 강건성, post-edit bash tsc 훅(LSP-lite 대안), _i intent 외부 텔레메트리, cross-file read+write 혼합 동시성.
+[2026-06-12] Pass — 텍스트 입력 딜레이 근본 해결 (키스트로크당 execSync 프로세스 스폰 제거)
+- 근본 원인(실측): previewLines/statusBarLine이 매 키 입력마다 실행되며 resolveTheme(process.env)를 최대 3회 호출 — 테마 미설정(기본) 상태에서는 호출마다 ① ~/.joc/config.json 동기 existsSync+readFileSync+JSON.parse, ② macOS detectAppearance의 execSync("defaults read -g AppleInterfaceStyle") 프로세스 스폰(실측 11.8ms/회) → 키당 ~35ms+α. 한글 조합 입력은 글자당 다중 키이벤트라 체감 지연이 더 큼.
+- 수정 3중: ① color.ts detectAppearance 프로세스-수명 메모(COLORFGBG 키드 — 팔레트 광고 터미널은 env별 존중; resetAppearanceCache 테스트 훅), ② themes.ts getExplicitThemeFromConfig 메모(env 테마가 항상 우선이라 /theme 즉시성 유지; resetThemeConfigCache 훅), ③ launch.ts 키-핫 콜사이트 호이스팅 — uiTheme/uiAccent/uiAccentShadow 1회 해석, /theme 변경 시 refreshUiTheme()로만 갱신(상태바·입력박스 즉시 반영으로 UX도 개선).
+- Tests: 워밍 50회 < 콜드 1회(스폰 1회 보장), resolveTheme 300회(≈100키×3) < 30ms(구버전 1키 예산 미만), COLORFGBG dark/light 판정 유지.
+- Verified: tsc 0; bun test 1163 pass / 0 fail.

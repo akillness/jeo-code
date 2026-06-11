@@ -112,21 +112,36 @@ export function listThemes(): { name: string; description: string }[] {
   return THEMES.map(t => ({ name: t.name, description: t.description }));
 }
 
+/** Process-lifetime memo: this runs on the keystroke-hot path (theme resolution
+ *  inside the input-box repaint), and an UNCACHED call does a synchronous
+ *  existsSync + readFileSync + JSON.parse of ~/.joc/config.json per keystroke.
+ *  Env (`JEO_TUI_THEME`) takes precedence over this value in `resolveTheme`, so
+ *  `/theme` switches stay live; external config edits apply on the next run. */
+let configThemeCache: { dir: string; value: string | undefined } | undefined;
+
+/** Test-only: clear the config-theme memo. */
+export function resetThemeConfigCache(): void {
+  configThemeCache = undefined;
+}
+
 function getExplicitThemeFromConfig(env: EnvLike): string | undefined {
   const home = os.homedir ? os.homedir() : undefined;
   const dir = env.JEO_CONFIG_DIR || env.JOC_CONFIG_DIR || (home ? path.join(home, ".joc") : undefined);
   if (!dir) return undefined;
+  if (configThemeCache && configThemeCache.dir === dir) return configThemeCache.value;
   const filePath = path.join(dir, "config.json");
+  let value: string | undefined;
   try {
     if (fs.existsSync(filePath)) {
       const data = fs.readFileSync(filePath, "utf-8");
       const config = JSON.parse(data);
-      return config.theme || config.tuiTheme || config.tui?.theme;
+      value = config.theme || config.tuiTheme || config.tui?.theme;
     }
   } catch {
-    // ignore
+    // ignore — treated as "no configured theme"
   }
-  return undefined;
+  configThemeCache = { dir, value };
+  return value;
 }
 
 /** Resolve the active theme from the environment (`JEO_TUI_THEME`, legacy `JOC_TUI_THEME`) or config, default cosmic. */

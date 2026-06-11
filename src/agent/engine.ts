@@ -566,24 +566,40 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     };
 
     const READONLY_TOOLS = new Set(["read", "find", "search", "ls", "web_search"]);
-    const groups: { isParallel: boolean; calls: { tool: string; arguments?: Record<string, any>; index: number }[] }[] = [];
+    const WRITE_TOOLS = new Set(["write", "edit"]);
+    // Batch grouping → concurrency plan (plan/gjc-inheritance.md cycle 12):
+    //   read group      — consecutive read-only calls run in parallel (safe).
+    //   write group     — consecutive write/edit calls to DISTINCT files run in
+    //                     parallel; a same-file (or path-less) collision opens a
+    //                     sequential boundary so ordered edits to one file stay ordered.
+    //   exclusive group — bash (and anything else) always runs alone, in order.
+    // Reads and writes never share a group, so a read can never race a write.
+    type ToolGroup = {
+      kind: "read" | "write" | "exclusive";
+      calls: { tool: string; arguments?: Record<string, any>; index: number }[];
+      files?: Set<string>;
+    };
+    const groups: ToolGroup[] = [];
+    const targetFile = (call: { arguments?: Record<string, any> }): string | null => {
+      const p = call.arguments?.filePath ?? call.arguments?.path;
+      return typeof p === "string" && p.trim() !== "" ? p : null;
+    };
     for (let i = 0; i < toolCalls.length; i++) {
-      const call = toolCalls[i];
-      const isReadOnly = READONLY_TOOLS.has(call.tool);
-      if (isReadOnly) {
-        if (groups.length > 0 && groups[groups.length - 1].isParallel) {
-          groups[groups.length - 1].calls.push({ ...call, index: i });
+      const entry = { ...toolCalls[i], index: i };
+      const last = groups[groups.length - 1];
+      if (READONLY_TOOLS.has(entry.tool)) {
+        if (last && last.kind === "read") last.calls.push(entry);
+        else groups.push({ kind: "read", calls: [entry] });
+      } else if (WRITE_TOOLS.has(entry.tool)) {
+        const file = targetFile(entry);
+        if (last && last.kind === "write" && file !== null && !last.files!.has(file)) {
+          last.calls.push(entry);
+          last.files!.add(file);
         } else {
-          groups.push({
-            isParallel: true,
-            calls: [{ ...call, index: i }]
-          });
+          groups.push({ kind: "write", calls: [entry], files: new Set(file !== null ? [file] : []) });
         }
       } else {
-        groups.push({
-          isParallel: false,
-          calls: [{ ...call, index: i }]
-        });
+        groups.push({ kind: "exclusive", calls: [entry] });
       }
     }
 
@@ -598,7 +614,8 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         aborted = true;
         break;
       }
-      if (group.isParallel) {
+      if (group.calls.length > 1) {
+        // read OR distinct-file write group → run concurrently.
         await Promise.all(group.calls.map(async (call) => {
           const res = await executeTool(call);
           results[call.index] = { ...res, executed: true };

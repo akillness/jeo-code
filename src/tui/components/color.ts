@@ -274,7 +274,27 @@ export function animatedGradientText(
 
   return out + resetEscape(ColorLevel.TrueColor);
 }
+/** Process-lifetime memo for `detectAppearance`: the darwin fallback shells out to
+ *  `defaults read` (execSync ≈ 12ms — measured), and theme resolution runs on the
+ *  keystroke-hot path. OS appearance changing mid-session is cosmetic; a fresh run
+ *  picks it up. Keyed by COLORFGBG so a terminal that DOES advertise its palette
+ *  is still honored per-env. */
+const appearanceCache = new Map<string, "light" | "dark" | undefined>();
+
+/** Test-only: clear the appearance memo. */
+export function resetAppearanceCache(): void {
+  appearanceCache.clear();
+}
+
 export function detectAppearance(env: EnvLike = process.env): "light" | "dark" | undefined {
+  const key = env.COLORFGBG ?? "";
+  if (appearanceCache.has(key)) return appearanceCache.get(key);
+  const result = detectAppearanceUncached(env);
+  appearanceCache.set(key, result);
+  return result;
+}
+
+function detectAppearanceUncached(env: EnvLike = process.env): "light" | "dark" | undefined {
   const colorfgbg = env.COLORFGBG;
   if (colorfgbg) {
     const parts = colorfgbg.split(";");

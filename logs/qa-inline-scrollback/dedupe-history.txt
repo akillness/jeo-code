@@ -1,0 +1,40 @@
+cd /Users/jangyoung/.superset/projects/jeo-code && bun run logs/qa-inline-scrollback/driver.ts dedup
+e
+jangyoung@MacBook-Pro-2 jeo-code % cd /Users/jangyoung/.superset/projects/jeo-code && bun run logs/q
+a-inline-scrollback/driver.ts dedupe
+Starting driver for case: dedupe
+[TOOL] [DONE] LEDGER-001
+[TOOL] [DONE] LEDGER-002
+[TOOL] [DONE] LEDGER-003
+[TOOL] [DONE] LEDGER-004
+[TOOL] [DONE] LEDGER-005
+  (no steps)
+╭──────────────────────────────────────────────────────────────────────────────────────────────╮
+│[01:TOOL] LEDGER-003 result ok · output                                                       │
+│──────────────────────────────────────────────────────────────────────────────────────────────│
+│<no output>                                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────╮
+│[02:TOOL] LEDGER-004 result ok · output                                                       │
+│──────────────────────────────────────────────────────────────────────────────────────────────│
+│<no output>                                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────╮
+│[03:TOOL] LEDGER-005 result ok · output                                                       │
+│──────────────────────────────────────────────────────────────────────────────────────────────│
+│<no output>                                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+Evolved to: ●○○○○ Primordial Cell [1/5] (took 0 steps in 0s)
+joc> qa done
+jangyoung@MacBook-Pro-2 jeo-code %
+
+
+
+
+
+
+
+
+

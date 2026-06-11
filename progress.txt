@@ -72,3 +72,9 @@
 - 라이브 결과: 필터행 1개/잔상 0, BSpace 후 목록 복귀(행 없음), ESC 후 박스 1개 복원, /exit 정상.
 - Verified: typecheck 0; bun test 871 pass / 0 fail; build ok.
 2026-06-10: Executed deepinit and code-refactoring for V2. Extracted output-util and tool-registry. Lean engine.ts loop finalized. Updated AGENTS.md files.
+[2026-06-11] Pass 889 — gjc-forge TUI parity wave (4 parallel executors) + inline-scrollback QA closed
+- Inline tmux scrollback (888b 위에 정합): QA 하니스 캡처 버그 2건 수정 — copy-mode 뷰는 scroll_position 기반 -S/-E로 캡처, 깨끗해진 히스토리는 history-top까지 스크롤. logs/qa-inline-scrollback/runner.sh 6/6 PASSED (happy/copy-mode/no-alt/resize/burst/dedupe, tmux 3.6a).
+- Welcome forge box (src/tui/components/welcome.ts): gjc 'Gajae forge' 구조 이식 — 타이틀 임베드 보더, 좌측(브랜드+태그라인+진화 아트+model/provider 필), 우측(Flow keys/Workspace/Session trail), <64col 단일 컬럼, <30col 한 줄 폴백, basename dedupe. launch 인터랙티브 배너의 평문 === 3줄 대체.
+- Update Available 박스: src/util/update-check.ts(npm latest, 2.5s 타임아웃, never-throws) + src/tui/components/update-box.ts(warning 보더). 배너 직후 1.2s race로만 출력 — 라이브 프레임 오염 금지.
+- Footer: cwd?(~축약, 32자 middle-truncate)+branch?(git symbolic-ref — tmux 세션 네이밍과 동일 호출) 세그먼트, ctx 세그먼트 gjc 포맷 'ctx {pct}%/{200k}'(k/M 포맷, ≥60% yellow ≥85% red, (auto) 표시). launch.ts:936 setContextUsage 라이브 공급 확인.
+- Verified: typecheck 0; bun test 920 pass / 0 fail (신규 tui-welcome 11 + update-box + footer 케이스 포함); tmux QA 6/6.

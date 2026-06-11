@@ -1,0 +1,234 @@
+cd /Users/jangyoung/.superset/projects/jeo-code && bun run logs/qa-inline-scrollback/driver.ts burst
+jangyoung@MacBook-Pro-2 jeo-code % cd /Users/jangyoung/.superset/projects/jeo-code && bun run logs/q
+a-inline-scrollback/driver.ts burst
+Starting driver for case: burst
+[TOOL] [DONE] LEDGER-001
+  [AGENT] executor ✓ LEDGER-002
+[TOOL] [DONE] LEDGER-003
+  [AGENT] executor ✓ LEDGER-004
+[TOOL] [DONE] LEDGER-005
+  [AGENT] executor ✓ LEDGER-006
+[TOOL] [DONE] LEDGER-007
+  [AGENT] executor ✓ LEDGER-008
+[TOOL] [DONE] LEDGER-009
+  [AGENT] executor ✓ LEDGER-010
+[TOOL] [DONE] LEDGER-011
+  [AGENT] executor ✓ LEDGER-012
+[TOOL] [DONE] LEDGER-013
+  [AGENT] executor ✓ LEDGER-014
+[TOOL] [DONE] LEDGER-015
+  [AGENT] executor ✓ LEDGER-016
+[TOOL] [DONE] LEDGER-017
+  [AGENT] executor ✓ LEDGER-018
+[TOOL] [DONE] LEDGER-019
+  [AGENT] executor ✓ LEDGER-020
+[TOOL] [DONE] LEDGER-021
+  [AGENT] executor ✓ LEDGER-022
+[TOOL] [DONE] LEDGER-023
+  [AGENT] executor ✓ LEDGER-024
+[TOOL] [DONE] LEDGER-025
+  [AGENT] executor ✓ LEDGER-026
+[TOOL] [DONE] LEDGER-027
+  [AGENT] executor ✓ LEDGER-028
+[TOOL] [DONE] LEDGER-029
+  [AGENT] executor ✓ LEDGER-030
+[TOOL] [DONE] LEDGER-031
+  [AGENT] executor ✓ LEDGER-032
+[TOOL] [DONE] LEDGER-033
+  [AGENT] executor ✓ LEDGER-034
+[TOOL] [DONE] LEDGER-035
+  [AGENT] executor ✓ LEDGER-036
+[TOOL] [DONE] LEDGER-037
+  [AGENT] executor ✓ LEDGER-038
+[TOOL] [DONE] LEDGER-039
+  [AGENT] executor ✓ LEDGER-040
+[TOOL] [DONE] LEDGER-041
+  [AGENT] executor ✓ LEDGER-042
+[TOOL] [DONE] LEDGER-043
+  [AGENT] executor ✓ LEDGER-044
+[TOOL] [DONE] LEDGER-045
+  [AGENT] executor ✓ LEDGER-046
+[TOOL] [DONE] LEDGER-047
+  [AGENT] executor ✓ LEDGER-048
+[TOOL] [DONE] LEDGER-049
+  [AGENT] executor ✓ LEDGER-050
+[TOOL] [DONE] LEDGER-051
+  [AGENT] executor ✓ LEDGER-052
+[TOOL] [DONE] LEDGER-053
+  [AGENT] executor ✓ LEDGER-054
+[TOOL] [DONE] LEDGER-055
+  [AGENT] executor ✓ LEDGER-056
+[TOOL] [DONE] LEDGER-057
+  [AGENT] executor ✓ LEDGER-058
+[TOOL] [DONE] LEDGER-059
+  [AGENT] executor ✓ LEDGER-060
+[TOOL] [DONE] LEDGER-061
+  [AGENT] executor ✓ LEDGER-062
+[TOOL] [DONE] LEDGER-063
+  [AGENT] executor ✓ LEDGER-064
+[TOOL] [DONE] LEDGER-065
+  [AGENT] executor ✓ LEDGER-066
+[TOOL] [DONE] LEDGER-067
+  [AGENT] executor ✓ LEDGER-068
+[TOOL] [DONE] LEDGER-069
+  [AGENT] executor ✓ LEDGER-070
+[TOOL] [DONE] LEDGER-071
+  [AGENT] executor ✓ LEDGER-072
+[TOOL] [DONE] LEDGER-073
+  [AGENT] executor ✓ LEDGER-074
+[TOOL] [DONE] LEDGER-075
+  [AGENT] executor ✓ LEDGER-076
+[TOOL] [DONE] LEDGER-077
+  [AGENT] executor ✓ LEDGER-078
+[TOOL] [DONE] LEDGER-079
+  [AGENT] executor ✓ LEDGER-080
+[TOOL] [DONE] LEDGER-081
+  [AGENT] executor ✓ LEDGER-082
+[TOOL] [DONE] LEDGER-083
+  [AGENT] executor ✓ LEDGER-084
+[TOOL] [DONE] LEDGER-085
+  [AGENT] executor ✓ LEDGER-086
+[TOOL] [DONE] LEDGER-087
+  [AGENT] executor ✓ LEDGER-088
+[TOOL] [DONE] LEDGER-089
+  [AGENT] executor ✓ LEDGER-090
+[TOOL] [DONE] LEDGER-091
+  [AGENT] executor ✓ LEDGER-092
+[TOOL] [DONE] LEDGER-093
+  [AGENT] executor ✓ LEDGER-094
+[TOOL] [DONE] LEDGER-095
+  [AGENT] executor ✓ LEDGER-096
+[TOOL] [DONE] LEDGER-097
+  [AGENT] executor ✓ LEDGER-098
+[TOOL] [DONE] LEDGER-099
+  [AGENT] executor ✓ LEDGER-100
+[TOOL] [DONE] LEDGER-101
+  [AGENT] executor ✓ LEDGER-102
+[TOOL] [DONE] LEDGER-103
+  [AGENT] executor ✓ LEDGER-104
+[TOOL] [DONE] LEDGER-105
+  [AGENT] executor ✓ LEDGER-106
+[TOOL] [DONE] LEDGER-107
+  [AGENT] executor ✓ LEDGER-108
+[TOOL] [DONE] LEDGER-109
+  [AGENT] executor ✓ LEDGER-110
+[TOOL] [DONE] LEDGER-111
+  [AGENT] executor ✓ LEDGER-112
+[TOOL] [DONE] LEDGER-113
+  [AGENT] executor ✓ LEDGER-114
+[TOOL] [DONE] LEDGER-115
+  [AGENT] executor ✓ LEDGER-116
+[TOOL] [DONE] LEDGER-117
+  [AGENT] executor ✓ LEDGER-118
+[TOOL] [DONE] LEDGER-119
+  [AGENT] executor ✓ LEDGER-120
+[TOOL] [DONE] LEDGER-121
+  [AGENT] executor ✓ LEDGER-122
+[TOOL] [DONE] LEDGER-123
+  [AGENT] executor ✓ LEDGER-124
+[TOOL] [DONE] LEDGER-125
+  [AGENT] executor ✓ LEDGER-126
+[TOOL] [DONE] LEDGER-127
+  [AGENT] executor ✓ LEDGER-128
+[TOOL] [DONE] LEDGER-129
+  [AGENT] executor ✓ LEDGER-130
+[TOOL] [DONE] LEDGER-131
+  [AGENT] executor ✓ LEDGER-132
+[TOOL] [DONE] LEDGER-133
+  [AGENT] executor ✓ LEDGER-134
+[TOOL] [DONE] LEDGER-135
+  [AGENT] executor ✓ LEDGER-136
+[TOOL] [DONE] LEDGER-137
+  [AGENT] executor ✓ LEDGER-138
+[TOOL] [DONE] LEDGER-139
+  [AGENT] executor ✓ LEDGER-140
+[TOOL] [DONE] LEDGER-141
+  [AGENT] executor ✓ LEDGER-142
+[TOOL] [DONE] LEDGER-143
+  [AGENT] executor ✓ LEDGER-144
+[TOOL] [DONE] LEDGER-145
+  [AGENT] executor ✓ LEDGER-146
+[TOOL] [DONE] LEDGER-147
+  [AGENT] executor ✓ LEDGER-148
+[TOOL] [DONE] LEDGER-149
+  [AGENT] executor ✓ LEDGER-150
+[TOOL] [DONE] LEDGER-151
+  [AGENT] executor ✓ LEDGER-152
+[TOOL] [DONE] LEDGER-153
+  [AGENT] executor ✓ LEDGER-154
+[TOOL] [DONE] LEDGER-155
+  [AGENT] executor ✓ LEDGER-156
+[TOOL] [DONE] LEDGER-157
+  [AGENT] executor ✓ LEDGER-158
+[TOOL] [DONE] LEDGER-159
+  [AGENT] executor ✓ LEDGER-160
+[TOOL] [DONE] LEDGER-161
+  [AGENT] executor ✓ LEDGER-162
+[TOOL] [DONE] LEDGER-163
+  [AGENT] executor ✓ LEDGER-164
+[TOOL] [DONE] LEDGER-165
+  [AGENT] executor ✓ LEDGER-166
+[TOOL] [DONE] LEDGER-167
+  [AGENT] executor ✓ LEDGER-168
+[TOOL] [DONE] LEDGER-169
+  [AGENT] executor ✓ LEDGER-170
+[TOOL] [DONE] LEDGER-171
+  [AGENT] executor ✓ LEDGER-172
+[TOOL] [DONE] LEDGER-173
+  [AGENT] executor ✓ LEDGER-174
+[TOOL] [DONE] LEDGER-175
+  [AGENT] executor ✓ LEDGER-176
+[TOOL] [DONE] LEDGER-177
+  [AGENT] executor ✓ LEDGER-178
+[TOOL] [DONE] LEDGER-179
+  [AGENT] executor ✓ LEDGER-180
+[TOOL] [DONE] LEDGER-181
+  [AGENT] executor ✓ LEDGER-182
+[TOOL] [DONE] LEDGER-183
+  [AGENT] executor ✓ LEDGER-184
+[TOOL] [DONE] LEDGER-185
+  [AGENT] executor ✓ LEDGER-186
+[TOOL] [DONE] LEDGER-187
+  [AGENT] executor ✓ LEDGER-188
+[TOOL] [DONE] LEDGER-189
+  [AGENT] executor ✓ LEDGER-190
+[TOOL] [DONE] LEDGER-191
+  [AGENT] executor ✓ LEDGER-192
+[TOOL] [DONE] LEDGER-193
+  [AGENT] executor ✓ LEDGER-194
+[TOOL] [DONE] LEDGER-195
+  [AGENT] executor ✓ LEDGER-196
+[TOOL] [DONE] LEDGER-197
+  [AGENT] executor ✓ LEDGER-198
+[TOOL] [DONE] LEDGER-199
+  [AGENT] executor ✓ LEDGER-200
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│╭──────────────────────────────────────────────────────────────────────────────────────────────╮  │
+││[01:TOOL] LEDGER-197 result ok · output                                                       │  │
+││──────────────────────────────────────────────────────────────────────────────────────────────│  │
+││<no output>                                                                                   │  │
+│╰──────────────────────────────────────────────────────────────────────────────────────────────╯  │
+│                                                                                                  │
+│╭──────────────────────────────────────────────────────────────────────────────────────────────╮  │
+││[02:TOOL] LEDGER-199 result ok · output                                                       │  │
+││──────────────────────────────────────────────────────────────────────────────────────────────│  │
+││<no output>                                                                                   │  │
+│╰──────────────────────────────────────────────────────────────────────────────────────────────╯  │
+├──────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│  ● thinking → ○ planning → ○ executing → ○ reporting → ○ done                                    │
+│                                                                                                  │
+│  [STEP] step 0/25 · [..........] 0% · elapsed 1s                                                 │
+│  [STATUS] joc status · thinking through the next tool call                                       │
+│  [TOOL] joc forge · forge idle · tools 0 (0 ok / 0 fail / 0 running)                             │
+│  ^C cancel · Tab complete · /help commands · /model switch · /exit quit                          │
+│.    qa · 1s                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

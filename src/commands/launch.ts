@@ -13,8 +13,13 @@ import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
 import { matchSlash, isSlashAttempt, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, type SlashCommandInfo } from "../tui/components/slash";
 import { staticCompletionContext, readlineCompleter, formatCompletionPreview, tokenize, type CompletionContext } from "../tui/components/autocomplete";
-import { EVOLUTION_STAGES, renderAsciiArt, animateAsciiArt } from "../tui/components/ascii-art";
+import { EVOLUTION_STAGES, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
+import { renderWelcome } from "../tui/components/welcome";
+import { checkForUpdate } from "../util/update-check";
+import { renderUpdateBox } from "../tui/components/update-box";
+import { supportsUnicode } from "../tui/components/capability";
+import pkg from "../../package.json";
 import chalk from "chalk";
 import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
@@ -662,6 +667,20 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (process.env.JOC_TMUX_LAUNCHED !== "1") console.log(`Using worktree: ${wt}`);
     }
   }
+  let branch: string | undefined;
+  try {
+    // Same git invocation the tmux session-naming path uses (symbolic-ref is
+    // quiet + fails cleanly on detached HEAD, so no "HEAD" placeholder leaks).
+    const gitRes = Bun.spawnSync(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], {
+      cwd,
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    if (gitRes.exitCode === 0) {
+      const out = gitRes.stdout.toString().trim();
+      branch = out || undefined;
+    }
+  } catch {}
   const cfg = await readGlobalConfig();
   const defaultModel = cfg.defaultModel;
   const initialSessionModel =
@@ -913,7 +932,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // `turnConfig` was read before compaction so both the compactor and delegated
     // task tool see mid-session config changes (e.g. `/agents <role> <model>`).
     const { provider: activeProvider } = await describeModel(activeModel);
-    const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: flags.maxSteps }) : null;
+    const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: flags.maxSteps, cwd, branch }) : null;
     tui?.setContextUsage(historyTokens(history), contextTokens);
     if (tui) tui.start();
     let result;
@@ -1111,14 +1130,24 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   }
 
   // INTERACTIVE mode
-  const welcomeStage = EVOLUTION_STAGES[0];
-  await animateAsciiArt(welcomeStage);
-  console.log(`\n=== joc launch — interactive coding agent (Evolution Stage: ${welcomeStage.name}) ===`);
+  const updatePromise = checkForUpdate({ timeoutMs: 2500 });
   const activeStartModel = sessionModel || defaultModel;
   const { provider: startProvider } = await describeModel(activeStartModel);
-  console.log(`Model: ${activeStartModel} (${startProvider})  ·  thinking: ${sessionThinking ?? "medium"}`);
-  if (sessionId) console.log(`Session: ${sessionId}`);
-  if (contextFiles.length > 0) console.log(`Project context: ${contextFiles.map(f => f.path).join(", ")}`);
+  console.log(renderWelcome({
+    version: pkg.version,
+    model: activeStartModel,
+    provider: startProvider,
+    cwd: cwd || process.cwd(),
+    thinking: sessionThinking ?? "medium",
+    sessionId,
+    contextFiles: contextFiles.map(f => f.path),
+    cols: terminalSize().cols,
+    unicode: supportsUnicode(),
+    color: resolveTheme(process.env).color,
+  }).join("\n"));
+
+  const upd = await Promise.race([updatePromise, new Promise<null>(r => setTimeout(() => r(null), 1200))]);
+  if (upd?.updateAvailable) console.log(renderUpdateBox(upd.current, upd.latest).join("\n"));
   console.log("Type your request. Slash: /help /model /models /provider /agents /roles /thinking /skill /view /diff /find /search /sessions /exit  (type / for the full ↑/↓ palette)" + (LaunchTui.usable(flags.noTui) ? "" : "  (plain output)"));
 
   const useTui = LaunchTui.usable(flags.noTui);

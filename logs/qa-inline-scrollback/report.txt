@@ -1,0 +1,98 @@
+=====================================================
+TUI INLINE SCROLLBACK QA HARNESS REPORT
+Date: 2026년  6월 11일 목요일 13시 06분 10초 KST
+=====================================================
+-----------------------------------------------------
+CASE 1: HAPPY PATH — mid-turn scrollback
+-----------------------------------------------------
+Creating tmux session joc-qa-happy-25678 (100x30)
+Waiting for driver to emit events (4.5s)...
+Capturing pane history (-S -200)...
+  [PASS] Found LEDGER-001 in history
+  [PASS] Found LEDGER-002 in history
+  [PASS] Found LEDGER-003 in history
+  [PASS] Found LEDGER-004 in history
+  [PASS] Found LEDGER-005 in history
+  [PASS] Found LEDGER-006 in history
+  [PASS] Found LEDGER-007 in history
+  [PASS] Found LEDGER-008 in history
+  [PASS] Found LEDGER-009 in history
+  [PASS] Found LEDGER-010 in history
+CASE 1 VERDICT: PASSED
+-----------------------------------------------------
+CASE 2: COPY-MODE WHEEL
+-----------------------------------------------------
+Creating tmux session joc-qa-copymode-25678 (100x30)
+Waiting for driver to emit events (4.5s)...
+Entering copy-mode...
+Jumping to history top (wheel upper bound)...
+Capturing copy-mode view (scroll_position=65, height=30)...
+Cancelling copy-mode...
+Waiting for repaint (0.5s)...
+Capturing pane again after cancel...
+  [PASS] Found LEDGER-001 on screen during copy-mode
+  [PASS] Found LEDGER-002 on screen during copy-mode
+  [PASS] Found LEDGER-003 on screen during copy-mode
+  [PASS] Found LEDGER-004 on screen during copy-mode
+  [PASS] Found LEDGER-005 on screen during copy-mode
+  [PASS] Found LEDGER-006 on screen during copy-mode
+  [PASS] Found LEDGER-007 on screen during copy-mode
+  [PASS] Found LEDGER-008 on screen during copy-mode
+  [PASS] Found LEDGER-009 on screen during copy-mode
+  [PASS] Found LEDGER-010 on screen during copy-mode
+  [PASS] Found footer ('qa') after cancel
+CASE 2 VERDICT: PASSED
+-----------------------------------------------------
+CASE 3: NO ALT SCREEN
+-----------------------------------------------------
+Creating tmux session joc-qa-alt0-25678 (100x30) for normal env
+Waiting for driver to start (2s)...
+alternate_on value under normal env: 0
+  [PASS] alternate_on is 0 (no alt screen used)
+Creating tmux session joc-qa-alt1-25678 (100x30) for JOC_TUI_ALT_SCREEN=1
+Waiting for driver to start (2s)...
+alternate_on value under JOC_TUI_ALT_SCREEN=1: 1
+  [PASS] alternate_on is 1 (alt screen legacy fallback intact)
+CASE 3 VERDICT: PASSED
+-----------------------------------------------------
+CASE 4: RED TEAM — resize mid-turn
+-----------------------------------------------------
+Creating tmux session joc-qa-resize-25678 (100x30)
+Waiting for driver to start (2s)...
+Resizing window to 80x20...
+Resizing window back to 100x30...
+Capturing visible screen...
+Found 'qa' in visible screen 1 times
+  [PASS] Process did not crash
+  [PASS] Exactly one footer line present (no stacked duplicate footers)
+CASE 4 VERDICT: PASSED
+-----------------------------------------------------
+CASE 5: RED TEAM — burst flushes
+-----------------------------------------------------
+Creating tmux session joc-qa-burst-25678 (100x30)
+Waiting for burst flushes to complete (2.5s)...
+Capturing pane history (-S -300)...
+Capturing visible screen...
+  [PASS] Found first marker (LEDGER-001) in history
+  [PASS] Found last marker (LEDGER-200) in history
+Found 'qa' in visible screen 1 times
+  [PASS] Exactly one footer line present (no torn duplicate footers)
+CASE 5 VERDICT: PASSED
+-----------------------------------------------------
+CASE 6: RED TEAM — finish dedupe
+-----------------------------------------------------
+Creating tmux session joc-qa-dedupe-25678 (100x30)
+Waiting for driver to finish and exit (3s)...
+Capturing full history...
+Found static ledger line '[TOOL] [DONE] LEDGER-001' 1 times in history
+  [PASS] Marker LEDGER-001 appeared exactly once in scrollback (no duplicates)
+CASE 6 VERDICT: PASSED
+=====================================================
+FINAL RESULTS:
+  CASE 1 (HAPPY PATH): PASSED
+  CASE 2 (COPY-MODE WHEEL): PASSED
+  CASE 3 (NO ALT SCREEN): PASSED
+  CASE 4 (RED TEAM RESIZE): PASSED
+  CASE 5 (RED TEAM BURST): PASSED
+  CASE 6 (RED TEAM DEDUPE): PASSED
+=====================================================

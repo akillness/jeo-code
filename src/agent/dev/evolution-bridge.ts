@@ -11,9 +11,9 @@ export async function consultGjcForAdvancedEvolution(cwd: string) {
     target: "src/ai/model-manager.ts",
     request: report,
     status: "in_progress"
-  });
+  }, cwd);
 
-  console.log(`\n[joc-Core] [${timestamp}] Starting Advanced Evolution Loop...`);
+  console.log();
   console.log("[joc-Core] Architectural Debt identified: Provider Coupling.");
 
   const request = `
@@ -34,7 +34,7 @@ As my implementation guide (gjc), please:
       target: "src/ai/model-manager.ts",
       request,
       status: "success"
-    });
+    }, cwd);
     console.log("[joc-Core] Advanced Provider Registry refactor SUCCESSFUL.");
   } catch (err: any) {
     await logEvolution({
@@ -43,7 +43,7 @@ As my implementation guide (gjc), please:
       request,
       status: "failed",
       verificationOutput: err.message
-    });
+    }, cwd);
     throw err;
   }
 }
@@ -58,9 +58,9 @@ export async function consultGjcForEvolution(cwd: string) {
     target: "src/agent/engine.ts",
     request: report,
     status: "in_progress"
-  });
+  }, cwd);
 
-  console.log(`\n[joc-Core] [${timestamp}] Starting evolution loop...`);
+  console.log();
   try {
     await runGjcCommand([report]);
     await logEvolution({
@@ -68,7 +68,7 @@ export async function consultGjcForEvolution(cwd: string) {
       target: "src/agent/engine.ts",
       request: report,
       status: "success"
-    });
+    }, cwd);
   } catch (err: any) {
     await logEvolution({
       timestamp: new Date().toISOString(),
@@ -76,7 +76,7 @@ export async function consultGjcForEvolution(cwd: string) {
       request: report,
       status: "failed",
       verificationOutput: err.message
-    });
+    }, cwd);
     throw err;
   }
 }

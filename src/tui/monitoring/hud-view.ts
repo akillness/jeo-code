@@ -38,7 +38,7 @@ export function renderMonitorView(state: MonitorState): string {
   output += chalk.bold.cyan("┠──────────────────────────────────────────────────────────────┨") + "\n";
   output += chalk.bold.cyan("┃") + " " + chalk.bold("PHASE:") + " " + hud.padEnd(50) + " ".repeat(4) + chalk.bold.cyan("┃") + "\n";
   output += chalk.bold.cyan("┃") + " " + chalk.bold("EVO  :") + " " + evo.padEnd(50) + " ".repeat(4) + chalk.bold.cyan("┃") + "\n";
-  output += chalk.bold.cyan("┃") + " " + chalk.bold("PROG :") + " " + chalk.bold().padEnd(50) + " ".repeat(0) + chalk.bold.cyan("┃") + "\n";
+  output += chalk.bold.cyan("┃") + " " + chalk.bold("PROG :") + " " + bar.padEnd(50) + " " + chalk.bold(percentage).padStart(6) + chalk.bold.cyan("┃") + "\n";
   output += chalk.bold.cyan("┠──────────────────────────────────────────────────────────────┨") + "\n";
   output += chalk.bold.cyan("┃") + " " + chalk.italic.dim("> " + statusMsg).padEnd(60) + " " + chalk.bold.cyan("┃") + "\n";
   

@@ -31,6 +31,7 @@ jeo-code (제오코드) is an external coding-agent harness, a pure-TypeScript r
 - **Real-time Log Streaming**: Evolution implementation logs are now streamed to dedicated log files, enabling the Sovereign Monitoring HUD to provide live visibility into implementation details.
 - **Sovereign Monitoring HUD**: Enhanced visibility into phases (Thinking, Planning, Executing, Reporting) and Evolution Stages (Primordial Cell to Singularity).
 - **Self-Analysis Engine**: joc now analyzes its own core (engine.ts) for monolithic bottlenecks and performance issues.
+- **Path-Safe Evolution Logging**: Logger functions now support explicit CWD to ensure correct visibility in multi-process/cron environments.
 
 ## Install
 
@@ -45,4 +46,4 @@ jeo-code (제오코드) is an external coding-agent harness, a pure-TypeScript r
 
 
 ---
-*V2 Evolution Update: 2026-06-11 (Level 3 Evolution Phase 1 Complete)*
+*V2 Evolution Update: 2026-06-11 (Level 3 Evolution Phase 2 Underway: Path-Safe Evolution Logging)*

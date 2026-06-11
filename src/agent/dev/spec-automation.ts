@@ -22,12 +22,12 @@ export async function syncSpecificationToSeed(cwd: string) {
     const reqs = reqsMatch ? reqsMatch[1].split("\n").map(l => l.replace(/^- /, "").trim()).filter(Boolean) : [];
 
     const seedContent = `
-goal: "${goals.replace(/"/g, '\\\\"')}"
+goal: "${goals.replace(/"/g, '\\\\\\\\"')}"
 constraints:
   - "Bun runtime"
   - "Zero native dependencies"
 acceptance_criteria:
-${reqs.map(r => `  - "${r.replace(/"/g, '\\\\"')}"`).join("\n")}
+${reqs.map(r => `  - "${r.replace(/"/g, '\\\\\\\\"')}"`).join("\n")}
   - "Mechanical verification (tests) must pass"
 `;
 

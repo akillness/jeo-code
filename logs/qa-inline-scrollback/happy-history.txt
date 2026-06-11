@@ -52,17 +52,6 @@ Starting driver for case: happy-path
 ✔ [TOOL] [DONE] LEDGER-047
   [AGENT] executor ✓ LEDGER-048
 ✔ [TOOL] [DONE] LEDGER-049
-  [AGENT] executor ✓ LEDGER-050
-✔ [TOOL] [DONE] LEDGER-051
-  [AGENT] executor ✓ LEDGER-052
-✔ [TOOL] [DONE] LEDGER-053
-  [AGENT] executor ✓ LEDGER-054
-✔ [TOOL] [DONE] LEDGER-055
-  [AGENT] executor ✓ LEDGER-056
-✔ [TOOL] [DONE] LEDGER-057
-  [AGENT] executor ✓ LEDGER-058
-✔ [TOOL] [DONE] LEDGER-059
-  [AGENT] executor ✓ LEDGER-060
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                                                                  │
 │                                                                                                  │
@@ -73,13 +62,13 @@ Starting driver for case: happy-path
 │                                                                                                  │
 │── Output ──────────────────────────────────────────────────────────────────────────────────────  │
 │╭──────────────────────────────────────────────────────────────────────────────────────────────╮  │
-││[01:TOOL] LEDGER-057 result ok · output                                                       │  │
+││[01:TOOL] LEDGER-047 result ok · output                                                       │  │
 ││──────────────────────────────────────────────────────────────────────────────────────────────│  │
 ││<no output>                                                                                   │  │
 │╰──────────────────────────────────────────────────────────────────────────────────────────────╯  │
 │                                                                                                  │
 │╭──────────────────────────────────────────────────────────────────────────────────────────────╮  │
-││[02:TOOL] LEDGER-059 result ok · output                                                       │  │
+││[02:TOOL] LEDGER-049 result ok · output                                                       │  │
 ││──────────────────────────────────────────────────────────────────────────────────────────────│  │
 ││<no output>                                                                                   │  │
 │╰──────────────────────────────────────────────────────────────────────────────────────────────╯  │
@@ -91,5 +80,5 @@ Starting driver for case: happy-path
 │  [STATUS] joc status · thinking through the next tool call                                       │
 │  [TOOL] joc forge · forge idle · tools 0 (0 ok / 0 fail / 0 running)                             │
 │  ^C cancel · Tab complete · /help commands · /model switch · ^O detail · /exit quit              │
-│...  qa · 3s                                                                                      │
+│.... qa · 3s                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

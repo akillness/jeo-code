@@ -7,10 +7,19 @@ import { codexResponsesCall, codexResponsesStream } from "./openai-responses";
 export function openaiRequest(messages: Message[], options: CallOptions, credential: Credential, stream: boolean): { url: string; headers: Record<string, string>; body: string } {
   const model = options.model.startsWith("openai/") ? options.model.slice(7) : options.model;
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
-  const openaiMessages: { role: string; content: string }[] = [];
+  const openaiMessages: { role: string; content: unknown }[] = [];
   if (systemPrompt) openaiMessages.push({ role: "system", content: systemPrompt });
   for (const msg of messages) {
-    if (msg.role !== "system") openaiMessages.push({ role: msg.role, content: msg.content });
+    if (msg.role === "system") continue;
+    // Image attachments (clipboard paste) use the content-parts form with data URLs;
+    // text-only messages keep the plain-string form every OpenAI-compat server accepts.
+    const content = msg.images?.length
+      ? [
+          ...(msg.content ? [{ type: "text", text: msg.content }] : []),
+          ...msg.images.map(img => ({ type: "image_url", image_url: { url: `data:${img.mediaType};base64,${img.data}` } })),
+        ]
+      : msg.content;
+    openaiMessages.push({ role: msg.role, content });
   }
   // Reasoning models (o-series, gpt-5 family) take max_completion_tokens + reasoning_effort
   // and reject temperature; classic chat models (gpt-4o, …) take max_tokens + temperature.

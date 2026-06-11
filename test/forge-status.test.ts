@@ -19,12 +19,12 @@ test("summarizeForgeInvocation renders bash, read, and write as code-box summari
   expect(bash.lines).toContain("$ echo hello");
 
   const read = summarizeForgeInvocation("read", { filePath: "src/app.ts", lineRange: "1-20" });
-  expect(read.title).toBe("read src/app.ts");
-  expect(read.lines).toEqual(["path: src/app.ts", "range: 1-20"]);
+  expect(read.title).toBe("Read : src/app.ts (lines: 1-20)");
+  expect(read.lines).toEqual(["path: src/app.ts"]);
 
   const write = summarizeForgeInvocation("write", { path: "out.txt", content: "a\nb" });
-  expect(write.title).toBe("write out.txt");
-  expect(write.lines[0]).toContain("2 line(s) -> out.txt");
+  expect(write.title).toBe("write : out.txt");
+  expect(write.lines).toContain("wrote 2 lines, 3 bytes");
 });
 
 test("forge boxes are width-bounded and redact secret-like values", () => {
@@ -187,18 +187,20 @@ test("summarizeForgeInvocation and summarizeForgeResult polish and status step s
 
   // 2. write language tag from extension
   const writeTs = summarizeForgeInvocation("write", { path: "src/main.ts", content: "const a = 1;" });
-  expect(writeTs.lines[0]).toContain("· typescript -> src/main.ts");
+  expect(writeTs.language).toBe("typescript");
+  expect(writeTs.lines.find(l => l.includes("wrote 1 lines, 12 bytes · typescript"))).toBeDefined();
 
   const writeUnknown = summarizeForgeInvocation("write", { path: "foo.unknown", content: "hello" });
-  expect(writeUnknown.lines[0]).toBe("# 5 bytes · 1 line(s) -> foo.unknown");
+  expect(writeUnknown.lines.find(l => l.includes("wrote 1 lines, 5 bytes"))).toBeDefined();
+  expect(writeUnknown.language).toBe("text");
 
   // 3. read with absent lineRange has # preview marker
   const readNoRange = summarizeForgeInvocation("read", { filePath: "src/app.ts" });
-  expect(readNoRange.lines[1]).toBe("range: full/default preview # preview");
+  expect(readNoRange.lines).toEqual(["path: src/app.ts"]);
 
   // Regression check: read with present lineRange does not have # preview, and contains range: 1-20
   const readWithRange = summarizeForgeInvocation("read", { filePath: "src/app.ts", lineRange: "1-20" });
-  expect(readWithRange.lines).toEqual(["path: src/app.ts", "range: 1-20"]);
+  expect(readWithRange.lines).toEqual(["path: src/app.ts"]);
 
   // 4. bash exit ok / fail and redaction regression
   const bashResultOk = summarizeForgeResult("bash", true, "success api-key=abc12345");

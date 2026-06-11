@@ -85,14 +85,21 @@ export async function resolveAntigravityProjectId(
   return projectId;
 }
 
-function antigravityContents(messages: Message[]): { role: "user" | "model"; parts: { text: string }[] }[] {
-  const contents: { role: "user" | "model"; parts: { text: string }[] }[] = [];
+type CcaPart = { text: string } | { inlineData: { mimeType: string; data: string } };
+
+function antigravityContents(messages: Message[]): { role: "user" | "model"; parts: CcaPart[] }[] {
+  const contents: { role: "user" | "model"; parts: CcaPart[] }[] = [];
   for (const m of messages) {
     if (m.role === "system") continue;
     const role = m.role === "assistant" ? "model" : "user";
+    // Clipboard-pasted images become inlineData parts alongside the text part.
+    const parts: CcaPart[] = [
+      ...(m.images?.map(img => ({ inlineData: { mimeType: img.mediaType, data: img.data } })) ?? []),
+      { text: m.content },
+    ];
     const prev = contents[contents.length - 1];
-    if (prev && prev.role === role) prev.parts.push({ text: m.content });
-    else contents.push({ role, parts: [{ text: m.content }] });
+    if (prev && prev.role === role) prev.parts.push(...parts);
+    else contents.push({ role, parts });
   }
   return contents;
 }

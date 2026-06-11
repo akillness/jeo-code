@@ -15,10 +15,13 @@ export function normalizeOllamaBaseUrl(baseUrl?: string): string {
 function ollamaRequest(messages: Message[], options: CallOptions, stream: boolean): { url: string; body: string } {
   const model = options.model.startsWith("ollama/") ? options.model.slice(7) : options.model;
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
-  const chatMessages: { role: string; content: string }[] = [];
+  const chatMessages: { role: string; content: string; images?: string[] }[] = [];
   if (systemPrompt) chatMessages.push({ role: "system", content: systemPrompt });
   for (const msg of messages) {
-    if (msg.role !== "system") chatMessages.push({ role: msg.role, content: msg.content });
+    if (msg.role === "system") continue;
+    // Ollama multimodal models take raw base64 strings in a sibling `images` array.
+    if (msg.images?.length) chatMessages.push({ role: msg.role, content: msg.content, images: msg.images.map(i => i.data) });
+    else chatMessages.push({ role: msg.role, content: msg.content });
   }
   const payload: Record<string, unknown> = {
     model,

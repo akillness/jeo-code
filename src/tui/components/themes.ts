@@ -62,9 +62,9 @@ const RED_CLAW: EvolutionTheme = {
   gradients: [
     { from: "#2b0000", to: "#4a0000" },
     { from: "#4a0000", to: "#8b0000" },
-    { from: "#8b0000", to: "#d90429" },
-    { from: "#d90429", to: "#ef233c" },
-    { from: "#ef233c", to: "#ffffff" },
+    { from: "#8b0000", to: "#b22222" },
+    { from: "#b22222", to: "#dc143c" },
+    { from: "#dc143c", to: "#ff0000" },
   ],
   color: true,
 };

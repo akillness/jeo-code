@@ -135,15 +135,23 @@ export function formatCodeBlock(content: string, opts: CodeViewOptions = {}): st
   const out: string[] = [];
   for (let i = 0; i < shown.length; i++) {
     const no = startLine + i;
-    const marked = highlight.has(no);
-    const numText = String(no).padStart(gutterW);
-    const num = color ? (marked ? chalk.yellow.bold(numText) : chalk.gray(numText)) : numText;
-    const body = sanitizeForTerminal(shown[i]);
+    const num = String(no).padStart(gutterW, " ");
+    const sepGlyph = color ? chalk.gray(sep) : "|";
+    // File-origin content can carry hostile escapes — neutralize, then expand tabs
+    // so the gutter alignment is column-stable.
+    const body = sanitizeForTerminal(allLines[i]!).replace(/\t/g, "  ");
     const colored = color ? lightHighlightLine(body, lang) : body;
+    const marked = highlight.has(no);
     const marker = marked ? (color ? chalk.yellow("▶") : ">") : " ";
-    const line = `${marker}${num} ${sep} ${colored}`;
+    
+    let prefix = " ";
+    if (body.startsWith("+")) prefix = color ? chalk.green("+") : "+";
+    else if (body.startsWith("-")) prefix = color ? chalk.red("-") : "-";
+    
+    const line = `${marker}${prefix}${num} ${sepGlyph} ${colored}`;
     out.push(truncate(line, cols));
   }
+
   if (allLines.length > maxLines) {
     const more = allLines.length - maxLines;
     out.push(color ? chalk.gray(`  …(+${more} more line${more === 1 ? "" : "s"})`) : `  …(+${more} more lines)`);

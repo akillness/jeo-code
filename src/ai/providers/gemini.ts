@@ -41,15 +41,20 @@ export function buildGeminiPayload(messages: Message[], options: CallOptions): {
   // consecutive same-role messages (a compaction summary prepended before a tool-result,
   // back-to-back tool results, etc.), so coalesce adjacent same-role turns into one
   // content block — otherwise the API rejects the request mid-session.
-  const contents: { role: string; parts: { text: string }[] }[] = [];
+  const contents: { role: string; parts: ({ text: string } | { inlineData: { mimeType: string; data: string } })[] }[] = [];
   for (const m of messages) {
     if (m.role === "system") continue;
     const role = m.role === "assistant" ? "model" : "user";
+    // Clipboard-pasted images become inlineData parts alongside the text part.
+    const parts: ({ text: string } | { inlineData: { mimeType: string; data: string } })[] = [
+      ...(m.images?.map(img => ({ inlineData: { mimeType: img.mediaType, data: img.data } })) ?? []),
+      { text: m.content },
+    ];
     const prev = contents[contents.length - 1];
     if (prev && prev.role === role) {
-      prev.parts.push({ text: m.content });
+      prev.parts.push(...parts);
     } else {
-      contents.push({ role, parts: [{ text: m.content }] });
+      contents.push({ role, parts });
     }
   }
 

@@ -127,10 +127,11 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
   if (normalized === "read") {
     const filePath = stringArg(args, "filePath", "path") ?? "<missing path>";
     const range = stringArg(args, "lineRange", "range");
+    const rangeText = range ? ` (lines: ${range})` : "";
     return {
-      title: `read ${filePath}`,
+      title: `Read : ${filePath}${rangeText}`,
       language: "path",
-      lines: [`path: ${filePath}`, range ? `range: ${range}` : "range: full/default preview # preview"],
+      lines: [`path: ${filePath}`],
     };
   }
 
@@ -142,9 +143,13 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
     const lang = EXT_TO_LANG[ext];
     const langTag = lang ? ` · ${lang}` : "";
     return {
-      title: `write ${filePath}`,
-      language: "text",
-      lines: [`# ${content.length} bytes · ${lineCount} line(s)${langTag} -> ${filePath}`, ...previewLines(content, 8, 800)],
+      title: `write : ${filePath}`,
+      language: lang || "text",
+      lines: [
+        ...previewLines(content, 8, 800),
+        FORGE_DIVIDER_PREFIX + "Summary",
+        `wrote ${lineCount} lines, ${content.length} bytes${langTag}`
+      ],
     };
   }
 
@@ -152,12 +157,11 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
     const filePath = stringArg(args, "filePath", "path") ?? "<missing path>";
     const editBlock = stringArg(args, "editBlock", "edit") ?? "";
     return {
-      title: `edit ${filePath}`,
+      title: `Edit : ${filePath}`,
       language: "patch",
-      lines: [`# patch -> ${filePath}`, ...previewLines(editBlock, 8, 800)],
+      lines: [...previewLines(editBlock, 8, 800)],
     };
   }
-
   if (normalized === "find") {
     const pattern = stringArg(args, "globPattern", "pattern") ?? "<missing glob>";
     return { title: "find files", language: "glob", lines: [`glob: ${pattern}`] };
@@ -166,7 +170,7 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
   if (normalized === "search") {
     const pattern = stringArg(args, "pattern") ?? "<missing pattern>";
     const glob = stringArg(args, "globPattern", "path") ?? "*";
-    return { title: "search content", language: "regex", lines: [`pattern: ${pattern}`, `glob: ${glob}`] };
+    return { title: `search : ${pattern}`, language: "regex", lines: [`glob: ${glob}`] };
   }
 
   if (normalized === "task") {
@@ -174,9 +178,9 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
     const task = stringArg(args, "task", "prompt", "assignment") ?? "<missing task>";
     const context = stringArg(args, "context");
     return {
-      title: `task ${role}`,
+      title: `Task : ${role}`,
       language: "text",
-      lines: [`role: ${role}`, ...previewLines(task, 4, 500), ...(context ? ["context:", ...previewLines(context, 3, 300)] : [])],
+      lines: [...previewLines(task, 4, 500), ...(context ? ["context:", ...previewLines(context, 3, 300)] : [])],
     };
   }
 

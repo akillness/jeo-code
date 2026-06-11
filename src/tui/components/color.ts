@@ -154,6 +154,20 @@ export function fgEscape(c: RGB, level: ColorLevel): string {
   }
 }
 
+/** Open-background escape for one color at a given level (empty at None). */
+export function bgEscape(c: RGB, level: ColorLevel): string {
+  switch (level) {
+    case ColorLevel.TrueColor:
+      return `${ESC}48;2;${c.r};${c.g};${c.b}m`;
+    case ColorLevel.Ansi256:
+      return `${ESC}48;5;${rgbToAnsi256(c)}m`;
+    case ColorLevel.Basic:
+      return `${ESC}${rgbToAnsi16(c) + 10}m`;
+    default:
+      return "";
+  }
+}
+
 /** Reset escape (empty at None). */
 export function resetEscape(level: ColorLevel): string {
   return level === ColorLevel.None ? "" : `${ESC}0m`;
@@ -177,6 +191,29 @@ export function applyGradient(text: string, from: RGB, to: RGB, level: ColorLeve
       continue;
     }
     out += fgEscape(stops[i]!, level) + ch;
+  }
+  return out + resetEscape(level);
+}
+
+/**
+ * Paint `text` on a left→right BACKGROUND gradient (`from`→`to`) with a fixed
+ * high-contrast foreground — the status-bar "highlight block" look. Unlike
+ * `applyGradient`, spaces ARE painted (the block must be continuous).
+ * At `ColorLevel.None` the plain text is returned unchanged.
+ */
+export function applyBgGradient(
+  text: string,
+  from: RGB,
+  to: RGB,
+  level: ColorLevel = ColorLevel.TrueColor,
+  fg: RGB = { r: 235, g: 235, b: 235 },
+): string {
+  const plain = stripAnsi(text);
+  if (level === ColorLevel.None || plain.length === 0) return plain;
+  const stops = gradientStops(from, to, plain.length);
+  let out = fgEscape(fg, level);
+  for (let i = 0; i < plain.length; i++) {
+    out += bgEscape(stops[i]!, level) + plain[i]!;
   }
   return out + resetEscape(level);
 }

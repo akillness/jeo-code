@@ -60,8 +60,12 @@ export function estimateTokens(text: string): number {
   return tokens;
 }
 
+/** Rough per-image vision-token cost (provider median for a clipboard screenshot).
+ *  Keeps the context meter and compaction trigger honest when images are attached. */
+const IMAGE_TOKEN_ESTIMATE = 1100;
+
 export function estimateMessageTokens(msg: Message): number {
-  return estimateTokens(msg.role) + estimateTokens(msg.content) + 1;
+  return estimateTokens(msg.role) + estimateTokens(msg.content) + (msg.images?.length ?? 0) * IMAGE_TOKEN_ESTIMATE + 1;
 }
 
 export function historyTokens(history: Message[]): number {
@@ -77,7 +81,12 @@ export function historyTokens(history: Message[]): number {
  */
 export function accurateHistoryTokens(history: Message[], model?: string): number {
   return history.reduce(
-    (sum, msg) => sum + countTokensAccurate(msg.role, model) + countTokensAccurate(msg.content, model) + 1,
+    (sum, msg) =>
+      sum +
+      countTokensAccurate(msg.role, model) +
+      countTokensAccurate(msg.content, model) +
+      (msg.images?.length ?? 0) * IMAGE_TOKEN_ESTIMATE +
+      1,
     0
   );
 }

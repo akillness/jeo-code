@@ -80,7 +80,17 @@ export function anthropicPayload(
 ): string {
   const model = stripAnthropicPrefix(options.model);
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
-  const anthropicMessages = messages.filter(m => m.role !== "system").map(m => ({ role: m.role, content: m.content }));
+  // Image attachments (clipboard paste) become Anthropic content blocks; plain
+  // string content is kept for text-only messages (the overwhelmingly common case).
+  const anthropicMessages = messages.filter(m => m.role !== "system").map(m => ({
+    role: m.role,
+    content: m.images?.length
+      ? [
+          ...m.images.map(img => ({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } })),
+          ...(m.content ? [{ type: "text", text: m.content }] : []),
+        ]
+      : m.content,
+  }));
   const payload: Record<string, unknown> = {
     model,
     messages: anthropicMessages,

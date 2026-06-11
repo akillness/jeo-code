@@ -2,9 +2,21 @@ import type { Credential } from "../auth";
 
 export type ProviderName = "anthropic" | "openai" | "gemini" | "antigravity" | "ollama";
 
+/** An image attached to a (user) message — base64 payload + IANA media type. */
+export interface ImageAttachment {
+  /** e.g. "image/png", "image/jpeg" */
+  mediaType: string;
+  /** Raw base64 (no data: URL prefix). */
+  data: string;
+}
+
 export interface Message {
   role: "system" | "user" | "assistant";
   content: string;
+  /** Optional image attachments (clipboard paste). Multimodal providers render
+   *  these alongside `content`; history bookkeeping (compaction, transcripts)
+   *  keeps treating `content` as the message body. */
+  images?: ImageAttachment[];
 }
 
 export interface Usage {

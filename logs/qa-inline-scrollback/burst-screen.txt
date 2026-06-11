@@ -25,6 +25,6 @@
 │  [STEP] step 0/25 · [..........] 0% · elapsed 1s                                                 │
 │  [STATUS] joc status · thinking through the next tool call                                       │
 │  [TOOL] joc forge · forge idle · tools 0 (0 ok / 0 fail / 0 running)                             │
-│  ^C cancel · Tab complete · /help commands · /model switch · /exit quit                          │
+│  ^C cancel · Tab complete · /help commands · /model switch · ^O detail · /exit quit              │
 │..   qa · 1s                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

@@ -10,7 +10,8 @@ export async function consultGjcForAdvancedEvolution(cwd: string) {
     timestamp,
     target: "src/ai/model-manager.ts",
     request: report,
-    status: "in_progress"
+    status: "in_progress",
+    stage: "analysis"
   }, cwd);
 
   console.log();
@@ -27,13 +28,22 @@ As my implementation guide (gjc), please:
   `;
 
   try {
+    await logEvolution({
+      timestamp: new Date().toISOString(),
+      target: "src/ai/model-manager.ts",
+      request,
+      status: "in_progress",
+      stage: "consultation"
+    }, cwd);
+
     await runGjcCommand([request]);
     
     await logEvolution({
       timestamp: new Date().toISOString(),
       target: "src/ai/model-manager.ts",
       request,
-      status: "success"
+      status: "success",
+      stage: "verification"
     }, cwd);
     console.log("[joc-Core] Advanced Provider Registry refactor SUCCESSFUL.");
   } catch (err: any) {
@@ -42,6 +52,7 @@ As my implementation guide (gjc), please:
       target: "src/ai/model-manager.ts",
       request,
       status: "failed",
+      stage: "verification",
       verificationOutput: err.message
     }, cwd);
     throw err;
@@ -57,17 +68,28 @@ export async function consultGjcForEvolution(cwd: string) {
     timestamp,
     target: "src/agent/engine.ts",
     request: report,
-    status: "in_progress"
+    status: "in_progress",
+    stage: "analysis"
   }, cwd);
 
   console.log();
   try {
-    await runGjcCommand([report]);
     await logEvolution({
       timestamp: new Date().toISOString(),
       target: "src/agent/engine.ts",
       request: report,
-      status: "success"
+      status: "in_progress",
+      stage: "consultation"
+    }, cwd);
+
+    await runGjcCommand([report]);
+
+    await logEvolution({
+      timestamp: new Date().toISOString(),
+      target: "src/agent/engine.ts",
+      request: report,
+      status: "success",
+      stage: "verification"
     }, cwd);
   } catch (err: any) {
     await logEvolution({
@@ -75,6 +97,7 @@ export async function consultGjcForEvolution(cwd: string) {
       target: "src/agent/engine.ts",
       request: report,
       status: "failed",
+      stage: "verification",
       verificationOutput: err.message
     }, cwd);
     throw err;

@@ -25,9 +25,7 @@ export async function runStatusCommand(): Promise<void> {
       console.log(chalk.bold("Overall Project Progress: [" + bar + "] " + percentage.toFixed(1) + "%"));
       console.log(chalk.dim("(" + completedTasks + "/" + totalTasks + " tasks completed from plan.md)\n"));
     }
-  } catch (e) {
-    // skip
-  }
+  } catch (e) {}
 
   try {
     const content = await fs.readFile(logPath, "utf-8");
@@ -39,14 +37,18 @@ export async function runStatusCommand(): Promise<void> {
       const activeTask = logs.find((l: any) => l.status === "in_progress");
       if (activeTask) {
         console.log(chalk.yellow.bold("▶ ACTIVE EVOLUTION: ") + chalk.cyan(activeTask.target));
-        console.log(chalk.dim("Started: " + activeTask.timestamp + "\n"));
+        if (activeTask.stage) {
+          console.log(chalk.magenta("  Stage: ") + chalk.bold(activeTask.stage.toUpperCase()));
+        }
+        console.log(chalk.dim("  Started: " + activeTask.timestamp + "\n"));
       }
 
       console.log(chalk.bold("Recent Evolution Turns:"));
       const recent = logs.slice(-5).reverse();
       for (const entry of recent) {
         const statusColor = entry.status === "success" ? chalk.green : (entry.status === "failed" ? chalk.red : chalk.yellow);
-        console.log("- " + chalk.dim("[" + new Date(entry.timestamp).toLocaleTimeString() + "]") + " " + statusColor(entry.status.toUpperCase().padEnd(11)) + " " + chalk.cyan(entry.target));
+        const stageLabel = entry.stage ? ` [${entry.stage.toUpperCase()}]` : "";
+        console.log("- " + chalk.dim("[" + new Date(entry.timestamp).toLocaleTimeString() + "]") + stageLabel.padEnd(16) + " " + statusColor(entry.status.toUpperCase().padEnd(11)) + " " + chalk.cyan(entry.target));
       }
       console.log("");
     }
@@ -56,7 +58,13 @@ export async function runStatusCommand(): Promise<void> {
 
   console.log(chalk.bold("=== Engine Performance Metrics ==="));
   try {
-    const perfContent = await fs.readFile(perfPath, "utf-8");
+    const perfPathAlt = path.join(cwd, "logs", "performance-metrics.json");
+    let perfContent = "";
+    try {
+      perfContent = await fs.readFile(perfPath, "utf-8");
+    } catch {
+      perfContent = await fs.readFile(perfPathAlt, "utf-8");
+    }
     const metrics = JSON.parse(perfContent);
     if (metrics.length > 0) {
       const recent = metrics.slice(-50);

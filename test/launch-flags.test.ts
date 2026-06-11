@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseFlags, gatedStdout, shouldUseOneShotTui } from "../src/commands/launch";
+import { parseFlags, gatedStdout, shouldUseOneShotTui, createInFlightAbortHarness, queuePromptInputChunk } from "../src/commands/launch";
 import { createInterface } from "node:readline/promises";
 import { Readable, Writable } from "node:stream";
 
@@ -93,6 +93,60 @@ test("gatedStdout: readline's own prompt/echo is suppressed while gated (single-
   const joined = seen.join("");
   expect(joined).not.toContain("jeo>"); // no duplicated raw CLI prompt line
   expect(joined).not.toContain("hi");   // no raw echo either — only our box would show it
+});
+
+test("queuePromptInputChunk preserves Korean follow-up text typed during a live turn", () => {
+  const state = { pendingLines: [] as string[], partial: "" };
+  expect(queuePromptInputChunk(state, "작업내용 확인")).toBe(true);
+  expect(state).toEqual({ pendingLines: [], partial: "작업내용 확인" });
+
+  expect(queuePromptInputChunk(state, "해줘\r")).toBe(true);
+  expect(state).toEqual({ pendingLines: ["작업내용 확인해줘"], partial: "" });
+
+  expect(queuePromptInputChunk(state, "\u001b[A")).toBe(false);
+  expect(state).toEqual({ pendingLines: ["작업내용 확인해줘"], partial: "" });
+});
+
+test("in-flight abort harness forwards printable live-turn input for the next prompt", () => {
+  const listeners = new Set<(chunk: string | Uint8Array) => void>();
+  const rawModes: boolean[] = [];
+  const chunks: string[] = [];
+  let noise = 0;
+  let resumed = false;
+  const stdin = {
+    isTTY: true,
+    isRaw: false,
+    setRawMode(raw: boolean) { rawModes.push(raw); },
+    resume() { resumed = true; },
+    on(event: "data", listener: (chunk: string | Uint8Array) => void) {
+      if (event === "data") listeners.add(listener);
+    },
+    off(event: "data", listener: (chunk: string | Uint8Array) => void) {
+      if (event === "data") listeners.delete(listener);
+    },
+  };
+
+  const harness = createInFlightAbortHarness({
+    stdin,
+    captureEsc: true,
+    onBufferedInput: chunk => chunks.push(chunk),
+    onNoise: () => { noise++; },
+  });
+
+  expect(rawModes).toEqual([true]);
+  expect(resumed).toBe(true);
+  expect(listeners.size).toBe(1);
+
+  harness.handleData("작업내용 확인해줘\r");
+  expect(chunks).toEqual(["작업내용 확인해줘\r"]);
+
+  harness.handleData("\u001b[A");
+  expect(noise).toBe(1);
+  expect(chunks).toEqual(["작업내용 확인해줘\r"]);
+
+  harness.dispose();
+  expect(rawModes).toEqual([true, false]);
+  expect(listeners.size).toBe(0);
 });
 
 // gjc-parity (logs/gjc-tui-study analysis Gap C): the /exit path prints a resume

@@ -201,3 +201,35 @@ export function clearSubagentSetting(config: Pick<Config, "subagents">, roleId: 
   delete subs[id];
   return subs;
 }
+
+/** One pickable apply-target: the global default or a subagent role. */
+export interface ApplyTargetChoice {
+  /** "default" or a subagent role id. */
+  value: string;
+  label: string;
+  /** Right-aligned hint: the target's CURRENT model (so the picker doubles as a viewer). */
+  hint: string;
+}
+
+/**
+ * Choices for the "apply picked model to…" picker shown after an interactive
+ * model selection (gjc parity: picking a model also lets you pick WHO uses it).
+ * The hint shows each target's current model, so the same picker doubles as a
+ * read-and-change panel for existing role assignments. Pure — testable.
+ */
+export function applyTargetChoices(
+  config: Pick<Config, "defaultModel" | "subagents">,
+): ApplyTargetChoice[] {
+  return [
+    {
+      value: "default",
+      label: "default — every session",
+      hint: config.defaultModel,
+    },
+    ...SUBAGENT_ROLES.map(role => ({
+      value: role.id,
+      label: `subagent ${role.id} — ${role.title}`,
+      hint: resolveSubagentModel(role.id, config) + (config.subagents?.[role.id]?.model ? "" : " (default)"),
+    })),
+  ];
+}

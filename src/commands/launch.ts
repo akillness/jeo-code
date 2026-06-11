@@ -16,7 +16,7 @@ import { matchSlash, isSlashAttempt, formatSlashCommandList, formatSlashPreview,
 import { staticCompletionContext, readlineCompleter, formatCompletionPreview, tokenize, type CompletionContext } from "../tui/components/autocomplete";
 import { EVOLUTION_STAGES, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
-import { renderWelcome } from "../tui/components/welcome";
+import { renderWelcome, playWelcomeSweep } from "../tui/components/welcome";
 import { checkForUpdate } from "../util/update-check";
 import { renderUpdateBox } from "../tui/components/update-box";
 import { supportsUnicode } from "../tui/components/capability";
@@ -31,7 +31,8 @@ import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLev
 
 import { listAliases } from "../ai/model-registry";
 
-import { SUBAGENT_ROLES, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, parseMaxSteps, withSubagentSetting, clearSubagentSetting } from "../agent/subagents";
+import { SUBAGENT_ROLES, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, parseMaxSteps, withSubagentSetting, clearSubagentSetting, applyTargetChoices } from "../agent/subagents";
+import { SelectList, renderSelectList } from "../tui/components/select-list";
 import {
   formatModelLine,
   formatAliasLines,
@@ -53,7 +54,7 @@ import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBl
 import { categoryBadge } from "../tui/components/category-index";
 import { renderInputFrame } from "../tui/components/input-box";
 import { renderStatusBar } from "../tui/components/status";
-import { detectColorLevel } from "../tui/components/color";
+import { detectColorLevel, ColorLevel } from "../tui/components/color";
 import { readClipboardImage } from "../util/clipboard-image";
 import { formatTranscript } from "../tui/components/transcript";
 import type { ImageAttachment } from "../ai/types";
@@ -375,6 +376,35 @@ interface AbortHarnessOptions {
   onHardExit?: () => void;
   /** Invoked when stray escape-sequence noise (wheel scroll etc.) arrives mid-turn. */
   onNoise?: () => void;
+  /** Invoked with printable keyboard input received while the live turn owns stdin. */
+  onBufferedInput?: (chunk: string) => void;
+}
+
+export interface PromptInputQueue {
+  pendingLines: string[];
+  partial: string;
+}
+
+export function queuePromptInputChunk(state: PromptInputQueue, chunk: string): boolean {
+  if (!chunk || chunk.includes("\u001b") || chunk.includes("\u0003")) return false;
+  let accepted = false;
+  const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  for (const ch of Array.from(normalized)) {
+    if (ch === "\n") {
+      if (state.partial.length > 0) accepted = true;
+      state.pendingLines.push(state.partial);
+      state.partial = "";
+    } else if (ch === "\u007f" || ch === "\b") {
+      const chars = Array.from(state.partial);
+      chars.pop();
+      state.partial = chars.join("");
+      accepted = true;
+    } else if (ch === "\t" || ch >= " ") {
+      state.partial += ch;
+      accepted = true;
+    }
+  }
+  return accepted;
 }
 
 export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFlightAbortHarness {
@@ -408,11 +438,11 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
       handleSigint();
       return;
     }
-    // Anything else arriving mid-turn (mouse-wheel arrow bursts, stray escape
-    // sequences) may have disturbed the screen — auto-heal with a full repaint.
     if (text.includes("\u001b")) {
       opts.onNoise?.();
+      return;
     }
+    opts.onBufferedInput?.(text);
   };
 
   process.on("SIGINT", handleSigint);
@@ -977,6 +1007,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const initialStepLimit = flags.maxSteps > 0 ? flags.maxSteps : initialDynamicStepLimit();
   // Plain (non-TTY / --no-tui) progress sink — the cmd-mode equivalent of the live TUI.
   const streamEvents = createStreamEvents(initialStepLimit);
+  let queueBusyInput: ((chunk: string) => boolean) | undefined;
 
 
   // Run one conversational turn: compact, persist user msg, run the loop, persist + return the reply.
@@ -1025,6 +1056,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       const harness = createInFlightAbortHarness({
         captureEsc: !!tui,
         onNoise: () => tui?.repaint(),
+        onBufferedInput: chunk => {
+          if (!tui) return;
+          const queued = queueBusyInput?.(chunk) ?? false;
+          if (queued) tui.events().onNotice?.("Keyboard input queued for the next prompt…");
+        },
         onAbortNotice: msg => {
           if (tui) tui.events().onNotice?.(msg);
           else console.log(msg);
@@ -1127,6 +1163,34 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       console.log("No input provided.");
       return;
     }
+    // One-shot piped/`-p` input that is a control slash command must be handled
+    // HERE — never forwarded to the model. `echo "/clear" | jeo` (and Ctrl-D after
+    // a piped command) previously sent the literal "/clear" to the LLM as a prompt:
+    // a slow, flaky, and semantically wrong round-trip. These no-arg session/system
+    // commands have a meaningful one-shot effect (or are simple no-ops) and exit.
+    {
+      const cmd = messageContent.trim();
+      if (cmd === "/exit" || cmd === "/quit") {
+        return;
+      }
+      if (cmd === "/clear" || cmd === "/new" || cmd === "/drop") {
+        // Reset history to just the system prompt and overwrite the session file so
+        // the persisted transcript matches (a fresh session for /new and /drop).
+        history.length = 1;
+        if (sessionId && !flags.noSession) {
+          try {
+            sessionId = (await createSession(cwd)).id;
+          } catch { /* best-effort: in-memory clear already done */ }
+        }
+        console.log("(history cleared)");
+        return;
+      }
+      if (cmd === "/" || cmd === "/?" || cmd === "/help") {
+        for (const line of formatSlashCommandList("/", skillSlashDetails)) console.log(line);
+        console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .joc/sessions/.");
+        return;
+      }
+    }
     const skillInvocation = parseSkillInvocation(messageContent, resolvedSkills);
     if (skillInvocation) {
       const isBundleWorkflow = ["deep-interview", "ralplan", "team", "ultragoal"].includes(skillInvocation.skill.name);
@@ -1219,7 +1283,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const activeStartModel = sessionModel || defaultModel;
   const { provider: startProvider } = await describeModel(activeStartModel);
   const welcomeTheme = resolveTheme(process.env);
-  console.log(renderWelcome({
+  const welcomeData = {
     version: pkg.version,
     model: activeStartModel,
     provider: startProvider,
@@ -1232,7 +1296,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     color: welcomeTheme.color,
     accent: accentPaint(welcomeTheme),
     accentShadow: accentShadowPaint(welcomeTheme),
-  }).join("\n"));
+  };
+  // Launch sweep: animate the DNA Claw's gradient once (~0.5s), ending on the
+  // static banner. Truecolor TTYs only; JEO_NO_WELCOME_ANIM=1 opts out.
+  const sweepable =
+    !!process.stdout.isTTY &&
+    welcomeTheme.color &&
+    detectColorLevel(process.env, true) === ColorLevel.TrueColor &&
+    (process.env.JEO_NO_WELCOME_ANIM ?? process.env.JOC_NO_WELCOME_ANIM) !== "1";
+  if (sweepable) await playWelcomeSweep(welcomeData);
+  else console.log(renderWelcome(welcomeData).join("\n"));
 
   const upd = await Promise.race([updatePromise, new Promise<null>(r => setTimeout(() => r(null), 1200))]);
   if (upd?.updateAvailable) console.log(renderUpdateBox(upd.current, upd.latest).join("\n"));
@@ -1399,6 +1472,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // 'line' instead), so queue those and serve them before prompting again.
   const pendingStdinLines: string[] = [];
   rl.on("line", l => { pendingStdinLines.push(l); });
+  const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: "" };
+  queueBusyInput = (chunk: string) => queuePromptInputChunk(queuedPromptInput, chunk);
   let stdinClosed = false;
   let notifyStdinClosed: (() => void) | undefined;
   // `on` + one-shot guard (not `once`): test harnesses stub readline with `on`/`question` only.
@@ -1420,12 +1495,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   // Mouse-wheel scroll during a live turn (tmux or plain terminal) can inject
   // arrow/scroll escape sequences into stdin; readline buffers them into its
-  // pending line and the NEXT prompt then shows/executes garbage. Drain any
-  // pending tty input and clear readline's buffered line before each prompt.
+  // pending line and the NEXT prompt then shows/executes garbage. Drain tty input
+  // before each prompt, but preserve printable text typed while a live turn was
+  // still running so fast follow-up prompts (including Korean/CJK text) are not
+  // silently eaten.
   const drainPendingTtyInput = (): void => {
     if (!process.stdin.isTTY) return;
     try {
-      while (process.stdin.read() !== null) { /* discard wheel/arrow noise typed mid-turn */ }
+      let chunk: unknown;
+      while ((chunk = process.stdin.read()) !== null) {
+        const text = typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString("utf8");
+        queuePromptInputChunk(queuedPromptInput, text);
+      }
     } catch { /* stream not readable in this state — nothing buffered */ }
     const r = rl as unknown as { line?: string; cursor?: number };
     if (typeof r.line === "string" && r.line.length > 0 && /\x1b|\[[ABCD]/.test(r.line)) {
@@ -1833,6 +1914,33 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     return chosen;
   };
 
+  /** Generic arrows+Enter option picker (apply-target / role / action menus).
+   *  Returns the chosen value, or undefined on ESC / non-TTY. */
+  const pickFromOptions = async (
+    title: string,
+    options: { value: string; label: string; hint?: string }[],
+  ): Promise<string | undefined> => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY || options.length === 0) return undefined;
+    const list = new SelectList(options.map(o => ({ value: o.value, label: o.label, hint: o.hint })));
+    let chosen: string | undefined;
+    await runSelectPicker(
+      (cols, rows) => renderSelectList(list, { title, cols, rows: Math.max(4, Math.min(rows, 10)), unicode: true, color: true }),
+      (ch, key) => {
+        if (key?.name === "up") { list.up(); return false; }
+        if (key?.name === "down") { list.down(); return false; }
+        if (key?.name === "escape" || (key?.ctrl && key.name === "c")) return true;
+        if (key?.name === "return" || key?.name === "enter") {
+          chosen = list.selected()?.value;
+          return true;
+        }
+        if (key?.name === "backspace") { list.backspace(); return false; }
+        if (ch && ch >= " " && !key?.ctrl && !key?.meta) list.typeChar(ch);
+        return false;
+      },
+    );
+    return chosen;
+  };
+
   const pickSkillFromList = async (skills: SkillDoc[]): Promise<SkillDoc | undefined> => {
     if (!process.stdin.isTTY || skills.length === 0) return undefined;
     const list = skillPicker(skills);
@@ -1935,6 +2043,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   if (previewEnabled) {
     process.once("exit", () => out.write("\x1b[?25h")); // safety net: never leave the cursor hidden
     process.stdin.on("keypress", (_ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
+      if (!previewArmed || pickerActive) return;
       // Ctrl+O: dump the FULL last assistant reply (untruncated, tables rendered) into
       // scrollback as a detail view, then restore the boxed footer. (Cmd+O is intercepted
       // by the OS/terminal and never reaches the app, so Ctrl+O is the portable binding.)
@@ -1972,7 +2081,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         })();
         return;
       }
-      if (pickerActive || previewPending) return;
+      if (previewPending) return;
       // ESC (or a meta-mapped Cmd+C) at the prompt: wipe the typed text. A bare
       // ESC decodes as `escape` (meta is set for a lone ESC byte — accept both)
       // only after readline's escape-sequence timeout, so arrow/wheel sequences
@@ -2036,13 +2145,23 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       drainPendingTtyInput();
       // Refresh the status bar's dirty flag once per prompt (one git spawn, not per frame).
       idleDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
+      const prefilledLine = queuedPromptInput.partial;
+      queuedPromptInput.partial = "";
       armPreview();
-      // Render the boxed input immediately (placeholder) so the prompt is visible
-      // even though readline's own "jeo>" echo is now suppressed in box mode.
-      typedLine = "";
+      // Render the boxed input immediately so the prompt is visible even though
+      // readline's own echo is suppressed. If the user typed while the previous
+      // live turn/subagent was still running, seed that text into readline and the
+      // box instead of dropping it as "noise".
+      typedLine = prefilledLine;
+      if (prefilledLine) {
+        const rli = rl as unknown as { line?: string; cursor?: number; _refreshLine?: () => void };
+        rli.line = prefilledLine;
+        rli.cursor = prefilledLine.length;
+        rli._refreshLine?.();
+      }
       navMatches = [];
       navIdx = -1;
-      drawFooter(previewLines(""));
+      drawFooter(previewLines(typedLine));
       // Box mode: NO raw `jeo>` prompt at all — the boxed footer IS the input UI
       // (gating already suppresses readline echo, the empty prompt guarantees no
       // raw CLI input line can ever flash). Legacy prompt only without the box.
@@ -2521,6 +2640,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (providerPick.length) logLines(formatPickListWithCapabilities(providerPick, { cap: 20 }));
           continue;
         }
+        // gjc parity: an INTERACTIVE pick also asks WHO the model applies to —
+        // the global default or one subagent role (the hint column shows each
+        // target's current model, so this doubles as a change-existing panel).
+        // ESC / non-TTY / explicit `/provider <name> <model>` keep the legacy
+        // behavior: apply as the global default.
+        let applyTo = "default";
+        if (pickedFromPicker) {
+          const choice = await pickFromOptions(`Apply ${target} to`, applyTargetChoices(await readGlobalConfig()));
+          if (choice) applyTo = choice;
+        }
+        const roleTarget = applyTo !== "default" ? getSubagentRole(applyTo) : undefined;
+        if (roleTarget) {
+          await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, roleTarget.id, { model: target }) }));
+          console.log(`Subagent '${roleTarget.id}' model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })} — saved (change anytime via /agents or this picker)`);
+          continue;
+        }
         sessionModel = target;
         // MRU persistence: a provider/model pick becomes the default for EVERY
         // future session and the head of the recents rotation.
@@ -2566,6 +2701,35 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log("Tip: set a role while choosing models with /model subagent <role> [model|#N]");
           console.log("Available: executor, planner, architect, critic");
           console.log("Subcommands: <role> <model|#N>, <role> provider <name> [model], <role> maxSteps <N>, <role> reset");
+          // Interactive editor (TTY): role picker → action picker → live model
+          // picker / reset — the arrows+Enter way to CHANGE an existing setting.
+          const rolePick = await pickFromOptions(
+            "Edit a subagent role (ESC to skip)",
+            SUBAGENT_ROLES.map(r => ({
+              value: r.id,
+              label: `${r.id} — ${r.title}`,
+              hint: `${resolveSubagentModel(r.id, cfgNow)} · ${resolveSubagentMaxSteps(r.id, cfgNow)} steps${cfgNow.subagents?.[r.id]?.model ? "" : " (default)"}`,
+            })),
+          );
+          const editRole = rolePick ? getSubagentRole(rolePick) : undefined;
+          if (!editRole) continue;
+          const action = await pickFromOptions(`${editRole.title} — choose action`, [
+            { value: "model", label: "change model", hint: resolveSubagentModel(editRole.id, cfgNow) },
+            { value: "reset", label: "reset to defaults", hint: "clears model + maxSteps override" },
+          ]);
+          if (action === "reset") {
+            await saveConfigPatch(raw => ({ subagents: clearSubagentSetting(raw, editRole.id) }));
+            console.log(`${editRole.title} settings reset to defaults → ~/.joc/config.json`);
+          } else if (action === "model") {
+            const live = await getLiveModels();
+            const entries = flattenModels(live);
+            const picked = await pickLiveProviderModel(`${editRole.id}`, entries, resolveSubagentModel(editRole.id, cfgNow));
+            if (picked) {
+              const pinned = qualifyModelId(picked.model, picked.provider);
+              await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, editRole.id, { model: pinned }) }));
+              console.log(`Subagent '${editRole.id}' model set to ${pinned} → ~/.joc/config.json`);
+            }
+          }
           continue;
         }
         const role = getSubagentRole(roleArg);

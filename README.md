@@ -170,9 +170,10 @@ JEO_DEFAULT_MODEL=...
 OLLAMA_HOST=http://localhost:11434
 JEO_TUI_THEME=cosmic        # TUI theme (cosmic/matrix/solar/red-claw/blue-crab/mono)
 JEO_TUI_ALT_SCREEN=1        # Revert to the legacy alt-screen live turn (default: main-buffer inline + tmux wheel scrollback)
-JEO_STEP_EXTENSIONS=2       # Step-budget extensions per turn (0 = legacy fixed counter)
-JEO_STEP_EXTENSION_SIZE=10  # Steps granted per extension (default: half the base budget, min 4)
-JEO_STEP_HARD_CAP=75        # Absolute step ceiling (default: 3× the base budget)
+JEO_STEP_BASE=24            # Dynamic step budget: rolling base (the `step N/M` seed)
+JEO_STEP_EXTENSIONS=2       # Bound extensions per turn (default: unlimited while progressing; 0 = legacy fixed counter)
+JEO_STEP_EXTENSION_SIZE=10  # Steps granted per extension (default: half the base, min 4)
+JEO_STEP_HARD_CAP=75        # Absolute step ceiling (default: 600 — a termination guarantee, not a task stop)
 JEO_STEP_WINDOW=8           # Recent tool-call window scored for progress
 ```
 
@@ -189,6 +190,10 @@ JEO_STEP_WINDOW=8           # Recent tool-call window scored for progress
   }
 }
 ```
+
+### Step budget (dynamic retry flow)
+
+A turn's step limit is a flexible **budget**, not a hardcoded counter. By default the budget is **dynamic**: it starts from a rolling base (`JEO_STEP_BASE`, default 24) and keeps extending itself for as long as the recent tool-call window shows real, novel progress (≥ 50% of recent calls succeeding, ≥ 2 distinct targets, and at least one never-seen call since the last extension) — there is no fixed per-task stop; `JEO_STEP_HARD_CAP` (default 600) exists only as a termination guarantee against pathological spins. Each extension leaves a `↻ step budget extended to M` ledger line and updates the live `step N/M` denominator. A stalled window (mostly failures, or cycling through already-seen calls) declines the extension and the loop **consolidates** instead: one final no-tools model call wraps up what was accomplished, the key findings, and what remains — with the refusal reason named in the message. Passing an explicit `--max-steps N` restores the bounded flow (base N + capped extensions). The existing guards (3× identical call, 5 consecutive failures, parse-bounce salvage) are unchanged, and subagent delegation (`task`, `jeo team`) keeps an exact step contract — extensions are disabled there and the parent owns retries.
 
 ## Publishing
 

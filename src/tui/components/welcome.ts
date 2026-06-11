@@ -13,6 +13,8 @@ export interface WelcomeData {
   contextFiles?: string[]; // project context file paths (render basenames)
   recentSessions?: { name: string; timeAgo: string }[];
   cols?: number;           // default 80
+  /** Gradient phase [0..1) for the DNA Claw symbol — drives the launch sweep animation. */
+  phase?: number;
   /** Lit-edge painter (top border + left edge); theme accent. Default gray. */
   accent?: (s: string) => string;
   /** Shaded-edge painter (bottom border + right edge); dimmed accent. Default dim gray. */
@@ -89,7 +91,7 @@ export function renderWelcome(d: WelcomeData): string[] {
   const grand = inner >= grandWidth;
   const artLines = renderDnaClaw({
     color: useColor,
-    phase: 0,
+    phase: d.phase ?? 0,
     unicode,
     colorLevel,
     grand,
@@ -124,4 +126,31 @@ export function renderWelcome(d: WelcomeData): string[] {
   });
 
   return [topBorderLine, ...finalContentLines, bottomBorderLine];
+}
+
+/**
+ * One-shot launch animation: sweep the DNA Claw's gradient through a full
+ * palette cycle by re-printing the welcome box in place (cursor-up rewrites,
+ * same row count every frame). The FINAL frame is phase 0 — byte-identical to
+ * the static `renderWelcome` — so the resting banner matches non-animated
+ * output exactly. `write`/`sleep` are injectable for tests; callers gate on
+ * TTY + truecolor before invoking.
+ */
+export async function playWelcomeSweep(
+  d: WelcomeData,
+  opts: { write?: (s: string) => void; sleep?: (ms: number) => Promise<unknown>; frames?: number; delayMs?: number } = {},
+): Promise<void> {
+  const write = opts.write ?? ((s: string) => process.stdout.write(s));
+  const sleep = opts.sleep ?? ((ms: number) => new Promise(r => setTimeout(r, ms)));
+  const frames = Math.max(1, Math.trunc(opts.frames ?? 10));
+  const delay = opts.delayMs ?? 50;
+  let lineCount = 0;
+  for (let f = 0; f <= frames; f++) {
+    const phase = (f / frames) % 1; // …last frame wraps to 0 (the static banner)
+    const lines = renderWelcome({ ...d, phase });
+    if (f > 0) write(`\x1b[${lineCount}A`);
+    write(lines.map(l => `${l}\x1b[K`).join("\n") + "\n");
+    lineCount = lines.length;
+    if (f < frames && delay > 0) await sleep(delay);
+  }
 }

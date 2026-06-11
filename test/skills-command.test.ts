@@ -215,4 +215,4 @@ test("skills command: list, read, legacy alias, json output, unknown skill handl
   } finally {
     process.exitCode = originalExitCode ?? 0;
   }
-});
+}, 20_000); // in-process only, but the default 5s budget can starve under full-suite CPU contention

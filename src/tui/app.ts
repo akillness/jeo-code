@@ -173,6 +173,10 @@ export class LaunchTui {
   /** Last stream-driven draw (ms epoch) — throttles per-delta repaints to ≤10/s. */
   private lastStreamDraw = 0;
   private flushedReasoning = "";
+  // Kind of the last ledger entry — drives the gjc-reference vertical rhythm: a
+  // blank line separates DIFFERENT ledger groups (card ↔ ✓-tool lines ↔ reasoning
+  // ↔ notices), while same-kind lines (consecutive ✓ reads) stay adjacent.
+  private lastLedgerKind: string | null = null;
   // True while the live turn renders in the alternate screen buffer (TTY only);
   // drives leaving it on finish so terminal scroll never fights the repaint.
   private usedAltScreen = false;
@@ -330,7 +334,7 @@ export class LaunchTui {
         if (this.streamingReasoning && this.streamingReasoning !== this.flushedReasoning) {
           this.flushedReasoning = this.streamingReasoning;
           const dim = this.theme.color ? chalk.dim : (s: string) => s;
-          this.appendLedger(dim(`jeo · ${this.streamingReasoning}`) + "\n");
+          this.appendLedger(dim(`jeo · ${this.streamingReasoning}`) + "\n", "reasoning");
         }
         this.streamingReasoning = "";
         this.streamingActivity = "";
@@ -417,7 +421,7 @@ export class LaunchTui {
         this.spinner.updateStep(this.footer.step ?? 0, limit);
         const mark = this.unicode ? "↻" : "~";
         const dim = this.theme.color ? chalk.dim : (s: string) => s;
-        this.appendLedger(dim(`${mark} ${reason}`) + "\n");
+        this.appendLedger(dim(`${mark} ${reason}`) + "\n", "notice");
         this.draw();
       },
       onUsage: (u: { inputTokens: number; outputTokens: number }) => {
@@ -434,15 +438,22 @@ export class LaunchTui {
    *  mouse-wheel can review the full progress history mid-turn (gjc-style); the
    *  StreamRegion copy still feeds the in-frame tail and the non-TTY / alt-screen
    *  final summary.
+   *  `kind` drives the readability rhythm (joc-ref layout): a blank spacer row is
+   *  inserted when the ledger switches between groups (tool lines ↔ reasoning ↔
+   *  cards ↔ notices) and around every card — same-kind lines stay adjacent so a
+   *  burst of ✓ reads still scans as one block.
    *  CRITICAL: every flushed line is width-wrapped to the terminal columns first.
    *  A line longer than the terminal hard-wraps into 2+ PHYSICAL rows, which breaks
    *  the renderer's 1-line=1-row reservation math — the live frame then repaints at
    *  the wrong rows (the "screen tearing + garbled scrollback" corruption). */
-  private appendLedger(text: string): void {
-    this.stream.append(text);
+  private appendLedger(text: string, kind = "line"): void {
+    const needsGap = this.lastLedgerKind !== null && (kind !== this.lastLedgerKind || kind === "card");
+    this.lastLedgerKind = kind;
+    const body0 = needsGap ? `\n${text}` : text;
+    this.stream.append(body0);
     if (this.inline && !this.finished) {
       const cols = Math.max(20, size().cols);
-      const body = text.endsWith("\n") ? text.slice(0, -1) : text;
+      const body = body0.endsWith("\n") ? body0.slice(0, -1) : body0;
       const wrapped = body
         .split("\n")
         .flatMap(line => (visibleWidth(line) <= cols ? [line] : wrapTextWithAnsi(line, cols)))
@@ -486,7 +497,7 @@ export class LaunchTui {
     if (status) {
       const detail = status.detail ? ` — ${status.detail}` : "";
       const diamond = this.unicode ? "◆" : "*";
-      this.appendLedger(`${diamond} workflow ${status.skill}: ${status.phase}${detail}\n`);
+      this.appendLedger(`${diamond} workflow ${status.skill}: ${status.phase}${detail}\n`, "workflow");
     }
     this.draw();
   }
@@ -553,20 +564,20 @@ export class LaunchTui {
     switch (e.kind) {
       case "start":
         this.subagentActive = true;
-        this.appendLedger(`${badge} ${role} ${this.unicode ? "▸" : ">"} start: ${detail}\n`);
+        this.appendLedger(`${badge} ${role} ${this.unicode ? "▸" : ">"} start: ${detail}\n`, "subagent");
         break;
       case "step":
-        this.appendLedger(`  ${badge} ${role}${step}: ${detail || "working"}\n`);
+        this.appendLedger(`  ${badge} ${role}${step}: ${detail || "working"}\n`, "subagent");
         break;
       case "tool":
-        this.appendLedger(`  ${badge} ${role} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`);
+        this.appendLedger(`  ${badge} ${role} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`, "subagent");
         break;
       case "error":
-        this.appendLedger(`  ${badge} ${role} ${bad} ${detail || "error"}\n`);
+        this.appendLedger(`  ${badge} ${role} ${bad} ${detail || "error"}\n`, "subagent");
         break;
       case "done":
         this.subagentActive = false;
-        this.appendLedger(`${badge} ${role} ${this.unicode ? "◂" : "<"} done${e.success === false ? " (incomplete)" : ""}: ${detail}\n`);
+        this.appendLedger(`${badge} ${role} ${this.unicode ? "◂" : "<"} done${e.success === false ? " (incomplete)" : ""}: ${detail}\n`, "subagent");
         break;
     }
     this.draw();
@@ -761,7 +772,7 @@ export class LaunchTui {
       paint: accentPaint(this.theme),
       color: this.theme.color,
     });
-    this.appendLedger(lines.join("\n") + "\n");
+    this.appendLedger(lines.join("\n") + "\n", "card");
     const i = this.forgeSummaries.indexOf(summary);
     if (i >= 0) this.forgeSummaries.splice(i, 1);
   }
@@ -911,7 +922,7 @@ export class LaunchTui {
     const isThinking = this.timer !== undefined;
     if (fit && !this.inline && this.progress.advanced() && idx > 0) {
       const arrow = this.unicode ? "\u27f6" : "->";
-      this.appendLedger(`${arrow} ${transitionMessage(idx)}\n`);
+      this.appendLedger(`${arrow} ${transitionMessage(idx)}\n`, "notice");
     }
     const showArt = fit && !this.inline && rows >= 18 && cols >= 40;
     // One int key folds both animation axes: twist frame advances every 3 ticks,

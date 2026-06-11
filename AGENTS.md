@@ -24,6 +24,7 @@
 | `docs/` | Documentation and improvements tracker (see `docs/AGENTS.md`) |
 | `scripts/` | Installation and maintenance scripts (see `scripts/AGENTS.md`) |
 | `plan/` | Implementation blueprints (see `plan/AGENTS.md`) |
+| `assets/` | Branding/character images used by docs and animations (see `assets/AGENTS.md`) |
 
 ## For AI Agents
 

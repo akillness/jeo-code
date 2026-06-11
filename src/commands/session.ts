@@ -22,6 +22,12 @@ interface SessionInfo {
   name: string;
   created: string;
   attached: boolean;
+  /** Carries the `@jeo-profile` ownership marker set by `jeo --tmux` (gjc `@gjc-profile` parity). */
+  owned: boolean;
+  /** `@jeo-branch` identity recorded at session creation, when present. */
+  branch?: string;
+  /** `@jeo-project` (cwd) identity recorded at session creation, when present. */
+  project?: string;
 }
 
 function printUsage(): void {
@@ -30,9 +36,19 @@ function printUsage(): void {
   console.log("       jeo session rm/kill <name>");
 }
 
+/** Exact-name tmux session target: `=name` is exact-matched (never prefix-matched)
+ *  and accepted by attach-session/kill-session on every supported tmux. (Option
+ *  commands need the `=name:` form instead — see launch.ts `tmuxProfileCommands`.) */
+function exactTarget(name: string): string {
+  return `=${name}`;
+}
+
+const LIST_FORMAT =
+  "#{session_name}\t#{session_created}\t#{session_attached}\t#{@jeo-profile}\t#{@jeo-branch}\t#{@jeo-project}";
+
 async function getJocSessions(runTmux: RunTmuxFn): Promise<SessionInfo[] | null> {
   try {
-    const res = await runTmux(["list-sessions", "-F", "#{session_name}\t#{session_created}\t#{session_attached}"]);
+    const res = await runTmux(["list-sessions", "-F", LIST_FORMAT]);
     if (res.exitCode !== 0) {
       return null;
     }
@@ -43,9 +59,12 @@ async function getJocSessions(runTmux: RunTmuxFn): Promise<SessionInfo[] | null>
       if (!trimmed) continue;
       const parts = trimmed.split("\t");
       if (parts.length < 3) continue;
-      const [name, created, attached] = parts;
-      // `jeo-` is the current prefix; `joc-` sessions from pre-rename builds stay manageable.
-      if (!name.startsWith("jeo-") && !name.startsWith("joc-")) continue;
+      const [name, created, attached, marker, branch, project] = parts;
+      const owned = marker === "1";
+      // Ownership: the `@jeo-profile` marker is authoritative (set by `jeo --tmux`
+      // regardless of how the session is named); the `jeo-` name prefix keeps
+      // sessions from older builds (and legacy `joc-`) manageable.
+      if (!owned && !name.startsWith("jeo-") && !name.startsWith("joc-")) continue;
 
       const createdSeconds = parseInt(created, 10);
       const createdIso = isNaN(createdSeconds) ? "" : new Date(createdSeconds * 1000).toISOString();
@@ -53,6 +72,9 @@ async function getJocSessions(runTmux: RunTmuxFn): Promise<SessionInfo[] | null>
         name,
         created: createdIso,
         attached: attached === "1",
+        owned,
+        ...(branch ? { branch } : {}),
+        ...(project ? { project } : {}),
       });
     }
     return sessions;
@@ -92,14 +114,15 @@ export async function runSessionCommandWith(args: string[], runTmux: RunTmuxFn):
     if (isJson) {
       console.log(JSON.stringify(sessions, null, 2));
     } else {
+      const branchOf = (s: SessionInfo): string => s.branch ?? "";
       const nameWidth = Math.max("Name".length, ...sessions.map(s => s.name.length));
       const createdWidth = Math.max("Created".length, ...sessions.map(s => s.created.length));
-      const attachedWidth = "Attached".length;
+      const branchWidth = Math.max("Branch".length, ...sessions.map(s => branchOf(s).length));
 
-      console.log(`${"Name".padEnd(nameWidth)}  ${"Created".padEnd(createdWidth)}  Attached`);
+      console.log(`${"Name".padEnd(nameWidth)}  ${"Created".padEnd(createdWidth)}  ${"Branch".padEnd(branchWidth)}  Attached`);
       for (const s of sessions) {
         const attachedStr = s.attached ? "yes" : "no";
-        console.log(`${s.name.padEnd(nameWidth)}  ${s.created.padEnd(createdWidth)}  ${attachedStr}`);
+        console.log(`${s.name.padEnd(nameWidth)}  ${s.created.padEnd(createdWidth)}  ${branchOf(s).padEnd(branchWidth)}  ${attachedStr}`);
       }
     }
     process.exitCode = 0;
@@ -122,7 +145,7 @@ export async function runSessionCommandWith(args: string[], runTmux: RunTmuxFn):
       return;
     }
 
-    const res = await runTmux(["attach", "-t", name]);
+    const res = await runTmux(["attach", "-t", exactTarget(name)]);
     process.exitCode = res.exitCode;
     return;
   }
@@ -135,13 +158,20 @@ export async function runSessionCommandWith(args: string[], runTmux: RunTmuxFn):
       return;
     }
 
+    // Ownership gate (gjc parity): the `jeo-`/`joc-` name prefix allows directly,
+    // and any session carrying the `@jeo-profile` marker (set by `jeo --tmux`)
+    // is jeo-owned regardless of its name. Everything else is refused.
     if (!name.startsWith("jeo-") && !name.startsWith("joc-")) {
-      console.log(`Error: Refusing to kill non-jeo session '${name}'.`);
-      process.exitCode = 1;
-      return;
+      const sessions = await getJocSessions(runTmux);
+      const owned = sessions?.some(s => s.name === name && s.owned) ?? false;
+      if (!owned) {
+        console.log(`Error: Refusing to kill non-jeo session '${name}'.`);
+        process.exitCode = 1;
+        return;
+      }
     }
 
-    const res = await runTmux(["kill-session", "-t", name]);
+    const res = await runTmux(["kill-session", "-t", exactTarget(name)]);
     process.exitCode = res.exitCode;
     return;
   }

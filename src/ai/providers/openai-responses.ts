@@ -50,7 +50,7 @@ export function codexResponsesRequest(
       content: [
         { type: m.role === "assistant" ? "output_text" : "input_text", text: m.content },
         // Clipboard-pasted images ride along as input_image data URLs (user turns only —
-        // assistant history is always text in joc).
+        // assistant history is always text in jeo).
         ...(m.role !== "assistant" && m.images?.length
           ? m.images.map(img => ({ type: "input_image", image_url: `data:${img.mediaType};base64,${img.data}` }))
           : []),

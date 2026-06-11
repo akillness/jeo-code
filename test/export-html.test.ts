@@ -56,8 +56,8 @@ test("runExportCommand validates args and sets exitCode 1 on --html and --json c
 
 test("runExportCommand with --html writes file to mkdtemp --out path", async () => {
   const savedCwd = process.cwd();
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-export-test-"));
-  const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-export-out-"));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-export-test-"));
+  const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-export-out-"));
   
   const originalLog = console.log;
   let loggedOutput = "";
@@ -103,7 +103,7 @@ test("runExportCommand with --html writes file to mkdtemp --out path", async () 
 
 test("runExportCommand with --html uses default path if no --out is specified", async () => {
   const savedCwd = process.cwd();
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-export-test2-"));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-export-test2-"));
   
   const originalLog = console.log;
   let loggedOutput = "";
@@ -117,7 +117,7 @@ test("runExportCommand with --html uses default path if no --out is specified", 
 
     await runExportCommand([id, "--html"]);
 
-    const expectedDefaultPath = path.join(tempDir, `joc-session-${id}.html`);
+    const expectedDefaultPath = path.join(tempDir, `jeo-session-${id}.html`);
     const fileExists = await fs.stat(expectedDefaultPath).then(() => true).catch(() => false);
     expect(fileExists).toBe(true);
 
@@ -136,7 +136,7 @@ test("runExportCommand with --html uses default path if no --out is specified", 
 
 test("runExportCommand markdown/json output still functions", async () => {
   const savedCwd = process.cwd();
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-export-test3-"));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-export-test3-"));
   
   const originalLog = console.log;
   let loggedOutput = "";

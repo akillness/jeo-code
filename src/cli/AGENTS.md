@@ -4,7 +4,7 @@
 # cli
 
 ## Purpose
-Command-line interface routing, argument parsing, and initialization logic. Defines the shape of the `joc` binary interface.
+Command-line interface routing, argument parsing, and initialization logic. Defines the shape of the `jeo` binary interface.
 
 ## Key Files
 | File | Description |

@@ -11,7 +11,7 @@ function textResult(text: string, isError = false): ToolResult {
 }
 
 /**
- * The credential kind joc would ACTUALLY use for a provider (the effective credential):
+ * The credential kind jeo would ACTUALLY use for a provider (the effective credential):
  * an API key wins over OAuth, and an OAuth-only login the bundled adapter can't serve
  * (e.g. Gemini Cloud Code Assist) reports "none". This matches the real call path, unlike
  * the bare resolveCredential() kind.
@@ -30,7 +30,7 @@ async function effectiveKind(provider: AuthProvider): Promise<string> {
 export const TOOLS: ToolDefinition[] = [
   {
     name: "joc_resolve_provider",
-    description: "Given a model name (e.g. 'claude-3-5-sonnet', 'openai/mock-1', 'gemini-2.0-flash', 'ollama/llama3'), return which provider joc would route the call to.",
+    description: "Given a model name (e.g. 'claude-3-5-sonnet', 'openai/mock-1', 'gemini-2.0-flash', 'ollama/llama3'), return which provider jeo would route the call to.",
     inputSchema: {
       type: "object",
       properties: {
@@ -66,7 +66,7 @@ export const TOOLS: ToolDefinition[] = [
   },
   {
     name: "joc_config_snapshot",
-    description: "Return a redacted snapshot of joc's current config: default model, openai/ollama base URLs, and which providers have credentials.",
+    description: "Return a redacted snapshot of jeo's current config: default model, openai/ollama base URLs, and which providers have credentials.",
     inputSchema: { type: "object", properties: {} },
     async handler() {
       const cfg = await readGlobalConfig();
@@ -86,7 +86,7 @@ export const TOOLS: ToolDefinition[] = [
   },
   {
     name: "joc_doctor",
-    description: "Run joc's health probe and return a structured report of provider connectivity. Same probe used by 'joc doctor' CLI.",
+    description: "Run jeo's health probe and return a structured report of provider connectivity. Same probe used by 'jeo doctor' CLI.",
     inputSchema: { type: "object", properties: {} },
     async handler() {
       const { runDoctorCommand } = await import("../commands/doctor");
@@ -170,6 +170,6 @@ const PIPELINE_TOOLS: ToolDefinition[] = [
   },
 ];
 
-if (process.env.JOC_MCP_PIPELINE === "1") {
+if ((process.env.JEO_MCP_PIPELINE ?? process.env.JOC_MCP_PIPELINE) === "1") {
   TOOLS.push(...PIPELINE_TOOLS);
 }

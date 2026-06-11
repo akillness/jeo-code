@@ -250,7 +250,7 @@ export function effectiveCredentialForProvider(
     if (apiKey) return { kind: "api_key", provider, token: apiKey };
     if (OAUTH_FLOW_REGISTRY[provider]?.verifiedEndToEnd === false) {
       throw new Error(
-        `Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'joc setup') to use ${model}.`,
+        `Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'jeo setup') to use ${model}.`,
       );
     }
   }
@@ -331,7 +331,7 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
     let credential = await resolveCredential("antigravity");
     if (credential.kind !== "oauth") credential = await resolveCredential("gemini");
     if (credential.kind !== "oauth") {
-      throw new Error("Antigravity models use Google OAuth. Run 'joc auth login antigravity' (recommended) or 'joc auth login gemini', then retry — the Google Cloud projectId is discovered automatically.");
+      throw new Error("Antigravity models use Google OAuth. Run 'jeo auth login antigravity' (recommended) or 'jeo auth login gemini', then retry — the Google Cloud projectId is discovered automatically.");
     }
     return { adapter, callOptions, credential, retry };
   }
@@ -347,14 +347,14 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
   }
   if (effective.kind === "none" && !isLocalOpenAi) {
     throw new Error(
-      `No credential for provider '${provider}'. Run 'joc setup', 'joc auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
+      `No credential for provider '${provider}'. Run 'jeo setup', 'jeo auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
     );
   }
   return { adapter, callOptions, credential: credentialForCall(provider, effective, config, baseUrl), retry };
 }
 
 /** Hard cap for a single non-streaming provider request (service-readiness: a
- *  blackholed/unreachable provider must not hang the agent or `joc team`). */
+ *  blackholed/unreachable provider must not hang the agent or `jeo team`). */
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 
 /** Per-chunk idle cap for streaming: a stream that emits NOTHING for this long is

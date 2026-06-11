@@ -7,7 +7,7 @@ import { findTool, searchTool, readTool, writeTool, bashTool, lsTool, parseLineS
 let dir = "";
 
 beforeAll(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-toolsfs-"));
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-toolsfs-"));
   await fs.mkdir(path.join(dir, "src"), { recursive: true });
   await fs.mkdir(path.join(dir, "node_modules", "leftpad"), { recursive: true });
   await fs.mkdir(path.join(dir, ".git"), { recursive: true });
@@ -301,7 +301,7 @@ test("editTool: unterminated SEARCH marker gives a marker-specific error (not th
 });
 
 test("readGitignore: parses dir + file globs; skips comment/negation/multi-segment", async () => {
-  const d = await fs.mkdtemp(path.join(os.tmpdir(), "joc-gi-"));
+  const d = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-gi-"));
   await fs.writeFile(path.join(d, ".gitignore"), "# comment\n\n*.log\nbuildme/\n!keep.log\nsub/path\nplain\n");
   const gi = await readGitignore(d);
   expect(gi.dirs).toContain("*.log");
@@ -315,13 +315,13 @@ test("readGitignore: parses dir + file globs; skips comment/negation/multi-segme
 });
 
 test("readGitignore: absent .gitignore → empty (no-op)", async () => {
-  const d = await fs.mkdtemp(path.join(os.tmpdir(), "joc-gi-none-"));
+  const d = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-gi-none-"));
   const gi = await readGitignore(d);
   expect(gi).toEqual({ dirs: [], fileGlobs: [] });
 });
 
 test("find/search honor .gitignore on top of IGNORED_DIRS", async () => {
-  const d = await fs.mkdtemp(path.join(os.tmpdir(), "joc-gifs-"));
+  const d = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-gifs-"));
   await fs.writeFile(path.join(d, ".gitignore"), "*.log\nbuildme/\n");
   await fs.mkdir(path.join(d, "buildme"), { recursive: true });
   await fs.writeFile(path.join(d, "keep.ts"), "NEEDLE_GI\n");

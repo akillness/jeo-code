@@ -2,7 +2,7 @@
   <img src="assets/hero.png" alt="jeo-code autonomous coding-agent hero illustration" width="100%" />
 </p>
 
-<h1 align="center">jeo-code (joc)</h1>
+<h1 align="center">jeo-code (jeo)</h1>
 
 <p align="center">
   <strong>Encode intention. Decode software.</strong><br />
@@ -26,22 +26,28 @@
   <a href="README.zh.md">中文</a>
 </p>
 
-A Bun-based AI coding-agent CLI. Run `joc` inside a repository and it reads files, edits them, runs commands, and drives the task to completion.
+A Bun-based AI coding-agent CLI. Run `jeo` inside a repository and it reads files, edits them, runs commands, and drives the task to completion.
 While it works, the live turn renders as a gjc-style flat inline stack: completed work flushes into scrollback as glyph-led `✓/✗` ledger lines and bordered tool cards (bash is a single merged card — `✗ Bash` title, `$ command` echo, an `Output` divider, the output body, and a trailing `Command exited with code N`; read/find/search stay single-line `✓ Read path:lines`), followed by one spinner status line showing the real in-flight target plus compact turn stats (step · elapsed · tokens · live `$` cost), the `Todos` checklist, a `◆ hud` line, and a bg-tinted model status bar (model (provider) · thinking / `branch ?N` dirty flag / cwd · output-token rate `⤴ N/s` · `ctx%`); assistant replies render GFM tables as box-drawn tables, and typing `/` in the input box (`> Type your message...`, theme-accent border, model bar pinned above) reveals a command preview below (with an `(i/total)` position counter).
 
-The status line shows **what it is actually doing right now** (the in-flight file/command, the active plan step, plan progress, and during rate-limit backoff a `rate limited (HTTP 429) — auto-retry #2 in 4s` countdown) together with the current step's elapsed time — instead of decorative text that churns every tick. The model's response **streams live**: its reasoning shows as a dim `💭` row while the JSON tool call forms, then flushes once into scrollback as a `jeo · …` line — press **Ctrl+O** to dump the full last response (untruncated, tables rendered) into scrollback as a detail view. The inline turn keeps the evolution identity to a single final `Evolved to: …` summary line (the ASCII art header remains in the legacy `JOC_TUI_ALT_SCREEN=1` boxed mode). Progress of **subagents delegated via `task`** (the assignment, `step N/M`, the real target of nested tool calls — `read src/x.ts`, `bash: …` — and the result summary) is streamed live, just like gjc.
+The status line shows **what it is actually doing right now** (the in-flight file/command, the active plan step, plan progress, and during rate-limit backoff a `rate limited (HTTP 429) — auto-retry #2 in 4s` countdown) together with the current step's elapsed time — instead of decorative text that churns every tick. The model's response **streams live**: its reasoning shows as a dim `💭` row while the JSON tool call forms, then flushes once into scrollback as a `jeo · …` line — press **Ctrl+O** to dump the full last response (untruncated, tables rendered) into scrollback as a detail view. The inline turn keeps the evolution identity to a single final `Evolved to: …` summary line (the ASCII art header remains in the legacy `JEO_TUI_ALT_SCREEN=1` boxed mode). Progress of **subagents delegated via `task`** (the assignment, `step N/M`, the real target of nested tool calls — `read src/x.ts`, `bash: …` — and the result summary) is streamed live, just like gjc.
 
 
 **Clipboard image paste**: press **Ctrl+V** in the input box to attach a copied image (screenshot, browser right-click copy) to the next message — an `[image #N]` tag lands at the caret, the box shows a `⧉ N image(s) attached` hint, and the attachment is sent as real multimodal input on every provider (Anthropic content blocks, OpenAI data URLs, Codex `input_image`, Gemini/Antigravity `inlineData`, Ollama `images[]`). macOS uses `pngpaste` when installed (else an AppleScript fallback); Linux uses `wl-paste`/`xclip`. The input box itself renders with a two-tone depth cue — lit top/left edge, shaded bottom/right edge — so it reads as a raised panel instead of a flat outline.
-Running a one-shot request as a command argument — `joc "request"` — still brings up the same live TUI on a TTY; in `--no-tui`/pipe mode the `[step N/M] <tool target>` plus result lines are streamed so the full flow stays visible.
 
-The TUI renders the live turn **inline in the main terminal buffer** (gjc-style): each completed progress line (tool result, subagent event, reasoning) and each finished tool card is flushed into normal scrollback as it happens, so **tmux / terminal mouse-wheel can scroll back through earlier progress mid-turn** while the compact live frame keeps repainting at the bottom. Erases are line-by-line (`ESC[2K`, never a scrollback-flooding `ESC[0J`) and each flush+repaint is wrapped in a **DECSET 2026 synchronized update** so there is no flicker; `JOC_TUI_ALT_SCREEN=1` reverts to the legacy scroll-isolated alt-screen turn. Width math is **CJK/emoji-aware** end to end, so wide-character input and boxes never overflow their borders. The stream/tool list is a **fixed-size ring buffer**, so memory and per-frame render cost stay flat across long sessions (even if the summarizer LLM fails, history is compacted deterministically — with tokenizer-accurate budgeting — and never grows unbounded). When the screen is too short to fit every section, the live frame is clipped from the top so the **status line, Todos, hud, and model bar are always visible**.
+**Two-tone panel depth**: every bordered panel — the JEO forge welcome box, the live status box, tool/forge cards, the outer alt-screen frame, and the input box — renders with a lit top/left edge (theme accent) against a shaded bottom/right edge (dimmed accent), with bold titles for contrast, so boxes read as raised panels instead of flat outlines.
+
+**Defaults follow your latest pick, in every session**: choosing a model or provider (`/model …`, `/provider <name> …`, pickers) persists immediately to `~/.joc/config.json` — the newest pick becomes `defaultModel` for every future session and `recentModels` keeps the MRU rotation (newest first) that `/model` lists back to you.
+Running a one-shot request as a command argument — `jeo "request"` — still brings up the same live TUI on a TTY; in `--no-tui`/pipe mode the `[step N/M] <tool target>` plus result lines are streamed so the full flow stays visible.
+
+The TUI renders the live turn **inline in the main terminal buffer** (gjc-style): each completed progress line (tool result, subagent event, reasoning) and each finished tool card is flushed into normal scrollback as it happens, so **tmux / terminal mouse-wheel can scroll back through earlier progress mid-turn** while the compact live frame keeps repainting at the bottom. Erases are line-by-line (`ESC[2K`, never a scrollback-flooding `ESC[0J`) and each flush+repaint is wrapped in a **DECSET 2026 synchronized update** so there is no flicker; `JEO_TUI_ALT_SCREEN=1` reverts to the legacy scroll-isolated alt-screen turn. Width math is **CJK/emoji-aware** end to end, so wide-character input and boxes never overflow their borders. The stream/tool list is a **fixed-size ring buffer**, so memory and per-frame render cost stay flat across long sessions (even if the summarizer LLM fails, history is compacted deterministically — with tokenizer-accurate budgeting — and never grows unbounded). When the screen is too short to fit every section, the live frame is clipped from the top so the **status line, Todos, hud, and model bar are always visible**.
 
 Forge boxes are bordered, so they are shown **only when a whole box fits** (most-recent first) and never rendered as half a box.
 
 ## Install
 
 Requirement: Bun `1.3.14+`
+
+> **Rename note**: the binary is now `jeo` (formerly `joc`). The `joc` command keeps working as a compatibility alias, legacy `JOC_*` environment variables are still honored (the `JEO_*` spelling is preferred), and existing `~/.joc` / `.joc` runtime state is used as-is.
 
 ```bash
 bun install -g jeo-code
@@ -50,28 +56,28 @@ bun install -g jeo-code
 Verify the install:
 
 ```bash
-joc --version
+jeo --version
 ```
 
 ## Basic usage
 
 ```bash
 # Run the interactive coding agent
-joc
+jeo
 
 # Run a single request immediately
-joc "Tidy up the README and run the tests"
+jeo "Tidy up the README and run the tests"
 
 # Check current config and model connectivity (probed via the real call path: Anthropic=GET /v1/models, OpenAI OAuth=Codex backend, Gemini OAuth=Cloud Code Assist loadCodeAssist)
-joc doctor
+jeo doctor
 
 # Configure API keys / OAuth / local models
-joc setup
+jeo setup
 ```
 
 ## Interactive slash commands
 
-Commands available in the `joc` REPL input box (`<Tab>` autocompletion supported).
+Commands available in the `jeo` REPL input box (`<Tab>` autocompletion supported).
 
 | Command | Description |
 | --- | --- |
@@ -97,46 +103,46 @@ Commands available in the `joc` REPL input box (`<Tab>` autocompletion supported
 
 ```bash
 # View / resume saved sessions
-joc launch --list
-joc launch --resume
+jeo launch --list
+jeo launch --resume
 
 # Run inside a tmux session — an independent session per run (launching several times in the same dir/branch splits into base, base-2, base-3 …)
-joc --tmux
-joc --tmux --model gemini-2.5-flash --thinking high
-joc --tmux --models --catalog gpt
+jeo --tmux
+jeo --tmux --model gemini-2.5-flash --thinking high
+jeo --tmux --models --catalog gpt
 
 # Run in a separate worktree
-joc --tmux --worktree ../joc-work
+jeo --tmux --worktree ../jeo-work
 
 # List models
-joc models
+jeo models
 
 # GJC-style model catalog (static capability)
-joc --list-models=gemini
-joc --models --catalog gpt
+jeo --list-models=gemini
+jeo --models --catalog gpt
 
 # Specify model/provider/thinking budget on launch
-joc --model gemini-2.5-flash --thinking high "Analyze this code"
-joc --provider gemini --plan "Draft an implementation plan"
+jeo --model gemini-2.5-flash --thinking high "Analyze this code"
+jeo --provider gemini --plan "Draft an implementation plan"
 # Slash-command palette
 # Typing a prefix like "/" or "/m" in the REPL lists commands/options by category.
 # Subagent setup is supported via /agents and /model subagent <role> ...
 
 # Auth management
-joc auth login anthropic
-joc auth status
+jeo auth login anthropic
+jeo auth status
 ```
 
 ## Spec-first workflow
 
-Use this to clarify requirements first, then plan, execute, and verify. The stages are carried through state (`.joc/state/`) and gated: deep-interview first **confirms the top-level topology**, preserves the input language (Korean/English/Japanese/Chinese) when writing questions, evaluations and acceptance criteria, and for brownfield requests collects **repo markers + path evidence**; then it must **freeze the seed** (ambiguity ≤ 20%; `--auto`/non-TTY cannot bypass this gate, and the seed is not frozen if the bar is not met) before MutationGuard allows code edits and ralplan proceeds → ralplan builds an **approval-pending** plan via **Planner→Architect→Critic consensus** (a 3-stage chained pass, with schema self-validation/repair) → it must be approved with `joc approve <plan>` → team executes (corrupt team state is rejected rather than ignored, unknown subagent roles are rejected before execution, identical task names are routed to the correct role by step index, and execution stops immediately if a planner/architect/critic report breaks its contract or architect returns `BLOCK`/`REQUEST CHANGES` or critic returns `[REJECT]`/`[ITERATE]`) → ultragoal verifies the team execution.
+Use this to clarify requirements first, then plan, execute, and verify. The stages are carried through state (`.joc/state/`) and gated: deep-interview first **confirms the top-level topology**, preserves the input language (Korean/English/Japanese/Chinese) when writing questions, evaluations and acceptance criteria, and for brownfield requests collects **repo markers + path evidence**; then it must **freeze the seed** (ambiguity ≤ 20%; `--auto`/non-TTY cannot bypass this gate, and the seed is not frozen if the bar is not met) before MutationGuard allows code edits and ralplan proceeds → ralplan builds an **approval-pending** plan via **Planner→Architect→Critic consensus** (a 3-stage chained pass, with schema self-validation/repair) → it must be approved with `jeo approve <plan>` → team executes (corrupt team state is rejected rather than ignored, unknown subagent roles are rejected before execution, identical task names are routed to the correct role by step index, and execution stops immediately if a planner/architect/critic report breaks its contract or architect returns `BLOCK`/`REQUEST CHANGES` or critic returns `[REJECT]`/`[ITERATE]`) → ultragoal verifies the team execution.
 
 ```bash
-joc deep-interview "Describe the feature you want to build"
-joc ralplan
-joc approve <plan-path>
-joc team
-joc ultragoal
+jeo deep-interview "Describe the feature you want to build"
+jeo ralplan
+jeo approve <plan-path>
+jeo team
+jeo ultragoal
 ```
 
 ## Using local models
@@ -145,9 +151,9 @@ With Ollama you can run locally without an API key.
 
 ```bash
 ollama pull qwen2.5:0.5b
-export JOC_DEFAULT_MODEL=ollama/qwen2.5:0.5b
-joc doctor
-joc
+export JEO_DEFAULT_MODEL=ollama/qwen2.5:0.5b
+jeo doctor
+jeo
 ```
 
 ## Configuration files
@@ -162,10 +168,14 @@ Key environment variables:
 ANTHROPIC_API_KEY=...
 OPENAI_API_KEY=...
 GEMINI_API_KEY=...
-JOC_DEFAULT_MODEL=...
+JEO_DEFAULT_MODEL=...
 OLLAMA_HOST=http://localhost:11434
-JOC_TUI_THEME=cosmic        # TUI theme (cosmic/matrix/solar/red-claw/blue-crab/mono)
-JOC_TUI_ALT_SCREEN=1        # Revert to the legacy alt-screen live turn (default: main-buffer inline + tmux wheel scrollback)
+JEO_TUI_THEME=cosmic        # TUI theme (cosmic/matrix/solar/red-claw/blue-crab/mono)
+JEO_TUI_ALT_SCREEN=1        # Revert to the legacy alt-screen live turn (default: main-buffer inline + tmux wheel scrollback)
+JEO_STEP_EXTENSIONS=2       # Step-budget extensions per turn (0 = legacy fixed counter)
+JEO_STEP_EXTENSION_SIZE=10  # Steps granted per extension (default: half the base budget, min 4)
+JEO_STEP_HARD_CAP=75        # Absolute step ceiling (default: 3× the base budget)
+JEO_STEP_WINDOW=8           # Recent tool-call window scored for progress
 ```
 
 ### Provider retry budget
@@ -203,6 +213,21 @@ else is decided exactly as before.
   }
 }
 ```
+
+### Step budget (retry flow)
+
+The per-turn step limit is a flexible **budget**, not a bare counter (gjc retry-flow
+parity). When the counter reaches the current limit, the engine scores the recent
+tool-call window: if the turn is demonstrably progressing (≥50% of recent calls ok
+on ≥2 distinct targets), the budget **extends itself** — bounded by
+`JEO_STEP_EXTENSIONS` (default 2) and an absolute `JEO_STEP_HARD_CAP` (default 3×
+the base) — emitting a `↻ step budget extended to M (extension k/n)` ledger line and
+updating the live `step N/M` denominator. A stalled window (mostly failures, or one
+signature spinning) **fails fast** into the consolidation wrap-up instead, with the
+explicit decline reason in the final message. The early guards are unchanged
+(3× identical call, 5 consecutive failures, parse-bounce salvage). Subagent
+delegation (`task`, `jeo team`) keeps an exact step contract — extensions are
+disabled there, the parent owns retries.
 
 ## Publishing
 

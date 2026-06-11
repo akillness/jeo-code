@@ -3,7 +3,7 @@
  * Faithful port of gjc's packages/ai/src/utils/oauth/openai-codex.ts.
  *
  * NOTE: tokens minted here authenticate against OpenAI's ChatGPT/Codex
- * backend. joc's default `openai` adapter targets the Chat Completions API,
+ * backend. jeo's default `openai` adapter targets the Chat Completions API,
  * which expects a platform API key. Use this flow with a Codex-compatible
  * endpoint, or prefer an `OPENAI_API_KEY` for the bundled chat adapter.
  */
@@ -93,7 +93,7 @@ class OpenAIOAuthFlow extends OAuthCallbackFlow {
       state,
       id_token_add_organizations: "true",
       codex_cli_simplified_flow: "true",
-      originator: "joc",
+      originator: "jeo",
     });
     return { url: `${AUTHORIZE_URL}?${params.toString()}`, instructions: "Complete login in your browser." };
   }

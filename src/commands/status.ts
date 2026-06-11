@@ -8,7 +8,7 @@ export async function runStatusCommand(): Promise<void> {
   const perfPath = path.join(cwd, ".joc", "state", "performance-metrics.json");
   const planPath = path.join(cwd, ".specify", "plan.md");
   
-  console.log(chalk.bold("\n=== joc Core Engine Status ==="));
+  console.log(chalk.bold("\n=== jeo Core Engine Status ==="));
   
   try {
     const planContent = await fs.readFile(planPath, "utf-8");

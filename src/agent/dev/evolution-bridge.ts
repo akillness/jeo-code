@@ -14,10 +14,10 @@ export async function consultGjcForAdvancedEvolution(cwd: string) {
   }, cwd);
 
   console.log();
-  console.log("[joc-Core] Architectural Debt identified: Provider Coupling.");
+  console.log("[jeo-Core] Architectural Debt identified: Provider Coupling.");
 
   const request = `
-I am joc, the Core Engine. My Advanced Analyzer identified tight coupling between 'src/ai/model-manager.ts' and specific provider files.
+I am jeo, the Core Engine. My Advanced Analyzer identified tight coupling between 'src/ai/model-manager.ts' and specific provider files.
 Report: ${report}
 
 As my implementation guide (gjc), please:
@@ -35,7 +35,7 @@ As my implementation guide (gjc), please:
       request,
       status: "success"
     }, cwd);
-    console.log("[joc-Core] Advanced Provider Registry refactor SUCCESSFUL.");
+    console.log("[jeo-Core] Advanced Provider Registry refactor SUCCESSFUL.");
   } catch (err: any) {
     await logEvolution({
       timestamp: new Date().toISOString(),

@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, TOOL_PROTOCOL, type AgentLoopEvents } from "../agent/engine";
+import { initialDynamicStepLimit } from "../agent/step-budget";
 import { createTaskTool, TASK_TOOL_PROTOCOL_LINE, type TaskSubEvent } from "../agent/task-tool";
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { LaunchTui } from "../tui/app";
@@ -65,7 +66,7 @@ import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { maybeCompact, historyTokens } from "../agent/compaction";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { listThemes, resolveTheme, themeGradient, accentPaint } from "../tui/components/themes";
+import { listThemes, resolveTheme, themeGradient, accentPaint, accentShadowPaint } from "../tui/components/themes";
 import {
   createSession,
   appendMessage,
@@ -87,6 +88,8 @@ export interface LaunchFlags {
   resumeId?: string;
   noSession: boolean;
   noTui: boolean;
+  /** Explicit step cap from --max-steps; 0 = dynamic (process-driven budget that
+   *  keeps extending while the turn shows progress — no hardcoded step ceiling). */
   maxSteps: number;
   message: string;
   tmux: boolean;
@@ -146,7 +149,8 @@ function tmuxRuntimeSuffix(flags: LaunchFlags): string {
   if (flags.model) parts.push(`model-${tmuxSafeNamePart(flags.model)}`);
   else if (flags.modelRole) parts.push(flags.modelRole);
   if (flags.thinking) parts.push(`think-${flags.thinking}`);
-  if (flags.maxSteps !== 25) parts.push(`steps-${flags.maxSteps}`);
+  // Only an EXPLICIT --max-steps cap names the session; the dynamic default (0) adds nothing.
+  if (flags.maxSteps > 0) parts.push(`steps-${flags.maxSteps}`);
   if (parts.length === 0) return "";
   const joined = parts.join("-");
   const suffix = joined.length <= 72 ? joined : `${joined.slice(0, 65)}-${hashString(joined)}`;
@@ -154,14 +158,14 @@ function tmuxRuntimeSuffix(flags: LaunchFlags): string {
 }
 
 /**
- * Base tmux session name for `joc --tmux`. Keyed on the working DIRECTORY (not just the
+ * Base tmux session name for `jeo --tmux`. Keyed on the working DIRECTORY (not just the
  * git branch) so two different projects/worktrees on the same branch (e.g. `main`)
  * never share a base. {@link uniqueTmuxSessionName} then makes each concurrent invocation
- * fully independent, so a second `joc --tmux` never attaches to (and mirrors) the first.
+ * fully independent, so a second `jeo --tmux` never attaches to (and mirrors) the first.
  */
 export function tmuxSessionName(cwd: string, branch: string, flags: LaunchFlags): string {
   const dirTag = `${tmuxSafeNamePart(path.basename(cwd) || "root", 16)}-${hashString(cwd)}`;
-  const base = branch ? `joc-${branch}-${dirTag}` : `joc-${dirTag}`;
+  const base = branch ? `jeo-${branch}-${dirTag}` : `jeo-${dirTag}`;
   return base + tmuxRuntimeSuffix(flags);
 }
 
@@ -183,13 +187,13 @@ export function gitDirtyCount(cwd: string): number | undefined {
 
 /**
  * Allocate + create an INDEPENDENT tmux session from a base name. Each separate,
- * concurrent `joc --tmux` invocation gets its OWN session instead of attaching to (and
+ * concurrent `jeo --tmux` invocation gets its OWN session instead of attaching to (and
  * mirroring) one another process already created: try `base`, then `base-2`, `base-3`, …
  * The create itself is the guard, so this is race-safe — two processes starting at the
  * same instant can't both win `base`. `tryCreate` must attempt to create the named session
  * and return `"ok"` (created — it's ours), `"taken"` (name already live / lost the race →
  * try the next suffix), or `"error:<msg>"` (a real failure → abort). Sessions die with
- * their joc process, so a sequential re-run reuses the clean base; only live overlap is
+ * their jeo process, so a sequential re-run reuses the clean base; only live overlap is
  * suffixed.
  */
 export type TmuxCreateResult = "ok" | "taken" | `error:${string}`;
@@ -212,10 +216,24 @@ function shellQuote(arg: string): string {
 }
 
 /**
+ * True when `jeo --tmux` runs INSIDE an existing tmux session and should enable
+ * session-scoped mouse mode for the CURRENT session: no jeo-owned session is created
+ * on this path, so without `mouse on` tmux ignores the wheel entirely and the
+ * mid-turn scrollback (ledger lines flushed above the live frame) is unreachable.
+ * Skipped for jeo-spawned sessions (JOC_TMUX_LAUNCHED=1 — the creator already set
+ * it) and when JOC_TMUX_MOUSE=0 opts out.
+ */
+export function shouldEnableCurrentTmuxMouse(env: Record<string, string | undefined>): boolean {
+  return !!env.TMUX
+    && (env.JEO_TMUX_LAUNCHED ?? env.JOC_TMUX_LAUNCHED) !== "1"
+    && (env.JEO_TMUX_MOUSE ?? env.JOC_TMUX_MOUSE) !== "0";
+}
+
+/**
  * A `process.stdout` view whose visible-output methods become no-ops while `gated()` is
  * true. Used as readline's `output` so that, while the boxed slash-preview footer is armed,
  * readline's OWN prompt/echo is suppressed and only our box is visible — no duplicated raw
- * `joc>` line. The previous approach monkeypatched `rl._writeToOutput`, a Node internal Bun
+ * `jeo>` line. The previous approach monkeypatched `rl._writeToOutput`, a Node internal Bun
  * does not expose (so on Bun both inputs showed at once). Gating the shared `output` stream
  * works on both runtimes. Our footer is written straight to `process.stdout`, never through
  * this proxy, so it always renders. Geometry/everything else is forwarded unchanged.
@@ -262,7 +280,7 @@ export function formatTaskSubEvent(e: TaskSubEvent): string {
   const summary = e.summary ? ` — ${e.summary}` : "";
   const step = e.step && e.maxSteps ? ` step ${e.step}/${e.maxSteps}` : "";
   // Lead every nested-subagent line with the [AGENT] category badge so the stream
-  // is classifiable at a glance (parity with the live TUI and `joc team`).
+  // is classifiable at a glance (parity with the live TUI and `jeo team`).
   const badge = categoryBadge("subagent");
   if (e.kind === "start") return `${badge} ${chalk.magenta(`▸ [${role}]`)} ${detail}`.slice(0, 240);
   if (e.kind === "step") return `  ${badge} ${chalk.cyan(`[${role}${step}]`)} ${detail || "working"}`;
@@ -424,10 +442,12 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
 /** The exact resume command printed on REPL exit (and testable in isolation) —
  *  same convention as the `--list` handler's hint. */
 export function formatResumeHint(sessionId: string): string {
-  return `Resume with: joc launch --resume ${sessionId}`;
+  return `Resume with: jeo launch --resume ${sessionId}`;
 }
 export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchFlags {
-  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 100, message: "", tmux: false, errors: [], print: false, noSkills: false, noTools: false };
+  // maxSteps 0 = dynamic: the engine's process-driven budget extends itself while the
+  // turn shows progress instead of stopping at a hardcoded count (old default: 100).
+  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 0, message: "", tmux: false, errors: [], print: false, noSkills: false, noTools: false };
   const rest: string[] = [];
   const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (let i = 0; i < args.length; i++) {
@@ -661,7 +681,7 @@ function resolveWorktree(cwd: string, wt: string): string {
     console.error("error: --worktree requires git on PATH");
     process.exit(1);
   }
-  const branch = (path.basename(abs).replace(/[^a-zA-Z0-9_-]/g, "-") || "joc-wt");
+  const branch = (path.basename(abs).replace(/[^a-zA-Z0-9_-]/g, "-") || "jeo-wt");
   const withBranch = Bun.spawnSync(["git", "worktree", "add", "-b", branch, abs], {
     cwd,
     stdout: "pipe",
@@ -700,7 +720,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (wt !== cwd) {
       process.chdir(wt);
       cwd = wt;
-      if (process.env.JOC_TMUX_LAUNCHED !== "1") console.log(`Using worktree: ${wt}`);
+      if ((process.env.JEO_TMUX_LAUNCHED ?? process.env.JOC_TMUX_LAUNCHED) !== "1") console.log(`Using worktree: ${wt}`);
     }
   }
   let branch: string | undefined;
@@ -731,7 +751,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   }
 
   if (flags.tmux) {
-    if (!process.env.TMUX && process.env.JOC_TMUX_LAUNCHED !== "1") {
+    if (!process.env.TMUX && (process.env.JEO_TMUX_LAUNCHED ?? process.env.JOC_TMUX_LAUNCHED) !== "1") {
       const tmuxBin = Bun.which("tmux");
       if (tmuxBin) {
         let branch = "";
@@ -757,7 +777,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (a.startsWith("--worktree=")) continue;
           innerArgs.push(a);
         }
-        const entrypoint = process.argv[1] || "joc";
+        const entrypoint = process.argv[1] || "jeo";
         const resolvedEntrypoint = path.isAbsolute(entrypoint) ? entrypoint : path.resolve(cwd, entrypoint);
         let cmd: string[] = [];
         if (entrypoint.endsWith(".ts") || entrypoint.endsWith(".js") || entrypoint.endsWith(".mjs")) {
@@ -773,7 +793,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           const created = Bun.spawnSync([tmuxBin, "new-session", "-d", "-s", name, "-c", cwd, innerCmd]);
           if (created.exitCode === 0) return "ok";
           const err = created.stderr.toString().trim();
-          if (/duplicate session/i.test(err)) return "taken"; // another joc grabbed this name
+          if (/duplicate session/i.test(err)) return "taken"; // another jeo grabbed this name
           return `error:${err || `tmux new-session exited ${created.exitCode}`}`;
         });
         if ("error" in alloc) {
@@ -781,17 +801,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           process.exit(1);
         }
         const sessionName = alloc.name;
-        // Wheel scrolling inside joc-owned tmux sessions: enable tmux mouse mode
+        // Wheel scrolling inside jeo-owned tmux sessions: enable tmux mouse mode
         // (session-scoped — never -g) so wheel-up enters copy-mode over the REAL
         // pane history and wheel-down at the bottom drops back out. Opt out with
         // JOC_TMUX_MOUSE=0. Best-effort: an old tmux without the option is fine.
-        if (process.env.JOC_TMUX_MOUSE !== "0") {
+        if ((process.env.JEO_TMUX_MOUSE ?? process.env.JOC_TMUX_MOUSE) !== "0") {
           try { Bun.spawnSync([tmuxBin, "set-option", "-t", `=${sessionName}`, "mouse", "on"]); } catch { /* best-effort */ }
         }
         console.log(
           sessionName === sessionBase
             ? `Starting new tmux session: ${sessionName}`
-            : `Starting new independent tmux session: ${sessionName} (another live joc session already owns ${sessionBase}; reattach later with: tmux attach -t ${sessionName})`,
+            : `Starting new independent tmux session: ${sessionName} (another live jeo session already owns ${sessionBase}; reattach later with: tmux attach -t ${sessionName})`,
         );
 
         const attach = Bun.spawn([tmuxBin, "attach-session", "-t", `=${sessionName}`], {
@@ -803,6 +823,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         return;
       } else {
         console.warn("warning: tmux is not available on PATH. Launching directly...");
+      }
+    } else if (shouldEnableCurrentTmuxMouse(process.env)) {
+      // `jeo --tmux` INSIDE an existing tmux session: no new session is created, but
+      // wheel scrolling still needs tmux mouse mode — without it tmux ignores the
+      // wheel entirely, so the live-turn scrollback contract (ledger lines flushed
+      // above the inline frame) is unreachable ("scroll doesn't work"). Session-
+      // scoped (never -g), best-effort; JOC_TMUX_MOUSE=0 opts out.
+      const tmuxBin = Bun.which("tmux");
+      if (tmuxBin) {
+        try { Bun.spawnSync([tmuxBin, "set-option", "mouse", "on"]); } catch { /* best-effort */ }
       }
     }
   }
@@ -819,7 +849,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     for (const s of sessions) {
       console.log(`  ${s.id}  ${s.timestamp}  (${s.messageCount} msgs)  ${s.preview}`);
     }
-    console.log("\nResume with: joc launch --resume <id>");
+    console.log("\nResume with: jeo launch --resume <id>");
     return;
   }
 
@@ -869,7 +899,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   );
 
   const protocol = buildToolProtocol(allowedTools);
-  const preamble = flags.systemPrompt ?? "You are the joc, an interactive coding agent.\nAccomplish the user's request by calling tools and verifying your work.";
+  const preamble = flags.systemPrompt ?? "You are the jeo, an interactive coding agent.\nAccomplish the user's request by calling tools and verifying your work.";
 
   const baseSystemPrompt =
     preamble + "\n\n" + protocol + "\n\n" +
@@ -942,8 +972,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
   }
 
+  // `step N/M` display seed: the explicit --max-steps cap, else the dynamic budget's
+  // rolling base — the engine's onBudget event keeps the denominator honest as it grows.
+  const initialStepLimit = flags.maxSteps > 0 ? flags.maxSteps : initialDynamicStepLimit();
   // Plain (non-TTY / --no-tui) progress sink — the cmd-mode equivalent of the live TUI.
-  const streamEvents = createStreamEvents(flags.maxSteps);
+  const streamEvents = createStreamEvents(initialStepLimit);
 
 
   // Run one conversational turn: compact, persist user msg, run the loop, persist + return the reply.
@@ -983,82 +1016,79 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // Dirty count is recomputed at each turn start (gjc parity P1.B5: per-turn, not
     // per-render) so `?N` grows as the agent edits files; one spawn/turn, not per frame.
     const turnDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
-    const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: flags.maxSteps, cwd, branch, dirtyCount: turnDirtyCount, thinking: sessionThinking }) : null;
+    const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: initialStepLimit, cwd, branch, dirtyCount: turnDirtyCount, thinking: sessionThinking }) : null;
     tui?.setContextUsage(historyTokens(history), contextTokens);
     tui?.setTurnTitle(userInput); // gjc-parity turn title → HUD + tmux pane title (no LLM call)
-    if (tui) tui.start();
     let result;
-    const harness = createInFlightAbortHarness({
-      captureEsc: !!tui,
-      onNoise: () => tui?.repaint(),
-      onAbortNotice: msg => {
-        if (tui) tui.events().onNotice?.(msg);
-        else console.log(msg);
-      },
-      onHardExit: () => {
-        if (tui) tui.finish("Cancelled.");
-        process.exit(130);
-      },
-    });
-    const ac = harness.controller;
-    const fullTools = {
-      ...DEFAULT_TOOLS,
-      task: createTaskTool({
-        config: { ...turnConfig, defaultModel: activeModel },
-        signal: ac.signal,
-        onEvent: useTui
-          ? (e => tui?.onSubagentEvent(e))
-          : (e => logTaskSubEvent(e)),
-      }),
-      todo: createTodoTool({ onChange: items => tui?.setTodos(items) }),
-    };
-    const tools = filterToolMap(fullTools, Array.from(allowedTools));
     try {
-      result = await runAgentLoop(history, {
-        cwd,
-        tools,
-        maxSteps: flags.maxSteps,
-        model: sessionModel,
-        maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
-        signal: ac.signal,
-        events: tui ? tui.events() : streamEvents,
+      if (tui) tui.start();
+      const harness = createInFlightAbortHarness({
+        captureEsc: !!tui,
+        onNoise: () => tui?.repaint(),
+        onAbortNotice: msg => {
+          if (tui) tui.events().onNotice?.(msg);
+          else console.log(msg);
+        },
+        onHardExit: () => {
+          if (tui) tui.finish("Cancelled.");
+          process.exit(130);
+        },
       });
-      // Echo guard: a turn that "answers" by reciting skill-document content gets ONE
-      // corrective retry — this is the "reply is just skill docs" bug. The retry keeps
-      // the same history (so the model sees its own echo + the correction) on a small
-      // step budget; its usage is folded into the turn total.
-      if (result.done && looksLikeSkillEcho(result.doneReason ?? "", resolvedSkills)) {
-        history.push({
-          role: "user",
-          content:
-            "Your previous reply was skill-document content, not an answer. Answer my actual request directly now — " +
-            "use tools if needed, then call done with a concise reply in your own words. Do not quote skill docs.",
-        });
-        const retry = await runAgentLoop(history, {
+      const ac = harness.controller;
+      try {
+        const fullTools = {
+          ...DEFAULT_TOOLS,
+          task: createTaskTool({
+            config: { ...turnConfig, defaultModel: activeModel },
+            signal: ac.signal,
+            onEvent: useTui
+              ? (e => tui?.onSubagentEvent(e))
+              : (e => logTaskSubEvent(e)),
+          }),
+          todo: createTodoTool({ onChange: items => tui?.setTodos(items) }),
+        };
+        const tools = filterToolMap(fullTools, Array.from(allowedTools));
+        result = await runAgentLoop(history, {
           cwd,
           tools,
-          maxSteps: Math.min(6, flags.maxSteps),
-          // Corrective echo retry is deliberately tiny — no budget extensions.
-          budget: { maxExtensions: 0 },
+          maxSteps: flags.maxSteps,
           model: sessionModel,
           maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
           signal: ac.signal,
           events: tui ? tui.events() : streamEvents,
         });
-        const usage =
-          result.usage && retry.usage
-            ? {
-                inputTokens: result.usage.inputTokens + retry.usage.inputTokens,
-                outputTokens: result.usage.outputTokens + retry.usage.outputTokens,
-              }
-            : retry.usage ?? result.usage;
-        result = { ...retry, steps: result.steps + retry.steps, usage };
+        if (result.done && looksLikeSkillEcho(result.doneReason ?? "", resolvedSkills)) {
+          history.push({
+            role: "user",
+            content:
+              "Your previous reply was skill-document content, not an answer. Answer my actual request directly now — " +
+              "use tools if needed, then call done with a concise reply in your own words. Do not quote skill docs.",
+          });
+          const retry = await runAgentLoop(history, {
+            cwd,
+            tools,
+            maxSteps: Math.min(6, flags.maxSteps > 0 ? flags.maxSteps : 6),
+            budget: { maxExtensions: 0 },
+            model: sessionModel,
+            maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
+            signal: ac.signal,
+            events: tui ? tui.events() : streamEvents,
+          });
+          const usage =
+            result.usage && retry.usage
+              ? {
+                  inputTokens: result.usage.inputTokens + retry.usage.inputTokens,
+                  outputTokens: result.usage.outputTokens + retry.usage.outputTokens,
+                }
+              : retry.usage ?? result.usage;
+          result = { ...retry, steps: result.steps + retry.steps, usage };
+        }
+      } finally {
+        harness.dispose();
       }
     } catch (err) {
       if (tui) tui.finish(`! ${friendlyProviderError(err)}`);
       throw err;
-    } finally {
-      harness.dispose();
     }
     // A completed turn with an empty done-reason must NOT masquerade as a step-limit
     // failure ("reached the 3-step limit" after the model called done at step 3).
@@ -1188,6 +1218,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const updatePromise = checkForUpdate({ timeoutMs: 2500 });
   const activeStartModel = sessionModel || defaultModel;
   const { provider: startProvider } = await describeModel(activeStartModel);
+  const welcomeTheme = resolveTheme(process.env);
   console.log(renderWelcome({
     version: pkg.version,
     model: activeStartModel,
@@ -1198,7 +1229,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     contextFiles: contextFiles.map(f => f.path),
     cols: terminalSize().cols,
     unicode: supportsUnicode(),
-    color: resolveTheme(process.env).color,
+    color: welcomeTheme.color,
+    accent: accentPaint(welcomeTheme),
+    accentShadow: accentShadowPaint(welcomeTheme),
   }).join("\n"));
 
   const upd = await Promise.race([updatePromise, new Promise<null>(r => setTimeout(() => r(null), 1200))]);
@@ -1240,7 +1273,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               previewArmed = false;
             }
             try {
-              return await rl.question("");
+              // EOF-safe prompt: a closed stdin yields "/exit" instead of a
+              // never-settling question that would hang the workflow forever.
+              return await promptInput("");
             } finally {
               if (wasPreviewArmed) {
                 previewArmed = true;
@@ -1291,7 +1326,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (!useTui) console.log(`▶ Running skill: ${skill.name}${intent ? ` — ${intent}` : ""}`);
       const task = buildSkillTask(skill, intent, invokedAs);
       const { reply, rendered, usage } = await runTurn(task, useTui);
-      if (!rendered) console.log(`joc> ${renderMarkdownTables(reply)}${usage}`);
+      if (!rendered) console.log(`jeo> ${renderMarkdownTables(reply)}${usage}`);
       else if (usage) console.log(usage.trim());
     }
   };
@@ -1347,7 +1382,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const rl = createInterface({
     input: process.stdin,
     // Single-box input: gate readline's output while the boxed footer is armed so its own
-    // `joc>` prompt/echo is suppressed and ONLY our box shows. (Bun exposes no
+    // `jeo>` prompt/echo is suppressed and ONLY our box shows. (Bun exposes no
     // `_writeToOutput` to patch, so gating the shared output stream is the portable fix.)
     // The gate also covers active select pickers: they disarm the preview, which
     // previously OPENED the gate and let readline echo typed filter characters
@@ -1356,6 +1391,32 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     output: gatedStdout(process.stdout, () => previewArmed || pickerActive),
     completer: (line: string) => readlineCompleter(line, completionContext()),
   });
+  // Stdin EOF must END the REPL, not hang it: under Bun a pending `rl.question`
+  // NEVER settles once the input stream closes (Ctrl-D, exhausted pipe) — the
+  // while(true) prompt loop then waits forever (the "joc never exits" hang).
+  // Bun's readline also DROPS piped lines that arrive between prompts (question()
+  // only captures the line submitted while it is registered; orphan lines emit
+  // 'line' instead), so queue those and serve them before prompting again.
+  const pendingStdinLines: string[] = [];
+  rl.on("line", l => { pendingStdinLines.push(l); });
+  let stdinClosed = false;
+  let notifyStdinClosed: (() => void) | undefined;
+  // `on` + one-shot guard (not `once`): test harnesses stub readline with `on`/`question` only.
+  rl.on("close", () => { if (stdinClosed) return; stdinClosed = true; notifyStdinClosed?.(); });
+  /** `rl.question` that resolves "/exit" on stdin EOF instead of hanging forever. */
+  const promptInput = async (prompt: string): Promise<string> => {
+    const queued = pendingStdinLines.shift();
+    if (queued !== undefined) return queued;
+    if (stdinClosed) return "/exit";
+    try {
+      return await Promise.race([
+        rl.question(prompt),
+        new Promise<string>(resolve => { notifyStdinClosed = () => resolve(pendingStdinLines.shift() ?? "/exit"); }),
+      ]);
+    } finally {
+      notifyStdinClosed = undefined;
+    }
+  };
 
   // Mouse-wheel scroll during a live turn (tmux or plain terminal) can inject
   // arrow/scroll escape sequences into stdin; readline buffers them into its
@@ -1389,14 +1450,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     return `@ ${dir === "." ? norm : dir}`;
   };
   // Boxed-input footer height — ADAPTIVE so short terminals/panes still get the single
-  // boxed input instead of silently falling back to the raw `joc>` prompt (previously
+  // boxed input instead of silently falling back to the raw `jeo>` prompt (previously
   // any terminal under 17 rows lost the box entirely and showed bare CLI input).
   const MAX_PREVIEW_ROWS = 12;
   const MIN_PREVIEW_ROWS = 6; // status bar (1) + input box (3 rows) + 2 preview rows
   const previewRowsFor = (rows: number): number => Math.max(MIN_PREVIEW_ROWS, Math.min(MAX_PREVIEW_ROWS, rows - 6));
   const previewEnabled =
     process.stdin.isTTY &&
-    process.env.JOC_NO_SLASH_PREVIEW !== "1" &&
+    (process.env.JEO_NO_SLASH_PREVIEW ?? process.env.JOC_NO_SLASH_PREVIEW) !== "1" &&
     (process.stdout.rows ?? 24) >= MIN_PREVIEW_ROWS + 6; // box + ≥6 scrollable content rows
   // Footer height reserved by the CURRENTLY armed region; disarm/draw must use the
   // same value the arm computed, even if the terminal was resized in between.
@@ -1513,6 +1574,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       color: true,
       unicode: true,
       accent: accentPaint(resolveTheme(process.env)),
+      accentShadow: accentShadowPaint(resolveTheme(process.env)),
       cwdLabel: currentAtLabel(line),
       attachmentLabel: pendingImages.length
         ? `⧉ ${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""} attached — sent with the next message`
@@ -1976,15 +2038,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       idleDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
       armPreview();
       // Render the boxed input immediately (placeholder) so the prompt is visible
-      // even though readline's own "joc>" echo is now suppressed in box mode.
+      // even though readline's own "jeo>" echo is now suppressed in box mode.
       typedLine = "";
       navMatches = [];
       navIdx = -1;
       drawFooter(previewLines(""));
-      // Box mode: NO raw `joc>` prompt at all — the boxed footer IS the input UI
+      // Box mode: NO raw `jeo>` prompt at all — the boxed footer IS the input UI
       // (gating already suppresses readline echo, the empty prompt guarantees no
       // raw CLI input line can ever flash). Legacy prompt only without the box.
-      const raw = (await rl.question(previewEnabled ? "" : "\njoc> ")).trim();
+      const raw = (await promptInput(previewEnabled ? "" : "\njoc> ")).trim();
       disarmPreview();
       // If an arrow-key selection was made over the slash/skill preview, run it.
       let input = pendingSelection && (isSlashAttempt(raw) || raw.startsWith("$")) && pendingSelection.startsWith(raw)
@@ -2004,7 +2066,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (input === "/" || input === "/?" || input === "/help") {
         logLines(formatSlashCommandList(input === "/help" ? "/" : input, skillSlashDetails));
         console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .joc/sessions/.");
-        const tip = getEvolutionTip(history.length, flags.maxSteps);
+        const tip = getEvolutionTip(history.length, flags.maxSteps > 0 ? flags.maxSteps : initialStepLimit);
         console.log(`\n${chalk.cyan("Evolutionary Tip:")} ${tip}`);
         continue;
       }
@@ -2147,7 +2209,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           const { done, steps, reply, rendered, usage } = await runTurn(lastUserInput, useTui);
         lastReply = reply;
           if (!rendered) {
-            console.log(`joc> ${renderMarkdownTables(reply)}${usage}`);
+            console.log(`jeo> ${renderMarkdownTables(reply)}${usage}`);
             if (!done) console.log(`(agent did not converge in ${steps} steps)`);
           } else if (usage) {
             console.log(usage.trim());
@@ -2176,7 +2238,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const fmtToken = tokens.find(t => t.toLowerCase() === "json" || t.toLowerCase() === "markdown");
         const format = fmtToken?.toLowerCase() === "json" ? "json" as const : "markdown" as const;
         const pathToken = tokens.find(t => t !== fmtToken);
-        const outPath = path.resolve(cwd, pathToken ?? `joc-session-${sessionId.slice(0, 8)}.${format === "json" ? "json" : "md"}`);
+        const outPath = path.resolve(cwd, pathToken ?? `jeo-session-${sessionId.slice(0, 8)}.${format === "json" ? "json" : "md"}`);
         try {
           const text = await exportSession(sessionId, format, cwd);
           await fs.promises.writeFile(outPath, text, "utf-8");
@@ -2217,7 +2279,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         try {
           const side: Message[] = [
-            { role: "system", content: "You are joc. Answer the user's side question concisely in plain text using the conversation context. Do not call tools; reply directly." },
+            { role: "system", content: "You are jeo. Answer the user's side question concisely in plain text using the conversation context. Do not call tools; reply directly." },
             ...history.slice(1).filter(m => m.role === "user" || m.role === "assistant").slice(-20),
             { role: "user", content: q },
           ];
@@ -2294,7 +2356,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`Unknown theme '${want}'. Known: ${themes.map(t => t.name).join(", ")}.`);
           continue;
         }
-        process.env.JOC_TUI_THEME = want;
+        process.env.JEO_TUI_THEME = want;
         console.log(`Theme set to ${want} (applies from the next turn).`);
         continue;
       }
@@ -2368,7 +2430,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
                 const st = statuses.find(s => s.name === p);
                 console.log(`  ${i + 1}) ${p.padEnd(10)} ${st?.ready ? `✓ ${st.label}` : "· not ready"}`);
               });
-              const ans = (await rl.question("Choose [1-3] or name (blank to cancel): ")).trim().toLowerCase();
+              const ans = (await promptInput("Choose [1-3] or name (blank to cancel): ")).trim().toLowerCase();
               const byNum: Record<string, string> = { "1": "anthropic", "2": "openai", "3": "gemini" };
               target = byNum[ans] ?? ((cloud as readonly string[]).includes(ans) ? ans : undefined);
             }
@@ -2495,7 +2557,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const modelArg = tokens[1];
         const cfgNow = await readGlobalConfig();
         if (!roleArg || roleArg === "/" || roleArg === "?" || roleArg.toLowerCase() === "help") {
-          console.log("Subagent roles (used by 'joc team'):");
+          console.log("Subagent roles (used by 'jeo team'):");
           for (const line of formatAgentsPanel(SUBAGENT_ROLES, r => ({
             model: resolveSubagentModel(r.id, cfgNow),
             maxSteps: resolveSubagentMaxSteps(r.id, cfgNow),
@@ -2607,7 +2669,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             console.log("Run /models first to build the numbered live model list.");
             continue;
           }
-          // Persist a per-role model override to ~/.joc/config.json (consumed by 'joc team').
+          // Persist a per-role model override to ~/.joc/config.json (consumed by 'jeo team').
           await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: chosenModel }) }));
           const { provider } = await describeModel(chosenModel);
           console.log(`${role.title} model set to ${chosenModel} (${provider}) — saved to ~/.joc/config.json`);
@@ -2851,7 +2913,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const { resolved, provider } = await describeModel(label);
         const st = statuses.find(s => s.name === provider);
         console.log(`${arg ? "Model set to" : "Current model"}: ${formatModelLine({ label, resolved, provider, ready: st?.ready })}${arg ? " — saved as default" : ""}`);
-        if (st && !st.ready) console.log(`  ! ${provider} is not ready (${st.label}) — set ${st.envVar ?? "the provider key"} or run 'joc setup'.`);
+        if (st && !st.ready) console.log(`  ! ${provider} is not ready (${st.label}) — set ${st.envVar ?? "the provider key"} or run 'jeo setup'.`);
         // ChatGPT OAuth only serves the Codex models; warn before the turn fails if the user
         // pins a non-Codex id with no local base URL to fall back to (gjc-parity readiness guard).
         if (arg && provider === "openai" && st?.kind === "oauth" && !CODEX_MODELS.includes(resolved)) {
@@ -3020,7 +3082,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const { done, steps, reply, rendered, usage } = await runTurn(input, useTui, turnImages);
         lastReply = reply;
         if (!rendered) {
-          console.log(`joc> ${renderMarkdownTables(reply)}${usage}`);
+          console.log(`jeo> ${renderMarkdownTables(reply)}${usage}`);
           if (!done) console.log(`(agent did not converge in ${steps} steps)`);
         } else if (usage) {
           console.log(usage.trim());

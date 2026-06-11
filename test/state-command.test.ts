@@ -6,7 +6,7 @@ import { runStateCommand } from "../src/commands/state";
 import { readWorkflowState, writeWorkflowState } from "../src/agent/state";
 
 test("state command: read, write, clear, handoff, error handling, help", async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-state-test-"));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-state-test-"));
   const originalCwd = process.cwd();
   process.chdir(tempDir);
 

@@ -26,7 +26,7 @@ test("friendlyProviderError detects 429 from the message when status is absent",
 test("friendlyProviderError maps 401/403 to a credential-check hint", () => {
   const out = friendlyProviderError(new ProviderHttpError("Gemini", 401, "unauthorized"));
   expect(out).toContain("Gemini");
-  expect(out).toContain("joc auth status");
+  expect(out).toContain("jeo auth status");
 });
 
 test("friendlyProviderError passes through unrelated errors unchanged", () => {

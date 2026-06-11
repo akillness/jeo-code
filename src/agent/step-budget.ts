@@ -41,7 +41,8 @@ export interface ExtensionDecision {
 type EnvLike = Record<string, string | undefined>;
 
 function envNum(env: EnvLike, key: string, dflt: number, min: number, max: number): number {
-  const raw = env[key];
+  // `key` is the legacy JOC_* name; the JEO_* spelling is preferred when both are set.
+  const raw = env[key.replace(/^JOC_/, "JEO_")] ?? env[key];
   if (raw === undefined || raw === "") return dflt;
   const n = Number(raw);
   if (!Number.isFinite(n)) return dflt;
@@ -79,11 +80,59 @@ export function resolveStepBudgetConfig(
   return merged;
 }
 
+/** True when `key` carries a non-empty value in `env`. */
+function envSet(env: EnvLike, key: string): boolean {
+  const raw = env[key.replace(/^JOC_/, "JEO_")] ?? env[key];
+  return raw !== undefined && raw !== "";
+}
+
+/**
+ * Dynamic (process-driven) budget — the default when the caller passes no explicit
+ * `--max-steps`: there is no SMALL hardcoded step ceiling. The budget starts at a
+ * rolling base (`JOC_STEP_BASE`, default 24) and keeps extending itself for as long
+ * as the recent tool window shows real progress; only a stalled window declines the
+ * extension, at which point the loop dynamically CONSOLIDATES a final wrap-up
+ * instead of dying at a fixed count.
+ *
+ * Termination is still GUARANTEED: extensions are unlimited in count, but the
+ * absolute ceiling defaults to `DYNAMIC_HARD_CAP` (600 steps) instead of Infinity.
+ * An unbounded ceiling turned every hole in the progress heuristic into a literal
+ * infinite loop (e.g. a model cycling successful reads forever); a large finite cap
+ * keeps long autonomous runs alive while converting a pathological spin into a
+ * consolidation wrap-up. Setting `JOC_STEP_EXTENSIONS` / `JOC_STEP_HARD_CAP`
+ * restores a fully bounded budget; caller overrides win over both.
+ */
+export const DYNAMIC_HARD_CAP = 600;
+
+export function dynamicStepBudgetConfig(
+  env: EnvLike = process.env,
+  overrides?: Partial<StepBudgetConfig>,
+): StepBudgetConfig {
+  const base = envNum(env, "JOC_STEP_BASE", 24, 1, 10_000);
+  const dynamic: Partial<StepBudgetConfig> = {};
+  if (!envSet(env, "JOC_STEP_EXTENSIONS")) dynamic.maxExtensions = Number.POSITIVE_INFINITY;
+  if (!envSet(env, "JOC_STEP_HARD_CAP")) dynamic.hardCap = Math.max(base, DYNAMIC_HARD_CAP);
+  return resolveStepBudgetConfig(base, env, { ...dynamic, ...overrides });
+}
+
+/** The step limit a dynamic turn starts from — seeds the `step N/M` display before
+ *  the engine's onBudget extensions grow the denominator. */
+export function initialDynamicStepLimit(env: EnvLike = process.env): number {
+  return dynamicStepBudgetConfig(env).baseSteps;
+}
+
 export class StepBudget {
   private readonly cfg: StepBudgetConfig;
   private readonly window: { signature: string; success: boolean }[] = [];
   private extensions = 0;
   private currentLimit: number;
+  /** Every signature executed this turn — basis of the novelty rule. */
+  private readonly seen = new Set<string>();
+  /** Never-seen-before signatures recorded since the last granted extension.
+   *  An extension requires ≥ 1: a window that merely CYCLES through previously
+   *  executed calls (read A, read B, read A, …) is a spin, not progress, even
+   *  when every call succeeds and the distinct-count check passes. */
+  private novelSinceExtension = 0;
 
   constructor(cfg: StepBudgetConfig) {
     this.cfg = cfg;
@@ -102,6 +151,10 @@ export class StepBudget {
 
   /** Record an executed tool call (ring-buffered to the scoring window). */
   record(signature: string, success: boolean): void {
+    if (!this.seen.has(signature)) {
+      this.seen.add(signature);
+      this.novelSinceExtension++;
+    }
     this.window.push({ signature, success });
     if (this.window.length > this.cfg.windowSize) this.window.shift();
   }
@@ -139,7 +192,13 @@ export class StepBudget {
         `no recent progress (${p.ok}/${p.total} ok, ${p.distinct} distinct target(s))`,
       );
     }
+    if (this.novelSinceExtension < 1) {
+      return decline(
+        `no novel tool calls since the last extension (cycling through ${p.distinct} repeated target(s))`,
+      );
+    }
     this.extensions++;
+    this.novelSinceExtension = 0;
     this.currentLimit = Math.min(this.currentLimit + this.cfg.extensionSteps, this.cfg.hardCap);
     return {
       extend: true,

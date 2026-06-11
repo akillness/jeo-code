@@ -312,7 +312,7 @@ export async function maybeCompact(
     ...boundedRecent,
   ];
   history.splice(0, history.length, ...next);
-  process.stderr.write(`[joc] compaction summary failed (${(summaryError as Error)?.message ?? "error"}); kept ${boundedRecent.length} recent messages (token-bounded) and dropped ${older.length} older messages.\n`);
+  process.stderr.write(`[jeo] compaction summary failed (${(summaryError as Error)?.message ?? "error"}); kept ${boundedRecent.length} recent messages (token-bounded) and dropped ${older.length} older messages.\n`);
 
   const finalTokens = accurateHistoryTokens(history, opts.model);
   let error: string | undefined;

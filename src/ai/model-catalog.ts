@@ -2,7 +2,7 @@
  * Static model catalog — capability metadata for well-known public models, so
  * the TUI can show context window, max output, supported thinking levels, and
  * image support next to a model (gjc `--list-models` design parity, reimplemented
- * in joc's own structure). This is factual capability data about public models,
+ * in jeo's own structure). This is factual capability data about public models,
  * not a copy of any vendor's catalog source. Live discovery
  * (`model-discovery.ts`) remains the source of truth for *availability*; this
  * catalog annotates known ids with capabilities.
@@ -14,7 +14,7 @@ export type ThinkLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
 export const THINK_LEVELS: readonly ThinkLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
 
 export interface CatalogModel {
-  /** joc-facing canonical id (what a user types). */
+  /** jeo-facing canonical id (what a user types). */
   canonical: string;
   provider: ProviderName;
   /** Exact provider model id used on the wire. */

@@ -33,11 +33,11 @@ export async function runGjcCommand(args: string[]): Promise<void> {
     maxSteps: 50,
   });
 
-  console.log("\n[joc] Verifying implementation...");
+  console.log("\n[jeo] Verifying implementation...");
   const verify = await runPostImplementationHooks(process.cwd(), intent);
   
   if (!verify.success) {
-    console.error("\n[joc] Verification FAILED. Auto-repairing...");
+    console.error("\n[jeo] Verification FAILED. Auto-repairing...");
     const repairTask = `Previous implementation failed verification.\nErrors:\n${verify.output}\n\nPlease fix.`;
     await runAgentLoop([{ role: "user", content: repairTask }], {
       cwd: process.cwd(),
@@ -47,6 +47,6 @@ export async function runGjcCommand(args: string[]): Promise<void> {
       maxSteps: 30,
     });
   } else {
-    console.log("\n[joc] Verification SUCCESSFUL.");
+    console.log("\n[jeo] Verification SUCCESSFUL.");
   }
 }

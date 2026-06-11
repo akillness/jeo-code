@@ -64,7 +64,7 @@ test("parseFlags: --append-system-prompt literal + @file + missing file", () => 
   expect(flags1Inline.errors).toEqual([]);
 
   // 2. @file with mkdtemp
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "joc-test-"));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "jeo-test-"));
   const tempFile = path.join(tempDir, "prompt.txt");
   fs.writeFileSync(tempFile, "loaded from file prompt", "utf8");
 
@@ -81,7 +81,7 @@ test("parseFlags: --append-system-prompt literal + @file + missing file", () => 
   }
 
   // 3. missing-file error path
-  const missingFile = path.join(os.tmpdir(), "joc-non-existent-prompt.txt");
+  const missingFile = path.join(os.tmpdir(), "jeo-non-existent-prompt.txt");
   const flags3 = parseFlags(["--append-system-prompt", `@${missingFile}`]);
   expect(flags3.appendSystemPromptRaw).toBe(`@${missingFile}`);
   expect(flags3.appendSystemPrompt).toBeUndefined();

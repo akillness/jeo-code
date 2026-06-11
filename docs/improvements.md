@@ -6460,3 +6460,40 @@ Reorganized the live screen to the gjc reference layout and removed the noise ph
 - tmux visual QA (`logs/joc-redesign/gjc-layout-driver.ts`, 110x32, red-claw): live frame,
   final scrollback, and idle prompt captured (`gjc-live*.txt`, `gjc-final*.txt`,
   `gjc-idle.txt`) and matched against the gjc reference screenshot layout.
+
+## Flexible step budget — gjc retry flow for the step limit (pass 897)
+
+**Date:** 2026-06-11 · **Dimension: agent loop (step-limit → progress-scored budget).**
+
+The per-turn step limit is no longer a bare counter: it is a gjc-style retry BUDGET
+that extends itself while the turn demonstrably progresses and fails fast when stalled.
+
+- **`src/agent/step-budget.ts`.** `StepBudget` + `resolveStepBudgetConfig`: base budget
+  (the caller's `maxSteps`), bounded extensions (`JOC_STEP_EXTENSIONS`, default 2;
+  `JOC_STEP_EXTENSION_SIZE`, default half the base, min 4), absolute hard cap
+  (`JOC_STEP_HARD_CAP`, default 3× base), and a recent tool-call window
+  (`JOC_STEP_WINDOW`, default 8) scored for progress. An extension is granted only when
+  ≥50% of windowed calls succeeded on ≥2 distinct signatures; declines carry an explicit
+  fail-fast reason (mostly failures / single-signature spin / cap / budget exhausted).
+- **Engine integration.** `runAgentLoop` records every executed tool call into the
+  window; at the limit it consults `tryExtend()` — extend → `onBudget(limit, reason)`
+  (falls back to `onNotice`) and the loop continues; decline → the consolidation
+  wrap-up now names the final limit, extension count, and decline reason
+  (`step budget of N reached after K extension(s); <reason>`). The early guards
+  (MAX_REPEAT, MAX_FAILURES, parse-bounce salvage) stay the first fail-fast layer.
+- **Bounded delegation stays exact.** `task-tool`, `joc team` ralph subagents, and the
+  skill-echo corrective retry pass `budget: { maxExtensions: 0 }` — a parent's step
+  contract never silently inflates; the parent owns retries.
+- **Surfaces.** TUI: `onBudget` updates the live `step N/M` denominator + spinner and
+  flushes a dim `↻ …extended to M (extension k/n)` ledger line. Non-TTY stream: the
+  `[step N/M]` cap updates and the reason is logged once (no duplicate notice).
+- **Docs.** README (en/ko/ja/zh): `JOC_STEP_*` env vars + a "Step budget (retry flow)"
+  section beside the existing provider retry budget; `src/agent/AGENTS.md` key files.
+
+### Verification (pass 897)
+- typecheck 0; `bun test` 1015 pass / 0 fail (+10 step-budget tests: config resolution
+  + clamping, extension/decline decisions, hard cap, legacy mode, and three engine
+  integration tests — progressing turn extends past base and completes, stalled turn
+  consolidates at base with no extension, extensions stop exactly at the hard cap with
+  the flow named in the wrap-up). Existing consolidation/subagent budget tests pinned
+  to `maxExtensions: 0` to keep asserting the legacy fixed-counter contract.

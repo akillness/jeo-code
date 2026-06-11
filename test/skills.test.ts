@@ -71,7 +71,7 @@ test("getSkill case-insensitive lookup", () => {
   const skill = getSkill("DEEP-INTERVIEW");
   expect(skill).toBeDefined();
   expect(skill?.name).toBe("deep-interview");
-  expect(skill?.command).toBe('joc deep-interview "<idea>"');
+  expect(skill?.command).toBe('jeo deep-interview "<idea>"');
 });
 
 test("getSkill returns undefined for non-existent skill", () => {
@@ -84,7 +84,7 @@ test("formatSkill output format", () => {
   expect(skill).toBeDefined();
   if (skill) {
     const formatted = formatSkill(skill);
-    expect(formatted).toContain("joc ralplan");
+    expect(formatted).toContain("jeo ralplan");
     expect(formatted).toContain("Planner/Architect/Critic blueprint from the seed.");
     expect(formatted).toContain("When to use:");
     expect(formatted).toContain("Details:");
@@ -158,7 +158,7 @@ test("parseSkillInvocation only matches explicit slash invocations", () => {
 });
 
 test("parseSkillInvocation can load an explicit skill file path but still blocks reserved meta-skill names", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-skill-path-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-skill-path-"));
   try {
     const skillPath = path.join(dir, "reviewer.md");
     await fs.writeFile(skillPath, "summary: Reviewer wrapper\naliases: /reviewer\n\nReview the target.");
@@ -176,7 +176,7 @@ test("parseSkillInvocation can load an explicit skill file path but still blocks
 });
 
 test("parseSkillInvocation: direct file path invocation (without /skill: prefix)", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-skill-direct-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-skill-direct-"));
   try {
     const skillPath = path.join(dir, "reviewer.md");
     await fs.writeFile(skillPath, "summary: Reviewer wrapper\n\nReview the target.");
@@ -190,14 +190,14 @@ test("parseSkillInvocation: direct file path invocation (without /skill: prefix)
 });
 
 test("runSkillsCommand --write: materializes one .md per skill", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-skills-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-skills-"));
   try {
     await runSkillsCommand(["--write", dir]);
     const files = (await fs.readdir(dir)).sort();
     expect(files).toEqual(SKILLS.map(s => `${s.name}.md`).sort());
     const sample = await fs.readFile(path.join(dir, "deep-interview.md"), "utf-8");
     expect(sample).toContain("# deep-interview");
-    expect(sample).toContain("joc deep-interview");
+    expect(sample).toContain("jeo deep-interview");
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

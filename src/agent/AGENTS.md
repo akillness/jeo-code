@@ -14,6 +14,7 @@ The core runtime loop, tool registry, session management, and state persistence 
 | `state.ts` | File-backed state and session persistence (`.joc/state/`) |
 | `session.ts` | Session context building, compaction, and history management |
 | `plan.ts` | Subagent planning structures and validation |
+| `step-budget.ts` | gjc-style flexible step budgeting: progress-scored extensions, hard cap, fail-fast |
 | `subagents.ts` / `task-tool.ts` | Delegation mechanisms and background execution of task subagents |
 
 ## Subdirectories

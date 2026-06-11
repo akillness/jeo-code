@@ -13,7 +13,7 @@ export interface OAuthFlow {
   login(ctrl: OAuthController): Promise<OAuthCredentials>;
   /** Exchange a refresh token for a fresh access token. */
   refresh(refreshToken: string): Promise<OAuthCredentials>;
-  /** Whether the minted token works with joc's bundled adapter end-to-end. */
+  /** Whether the minted token works with jeo's bundled adapter end-to-end. */
   readonly verifiedEndToEnd: boolean;
   /** Human note about adapter compatibility. */
   readonly note?: string;

@@ -13,7 +13,7 @@ function createJwt(email: string): string {
 }
 
 test("import command persists a credential readable by storage helpers", async () => {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-import-"));
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-import-"));
   const configDir = path.join(tmpDir, ".joc");
   await fs.mkdir(configDir, { recursive: true });
 
@@ -46,7 +46,7 @@ test("import command persists a credential readable by storage helpers", async (
   };
 
   try {
-    // Test: joc auth import gemini
+    // Test: jeo auth import gemini
     await runAuthCommand(["import", "gemini"]);
     expect(process.exitCode ?? 0).toBe(0);
 
@@ -60,7 +60,7 @@ test("import command persists a credential readable by storage helpers", async (
     expect(logs.some(l => l.includes("[SUCCESS] Imported OAuth credentials"))).toBe(true);
     expect(logs.some(l => l.includes("Account email: user@example.com"))).toBe(true);
 
-    // Test: joc auth login gemini --import (should run the same thing)
+    // Test: jeo auth login gemini --import (should run the same thing)
     logs.length = 0;
     await runAuthCommand(["login", "gemini", "--import"]);
     // Bun quirk: `process.exitCode = undefined` cannot CLEAR a value a prior
@@ -78,7 +78,7 @@ test("import command persists a credential readable by storage helpers", async (
 });
 
 test("corrupt file → exitCode 1", async () => {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-import-"));
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-import-"));
   const configDir = path.join(tmpDir, ".joc");
   await fs.mkdir(configDir, { recursive: true });
 
@@ -113,7 +113,7 @@ test("corrupt file → exitCode 1", async () => {
 });
 
 test("missing file → exitCode 1", async () => {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-import-"));
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-import-"));
   const configDir = path.join(tmpDir, ".joc");
   await fs.mkdir(configDir, { recursive: true });
 
@@ -146,8 +146,8 @@ test("missing file → exitCode 1", async () => {
   }
 });
 
-test("auto-import fallback populates storage when joc has none", async () => {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-import-"));
+test("auto-import fallback populates storage when jeo has none", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-import-"));
   const configDir = path.join(tmpDir, ".joc");
   await fs.mkdir(configDir, { recursive: true });
 

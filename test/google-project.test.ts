@@ -119,7 +119,7 @@ test("resolveAntigravityProjectId: discovery failure surfaces an actionable erro
     const cred = { kind: "oauth" as const, provider: "gemini" as const, token: `tok-fail-${Date.now()}` };
     await expect(
       resolveAntigravityProjectId(cred, { discover: async () => { throw new Error("loadCodeAssist failed (HTTP 403)"); } }),
-    ).rejects.toThrow(/auto-discovery failed.*joc auth login gemini/s);
+    ).rejects.toThrow(/auto-discovery failed.*jeo auth login gemini/s);
   } finally {
     if (prevProj !== undefined) process.env.GOOGLE_CLOUD_PROJECT = prevProj;
     if (prevProjId !== undefined) process.env.GOOGLE_CLOUD_PROJECT_ID = prevProjId;

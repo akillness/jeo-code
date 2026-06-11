@@ -1,6 +1,6 @@
 ---
 description: Verify acceptance criteria, write report.
-command: joc ultragoal
+command: jeo ultragoal
 when: When tasks are implemented and you need a final, high-level verification and summary report.
 ---
 

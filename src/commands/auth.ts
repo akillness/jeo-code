@@ -24,7 +24,7 @@ export async function runAuthCommand(args: string[]): Promise<void> {
   if (sub === "import") return runAuthImport(args.slice(1));
   if (sub === "logout") return runAuthLogout(args[1] as AuthProvider | undefined);
   if (sub === "refresh") return runAuthRefresh(args[1] as AuthProvider | undefined);
-  console.log(`Unknown auth subcommand: ${sub}\nUsage: joc auth [login|logout|refresh|status|import] [provider] [--token <bearer>] [--import]`);
+  console.log(`Unknown auth subcommand: ${sub}\nUsage: jeo auth [login|logout|refresh|status|import] [provider] [--token <bearer>] [--import]`);
   process.exitCode = 1;
 }
 
@@ -50,7 +50,7 @@ function fmtExpiry(expires?: number): string {
 
 async function runAuthStatus(): Promise<void> {
   const cfg = await readGlobalConfig();
-  console.log("\n=== joc auth status ===");
+  console.log("\n=== jeo auth status ===");
   console.log("Provider     API key   OAuth");
   for (const p of ["anthropic", "openai", "gemini", "antigravity"] as AuthProvider[]) {
     const snap = await snapshotProvider(p);
@@ -110,10 +110,10 @@ async function runAuthLogin(rest: string[]): Promise<void> {
   try {
     const { email } = await interactiveOAuthLogin(chosen, rl);
     console.log(`\n[SUCCESS] OAuth login complete for ${chosen}${email ? ` (${email})` : ""}.`);
-    console.log("Stored access + refresh tokens in ~/.joc/config.json; joc will auto-refresh on expiry.");
+    console.log("Stored access + refresh tokens in ~/.joc/config.json; jeo will auto-refresh on expiry.");
   } catch (err) {
     console.log(`\n[FAILED] ${(err as Error).message}`);
-    console.log("Tip: paste the redirect URL when prompted, or use 'joc auth login <provider> --token <bearer>'.");
+    console.log("Tip: paste the redirect URL when prompted, or use 'jeo auth login <provider> --token <bearer>'.");
     process.exitCode = 1;
   } finally {
     rl.close();
@@ -123,7 +123,7 @@ async function runAuthLogin(rest: string[]): Promise<void> {
 async function runAuthImport(rest: string[]): Promise<void> {
   const provider = rest.find(a => a !== "--import") as AuthProvider | undefined;
   if (!provider) {
-    console.log("Usage: joc auth import <provider>");
+    console.log("Usage: jeo auth import <provider>");
     process.exitCode = 1;
     return;
   }
@@ -135,7 +135,7 @@ async function runAuthImport(rest: string[]): Promise<void> {
   }
 
   try {
-    const credsPath = process.env.JOC_GEMINI_CREDS_PATH || path.join(os.homedir(), ".gemini", "oauth_creds.json");
+    const credsPath = (process.env.JEO_GEMINI_CREDS_PATH ?? process.env.JOC_GEMINI_CREDS_PATH) || path.join(os.homedir(), ".gemini", "oauth_creds.json");
     let content: string;
     try {
       content = await fs.readFile(credsPath, "utf-8");
@@ -204,7 +204,7 @@ export interface OAuthPrompt {
 
 /**
  * Run the interactive OAuth login flow for a provider using an existing prompt
- * (readline) interface. Shared by `joc auth login` and the REPL `/provider login`.
+ * (readline) interface. Shared by `jeo auth login` and the REPL `/provider login`.
  * Prints flow instructions, opens the browser, and resolves with the account email.
  */
 export async function interactiveOAuthLogin(
@@ -221,7 +221,7 @@ export async function interactiveOAuthLogin(
   // Abort the pending "Paste redirect URL…" question once the flow settles.
   // Without this the dangling readline question survives a SUCCESS/FAILED
   // result, reprints its prompt over the result line, and queues in FRONT of
-  // any follow-up question (the `joc setup` API-key fallback appeared hung).
+  // any follow-up question (the `jeo setup` API-key fallback appeared hung).
   const ac = new AbortController();
   const ctrl: OAuthController = {
     signal: ac.signal,
@@ -253,7 +253,7 @@ async function runAuthLogout(provider?: AuthProvider): Promise<void> {
 
 async function runAuthRefresh(provider?: AuthProvider): Promise<void> {
   if (!provider) {
-    console.log("Usage: joc auth refresh <provider>");
+    console.log("Usage: jeo auth refresh <provider>");
     process.exitCode = 1;
     return;
   }

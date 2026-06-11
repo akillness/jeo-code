@@ -557,7 +557,7 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
         if (ambiguity <= threshold && readiness.ok) {
           log(`\n[SUCCESS] Ambiguity is <= ${(threshold * 100).toFixed(0)}%! Concluding requirements gather.`);
           await freezeSeed(parsed);
-          log("\n[Handoff Ready] Requirement is crystallized. Next, run 'joc ralplan' to build a plan.");
+          log("\n[Handoff Ready] Requirement is crystallized. Next, run 'jeo ralplan' to build a plan.");
           if (opts.onProgress) {
             opts.onProgress({ skill: "deep-interview", phase: "complete" });
           }
@@ -601,12 +601,12 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
           : `ambiguity stayed above ${(threshold * 100).toFixed(0)}%`;
         log(
           `\n[AUTO] Interview stopped after ${round - 1} rounds because ${why}. ` +
-          `No seed was frozen; MutationGuard remains locked. Resume with 'joc deep-interview' to finish clarification.`
+          `No seed was frozen; MutationGuard remains locked. Resume with 'jeo deep-interview' to finish clarification.`
         );
       } else if (round > 10) {
         log(
           `\n[PAUSED] Interview stopped after ${round - 1} rounds without crystallizing concrete requirements. ` +
-          `Resume with 'joc deep-interview' to continue.`
+          `Resume with 'jeo deep-interview' to continue.`
         );
       }
       if (opts.onProgress) {

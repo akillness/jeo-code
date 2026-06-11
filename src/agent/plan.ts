@@ -1,6 +1,6 @@
 /**
- * Shared plan-document schema + minimal YAML parser for joc workflow plans.
- * Used by both `joc team` (execution) and `joc ralplan` (plan generation/validation).
+ * Shared plan-document schema + minimal YAML parser for jeo workflow plans.
+ * Used by both `jeo team` (execution) and `jeo ralplan` (plan generation/validation).
  */
 import { z } from "zod";
 

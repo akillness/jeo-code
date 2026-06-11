@@ -35,7 +35,7 @@ afterAll(() => {
 });
 
 test("/model subagent <role> <model> persists the role model override", async () => {
-  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-role-model-"));
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-role-model-"));
   const savedCfg = process.env.JOC_CONFIG_DIR;
   const savedLog = console.log;
   console.log = () => {};
@@ -55,7 +55,7 @@ test("/model subagent <role> <model> persists the role model override", async ()
 });
 
 test("antigravity stays selectable in /model with a gemini-fallback OAuth (warned, not refused)", async () => {
-  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-role-ag-"));
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-role-ag-"));
   const savedCfg = process.env.JOC_CONFIG_DIR;
   const savedLog = console.log;
   const logged: string[] = [];

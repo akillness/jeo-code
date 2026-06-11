@@ -34,7 +34,7 @@ export async function runSkillsCommand(args: string[] = []): Promise<void> {
   const isJson = args.includes("--json");
   const cleanArgs = args.filter(a => a !== "--json");
 
-  // `joc skills --write [dir]` materializes bundled skill docs to disk (gjc-style SKILL.md files).
+  // `jeo skills --write [dir]` materializes bundled skill docs to disk (gjc-style SKILL.md files).
   if (cleanArgs[0] === "--write") {
     const dir = cleanArgs[1] ? path.resolve(cwd, cleanArgs[1]) : path.join(getLocalJocDir(cwd), "skills");
     await fs.mkdir(dir, { recursive: true });
@@ -54,8 +54,8 @@ export async function runSkillsCommand(args: string[] = []): Promise<void> {
     if (isJson) {
       console.log(JSON.stringify(skills.map(s => ({ name: s.name, summary: s.summary })), null, 2));
     } else {
-      console.log("\n=== joc skills ===");
-      console.log("Workflow skills (bundled + ~/.joc/skills, ~/.agents/skills, project dirs) — 'joc skills <name>' for details, --write to export:\n");
+      console.log("\n=== jeo skills ===");
+      console.log("Workflow skills (bundled + ~/.joc/skills, ~/.agents/skills, project dirs) — 'jeo skills <name>' for details, --write to export:\n");
       for (const s of skills) {
         console.log(`  ${s.name.padEnd(16)} ${s.summary}`);
       }

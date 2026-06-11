@@ -27,10 +27,10 @@ function isVerb(val: string): val is Verb {
 
 function printUsage(): void {
   console.log("Usage:");
-  console.log("  joc state <skill> read [--json]");
-  console.log("  joc state <skill> write --input '<json>' [--json]");
-  console.log("  joc state <skill> clear");
-  console.log("  joc state <skill> handoff --to <skill> [--json]");
+  console.log("  jeo state <skill> read [--json]");
+  console.log("  jeo state <skill> write --input '<json>' [--json]");
+  console.log("  jeo state <skill> clear");
+  console.log("  jeo state <skill> handoff --to <skill> [--json]");
   console.log("");
   console.log("Skills:");
   console.log("  deep-interview, ralplan, team, ultragoal");

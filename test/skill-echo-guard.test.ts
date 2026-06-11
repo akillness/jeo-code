@@ -10,7 +10,7 @@ import {
 test("workflowSkillsForPrompt ignores a user doc named 'team' with a foreign summary", () => {
   const foreignTeam: SkillDoc = {
     name: "team",
-    command: "joc team",
+    command: "jeo team",
     summary: "foreign team mode override",
     whenToUse: "When using OMX mode",
     details: "foreign details here"
@@ -26,7 +26,7 @@ test("buildSkillTask clamps long details and contains the anti-recite line", () 
   const longDetails = "a".repeat(3000);
   const longSkill: SkillDoc = {
     name: "test-clamp",
-    command: "joc test-clamp",
+    command: "jeo test-clamp",
     summary: "test clamp summary",
     whenToUse: "Always",
     details: longDetails
@@ -52,7 +52,7 @@ test("looksLikeSkillEcho detects replies dominated by skill-doc content", () => 
   const longDetails = "x".repeat(300) + "y".repeat(300) + "z".repeat(300); // 900 chars
   const skill: SkillDoc = {
     name: "fab-skill",
-    command: "joc fab-skill",
+    command: "jeo fab-skill",
     summary: "fab summary",
     whenToUse: "when needed",
     details: longDetails
@@ -63,7 +63,7 @@ test("looksLikeSkillEcho detects replies dominated by skill-doc content", () => 
   expect(looksLikeSkillEcho(guidanceReply, [skill])).toBe(true);
 
   // (2) True for a reply with "Skill: " and "When to use:"
-  const formattedReply = "Skill: fab-skill\nCommand: joc fab-skill\nSummary: fab summary\nWhen to use: when needed\nDetails:\n  some details here";
+  const formattedReply = "Skill: fab-skill\nCommand: jeo fab-skill\nSummary: fab summary\nWhen to use: when needed\nDetails:\n  some details here";
   expect(looksLikeSkillEcho(formattedReply, [skill])).toBe(true);
 
   // (3) True for a reply quoting 200 chars of a skill's details (start probe is 160 'x's, so 200 'x's will trigger it)

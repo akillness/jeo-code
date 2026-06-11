@@ -2,7 +2,7 @@ import { test, expect, mock } from "bun:test";
 import { getSubagentRole, subagentToolset, subagentSystemPrompt } from "../src/agent/subagents";
 
 // End-to-end check that the subagent tool-loop actually runs with a role's
-// toolset and enforces read-only roles (the executor path joc team drives).
+// toolset and enforces read-only roles (the executor path jeo team drives).
 
 test("read-only role (planner) toolset rejects a write at the engine boundary", async () => {
   let turn = 0;
@@ -61,6 +61,9 @@ test("subagent loop honors a role's step budget when the model never signals don
   const result = await runAgentLoop([{ role: "system" as const, content: "sys" }], {
     cwd: process.cwd(),
     maxSteps: 4,
+    // Production subagent delegation (task-tool/team) disables the gjc step-extension
+    // flow so a role's step contract stays exact — mirror that here.
+    budget: { maxExtensions: 0 },
     tools: subagentToolset(critic),
   });
   expect(result.done).toBe(false);

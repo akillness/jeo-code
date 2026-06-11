@@ -17,7 +17,7 @@ const OAUTH_ENV = ["ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_O
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeAll(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-disc-"));
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-disc-"));
   process.env.JOC_CONFIG_DIR = dir;
   delete process.env.OPENAI_BASE_URL;
   await fs.writeFile(
@@ -189,7 +189,7 @@ test("listProviderModels: OAuth-only discovery still probes the provider list", 
 
 test("listProviderModels: credential-less cloud short-circuits without fetching", async () => {
   // Fresh config dir with no keys → anthropic credential is "none".
-  const empty = await fs.mkdtemp(path.join(os.tmpdir(), "joc-disc-empty-"));
+  const empty = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-disc-empty-"));
   const prev = process.env.JOC_CONFIG_DIR;
   process.env.JOC_CONFIG_DIR = empty;
   await fs.writeFile(path.join(empty, "config.json"), JSON.stringify({ providers: {}, defaultModel: "claude-3-5-sonnet" }));

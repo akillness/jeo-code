@@ -393,7 +393,7 @@ export async function exportSession(
   }
 
   const lines: string[] = [
-    `# joc session ${header.id}`,
+    `# jeo session ${header.id}`,
     "",
     `- Started: ${header.timestamp}`,
     `- Workspace: ${header.cwd}`,

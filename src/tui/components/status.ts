@@ -205,8 +205,8 @@ export function renderJocStatus(data: JocStatusData): string[] {
   }
   return [
     `  ${categoryBadge("progress", { color: useColor })} step ${step}/${max} · ${bar} · elapsed ${elapsed}${extraStats}`,
-    `  ${categoryBadge("status", { color: useColor })} ${cyanBold("joc status")} · ${msg}`,
-    `  ${categoryBadge("tool", { color: useColor })} ${magentaBold("joc forge")} · ${stage}${current} · tools ${total} (${toolCounts})${guard}`,
+    `  ${categoryBadge("status", { color: useColor })} ${cyanBold("jeo status")} · ${msg}`,
+    `  ${categoryBadge("tool", { color: useColor })} ${magentaBold("jeo forge")} · ${stage}${current} · tools ${total} (${toolCounts})${guard}`,
   ];
 
 }
@@ -301,7 +301,7 @@ export function renderStatusBox(data: StatusBoxData): string[] {
   const g = unicode ? BOX_UNICODE : BOX_ASCII;
   const phaseGlyph = unicode ? "●" : "*";
   const title = ` ${phaseGlyph} ${data.phaseLabel ?? "thinking"}${max ? ` · step ${step}/${max}` : ""} `;
-  const body = boxBlock([activityRow, metricsRow], cols, { glyphs: g, paint: gray, align: "left" });
+  const body = boxBlock([activityRow, metricsRow], cols, { glyphs: g, paint: gray, paintShadow: useColor ? (s: string) => chalk.dim(chalk.gray(s)) : undefined, align: "left" });
   // Embed the title into the top border (welcome-box style).
   const titleText = `${g.h}${title}`;
   const room2 = inner - visibleWidth(titleText);

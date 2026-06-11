@@ -80,7 +80,7 @@ test("renderUpdateBox - output content", () => {
   expect(joined).toContain("Update Available");
   expect(joined).toContain("1.0.0");
   expect(joined).toContain("2.0.0");
-  expect(joined).toContain("joc update");
+  expect(joined).toContain("jeo update");
 });
 
 test("renderUpdateBox - equal line widths", () => {

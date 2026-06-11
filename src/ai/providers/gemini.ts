@@ -37,7 +37,7 @@ export function buildGeminiPayload(messages: Message[], options: CallOptions): {
   if (!geminiModel || geminiModel === "claude-3-5-sonnet") geminiModel = "gemini-2.0-flash";
 
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
-  // Gemini requires strictly ALTERNATING user/model turns. joc histories can carry
+  // Gemini requires strictly ALTERNATING user/model turns. jeo histories can carry
   // consecutive same-role messages (a compaction summary prepended before a tool-result,
   // back-to-back tool results, etc.), so coalesce adjacent same-role turns into one
   // content block — otherwise the API rejects the request mid-session.
@@ -89,7 +89,7 @@ const CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com";
 
 /** gemini-cli identification headers Cloud Code Assist expects (gjc parity). */
 export function getGeminiCliHeaders(modelId?: string): Record<string, string> {
-  const version = process.env.JOC_GEMINI_CLI_VERSION || "0.45.2";
+  const version = (process.env.JEO_GEMINI_CLI_VERSION ?? process.env.JOC_GEMINI_CLI_VERSION) || "0.45.2";
   return {
     "User-Agent": `GeminiCLI/${version}/${modelId ?? "gemini-2.5-flash"} (${process.platform}; ${process.arch}; terminal)`,
     "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
@@ -100,7 +100,7 @@ export function getGeminiCliHeaders(modelId?: string): Record<string, string> {
  * Cloud Code Assist request for a Google OAuth (gemini-cli) credential — the
  * gemini-cli/gjc call path. OAuth tokens carry cloud-platform scope and target
  * cloudcode-pa.googleapis.com, NOT the public generativelanguage API, so a
- * plain `joc auth login gemini` works without any GEMINI_API_KEY. The body
+ * plain `jeo auth login gemini` works without any GEMINI_API_KEY. The body
  * wraps the standard payload as `{ project, model, request }`.
  */
 export function geminiCliRequest(messages: Message[], options: CallOptions, accessToken: string, projectId: string): { url: string; headers: Record<string, string>; body: string } {

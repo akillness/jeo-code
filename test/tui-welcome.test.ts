@@ -1,5 +1,4 @@
 import { test, expect } from "bun:test";
-import os from "node:os";
 import { renderWelcome } from "../src/tui/components/welcome";
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -18,8 +17,8 @@ test("box has top/bottom borders and title with version", () => {
   const topLine = lines[0]!;
   const bottomLine = lines[lines.length - 1]!;
 
-  expect(topLine).toContain("joc v1.2.3");
-  expect(topLine).toContain("evolution forge");
+  expect(topLine).toContain("jeo v1.2.3");
+  expect(topLine).toContain("JEO forge");
   expect(topLine.startsWith("╭")).toBe(true);
   expect(topLine.endsWith("╮")).toBe(true);
 
@@ -71,6 +70,22 @@ test("every line has equal visible width", () => {
   }
 });
 
+test("hero column: brand, tagline, grand DNA Claw symbol, centered", () => {
+  const lines = renderWelcome({
+    version: "1.2.3",
+    model: "claude-3-5-sonnet",
+    provider: "anthropic",
+    cols: 80,
+    unicode: true,
+    color: false,
+  });
+  const joined = lines.map(stripAnsi).join("\n");
+  expect(joined).toContain("Jeo forge");
+  expect(joined).toContain("evolve · act · prove");
+  // Grand symbol caption (spaced caption from the grand art block).
+  expect(joined).toContain("D N A · C L A W");
+});
+
 test("model + provider pills present", () => {
   const lines = renderWelcome({
     version: "1.2.3",
@@ -98,57 +113,51 @@ test("provider pill omitted when missing", () => {
   expect(joined).not.toContain("[ ◇");
 });
 
-test("cwd rendered ~-shortened", () => {
-  const home = process.env.HOME ?? os.homedir();
-  const cwd = home + "/my-awesome-project";
+test("workspace / session details no longer render inside the hero box (gjc parity)", () => {
   const lines = renderWelcome({
     version: "1.2.3",
     model: "claude-3-5-sonnet",
-    cwd,
     cols: 80,
     unicode: true,
     color: false,
+    cwd: "/Users/jangyoung/my-awesome-project",
+    recentSessions: [{ name: "s1", timeAgo: "1m ago" }],
   });
-
   const joined = lines.map(stripAnsi).join("\n");
-  expect(joined).toContain("~/my-awesome-project");
-  expect(joined).not.toContain(home + "/my-awesome-project");
+  expect(joined).not.toContain("Flow keys");
+  expect(joined).not.toContain("Workspace");
+  expect(joined).not.toContain("Session trail");
+  expect(joined).not.toContain("my-awesome-project");
 });
 
-test("recent sessions listed and capped at 3", () => {
+test("an overlong model pill truncates instead of breaking the border", () => {
+  const model = "antigravity/gemini-3.1-pro-extremely-long-model-identifier-overflowing";
+  const cols = 60;
+  const W = Math.min(100, cols - 2);
   const lines = renderWelcome({
     version: "1.2.3",
-    model: "claude-3-5-sonnet",
-    cols: 80,
+    model,
+    provider: "antigravity",
+    cols,
     unicode: true,
     color: false,
-    recentSessions: [
-      { name: "s1", timeAgo: "1m ago" },
-      { name: "s2", timeAgo: "2m ago" },
-      { name: "s3", timeAgo: "3m ago" },
-      { name: "s4", timeAgo: "4m ago" },
-    ],
   });
-
-  const joined = lines.map(stripAnsi).join("\n");
-  expect(joined).toContain("• s1 (1m ago)");
-  expect(joined).toContain("• s2 (2m ago)");
-  expect(joined).toContain("• s3 (3m ago)");
-  expect(joined).not.toContain("s4");
+  for (const line of lines) {
+    expect(stripAnsi(line).length).toBe(W);
+  }
 });
 
-test("empty sessions -> No saved trails", () => {
+test("narrow box falls back to the compact DNA Claw symbol", () => {
   const lines = renderWelcome({
     version: "1.2.3",
     model: "claude-3-5-sonnet",
-    cols: 80,
+    cols: 34, // inner 30 < grand art width
     unicode: true,
     color: false,
-    recentSessions: [],
   });
-
   const joined = lines.map(stripAnsi).join("\n");
-  expect(joined).toContain("No saved trails");
+  expect(joined).toContain("[ DNA Claw ]");
+  expect(joined).not.toContain("D N A · C L A W");
 });
 
 test("narrow cols (<30) -> single-line fallback", () => {
@@ -160,7 +169,7 @@ test("narrow cols (<30) -> single-line fallback", () => {
     color: false,
   });
 
-  expect(lines).toEqual(["joc v1.2.3 · claude-3-5-sonnet"]);
+  expect(lines).toEqual(["jeo v1.2.3 · claude-3-5-sonnet"]);
 });
 
 test("color:false emits no ANSI", () => {
@@ -184,16 +193,27 @@ test("color:false emits no ANSI", () => {
   }
 });
 
-test("single column layout when W < 64", () => {
+test("two-tone depth: lit top/left edges vs shaded bottom/right edges", () => {
+  const lit = (s: string) => `<L>${s}</L>`;
+  const shadow = (s: string) => `<S>${s}</S>`;
   const lines = renderWelcome({
     version: "1.2.3",
     model: "claude-3-5-sonnet",
-    cols: 60,
+    provider: "anthropic",
+    cols: 80,
     unicode: true,
-    color: false,
+    color: true,
+    accent: lit,
+    accentShadow: shadow,
   });
-
-  const joined = lines.map(stripAnsi).join("\n");
-  expect(joined).toContain("[ ◆ claude-3-5-sonnet ]");
-  expect(joined).not.toContain("Flow keys");
+  // Top border is lit; bottom border is shaded.
+  expect(lines[0]!).toContain("<L>");
+  expect(lines[0]!).not.toContain("<S>");
+  expect(lines[lines.length - 1]!).toContain("<S>");
+  expect(lines[lines.length - 1]!).not.toContain("<L>");
+  // Every content row: left edge lit, right edge shaded.
+  for (const row of lines.slice(1, -1)) {
+    expect(row.startsWith("<L>│</L>")).toBe(true);
+    expect(row.endsWith("<S>│</S>")).toBe(true);
+  }
 });

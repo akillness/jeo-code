@@ -22,7 +22,7 @@ export interface AuthSnapshot {
 
 const inFlightRefresh = new Map<AuthProvider, Promise<any>>();
 function getLockPath(provider: AuthProvider): string {
-  const dir = process.env.JOC_CONFIG_DIR || path.join(os.homedir(), ".joc");
+  const dir = (process.env.JEO_CONFIG_DIR ?? process.env.JOC_CONFIG_DIR) || path.join(os.homedir(), ".joc");
   return path.join(dir, `oauth-${provider}.lock`);
 }
 
@@ -31,6 +31,12 @@ export async function acquireLock(provider: AuthProvider, timeoutMs = 5000): Pro
   const dir = path.dirname(lockPath);
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 
+  // `timeoutMs` is the STALENESS threshold for a dead holder's lock file; the
+  // acquisition wait itself is bounded at 2× that. The previous unbounded 50ms
+  // retry loop spun forever when the stale lock could not be unlinked (or was
+  // recreated under churn by concurrent sessions) — a mid-turn OAuth refresh
+  // then froze the whole agent turn with no diagnostic.
+  const deadline = Date.now() + Math.max(timeoutMs * 2, 1_000);
   while (true) {
     try {
       const handle = await fs.open(lockPath, "wx");
@@ -57,6 +63,19 @@ export async function acquireLock(provider: AuthProvider, timeoutMs = 5000): Pro
         } catch {}
       }
     }
+    if (Date.now() >= deadline) {
+      // Deadline reached: the holder is dead or wedged. Steal once — the lock
+      // guards a short config read-modify-write, so waiting longer only hangs
+      // the caller (and with it the live turn that triggered the refresh).
+      await fs.unlink(lockPath).catch(() => {});
+      const handle = await fs.open(lockPath, "wx").catch(() => null);
+      if (handle) {
+        await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: Date.now(), stolen: true }), "utf-8");
+        await handle.close();
+        return;
+      }
+      throw new Error(`OAuth lock for ${provider} could not be acquired within ${Math.max(timeoutMs * 2, 1_000)}ms (${lockPath})`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
@@ -77,16 +96,16 @@ export async function resolveCredential(provider: AuthProvider): Promise<Credent
   const cfg = await readGlobalConfig();
   let stored = cfg.oauth?.[provider];
 
-  // Auto-import gemini-cli credentials (~/.gemini/oauth_creds.json) when joc has no
+  // Auto-import gemini-cli credentials (~/.gemini/oauth_creds.json) when jeo has no
   // gemini OAuth of its own — the out-of-the-box antigravity/gemini unlock. Hermetic
   // under tests/custom config sandboxes: if JOC_CONFIG_DIR is explicitly set, only an
   // explicit JOC_GEMINI_CREDS_PATH opts in, so tests never read the developer's real
   // credentials or refresh real tokens.
-  const credsOverride = process.env.JOC_GEMINI_CREDS_PATH;
-  const configDirOverridden = !!process.env.JOC_CONFIG_DIR;
+  const credsOverride = (process.env.JEO_GEMINI_CREDS_PATH ?? process.env.JOC_GEMINI_CREDS_PATH);
+  const configDirOverridden = !!(process.env.JEO_CONFIG_DIR ?? process.env.JOC_CONFIG_DIR);
   if (!stored && provider === "gemini" && (credsOverride || !configDirOverridden)) {
     try {
-      const credsPath = process.env.JOC_GEMINI_CREDS_PATH || path.join(os.homedir(), ".gemini", "oauth_creds.json");
+      const credsPath = (process.env.JEO_GEMINI_CREDS_PATH ?? process.env.JOC_GEMINI_CREDS_PATH) || path.join(os.homedir(), ".gemini", "oauth_creds.json");
       const content = await fs.readFile(credsPath, "utf-8");
       const creds = JSON.parse(content);
       if (creds && creds.access_token) {

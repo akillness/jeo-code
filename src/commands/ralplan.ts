@@ -45,7 +45,7 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
   const interviewState = await readWorkflowState("deep-interview", cwd);
   if (!interviewState || interviewState.current_phase !== "complete" || !interviewState.seed_path) {
     log(
-      `[ERROR] No crystallized requirements found. Please run 'joc deep-interview' to crystallize requirements first.`
+      `[ERROR] No crystallized requirements found. Please run 'jeo deep-interview' to crystallize requirements first.`
     );
     return { ok: false, reason: "No crystallized requirements found" };
   }
@@ -151,7 +151,7 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
           cleanPlan = fallback;
           log("[ralplan] Using an earlier valid pass output (Critic output was unparseable).");
         } else {
-          log("[ralplan] WARNING: no pass produced a schema-valid plan. Saving the Critic output, but 'joc team' may reject it — review/edit the plan or re-run with a stronger model.");
+          log("[ralplan] WARNING: no pass produced a schema-valid plan. Saving the Critic output, but 'jeo team' may reject it — review/edit the plan or re-run with a stronger model.");
         }
       }
     }
@@ -173,8 +173,8 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     log(cleanPlan);
     log("-----------------------------------------");
     log(`\n[Handoff Ready] The blueprint is prepared but NOT yet approved.`);
-    log(`  1) Review it, then approve:  joc approve "${planPath}"`);
-    log(`  2) Execute the plan:         joc team`);
+    log(`  1) Review it, then approve:  jeo approve "${planPath}"`);
+    log(`  2) Execute the plan:         jeo team`);
 
     if (opts.onProgress) {
       opts.onProgress({ skill: "ralplan", phase: "complete" });

@@ -50,7 +50,7 @@ afterEach(() => {
 });
 
 test("readGlobalConfig: falls back to defaults when on-disk config is invalid", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-cfg-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-cfg-"));
   await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({ defaultModel: 123 }));
   process.env.JOC_CONFIG_DIR = dir;
   process.env.JOC_DEFAULT_MODEL = "fallback-model";
@@ -62,7 +62,7 @@ test("readGlobalConfig: falls back to defaults when on-disk config is invalid", 
 });
 
 test("readGlobalConfig: loads a valid on-disk config", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-cfg-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-cfg-"));
   await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({ defaultModel: "claude-3-5-haiku", providers: {} }));
   process.env.JOC_CONFIG_DIR = dir;
   const cfg = await readGlobalConfig();

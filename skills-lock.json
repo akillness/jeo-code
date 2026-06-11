@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "spec-stack": {
+      "source": "akillness/oh-my-skills",
+      "sourceType": "github",
+      "computedHash": "29136bca10a7dbaba52212e5a2a03991d89a30c037d557dd4ab365fad6cf01c0"
+    }
+  }
+}

@@ -7,7 +7,7 @@ test("evolve is a registered command", () => {
   expect(findCommand("evolve")).toBeDefined();
 });
 
-test("joc evolve (default) renders all five stages", async () => {
+test("jeo evolve (default) renders all five stages", async () => {
   const out: string[] = [];
   await runEvolveCommand(["--no-color"], { write: s => out.push(s) });
   const text = out.join("");
@@ -16,13 +16,13 @@ test("joc evolve (default) renders all five stages", async () => {
   expect(text).toContain("Stage 5/5");
 });
 
-test("joc evolve --no-color emits no ANSI escapes", async () => {
+test("jeo evolve --no-color emits no ANSI escapes", async () => {
   const out: string[] = [];
   await runEvolveCommand(["--no-color"], { write: s => out.push(s) });
   expect(out.join("").includes("\u001b[")).toBe(false);
 });
 
-test("joc evolve --step selects a single stage by step/max", async () => {
+test("jeo evolve --step selects a single stage by step/max", async () => {
   const out: string[] = [];
   await runEvolveCommand(["--no-color", "--step", "100", "--max", "100"], { write: s => out.push(s) });
   const text = out.join("");
@@ -32,7 +32,7 @@ test("joc evolve --step selects a single stage by step/max", async () => {
   expect((text.match(/── Stage /g) || []).length).toBe(1);
 });
 
-test("joc evolve --animate streams the stage without real delay", async () => {
+test("jeo evolve --animate streams the stage without real delay", async () => {
   const out: string[] = [];
   await runEvolveCommand(["--no-color", "--animate", "--step", "0", "--max", "25"], {
     write: s => out.push(s),
@@ -41,7 +41,7 @@ test("joc evolve --animate streams the stage without real delay", async () => {
   expect(out.join("")).toContain("Primordial Cell");
 });
 
-test("joc evolve --json emits the canonical stage model", async () => {
+test("jeo evolve --json emits the canonical stage model", async () => {
   const out: string[] = [];
   await runEvolveCommand(["--json"], { write: s => out.push(s) });
   const model = JSON.parse(out.join(""));
@@ -53,14 +53,14 @@ test("joc evolve --json emits the canonical stage model", async () => {
   expect(model.themes.map((t: { name: string }) => t.name)).toContain("matrix");
 });
 
-test("joc evolve --list-themes lists all themes", async () => {
+test("jeo evolve --list-themes lists all themes", async () => {
   const out: string[] = [];
   await runEvolveCommand(["--list-themes"], { write: s => out.push(s) });
   const text = out.join("");
   for (const name of ["cosmic", "matrix", "solar", "mono"]) expect(text).toContain(name);
 });
 
-test("joc evolve --list prints one track line per stage", async () => {
+test("jeo evolve --list prints one track line per stage", async () => {
   const out: string[] = [];
   await runEvolveCommand(["--list", "--no-color"], { write: s => out.push(s) });
   const lines = out.join("").trimEnd().split("\n");
@@ -68,7 +68,7 @@ test("joc evolve --list prints one track line per stage", async () => {
   for (const name of EVOLUTION_STAGE_NAMES) expect(out.join("")).toContain(name);
 });
 
-test("joc evolve --ascii --no-color emits no unicode and no ANSI", async () => {
+test("jeo evolve --ascii --no-color emits no unicode and no ANSI", async () => {
   const out: string[] = [];
   await runEvolveCommand(["--ascii", "--no-color", "--step", "100", "--max", "100"], { write: s => out.push(s) });
   const text = out.join("");
@@ -76,7 +76,7 @@ test("joc evolve --ascii --no-color emits no unicode and no ANSI", async () => {
   expect(/[^\x00-\x7f]/.test(text.replace(/[─—]/g, ""))).toBe(false); // header dashes excluded
 });
 
-test("joc evolve --gradient (theme matrix) paints truecolor when forced", async () => {
+test("jeo evolve --gradient (theme matrix) paints truecolor when forced", async () => {
   const out: string[] = [];
   const saved = { NO_COLOR: process.env.NO_COLOR, FORCE_COLOR: process.env.FORCE_COLOR, COLORTERM: process.env.COLORTERM, TERM: process.env.TERM };
   delete process.env.NO_COLOR;
@@ -94,7 +94,7 @@ test("joc evolve --gradient (theme matrix) paints truecolor when forced", async 
   expect(out.join("")).toContain("\u001b[38;2;"); // truecolor escapes present
 });
 
-test("joc evolve --loop animates frames with injected sleep (no real delay)", async () => {
+test("jeo evolve --loop animates frames with injected sleep (no real delay)", async () => {
   const out: string[] = [];
   let sleeps = 0;
   await runEvolveCommand(["--loop", "3", "--no-color", "--step", "5", "--max", "25"], {

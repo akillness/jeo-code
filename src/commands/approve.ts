@@ -29,7 +29,7 @@ export async function runApproveCommand(args: string[] = []): Promise<void> {
   // Read ralplan state
   const ralplanState = await readWorkflowState("ralplan", cwd);
   if (!ralplanState) {
-    console.log(`[ERROR] No ralplan workflow state found. Please run 'joc ralplan' first.`);
+    console.log(`[ERROR] No ralplan workflow state found. Please run 'jeo ralplan' first.`);
     process.exitCode = 1;
     return;
   }
@@ -56,7 +56,7 @@ export async function runApproveCommand(args: string[] = []): Promise<void> {
       `[ERROR] Provided plan path does not match the active plan in the ralplan state.\n` +
       `  provided: ${resolvedInputPath}\n` +
       `  active:   ${resolvedStatePath}\n` +
-      `  Run 'joc approve "${resolvedStatePath}"' to approve the active plan.`
+      `  Run 'jeo approve "${resolvedStatePath}"' to approve the active plan.`
     );
     process.exitCode = 1;
     return;

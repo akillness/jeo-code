@@ -36,7 +36,7 @@ export function renderUpdateBox(
   const lines = [
     paintBold("Update Available"),
     `New version ${latest} is available (current ${current}).`,
-    `Run: ${paintCyan("joc update")}`,
+    `Run: ${paintCyan("jeo update")}`,
   ];
 
   const mid = lines.map(line => {

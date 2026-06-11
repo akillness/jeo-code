@@ -7,7 +7,7 @@ import { readWorkflowState, writeWorkflowState } from "../src/agent/state";
 import { findCommand } from "../src/cli/runner";
 
 test("approve command: nonexistent plan rejection, validation, and idempotency", async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-approve-test-"));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-approve-test-"));
   const originalCwd = process.cwd;
   process.cwd = () => tempDir;
 

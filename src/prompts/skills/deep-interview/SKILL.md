@@ -1,6 +1,6 @@
 ---
 description: Socratic ambiguity gate; freezes a seed only when clarity is sufficient, with --auto for non-interactive clarification.
-command: 'joc deep-interview "<idea>"'
+command: 'jeo deep-interview "<idea>"'
 when: When an idea is vague and needs requirement gathering and refinement before planning.
 ---
 

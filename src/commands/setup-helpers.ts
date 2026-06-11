@@ -1,5 +1,5 @@
 /**
- * Pure helpers for the model/provider setting flow (`joc setup`). Extracted from
+ * Pure helpers for the model/provider setting flow (`jeo setup`). Extracted from
  * the readline-driven command so the validation, normalization, recommendation,
  * and summary logic is unit-testable without a TTY.
  */

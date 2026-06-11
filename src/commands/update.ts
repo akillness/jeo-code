@@ -231,7 +231,7 @@ export async function runUpdateCommandWith(args: string[], deps: UpdateDeps): Pr
 }
 
 function printUsage() {
-  console.log("Usage: joc update [options]");
+  console.log("Usage: jeo update [options]");
   console.log("");
   console.log("Check for and install updates for jeo-code.");
   console.log("");

@@ -69,7 +69,7 @@ test("OpenAI OAuth-only + non-Codex model fails fast", async () => {
   delete process.env.JOC_DEFAULT_MODEL;
   delete process.env.OPENAI_BASE_URL;
 
-  const tempConfigDir = path.join(os.tmpdir(), `joc-test-config-${Math.random().toString(36).slice(2)}`);
+  const tempConfigDir = path.join(os.tmpdir(), `jeo-test-config-${Math.random().toString(36).slice(2)}`);
   await fs.mkdir(tempConfigDir, { recursive: true });
   process.env.JOC_CONFIG_DIR = tempConfigDir;
 
@@ -115,7 +115,7 @@ test("OpenAI OAuth-only + non-Codex model does NOT fail fast when base URL is co
   delete process.env.JOC_DEFAULT_MODEL;
   delete process.env.OPENAI_BASE_URL;
 
-  const tempConfigDir = path.join(os.tmpdir(), `joc-test-config-${Math.random().toString(36).slice(2)}`);
+  const tempConfigDir = path.join(os.tmpdir(), `jeo-test-config-${Math.random().toString(36).slice(2)}`);
   await fs.mkdir(tempConfigDir, { recursive: true });
   process.env.JOC_CONFIG_DIR = tempConfigDir;
 

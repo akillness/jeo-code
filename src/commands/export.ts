@@ -107,7 +107,7 @@ ${messageHtml}
 }
 
 /**
- * `joc export [id] [--json] [--system] [--html] [--out <path>]` — print a saved session transcript
+ * `jeo export [id] [--json] [--system] [--html] [--out <path>]` — print a saved session transcript
  * (Markdown by default; `--json` for structured; `--system` to include system
  * messages). Defaults to the latest session when no id is given.
  */
@@ -159,7 +159,7 @@ export async function runExportCommand(args: string[] = []): Promise<void> {
       const html = renderSessionHtml(header, picked);
       const resolvedOutPath = outPath
         ? path.resolve(process.cwd(), outPath)
-        : path.join(process.cwd(), `joc-session-${id}.html`);
+        : path.join(process.cwd(), `jeo-session-${id}.html`);
       await fs.writeFile(resolvedOutPath, html, "utf8");
       console.log(resolvedOutPath);
     } catch (err) {

@@ -2,7 +2,7 @@
  * Live model discovery — query a provider's `models` endpoint with the resolved
  * credential (OAuth bearer or API key) and return the model ids the account can
  * actually use. This powers the TUI `/models` / `/model` / `/provider` flows and
- * `joc models`, so users pick from the real, logged-in catalog instead of a
+ * `jeo models`, so users pick from the real, logged-in catalog instead of a
  * static alias guess.
  *
  * Network access is injectable (`fetchImpl`) and every call is timeout-bounded so
@@ -118,7 +118,7 @@ export function discoveryRequest(
 
 /**
  * OpenAI `/v1/models` lists every model family — embeddings, audio/tts, image, moderation,
- * realtime — but joc only calls chat/completions. Drop the families that can never serve a
+ * realtime — but jeo only calls chat/completions. Drop the families that can never serve a
  * chat turn so pickers never offer a model that fails at call time.
  */
 function isOpenAiChatModel(id: string): boolean {

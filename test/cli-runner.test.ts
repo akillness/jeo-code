@@ -32,12 +32,12 @@ test("dispatch: --version prints and returns 0", async () => {
   console.log = (...a: unknown[]) => logs.push(a.join(" "));
   let code: number;
   try {
-    code = await dispatch(["--version"], { appName: "joc", version: "9.9.9" });
+    code = await dispatch(["--version"], { appName: "jeo", version: "9.9.9" });
   } finally {
     console.log = orig;
   }
   expect(code).toBe(0);
-  expect(logs.join("\n")).toContain("joc v9.9.9");
+  expect(logs.join("\n")).toContain("jeo v9.9.9");
 });
 
 test("dispatch: --tmux --version and --tmux --help stay global", async () => {
@@ -45,13 +45,13 @@ test("dispatch: --tmux --version and --tmux --help stay global", async () => {
   const orig = console.log;
   console.log = (...a: unknown[]) => logs.push(a.join(" "));
   try {
-    expect(await dispatch(["--tmux", "--version"], { appName: "joc", version: "9.9.9" })).toBe(0);
-    expect(await dispatch(["--tmux", "--help"], { appName: "joc", version: "9.9.9" })).toBe(0);
+    expect(await dispatch(["--tmux", "--version"], { appName: "jeo", version: "9.9.9" })).toBe(0);
+    expect(await dispatch(["--tmux", "--help"], { appName: "jeo", version: "9.9.9" })).toBe(0);
   } finally {
     console.log = orig;
   }
   const text = logs.join("\n");
-  expect(text).toContain("joc v9.9.9");
+  expect(text).toContain("jeo v9.9.9");
   expect(text).toContain("Options:");
   expect(text).not.toContain("Starting new tmux session");
 });
@@ -62,7 +62,7 @@ test("dispatch: unknown command returns 1 and suggests a near match", async () =
   console.log = (...a: unknown[]) => logs.push(a.join(" "));
   let code: number;
   try {
-    code = await dispatch(["doctr"], { appName: "joc", version: "0.0.0" });
+    code = await dispatch(["doctr"], { appName: "jeo", version: "0.0.0" });
   } finally {
     console.log = orig;
   }
@@ -74,7 +74,7 @@ test("dispatch: unknown command returns 1 and suggests a near match", async () =
 });
 
 test("renderHelp lists every command", () => {
-  const help = renderHelp({ appName: "joc", version: "0.0.0" });
+  const help = renderHelp({ appName: "jeo", version: "0.0.0" });
   expect(help).toContain("launch");
   expect(help).toContain("doctor");
   expect(help).toContain("ultragoal");
@@ -89,13 +89,13 @@ test("dispatch: per-command --help prints that command's usage without running i
   console.log = (...a: unknown[]) => logs.push(a.join(" "));
   let code: number;
   try {
-    code = await dispatch(["deep-interview", "--help"], { appName: "joc", version: "0.0.0" });
+    code = await dispatch(["deep-interview", "--help"], { appName: "jeo", version: "0.0.0" });
   } finally {
     console.log = orig;
   }
   expect(code).toBe(0);
   const text = logs.join("\n");
-  expect(text).toContain("Usage: joc deep-interview");
+  expect(text).toContain("Usage: jeo deep-interview");
   expect(text).toContain("Socratic"); // the command summary, not the global help
   expect(text).not.toContain("Commands:"); // global help not printed
 });
@@ -106,7 +106,7 @@ test("dispatch: --list-models routes to GJC-style catalog output", async () => {
   console.log = (...a: unknown[]) => logs.push(a.join(" "));
   let code: number;
   try {
-    code = await dispatch(["--list-models", "gpt"], { appName: "joc", version: "0.0.0" });
+    code = await dispatch(["--list-models", "gpt"], { appName: "jeo", version: "0.0.0" });
   } finally {
     console.log = orig;
   }
@@ -122,7 +122,7 @@ test("dispatch: --models routes to the models command", async () => {
   console.log = (...a: unknown[]) => logs.push(a.join(" "));
   let code: number;
   try {
-    code = await dispatch(["--models", "--catalog", "gpt"], { appName: "joc", version: "0.0.0" });
+    code = await dispatch(["--models", "--catalog", "gpt"], { appName: "jeo", version: "0.0.0" });
   } finally {
     console.log = orig;
   }
@@ -137,7 +137,7 @@ test("dispatch: tmux plus --models still routes to models listing", async () => 
   console.log = (...a: unknown[]) => logs.push(a.join(" "));
   let code: number;
   try {
-    code = await dispatch(["--tmux", "--models", "--catalog", "gpt"], { appName: "joc", version: "0.0.0" });
+    code = await dispatch(["--tmux", "--models", "--catalog", "gpt"], { appName: "jeo", version: "0.0.0" });
   } finally {
     console.log = orig;
   }
@@ -153,7 +153,7 @@ test("dispatch: tmux plus --list-models still routes to catalog listing", async 
   console.log = (...a: unknown[]) => logs.push(a.join(" "));
   let code: number;
   try {
-    code = await dispatch(["--tmux", "--list-models", "gemini"], { appName: "joc", version: "0.0.0" });
+    code = await dispatch(["--tmux", "--list-models", "gemini"], { appName: "jeo", version: "0.0.0" });
   } finally {
     console.log = orig;
   }
@@ -167,7 +167,7 @@ test("dispatch: launch plus tmux model-list flags routes to models command", asy
   console.log = (...a: unknown[]) => logs.push(a.join(" "));
   let code: number;
   try {
-    code = await dispatch(["launch", "--tmux", "--list-models=gemini"], { appName: "joc", version: "0.0.0" });
+    code = await dispatch(["launch", "--tmux", "--list-models=gemini"], { appName: "jeo", version: "0.0.0" });
   } finally {
     console.log = orig;
   }
@@ -181,7 +181,7 @@ test("dispatch: unknown command with later --models is not hijacked", async () =
   console.log = (...a: unknown[]) => logs.push(a.join(" "));
   let code: number;
   try {
-    code = await dispatch(["definitely-not-a-cmd", "--models"], { appName: "joc", version: "0.0.0" });
+    code = await dispatch(["definitely-not-a-cmd", "--models"], { appName: "jeo", version: "0.0.0" });
   } finally {
     console.log = orig;
   }

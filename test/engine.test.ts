@@ -115,8 +115,9 @@ test("runAgentLoop: stops on repeated identical tool calls (weak-model no-progre
   });
   expect(result.done).toBe(false);
   expect(result.doneReason).toContain("repeated the same 'write' call");
-  // Stops on the 3rd identical call → at most 2 executions, well under maxSteps.
-  expect(writes).toBeLessThanOrEqual(2);
+  // Repeat detection runs BEFORE the repeated step executes → the 3rd identical
+  // (potentially mutating) call must never run; the guard trips on sight.
+  expect(writes).toBe(2);
   expect(calls).toBeLessThan(25);
 });
 
@@ -235,6 +236,8 @@ test("runAgentLoop: exhausted step budget triggers a no-tools consolidation wrap
   const result = await runAgentLoop([{ role: "user", content: "go" }], {
     cwd: process.cwd(),
     maxSteps: 3,
+    // Legacy fixed counter (extensions off) — the consolidation contract under test.
+    budget: { maxExtensions: 0 },
     tools: { spin: async () => ({ success: true, output: "ok" }) },
   });
   expect(result.done).toBe(false);

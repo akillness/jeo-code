@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { stageIndexForStep, clampStageIndex, type StageGradient } from "./evolution";
-import { applyGradient, hexToRgb, ColorLevel } from "./color";
+import { applyGradient, hexToRgb, ColorLevel, animatedGradientText } from "./color";
 
 export interface AsciiStage {
   name: string;
@@ -13,6 +13,14 @@ export interface AsciiStage {
    * the fallback when `frames` is absent. Frames should match `art`'s line count.
    */
   frames?: string[][];
+  /**
+   * Optional ASCII-only `art`/`frames` used when the caller passes `unicode: false`
+   * (terminals that cannot render box-drawing / geometric glyphs). When absent the
+   * stage's normal `art`/`frames` are used as-is (the other stages are already
+   * ASCII-clean). Row counts should match so per-line colors stay aligned.
+   */
+  asciiArt?: string[];
+  asciiFrames?: string[][];
 }
 
 export const EVOLUTION_STAGES: AsciiStage[] = [
@@ -20,33 +28,82 @@ export const EVOLUTION_STAGES: AsciiStage[] = [
     name: "Primordial Cell",
     color: s => chalk.cyan(s),
     art: [
-      "      .---.      ",
-      "     / o o \\     ",
-      "     \\  -  /     ",
-      "      '---'      ",
+      "   ○           ○   ",
+      "    ╲         ╱    ",
+      "     ╭───────╮     ",
+      "     │ ◕ § ◕ │     ",
+      "     │ · ‿ · │     ",
+      "     ╰───────╯     ",
+      "    ╱ ╲     ╱ ╲    ",
       " [Primordial Cell]"
     ],
     lineColors: [
       chalk.cyan,
       chalk.cyan,
       chalk.cyan,
+      s => chalk.bold.cyan(s),
+      chalk.cyan,
+      chalk.cyan,
       chalk.cyan,
       s => chalk.bold.cyan(s)
     ],
-    // Pulsing membrane + nucleus (a primordial cell "breathing").
+    // A glowing primordial cell after assets/character.png: antennae with pulsing
+    // tips, a round membrane, big kawaii eyes flanking an inner DNA helix (§/≋), a
+    // smile, and crab-like legs. Two frames "breathe": blink + helix pulse + leg swing.
+    // Every glyph is display-width 1 (box-drawing + ambiguous-width geometrics the
+    // rest of the TUI already uses) so renderAsciiArt's length-based padding and
+    // app.ts/welcome.ts's visibleWidth centering stay in lockstep.
     frames: [
       [
-        "      .---.      ",
-        "     / o o \\     ",
-        "     \\  -  /     ",
-        "      '---'      ",
+        "   ○           ○   ",
+        "    ╲         ╱    ",
+        "     ╭───────╮     ",
+        "     │ ◕ § ◕ │     ",
+        "     │ · ‿ · │     ",
+        "     ╰───────╯     ",
+        "    ╱ ╲     ╱ ╲    ",
         " [Primordial Cell]"
       ],
       [
-        "      .===.      ",
-        "     / O O \\     ",
-        "     \\  ~  /     ",
-        "      '==='      ",
+        "   ◉           ◉   ",
+        "    ╲         ╱    ",
+        "     ╭───────╮     ",
+        "     │ ◔ ≋ ◔ │     ",
+        "     │ ° ‿ ° │     ",
+        "     ╰───────╯     ",
+        "     ╲ ╱   ╲ ╱     ",
+        " [Primordial Cell]"
+      ]
+    ],
+    asciiArt: [
+      "   o           o   ",
+      "    \\         /    ",
+      "     .-------.     ",
+      "     | o 8 o |     ",
+      "     |  \\_/  |     ",
+      "     '-------'     ",
+      "    / \\     / \\    ",
+      " [Primordial Cell]"
+    ],
+    asciiFrames: [
+      [
+        "   o           o   ",
+        "    \\         /    ",
+        "     .-------.     ",
+        "     | o 8 o |     ",
+        "     |  \\_/  |     ",
+        "     '-------'     ",
+        "    / \\     / \\    ",
+        " [Primordial Cell]"
+      ],
+      [
+        "   O           O   ",
+        "    \\         /    ",
+        "     .-------.     ",
+        "     | - % - |     ",
+        "     |  \\_/  |     ",
+        "     '-------'     ",
+        "     \\ /   \\ /     ",
         " [Primordial Cell]"
       ]
     ]
@@ -242,6 +299,9 @@ export interface RenderAsciiOptions {
   gradient?: StageGradient;
   /** Color tier for gradient rendering (default TrueColor). */
   colorLevel?: ColorLevel;
+  /** Use the stage's ASCII-only `asciiArt`/`asciiFrames` fallback when false
+   *  (terminals without box-drawing/geometric glyph support). Default true. */
+  unicode?: boolean;
 }
 
 /**
@@ -252,7 +312,21 @@ export interface RenderAsciiOptions {
  */
 export function renderAsciiArt(stage: AsciiStage, opts: RenderAsciiOptions = {}): string[] {
   const useColor = opts.color !== false;
-  const source = opts.frame !== undefined ? stageFrame(stage, opts.frame) : stage.art;
+  const useUnicode = opts.unicode !== false;
+  // ASCII-fallback source set: a non-unicode terminal gets the stage's plain-ASCII
+  // art/frames (when defined) instead of box-drawing/geometric glyphs that would
+  // render as tofu boxes. stageBlocks/stageFrame keep using the unicode frames so
+  // stageWidth()/stageHeight() invariants are unaffected.
+  const frameSet =
+    !useUnicode && stage.asciiFrames && stage.asciiFrames.length > 0 ? stage.asciiFrames : stageBlocks(stage);
+  const baseArt = !useUnicode && stage.asciiArt ? stage.asciiArt : stage.art;
+  let source: string[];
+  if (opts.frame !== undefined) {
+    const t = Number.isFinite(opts.frame) ? Math.trunc(opts.frame) : 0;
+    source = frameSet[((t % frameSet.length) + frameSet.length) % frameSet.length]!;
+  } else {
+    source = baseArt;
+  }
   const width = opts.width ?? Math.max(0, ...source.map(l => l.length));
   if (opts.cols !== undefined && opts.cols < width) {
     return [];
@@ -337,4 +411,95 @@ export async function animateFrames(stage: AsciiStage, opts: AnimateFramesOption
     if (delay > 0 && f < total - 1) await sleep(delay);
   }
   return total;
+}
+export const DNA_CLAW_ART: string[] = [
+  "  ╭╯   ◆  ◆   ╰╮  ",
+  " ╭╯   ╱╲  ╱╲   ╰╮ ",
+  " ║    ╲ ╳ ╱     ║ ",
+  " ╰╮    ╳ ╳     ╭╯ ",
+  "  ╰╮  ╱ ╳ ╲   ╭╯  ",
+  "   ╚══○   ○══╝    ",
+  "      ║   ║       ",
+  "   [ DNA Claw ]   "
+];
+
+export const DNA_CLAW_ART_ASCII: string[] = [
+  "  /{   *  *   }\\  ",
+  " /{   / \\ / \\  }\\ ",
+  " |    \\  X  /   | ",
+  " \\{    X X     }/ ",
+  "  \\{  / X \\   }/  ",
+  "   \\==o   o==/    ",
+  "      |   |       ",
+  "   [ DNA Claw ]   "
+];
+
+/** Grand hero variant for the welcome forge box (gjc-style spacious banner):
+ *  a wide claw whose pincers frame a twisting DNA helix. Width-1 glyphs only
+ *  (box drawing + diagonals + geometrics) so padding/centering math stays exact. */
+export const DNA_CLAW_ART_GRAND: string[] = [
+  "      ◆◆                    ◆◆      ",
+  "   ╭──╯╰──╮              ╭──╯╰──╮   ",
+  "  ╭╯      ╰╮   ╲╲  ╱╱   ╭╯      ╰╮  ",
+  " ╭╯        ║    ╲╳╳╱    ║        ╰╮ ",
+  " ║         ║     ╳╳     ║         ║ ",
+  " ║         ║    ╱╳╳╲    ║         ║ ",
+  " ╰╮        ║   ╱╱  ╲╲   ║        ╭╯ ",
+  "  ╰╮       ║   ╲╲  ╱╱   ║       ╭╯  ",
+  "   ╰──╮    ║    ╲╳╳╱    ║    ╭──╯   ",
+  "      ╰════○     ╳╳     ○════╯      ",
+  "           ║    ╱╳╳╲    ║           ",
+  "        [ D N A · C L A W ]         "
+];
+
+export const DNA_CLAW_ART_GRAND_ASCII: string[] = [
+  "      **                    **      ",
+  "   /--'`--\\              /--'`--\\   ",
+  "  /'      `\\   \\\\  //   /'      `\\  ",
+  " /'        |    \\XX/    |        `\\ ",
+  " |         |     XX     |         | ",
+  " |         |    /XX\\    |         | ",
+  " \\,        |   //  \\\\   |        ,/ ",
+  "  \\,       |   \\\\  //   |       ,/  ",
+  "   \\--,    |    \\XX/    |    ,--/   ",
+  "      \\====o     XX     o====/      ",
+  "           |    /XX\\    |           ",
+  "        [ D N A . C L A W ]         "
+];
+
+export function renderDnaClaw(opts: {
+  cols?: number;
+  phase?: number;
+  unicode?: boolean;
+  color?: boolean;
+  colorLevel?: ColorLevel;
+  /** Grand hero variant (welcome forge box); default is the compact in-turn symbol. */
+  grand?: boolean;
+}): string[] {
+  const useUnicode = opts.unicode !== false;
+  const source = opts.grand
+    ? (useUnicode ? DNA_CLAW_ART_GRAND : DNA_CLAW_ART_GRAND_ASCII)
+    : (useUnicode ? DNA_CLAW_ART : DNA_CLAW_ART_ASCII);
+  const width = Math.max(0, ...source.map(l => l.length));
+
+  if (opts.cols !== undefined && opts.cols < width) {
+    return [];
+  }
+
+  const phase = opts.phase ?? 0;
+  const useColor = opts.color !== false;
+  const colorLevel = opts.colorLevel ?? ColorLevel.TrueColor;
+  const palette = ["#10ac84", "#48dbfb", "#8e44ad"];
+
+  return source.map((line, idx) => {
+    const padded = line.length < width ? line + " ".repeat(width - line.length) : line;
+    if (!useColor || colorLevel < ColorLevel.TrueColor) {
+      return padded;
+    }
+    return animatedGradientText(padded, palette, phase + idx * 0.07, { colorLevel });
+  });
+}
+
+export function dnaClawHeight(): number {
+  return DNA_CLAW_ART.length;
 }

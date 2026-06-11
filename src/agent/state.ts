@@ -140,7 +140,7 @@ const DEFAULT_MODEL = "claude-sonnet-4-5";
  * `JOC_CONFIG_DIR` takes precedence; otherwise `~/.joc`.
  */
 function globalConfigDir(): string {
-  return process.env.JOC_CONFIG_DIR || path.join(os.homedir(), ".joc");
+  return (process.env.JEO_CONFIG_DIR ?? process.env.JOC_CONFIG_DIR) || path.join(os.homedir(), ".joc");
 }
 function globalConfigPath(): string {
   return path.join(globalConfigDir(), "config.json");
@@ -172,13 +172,13 @@ function withEnvOverlay(cfg: Config): Config {
     ...cfg,
     providers,
     oauth,
-    defaultModel: process.env.JOC_DEFAULT_MODEL || cfg.defaultModel,
+    defaultModel: (process.env.JEO_DEFAULT_MODEL ?? process.env.JOC_DEFAULT_MODEL) || cfg.defaultModel,
     ollamaBaseUrl: cfg.ollamaBaseUrl || process.env.OLLAMA_HOST || "http://localhost:11434",
     openaiBaseUrl: cfg.openaiBaseUrl || process.env.OPENAI_BASE_URL,
     roles: {
-      smol: cfg.roles?.smol || process.env.JOC_SMOL_MODEL,
-      slow: cfg.roles?.slow || process.env.JOC_SLOW_MODEL,
-      plan: cfg.roles?.plan || process.env.JOC_PLAN_MODEL,
+      smol: cfg.roles?.smol || (process.env.JEO_SMOL_MODEL ?? process.env.JOC_SMOL_MODEL),
+      slow: cfg.roles?.slow || (process.env.JEO_SLOW_MODEL ?? process.env.JOC_SLOW_MODEL),
+      plan: cfg.roles?.plan || (process.env.JEO_PLAN_MODEL ?? process.env.JOC_PLAN_MODEL),
     },
   };
 }
@@ -190,7 +190,7 @@ function envDefaultConfig(): Config {
       openai: process.env.OPENAI_API_KEY,
       gemini: process.env.GEMINI_API_KEY,
     },
-    defaultModel: process.env.JOC_DEFAULT_MODEL || DEFAULT_MODEL,
+    defaultModel: (process.env.JEO_DEFAULT_MODEL ?? process.env.JOC_DEFAULT_MODEL) || DEFAULT_MODEL,
     thinkingLevel: "medium",
   };
 }
@@ -253,7 +253,7 @@ export async function readGlobalConfig(): Promise<Config> {
     if (!parsed.warned) {
       parsed.warned = true;
       const detail = parsed.kind === "invalid" ? ` is invalid (${parsed.message})` : " is not valid JSON";
-      process.stderr.write(`[joc] ${globalConfigPath()}${detail}; using environment defaults.\n`);
+      process.stderr.write(`[jeo] ${globalConfigPath()}${detail}; using environment defaults.\n`);
     }
     return withEnvOverlay(envDefaultConfig());
   }
@@ -362,5 +362,5 @@ export async function clearWorkflowState(
 
 /** Returns true if the agent is running in development mode (enables self-improvement). */
 export function isDevMode(): boolean {
-  return process.env.JOC_DEV_MODE === "1" || process.env.NODE_ENV === "development";
+  return (process.env.JEO_DEV_MODE ?? process.env.JOC_DEV_MODE) === "1" || process.env.NODE_ENV === "development";
 }

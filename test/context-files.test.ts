@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 async function createTempDir(): Promise<string> {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "joc-context-test-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "jeo-context-test-"));
 }
 
 test("loadProjectContext returns empty array and withProjectContext returns prompt unchanged when no files exist", async () => {

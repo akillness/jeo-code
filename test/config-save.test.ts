@@ -15,7 +15,7 @@ const saved = {
 };
 
 beforeEach(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-cfgsave-"));
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-cfgsave-"));
   process.env.JOC_CONFIG_DIR = dir;
 });
 

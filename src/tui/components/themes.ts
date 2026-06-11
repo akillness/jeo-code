@@ -107,14 +107,14 @@ export function getTheme(name: string | undefined): EvolutionTheme {
   return THEMES.find(t => t.name === lc) ?? COSMIC;
 }
 
-/** Theme names + descriptions for `joc evolve --list-themes`. */
+/** Theme names + descriptions for `jeo evolve --list-themes`. */
 export function listThemes(): { name: string; description: string }[] {
   return THEMES.map(t => ({ name: t.name, description: t.description }));
 }
 
 function getExplicitThemeFromConfig(env: EnvLike): string | undefined {
   const home = os.homedir ? os.homedir() : undefined;
-  const dir = env.JOC_CONFIG_DIR || (home ? path.join(home, ".joc") : undefined);
+  const dir = env.JEO_CONFIG_DIR || env.JOC_CONFIG_DIR || (home ? path.join(home, ".joc") : undefined);
   if (!dir) return undefined;
   const filePath = path.join(dir, "config.json");
   try {
@@ -129,12 +129,12 @@ function getExplicitThemeFromConfig(env: EnvLike): string | undefined {
   return undefined;
 }
 
-/** Resolve the active theme from the environment (`JOC_TUI_THEME`) or config, default cosmic. */
+/** Resolve the active theme from the environment (`JEO_TUI_THEME`, legacy `JOC_TUI_THEME`) or config, default cosmic. */
 export function resolveTheme(
   env: EnvLike = process.env,
   config?: { theme?: string; tuiTheme?: string; tui?: { theme?: string } }
 ): EvolutionTheme {
-  const explicit = env.JOC_TUI_THEME || config?.theme || config?.tuiTheme || config?.tui?.theme || getExplicitThemeFromConfig(env);
+  const explicit = env.JEO_TUI_THEME || env.JOC_TUI_THEME || config?.theme || config?.tuiTheme || config?.tui?.theme || getExplicitThemeFromConfig(env);
   if (explicit) {
     return getTheme(explicit);
   }
@@ -162,4 +162,13 @@ export function accentPaint(theme: EvolutionTheme): (s: string) => string {
   if (!theme.color) return (s: string) => s;
   const hex = theme.accent;
   return (s: string) => chalk.hex(hex)(s);
+}
+
+/** A dimmed accent painter for the "shaded" box edges (bottom/right). Paired with
+ *  `accentPaint` on the lit top/left edges, the two-tone contrast gives every
+ *  bordered panel a pseudo-3D depth cue. Identity when the theme is colorless. */
+export function accentShadowPaint(theme: EvolutionTheme): (s: string) => string {
+  if (!theme.color) return (s: string) => s;
+  const hex = theme.accent;
+  return (s: string) => chalk.dim(chalk.hex(hex)(s));
 }

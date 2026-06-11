@@ -4,7 +4,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { runPreToolHooks, runPostTurnHooks, loadHooks } from "../src/agent/hooks";
 
-const testDir = path.join(os.tmpdir(), `joc-hooks-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+const testDir = path.join(os.tmpdir(), `jeo-hooks-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 const globalConfigDir = path.join(testDir, "global-config");
 const projectDir = path.join(testDir, "project");
 

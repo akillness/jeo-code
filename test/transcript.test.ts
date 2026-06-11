@@ -11,7 +11,7 @@ const turn = (prompt: string, tool: string, args: Record<string, unknown>, ok: b
   { role: "assistant", content: JSON.stringify({ tool: "done", arguments: { reason: reply } }) },
 ];
 
-test("formatTranscript folds engine history into user/tool/joc blocks", () => {
+test("formatTranscript folds engine history into user/tool/jeo blocks", () => {
   const messages: Message[] = [
     { role: "system", content: "system prompt" },
     ...turn("read package.json", "read", { filePath: "package.json" }, true, "name is jeo-code"),
@@ -21,7 +21,7 @@ test("formatTranscript folds engine history into user/tool/joc blocks", () => {
   expect(text).toContain("user ▸");
   expect(text).toContain("  read package.json"); // prompt body, indented
   expect(text).toMatch(/✔ .*package\.json/);      // compact tool ledger line
-  expect(text).toContain("joc ◂");
+  expect(text).toContain("jeo ◂");
   expect(text).toContain("  name is jeo-code");
   expect(text).not.toContain("system prompt");     // system never shown
   expect(text).not.toContain("Tool [read] result"); // raw feedback folded away
@@ -37,7 +37,7 @@ test("formatTranscript marks failing tools and skips protocol bounces", () => {
   ];
   const out = formatTranscript(messages, { color: false, unicode: true }).map(stripAnsi).join("\n");
   expect(out).toMatch(/✗ .*bash/i);                // failure glyph from the result verdict
-  expect(out).toContain("  not json at all");      // prose reply shown as joc block
+  expect(out).toContain("  not json at all");      // prose reply shown as jeo block
   expect(out).not.toContain("Your last reply");    // correction bounce hidden
 });
 

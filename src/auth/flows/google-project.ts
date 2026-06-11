@@ -5,7 +5,7 @@
  * cloudaicompanionProject; when the account has none, onboard the default
  * (free) tier via v1internal:onboardUser and poll the long-running operation
  * until a managed project id is provisioned. This is how gemini-cli itself
- * obtains a project id, so plain `joc auth login gemini` users get Antigravity
+ * obtains a project id, so plain `jeo auth login gemini` users get Antigravity
  * access without ever setting GOOGLE_CLOUD_PROJECT.
  */
 

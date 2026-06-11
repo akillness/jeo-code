@@ -1,4 +1,4 @@
-/** OAuth flow types, mirroring gjc's oauth/types.ts (trimmed to joc's surface). */
+/** OAuth flow types, mirroring gjc's oauth/types.ts (trimmed to jeo's surface). */
 
 export interface OAuthCredentials {
   access: string;

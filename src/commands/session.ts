@@ -25,9 +25,9 @@ interface SessionInfo {
 }
 
 function printUsage(): void {
-  console.log("Usage: joc session [list] [--json]");
-  console.log("       joc session attach <name>");
-  console.log("       joc session rm/kill <name>");
+  console.log("Usage: jeo session [list] [--json]");
+  console.log("       jeo session attach <name>");
+  console.log("       jeo session rm/kill <name>");
 }
 
 async function getJocSessions(runTmux: RunTmuxFn): Promise<SessionInfo[] | null> {
@@ -44,7 +44,8 @@ async function getJocSessions(runTmux: RunTmuxFn): Promise<SessionInfo[] | null>
       const parts = trimmed.split("\t");
       if (parts.length < 3) continue;
       const [name, created, attached] = parts;
-      if (!name.startsWith("joc-")) continue;
+      // `jeo-` is the current prefix; `joc-` sessions from pre-rename builds stay manageable.
+      if (!name.startsWith("jeo-") && !name.startsWith("joc-")) continue;
 
       const createdSeconds = parseInt(created, 10);
       const createdIso = isNaN(createdSeconds) ? "" : new Date(createdSeconds * 1000).toISOString();
@@ -82,7 +83,7 @@ export async function runSessionCommandWith(args: string[], runTmux: RunTmuxFn):
       if (isJson) {
         console.log("[]");
       } else {
-        console.log("No active joc sessions found.");
+        console.log("No active jeo sessions found.");
       }
       process.exitCode = 0;
       return;
@@ -134,8 +135,8 @@ export async function runSessionCommandWith(args: string[], runTmux: RunTmuxFn):
       return;
     }
 
-    if (!name.startsWith("joc-")) {
-      console.log(`Error: Refusing to kill non-joc session '${name}'.`);
+    if (!name.startsWith("jeo-") && !name.startsWith("joc-")) {
+      console.log(`Error: Refusing to kill non-jeo session '${name}'.`);
       process.exitCode = 1;
       return;
     }

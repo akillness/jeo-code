@@ -85,7 +85,7 @@ export function lightHighlightLine(line: string, lang: string): string {
  * File bytes are untrusted display data: a raw `\x1b[2J`, OSC title set, lone `\r`
  * progress-overwrite, or a stray C0 byte can clear the screen, move the cursor, or
  * corrupt the gutter. Strip CR, expand tabs, and remove ANSI/C0 control sequences.
- * joc's own coloring is applied AFTER this, so no intended color is lost.
+ * jeo's own coloring is applied AFTER this, so no intended color is lost.
  */
 export function sanitizeForTerminal(line: string): string {
   return line

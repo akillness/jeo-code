@@ -9,7 +9,7 @@ afterEach(() => {
 });
 
 async function tmpDir(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), "joc-task-"));
+  return fs.mkdtemp(path.join(os.tmpdir(), "jeo-task-"));
 }
 
 test("createTaskTool: executor delegates, runs a tool, then completes on done", async () => {

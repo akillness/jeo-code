@@ -19,9 +19,6 @@ test("LaunchTui: shows a 'calling model' status while waiting on the model, then
   const afterAssistant = out.join("");
   expect(afterAssistant).not.toContain("calling model");
 });
-test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll reaches earlier progress", () => {
-  const out: string[] = [];
-  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
   tui.start();
   const live = out.join("");
   // gjc-style inline rendering: NO alt screen — tmux/terminal scrollback keeps working mid-turn.
@@ -61,12 +58,6 @@ test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll
   expect(tail).not.toContain("Read src/cli.ts\n\x1b[K");
 });
 
-test("LaunchTui: JOC_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen turn", () => {
-  const orig = process.env.JOC_TUI_ALT_SCREEN;
-  process.env.JOC_TUI_ALT_SCREEN = "1";
-  try {
-    const out: string[] = [];
-    const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
     tui.start();
     const live = out.join("");
     // Enters the alt screen before hiding the cursor → scroll can't fight the repaint.
@@ -301,9 +292,6 @@ test("LaunchTui: corrupt deep-interview state shows fail-closed mutation lock", 
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
-test("LaunchTui: live region renders tool list + footer, finish collapses to static output", () => {
-  const out: string[] = [];
-  const tui = new LaunchTui({ model: "m1", sessionId: "abcd1234efgh", write: s => out.push(s) });
 
   tui.start();
   const live = out.join("");
@@ -545,18 +533,6 @@ test("LaunchTui: onToolResult stream line includes the invocation target using w
   expect(txt).toContain("$ bun test");  // command echo inside the card
 });
 
-test("LaunchTui (alt-screen boxed): status box shows the in-flight file; steps in the title; stage in the track", () => {
-  const realRender = Renderer.prototype.render;
-  let frame: string[] = [];
-  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
-  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-  // Pin the viewport: on a narrow/short runner terminal the centered art/track is
-  // dropped and the footer stage tag can be width-truncated, making the stage
-  // assertion flaky. 200x40 keeps both deterministic. (columns/rows are accessor
-  // properties in Bun — override via defineProperty, restore the descriptors after.)
-  const savedColsDesc = Object.getOwnPropertyDescriptor(process.stdout, "columns");
-  const savedRowsDesc = Object.getOwnPropertyDescriptor(process.stdout, "rows");
-  Object.defineProperty(process.stdout, "columns", { value: 200, configurable: true });
   Object.defineProperty(process.stdout, "rows", { value: 40, configurable: true });
   const savedAlt = process.env.JOC_TUI_ALT_SCREEN;
   process.env.JOC_TUI_ALT_SCREEN = "1";

@@ -47,7 +47,7 @@ test("parseFlags: parses --no-skills, --skills, --no-tools, --tools, --system-pr
 });
 
 test("parseFlags: --system-prompt reading from @file", () => {
-  const tempFile = path.join(os.tmpdir(), `joc-temp-sysprompt-${Date.now()}.txt`);
+  const tempFile = path.join(os.tmpdir(), `jeo-temp-sysprompt-${Date.now()}.txt`);
   fs.writeFileSync(tempFile, "system prompt from file content", "utf8");
 
   try {
@@ -63,7 +63,7 @@ test("parseFlags: --system-prompt reading from @file", () => {
 });
 
 test("parseFlags: --system-prompt missing @file records error", () => {
-  const missingFile = path.join(os.tmpdir(), "joc-non-existent-sysprompt-file.txt");
+  const missingFile = path.join(os.tmpdir(), "jeo-non-existent-sysprompt-file.txt");
   const flags = parseFlags(["--system-prompt", `@${missingFile}`]);
   expect(flags.systemPromptRaw).toBe(`@${missingFile}`);
   expect(flags.systemPrompt).toBeUndefined();

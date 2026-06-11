@@ -12,7 +12,7 @@ import {
 } from "./protocol";
 import { TOOLS } from "./tools";
 
-const SERVER_INFO = { name: "joc-mcp", version: "0.1.0" };
+const SERVER_INFO = { name: "jeo-mcp", version: "0.1.0" };
 const PROTOCOL_VERSION = "2024-11-05";
 
 interface ServerOptions {
@@ -23,7 +23,7 @@ interface ServerOptions {
 export async function runMcpServer(options: ServerOptions = {}): Promise<void> {
   const tools = options.tools ?? TOOLS;
   const log = options.log ?? (line => process.stderr.write(`${line}\n`));
-  log(`joc-mcp v${SERVER_INFO.version} listening on stdio (${tools.length} tools)`);
+  log(`jeo-mcp v${SERVER_INFO.version} listening on stdio (${tools.length} tools)`);
 
   let buffer = "";
   const decoder = new TextDecoder();

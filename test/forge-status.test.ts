@@ -64,9 +64,9 @@ test("renderJocStatus separates progress, insight status, and forge rows", () =>
   expect(lines[0]).toContain("step 3/10");
   expect(lines[0]).not.toContain("Resolving type boundaries");
   expect(lines[1]).toContain("[STATUS]");
-  expect(lines[1]).toContain("joc status");
+  expect(lines[1]).toContain("jeo status");
   expect(lines[1]).toContain("Resolving type boundaries");
-  expect(lines[2]).toContain("joc forge");
+  expect(lines[2]).toContain("jeo forge");
   expect(lines[2]).toContain("tools 4 (2 ok / 1 fail / 1 running)");
   expect(lines[2]).toContain("mutation locked");
 });
@@ -167,7 +167,7 @@ test("renderJocStatus: forge line exposes the evolution stage (double helix) whe
     color: false, unicode: true,
   });
   const forgeLine = lines[2] ?? "";
-  expect(forgeLine).toContain("joc forge");
+  expect(forgeLine).toContain("jeo forge");
   expect(forgeLine).toContain("Double Helix (DNA)"); // stage identity exposed
   expect(forgeLine).toContain("forging read");        // current tool still shown
   // without a stage, the forge line omits it (no leading separator noise)
@@ -272,4 +272,28 @@ test("bash result divider uses ASCII rules under unicode:false and stays width-b
   expect(divider).toBeDefined();
   expect(divider!.startsWith("|") && divider!.endsWith("|")).toBe(true);
   expect(box.every(l => l.length <= 32)).toBe(true);
+});
+
+test("forge box two-tone depth: bottom border + right edge use the shadow painter", () => {
+  const lit = (s: string) => `<L>${s}</L>`;
+  const shadow = (s: string) => `<S>${s}</S>`;
+  const summary = summarizeForgeResult("bash", true, "hello world");
+  const box = formatForgeBox(summary, { width: 36, unicode: false, paint: lit, paintShadow: shadow });
+  // Top border lit, bottom border shaded.
+  expect(box[0]!).toContain("<L>");
+  expect(box[0]!).not.toContain("<S>");
+  expect(box[box.length - 1]!).toContain("<S>");
+  expect(box[box.length - 1]!).not.toContain("<L>");
+  // Interior rows end on the shaded right edge.
+  for (const row of box.slice(1, -1)) {
+    expect(row.endsWith("<S>|</S>")).toBe(true);
+  }
+});
+
+test("forge box color:false keeps single-tone borders byte-stable", () => {
+  const summary = summarizeForgeResult("bash", true, "hello");
+  const box = formatForgeBox(summary, { width: 30, unicode: false, color: false, paint: s => s });
+  for (const row of box) {
+    expect(row).not.toContain("\x1b[");
+  }
 });

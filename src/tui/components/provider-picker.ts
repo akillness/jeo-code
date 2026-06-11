@@ -1,6 +1,6 @@
 /**
  * Provider picker — turns live provider readiness into a `SelectList` for the
- * TUI `/provider` and `joc setup` flows. Ready providers are listed first and
+ * TUI `/provider` and `jeo setup` flows. Ready providers are listed first and
  * the recommended choice is the first ready provider. Pure builders.
  */
 import { SelectList, renderSelectList, type SelectItem, type RenderSelectOptions } from "./select-list";

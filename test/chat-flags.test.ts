@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { parseChatArgs } from "../src/commands/chat";
 
-// Regression: `joc chat --model X "hi"` used to swallow the flag into the message
+// Regression: `jeo chat --model X "hi"` used to swallow the flag into the message
 // and chat with the DEFAULT model — anthropic/antigravity selections never reached
 // the provider router.
 

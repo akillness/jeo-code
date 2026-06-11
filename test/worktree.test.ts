@@ -6,7 +6,7 @@ import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 
-const CTX = { appName: "joc", version: "9.9.9" };
+const CTX = { appName: "jeo", version: "9.9.9" };
 
 function captureLog<T>(fn: () => Promise<T>): Promise<{ result: T; out: string }> {
   const original = console.log;
@@ -23,7 +23,7 @@ function captureLog<T>(fn: () => Promise<T>): Promise<{ result: T; out: string }
 
 test("dispatch routes a bare leading --flag to launch (not 'unknown command')", async () => {
   const originalCwd = process.cwd();
-  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "joc-wt-route-"));
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "jeo-wt-route-"));
   try {
     process.chdir(dir);
     // `--list` is a launch flag: a leading global flag must route to launch,
@@ -41,7 +41,7 @@ test("dispatch routes a bare leading --flag to launch (not 'unknown command')", 
 test("dispatch still handles --version without routing to launch", async () => {
   const { result, out } = await captureLog(() => dispatch(["--version"], CTX));
   expect(result).toBe(0);
-  expect(out).toContain("joc v9.9.9");
+  expect(out).toContain("jeo v9.9.9");
 });
 
 test("dispatch reports unknown subcommands (non-flag) as before", async () => {
@@ -54,7 +54,7 @@ test("--worktree reuses an existing directory and chdirs into it", async () => {
   const oldTmux = process.env.JOC_TMUX_LAUNCHED;
   delete process.env.JOC_TMUX_LAUNCHED;
   const originalCwd = process.cwd();
-  const wt = await fsp.mkdtemp(path.join(os.tmpdir(), "joc-wt-existing-"));
+  const wt = await fsp.mkdtemp(path.join(os.tmpdir(), "jeo-wt-existing-"));
   try {
     const { out } = await captureLog(() =>
       runLaunchCommand(["--worktree", wt, "--list"]),
@@ -70,7 +70,7 @@ test("--worktree reuses an existing directory and chdirs into it", async () => {
 });
 test("--worktree creates a git worktree when the path does not exist", async () => {
   const originalCwd = process.cwd();
-  const repo = await fsp.mkdtemp(path.join(os.tmpdir(), "joc-wt-repo-"));
+  const repo = await fsp.mkdtemp(path.join(os.tmpdir(), "jeo-wt-repo-"));
   try {
     // Minimal git repo with one commit so `git worktree add` succeeds.
     const run = (cmd: string[]) =>

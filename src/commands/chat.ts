@@ -2,12 +2,12 @@ import { createModelManager, thinkingMaxTokens } from "../ai/model-manager";
 import { friendlyProviderError } from "../util/provider-error";
 
 /**
- * `joc chat "<message>"` — a quick, single-shot streaming chat (no tools).
+ * `jeo chat "<message>"` — a quick, single-shot streaming chat (no tools).
  * Renders the reply token-by-token via the provider streaming path
- * (`ModelManager.stream`), complementary to the tool-loop `joc launch`.
+ * (`ModelManager.stream`), complementary to the tool-loop `jeo launch`.
  */
 /** Pull chat-only flags out of args; the rest joins into the message.
- *  Previously flags were swallowed into the message text, so `joc chat --model X "hi"`
+ *  Previously flags were swallowed into the message text, so `jeo chat --model X "hi"`
  *  silently chatted with the DEFAULT model — the worst kind of wrong. */
 export function parseChatArgs(args: string[]): { model?: string; thinking?: string; maxTokens?: number; message: string } {
   let model: string | undefined;
@@ -36,13 +36,13 @@ export async function runChatCommand(args: string[] = []): Promise<void> {
   let message = parsed;
   if (!message && !process.stdin.isTTY) message = (await Bun.stdin.text()).trim();
   if (!message) {
-    console.log('Usage: joc chat [--model <id>] [--thinking <level>] [--max-tokens <n>] "<message>"   (streams the reply token-by-token)');
+    console.log('Usage: jeo chat [--model <id>] [--thinking <level>] [--max-tokens <n>] "<message>"   (streams the reply token-by-token)');
     process.exitCode = 1;
     return;
   }
 
   const manager = createModelManager();
-  process.stdout.write("joc> ");
+  process.stdout.write("jeo> ");
   let any = false;
   let usage: { inputTokens?: number; outputTokens?: number; durationMs?: number } | undefined;
   try {

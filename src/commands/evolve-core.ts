@@ -2,11 +2,11 @@ import { consultGjcForEvolution } from "../agent/dev/evolution-bridge";
 import chalk from "chalk";
 
 /**
- * joc evolve-core: Triggers a self-evolution turn using gjc as a guide.
+ * jeo evolve-core: Triggers a self-evolution turn using gjc as a guide.
  */
 export async function runEvolveCoreCommand(args: string[]): Promise<void> {
   const cwd = process.cwd();
-  console.log("\n=== " + chalk.bold.magenta("joc") + " Autonomous Core Evolution ===");
+  console.log("\n=== " + chalk.bold.magenta("jeo") + " Autonomous Core Evolution ===");
   
   try {
     await consultGjcForEvolution(cwd);

@@ -138,6 +138,9 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       cwd,
       model,
       maxSteps,
+      // Bounded delegation: a subagent's step contract stays exact — the parent
+      // owns any retry/extension decision, so the gjc retry flow is disabled here.
+      budget: { maxExtensions: 0 },
       signal: opts.signal,
       tools: subagentToolset(role),
       events: {

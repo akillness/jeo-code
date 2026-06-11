@@ -3,9 +3,9 @@
  * Port of gjc's google-oauth-shared.ts + google-gemini-cli.ts constants.
  *
  * NOTE: these tokens authenticate against Google's Cloud Code Assist backend.
- * joc's default `gemini` adapter targets the public generativelanguage API,
+ * jeo's default `gemini` adapter targets the public generativelanguage API,
  * which prefers an API key (`GEMINI_API_KEY`). The login/refresh machinery is
- * real; project provisioning is best-effort (env-driven) to keep joc lean.
+ * real; project provisioning is best-effort (env-driven) to keep jeo lean.
  */
 import { OAuthCallbackFlow } from "../callback-server";
 import { discoverGoogleProjectId } from "./google-project";

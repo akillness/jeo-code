@@ -25,7 +25,7 @@ Framework for discovering, loading, and executing workflow skills (both bundled 
 - Test skill resolution order (user directory vs bundled).
 
 ### Common Patterns
-- Direct slash invocation (`/skill deep-interview`) and CLI equivalent (`joc deep-interview`).
+- Direct slash invocation (`/skill deep-interview`) and CLI equivalent (`jeo deep-interview`).
 
 ## Dependencies
 

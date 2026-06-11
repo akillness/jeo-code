@@ -4,7 +4,7 @@
 # commands
 
 ## Purpose
-Concrete implementations of `joc` subcommands (e.g., launch, setup, team, ultragoal, models).
+Concrete implementations of `jeo` subcommands (e.g., launch, setup, team, ultragoal, models).
 
 ## Key Files
 | File | Description |

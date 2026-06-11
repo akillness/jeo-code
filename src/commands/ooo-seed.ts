@@ -3,7 +3,7 @@ import { categoryBadge } from "../tui/components/category-index";
 import chalk from "chalk";
 
 /**
- * joc ooo-seed: Syncs .specify/specification.md to an ooo seed.
+ * jeo ooo-seed: Syncs .specify/specification.md to an ooo seed.
  */
 export async function runOooSeedCommand(args: string[]): Promise<void> {
   const cwd = process.cwd();

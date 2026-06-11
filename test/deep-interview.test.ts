@@ -26,7 +26,7 @@ afterEach(async () => {
 });
 
 async function tempDir(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), "joc-deep-"));
+  return fs.mkdtemp(path.join(os.tmpdir(), "jeo-deep-"));
 }
 
 async function readState(cwd: string): Promise<any> {
@@ -264,7 +264,7 @@ test("deep-interview: brownfield scanner sanitizes file names and skips symlinke
   await fs.writeFile(path.join(cwd, "src", "login`evil.ts"), "// adversarial filename", "utf-8");
 
   // Symlinked directory inside src/ — the scanner must not follow it.
-  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "joc-deep-outside-"));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-deep-outside-"));
   await fs.writeFile(path.join(outside, "secret-login.ts"), "// should not be surfaced", "utf-8");
   try {
     await fs.symlink(outside, path.join(cwd, "src", "linked"), "dir");

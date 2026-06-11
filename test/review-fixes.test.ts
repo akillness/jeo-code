@@ -29,7 +29,7 @@ test("extractJsonObject: still throws when no balanced group is valid JSON", () 
 // --- tools.ts editTool: range validation + whitespace preservation (review MEDIUM finding) ---
 
 async function tmp(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), "joc-edit-"));
+  return fs.mkdtemp(path.join(os.tmpdir(), "jeo-edit-"));
 }
 
 test("editTool: rejects an out-of-bounds line range without writing", async () => {
@@ -74,7 +74,7 @@ test("editTool: empty search block is rejected", async () => {
 // --- session.ts: tolerate a malformed (truncated) tail line (review MEDIUM finding) ---
 
 test("loadSession: tolerates a malformed non-header line and keeps valid messages", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-sess-fix-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-sess-fix-"));
   try {
     const { id } = await createSession(dir);
     await appendMessage(id, { role: "user", content: "hi" }, dir);

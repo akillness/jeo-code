@@ -4,7 +4,7 @@ import { isDevMode } from "../state";
 import type { PerfMetric } from "../output-util";
 
 /**
- * joc-Centric Analysis: joc looks at its own performance and engine.
+ * jeo-Centric Analysis: jeo looks at its own performance and engine.
  */
 export async function runSelfAnalysis(cwd: string): Promise<string> {
   if (!isDevMode()) throw new Error("Self-analysis only available in Dev Mode");

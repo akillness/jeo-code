@@ -17,7 +17,7 @@ import {
 } from "../src/agent/session";
 
 test("session lifecycle and logic with custom cwd", async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-sess-"));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-sess-"));
   try {
     // 1. createSession writes a header
     const id1 = newSessionId();
@@ -93,7 +93,7 @@ test("session lifecycle and logic with custom cwd", async () => {
 
 test("session default cwd behavior", async () => {
   const originalCwd = process.cwd();
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-sess-cwd-"));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-sess-cwd-"));
   try {
     process.chdir(tempDir);
 
@@ -119,7 +119,7 @@ test("session default cwd behavior", async () => {
 });
 
 test("session rename and delete lifecycle", async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-sess-manage-"));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-sess-manage-"));
   try {
     const id = newSessionId();
     const sess = await createSession(tempDir, id);
@@ -172,7 +172,7 @@ test("session rename and delete lifecycle", async () => {
 });
 
 test("session resume with compaction marker and legacy compatibility", async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-sess-compat-"));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-sess-compat-"));
   const { appendCompaction } = await import("../src/agent/session");
 
   try {
@@ -222,7 +222,7 @@ test("session resume with compaction marker and legacy compatibility", async () 
 });
 
 test("listSessions uses lightweight parser (avoids full JSON.parse)", async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-sess-light-"));
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-sess-light-"));
   try {
     const id = newSessionId();
     await createSession(tempDir, id);

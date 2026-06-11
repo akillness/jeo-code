@@ -39,7 +39,7 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
   const interviewState = await readWorkflowState("deep-interview", cwd);
   if (!interviewState || !interviewState.seed_path) {
     log(
-      `[ERROR] No crystallized requirements found. Please run 'joc deep-interview' first.`
+      `[ERROR] No crystallized requirements found. Please run 'jeo deep-interview' first.`
     );
     return { ok: false, reason: "No crystallized requirements found" };
   }
@@ -52,7 +52,7 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
   const teamState = await readWorkflowState("team", cwd);
   if (!teamState || teamState.current_phase !== "complete") {
     log(
-      `[WARN] No completed 'joc team' execution found (run deep-interview → ralplan → approve → team first).\n` +
+      `[WARN] No completed 'jeo team' execution found (run deep-interview → ralplan → approve → team first).\n` +
       `       Verifying current repository state anyway — results reflect whatever is on disk now.`
     );
   } else {

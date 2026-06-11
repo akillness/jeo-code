@@ -120,7 +120,7 @@ export function formatLiveModels(
     }
     if (r.models.length > cap) lines.push(chalk.gray(`  …(+${r.models.length - cap} more)`));
   }
-  if (lines.length === 0) lines.push("  (no live models — log in with 'joc auth login' or start Ollama)");
+  if (lines.length === 0) lines.push("  (no live models — log in with 'jeo auth login' or start Ollama)");
   return lines;
 }
 
@@ -134,7 +134,7 @@ export function liveModelKnown(results: ProviderModelsResult[], model: string): 
  * The active model (if any) is marked.
  */
 export function formatPickList(entries: PickEntry[], opts: { current?: string; cap?: number } = {}): string[] {
-  if (entries.length === 0) return ["  (no models — log in with 'joc auth login' or start Ollama)"];
+  if (entries.length === 0) return ["  (no models — log in with 'jeo auth login' or start Ollama)"];
   const cap = opts.cap ?? 60;
   const width = String(Math.min(entries.length, cap)).length + 1; // "#" + digits
   const lines = entries.slice(0, cap).map(e => {
@@ -152,7 +152,7 @@ export function formatPickList(entries: PickEntry[], opts: { current?: string; c
  * annotated with catalog metadata when known.
  */
 export function formatPickListWithCapabilities(entries: PickEntry[], opts: { current?: string; cap?: number } = {}): string[] {
-  if (entries.length === 0) return ["  (no models — log in with 'joc auth login' or start Ollama)"];
+  if (entries.length === 0) return ["  (no models — log in with 'jeo auth login' or start Ollama)"];
   const cap = opts.cap ?? 50;
   const shown = entries.slice(0, cap);
   const iw = String(Math.min(entries.length, cap)).length + 1;
@@ -238,7 +238,7 @@ export function formatCapabilityLine(m: CatalogModel): string {
  * context/out/thinking/img when the catalog knows them, "-" otherwise.
  */
 export function formatEnrichedModels(models: EnrichedModel[], opts: { current?: string; cap?: number } = {}): string[] {
-  if (models.length === 0) return ["  (no live models — log in with 'joc auth login' or start Ollama)"];
+  if (models.length === 0) return ["  (no live models — log in with 'jeo auth login' or start Ollama)"];
   const cap = opts.cap ?? 50;
   const shown = models.slice(0, cap);
   const pw = Math.max(...shown.map(m => m.provider.length), 8);

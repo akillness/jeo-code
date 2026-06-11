@@ -1,6 +1,6 @@
 ---
 description: Per-task executor loop against the plan.
-command: joc team
+command: jeo team
 when: When you have a blueprint/plan and need to execute the concrete implementation tasks.
 ---
 

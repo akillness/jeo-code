@@ -3,7 +3,7 @@
 # jeo-code
 
 ## Purpose
-`jeo-code` (binary `joc`) is a pure-TypeScript AI coding agent that runs on Bun with zero native dependencies. It features a Spec-first workflow, deep-interview Socratic capabilities, robust TUI with TMA (tmux) integrations, and native Ouroboros compatibility.
+`jeo-code` (binary `jeo`) is a pure-TypeScript AI coding agent that runs on Bun with zero native dependencies. It features a Spec-first workflow, deep-interview Socratic capabilities, robust TUI with TMA (tmux) integrations, and native Ouroboros compatibility.
 
 ## Key Files
 | File | Description |

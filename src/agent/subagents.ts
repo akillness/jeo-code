@@ -2,7 +2,7 @@
  * Subagent role registry (gjc role-agent parity: executor / planner / architect /
  * critic). A "subagent" is the executor tool-loop driven with a role-specific
  * system prompt, model, step budget, and toolset. The registry is pure data so
- * it can be listed in the TUI (`/agents`) and consumed by `joc team` without
+ * it can be listed in the TUI (`/agents`) and consumed by `jeo team` without
  * importing any provider or I/O code.
  *
  * Read-only roles (planner/architect/critic) get a mutation-free toolset so a

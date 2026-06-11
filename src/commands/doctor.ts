@@ -14,7 +14,7 @@ interface ProbeResult {
   latencyMs?: number;
 }
 
-const APP_NAME = "joc";
+const APP_NAME = "jeo";
 const PROBE_TIMEOUT_MS = 4000;
 
 async function timedFetch(url: string, init: RequestInit): Promise<{ res: Response; latencyMs: number }> {
@@ -29,7 +29,7 @@ async function timedFetch(url: string, init: RequestInit): Promise<{ res: Respon
   }
 }
 
-const NO_OPENAI_CREDENTIAL_DETAIL = "no credential (run 'joc setup' or 'joc auth login openai')";
+const NO_OPENAI_CREDENTIAL_DETAIL = "no credential (run 'jeo setup' or 'jeo auth login openai')";
 
 async function probeOpenAi(credential: Credential, baseUrl: string | undefined): Promise<ProbeResult> {
   if (credential.kind === "none" && !baseUrl) {
@@ -52,7 +52,7 @@ async function probeOpenAi(credential: Credential, baseUrl: string | undefined):
       const { res, latencyMs } = await timedFetch(CODEX_RESPONSES_URL, {
         method: "POST",
         headers,
-        body: JSON.stringify({ model: "joc-doctor-probe", input: [{ role: "user", content: [{ type: "input_text", text: "ping" }] }], stream: true, store: false }),
+        body: JSON.stringify({ model: "jeo-doctor-probe", input: [{ role: "user", content: [{ type: "input_text", text: "ping" }] }], stream: true, store: false }),
       });
       if (res.ok || res.status === 400) return { status: "ok", detail: "POST codex/responses (Codex backend reachable)", latencyMs };
       if (res.status === 401 || res.status === 403) return { status: "fail", detail: `Codex auth rejected (${res.status})`, latencyMs };
@@ -76,7 +76,7 @@ async function probeOpenAi(credential: Credential, baseUrl: string | undefined):
 
 async function probeGemini(credential: Credential): Promise<ProbeResult> {
   if (credential.kind === "none") {
-    return { status: "skipped", detail: "no credential (run 'joc setup' or 'joc auth login gemini')" };
+    return { status: "skipped", detail: "no credential (run 'jeo setup' or 'jeo auth login gemini')" };
   }
   // OAuth tokens are served via Cloud Code Assist (the REAL call path) — probe
   // loadCodeAssist there; the public generativelanguage list rejects them.
@@ -110,7 +110,7 @@ async function probeGemini(credential: Credential): Promise<ProbeResult> {
 
 async function probeAnthropic(credential: Credential): Promise<ProbeResult> {
   if (credential.kind === "none") {
-    return { status: "skipped", detail: "no credential (run 'joc setup' or 'joc auth login anthropic')" };
+    return { status: "skipped", detail: "no credential (run 'jeo setup' or 'jeo auth login anthropic')" };
   }
   // GET /v1/models verifies auth without burning credit and without depending on a
   // (possibly retired) model id — the old 1-token POST 404'd whenever the probe model
@@ -283,7 +283,7 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   } else if (defaultProbe?.result.status === "skipped") {
     console.log(
       `${chalk.red("[NOT READY]")} Default model '${config.defaultModel}' resolves to '${defaultProvider}', ` +
-      `but no credential is configured. Run 'joc setup' or 'joc auth login ${defaultProvider}'.`
+      `but no credential is configured. Run 'jeo setup' or 'jeo auth login ${defaultProvider}'.`
     );
   } else {
     console.log(

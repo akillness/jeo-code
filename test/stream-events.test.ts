@@ -58,8 +58,8 @@ test("end-to-end: a piped one-shot turn prints the per-step flow (not just the f
     },
   }));
 
-  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-cfg-"));
-  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-work-"));
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-se-cfg-"));
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-se-work-"));
   await fs.writeFile(path.join(workDir, "note.txt"), "hello from note\n");
   const savedCfg = process.env.JOC_CONFIG_DIR;
   const savedCwd = process.cwd();
@@ -98,8 +98,8 @@ test("end-to-end: cmd-mode task subagent prints nested steps and result summarie
     },
   }));
 
-  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-sub-cfg-"));
-  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-sub-work-"));
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-se-sub-cfg-"));
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-se-sub-work-"));
   await fs.writeFile(path.join(workDir, "note.txt"), "hello from note\n");
   const savedCfg = process.env.JOC_CONFIG_DIR;
   const savedCwd = process.cwd();
@@ -146,8 +146,8 @@ test("end-to-end: a disk-persisted subagent model override is the model the in-l
     },
   }));
 
-  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-ovr-cfg-"));
-  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-ovr-work-"));
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-se-ovr-cfg-"));
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-se-ovr-work-"));
   await fs.writeFile(path.join(workDir, "note.txt"), "hello\n");
   // Persist a per-role override so a DIFFERENT provider/model is pinned for executor.
   await fs.writeFile(
@@ -186,8 +186,8 @@ test("end-to-end: one-shot skill alias executes configured skill instead of chat
     },
   }));
 
-  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-skill-cfg-"));
-  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-se-skill-work-"));
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-se-skill-cfg-"));
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-se-skill-work-"));
   await fs.mkdir(path.join(cfgDir, "skills", "spec-kit"), { recursive: true });
   await fs.writeFile(
     path.join(cfgDir, "skills", "spec-kit", "SKILL.md"),
@@ -202,7 +202,7 @@ test("end-to-end: one-shot skill alias executes configured skill instead of chat
     process.env.JOC_CONFIG_DIR = cfgDir;
     process.chdir(workDir);
     const { runLaunchCommand } = await import("../src/commands/launch");
-    await runLaunchCommand(["/speckit.plan improve joc", "--model", "ollama/qwen2.5:0.5b", "--no-session", "--no-tui"]);
+    await runLaunchCommand(["/speckit.plan improve jeo", "--model", "ollama/qwen2.5:0.5b", "--no-session", "--no-tui"]);
   } finally {
     console.log = origLog;
     process.chdir(savedCwd);
@@ -214,7 +214,7 @@ test("end-to-end: one-shot skill alias executes configured skill instead of chat
   const out = logged.join("\n");
   expect(seenUser).toContain('You are now executing the "spec-kit"');
   expect(seenUser).toContain("Invoked as: /speckit.plan");
-  expect(seenUser).toContain("User intent: improve joc");
-  expect(out).toContain("▶ Running skill: spec-kit — improve joc");
+  expect(seenUser).toContain("User intent: improve jeo");
+  expect(out).toContain("▶ Running skill: spec-kit — improve jeo");
   expect(out).toContain("skill executed");
 });

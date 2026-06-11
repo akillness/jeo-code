@@ -42,7 +42,7 @@ test("anthropic: image-bearing last message puts the breakpoint on its tail bloc
 // ── Config read cache ─────────────────────────────────────────────────────────
 
 async function withTempConfigDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-cfgcache-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-cfgcache-"));
   const prev = process.env.JOC_CONFIG_DIR;
   process.env.JOC_CONFIG_DIR = dir;
   clearConfigReadCache();
@@ -93,7 +93,7 @@ test("config cache: returned configs are clones — caller mutation cannot poiso
 // ── Batched session persistence ───────────────────────────────────────────────
 
 test("appendMessages: one batched append round-trips through loadSession", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-sess-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-sess-"));
   try {
     const { id } = await createSession(dir);
     const batch: Message[] = [

@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { runSessionCommandWith } from "../src/commands/session";
 
-test("list filters non-joc sessions and formats output", async () => {
+test("list filters non-jeo sessions and formats output", async () => {
   const originalExitCode = process.exitCode;
   const logs: string[] = [];
   const origLog = console.log;
@@ -15,7 +15,7 @@ test("list filters non-joc sessions and formats output", async () => {
       expect(argv).toEqual(["list-sessions", "-F", "#{session_name}\t#{session_created}\t#{session_attached}"]);
       return {
         exitCode: 0,
-        stdout: "joc-session-1\t1686259200\t1\nnon-joc-session\t1686259200\t0\njoc-session-2\t1686262800\t0\n",
+        stdout: "jeo-session-1\t1686259200\t1\nnon-jeo-session\t1686259200\t0\njoc-session-2\t1686262800\t0\n",
         stderr: "",
       };
     };
@@ -24,9 +24,9 @@ test("list filters non-joc sessions and formats output", async () => {
 
     expect(process.exitCode).toBe(0);
     const output = logs.join("\n");
-    expect(output).toContain("joc-session-1");
-    expect(output).toContain("joc-session-2");
-    expect(output).not.toContain("non-joc-session");
+    expect(output).toContain("jeo-session-1");
+    expect(output).toContain("joc-session-2"); // legacy pre-rename sessions stay listed
+    expect(output).not.toContain("non-jeo-session");
     expect(output).toContain(new Date(1686259200 * 1000).toISOString());
     expect(output).toContain("yes");
     expect(output).toContain("no");
@@ -49,7 +49,7 @@ test("list with --json formats as JSON", async () => {
     const fakeTmux = (argv: string[]) => {
       return {
         exitCode: 0,
-        stdout: "joc-session-1\t1686259200\t1\n",
+        stdout: "jeo-session-1\t1686259200\t1\n",
         stderr: "",
       };
     };
@@ -60,7 +60,7 @@ test("list with --json formats as JSON", async () => {
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed).toEqual([
       {
-        name: "joc-session-1",
+        name: "jeo-session-1",
         created: new Date(1686259200 * 1000).toISOString(),
         attached: true,
       }
@@ -92,14 +92,14 @@ test("list with tmux absent (no server or exitCode 1) -> empty-friendly message 
     await runSessionCommandWith(["list"], fakeTmux);
 
     expect(process.exitCode).toBe(0);
-    expect(logs.join("\n")).toContain("No active joc sessions found.");
+    expect(logs.join("\n")).toContain("No active jeo sessions found.");
   } finally {
     console.log = origLog;
     process.exitCode = originalExitCode;
   }
 });
 
-test("rm refuses non-joc- name with exitCode 1", async () => {
+test("rm refuses non-jeo- name with exitCode 1", async () => {
   const originalExitCode = process.exitCode;
   const logs: string[] = [];
   const origLog = console.log;
@@ -113,17 +113,17 @@ test("rm refuses non-joc- name with exitCode 1", async () => {
       return { exitCode: 0, stdout: "", stderr: "" };
     };
 
-    await runSessionCommandWith(["rm", "non-joc-session"], fakeTmux);
+    await runSessionCommandWith(["rm", "non-jeo-session"], fakeTmux);
 
     expect(process.exitCode).toBe(1);
-    expect(logs.join("\n")).toContain("Refusing to kill non-joc session");
+    expect(logs.join("\n")).toContain("Refusing to kill non-jeo session");
   } finally {
     console.log = origLog;
     process.exitCode = originalExitCode;
   }
 });
 
-test("rm joc- name invokes kill-session argv", async () => {
+test("rm jeo- name invokes kill-session argv", async () => {
   const originalExitCode = process.exitCode;
   const logs: string[] = [];
   const origLog = console.log;
@@ -139,10 +139,10 @@ test("rm joc- name invokes kill-session argv", async () => {
       return { exitCode: 0, stdout: "", stderr: "" };
     };
 
-    await runSessionCommandWith(["rm", "joc-session-1"], fakeTmux);
+    await runSessionCommandWith(["rm", "jeo-session-1"], fakeTmux);
 
     expect(process.exitCode).toBe(0);
-    expect(killArgs).toEqual(["kill-session", "-t", "joc-session-1"]);
+    expect(killArgs).toEqual(["kill-session", "-t", "jeo-session-1"]);
   } finally {
     console.log = origLog;
     process.exitCode = originalExitCode;
@@ -163,17 +163,17 @@ test("attach unknown name (not in list output) -> exitCode 1", async () => {
       if (argv[0] === "list-sessions") {
         return {
           exitCode: 0,
-          stdout: "joc-session-1\t1686259200\t1\n",
+          stdout: "jeo-session-1\t1686259200\t1\n",
           stderr: "",
         };
       }
       return { exitCode: 0, stdout: "", stderr: "" };
     };
 
-    await runSessionCommandWith(["attach", "joc-session-99"], fakeTmux);
+    await runSessionCommandWith(["attach", "jeo-session-99"], fakeTmux);
 
     expect(process.exitCode).toBe(1);
-    expect(logs.join("\n")).toContain("Session 'joc-session-99' not found");
+    expect(logs.join("\n")).toContain("Session 'jeo-session-99' not found");
   } finally {
     console.log = origLog;
     process.exitCode = originalExitCode;
@@ -195,7 +195,7 @@ test("attach known name -> invokes attach -t name", async () => {
       if (argv[0] === "list-sessions") {
         return {
           exitCode: 0,
-          stdout: "joc-session-1\t1686259200\t1\n",
+          stdout: "jeo-session-1\t1686259200\t1\n",
           stderr: "",
         };
       }
@@ -203,10 +203,10 @@ test("attach known name -> invokes attach -t name", async () => {
       return { exitCode: 0, stdout: "", stderr: "" };
     };
 
-    await runSessionCommandWith(["attach", "joc-session-1"], fakeTmux);
+    await runSessionCommandWith(["attach", "jeo-session-1"], fakeTmux);
 
     expect(process.exitCode).toBe(0);
-    expect(attachArgs).toEqual(["attach", "-t", "joc-session-1"]);
+    expect(attachArgs).toEqual(["attach", "-t", "jeo-session-1"]);
   } finally {
     console.log = origLog;
     process.exitCode = originalExitCode;
@@ -231,7 +231,7 @@ test("unknown verb usage exitCode 1", async () => {
 
     expect(process.exitCode).toBe(1);
     expect(logs.join("\n")).toContain("Unknown subcommand: foo-bar-verb");
-    expect(logs.join("\n")).toContain("Usage: joc session");
+    expect(logs.join("\n")).toContain("Usage: jeo session");
   } finally {
     console.log = origLog;
     process.exitCode = originalExitCode;
@@ -255,7 +255,7 @@ test("--help usage exitCode 0", async () => {
     await runSessionCommandWith(["--help"], fakeTmux);
 
     expect(process.exitCode).toBe(0);
-    expect(logs.join("\n")).toContain("Usage: joc session");
+    expect(logs.join("\n")).toContain("Usage: jeo session");
   } finally {
     console.log = origLog;
     process.exitCode = originalExitCode;

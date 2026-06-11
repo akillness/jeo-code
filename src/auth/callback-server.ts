@@ -24,7 +24,7 @@ export interface OAuthCallbackFlowOptions {
 
 export type CallbackResult = { code: string; state: string };
 
-const SUCCESS_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>joc — login complete</title>
+const SUCCESS_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>jeo — login complete</title>
 <style>body{font-family:system-ui,sans-serif;background:#0d1117;color:#e6edf3;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
 .card{text-align:center;padding:2rem 3rem;border:1px solid #30363d;border-radius:12px;background:#161b22}
 h1{margin:0 0 .5rem;font-size:1.4rem}p{margin:0;color:#8b949e}</style></head>

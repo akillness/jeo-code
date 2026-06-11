@@ -1,6 +1,6 @@
 ---
 description: Main implementation process using gjc spec-first workflow.
-command: joc gjc "<request>"
+command: jeo gjc "<request>"
 when: When you need to perform significant code changes, refactoring, or feature development using the core gjc process.
 ---
 

@@ -2,7 +2,7 @@
   <img src="assets/hero.png" alt="jeo-code autonomous coding-agent hero illustration" width="100%" />
 </p>
 
-<h1 align="center">jeo-code (joc)</h1>
+<h1 align="center">jeo-code (jeo)</h1>
 
 <p align="center">
   <strong>Encode intention. Decode software.</strong><br />
@@ -26,12 +26,12 @@
   <b>中文</b>
 </p>
 
-基于 Bun 的 AI 编码代理 CLI。在仓库中运行 `joc`，它会读取文件、修改文件、执行命令，并把任务一直推进到完成。
+基于 Bun 的 AI 编码代理 CLI。在仓库中运行 `jeo`，它会读取文件、修改文件、执行命令，并把任务一直推进到完成。
 运行过程中显示 gjc 风格的扁平内联堆栈：完成的工作以 `✓/✗` 单行账目和带边框的工具卡片（bash 为单一合并卡片 —— `✗ Bash` 标题、`$ 命令` 回显、`── Output ──` 分隔线、输出正文、结尾的 `Command exited with code N`；read/find/search 保持 `✓ Read path:lines` 单行）流入回滚缓冲区，其下固定一行带旋转指示的状态行（真实的当前目标 + step · 已用时间 · token · 实时 `$` 成本）、`Todos` 清单、`◆ hud` 行，以及带背景色的模型状态栏（模型（提供商）· thinking / `branch ?N` / cwd · `⤴ N/s` · `ctx%`）；在输入框（`> Type your message...`，主题强调色边框）中以 `/` 开头会在底部显示命令预览。
 
-状态行显示的是 **当前正在做的事**（正在处理的文件/命令、活动的 plan 步骤、plan 进度，限流退避期间显示 `rate limited (HTTP 429) — auto-retry #2 in 4s` 倒计时），并附带当前步骤已用时间，而不是每个 tick 都变化的装饰文字。内联回合中进化标识只保留最后一行 `Evolved to: …` 摘要，ASCII 艺术页眉保留在传统的 `JOC_TUI_ALT_SCREEN=1` 盒式模式中。通过 `task` 委派的 **子代理进度**（分配、`step N/M`、嵌套工具调用的真实目标 `read src/x.ts`、`bash: …`、结果摘要）也会像 gjc 一样实时显示在流中。
+状态行显示的是 **当前正在做的事**（正在处理的文件/命令、活动的 plan 步骤、plan 进度，限流退避期间显示 `rate limited (HTTP 429) — auto-retry #2 in 4s` 倒计时），并附带当前步骤已用时间，而不是每个 tick 都变化的装饰文字。内联回合中进化标识只保留最后一行 `Evolved to: …` 摘要，ASCII 艺术页眉保留在传统的 `JEO_TUI_ALT_SCREEN=1` 盒式模式中。通过 `task` 委派的 **子代理进度**（分配、`step N/M`、嵌套工具调用的真实目标 `read src/x.ts`、`bash: …`、结果摘要）也会像 gjc 一样实时显示在流中。
 
-即使像 `joc "请求"` 这样以命令参数一次性执行，在 TTY 上同样会启动相同的实时 TUI；在 `--no-tui`/管道模式下会流式输出 `[step N/M] <tool target>` 与结果行，从而看到完整的执行流程。
+即使像 `jeo "请求"` 这样以命令参数一次性执行，在 TTY 上同样会启动相同的实时 TUI；在 `--no-tui`/管道模式下会流式输出 `[step N/M] <tool target>` 与结果行，从而看到完整的执行流程。
 
 TUI 使用 **差分（differential）渲染器** 就地刷新屏幕，不会增加回滚缓冲（完成的账目行与工具卡片会在发生时立即流入回滚缓冲区，因此 tmux/鼠标滚轮在回合进行中也能回看早前进度）；当窗口尺寸变化导致宽度改变时会整屏重绘，即使在空闲提示符下也会通过 resize 重新同步页脚区域。流/工具列表是 **固定大小的环形缓冲区**，因此在长会话中内存与每帧渲染成本保持平稳（即使摘要 LLM 失败，历史也会被确定性地压缩，不会无限增长）。当屏幕过短无法容纳所有区块时，会 **始终优先保留状态行、Todos、hud 与模型栏**，剩余的行才用于进行中的工具卡片。
 
@@ -41,6 +41,12 @@ forge 框带有边框，因此 **只有能完整放下时才显示**（优先显
 
 要求: Bun `1.3.14+`
 
+> **重命名说明**: 二进制名称现为 `jeo`（原 `joc`）。`joc` 命令作为兼容别名继续可用，旧的 `JOC_*` 环境变量仍被识别（推荐使用 `JEO_*` 写法），现有 `~/.joc` / `.joc` 运行时状态保持不变。
+
+**双色面板深度**: 所有带边框的面板（JEO forge 欢迎框、实时状态框、工具/forge 卡片、外层框架、输入框）都以明亮的上/左边缘（主题强调色）对比暗色的下/右边缘（淡化强调色）渲染，标题加粗对比，让框体呈现出立体面板的质感。
+
+**默认值始终跟随最近的选择（所有会话共享）**: 选择模型/provider（`/model …`、`/provider <name> …`、选择器）会立即保存到 `~/.joc/config.json` — 最新选择成为未来所有会话的 `defaultModel`，`recentModels` 保留最新优先的 MRU 轮换列表。
+
 ```bash
 bun install -g jeo-code
 ```
@@ -48,28 +54,28 @@ bun install -g jeo-code
 确认安装:
 
 ```bash
-joc --version
+jeo --version
 ```
 
 ## 基本用法
 
 ```bash
 # 启动交互式编码代理
-joc
+jeo
 
 # 立即执行一次请求
-joc "整理 README 并运行测试"
+jeo "整理 README 并运行测试"
 
 # 检查当前配置与模型连通性（通过真实调用路径探测: Anthropic=GET /v1/models, OpenAI OAuth=Codex 后端, Gemini OAuth=Cloud Code Assist loadCodeAssist）
-joc doctor
+jeo doctor
 
 # 配置 API 密钥 / OAuth / 本地模型
-joc setup
+jeo setup
 ```
 
 ## 交互式斜杠命令
 
-可在 `joc` REPL 输入框中使用的命令（支持 `<Tab>` 自动补全）。
+可在 `jeo` REPL 输入框中使用的命令（支持 `<Tab>` 自动补全）。
 
 | 命令 | 说明 |
 | --- | --- |
@@ -95,46 +101,46 @@ joc setup
 
 ```bash
 # 查看 / 恢复已保存的会话
-joc launch --list
-joc launch --resume
+jeo launch --list
+jeo launch --resume
 
 # 在 tmux 会话中运行 —— 每次运行都是独立会话（在相同目录/分支中同时多次启动会拆分为 base, base-2, base-3 …）
-joc --tmux
-joc --tmux --model gemini-2.5-flash --thinking high
-joc --tmux --models --catalog gpt
+jeo --tmux
+jeo --tmux --model gemini-2.5-flash --thinking high
+jeo --tmux --models --catalog gpt
 
 # 在单独的 worktree 中运行
-joc --tmux --worktree ../joc-work
+jeo --tmux --worktree ../jeo-work
 
 # 列出模型
-joc models
+jeo models
 
 # GJC 风格的模型目录（静态 capability）
-joc --list-models=gemini
-joc --models --catalog gpt
+jeo --list-models=gemini
+jeo --models --catalog gpt
 
 # 启动时指定模型/提供商/思考预算
-joc --model gemini-2.5-flash --thinking high "分析这段代码"
-joc --provider gemini --plan "起草一份实现计划"
+jeo --model gemini-2.5-flash --thinking high "分析这段代码"
+jeo --provider gemini --plan "起草一份实现计划"
 # 斜杠命令面板
 # 在 REPL 中输入像 "/" 或 "/m" 这样的前缀，会按类别列出命令/选项。
 # 子代理设置通过 /agents 和 /model subagent <role> ... 支持。
 
 # 认证管理
-joc auth login anthropic
-joc auth status
+jeo auth login anthropic
+jeo auth status
 ```
 
 ## Spec-first 工作流
 
-当你想先理清需求，再进行计划、执行与验证时使用。各阶段通过状态（`.joc/state/`）衔接并设有门禁: deep-interview 先 **确认顶层拓扑（topology）**，在撰写问题、评估与验收标准时保留输入语言（韩语/英语/日语/中文）；若为 brownfield 请求，会收集 **repo 标记 + path evidence**，随后必须 **冻结 seed**（ambiguity ≤ 20%；`--auto`/非 TTY 也无法绕过该门禁，未达标则不冻结 seed），之后 MutationGuard 才允许代码修改并进入 ralplan → ralplan 通过 **Planner→Architect→Critic 共识**（三阶段链式过程）生成 **待批准** 的计划（含 schema 自校验/修复）→ 必须用 `joc approve <plan>` 批准 → 然后 team 执行（损坏的 team 状态会被拒绝而非忽略，未知的 subagent role 在执行前被拒绝，同名 task 也会按 step index 路由到正确的 role；若 planner/architect/critic 的 report 不符合契约，或 architect 返回 `BLOCK`/`REQUEST CHANGES`、critic 返回 `[REJECT]`/`[ITERATE]`，则立即中止）→ ultragoal 验证 team 的执行结果。
+当你想先理清需求，再进行计划、执行与验证时使用。各阶段通过状态（`.joc/state/`）衔接并设有门禁: deep-interview 先 **确认顶层拓扑（topology）**，在撰写问题、评估与验收标准时保留输入语言（韩语/英语/日语/中文）；若为 brownfield 请求，会收集 **repo 标记 + path evidence**，随后必须 **冻结 seed**（ambiguity ≤ 20%；`--auto`/非 TTY 也无法绕过该门禁，未达标则不冻结 seed），之后 MutationGuard 才允许代码修改并进入 ralplan → ralplan 通过 **Planner→Architect→Critic 共识**（三阶段链式过程）生成 **待批准** 的计划（含 schema 自校验/修复）→ 必须用 `jeo approve <plan>` 批准 → 然后 team 执行（损坏的 team 状态会被拒绝而非忽略，未知的 subagent role 在执行前被拒绝，同名 task 也会按 step index 路由到正确的 role；若 planner/architect/critic 的 report 不符合契约，或 architect 返回 `BLOCK`/`REQUEST CHANGES`、critic 返回 `[REJECT]`/`[ITERATE]`，则立即中止）→ ultragoal 验证 team 的执行结果。
 
 ```bash
-joc deep-interview "描述你想构建的功能"
-joc ralplan
-joc approve <plan-path>
-joc team
-joc ultragoal
+jeo deep-interview "描述你想构建的功能"
+jeo ralplan
+jeo approve <plan-path>
+jeo team
+jeo ultragoal
 ```
 
 ## 使用本地模型
@@ -143,9 +149,9 @@ joc ultragoal
 
 ```bash
 ollama pull qwen2.5:0.5b
-export JOC_DEFAULT_MODEL=ollama/qwen2.5:0.5b
-joc doctor
-joc
+export JEO_DEFAULT_MODEL=ollama/qwen2.5:0.5b
+jeo doctor
+jeo
 ```
 
 ## 配置文件
@@ -159,11 +165,19 @@ joc
 ANTHROPIC_API_KEY=...
 OPENAI_API_KEY=...
 GEMINI_API_KEY=...
-JOC_DEFAULT_MODEL=...
+JEO_DEFAULT_MODEL=...
 OLLAMA_HOST=http://localhost:11434
-JOC_TUI_THEME=cosmic        # TUI 主题 (cosmic/matrix/solar/red-claw/blue-crab/mono)
-JOC_TUI_ALT_SCREEN=1        # 回退到旧版 alt-screen 实时回合（默认: 主缓冲区内联 + tmux 滚轮回滚）
+JEO_TUI_THEME=cosmic        # TUI 主题 (cosmic/matrix/solar/red-claw/blue-crab/mono)
+JEO_TUI_ALT_SCREEN=1        # 回退到旧版 alt-screen 实时回合（默认: 主缓冲区内联 + tmux 滚轮回滚）
+JEO_STEP_EXTENSIONS=2       # 每回合 step 预算延长次数 (0 = 传统固定计数器)
+JEO_STEP_EXTENSION_SIZE=10  # 每次延长授予的 step 数（默认: 基础预算的一半，最少 4）
+JEO_STEP_HARD_CAP=75        # 绝对 step 上限（默认: 基础预算的 3 倍）
+JEO_STEP_WINDOW=8           # 用于进度评分的最近工具调用窗口
 ```
+
+### Step 预算（retry 流程）
+
+每回合的 step 限制是一个灵活的 **预算**，而不是简单计数器（gjc retry-flow 对齐）。当计数器达到当前上限时，引擎会对最近的工具调用窗口评分：如果回合确实在推进（最近调用 ≥50% 成功且目标 ≥2 个不同签名），预算会 **自动延长** —— 受 `JEO_STEP_EXTENSIONS`（默认 2 次）和绝对上限 `JEO_STEP_HARD_CAP`（默认 3 倍）约束，同时输出 `↻ step budget extended to M` 账目行并更新实时 `step N/M` 分母。停滞的窗口（大多失败或同一调用空转）不会延长，而是 **fail-fast** 进入整合收尾（consolidation），拒绝原因会写进最终消息。原有守卫不变（相同调用 3 次、连续失败 5 次、parse-bounce 兜底）。子代理委派（`task`、`jeo team`）保持精确的 step 契约 —— 延长被禁用，重试权归父级所有。
 
 ## Publishing
 

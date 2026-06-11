@@ -22,7 +22,7 @@ afterEach(async () => {
 });
 
 async function seedPlan(steps: { name: string; role?: string }[]): Promise<void> {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), "joc-team-"));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-team-"));
   const planPath = path.join(tmp, "plan.yaml");
   const yaml = ["name: demo-plan", "steps:", ...steps.flatMap(s => [`  - name: ${s.name}`, ...(s.role ? [`    role: ${s.role}`] : [])])].join("\n");
   await fs.writeFile(planPath, yaml + "\n");
@@ -101,7 +101,7 @@ test("runTeamCommand routes duplicate task names by step index, not by name", as
 
 test("runTeamCommand refuses an unapproved plan", async () => {
   const { runTeamCommand } = await import("../src/commands/team");
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), "joc-team-na-"));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-team-na-"));
   const stateDir = path.join(tmp, ".joc", "state");
   await fs.mkdir(stateDir, { recursive: true });
   await fs.writeFile(

@@ -8,11 +8,11 @@ export async function runMcpCommand(args: string[]): Promise<void> {
   }
   if (sub === "tools") {
     const { TOOLS } = await import("../mcp");
-    console.log(`Available joc-mcp tools (${TOOLS.length}):`);
+    console.log(`Available jeo-mcp tools (${TOOLS.length}):`);
     for (const t of TOOLS) console.log(`  ${t.name.padEnd(28)} ${t.description}`);
     return;
   }
-  console.log(`unknown 'joc mcp' subcommand: ${sub}`);
-  console.log("Usage: joc mcp [serve|tools]");
+  console.log(`unknown 'jeo mcp' subcommand: ${sub}`);
+  console.log("Usage: jeo mcp [serve|tools]");
   process.exit(1);
 }

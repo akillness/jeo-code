@@ -10,7 +10,7 @@ export async function syncSpecificationToSeed(cwd: string) {
   const specPath = path.join(cwd, ".specify", "specification.md");
   const seedPath = path.join(cwd, ".ouroboros", "seeds", "generated-seed.yaml");
   
-  console.log("[joc-Core] Syncing specification to ooo seed...");
+  console.log("[jeo-Core] Syncing specification to ooo seed...");
   
   try {
     const spec = await fs.readFile(specPath, "utf-8");
@@ -41,9 +41,9 @@ ${reqs.map(r => `  - "${r.replace(/"/g, '\\\\\\\\"')}"`).join("\n")}
       status: "success"
     });
     
-    console.log("[joc-Core] Successfully generated seed.");
+    console.log("[jeo-Core] Successfully generated seed.");
   } catch (err: any) {
-    console.error(`[joc-Core] Failed to sync specification: ${err.message}`);
+    console.error(`[jeo-Core] Failed to sync specification: ${err.message}`);
     throw err;
   }
 }

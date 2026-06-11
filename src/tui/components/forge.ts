@@ -15,6 +15,9 @@ export interface ForgeBoxOptions {
   maxLines?: number;
   unicode?: boolean;
   paint?: (s: string) => string;
+  /** Shaded-edge painter (bottom border + right edge). Defaults to a dimmed `paint`
+   *  when color is on — the lit/shaded two-tone gives the card visible depth. */
+  paintShadow?: (s: string) => string;
   index?: number;
   category?: UiCategory;
   color?: boolean;
@@ -270,17 +273,18 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
   const maxLines = Math.max(1, Math.trunc(opts.maxLines ?? 10));
   const glyphs = borderGlyphs(opts.unicode);
   const paint = opts.paint ?? chalk.gray;
+  const shadow = opts.paintShadow ?? (opts.color === false ? paint : (s: string) => chalk.dim(paint(s)));
   const inner = Math.max(1, width - 2);
   const top = paint(glyphs.tl + glyphs.h.repeat(inner) + glyphs.tr);
-  const bottom = paint(glyphs.bl + glyphs.h.repeat(inner) + glyphs.br);
+  const bottom = shadow(glyphs.bl + glyphs.h.repeat(inner) + glyphs.br);
   // gjc-style header: just the title (e.g. `✗ Bash`, `Write src/app.ts`) — no
   // category badge, no `· language` suffix; the box content speaks for itself.
   const label = summary.title;
   const title = `${opts.color === false ? label : chalk.bold(label)}`;
   // Truncate the title to the inner width BEFORE padding — padLineTo only pads, so a
   // long title/badge would otherwise overflow the right border (box wider than `width`).
-  const rendered: string[] = [top, paint(glyphs.v) + padLineTo(truncateToWidth(title, inner), inner, "left") + paint(glyphs.v)];
-  const separator = paint(glyphs.v) + paint(glyphs.h.repeat(inner)) + paint(glyphs.v);
+  const rendered: string[] = [top, paint(glyphs.v) + padLineTo(truncateToWidth(title, inner), inner, "left") + shadow(glyphs.v)];
+  const separator = paint(glyphs.v) + paint(glyphs.h.repeat(inner)) + shadow(glyphs.v);
   rendered.push(separator);
 
   // A labeled divider counts as a single content row; everything else word-wraps to the
@@ -295,18 +299,18 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
     const lead = glyphs.h.repeat(Math.min(2, inner));
     const rest = Math.max(0, inner - visibleWidth(lead) - visibleWidth(text));
     const bar = `${lead}${text}${glyphs.h.repeat(rest)}`;
-    return paint(glyphs.v) + paint(padLineTo(bar, inner, "left")) + paint(glyphs.v);
+    return paint(glyphs.v) + paint(padLineTo(bar, inner, "left")) + shadow(glyphs.v);
   };
   const clipped = content.slice(0, maxLines);
   for (const line of clipped) {
     if (line.startsWith(FORGE_DIVIDER_PREFIX)) {
       rendered.push(renderDivider(line.slice(FORGE_DIVIDER_PREFIX.length)));
     } else {
-      rendered.push(paint(glyphs.v) + padLineTo(line, inner, "left") + paint(glyphs.v));
+      rendered.push(paint(glyphs.v) + padLineTo(line, inner, "left") + shadow(glyphs.v));
     }
   }
   if (content.length > clipped.length) {
-    rendered.push(paint(glyphs.v) + padLineTo(`… ${content.length - clipped.length} hidden line(s)`, inner, "left") + paint(glyphs.v));
+    rendered.push(paint(glyphs.v) + padLineTo(`… ${content.length - clipped.length} hidden line(s)`, inner, "left") + shadow(glyphs.v));
   }
   rendered.push(bottom);
   return rendered;

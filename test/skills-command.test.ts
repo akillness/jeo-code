@@ -5,7 +5,7 @@ test("skills command: list, read, legacy alias, json output, unknown skill handl
   const originalExitCode = process.exitCode;
 
   try {
-    // 1. list text output (joc skills or joc skills list)
+    // 1. list text output (jeo skills or jeo skills list)
     {
       const logs: string[] = [];
       const origLog = console.log;
@@ -20,7 +20,7 @@ test("skills command: list, read, legacy alias, json output, unknown skill handl
       }
 
       const output = logs.join("\n");
-      expect(output).toContain("=== joc skills ===");
+      expect(output).toContain("=== jeo skills ===");
       expect(output).toContain("deep-interview");
       expect(output).toContain("ralplan");
       expect(output).toContain("team");
@@ -41,7 +41,7 @@ test("skills command: list, read, legacy alias, json output, unknown skill handl
       }
 
       const output = logs.join("\n");
-      expect(output).toContain("=== joc skills ===");
+      expect(output).toContain("=== jeo skills ===");
       expect(output).toContain("deep-interview");
       expect(output).toContain("ralplan");
     }
@@ -131,7 +131,7 @@ test("skills command: list, read, legacy alias, json output, unknown skill handl
       expect(parsed.content).toContain("deep-interview");
     }
 
-    // 5. legacy alias (joc skills <name>)
+    // 5. legacy alias (jeo skills <name>)
     {
       const logs: string[] = [];
       const origLog = console.log;
@@ -150,7 +150,7 @@ test("skills command: list, read, legacy alias, json output, unknown skill handl
       expect(output).toContain("Summary:");
     }
 
-    // 6. legacy alias with --json (joc skills <name> --json)
+    // 6. legacy alias with --json (jeo skills <name> --json)
     {
       const logs: string[] = [];
       const origLog = console.log;

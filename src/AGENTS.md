@@ -20,7 +20,7 @@ Core application source code for the `jeo-code` CLI and agent runtime. It orches
 | `ai/` | LLM client interactions, provider abstractions, and token management (see `ai/AGENTS.md`) |
 | `auth/` | OAuth flows and credential management (see `auth/AGENTS.md`) |
 | `cli/` | Command-line interface definitions and arg parsing (see `cli/AGENTS.md`) |
-| `commands/` | Implementations for all `joc` subcommands (launch, setup, team, etc.) (see `commands/AGENTS.md`) |
+| `commands/` | Implementations for all `jeo` subcommands (launch, setup, team, etc.) (see `commands/AGENTS.md`) |
 | `mcp/` | Model Context Protocol integration (see `mcp/AGENTS.md`) |
 | `prompts/` | Bundled system prompts and skills (see `prompts/AGENTS.md`) |
 | `skills/` | Skill execution framework and discovery (see `skills/AGENTS.md`) |

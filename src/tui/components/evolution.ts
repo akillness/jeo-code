@@ -1,7 +1,7 @@
 import chalk from "chalk";
 
 /**
- * Canonical "evolution" model for the joc TUI (single source of truth).
+ * Canonical "evolution" model for the jeo TUI (single source of truth).
  *
  * Every evolving surface — the ASCII art, the spinner, the progress meter, and
  * the footer track — derives its stage from the functions and tables here, so a

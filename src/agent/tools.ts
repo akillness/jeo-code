@@ -20,7 +20,7 @@ export interface ToolResult {
 
 /**
  * Directories that pollute `find`/`search` results and waste time: VCS, build
- * artifacts, dependency trees, and joc's own runtime dir. gjc's native search
+ * artifacts, dependency trees, and jeo's own runtime dir. gjc's native search
  * respects ignore files; this is the pure-TS equivalent.
  */
 export const IGNORED_DIRS = [
@@ -84,7 +84,7 @@ export async function assertMutationAllowed(
     if (!insideJoc) {
       throw new Error(
         `[MutationGuard Blocked] Code mutation is blocked while a Socratic interview is active (the requirements seed is not yet frozen).\n` +
-        `Current ambiguity: ${((deepInterviewState.current_ambiguity ?? 1) * 100).toFixed(0)}%. Finish the interview to freeze the seed and unlock writes — run 'joc deep-interview'. Non-interactive '--auto' can continue clarification, but it does not bypass the ambiguity gate.\n` +
+        `Current ambiguity: ${((deepInterviewState.current_ambiguity ?? 1) * 100).toFixed(0)}%. Finish the interview to freeze the seed and unlock writes — run 'jeo deep-interview'. Non-interactive '--auto' can continue clarification, but it does not bypass the ambiguity gate.\n` +
         `Only spec/planning writes under '.joc/' are permitted until then.`
       );
     }
@@ -97,7 +97,7 @@ export async function assertBashAllowed(
   const deepInterviewState = await readMutationLock(cwd);
   if (deepInterviewState && deepInterviewState.active && deepInterviewState.current_phase !== "complete") {
     throw new Error(
-      "[MutationGuard] bash is blocked while a Socratic interview is active (requirements seed not frozen). Finish 'joc deep-interview' to continue; '--auto' does not bypass the ambiguity gate."
+      "[MutationGuard] bash is blocked while a Socratic interview is active (requirements seed not frozen). Finish 'jeo deep-interview' to continue; '--auto' does not bypass the ambiguity gate."
     );
   }
 }
@@ -381,7 +381,7 @@ export async function bashTool(
   subdir?: string,
   env?: Record<string, string>
 ): Promise<ToolResult> {
-  if (process.env.JOC_BASH_FIXUPS === "1") {
+  if ((process.env.JEO_BASH_FIXUPS ?? process.env.JOC_BASH_FIXUPS) === "1") {
     const fx = applyBashFixups(command);
     command = fx.command;
   }

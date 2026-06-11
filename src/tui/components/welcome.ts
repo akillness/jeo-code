@@ -1,7 +1,7 @@
 import chalk from "chalk";
-import os from "node:os";
-import { getStageByIndex, renderAsciiArt } from "./ascii-art";
-import { truncate } from "../terminal";
+import { renderDnaClaw, DNA_CLAW_ART_GRAND } from "./ascii-art";
+import { truncate, isTTY } from "../terminal";
+import { detectColorLevel, ColorLevel } from "./color";
 
 export interface WelcomeData {
   version: string;
@@ -13,6 +13,10 @@ export interface WelcomeData {
   contextFiles?: string[]; // project context file paths (render basenames)
   recentSessions?: { name: string; timeAgo: string }[];
   cols?: number;           // default 80
+  /** Lit-edge painter (top border + left edge); theme accent. Default gray. */
+  accent?: (s: string) => string;
+  /** Shaded-edge painter (bottom border + right edge); dimmed accent. Default dim gray. */
+  accentShadow?: (s: string) => string;
   unicode?: boolean;       // default true
   color?: boolean;         // default true
 }
@@ -33,56 +37,20 @@ function padLine(line: string, width: number, align: "left" | "center" | "right"
   return line + " ".repeat(total);
 }
 
-function shortenCwd(cwd: string): string {
-  const home = process.env.HOME ?? os.homedir();
-  if (cwd === home) return "~";
-  if (cwd.startsWith(home + "/")) {
-    return "~" + cwd.slice(home.length);
-  }
-  return cwd;
-}
-
-function formatWorkspaceLine(label: string, value: string, width: number, useColor: boolean): string {
-  const combinedPlain = label + value;
-  if (combinedPlain.length <= width) {
-    return useColor ? chalk.dim(label) + value : combinedPlain;
-  } else {
-    const allowedValueLen = Math.max(0, width - label.length);
-    const truncatedValue = value.slice(0, allowedValueLen);
-    return useColor ? chalk.dim(label) + truncatedValue : label + truncatedValue;
-  }
-}
-
-function formatSessionLine(name: string, timeAgo: string, width: number, useColor: boolean, unicode: boolean): string {
-  const bullet = unicode ? "•" : "*";
-  const label = `${bullet} `;
-  const valueSuffix = ` (${timeAgo})`;
-  const totalLabel = `${bullet} `;
-  const plainText = `${totalLabel}${name}${valueSuffix}`;
-  if (plainText.length <= width) {
-    if (useColor) {
-      return `${chalk.cyan(bullet)} ${name} ${chalk.dim(valueSuffix)}`;
-    } else {
-      return plainText;
-    }
-  } else {
-    const allowedNameLen = Math.max(0, width - totalLabel.length - valueSuffix.length);
-    const truncatedName = name.slice(0, allowedNameLen);
-    if (useColor) {
-      return `${chalk.cyan(bullet)} ${truncatedName} ${chalk.dim(valueSuffix)}`;
-    } else {
-      return `${totalLabel}${truncatedName}${valueSuffix}`;
-    }
-  }
-}
-
+/**
+ * The gjc-style hero welcome box ("JEO forge"): one outer box with the version
+ * embedded in the top border and a SINGLE CENTERED column inside — brand line,
+ * tagline, the grand DNA Claw symbol (flowing gradient on capable terminals),
+ * and the model/provider pills. Workspace details and key hints intentionally
+ * live elsewhere (footer/status bar), matching the gjc forge banner.
+ */
 export function renderWelcome(d: WelcomeData): string[] {
   const cols = d.cols ?? 80;
   const unicode = d.unicode !== false;
   const useColor = d.color !== false;
 
   if (cols < 30) {
-    return [ `joc v${d.version} · ${d.model}` ];
+    return [ `jeo v${d.version} · ${d.model}` ];
   }
 
   const W = Math.min(100, cols - 2);
@@ -92,135 +60,68 @@ export function renderWelcome(d: WelcomeData): string[] {
   const BOX_ASCII = { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" };
   const g = unicode ? BOX_UNICODE : BOX_ASCII;
 
-  // Title text: ─── joc v{version} · evolution forge ───
-  const dashStr = (unicode ? "─" : "-").repeat(3);
-  const titleText = `${dashStr} joc v${d.version} · evolution forge ${dashStr}`;
+  // Depth cue (two-tone borders): top border + left edge are "lit" with the
+  // accent; bottom border + right edge are "shaded" with the dimmed accent.
+  const lit = useColor ? (d.accent ?? chalk.gray) : (s: string) => s;
+  const shadow = useColor ? (d.accentShadow ?? ((s: string) => chalk.dim(chalk.gray(s)))) : (s: string) => s;
 
-  let topBorderContent = titleText;
-  if (topBorderContent.length > inner) {
-    topBorderContent = topBorderContent.slice(0, inner);
+  // Title text: ─── jeo v{version} · JEO forge ─── (bold for contrast against the border)
+  const dashStr = g.h.repeat(3);
+  const titleLabel = ` jeo v${d.version} · JEO forge `;
+  const titleHead = `${dashStr}${titleLabel}`;
+  let topBorderLine: string;
+  if (titleHead.length + 2 > inner) {
+    const clipped = titleHead.slice(0, inner);
+    topBorderLine = lit(g.tl + clipped + g.h.repeat(Math.max(0, inner - clipped.length)) + g.tr);
   } else {
-    topBorderContent = topBorderContent + g.h.repeat(inner - topBorderContent.length);
+    const fill = g.h.repeat(inner - titleHead.length);
+    topBorderLine = useColor
+      ? lit(g.tl + dashStr) + chalk.bold(lit(titleLabel)) + lit(fill) + lit(g.tr)
+      : g.tl + titleHead + fill + g.tr;
   }
-  const topBorderPlain = g.tl + topBorderContent + g.tr;
-  const topBorderLine = useColor ? chalk.gray(topBorderPlain) : topBorderPlain;
 
   const bottomBorderPlain = g.bl + g.h.repeat(inner) + g.br;
-  const bottomBorderLine = useColor ? chalk.gray(bottomBorderPlain) : bottomBorderPlain;
+  const bottomBorderLine = shadow(bottomBorderPlain);
 
-  // Compile LEFT column
-  const artLines = renderAsciiArt(getStageByIndex(0), {
+  // Grand symbol when the box is wide enough; compact DNA Claw otherwise.
+  const colorLevel = useColor ? detectColorLevel(process.env, isTTY()) : ColorLevel.None;
+  const grandWidth = Math.max(...DNA_CLAW_ART_GRAND.map(l => l.length));
+  const grand = inner >= grandWidth;
+  const artLines = renderDnaClaw({
     color: useColor,
-    firing: false,
-    frame: 0
+    phase: 0,
+    unicode,
+    colorLevel,
+    grand,
+    cols: inner,
   });
 
-  const leftLines: string[] = [];
-  leftLines.push("");
-  leftLines.push(useColor ? chalk.bold.cyan("jeo-code") : "jeo-code");
-  leftLines.push(useColor ? chalk.dim("evolve · act · prove") : "evolve · act · prove");
-  leftLines.push("");
-  for (const line of artLines) {
-    leftLines.push(line);
-  }
-  leftLines.push("");
+  // Single centered hero column (gjc forge layout): breathing room, brand,
+  // tagline, the symbol, then the model/provider pills.
+  const content: string[] = [];
+  content.push("");
+  content.push(useColor ? chalk.bold.cyan("Jeo forge") : "Jeo forge");
+  content.push(useColor ? chalk.dim("evolve · act · prove") : "evolve · act · prove");
+  content.push("");
+  for (const line of artLines) content.push(line);
+  content.push("");
 
   const modelIcon = unicode ? "◆" : "*";
-  leftLines.push(useColor ? chalk.cyan(`[ ${modelIcon} ${d.model} ]`) : `[ ${modelIcon} ${d.model} ]`);
-
+  const modelPill = truncate(`[ ${modelIcon} ${d.model} ]`, inner);
+  content.push(useColor ? chalk.cyan(modelPill) : modelPill);
   if (d.provider) {
     const providerIcon = unicode ? "◇" : "o";
-    leftLines.push(useColor ? chalk.blue(`[ ${providerIcon} ${d.provider} ]`) : `[ ${providerIcon} ${d.provider} ]`);
+    const providerPill = truncate(`[ ${providerIcon} ${d.provider} ]`, inner);
+    content.push(useColor ? chalk.blue(providerPill) : providerPill);
   }
+  content.push("");
 
-  const finalContentLines: string[] = [];
-
-  if (W >= 64) {
-    // Two columns
-    const leftWidth = Math.min(32, Math.floor(inner * 0.45));
-    const rightWidth = inner - 1 - leftWidth;
-
-    // Compile RIGHT column
-    const workspaceLines: string[] = [];
-    if (d.cwd) {
-      const shortened = shortenCwd(d.cwd);
-      workspaceLines.push(formatWorkspaceLine("cwd ", shortened, rightWidth, useColor));
-    }
-    if (d.thinking) {
-      workspaceLines.push(formatWorkspaceLine("thinking ", d.thinking, rightWidth, useColor));
-    }
-    if (d.sessionId) {
-      const session8 = d.sessionId.slice(0, 8);
-      workspaceLines.push(formatWorkspaceLine("session ", session8, rightWidth, useColor));
-    }
-    if (d.contextFiles && d.contextFiles.length > 0) {
-      // Dedupe repeated basenames (e.g. nested AGENTS.md files) so the narrow
-      // workspace column lists distinct names instead of "AGENTS.md, AGENTS.md, …".
-      const basenames = [...new Set(d.contextFiles.map(f => f.split(/[/\\]/).pop() || f))];
-      const joined = basenames.join(", ");
-      const label = `context ${d.contextFiles.length} file(s): `;
-      workspaceLines.push(formatWorkspaceLine(label, joined, rightWidth, useColor));
-    }
-
-    const sessionTrailLines: string[] = [];
-    if (!d.recentSessions || d.recentSessions.length === 0) {
-      sessionTrailLines.push(useColor ? chalk.dim("No saved trails") : "No saved trails");
-    } else {
-      const sessions = d.recentSessions.slice(0, 3);
-      for (const s of sessions) {
-        sessionTrailLines.push(formatSessionLine(s.name, s.timeAgo, rightWidth, useColor, unicode));
-      }
-    }
-
-    const rightLines: string[] = [];
-    rightLines.push(useColor ? chalk.bold("Flow keys") : "Flow keys");
-    rightLines.push(useColor ? chalk.dim("/ commands · /model model") : "/ commands · /model model");
-    rightLines.push(useColor ? chalk.dim("/skill skills · /sessions history") : "/skill skills · /sessions history");
-    rightLines.push(useColor ? chalk.dim("/exit quit · /help all") : "/exit quit · /help all");
-    rightLines.push("DIVIDER");
-    rightLines.push(useColor ? chalk.bold("Workspace") : "Workspace");
-    for (const line of workspaceLines) {
-      rightLines.push(line);
-    }
-    rightLines.push("DIVIDER");
-    rightLines.push(useColor ? chalk.bold("Session trail") : "Session trail");
-    for (const line of sessionTrailLines) {
-      rightLines.push(line);
-    }
-
-    const maxLines = Math.max(leftLines.length, rightLines.length);
-    for (let i = 0; i < maxLines; i++) {
-      const rawL = leftLines[i] ?? "";
-      const rawR = rightLines[i] ?? "";
-
-      const truncatedL = truncate(rawL, leftWidth);
-      const l = padLine(truncatedL, leftWidth, "center");
-
-      let r = "";
-      if (rawR === "DIVIDER") {
-        const sepChar = unicode ? "─" : "-";
-        r = useColor ? chalk.dim(sepChar.repeat(rightWidth)) : sepChar.repeat(rightWidth);
-      } else {
-        const truncatedR = truncate(rawR, rightWidth);
-        r = padLine(truncatedR, rightWidth, "left");
-      }
-
-      const leftBorder = useColor ? chalk.gray(g.v) : g.v;
-      const midBorder = useColor ? chalk.gray(g.v) : g.v;
-      const rightBorder = useColor ? chalk.gray(g.v) : g.v;
-      finalContentLines.push(leftBorder + l + midBorder + r + rightBorder);
-    }
-  } else {
-    // Single column
-    for (let i = 0; i < leftLines.length; i++) {
-      const rawL = leftLines[i] ?? "";
-      const truncatedL = truncate(rawL, inner);
-      const l = padLine(truncatedL, inner, "center");
-      const leftBorder = useColor ? chalk.gray(g.v) : g.v;
-      const rightBorder = useColor ? chalk.gray(g.v) : g.v;
-      finalContentLines.push(leftBorder + l + rightBorder);
-    }
-  }
+  const leftBorder = lit(g.v);
+  const rightBorder = shadow(g.v);
+  const finalContentLines = content.map(raw => {
+    const line = padLine(truncate(raw, inner), inner, "center");
+    return leftBorder + line + rightBorder;
+  });
 
   return [topBorderLine, ...finalContentLines, bottomBorderLine];
 }

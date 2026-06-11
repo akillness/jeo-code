@@ -16,7 +16,7 @@ const OAUTH_ENV = ["ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_O
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeAll(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-prov-"));
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-prov-"));
   process.env.JOC_CONFIG_DIR = dir;
   // A config file with an empty providers map + no credential env vars isolates each
   // scenario: readGlobalConfig overlays env API keys onto gaps, so they must be cleared.
@@ -142,7 +142,7 @@ test("describeProvider: antigravity shows Gemini OAuth as catalog-only, not call
   expect(s.ready).toBe(false);
   expect(s.kind).toBe("oauth");
   expect(s.label).toContain("catalog via Gemini CLI");
-  expect(s.label).toContain("joc auth login antigravity");
+  expect(s.label).toContain("jeo auth login antigravity");
   expect(s.envVar).toBeUndefined();
 });
 

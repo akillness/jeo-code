@@ -7,7 +7,7 @@ import { writeTool } from "../src/agent/tools";
 let dir = "";
 
 beforeAll(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-mutguard-"));
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-mutguard-"));
   await fs.mkdir(path.join(dir, ".joc", "state"), { recursive: true });
   // Active interview, not yet complete → mutations outside .joc/ are blocked.
   await fs.writeFile(
@@ -38,7 +38,7 @@ test("MutationGuard blocks sibling dirs like .joc-backup (path-boundary, not pre
 });
 
 test("MutationGuard fails CLOSED on a corrupt deep-interview state (blocks mutation)", async () => {
-  const d = await fs.mkdtemp(path.join(os.tmpdir(), "joc-mutguard-corrupt-"));
+  const d = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-mutguard-corrupt-"));
   try {
     await fs.mkdir(path.join(d, ".joc", "state"), { recursive: true });
     await fs.writeFile(path.join(d, ".joc", "state", "deep-interview-state.json"), "{ not valid json");

@@ -8,7 +8,11 @@ import {
   stageHeight,
   stageWidth,
   stageCaption,
+  DNA_CLAW_ART,
+  DNA_CLAW_ART_ASCII,
+  renderDnaClaw,
 } from "../src/tui/components/ascii-art";
+import { ColorLevel } from "../src/tui/components/color";
 
 test("getEvolutionStage / getStageByIndex select + clamp stages", () => {
   expect(getEvolutionStage(0, 25).name).toBe("Primordial Cell");
@@ -99,5 +103,73 @@ test("all stages align to a uniform global width and height when requested", () 
     const lines = renderAsciiArt(s, { color: false, width: w, height: h });
     expect(lines.length).toBe(h);
     expect(lines.every(l => l.length === w)).toBe(true);
+  }
+});
+
+test("primordial cell: unicode art is width-1 per glyph (no smearing on re-center)", async () => {
+  const { visibleWidth } = await import("../src/tui/components/color");
+  const cell = getStageByIndex(0);
+  for (let f = 0; f < (cell.frames?.length ?? 1); f++) {
+    for (const line of renderAsciiArt(cell, { color: false, frame: f })) {
+      // length === display width is the invariant that keeps renderAsciiArt's
+      // length-based padding and app.ts/welcome.ts's visibleWidth centering in sync.
+      expect(line.length).toBe(visibleWidth(line));
+    }
+  }
+});
+
+test("primordial cell: unicode:false degrades to a tofu-free ASCII fallback", () => {
+  const cell = getStageByIndex(0);
+  expect(cell.asciiArt).toBeDefined();
+  expect(cell.asciiFrames && cell.asciiFrames.length).toBe(cell.frames!.length);
+  const nonAscii = /[^\x00-\x7f]/;
+  for (let f = 0; f < cell.frames!.length; f++) {
+    const uni = renderAsciiArt(cell, { color: false, frame: f, unicode: true }).join("\n");
+    const ascii = renderAsciiArt(cell, { color: false, frame: f, unicode: false }).join("\n");
+    expect(nonAscii.test(uni)).toBe(true); // box-drawing / geometric glyphs present
+    expect(nonAscii.test(ascii)).toBe(false); // fallback is pure ASCII
+  }
+  // ASCII frames stay width-uniform so the fallback never tears the welcome box.
+  for (let f = 0; f < cell.asciiFrames!.length; f++) {
+    const lines = renderAsciiArt(cell, { color: false, frame: f, unicode: false });
+    expect(new Set(lines.map(l => l.length)).size).toBe(1);
+  }
+});
+test("DNA_CLAW_ART: lines all width <=24 and uniform after render", () => {
+  expect(DNA_CLAW_ART.length).toBeGreaterThan(0);
+  for (const line of DNA_CLAW_ART) {
+    expect(line.length).toBeLessThanOrEqual(24);
+  }
+  const rendered = renderDnaClaw({ color: false });
+  expect(rendered.length).toBe(DNA_CLAW_ART.length);
+  const widthSet = new Set(rendered.map(l => l.length));
+  expect(widthSet.size).toBe(1);
+  expect(widthSet.values().next().value).toBeLessThanOrEqual(24);
+});
+
+test("renderDnaClaw: plain (color:false) is byte-stable across phases", () => {
+  const r0 = renderDnaClaw({ color: false, phase: 0 });
+  const r1 = renderDnaClaw({ color: false, phase: 0.5 });
+  expect(r0).toEqual(r1);
+});
+
+test("renderDnaClaw: two different phases at TrueColor produce different escape sequences", () => {
+  const r0 = renderDnaClaw({ color: true, colorLevel: ColorLevel.TrueColor, phase: 0 });
+  const r1 = renderDnaClaw({ color: true, colorLevel: ColorLevel.TrueColor, phase: 0.5 });
+  expect(r0).not.toEqual(r1);
+  for (const line of r0) {
+    expect(line.includes("\x1b[")).toBe(true);
+  }
+  for (const line of r1) {
+    expect(line.includes("\x1b[")).toBe(true);
+  }
+});
+
+test("renderDnaClaw: ascii fallback contains no non-ASCII chars", () => {
+  expect(DNA_CLAW_ART_ASCII.length).toBeGreaterThan(0);
+  const nonAscii = /[^\x00-\x7f]/;
+  const rendered = renderDnaClaw({ unicode: false, color: false });
+  for (const line of rendered) {
+    expect(nonAscii.test(line)).toBe(false);
   }
 });

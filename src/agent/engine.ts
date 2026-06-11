@@ -1,6 +1,6 @@
 /**
- * Reusable agentic tool-call loop — the shared core behind `joc team`
- * (per-task executor) and `joc launch` (interactive coding agent).
+ * Reusable agentic tool-call loop — the shared core behind `jeo team`
+ * (per-task executor) and `jeo launch` (interactive coding agent).
  *
  * The model is driven in JSON tool-call mode: each step it emits exactly one
  * `{ "tool": "...", "arguments": { ... } }` object; the engine dispatches it,
@@ -16,7 +16,7 @@ import { friendlyProviderError } from "../util/provider-error";
 import { isRateLimitError } from "../util/retry";
 import { runPreToolHooks, runPostTurnHooks } from "./hooks";
 import { minimizeToolOutput } from "./output-minimizer";
-import { StepBudget, resolveStepBudgetConfig, type StepBudgetConfig } from "./step-budget";
+import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, type StepBudgetConfig } from "./step-budget";
 
 
 async function invokeCallLlm(history: Message[], options: {
@@ -51,7 +51,7 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
 
 /** Tool-protocol description injected into the system prompt. */
 export const TOOL_PROTOCOL = [
-  "You have these tools (call exactly ONE per step):",
+  "You have these tools (call exactly ONE per step, or batch multiple independent calls):",
   "1. read   {filePath, lineRange?, raw?} — read a file (lineRange \"a-b\",\"a-\",\"a\",\"a+n\",\"a-b,c-d\"; raw: verbatim, no line numbers)",
   "2. write  {filePath, content}         — create/overwrite a file",
   "3. edit   {filePath, editBlock}       — ≔A..B replace lines; ≔A+ insert after line A; ≔$ append EOF (payload on next line)",
@@ -64,13 +64,17 @@ export const TOOL_PROTOCOL = [
   "Reply with STRICT JSON only — no code fences. You MAY include an optional leading",
   '"reasoning" string (one short sentence on your plan) before "tool":',
   '{ "reasoning": "<one short sentence>", "tool": "<name>", "arguments": { ... } }',
+  "",
+  "Alternatively, you may batch up to 6 independent calls in a single turn using the following format:",
+  '{ "reasoning": "<one short sentence>", "tools": [{ "tool": "<name>", "arguments": { ... } }, ...] }',
+  "Batch only independent calls; NEVER batch 'done', and NEVER put a mutating tool (write/edit/bash) after another mutating tool in one batch whose inputs depend on the earlier one.",
 ].join("\n");
 
 /** Restricted protocol for read-only subagent roles (planner/architect/critic):
  *  advertises only the non-mutating tools so the model does not waste steps
  *  calling write/edit/bash, which `subagentToolset` has physically removed. */
 export const READONLY_TOOL_PROTOCOL = [
-  "You have these READ-ONLY tools (call exactly ONE per step):",
+  "You have these READ-ONLY tools (call exactly ONE per step, or batch multiple independent calls):",
   "1. read   {filePath, lineRange?}      — read a file (lineRange: \"a-b\", \"a-\", \"a\", \"a+n\", or multi \"a-b,c-d\")",
   "2. find   {globPattern}               — find files by name",
   "3. search {pattern, globPattern?, ignoreCase?} — grep for a pattern",
@@ -79,6 +83,10 @@ export const READONLY_TOOL_PROTOCOL = [
   "",
   "Reply with STRICT JSON only — no prose, no code fences:",
   '{ "tool": "<name>", "arguments": { ... } }',
+  "",
+  "Alternatively, you may batch up to 6 independent calls in a single turn using the following format:",
+  '{ "tools": [{ "tool": "<name>", "arguments": { ... } }, ...] }',
+  "Batch only independent calls; NEVER batch 'done'.",
 ].join("\n");
 
 export function executorSystemPrompt(
@@ -114,6 +122,10 @@ export interface AgentLoopOptions {
   /** Optional system prompt: prepended to `history` when it has no system message. */
   systemPrompt?: string;
   cwd: string;
+  /** Base step budget (default 15). Non-finite or `<= 0` selects the DYNAMIC budget:
+   *  the budget keeps extending while the recent tool window shows NOVEL progress,
+   *  a stalled or cycling turn consolidates a final wrap-up, and a large finite
+   *  safety cap (`DYNAMIC_HARD_CAP`, default 600) guarantees termination. */
   maxSteps?: number;
   model?: string;
   /** Max generation tokens per step (drives the thinking budget). */
@@ -229,9 +241,17 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   const tools = opts.tools ?? DEFAULT_TOOLS;
   const maxSteps = opts.maxSteps ?? 15;
   // gjc-style retry flow: the step limit is a flexible BUDGET, not a bare counter.
-  // While the recent window shows real progress the budget extends itself (bounded
-  // extensions, hard cap); a stalled turn fails fast into the consolidation wrap-up.
-  const budget = new StepBudget(resolveStepBudgetConfig(maxSteps, process.env, opts.budget));
+  // While the recent window shows real progress the budget extends itself; a stalled
+  // turn fails fast into the consolidation wrap-up. An explicit positive maxSteps
+  // keeps the bounded flow (base + capped extensions); a non-finite / non-positive
+  // maxSteps selects the DYNAMIC budget — extensions keep flowing while NOVEL
+  // progress continues, a stalled/cycling window consolidates, and a large finite
+  // safety cap (default 600 steps) guarantees the turn always terminates.
+  const budget = new StepBudget(
+    Number.isFinite(maxSteps) && maxSteps > 0
+      ? resolveStepBudgetConfig(maxSteps, process.env, opts.budget)
+      : dynamicStepBudgetConfig(process.env, opts.budget),
+  );
   // Why the loop stopped at the limit — folded into the consolidation message.
   let budgetStopReason = "";
   const ev = opts.events ?? {};
@@ -263,8 +283,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         budgetStopReason = decision.reason;
         break;
       }
-      ev.onNotice?.(decision.reason);
-      ev.onBudget?.(decision.limit, decision.reason);
+      // One surface per sink: budget-aware consumers get onBudget; others the notice.
+      if (ev.onBudget) ev.onBudget(decision.limit, decision.reason);
+      else ev.onNotice?.(decision.reason);
     }
     if (opts.signal?.aborted) {
       return finish({ done: false, steps: step - 1, doneReason: "Cancelled." });
@@ -305,9 +326,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     }
     if (sawUsage) ev.onUsage?.({ ...acc });
 
-    let invocation: ToolInvocation;
+    let invocation: any;
     try {
-      invocation = extractJsonObject<ToolInvocation>(responseText);
+      invocation = extractJsonObject<any>(responseText);
     } catch (err) {
       ev.onAssistant?.(responseText, null);
       // Prose salvage: a reply with no JSON object at all is a chat-style final
@@ -332,119 +353,247 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       step++;
       continue;
     }
+    // A successfully parsed reply ends any bounce streak: MAX_PARSE_BOUNCES is a
+    // CONSECUTIVE-failure salvage, not a cumulative one — without this reset a long
+    // turn accumulated scattered parse slips and prematurely salvaged mid-task prose.
+    parseFailures = 0;
 
-    ev.onAssistant?.(responseText, invocation);
+    // Normalize to an invocation list
+    let toolCalls: { tool: string; arguments?: Record<string, any> }[] = [];
+    if (invocation && typeof invocation === "object") {
+      if (Array.isArray(invocation.tools)) {
+        const isValidBatch = invocation.tools.length > 0 && invocation.tools.every(
+          (t: any) => t && typeof t === "object" && typeof t.tool === "string" && t.tool.trim().length > 0
+        );
+        if (isValidBatch) {
+          toolCalls = invocation.tools.map((t: any) => ({
+            tool: t.tool.trim(),
+            arguments: t.arguments
+          }));
+        }
+      } else if (typeof invocation.tool === "string" && invocation.tool.trim().length > 0) {
+        toolCalls = [{
+          tool: invocation.tool.trim(),
+          arguments: invocation.arguments
+        }];
+      }
+    }
 
-    // Valid JSON but no usable `tool` field: the model isn't following the protocol.
-    // Guide it once or twice, then stop with a clear, actionable reason.
-    const toolName = typeof invocation?.tool === "string" ? invocation.tool.trim() : "";
-    if (!toolName) {
+    if (toolCalls.length === 0) {
       invalidToolCalls++;
       if (invalidToolCalls >= MAX_REPEAT) {
         return finish({
           done: false,
           steps: step,
-          doneReason: `Stopped: the model returned no valid tool call ${MAX_REPEAT}× (a JSON reply with no "tool" field). The selected model may be too small to follow the JSON tool protocol — switch to a stronger model with /model.`,
+          doneReason: `Stopped: the model returned no valid tool call ${MAX_REPEAT}× (a JSON reply with no valid "tool" or "tools" field). The selected model may be too small to follow the JSON tool protocol — switch to a stronger model with /model.`,
         });
       }
       history.push({ role: "assistant", content: responseText });
       history.push({
         role: "user",
-        content: `Your last reply had no "tool" field. Reply with exactly one JSON object, e.g. {"tool":"find","arguments":{"globPattern":"src/**"}} or {"tool":"done","arguments":{"reason":"…"}}.`,
+        content: `Your last reply had no "tool" or "tools" field. Reply with exactly one JSON object, e.g. {"tool":"find","arguments":{"globPattern":"src/**"}} or {"tools":[{"tool":"read","arguments":{"filePath":"src/main.ts"}}, ...]}.`,
       });
       step++;
       continue;
     }
     invalidToolCalls = 0;
 
-    if (invocation.tool === "done") {
-      return finish({ done: true, steps: step, doneReason: (invocation.arguments?.reason as string) ?? "" });
+    if (toolCalls.length > 6) {
+      ev.onNotice?.(`Too many tool calls in batch (${toolCalls.length}); capping at 6 and dropping the rest.`);
+      toolCalls = toolCalls.slice(0, 6);
     }
 
-    // Detect repeated identical tool calls (no forward progress).
-    const sig = `${invocation.tool}:${JSON.stringify(invocation.arguments ?? {})}`;
+    ev.onAssistant?.(responseText, toolCalls[0]);
+
+    if (toolCalls.length === 1 && toolCalls[0].tool === "done") {
+      return finish({ done: true, steps: step, doneReason: (toolCalls[0].arguments?.reason as string) ?? "" });
+    }
+
+    // Anti-spin guard, checked BEFORE execution: a repeated identical step must be
+    // stopped without running its calls again — a repeated mutating bash/edit must
+    // not execute a third time merely to be detected.
+    const callSigs = toolCalls.map(c => `${c.tool}:${JSON.stringify(c.arguments ?? {})}`);
+    const sig = callSigs.join(" | ");
     if (sig === lastSig) repeatCount++;
     else {
       repeatCount = 1;
       lastSig = sig;
     }
     if (repeatCount >= MAX_REPEAT) {
+      const what = toolCalls.length === 1 ? `the same '${toolCalls[0].tool}' call` : "the same tool calls";
       return finish({
         done: false,
         steps: step,
-        doneReason: `Stopped: repeated the same '${invocation.tool}' call ${MAX_REPEAT}× with no new progress (the model never signaled done).`,
+        doneReason: `Stopped: repeated ${what} ${MAX_REPEAT}× with no new progress (the model never signaled done).`,
       });
     }
 
-    const handler = tools[invocation.tool];
-    let success: boolean;
-    let output: string;
-    if (!handler) {
-      success = false;
-      const suggestion = nearestToolName(invocation.tool, Object.keys(tools));
-      const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
-      output = `Unknown tool: ${invocation.tool}.${hint} Available: ${Object.keys(tools).join(", ")}, done.`;
-    } else {
-      const preHookResult = await runPreToolHooks(
-        cwd,
-        invocation.tool,
-        invocation.arguments ?? {},
-        opts.signal,
-        ev.onNotice
-      );
-      if (preHookResult.vetoed) {
+    // Helper to execute a single tool call
+    const executeTool = async (call: { tool: string; arguments?: Record<string, any> }) => {
+      const { tool, arguments: args } = call;
+      let success: boolean;
+      let output: string;
+
+      if (tool === "done") {
         success = false;
-        output = preHookResult.error + (preHookResult.output ? `\n${preHookResult.output}` : "");
+        output = "Error: 'done' can only be called as the single tool invocation, not in a batch. Please send 'done' alone.";
       } else {
-        const res = await handler(invocation.arguments ?? {}, cwd);
-        success = res.success;
-        output = res.success ? res.output : (res.error ? (res.output ? `${res.error}\n${res.output}` : res.error) : res.output);
+        const handler = tools[tool];
+        if (!handler) {
+          success = false;
+          const suggestion = nearestToolName(tool, Object.keys(tools));
+          const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
+          output = `Unknown tool: ${tool}.${hint} Available: ${Object.keys(tools).join(", ")}, done.`;
+        } else {
+          const preHookResult = await runPreToolHooks(
+            cwd,
+            tool,
+            args ?? {},
+            opts.signal,
+            ev.onNotice
+          );
+          if (preHookResult.vetoed) {
+            success = false;
+            output = preHookResult.error + (preHookResult.output ? `\n${preHookResult.output}` : "");
+          } else {
+            try {
+              const res = await handler(args ?? {}, cwd);
+              success = res.success;
+              output = res.success ? res.output : (res.error ? (res.output ? `${res.error}\n${res.output}` : res.error) : res.output);
+            } catch (err: any) {
+              success = false;
+              output = err?.message || String(err);
+            }
+          }
+        }
+      }
+      return { success, output };
+    };
+
+    const READONLY_TOOLS = new Set(["read", "find", "search", "ls"]);
+    const groups: { isParallel: boolean; calls: { tool: string; arguments?: Record<string, any>; index: number }[] }[] = [];
+    for (let i = 0; i < toolCalls.length; i++) {
+      const call = toolCalls[i];
+      const isReadOnly = READONLY_TOOLS.has(call.tool);
+      if (isReadOnly) {
+        if (groups.length > 0 && groups[groups.length - 1].isParallel) {
+          groups[groups.length - 1].calls.push({ ...call, index: i });
+        } else {
+          groups.push({
+            isParallel: true,
+            calls: [{ ...call, index: i }]
+          });
+        }
+      } else {
+        groups.push({
+          isParallel: false,
+          calls: [{ ...call, index: i }]
+        });
       }
     }
 
-    ev.onToolResult?.(invocation.tool, success, output);
-    history.push({ role: "assistant", content: responseText });
-    const minimized = minimizeToolOutput(output, invocation.tool);
-    const visible = minimized.text;
-    let resultBody = truncateToolOutput(visible);
-    // Spill oversized tool output to a recoverable artifact so the decisive middle
-    // (test logs, long searches) isn't lost to the head+tail cap — the model can
-    // `read` the full file when the preview elides what it needs.
-    if (output.length > TOOL_SPILL_THRESHOLD) {
-      const artifact = await spillToolResult(invocation.tool, output, cwd).catch(() => null);
-      if (artifact) resultBody += `\n[full output (${output.length} chars) saved to ${artifact} — read it for the elided middle]`;
-    }
-    history.push({
-      role: "user",
-      content: `Tool [${invocation.tool}] result (${success ? "ok" : "fail"}):\n${resultBody}`,
-    });
-
-    await runPostTurnHooks(
-      cwd,
-      invocation.tool,
-      invocation.arguments ?? {},
-      success,
-      output,
-      opts.signal,
-      ev.onNotice
+    const results: { success: boolean; output: string; executed: boolean }[] = Array.from(
+      { length: toolCalls.length },
+      () => ({ success: false, output: "", executed: false })
     );
 
-    if (success) {
+    let aborted = false;
+    for (const group of groups) {
+      if (opts.signal?.aborted) {
+        aborted = true;
+        break;
+      }
+      if (group.isParallel) {
+        await Promise.all(group.calls.map(async (call) => {
+          const res = await executeTool(call);
+          results[call.index] = { ...res, executed: true };
+        }));
+      } else {
+        const call = group.calls[0];
+        const res = await executeTool(call);
+        results[call.index] = { ...res, executed: true };
+      }
+    }
+
+    const processAndPushResults = async (indices: number[]) => {
+      const resultBlocks: string[] = [];
+      for (const idx of indices) {
+        const call = toolCalls[idx];
+        const res = results[idx];
+
+        ev.onToolResult?.(call.tool, res.success, res.output);
+
+        const minimized = minimizeToolOutput(res.output, call.tool);
+        const visible = minimized.text;
+        let resultBody = truncateToolOutput(visible);
+        if (res.output.length > TOOL_SPILL_THRESHOLD) {
+          const artifact = await spillToolResult(call.tool, res.output, cwd).catch(() => null);
+          if (artifact) {
+            resultBody += `\n[full output (${res.output.length} chars) saved to ${artifact} — read it for the elided middle]`;
+          }
+        }
+
+        await runPostTurnHooks(
+          cwd,
+          call.tool,
+          call.arguments ?? {},
+          res.success,
+          res.output,
+          opts.signal,
+          ev.onNotice
+        );
+
+        resultBlocks.push(`Tool [${call.tool}] result (${res.success ? "ok" : "fail"}):\n${resultBody}`);
+      }
+
+      history.push({ role: "assistant", content: responseText });
+      history.push({
+        role: "user",
+        content: resultBlocks.join("\n\n"),
+      });
+    };
+
+    if (aborted) {
+      const executedIndices = results.map((r, i) => r.executed ? i : -1).filter(i => i !== -1);
+      if (executedIndices.length > 0) {
+        await processAndPushResults(executedIndices);
+      }
+      return finish({ done: false, steps: step, doneReason: "Cancelled." });
+    }
+
+    const allIndices = toolCalls.map((_, i) => i);
+    await processAndPushResults(allIndices);
+
+    // Score the budget window per CALL, not per batch: a batch of five failing
+    // edits plus one trivial successful read must not look like a progressing
+    // step to the extension heuristic (that loophole earned endless extensions).
+    for (let i = 0; i < toolCalls.length; i++) {
+      if (results[i].executed) budget.record(callSigs[i], results[i].success);
+    }
+    const stepSuccess = results.some(r => r.success);
+
+    if (stepSuccess) {
       consecutiveFailures = 0;
     } else if (++consecutiveFailures >= MAX_FAILURES) {
+      const isSingle = toolCalls.length === 1;
+      const stopMsg = isSingle
+        ? `Stopped: ${MAX_FAILURES} consecutive failing tool calls (last '${toolCalls[0].tool}'); the model could not recover.`
+        : `Stopped: ${MAX_FAILURES} consecutive failing tool steps; the model could not recover.`;
       return finish({
         done: false,
         steps: step,
-        doneReason: `Stopped: ${MAX_FAILURES} consecutive failing tool calls (last '${invocation.tool}'); the model could not recover.`,
+        doneReason: stopMsg,
       });
     }
     step++;
   }
 
-  // Step budget exhausted without `done`. Instead of dying with a bare
-  // "(reached the N-step limit)" error, dynamically CONSOLIDATE: one final
-  // no-tools model call summarizes what was accomplished, key findings, and
-  // what remains — so the turn ends with a useful wrap-up, not a failure line.
+  // Step budget exhausted without `done` (and the retry flow declined a further
+  // extension). Instead of dying with a bare "(reached the N-step limit)" error,
+  // dynamically CONSOLIDATE: one final no-tools model call summarizes what was
+  // accomplished, key findings, and what remains — a useful wrap-up, not a failure.
+  const extInfo = budget.extensionsUsed() > 0 ? ` after ${budget.extensionsUsed()} extension(s)` : "";
+  const stopInfo = budgetStopReason ? `; ${budgetStopReason}` : "";
   try {
     if (!opts.signal?.aborted) {
       const wrapUp = await invokeCallLlm(
@@ -465,11 +614,11 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         history.push({ role: "assistant", content: consolidated });
         return finish({
           done: false,
-          steps: maxSteps,
-          doneReason: `${consolidated}\n\n(step budget of ${maxSteps} reached — consolidated wrap-up above; continue with a follow-up request)`,
+          steps: budget.limit(),
+          doneReason: `${consolidated}\n\n(step budget of ${budget.limit()} reached${extInfo}${stopInfo} — consolidated wrap-up above; continue with a follow-up request)`,
         });
       }
     }
   } catch { /* wrap-up is best-effort; fall through to the plain budget message */ }
-  return finish({ done: false, steps: maxSteps });
+  return finish({ done: false, steps: budget.limit(), doneReason: budgetStopReason ? `(step budget of ${budget.limit()} reached${extInfo} — ${budgetStopReason})` : undefined });
 }

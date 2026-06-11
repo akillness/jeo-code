@@ -3,14 +3,14 @@ import { buildSkillChoices, skillPicker, renderSkillPicker } from "../src/tui/co
 
 const skills = [
   { name: "spec-kit", command: "/skill spec-kit", summary: "Spec-driven workflow", whenToUse: "SDD", details: "Use /speckit.plan", aliases: ["/speckit.plan", "/speckit.tasks"] },
-  { name: "ralplan", command: "joc ralplan", summary: "Plan", whenToUse: "planning", details: "Plan" },
+  { name: "ralplan", command: "jeo ralplan", summary: "Plan", whenToUse: "planning", details: "Plan" },
 ];
 
 test("buildSkillChoices shows aliases as hints", () => {
   const choices = buildSkillChoices(skills);
   expect(choices[0]?.label).toBe("spec-kit");
   expect(choices[0]?.hint).toContain("/speckit.plan");
-  expect(choices[1]?.hint).toBe("joc ralplan");
+  expect(choices[1]?.hint).toBe("jeo ralplan");
 });
 
 test("skillPicker renders a keyboard-selectable skill list", () => {

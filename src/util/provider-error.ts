@@ -40,7 +40,7 @@ export function friendlyProviderError(err: unknown): string {
     return `Rate limited by ${provider} (HTTP 429).${retry} Auto-retry cannot clear this window right now — slow your request rate, wait for the reset, or switch model with /model (a local ollama model never rate-limits).`;
   }
   if (status === 401 || status === 403 || /\b40[13]\b/.test(msg)) {
-    return `${provider} rejected the credential (HTTP ${status ?? "401/403"}). Run 'joc auth status', re-login with /provider login <name>, and for Antigravity prefer '/provider login antigravity' (gemini login only works when the Cloud Code Assist backend authorizes that token).`;
+    return `${provider} rejected the credential (HTTP ${status ?? "401/403"}). Run 'jeo auth status', re-login with /provider login <name>, and for Antigravity prefer '/provider login antigravity' (gemini login only works when the Cloud Code Assist backend authorizes that token).`;
   }
   return msg;
 }

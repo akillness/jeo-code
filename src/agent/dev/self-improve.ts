@@ -9,7 +9,7 @@ import { logEvolution } from "./evolution-logger";
 export async function suggestSelfImprovement(cwd: string) {
   if (!isDevMode()) return null;
   
-  console.log("[DEV] Analyzing joc for self-improvement...");
+  console.log("[DEV] Analyzing jeo for self-improvement...");
   const report = await runSelfAnalysis(cwd);
   
   await logEvolution({

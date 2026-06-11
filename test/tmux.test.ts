@@ -1,5 +1,5 @@
 import { test, expect, spyOn, mock } from "bun:test";
-import { runLaunchCommand, tmuxSessionName, allocateTmuxSession, parseFlags } from "../src/commands/launch";
+import { runLaunchCommand, tmuxSessionName, allocateTmuxSession, parseFlags, shouldEnableCurrentTmuxMouse } from "../src/commands/launch";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -75,14 +75,14 @@ test("tmux session launch behavior", async () => {
     expect(newSessionCall).toBeDefined();
     expect(newSessionCall).toContain("-s");
     const newName = newSessionCall![newSessionCall!.indexOf("-s") + 1] as string;
-    expect(newName.startsWith("joc-feature-branch-")).toBe(true); // branch + dir-scoped tag
+    expect(newName.startsWith("jeo-feature-branch-")).toBe(true); // branch + dir-scoped tag
 
     // Verify attach-session call
     const attachCall = spawnCalls.find(c => c[0] === "/usr/local/bin/tmux" && c[1] === "attach-session");
     expect(attachCall).toBeDefined();
     expect(attachCall).toContain("-t");
     const attachTarget = attachCall![attachCall!.indexOf("-t") + 1] as string;
-    expect(attachTarget.startsWith("=joc-feature-branch-")).toBe(true);
+    expect(attachTarget.startsWith("=jeo-feature-branch-")).toBe(true);
 
   } finally {
     Bun.which = originalWhich;
@@ -123,7 +123,7 @@ test("tmux runtime model flags get a distinct session and propagate to inner lau
     const newSessionCall = spawnSyncCalls.find(c => c[0] === "/usr/local/bin/tmux" && c[1] === "new-session");
     expect(newSessionCall).toBeDefined();
     const sessName = newSessionCall![newSessionCall!.indexOf("-s") + 1] as string;
-    expect(sessName.startsWith("joc-feature-branch-")).toBe(true);
+    expect(sessName.startsWith("jeo-feature-branch-")).toBe(true);
     expect(sessName).toContain("model-gemini-2-5-flash-think-high-steps-7"); // runtime suffix preserved
     const innerCmd = String(newSessionCall.at(-1));
     expect(innerCmd).toContain("'--model' 'gemini-2.5-flash'");
@@ -274,7 +274,7 @@ test("tmux creates an INDEPENDENT session (base-2) when the base name is already
     const newSessionCalls = spawnSyncCalls.filter(c => c[0] === "/usr/local/bin/tmux" && c[1] === "new-session");
     expect(newSessionCalls.length).toBe(2); // base (duplicate) then base-2 (created)
     const createdName = newSessionCalls[1]![newSessionCalls[1]!.indexOf("-s") + 1] as string;
-    expect(createdName).toMatch(/^joc-main-.*-2$/); // first free suffix
+    expect(createdName).toMatch(/^jeo-main-.*-2$/); // first free suffix
 
     const attachCall = spawnCalls.find(c => c[0] === "/usr/local/bin/tmux" && c[1] === "attach-session");
     expect(attachCall).toBeDefined();
@@ -291,13 +291,13 @@ test("tmux creates an INDEPENDENT session (base-2) when the base name is already
 
 test("allocateTmuxSession: base when free, next free -N on collision, error passthrough", () => {
   // base is free → created on the first try
-  expect(allocateTmuxSession("joc-main-x", () => "ok")).toEqual({ name: "joc-main-x" });
+  expect(allocateTmuxSession("jeo-main-x", () => "ok")).toEqual({ name: "jeo-main-x" });
   // base + base-2 taken (lost the race) → base-3 wins
   let calls = 0;
-  const r = allocateTmuxSession("joc-main-x", () => (++calls <= 2 ? "taken" : "ok"));
-  expect(r).toEqual({ name: "joc-main-x-3" });
+  const r = allocateTmuxSession("jeo-main-x", () => (++calls <= 2 ? "taken" : "ok"));
+  expect(r).toEqual({ name: "jeo-main-x-3" });
   // a real tmux failure aborts with the message
-  expect(allocateTmuxSession("joc-main-x", () => "error:server not found")).toEqual({ error: "server not found" });
+  expect(allocateTmuxSession("jeo-main-x", () => "error:server not found")).toEqual({ error: "server not found" });
 });
 
 test("tmuxSessionName: same branch + different dirs get INDEPENDENT sessions (no collision)", () => {
@@ -305,11 +305,22 @@ test("tmuxSessionName: same branch + different dirs get INDEPENDENT sessions (no
   const a = tmuxSessionName("/home/u/projA", "main", flags);
   const b = tmuxSessionName("/home/u/projB", "main", flags);
   expect(a).not.toBe(b); // different working dirs → independent sessions even on the same branch
-  expect(a.startsWith("joc-main-")).toBe(true);
-  expect(b.startsWith("joc-main-")).toBe(true);
+  expect(a.startsWith("jeo-main-")).toBe(true);
+  expect(b.startsWith("jeo-main-")).toBe(true);
   // Same dir + branch + flags yields a stable BASE; uniqueTmuxSessionName then makes each
   // concurrent invocation independent (base, base-2, …) at launch time.
   expect(tmuxSessionName("/home/u/projA", "main", flags)).toBe(a);
   // Same basename, different absolute path still diverges (hash of full cwd).
   expect(tmuxSessionName("/a/proj", "main", flags)).not.toBe(tmuxSessionName("/b/proj", "main", flags));
+});
+
+test("shouldEnableCurrentTmuxMouse: only inside a foreign tmux session, opt-out honored", () => {
+  // Inside the user's own tmux (jeo created no session): enable wheel scrolling.
+  expect(shouldEnableCurrentTmuxMouse({ TMUX: "/tmp/tmux-1/default,123,0" })).toBe(true);
+  // Outside tmux there is nothing to configure.
+  expect(shouldEnableCurrentTmuxMouse({})).toBe(false);
+  // jeo-spawned sessions already had mouse mode set by the creator.
+  expect(shouldEnableCurrentTmuxMouse({ TMUX: "/tmp/tmux-1/default,123,0", JOC_TMUX_LAUNCHED: "1" })).toBe(false);
+  // Explicit opt-out wins.
+  expect(shouldEnableCurrentTmuxMouse({ TMUX: "/tmp/tmux-1/default,123,0", JOC_TMUX_MOUSE: "0" })).toBe(false);
 });

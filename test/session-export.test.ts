@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { createSession, appendMessage, exportSession } from "../src/agent/session";
 
 async function seed(): Promise<string> {
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "joc-export-"));
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-export-"));
   const { id } = await createSession(cwd);
   await appendMessage(id, { role: "system", content: "SYSTEM PROMPT" }, cwd);
   await appendMessage(id, { role: "user", content: "do the thing" }, cwd);
@@ -16,7 +16,7 @@ async function seed(): Promise<string> {
 test("exportSession: markdown includes header + non-system messages by default", async () => {
   const { cwd, id } = JSON.parse(await seed());
   const md = await exportSession(id, "markdown", cwd);
-  expect(md).toContain(`# joc session ${id}`);
+  expect(md).toContain(`# jeo session ${id}`);
   expect(md).toContain("- Messages: 2"); // system excluded
   expect(md).toContain("## User");
   expect(md).toContain("do the thing");
@@ -48,7 +48,7 @@ test("exportSession: tolerates a malformed trailing line", async () => {
 });
 
 test("exportSession: markdown fence is longer than backtick runs in the content", async () => {
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "joc-fence-"));
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-fence-"));
   const { id } = await createSession(cwd);
   await appendMessage(id, { role: "assistant", content: "see:\n```ts\ncode\n```\nend" }, cwd);
   const md = await exportSession(id, "markdown", cwd);

@@ -1,6 +1,6 @@
 ---
 description: Planner/Architect/Critic blueprint from the seed.
-command: joc ralplan
+command: jeo ralplan
 when: When requirements are clear (e.g. from deep-interview) and you need a robust execution blueprint.
 ---
 

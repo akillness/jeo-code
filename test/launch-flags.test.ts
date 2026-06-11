@@ -83,7 +83,7 @@ test("gatedStdout: readline's own prompt/echo is suppressed while gated (single-
 
   let armed = true; // box mode: readline output must be suppressed
   const rl = createInterface({ input, output: gatedStdout(out, () => armed) });
-  const answer = rl.question("joc> ");
+  const answer = rl.question("jeo> ");
   input.push("hi");
   await new Promise(r => setTimeout(r, 30));
   input.push("\n");
@@ -91,7 +91,7 @@ test("gatedStdout: readline's own prompt/echo is suppressed while gated (single-
   rl.close();
 
   const joined = seen.join("");
-  expect(joined).not.toContain("joc>"); // no duplicated raw CLI prompt line
+  expect(joined).not.toContain("jeo>"); // no duplicated raw CLI prompt line
   expect(joined).not.toContain("hi");   // no raw echo either — only our box would show it
 });
 
@@ -101,5 +101,15 @@ import { formatResumeHint } from "../src/commands/launch";
 
 test("formatResumeHint matches the --list handler convention", () => {
   expect(formatResumeHint("019eb4b5-17fe-7000-a9d5-d6c9d7923f45"))
-    .toBe("Resume with: joc launch --resume 019eb4b5-17fe-7000-a9d5-d6c9d7923f45");
+    .toBe("Resume with: jeo launch --resume 019eb4b5-17fe-7000-a9d5-d6c9d7923f45");
+});
+
+test("parseFlags defaults maxSteps to 0 (dynamic process-driven budget, no hardcoded 100)", () => {
+  const flags = parseFlags([]);
+  expect(flags.maxSteps).toBe(0);
+  // An explicit cap still wins (both flag spellings).
+  expect(parseFlags(["--max-steps", "40"]).maxSteps).toBe(40);
+  expect(parseFlags(["--max-steps=40"]).maxSteps).toBe(40);
+  // Invalid values keep the dynamic default instead of inventing a cap.
+  expect(parseFlags(["--max-steps=-3"]).maxSteps).toBe(0);
 });

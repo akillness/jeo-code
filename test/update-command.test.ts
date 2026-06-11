@@ -321,6 +321,6 @@ test("update - --help", async () => {
 
   await runUpdateCommandWith(["--help"], deps);
 
-  expect(logged.some(line => line.includes("Usage: joc update"))).toBe(true);
+  expect(logged.some(line => line.includes("Usage: jeo update"))).toBe(true);
   expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true);
 });

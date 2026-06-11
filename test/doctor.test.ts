@@ -12,7 +12,7 @@ const CRED_ENV = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "ANTH
 const savedCredEnv: Record<string, string | undefined> = {};
 
 beforeEach(async () => {
-  cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-doctor-"));
+  cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-doctor-"));
   process.env.JOC_CONFIG_DIR = cfgDir;
   for (const k of CRED_ENV) {
     savedCredEnv[k] = process.env[k];

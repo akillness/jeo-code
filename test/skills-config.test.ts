@@ -57,7 +57,7 @@ const prevHome = process.env.HOME;
 const prevSkillsDir = process.env.JOC_SKILLS_DIR;
 
 beforeAll(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-skills-"));
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-skills-"));
   process.env.JOC_CONFIG_DIR = dir;
   // Isolate from the real ~/.agents/skills and any JOC_SKILLS_DIR so the merge
   // assertions see only the fixtures written below.
@@ -106,9 +106,9 @@ test("loadSkills skips hidden system dirs and external skills that collide with 
   expect(getSkillFrom(skills, "hidden")).toBeUndefined();
 });
 
-test("parseSkillMarkdown round-trips the formatSkill (joc skills --write) decoration", () => {
+test("parseSkillMarkdown round-trips the formatSkill (jeo skills --write) decoration", () => {
   const bundled = SKILLS.find(s => s.name === "deep-interview")!;
-  // This is exactly what `joc skills --write` puts on disk.
+  // This is exactly what `jeo skills --write` puts on disk.
   const onDisk = `# ${bundled.name}\n\n${formatSkill(bundled)}\n`;
   const back = parseSkillMarkdown(bundled.name, onDisk);
   expect(back.summary).toBe(bundled.summary); // NOT "Skill: deep-interview"
@@ -118,7 +118,7 @@ test("parseSkillMarkdown round-trips the formatSkill (joc skills --write) decora
 });
 
 test("loadSkills loads skills from JOC_SKILLS_DIR (positive path)", async () => {
-  const extra = await fs.mkdtemp(path.join(os.tmpdir(), "joc-skills-extra-"));
+  const extra = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-skills-extra-"));
   await fs.writeFile(path.join(extra, "envskill.md"), "summary: from env dir\n\nSteps here.");
   process.env.JOC_SKILLS_DIR = extra;
   try {

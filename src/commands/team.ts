@@ -190,7 +190,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
   const planState = await readWorkflowState("ralplan", cwd);
   if (!planState || planState.current_phase !== "complete" || !planState.plan_path) {
     log(
-      `[ERROR] No completed plan found. Please run 'joc ralplan' to generate a plan first.`
+      `[ERROR] No completed plan found. Please run 'jeo ralplan' to generate a plan first.`
     );
     return { ok: false, reason: "No completed plan found" };
   }
@@ -228,7 +228,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
     log(
       `[ERROR] The plan is not in the expected shape — it needs a top-level object with a 'steps:' list ` +
       `(each step: { name, role?, ... }), but the plan file is ${shape}.\n` +
-      `  The planning model likely produced malformed YAML. Review ${planPath} or re-run 'joc ralplan' (with a more capable model).`
+      `  The planning model likely produced malformed YAML. Review ${planPath} or re-run 'jeo ralplan' (with a more capable model).`
     );
     return { ok: false, reason: "Plan is not in the expected shape" };
   }
@@ -240,7 +240,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
     const unique = [...new Set(unknownRoles)];
     log(
       `[ERROR] Plan references unknown subagent role(s): ${unique.join(", ")}. ` +
-      `Known roles: ${subagentRoleIds().join(", ")}. Fix ${planPath} or re-run 'joc ralplan'.`
+      `Known roles: ${subagentRoleIds().join(", ")}. Fix ${planPath} or re-run 'jeo ralplan'.`
     );
     return { ok: false, reason: "Plan references unknown subagent role(s)" };
   }
@@ -263,7 +263,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
     };
   } catch {
     log(
-      `[ERROR] .joc/state/team-state.json is corrupt. Fix or delete it before re-running 'joc team' ` +
+      `[ERROR] .joc/state/team-state.json is corrupt. Fix or delete it before re-running 'jeo team' ` +
       `(refusing to silently restart and re-run already-completed tasks).`,
     );
     return { ok: false, reason: "team-state.json is corrupt" };
@@ -315,7 +315,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
     teamState.current_phase = "complete";
     await writeWorkflowState("team", teamState, cwd);
     log(`\n${categoryBadge("done")} All tasks in the plan executed successfully!`);
-    log("Run 'joc ultragoal' to run verify tests and evaluate metrics.");
+    log("Run 'jeo ultragoal' to run verify tests and evaluate metrics.");
     if (opts.onProgress) {
       opts.onProgress({ skill: "team", phase: "complete" });
     }
@@ -355,6 +355,9 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
     cwd: ctx.cwd,
     model,
     maxSteps,
+    // Bounded delegation: ralph/team subagents keep an exact step contract; the
+    // orchestrator owns retries, so the gjc step-extension flow is disabled here.
+    budget: { maxExtensions: 0 },
     tools: subagentToolset(role),
     events: {
       onAssistant: (_raw, invocation) => {

@@ -35,7 +35,7 @@ export async function runModelsCommand(args: string[] = []): Promise<void> {
   if (args.includes("--catalog")) {
     const query = args.find(a => !a.startsWith("--") && a.toLowerCase() !== "all");
     const rows = query ? fuzzyMatchCatalog(query) : [...MODEL_CATALOG];
-    console.log("\n=== joc models --catalog ===");
+    console.log("\n=== jeo models --catalog ===");
     console.log(`Canonical models${query ? ` matching '${query}'` : ""}`);
     for (const line of formatCanonicalCatalogTable(rows)) console.log(line);
     console.log("\nProvider models");
@@ -51,7 +51,7 @@ export async function runModelsCommand(args: string[] = []): Promise<void> {
       images: args.includes("--images") ? true : undefined,
       minContext: args.includes("--long") ? 200_000 : undefined,
     };
-    console.log("\n=== joc models --caps (live + capabilities) ===");
+    console.log("\n=== jeo models --caps (live + capabilities) ===");
     const live = await discoverModels({ config: cfg, timeoutMs: 4000 });
     const enriched = sortByCapability(filterCapable(enrichAll(live), filter));
     const { known, unknown } = knownCount(enriched);
@@ -60,7 +60,7 @@ export async function runModelsCommand(args: string[] = []): Promise<void> {
     return;
   }
   const config = await readGlobalConfig();
-  console.log("\n=== joc models ===");
+  console.log("\n=== jeo models ===");
   const resolved = await resolveModelId(config.defaultModel);
   console.log(`Default model: ${config.defaultModel}${resolved !== config.defaultModel ? ` → ${resolved}` : ""} → ${resolveProvider(resolved)}`);
   console.log(`Role tiers: smol=${resolveRoleModel("smol", config)} · slow=${resolveRoleModel("slow", config)} · plan=${resolveRoleModel("plan", config)}`);
@@ -102,5 +102,5 @@ export async function runModelsCommand(args: string[] = []): Promise<void> {
   }
   for (const line of formatLiveModels(live, { current: resolved, perProvider: 20 })) console.log(line);
 
-  console.log("\nSet a default with 'joc setup' or JOC_DEFAULT_MODEL=<id>.");
+  console.log("\nSet a default with 'jeo setup' or JOC_DEFAULT_MODEL=<id>.");
 }

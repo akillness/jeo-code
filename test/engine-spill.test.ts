@@ -16,7 +16,7 @@ test("runAgentLoop: oversized tool output is spilled to a recoverable artifact +
     },
   }));
   const { runAgentLoop, TOOL_SPILL_THRESHOLD } = await import("../src/agent/engine");
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "joc-spill-"));
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-spill-"));
   const huge = "X".repeat(TOOL_SPILL_THRESHOLD + 5000);
   const history = [{ role: "system" as const, content: "s" }];
   await runAgentLoop(history, { cwd, maxSteps: 5, tools: { big: async () => ({ success: true, output: huge }) } });
@@ -40,7 +40,7 @@ test("runAgentLoop: small tool output is NOT spilled", async () => {
     },
   }));
   const { runAgentLoop } = await import("../src/agent/engine");
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "joc-spill2-"));
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-spill2-"));
   const history = [{ role: "system" as const, content: "s" }];
   await runAgentLoop(history, { cwd, maxSteps: 5, tools: { small: async () => ({ success: true, output: "tiny" }) } });
   expect(history.some(m => m.content.includes(".joc/artifacts"))).toBe(false);
@@ -57,7 +57,7 @@ test("runAgentLoop: a FAILED tool with huge error output also spills", async () 
     },
   }));
   const { runAgentLoop, TOOL_SPILL_THRESHOLD } = await import("../src/agent/engine");
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "joc-spill3-"));
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-spill3-"));
   const hugeErr = "E".repeat(TOOL_SPILL_THRESHOLD + 3000);
   const history = [{ role: "system" as const, content: "s" }];
   await runAgentLoop(history, { cwd, maxSteps: 5, tools: { boom: async () => ({ success: false, output: "", error: hugeErr }) } });
@@ -66,7 +66,7 @@ test("runAgentLoop: a FAILED tool with huge error output also spills", async () 
 
 test("spillToolResult: retention caps the artifact directory at MAX_TOOL_ARTIFACTS", async () => {
   const { spillToolResult, MAX_TOOL_ARTIFACTS } = await import("../src/agent/engine");
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "joc-artgc-"));
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-artgc-"));
   for (let i = 0; i < MAX_TOOL_ARTIFACTS + 10; i++) {
     await spillToolResult("t", `payload ${i}`, cwd);
   }

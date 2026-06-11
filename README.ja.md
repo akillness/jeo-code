@@ -2,7 +2,7 @@
   <img src="assets/hero.png" alt="jeo-code autonomous coding-agent hero illustration" width="100%" />
 </p>
 
-<h1 align="center">jeo-code (joc)</h1>
+<h1 align="center">jeo-code (jeo)</h1>
 
 <p align="center">
   <strong>Encode intention. Decode software.</strong><br />
@@ -26,12 +26,12 @@
   <a href="README.zh.md">中文</a>
 </p>
 
-Bun ベースの AI コーディングエージェント CLI です。リポジトリ内で `joc` を実行すると、ファイルを読み込み、編集し、コマンドを実行して、タスクを最後まで遂行します。
+Bun ベースの AI コーディングエージェント CLI です。リポジトリ内で `jeo` を実行すると、ファイルを読み込み、編集し、コマンドを実行して、タスクを最後まで遂行します。
 実行中は gjc スタイルのフラットなインラインスタックが表示されます: 完了した作業は `✓/✗` の 1 行レジャーと枠付きツールカード（bash は `✗ Bash` タイトル・`$ コマンド` エコー・`── Output ──` 区切り・出力本文・末尾の `Command exited with code N` を統合した単一カード、read/find/search は `✓ Read path:lines` の 1 行）としてスクロールバックに流れ、その下に実際の処理対象を示すスピナー付きステータス 1 行（step・経過・トークン・ライブ `$` コスト）、`Todos` チェックリスト、`◆ hud` 行、背景色付きモデルステータスバー（モデル（プロバイダー）・thinking / `branch ?N` / cwd・`⤴ N/s`・`ctx%`）がピン留めされます。入力欄（`> Type your message...`、テーマアクセントの枠）で `/` を入力するとコマンドプレビューが下部に表示されます。
 
-ステータス行は、ティックごとに変わる装飾文ではなく、**いま実際に行っていること**（処理中のファイル・コマンド、アクティブな plan ステップ、plan の進捗、レート制限バックオフ中は `rate limited (HTTP 429) — auto-retry #2 in 4s` のカウントダウン）を、現在のステップ経過時間とともに表示します。インラインターンでは進化のアイデンティティは最後の `Evolved to: …` サマリ 1 行に集約され、ASCII アートヘッダーはレガシーの `JOC_TUI_ALT_SCREEN=1` ボックスモードに残ります。`task` で委任された **サブエージェントの進捗**（割り当て・`step N/M`・ネストしたツール呼び出しの実際の対象 `read src/x.ts`・`bash: …`・結果サマリ）も gjc と同様にストリームへリアルタイム表示されます。
+ステータス行は、ティックごとに変わる装飾文ではなく、**いま実際に行っていること**（処理中のファイル・コマンド、アクティブな plan ステップ、plan の進捗、レート制限バックオフ中は `rate limited (HTTP 429) — auto-retry #2 in 4s` のカウントダウン）を、現在のステップ経過時間とともに表示します。インラインターンでは進化のアイデンティティは最後の `Evolved to: …` サマリ 1 行に集約され、ASCII アートヘッダーはレガシーの `JEO_TUI_ALT_SCREEN=1` ボックスモードに残ります。`task` で委任された **サブエージェントの進捗**（割り当て・`step N/M`・ネストしたツール呼び出しの実際の対象 `read src/x.ts`・`bash: …`・結果サマリ）も gjc と同様にストリームへリアルタイム表示されます。
 
-`joc "リクエスト"` のようにコマンド引数で一度に実行しても、TTY では同じライブ TUI が立ち上がり、`--no-tui`/パイプモードでは `[step N/M] <tool target>` と結果行がストリーミングされ、動作の流れ全体が見えます。
+`jeo "リクエスト"` のようにコマンド引数で一度に実行しても、TTY では同じライブ TUI が立ち上がり、`--no-tui`/パイプモードでは `[step N/M] <tool target>` と結果行がストリーミングされ、動作の流れ全体が見えます。
 
 TUI は **差分（differential）レンダラー** で画面をその場で更新し、スクロールバックを増やしません（完了したレジャー行とツールカードは発生と同時にスクロールバックへ流れるため、tmux／マウスホイールでターン中でも過去の進捗を確認できます）。画面サイズが変わって幅が変化したときは全体を再描画し、アイドルプロンプトでもリサイズでフッター領域を再同期します。ストリーム／ツールリストは **固定サイズのリングバッファ** なので、長いセッションでもメモリとフレームあたりの描画コストが平坦に保たれます（要約 LLM が失敗しても履歴は決定的に圧縮され、無限に増えません）。画面が短くすべてのセクションが収まらない場合は、**ステータス行・Todos・hud・モデルバーを必ず最初に確保** し、残りの行だけを処理中のツールカードに使います。
 
@@ -41,6 +41,12 @@ forge ボックスは枠があるため、**まるごと収まるときだけ**�
 
 要件: Bun `1.3.14+`
 
+> **リネームのお知らせ**: バイナリ名は `jeo` になりました（旧 `joc`）。`joc` コマンドは互換エイリアスとして引き続き動作し、レガシーの `JOC_*` 環境変数も認識されます（`JEO_*` 表記を推奨）。既存の `~/.joc` / `.joc` ランタイム状態はそのまま使用されます。
+
+**ツートーンのパネル深度**: すべての枠付きパネル（JEO forge ウェルカムボックス、ライブステータスボックス、ツール/forge カード、外枠フレーム、入力ボックス）が、明るい上/左エッジ（テーマアクセント）と暗い下/右エッジ（淡色アクセント）で描画され、タイトルは太字でコントラストされるため、立体的なパネルとして見えます。
+
+**デフォルトは常に最新の選択に従う（全セッション共有）**: モデル/provider を選択すると（`/model …`、`/provider <name> …`、ピッカー）即座に `~/.joc/config.json` へ保存されます — 最新の選択が今後のすべてのセッションの `defaultModel` になり、`recentModels` が新しい順の MRU ローテーションを保持します。
+
 ```bash
 bun install -g jeo-code
 ```
@@ -48,28 +54,28 @@ bun install -g jeo-code
 インストールの確認:
 
 ```bash
-joc --version
+jeo --version
 ```
 
 ## 基本的な使い方
 
 ```bash
 # 対話型コーディングエージェントを起動
-joc
+jeo
 
 # 1 回のリクエストをすぐ実行
-joc "README を整理してテストを実行して"
+jeo "README を整理してテストを実行して"
 
 # 現在の設定とモデル接続状態を確認（実際の呼び出し経路で点検: Anthropic=GET /v1/models, OpenAI OAuth=Codex バックエンド, Gemini OAuth=Cloud Code Assist loadCodeAssist）
-joc doctor
+jeo doctor
 
 # API キー / OAuth / ローカルモデルの設定
-joc setup
+jeo setup
 ```
 
 ## 対話型スラッシュコマンド
 
-`joc` REPL の入力欄で使えるコマンドです（`<Tab>` 補完対応）。
+`jeo` REPL の入力欄で使えるコマンドです（`<Tab>` 補完対応）。
 
 | コマンド | 説明 |
 | --- | --- |
@@ -95,46 +101,46 @@ joc setup
 
 ```bash
 # 保存済みセッションの表示 / 再開
-joc launch --list
-joc launch --resume
+jeo launch --list
+jeo launch --resume
 
 # tmux セッションで実行 — 実行ごとに独立したセッション（同じディレクトリ・ブランチで同時に複数起動しても base, base-2, base-3 … に分離）
-joc --tmux
-joc --tmux --model gemini-2.5-flash --thinking high
-joc --tmux --models --catalog gpt
+jeo --tmux
+jeo --tmux --model gemini-2.5-flash --thinking high
+jeo --tmux --models --catalog gpt
 
 # 別の worktree で実行
-joc --tmux --worktree ../joc-work
+jeo --tmux --worktree ../jeo-work
 
 # モデル一覧を確認
-joc models
+jeo models
 
 # GJC スタイルのモデルカタログ（静的 capability）
-joc --list-models=gemini
-joc --models --catalog gpt
+jeo --list-models=gemini
+jeo --models --catalog gpt
 
 # 起動時にモデル/プロバイダー/思考予算を指定
-joc --model gemini-2.5-flash --thinking high "コードを分析して"
-joc --provider gemini --plan "実装計画を立てて"
+jeo --model gemini-2.5-flash --thinking high "コードを分析して"
+jeo --provider gemini --plan "実装計画を立てて"
 # スラッシュコマンドパレット
 # REPL で "/" や "/m" のように prefix を入力すると、カテゴリ別にコマンド/オプションが一覧表示されます。
 # subagent の設定は /agents と /model subagent <role> ... で対応します。
 
 # 認証管理
-joc auth login anthropic
-joc auth status
+jeo auth login anthropic
+jeo auth status
 ```
 
 ## Spec-first ワークフロー
 
-要件をまず整理してから、計画・実行・検証まで進めるときに使います。各ステージは状態（`.joc/state/`）で引き継がれ、ゲートがあります: deep-interview がまず **トップレベルのトポロジを確認** し、入力言語（韓国語/英語/日本語/中国語）を保持して質問・評価・受け入れ基準を作成します。brownfield のリクエストなら **repo マーカー + path evidence** を収集したうえで、次に **シードを凍結**（ambiguity ≤ 20%; `--auto`/非 TTY もこのゲートを回避できず、基準未達ならシードは凍結されません）して初めて MutationGuard がコード編集を許可し、ralplan が進みます → ralplan は **Planner→Architect→Critic の合意**（3 段階の連鎖パス）で **承認待ち** プランを作成し（スキーマ自己検証・補正を含む）→ `joc approve <plan>` で承認して初めて → team が実行します（破損した team 状態は無視せず拒否、未知の subagent role は実行前に拒否、同名の task も step index に基づき正しい role へルーティング、planner/architect/critic の report が契約を満たさない、または architect が `BLOCK`/`REQUEST CHANGES`、critic が `[REJECT]`/`[ITERATE]` を返したら即時中断）→ ultragoal が team 実行を検証します。
+要件をまず整理してから、計画・実行・検証まで進めるときに使います。各ステージは状態（`.joc/state/`）で引き継がれ、ゲートがあります: deep-interview がまず **トップレベルのトポロジを確認** し、入力言語（韓国語/英語/日本語/中国語）を保持して質問・評価・受け入れ基準を作成します。brownfield のリクエストなら **repo マーカー + path evidence** を収集したうえで、次に **シードを凍結**（ambiguity ≤ 20%; `--auto`/非 TTY もこのゲートを回避できず、基準未達ならシードは凍結されません）して初めて MutationGuard がコード編集を許可し、ralplan が進みます → ralplan は **Planner→Architect→Critic の合意**（3 段階の連鎖パス）で **承認待ち** プランを作成し（スキーマ自己検証・補正を含む）→ `jeo approve <plan>` で承認して初めて → team が実行します（破損した team 状態は無視せず拒否、未知の subagent role は実行前に拒否、同名の task も step index に基づき正しい role へルーティング、planner/architect/critic の report が契約を満たさない、または architect が `BLOCK`/`REQUEST CHANGES`、critic が `[REJECT]`/`[ITERATE]` を返したら即時中断）→ ultragoal が team 実行を検証します。
 
 ```bash
-joc deep-interview "作りたい機能の説明"
-joc ralplan
-joc approve <plan-path>
-joc team
-joc ultragoal
+jeo deep-interview "作りたい機能の説明"
+jeo ralplan
+jeo approve <plan-path>
+jeo team
+jeo ultragoal
 ```
 
 ## ローカルモデルの利用
@@ -143,9 +149,9 @@ Ollama を使えば API キーなしでローカル実行できます。
 
 ```bash
 ollama pull qwen2.5:0.5b
-export JOC_DEFAULT_MODEL=ollama/qwen2.5:0.5b
-joc doctor
-joc
+export JEO_DEFAULT_MODEL=ollama/qwen2.5:0.5b
+jeo doctor
+jeo
 ```
 
 ## 設定ファイル
@@ -159,11 +165,19 @@ joc
 ANTHROPIC_API_KEY=...
 OPENAI_API_KEY=...
 GEMINI_API_KEY=...
-JOC_DEFAULT_MODEL=...
+JEO_DEFAULT_MODEL=...
 OLLAMA_HOST=http://localhost:11434
-JOC_TUI_THEME=cosmic        # TUI テーマ (cosmic/matrix/solar/red-claw/blue-crab/mono)
-JOC_TUI_ALT_SCREEN=1        # レガシー alt-screen ライブターンに戻す（既定: メインバッファインライン + tmux ホイールスクロールバック）
+JEO_TUI_THEME=cosmic        # TUI テーマ (cosmic/matrix/solar/red-claw/blue-crab/mono)
+JEO_TUI_ALT_SCREEN=1        # レガシー alt-screen ライブターンに戻す（既定: メインバッファインライン + tmux ホイールスクロールバック）
+JEO_STEP_EXTENSIONS=2       # ターンあたりの step 予算延長回数 (0 = 従来の固定カウンター)
+JEO_STEP_EXTENSION_SIZE=10  # 延長 1 回あたりの付与 step 数（既定: 基本予算の半分、最小 4）
+JEO_STEP_HARD_CAP=75        # 絶対 step 上限（既定: 基本予算の 3 倍）
+JEO_STEP_WINDOW=8           # 進捗判定に使う直近ツール呼び出しウィンドウ
 ```
+
+### Step 予算（retry フロー）
+
+ターンあたりの step 制限は単純なカウンターではなく柔軟な **予算** です（gjc retry-flow パリティ）。カウンターが現在の上限に達すると、エンジンは直近のツール呼び出しウィンドウを採点し、実際に進捗していれば（直近呼び出しの 50% 以上成功 + 2 つ以上の異なる対象）予算を **自動で延長** します — `JEO_STEP_EXTENSIONS`（既定 2 回）と絶対上限 `JEO_STEP_HARD_CAP`（既定 3 倍）に制限され、`↻ step budget extended to M` のレジャー行とともにライブの `step N/M` 分母も更新されます。停滞したウィンドウ（ほとんど失敗、または同じ呼び出しの繰り返し）は延長されず **fail-fast** で統合ラップアップ（consolidation）に入り、却下理由が最終メッセージに明示されます。既存のガード（同一呼び出し 3 回、連続失敗 5 回、parse-bounce サルベージ）はそのままです。サブエージェント委任（`task`、`jeo team`）は正確な step 契約を維持します — 延長は無効で、リトライの権限は親にあります。
 
 ## Publishing
 

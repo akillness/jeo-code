@@ -1,5 +1,5 @@
 #!/bin/sh
-# joc (jeo-code) installer — gjc-style bun global install.
+# jeo (jeo-code) installer — gjc-style bun global install.
 #
 # The gjc parity path is a single Bun global install. The published-package form
 # (once jeo-code is on npm) is identical to gajae-code's:
@@ -25,25 +25,25 @@
 set -e
 
 DEFAULT_REPO="https://github.com/akillness/jeo-code.git"
-REPO="${JOC_REPO:-${JOC_REPO_URL:-$DEFAULT_REPO}}"
-PKG="${JOC_PKG:-jeo-code}"
-INSTALL_DIR="${JOC_INSTALL_DIR:-$HOME/.local/bin}"
+REPO="${JEO_REPO:-${JOC_REPO:-${JEO_REPO_URL:-${JOC_REPO_URL:-$DEFAULT_REPO}}}}"
+PKG="${JEO_PKG:-${JOC_PKG:-jeo-code}}"
+INSTALL_DIR="${JEO_INSTALL_DIR:-${JOC_INSTALL_DIR:-$HOME/.local/bin}}"
 MIN_BUN_VERSION="1.3.14"
 
 MODE="global"
 REF=""
 SRC_DIR=""
 LINKED=""
-REGISTRY="${JOC_REGISTRY:-}"
-SCOPE="${JOC_REGISTRY_SCOPE:-}"
+REGISTRY="${JEO_REGISTRY:-${JOC_REGISTRY:-}}"
+SCOPE="${JEO_REGISTRY_SCOPE:-${JOC_REGISTRY_SCOPE:-}}"
 PERSIST_REGISTRY=0
 PROJECT_NPMRC=0
 DRY_RUN=0
 
 usage() {
   cat <<EOF
-joc installer (gjc-style Bun global install)
-  (default)            bun global install from $REPO  →  exposes 'joc'
+jeo installer (gjc-style Bun global install)
+  (default)            bun global install from $REPO  →  exposes 'jeo'
   --repo <url|owner/repo>  git source (default $DEFAULT_REPO)
   --npm                bun install -g $PKG (npm registry; gjc parity once published)
   --package <name>     npm package name for --npm (default $PKG)
@@ -58,11 +58,11 @@ joc installer (gjc-style Bun global install)
   --ref <ref>          install a specific tag/branch/commit
   --dry-run            print the bun/npm commands without installing
 Environment:
-  JOC_INSTALL_DIR      (default \$HOME/.local/bin — compatibility symlink)
-  JOC_REPO/JOC_REPO_URL(default $DEFAULT_REPO)
-  JOC_PKG             (default $PKG)
-  JOC_REGISTRY        one-shot or persisted registry URL
-  JOC_REGISTRY_SCOPE  optional scope such as @my-org
+  JEO_INSTALL_DIR      (default \$HOME/.local/bin — compatibility symlink; legacy JOC_* names still honored)
+  JEO_REPO/JEO_REPO_URL(default $DEFAULT_REPO)
+  JEO_PKG             (default $PKG)
+  JEO_REGISTRY        one-shot or persisted registry URL
+  JEO_REGISTRY_SCOPE  optional scope such as @my-org
 EOF
 }
 
@@ -225,8 +225,8 @@ run_bun_global_add() {
   fi
 }
 
-# Bun global install (the gjc-idiomatic path). Exposes the package's `joc` bin
-# in Bun's global bin dir (~/.bun/bin/joc).
+# Bun global install (the gjc-idiomatic path). Exposes the package's `jeo` bin
+# in Bun's global bin dir (~/.bun/bin/jeo).
 install_global() {
   spec=$(normalize_repo_spec "$REPO")
   echo "Installing $PKG globally via Bun ($spec)..."
@@ -267,13 +267,13 @@ install_binary() {
   fi
   if [ "$DRY_RUN" = "1" ]; then
     echo "+ ( cd $SRC_DIR && bun install --silent )"
-    echo "+ bun build src/cli.ts --compile --outfile $INSTALL_DIR/joc"
+    echo "+ bun build src/cli.ts --compile --outfile $INSTALL_DIR/jeo"
   else
     ( cd "$SRC_DIR" && bun install --silent >/dev/null )
     mkdir -p "$INSTALL_DIR"
-    echo "Compiling standalone binary → $INSTALL_DIR/joc ..."
-    ( cd "$SRC_DIR" && bun build src/cli.ts --compile --outfile "$INSTALL_DIR/joc" >/dev/null )
-    chmod +x "$INSTALL_DIR/joc" 2>/dev/null || true
+    echo "Compiling standalone binary → $INSTALL_DIR/jeo ..."
+    ( cd "$SRC_DIR" && bun build src/cli.ts --compile --outfile "$INSTALL_DIR/jeo" >/dev/null )
+    chmod +x "$INSTALL_DIR/jeo" 2>/dev/null || true
   fi
 }
 
@@ -282,9 +282,13 @@ install_binary() {
 link_compat() {
   [ "$DRY_RUN" = "1" ] && return 0
   BUN_BIN="$(bun_bin_dir)"
-  [ -e "$BUN_BIN/joc" ] && LINKED="$BUN_BIN/joc"
+  [ -e "$BUN_BIN/jeo" ] && LINKED="$BUN_BIN/jeo"
+  [ -z "$LINKED" ] && [ -e "$BUN_BIN/joc" ] && LINKED="$BUN_BIN/joc"
   mkdir -p "$INSTALL_DIR"
   if [ -n "$LINKED" ]; then
+    ln -sf "$LINKED" "$INSTALL_DIR/jeo"
+    chmod +x "$INSTALL_DIR/jeo" 2>/dev/null || true
+    # Legacy alias: `joc` keeps working after the jeo rename.
     ln -sf "$LINKED" "$INSTALL_DIR/joc"
     chmod +x "$INSTALL_DIR/joc" 2>/dev/null || true
   fi
@@ -297,11 +301,11 @@ print_done() {
     echo "Dry run complete; no install changes were made."
     return 0
   fi
-  [ -n "$LINKED" ] && echo "Linked joc via Bun → $LINKED"
-  [ -e "$INSTALL_DIR/joc" ] && echo "Compatibility symlink → $INSTALL_DIR/joc"
+  [ -n "$LINKED" ] && echo "Linked jeo via Bun → $LINKED"
+  [ -e "$INSTALL_DIR/jeo" ] && echo "Compatibility symlink → $INSTALL_DIR/jeo"
   case ":$PATH:" in
-    *":$BUN_BIN:"*|*":$INSTALL_DIR:"*) echo "Run: joc --help" ;;
-    *) echo "Add $BUN_BIN (or $INSTALL_DIR) to PATH, then run: joc --help" ;;
+    *":$BUN_BIN:"*|*":$INSTALL_DIR:"*) echo "Run: jeo --help" ;;
+    *) echo "Add $BUN_BIN (or $INSTALL_DIR) to PATH, then run: jeo --help" ;;
   esac
 }
 

@@ -1,8 +1,11 @@
 #!/usr/bin/env bun
 import { dispatch } from "./cli/runner";
+import pkg from "../package.json";
 
-const APP_NAME = "joc";
-const VERSION = "0.1.0";
+const APP_NAME = "jeo";
+// Single source of truth: package.json. A hardcoded copy here drifted from the
+// published version (`jeo update` compares the local version against the registry).
+const VERSION = pkg.version;
 const MIN_BUN_VERSION = "1.3.14";
 
 if (typeof Bun !== "undefined" && Bun.semver?.order(Bun.version, MIN_BUN_VERSION) < 0) {

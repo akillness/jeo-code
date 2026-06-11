@@ -51,7 +51,7 @@ async function macClipboardImage(): Promise<Uint8Array | null> {
   }
   if (!Bun.which("osascript")) return null;
   // Fallback: AppleScript writes «class PNGf» clipboard data to a temp file.
-  const tmp = path.join(os.tmpdir(), `joc-paste-${Date.now()}-${process.pid}.png`);
+  const tmp = path.join(os.tmpdir(), `jeo-paste-${Date.now()}-${process.pid}.png`);
   const script =
     `set pngData to the clipboard as «class PNGf»\n` +
     `set f to open for access POSIX file ${JSON.stringify(tmp)} with write permission\n` +
@@ -83,7 +83,7 @@ async function linuxClipboardImage(): Promise<Uint8Array | null> {
 
 async function windowsClipboardImage(): Promise<Uint8Array | null> {
   if (!Bun.which("powershell.exe") && !Bun.which("powershell")) return null;
-  const tmp = path.join(os.tmpdir(), `joc-paste-${Date.now()}-${process.pid}.png`);
+  const tmp = path.join(os.tmpdir(), `jeo-paste-${Date.now()}-${process.pid}.png`);
   const ps =
     `Add-Type -AssemblyName System.Windows.Forms; ` +
     `$img = [System.Windows.Forms.Clipboard]::GetImage(); ` +

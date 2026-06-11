@@ -87,7 +87,7 @@ test("OAuthCallbackFlow: state mismatch is rejected (CSRF guard)", async () => {
 });
 
 test("resolveCredential: auto-refreshes an expired anthropic OAuth token", async () => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "joc-oauth-"));
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-oauth-"));
   const prevConfigDir = process.env.JOC_CONFIG_DIR;
   const prevFetch = globalThis.fetch;
   const configDir = path.join(home, ".joc");
@@ -157,7 +157,7 @@ test("googleClientSecret: env override wins, blank/missing env falls back to bun
   expect(fallback.length).toBeGreaterThan(10);
 });
 test("refreshOAuthToken: concurrent refreshes acquire lock sequentially and reuse already refreshed token without double-refresh", async () => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "joc-oauth-lock-test-"));
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-oauth-lock-test-"));
   const prevConfigDir = process.env.JOC_CONFIG_DIR;
   process.env.JOC_CONFIG_DIR = home;
 

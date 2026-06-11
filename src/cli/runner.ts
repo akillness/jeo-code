@@ -93,7 +93,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "mcp",
-    summary: "Run joc as an MCP stdio server (subcommand: serve|tools).",
+    summary: "Run jeo as an MCP stdio server (subcommand: serve|tools).",
     usage: "mcp [serve|tools]",
     loader: async () => {
       const m = await import("../commands/mcp");
@@ -110,7 +110,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "skills",
-    summary: "List bundled workflow skills (joc skills <name> for details).",
+    summary: "List bundled workflow skills (jeo skills <name> for details).",
     usage: "skills [name]",
     loader: async () => {
       const m = await import("../commands/skills");
@@ -119,7 +119,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "resume",
-    summary: "Resume the latest interactive session (or 'joc resume <id>').",
+    summary: "Resume the latest interactive session (or 'jeo resume <id>').",
     usage: "resume [id]",
     loader: async () => {
       const m = await import("../commands/resume");
@@ -155,7 +155,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "session",
-    summary: "List, attach, or remove joc-managed tmux sessions.",
+    summary: "List, attach, or remove jeo-managed tmux sessions.",
     usage: "session [list|attach <name>|rm <name>] [--json]",
     loader: async () => {
       const m = await import("../commands/session");
@@ -265,7 +265,7 @@ export function renderHelp(ctx: DispatchContext): string {
   lines.push("      --provider <name>        Start launch on a provider default (anthropic/openai/gemini/antigravity/ollama).");
   lines.push("      --smol|--slow|--plan     Start launch with the configured model role tier.");
   lines.push("      --thinking <level>       Set thinking budget (minimal/low/medium/high/xhigh).");
-  lines.push("      --models                 List live OAuth/API-key models (same as `joc models`).");
+  lines.push("      --models                 List live OAuth/API-key models (same as `jeo models`).");
   lines.push("      --list-models[=<query>]  List GJC-style model catalog (or fuzzy query).");
   lines.push("");
   return lines.join("\n");
@@ -312,9 +312,9 @@ function stripLaunchOnlyArgs(args: string[]): string[] {
 }
 
 /**
- * Convert a leading global model-list flag into `joc models` arguments. The scan
+ * Convert a leading global model-list flag into `jeo models` arguments. The scan
  * deliberately stops at the first positional command/prompt token so strings like
- * `joc --tmux fix --models routing` remain agent prompts instead of being hijacked
+ * `jeo --tmux fix --models routing` remain agent prompts instead of being hijacked
  * into a model-list command.
  */
 export function globalModelsArgs(argv: string[]): string[] | null {
@@ -393,8 +393,8 @@ export async function dispatch(argv: string[], ctx: DispatchContext): Promise<nu
     await run(modelsArgs);
     return 0;
   }
-  // Bare invocation or a leading global flag (e.g. `joc`, `joc --tmux`,
-  // `joc --tmux --worktree <path>`) routes to the interactive agent — gjc parity.
+  // Bare invocation or a leading global flag (e.g. `jeo`, `jeo --tmux`,
+  // `jeo --tmux --worktree <path>`) routes to the interactive agent — gjc parity.
   if (!first || first.startsWith("-")) {
     const run = await findCommand("launch")!.loader();
     await run(argv);
@@ -410,7 +410,7 @@ export async function dispatch(argv: string[], ctx: DispatchContext): Promise<nu
     return 1;
   }
 
-  // Per-command help: `joc <cmd> --help`.
+  // Per-command help: `jeo <cmd> --help`.
   const rest = argv.slice(1);
   if (rest.includes("--help") || rest.includes("-h")) {
     console.log(renderCommandHelp(spec, ctx));

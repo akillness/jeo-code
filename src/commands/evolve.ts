@@ -114,7 +114,7 @@ function stageModelJson() {
 }
 
 /**
- * Preview the joc "evolution" TUI identity: render the five stages (or one stage
+ * Preview the jeo "evolution" TUI identity: render the five stages (or one stage
  * for a given step) with art, evolution track, and a stage meter. Supports
  * theming, truecolor gradients, ASCII-only fallback, terminal-width fitting,
  * frame-loop animation, and machine-readable `--json` / `--list` output.
@@ -162,6 +162,7 @@ export async function runEvolveCommand(args: string[], opts: EvolveOptions = {})
       color: useColor,
       width: artWidth,
       height: stageHeight(),
+      unicode,
       ...(gradientOn ? { gradient: themeGradient(theme, index), colorLevel } : {}),
     };
 

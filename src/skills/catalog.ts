@@ -11,7 +11,7 @@ const MAX_SKILLS_PROMPT_CHARS = 6_000;
 
 export interface SkillDoc {
   name: string;          // e.g. "deep-interview"
-  command: string;       // e.g. "joc deep-interview \"<idea>\""
+  command: string;       // e.g. "jeo deep-interview \"<idea>\""
   summary: string;       // one line
   whenToUse: string;     // one line
   details: string;       // 2-5 lines of guidance
@@ -283,8 +283,8 @@ export function skillSlashAliases(skill: SkillDoc): string[] {
 
 /** Global + per-project skill-doc directories (user-configurable SKILL.md files). */
 export function skillDirs(cwd: string = process.cwd()): string[] {
-  const home = process.env.JOC_CONFIG_DIR || path.join(os.homedir(), ".joc");
-  const configured = (process.env.JOC_SKILLS_DIR ?? "")
+  const home = (process.env.JEO_CONFIG_DIR ?? process.env.JOC_CONFIG_DIR) || path.join(os.homedir(), ".joc");
+  const configured = ((process.env.JEO_SKILLS_DIR ?? process.env.JOC_SKILLS_DIR) ?? "")
     .split(path.delimiter)
     .map(s => s.trim())
     .filter(Boolean);
@@ -299,7 +299,7 @@ export function skillDirs(cwd: string = process.cwd()): string[] {
 
 /** Parse a user skill markdown file into a SkillDoc. Recognizes both the documented
  *  `key: value` header grammar (summary / command / when[ to use] / use) AND the
- *  decorated form emitted by `joc skills --write` (`Skill:` / `When to use:` /
+ *  decorated form emitted by `jeo skills --write` (`Skill:` / `When to use:` /
  *  `Details:`), tolerating a leading `# title` and blank separators. Falls back to
  *  inferring the summary from the first body line. */
 export function parseSkillMarkdown(name: string, content: string): SkillDoc {

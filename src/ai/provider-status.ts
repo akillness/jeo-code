@@ -1,6 +1,6 @@
 /**
  * Provider credential/status inventory — the shared source of truth behind
- * `joc models`, the TUI `/provider` command, and `joc doctor`. Reports, for each
+ * `jeo models`, the TUI `/provider` command, and `jeo doctor`. Reports, for each
  * provider, how it will authenticate (API key / OAuth / keyless / none), its
  * effective base URL, and whether it is ready to serve a request.
  */
@@ -19,7 +19,7 @@ export type CredentialKind = "api_key" | "oauth" | "keyless" | "none";
 export interface ProviderStatus {
   name: ProviderName;
   kind: CredentialKind;
-  /** Display label, e.g. "API key", "OAuth", "keyless (local)", "none (run 'joc setup')". */
+  /** Display label, e.g. "API key", "OAuth", "keyless (local)", "none (run 'jeo setup')". */
   label: string;
   /** Effective base URL when relevant (ollama / openai-compatible). */
   baseUrl?: string;
@@ -45,7 +45,7 @@ export function credentialLabel(kind: CredentialKind): string {
     case "keyless":
       return "keyless (local)";
     case "none":
-      return "none (run 'joc setup' or 'joc auth login')";
+      return "none (run 'jeo setup' or 'jeo auth login')";
   }
 }
 
@@ -95,8 +95,8 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
     label = hasOwnOAuth
       ? "OAuth (Antigravity Cloud Code Assist)"
       : hasGeminiFallback
-        ? "OAuth catalog via Gemini CLI; calls need 'joc auth login antigravity'"
-        : "none (run 'joc auth login antigravity')";
+        ? "OAuth catalog via Gemini CLI; calls need 'jeo auth login antigravity'"
+        : "none (run 'jeo auth login antigravity')";
   } else if (kind === "oauth" && OAUTH_FLOW_REGISTRY[credentialProvider]?.verifiedEndToEnd === false) {
     ready = false;
     label = "OAuth (API key needed)";

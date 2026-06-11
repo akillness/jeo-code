@@ -42,7 +42,7 @@ export function enterAltScreen(): string {
 
 /** Leave the alternate screen buffer (`?1049l`), restoring the main buffer + scrollback.
  *  Re-enables alternate scroll (`?1007h`, the common terminal default) so other
- *  full-screen apps (vim/less) keep their wheel behavior after joc exits the turn. */
+ *  full-screen apps (vim/less) keep their wheel behavior after jeo exits the turn. */
 export function leaveAltScreen(): string {
   return `${ESC}?1007h${ESC}?1049l`;
 }

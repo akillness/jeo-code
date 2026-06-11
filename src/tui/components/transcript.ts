@@ -9,7 +9,7 @@
  *                 (`Tool [name] result (ok|fail):\n…`) and parse-correction bounces
  *   assistant   → raw JSON tool calls, or plain prose (final/legacy replies)
  * This formatter folds that back into a gjc-style ledger: `user ▸` prompt blocks,
- * one compact `✔/✗ title` line per tool step, and `joc ◂` reply blocks.
+ * one compact `✔/✗ title` line per tool step, and `jeo ◂` reply blocks.
  */
 import chalk from "chalk";
 import type { Message } from "../../ai/types";
@@ -97,7 +97,7 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
       ? String((invocation.arguments as { reason?: unknown } | undefined)?.reason ?? "")
       : m.content;
     if (!reason.trim()) continue;
-    lines.push(`${magentaBold(`joc ${jocMark}`)}`);
+    lines.push(`${magentaBold(`jeo ${jocMark}`)}`);
     lines.push(...clipBody(reason.trim(), bodyCap));
   }
   return lines;

@@ -45,7 +45,7 @@ export async function resolveAntigravityProjectId(
   opts: ResolveProjectOptions = {},
 ): Promise<string> {
   if (credential.kind !== "oauth") {
-    throw new Error("Antigravity provider requires Google/Gemini CLI OAuth credentials. Run `joc auth login gemini`.");
+    throw new Error("Antigravity provider requires Google/Gemini CLI OAuth credentials. Run `jeo auth login gemini`.");
   }
   const direct = projectIdFor(credential);
   if (direct) return direct;
@@ -66,7 +66,7 @@ export async function resolveAntigravityProjectId(
   } catch (err) {
     throw new Error(
       `Antigravity project auto-discovery failed: ${(err as Error)?.message ?? err}. ` +
-      "Set GOOGLE_CLOUD_PROJECT(_ID) or re-run `joc auth login gemini`.",
+      "Set GOOGLE_CLOUD_PROJECT(_ID) or re-run `jeo auth login gemini`.",
     );
   }
   discoveredProjects.set(credential.token, projectId);
@@ -117,7 +117,7 @@ export function antigravityRequest(messages: Message[], options: CallOptions, cr
   if (!project) {
     throw new Error(
       "Antigravity needs a Google Cloud projectId and auto-discovery has not run yet. " +
-      "Set GOOGLE_CLOUD_PROJECT(_ID) or re-run `joc auth login gemini`.",
+      "Set GOOGLE_CLOUD_PROJECT(_ID) or re-run `jeo auth login gemini`.",
     );
   }
   const model = antigravityModelId(options.model);

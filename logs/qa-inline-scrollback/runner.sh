@@ -220,10 +220,12 @@ sleep 1
 log_report "Capturing visible screen..."
 tmux capture-pane -p -t "$SESS" > "$OUT_DIR/resize-screen.txt"
 
-# Count occurrences of the live footer line.
-# The footer contains "qa".
-qa_count=$(grep -c "qa" "$OUT_DIR/resize-screen.txt" || true)
-log_report "Found 'qa' in visible screen $qa_count times"
+# Count occurrences of the live footer line. The footer line is uniquely prefixed
+# by the `⬢ <model>` glyph; we anchor on `⬢ qa` rather than a bare "qa" because the
+# project path `qa-inline-scrollback` echoed in the shell command line also contains
+# "qa" and would inflate the count (false torn-footer positive).
+qa_count=$(grep -c "⬢ qa" "$OUT_DIR/resize-screen.txt" || true)
+log_report "Found '⬢ qa' footer in visible screen $qa_count times"
 
 passed_resize=true
 # Checking if process crashed (pane should still exist)
@@ -288,9 +290,11 @@ else
   passed_burst=false
 fi
 
-# Assert visible screen still shows exactly one live frame (no torn duplicate footer rows)
-qa_count_burst=$(grep -c "qa" "$OUT_DIR/burst-screen.txt" || true)
-log_report "Found 'qa' in visible screen $qa_count_burst times"
+# Assert visible screen still shows exactly one live frame (no torn duplicate footer
+# rows). Anchor on the `⬢ qa` footer glyph (not bare "qa", which also matches the
+# `qa-inline-scrollback` path in the command echo).
+qa_count_burst=$(grep -c "⬢ qa" "$OUT_DIR/burst-screen.txt" || true)
+log_report "Found '⬢ qa' footer in visible screen $qa_count_burst times"
 if [ "$qa_count_burst" -eq 1 ]; then
   log_report "  [PASS] Exactly one footer line present (no torn duplicate footers)"
 else
@@ -324,11 +328,13 @@ sleep 3
 log_report "Capturing full history..."
 tmux capture-pane -p -S -200 -t "$SESS" > "$OUT_DIR/dedupe-history.txt"
 
-# Count occurrences of a unique marker (e.g. LEDGER-001)
-# Pass-889 prepends a gjc-style ✔/✗ (or v/x) glyph to flushed ledger lines, so the
-# line is no longer badge-first; anchor on the marker itself, count exact lines.
-marker_count=$(sed 's/\x1b\[[0-9;]*m//g' "$OUT_DIR/dedupe-history.txt" | grep -c -E '^([✔✗vx] )?\[TOOL\] \[DONE\] LEDGER-001$' || true)
-log_report "Found static ledger line '[TOOL] [DONE] LEDGER-001' $marker_count times in history"
+# Count occurrences of a unique marker (e.g. LEDGER-001). The forge reformat (pass
+# 895) flushes light-tool ledger lines as `<glyph> <name>` (e.g. `✓ LEDGER-001`) — no
+# `[TOOL] [DONE]` prefix. Anchor on the bare marker preceded by start-of-line or any
+# whitespace (the leading ✔/✗ glyph + space); a multibyte `[✔✗]` char class is locale-
+# fragile under BSD grep, so match the whitespace boundary instead.
+marker_count=$(sed 's/\x1b\[[0-9;]*m//g' "$OUT_DIR/dedupe-history.txt" | grep -c -E '(^|[[:space:]])LEDGER-001$' || true)
+log_report "Found static ledger line 'LEDGER-001' $marker_count times in history"
 
 passed_dedupe=true
 if [ "$marker_count" -eq 1 ]; then

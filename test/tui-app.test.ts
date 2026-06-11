@@ -17,31 +17,90 @@ test("LaunchTui: shows a 'calling model' status while waiting on the model, then
   const afterAssistant = out.join("");
   expect(afterAssistant).not.toContain("calling model");
 });
-test("LaunchTui: on a TTY the live turn uses the alternate screen buffer (scroll-safe)", () => {
+test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll reaches earlier progress", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
   tui.start();
   const live = out.join("");
-  // Enters the alt screen before hiding the cursor → scroll can't fight the repaint.
-  expect(live).toContain(enterAltScreen());
-  expect(live.indexOf(enterAltScreen())).toBeLessThan(live.indexOf(hideCursor()));
-  expect(live).not.toContain(leaveAltScreen()); // not left yet
-  // Mouse-wheel guard: alternate scroll is disabled inside the alt screen so a wheel
-  // scroll (tmux or plain terminal) cannot inject Up/Down arrows into the input buffer.
-  expect(enterAltScreen()).toContain("\x1b[?1007l");
-  expect(leaveAltScreen()).toContain("\x1b[?1007h");
+  // gjc-style inline rendering: NO alt screen — tmux/terminal scrollback keeps working mid-turn.
+  expect(live).not.toContain(enterAltScreen());
+  expect(live).toContain(hideCursor());
+  expect(live).toContain(clearToEnd()); // anchor cleared once so stale rows can't bleed in
 
+  // A completed tool result is FLUSHED into normal scrollback while the turn runs:
+  // clear the live frame from its anchor, write the static ledger line + "\n", then
+  // repaint the frame below it (the next reserve scrolls the line into history).
+  out.length = 0;
+  const ev = tui.events();
+  ev.onStep!(1);
+  ev.onAssistant!("", { tool: "read", arguments: { filePath: "src/cli.ts" } });
+  ev.onToolResult!("read", true, "1|const ok = true;");
+  const ledger = out.join("");
+  const flushIdx = ledger.indexOf("\x1b[0J");
+  expect(flushIdx).toBeGreaterThanOrEqual(0);
+  expect(ledger.slice(flushIdx)).toContain("read src/cli.ts\n"); // static line, newline-terminated
+
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  out.length = 0;
   tui.finish("ok");
   const tail = out.join("");
-  expect(tail).toContain(leaveAltScreen()); // restored main buffer on finish
+  expect(tail).not.toContain(leaveAltScreen()); // never entered, never left
   expect(tail).toContain(showCursor());
-  // Final summary is WRITTEN to the main buffer (scrollback) AFTER leaving the alt
-  // screen, with clear-to-EOL per line + clear-below so stale pre-turn rows (old
-  // footer box, context lines) never merge into the summary or leave a torn box.
-  const afterLeave = tail.slice(tail.indexOf(leaveAltScreen()));
-  expect(afterLeave).toContain("joc> ok");
-  expect(afterLeave).toContain("\x1b[K");
-  expect(afterLeave).toContain("\x1b[0J");
+  // Final summary still printed with clear-to-EOL per line + clear-below hygiene…
+  expect(tail).toContain("joc> ok");
+  expect(tail).toContain("\x1b[K");
+  expect(tail).toContain("\x1b[0J");
+  // …but WITHOUT re-printing the ledger lines already flushed into scrollback live.
+  expect(tail).not.toContain("read src/cli.ts\n\x1b[K");
+});
+
+test("LaunchTui: JOC_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen turn", () => {
+  const orig = process.env.JOC_TUI_ALT_SCREEN;
+  process.env.JOC_TUI_ALT_SCREEN = "1";
+  try {
+    const out: string[] = [];
+    const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+    tui.start();
+    const live = out.join("");
+    // Enters the alt screen before hiding the cursor → scroll can't fight the repaint.
+    expect(live).toContain(enterAltScreen());
+    expect(live.indexOf(enterAltScreen())).toBeLessThan(live.indexOf(hideCursor()));
+    expect(live).not.toContain(leaveAltScreen()); // not left yet
+    // Mouse-wheel guard: alternate scroll is disabled inside the alt screen so a wheel
+    // scroll (tmux or plain terminal) cannot inject Up/Down arrows into the input buffer.
+    expect(enterAltScreen()).toContain("\x1b[?1007l");
+    expect(leaveAltScreen()).toContain("\x1b[?1007h");
+
+    tui.finish("ok");
+    const tail = out.join("");
+    expect(tail).toContain(leaveAltScreen()); // restored main buffer on finish
+    expect(tail).toContain(showCursor());
+    // Final summary is WRITTEN to the main buffer (scrollback) AFTER leaving the alt
+    // screen, with clear-to-EOL per line + clear-below so stale pre-turn rows (old
+    // footer box, context lines) never merge into the summary or leave a torn box.
+    const afterLeave = tail.slice(tail.indexOf(leaveAltScreen()));
+    expect(afterLeave).toContain("joc> ok");
+    expect(afterLeave).toContain("\x1b[K");
+    expect(afterLeave).toContain("\x1b[0J");
+  } finally {
+    if (orig === undefined) delete process.env.JOC_TUI_ALT_SCREEN;
+    else process.env.JOC_TUI_ALT_SCREEN = orig;
+  }
+});
+
+test("LaunchTui: subagent progress lines are flushed into scrollback mid-turn on a TTY", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  out.length = 0;
+  tui.onSubagentEvent({ role: "executor", kind: "start", detail: "Add a retry guard" });
+  tui.onSubagentEvent({ role: "executor", kind: "tool", detail: "read src/agent/engine.ts", success: true });
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  const ledger = out.join("");
+  // Both nested events became static scrollback lines (clear-frame + text + "\n").
+  expect(ledger).toContain("start: Add a retry guard\n");
+  expect(ledger).toContain("read src/agent/engine.ts\n");
+  tui.finish("done");
 });
 
 test("LaunchTui: without a TTY the alt screen is NOT used (plain in-place render)", () => {

@@ -6188,3 +6188,43 @@ Eager fixed reservation:
 
 ### Verification (pass 887)
 - Full: `bun run typecheck` → 0; `bun test` → **871 pass / 0 fail** (113 files); `bun run build` → ok.
+
+## Inline scrollback-friendly live turn (gjc-style main-buffer rendering) — pass 888
+
+**Date:** 2026-06-11 · **Dimension: tui (tmux mouse-wheel scrollback mid-turn).**
+
+User ask: while a `joc` turn is running in tmux, mouse-wheel scroll should reach
+EARLIER progress output — like gjc's subagent monitoring does. The pass-814 alt-screen
+turn made the live repaint scroll-safe but killed scrollback entirely (the alt screen
+has none), so mid-turn history was unreachable by design.
+
+### Fix
+- **888a. Inline main-buffer rendering is now the TTY default.** `LaunchTui` no longer
+  enters the alternate screen; the live frame repaints in place in the main buffer and
+  every completed progress-ledger line (tool results, subagent events, workflow status,
+  evolution transitions) is flushed into normal scrollback FIRST via the new
+  `Renderer.insertAbove()` (clear frame from anchor → static line + `\n` → full repaint
+  below). tmux / terminal wheel-scroll therefore reaches the whole progress history
+  mid-turn; in the main buffer no DECSET 1007 arrow-key injection applies, so the
+  pass-884 wheel-corruption bug cannot return in this mode.
+- **888b. Row reservation.** `Renderer` gained a `reserve` option (inline-only): before
+  painting a frame TALLER than the previous one it walks to the last occupied row,
+  emits one real newline per missing row (newlines DO scroll at the bottom margin,
+  pushing ledger lines into history), then hops back to the shifted anchor. Without
+  this, a frame anchored near the viewport bottom would collapse onto its last rows
+  (cursor-down cannot scroll). Alt-screen/non-TTY renderers never emit newlines.
+- **888c. `JOC_TUI_ALT_SCREEN=1`** opts back into the legacy pass-814 alternate-screen
+  turn (scroll-isolated, no mid-turn scrollback) — kept for terminals where inline
+  repaint misbehaves. The once-per-process exit safety now restores the cursor in both
+  modes and leaves the alt screen only when it was actually entered.
+- **888d. No duplicate history.** Inline `finish()` skips re-printing the stream ledger
+  (it is already in scrollback live); non-TTY and alt-screen summaries are unchanged.
+  Dead `fillScreen` import dropped from `app.ts`.
+
+### Verification (pass 888)
+- New tests: inline TTY turn never enters the alt screen and flushes tool-result +
+  subagent ledger lines as newline-terminated static scrollback writes; alt-screen
+  contract preserved under `JOC_TUI_ALT_SCREEN=1`; renderer reserve emits newlines on
+  growth only; `insertAbove` forces a full next repaint; reserve-off renderers emit no
+  newlines.
+- Full: `bun run typecheck` → 0; `bun test` → **889 pass / 0 fail** (116 files).

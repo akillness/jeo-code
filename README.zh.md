@@ -31,7 +31,7 @@
 
 状态行显示的是 **当前正在做的事**（正在处理的文件/命令、活动的计划步骤、计划进度，限流退避期间显示 `rate limited (HTTP 429) — auto-retry #2 in 4s` 倒计时），并附带当前步骤已用时间，而不是每个 tick 都变化的装饰文字。模型的回复 **实时流式输出**：在 JSON 工具调用形成时，其推理过程显示为暗淡的 `💭` 行，随后刷新为单行 `jeo · …` 流入回滚缓冲区 —— 按下 **Ctrl+O** 可将完整的最后一次回复（未截断，渲染表格）转储到回滚缓冲区中作为详细视图。内联回合中进化标识只保留最后一行 `Evolved to: …` 摘要（ASCII 艺术页眉保留在传统的 `JEO_TUI_ALT_SCREEN=1` 盒式模式中）。通过 `task` 委派的 **子代理进度**（分配任务、`step N/M`、嵌套工具调用的真实目标——如 `read src/x.ts`、`bash: …`——以及结果摘要）也会像 gjc 一样实时显示在流中。
 
-**剪贴板图像粘贴**：在输入框中按 **Ctrl+V** 即可将复制 of 图像（截图、浏览器右键复制）附加到下一条消息 —— 插入符位置会落入 `[image #N]` 标签，输入框会显示 `⧉ N image(s) attached` 提示，且该附件将作为真实的物理多模态输入发送给所有提供商（Anthropic 内容块、OpenAI 数据 URL、Codex `input_image`、Gemini/Antigravity `inlineData`、Ollama `images[]`）。macOS 在安装了 `pngpaste` 时会使用它（否则回退到 AppleScript）；Linux 使用 `wl-paste`/`xclip`。输入框本身渲染有双色深度线索 —— 明亮的上/左边缘，阴影的下/右边缘 —— 使其读起来像是一个凸起的面板，而不是扁平的轮廓。
+**剪贴板图像粘贴**：在输入框中按 **Ctrl+V** 即可将复制的图像（截图、浏览器右键复制）附加到下一条消息 —— 插入符位置会落入 `[image #N]` 标签，输入框会显示 `⧉ N image(s) attached` 提示，且该附件将作为真实的物理多模态输入发送给所有提供商（Anthropic 内容块、OpenAI 数据 URL、Codex `input_image`、Gemini/Antigravity `inlineData`、Ollama `images[]`）。macOS 在安装了 `pngpaste` 时会使用它（否则回退到 AppleScript）；Linux 使用 `wl-paste`/`xclip`。输入框本身渲染有双色深度线索 —— 明亮的上/左边缘，阴影的下/右边缘 —— 使其读起来像是一个凸起的面板，而不是扁平的轮廓。
 
 **双色面板深度**：所有带边框的面板 —— JEO forge 欢迎框、实时状态框、工具/forge 卡片、外层 alt-screen 框架以及输入框 —— 渲染时都以明亮的上/左边缘（主题强调色）对比暗色的下/右边缘（淡化强调色），并以加粗的标题进行对比，让框体读起来像立体面板而不是扁平轮廓。
 
@@ -132,7 +132,7 @@ jeo auth status
 
 ## Spec-first 工作流
 
-当你想先理清需求，再进行计划、执行与验证时使用。各个阶段通过状态（`.joc/state/`）承载并设有门禁：deep-interview 首先 **确认顶层拓扑（topology）**，在撰写问题、评估和验收标准时保留输入语言（韩语/英语/日语/中文），对于 brownfield 请求，会收集 **repo 标记 + 路径证据（path evidence）**；随后必须 **冻结 seed**（歧义度 ambiguity ≤ 20%；`--auto`/非 TTY 模式无法绕过该门禁，且如果未达到标准则不会冻结 seed），之后 MutationGuard 才允许修改代码并让 ralplan 继续进行 → ralplan 通过 **Planner→Architect→Critic 共识**（三阶段链式过程，且带有 schema 自校验/修复）构建一个 **待批准（approval-pending）** 的计划 → 必须使用 `jeo approve <plan>` 批准该计划 → 然后 team 执行（损坏 of team 状态会被拒绝而非忽略，未知的子代理角色（subagent roles）在执行前会被拒绝，同名 task 会通过步骤索引路由到正确的角色，并且如果 planner/architect/critic 的报告违反了其契约，或者 architect 返回 `BLOCK`/`REQUEST CHANGES`，或者 critic 返回 `[REJECT]`/`[ITERATE]`，执行将立即停止）→ 最后由 ultragoal 验证 team 的执行结果。
+当你想先理清需求，再进行计划、执行与验证时使用。各个阶段通过状态（`.joc/state/`）承载并设有门禁：deep-interview 首先 **确认顶层拓扑（topology）**，在撰写问题、评估和验收标准时保留输入语言（韩语/英语/日语/中文），对于 brownfield 请求，会收集 **repo 标记 + 路径证据（path evidence）**；随后必须 **冻结 seed**（歧义度 ambiguity ≤ 20%；`--auto`/非 TTY 模式无法绕过该门禁，且如果未达到标准则不会冻结 seed），之后 MutationGuard 才允许修改代码并让 ralplan 继续进行 → ralplan 通过 **Planner→Architect→Critic 共识**（三阶段链式过程，且带有 schema 自校验/修复）构建一个 **待批准（approval-pending）** 的计划 → 必须使用 `jeo approve <plan>` 批准该计划 → 然后 team 执行（损坏的 team 状态会被拒绝而非忽略，未知的子代理角色（subagent roles）在执行前会被拒绝，同名 task 会通过步骤索引路由到正确的角色，并且如果 planner/architect/critic 的报告违反了其契约，或者 architect 返回 `BLOCK`/`REQUEST CHANGES`，或者 critic 返回 `[REJECT]`/`[ITERATE]`，执行将立即停止）→ 最后由 ultragoal 验证 team 的执行结果。
 
 ```bash
 jeo deep-interview "Describe the feature you want to build"

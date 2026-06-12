@@ -322,3 +322,9 @@
 - freezeSeed 라운드트립 자기검증: 기준이 파서를 정확히 통과하지 못하면 freeze 거부 — 미래 작성기/파서 드리프트가 렛저를 조용히 오염시키는 대신 시끄럽게 실패.
 - Verified: typecheck 0; full bun test 1228 pass / 0 fail (+4종 seed-roundtrip: 따옴표/콜론/백슬래시/유니코드 왕복, 레거시 관용, 섹션 경계, e2e 리포트 비맹글링).
 - 결산: architect 발굴 MED 이상 백로그 전부 소진. 잔여 LOW/WATCH 2건뿐.
+[2026-06-12] gjc-계승 마라톤 라운드 13 (cycle 23) — 강화된 체인 라이브 풀 e2e
+- 전 체인 실모델 관통: deep-interview --auto → ralplan → approve → team(×2) → ultragoal. 신선 빌드 dist/jeo(R10~12 게이트 포함), /tmp 샌드박스, OAuth config 사본 즉시 폐기. 과제: slugify 모듈+테스트 그린필드.
+- 라이브 발화 확인된 게이트: ① 실 모호성 스코어링 60%→10%(인터뷰가 유니코드/대시 엣지케이스를 스스로 질문) ② critic 서브에이전트 [OKAY] + "repo is nearly empty…" 실저장소 열람 근거(R11 합의 실체화) ③ approve 3중 게이트(스키마+role+평결) ④ team 1차 스텝버짓 소진 → fail-closed 정지+failed_task 영속(R8) → 2차 "[WARN] partial edits" 재개 경고 후 4/4 완료 ⑤ ultragoal SUITE_GREEN + 6기준 ⚠️ UNVERIFIED 정직 기록(R7) + 따옴표 기준 비맹글링(R12).
+- 산출물 실검증: slugify(NFD 정규화·하이픈 붕괴·트림·빈문자) 정확 구현, bun test 6 pass / 0 fail 직접 확인.
+- 특기: team 1차 실패는 결함이 아니라 계약 동작 — 작업은 됐지만 done 계약 미신고면 성공을 주장하지 않는다(completion-contract의 라이브 증명). 재개 경로가 그 실패를 정확히 흡수.
+- 마라톤 양 축 완결: 메커니즘 구축(R1~12, 1228 tests) + 라이브 실증(R9 코어 루프, R13 풀 체인).

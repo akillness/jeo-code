@@ -6630,3 +6630,24 @@ that extends itself while the turn demonstrably progresses and fails fast when s
 
 ### Verification (round 12)
 - typecheck 0; `bun test` **1228 pass / 0 fail** across 160 files (+4: hostile-value round-trip incl. quotes/colons/backslashes/unicode, legacy leniency, section boundaries, e2e report carries quoted criteria unmangled). The architect-discovered backlog of MED+ findings is now fully exhausted across all five axes; only two LOW/WATCH items remain (slow-drip stream deadline, criteria-quality heuristic).
+
+---
+
+**Date:** 2026-06-12 · **Dimension: gjc-inheritance marathon round 13 — live full-chain e2e of the hardened workflow.**
+
+### The whole chain, on a real model, every gate firing
+Fresh `dist/jeo` build (rounds 10–12 included), /tmp sandbox, OAuth config copy destroyed after the run. Task: greenfield slugify module + tests.
+
+| Stage | Observed live |
+|---|---|
+| `deep-interview --auto` | Real ambiguity scoring (60% → self-posed unicode/dash edge-case question → 10%); 6 criteria frozen JSON-encoded (R12 writer); `active: false` on freeze (R10) |
+| `ralplan` | Drafting passes + the **critic subagent gate returned [OKAY]** with a justification proving real repo access ("repo is nearly empty — only an empty src/…"); verdict persisted (R11) |
+| `approve` | Schema + role + consensus triple gate passed (R10/R11) |
+| `team` (1st run) | Task 1 exhausted its 20-step budget — work was done but the done-contract was not signaled → **fail-closed halt + `failed_task` marker persisted** (R8). Not a defect: the completion contract refusing to claim unproven success, live |
+| `team` (2nd run) | "[WARN] … may have left partial edits on disk" resume warning fired (R8); all 4 tasks completed |
+| `ultragoal` | Suite GREEN; 6 criteria honestly recorded ⚠️ UNVERIFIED (R7); quoted criteria reached the report unmangled (R12); `SUITE_GREEN`/`suite_green` persisted |
+
+Artifacts verified directly: correct slugify (NFD normalization, hyphen collapse, trim, empty input) and `bun test` → **6 pass / 0 fail** in the sandbox.
+
+### Marathon closure
+Both axes are now complete: mechanism-building (rounds 1–12, 1228 repo tests green) and live proof (round 9 core loop, round 13 full chain). Every gate that was once theater — ultragoal verification, ralplan consensus, approve — has been made real and then proven firing on a real model end-to-end.

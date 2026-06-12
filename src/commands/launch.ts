@@ -9,7 +9,8 @@ import { runDeepInterviewEngine } from "./deep-interview";
 import { runRalplanEngine } from "./ralplan";
 import { runTeamEngine } from "./team";
 import { runUltragoalEngine } from "./ultragoal";
-import { skillsPromptSection, loadSkills, formatSkill, buildSkillTask, getSkillFrom, skillSlashAliases, workflowSkillsForPrompt, parseSkillInvocation, looksLikeSkillEcho, type SkillDoc } from "../skills/catalog";
+import { skillsPromptSection, loadSkills, formatSkill, buildSkillTask, getSkillFrom, skillSlashAliases, workflowSkillsForPrompt, parseSkillInvocation, looksLikeSkillEcho, skillInvocationCard, type SkillDoc } from "../skills/catalog";
+import { formatForgeBox } from "../tui/components/forge";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
@@ -1455,6 +1456,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const useTui = LaunchTui.usable(flags.noTui);
   const runSkillInvocation = async (skill: SkillDoc, intent: string, invokedAs?: string): Promise<void> => {
+    // gjc-style invocation card: surface WHAT is being injected before the work
+    // starts — skill name, resolved SKILL.md path, and the prompt size.
+    {
+      const card = formatForgeBox(
+        { title: "[skill]", lines: skillInvocationCard(skill) },
+        { width: Math.min(100, Math.max(40, (process.stdout.columns ?? 80) - 2)), unicode: supportsUnicode(), paint: accentPaint(uiTheme), paintShadow: accentShadowPaint(uiTheme), color: uiTheme.color },
+      );
+      logLines(card);
+    }
     const isBundleWorkflow = ["deep-interview", "ralplan", "team", "ultragoal"].includes(skill.name);
     if (isBundleWorkflow) {
       const startMsg: Message = {

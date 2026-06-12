@@ -456,6 +456,18 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
   return [...byName.values()];
 }
 
+/** gjc-style skill-invocation card body (the `[skill]` block shown in the TUI
+ *  when `$name`//skill runs): name, resolved SKILL.md path (or the bundled
+ *  module path), and the prompt size actually injected. Pure — testable. */
+export function skillInvocationCard(skill: SkillDoc): string[] {
+  const promptLines = (skill.raw ?? skill.details ?? "").split("\n").filter(l => l.trim().length > 0).length;
+  return [
+    `Skill: ${skill.name}`,
+    `Path: ${skill.sourcePath ?? `(bundled) src/prompts/skills/${skill.name}/SKILL.md`}`,
+    `Prompt: ${promptLines} lines`,
+  ];
+}
+
 /** Case-insensitive lookup within a resolved skill list. */
 export function getSkillFrom(skills: SkillDoc[], name: string): SkillDoc | undefined {
   return skills.find(s => s.name.toLowerCase() === name.toLowerCase());

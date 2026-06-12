@@ -339,3 +339,8 @@
 - 수정: CODEX_MODELS_URL에 client_version=2.0.0(실측: 0.46→[], 0.99→gpt-5.4, 1.0/2.0→gpt-5.5 풀셋; 주석에 실측 기록) + codex-auto-review 류 리뷰 전용 모델 제외. gemini URL pageSize=1000 + listProviderModels가 nextPageToken 추적(≤4페이지, 실패 시 부분 리스트 유지). isGeminiChatModel에 lyria(음악)·nano-banana(이미지) 가족 추가(generateContent는 지원하나 채팅 턴 불가). antigravity는 api-key 스왑 면제(리스트 엔드포인트가 OAuth 전용 — 잠재 버그 가드).
 - 라이브 재검증: openai 400→ok 3모델(gpt-5.5/5.4/5.4-mini), gemini api_key 21개 클린 채팅 모델(3.5-flash/3.1-pro 등 최신 포함, 누수 0), antigravity 8개 무손상.
 - Verified: typecheck 0; full bun test 1236 pass / 0 fail (+4종: client_version URL 계약, pageSize 계약, auto-review 제외, nextPageToken 추적 모킹).
+[2026-06-12] Pass — $스킬 호출 카드 ([skill] 블록) 노출
+- gjc 패리티: $name//skill 호출 시 작업 시작 전 [skill] 카드 노출 — Skill 이름 / 해석된 SKILL.md 경로(디스커버리 우선, 번들은 "(bundled) src/prompts/skills/<name>/SKILL.md") / 주입되는 Prompt 라인 수(공백 제외). 워크플로우·프롬프트 스킬 양 경로 공통(runSkillInvocation 톱), forge 카드 + 테마 투톤으로 렌더.
+- catalog: SkillDoc.sourcePath — 디스커버리 로더(단일 .md / 디렉터리 SKILL.md)에서 원본 경로 기록; skillInvocationCard() 순수 빌더.
+- 실동작 검증(tmux, dist/jeo): `$ralplan` → "╭── [skill] ──╮ / Skill: ralplan / Path: ~/.agents/skills/ralplan/SKILL.md / Prompt: 25 lines" 카드 실표시 후 [workflow:ralplan] start.
+- Verified: tsc 0; bun test 1237 pass / 0 fail; dist/jeo 재빌드.

@@ -7,16 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
 ## [Unreleased]
-_Self-contained `.jeo` namespace for skills/hooks/rules, live mid-turn input queue, hardened Ctrl-C / Ctrl+O._
+_Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input box, role-targeted model/thinking picker, hardened Ctrl-C / Ctrl+O._
 
 ### Added
-- Live mid-turn queued-input row in the TUI — text typed during a running turn stays visible and queues for the next prompt; the input affordance never vanishes (gjc parity).
+- Live next-prompt input box in the TUI — text typed during a running turn stays in the same query surface instead of a separate queued row.
 - jeo discovers skills from its own `~/.jeo/agent/skills` (+ project `.jeo/agent/skills`) and resolves hooks/rules under `.jeo` instead of referencing `.gjc`.
 - Config-driven custom subagent roles: a non-bundled id declaring `title`/`description`/`prompt` becomes a first-class role at runtime.
 - Ctrl+O mid-turn detail view: flush the full last reply + tool output into scrollback.
 
 ### Changed
-- Renamed the config directory `.jeo` → `.jeo` and the env prefix `JEO_` → `JEO_`.
+- Unified model targeting: `/model` can now set default thinking, pick a model, apply it to the default agent or any subagent role, and set that target's thinking level in one flow.
+- Canonicalized runtime naming on `.jeo` and `JEO_` only.
 
 ### Fixed
 - Ctrl-C now force-quits jeo immediately instead of being softened into an abort prompt.

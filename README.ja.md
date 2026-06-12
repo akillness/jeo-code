@@ -36,7 +36,7 @@
 - **芝居なしの本物のゲート** — `ralplan` の合議はリポジトリを実際に読む critic サブエージェントで、`[OKAY]` 評決が永続化され `jeo approve` がそれを*要求*します。`ultragoal` は誠実に報告します(スイート1回実行はグローバル信号であり、基準ごとの合格を捏造しません)。
 - **クラッシュ耐久・ローカルファースト** — 全状態は `.jeo/` 配下にアトミック書き込み、プロセス間ロック、失敗タスクマーカー + 再開時の部分編集警告。
 - **動的ステップ予算** — 直近のツール呼び出しが新規の進捗を示す間は延長され、停滞すれば要約に収束。サブエージェントは厳密なステップ契約を維持。
-- **インライン TUI** — 完了した作業は実スクロールバックに流れ(ターン中も tmux ホイール可)、ステータス行は実際の処理対象を表示。テーマ、クリップボード画像貼り付け(Ctrl+V)、CJK/絵文字対応の幅計算。
+- **インライン TUI** — 完了した作業は実スクロールバックに流れ(ターン中も tmux ホイール可)、エージェント実行中も通常のクエリ入力欄が表示されたまま編集できます。Ctrl+O の詳細トグル、テーマ、クリップボード画像貼り付け(Ctrl+V)、CJK/絵文字対応の幅計算。
 
 ## インストール
 
@@ -63,10 +63,10 @@ jeo --tmux               # 独立した tmux セッションで実行
 
 | コマンド | 説明 |
 | --- | --- |
-| `/model` · `/models` · `/provider` | モデル/プロバイダ選択(3段階: モデル → 適用先 → 推論レベル)、選択は永続化 |
+| `/model` · `/models` · `/provider` | モデル/プロバイダ選択; `/model` でデフォルト/サブエージェント適用先と thinking レベルまで一つの流れで設定 |
 | `/provider login <name>` · `/logout` | 入力欄から OAuth ログイン/ログアウト |
 | `/agents [role]` · `/subagent` | ロール別(executor/planner/architect/critic)モデル・thinking・ステップ設定 |
-| `/thinking [level]` | 推論予算(minimal…xhigh) |
+| `/thinking [level]` | デフォルト推論予算(minimal…xhigh)の表示/設定 |
 | `/skill` · `$<skill> [intent]` | ワークフロースキルの一覧/実行(`$team "task"` 形式) |
 | `/view` · `/diff` · `/find` · `/search` | コード表示、git diff、ファイル/パターン検索 |
 | `/new` · `/resume` · `/sessions` · `/export` | セッション管理・トランスクリプト出力 |
@@ -133,7 +133,7 @@ JEO_STREAM_MAX_MS=300000        # オプトインの全体ストリーム期限(
 JEO_TOOL_OUTPUT_MAX=4000        # モデル可視のツール出力上限(全文はアーティファクトへ)
 ```
 
-リトライ動作は `~/.jeo/config.json` の `retry` で調整します(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` など)。ステップ予算はデフォルトで動的 — 新規進捗が見える間は延長され、停滞時は要約に収束します。`--max-steps N` で有限フローに戻ります。レガシー `JEO_*` 環境変数も引き続きサポートされます。
+リトライ動作は `~/.jeo/config.json` の `retry` で調整します(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` など)。ステップ予算はデフォルトで動的 — 新規進捗が見える間は延長され、停滞時は要約に収束します。`--max-steps N` で有限フローに戻ります。
 
 ## 公開 (Publishing)
 
@@ -147,7 +147,7 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live mid-turn input queue, hardened Ctrl-C / Ctrl+O.
+- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input box, role-targeted model/thinking picker, hardened Ctrl-C / Ctrl+O.
 - **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
 - **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
 - **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.

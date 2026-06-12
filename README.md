@@ -36,7 +36,7 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 - **Real gates, no theater** — `ralplan` consensus is a repo-grounded critic subagent whose `[OKAY]` verdict is persisted and *required* by `jeo approve`; `ultragoal` reports honestly (a suite run is a global signal, never fabricated per-criterion passes).
 - **Crash-durable, local-first** — all state under `.jeo/` with atomic writes, cross-process run locks, failed-task markers with partial-edit warnings on resume.
 - **Dynamic step budget** — turns extend while the tool window shows novel progress and consolidate gracefully when stalled; subagents keep exact step contracts.
-- **Inline TUI** — completed work flushes into real scrollback (tmux wheel works mid-turn), live status shows the actual in-flight target, themes, clipboard image paste (Ctrl+V), CJK/emoji-safe width math.
+- **Inline TUI** — completed work flushes into real scrollback (tmux wheel works mid-turn), the normal query input box stays visible and editable while the agent runs, Ctrl+O toggles full detail, themes, clipboard image paste (Ctrl+V), CJK/emoji-safe width math.
 
 ## Install
 
@@ -63,10 +63,10 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 
 | Command | Description |
 | --- | --- |
-| `/model` · `/models` · `/provider` | Pick model/provider (3-step: model → apply-target → reasoning); picks persist |
+| `/model` · `/models` · `/provider` | Pick model/provider; `/model` handles default vs subagent target plus thinking level in one flow |
 | `/provider login <name>` · `/logout` | OAuth login/logout from the input box |
 | `/agents [role]` · `/subagent` | Per-role (executor/planner/architect/critic) model · thinking · step config |
-| `/thinking [level]` | Reasoning budget (minimal…xhigh) |
+| `/thinking [level]` | Show/set default reasoning budget (minimal…xhigh) |
 | `/skill` · `$<skill> [intent]` | List/run workflow skills (`$team "task"` style) |
 | `/view` · `/diff` · `/find` · `/search` | Code view, git diff, file/pattern search |
 | `/new` · `/resume` · `/sessions` · `/export` | Session management & transcript export |
@@ -133,7 +133,7 @@ JEO_STREAM_MAX_MS=300000        # opt-in overall stream deadline (default off; b
 JEO_TOOL_OUTPUT_MAX=4000        # model-visible tool output cap (full output spills to artifacts)
 ```
 
-Retry behavior is tunable via `retry` in `~/.jeo/config.json` (`requestMaxRetries`, `streamMaxRetries`, `rateLimitRetries`, `failFastStatuses`, …). The step budget is dynamic by default — it extends while recent tool calls show novel progress and consolidates with a wrap-up when stalled; `--max-steps N` restores a bounded flow. Legacy `JEO_*` env names remain supported.
+Retry behavior is tunable via `retry` in `~/.jeo/config.json` (`requestMaxRetries`, `streamMaxRetries`, `rateLimitRetries`, `failFastStatuses`, …). The step budget is dynamic by default — it extends while recent tool calls show novel progress and consolidates with a wrap-up when stalled; `--max-steps N` restores a bounded flow.
 
 ## Publishing
 
@@ -147,7 +147,7 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live mid-turn input queue, hardened Ctrl-C / Ctrl+O.
+- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input box, role-targeted model/thinking picker, hardened Ctrl-C / Ctrl+O.
 - **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
 - **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
 - **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.

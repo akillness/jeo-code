@@ -6619,3 +6619,14 @@ that extends itself while the turn demonstrably progresses and fails fast when s
 
 ### Verification (round 11)
 - typecheck 0; `bun test` **1224 pass / 0 fail** across 159 files (tests: [OKAY] completes + verdict persisted, [REJECT] blocks + justification persisted, approve refuses missing verdict, legacy fixture updated). Every gate in the deep-interview→ralplan→approve→team→ultragoal chain is now real: write-time schema/role → blocking consensus → validated approval → locked/audited execution → honest verification.
+
+---
+
+**Date:** 2026-06-12 · **Dimension: gjc-inheritance marathon round 12 — seed round-trip integrity (last MED exhausted).**
+
+### Seed writer/parser coupling
+- **`src/agent/seed.ts`.** The deep-interview WRITER (`yamlList`, JSON-encoding each item) and ultragoal's READER lived in different files with different rules — the old reader stripped EVERY double quote (`replace(/"/g,"")`), silently mangling criteria like `Display "Done" message` into the verification ledger. Both now share one module and one encoding (JSON encode ↔ decode); hand-written legacy items keep a lenient fallback that strips only a MATCHED outer quote pair, never interior quotes.
+- **Freeze-time round-trip assert.** `freezeSeed` re-parses the seed it is about to write and refuses to freeze if the criteria do not survive the parser EXACTLY — future writer/parser drift fails loudly instead of corrupting the ledger silently (the same self-checking principle as the round-7/11 gates).
+
+### Verification (round 12)
+- typecheck 0; `bun test` **1228 pass / 0 fail** across 160 files (+4: hostile-value round-trip incl. quotes/colons/backslashes/unicode, legacy leniency, section boundaries, e2e report carries quoted criteria unmangled). The architect-discovered backlog of MED+ findings is now fully exhausted across all five axes; only two LOW/WATCH items remain (slow-drip stream deadline, criteria-quality heuristic).

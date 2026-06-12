@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { readWorkflowState, writeWorkflowState, getLocalJocDir, type WorkflowState } from "../agent/state";
 import { bashTool } from "../agent/tools";
+import { parseSeedAcceptanceCriteria } from "../agent/seed";
 
 export interface UltragoalEngineOptions {
   cwd?: string;
@@ -67,25 +68,11 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
     return { ok: false, reason: err.message };
   }
 
-  // Parse acceptance criteria from seed YAML
-  const criteria: string[] = [];
-  const lines = seedContent.split("\n");
-  let parsingCriteria = false;
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("acceptance_criteria:")) {
-      parsingCriteria = true;
-      continue;
-    }
-    if (parsingCriteria) {
-      if (trimmed.startsWith("-")) {
-        criteria.push(trimmed.replace(/^-\s*/, "").replace(/"/g, "").trim());
-      } else if (trimmed === "" || trimmed.includes(":")) {
-        // End of list or next section
-        parsingCriteria = false;
-      }
-    }
-  }
+  // Parse acceptance criteria via the SHARED seed module (round-12) — the old
+  // inline scan stripped EVERY double quote and mangled criteria like
+  // `Display "Done" message`; the shared parser JSON-decodes what the
+  // deep-interview writer JSON-encoded, so values round-trip exactly.
+  const criteria: string[] = parseSeedAcceptanceCriteria(seedContent);
 
   if (criteria.length === 0) {
     criteria.push("Runs successfully in the terminal");

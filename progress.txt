@@ -317,3 +317,8 @@
 - 평결 영속: ralplan state에 consensus/consensus_detail 기록. [OKAY]만 current_phase=complete. 비승인 시 플랜은 검토용 저장 + 근거 표면화 + ok:false.
 - approve 강화: 영속 평결 consensus==="okay" 요구 — 평결 없는/실패한 플랜은 승인 불가(구 상태는 ralplan 재실행으로 치유). 라운드 10에서 "정직 리라벨"로 보류했던 #1(합의 연극)의 전면 수정 — 차단 가능한 게이트가 진짜가 됨.
 - Verified: typecheck 0; full bun test 1224 pass / 0 fail (신규/갱신 4종: OKAY 완료+평결 영속, REJECT 차단+근거 영속, approve 평결 거부, approve fixture 갱신). 체인 전 게이트 실체화 완료: write-time → 합의 → 승인 → 실행 → 검증.
+[2026-06-12] gjc-계승 마라톤 라운드 12 (cycle 22) — 시드 라운드트립 (마지막 MED 소진)
+- src/agent/seed.ts 신설: deep-interview의 작성기(yamlList)와 ultragoal의 파서(parseSeedAcceptanceCriteria)가 한 모듈·한 인코딩(JSON encode↔decode) 공유. 구 인라인 파서는 replace(/"/g,'')로 모든 큰따옴표를 strip — `Display "Done" message` 류 기준이 검증 렛저에 사일런트 맹글링되던 문제 해소. 레거시 비인용 항목은 외곽 따옴표쌍만 strip하는 관용 폴백 유지.
+- freezeSeed 라운드트립 자기검증: 기준이 파서를 정확히 통과하지 못하면 freeze 거부 — 미래 작성기/파서 드리프트가 렛저를 조용히 오염시키는 대신 시끄럽게 실패.
+- Verified: typecheck 0; full bun test 1228 pass / 0 fail (+4종 seed-roundtrip: 따옴표/콜론/백슬래시/유니코드 왕복, 레거시 관용, 섹션 경계, e2e 리포트 비맹글링).
+- 결산: architect 발굴 MED 이상 백로그 전부 소진. 잔여 LOW/WATCH 2건뿐.

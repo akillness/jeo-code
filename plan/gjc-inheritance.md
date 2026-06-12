@@ -148,3 +148,7 @@
 ## 사이클 렛저 (라운드 11 — 합의의 실체화)
 - cycle 21 (2026-06-12): **ralplan 실 합의 게이트** — runConsensusCriticGate: read-only critic 서브에이전트(repo 접근: read/search/find/ls)가 후보 플랜을 시드+실저장소 대조 검토, [OKAY]/[ITERATE]/[REJECT] 평결 강제(fail-closed: 계약 미충족=unverified=비승인). [ITERATE]는 1회 수정 라운드 후 재심. 평결+근거가 ralplan state에 영속(consensus/consensus_detail), [OKAY]만 complete. **approve가 영속 평결 요구** — consensus!=="okay"면 거부(구 상태는 ralplan 재실행으로 치유). 이로써 라운드 10 #1(합의 연극)의 전면 수정 완료: 드래프팅은 여전히 single-model이지만 **차단 가능한 게이트가 진짜**가 됐다. 신규/갱신 테스트 4종(critic OKAY 완료+평결 영속, REJECT 차단, approve 평결 거부, 기존 fixture 갱신). full 1224 pass / 0 fail, typecheck 0.
 - **라운드 11 종료** — 누적 21사이클. 체인의 모든 게이트가 실체화됨: write-time(ralplan 스키마/role) → 합의(critic 평결) → 승인(스키마+role+평결) → 실행(team 게이트+락+감사) → 검증(ultragoal 정직 기록). 잔여: #5 시드 라운드트립(MED), LOW/WATCH 2건.
+
+## 사이클 렛저 (라운드 12 — 시드 라운드트립)
+- cycle 22 (2026-06-12): #5(MED, 마지막 잔여 MED) — src/agent/seed.ts 신설: yamlList(작성기)와 parseSeedAcceptanceCriteria/parseSeedList(파서)가 한 모듈·한 인코딩 공유(JSON encode→decode). 구 ultragoal 인라인 파서는 모든 큰따옴표를 strip해 `Display "Done" message` 류 기준을 사일런트 맹글링. deep-interview freezeSeed에 라운드트립 자기검증(불일치 시 freeze 거부 — 미래 포맷 드리프트의 시끄러운 실패), ultragoal은 공유 파서 사용(레거시 비인용 항목 관용 유지). 신규 테스트 4종(seed-roundtrip: 적대적 값 왕복/레거시 관용/섹션 경계/e2e 비맹글링). full 1228 pass / 0 fail, typecheck 0.
+- **라운드 12 종료** — 누적 22사이클. **MED 이상 발굴 백로그 전부 소진.** 잔여는 LOW/WATCH 2건(슬로우드립 스트림 데드라인, deep-interview 기준 품질 휴리스틱)뿐.

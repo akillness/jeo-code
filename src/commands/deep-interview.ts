@@ -13,6 +13,7 @@ import {
   type WorkflowTopologyState,
   getLocalJocDir,
 } from "../agent/state";
+import { yamlList, parseSeedAcceptanceCriteria } from "../agent/seed";
 
 interface SocraticResponse {
   ambiguityScore: number;
@@ -82,10 +83,8 @@ function normalizeList(values: string[] | undefined): string[] {
   return (values ?? []).map(v => v.trim()).filter(Boolean);
 }
 
-function yamlList(name: string, values: string[]): string {
-  if (values.length === 0) return `${name}: []`;
-  return `${name}:\n${values.map(value => `  - ${JSON.stringify(value)}`).join("\n")}`;
-}
+// yamlList moved to ../agent/seed (round-12): the writer and ultragoal's reader
+// now share one module + one encoding, asserted round-trip at freeze time.
 
 function freezeReadiness(parsed: SocraticResponse | undefined): { ok: boolean; reason?: string } {
   if (!parsed) return { ok: false, reason: "the interview never produced a structured assessment" };
@@ -535,6 +534,18 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
         `goal: ${JSON.stringify(goal)}\n` +
         `${yamlList("constraints", constraints)}\n\n` +
         `${yamlList("acceptance_criteria", criteria)}\n`;
+      // Round-trip self-check (round-12): the criteria must survive ultragoal's
+      // parser EXACTLY — writer/parser drift would otherwise corrupt the
+      // verification ledger silently. Should never fire (shared module), but
+      // future format changes fail loudly here instead.
+      const parsedBack = parseSeedAcceptanceCriteria(seedContent);
+      if (JSON.stringify(parsedBack) !== JSON.stringify(criteria)) {
+        log(
+          `[ERROR] Seed round-trip self-check FAILED — the acceptance criteria would not survive ultragoal's parser ` +
+          `(writer/parser drift). NOT freezing the seed. Got back: ${JSON.stringify(parsedBack)}`,
+        );
+        return;
+      }
       await fs.writeFile(seedPath, seedContent, "utf-8");
       state!.current_phase = "complete";
       state!.active = false; // finished — must not read as "interview in progress" forever

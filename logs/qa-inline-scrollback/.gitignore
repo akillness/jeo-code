@@ -1,2 +1,0 @@
-# Capture outputs are regenerated on every harness run — never commit them.
-*.txt

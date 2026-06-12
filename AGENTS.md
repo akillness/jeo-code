@@ -25,6 +25,9 @@
 | `scripts/` | Installation and maintenance scripts (see `scripts/AGENTS.md`) |
 | `plan/` | Implementation blueprints (see `plan/AGENTS.md`) |
 | `assets/` | Branding/character images used by docs and animations (see `assets/AGENTS.md`) |
+| `skills/` | Top-level git-tracked workflow skills for external AI agents (see `skills/AGENTS.md`) |
+| `.github/` | GitHub Actions CI and npm publish workflows (see `.github/AGENTS.md`) |
+| `jeo-claw/` | Workflow analysis report artifacts (see `jeo-claw/AGENTS.md`) |
 
 ## For AI Agents
 

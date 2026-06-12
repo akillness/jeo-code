@@ -354,3 +354,9 @@
 - Tests: 3단계 회복 성공(거부×3→스트립 후 done, 시스템 프롬프트 잔존 확인, 호출 4회 정확) / 블록 부재 시 3호출 후 에러(추가 과금 0).
 - 실동작: jeo-code cwd `$gjc init` 재실행 — 7스텝+ 정상 진행(도구 5 ok), 에러 미발생.
 - Verified: tsc 0; bun test 1239 pass / 0 fail; dist/jeo 재빌드.
+[2026-06-12] 라운드 16 (cycle 26) — /exit·^C^C 즉시 종료 (종료 버퍼링 제거)
+- 원인: 인터랙티브 REPL 종료 꼬리의 `await distillSessionMemory(...)`가 최종 LLM 콜(최대 20s 타임아웃)을 블로킹 — /exit와 더블 ^C(→/exit 주입) 모두 같은 꼬리를 타므로 종료가 수 초~20초 버퍼링.
+- 수정: 증류를 분리된 백그라운드 자식으로 강등 — spawnDetachedDistill이 페이로드(.joc/memory/pending-distill-*.json)를 쓰고 숨은 CLI 워커 `jeo memory-distill <file>`을 스폰 후 즉시 반환. distillInvocation은 tmuxLaunchCommand와 동일한 3형태 자기호출(컴파일 가상경로/소스/심). **핵심**: Bun.spawn이 아니라 node:child_process `detached: true`(자체 세션/프로세스 그룹) — 부모 pane이 닫히면 같은 그룹의 자식이 죽는 것을 라이브로 관측하고 교정.
+- 라이브 검증(tmux 인터랙티브, dist/jeo): 턴 1회 후 /exit → **종료 지연 ≈ 0.1s**(이전 최대 20s), 종료 직후 pending 페이로드 존재 → 12초 후 자식이 MEMORY.md 작성+페이로드 정리(터미널 사망 생존). hermes 루프 유지, 사용자 시계에서만 제거.
+- 부수 수리: themes.test.ts가 실 ~/.joc/config.json의 테마(blue-crab)를 읽어 깨지던 격리 버그 — fallback 분기 호출에 빈 JOC_CONFIG_DIR 주입.
+- Verified: typecheck 0; full bun test 1239+ pass / 0 fail; 신규 테스트 4종(memory: invocation 3형태/스폰 계약+unref/게이트/워커 e2e).

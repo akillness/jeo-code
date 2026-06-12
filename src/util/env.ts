@@ -10,5 +10,5 @@ export function jeoEnv(
   suffix: string,
   env: Record<string, string | undefined> = process.env,
 ): string | undefined {
-  return env[`JEO_${suffix}`] ?? env[`JEO_${suffix}`];
+  return env[`JEO_${suffix}`] ?? env[`JOC_${suffix}`];
 }

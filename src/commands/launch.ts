@@ -1750,6 +1750,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     output: gatedStdout(process.stdout, () => previewArmed || pickerActive || interactiveTurnActive),
     completer: (line: string) => readlineCompleter(line, completionContext()),
   });
+  const promptStdin = process.stdin as typeof process.stdin & { isRaw?: boolean; setRawMode?(raw: boolean): void };
+  const promptWasRaw = !!promptStdin.isRaw;
+  let promptRawChanged = false;
+  const restorePromptRawMode = () => {
+    if (!promptRawChanged) return;
+    try { promptStdin.setRawMode?.(false); } catch { /* terminal gone */ }
+    promptRawChanged = false;
+  };
+  if (promptStdin.isTTY && promptStdin.setRawMode && !promptWasRaw) {
+    promptStdin.setRawMode(true);
+    promptRawChanged = true;
+  }
+  process.once("exit", restorePromptRawMode);
   // Stdin EOF must END the REPL, not hang it: under Bun a pending `rl.question`
   // NEVER settles once the input stream closes (Ctrl-D, exhausted pipe) — the
   // while(true) prompt loop then waits forever (the "joc never exits" hang).
@@ -1791,13 +1804,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let stdinClosed = false;
   let notifyStdinClosed: (() => void) | undefined;
   let gracefulReadlineClose = false;
+  let hardExitOnLoopEnd = false;
   // `on` + one-shot guard (not `once`): test harnesses stub readline with `on`/`question` only.
   rl.on("close", () => {
     if (stdinClosed) return;
     // Bun/readline can turn Ctrl+C into a bare close event without SIGINT/key
-    // delivery. In an interactive TTY, an unexpected close is therefore a hard
-    // break, not a graceful `/exit`.
-    if (process.stdin.isTTY && !gracefulReadlineClose) forceExitFromCtrlC();
+    // delivery. In an interactive terminal, an unexpected close is therefore a
+    // hard break, not a graceful `/exit`. Some Bun/tmux paths leave stdin.isTTY
+    // false while stdout is still a TTY, so accept either side as interactive.
+    if ((process.stdin.isTTY || process.stdout.isTTY || previewEnabled) && !gracefulReadlineClose) {
+      hardExitOnLoopEnd = true;
+      forceExitFromCtrlC();
+    }
     stdinClosed = true;
     notifyStdinClosed?.();
   });
@@ -1813,11 +1831,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     const queued = pendingStdinLines.shift();
     if (queued !== undefined) return queued;
-    if (stdinClosed) return "/exit";
+    if (stdinClosed) {
+      if (hardExitOnLoopEnd || process.stdin.isTTY || process.stdout.isTTY) forceExitFromCtrlC();
+      return "/exit";
+    }
     try {
       return await Promise.race([
         rl.question(prompt),
-        new Promise<string>(resolve => { notifyStdinClosed = () => resolve(pendingStdinLines.shift() ?? "/exit"); }),
+        new Promise<string>(resolve => {
+          notifyStdinClosed = () => {
+            if (hardExitOnLoopEnd || process.stdin.isTTY || process.stdout.isTTY) forceExitFromCtrlC();
+            resolve(pendingStdinLines.shift() ?? "/exit");
+          };
+        }),
       ]);
     } finally {
       notifyStdinClosed = undefined;
@@ -2100,14 +2126,20 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     try {
       disarmPreview();
       out.write("\x1b[?25h\n");
+      restorePromptRawMode();
     } catch {
       // Best-effort terminal restore; process exit is the contract.
     }
     process.exit(130);
   };
-  // Bun/readline can deliver Ctrl+C as either readline SIGINT or process SIGINT
-  // depending on raw-mode and terminal timing; wire both to the same hard-exit path.
+  const forceExitOnCtrlCByte = (chunk: string | Uint8Array) => {
+    const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    if (text.includes("\u0003")) forceExitFromCtrlC();
+  };
+  // Bun/readline can deliver Ctrl+C as readline SIGINT, process SIGINT, or (tmux)
+  // a raw \u0003 byte before readline resolves the question; wire all three.
   process.on("SIGINT", forceExitFromCtrlC);
+  process.stdin.on("data", forceExitOnCtrlCByte);
   rl.on("SIGINT", forceExitFromCtrlC);
 
   const runSelectPicker = async <T>(
@@ -2554,7 +2586,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // Box mode: NO raw `jeo>` prompt at all — the boxed footer IS the input UI
       // (gating already suppresses readline echo, the empty prompt guarantees no
       // raw CLI input line can ever flash). Legacy prompt only without the box.
-      const raw = (await promptInput(previewEnabled ? "" : "\njeo> ")).trim();
+      const rawText = await promptInput(previewEnabled ? "" : "\njeo> ");
+      if (rawText.includes("\u0003")) forceExitFromCtrlC();
+      const raw = rawText.trim();
       disarmPreview();
       // Pasted batch command: echo what is about to run (with the remaining queue
       // depth) so a multi-line paste reads as a visible, ordered script.
@@ -3707,6 +3741,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
     }
   disarmPreview(); // clear footer + restore full-screen scrolling before leaving the REPL
+  if (hardExitOnLoopEnd) {
+    try {
+      disarmPreview();
+      out.write("\x1b[?25h\n");
+    } catch { /* best effort */ }
+    process.removeListener("SIGINT", forceExitFromCtrlC);
+    process.stdin.off("data", forceExitOnCtrlCByte);
+    restorePromptRawMode();
+    process.exit(130);
+  }
   // hermes-style experience distill (plan/gjc-inheritance.md B6) — now handed to a
   // DETACHED child (round-16): /exit and ^C^C return the shell IMMEDIATELY instead
   // of blocking up to 20s on a final LLM call. The child writes MEMORY.md atomically.
@@ -3718,6 +3762,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // resume command in scrollback on exit, mirroring the --list handler's convention.
   if (sessionId && !flags.noSession) console.log(formatResumeHint(sessionId));
   process.removeListener("SIGINT", forceExitFromCtrlC);
+  process.stdin.off("data", forceExitOnCtrlCByte);
+  restorePromptRawMode();
   gracefulReadlineClose = true;
   rl.close();
 }

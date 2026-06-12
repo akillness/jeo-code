@@ -402,3 +402,13 @@
 - Test hardening: todo-card의 유니코드 기대 테스트를 TERM/LANG에 의존하지 않도록 UTF-8 터미널 환경으로 고정.
 - Tests: Ctrl+O live-frame 토글 단위 테스트 추가; focused `tui-app/ctrl-o-detail/todo-card` green. Full gate: tsc 0; bun test 1263 pass / 0 fail; dist/jeo rebuild.
 - Live verification (compiled dist/jeo, tmux): live turn Ctrl+O open → `history · Ctrl+O closes` visible, Ctrl+O close → gone. Prompt wait Ctrl+O open/close도 동일하게 current pane에서 확인.
+
+[2026-06-12] Pass — Ctrl+C hard-exit (terminal force quit)
+- Request: make Ctrl+C force-terminate jeo instead of soft-clearing/aborting and requiring a second press.
+- Root cause: prompt path treated Ctrl+C as line-editor behavior (clear input / graceful `/exit` fallback), while live-turn harness only aborted first and hard-exited on the second press. Bun/tmux can deliver Ctrl+C as readline SIGINT, process SIGINT, a raw `\u0003` byte, or a readline close that later resolves `/exit`; all paths must converge on exit 130.
+- Fix: createInFlightAbortHarness.handleSigint now aborts observers and immediately calls onHardExit. REPL prompt registers a shared forceExitFromCtrlC on readline SIGINT, process SIGINT, stdin data `\u0003`, unexpected interactive readline close, and raw text containing `\u0003`.
+- Terminal hygiene: prompt raw mode is owned/restored for the REPL lifetime; force-exit and normal-exit paths restore raw mode and cursor before exit.
+- Compatibility fix found by full gate: jeoEnv fallback corrected from duplicate `JEO_*` lookup to legacy `JOC_*`; test wording/fixtures corrected.
+- Tests: launch-toggles Ctrl+C contracts updated; env-helper verifies JEO-over-JOC and empty-string semantics.
+- Live verification (compiled dist/jeo, tmux, accurate `sh -lc` exit-code wrapper): prompt Ctrl+C => EXIT:130; live turn Ctrl+C while agent/tool turn active => EXIT:130.
+- Verified: tsc 0; bun test 1269 pass / 0 fail; dist/jeo rebuilt.

@@ -6583,3 +6583,12 @@ that extends itself while the turn demonstrably progresses and fails fast when s
 
 ### Verification (round 8)
 - typecheck 0; `bun test` **1206 pass / 0 fail** across 157 files (+3: lock lifecycle incl. dead-pid takeover, failure marker + resume warning, parent audit incl. read-only exemption). The architect-driven backlog from rounds 4–7 is now exhausted; remaining items are LOW/WATCH only (slow-drip stream deadline, plan dependency-key rejection, spawn-gate comment).
+
+---
+
+**Date:** 2026-06-12 · **Dimension: gjc-inheritance marathon round 9 — live e2e proof of the self-correction loop.**
+
+### Live verification (real model, deterministic hook)
+- **Setup.** /tmp sandbox project with a deterministic post-turn hook (`match.tool: "edit|write"`): exits 1 with `LINT-E001: src/app.ts must also export a VERSION constant…` unless the file exports `VERSION`. The prompt only said "if a verification hook reports a problem, fix exactly what it reports" — the hook's actual check was never disclosed to the model. Credentials: OAuth config copied under a temp `JOC_CONFIG_DIR`, destroyed immediately after the run.
+- **Observed loop** (`dist/jeo launch --no-tui --no-session -p …`, antigravity/gemini-3.5-flash-low): step 2 edit → hook RED (advisory notice live) → step 3 re-read → step 4 the model added `export const VERSION = "1.0.0"` exactly as the diagnostic demanded → hook GREEN → step 6 bash verification → done with no pushback. The dynamic step-budget novelty extension also fired live ("progress detected … extended to 15").
+- **Proves in concert on a real model:** cycle 13 (hook diagnostics fed to the model), 14a (`edit|write` multi-match), 14 F1 (pendingHookFailure cleared by the clean run), and the round-1 dynamic budget. Final file verified: `greet()` change AND the hook-driven `VERSION` export both correct.

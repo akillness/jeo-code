@@ -129,3 +129,6 @@
 ## 사이클 렛저 (라운드 8 — 라운드7 architect MED 보류분 소진)
 - cycle 18 (2026-06-12): (A) 부모측 변이 감사 — task-tool/team이 서브에이전트의 성공한 write/edit/bash를 실측 카운트, mutating 역할이 0건 변이로 "완료" 시 "[parent audit] … UNVERIFIED" 주석/경고(보고서 마커는 형식 증명일 뿐 작업 증명이 아님). (B) 크로스 프로세스 런 락 — acquireWorkflowRunLock(O_EXCL+pid, 死pid stale 인수, 생존 보유자는 명확 거부), runTeamEngine 본문 try/finally 래핑(동시 team 런의 이중 실행/완료 소실 차단). (C) 실패 태스크 마커 — 실패 시 current_phase=failed+failed_task 영속, 다음 런이 부분 편집 경고 후 마커 해제. WorkflowState.failed_task 신설. 신규 테스트 3종(workflow-integrity: 락 수명주기/실패 마커+재개 경고/parent audit). full 1206 pass / 0 fail, typecheck 0.
 - **라운드 8 종료** — 누적 18사이클. architect 발굴 백로그(라운드 4~7) 전부 소진(잔여는 LOW/WATCH뿐: 슬로우드립 데드라인, plan deps 거부, spawn-gate 주석).
+
+## 사이클 렛저 (라운드 9 — 라이브 e2e 실증)
+- cycle 19 (2026-06-12): **자기수정 루프 라이브 실증** — 샌드박스(/tmp, OAuth 사본 config + 즉시 폐기)에서 dist/jeo 실모델 런(antigravity/gemini-3.5-flash-low, --no-tui -p). 결정적 post-turn 훅(match.tool "edit|write", VERSION export 강제 grep)으로 검증: ① step2 편집 → 훅 RED(LINT-E001 advisory 발화) ② 모델이 훅 내용을 사전에 모름에도 진단만으로 step4에서 `export const VERSION = "1.0.0"` 정확 추가(cycle 13 피드백 실증) ③ 훅 GREEN → pendingHookFailure 해제(cycle 14 F1) ④ bash 검증 후 done 무푸시백 통과 ⑤ 동적 스텝버짓 novelty 연장("progress detected → extended to 15") 라이브 발화. 파일 결과 확인: greet 변경+VERSION 추가 모두 정확. 라운드 1~8 스택(훅 진단 피드백·다중매칭·done 가드·스텝버짓)이 실모델에서 합주 동작함을 증명.

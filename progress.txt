@@ -290,3 +290,8 @@
 - (B) 크로스 프로세스 런 락: state.ts acquireWorkflowRunLock — O_EXCL 락파일(pid 포함), 死pid stale 락은 1회 인수, 생존 보유자는 actionable 에러로 거부. runTeamEngine 본문 try/finally 래핑 — 동시 jeo team 2개가 pending[0]을 각자 pop해 이중 실행/완료 소실하던 레이스 차단.
 - (C) 실패 태스크 마커: 실패 시 current_phase=failed + failed_task 영속(이전엔 성공만 상태를 남김). 다음 런이 "partial edits may be on disk" 경고 후 마커 해제·재개. WorkflowState.failed_task 신설.
 - Verified: typecheck 0; full bun test 1206 pass / 0 fail (+3종 workflow-integrity: 락 수명주기, 실패마커+재개경고, parent audit — 실스트림에서 경고 발화 확인). 라운드 4~7 architect 백로그 전부 소진.
+[2026-06-12] gjc-계승 마라톤 라운드 9 (cycle 19) — 자기수정 루프 라이브 e2e 실증
+- 시나리오: /tmp 샌드박스 프로젝트 + OAuth 사본 config(JOC_CONFIG_DIR, 검증 직후 폐기) + 결정적 post-turn 훅(.joc/hooks.json, match.tool "edit|write": src/app.ts에 VERSION export 없으면 LINT-E001 + exit 1). 프롬프트는 "훅이 문제를 보고하면 보고된 것만 고쳐라"만 지시 — 훅의 검사 내용은 모델에 비공개.
+- 실행(dist/jeo, antigravity/gemini-3.5-flash-low, --no-tui --no-session -p): step2 편집 → 훅 RED(LINT-E001 advisory 라이브 발화) → step3 재읽기 → step4 진단대로 `export const VERSION = "1.0.0"` 정확 추가 → 훅 GREEN → step6 bash 검증 → done 무푸시백. 동적 스텝버짓 novelty 연장도 라이브 발화("progress detected … extended to 15 (extension 1/2)").
+- 결과 파일 검증: greet()='hello, jeo' + VERSION export 둘 다 정확. cycle 13(훅 진단→모델 피드백)·14a(다중매칭)·14 F1(pendingHookFailure 해제)·라운드1(동적 버짓)이 실모델 합주로 증명됨.
+- 비고: 소스 트리(src/tui/app.ts)는 동시 세션 편집 중이라 빌드 불가 — dist/jeo 바이너리로 우회 실행(이 우회 자체가 standalone 배포 경로 검증이기도 함).

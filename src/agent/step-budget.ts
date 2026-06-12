@@ -121,6 +121,25 @@ export function initialDynamicStepLimit(env: EnvLike = process.env): number {
   return dynamicStepBudgetConfig(env).baseSteps;
 }
 
+/**
+ * Fixed-size hash of a tool-call signature (two interleaved FNV-1a streams).
+ * Signature strings embed the full JSON arguments — a `write` call carries the
+ * whole file body — so per-turn bookkeeping (the novelty `seen` set, the scoring
+ * window, the engine's repeat/cycle guards) stores this digest instead. Bounds a
+ * long turn's signature memory at O(steps × ~14 bytes) without changing any
+ * equality semantics the guards rely on.
+ */
+export function hashSignature(s: string): string {
+  let h1 = 0x811c9dc5 | 0;
+  let h2 = 0x811c9dc5 | 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193);
+    h2 = Math.imul(h2 ^ (c + i), 0x01000193);
+  }
+  return (h1 >>> 0).toString(36) + "." + (h2 >>> 0).toString(36);
+}
+
 export class StepBudget {
   private readonly cfg: StepBudgetConfig;
   private readonly window: { signature: string; success: boolean }[] = [];
@@ -149,13 +168,15 @@ export class StepBudget {
     return this.extensions;
   }
 
-  /** Record an executed tool call (ring-buffered to the scoring window). */
+  /** Record an executed tool call (ring-buffered to the scoring window).
+   *  Stored as a fixed-size digest — see `hashSignature` (memory bound). */
   record(signature: string, success: boolean): void {
-    if (!this.seen.has(signature)) {
-      this.seen.add(signature);
+    const sig = hashSignature(signature);
+    if (!this.seen.has(sig)) {
+      this.seen.add(sig);
       this.novelSinceExtension++;
     }
-    this.window.push({ signature, success });
+    this.window.push({ signature: sig, success });
     if (this.window.length > this.cfg.windowSize) this.window.shift();
   }
 

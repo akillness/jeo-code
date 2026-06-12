@@ -49,18 +49,7 @@ test("friendlyProviderError: usage-limit gets a switch-model message, not the ge
   expect(friendlyProviderError(perMinute)).toContain("Rate limited by Anthropic");
 });
 
-test("[STEP] row shows the meter percent exactly once", () => {
-  const [stepRow] = renderJeoStatus({ step: 1, maxSteps: 25, elapsedMs: 18_000, unicode: false, color: false });
-  const percents = stripAnsi(stepRow!).match(/\d+%/g) ?? [];
-  expect(percents.length).toBe(1); // was "4% [..........] 4%" — duplicated
-});
-
-test("footer ETA needs at least one completed step (no eta at step 1)", () => {
-  const atStep1 = stripAnsi(renderFooter({ model: "m", step: 1, maxSteps: 25, elapsedMs: 18_000, showEta: true }));
-  expect(atStep1).not.toContain("eta");
-  const atStep2 = stripAnsi(renderFooter({ model: "m", step: 2, maxSteps: 10, elapsedMs: 4000, showEta: true }));
-  expect(atStep2).toContain("eta 16s");
-});
+// Step-driven meter and ETA were removed from the status bar and footer.
 
 test("LaunchTui pins rate-limit retry notice in status without appending log spam", () => {
   const out: string[] = [];

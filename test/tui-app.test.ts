@@ -234,21 +234,7 @@ test("LaunchTui.usable is false under a non-TTY test process", () => {
   expect(LaunchTui.usable(true)).toBe(false); // --no-tui always false
 });
 
-test("LaunchTui: footer step denominator reflects the configured maxSteps", () => {
-  const out: string[] = [];
-  const tui = new LaunchTui({ model: "m1", maxSteps: 50, write: s => out.push(s) });
-  tui.start();
-  tui.events().onStep!(1);
-  expect(out.join("")).toContain("step 1/50");
-});
-
-test("LaunchTui: footer defaults to 100 steps when maxSteps is omitted", () => {
-  const out: string[] = [];
-  const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
-  tui.start();
-  tui.events().onStep!(3);
-  expect(out.join("")).toContain("step 3/100");
-});
+// Step counters were removed from the footer.
 
 test("LaunchTui: setTodos renders a plan checklist in live and final output", () => {
   const out: string[] = [];
@@ -527,7 +513,7 @@ test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result i
   expect(txt).toContain("[AGENT]"); // every nested line carries the subagent category badge
   // Glyph is "▸" on unicode-capable terminals, ">" otherwise — accept both.
   expect(txt).toMatch(/executor [>▸] start: Add a retry guard to engine\.ts/); // assignment
-  expect(txt).toContain("[AGENT] executor step 1/15:"); // step header
+  expect(txt).toContain("[AGENT] executor:"); // step header
   expect(txt).toContain("read src/agent/engine.ts");
   expect(txt).toContain("1|const ok = true;");
   expect(txt).toContain("done: completed in 4 steps: guard added"); // result summary
@@ -597,16 +583,10 @@ test("LaunchTui (alt-screen boxed): status box shows the in-flight file; steps i
     clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
 
     const txt = frame.map(strip);
-    // gjc status-box contract: steps live in the TITLE border row…
-    const titleLine = txt.find(l => /step 8\/25/.test(l)) ?? "";
-    expect(titleLine).toMatch(/executing|thinking/);
-    expect(titleLine).not.toContain("src/agent/engine.ts");
     // …and the activity row inside the box names the real in-flight file.
     const activityLine = txt.find(l => /[Rr]ead.*src\/agent\/engine\.ts.*(⟦esc⟧|\[esc\])/.test(l)) ?? "";
     expect(activityLine).not.toBe("");
     expect(activityLine).not.toContain("Transcribing instructions");
-    // The evolution stage is rendered in the centered track/footer, not in the status box.
-    expect(titleLine).not.toContain("Double Helix");
     expect(txt.some(l => /Primordial Cell|Double Helix|Tool User|Super intelligence/.test(l))).toBe(true);
   } finally {
     if (savedAlt === undefined) delete process.env.JEO_TUI_ALT_SCREEN;

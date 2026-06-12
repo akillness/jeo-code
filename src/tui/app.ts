@@ -237,8 +237,6 @@ export class LaunchTui {
       sessionId: opts.sessionId,
       maxSteps: opts.maxSteps ?? DEFAULT_MAX_STEPS,
       unicode: this.unicode,
-      showEta: true,
-      showProgress: true,
       cwd: opts.cwd,
       branch: opts.branch,
       dirtyCount: opts.dirtyCount,
@@ -657,14 +655,15 @@ export class LaunchTui {
     const bad = this.unicode ? "✗" : "x";
     const detail = (e.detail ?? "").split("\n").find(l => l.trim().length > 0)?.trim().slice(0, 140) ?? "";
     const summary = e.summary ? ` — ${e.summary}` : "";
-    const step = e.step && e.maxSteps ? ` step ${e.step}/${e.maxSteps}` : "";
+    // No `step N/M` marker on nested lines — step counters carry no meaning
+    // under the dynamic budget (user feedback).
     switch (e.kind) {
       case "start":
         this.subagentActive = true;
         this.appendLedger(`${badge} ${role} ${this.unicode ? "▸" : ">"} start: ${detail}\n`, "subagent");
         break;
       case "step":
-        this.appendLedger(`  ${badge} ${role}${step}: ${detail || "working"}\n`, "subagent");
+        this.appendLedger(`  ${badge} ${role}: ${detail || "working"}\n`, "subagent");
         break;
       case "tool":
         this.appendLedger(`  ${badge} ${role} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`, "subagent");
@@ -1001,8 +1000,6 @@ export class LaunchTui {
         spinner: this.spinner.current(),
         activity: this.retryNotice ?? (this.streamingActivity || this.currentActivity()),
         escHint: true,
-        step: stepNow,
-        maxSteps: this.footer.maxSteps,
         elapsedMs,
         stepElapsedMs: this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined,
         avgStepMs: stepNow > 0 ? elapsedMs / stepNow : undefined,
@@ -1187,8 +1184,6 @@ export class LaunchTui {
           spinner: this.spinner.current(),
           activity: this.retryNotice ?? (this.streamingActivity || statusMsg),
           escHint: true,
-          step: stepNow,
-          maxSteps: this.footer.maxSteps,
           elapsedMs,
           stepElapsedMs: this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined,
           avgStepMs: stepNow > 0 ? elapsedMs / stepNow : undefined,
@@ -1216,7 +1211,7 @@ export class LaunchTui {
         }
         const redBold = this.theme.color ? chalk.red.bold : (s: string) => s;
         const guardBadge = this.mutationGuarded ? ` ${redBold("[MUTATION LOCKED]")}` : "";
-        bottom.push(`  ${categoryBadge("progress", { color: this.theme.color })} step ${stepNow}/${this.footer.maxSteps} · elapsed ${formatDuration(elapsedMs)}`);
+        bottom.push(`  ${categoryBadge("progress", { color: this.theme.color })} elapsed ${formatDuration(elapsedMs)}`);
         bottom.push(`  ${categoryBadge("status", { color: this.theme.color })} ${msg}${guardBadge}`);
       }
     }

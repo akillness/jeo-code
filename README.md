@@ -148,7 +148,7 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input card, role-targeted model/thinking picker, fast-mode slash command, hardened Ctrl-C / Ctrl+O.
+- **[0.4.2]** (2026-06-13) — Thinking-loop termination guarantees (cycle guard + turn wall-clock budget), unboxed live status without step counters, self-contained `.jeo` namespace, live next-prompt input card, role-targeted model/thinking picker.
 - **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
 - **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
 - **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.

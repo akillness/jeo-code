@@ -1,7 +1,6 @@
 import chalk from "chalk";
-import { boxBlock, BOX_UNICODE, BOX_ASCII, padLineTo } from "./layout";
-import { meter } from "./meter";
 import { categoryBadge } from "./category-index";
+
 import { animatedGradientText, applyBgGradient, hexToRgb, visibleWidth, ColorLevel } from "./color";
 import * as os from "node:os";
 import { formatUsage } from "./duration";
@@ -148,10 +147,7 @@ function seconds(ms: number | undefined): number {
 }
 
 export function renderJeoStatus(data: JeoStatusData): string[] {
-  const step = Number.isFinite(data.step) ? Math.max(0, Math.trunc(data.step ?? 0)) : 0;
-  const max = Number.isFinite(data.maxSteps) && (data.maxSteps ?? 0) > 0 ? Math.trunc(data.maxSteps ?? 0) : 0;
   const useColor = data.color !== false;
-  const bar = meter(step, max || 1, 10, { unicode: data.unicode !== false, color: useColor });
   const elapsed = `${seconds(data.elapsedMs)}s`;
   let msg = data.message ?? "thinking through the next tool call";
   const level = data.colorLevel ?? (useColor ? ColorLevel.TrueColor : ColorLevel.None);
@@ -177,7 +173,7 @@ export function renderJeoStatus(data: JeoStatusData): string[] {
   const guard = data.mutationGuarded ? ` · ${redBold("mutation locked")}` : "";
   let extraStats = "";
   if (Number.isFinite(data.stepElapsedMs)) {
-    extraStats += ` · step ${(data.stepElapsedMs! / 1000).toFixed(1)}s`;
+    extraStats += ` · now ${(data.stepElapsedMs! / 1000).toFixed(1)}s`;
   }
   if (Number.isFinite(data.avgStepMs)) {
     extraStats += ` · avg ${(data.avgStepMs! / 1000).toFixed(1)}s`;
@@ -203,8 +199,10 @@ export function renderJeoStatus(data: JeoStatusData): string[] {
   if (data.subagentActive) {
     extraStats += " (sub)";
   }
+  // No step counter / step-driven meter here: with the dynamic step budget the
+  // denominator keeps extending, so `step n/m` carried no information (user feedback).
   return [
-    `  ${categoryBadge("progress", { color: useColor })} step ${step}/${max} · ${bar} · elapsed ${elapsed}${extraStats}`,
+    `  ${categoryBadge("progress", { color: useColor })} elapsed ${elapsed}${extraStats}`,
     `  ${categoryBadge("status", { color: useColor })} ${cyanBold("jeo status")} · ${msg}`,
     `  ${categoryBadge("tool", { color: useColor })} ${magentaBold("jeo forge")} · ${stage}${current} · tools ${total} (${toolCounts})${guard}`,
   ];
@@ -212,9 +210,9 @@ export function renderJeoStatus(data: JeoStatusData): string[] {
 }
 
 export interface StatusBoxData extends JeoStatusData {
-  /** Inner frame width the box should fill. */
+  /** Frame width the status lines should fit. */
   cols: number;
-  /** Phase label embedded in the title border (thinking/planning/executing/reporting). */
+  /** Phase label leading the activity row (thinking/planning/executing/reporting). */
   phaseLabel?: string;
   /** Current spinner frame glyph. */
   spinner?: string;
@@ -225,35 +223,33 @@ export interface StatusBoxData extends JeoStatusData {
 }
 
 /**
- * gjc-style live STATUS BOX — replaces the [STEP]/[STATUS]/[TOOL] triple rows.
- * The thinking process renders inside a bordered box (gjc status-box format):
+ * Live status lines — UNBOXED (user feedback: the message/status must not be
+ * trapped inside a border). A fixed two-row layout:
  *
- *   ╭─ ● thinking · step 3/25 ────────────────────────────╮
- *   │ ⠙ <live reasoning / current activity>         ⟦esc⟧ │
- *   │ ▰▰▱▱ 12% · 12s · avg 2.5s · 8.2k in / 30 out · ⤴ 6/s · 2 ok │
- *   ╰──────────────────────────────────────────────────────╯
+ *   ⠙ thinking · <live reasoning / current activity>          ⟦esc⟧
+ *     12s · now 2.5s · avg 2.5s · 8.2k in / 30 out · ⤴ 6/s · 2 ok
  *
- * Steps are part of the TITLE (`step n/m`), the activity row carries the live
- * thinking text uniformly for every model, and one compact metrics row folds
- * meter/timing/usage/rate/cost/tool-counts together.
+ * The spinner + dim phase label lead the live thinking text, the cancel hint is
+ * right-aligned, and one compact dim metrics row folds timing/usage/rate/cost/
+ * tool-counts together. Step counters and the step-driven meter are deliberately
+ * absent: the dynamic step budget keeps extending the denominator, so `step n/m`
+ * carried no information.
  */
 export function renderStatusBox(data: StatusBoxData): string[] {
   const unicode = data.unicode !== false;
   const useColor = data.color !== false;
   const cols = Math.max(24, Math.trunc(data.cols));
-  const inner = cols - 2;
-  const step = Number.isFinite(data.step) ? Math.max(0, Math.trunc(data.step ?? 0)) : 0;
-  const max = Number.isFinite(data.maxSteps) && (data.maxSteps ?? 0) > 0 ? Math.trunc(data.maxSteps ?? 0) : 0;
   const dim = useColor ? chalk.dim : (s: string) => s;
   const gray = useColor ? chalk.gray : (s: string) => s;
 
-  // Activity row: spinner + live thinking text (+ right-aligned ⟦esc⟧, gjc parity).
+  // Activity row: spinner + phase + live thinking text (+ right-aligned ⟦esc⟧).
   let activity = (data.activity?.trim() || data.message || "thinking through the next tool call").replace(/\s+/g, " ");
   const level = data.colorLevel ?? (useColor ? ColorLevel.TrueColor : ColorLevel.None);
   const esc = data.escHint ? (unicode ? "⟦esc⟧" : "[esc]") : "";
   const spin = data.spinner ?? "";
-  const headWidth = visibleWidth(`${spin} `) + (esc ? visibleWidth(esc) + 1 : 0);
-  const room = Math.max(8, inner - 2 - headWidth);
+  const phaseLabel = data.phaseLabel ?? "thinking";
+  const headPlain = `${spin ? `${spin} ` : ""}${phaseLabel} ${unicode ? "·" : "-"} `;
+  const room = Math.max(8, cols - 1 - visibleWidth(headPlain) - (esc ? visibleWidth(esc) + 1 : 0));
   if (visibleWidth(activity) > room) {
     let w = 0; let cut = "";
     for (const ch of activity) {
@@ -263,16 +259,21 @@ export function renderStatusBox(data: StatusBoxData): string[] {
     }
     activity = cut + (unicode ? "…" : "...");
   }
+  const plainActivityWidth = visibleWidth(activity);
   if (useColor && data.isThinking && level === ColorLevel.TrueColor && data.palette && data.palette.length > 0) {
     activity = animatedGradientText(activity, data.palette, data.phase ?? 0, { colorLevel: level });
   }
-  const escPad = esc ? " ".repeat(Math.max(1, inner - 2 - visibleWidth(`${spin} `) - visibleWidth(activity.replace(/\x1b\[[0-9;]*m/g, "")) - visibleWidth(esc))) + dim(esc) : "";
-  const activityRow = ` ${spin} ${activity}${escPad}`;
+  const escPad = esc
+    ? " ".repeat(Math.max(1, cols - 1 - visibleWidth(headPlain) - plainActivityWidth - visibleWidth(esc))) + dim(esc)
+    : "";
+  const head = useColor
+    ? `${spin ? `${spin} ` : ""}${chalk.cyan.bold(phaseLabel)} ${dim(unicode ? "·" : "-")} `
+    : headPlain;
+  const activityRow = ` ${head}${activity}${escPad}`;
 
-  // Compact metrics row: meter · elapsed · step/avg · usage · rate · cost · tools.
-  const bar = meter(step, max || 1, 10, { unicode, color: useColor });
-  const bits: string[] = [`${bar}`, `${seconds(data.elapsedMs)}s`];
-  if (Number.isFinite(data.stepElapsedMs)) bits.push(`step ${(data.stepElapsedMs! / 1000).toFixed(1)}s`);
+  // Compact metrics row: elapsed · now/avg timing · usage · rate · cost · tools.
+  const bits: string[] = [`${seconds(data.elapsedMs)}s`];
+  if (Number.isFinite(data.stepElapsedMs)) bits.push(`now ${(data.stepElapsedMs! / 1000).toFixed(1)}s`);
   if (Number.isFinite(data.avgStepMs)) bits.push(`avg ${(data.avgStepMs! / 1000).toFixed(1)}s`);
   if (data.usage && (data.usage.inputTokens || data.usage.outputTokens)) {
     bits.push(formatUsage(data.usage));
@@ -295,17 +296,11 @@ export function renderStatusBox(data: StatusBoxData): string[] {
   }
   if (data.subagentActive) bits.push("(sub)");
   if (data.mutationGuarded) bits.push(useColor ? chalk.red.bold("mutation locked") : "mutation locked");
-  const metricsRow = ` ${gray(bits.join(" · "))}`;
-
-  // Title border: ─ ● thinking · step 3/25 ─ (steps live in the TITLE now).
-  const g = unicode ? BOX_UNICODE : BOX_ASCII;
-  const phaseGlyph = unicode ? "●" : "*";
-  const title = ` ${phaseGlyph} ${data.phaseLabel ?? "thinking"}${max ? ` · step ${step}/${max}` : ""} `;
-  const body = boxBlock([activityRow, metricsRow], cols, { glyphs: g, paint: gray, paintShadow: useColor ? (s: string) => chalk.dim(chalk.gray(s)) : undefined, align: "left" });
-  // Embed the title into the top border (welcome-box style).
-  const titleText = `${g.h}${title}`;
-  const room2 = inner - visibleWidth(titleText);
-  const top = g.tl + titleText + (room2 > 0 ? g.h.repeat(room2) : "") + g.tr;
-  body[0] = useColor ? gray(g.tl + g.h) + chalk.cyan.bold(title) + gray(g.h.repeat(Math.max(0, room2)) + g.tr) : top;
-  return body;
+  // Width-fit by dropping trailing WHOLE segments (never mid-ANSI cuts): the
+  // leading elapsed/timing bits carry the most signal and always survive.
+  const metricsIndent = "   ";
+  const maxMetricsWidth = Math.max(8, cols - metricsIndent.length);
+  while (bits.length > 1 && visibleWidth(bits.join(" · ")) > maxMetricsWidth) bits.pop();
+  const metricsRow = `${metricsIndent}${gray(bits.join(" · "))}`;
+  return [activityRow, metricsRow];
 }

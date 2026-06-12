@@ -381,12 +381,13 @@ export function formatTaskSubEvent(e: TaskSubEvent): string {
   const role = e.role || "subagent";
   const detail = firstOutputLine(e.detail);
   const summary = e.summary ? ` — ${e.summary}` : "";
-  const step = e.step && e.maxSteps ? ` step ${e.step}/${e.maxSteps}` : "";
+  // No ` step N/M` marker — step counters carry no meaning under the dynamic
+  // budget (user feedback); the role tag alone identifies the nested line.
   // Lead every nested-subagent line with the [AGENT] category badge so the stream
   // is classifiable at a glance (parity with the live TUI and `jeo team`).
   const badge = categoryBadge("subagent");
   if (e.kind === "start") return `${badge} ${chalk.magenta(`▸ [${role}]`)} ${detail}`.slice(0, 240);
-  if (e.kind === "step") return `  ${badge} ${chalk.cyan(`[${role}${step}]`)} ${detail || "working"}`;
+  if (e.kind === "step") return `  ${badge} ${chalk.cyan(`[${role}]`)} ${detail || "working"}`;
   if (e.kind === "tool") return `  ${badge} [${role}] ${e.success === false ? chalk.red("✗") : chalk.green("✓")} ${detail || "tool"}${summary}`;
   if (e.kind === "error") return `  ${badge} [${role}] ${chalk.red("✗")} ${detail || "error"}`;
   return `${badge} ${chalk.magenta(`◂ [${role}]`)} done${e.success === false ? " (incomplete)" : ""}${detail ? `: ${detail}` : ""}`;
@@ -407,22 +408,19 @@ function logTaskSubEvent(e: TaskSubEvent, log: (line: string) => void = (s: stri
  * onStep → onAssistant → onToolResult sequence.
  */
 export function createStreamEvents(
-  maxSteps: number,
+  _maxSteps: number,
   log: (line: string) => void = (s: string) => console.log(s),
   now: () => number = Date.now,
 ): AgentLoopEvents {
-  let step = 0;
-  let cap = maxSteps;
   let pending = "";
   let latestUsage: { inputTokens: number; outputTokens: number } | undefined;
   const startTime = now();
 
   return {
-    onStep: (n: number) => {
-      // Lazy header: recorded here, printed once the tool call is known (onAssistant).
-      // A `done` / invalid reply therefore emits no step line at all.
-      step = n;
-    },
+    // Lazy header: nothing is printed until the tool call is known (onAssistant).
+    // A `done` / invalid reply therefore emits no progress line at all. The step
+    // NUMBER itself is never shown — meaningless under the dynamic budget.
+    onStep: () => {},
     onAssistant: (_raw: string, invocation: { tool?: string; arguments?: unknown } | null) => {
       const tool = typeof invocation?.tool === "string" ? invocation.tool.trim() : "";
       if (!tool || tool === "done") return;
@@ -432,7 +430,7 @@ export function createStreamEvents(
       let suffix = "";
       if (elapsedMs >= 1000) suffix += ` · ${formatDuration(elapsedMs)}`;
       if (latestUsage) suffix += ` · ${formatUsage(latestUsage)}`;
-      log(`${categoryBadge("progress")} ${chalk.cyan(`[step ${step}/${cap}]`)} ${pending}${suffix ? chalk.dim(suffix) : ""}`);
+      log(`${categoryBadge("progress")} ${pending}${suffix ? chalk.dim(suffix) : ""}`);
     },
     onToolResult: (tool: string, ok: boolean, output?: string) => {
       const label = pending || tool;
@@ -441,9 +439,7 @@ export function createStreamEvents(
       pending = "";
     },
     onNotice: (msg: string) => log(`  ${categoryBadge("progress")} ${chalk.yellow(msg)}`),
-    onBudget: (limit: number, reason: string) => {
-      // gjc-style retry flow: keep the `[step N/M]` denominator honest after an extension.
-      cap = limit;
+    onBudget: (_limit: number, reason: string) => {
       log(`  ${categoryBadge("progress")} ${chalk.yellow(reason)}`);
     },
     onUsage: (usage: { inputTokens: number; outputTokens: number }) => {

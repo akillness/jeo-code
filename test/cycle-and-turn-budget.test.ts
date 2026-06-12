@@ -1,0 +1,142 @@
+import { test, expect, mock, afterEach } from "bun:test";
+import type { Message } from "../src/agent/loop";
+
+afterEach(() => mock.restore());
+
+// ── Cycle guard ────────────────────────────────────────────────────────────
+// The exact-repeat guard only sees IDENTICAL consecutive steps. An A↔B
+// alternation (re-read one file ↔ re-run one command, forever) dodged it and
+// burned the whole budget while the user watched "thinking" never end. The
+// cycle guard detects a recent window cycling through ≤2 distinct step
+// signatures: one corrective bounce, then a hard stop if the spin persists.
+
+test("cycle guard: an A↔B ping-pong gets ONE corrective bounce, then the model can recover with done", async () => {
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (history: Message[]) => {
+      turn++;
+      // After the corrective bounce lands in history, finish cleanly.
+      if (history.some(m => m.role === "user" && m.content.includes("You are cycling through the same"))) {
+        return JSON.stringify({ tool: "done", arguments: { reason: "recovered from cycle" } });
+      }
+      // Alternate two distinct calls — never identical consecutively.
+      return turn % 2 === 1
+        ? JSON.stringify({ tool: "probe", arguments: { which: "A" } })
+        : JSON.stringify({ tool: "probe", arguments: { which: "B" } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  let probeRuns = 0;
+  const history: Message[] = [{ role: "system", content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 30,
+    budget: { maxExtensions: 0 },
+    tools: { probe: async () => { probeRuns++; return { success: true, output: "ok" }; } },
+  });
+  expect(result.done).toBe(true);
+  expect(result.doneReason).toBe("recovered from cycle");
+  // The detected cycling step was NOT executed (bounce skips execution).
+  expect(probeRuns).toBeLessThan(turn);
+  expect(history.some(m => m.content.includes("You are cycling through the same"))).toBe(true);
+});
+
+test("cycle guard: a ping-pong that survives the correction stops the turn", async () => {
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    // Stubborn alternation forever — ignores the corrective bounce.
+    callLlm: async () => {
+      turn++;
+      return turn % 2 === 1
+        ? JSON.stringify({ tool: "probe", arguments: { which: "A" } })
+        : JSON.stringify({ tool: "probe", arguments: { which: "B" } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const result = await runAgentLoop([{ role: "system", content: "sys" }], {
+    cwd: process.cwd(),
+    maxSteps: 40,
+    budget: { maxExtensions: 0 },
+    tools: { probe: async () => ({ success: true, output: "ok" }) },
+  });
+  expect(result.done).toBe(false);
+  expect(result.doneReason).toContain("cycled through the same tool calls");
+  // Stopped by the guard, far before the 40-step budget.
+  expect(result.steps).toBeLessThan(20);
+});
+
+test("cycle guard: genuinely progressing turns (distinct targets) are never bounced", async () => {
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      if (turn > 8) return JSON.stringify({ tool: "done", arguments: { reason: "all distinct" } });
+      return JSON.stringify({ tool: "probe", arguments: { n: turn } }); // every step distinct
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history: Message[] = [{ role: "system", content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 20,
+    budget: { maxExtensions: 0 },
+    tools: { probe: async () => ({ success: true, output: "ok" }) },
+  });
+  expect(result.done).toBe(true);
+  expect(result.doneReason).toBe("all distinct");
+  expect(history.some(m => m.content.includes("You are cycling through the same"))).toBe(false);
+});
+
+// ── Turn wall-clock budget ─────────────────────────────────────────────────
+// Step budgets bound the COUNT of model calls; JEO_TURN_MAX_MS bounds their
+// total TIME — the definitive "thinking can never run forever" guarantee.
+
+test("turnMaxMs: defaults to 30 minutes, honors JEO_TURN_MAX_MS, 0 disables", async () => {
+  const { turnMaxMs } = await import("../src/agent/engine");
+  expect(turnMaxMs({})).toBe(30 * 60 * 1000);
+  expect(turnMaxMs({ JEO_TURN_MAX_MS: "5000" })).toBe(5000);
+  expect(turnMaxMs({ JEO_TURN_MAX_MS: "0" })).toBe(0);
+  expect(turnMaxMs({ JEO_TURN_MAX_MS: "garbage" })).toBe(30 * 60 * 1000);
+  expect(turnMaxMs({ JEO_TURN_MAX_MS: "-5" })).toBe(30 * 60 * 1000);
+});
+
+test("turn wall-clock budget: a turn that outlives JEO_TURN_MAX_MS consolidates instead of spinning", async () => {
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_h: Message[], options: { jsonMode?: boolean } = {}) => {
+      // The post-budget consolidation call is plain-prose (jsonMode false).
+      if (options.jsonMode === false) return "wrap-up: work so far summarized";
+      turn++;
+      await new Promise(r => setTimeout(r, 25)); // each step costs real wall time
+      return JSON.stringify({ tool: "probe", arguments: { n: turn } }); // always novel → never step-stopped
+    },
+  }));
+  const saved = process.env.JEO_TURN_MAX_MS;
+  process.env.JEO_TURN_MAX_MS = "60"; // 60ms budget → exceeded after ~3 steps
+  try {
+    const { runAgentLoop } = await import("../src/agent/engine");
+    const result = await runAgentLoop([{ role: "system", content: "sys" }], {
+      cwd: process.cwd(),
+      maxSteps: 10_000,
+      tools: { probe: async () => ({ success: true, output: "ok" }) },
+    });
+    expect(result.done).toBe(false);
+    expect(result.doneReason).toContain("wrap-up: work so far summarized");
+    expect(result.doneReason).toContain("turn time budget");
+    expect(turn).toBeLessThan(20); // stopped by TIME, nowhere near the step cap
+  } finally {
+    if (saved === undefined) delete process.env.JEO_TURN_MAX_MS; else process.env.JEO_TURN_MAX_MS = saved;
+  }
+});
+
+// ── Signature hashing (memory bound) ───────────────────────────────────────
+
+test("hashSignature: stable, fixed-size, distinct for distinct inputs", async () => {
+  const { hashSignature } = await import("../src/agent/step-budget");
+  const big = "write:" + JSON.stringify({ filePath: "a.ts", content: "x".repeat(100_000) });
+  const h1 = hashSignature(big);
+  expect(h1).toBe(hashSignature(big)); // deterministic
+  expect(h1.length).toBeLessThan(20); // fixed-size digest, not the 100k payload
+  expect(hashSignature(big + "!")).not.toBe(h1);
+  expect(hashSignature("read:{}")).not.toBe(hashSignature("read:{} ")); // whitespace-sensitive
+});

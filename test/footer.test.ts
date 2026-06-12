@@ -3,9 +3,11 @@ import { renderFooter } from "../src/tui/components/footer";
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
-test("footer appends a compact evolution-stage tag when step+maxSteps known", () => {
+test("footer appends a compact evolution-stage tag when step+maxSteps known — never a step counter", () => {
   const out = stripAnsi(renderFooter({ model: "m1", step: 1, maxSteps: 50 }));
-  expect(out).toContain("step 1/50");
+  // No `step n/m` segment: the dynamic budget keeps extending the denominator,
+  // so the raw counter carries no information (user feedback).
+  expect(out).not.toMatch(/step \d+/);
   expect(out).toContain("\u25cf\u25cf\u25cb\u25cb\u25cb Double Helix (DNA) [2/5]"); // 1/50 → ratio 0.02 → stage 1
 });
 
@@ -97,7 +99,7 @@ test("footer stage track honors the mono theme (color:false emits no ANSI)", () 
     expect(/\x1b\[/.test(colored)).toBe(true); // default → colored
     const mono = renderFooter({ model: "m", step: 3, maxSteps: 5, color: false });
     expect(/\x1b\[/.test(mono)).toBe(false); // mono → no ANSI even with color forced on
-    expect(mono).toContain("step 3/5");
+    expect(mono).toContain("[4/5]"); // stage tag (3/5 → ratio 0.6 → stage 4) survives, plain
   } finally {
     chalk.level = prev;
   }

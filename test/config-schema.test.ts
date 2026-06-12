@@ -43,28 +43,28 @@ test("parseConfig: rejects a negative retry budget", () => {
   if (!r.ok) expect(r.message).toContain("retry");
 });
 
-const origDir = process.env.JOC_CONFIG_DIR;
+const origDir = process.env.JEO_CONFIG_DIR;
 afterEach(() => {
-  if (origDir === undefined) delete process.env.JOC_CONFIG_DIR;
-  else process.env.JOC_CONFIG_DIR = origDir;
+  if (origDir === undefined) delete process.env.JEO_CONFIG_DIR;
+  else process.env.JEO_CONFIG_DIR = origDir;
 });
 
 test("readGlobalConfig: falls back to defaults when on-disk config is invalid", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-cfg-"));
   await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({ defaultModel: 123 }));
-  process.env.JOC_CONFIG_DIR = dir;
-  process.env.JOC_DEFAULT_MODEL = "fallback-model";
+  process.env.JEO_CONFIG_DIR = dir;
+  process.env.JEO_DEFAULT_MODEL = "fallback-model";
   const cfg = await readGlobalConfig();
   expect(typeof cfg.defaultModel).toBe("string");
   expect(cfg.defaultModel).toBe("fallback-model"); // env default, not the bad 123
   await fs.rm(dir, { recursive: true, force: true });
-  delete process.env.JOC_DEFAULT_MODEL;
+  delete process.env.JEO_DEFAULT_MODEL;
 });
 
 test("readGlobalConfig: loads a valid on-disk config", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-cfg-"));
   await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({ defaultModel: "claude-3-5-haiku", providers: {} }));
-  process.env.JOC_CONFIG_DIR = dir;
+  process.env.JEO_CONFIG_DIR = dir;
   const cfg = await readGlobalConfig();
   expect(cfg.defaultModel).toBe("claude-3-5-haiku");
   await fs.rm(dir, { recursive: true, force: true });

@@ -276,7 +276,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
       };
     } catch {
       log(
-        `[ERROR] .joc/state/team-state.json is corrupt. Fix or delete it before re-running 'jeo team' ` +
+        `[ERROR] .jeo/state/team-state.json is corrupt. Fix or delete it before re-running 'jeo team' ` +
         `(refusing to silently restart and re-run already-completed tasks).`,
       );
       return { ok: false, reason: "team-state.json is corrupt" };

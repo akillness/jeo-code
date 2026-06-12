@@ -34,7 +34,7 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 - **Edit integrity** — read output carries content anchors (`42ab|`); anchored edits are verified against the current file, re-mapped when lines shifted, and rejected with fresh content instead of corrupting.
 - **Self-correcting verification loop** — configure a post-edit hook (tsc / eslint / tests) and the agent *sees* the diagnostics and fixes them in-loop; a red hook blocks `done` until resolved.
 - **Real gates, no theater** — `ralplan` consensus is a repo-grounded critic subagent whose `[OKAY]` verdict is persisted and *required* by `jeo approve`; `ultragoal` reports honestly (a suite run is a global signal, never fabricated per-criterion passes).
-- **Crash-durable, local-first** — all state under `.joc/` with atomic writes, cross-process run locks, failed-task markers with partial-edit warnings on resume.
+- **Crash-durable, local-first** — all state under `.jeo/` with atomic writes, cross-process run locks, failed-task markers with partial-edit warnings on resume.
 - **Dynamic step budget** — turns extend while the tool window shows novel progress and consolidate gracefully when stalled; subagents keep exact step contracts.
 - **Inline TUI** — completed work flushes into real scrollback (tmux wheel works mid-turn), live status shows the actual in-flight target, themes, clipboard image paste (Ctrl+V), CJK/emoji-safe width math.
 
@@ -76,7 +76,7 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 
 ## Spec-first workflow
 
-Requirements → plan → approval → execution → verification, carried through `.joc/state/` with **real, blocking gates** at every handoff:
+Requirements → plan → approval → execution → verification, carried through `.jeo/state/` with **real, blocking gates** at every handoff:
 
 ```bash
 jeo deep-interview "Describe what you want to build"
@@ -94,10 +94,10 @@ jeo ultragoal
 
 ## Verification hooks (self-correction)
 
-Enable hooks once globally (`"hooks": { "enabled": true }` in `~/.joc/config.json`), then add a post-edit check per project; the agent sees failures and fixes them before it may call `done`:
+Enable hooks once globally (`"hooks": { "enabled": true }` in `~/.jeo/config.json`), then add a post-edit check per project; the agent sees failures and fixes them before it may call `done`:
 
 ```jsonc
-// .joc/hooks.json
+// .jeo/hooks.json
 {
   "enabled": true,
   "hooks": [
@@ -118,8 +118,8 @@ jeo doctor && jeo
 
 ## Configuration
 
-- Global config: `~/.joc/config.json` (model picks are MRU-persisted)
-- Project state/sessions: `<project>/.joc/`
+- Global config: `~/.jeo/config.json` (model picks are MRU-persisted)
+- Project state/sessions: `<project>/.jeo/`
 
 ```bash
 ANTHROPIC_API_KEY=... OPENAI_API_KEY=... GEMINI_API_KEY=...
@@ -133,7 +133,7 @@ JEO_STREAM_MAX_MS=300000        # opt-in overall stream deadline (default off; b
 JEO_TOOL_OUTPUT_MAX=4000        # model-visible tool output cap (full output spills to artifacts)
 ```
 
-Retry behavior is tunable via `retry` in `~/.joc/config.json` (`requestMaxRetries`, `streamMaxRetries`, `rateLimitRetries`, `failFastStatuses`, …). The step budget is dynamic by default — it extends while recent tool calls show novel progress and consolidates with a wrap-up when stalled; `--max-steps N` restores a bounded flow. Legacy `JOC_*` env names remain supported.
+Retry behavior is tunable via `retry` in `~/.jeo/config.json` (`requestMaxRetries`, `streamMaxRetries`, `rateLimitRetries`, `failFastStatuses`, …). The step budget is dynamic by default — it extends while recent tool calls show novel progress and consolidates with a wrap-up when stalled; `--max-steps N` restores a bounded flow. Legacy `JEO_*` env names remain supported.
 
 ## Publishing
 

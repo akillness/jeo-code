@@ -12,9 +12,9 @@ import {
 import { webSearchCardLines } from "../src/tui/components/forge";
 
 const SEARCH_ENV_KEYS = [
-  "JEO_SEARCH_PROVIDER", "JOC_SEARCH_PROVIDER",
-  "JEO_SEARCH_API_KEY", "JOC_SEARCH_API_KEY",
-  "JEO_SEARCH_MODEL", "JOC_SEARCH_MODEL",
+  "JEO_SEARCH_PROVIDER", "JEO_SEARCH_PROVIDER",
+  "JEO_SEARCH_API_KEY", "JEO_SEARCH_API_KEY",
+  "JEO_SEARCH_MODEL", "JEO_SEARCH_MODEL",
 ];
 
 function withSearchEnv(env: Record<string, string>, fn: () => Promise<void>): Promise<void> {

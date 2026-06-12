@@ -52,17 +52,17 @@ test("parseSkillMarkdown skips YAML frontmatter and uses folded description as s
 });
 
 let dir: string;
-const prev = process.env.JOC_CONFIG_DIR;
+const prev = process.env.JEO_CONFIG_DIR;
 const prevHome = process.env.HOME;
-const prevSkillsDir = process.env.JOC_SKILLS_DIR;
+const prevSkillsDir = process.env.JEO_SKILLS_DIR;
 
 beforeAll(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-skills-"));
-  process.env.JOC_CONFIG_DIR = dir;
-  // Isolate from the real ~/.agents/skills and any JOC_SKILLS_DIR so the merge
+  process.env.JEO_CONFIG_DIR = dir;
+  // Isolate from the real ~/.agents/skills and any JEO_SKILLS_DIR so the merge
   // assertions see only the fixtures written below.
   process.env.HOME = dir;
-  delete process.env.JOC_SKILLS_DIR;
+  delete process.env.JEO_SKILLS_DIR;
   await fs.mkdir(path.join(dir, "skills"), { recursive: true });
   await fs.writeFile(path.join(dir, "skills", "myskill.md"), "summary: my custom skill\n\nStep 1. Step 2.");
   // Override a bundled skill by name.
@@ -76,17 +76,17 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (prev === undefined) delete process.env.JOC_CONFIG_DIR;
-  else process.env.JOC_CONFIG_DIR = prev;
+  if (prev === undefined) delete process.env.JEO_CONFIG_DIR;
+  else process.env.JEO_CONFIG_DIR = prev;
   if (prevHome === undefined) delete process.env.HOME;
   else process.env.HOME = prevHome;
-  if (prevSkillsDir === undefined) delete process.env.JOC_SKILLS_DIR;
-  else process.env.JOC_SKILLS_DIR = prevSkillsDir;
+  if (prevSkillsDir === undefined) delete process.env.JEO_SKILLS_DIR;
+  else process.env.JEO_SKILLS_DIR = prevSkillsDir;
   await fs.rm(dir, { recursive: true, force: true });
 });
 
 test("loadSkills merges bundled + user skill docs; user overrides by name", async () => {
-  const skills = await loadSkills(dir); // use a cwd with no .joc/skills, so only the global dir adds
+  const skills = await loadSkills(dir); // use a cwd with no .jeo/skills, so only the global dir adds
   const names = skills.map(s => s.name);
   // bundled skills present
   for (const b of SKILLS) expect(names).toContain(b.name);
@@ -117,15 +117,15 @@ test("parseSkillMarkdown round-trips the formatSkill (jeo skills --write) decora
   expect(back.details.split("\n")[0]).toBe(bundled.details.split("\n")[0]);
 });
 
-test("loadSkills loads skills from JOC_SKILLS_DIR (positive path)", async () => {
+test("loadSkills loads skills from JEO_SKILLS_DIR (positive path)", async () => {
   const extra = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-skills-extra-"));
   await fs.writeFile(path.join(extra, "envskill.md"), "summary: from env dir\n\nSteps here.");
-  process.env.JOC_SKILLS_DIR = extra;
+  process.env.JEO_SKILLS_DIR = extra;
   try {
     const skills = await loadSkills(dir);
     expect(getSkillFrom(skills, "envskill")?.summary).toBe("from env dir");
   } finally {
-    delete process.env.JOC_SKILLS_DIR;
+    delete process.env.JEO_SKILLS_DIR;
     await fs.rm(extra, { recursive: true, force: true });
   }
 });

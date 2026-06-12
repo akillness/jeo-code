@@ -7,24 +7,24 @@ import { setApiKey, setOauthToken } from "../src/auth/storage";
 
 let dir: string;
 const saved = {
-  cfg: process.env.JOC_CONFIG_DIR,
-  model: process.env.JOC_DEFAULT_MODEL,
+  cfg: process.env.JEO_CONFIG_DIR,
+  model: process.env.JEO_DEFAULT_MODEL,
   oauth: process.env.ANTHROPIC_OAUTH_TOKEN,
-  smol: process.env.JOC_SMOL_MODEL,
+  smol: process.env.JEO_SMOL_MODEL,
   gemini: process.env.GEMINI_API_KEY,
 };
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-cfgsave-"));
-  process.env.JOC_CONFIG_DIR = dir;
+  process.env.JEO_CONFIG_DIR = dir;
 });
 
 afterEach(async () => {
   for (const [k, v] of Object.entries({
-    JOC_CONFIG_DIR: saved.cfg,
-    JOC_DEFAULT_MODEL: saved.model,
+    JEO_CONFIG_DIR: saved.cfg,
+    JEO_DEFAULT_MODEL: saved.model,
     ANTHROPIC_OAUTH_TOKEN: saved.oauth,
-    JOC_SMOL_MODEL: saved.smol,
+    JEO_SMOL_MODEL: saved.smol,
     GEMINI_API_KEY: saved.gemini,
   })) {
     if (v === undefined) delete process.env[k];
@@ -33,11 +33,11 @@ afterEach(async () => {
   await fs.rm(dir, { recursive: true, force: true });
 });
 
-test("saveConfigPatch never bakes env-only values (OAuth token / JOC_DEFAULT_MODEL / role tiers) into config.json", async () => {
+test("saveConfigPatch never bakes env-only values (OAuth token / JEO_DEFAULT_MODEL / role tiers) into config.json", async () => {
   // Env values that readGlobalConfig would overlay but must NOT be persisted.
-  process.env.JOC_DEFAULT_MODEL = "gemini-2.5-flash";
+  process.env.JEO_DEFAULT_MODEL = "gemini-2.5-flash";
   process.env.ANTHROPIC_OAUTH_TOKEN = "secret-bearer-should-not-persist";
-  process.env.JOC_SMOL_MODEL = "ollama/qwen2.5:0.5b";
+  process.env.JEO_SMOL_MODEL = "ollama/qwen2.5:0.5b";
 
   // An unrelated change (e.g. /agents executor maxSteps 20).
   await saveConfigPatch(raw => ({
@@ -56,7 +56,7 @@ test("saveConfigPatch builds the patch from the RAW on-disk config, not the env 
     path.join(dir, "config.json"),
     JSON.stringify({ providers: {}, defaultModel: "claude-3-5-sonnet", subagents: { planner: { model: "gpt-4o" } } }),
   );
-  process.env.JOC_SMOL_MODEL = "env-smol-model";
+  process.env.JEO_SMOL_MODEL = "env-smol-model";
 
   await saveConfigPatch(raw => ({ subagents: { ...(raw.subagents ?? {}), critic: { maxSteps: 8 } } }));
 
@@ -68,7 +68,7 @@ test("saveConfigPatch builds the patch from the RAW on-disk config, not the env 
 
 test("auth storage setters persist onto the RAW config — no env-only values baked in", async () => {
   process.env.OLLAMA_HOST = "http://env-ollama:9999"; // readGlobalConfig would overlay this
-  process.env.JOC_DEFAULT_MODEL = "gemini-flash-latest";
+  process.env.JEO_DEFAULT_MODEL = "gemini-flash-latest";
   try {
     await setApiKey("anthropic", "sk-test-key");
     await setOauthToken("openai", "oauth-token-x");
@@ -107,7 +107,7 @@ test("readGlobalConfig: on-disk provider key wins over the env key (env never ov
 test("saveConfigPatch on a fresh install bakes the runtime default model, not a divergent one", async () => {
   // No config.json on disk; an unrelated patch (e.g. auth login / /agents) must persist the SAME
   // default the runtime resolves (envDefaultConfig), never a different built-in.
-  delete process.env.JOC_DEFAULT_MODEL;
+  delete process.env.JEO_DEFAULT_MODEL;
   await saveConfigPatch(raw => ({ subagents: { ...(raw.subagents ?? {}), executor: { maxSteps: 12 } } }));
   const onDisk = JSON.parse(await fs.readFile(path.join(dir, "config.json"), "utf-8"));
   expect(onDisk.defaultModel).toBe("claude-sonnet-4-5"); // matches the runtime no-file default

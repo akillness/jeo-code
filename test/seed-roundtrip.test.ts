@@ -68,7 +68,7 @@ test("ultragoal report carries quoted criteria UNMANGLED end to end", async () =
   const { runUltragoalEngine } = await import("../src/commands/ultragoal");
   const res = await runUltragoalEngine({ cwd: dir, io: { output: () => {} } });
   expect(res.ok).toBe(true);
-  const report = await fs.readFile(path.join(dir, ".joc", "state", "ultragoal-report.md"), "utf-8");
+  const report = await fs.readFile(path.join(dir, ".jeo", "state", "ultragoal-report.md"), "utf-8");
   expect(report).toContain('Display "Done" message after save'); // exact, quotes intact
   expect(report).not.toContain("Display Done message"); // the old mangling
   await fs.rm(dir, { recursive: true, force: true });

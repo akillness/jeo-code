@@ -11,14 +11,14 @@ import {
 } from "../src/ai/model-discovery";
 
 let dir: string;
-const prevCfgDir = process.env.JOC_CONFIG_DIR;
+const prevCfgDir = process.env.JEO_CONFIG_DIR;
 const prevOpenAiBase = process.env.OPENAI_BASE_URL;
 const OAUTH_ENV = ["ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_OAUTH_TOKEN", "GEMINI_OAUTH_TOKEN"];
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeAll(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-disc-"));
-  process.env.JOC_CONFIG_DIR = dir;
+  process.env.JEO_CONFIG_DIR = dir;
   delete process.env.OPENAI_BASE_URL;
   await fs.writeFile(
     path.join(dir, "config.json"),
@@ -34,8 +34,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (prevCfgDir === undefined) delete process.env.JOC_CONFIG_DIR;
-  else process.env.JOC_CONFIG_DIR = prevCfgDir;
+  if (prevCfgDir === undefined) delete process.env.JEO_CONFIG_DIR;
+  else process.env.JEO_CONFIG_DIR = prevCfgDir;
   if (prevOpenAiBase === undefined) delete process.env.OPENAI_BASE_URL;
   else process.env.OPENAI_BASE_URL = prevOpenAiBase;
   for (const k of OAUTH_ENV) {
@@ -190,8 +190,8 @@ test("listProviderModels: OAuth-only discovery still probes the provider list", 
 test("listProviderModels: credential-less cloud short-circuits without fetching", async () => {
   // Fresh config dir with no keys → anthropic credential is "none".
   const empty = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-disc-empty-"));
-  const prev = process.env.JOC_CONFIG_DIR;
-  process.env.JOC_CONFIG_DIR = empty;
+  const prev = process.env.JEO_CONFIG_DIR;
+  process.env.JEO_CONFIG_DIR = empty;
   await fs.writeFile(path.join(empty, "config.json"), JSON.stringify({ providers: {}, defaultModel: "claude-3-5-sonnet" }));
   let called = false;
   const spy = (async () => { called = true; return new Response("{}", { status: 200 }); }) as unknown as typeof fetch;
@@ -201,7 +201,7 @@ test("listProviderModels: credential-less cloud short-circuits without fetching"
     expect(r.error).toBe("not logged in");
     expect(called).toBe(false);
   } finally {
-    process.env.JOC_CONFIG_DIR = prev;
+    process.env.JEO_CONFIG_DIR = prev;
     await fs.rm(empty, { recursive: true, force: true });
   }
 });
@@ -400,8 +400,8 @@ test("parseModelsBody: codex review-only models are excluded", () => {
 
 test("listProviderModels: gemini follows nextPageToken so the available list is complete", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-disc-page-"));
-  const prev = process.env.JOC_CONFIG_DIR;
-  process.env.JOC_CONFIG_DIR = dir;
+  const prev = process.env.JEO_CONFIG_DIR;
+  process.env.JEO_CONFIG_DIR = dir;
   await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({ providers: { gemini: "sk-gem" }, defaultModel: "claude-3-5-sonnet" }));
   const prevKey = process.env.GEMINI_API_KEY;
   delete process.env.GEMINI_API_KEY;
@@ -426,7 +426,7 @@ test("listProviderModels: gemini follows nextPageToken so the available list is 
     expect(pages.length).toBe(2);
     expect(pages[1]).toContain("pageToken=tok-2");
   } finally {
-    process.env.JOC_CONFIG_DIR = prev;
+    process.env.JEO_CONFIG_DIR = prev;
     if (prevKey !== undefined) process.env.GEMINI_API_KEY = prevKey;
     await fs.rm(dir, { recursive: true, force: true });
   }

@@ -2,7 +2,7 @@
  * GJC Bash Command Fixups — conservative, INTENT-PRESERVING, off-by-default rewrites
  * for common CLI mistakes. Every rule is a no-op unless it matches exactly, and no rule
  * may change what the command observably does (only its form). Gated behind
- * `JOC_BASH_FIXUPS=1` by the caller (bashTool); never altered by default.
+ * `JEO_BASH_FIXUPS=1` by the caller (bashTool); never altered by default.
  *
  * Rules that would CHANGE behavior (e.g. merging stderr into a pipe with `2>&1`, which
  * adds new data to the matched stream) are intentionally NOT included — that is

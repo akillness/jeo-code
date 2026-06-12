@@ -34,7 +34,7 @@
 - **编辑完整性** — read 输出携带内容锚点(`42ab|`)；带锚点的编辑会与当前文件校验、行移动时自动重映射、不匹配时连同最新内容一起拒绝 — 绝不污染文件。
 - **自我修正的验证循环** — 配置 post-edit 钩子(tsc / eslint / 测试)，代理会*亲自读取*诊断并在循环内修复；钩子未通过时 `done` 会被阻断。
 - **没有表演的真实门禁** — `ralplan` 共识由真正读取仓库的 critic 子代理执行，`[OKAY]` 裁决被持久化且 `jeo approve` *强制要求*它；`ultragoal` 诚实报告(套件运行只是全局信号，绝不伪造逐条通过)。
-- **崩溃耐久、本地优先** — 全部状态位于 `.joc/`，原子写入、跨进程运行锁、失败任务标记 + 恢复时的部分编辑警告。
+- **崩溃耐久、本地优先** — 全部状态位于 `.jeo/`，原子写入、跨进程运行锁、失败任务标记 + 恢复时的部分编辑警告。
 - **动态步数预算** — 只要近期工具调用展现新的进展就持续延长，停滞时优雅收敛为总结；子代理保持精确的步数契约。
 - **内联 TUI** — 已完成的工作流入真实滚动缓冲区(回合中也可用 tmux 滚轮)，状态行显示真实的处理对象。主题、剪贴板图片粘贴(Ctrl+V)、CJK/表情安全的宽度计算。
 
@@ -76,7 +76,7 @@ jeo --tmux               # 在独立 tmux 会话中运行
 
 ## Spec-first 工作流
 
-需求 → 计划 → 批准 → 执行 → 验证，经由 `.joc/state/` 串联，每次交接都有**可阻断的真实门禁**:
+需求 → 计划 → 批准 → 执行 → 验证，经由 `.jeo/state/` 串联，每次交接都有**可阻断的真实门禁**:
 
 ```bash
 jeo deep-interview "描述你想构建的东西"
@@ -94,10 +94,10 @@ jeo ultragoal
 
 ## 验证钩子(自我修正)
 
-先全局启用一次(在 `~/.joc/config.json` 中设置 `"hooks": { "enabled": true }`)，再为项目添加 post-edit 检查，代理会读取失败并在 `done` 之前修复:
+先全局启用一次(在 `~/.jeo/config.json` 中设置 `"hooks": { "enabled": true }`)，再为项目添加 post-edit 检查，代理会读取失败并在 `done` 之前修复:
 
 ```jsonc
-// .joc/hooks.json
+// .jeo/hooks.json
 {
   "enabled": true,
   "hooks": [
@@ -118,8 +118,8 @@ jeo doctor && jeo
 
 ## 配置
 
-- 全局配置: `~/.joc/config.json`(模型选择 MRU 持久化)
-- 项目状态/会话: `<project>/.joc/`
+- 全局配置: `~/.jeo/config.json`(模型选择 MRU 持久化)
+- 项目状态/会话: `<project>/.jeo/`
 
 ```bash
 ANTHROPIC_API_KEY=... OPENAI_API_KEY=... GEMINI_API_KEY=...
@@ -133,7 +133,7 @@ JEO_STREAM_MAX_MS=300000        # 可选的整体流截止(默认关闭; 约束�
 JEO_TOOL_OUTPUT_MAX=4000        # 模型可见的工具输出上限(全文溢出到 artifacts)
 ```
 
-重试行为通过 `~/.joc/config.json` 的 `retry` 调整(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` 等)。步数预算默认动态 — 只要看到新的进展就延长，停滞时收敛为总结；`--max-steps N` 恢复有界流程。旧的 `JOC_*` 环境变量仍然受支持。
+重试行为通过 `~/.jeo/config.json` 的 `retry` 调整(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` 等)。步数预算默认动态 — 只要看到新的进展就延长，停滞时收敛为总结；`--max-steps N` 恢复有界流程。旧的 `JEO_*` 环境变量仍然受支持。
 
 ## 发布 (Publishing)
 

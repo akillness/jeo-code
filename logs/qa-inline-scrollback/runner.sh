@@ -169,21 +169,21 @@ else
 fi
 tmux kill-session -t "$SESS"
 
-# Sub-case 3b: JOC_TUI_ALT_SCREEN=1 env (should be 1)
+# Sub-case 3b: JEO_TUI_ALT_SCREEN=1 env (should be 1)
 SESS="joc-qa-alt1-$$"
-log_report "Creating tmux session $SESS (100x30) for JOC_TUI_ALT_SCREEN=1"
+log_report "Creating tmux session $SESS (100x30) for JEO_TUI_ALT_SCREEN=1"
 tmux new-session -d -s "$SESS" -x 100 -y 30
-tmux send-keys -t "$SESS" "cd $PROJECT_DIR && env JOC_TUI_ALT_SCREEN=1 bun run logs/qa-inline-scrollback/driver.ts no-alt-screen" C-m
+tmux send-keys -t "$SESS" "cd $PROJECT_DIR && env JEO_TUI_ALT_SCREEN=1 bun run logs/qa-inline-scrollback/driver.ts no-alt-screen" C-m
 
 log_report "Waiting for driver to start (2s)..."
 sleep 2
 
 ALT_ON_ALT=$(tmux display -p -t "$SESS" '#{alternate_on}')
-log_report "alternate_on value under JOC_TUI_ALT_SCREEN=1: $ALT_ON_ALT"
+log_report "alternate_on value under JEO_TUI_ALT_SCREEN=1: $ALT_ON_ALT"
 if [ "$ALT_ON_ALT" -eq 1 ]; then
   log_report "  [PASS] alternate_on is 1 (alt screen legacy fallback intact)"
 else
-  log_report "  [FAIL] alternate_on is $ALT_ON_ALT (alt screen was NOT used under JOC_TUI_ALT_SCREEN=1!)"
+  log_report "  [FAIL] alternate_on is $ALT_ON_ALT (alt screen was NOT used under JEO_TUI_ALT_SCREEN=1!)"
   passed_alt=false
 fi
 tmux kill-session -t "$SESS"

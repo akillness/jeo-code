@@ -3,7 +3,7 @@ import { CODEX_MODELS } from "../ai/model-catalog";
 import { z } from "zod";
 
 /**
- * Runtime validation for `~/.joc/config.json`. Previously the file was
+ * Runtime validation for `~/.jeo/config.json`. Previously the file was
  * `JSON.parse`d and cast straight to `Config` — a wrong-typed field (e.g. a
  * numeric `defaultModel`) slipped through untyped and surfaced as a confusing
  * downstream failure. `parseConfig` turns that into a clear, actionable signal.

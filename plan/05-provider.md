@@ -26,7 +26,7 @@ overrides); local/offline works keylessly. Next: token streaming and more backen
 - **Adapter-aware selection** `model-manager.call()` (pass 14): a non-verified OAuth token never shadows a
   working API key for the bundled chat/generativelanguage adapters; clear error if only an incompatible token exists.
 - **Local/offline**: ollama + any OpenAI-compatible endpoint via `openaiBaseUrl` (keyless `kind:"none"` path).
-- **Hardening**: `~/.joc/config.json` `0600`, dir `0700`; bash tool timeout + output cap (`tools.ts`).
+- **Hardening**: `~/.jeo/config.json` `0600`, dir `0700`; bash tool timeout + output cap (`tools.ts`).
 
 ## 3. Target State (gjc / pi-mono parity)
 - **gjc** `packages/ai/src/providers`: ~14 backends (Anthropic, OpenAI Chat + Responses/Codex, Azure,

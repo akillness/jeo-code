@@ -226,13 +226,13 @@ function shellQuote(arg: string): string {
  * session-scoped mouse mode for the CURRENT session: no jeo-owned session is created
  * on this path, so without `mouse on` tmux ignores the wheel entirely and the
  * mid-turn scrollback (ledger lines flushed above the live frame) is unreachable.
- * Skipped for jeo-spawned sessions (JOC_TMUX_LAUNCHED=1 — the creator already set
- * it) and when JOC_TMUX_MOUSE=0 opts out.
+ * Skipped for jeo-spawned sessions (JEO_TMUX_LAUNCHED=1 — the creator already set
+ * it) and when JEO_TMUX_MOUSE=0 opts out.
  */
 export function shouldEnableCurrentTmuxMouse(env: Record<string, string | undefined>): boolean {
   return !!env.TMUX
-    && (env.JEO_TMUX_LAUNCHED ?? env.JOC_TMUX_LAUNCHED) !== "1"
-    && (env.JEO_TMUX_MOUSE ?? env.JOC_TMUX_MOUSE) !== "0";
+    && (env.JEO_TMUX_LAUNCHED ?? env.JEO_TMUX_LAUNCHED) !== "1"
+    && (env.JEO_TMUX_MOUSE ?? env.JEO_TMUX_MOUSE) !== "0";
 }
 
 /**
@@ -291,7 +291,7 @@ export function tmuxProfileCommands(
   // `mouse on` unset, killing wheel-up scrollback in jeo-owned sessions.
   const t = `=${target}:`;
   const commands: TmuxProfileCommand[] = [];
-  if ((env.JEO_TMUX_MOUSE ?? env.JOC_TMUX_MOUSE) !== "0") {
+  if ((env.JEO_TMUX_MOUSE ?? env.JEO_TMUX_MOUSE) !== "0") {
     commands.push({
       description: "enable tmux mouse scrolling (wheel-up → copy-mode over real history)",
       args: ["set-option", "-t", t, "mouse", "on"],
@@ -313,7 +313,7 @@ export function tmuxProfileCommands(
       args: ["set-option", "-t", t, "@jeo-project", meta.project],
     });
   }
-  if ((env.JEO_TMUX_PROFILE ?? env.JOC_TMUX_PROFILE) !== "0") {
+  if ((env.JEO_TMUX_PROFILE ?? env.JEO_TMUX_PROFILE) !== "0") {
     commands.push(
       {
         description: "enable tmux clipboard integration",
@@ -601,7 +601,11 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
   };
 
   const handleSigint = () => {
-    if (abortNow("Cancelling current run… Press Ctrl-C again to exit.")) return;
+    // Ctrl+C is a hard terminal break. Older jeo softened the first press into
+    // "abort current run; press again to exit", which left users trapped in raw
+    // TTY/TUI states when they expected the terminal to stop. Abort the controller
+    // for cleanup observers, then invoke the hard-exit hook immediately.
+    if (!controller.signal.aborted) controller.abort();
     opts.onHardExit?.();
   };
 
@@ -1010,7 +1014,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         const cmd = tmuxLaunchCommand(process.argv[1], process.execPath, cwd);
 
-        const innerCmd = `exec env JOC_TMUX_LAUNCHED=1 ${[...cmd, "launch", ...innerArgs].map(shellQuote).join(" ")}`;
+        const innerCmd = `exec env JEO_TMUX_LAUNCHED=1 ${[...cmd, "launch", ...innerArgs].map(shellQuote).join(" ")}`;
 
         // Create a fresh, independent session (race-safe: the create is the guard).
         const alloc = allocateTmuxSession(sessionBase, name => {
@@ -1054,7 +1058,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // wheel scrolling still needs tmux mouse mode — without it tmux ignores the
       // wheel entirely, so the live-turn scrollback contract (ledger lines flushed
       // above the inline frame) is unreachable ("scroll doesn't work"). Session-
-      // scoped (never -g), best-effort; JOC_TMUX_MOUSE=0 opts out.
+      // scoped (never -g), best-effort; JEO_TMUX_MOUSE=0 opts out.
       const tmuxBin = Bun.which("tmux");
       if (tmuxBin) {
         try { Bun.spawnSync([tmuxBin, "set-option", "mouse", "on"]); } catch { /* best-effort */ }
@@ -1067,7 +1071,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   if (flags.list) {
     const sessions = await listSessions(cwd);
     if (sessions.length === 0) {
-      console.log("No saved sessions in .joc/sessions/.");
+      console.log("No saved sessions in .jeo/sessions/.");
       return;
     }
     console.log("Saved sessions (newest first):");
@@ -1078,7 +1082,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     return;
   }
 
-  // pi-style: load project context (JEO.md / AGENTS.md / .joc/context.md / CLAUDE.md) into the prompt.
+  // pi-style: load project context (JEO.md / AGENTS.md / .jeo/context.md / CLAUDE.md) into the prompt.
   const contextFiles = await loadProjectContext(cwd);
 
   const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "todo"]);
@@ -1125,7 +1129,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const protocol = buildToolProtocol(allowedTools);
   const preamble = flags.systemPrompt ?? "You are the jeo, an interactive coding agent.\nAccomplish the user's request by calling tools and verifying your work.";
-  // Prior-session learnings (B6 경험 증류) — "" when absent or JOC_NO_MEMORY=1.
+  // Prior-session learnings (B6 경험 증류) — "" when absent or JEO_NO_MEMORY=1.
   const memoryBlock = await memoryPromptSection(cwd);
 
   const baseSystemPrompt =
@@ -1448,7 +1452,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       if (cmd === "/" || cmd === "/?" || cmd === "/help") {
         for (const line of formatSlashCommandList("/", skillSlashDetails)) console.log(line);
-        console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .joc/sessions/.");
+        console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .jeo/sessions/.");
         return;
       }
     }
@@ -1777,8 +1781,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   });
   let stdinClosed = false;
   let notifyStdinClosed: (() => void) | undefined;
+  let gracefulReadlineClose = false;
   // `on` + one-shot guard (not `once`): test harnesses stub readline with `on`/`question` only.
-  rl.on("close", () => { if (stdinClosed) return; stdinClosed = true; notifyStdinClosed?.(); });
+  rl.on("close", () => {
+    if (stdinClosed) return;
+    // Bun/readline can turn Ctrl+C into a bare close event without SIGINT/key
+    // delivery. In an interactive TTY, an unexpected close is therefore a hard
+    // break, not a graceful `/exit`.
+    if (process.stdin.isTTY && !gracefulReadlineClose) forceExitFromCtrlC();
+    stdinClosed = true;
+    notifyStdinClosed?.();
+  });
   /** `rl.question` that resolves "/exit" on stdin EOF instead of hanging forever. */
   let promptServedFromPaste = false;
   const promptInput = async (prompt: string): Promise<string> => {
@@ -1828,7 +1841,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // (DECSTBM). The region is armed ONLY while waiting for input, and disarmed for
   // turns/command output so the full-screen turn TUI renders normally. The footer
   // is drawn at absolute rows (per-row clear → no scroll, no duplication).
-  // Opt out with JOC_NO_SLASH_PREVIEW=1; auto-off on short terminals.
+  // Opt out with JEO_NO_SLASH_PREVIEW=1; auto-off on short terminals.
   const currentAtLabel = (line: string): string | undefined => {
     const { tokens } = tokenize(line);
     const token = [...tokens].reverse().find(t => t.startsWith("@"));
@@ -2048,9 +2061,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     out.write(s);
   };
 
-  // ESC / Ctrl+C at the prompt: wipe the typed text (and detach any pending
-  // clipboard images — their `[image #N]` tags live in that text) instead of
-  // leaving stale input. Returns true when something was actually cleared.
+  // ESC at the prompt: wipe the typed text (and detach any pending clipboard
+  // images — their `[image #N]` tags live in that text) instead of leaving stale
+  // input. Ctrl+C is no longer a line editor shortcut; it hard-exits below.
   const clearTypedInput = (): boolean => {
     const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
     const hadPastedQueue = queuedPromptInput.pastedLines.length > 0;
@@ -2071,48 +2084,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (previewArmed) drawFooter(previewLines(""));
     return true;
   };
-  // Ctrl+C at the prompt: the FIRST press clears the typed line (zsh/gjc-style)
-  // — and pressing ^C again in quick succession (≤2s, nothing left to clear)
-  // EXITS the process gracefully by resolving the pending prompt as /exit, so
-  // the normal quit path (session save, resume pointer) runs. Mid-turn ^C
-  // aborts stay with the separate raw-mode turn harness, not this listener.
-  let lastSigintAt = 0;
-  const SIGINT_EXIT_WINDOW_MS = 2000;
-  rl.on("SIGINT", () => {
-    if (pickerActive) return;
-    const now = Date.now();
-    const consecutive = now - lastSigintAt <= SIGINT_EXIT_WINDOW_MS;
-    lastSigintAt = now;
-    if (clearTypedInput()) {
-      if (previewArmed) {
-        const lines = previewLines("");
-        lines.push(chalk.gray("  ^C cleared input — press ^C again to exit"));
-        drawFooter(lines);
-      }
-      return;
+  // Ctrl+C at the prompt is a hard terminal break (exit code 130), not a line
+  // editor shortcut. `/exit` remains the graceful session-save path; ^C is the
+  // emergency "get me back to my shell now" path and must work on the first press.
+  const forceExitFromCtrlC = () => {
+    try {
+      disarmPreview();
+      out.write("\x1b[?25h\n");
+    } catch {
+      // Best-effort terminal restore; process exit is the contract.
     }
-    if (consecutive) {
-      // Second consecutive ^C with nothing to clear → graceful /exit: inject the
-      // command through readline's own input path (rl.write submits the line and
-      // resolves the pending rl.question), so the normal quit path — session save,
-      // resume pointer — runs exactly as if the user typed /exit.
-      try {
-        rl.write("/exit\n");
-      } catch {
-        // Input path unavailable (stream closing) — exit directly but restore the
-        // terminal first so the shell prompt isn't left on a hidden cursor.
-        disarmPreview();
-        out.write("\x1b[?25h\n");
-        process.exit(0);
-      }
-      return;
-    }
-    if (previewArmed) {
-      const lines = previewLines("");
-      lines.push(chalk.gray("  ^C — press ^C again to exit · /exit to quit"));
-      drawFooter(lines);
-    }
-  });
+    process.exit(130);
+  };
+  // Bun/readline can deliver Ctrl+C as either readline SIGINT or process SIGINT
+  // depending on raw-mode and terminal timing; wire both to the same hard-exit path.
+  process.on("SIGINT", forceExitFromCtrlC);
+  rl.on("SIGINT", forceExitFromCtrlC);
 
   const runSelectPicker = async <T>(
     render: (cols: number, rows: number) => string[],
@@ -2390,6 +2377,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   if (previewEnabled) {
     process.once("exit", () => out.write("\x1b[?25h")); // safety net: never leave the cursor hidden
     process.stdin.on("keypress", (_ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
+      if (key?.ctrl && key.name === "c") {
+        forceExitFromCtrlC();
+        return;
+      }
       if (!previewArmed || pickerActive) return;
       // Ctrl+O: toggle a reversible history/detail panel. The live-turn TUI path
       // uses LaunchTui.showDetail(); this idle-prompt path paints the same content
@@ -2442,8 +2433,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         clearTypedInput();
         return;
       }
-      // Ctrl+C is owned end-to-end by the rl SIGINT listener (clear or quit hint);
-      // skipping the generic redraw here keeps that hint from being overwritten.
+      // Ctrl+C hard-exits above; keep this guard for defensive ordering only.
       if (key?.ctrl && key.name === "c") return;
       previewPending = true;
       setImmediate(() => {
@@ -2589,7 +2579,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       if (input === "/" || input === "/?" || input === "/help") {
         logLines(formatSlashCommandList(input === "/help" ? "/" : input, skillSlashDetails));
-        console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .joc/sessions/.");
+        console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .jeo/sessions/.");
         const tip = getEvolutionTip(history.length, flags.maxSteps > 0 ? flags.maxSteps : initialStepLimit);
         console.log(`\n${chalk.cyan("Evolutionary Tip:")} ${tip}`);
         continue;
@@ -2887,7 +2877,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const themes = listThemes();
         if (!want) {
           const active = resolveTheme().name;
-          console.log("TUI themes (set with /theme <name>, persists via ~/.joc/config.json):");
+          console.log("TUI themes (set with /theme <name>, persists via ~/.jeo/config.json):");
           for (const t of themes) console.log(`  ${t.name === active ? "*" : " "} ${t.name.padEnd(10)} ${t.description}`);
           continue;
         }
@@ -2898,7 +2888,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         process.env.JEO_TUI_THEME = want;
         await saveConfigPatch(raw => ({ theme: want }));
         refreshUiTheme(); // re-resolve the keystroke-hot theme handle immediately
-        console.log(`Theme set to ${want} — saved to ~/.joc/config.json`);
+        console.log(`Theme set to ${want} — saved to ~/.jeo/config.json`);
         continue;
       }
       if (input === "/evolve") {
@@ -2983,7 +2973,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`Starting OAuth login for ${target}…`);
           try {
             const { email } = await interactiveOAuthLogin(target as AuthProvider, rl);
-            console.log(`[SUCCESS] OAuth login complete for ${target}${email ? ` (${email})` : ""}. Tokens saved to ~/.joc/config.json.`);
+            console.log(`[SUCCESS] OAuth login complete for ${target}${email ? ` (${email})` : ""}. Tokens saved to ~/.jeo/config.json.`);
             const live = await refreshLiveModelsCache();
             const after = (await describeAllProviders()).find(s => s.name === target);
             if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
@@ -3164,7 +3154,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           ]);
           if (action === "reset") {
             await saveConfigPatch(raw => ({ subagents: clearSubagentSetting(raw, editRole.id) }));
-            console.log(`${editRole.title} settings reset to defaults → ~/.joc/config.json`);
+            console.log(`${editRole.title} settings reset to defaults → ~/.jeo/config.json`);
           } else if (action === "model") {
             const live = await getLiveModels();
             const entries = flattenModels(live);
@@ -3172,7 +3162,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             if (picked) {
               const pinned = qualifyModelId(picked.model, picked.provider);
               await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, editRole.id, { model: pinned }) }));
-              console.log(`Subagent '${editRole.id}' model set to ${pinned} → ~/.joc/config.json`);
+              console.log(`Subagent '${editRole.id}' model set to ${pinned} → ~/.jeo/config.json`);
             }
           }
           continue;
@@ -3184,7 +3174,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         if (modelArg?.toLowerCase() === "reset") {
           await saveConfigPatch(raw => ({ subagents: clearSubagentSetting(raw, role.id) }));
-          console.log(`${role.title} settings reset to defaults → ~/.joc/config.json`);
+          console.log(`${role.title} settings reset to defaults → ~/.jeo/config.json`);
           continue;
         }
         if (modelArg?.toLowerCase() === "maxsteps" || modelArg?.toLowerCase() === "steps") {
@@ -3194,7 +3184,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             continue;
           }
           await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { maxSteps }) }));
-          console.log(`${role.title} maxSteps set to ${maxSteps} → ~/.joc/config.json`);
+          console.log(`${role.title} maxSteps set to ${maxSteps} → ~/.jeo/config.json`);
           continue;
         }
         if (modelArg?.toLowerCase() === "provider") {
@@ -3238,7 +3228,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             chosenModel = PROVIDER_DEFAULT[want];
           }
           await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: chosenModel }) }));
-          console.log(`${role.title} pinned to ${want} via model ${chosenModel} — saved to ~/.joc/config.json`);
+          console.log(`${role.title} pinned to ${want} via model ${chosenModel} — saved to ~/.jeo/config.json`);
           if (forProvider.length) {
             lastPickIndex = forProvider;
             console.log(`Live ${want} models — refine with /agents ${role.id} #N:`);
@@ -3278,10 +3268,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             console.log("Run /models first to build the numbered live model list.");
             continue;
           }
-          // Persist a per-role model override to ~/.joc/config.json (consumed by 'jeo team').
+          // Persist a per-role model override to ~/.jeo/config.json (consumed by 'jeo team').
           await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: chosenModel }) }));
           const { provider } = await describeModel(chosenModel);
-          console.log(`${role.title} model set to ${chosenModel} (${provider}) — saved to ~/.joc/config.json`);
+          console.log(`${role.title} model set to ${chosenModel} (${provider}) — saved to ~/.jeo/config.json`);
           const live = await getLiveModels();
           if (!liveModelKnown(live, chosenModel)) {
             console.log(`  (note: '${chosenModel}' is not in any live model list — verify it is valid for ${provider})`);
@@ -3353,7 +3343,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             continue;
           }
           await saveConfigPatch(raw => ({ roles: { ...(raw.roles ?? {}), [tier]: chosenModel } }));
-          console.log(`Role '${tier}' model set to ${chosenModel} → ~/.joc/config.json`);
+          console.log(`Role '${tier}' model set to ${chosenModel} → ~/.jeo/config.json`);
           continue;
         }
         console.log("Model role tiers (fall back to the default model):");
@@ -3413,7 +3403,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           const finalSave = toSave || sessionModel || (await readGlobalConfig()).defaultModel;
           await saveConfigPatch(raw => rememberModelPatch(raw, finalSave));
           const { resolved, provider } = await describeModel(finalSave);
-          console.log(`Default model saved: ${formatModelLine({ label: finalSave, resolved, provider })} → ~/.joc/config.json`);
+          console.log(`Default model saved: ${formatModelLine({ label: finalSave, resolved, provider })} → ~/.jeo/config.json`);
           continue;
         }
         const statuses = await describeAllProviders();
@@ -3463,7 +3453,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (roleModelArg) {
             await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: roleModelArg }) }));
             const { provider } = await describeModel(roleModelArg);
-            console.log(`${role.title} model set to ${roleModelArg} (${provider}) — saved to ~/.joc/config.json`);
+            console.log(`${role.title} model set to ${roleModelArg} (${provider}) — saved to ~/.jeo/config.json`);
           } else {
             const current = resolveSubagentModel(role.id, await readGlobalConfig());
             const { resolved, provider } = await describeModel(current);
@@ -3718,5 +3708,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // gjc-parity resume pointer (logs/gjc-tui-study analysis Gap C): leave the exact
   // resume command in scrollback on exit, mirroring the --list handler's convention.
   if (sessionId && !flags.noSession) console.log(formatResumeHint(sessionId));
+  process.removeListener("SIGINT", forceExitFromCtrlC);
+  gracefulReadlineClose = true;
   rl.close();
 }

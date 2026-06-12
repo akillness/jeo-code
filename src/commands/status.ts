@@ -5,7 +5,7 @@ import chalk from "chalk";
 export async function runStatusCommand(): Promise<void> {
   const cwd = process.cwd();
   const logPath = path.join(cwd, "logs", "evolution-log.json");
-  const perfPath = path.join(cwd, ".joc", "state", "performance-metrics.json");
+  const perfPath = path.join(cwd, ".jeo", "state", "performance-metrics.json");
   const planPath = path.join(cwd, ".specify", "plan.md");
   
   console.log(chalk.bold("\n=== jeo Core Engine Status ==="));

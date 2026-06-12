@@ -155,7 +155,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "state",
-    summary: "Read or update workflow state receipts under .joc/state (gjc-state parity).",
+    summary: "Read or update workflow state receipts under .jeo/state (gjc-state parity).",
     usage: "state <deep-interview|ralplan|team|ultragoal> <read|write|clear|handoff> [--input '<json>'] [--to <skill>] [--json]",
     loader: async () => {
       const m = await import("../commands/state");

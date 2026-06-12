@@ -123,7 +123,7 @@ async function captureCommand(run: () => Promise<void>): Promise<string> {
 const PIPELINE_TOOLS: ToolDefinition[] = [
   {
     name: "joc_deep_interview",
-    description: "DANGER: WRITES FILES + BURNS LLM CREDITS. Runs Socratic requirements interview. Writes .joc/spec.json. Requires default model credential.",
+    description: "DANGER: WRITES FILES + BURNS LLM CREDITS. Runs Socratic requirements interview. Writes .jeo/spec.json. Requires default model credential.",
     inputSchema: {
       type: "object",
       properties: {
@@ -141,7 +141,7 @@ const PIPELINE_TOOLS: ToolDefinition[] = [
   },
   {
     name: "joc_ralplan",
-    description: "DANGER: WRITES FILES + BURNS LLM CREDITS. Reads .joc/spec.json, writes .joc/plan.yaml via Planner/Architect/Critic.",
+    description: "DANGER: WRITES FILES + BURNS LLM CREDITS. Reads .jeo/spec.json, writes .jeo/plan.yaml via Planner/Architect/Critic.",
     inputSchema: { type: "object", properties: {} },
     async handler() {
       const { runRalplanCommand } = await import("../commands/ralplan");
@@ -151,7 +151,7 @@ const PIPELINE_TOOLS: ToolDefinition[] = [
   },
   {
     name: "joc_team",
-    description: "DANGER: WRITES FILES + EDITS CODE + BURNS LLM CREDITS. Executes .joc/plan.yaml via Executor subagent. Modifies the working tree.",
+    description: "DANGER: WRITES FILES + EDITS CODE + BURNS LLM CREDITS. Executes .jeo/plan.yaml via Executor subagent. Modifies the working tree.",
     inputSchema: { type: "object", properties: {} },
     async handler() {
       const { runTeamCommand } = await import("../commands/team");
@@ -161,7 +161,7 @@ const PIPELINE_TOOLS: ToolDefinition[] = [
   },
   {
     name: "joc_ultragoal",
-    description: "DANGER: BURNS LLM CREDITS. Runs acceptance verification against .joc/spec.json + .joc/plan.yaml.",
+    description: "DANGER: BURNS LLM CREDITS. Runs acceptance verification against .jeo/spec.json + .jeo/plan.yaml.",
     inputSchema: { type: "object", properties: {} },
     async handler() {
       const { runUltragoalCommand } = await import("../commands/ultragoal");

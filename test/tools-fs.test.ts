@@ -119,11 +119,11 @@ test("readTool: raw mode returns verbatim content with no line prefixes", async 
 });
 
 test("bashTool: env vars are merged into the child environment", async () => {
-  const res = await bashTool("echo \"$JOC_TEST_VAR\"", dir, 10_000, undefined, { JOC_TEST_VAR: "hello-env" });
+  const res = await bashTool("echo \"$JEO_TEST_VAR\"", dir, 10_000, undefined, { JEO_TEST_VAR: "hello-env" });
   expect(res.success).toBe(true);
   expect(res.output.trim()).toBe("hello-env");
   // Parent env still inherited (PATH present) alongside the injected var.
-  const inherit = await bashTool("test -n \"$PATH\" && echo ok", dir, 10_000, undefined, { JOC_TEST_VAR: "x" });
+  const inherit = await bashTool("test -n \"$PATH\" && echo ok", dir, 10_000, undefined, { JEO_TEST_VAR: "x" });
   expect(inherit.output.trim()).toBe("ok");
 });
 

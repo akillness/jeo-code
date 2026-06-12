@@ -180,7 +180,7 @@ export interface AgentLoopResult {
 }
 
 /** Env-tunable output budget (plan/gjc-inheritance.md B10, gjc settings-driven
- *  output handling 계승): JOC_TOOL_OUTPUT_MAX caps the model-visible tool result;
+ *  output handling 계승): JEO_TOOL_OUTPUT_MAX caps the model-visible tool result;
  *  the spill threshold tracks it so anything truncated stays artifact-recoverable. */
 function envOutputMax(): number {
   const raw = Number(jeoEnv("TOOL_OUTPUT_MAX") ?? "");
@@ -206,7 +206,7 @@ export function truncateToolOutput(s: string, max = TOOL_OUTPUT_MAX): string {
 export const TOOL_SPILL_THRESHOLD = TOOL_OUTPUT_MAX;
 
 /**
- * Write an oversized tool result verbatim under `.joc/artifacts/tool-results/` and
+ * Write an oversized tool result verbatim under `.jeo/artifacts/tool-results/` and
  * return the workspace-relative path (for the model to `read`). Best-effort: throws
  * are caught by the caller, which simply omits the artifact note.
  */
@@ -227,11 +227,11 @@ async function pruneToolArtifacts(dir: string): Promise<void> {
 }
 
 export async function spillToolResult(tool: string, output: string, cwd: string): Promise<string> {
-  const dir = path.join(cwd, ".joc", "artifacts", "tool-results");
+  const dir = path.join(cwd, ".jeo", "artifacts", "tool-results");
   await fs.mkdir(dir, { recursive: true });
   const safeTool = tool.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 32) || "tool";
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const rel = path.join(".joc", "artifacts", "tool-results", `${stamp}-${safeTool}.txt`);
+  const rel = path.join(".jeo", "artifacts", "tool-results", `${stamp}-${safeTool}.txt`);
   await fs.writeFile(path.join(cwd, rel), output, "utf-8");
   // Retention so a long session can't grow the artifact dir without bound.
   await pruneToolArtifacts(dir);

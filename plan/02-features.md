@@ -21,12 +21,12 @@ context). This doc enumerates what exists and the bounded next steps.
   bare `joc` routes here (`src/cli/runner.ts:dispatch`).
 - **Spec-first pipeline (gjc contract)**: `deep-interview.ts` (ambiguity gate, `--auto`), `ralplan.ts`
   (Planner/Architect/Critic prompt), `team.ts` (per-task executor on the engine), `ultragoal.ts`
-  (acceptance verification). Artifacts under `<cwd>/.joc/{seeds,plans,state}`.
-- **Mutation guard**: `src/agent/tools.ts:assertMutationAllowed()` blocks writes/edits outside `.joc/`
+  (acceptance verification). Artifacts under `<cwd>/.jeo/{seeds,plans,state}`.
+- **Mutation guard**: `src/agent/tools.ts:assertMutationAllowed()` blocks writes/edits outside `.jeo/`
   during an active interview; `assertBashAllowed()` blocks bash too.
 - **Sessions / compaction / context** (pi-mono): `src/agent/session.ts` (append-only JSONL,
   `--list`/`--resume`), `compaction.ts:maybeCompact()`, `context-files.ts:loadProjectContext()`.
-- **MCP**: `src/mcp/server.ts` stdio JSON-RPC; 4 read-only tools + 4 pipeline tools behind `JOC_MCP_PIPELINE=1`.
+- **MCP**: `src/mcp/server.ts` stdio JSON-RPC; 4 read-only tools + 4 pipeline tools behind `JEO_MCP_PIPELINE=1`.
 - 11 commands registered in `src/cli/runner.ts:COMMANDS`.
 
 ## 3. Target State (gjc / pi-mono parity)

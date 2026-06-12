@@ -41,8 +41,8 @@ export interface ExtensionDecision {
 type EnvLike = Record<string, string | undefined>;
 
 function envNum(env: EnvLike, key: string, dflt: number, min: number, max: number): number {
-  // `key` is the legacy JOC_* name; the JEO_* spelling is preferred when both are set.
-  const raw = env[key.replace(/^JOC_/, "JEO_")] ?? env[key];
+  // `key` is the legacy JEO_* name; the JEO_* spelling is preferred when both are set.
+  const raw = env[key.replace(/^JEO_/, "JEO_")] ?? env[key];
   if (raw === undefined || raw === "") return dflt;
   const n = Number(raw);
   if (!Number.isFinite(n)) return dflt;
@@ -50,7 +50,7 @@ function envNum(env: EnvLike, key: string, dflt: number, min: number, max: numbe
 }
 
 /**
- * Resolve the effective budget config: defaults ← env (`JOC_STEP_*`) ← caller overrides.
+ * Resolve the effective budget config: defaults ← env (`JEO_STEP_*`) ← caller overrides.
  * Defaults keep the flow ON for the main agent (2 extensions, half-budget each, 3× cap);
  * bounded delegation (task/team subagents) passes `{ maxExtensions: 0 }` so a parent's
  * step contract stays exact.
@@ -63,10 +63,10 @@ export function resolveStepBudgetConfig(
   const base = Math.max(1, Math.trunc(baseSteps));
   const cfg: StepBudgetConfig = {
     baseSteps: base,
-    extensionSteps: envNum(env, "JOC_STEP_EXTENSION_SIZE", Math.max(4, Math.ceil(base / 2)), 1, 100),
-    maxExtensions: envNum(env, "JOC_STEP_EXTENSIONS", 2, 0, 8),
-    hardCap: envNum(env, "JOC_STEP_HARD_CAP", base * 3, base, base * 10),
-    windowSize: envNum(env, "JOC_STEP_WINDOW", 8, 2, 32),
+    extensionSteps: envNum(env, "JEO_STEP_EXTENSION_SIZE", Math.max(4, Math.ceil(base / 2)), 1, 100),
+    maxExtensions: envNum(env, "JEO_STEP_EXTENSIONS", 2, 0, 8),
+    hardCap: envNum(env, "JEO_STEP_HARD_CAP", base * 3, base, base * 10),
+    windowSize: envNum(env, "JEO_STEP_WINDOW", 8, 2, 32),
     minProgressRatio: 0.5,
     minDistinct: 2,
   };
@@ -82,14 +82,14 @@ export function resolveStepBudgetConfig(
 
 /** True when `key` carries a non-empty value in `env`. */
 function envSet(env: EnvLike, key: string): boolean {
-  const raw = env[key.replace(/^JOC_/, "JEO_")] ?? env[key];
+  const raw = env[key.replace(/^JEO_/, "JEO_")] ?? env[key];
   return raw !== undefined && raw !== "";
 }
 
 /**
  * Dynamic (process-driven) budget — the default when the caller passes no explicit
  * `--max-steps`: there is no SMALL hardcoded step ceiling. The budget starts at a
- * rolling base (`JOC_STEP_BASE`, default 24) and keeps extending itself for as long
+ * rolling base (`JEO_STEP_BASE`, default 24) and keeps extending itself for as long
  * as the recent tool window shows real progress; only a stalled window declines the
  * extension, at which point the loop dynamically CONSOLIDATES a final wrap-up
  * instead of dying at a fixed count.
@@ -99,7 +99,7 @@ function envSet(env: EnvLike, key: string): boolean {
  * An unbounded ceiling turned every hole in the progress heuristic into a literal
  * infinite loop (e.g. a model cycling successful reads forever); a large finite cap
  * keeps long autonomous runs alive while converting a pathological spin into a
- * consolidation wrap-up. Setting `JOC_STEP_EXTENSIONS` / `JOC_STEP_HARD_CAP`
+ * consolidation wrap-up. Setting `JEO_STEP_EXTENSIONS` / `JEO_STEP_HARD_CAP`
  * restores a fully bounded budget; caller overrides win over both.
  */
 export const DYNAMIC_HARD_CAP = 600;
@@ -108,10 +108,10 @@ export function dynamicStepBudgetConfig(
   env: EnvLike = process.env,
   overrides?: Partial<StepBudgetConfig>,
 ): StepBudgetConfig {
-  const base = envNum(env, "JOC_STEP_BASE", 24, 1, 10_000);
+  const base = envNum(env, "JEO_STEP_BASE", 24, 1, 10_000);
   const dynamic: Partial<StepBudgetConfig> = {};
-  if (!envSet(env, "JOC_STEP_EXTENSIONS")) dynamic.maxExtensions = Number.POSITIVE_INFINITY;
-  if (!envSet(env, "JOC_STEP_HARD_CAP")) dynamic.hardCap = Math.max(base, DYNAMIC_HARD_CAP);
+  if (!envSet(env, "JEO_STEP_EXTENSIONS")) dynamic.maxExtensions = Number.POSITIVE_INFINITY;
+  if (!envSet(env, "JEO_STEP_HARD_CAP")) dynamic.hardCap = Math.max(base, DYNAMIC_HARD_CAP);
   return resolveStepBudgetConfig(base, env, { ...dynamic, ...overrides });
 }
 

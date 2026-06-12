@@ -247,7 +247,7 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   console.log("");
   console.log(`Bun runtime:    v${Bun.version}`);
   console.log(`Default model:  ${config.defaultModel}${resolvedModel !== config.defaultModel ? ` → ${resolvedModel}` : ""} → ${defaultProvider}`);
-  console.log(`Config:         ${process.env.HOME}/.joc/config.json`);
+  console.log(`Config:         ${process.env.HOME}/.jeo/config.json`);
   if (config.openaiBaseUrl) console.log(`OpenAI base:    ${config.openaiBaseUrl}`);
   console.log(`Ollama base:    ${ollamaBase}`);
 

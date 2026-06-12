@@ -14,7 +14,7 @@ function createJwt(email: string): string {
 
 test("import command persists a credential readable by storage helpers", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-import-"));
-  const configDir = path.join(tmpDir, ".joc");
+  const configDir = path.join(tmpDir, ".jeo");
   await fs.mkdir(configDir, { recursive: true });
 
   const credsPath = path.join(tmpDir, "oauth_creds.json");
@@ -31,10 +31,10 @@ test("import command persists a credential readable by storage helpers", async (
     "utf-8"
   );
 
-  const prevConfigDir = process.env.JOC_CONFIG_DIR;
-  const prevCredsPath = process.env.JOC_GEMINI_CREDS_PATH;
-  process.env.JOC_CONFIG_DIR = configDir;
-  process.env.JOC_GEMINI_CREDS_PATH = credsPath;
+  const prevConfigDir = process.env.JEO_CONFIG_DIR;
+  const prevCredsPath = process.env.JEO_GEMINI_CREDS_PATH;
+  process.env.JEO_CONFIG_DIR = configDir;
+  process.env.JEO_GEMINI_CREDS_PATH = credsPath;
 
   const originalExitCode = process.exitCode;
   process.exitCode = undefined;
@@ -71,24 +71,24 @@ test("import command persists a credential readable by storage helpers", async (
   } finally {
     console.log = originalLog;
     process.exitCode = 0;
-    process.env.JOC_CONFIG_DIR = prevConfigDir;
-    process.env.JOC_GEMINI_CREDS_PATH = prevCredsPath;
+    process.env.JEO_CONFIG_DIR = prevConfigDir;
+    process.env.JEO_GEMINI_CREDS_PATH = prevCredsPath;
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
 
 test("corrupt file → exitCode 1", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-import-"));
-  const configDir = path.join(tmpDir, ".joc");
+  const configDir = path.join(tmpDir, ".jeo");
   await fs.mkdir(configDir, { recursive: true });
 
   const credsPath = path.join(tmpDir, "oauth_creds.json");
   await fs.writeFile(credsPath, "corrupt-json{invalid", "utf-8");
 
-  const prevConfigDir = process.env.JOC_CONFIG_DIR;
-  const prevCredsPath = process.env.JOC_GEMINI_CREDS_PATH;
-  process.env.JOC_CONFIG_DIR = configDir;
-  process.env.JOC_GEMINI_CREDS_PATH = credsPath;
+  const prevConfigDir = process.env.JEO_CONFIG_DIR;
+  const prevCredsPath = process.env.JEO_GEMINI_CREDS_PATH;
+  process.env.JEO_CONFIG_DIR = configDir;
+  process.env.JEO_GEMINI_CREDS_PATH = credsPath;
 
   const originalExitCode = process.exitCode;
   process.exitCode = undefined;
@@ -106,23 +106,23 @@ test("corrupt file → exitCode 1", async () => {
   } finally {
     console.log = originalLog;
     process.exitCode = 0;
-    process.env.JOC_CONFIG_DIR = prevConfigDir;
-    process.env.JOC_GEMINI_CREDS_PATH = prevCredsPath;
+    process.env.JEO_CONFIG_DIR = prevConfigDir;
+    process.env.JEO_GEMINI_CREDS_PATH = prevCredsPath;
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
 
 test("missing file → exitCode 1", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-import-"));
-  const configDir = path.join(tmpDir, ".joc");
+  const configDir = path.join(tmpDir, ".jeo");
   await fs.mkdir(configDir, { recursive: true });
 
   const credsPath = path.join(tmpDir, "non_existent_file.json");
 
-  const prevConfigDir = process.env.JOC_CONFIG_DIR;
-  const prevCredsPath = process.env.JOC_GEMINI_CREDS_PATH;
-  process.env.JOC_CONFIG_DIR = configDir;
-  process.env.JOC_GEMINI_CREDS_PATH = credsPath;
+  const prevConfigDir = process.env.JEO_CONFIG_DIR;
+  const prevCredsPath = process.env.JEO_GEMINI_CREDS_PATH;
+  process.env.JEO_CONFIG_DIR = configDir;
+  process.env.JEO_GEMINI_CREDS_PATH = credsPath;
 
   const originalExitCode = process.exitCode;
   process.exitCode = undefined;
@@ -140,15 +140,15 @@ test("missing file → exitCode 1", async () => {
   } finally {
     console.log = originalLog;
     process.exitCode = 0;
-    process.env.JOC_CONFIG_DIR = prevConfigDir;
-    process.env.JOC_GEMINI_CREDS_PATH = prevCredsPath;
+    process.env.JEO_CONFIG_DIR = prevConfigDir;
+    process.env.JEO_GEMINI_CREDS_PATH = prevCredsPath;
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
 
 test("auto-import fallback populates storage when jeo has none", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-import-"));
-  const configDir = path.join(tmpDir, ".joc");
+  const configDir = path.join(tmpDir, ".jeo");
   await fs.mkdir(configDir, { recursive: true });
 
   // Create empty initial global config.json
@@ -172,10 +172,10 @@ test("auto-import fallback populates storage when jeo has none", async () => {
     "utf-8"
   );
 
-  const prevConfigDir = process.env.JOC_CONFIG_DIR;
-  const prevCredsPath = process.env.JOC_GEMINI_CREDS_PATH;
-  process.env.JOC_CONFIG_DIR = configDir;
-  process.env.JOC_GEMINI_CREDS_PATH = credsPath;
+  const prevConfigDir = process.env.JEO_CONFIG_DIR;
+  const prevCredsPath = process.env.JEO_GEMINI_CREDS_PATH;
+  process.env.JEO_CONFIG_DIR = configDir;
+  process.env.JEO_GEMINI_CREDS_PATH = credsPath;
 
   const logs: string[] = [];
   const originalLog = console.log;
@@ -205,8 +205,8 @@ test("auto-import fallback populates storage when jeo has none", async () => {
   } finally {
     console.log = originalLog;
     console.error = originalErr;
-    process.env.JOC_CONFIG_DIR = prevConfigDir;
-    process.env.JOC_GEMINI_CREDS_PATH = prevCredsPath;
+    process.env.JEO_CONFIG_DIR = prevConfigDir;
+    process.env.JEO_GEMINI_CREDS_PATH = prevCredsPath;
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });

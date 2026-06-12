@@ -11,13 +11,13 @@ import {
 } from "../src/ai/provider-status";
 
 let dir: string;
-const prevCfgDir = process.env.JOC_CONFIG_DIR;
+const prevCfgDir = process.env.JEO_CONFIG_DIR;
 const OAUTH_ENV = ["ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_OAUTH_TOKEN", "GEMINI_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"];
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeAll(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-prov-"));
-  process.env.JOC_CONFIG_DIR = dir;
+  process.env.JEO_CONFIG_DIR = dir;
   // A config file with an empty providers map + no credential env vars isolates each
   // scenario: readGlobalConfig overlays env API keys onto gaps, so they must be cleared.
   await fs.writeFile(
@@ -31,8 +31,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (prevCfgDir === undefined) delete process.env.JOC_CONFIG_DIR;
-  else process.env.JOC_CONFIG_DIR = prevCfgDir;
+  if (prevCfgDir === undefined) delete process.env.JEO_CONFIG_DIR;
+  else process.env.JEO_CONFIG_DIR = prevCfgDir;
   for (const k of OAUTH_ENV) {
     if (savedEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];

@@ -17,7 +17,7 @@ make the chosen model reachable and verifiable. Next: a model registry with alia
   `ollama/<name>` → ollama; contains `gpt`/`o1` or `openai/<name>` → openai;
   contains `gemini` or `google/<name>` → gemini; else → anthropic.
 - **Config** `src/agent/state.ts:Config.defaultModel` (+ `ollamaBaseUrl`, `openaiBaseUrl`, `thinkingLevel`);
-  resolved from `~/.joc/config.json` (or `JOC_CONFIG_DIR`) with an env overlay (`withEnvOverlay`).
+  resolved from `~/.jeo/config.json` (or `JEO_CONFIG_DIR`) with an env overlay (`withEnvOverlay`).
 - **Setup** `src/commands/setup.ts`: interactive provider picker (anthropic/openai/gemini/ollama/lmstudio/
   openai-compatible), **live model probing** via `/api/tags` (ollama) and `/v1/models` (OpenAI-compat),
   writes `defaultModel`.
@@ -59,7 +59,7 @@ make the chosen model reachable and verifiable. Next: a model registry with alia
 ```bash
 bun run typecheck && bun test test/model-registry.test.ts
 joc models                                  # lists aliases + local models
-JOC_CONFIG_DIR=/tmp/c joc doctor            # [READY] for the configured default
+JEO_CONFIG_DIR=/tmp/c joc doctor            # [READY] for the configured default
 ```
 
 ## 9. Long-term / Future

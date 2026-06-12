@@ -11,17 +11,17 @@ const projectDir = path.join(testDir, "project");
 let originalConfigDir: string | undefined;
 
 beforeAll(async () => {
-  originalConfigDir = process.env.JOC_CONFIG_DIR;
+  originalConfigDir = process.env.JEO_CONFIG_DIR;
   await fs.mkdir(globalConfigDir, { recursive: true });
-  await fs.mkdir(path.join(projectDir, ".joc"), { recursive: true });
-  process.env.JOC_CONFIG_DIR = globalConfigDir;
+  await fs.mkdir(path.join(projectDir, ".jeo"), { recursive: true });
+  process.env.JEO_CONFIG_DIR = globalConfigDir;
 });
 
 afterAll(async () => {
   if (originalConfigDir === undefined) {
-    delete process.env.JOC_CONFIG_DIR;
+    delete process.env.JEO_CONFIG_DIR;
   } else {
-    process.env.JOC_CONFIG_DIR = originalConfigDir;
+    process.env.JEO_CONFIG_DIR = originalConfigDir;
   }
   await fs.rm(testDir, { recursive: true, force: true });
 });
@@ -43,7 +43,7 @@ test("disabled hooks never run", async () => {
   };
   await fs.writeFile(path.join(globalConfigDir, "config.json"), JSON.stringify(globalConfig), "utf-8");
 
-  // Local .joc/hooks.json exists
+  // Local .jeo/hooks.json exists
   const localHooks = {
     enabled: true,
     hooks: [
@@ -53,7 +53,7 @@ test("disabled hooks never run", async () => {
       }
     ]
   };
-  await fs.writeFile(path.join(projectDir, ".joc", "hooks.json"), JSON.stringify(localHooks), "utf-8");
+  await fs.writeFile(path.join(projectDir, ".jeo", "hooks.json"), JSON.stringify(localHooks), "utf-8");
 
   const loaded = await loadHooks(projectDir);
   expect(loaded).toEqual([]);
@@ -81,7 +81,7 @@ test("enabled pre-tool can veto", async () => {
 
   // No local hooks file
   try {
-    await fs.unlink(path.join(projectDir, ".joc", "hooks.json"));
+    await fs.unlink(path.join(projectDir, ".jeo", "hooks.json"));
   } catch {}
 
   const loaded = await loadHooks(projectDir);
@@ -127,7 +127,7 @@ test("enabled local hook file takes precedence / is parsed", async () => {
       }
     ]
   };
-  await fs.writeFile(path.join(projectDir, ".joc", "hooks.json"), JSON.stringify(localHooks), "utf-8");
+  await fs.writeFile(path.join(projectDir, ".jeo", "hooks.json"), JSON.stringify(localHooks), "utf-8");
 
   const loaded = await loadHooks(projectDir);
   expect(loaded.length).toBe(1);
@@ -155,7 +155,7 @@ test("enabled post-turn advisory does not fail loop", async () => {
   await fs.writeFile(path.join(globalConfigDir, "config.json"), JSON.stringify(globalConfig), "utf-8");
 
   try {
-    await fs.unlink(path.join(projectDir, ".joc", "hooks.json"));
+    await fs.unlink(path.join(projectDir, ".jeo", "hooks.json"));
   } catch {}
 
   let noticeMessage = "";

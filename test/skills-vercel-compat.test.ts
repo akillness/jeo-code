@@ -12,15 +12,15 @@ import { loadSkills, getSkillFrom, skillDirs, parseSkillMarkdown } from "../src/
 let home: string;
 let cwd: string;
 const prevHome = process.env.HOME;
-const prevCfg = process.env.JOC_CONFIG_DIR;
-const prevSkillsDir = process.env.JOC_SKILLS_DIR;
+const prevCfg = process.env.JEO_CONFIG_DIR;
+const prevSkillsDir = process.env.JEO_SKILLS_DIR;
 
 beforeAll(async () => {
   home = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-vercel-home-"));
   cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-vercel-cwd-"));
   process.env.HOME = home;
-  process.env.JOC_CONFIG_DIR = path.join(home, ".joc");
-  delete process.env.JOC_SKILLS_DIR;
+  process.env.JEO_CONFIG_DIR = path.join(home, ".jeo");
+  delete process.env.JEO_SKILLS_DIR;
 
   // 1. Vercel canonical store with a SYMLINKED skill dir (the layout `npx skills
   //    add` produces when linking agent dirs to its store).
@@ -60,10 +60,10 @@ beforeAll(async () => {
 afterAll(async () => {
   if (prevHome === undefined) delete process.env.HOME;
   else process.env.HOME = prevHome;
-  if (prevCfg === undefined) delete process.env.JOC_CONFIG_DIR;
-  else process.env.JOC_CONFIG_DIR = prevCfg;
-  if (prevSkillsDir === undefined) delete process.env.JOC_SKILLS_DIR;
-  else process.env.JOC_SKILLS_DIR = prevSkillsDir;
+  if (prevCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+  else process.env.JEO_CONFIG_DIR = prevCfg;
+  if (prevSkillsDir === undefined) delete process.env.JEO_SKILLS_DIR;
+  else process.env.JEO_SKILLS_DIR = prevSkillsDir;
   await fs.rm(home, { recursive: true, force: true });
   await fs.rm(cwd, { recursive: true, force: true });
 });
@@ -76,7 +76,7 @@ test("skillDirs covers Vercel canonical, agent-targeted, and gjc install roots",
   expect(dirs).toContain(path.join(cwd, ".claude", "skills"));
   expect(dirs).toContain(path.join(cwd, ".agents", "skills"));
   // jeo-native project dir stays highest-precedence among scanned defaults.
-  expect(dirs.indexOf(path.join(cwd, ".joc", "skills"))).toBeGreaterThan(dirs.indexOf(path.join(cwd, ".agents", "skills")));
+  expect(dirs.indexOf(path.join(cwd, ".jeo", "skills"))).toBeGreaterThan(dirs.indexOf(path.join(cwd, ".agents", "skills")));
 });
 
 test("loadSkills follows symlinked skill dirs and skips dangling links", async () => {

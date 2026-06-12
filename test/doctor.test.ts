@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 let cfgDir = "";
-const savedCfgDir = process.env.JOC_CONFIG_DIR;
+const savedCfgDir = process.env.JEO_CONFIG_DIR;
 const savedFetch = globalThis.fetch;
 // readGlobalConfig overlays env API keys onto provider gaps, so clear them to keep
 // "no credential" / "oauth-only" diagnostics deterministic regardless of the host env.
@@ -13,7 +13,7 @@ const savedCredEnv: Record<string, string | undefined> = {};
 
 beforeEach(async () => {
   cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-doctor-"));
-  process.env.JOC_CONFIG_DIR = cfgDir;
+  process.env.JEO_CONFIG_DIR = cfgDir;
   for (const k of CRED_ENV) {
     savedCredEnv[k] = process.env[k];
     delete process.env[k];
@@ -22,8 +22,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   globalThis.fetch = savedFetch;
-  if (savedCfgDir === undefined) delete process.env.JOC_CONFIG_DIR;
-  else process.env.JOC_CONFIG_DIR = savedCfgDir;
+  if (savedCfgDir === undefined) delete process.env.JEO_CONFIG_DIR;
+  else process.env.JEO_CONFIG_DIR = savedCfgDir;
   for (const k of CRED_ENV) {
     if (savedCredEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedCredEnv[k];

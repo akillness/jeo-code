@@ -18,9 +18,9 @@ binary and npm/Homebrew paths so non-bun users can install too.
 - **Canonical installer** `scripts/install.sh`: `require_bun` (auto-installs Bun,
   enforces `MIN_BUN_VERSION=1.3.14`) → `bun install` (deps) → `bun link` (registers the package in
   bun's global registry and exposes `joc` at `${BUN_INSTALL:-~/.bun}/bin/joc`) → compat symlink at
-  `${JOC_INSTALL_DIR:-~/.local/bin}/joc` → PATH hint. Modes: `--local` / `--source` / `--ref`.
+  `${JEO_INSTALL_DIR:-~/.local/bin}/joc` → PATH hint. Modes: `--local` / `--source` / `--ref`.
 - **Uninstall** `scripts/uninstall.sh`: removes both bins, unregisters from the bun global
-  registry, `--purge` removes `~/.joc/`.
+  registry, `--purge` removes `~/.jeo/`.
 - **Runtime guard**: `src/cli.ts` re-checks `Bun.semver.order(Bun.version, "1.3.14")` and
   sets `process.title`.
 - **bun scripts**: `package.json` → `start` / `typecheck` / `test`.

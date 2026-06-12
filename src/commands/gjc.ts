@@ -8,7 +8,7 @@ export async function runGjcCommand(args: string[]): Promise<void> {
   const config = await readGlobalConfig();
   
   if (intent.toLowerCase().includes("self-improve") && !isDevMode()) {
-    console.error("Error: Self-improvement tasks are only allowed in JOC_DEV_MODE=1.");
+    console.error("Error: Self-improvement tasks are only allowed in JEO_DEV_MODE=1.");
     process.exit(1);
   }
 

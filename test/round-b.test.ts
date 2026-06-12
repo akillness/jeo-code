@@ -271,7 +271,7 @@ test("streamMaxMs: env opt-in parsing — off by default, positive ints only", a
   const { streamMaxMs } = await import("../src/ai/model-manager");
   expect(streamMaxMs({})).toBeUndefined(); // default OFF
   expect(streamMaxMs({ JEO_STREAM_MAX_MS: "30000" })).toBe(30000);
-  expect(streamMaxMs({ JOC_STREAM_MAX_MS: "5000" })).toBe(5000); // legacy prefix
+  expect(streamMaxMs({ JEO_STREAM_MAX_MS: "5000" })).toBe(5000); // legacy prefix
   expect(streamMaxMs({ JEO_STREAM_MAX_MS: "0" })).toBeUndefined();
   expect(streamMaxMs({ JEO_STREAM_MAX_MS: "nope" })).toBeUndefined();
 });

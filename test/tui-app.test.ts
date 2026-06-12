@@ -61,9 +61,9 @@ test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll
   expect(tail).not.toContain("Read src/cli.ts\n\x1b[K");
 });
 
-test("LaunchTui: JOC_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen turn", () => {
-  const orig = process.env.JOC_TUI_ALT_SCREEN;
-  process.env.JOC_TUI_ALT_SCREEN = "1";
+test("LaunchTui: JEO_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen turn", () => {
+  const orig = process.env.JEO_TUI_ALT_SCREEN;
+  process.env.JEO_TUI_ALT_SCREEN = "1";
   try {
     const out: string[] = [];
     const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
@@ -90,8 +90,8 @@ test("LaunchTui: JOC_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen
     expect(afterLeave).toContain("\x1b[K");
     expect(afterLeave).toContain("\x1b[0J");
   } finally {
-    if (orig === undefined) delete process.env.JOC_TUI_ALT_SCREEN;
-    else process.env.JOC_TUI_ALT_SCREEN = orig;
+    if (orig === undefined) delete process.env.JEO_TUI_ALT_SCREEN;
+    else process.env.JEO_TUI_ALT_SCREEN = orig;
   }
 });
 
@@ -280,8 +280,8 @@ test("LaunchTui: corrupt deep-interview state shows fail-closed mutation lock", 
   const originalCwd = process.cwd();
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-tui-lock-"));
   try {
-    await fs.mkdir(path.join(dir, ".joc", "state"), { recursive: true });
-    await fs.writeFile(path.join(dir, ".joc", "state", "deep-interview-state.json"), "{ nope", "utf8");
+    await fs.mkdir(path.join(dir, ".jeo", "state"), { recursive: true });
+    await fs.writeFile(path.join(dir, ".jeo", "state", "deep-interview-state.json"), "{ nope", "utf8");
     process.chdir(dir);
 
     const out: string[] = [];
@@ -585,8 +585,8 @@ test("LaunchTui (alt-screen boxed): status box shows the in-flight file; steps i
   const savedRowsDesc = Object.getOwnPropertyDescriptor(process.stdout, "rows");
   Object.defineProperty(process.stdout, "columns", { value: 200, configurable: true });
   Object.defineProperty(process.stdout, "rows", { value: 40, configurable: true });
-  const savedAlt = process.env.JOC_TUI_ALT_SCREEN;
-  process.env.JOC_TUI_ALT_SCREEN = "1";
+  const savedAlt = process.env.JEO_TUI_ALT_SCREEN;
+  process.env.JEO_TUI_ALT_SCREEN = "1";
   try {
     const tui = new LaunchTui({ model: "m1", maxSteps: 25, tty: true, write: () => {} });
     tui.start();
@@ -609,8 +609,8 @@ test("LaunchTui (alt-screen boxed): status box shows the in-flight file; steps i
     expect(titleLine).not.toContain("Double Helix");
     expect(txt.some(l => /Primordial Cell|Double Helix|Tool User|Super intelligence/.test(l))).toBe(true);
   } finally {
-    if (savedAlt === undefined) delete process.env.JOC_TUI_ALT_SCREEN;
-    else process.env.JOC_TUI_ALT_SCREEN = savedAlt;
+    if (savedAlt === undefined) delete process.env.JEO_TUI_ALT_SCREEN;
+    else process.env.JEO_TUI_ALT_SCREEN = savedAlt;
     Renderer.prototype.render = realRender;
     if (savedColsDesc) Object.defineProperty(process.stdout, "columns", savedColsDesc);
     if (savedRowsDesc) Object.defineProperty(process.stdout, "rows", savedRowsDesc);

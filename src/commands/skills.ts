@@ -46,7 +46,7 @@ export async function runSkillsCommand(args: string[] = []): Promise<void> {
     return;
   }
 
-  // List/lookup over the MERGED set (bundled + ~/.joc/skills + ~/.agents/skills + project dirs), matching the REPL /skill.
+  // List/lookup over the MERGED set (bundled + ~/.jeo/skills + ~/.agents/skills + project dirs), matching the REPL /skill.
   const skills = await loadSkills(cwd);
   const command = cleanArgs[0];
 
@@ -55,12 +55,12 @@ export async function runSkillsCommand(args: string[] = []): Promise<void> {
       console.log(JSON.stringify(skills.map(s => ({ name: s.name, summary: s.summary })), null, 2));
     } else {
       console.log("\n=== jeo skills ===");
-      console.log("Workflow skills (bundled + ~/.joc/skills, ~/.agents/skills, project dirs) — 'jeo skills <name>' for details, --write to export:\n");
+      console.log("Workflow skills (bundled + ~/.jeo/skills, ~/.agents/skills, project dirs) — 'jeo skills <name>' for details, --write to export:\n");
       for (const s of skills) {
         console.log(`  ${s.name.padEnd(16)} ${s.summary}`);
       }
       console.log("\nInvoke: /skill <name> [intent]  ·  $<name> [intent]  ·  skill-owned slash aliases (e.g. /speckit.plan)");
-      console.log("Discovery dirs (later wins on name clash; JOC_SKILLS_DIR adds more):");
+      console.log("Discovery dirs (later wins on name clash; JEO_SKILLS_DIR adds more):");
       for (const d of skillDirs(cwd)) console.log(`  ${d}`);
       console.log("");
     }

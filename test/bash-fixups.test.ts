@@ -72,16 +72,16 @@ test("applyBashFixups: passthrough; quotes/globs untouched", () => {
   expect(applyBashFixups(original)).toEqual({ command: original, applied: [] });
 });
 
-test("bashTool respects the JOC_BASH_FIXUPS env flag (off by default)", async () => {
+test("bashTool respects the JEO_BASH_FIXUPS env flag (off by default)", async () => {
   const { bashTool } = await import("../src/agent/tools");
-  delete process.env.JOC_BASH_FIXUPS;
+  delete process.env.JEO_BASH_FIXUPS;
   const resOff = await bashTool("././nonexistent_script_file");
   expect(resOff.output).toContain("././nonexistent_script_file");
 
-  process.env.JOC_BASH_FIXUPS = "1";
+  process.env.JEO_BASH_FIXUPS = "1";
   const resOn = await bashTool("././nonexistent_script_file");
   expect(resOn.output).toContain("./nonexistent_script_file");
   expect(resOn.output).not.toContain("././nonexistent_script_file");
 
-  delete process.env.JOC_BASH_FIXUPS;
+  delete process.env.JEO_BASH_FIXUPS;
 });

@@ -10,7 +10,7 @@ export function truncateToolOutput(output: string, limit = 8000): string {
 }
 
 export async function spillToolResult(tool: string, output: string, cwd: string): Promise<string> {
-  const artifactsDir = path.join(cwd, ".joc", "artifacts");
+  const artifactsDir = path.join(cwd, ".jeo", "artifacts");
   await fs.mkdir(artifactsDir, { recursive: true });
 
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
@@ -29,12 +29,12 @@ export interface PerfMetric {
   error?: string;
 }
 
-/** Append a tool performance metric to `.joc/state/performance-metrics.json`
+/** Append a tool performance metric to `.jeo/state/performance-metrics.json`
  *  (bounded to the most recent 200 records). Best-effort: failures are ignored
  *  so metrics can never break an agent turn. */
 export async function logPerformanceMetric(cwd: string, metric: PerfMetric): Promise<void> {
   try {
-    const dir = path.join(cwd, ".joc", "state");
+    const dir = path.join(cwd, ".jeo", "state");
     const file = path.join(dir, "performance-metrics.json");
     await fs.mkdir(dir, { recursive: true });
     let records: PerfMetric[] = [];

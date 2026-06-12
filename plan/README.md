@@ -58,10 +58,10 @@ M7  Model registry      → plan 04       (discovery, aliases, cost/usage tracki
 5. **Review gate** — `architect` review on auth/agent-core changes; resolve BLOCK findings before landing.
 
 ## Configuration conventions (stable contracts future work must honor)
-- **Global config**: `~/.joc/config.json` (override dir via `JOC_CONFIG_DIR`); dir `0700`, file `0600`.
+- **Global config**: `~/.jeo/config.json` (override dir via `JEO_CONFIG_DIR`); dir `0700`, file `0600`.
   Shape in `src/agent/state.ts:Config` (`providers`, `oauth`, `defaultModel`,
   `ollamaBaseUrl`, `openaiBaseUrl`, `thinkingLevel`).
-- **Per-project runtime**: `<cwd>/.joc/` — `seeds/`, `plans/`, `state/`, `sessions/` (see plan 02).
+- **Per-project runtime**: `<cwd>/.jeo/` — `seeds/`, `plans/`, `state/`, `sessions/` (see plan 02).
 - **Bun-native**: deps + bin via `bun install` + `bun link`; entry `src/cli.ts`
   (bin `joc`), lazy command registry `src/cli/runner.ts:COMMANDS`.
 - **Env overlay** never overrides on-disk config (`state.ts:withEnvOverlay`).

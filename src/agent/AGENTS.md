@@ -11,7 +11,7 @@ The core runtime loop, tool registry, session management, and state persistence 
 |------|-------------|
 | `loop.ts` | The primary execution loop orchestrating model calls and tool execution |
 | `tools.ts` | Built-in tool definitions (bash, read, write, edit, etc.) |
-| `state.ts` | File-backed state and session persistence (`.joc/state/`) |
+| `state.ts` | File-backed state and session persistence (`.jeo/state/`) |
 | `session.ts` | Session context building, compaction, and history management |
 | `plan.ts` | Subagent planning structures and validation |
 | `step-budget.ts` | gjc-style flexible step budgeting: progress-scored extensions, hard cap, fail-fast |

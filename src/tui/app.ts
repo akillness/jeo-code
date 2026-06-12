@@ -120,7 +120,7 @@ function todoListChanged(
 // open synchronized update, and always bring the cursor back — so the TTY is never
 // left hidden-cursor, sync-frozen, or stuck on a blank alt screen. The mode flag is
 // mutable and refreshed on every start() so a later turn in a different mode (e.g. a
-// test flipping JOC_TUI_ALT_SCREEN) is restored correctly.
+// test flipping JEO_TUI_ALT_SCREEN) is restored correctly.
 let exitSafetyArmed = false;
 let exitSafetyAltScreen = false;
 function armExitSafety(altScreen: boolean): void {
@@ -204,14 +204,14 @@ export class LaunchTui {
   private readonly progress: StageProgress = createStageProgress();
   // Terminal unicode capability, detected once (drives spinner/track glyph set).
   private readonly unicode: boolean = supportsUnicode();
-  // Active color theme (JOC_TUI_THEME), default cosmic; `mono` disables color.
+  // Active color theme (JEO_TUI_THEME), default cosmic; `mono` disables color.
   private readonly theme = resolveTheme(process.env);
   // Whether the live turn may use the alternate screen buffer (real TTY only).
   private readonly tty: boolean;
   // gjc-style inline rendering (default on a TTY): the live frame repaints in place in
   // the MAIN buffer and every completed ledger line is flushed into normal scrollback
   // first, so tmux / terminal mouse-wheel can scroll back through earlier progress
-  // mid-turn. JOC_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen turn
+  // mid-turn. JEO_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen turn
   // (scroll-isolated, but no mid-turn scrollback).
   private readonly inline: boolean;
   // Thinking-level label for the gjc-style model status bar.
@@ -633,7 +633,7 @@ export class LaunchTui {
     // tmux / terminal mouse-wheel scroll can review earlier progress mid-turn. The
     // differential renderer reserves frame rows with real newlines, keeping the
     // in-place repaint anchored even at the bottom of the viewport.
-    // JOC_TUI_ALT_SCREEN=1 restores the legacy alternate-screen turn (scroll-isolated,
+    // JEO_TUI_ALT_SCREEN=1 restores the legacy alternate-screen turn (scroll-isolated,
     // but with no scrollback until the turn ends).
     if (this.tty) {
       if (this.inline) {

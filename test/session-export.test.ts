@@ -41,7 +41,7 @@ test("exportSession: json is structured and parseable", async () => {
 
 test("exportSession: tolerates a malformed trailing line", async () => {
   const { cwd, id } = JSON.parse(await seed());
-  const file = path.join(cwd, ".joc", "sessions", `${id}.jsonl`);
+  const file = path.join(cwd, ".jeo", "sessions", `${id}.jsonl`);
   await fs.appendFile(file, "{ this is not valid json\n");
   const md = await exportSession(id, "markdown", cwd);
   expect(md).toContain("## Assistant"); // earlier messages still render

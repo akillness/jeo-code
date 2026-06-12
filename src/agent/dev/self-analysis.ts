@@ -9,7 +9,7 @@ import type { PerfMetric } from "../output-util";
 export async function runSelfAnalysis(cwd: string): Promise<string> {
   if (!isDevMode()) throw new Error("Self-analysis only available in Dev Mode");
 
-  const perfPath = path.join(cwd, ".joc/state/performance-metrics.json");
+  const perfPath = path.join(cwd, ".jeo/state/performance-metrics.json");
   let perfData: PerfMetric[] = [];
   try {
     const content = await fs.readFile(perfPath, "utf-8");

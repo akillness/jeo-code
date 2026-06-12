@@ -25,17 +25,17 @@
 set -e
 
 DEFAULT_REPO="https://github.com/akillness/jeo-code.git"
-REPO="${JEO_REPO:-${JOC_REPO:-${JEO_REPO_URL:-${JOC_REPO_URL:-$DEFAULT_REPO}}}}"
-PKG="${JEO_PKG:-${JOC_PKG:-jeo-code}}"
-INSTALL_DIR="${JEO_INSTALL_DIR:-${JOC_INSTALL_DIR:-$HOME/.local/bin}}"
+REPO="${JEO_REPO:-${JEO_REPO:-${JEO_REPO_URL:-${JEO_REPO_URL:-$DEFAULT_REPO}}}}"
+PKG="${JEO_PKG:-${JEO_PKG:-jeo-code}}"
+INSTALL_DIR="${JEO_INSTALL_DIR:-${JEO_INSTALL_DIR:-$HOME/.local/bin}}"
 MIN_BUN_VERSION="1.3.14"
 
 MODE="global"
 REF=""
 SRC_DIR=""
 LINKED=""
-REGISTRY="${JEO_REGISTRY:-${JOC_REGISTRY:-}}"
-SCOPE="${JEO_REGISTRY_SCOPE:-${JOC_REGISTRY_SCOPE:-}}"
+REGISTRY="${JEO_REGISTRY:-${JEO_REGISTRY:-}}"
+SCOPE="${JEO_REGISTRY_SCOPE:-${JEO_REGISTRY_SCOPE:-}}"
 PERSIST_REGISTRY=0
 PROJECT_NPMRC=0
 DRY_RUN=0
@@ -58,7 +58,7 @@ jeo installer (gjc-style Bun global install)
   --ref <ref>          install a specific tag/branch/commit
   --dry-run            print the bun/npm commands without installing
 Environment:
-  JEO_INSTALL_DIR      (default \$HOME/.local/bin — compatibility symlink; legacy JOC_* names still honored)
+  JEO_INSTALL_DIR      (default \$HOME/.local/bin — compatibility symlink; legacy JEO_* names still honored)
   JEO_REPO/JEO_REPO_URL(default $DEFAULT_REPO)
   JEO_PKG             (default $PKG)
   JEO_REGISTRY        one-shot or persisted registry URL

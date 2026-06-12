@@ -67,9 +67,9 @@ test("handleLine: tool list exposes base tools and optional ralph workflow tools
   const names = tools.map(t => t.name);
 
   expect(names).toContain("joc_resolve_provider");
-  // The process-level JEO_MCP_PIPELINE/JOC_MCP_PIPELINE flag controls whether these are present
+  // The process-level JEO_MCP_PIPELINE/JEO_MCP_PIPELINE flag controls whether these are present
   // in the exported TOOLS array. This assertion only runs when the test process has that flag.
-  if (process.env.JEO_MCP_PIPELINE === "1" || process.env.JOC_MCP_PIPELINE === "1") {
+  if (process.env.JEO_MCP_PIPELINE === "1" || process.env.JEO_MCP_PIPELINE === "1") {
     expect(names).toEqual(expect.arrayContaining(["joc_deep_interview", "joc_ralplan", "joc_team", "joc_ultragoal"]));
   }
 });

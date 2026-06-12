@@ -2,9 +2,9 @@
 # jeo uninstaller — removes binary symlink and optionally global config.
 # Usage:
 #   sh scripts/uninstall.sh              # remove binary only
-#   sh scripts/uninstall.sh --purge      # also remove ~/.joc/
+#   sh scripts/uninstall.sh --purge      # also remove ~/.jeo/
 set -e
-INSTALL_DIR="${JEO_INSTALL_DIR:-${JOC_INSTALL_DIR:-$HOME/.local/bin}}"
+INSTALL_DIR="${JEO_INSTALL_DIR:-${JEO_INSTALL_DIR:-$HOME/.local/bin}}"
 PURGE=0
 [ "$1" = "--purge" ] && PURGE=1
 
@@ -27,6 +27,6 @@ GLOBAL_PKG="${BUN_INSTALL:-$HOME/.bun}/install/global/node_modules/jeo-code"
 [ -e "$GLOBAL_PKG" ] && rm -rf "$GLOBAL_PKG" && echo "Unregistered jeo-code from bun global"
 
 if [ "$PURGE" = "1" ]; then
-  rm -rf "$HOME/.joc"
-  echo "Removed ~/.joc/"
+  rm -rf "$HOME/.jeo"
+  echo "Removed ~/.jeo/"
 fi

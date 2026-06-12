@@ -88,10 +88,10 @@ test("OAuthCallbackFlow: state mismatch is rejected (CSRF guard)", async () => {
 
 test("resolveCredential: auto-refreshes an expired anthropic OAuth token", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-oauth-"));
-  const prevConfigDir = process.env.JOC_CONFIG_DIR;
+  const prevConfigDir = process.env.JEO_CONFIG_DIR;
   const prevFetch = globalThis.fetch;
-  const configDir = path.join(home, ".joc");
-  process.env.JOC_CONFIG_DIR = configDir;
+  const configDir = path.join(home, ".jeo");
+  process.env.JEO_CONFIG_DIR = configDir;
   // Ensure no env OAuth bleed-through.
   const clearedEnv = ["ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"].map(k => {
     const v = process.env[k];
@@ -140,8 +140,8 @@ test("resolveCredential: auto-refreshes an expired anthropic OAuth token", async
     expect(stored?.expires).toBeGreaterThan(Date.now());
   } finally {
     globalThis.fetch = prevFetch;
-    if (prevConfigDir === undefined) delete process.env.JOC_CONFIG_DIR;
-    else process.env.JOC_CONFIG_DIR = prevConfigDir;
+    if (prevConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = prevConfigDir;
     for (const [k, v] of clearedEnv) if (v !== undefined) process.env[k] = v;
     await fs.rm(home, { recursive: true, force: true });
   }
@@ -158,8 +158,8 @@ test("googleClientSecret: env override wins, blank/missing env falls back to bun
 });
 test("refreshOAuthToken: concurrent refreshes acquire lock sequentially and reuse already refreshed token without double-refresh", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-oauth-lock-test-"));
-  const prevConfigDir = process.env.JOC_CONFIG_DIR;
-  process.env.JOC_CONFIG_DIR = home;
+  const prevConfigDir = process.env.JEO_CONFIG_DIR;
+  process.env.JEO_CONFIG_DIR = home;
 
   const configPath = path.join(home, "config.json");
   const initialConfig = {
@@ -225,8 +225,8 @@ test("refreshOAuthToken: concurrent refreshes acquire lock sequentially and reus
     expect(stored?.expires).toBeGreaterThan(Date.now());
   } finally {
     globalThis.fetch = prevFetch;
-    if (prevConfigDir === undefined) delete process.env.JOC_CONFIG_DIR;
-    else process.env.JOC_CONFIG_DIR = prevConfigDir;
+    if (prevConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = prevConfigDir;
     await fs.rm(home, { recursive: true, force: true });
   }
 });

@@ -8,7 +8,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 echo "== --binary (compiled standalone, no bun at runtime) =="
-JOC_INSTALL_DIR="$TMP/bin" sh "$ROOT/scripts/install.sh" --binary >/dev/null
+JEO_INSTALL_DIR="$TMP/bin" sh "$ROOT/scripts/install.sh" --binary >/dev/null
 V="$(env -i PATH=/usr/bin:/bin "$TMP/bin/jeo" --version)"
 echo "  jeo --version → $V"
 case "$V" in

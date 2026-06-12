@@ -6,7 +6,7 @@ dist/
 *.log
 
 # Hidden (dot) files and folders at EVERY level — runtime / tool state such as
-# .joc, .gjc, .omc, .omx, .omu, .serena, .specify, .autoresearch, .DS_Store …
+# .jeo, .gjc, .omc, .omx, .omu, .serena, .specify, .autoresearch, .DS_Store …
 # A pattern with no slash matches the basename at any depth, so this covers
 # both repo-root and nested dotfiles/dirs.
 .*

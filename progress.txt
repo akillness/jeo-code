@@ -374,3 +374,21 @@
 - Tests: 바운스→todo 갱신→done 수락(정확히 3호출), 완고한 done 2회째 통과(훅 1회만 소비), 깨끗한 플랜 즉시 종료(추가 비용 0).
 - 실동작(dist/jeo, tmux): 모델에 "todo 갱신 없이 done" 지시 → 게이트 바운스 → "Reconciled the todo list…" → 최종 Todos ✓2/2.
 - Verified: tsc 0; bun test 1253 pass / 0 fail; dist/jeo 재빌드.
+[2026-06-12] Pass — 서브에이전트 시스템화(하드코딩 제거) + TUI mid-turn Ctrl+O
+- 서브에이전트 레지스트리 시스템화: config.subagents에 title/description/prompt/readOnly 선언만으로
+  커스텀 역할이 1급 역할로 등록 (rolesFromConfig/allSubagentRoles). 번들 4종은 기본값일 뿐 —
+  역할 목록·프롬프트·도구셋·스텝 한도 전부 데이터 구동. 미지 id의 단순 model 핀은 역할로 승격
+  안 함(오타 안전). 커스텀 역할 기본 read-only(readOnly:false 명시 시만 mutate).
+- 소비처 전환: task-tool(역할 해석+프로토콜 라인 동적화 taskToolProtocolLine(config)), /agents
+  패널·편집기, apply-target 픽커, approve/team 플랜 게이트, team 워커 — 전부 병합 레지스트리 사용.
+- Ctrl+O TUI 동작: 라이브 턴 중 \u000f가 buffered input으로 삼켜지던 것을 하니스 onDetailKey로
+  인터셉트 → tui.showDetail()이 ledger에 detail 블록 flush. 프롬프트(readline) 경로와 동일한
+  composeDetailLines 공용 컴포저. 붙여넣기/임베디드 \u000f는 데이터로 유지.
+- Tests: custom-subagent-roles(6) — 선언≠핀 구분, read-only 기본, 도구셋, 템플릿 치환, 표면 노출,
+  번들 중복 금지; ctrl-o-detail(3) — 단독 키만 발화, 페이스트/임베디드 불발화, 훅 없으면 불활성.
+- 실동작(dist/jeo, tmux 샌드박스): ① 클립 카드 "… 36 more line(s) ⟦Ctrl+O for more⟧" 표시 중
+  Ctrl+O → "detail · full last tool output (bash)" 전체 덤프 확인. ② config에만 선언한 reviewer
+  역할 위임 → [AGENT] reviewer ▸ start → step 1/6 → ◂ done 카드 ✓.
+- 동시 패스 조정: 45b7b19가 본 세션 subagents.ts를 선커밋, README 동기화로 npm 토큰 섹션 누락
+  (install-script 테스트 fail) → aa15387이 4개 언어 복원, 본 패스 게이트에서 green 확인.
+- Verified: tsc 0; bun test 1262 pass / 0 fail; dist/jeo 재빌드.

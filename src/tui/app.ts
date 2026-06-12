@@ -30,7 +30,7 @@ import { costForUsage, formatCost } from "../ai/pricing";
 import { renderMarkdownTables } from "./components/markdown-table";
  
 import { stripMarkdown, renderMarkdownAnsi } from "./components/markdown-text";
-import { visibleWidth, wrapTextWithAnsi } from "./components/width";
+import { visibleWidth, wrapTextWithAnsi, truncateToWidth } from "./components/width";
 import { categoryBadge } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
@@ -163,6 +163,12 @@ export class LaunchTui {
   private turnUsage: { inputTokens: number; outputTokens: number } | null = null;
   // True while a delegated subagent turn is in flight — drives the `(sub)` status marker.
   private subagentActive = false;
+  // Live mid-turn input queue (gjc parity): printable keystrokes typed while a turn
+  // owns stdin are captured into the REPL's input queue and folded into the next
+  // prompt; this mirrors that state into the frame so the input affordance never
+  // vanishes — `text` is the in-flight partial line, `lines` the count of complete
+  // lines already queued for the next turn. Reset at every start().
+  private queuedInput: { text: string; lines: number } = { text: "", lines: 0 };
   // Auto-derived turn title (no LLM call): seeded from the first user message, refined
   // once to the first tool's verb+target. Shown in the HUD and synced to the tmux pane
   // title under --tmux so multiple sessions are distinguishable at a glance (gjc parity).
@@ -473,6 +479,35 @@ export class LaunchTui {
     this.draw();
   }
 
+  /** Mirror the REPL's mid-turn input queue into the live frame (gjc parity). Called
+   *  from the abort harness after every accepted keystroke typed during a turn, so the
+   *  user SEES their input being captured instead of typing into a void — the input
+   *  affordance never vanishes. `text` is the in-flight partial line, `lines` the count
+   *  of complete lines already queued to run after this turn. */
+  setQueuedInput(state: { text: string; lines: number }): void {
+    if (this.finished) return;
+    const next = { text: state.text ?? "", lines: Math.max(0, state.lines ?? 0) };
+    if (next.text === this.queuedInput.text && next.lines === this.queuedInput.lines) return;
+    this.queuedInput = next;
+    this.draw();
+  }
+
+  /** One-row queued-input affordance pinned at the bottom of the live frame, shown only
+   *  while the user has typed something mid-turn. Empty when nothing is queued. */
+  private renderQueuedInputRow(cols: number): string[] {
+    const { text, lines } = this.queuedInput;
+    if (!text && lines === 0) return [];
+    const dim = this.theme.color ? chalk.dim : (s: string) => s;
+    const accent = this.theme.color ? accentPaint(this.theme) : (s: string) => s;
+    const arrow = this.unicode ? "⏎" : ">";
+    const caret = this.unicode ? "▌" : "_";
+    const queued = lines > 0 ? `  (+${lines} queued for next turn)` : "";
+    const label = `  ${arrow} queued › `;
+    const budget = Math.max(4, cols - visibleWidth(label) - 1 - visibleWidth(queued));
+    const body = truncateToWidth(text, budget);
+    return [truncateToWidth(`${dim(label)}${accent(body)}${dim(caret)}${dim(queued)}`, cols)];
+  }
+
   /** Append a completed progress-ledger line. In inline mode the line is flushed
    *  straight into normal scrollback ABOVE the live frame, so tmux / terminal
    *  mouse-wheel can review the full progress history mid-turn (gjc-style); the
@@ -627,6 +662,7 @@ export class LaunchTui {
     this.startedAt = Date.now();
     this.turnUsage = null;
     this.lastLedgerKind = null; // fresh turn: no leading spacer before the first ledger line
+    this.queuedInput = { text: "", lines: 0 }; // fresh turn: nothing queued yet
     this.spinner.updateStep(0, this.footer.maxSteps);
     // On a real TTY the live turn renders gjc-style in the MAIN buffer by default:
     // completed ledger lines are flushed into normal scrollback as they happen, so a
@@ -978,6 +1014,7 @@ export class LaunchTui {
       : renderHud(this.hudPhase, { unicode: this.unicode, color: this.theme.color });
     tail.push("");
     tail.push(`${diamond} ${dim("hud")} ${hudTail}`);
+    tail.push(...this.renderQueuedInputRow(cols));
     tail.push(this.renderModelBar(cols, elapsedMs));
 
     // Bottom-anchor: on a too-short terminal drop tail rows from the TOP so the
@@ -1156,6 +1193,8 @@ export class LaunchTui {
     }
     // TTY only: a key-hint bar above the footer (kept out of non-TTY/test frames).
     if (fit) bottom.push(formatHintBar(undefined, { unicode: this.unicode, color: this.theme.color, cols: innerWidth }));
+    // Mid-turn queued-input affordance (gjc parity), shown only when the user typed.
+    if (fit) bottom.push(...this.renderQueuedInputRow(innerWidth));
     // Live animated step strip appended to the footer when the turn has steps.
     const liveSteps = stepsFromTools(this.tools.snapshot());
     const strip = liveSteps.length

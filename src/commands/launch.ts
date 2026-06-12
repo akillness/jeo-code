@@ -1237,6 +1237,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const streamEvents = createStreamEvents(initialStepLimit);
   let queueBusyInput: ((chunk: string) => boolean) | undefined;
   let queueBusyPasteActive: (() => boolean) | undefined;
+  // Live snapshot of the busy-turn input queue (partial line + count of complete
+  // lines awaiting the next prompt) — feeds the TUI's mid-turn queued-input row so
+  // typing during a live turn is VISIBLE (gjc-parity: the input affordance never
+  // vanishes; the user sees what they queued / are about to steer).
+  let queueBusySnapshot: (() => { text: string; lines: number }) | undefined;
   let interactiveTurnActive = false;
 
 
@@ -1287,7 +1292,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         interactiveTurnActive = true;
         tui.start();
       }
-      let queuedInputNotified = false;
       const harness = createInFlightAbortHarness({
         captureEsc: !!tui,
         onNoise: () => tui?.repaint(),
@@ -1301,10 +1305,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         onBufferedInput: chunk => {
           if (!tui) return;
           const queued = queueBusyInput?.(chunk) ?? false;
-          if (queued && !queuedInputNotified) {
-            queuedInputNotified = true;
-            tui.events().onNotice?.("Keyboard input queued for the next prompt…");
-          }
+          // Live mid-turn queued-input row: reflect the in-flight partial + count
+          // after every accepted keystroke (incl. backspace edits and Enter
+          // promoting a line) so the user SEES their input being captured —
+          // the input affordance never vanishes during a turn (gjc parity).
+          if (queued) tui.setQueuedInput(queueBusySnapshot?.() ?? { text: "", lines: 0 });
         },
         onAbortNotice: msg => {
           if (tui) tui.events().onNotice?.(msg);
@@ -1755,6 +1760,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: "", pastedLines: [], inPaste: false };
   queueBusyInput = (chunk: string) => queuePromptInputChunk(queuedPromptInput, chunk);
   queueBusyPasteActive = () => queuedPromptInput.inPaste;
+  queueBusySnapshot = () => ({
+    text: queuedPromptInput.partial,
+    lines: queuedPromptInput.pendingLines.length + queuedPromptInput.pastedLines.length,
+  });
   // Bracketed-paste line routing at the PROMPT: readline strips the 2004 markers
   // and replays pasted lines as synthetic keypresses, emitting paste-start /
   // paste-end around them. Lines submitted INSIDE that window are intentional

@@ -30,7 +30,7 @@ async function effectiveKind(provider: AuthProvider): Promise<string> {
 
 export const TOOLS: ToolDefinition[] = [
   {
-    name: "joc_resolve_provider",
+    name: "jeo_resolve_provider",
     description: "Given a model name (e.g. 'claude-3-5-sonnet', 'openai/mock-1', 'gemini-2.0-flash', 'ollama/llama3'), return which provider jeo would route the call to.",
     inputSchema: {
       type: "object",
@@ -46,7 +46,7 @@ export const TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: "joc_credential_status",
+    name: "jeo_credential_status",
     description: "Report which auth method is configured for a provider (oauth|api_key|none). Does not reveal the secret.",
     inputSchema: {
       type: "object",
@@ -66,7 +66,7 @@ export const TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: "joc_config_snapshot",
+    name: "jeo_config_snapshot",
     description: "Return a redacted snapshot of jeo's current config: default model, openai/ollama base URLs, and which providers have credentials.",
     inputSchema: { type: "object", properties: {} },
     async handler() {
@@ -86,7 +86,7 @@ export const TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: "joc_doctor",
+    name: "jeo_doctor",
     description: "Run jeo's health probe and return a structured report of provider connectivity. Same probe used by 'jeo doctor' CLI.",
     inputSchema: { type: "object", properties: {} },
     async handler() {
@@ -122,7 +122,7 @@ async function captureCommand(run: () => Promise<void>): Promise<string> {
 
 const PIPELINE_TOOLS: ToolDefinition[] = [
   {
-    name: "joc_deep_interview",
+    name: "jeo_deep_interview",
     description: "DANGER: WRITES FILES + BURNS LLM CREDITS. Runs Socratic requirements interview. Writes .jeo/spec.json. Requires default model credential.",
     inputSchema: {
       type: "object",
@@ -140,7 +140,7 @@ const PIPELINE_TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: "joc_ralplan",
+    name: "jeo_ralplan",
     description: "DANGER: WRITES FILES + BURNS LLM CREDITS. Reads .jeo/spec.json, writes .jeo/plan.yaml via Planner/Architect/Critic.",
     inputSchema: { type: "object", properties: {} },
     async handler() {
@@ -150,7 +150,7 @@ const PIPELINE_TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: "joc_team",
+    name: "jeo_team",
     description: "DANGER: WRITES FILES + EDITS CODE + BURNS LLM CREDITS. Executes .jeo/plan.yaml via Executor subagent. Modifies the working tree.",
     inputSchema: { type: "object", properties: {} },
     async handler() {
@@ -160,7 +160,7 @@ const PIPELINE_TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: "joc_ultragoal",
+    name: "jeo_ultragoal",
     description: "DANGER: BURNS LLM CREDITS. Runs acceptance verification against .jeo/spec.json + .jeo/plan.yaml.",
     inputSchema: { type: "object", properties: {} },
     async handler() {

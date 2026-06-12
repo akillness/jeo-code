@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { priceForModel, costForUsage, formatCost } from "../src/ai/pricing";
 import { renderFooter } from "../src/tui/components/footer";
-import { renderJocStatus } from "../src/tui/components/status";
+import { renderJeoStatus } from "../src/tui/components/status";
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -45,15 +45,15 @@ test("renderFooter shows the cost segment only when costUsd > 0", () => {
   expect(zero).not.toContain("$");
 });
 
-test("renderJocStatus [STEP] row shows $cost and a (sub) marker for subagent turns", () => {
-  const line = strip(renderJocStatus({
+test("renderJeoStatus [STEP] row shows $cost and a (sub) marker for subagent turns", () => {
+  const line = strip(renderJeoStatus({
     step: 2, maxSteps: 25, elapsedMs: 5000, color: false, unicode: true,
     usage: { inputTokens: 1000, outputTokens: 500 }, costUsd: 0.42, subagentActive: true,
   })[0]);
   expect(line).toContain("$0.42");
   expect(line).toContain("(sub)");
   // No cost shown when undefined/zero, no (sub) when inactive.
-  const bare = strip(renderJocStatus({
+  const bare = strip(renderJeoStatus({
     step: 2, maxSteps: 25, elapsedMs: 5000, color: false, unicode: true,
     usage: { inputTokens: 1000, outputTokens: 500 },
   })[0]);

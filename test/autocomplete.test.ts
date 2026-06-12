@@ -93,7 +93,7 @@ test("/logout completes cloud provider names", () => {
 });
 
 test("/agents and /model subagent complete role ids, then models + maxSteps keyword", () => {
-  expect(complete("/agents ", ctx()).completions).toEqual(["executor", "planner", "architect", "critic"]);
+  expect(complete("/agents ", ctx()).completions).toEqual(["edit", "executor", "planner", "architect", "critic"]);
   expect(complete("/agents exec", ctx()).completions).toEqual(["executor"]);
   const m = complete("/agents executor ", ctx());
   expect(m.completions).toContain("reset");

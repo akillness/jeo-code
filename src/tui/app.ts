@@ -25,7 +25,7 @@ import { SECTION_GAP, stackSections } from "./components/section";
 import { resolveTheme, themeGradient, accentPaint, accentShadowPaint, diffPaint } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, webSearchCardLines, type ForgeSummary } from "./components/forge";
-import { renderJocStatus, renderStatusBar, renderStatusBox } from "./components/status";
+import { renderJeoStatus, renderStatusBar, renderStatusBox } from "./components/status";
 import { costForUsage, formatCost } from "../ai/pricing";
 import { renderMarkdownTables } from "./components/markdown-table";
  
@@ -35,7 +35,7 @@ import { categoryBadge } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
 import { formatDuration, formatUsage } from "./components/duration";
-import { renderHud, derivePhase, type JocPhase } from "./components/hud";
+import { renderHud, derivePhase, type JeoPhase } from "./components/hud";
 import { formatTodoWriteCard } from "./components/todo-card";
 import { jeoEnv } from "../util/env";
 import chalk from "chalk";
@@ -152,7 +152,7 @@ export class LaunchTui {
   // True between a step start and the model's reply — i.e. we're waiting on the model.
   // Surfaced in the status line ("calling model…") so the wait isn't an opaque pause.
   private thinking = false;
-  private hudPhase: JocPhase = "thinking";
+  private hudPhase: JeoPhase = "thinking";
   private runningTool = false;
   // Latest transient provider notice (rate-limit auto-retry countdown); pinned into the
   // [STEP] status row while waiting so backoff is visible at a glance. Cleared on the
@@ -258,7 +258,7 @@ export class LaunchTui {
     if (hasInProgress && changed && !this.runningTool) {
       this.hudPhase = "planning";
     }
-    // joc-ref transcript: every plan CHANGE flushes a "Todo Write" tree card into
+    // jeo-ref transcript: every plan CHANGE flushes a "Todo Write" tree card into
     // scrollback (☑ + strikethrough as items complete), so the checklist's history
     // is reviewable. The live pinned plan stays in the frame tail as before.
     if (changed && items.length > 0 && !this.finished) {
@@ -288,11 +288,11 @@ export class LaunchTui {
     this.draw();
   }
 
-  /** Write an OSC window/pane title (`ESC]2;joc: <title>BEL`). tmux maps this to the
+  /** Write an OSC window/pane title (`ESC]2;jeo: <title>BEL`). tmux maps this to the
    *  pane title, so multiple --tmux sessions are distinguishable at a glance. TTY only. */
   private emitPaneTitle(): void {
     if (!this.tty || !this.turnTitle) return;
-    try { this.write(`\x1b]2;joc: ${this.turnTitle}\x07`); } catch { /* terminal gone */ }
+    try { this.write(`\x1b]2;jeo: ${this.turnTitle}\x07`); } catch { /* terminal gone */ }
   }
 
   /** Render the task plan as a status-colored checklist; empty when no plan. */
@@ -327,7 +327,7 @@ export class LaunchTui {
         // fallback (tool being formed / reply prose head) — so no model leaves the
         // status box silent while it streams.
         // Draws are THROTTLED to one per 100ms: the old per-delta draw() rendered
-        // the full frame hundreds of times per response (a real chunk of joc's
+        // the full frame hundreds of times per response (a real chunk of jeo's
         // per-step latency); the 120ms timer tick covers the gaps anyway.
         const r = extractStreamingReasoning(textSoFar);
         let changed = false;
@@ -350,7 +350,7 @@ export class LaunchTui {
       onAssistant: (_raw, invocation) => {
         this.thinking = false; // model replied; now dispatching the tool
         this.retryNotice = null; // the call got through — clear any backoff notice
-        // Flush the streamed reasoning once into scrollback as a joc-ref reasoning
+        // Flush the streamed reasoning once into scrollback as a jeo-ref reasoning
         // block — the agent NAME on its own accent line, the prose below it (the
         // durable record) — then stop showing the transient live reasoning row.
         if (this.streamingReasoning && this.streamingReasoning !== this.flushedReasoning) {
@@ -513,7 +513,7 @@ export class LaunchTui {
    *  mouse-wheel can review the full progress history mid-turn (gjc-style); the
    *  StreamRegion copy still feeds the in-frame tail and the non-TTY / alt-screen
    *  final summary.
-   *  `kind` drives the readability rhythm (joc-ref layout): a blank spacer row is
+   *  `kind` drives the readability rhythm (jeo-ref layout): a blank spacer row is
    *  inserted when the ledger switches between groups (tool lines ↔ reasoning ↔
    *  cards ↔ notices) and around every card — same-kind lines stay adjacent so a
    *  burst of ✓ reads still scans as one block.
@@ -578,7 +578,7 @@ export class LaunchTui {
   }
 
   /**
-   * Real, stable "what joc is doing right now" for the [STEP] line — the in-flight tool's
+   * Real, stable "what jeo is doing right now" for the [STEP] line — the in-flight tool's
    * actual target (file / command), else the active plan step, else overall plan progress.
    * Replaces the per-tick cycling status text so the line shows genuine content (thinking
    * about a real file/step) instead of churning decorative messages every 120ms.
@@ -758,7 +758,7 @@ export class LaunchTui {
     const timelineSteps = stepsFromTools(this.tools.snapshot());
     const totalElapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
     const finalLines: string[] = [];
-    // joc-ref final-report order: the ANSWER leads; the Todos checklist follows it
+    // jeo-ref final-report order: the ANSWER leads; the Todos checklist follows it
     // (done = checked + struck through), so the plan reads as a completion receipt.
     const planLines = this.renderPlan(this.theme.color);
     if (!this.inline) {
@@ -782,7 +782,7 @@ export class LaunchTui {
     if (!this.inline) {
       // Inline turns flushed every completed card into scrollback live; re-printing
       // the cards here would duplicate them right below themselves. A spacer row
-      // keeps the card block from gluing to the stream above (joc-ref rhythm).
+      // keeps the card block from gluing to the stream above (jeo-ref rhythm).
       const forge = this.renderForge(size().cols, 3);
       if (forge.length && finalLines.length) finalLines.push("");
       finalLines.push(...forge);
@@ -796,7 +796,7 @@ export class LaunchTui {
       const doneBadge = categoryBadge("done", { color: this.theme.color });
       finalLines.push(`${doneBadge} ${flow} · ${stepsCount} steps · ${durationStr}${usageStr}`);
     }
-    // joc-ref final-report rendering: GFM tables become box-drawn tables, then
+    // jeo-ref final-report rendering: GFM tables become box-drawn tables, then
     // headings/bold/inline-code are styled (theme accent) instead of stripped.
     // color:false keeps the plain stripMarkdown text for pipes/tests.
     const tabled = renderMarkdownTables(reply, { unicode: this.unicode });
@@ -807,10 +807,10 @@ export class LaunchTui {
     const peak = this.progress.current();
     const usageSuffix = this.turnUsage ? ` · ${formatUsage(this.turnUsage)}` : "";
     if (this.inline) {
-      // joc-ref clean ending: the ANSWER leads, then the Todos completion receipt,
+      // jeo-ref clean ending: the ANSWER leads, then the Todos completion receipt,
       // then exactly ONE compact dim status line (steps · time · usage · evolution
       // track). The live ledger above already recorded every step. A blank spacer
-      // row separates the ledger from the answer (joc-ref vertical rhythm).
+      // row separates the ledger from the answer (jeo-ref vertical rhythm).
       finalLines.push("");
       finalLines.push(`jeo> ${renderedReply}`);
       if (planLines.length) {

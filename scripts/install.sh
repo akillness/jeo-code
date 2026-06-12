@@ -277,20 +277,16 @@ install_binary() {
   fi
 }
 
-# Add a compatibility symlink in INSTALL_DIR so the documented location keeps
-# working even when Bun's global bin dir is not on PATH.
+# Add a symlink in INSTALL_DIR so the documented location works even when
+# Bun's global bin dir is not on PATH.
 link_compat() {
   [ "$DRY_RUN" = "1" ] && return 0
   BUN_BIN="$(bun_bin_dir)"
   [ -e "$BUN_BIN/jeo" ] && LINKED="$BUN_BIN/jeo"
-  [ -z "$LINKED" ] && [ -e "$BUN_BIN/joc" ] && LINKED="$BUN_BIN/joc"
   mkdir -p "$INSTALL_DIR"
   if [ -n "$LINKED" ]; then
     ln -sf "$LINKED" "$INSTALL_DIR/jeo"
     chmod +x "$INSTALL_DIR/jeo" 2>/dev/null || true
-    # Legacy alias: `joc` keeps working after the jeo rename.
-    ln -sf "$LINKED" "$INSTALL_DIR/joc"
-    chmod +x "$INSTALL_DIR/joc" 2>/dev/null || true
   fi
 }
 

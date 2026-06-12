@@ -175,7 +175,7 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     case "/logout":
       return argIndex === 0 ? finish(["anthropic", "openai", "gemini", "antigravity"], "provider") : { completions: [], token, kind: "none" };
     case "/agents": {
-      if (argIndex === 0) return finish(ctx.roleIds, "role");
+      if (argIndex === 0) return finish(["edit", ...ctx.roleIds], "role");
       if (argIndex === 1) return finish(["reset", "maxSteps", ...rankedModelPool(ctx)], "model");
       if (argIndex === 2 && (tokens[2]?.toLowerCase() === "maxsteps" || tokens[2]?.toLowerCase() === "steps")) return { completions: [], token, kind: "none" };
       return { completions: [], token, kind: "none" };

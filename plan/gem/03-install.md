@@ -11,7 +11,7 @@
 Provide a seamless, multi-ecosystem installer. Python developers should be able to run `uv tool install gem-ai` (or `pip install gem-ai`) and get a working `gem` command. Node/Bun developers can run `bun link`. The installation layer must automatically check for Bun, enforce version requirements, compile the native binary, and set up system paths.
 
 ## 2. Current State (cite evidence)
-- `jeo-code/install.sh` is a pure bash script that runs `bun install` and symlinks `coding-agent/src/cli.ts` to `~/.local/bin/joc`.
+- `jeo-code/install.sh` is a pure bash script that runs `bun install` and symlinks `coding-agent/src/cli.ts` to `~/.local/bin/jeo`.
 - There is no Python packaging (`pyproject.toml` or `setup.py`) or integration with `uv` (Python packaging manager).
 - Developers must have Bun pre-installed; there is no auto-installer or pre-compiled single-binary compilation script in the base repo.
 

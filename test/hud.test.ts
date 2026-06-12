@@ -1,5 +1,5 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import { renderHud, derivePhase, type JocPhase } from "../src/tui/components/hud";
+import { renderHud, derivePhase, type JeoPhase } from "../src/tui/components/hud";
 import chalk from "chalk";
 
 let prevChalkLevel = chalk.level;

@@ -1,5 +1,5 @@
 import type { Message } from "./loop";
-import { getLocalJocDir } from "./state";
+import { getLocalJeoDir } from "./state";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -42,7 +42,7 @@ export function newSessionId(): string {
 }
 
 export function sessionsDir(cwd = process.cwd()): string {
-  return path.join(getLocalJocDir(cwd), "sessions");
+  return path.join(getLocalJeoDir(cwd), "sessions");
 }
 
 export function sessionPath(id: string, cwd = process.cwd()): string {

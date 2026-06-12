@@ -1,4 +1,7 @@
 import { test, expect } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
   bashCommandAllowed,
   subagentToolset,
@@ -45,13 +48,15 @@ test("subagentToolset: a role's bash allowlist actually gates the bash tool", as
     bashAllowedPrefixes: ["echo"],
   };
   const tools = subagentToolset(sandboxed);
-  const allowed = await tools.bash({ command: "echo hello" }, process.cwd());
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-subagent-bash-"));
+  const allowed = await tools.bash({ command: "echo hello" }, cwd);
   expect(allowed.success).toBe(true);
   expect(allowed.output).toContain("hello");
 
-  const blocked = await tools.bash({ command: "rm -rf /tmp/should-not-run" }, process.cwd());
+  const blocked = await tools.bash({ command: "rm -rf /tmp/should-not-run" }, cwd);
   expect(blocked.success).toBe(false);
   expect(blocked.error).toContain("bash rejected for role 'sandboxed'");
+  await fs.rm(cwd, { recursive: true, force: true });
 });
 
 test("executor (no allowlist) keeps the unconstrained default bash handler", () => {

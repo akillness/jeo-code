@@ -1141,7 +1141,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     " Call task with {\"role\": <one of the advertised roles>, \"task\": <assignment>, \"context\": <optional>} to hand a focused slice to a subagent." : "") +
     (allowedTools.has("todo") ? "\n\nPlanning: " + TODO_TOOL_PROTOCOL_LINE : "") +
     (effectiveNoSkills ? "" :
-    "\n\nJOC workflow routing:\n" +
+    "\n\nJEO workflow routing:\n" +
     "- Answer the user's request DIRECTLY. Never reply with a catalog, list, or summary of skills unless the user explicitly asks what skills exist.\n" +
     "- Advertise both bundled workflow skills and configured skills below. Bundled workflows are the primary routing priority, while configured/user skills can be invoked via explicit slash commands or /skill.\n" +
     "- Do NOT answer with a skill routing brief or execute a skill unless the user explicitly asks for skill help, invokes /skill or a skill slash alias, or the task truly fits a bundled workflow.\n" +
@@ -1765,7 +1765,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   process.once("exit", restorePromptRawMode);
   // Stdin EOF must END the REPL, not hang it: under Bun a pending `rl.question`
   // NEVER settles once the input stream closes (Ctrl-D, exhausted pipe) — the
-  // while(true) prompt loop then waits forever (the "joc never exits" hang).
+  // while(true) prompt loop then waits forever (the "jeo never exits" hang).
   // Bun's readline also DROPS piped lines that arrive between prompts (question()
   // only captures the line submitted while it is registered; orphan lines emit
   // 'line' instead), so queue those and serve them before prompting again.
@@ -2035,7 +2035,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       cursor: caret,
     });
     const input = frame.lines.map(l => truncateAnsi(l, cols));
-    // joc-ref layout: a blank spacer row between the status bar (row 0) and the
+    // jeo-ref layout: a blank spacer row between the status bar (row 0) and the
     // input box, so the box breathes instead of gluing to the bar — the caret
     // (and everything below) therefore shifts down TWO rows.
     footerCursor = {
@@ -3168,17 +3168,25 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const roleArg = tokens[0];
         const modelArg = tokens[1];
         const cfgNow = await readGlobalConfig();
-        if (!roleArg || roleArg === "/" || roleArg === "?" || roleArg.toLowerCase() === "help") {
+        const subcommand = roleArg?.toLowerCase();
+        const printRoster = () => {
           console.log("Subagent roles (used by 'jeo team'):");
           for (const line of formatAgentsPanel(allSubagentRoles(cfgNow), r => ({
             model: resolveSubagentModel(r.id, cfgNow),
             maxSteps: resolveSubagentMaxSteps(r.id, cfgNow),
             thinking: resolveSubagentThinking(r.id, cfgNow),
           }))) console.log(line);
-          console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  provider: /agents <role> provider <name> [model]  ·  steps: /agents <role> maxSteps <N>");
+          console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  provider: /agents <role> provider <name> [model]  ·  steps: /agents <role> maxSteps <N>  ·  picker: /agents edit");
           console.log("Tip: set a role while choosing models with /model subagent <role> [model|#N]");
           console.log(`Available: ${allSubagentRoles(cfgNow).map(r => r.id).join(", ")} (declare custom roles in config.subagents)`);
-          console.log("Subcommands: <role> <model|#N>, <role> provider <name> [model], <role> maxSteps <N>, <role> reset");
+          console.log("Subcommands: edit, <role> <model|#N>, <role> provider <name> [model], <role> maxSteps <N>, <role> reset");
+        };
+        if (!roleArg || roleArg === "/" || roleArg === "?" || subcommand === "help") {
+          printRoster();
+          continue;
+        }
+        if (subcommand === "edit" || subcommand === "picker") {
+          printRoster();
           // Interactive editor (TTY): role picker → action picker → live model
           // picker / reset — the arrows+Enter way to CHANGE an existing setting.
           const rolePick = await pickFromOptions(

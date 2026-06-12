@@ -571,7 +571,7 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
       const readiness = freezeReadiness(parsed);
       if (!readiness.ok) throw new Error(`Refusing to freeze seed: ${readiness.reason}.`);
 
-      const seedDir = path.join(getLocalJocDir(cwd), "seeds");
+      const seedDir = path.join(getLocalJeoDir(cwd), "seeds");
       await fs.mkdir(seedDir, { recursive: true });
       const seedPath = path.join(seedDir, `seed-${slug}.yaml`);
       const constraints = normalizeList(parsed.constraints);

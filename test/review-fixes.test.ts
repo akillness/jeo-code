@@ -8,7 +8,7 @@ import { createSession, appendMessage, loadSession, sessionPath } from "../src/a
 import { LaunchTui } from "../src/tui/app";
 import { renderAsciiArt, getStageByIndex } from "../src/tui/components/ascii-art";
 import { resolveTheme } from "../src/tui/components/themes";
-import { renderJocStatus } from "../src/tui/components/status";
+import { renderJeoStatus } from "../src/tui/components/status";
 import { ToolList } from "../src/tui/components/tool-list";
 import { boxBlock, BOX_ASCII } from "../src/tui/components/layout";
 import { visibleWidth } from "../src/tui/components/color";
@@ -214,8 +214,8 @@ test("FIX 2: render art with theme.color=false -> output has no \\x1b[", () => {
   expect(text).not.toContain("\x1b[");
 });
 
-test("FIX 3: renderJocStatus with color=false -> no \\x1b[", () => {
-  const status = renderJocStatus({
+test("FIX 3: renderJeoStatus with color=false -> no \\x1b[", () => {
+  const status = renderJeoStatus({
     step: 1,
     maxSteps: 25,
     message: "thinking",

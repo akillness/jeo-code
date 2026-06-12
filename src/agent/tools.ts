@@ -80,9 +80,9 @@ export async function assertMutationAllowed(
     // Check if the target is NOT inside the local .jeo folder. Use a path-boundary
     // check (not bare startsWith) so siblings like ".jeo-backup" aren't mistaken for ".jeo/".
     const absPath = path.resolve(cwd, filePath);
-    const jocDir = path.resolve(cwd, ".jeo");
-    const insideJoc = absPath === jocDir || absPath.startsWith(jocDir + path.sep);
-    if (!insideJoc) {
+    const jeoDir = path.resolve(cwd, ".jeo");
+    const insideJeo = absPath === jeoDir || absPath.startsWith(jeoDir + path.sep);
+    if (!insideJeo) {
       throw new Error(
         `[MutationGuard Blocked] Code mutation is blocked while a Socratic interview is active (the requirements seed is not yet frozen).\n` +
         `Current ambiguity: ${((deepInterviewState.current_ambiguity ?? 1) * 100).toFixed(0)}%. Finish the interview to freeze the seed and unlock writes — run 'jeo deep-interview'. Non-interactive '--auto' can continue clarification, but it does not bypass the ambiguity gate.\n` +

@@ -40,7 +40,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/logout", usage: "/logout <anthropic|openai|gemini|antigravity>", description: "Remove the stored OAuth token for a provider", group: "models" },
   { command: "/roles", usage: "/roles [tier model]", description: "Show or set model role tiers (smol/slow/plan)", group: "models" },
   { command: "/thinking", usage: "/thinking [level]", description: "Show or set thinking budget (minimal/low/medium/high/xhigh)", group: "models" },
-  { command: "/agents", usage: "/agents [role] [model|#N|maxSteps N|reset]", description: "List subagent roles, edit interactively, or pin role model/settings", group: "subagents" },
+  { command: "/agents", usage: "/agents [edit|role] [model|#N|maxSteps N|reset]", description: "List subagent roles; use /agents edit for the interactive picker or pin role model/settings", group: "subagents" },
   { command: "/subagent", usage: "/subagent [role]", description: "Show the current subagent composition (per-role model · thinking · steps); alias of /agents", group: "subagents" },
   { command: "/view", usage: "/view <file> [a-b]", description: "Render a file with line numbers + light highlight", group: "code" },
   { command: "/diff", usage: "/diff [file]", description: "Render `git diff` with +/- coloring", group: "code" },

@@ -1,4 +1,7 @@
 import { test, expect } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { applyBashFixups } from "../src/agent/bash-fixups";
 
 test("applyBashFixups: Rule 1: strip-trailing", () => {
@@ -74,14 +77,18 @@ test("applyBashFixups: passthrough; quotes/globs untouched", () => {
 
 test("bashTool respects the JEO_BASH_FIXUPS env flag (off by default)", async () => {
   const { bashTool } = await import("../src/agent/tools");
-  delete process.env.JEO_BASH_FIXUPS;
-  const resOff = await bashTool("././nonexistent_script_file");
-  expect(resOff.output).toContain("././nonexistent_script_file");
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-bash-fixups-"));
+  try {
+    delete process.env.JEO_BASH_FIXUPS;
+    const resOff = await bashTool("././nonexistent_script_file", cwd);
+    expect(resOff.output).toContain("././nonexistent_script_file");
 
-  process.env.JEO_BASH_FIXUPS = "1";
-  const resOn = await bashTool("././nonexistent_script_file");
-  expect(resOn.output).toContain("./nonexistent_script_file");
-  expect(resOn.output).not.toContain("././nonexistent_script_file");
-
-  delete process.env.JEO_BASH_FIXUPS;
+    process.env.JEO_BASH_FIXUPS = "1";
+    const resOn = await bashTool("././nonexistent_script_file", cwd);
+    expect(resOn.output).toContain("./nonexistent_script_file");
+    expect(resOn.output).not.toContain("././nonexistent_script_file");
+  } finally {
+    delete process.env.JEO_BASH_FIXUPS;
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
 });

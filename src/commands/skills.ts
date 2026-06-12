@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { SKILLS, getSkillFrom, formatSkill, loadSkills, skillDirs } from "../skills/catalog";
-import { getLocalJocDir } from "../agent/state";
+import { getLocalJeoDir } from "../agent/state";
 
 function editDistance(a: string, b: string): number {
   const m = a.length, n = b.length;
@@ -36,7 +36,7 @@ export async function runSkillsCommand(args: string[] = []): Promise<void> {
 
   // `jeo skills --write [dir]` materializes bundled skill docs to disk (gjc-style SKILL.md files).
   if (cleanArgs[0] === "--write") {
-    const dir = cleanArgs[1] ? path.resolve(cwd, cleanArgs[1]) : path.join(getLocalJocDir(cwd), "skills");
+    const dir = cleanArgs[1] ? path.resolve(cwd, cleanArgs[1]) : path.join(getLocalJeoDir(cwd), "skills");
     await fs.mkdir(dir, { recursive: true });
     for (const s of SKILLS) {
       const file = path.join(dir, `${s.name}.md`);

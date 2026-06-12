@@ -54,10 +54,10 @@ test("formatSlashCommandList lists all commands for bare slash and narrows by pr
   const all = formatSlashCommandList("/").join("\n");
   expect(all).toContain("Slash Commands:");
   expect(all).toContain("/model [id|#N|save|subagent <role> <model|#N>]");
-  expect(all).toContain("/agents [role] [model|#N|maxSteps N|reset]");
+  expect(all).toContain("/agents [edit|role] [model|#N|maxSteps N|reset]");
   expect(all).toContain("Subagents:");
   expect(all).toContain("/subagent [role]"); // view alias of /agents (re-added by user request)
-  expect(formatSlashCommandList("/?").join("\n")).toContain("/agents [role] [model|#N|maxSteps N|reset]");
+  expect(formatSlashCommandList("/?").join("\n")).toContain("/agents [edit|role] [model|#N|maxSteps N|reset]");
 
   const modelOnly = formatSlashCommandList("/m").join("\n");
   expect(modelOnly).toContain("Slash Commands matching '/m':");

@@ -33,7 +33,7 @@ Utility, maintenance, and installation scripts for `jeo-code`. Contains standalo
 ## Dependencies
 
 ### Internal
-- May invoke `joc` binary or `src/cli.ts`.
+- May invoke `jeo` binary or `src/cli.ts`.
 
 ### External
 - System utilities (bash, curl, rm, ln).

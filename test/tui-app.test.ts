@@ -278,7 +278,7 @@ test("LaunchTui: setTodos renders a plan checklist in live and final output", ()
 
 test("LaunchTui: corrupt deep-interview state shows fail-closed mutation lock", async () => {
   const originalCwd = process.cwd();
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "joc-tui-lock-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-tui-lock-"));
   try {
     await fs.mkdir(path.join(dir, ".jeo", "state"), { recursive: true });
     await fs.writeFile(path.join(dir, ".jeo", "state", "deep-interview-state.json"), "{ nope", "utf8");

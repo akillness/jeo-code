@@ -322,7 +322,7 @@ export async function saveConfigPatch(build: (raw: Config) => Partial<Config>): 
   return next;
 }
 
-export function getLocalJocDir(cwd: string = process.cwd()): string {
+export function getLocalJeoDir(cwd: string = process.cwd()): string {
   return path.join(cwd, ".jeo");
 }
 
@@ -330,7 +330,7 @@ export async function readWorkflowState(
   skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
   cwd: string = process.cwd()
 ): Promise<WorkflowState | null> {
-  const statePath = path.join(getLocalJocDir(cwd), "state", `${skill}-state.json`);
+  const statePath = path.join(getLocalJeoDir(cwd), "state", `${skill}-state.json`);
   try {
     const data = await fs.readFile(statePath, "utf-8");
     return JSON.parse(data) as WorkflowState;
@@ -348,7 +348,7 @@ export async function readWorkflowStateStrict(
   skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
   cwd: string = process.cwd()
 ): Promise<WorkflowState | null> {
-  const statePath = path.join(getLocalJocDir(cwd), "state", `${skill}-state.json`);
+  const statePath = path.join(getLocalJeoDir(cwd), "state", `${skill}-state.json`);
   let data: string;
   try {
     data = await fs.readFile(statePath, "utf-8");
@@ -368,7 +368,7 @@ export async function writeWorkflowState(
   state: WorkflowState,
   cwd: string = process.cwd()
 ): Promise<string> {
-  const stateDir = path.join(getLocalJocDir(cwd), "state");
+  const stateDir = path.join(getLocalJeoDir(cwd), "state");
   await fs.mkdir(stateDir, { recursive: true });
   const statePath = path.join(stateDir, `${skill}-state.json`);
   // Atomic temp+rename (zeroclaw crash-durability): workflow state is rewritten
@@ -389,7 +389,7 @@ export async function clearWorkflowState(
   skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
   cwd: string = process.cwd()
 ): Promise<void> {
-  const statePath = path.join(getLocalJocDir(cwd), "state", `${skill}-state.json`);
+  const statePath = path.join(getLocalJeoDir(cwd), "state", `${skill}-state.json`);
   try {
     await fs.unlink(statePath);
   } catch {}
@@ -406,7 +406,7 @@ export async function acquireWorkflowRunLock(
   skill: "team" | "ultragoal",
   cwd: string = process.cwd(),
 ): Promise<() => Promise<void>> {
-  const stateDir = path.join(getLocalJocDir(cwd), "state");
+  const stateDir = path.join(getLocalJeoDir(cwd), "state");
   await fs.mkdir(stateDir, { recursive: true });
   const lockPath = path.join(stateDir, `${skill}.lock`);
   const payload = JSON.stringify({ pid: process.pid, at: Date.now() });

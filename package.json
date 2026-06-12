@@ -5,8 +5,7 @@
   "type": "module",
   "main": "src/cli.ts",
   "bin": {
-    "jeo": "src/cli.ts",
-    "joc": "src/cli.ts"
+    "jeo": "src/cli.ts"
   },
   "files": [
     "src",

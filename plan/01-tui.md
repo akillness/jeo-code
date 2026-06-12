@@ -1,6 +1,6 @@
 # 01 — TUI Plan (gjc / pi-tui-style terminal UI)
 
-> A pure-TypeScript differential terminal renderer for `joc`, so the interactive
+> A pure-TypeScript differential terminal renderer for `jeo`, so the interactive
 > agent and pipeline render like gjc — live tool calls, streaming text, a status
 > footer, and a slash-command palette — instead of scrolling raw `console.log`.
 
@@ -9,7 +9,7 @@
 ---
 
 ## 1. Goal
-Give `joc` a real terminal UI: in-place redraw (no scroll spam), a live tool-call
+Give `jeo` a real terminal UI: in-place redraw (no scroll spam), a live tool-call
 list, streaming assistant text, and a persistent status footer (model · elapsed ·
 step). Match gjc's interactive feel without its native (Rust/sixel) dependencies.
 Must degrade cleanly to today's plain-stream output on non-TTY / `--no-tui`.
@@ -33,7 +33,7 @@ Must degrade cleanly to today's plain-stream output on non-TTY / `--no-tui`.
   incidental complexity for a lean CLI.
 - **pi-mono** `packages/tui` (`pi-tui`): **differential rendering** terminal UI (repaint only changed
   lines), streaming output, tool-call rendering. This is the model we copy.
-- **joc** decision: a ~pure-TS `src/tui/` with a diff renderer + a small component set, wired to the
+- **jeo** decision: a ~pure-TS `src/tui/` with a diff renderer + a small component set, wired to the
   existing engine events. No native deps. `--no-tui` and non-TTY fall back to the current stream path.
 
 ## 4. Design & Architecture
@@ -76,9 +76,9 @@ user input ─▶ runAgentLoop(history, { events })
 
 ## 6. Acceptance Criteria (testable)
 - [ ] `src/tui/renderer.ts` exists; unit test proves a 1-row change repaints exactly 1 row (not the whole frame).
-- [ ] `joc launch` on a TTY shows a **footer redrawn in place** with `model · step N/25 · elapsed`s (no duplicate footer lines in scrollback).
+- [ ] `jeo launch` on a TTY shows a **footer redrawn in place** with `model · step N/25 · elapsed`s (no duplicate footer lines in scrollback).
 - [ ] Tool calls render as a live list: `running → ok/FAILED`, not one `console.log` per event.
-- [ ] `joc launch --no-tui` and non-TTY (`echo x | joc`) produce the **same final assistant text** as today (byte-compatible final line).
+- [ ] `jeo launch --no-tui` and non-TTY (`echo x | jeo`) produce the **same final assistant text** as today (byte-compatible final line).
 - [ ] `tsc -p tsconfig.json --noEmit` → 0; `bun test` includes ≥2 new TUI tests, all green.
 - [ ] No new runtime npm dependency (chalk only); engine.ts unchanged (`git diff` shows 0 lines in `src/agent/engine.ts`).
 
@@ -95,9 +95,9 @@ user input ─▶ runAgentLoop(history, { events })
 ```bash
 bun run typecheck
 bun test test/tui-renderer.test.ts test/tui-components.test.ts
-# TTY (manual): joc launch  → footer redraws in place; tool list updates live
-echo "create a file ok.txt with text hi" | joc            # non-TTY: plain stream, unchanged
-joc launch --no-tui "say hi"                               # explicit fallback parity
+# TTY (manual): jeo launch  → footer redraws in place; tool list updates live
+echo "create a file ok.txt with text hi" | jeo            # non-TTY: plain stream, unchanged
+jeo launch --no-tui "say hi"                               # explicit fallback parity
 ```
 
 ## 9. Long-term / Future
@@ -109,5 +109,5 @@ joc launch --no-tui "say hi"                               # explicit fallback p
 ## 10. Changelog
 - 2026-06-05 — plan created.
 - 2026-06-05 — M1+M2 shipped: `src/tui/{terminal,renderer,app}.ts` + `src/tui/components/*`, wired into
-  `joc launch` behind `isTTY() && !--no-tui` with the stream fallback preserved. 11 TUI tests; full
+  `jeo launch` behind `isTTY() && !--no-tui` with the stream fallback preserved. 11 TUI tests; full
   suite 45/45; `docs/improvements.md §24`. Remaining: M3 (slash palette/autocomplete), M4 (pipeline/doctor views).

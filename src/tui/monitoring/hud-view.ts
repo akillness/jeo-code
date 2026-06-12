@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { renderHud, type JocPhase } from "../components/hud";
+import { renderHud, type JeoPhase } from "../components/hud";
 import { 
   evolutionTrack, 
   stageIndexForStep, 
@@ -10,7 +10,7 @@ import {
 } from "../components/evolution";
 
 export interface MonitorState {
-  phase: JocPhase;
+  phase: JeoPhase;
   step: number;
   maxSteps: number;
   tickCount: number;

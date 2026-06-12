@@ -43,7 +43,7 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
   const ok = unicode ? "✔" : "v";
   const bad = unicode ? "✗" : "x";
   const userMark = unicode ? "▸" : ">";
-  const jocMark = unicode ? "◂" : "<";
+  const jeoMark = unicode ? "◂" : "<";
   const cyanBold = color ? chalk.cyan.bold : (s: string) => s;
   const magentaBold = color ? chalk.magenta.bold : (s: string) => s;
   const dim = color ? chalk.dim : (s: string) => s;
@@ -97,7 +97,7 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
       ? String((invocation.arguments as { reason?: unknown } | undefined)?.reason ?? "")
       : m.content;
     if (!reason.trim()) continue;
-    lines.push(`${magentaBold(`jeo ${jocMark}`)}`);
+    lines.push(`${magentaBold(`jeo ${jeoMark}`)}`);
     lines.push(...clipBody(reason.trim(), bodyCap));
   }
   return lines;

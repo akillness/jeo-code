@@ -463,7 +463,7 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
  *  module path), and the prompt size actually injected. Pure — testable. */
 export function skillInvocationCard(skill: SkillDoc): string[] {
   const promptLines = (skill.raw ?? skill.details ?? "").split("\n").filter(l => l.trim().length > 0).length;
-  // joc-ref tree-connector detail: the skill name leads, resolved metadata hangs
+  // jeo-ref tree-connector detail: the skill name leads, resolved metadata hangs
   // off ├─/└─ connectors so the card scans like the reference's Skill panel.
   return [
     `Skill: ${skill.name}`,

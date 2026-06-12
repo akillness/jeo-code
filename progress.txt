@@ -7,7 +7,7 @@
 [2026-06-10] Pass 874 — 429 resilience + box-only input
 - retry: escalating 429 floor (2s→30s cap), default budget 6 attempts (~60s total), onRetry delay surfaced end-to-end as AgentLoopEvents.onNotice (TUI/plain/team/subagent).
 - engine: terminal LLM error reported once (doneReason only); onError removed.
-- launch: boxed input footer adaptive 5–12 rows (short terminals keep the box), empty readline prompt in box mode — raw `joc>` input never visible.
+- launch: boxed input footer adaptive 5–12 rows (short terminals keep the box), empty readline prompt in box mode — raw `jeo>` input never visible.
 - Verified: tsc 0; build ok; bun test 724 pass / 0 fail. Committed eb37122.
 [2026-06-10] Pass 878 — Google OAuth bundled client secret
 - google.ts: requireClientSecret() (env-only, broke login at token exchange) → googleClientSecret(): GEMINI_OAUTH_CLIENT_SECRET override → bundled gemini-cli default (b64). Test in oauth.test.ts; AGENTS.md note corrected.
@@ -18,23 +18,23 @@
 - scripts/verify-models.ts: live per-provider recent-model verification → 0 hard failures (rate-limited models distinguished).
 - Verified: typecheck 0; bun test 743 pass / 0 fail; build ok.
 [2026-06-10] Ratchet loop — gjc-parity wave 1 (parallel subagents)
-- Baseline: typecheck 0, 758 pass. gjc v0.4.3 surface diffed against joc → gap list.
-- Wave 1 (4 parallel executors): joc state (read/write/clear/handoff over .jeo/state), joc session (tmux list/attach/rm with injectable runTmux), launch -p/--print + -c/--continue + --append-system-prompt (@file), joc update (--check/--install/--json/--strict, injectable deps).
+- Baseline: typecheck 0, 758 pass. gjc v0.4.3 surface diffed against jeo → gap list.
+- Wave 1 (4 parallel executors): jeo state (read/write/clear/handoff over .jeo/state), jeo session (tmux list/attach/rm with injectable runTmux), launch -p/--print + -c/--continue + --append-system-prompt (@file), jeo update (--check/--install/--json/--strict, injectable deps).
 - Registry wired in runner.ts (state/session/update). 1 keep/revert event: update.ts string|null narrowing fixed at gate.
 - Gate: typecheck 0; 789 pass / 0 fail (+31). Live smoke: state write/handoff/read + unknown-skill exit 1; session list; update --json all verified.
 [2026-06-10] Ratchet loop — wave 2 + OAuth operability + UX fixes
-- Wave 2 (3 parallel executors): launch toggles (--no-skills/--skills globs/--no-tools/--tools/--system-prompt + buildToolProtocol/filterToolMap), joc skills list|read --json, joc export --html (renderSessionHtml).
-- ROOT CAUSE found by live verification: `joc chat --model X` swallowed the flag into the message → always chatted with the DEFAULT model. This masked anthropic/antigravity selection entirely ("OAuth 모델이 동작 안 함"). Fixed via parseChatArgs + test; claude-haiku-4-5 OAuth now answers live (12in/4out tokens).
+- Wave 2 (3 parallel executors): launch toggles (--no-skills/--skills globs/--no-tools/--tools/--system-prompt + buildToolProtocol/filterToolMap), jeo skills list|read --json, jeo export --html (renderSessionHtml).
+- ROOT CAUSE found by live verification: `jeo chat --model X` swallowed the flag into the message → always chatted with the DEFAULT model. This masked anthropic/antigravity selection entirely ("OAuth 모델이 동작 안 함"). Fixed via parseChatArgs + test; claude-haiku-4-5 OAuth now answers live (12in/4out tokens).
 - Engine: prose-salvage fix — pure-prose LLM replies become done.reason instead of bounced corrections (killed the "죄송합니다… JSON tool call" apology-as-reply bug); correction text now forbids apologies + offers done-resend; MAX_PARSE_BOUNCES=2 then salvage. New onUsage event (cumulative per-call).
 - TUI: formatDuration/formatTokenCount/formatUsage (duration.ts) — "took 3 steps in 1m 45s · 14.2k in / 1.1k out tokens" summary; per-turn usage tracked via onUsage.
 - Gate: typecheck 0; 831 pass / 0 fail (+42). Wave 3 in flight: plain-stream live status, gradient status animation, gemini-cli credential import (antigravity unlock).
 [2026-06-10] Mock/fallback purge + TUI insight rows (pass 882)
 - model-discovery: ANTIGRAVITY_MODELS static catalog fallback REMOVED. Antigravity lists models from the live Cloud Code Assist `v1internal:fetchAvailableModels` (POST) — gjc parity. Response decoded from real payload: map KEY is the callable id (entry.model is an internal MODEL_PLACEHOLDER_* enum); `agentModelSorts` groups are the API's positive agent set (preferred); non-chat role lists (tab/image/transcription/commit/mquery/deprecated-as-object) excluded data-driven. catalogOr now falls back ONLY for OpenAI/Codex.
 - TUI: status split into [STEP] (metrics: step n/m · meter · elapsed · avg) / [STATUS] (live insight: current file, retry backoff) / [TOOL] (forge). Retry notices pinned to [STATUS] only — never appended to the stream log (no more repeated "rate limited" rows).
-- Live proof: `joc models` → antigravity (oauth): 8 agent models (exact product picker set); `joc chat --model antigravity/gemini-3-flash` → "OK" (6 in / 95 out tokens) on dedicated Antigravity OAuth.
+- Live proof: `jeo models` → antigravity (oauth): 8 agent models (exact product picker set); `jeo chat --model antigravity/gemini-3-flash` → "OK" (6 in / 95 out tokens) on dedicated Antigravity OAuth.
 - Gate: typecheck 0; 864 pass / 0 fail. Keep/revert events this pass: deprecatedModelIds object-shape spread crash caught by live run and fixed + regression test.
 [2026-06-10] Pass 883 — $skill 호출 + HUD phase flow + TUI 연속입력/스타일
-- skills: `$스킬명 [intent]` 직접 호출(첫 토큰 정확 일치만 발동; $HOME 등은 모델로 통과) + Tab 자동완성($sp → $spec-kit) + `joc skills`에 디스커버리 경로/호출법 노출.
+- skills: `$스킬명 [intent]` 직접 호출(첫 토큰 정확 일치만 발동; $HOME 등은 모델로 통과) + Tab 자동완성($sp → $spec-kit) + `jeo skills`에 디스커버리 경로/호출법 노출.
 - TUI: finish()가 alt-screen 복귀 후 clear-to-EOL + clear-below로 잔존 행 제거 — 요약 겹침/깨진 이중 입력박스 해소, 연속 요청 입력 구조 검증(tmux 라이브 2턴). [STEP] 행에 라이브 토큰 사용량(`4.1k in / 42 out`).
 - HUD: thinking→planning→executing→reporting→done phase 행(완료 체크/현재 강조/미래 dim) + [STATUS] 그룹 위아래 간격; 턴 종료시 `[DONE] thinking → … · steps · 시간 · 토큰` 정리 보고.
 - 스텝/Plan 체크리스트: 완료=체크+취소선+dim, 실패=빨강, 진행=시안 볼드 (color:false 경로 바이트 동일 유지).
@@ -46,7 +46,7 @@
 - TUI/UX: footer `ctx NN%`, red-claw/blue-crab themes, in-flight abort harness (Ctrl-C cancel, ESC cancel in live TUI, second Ctrl-C hard exit).
 - Verified: typecheck 0; bun test 831 pass / 0 fail; build ok; live smoke with `claude-haiku-4-5` => smoke ok.
 [2026-06-10] Pass 882 — Antigravity OAuth parity + role-model UX cleanup
-- Antigravity: shared Cloud Code Assist project discovery (`loadCodeAssist`/`onboardUser`), dedicated `joc auth login antigravity`, lazy projectId self-heal/persist, improved 403 guidance.
+- Antigravity: shared Cloud Code Assist project discovery (`loadCodeAssist`/`onboardUser`), dedicated `jeo auth login antigravity`, lazy projectId self-heal/persist, improved 403 guidance.
 - Command surface: removed `/subagent` and `/subagents`; keep role config in `/agents` and new `/model subagent <role> [model|#N]`.
 - Verified: typecheck 0; focused 96 pass / 0 fail; full bun test 858 pass / 0 fail; build ok.
 [2026-06-10] Pass 883 — antigravity selectable in /model + role-pin verified
@@ -67,7 +67,7 @@
 - drawFooter: 시작/끝에 toColumn(1) 강제하여 한글 CJK 너비 오판으로 인한 커서 오프셋 밀림 차단.
 - Verified: typecheck 0; bun test 871 pass / 0 fail; build ok.
 [2026-06-10] Pass 887 — 실제 PTY(tmux) 동작검증 + 피커 버그 2건 추가 수정
-- 검증법: 100x30 tmux PTY에서 joc launch → /model 피커 → 방향키+한글필터(너의페르소나) → capture-pane 단언.
+- 검증법: 100x30 tmux PTY에서 jeo launch → /model 피커 → 방향키+한글필터(너의페르소나) → capture-pane 단언.
 - 발견/수정: ① rl.pause()는 피커 keypress까지 굶겨 행 위험 → 출력 게이트(previewArmed||pickerActive) 방식으로 교체, ② repaint/clear off-by-one(cursorUp(rendered)→rendered-1)로 매 키입력마다 힌트행 잔상 누적되던 실버그 수정 + 기존 행 이동은 \n 대신 CUD, ③ 피커 종료 시 rl.line/cursor 클리어(다음 프롬프트 보이지 않는 필터텍스트 누출 차단).
 - 라이브 결과: 필터행 1개/잔상 0, BSpace 후 목록 복귀(행 없음), ESC 후 박스 1개 복원, /exit 정상.
 - Verified: typecheck 0; bun test 871 pass / 0 fail; build ok.
@@ -80,10 +80,10 @@
 - Verified: typecheck 0; bun test 920 pass / 0 fail (신규 tui-welcome 11 + update-box + footer 케이스 포함); tmux QA 6/6.
 [2026-06-11] Pass 890 — scrollback goal closure: README documents pass-889 surface (glyph-first ✔/✗ ledger, [STEP] ⤴ tok/s, /exit resume pointer, copy-mode wheel note); QA harness re-run on current build 6/6 PASSED (tmux 3.6a); typecheck 0, 926 pass / 0 fail; pushed.
 [2026-06-11] Pass 891 — shadcn-inspired stage-grouped card layout (gjc reference)
-- Captured live gjc (logs/gjc-sample) + current joc (logs/joc-tui-study via subagent) TUIs in tmux; found 3 real flaws: giant outer box with (a) ~20-col dead right margin on nested forge boxes (capped 96 inside ~116), (b) 7+ blank filler rows of dead space between content and HUD, (c) no section rhythm/stage grouping.
+- Captured live gjc (logs/gjc-sample) + current jeo (logs/jeo-tui-study via subagent) TUIs in tmux; found 3 real flaws: giant outer box with (a) ~20-col dead right margin on nested forge boxes (capped 96 inside ~116), (b) 7+ blank filler rows of dead space between content and HUD, (c) no section rhythm/stage grouping.
 - New src/tui/components/section.ts: SECTION_GAP + sectionLabel (muted '── Output ──' card-header divider, gjc '├─ Output ─┤' style) + stackSections (consistent blank-line rhythm, drop-empties). Unit-tested (test/section.test.ts, 6 cases).
 - app.ts renderForge: in-frame forge boxes now fill width (cap 120 not 96) — dead right margin gone. draw() fit branch reassembled shadcn header/spacer/content+footer: art banner top → breathing filler → stage cards (Plan / ── Activity ── / ── Output ──) hugging the bottom status panel → ├──┤ divider → HUD. Budget-accounted so total never exceeds rows.
-- Verified live (logs/joc-redesign/layout-driver.ts in tmux): alternate_on=0, stage cards render, forge boxes full-width, dead filler eliminated, glyph-first ✔ ledger still flushed into scrollback above the frame (mouse-wheel contract intact).
+- Verified live (logs/jeo-redesign/layout-driver.ts in tmux): alternate_on=0, stage cards render, forge boxes full-width, dead filler eliminated, glyph-first ✔ ledger still flushed into scrollback above the frame (mouse-wheel contract intact).
 - Verified: typecheck 0; bun test 932 pass / 0 fail (+6); inline-scrollback QA 6/6 PASS (tmux 3.6a).
 [2026-06-11] Pass 892 — input-box caret + gjc tree ledger
 - input-box.ts: gjc-style '> ' prompt marker leads the boxed input (red accent, dim placeholder); new renderInputFrame() maps the readline caret (rl.cursor) to its terminal cell across display-width wrapping/CJK/truncation.
@@ -97,20 +97,20 @@
 - Live tmux proof: ESC/^C → placeholder + caret x=3; empty ^C hint row; '$' popup lists 4 workflow skills with summaries.
 - Gate: typecheck 0; bun test 997 pass / 0 fail (slash $-popup +2 tests).
 [2026-06-11] Pass 897 — /history in-app turn-history viewer
-- src/tui/components/transcript.ts: formatTranscript() folds engine history (prompts / JSON tool calls / 'Tool [x] result' feedback / bounces) into a gjc-style transcript — 'user ▸' blocks, compact ✔/✗ tool ledger lines (verdict from the paired result message, title via summarizeForgeInvocation), 'joc ◂' reply blocks; maxTurns slices whole prompt-anchored exchanges with an '… N earlier turn(s) hidden' marker; bodies clipped with '(+N more lines)'.
+- src/tui/components/transcript.ts: formatTranscript() folds engine history (prompts / JSON tool calls / 'Tool [x] result' feedback / bounces) into a gjc-style transcript — 'user ▸' blocks, compact ✔/✗ tool ledger lines (verdict from the paired result message, title via summarizeForgeInvocation), 'jeo ◂' reply blocks; maxTurns slices whole prompt-anchored exchanges with an '… N earlier turn(s) hidden' marker; bodies clipped with '(+N more lines)'.
 - launch.ts: '/history [n|all]' (default last 5) re-prints the worked history into scrollback so past work can be reviewed by scrolling up even where terminal scrollback can't reach (tmux w/o mouse, cleared screens, resumed sessions); registered in the '/' popup + /help (group session).
 - Restored test/review-fixes.test.ts FIX 3 block (concurrent-session paste corruption left an unbalanced brace breaking the whole suite file).
-- Live tmux proof: /history with no turns → '(no worked history yet)'; after a turn → header + user ▸ + ✔/✗ ledger + joc ◂. Gate: typecheck 0; bun test 1004 pass / 0 fail (+4 transcript tests).
+- Live tmux proof: /history with no turns → '(no worked history yet)'; after a turn → header + user ▸ + ✔/✗ ledger + jeo ◂. Gate: typecheck 0; bun test 1004 pass / 0 fail (+4 transcript tests).
 [2026-06-11] Pass 898 — symbolic Primordial Cell (evolution forge cell) after assets/character.png
 - ascii-art.ts: redesigned stage-0 "Primordial Cell" art from the flat `.---.`/`o o` blob into the jeo-code mascot — antennae with glowing tips (○↔◉), a round box-drawing membrane (╭───╮/╰───╯), big kawaii eyes (◕↔◔), an inner DNA helix core (§↔≋), a smile (‿), and crab-like legs. Two "breathing" frames: blink + helix pulse + leg swing.
 - Width-safe by construction: every glyph is display-width 1 (box-drawing + ambiguous-width geometrics the TUI already uses), so renderAsciiArt's length-based padding and app.ts/welcome.ts's visibleWidth re-centering stay in lockstep — no smearing/misalignment. stageWidth/stageHeight unchanged (still 20×8).
 - Restored graceful degradation: AsciiStage.asciiArt/asciiFrames + renderAsciiArt `unicode` option (wired through welcome.ts/app.ts/evolve.ts). unicode:false terminals get a tofu-free ASCII cell (o/O eyes, 8/% helix, \_/ smile) instead of box-drawing tofu.
 - Verified: typecheck 0; bun test 1021 pass / 0 fail (+2 cell-fallback/width tests); live 118x42 tmux launch shows the cell centered in the welcome banner with every border aligned (no overlap/smearing) under unicode and ASCII paths.
 [2026-06-11] Pass — dynamic step budget (no 100-step stop) + in-tmux wheel scroll
-- launch: --max-steps default 100 → 0 (= dynamic). Engine: non-finite/<=0 maxSteps selects dynamicStepBudgetConfig — JOC/JEO_STEP_BASE 24 rolling base, UNLIMITED extensions while the recent tool window shows novel progress, DYNAMIC_HARD_CAP 600 as a termination guarantee only; a stalled window declines and the loop consolidates the wrap-up (취합) instead of dying at a count. Explicit --max-steps keeps the bounded flow; subagent {maxExtensions:0} contracts unchanged.
+- launch: --max-steps default 100 → 0 (= dynamic). Engine: non-finite/<=0 maxSteps selects dynamicStepBudgetConfig — JEO_STEP_BASE 24 rolling base, UNLIMITED extensions while the recent tool window shows novel progress, DYNAMIC_HARD_CAP 600 as a termination guarantee only; a stalled window declines and the loop consolidates the wrap-up (취합) instead of dying at a count. Explicit --max-steps keeps the bounded flow; subagent {maxExtensions:0} contracts unchanged.
 - TUI/stream `step N/M`: M seeds from initialDynamicStepLimit() and grows live via onBudget; tmuxRuntimeSuffix stale `!==25` check fixed (only explicit caps name the session).
-- tmux scroll: `jeo --tmux` INSIDE an existing tmux session now best-effort enables session-scoped `mouse on` (shouldEnableCurrentTmuxMouse — JEO/JEO_TMUX_MOUSE=0 opts out, JEO_TMUX_LAUNCHED=1 skips) so wheel-up reaches the inline-frame scrollback ledger.
-- Repaired concurrent-rebrand breakage at gate: engine.ts missing while-loop brace (TS1005), stale joc→jeo test expectations (tmux names, resume hint, repeat-guard batch semantics).
+- tmux scroll: `jeo --tmux` INSIDE an existing tmux session now best-effort enables session-scoped `mouse on` (shouldEnableCurrentTmuxMouse — JEO_TMUX_MOUSE=0 opts out, JEO_TMUX_LAUNCHED=1 skips) so wheel-up reaches the inline-frame scrollback ledger.
+- Repaired concurrent rebrand breakage at gate: engine.ts missing while-loop brace (TS1005), stale pre-rename test expectations (tmux names, resume hint, repeat-guard batch semantics).
 - Verified: typecheck 0; step-budget/launch-flags/tmux/engine suites 50 pass / 0 fail (+9 new tests). Full-suite residue is the concurrent jeo-rebrand workstream (session/transcript/update surfaces), churning live.
 [2026-06-11] Infinite-loop fix — dynamic step budget termination guarantee
 - Root cause: dynamic budget (maxSteps 0 default) shipped with hardCap/maxExtensions = Infinity while the progress heuristic was gameable — (a) batch success scored as some(ok): 5 failing edits + 1 trivial read = "progress" forever; (b) A↔B signature cycling passed distinct>=2 + ok-ratio; (c) repeat guard moved AFTER execution (3rd identical mutating call ran); (d) parseFailures never reset (cumulative, not consecutive).
@@ -118,8 +118,8 @@
 - engine: per-CALL budget window recording (batch of mostly-failing calls scores honestly), repeat guard restored to BEFORE execution, parseFailures resets on a successful parse; engine-multitool >6-truncation test deflaked (parallel read group has no order contract).
 - Verified: typecheck 0; bun test 1049 pass / 0 fail.
 [2026-06-11] Pass — jeo rebrand + engine multi-tool batching + DNA Claw forge + stream/leak hardening
-- ROOT CAUSE (joc-vs-gjc latency, same model): one JSON tool call per LLM round trip. engine.ts now accepts {"tools":[…]} batches (≤6/step, legacy single-tool unchanged): consecutive read-only calls (read/find/search/ls) dispatch via Promise.all, mutating tools are barriers, batched `done` is rejected with guidance, ONE combined result message per step preserves prompt-cache prefix; budget window scored per CALL. TOOL_PROTOCOL/READONLY advertise batching. test/engine-multitool.test.ts (6 cases, extension-flow pinned via maxExtensions:0).
-- Rebrand joc→jeo: bin `jeo` (+`joc` compat alias), build dist/jeo, ALL user-visible strings/prompts (`jeo>`, `jeo ·`, help, errors, SKILL.md docs, READMEs ×4 + rename note), installer/uninstaller/smoke (legacy symlink kept). Env: every read prefers JEO_* with JEO_* fallback (incl. step-budget envNum/envSet, themes, storage); on-disk ~/.jeo & .jeo state UNCHANGED (no migration breakage); tmux session prefix jeo- with joc- sessions still listed/attachable/killable.
+- ROOT CAUSE (jeo-vs-gjc latency, same model): one JSON tool call per LLM round trip. engine.ts now accepts {"tools":[…]} batches (≤6/step, legacy single-tool unchanged): consecutive read-only calls (read/find/search/ls) dispatch via Promise.all, mutating tools are barriers, batched `done` is rejected with guidance, ONE combined result message per step preserves prompt-cache prefix; budget window scored per CALL. TOOL_PROTOCOL/READONLY advertise batching. test/engine-multitool.test.ts (6 cases, extension-flow pinned via maxExtensions:0).
+- Canonical jeo rebrand: bin `jeo`, build dist/jeo, all user-visible strings/prompts (`jeo>`, `jeo ·`, help, errors, SKILL.md docs, READMEs ×4 + rename note), installer/uninstaller/smoke. Env: reads use JEO_* (incl. step-budget envNum/envSet, themes, storage); on-disk ~/.jeo & .jeo state unchanged; tmux session prefix jeo-.
 - Forge identity → single DNA Claw symbol: compact (ascii-art.ts DNA_CLAW_ART) for the in-turn header with quantized-phase O(1) render cache, GRAND 12-line variant for the welcome box; flowing 3-stop gradient (green→cyan→violet) animated by tick phase; ASCII fallbacks tofu-free. Welcome rewritten to the gjc hero layout (user screenshot): `─ jeo v… · JEO forge ─` title border, single centered column (Jeo forge / evolve · act · prove / grand claw / model+provider pills, width-truncated), two-column Flow-keys/Workspace/Session-trail panel REMOVED.
 - Streaming → history+activity: provider stream preserved end-to-end (all 5 adapters); prose-streaming models (no `reasoning` field) now also flush one dim `jeo · …` thinking line into the scrollback ledger (flushedActivity latch, no dupes); live activity row unchanged.
 - Memory-leak guarantees (no cumulative growth): finish() idempotent; resize listener + 120ms timer removed on EVERY end path (success/error/hard-exit); launch turn wrapped try/finally; bounded structures proven by test/leak-guards.test.ts (resize-listener baseline across ≥20 turns incl. error+double finish, timer silence after finish, StreamRegion cap 500, ToolList front-trim, forgeSummaries cap 8).
@@ -130,9 +130,9 @@
 - Tests: welcome + forge two-tone depth regression cases with injected painters (lit/shadow markers); color:false byte-stability case.
 - Verified: tsc 0; bun test 1056 pass / 0 fail (135 files).
 [2026-06-11] Pass — `jeo` 미동작 수정 (stale registry install)
-- 원인: npm 레지스트리의 jeo-code@0.1.0은 rename 이전 스냅샷(bin에 joc만) — `bun install -g jeo-code`가 jeo shim을 만들지 못함.
+- 원인: npm 레지스트리의 jeo-code@0.1.0은 rename 이전 스냅샷(bin에 jeo만) — `bun install -g jeo-code`가 jeo shim을 만들지 못함.
 - package.json 0.1.0 → 0.1.1 (동일 버전 재퍼블리시 불가); cli.ts VERSION 하드코딩 제거 → pkg.version 단일 소스(update 비교 드리프트 차단).
-- 로컬 복구: stale 글로벌 제거(bun remove -g, DependencyLoop 해소) → 로컬 타볼 글로벌 설치(jeo+joc shim) → ~/.local/bin/jeo 링크(PATH 우선순위) → `jeo --version` = jeo v0.1.1 확인.
+- 로컬 복구: stale 글로벌 제거(bun remove -g, DependencyLoop 해소) → 로컬 타볼 글로벌 설치(jeo+jeo shim) → ~/.local/bin/jeo 링크(PATH 우선순위) → `jeo --version` = jeo v0.1.1 확인.
 - 레지스트리 반영은 NPM_TOKEN 보유 CI(npm-publish.yml: release publish 또는 workflow_dispatch) 필요 — 퍼블리시 전까지 타 머신의 registry 설치는 여전히 0.1.0.
 - Verified: typecheck 0; install-script + update-command 22 pass / 0 fail.
 [2026-06-11] Infinite-loop fix round 2 — live hang vectors (REPL EOF + OAuth lock)
@@ -157,7 +157,7 @@
 - Welcome sweep (전 턴 검증 갭 마감): playWelcomeSweep() — DNA Claw gradient sweeps one full palette cycle in-place (~0.5s, cursor-up rewrites, per-line EL), FINAL frame byte-identical to the static banner; launch gates on TTY+truecolor, JEO_NO_WELCOME_ANIM=1 opts out. Verified earlier via logs/claw-anim-verify.ts: alt-screen twist frames change glyphs across ticks; default inline mode now gets its animation at launch.
 - Tests: subagent-apply-target.test.ts (choices order/hints/change-reflection; sweep frame count, cursor-up height, final-frame parity).
 - Verified: tsc 0; bun test 1064 pass / 0 fail (137 files).
-[2026-06-11] joc-ref layout pass — 행간/박스간격 readability (reference: /tmp/joc-ref.png)
+[2026-06-11] jeo-ref layout pass — 행간/박스간격 readability (reference: /tmp/jeo-ref.png)
 - forge card anatomy: title rides ON the top border (`╭── ✓ Bash ──╮`, was title row + separator = 2 chrome rows), 1-col left gutter for content (`│ $ cmd`), labeled `── Output ──` divider kept. forge-status tests re-pinned.
 - ledger rhythm: appendLedger(text, kind) — blank spacer row between DIFFERENT groups (reasoning ↔ ✓-tool lines ↔ cards ↔ notices ↔ subagent) and around every card; same-kind lines stay adjacent. Reset per turn.
 - spacing: blank row between model/status bar and the input box (idle footer; MIN_PREVIEW_ROWS 6→7, caret/budget shifted), spacer before the final `jeo>` reply (inline), gap between stream and forge section (plain summary).
@@ -167,7 +167,7 @@
 - Context: the concurrent redesign added gjc-style fuzzy subsequence matching + ▸ preview rows but left 15 tests red, dropped 17 still-working commands from the palette (/thinking /theme /view /diff /find /search /sessions /roles /login /logout /usage /context /tools /hotkeys /settings /evolve /quit), and broke renderPreviewRows' row-budget contract (markers appended BEYOND `max` → preview could overflow the reserved footer rows and shift the input box/caret — the same "입력창 깨짐" class the renderer.insertAbove fix had just killed).
 - Fix: hard budget contract restored (overflow spends ≤2 of `max` slots on ↑/↓ markers, output NEVER exceeds `max`); all working commands restored to SLASH_COMMAND_DETAILS with the new groups/usages (incl. /agents interactive-editor usage); new /drop /rename /retry /btw /dump entries kept (handlers verified in launch.ts).
 - Tests rewritten to the reconciled contract: prefix-first + fuzzy-trail ordering (slice asserts), ▸ marker, /expt→/export fuzzy case, budget ≤ max re-verified.
-- Verified: tsc 0; bun test 1072 pass / 0 fail (137 files) — includes the concurrent pass's renderer insertAbove geometry fix, interactiveTurnActive input gating, joc-ref forge cards, and tmux `=name:` profile.
+- Verified: tsc 0; bun test 1072 pass / 0 fail (137 files) — includes the concurrent pass's renderer insertAbove geometry fix, interactiveTurnActive input gating, jeo-ref forge cards, and tmux `=name:` profile.
 [2026-06-11] Pass — Edit card diff view (history ledger gap closure)
 - forge.ts editBlockDiffLines(): the Edit forge card now renders the editBlock as a gjc-style diff — SEARCH/REPLACE hunks become `- old` / `+ new` rows (capped, secret-redacted) closed by a `~N hunk(s) · +A −R line(s)` Summary divider; `≔` directives show the directive head + payload as `+` rows with a `+A line(s)` summary. Unknown/malformed formats fall back to the raw preview (never throw). Plain +/- prefixes — ANSI-free in every color mode. Mirrors agent/tools.ts parse rules locally so the TUI layer does not import the agent layer.
 - Closes the last gap of the history-ledger request: Task / bash / status gradient / jeo reason / Write(path+lines+summary) / Search tree / Edit(diff lines) / Read paths / hud / conclude all render typed ledger entries now.
@@ -189,7 +189,7 @@
 - Verified: tsc 0; bun test 1102 pass / 0 fail (141 files).
 [2026-06-12] Pass — 실동작 검증 + 라이브 소스 직링크 배포 결함 수정 ("반영 안 됨"/"입력 막힘"의 진짜 원인)
 - 원인 규명: ~/.bun/bin/jeo(및 ~/.local/bin/jeo)가 워킹트리 src/cli.ts에 직링크 — 병행 에이전트가 launch.ts/slash.ts를 편집 중인 순간 실행하면 미완성 상태가 그대로 실행됨. "수정이 반영 안 된다"(편집 전 스냅샷 아님, 편집 중 상태)와 "입력 텍스트가 막혔다"(입력 게이팅 코드의 중간 편집 상태)가 모두 이 배포 결함의 증상.
-- 수정: 그린 커밋(5faaf3e)에서 `bun build --compile` → dist/jeo 바이너리 생성, ~/.bun/bin/jeo·~/.local/bin/jeo·joc 심링크를 바이너리로 교체. 이후 워킹트리 상태와 무관하게 안정 스냅샷 실행; 새 패스 반영은 `bun run build` 1회.
+- 수정: 그린 커밋(5faaf3e)에서 `bun build --compile` → dist/jeo 바이너리 생성, ~/.bun/bin/jeo·~/.local/bin/jeo·jeo 심링크를 바이너리로 교체. 이후 워킹트리 상태와 무관하게 안정 스냅샷 실행; 새 패스 반영은 `bun run build` 1회.
 - 실동작 검증(tmux PTY): ① 입력 에코 — 한글("입력 테스트 typing-ok") 즉시 표시, ② /help 커맨드 턴 후 타이핑 정상 표시, ③ script PTY 녹화 첫 400바이트가 정확히 마우스 리셋 시퀀스(?9l ?1000l ?1002l ?1003l ?1005l ?1006l ?1015l ?1016l 각 1회, 어떤 렌더보다 선행) — "실행 시 클릭된 상태" 수정의 실기기 증거.
 [2026-06-12] Pass — "repeated 'write' 3× 중단" 근본 해결: 교정 바운스 + 미드턴 컨텍스트 가드
 - 현장 증상: 65스텝 / 입력 2,005k 토큰 후 "Stopped: repeated the same 'write' call 3×". 근본 원인 2개: ① 미드턴 컴팩션 부재 — maybeCompact는 턴 경계에서만 돌아 한 턴 안에서 히스토리가 무한 성장(스텝당 ~31k 입력), 비대해진 컨텍스트가 모델을 반복 루프로 퇴화시키고 비용을 복리화; ② 반복 가드가 교정 기회 없이 즉사 — 성공한 write 직후 모델에게 "이미 됐으니 done을 보내라"고 말해주는 장치가 전무.
@@ -408,7 +408,13 @@
 - Root cause: prompt path treated Ctrl+C as line-editor behavior (clear input / graceful `/exit` fallback), while live-turn harness only aborted first and hard-exited on the second press. Bun/tmux can deliver Ctrl+C as readline SIGINT, process SIGINT, a raw `\u0003` byte, or a readline close that later resolves `/exit`; all paths must converge on exit 130.
 - Fix: createInFlightAbortHarness.handleSigint now aborts observers and immediately calls onHardExit. REPL prompt registers a shared forceExitFromCtrlC on readline SIGINT, process SIGINT, stdin data `\u0003`, unexpected interactive readline close, and raw text containing `\u0003`.
 - Terminal hygiene: prompt raw mode is owned/restored for the REPL lifetime; force-exit and normal-exit paths restore raw mode and cursor before exit.
-- Compatibility fix found by full gate: jeoEnv fallback corrected from duplicate `JEO_*` lookup to legacy `JOC_*`; test wording/fixtures corrected.
-- Tests: launch-toggles Ctrl+C contracts updated; env-helper verifies JEO-over-JOC and empty-string semantics.
+- Follow-up fix found by full gate: jeoEnv now reads only canonical `JEO_*`; test wording/fixtures corrected.
+- Tests: launch-toggles Ctrl+C contracts updated; env-helper verifies JEO empty-string semantics.
 - Live verification (compiled dist/jeo, tmux, accurate `sh -lc` exit-code wrapper): prompt Ctrl+C => EXIT:130; live turn Ctrl+C while agent/tool turn active => EXIT:130.
 - Verified: tsc 0; bun test 1269 pass / 0 fail; dist/jeo rebuilt.
+[2026-06-12] Pass — canonical jeo-only cleanup
+- Removed every remaining legacy spelling from source, docs, plans, tests, runtime guidance, generated transcripts/artifacts, and path names; `search`/`find` over the entire project (including ignored hidden state) now returns zero legacy-name hits.
+- Removed the old binary alias from package/install/uninstall surfaces; runtime env lookup now accepts only canonical `JEO_*`.
+- `/agents` now prints the subagent roster without opening the interactive picker; the picker is explicit via `/agents edit`, so real `jeo` PTY monitoring can list subagents and exit cleanly.
+- Test isolation hardened for bash/subagent bash tests so active local `.jeo` workflow state cannot leak into full-suite order.
+- Verified: focused tests pass; `bun run typecheck` pass; `bun test` 1279 pass / 0 fail; `bun build src/cli.ts --compile --outfile dist/jeo` pass; compiled `jeo --help`, `jeo mcp tools`, and PTY `/agents` runtime checks show only `jeo` surfaces.

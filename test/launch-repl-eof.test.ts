@@ -40,7 +40,7 @@ async function runReplWithStdin(
 
 // Regression: under Bun a pending `rl.question` never settles once stdin closes,
 // so the while(true) REPL loop hung FOREVER on Ctrl-D / exhausted piped input —
-// `echo "..." | joc` never returned. EOF must now behave like /exit.
+// `echo "..." | jeo` never returned. EOF must now behave like /exit.
 test("launch REPL exits on immediate stdin EOF instead of hanging forever", async () => {
   const { code } = await runReplWithStdin("", 25_000);
   expect(code).not.toBe("timeout");

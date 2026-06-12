@@ -53,7 +53,7 @@ test("installer dry-run normalizes the Git URL and keeps registry one-shot", asy
 test("package metadata is npm-publication ready for bun install -g jeo-code", async () => {
   const pkg = JSON.parse(await Bun.file("package.json").text());
   expect(pkg.name).toBe("jeo-code");
-  expect(pkg.bin).toEqual({ jeo: "src/cli.ts", joc: "src/cli.ts" });
+  expect(pkg.bin).toEqual({ jeo: "src/cli.ts" });
   expect(pkg.files).toContain("src");
   expect(pkg.publishConfig).toEqual({
     access: "public",

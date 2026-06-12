@@ -4,7 +4,7 @@ import {
   formatForgeBox,
   progressPercent,
   redactSecrets,
-  renderJocStatus,
+  renderJeoStatus,
   summarizeForgeInvocation,
   summarizeForgeResult,
 } from "../src/tui/components";
@@ -31,7 +31,7 @@ test("forge boxes are width-bounded and redact secret-like values", () => {
   expect(redactSecrets("API_KEY=abcdef token: secret-value")).toContain("<redacted>");
   const summary = summarizeForgeResult("bash", false, "password=abc123\nline two");
   const box = formatForgeBox(summary, { width: 36, unicode: false, paint: s => s }).map(stripAnsi);
-  // joc-ref anatomy: the title rides ON the top border instead of its own row.
+  // jeo-ref anatomy: the title rides ON the top border instead of its own row.
   expect(box[0]!.startsWith("+--")).toBe(true);
   expect(box[0]!.endsWith("+")).toBe(true);
   expect(box[0]).toContain("bash result failed");
@@ -48,9 +48,9 @@ test("forge summaries never throw on an undefined/empty tool name (malformed mod
   expect(() => formatForgeBox(inv, { width: 40, unicode: false, paint: s => s })).not.toThrow();
 });
 
-test("renderJocStatus separates progress, insight status, and forge rows", () => {
+test("renderJeoStatus separates progress, insight status, and forge rows", () => {
   expect(progressPercent(3, 10)).toBe(30);
-  const lines = renderJocStatus({
+  const lines = renderJeoStatus({
     step: 3,
     maxSteps: 10,
     elapsedMs: 2400,
@@ -74,11 +74,11 @@ test("renderJocStatus separates progress, insight status, and forge rows", () =>
   expect(lines[2]).toContain("mutation locked");
 });
 
-test("renderJocStatus colorizes the forge count segments when color is on", () => {
+test("renderJeoStatus colorizes the forge count segments when color is on", () => {
   const prev = chalk.level;
   chalk.level = 3;
   try {
-    const lines = renderJocStatus({
+    const lines = renderJeoStatus({
       step: 3,
       maxSteps: 10,
       elapsedMs: 2400,
@@ -163,8 +163,8 @@ test("fitForgeBoxes: includes whole most-recent boxes within budget, never a hal
   expect(fitForgeBoxes(lines, 9)).toEqual(lines);
 });
 
-test("renderJocStatus: forge line exposes the evolution stage (double helix) when provided", () => {
-  const lines = renderJocStatus({
+test("renderJeoStatus: forge line exposes the evolution stage (double helix) when provided", () => {
+  const lines = renderJeoStatus({
     step: 4, maxSteps: 25, currentTool: "read",
     stage: "●●○○○ Double Helix (DNA) [2/5]",
     color: false, unicode: true,
@@ -174,7 +174,7 @@ test("renderJocStatus: forge line exposes the evolution stage (double helix) whe
   expect(forgeLine).toContain("Double Helix (DNA)"); // stage identity exposed
   expect(forgeLine).toContain("forging read");        // current tool still shown
   // without a stage, the forge line omits it (no leading separator noise)
-  const plain = renderJocStatus({ step: 1, maxSteps: 25, color: false });
+  const plain = renderJeoStatus({ step: 1, maxSteps: 25, color: false });
   expect(plain[2] ?? "").not.toContain("Double Helix");
 });
 
@@ -215,8 +215,8 @@ test("summarizeForgeInvocation and summarizeForgeResult polish and status step s
   expect(bashResultFail.lines[1]).toContain("<redacted>");
   expect(bashResultFail.lines[bashResultFail.lines.length - 1]).toBe("Command exited with code 1");
 
-  // 5. renderJocStatus with stepElapsedMs and avgStepMs
-  const statusLines = renderJocStatus({
+  // 5. renderJeoStatus with stepElapsedMs and avgStepMs
+  const statusLines = renderJeoStatus({
     step: 5,
     maxSteps: 10,
     elapsedMs: 5000,
@@ -255,7 +255,7 @@ test("bash result card draws an `Output` divider between exit note and body, fra
   expect(box[0]!.endsWith("╮")).toBe(true);
   expect(box[box.length - 1]!.startsWith("╰")).toBe(true);
   expect(box[box.length - 1]!.endsWith("╯")).toBe(true);
-  // joc-ref anatomy: the title rides ON the top border (`╭── ✓ bash … ──╮`)
+  // jeo-ref anatomy: the title rides ON the top border (`╭── ✓ bash … ──╮`)
   expect(box[0]).toContain("bash result ok");
   // a labeled divider rule appears, carrying the Output label, and no raw sentinel leaks
   const divider = box.find(l => l.includes(" Output ") && l.includes("─"));

@@ -39,7 +39,7 @@ This is a blockquote.`;
   expect(stripMarkdown(input)).toBe(expected.trim());
 });
 
-// ---- renderMarkdownAnsi (joc-ref final-report styling) ----------------------
+// ---- renderMarkdownAnsi (jeo-ref final-report styling) ----------------------
 
 test("renderMarkdownAnsi styles headings/bold/inline-code; fences drop, bodies verbatim", () => {
   const prev = chalk.level;

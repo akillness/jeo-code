@@ -215,6 +215,24 @@ export const COMMANDS: readonly CommandSpec[] = [
       return args => m.runEvolveCoreCommand(args);
     },
   },
+  {
+    name: "autopilot",
+    summary: "Autonomous build loop (autopilot × autoresearch ratchet).",
+    usage: "autopilot <subcommand> [flags]",
+    loader: async () => {
+      const m = await import("../autopilot");
+      return args => Promise.resolve(m.runAutopilot(args));
+    },
+  },
+  {
+    name: "ledger",
+    summary: "Cross-plan append-only ledger (ledger / review / cleanup).",
+    usage: "ledger <subcommand> [flags]",
+    loader: async () => {
+      const m = await import("../ledger");
+      return args => Promise.resolve(m.runLedger(args));
+    },
+  },
 ];
 
 export function findCommand(name: string): CommandSpec | undefined {

@@ -217,12 +217,12 @@ function getExplicitThemeFromConfig(env: EnvLike): string | undefined {
   return value;
 }
 
-/** Resolve the active theme from the environment (`JEO_TUI_THEME`, legacy `JEO_TUI_THEME`) or config, default cosmic. */
+/** Resolve the active theme from the environment (`JEO_TUI_THEME`) or config, default cosmic. */
 export function resolveTheme(
   env: EnvLike = process.env,
   config?: { theme?: string; tuiTheme?: string; tui?: { theme?: string } }
 ): EvolutionTheme {
-  const explicit = env.JEO_TUI_THEME || env.JEO_TUI_THEME || config?.theme || config?.tuiTheme || config?.tui?.theme || getExplicitThemeFromConfig(env);
+  const explicit = env.JEO_TUI_THEME || config?.theme || config?.tuiTheme || config?.tui?.theme || getExplicitThemeFromConfig(env);
   if (explicit) {
     return getTheme(explicit);
   }

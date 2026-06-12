@@ -134,7 +134,3 @@ JEO_TOOL_OUTPUT_MAX=4000        # model-visible tool output cap (full output spi
 ```
 
 Retry behavior is tunable via `retry` in `~/.joc/config.json` (`requestMaxRetries`, `streamMaxRetries`, `rateLimitRetries`, `failFastStatuses`, …). The step budget is dynamic by default — it extends while recent tool calls show novel progress and consolidates with a wrap-up when stalled; `--max-steps N` restores a bounded flow. Legacy `JOC_*` env names remain supported.
-
-## Publishing
-
-Required npm token permissions: a **Granular Access Token** stored as `NPM_TOKEN`, type **Automation**, with the package allowing the publish workflow to **bypass 2FA**.

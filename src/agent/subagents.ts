@@ -96,15 +96,57 @@ export const SUBAGENT_ROLES: readonly SubagentRole[] = [
 
 const DEFAULT_ROLE_ID = "executor";
 
+/** Generic prompt template for CONFIG-DECLARED custom roles (no per-role .md
+ *  bundled). Uses the same {{…}} variables as the bundled templates, so the
+ *  whole role pipeline stays template-driven rather than hardcoded. */
+const CUSTOM_ROLE_PROMPT = `You are the {{ROLE_TITLE}} subagent: {{ROLE_DESCRIPTION}}
+
+{{TOOL_PROTOCOL}}
+
+Work strictly within your assignment. When finished, reply
+{"tool":"done","arguments":{"reason":"Summary: <what you found/did>"}}.`;
+
+/**
+ * SYSTEM-driven role registry: config.subagents entries that DECLARE a role
+ * identity (a \`prompt\`, \`title\`, or \`description\`) under an id that is not
+ * bundled become first-class roles — no code change needed to add one. Bare
+ * model/steps pins on unknown ids are NOT roles (typo safety). Safety default:
+ * a custom role is READ-ONLY unless it explicitly sets \`readOnly: false\`.
+ */
+export function rolesFromConfig(config: Pick<Config, "subagents">): SubagentRole[] {
+  const custom: SubagentRole[] = [];
+  for (const [rawId, entry] of Object.entries(config.subagents ?? {})) {
+    const id = normalizeRoleId(rawId);
+    if (!id || SUBAGENT_ROLES.some(r => r.id === id)) continue;
+    if (!entry || (entry.prompt === undefined && entry.title === undefined && entry.description === undefined)) continue;
+    const title = entry.title ?? id.charAt(0).toUpperCase() + id.slice(1);
+    custom.push({
+      id,
+      title,
+      description: entry.description ?? `Custom role "${id}" (declared in config.subagents).`,
+      readOnly: entry.readOnly ?? true,
+      defaultMaxSteps: typeof entry.maxSteps === "number" && entry.maxSteps > 0 ? entry.maxSteps : 12,
+      prompt: (entry.prompt ?? CUSTOM_ROLE_PROMPT).replaceAll("{{ROLE_DESCRIPTION}}", entry.description ?? title),
+    });
+  }
+  return custom;
+}
+
+/** Bundled roles + config-declared custom roles (the full live registry). */
+export function allSubagentRoles(config?: Pick<Config, "subagents">): SubagentRole[] {
+  return config ? [...SUBAGENT_ROLES, ...rolesFromConfig(config)] : [...SUBAGENT_ROLES];
+}
+
 /** Normalize loosely-typed role input (case-insensitive, trimmed). */
 export function normalizeRoleId(input: string | undefined | null): string {
   return (input ?? "").trim().toLowerCase();
 }
 
-/** Look up a role by id (case-insensitive). Returns undefined when unknown. */
-export function getSubagentRole(id: string | undefined | null): SubagentRole | undefined {
+/** Look up a role by id (case-insensitive) across the bundled registry and —
+ *  when a config is supplied — config-declared custom roles. */
+export function getSubagentRole(id: string | undefined | null, config?: Pick<Config, "subagents">): SubagentRole | undefined {
   const want = normalizeRoleId(id);
-  return SUBAGENT_ROLES.find(r => r.id === want);
+  return allSubagentRoles(config).find(r => r.id === want);
 }
 
 /** The default role (`executor`) used when none is specified. */
@@ -221,9 +263,9 @@ export function subagentToolset(role: SubagentRole): Record<string, ToolHandler>
   return DEFAULT_TOOLS;
 }
 
-/** All role ids (for `/agents` autocomplete + validation). */
-export function subagentRoleIds(): string[] {
-  return SUBAGENT_ROLES.map(r => r.id);
+/** All role ids — bundled + config-declared (for autocomplete + validation). */
+export function subagentRoleIds(config?: Pick<Config, "subagents">): string[] {
+  return allSubagentRoles(config).map(r => r.id);
 }
 
 /** Parse a `/agents <role> maxSteps <n>` value → positive int, else undefined. */
@@ -295,7 +337,7 @@ export function applyTargetChoices(
       label: "default — every session",
       hint: `${config.defaultModel} (${config.thinkingLevel ?? "medium"})`,
     },
-    ...SUBAGENT_ROLES.map(role => ({
+    ...allSubagentRoles(config).map(role => ({
       value: role.id,
       label: `subagent ${role.id} — ${role.title}`,
       hint: resolveSubagentModel(role.id, config) + (config.subagents?.[role.id]?.model ? "" : " (default)") + roleThink(role.id),

@@ -1351,11 +1351,20 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         captureEsc: !!tui,
         onNoise: () => tui?.repaint(),
         pasteActive: () => queueBusyPasteActive?.() ?? false,
-        // Ctrl+O mid-turn: flush the detail view into the TUI ledger/scrollback.
+        // Ctrl+O mid-turn: flush the detail view into the TUI panel. Always
+        // useful — even before the first reply/tool detail exists, the panel
+        // shows the turn's timestamped recent-activity tail, so Ctrl+O answers
+        // "what has been happening" instead of silently doing nothing.
         onDetailKey: () => {
-          const detail = composeDetailLines();
-          if (detail.length === 0 || !tui) return;
-          tui.showDetail(detail);
+          if (!tui) return;
+          const lines = [...composeDetailLines()];
+          const activity = tui.recentActivity(20);
+          if (activity.length) {
+            const sep = "─".repeat(40);
+            lines.push(`activity · last ${activity.length} event(s) this turn`, sep, ...activity, sep);
+          }
+          if (lines.length === 0) return;
+          tui.showDetail(lines);
         },
         onBufferedInput: chunk => {
           if (!tui) return;

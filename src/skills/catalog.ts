@@ -18,6 +18,8 @@ export interface SkillDoc {
   details: string;       // 2-5 lines of guidance
   /** Slash aliases that invoke this skill directly, e.g. `/speckit.plan`. */
   aliases?: string[];
+  /** Source SKILL.md path for discovered skills; absent for bundled skills. */
+  sourcePath?: string;
   raw?: string;
 }
 
@@ -436,6 +438,7 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
         const nm = entry.name.slice(0, -3);
         try {
           const parsed = parseSkillMarkdown(nm, await fs.readFile(path.join(dir, entry.name), "utf-8"), { preferMetaName: true });
+          parsed.sourcePath = path.join(dir, entry.name);
           if (isSupportedExternalSkill(parsed)) byName.set(parsed.name.toLowerCase(), parsed);
         } catch { /* skip unreadable file */ }
         continue;
@@ -444,6 +447,7 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
         const skillPath = path.join(dir, entry.name, "SKILL.md");
         try {
           const parsed = parseSkillMarkdown(entry.name, await fs.readFile(skillPath, "utf-8"), { preferMetaName: true });
+          parsed.sourcePath = skillPath;
           if (isSupportedExternalSkill(parsed)) byName.set(parsed.name.toLowerCase(), parsed);
         } catch { /* skip dirs without SKILL.md or unreadable files */ }
       }

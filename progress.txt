@@ -334,3 +334,8 @@
 - Verified(유닛): typecheck 0; full bun test 1232 pass / 0 fail (+4종: 슬로우드립 중단/건강 스트림 무영향/env 파싱/vague 거부).
 - Verified(라이브): dist 재빌드 → ① chat(스트리밍)+JEO_STREAM_MAX_MS=50 → "stream exceeded the overall deadline (JEO_STREAM_MAX_MS)" 라이브 발화 ② 기본 OFF chat 정상 "hello" ③ launch -p(비스트리밍 설계) env 무관 정상 = 노브가 정확한 경로에만 적용. config 사본 즉시 폐기.
 - 결산: architect/critic 발굴 백로그 전량(HIGH/MED/LOW/WATCH) 소진 — 마라톤 24사이클.
+[2026-06-12] 라운드 15 (cycle 25) — 모델 디스커버리 실측 수리 (openai 재확인 + gemini 라이브 리스트)
+- 라이브 프로브로 실증한 구조 문제 2건: ① Codex 모델 엔드포인트가 client_version 쿼리를 요구하게 변경(없으면 HTTP 400, 낮은 버전은 빈 배열) — jeo의 openai OAuth 라이브 디스커버리가 통째로 죽어 카탈로그 폴백(2개)만 노출되던 상태 ② gemini /v1beta/models 기본 페이지=50+nextPageToken — 단발 fetch가 2페이지를 묵살(실측 50+token vs 전체 55).
+- 수정: CODEX_MODELS_URL에 client_version=2.0.0(실측: 0.46→[], 0.99→gpt-5.4, 1.0/2.0→gpt-5.5 풀셋; 주석에 실측 기록) + codex-auto-review 류 리뷰 전용 모델 제외. gemini URL pageSize=1000 + listProviderModels가 nextPageToken 추적(≤4페이지, 실패 시 부분 리스트 유지). isGeminiChatModel에 lyria(음악)·nano-banana(이미지) 가족 추가(generateContent는 지원하나 채팅 턴 불가). antigravity는 api-key 스왑 면제(리스트 엔드포인트가 OAuth 전용 — 잠재 버그 가드).
+- 라이브 재검증: openai 400→ok 3모델(gpt-5.5/5.4/5.4-mini), gemini api_key 21개 클린 채팅 모델(3.5-flash/3.1-pro 등 최신 포함, 누수 0), antigravity 8개 무손상.
+- Verified: typecheck 0; full bun test 1236 pass / 0 fail (+4종: client_version URL 계약, pageSize 계약, auto-review 제외, nextPageToken 추적 모킹).

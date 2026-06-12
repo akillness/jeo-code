@@ -6664,3 +6664,15 @@ Both axes are now complete: mechanism-building (rounds 1–12, 1228 repo tests g
 - Unit: typecheck 0; `bun test` **1232 pass / 0 fail** (+4: slow-drip aborted by deadline while idle never fires, healthy stream undisturbed, env parsing incl. legacy prefix, vague-only freeze refusal).
 - **Live** (fresh dist build, OAuth config copy destroyed after): `jeo chat` (streaming path) with `JEO_STREAM_MAX_MS=50` → the new "stream exceeded the overall deadline (JEO_STREAM_MAX_MS)" error fired on a real model; default-OFF chat answered normally; `launch -p` (non-streaming by design) unaffected regardless of the env — the knob applies exactly where it should.
 - **Marathon status:** the architect/critic-discovered backlog is now exhausted at EVERY severity (HIGH/MED/LOW/WATCH) across 24 cycles.
+
+---
+
+**Date:** 2026-06-12 · **Dimension: round 15 — model discovery repaired against the LIVE endpoints (openai re-verified, gemini full list).**
+
+### Live-probed structural breaks, fixed
+- **Codex models endpoint now requires `client_version` (openai OAuth).** Without it: HTTP 400; with an old version: `{"models":[]}` — jeo's live openai discovery was silently dead, exposing only the 2-id catalog fallback. The URL now carries `client_version=2.0.0` (live-probed: 0.46→[], 0.99→gpt-5.4 set, 1.0/2.0→full gpt-5.5 set) and review-only entries (`codex-auto-review`) are excluded. Live result: 400 → **ok, 3 chat models** (gpt-5.5 / 5.4 / 5.4-mini).
+- **Gemini list is paginated; page 2 was silently dropped.** The default page is 50 models WITH a `nextPageToken` (live: 50+token vs 55 total). The URL now requests `pageSize=1000` and `listProviderModels` follows `nextPageToken` (≤4 pages, partial-list-on-error) — so entering a Gemini API key yields the COMPLETE available list. Also: `lyria` (music) and `nano-banana` (image) families are filtered (they support generateContent but cannot serve a chat turn). Live result: **21 clean chat models** including gemini-3.5-flash / 3.1-pro previews, zero leaks.
+- **Antigravity guard.** Its list endpoint is OAuth-only; the api-key-preference swap now exempts it (a configured key would have produced an unauthenticated request).
+
+### Verification (round 15)
+- typecheck 0; `bun test` **1236 pass / 0 fail** (+4: client_version URL contract, pageSize contract, auto-review exclusion, mocked nextPageToken follow). Live re-probe across openai/gemini/antigravity confirmed all three list correctly.

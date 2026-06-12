@@ -43,7 +43,12 @@ export interface DiscoveryOptions {
 
 const DEFAULT_TIMEOUT = 5000;
 const DEFAULT_LIMIT = 100;
-const CODEX_MODELS_URL = "https://chatgpt.com/backend-api/codex/models";
+// The Codex models endpoint REQUIRES `client_version` (HTTP 400 without it) and
+// GATES the list by it — old versions get `{"models":[]}`. Keep this high enough
+// to receive the full current list (verified live 2026-06-12: 0.46→[], 0.99→gpt-5.4,
+// 1.0/2.0→full gpt-5.5 set). On drift the catalog fallback keeps Codex usable.
+const CODEX_CLIENT_VERSION = "2.0.0";
+const CODEX_MODELS_URL = `https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`;
 const ANTIGRAVITY_MODELS_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 const ANTIGRAVITY_MODEL_DENYLIST = new Set([
   "chat_20706",
@@ -95,9 +100,12 @@ export function discoveryRequest(
     case "gemini": {
       const oauth = cred?.kind === "oauth" ? cred.token : undefined;
       const apiKey = cred?.kind === "api_key" ? cred.token : undefined;
+      // pageSize=1000: the DEFAULT page is 50 models WITH a nextPageToken — the
+      // single-shot fetch silently dropped everything past page 1 (verified live:
+      // 50+token vs 55 total). listProviderModels also follows nextPageToken.
       const url = oauth
-        ? "https://generativelanguage.googleapis.com/v1beta/models"
-        : `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey ?? ""}`;
+        ? "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000"
+        : `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=${apiKey ?? ""}`;
       return { url, headers: oauth ? { authorization: `Bearer ${oauth}` } : {} };
     }
     case "antigravity": {
@@ -130,7 +138,7 @@ function isOpenAiChatModel(id: string): boolean {
  * audio/image/vectors — not a usable text turn for a coding chat. Drop them by family.
  */
 function isGeminiChatModel(id: string): boolean {
-  return !/(^|[-/])(embedding|aqa|tts|image|imagen|veo|deep-research|computer-use|antigravity)([-/]|$)/i.test(id);
+  return !/(^|[-/])(embedding|aqa|tts|image|imagen|veo|lyria|nano-banana|deep-research|computer-use|antigravity)([-/]|$)/i.test(id);
 }
 
 type CodexModelRow = { slug?: string; id?: string; supported_in_api?: boolean; priority?: number };
@@ -208,7 +216,8 @@ export function parseModelsBody(provider: ProviderName, body: unknown): string[]
     return data.models
       .filter(m => m.supported_in_api !== false)
       .map(m => m.slug ?? m.id ?? "")
-      .filter(Boolean);
+      // Review-only entries (e.g. codex-auto-review) are not chat-turn models.
+      .filter(id => id && !/(^|[-/])auto-review([-/]|$)/i.test(id));
   }
   // anthropic / openai: { data: [{ id }] }
   const ids = (data.data ?? []).map(m => m.id ?? "").filter(Boolean);
@@ -269,7 +278,9 @@ export async function listProviderModels(
     }
 
     const prov = authProvider!;
-    if (cred.kind === "oauth" && config.providers?.[prov]) {
+    // Antigravity's list endpoint accepts ONLY OAuth (the request builder sends
+    // no api-key header), so never swap its credential to an api_key.
+    if (provider !== "antigravity" && cred.kind === "oauth" && config.providers?.[prov]) {
       // An API key is the broader, documented path — prefer it for live discovery.
       cred = { kind: "api_key", provider: prov, token: config.providers[prov]! };
       source = "api_key";
@@ -290,7 +301,21 @@ export async function listProviderModels(
       return { provider, models: [], ok: false, source, error: reason };
     }
     const body = await res.json();
-    const models = parseModelsBody(provider, body).sort().slice(0, limit);
+    let ids = parseModelsBody(provider, body);
+    // Gemini paginates: follow nextPageToken (bounded) so the available list is
+    // COMPLETE — page 1 alone silently dropped the newest models (round-15).
+    if (provider === "gemini") {
+      let pageToken = (body as { nextPageToken?: string })?.nextPageToken;
+      for (let page = 0; pageToken && page < 4; page++) {
+        const pagedUrl = `${url}&pageToken=${encodeURIComponent(pageToken)}`;
+        const pageRes = await fetchImpl(pagedUrl, { method: "GET", headers, signal });
+        if (!pageRes.ok) break; // partial list beats a hard failure
+        const pageBody = await pageRes.json() as { nextPageToken?: string };
+        ids = ids.concat(parseModelsBody(provider, pageBody));
+        pageToken = pageBody.nextPageToken;
+      }
+    }
+    const models = [...new Set(ids)].sort().slice(0, limit);
     return { provider, models, ok: true, source };
   } catch (err) {
     const msg = (err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError" ? "timeout" : "unreachable";

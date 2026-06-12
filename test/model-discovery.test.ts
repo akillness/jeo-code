@@ -82,7 +82,7 @@ test("discoveryRequest: openai honors a base URL override", () => {
 
 test("discoveryRequest: openai oauth uses the Codex models endpoint", () => {
   const { url, headers } = discoveryRequest("openai", { kind: "oauth", provider: "openai", token: fakeJwt("acct-1") });
-  expect(url).toBe("https://chatgpt.com/backend-api/codex/models");
+  expect(url).toBe("https://chatgpt.com/backend-api/codex/models?client_version=2.0.0");
   expect(headers.Authorization).toContain("Bearer ");
   expect(headers["chatgpt-account-id"]).toBe("acct-1");
   expect(headers["OpenAI-Beta"]).toBe("responses=experimental");
@@ -176,7 +176,7 @@ test("listProviderModels: OAuth-only discovery still probes the provider list", 
   const fetchSpy = (async (_url: string | URL | Request, init?: RequestInit) => {
     called = true;
     const headers = init?.headers as Record<string, string>;
-    expect(String(_url)).toBe("https://chatgpt.com/backend-api/codex/models");
+    expect(String(_url)).toBe("https://chatgpt.com/backend-api/codex/models?client_version=2.0.0");
     expect(headers.Authorization).toContain("Bearer ");
     return new Response(JSON.stringify({ models: [{ slug: "gpt-5.5", supported_in_api: true }, { slug: "hidden", supported_in_api: false }] }), { status: 200 });
   }) as typeof fetch;
@@ -371,4 +371,63 @@ test("catalogOr: an api_key rejection does NOT fabricate catalog rows (bad key s
   expect(r.ok).toBe(false);
   expect(r.models).toEqual([]);
   expect(r.fallback).toBeUndefined();
+});
+
+// Round-15: live-verified endpoint structure fixes.
+
+test("discoveryRequest: codex URL carries client_version (400 without; old versions get [])", () => {
+  const { url } = discoveryRequest("openai", { kind: "oauth", provider: "openai", token: fakeJwt("a") });
+  expect(url).toContain("client_version=");
+});
+
+test("discoveryRequest: gemini URLs request pageSize=1000 (default page drops models)", () => {
+  const apiKey = discoveryRequest("gemini", { kind: "api_key", provider: "gemini", token: "k" });
+  expect(apiKey.url).toContain("pageSize=1000");
+  expect(apiKey.url).toContain("key=k");
+  const oauth = discoveryRequest("gemini", { kind: "oauth", provider: "gemini", token: "t" });
+  expect(oauth.url).toContain("pageSize=1000");
+});
+
+test("parseModelsBody: codex review-only models are excluded", () => {
+  const ids = parseModelsBody("openai", {
+    models: [
+      { slug: "gpt-5.5", supported_in_api: true },
+      { slug: "codex-auto-review", supported_in_api: true },
+    ],
+  });
+  expect(ids).toEqual(["gpt-5.5"]);
+});
+
+test("listProviderModels: gemini follows nextPageToken so the available list is complete", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-disc-page-"));
+  const prev = process.env.JOC_CONFIG_DIR;
+  process.env.JOC_CONFIG_DIR = dir;
+  await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({ providers: { gemini: "sk-gem" }, defaultModel: "claude-3-5-sonnet" }));
+  const prevKey = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  const pages: string[] = [];
+  const fetchSpy = (async (url: string | URL | Request) => {
+    const u = String(url);
+    pages.push(u);
+    if (!u.includes("pageToken=")) {
+      return new Response(JSON.stringify({
+        models: [{ name: "models/gemini-2.5-pro", supportedGenerationMethods: ["generateContent"] }],
+        nextPageToken: "tok-2",
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      models: [{ name: "models/gemini-3-pro-preview", supportedGenerationMethods: ["generateContent"] }],
+    }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const r = await listProviderModels("gemini", { fetchImpl: fetchSpy });
+    expect(r.ok).toBe(true);
+    expect(r.models).toEqual(["gemini-2.5-pro", "gemini-3-pro-preview"]); // BOTH pages
+    expect(pages.length).toBe(2);
+    expect(pages[1]).toContain("pageToken=tok-2");
+  } finally {
+    process.env.JOC_CONFIG_DIR = prev;
+    if (prevKey !== undefined) process.env.GEMINI_API_KEY = prevKey;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });

@@ -18,6 +18,17 @@ export function isContextOverflowError(err: unknown): boolean {
   return status === 413; // payload-too-large is always an overflow signal
 }
 
+/** Provider safety-refusal signal: an HTTP-200 completion that returned NO
+ *  content because the model/provider declined (Anthropic `stop_reason=refusal`,
+ *  OpenAI `finish_reason=content_filter`, Gemini `SAFETY`/`PROHIBITED_CONTENT`
+ *  block reasons). On routine coding work these are usually transient
+ *  false-positives — the engine retries the step (bounded) instead of killing
+ *  the turn with a dead "Error: … returned no content". */
+export function isRefusalError(err: unknown): boolean {
+  const msg = (err as Error)?.message ?? String(err);
+  return /stop_reason=refusal|finish_reason=content_filter|\(content_filter\)|\(SAFETY\)|\(PROHIBITED_CONTENT\)|\(BLOCKLIST\)/i.test(msg);
+}
+
 function formatDuration(ms: number): string {
   const totalSeconds = Math.ceil(ms / 1000);
   if (totalSeconds < 60) return `${totalSeconds}s`;
@@ -56,6 +67,9 @@ export function friendlyProviderError(err: unknown): string {
   }
   if (isContextOverflowError(err)) {
     return `${provider} rejected the request: the conversation no longer fits the model's context window. Run /compact, drop large attachments, or start a fresh session.`;
+  }
+  if (isRefusalError(err)) {
+    return `${provider} declined to answer (safety refusal — no content returned) even after automatic retries. This is usually a transient false-positive on coding tasks: run /retry, rephrase the request, or switch model with /model.`;
   }
   if (status === 404) {
     return `${provider} does not recognize the requested model (HTTP 404). The id may be retired, gated, or mistyped — pick another with /model.`;

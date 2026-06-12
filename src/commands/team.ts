@@ -23,6 +23,7 @@ import {
   validateSubagentDoneReason,
 } from "../agent/subagents";
 import type { Message } from "../agent/loop";
+import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { categoryBadge } from "../tui/components/category-index";
 
 export type RalphStreamKind = "step" | "complete" | "error";
@@ -390,8 +391,9 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
 
   const contextTokens = catalogMetadata(model)?.contextTokens;
 
+  const projectContext = await loadProjectContext(ctx.cwd);
   const history: Message[] = [
-    { role: "system", content: subagentSystemPrompt(role) },
+    { role: "system", content: withProjectContext(subagentSystemPrompt(role), projectContext) },
     { role: "user", content: buildRalphSubagentPrompt(ctx) },
   ];
 

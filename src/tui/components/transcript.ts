@@ -35,6 +35,17 @@ function clipBody(text: string, cap: number): string[] {
   return out;
 }
 
+function firstToolResultLine(text: string | undefined): string {
+  if (!text) return "";
+  return text
+    .replace(TOOL_RESULT_RE, "")
+    .split("\n")
+    .map(l => l.trim())
+    .find(Boolean)
+    ?.replace(/\s+/g, " ")
+    .slice(0, 96) ?? "";
+}
+
 /** Format engine history as a scrollback-friendly transcript. */
 export function formatTranscript(messages: readonly Message[], opts: TranscriptOptions = {}): string[] {
   const color = opts.color !== false;
@@ -58,6 +69,7 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
     if (BOUNCE_PREFIXES.some(p => m.content.startsWith(p))) return;
     promptIdx.push(i);
   });
+  const promptNumber = new Map(promptIdx.map((idx, i) => [idx, i + 1]));
   const totalTurns = promptIdx.length;
   if (totalTurns === 0) return [dim("(no worked history yet — ask something first)")];
   const keep = Math.max(1, Math.min(totalTurns, opts.maxTurns ?? totalTurns));
@@ -73,6 +85,8 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
       if (result) continue; // outcome is folded into the assistant tool line below
       if (BOUNCE_PREFIXES.some(p => m.content.startsWith(p))) continue; // protocol noise
       if (lines.length) lines.push("");
+      const turnNo = promptNumber.get(i) ?? 1;
+      lines.push(dim(`${unicode ? "─" : "-"} turn ${turnNo}/${totalTurns}`));
       const imgs = m.images?.length ? dim(` ⧉ ${m.images.length} image(s)`) : "";
       lines.push(`${cyanBold(`user ${userMark}`)}${imgs}`);
       lines.push(...clipBody(m.content, bodyCap));
@@ -90,7 +104,9 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
       const verdict = next?.role === "user" ? next.content.match(TOOL_RESULT_RE) : null;
       const mark = verdict?.[2] === "fail" ? red(bad) : green(ok);
       const title = summarizeForgeInvocation(invocation.tool, invocation.arguments).title;
-      lines.push(`  ${mark} ${title}`);
+      const resultLine = firstToolResultLine(next?.content);
+      const suffix = resultLine ? dim(` — ${resultLine}`) : "";
+      lines.push(`  ${mark} ${title}${suffix}`);
       continue;
     }
     const reason = invocation

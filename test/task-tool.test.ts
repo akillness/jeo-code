@@ -2,6 +2,7 @@ import { test, expect, mock, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { Message } from "../src/agent/loop";
 
 // Each test re-mocks ../src/agent/loop; restore afterwards so other suites are clean.
 afterEach(() => {
@@ -235,4 +236,28 @@ test("createTaskTool: invalid planner report is surfaced as incomplete", async (
   expect(res.success).toBe(false);
   expect(res.output).toContain("contract incomplete");
   expect(res.output).toContain("File-level Changes:");
+});
+
+test("createTaskTool: subagents receive .jeo project context and ignore legacy .gjc context", async () => {
+  let systemPrompt = "";
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: Message[]) => {
+      systemPrompt = messages.find(m => m.role === "system")?.content ?? "";
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nIn Scope:\nOut of Scope:\nFile-level Changes:\nSequencing:\nAcceptance Criteria:\nVerification:\nRisks:" } });
+    },
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const cwd = await tmpDir();
+  await fs.mkdir(path.join(cwd, ".jeo"), { recursive: true });
+  await fs.mkdir(path.join(cwd, ".gjc"), { recursive: true });
+  await fs.writeFile(path.join(cwd, ".jeo", "context.md"), "JEO_SUBAGENT_CONTEXT=active", "utf8");
+  await fs.writeFile(path.join(cwd, ".gjc", "context.md"), "GJC_LEGACY_CONTEXT=blocked", "utf8");
+
+  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
+  const res = await tool({ role: "planner", task: "check context routing" }, cwd);
+
+  expect(res.success).toBe(true);
+  expect(systemPrompt).toContain('<project_instructions path=".jeo/context.md">');
+  expect(systemPrompt).toContain("JEO_SUBAGENT_CONTEXT=active");
+  expect(systemPrompt).not.toContain("GJC_LEGACY_CONTEXT=blocked");
 });

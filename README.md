@@ -70,10 +70,12 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 | `/fast [on|off|status]` | Toggle fast thinking mode when the active model advertises minimal/low reasoning |
 | `/skill` · `$<skill> [intent]` | List/run workflow skills (`$team "task"` style) |
 | `/view` · `/diff` · `/find` · `/search` | Code view, git diff, file/pattern search |
-| `/new` · `/resume` · `/sessions` · `/export` | Session management & transcript export |
+| `/new` · `/resume` · `/sessions` | Session management |
+| `/history [n|all]` · `/export` | Reprint readable worked activity history into scrollback · transcript export |
 | `/retry` · `/btw <q>` | Retry last request · side question without touching history |
 | `/usage` · `/context` · `/compact` | Token usage, context breakdown, manual compaction |
 | `/theme` · `/config` · `/help` | Theme, runtime config, help |
+| `jeo autopilot status` | Ratchet status field with score direction, keep/revert counts, and next action |
 
 ## Spec-first workflow
 
@@ -148,11 +150,11 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.4.3]** (2026-06-13) — Readability pass for autopilot, subagent activity, and worked-history review.
 - **[0.4.2]** (2026-06-13) — Thinking-loop termination guarantees (cycle guard + turn wall-clock budget), unboxed live status without step counters, self-contained `.jeo` namespace, live next-prompt input card, role-targeted model/thinking picker.
 - **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
 - **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
 - **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.
-- **[0.2.1]** (2026-06-02) — Setup and model configuration.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

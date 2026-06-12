@@ -105,7 +105,7 @@ test("LaunchTui: subagent progress lines are flushed into scrollback mid-turn on
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
   const ledger = out.join("");
   // Both nested events became static scrollback lines (clear-frame + text + "\n").
-  expect(ledger).toContain("start: Add a retry guard\n");
+  expect(ledger).toContain("EXECUTOR · Add a retry guard\n");
   expect(ledger).toContain("read src/agent/engine.ts\n");
   tui.finish("done");
 });
@@ -484,8 +484,8 @@ test("LaunchTui (inline): status line and model bar are never cut off when conte
 
     const txt = frame.map(strip);
     expect(frame.length).toBeLessThanOrEqual(24);          // fits inside the terminal height
-    // The status line (step counter) and the model bar must both survive at the bottom.
-    expect(txt.some(l => l.includes("step"))).toBe(true);
+    // The live status field and the model bar must both survive at the bottom.
+    expect(txt.some(l => l.includes("[esc]") || l.includes("⟦esc⟧"))).toBe(true);
     // The very last row of the inline frame is the gjc-style model bar.
     const lastContent = txt[txt.length - 1] ?? "";
     expect(lastContent).toContain("m1");
@@ -512,11 +512,11 @@ test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result i
   const txt = logged.join("\n");
   expect(txt).toContain("[AGENT]"); // every nested line carries the subagent category badge
   // Glyph is "▸" on unicode-capable terminals, ">" otherwise — accept both.
-  expect(txt).toMatch(/executor [>▸] start: Add a retry guard to engine\.ts/); // assignment
-  expect(txt).toContain("[AGENT] executor:"); // step header
+  expect(txt).toMatch(/[>▸] EXECUTOR · Add a retry guard to engine\.ts/); // assignment
+  expect(txt).toMatch(/\[AGENT\] (├─|\|-) EXECUTOR/); // nested activity branch
   expect(txt).toContain("read src/agent/engine.ts");
   expect(txt).toContain("1|const ok = true;");
-  expect(txt).toContain("done: completed in 4 steps: guard added"); // result summary
+  expect(txt).toMatch(/(└─|`-) EXECUTOR done: completed in 4 steps: guard added/); // result summary
 });
 
 test("LaunchTui: onToolResult flushes a gjc-style glyph-led ledger line for the target", () => {
@@ -558,7 +558,7 @@ test("LaunchTui: onToolResult stream line includes the invocation target using w
   expect(txt).toContain("$ bun test");  // command echo inside the card
 });
 
-test("LaunchTui (alt-screen boxed): status box shows the in-flight file; steps in the title; stage in the track", () => {
+test("LaunchTui (alt-screen boxed): status field shows the in-flight file and stage track", () => {
   const realRender = Renderer.prototype.render;
   let frame: string[] = [];
   (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
@@ -583,7 +583,7 @@ test("LaunchTui (alt-screen boxed): status box shows the in-flight file; steps i
     clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
 
     const txt = frame.map(strip);
-    // …and the activity row inside the box names the real in-flight file.
+    // …and the live status field names the real in-flight file.
     const activityLine = txt.find(l => /[Rr]ead.*src\/agent\/engine\.ts.*(⟦esc⟧|\[esc\])/.test(l)) ?? "";
     expect(activityLine).not.toBe("");
     expect(activityLine).not.toContain("Transcribing instructions");

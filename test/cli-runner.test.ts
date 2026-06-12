@@ -1,9 +1,9 @@
 import { test, expect } from "bun:test";
-import { suggestCommands, findCommand, dispatch, renderHelp, globalModelsArgs } from "../src/cli/runner";
+import { suggestCommands, findCommand, dispatch, renderHelp } from "../src/cli/runner";
 
 test("suggestCommands: recovers from common typos", () => {
   expect(suggestCommands("lauch")).toContain("launch");
-  expect(suggestCommands("modls")).toContain("models");
+  expect(suggestCommands("skils")).toContain("skills");
   expect(suggestCommands("doctr")).toContain("doctor");
   expect(suggestCommands("set")).toContain("setup"); // prefix
   expect(suggestCommands("xqzptv")).toEqual([]); // nothing close
@@ -13,17 +13,7 @@ test("suggestCommands: recovers from common typos", () => {
 test("findCommand: known commands resolve, unknown returns undefined", () => {
   expect(findCommand("doctor")?.name).toBe("doctor");
   expect(findCommand("nope")).toBeUndefined();
-});
-
-test("globalModelsArgs only scans the leading global flag segment", () => {
-  expect(globalModelsArgs(["--tmux", "--models", "--catalog", "gpt"])).toEqual(["--catalog", "gpt"]);
-  expect(globalModelsArgs(["--tmux", "--list-models=gemini"])).toEqual(["--catalog", "gemini"]);
-  expect(globalModelsArgs(["--tmux", "--models", "--caps", "--thinking=high"])).toEqual(["--caps", "--thinking=high"]);
-  expect(globalModelsArgs(["--tmux", "--", "--models", "routing"])).toBeNull();
-  expect(globalModelsArgs(["--tmux", "fix", "--models", "routing"])).toBeNull();
-  expect(globalModelsArgs(["doctor", "--models"])).toBeNull();
-  // A real 8-4-4-4-12 UUID after --resume must be skipped so a trailing --models is still seen.
-  expect(globalModelsArgs(["--resume", "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "--models", "caps"])).toEqual(["caps"]);
+  expect(findCommand("models")).toBeUndefined();
 });
 
 test("dispatch: --version prints and returns 0", async () => {
@@ -79,7 +69,7 @@ test("renderHelp lists every command", () => {
   expect(help).toContain("doctor");
   expect(help).toContain("ultragoal");
   expect(help).toContain("--model <id>");
-  expect(help).toContain("--models");
+  expect(help).not.toContain("--models");
   expect(help).toContain("--thinking <level>");
 });
 
@@ -98,81 +88,6 @@ test("dispatch: per-command --help prints that command's usage without running i
   expect(text).toContain("Usage: jeo deep-interview");
   expect(text).toContain("Socratic"); // the command summary, not the global help
   expect(text).not.toContain("Commands:"); // global help not printed
-});
-
-test("dispatch: --list-models routes to GJC-style catalog output", async () => {
-  const logs: string[] = [];
-  const orig = console.log;
-  console.log = (...a: unknown[]) => logs.push(a.join(" "));
-  let code: number;
-  try {
-    code = await dispatch(["--list-models", "gpt"], { appName: "jeo", version: "0.0.0" });
-  } finally {
-    console.log = orig;
-  }
-  expect(code).toBe(0);
-  const text = logs.join("\n");
-  expect(text).toContain("Canonical models matching 'gpt'");
-  expect(text).toContain("Provider models");
-});
-
-test("dispatch: --models routes to the models command", async () => {
-  const logs: string[] = [];
-  const orig = console.log;
-  console.log = (...a: unknown[]) => logs.push(a.join(" "));
-  let code: number;
-  try {
-    code = await dispatch(["--models", "--catalog", "gpt"], { appName: "jeo", version: "0.0.0" });
-  } finally {
-    console.log = orig;
-  }
-  expect(code).toBe(0);
-  const text = logs.join("\n");
-  expect(text).toContain("Canonical models matching 'gpt'");
-});
-
-test("dispatch: tmux plus --models still routes to models listing", async () => {
-  const logs: string[] = [];
-  const orig = console.log;
-  console.log = (...a: unknown[]) => logs.push(a.join(" "));
-  let code: number;
-  try {
-    code = await dispatch(["--tmux", "--models", "--catalog", "gpt"], { appName: "jeo", version: "0.0.0" });
-  } finally {
-    console.log = orig;
-  }
-  expect(code).toBe(0);
-  const text = logs.join("\n");
-  expect(text).toContain("Canonical models matching 'gpt'");
-  expect(text).not.toContain("Starting new tmux session");
-});
-
-test("dispatch: tmux plus --list-models still routes to catalog listing", async () => {
-  const logs: string[] = [];
-  const orig = console.log;
-  console.log = (...a: unknown[]) => logs.push(a.join(" "));
-  let code: number;
-  try {
-    code = await dispatch(["--tmux", "--list-models", "gemini"], { appName: "jeo", version: "0.0.0" });
-  } finally {
-    console.log = orig;
-  }
-  expect(code).toBe(0);
-  expect(logs.join("\n")).toContain("Canonical models matching 'gemini'");
-});
-
-test("dispatch: launch plus tmux model-list flags routes to models command", async () => {
-  const logs: string[] = [];
-  const orig = console.log;
-  console.log = (...a: unknown[]) => logs.push(a.join(" "));
-  let code: number;
-  try {
-    code = await dispatch(["launch", "--tmux", "--list-models=gemini"], { appName: "jeo", version: "0.0.0" });
-  } finally {
-    console.log = orig;
-  }
-  expect(code).toBe(0);
-  expect(logs.join("\n")).toContain("Canonical models matching 'gemini'");
 });
 
 test("dispatch: unknown command with later --models is not hijacked", async () => {

@@ -70,10 +70,12 @@ jeo --tmux               # 독립 tmux 세션에서 실행
 | `/fast [on|off|status]` | 현재 모델이 minimal/low 추론을 지원하면 fast thinking 모드를 켜고 끔 |
 | `/skill` · `$<skill> [intent]` | 워크플로 스킬 목록/실행(`$team "작업"` 스타일) |
 | `/view` · `/diff` · `/find` · `/search` | 코드 보기, git diff, 파일/패턴 검색 |
-| `/new` · `/resume` · `/sessions` · `/export` | 세션 관리·트랜스크립트 내보내기 |
+| `/new` · `/resume` · `/sessions` | 세션 관리 |
+| `/history [n|all]` · `/export` | 작업 활동 히스토리를 읽기 좋게 스크롤백에 재출력 · 트랜스크립트 내보내기 |
 | `/retry` · `/btw <질문>` | 마지막 요청 재시도 · 히스토리에 안 남는 사이드 질문 |
 | `/usage` · `/context` · `/compact` | 토큰 사용량, 컨텍스트 내역, 수동 컴팩션 |
 | `/theme` · `/config` · `/help` | 테마, 런타임 설정, 도움말 |
+| `jeo autopilot status` | 점수 방향, keep/revert 횟수, 다음 액션을 보여주는 ratchet 상태 필드 |
 
 ## Spec-first 워크플로
 
@@ -148,11 +150,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.4.3]** (2026-06-13) — Readability pass for autopilot, subagent activity, and worked-history review.
 - **[0.4.2]** (2026-06-13) — Thinking-loop termination guarantees (cycle guard + turn wall-clock budget), unboxed live status without step counters, self-contained `.jeo` namespace, live next-prompt input card, role-targeted model/thinking picker.
 - **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
 - **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
 - **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.
-- **[0.2.1]** (2026-06-02) — Setup and model configuration.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

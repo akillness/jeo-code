@@ -70,10 +70,12 @@ jeo --tmux               # 在独立 tmux 会话中运行
 | `/fast [on|off|status]` | 当前模型支持 minimal/low 推理时切换 fast thinking 模式 |
 | `/skill` · `$<skill> [intent]` | 列出/运行工作流技能(`$team "任务"` 风格) |
 | `/view` · `/diff` · `/find` · `/search` | 代码查看、git diff、文件/模式搜索 |
-| `/new` · `/resume` · `/sessions` · `/export` | 会话管理与记录导出 |
+| `/new` · `/resume` · `/sessions` | 会话管理 |
+| `/history [n|all]` · `/export` | 将可读的工作活动历史重新输出到滚动区 · 导出记录 |
 | `/retry` · `/btw <问题>` | 重试上次请求 · 不写入历史的旁路提问 |
 | `/usage` · `/context` · `/compact` | Token 用量、上下文明细、手动压缩 |
 | `/theme` · `/config` · `/help` | 主题、运行时配置、帮助 |
+| `jeo autopilot status` | 显示分数方向、keep/revert 次数和下一步动作的 ratchet 状态字段 |
 
 ## Spec-first 工作流
 
@@ -148,11 +150,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.4.3]** (2026-06-13) — Readability pass for autopilot, subagent activity, and worked-history review.
 - **[0.4.2]** (2026-06-13) — Thinking-loop termination guarantees (cycle guard + turn wall-clock budget), unboxed live status without step counters, self-contained `.jeo` namespace, live next-prompt input card, role-targeted model/thinking picker.
 - **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
 - **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
 - **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.
-- **[0.2.1]** (2026-06-02) — Setup and model configuration.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

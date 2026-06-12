@@ -18,9 +18,11 @@ test("formatTranscript folds engine history into user/tool/jeo blocks", () => {
   ];
   const out = formatTranscript(messages, { color: false, unicode: true }).map(stripAnsi);
   const text = out.join("\n");
+  expect(text).toContain("─ turn 1/1");
   expect(text).toContain("user ▸");
   expect(text).toContain("  read package.json"); // prompt body, indented
   expect(text).toMatch(/✔ .*package\.json/);      // compact tool ledger line
+  expect(text).toContain("some output");        // first result line is folded into the activity row
   expect(text).toContain("jeo ◂");
   expect(text).toContain("  name is jeo-code");
   expect(text).not.toContain("system prompt");     // system never shown

@@ -1,9 +1,8 @@
 /**
  * Static model catalog — capability metadata for well-known public models, so
  * the TUI can show context window, max output, supported thinking levels, and
- * image support next to a model (gjc `--list-models` design parity, reimplemented
- * in jeo's own structure). This is factual capability data about public models,
- * not a copy of any vendor's catalog source. Live discovery
+ * image support next to a model. This is factual capability data about public
+ * models, not a copy of any vendor's catalog source. Live discovery
  * (`model-discovery.ts`) remains the source of truth for *availability*; this
  * catalog annotates known ids with capabilities.
  */

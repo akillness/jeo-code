@@ -86,7 +86,7 @@ function extractStreamingReasoning(buf: string): string {
 
 /** Uniform live-activity fallback for models that stream no `reasoning` field: derive
  *  what the model is doing from the forming JSON (`"tool":"x"` → "calling x…") or, for
- *  prose-replying models, show the reply head — so the status box behaves identically
+ *  prose-replying models, show the reply head — so the live status field behaves identically
  *  across providers/models instead of staying silent for some of them. */
 function extractStreamingActivity(buf: string): string {
   const head = buf.length > 512 ? buf.slice(0, 512) : buf;
@@ -177,7 +177,7 @@ export class LaunchTui {
   // `"reasoning"` field of the forming tool-call JSON). Shown dim under the HUD while
   // the model responds, then flushed once into scrollback as a `jeo · …` ledger line.
   private streamingReasoning = "";
-  /** Uniform live-activity text for the status box (reasoning OR derived fallback). */
+  /** Uniform live-activity text for the live status field (reasoning OR derived fallback). */
   private streamingActivity = "";
   /** Last stream-driven draw (ms epoch) — throttles per-delta repaints to ≤10/s. */
   private lastStreamDraw = 0;
@@ -322,7 +322,7 @@ export class LaunchTui {
         // Surface the model's LIVE activity uniformly for every model/provider:
         // the streamed `reasoning` field when the model emits one, else a derived
         // fallback (tool being formed / reply prose head) — so no model leaves the
-        // status box silent while it streams.
+        // live status field silent while it streams.
         // Draws are THROTTLED to one per 100ms: the old per-delta draw() rendered
         // the full frame hundreds of times per response (a real chunk of jeo's
         // per-step latency); the 120ms timer tick covers the gaps anyway.
@@ -650,30 +650,34 @@ export class LaunchTui {
     if (this.finished) return;
     const color = this.theme.color;
     const role = e.role || "subagent";
+    const roleLabel = role.toUpperCase();
     const badge = categoryBadge("subagent", { color });
     const ok = this.unicode ? "✓" : "v";
     const bad = this.unicode ? "✗" : "x";
+    const branch = this.unicode ? "├─" : "|-";
+    const last = this.unicode ? "└─" : "`-";
     const detail = (e.detail ?? "").split("\n").find(l => l.trim().length > 0)?.trim().slice(0, 140) ?? "";
     const summary = e.summary ? ` — ${e.summary}` : "";
     // No `step N/M` marker on nested lines — step counters carry no meaning
-    // under the dynamic budget (user feedback).
+    // under the dynamic budget (user feedback). A tree branch keeps subagent
+    // activity readable in scrollback and visually separate from parent tools.
     switch (e.kind) {
       case "start":
         this.subagentActive = true;
-        this.appendLedger(`${badge} ${role} ${this.unicode ? "▸" : ">"} start: ${detail}\n`, "subagent");
+        this.appendLedger(`${badge} ${this.unicode ? "▸" : ">"} ${roleLabel} · ${detail}\n`, "subagent");
         break;
       case "step":
-        this.appendLedger(`  ${badge} ${role}: ${detail || "working"}\n`, "subagent");
+        this.appendLedger(`  ${badge} ${branch} ${roleLabel} · ${detail || "working"}\n`, "subagent");
         break;
       case "tool":
-        this.appendLedger(`  ${badge} ${role} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`, "subagent");
+        this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`, "subagent");
         break;
       case "error":
-        this.appendLedger(`  ${badge} ${role} ${bad} ${detail || "error"}\n`, "subagent");
+        this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${bad} ${detail || "error"}\n`, "subagent");
         break;
       case "done":
         this.subagentActive = false;
-        this.appendLedger(`${badge} ${role} ${this.unicode ? "◂" : "<"} done${e.success === false ? " (incomplete)" : ""}: ${detail}\n`, "subagent");
+        this.appendLedger(`${badge} ${last} ${roleLabel} done${e.success === false ? " (incomplete)" : ""}: ${detail}\n`, "subagent");
         break;
     }
     this.draw();
@@ -977,7 +981,7 @@ export class LaunchTui {
     const colorLevel = detectColorLevel(process.env, isTTY());
     // One quantized animation clock for the whole frame: gradient phase cycles 20
     // steps, the claw beat advances every 3 ticks. Quantization keeps repaints
-    // coherent (status box + forge border move together) and bounds per-tick work.
+    // coherent (status field + forge border move together) and bounds per-tick work.
     const phase = (this.tickCount * 0.05) % 1;
     const beat = dnaClawBeat(Math.trunc(this.tickCount / 3), this.unicode);
 
@@ -986,10 +990,9 @@ export class LaunchTui {
     // whatever rows remain above it.
     const tail: string[] = [];
 
-    // gjc status box: the live thinking process renders in a bordered box —
-    // phase + step n/m embedded in the title border, the model's streamed
-    // activity (uniform across providers via streamingActivity) on the spinner
-    // row with the ⟦esc⟧ cancel hint, and one compact metrics row.
+    // Live status field: unboxed thinking line + compact metrics row. The model's
+    // streamed activity is uniform across providers via streamingActivity and keeps
+    // the ⟦esc⟧ cancel hint visible without trapping the message inside a border.
     if (isThinking) {
       const grad = themeGradient(this.theme, idx);
       const costUsd = costForUsage(this.footer.model, this.turnUsage) ?? undefined;
@@ -1173,10 +1176,9 @@ export class LaunchTui {
           const titleLine = `  ${arrow} ${this.turnTitle}`;
           bottom.push(this.theme.color ? chalk.dim(titleLine) : titleLine);
         }
-        // gjc status box: the live thinking process renders inside a bordered box —
-        // phase + step n/m embedded in the title border, the streamed activity
-        // (uniform for every model) on the spinner row with the ⟦esc⟧ cancel hint,
-        // and one compact metrics row (meter/timing/usage/rate/cost/tool counts).
+        // Live status field: unboxed thinking line + compact metrics row. The
+        // streamed activity is uniform across providers, with the ⟦esc⟧ cancel hint
+        // right-aligned and no misleading step counter.
         const stats = this.tools.stats();
         for (const line of renderStatusBox({
           cols: innerWidth,

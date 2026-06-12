@@ -197,7 +197,7 @@ export function formatCatalogTable(models: CatalogModel[], opts: { current?: str
 }
 
 /**
- * Canonical catalog table matching the useful GJC `--list-models` layout:
+ * Canonical catalog table used by the `/model` and `/provider` pickers:
  * canonical id, selected provider model, variant count, context, and max output.
  */
 export function formatCanonicalCatalogTable(models: CatalogModel[], opts: { current?: string; cap?: number } = {}): string[] {

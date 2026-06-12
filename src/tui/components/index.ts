@@ -8,3 +8,4 @@ export * from "./status";
 export * from "./category-index";
 export * from "./input-box";
 export * from "./hud";
+export * from "./autopilot-status";

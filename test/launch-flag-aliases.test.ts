@@ -1,6 +1,5 @@
 import { test, expect } from "bun:test";
 import { parseFlags } from "../src/commands/launch";
-import { globalModelsArgs } from "../src/cli/runner";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -87,20 +86,4 @@ test("parseFlags: --append-system-prompt literal + @file + missing file", () => 
   expect(flags3.appendSystemPrompt).toBeUndefined();
   expect(flags3.errors.length).toBeGreaterThan(0);
   expect(flags3.errors[0]).toContain("failed to read system prompt file");
-});
-
-test("globalModelsArgs classifies new launch flags correctly", () => {
-  // If we pass global models command after --append-system-prompt, it should skip --append-system-prompt and its value
-  expect(globalModelsArgs(["--append-system-prompt", "custom text", "--models", "caps"])).toEqual(["caps"]);
-  expect(globalModelsArgs(["--append-system-prompt=custom inline", "--models", "caps"])).toEqual(["caps"]);
-
-  // If we pass global models command after -p / --print, they are stripped/ignored
-  expect(globalModelsArgs(["-p", "--models", "caps"])).toEqual(["caps"]);
-  expect(globalModelsArgs(["--print", "--models", "caps"])).toEqual(["caps"]);
-
-  // -c and --continue take optional UUID like --resume
-  expect(globalModelsArgs(["-c", "--models", "caps"])).toEqual(["caps"]);
-  const uuid = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
-  expect(globalModelsArgs(["-c", uuid, "--models", "caps"])).toEqual(["caps"]);
-  expect(globalModelsArgs(["--continue", uuid, "--models", "caps"])).toEqual(["caps"]);
 });

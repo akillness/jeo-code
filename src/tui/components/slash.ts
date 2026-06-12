@@ -247,8 +247,11 @@ export function slashPreviewMatches(
  * completed line WITH a trailing space — arguments follow, and the space closes
  * the keyword popup (a space means a real invocation is being typed). Pure.
  */
-export function tabCompleteSelection(matches: readonly string[], selected: number): string | undefined {
+export function tabCompleteSelection(line: string, matches: readonly string[], selected: number): string | undefined {
   if (matches.length === 0) return undefined;
+  const trigger = activeTriggerToken(line);
+  if (!trigger) return undefined;
   const pick = matches[selected >= 0 && selected < matches.length ? selected : 0]!;
-  return `${pick} `;
+  return line.slice(0, trigger.start) + `${pick} `;
 }
+

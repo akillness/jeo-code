@@ -177,6 +177,10 @@ export class LaunchTui {
   /** Last stream-driven draw (ms epoch) — throttles per-delta repaints to ≤10/s. */
   private lastStreamDraw = 0;
   private flushedReasoning = "";
+  // Ctrl+O history/detail panel. When set, the live inline frame shows this
+  // block above the heartbeat; pressing Ctrl+O again clears it and restores the
+  // normal activity view. Kept as data, not scrollback text, so it can actually close.
+  private historyLines: string[] | null = null;
   // Kind of the last ledger entry — drives the gjc-reference vertical rhythm: a
   // blank line separates DIFFERENT ledger groups (card ↔ ✓-tool lines ↔ reasoning
   // ↔ notices), while same-kind lines (consecutive ✓ reads) stay adjacent.
@@ -454,13 +458,18 @@ export class LaunchTui {
     };
   }
 
-  /** Ctrl+O detail view, mid-turn: flush the full last reply / tool output into
-   *  the scrollback ledger as one card-spaced block. The harness owns the
-   *  keystroke (raw stdin); the TUI only renders. No-op after finish() — the
-   *  prompt-time readline binding owns the key from then on. */
+  /** Ctrl+O history/detail toggle, mid-turn: first press opens a live panel with
+   *  the full last reply / tool output, second press closes it and returns to the
+   *  normal activity frame. Unlike the old scrollback dump, this is reversible. */
   showDetail(lines: string[]): void {
-    if (this.finished || lines.length === 0) return;
-    this.appendLedger(lines.join("\n") + "\n", "card");
+    if (this.finished) return;
+    if (this.historyLines) {
+      this.historyLines = null;
+      this.draw();
+      return;
+    }
+    if (lines.length === 0) return;
+    this.historyLines = lines;
     this.draw();
   }
 
@@ -862,6 +871,36 @@ export class LaunchTui {
     return lines;
   }
 
+
+  /** Render the Ctrl+O panel inside the live frame. `maxRows` includes borders. */
+  private renderHistoryPanel(width: number, maxRows: number): string[] {
+    if (!this.historyLines || maxRows < 4) return [];
+    const boxWidth = Math.max(24, Math.min(120, width));
+    const inner = Math.max(10, boxWidth - 2);
+    const accent = this.theme.color ? accentPaint(this.theme) : (s: string) => s;
+    const dim = this.theme.color ? chalk.dim : (s: string) => s;
+    const title = `${accent("history")} ${dim("· Ctrl+O closes")}`;
+    const wrapped = this.historyLines.flatMap(line => {
+      const physical = line.split("\n");
+      return physical.flatMap(part => (visibleWidth(part) <= inner ? [part] : wrapTextWithAnsi(part, inner)));
+    });
+    const header = [title, "DIVIDER"];
+    const bodyLimit = Math.max(0, maxRows - 2 - header.length);
+    let body = wrapped;
+    if (wrapped.length > bodyLimit) {
+      const keep = Math.max(0, bodyLimit - 1);
+      body = wrapped.slice(0, keep);
+      body.push(dim(`… ${wrapped.length - keep} more line(s)`));
+    } else {
+      body = wrapped.slice(0, bodyLimit);
+    }
+    return boxBlock([...header, ...body], boxWidth, {
+      glyphs: this.unicode ? BOX_UNICODE : BOX_ASCII,
+      paint: this.theme.color ? accentPaint(this.theme) : (s: string) => s,
+      paintShadow: this.theme.color ? accentShadowPaint(this.theme) : (s: string) => s,
+      align: "left",
+    });
+  }
   /**
    * The gjc-style inline live frame: a flat stack with no outer border —
    *   <live forge card(s)> · <spinner status line> · <todos> · <hud line> · <model bar>
@@ -946,14 +985,20 @@ export class LaunchTui {
     // in-flight tool card (whole boxes only — never half a card).
     const tailKeep = tail.length > rows ? tail.slice(tail.length - rows) : tail;
     const budget = Math.max(0, rows - tailKeep.length - 1);
-    const forgeAnim = isThinking && this.theme.color && colorLevel >= ColorLevel.TrueColor
-      ? { phase, colorLevel, beat }
-      : undefined;
-    const forgeK = budget > 0 ? fitForgeBoxes(this.renderForge(cols, 2, forgeAnim), budget) : [];
     const frame: string[] = [];
-    if (forgeK.length) {
-      frame.push(...forgeK);
-      frame.push("");
+    const historyK = this.historyLines ? this.renderHistoryPanel(cols, budget) : [];
+    if (historyK.length) {
+      frame.push(...historyK);
+      if (frame.length + tailKeep.length < rows) frame.push("");
+    } else {
+      const forgeAnim = isThinking && this.theme.color && colorLevel >= ColorLevel.TrueColor
+        ? { phase, colorLevel, beat }
+        : undefined;
+      const forgeK = budget > 0 ? fitForgeBoxes(this.renderForge(cols, 2, forgeAnim), budget) : [];
+      if (forgeK.length) {
+        frame.push(...forgeK);
+        frame.push("");
+      }
     }
     frame.push(...tailKeep);
     return frame;

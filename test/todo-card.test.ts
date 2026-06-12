@@ -36,24 +36,38 @@ test("formatTodoWriteCard: ASCII fallback and empty input", () => {
 });
 
 test("LaunchTui.setTodos flushes a Todo Write card into the ledger on change only", () => {
+  const prevTerm = process.env.TERM;
+  const prevLang = process.env.LANG;
+  process.env.TERM = "xterm-256color";
+  process.env.LANG = "en_US.UTF-8";
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
-  tui.start();
-  out.length = 0;
-  const items = [
-    { title: "Scaffold module", status: "done" as const },
-    { title: "Write tests", status: "in_progress" as const },
-  ];
-  tui.setTodos(items);
-  const first = stripAnsi(out.join(""));
-  // Test env has no unicode TERM — the ASCII fallback glyph set renders.
-  expect(first).toContain("Todo Write 2 tasks");
-  expect(first).toContain("|- [x] Scaffold module");
-  expect(first).toContain("`- [ ] Write tests");
 
-  // Re-sending the SAME list must not flush a duplicate card.
-  out.length = 0;
-  tui.setTodos(items.map(i => ({ ...i })));
-  expect(stripAnsi(out.join(""))).not.toContain("Todo Write 2 tasks");
-  tui.finish("done");
+  try {
+    tui.start();
+    out.length = 0;
+    const items = [
+      { title: "Scaffold module", status: "done" as const },
+      { title: "Write tests", status: "in_progress" as const },
+    ];
+    tui.setTodos(items);
+    const first = stripAnsi(out.join(""));
+    expect(first).toContain("Todo Write 2 tasks");
+    expect(first).toContain("├─ ☑ Scaffold module");
+    expect(first).toContain("└─ ☐ Write tests");
+
+
+
+    // Re-sending the SAME list must not flush a duplicate card.
+    out.length = 0;
+    tui.setTodos(items.map(i => ({ ...i })));
+    expect(stripAnsi(out.join(""))).not.toContain("Todo Write 2 tasks");
+    tui.finish("done");
+  } finally {
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    if (prevTerm === undefined) delete process.env.TERM;
+    else process.env.TERM = prevTerm;
+    if (prevLang === undefined) delete process.env.LANG;
+    else process.env.LANG = prevLang;
+  }
 });

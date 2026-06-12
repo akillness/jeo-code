@@ -445,6 +445,33 @@ function simulateTerminal(writes: string[]): string[] {
 
 import { Renderer } from "../src/tui/renderer";
 
+test("LaunchTui: Ctrl+O history panel toggles open and closed inside the live frame", () => {
+  const realRender = Renderer.prototype.render;
+  let frame: string[] = [];
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  try {
+    const tui = new LaunchTui({ model: "m1", tty: true, write: () => {} });
+    tui.start();
+
+    tui.showDetail(["detail · full last tool output (bash)", "line 1", "line 2"]);
+    let txt = frame.map(strip).join("\n");
+    expect(txt).toContain("history · Ctrl+O closes");
+    expect(txt).toContain("detail · full last tool output (bash)");
+    expect(txt).toContain("line 2");
+
+    tui.showDetail(["ignored because second press closes"]);
+    txt = frame.map(strip).join("\n");
+    expect(txt).not.toContain("history · Ctrl+O closes");
+    expect(txt).not.toContain("ignored because second press closes");
+
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    tui.finish("done");
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});
+
 test("LaunchTui (inline): status line and model bar are never cut off when content overflows the terminal", () => {
   const realRender = Renderer.prototype.render;
   let frame: string[] = [];

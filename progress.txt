@@ -392,3 +392,13 @@
 - 동시 패스 조정: 45b7b19가 본 세션 subagents.ts를 선커밋, README 동기화로 npm 토큰 섹션 누락
   (install-script 테스트 fail) → aa15387이 4개 언어 복원, 본 패스 게이트에서 green 확인.
 - Verified: tsc 0; bun test 1262 pass / 0 fail; dist/jeo 재빌드.
+
+[2026-06-12] Pass — Ctrl+O reversible history panel
+- 요청: Ctrl+O로 history/detail을 열고, 다시 Ctrl+O로 닫을 수 있게 개선.
+- 원인: 기존 mid-turn Ctrl+O는 detail을 scrollback ledger로 append만 해서 닫을 수 없었고, prompt 대기 경로도 detail을 콘솔에 덤프했다가 footer를 복구하는 one-shot 동작이었다.
+- 수정: LaunchTui에 historyLines 상태 + renderHistoryPanel() 추가. showDetail()이 first press=open, second press=close 토글로 동작하고, live inline frame 안에 `history · Ctrl+O closes` 패널을 렌더한다(스크롤백 오염 없이 닫힘).
+- prompt 대기 경로도 promptHistoryLines + historyPreviewLines()로 fixed footer reservation 안에 같은 history 패널을 그리고, 두 번째 Ctrl+O 또는 입력 편집 시 닫는다.
+- 힌트바 라벨을 `^O history`로 변경. Tab completion 보정(중간 `/`·`$` 토큰 완성 시 줄 앞부분 보존)과 테스트도 함께 반영된 현재 워킹트리로 검증.
+- Test hardening: todo-card의 유니코드 기대 테스트를 TERM/LANG에 의존하지 않도록 UTF-8 터미널 환경으로 고정.
+- Tests: Ctrl+O live-frame 토글 단위 테스트 추가; focused `tui-app/ctrl-o-detail/todo-card` green. Full gate: tsc 0; bun test 1263 pass / 0 fail; dist/jeo rebuild.
+- Live verification (compiled dist/jeo, tmux): live turn Ctrl+O open → `history · Ctrl+O closes` visible, Ctrl+O close → gone. Prompt wait Ctrl+O open/close도 동일하게 current pane에서 확인.

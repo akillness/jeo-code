@@ -1870,6 +1870,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
   };
   let previewPending = false;
+  let promptHistoryLines: string[] | null = null;
 
   // Inline boxed-footer rendering with a FIXED reservation (the "@-mention typing
   // pushes the box down" fix). The footer reserves its full `footerRows` height
@@ -1998,6 +1999,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const args = !slash.length && budget > 0 ? formatCompletionPreview(line, completionContext(), budget) : [];
     const preview = (slash.length ? slash : args).map(l => chalk.gray(truncateAnsi(l, cols)));
     return [statusBarLine(cols), "", ...input, ...preview].slice(0, footerRows);
+  };
+  const historyPreviewLines = (detail: string[]): string[] => {
+    const cols = Math.max(24, (process.stdout.columns ?? 80) - 1);
+    const title = `${chalk.cyan.bold("history")} ${chalk.gray("· Ctrl+O closes")}`;
+    const budget = Math.max(0, footerRows - 2);
+    const physical = detail.flatMap(line => line.split("\n")).map(line => truncateAnsi(line, cols));
+    let body = physical;
+    if (physical.length > budget) {
+      const keep = Math.max(0, budget - 1);
+      body = physical.slice(0, keep);
+      body.push(chalk.gray(`… ${physical.length - keep} more line(s)`));
+    } else {
+      body = physical.slice(0, budget);
+    }
+    footerCursor = { row: Math.min(1, footerRows - 1), col: 1 };
+    return [statusBarLine(cols), title, ...body].slice(0, footerRows);
   };
   const drawFooter = (lines: string[]) => {
     if (!previewArmed || footerRendered === 0) return;
@@ -2374,18 +2391,23 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     process.once("exit", () => out.write("\x1b[?25h")); // safety net: never leave the cursor hidden
     process.stdin.on("keypress", (_ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
       if (!previewArmed || pickerActive) return;
-      // Ctrl+O: dump the FULL last assistant reply (untruncated, tables rendered) into
-      // scrollback as a detail view, then restore the boxed footer. (Cmd+O is intercepted
-      // by the OS/terminal and never reaches the app, so Ctrl+O is the portable binding.)
+      // Ctrl+O: toggle a reversible history/detail panel. The live-turn TUI path
+      // uses LaunchTui.showDetail(); this idle-prompt path paints the same content
+      // into the fixed footer reservation, so the second Ctrl+O can close it.
+      // (Cmd+O is intercepted by macOS/terminal and never reaches the app.)
       if (key?.ctrl && key.name === "o") {
+        if (promptHistoryLines) {
+          promptHistoryLines = null;
+          drawFooter(previewLines(typedLine, navIdx));
+          return;
+        }
         const detail = composeDetailLines();
         if (detail.length === 0) return;
-        const wasArmed = previewArmed;
-        if (wasArmed) disarmPreview();
-        logLines(detail);
-        if (wasArmed) { armPreview(); drawFooter(previewLines(typedLine, navIdx)); }
+        promptHistoryLines = detail;
+        drawFooter(historyPreviewLines(detail));
         return;
       }
+      if (promptHistoryLines) promptHistoryLines = null;
       // Ctrl+V: attach a clipboard IMAGE to the next message. Terminal text paste
       // never arrives as a ctrl+v keypress (it streams as plain stdin data), so this
       // binding is image-only; when the clipboard holds no image it's a silent no-op.
@@ -2429,6 +2451,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (!previewArmed) return;
         try {
           if (key && (key.name === "return" || key.name === "enter")) {
+            promptHistoryLines = null;
             drawFooter([]);
             return;
           }
@@ -2454,7 +2477,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // rl.line here makes the popup's choice the deterministic final state
           // (the completer's candidate dump is gated while the preview is armed).
           if (key && key.name === "tab" && navMatches.length > 0) {
-            const completed = tabCompleteSelection(navMatches, navIdx);
+            const completed = tabCompleteSelection(typedLine, navMatches, navIdx);
+
             if (completed) {
               const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
               rli.line = completed;
@@ -2486,7 +2510,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       try {
         disarmPreview();
         armPreview();
-        drawFooter(previewLines(typedLine, navIdx));
+        drawFooter(promptHistoryLines ? historyPreviewLines(promptHistoryLines) : previewLines(typedLine, navIdx));
       } catch { /* ignore resize render races */ }
     });
   }

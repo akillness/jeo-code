@@ -379,18 +379,18 @@ function streamResultSuffix(tool: string, ok: boolean, output: string | undefine
 
 export function formatTaskSubEvent(e: TaskSubEvent): string {
   const role = e.role || "subagent";
+  const roleLabel = role.toUpperCase();
   const detail = firstOutputLine(e.detail);
   const summary = e.summary ? ` — ${e.summary}` : "";
   // No ` step N/M` marker — step counters carry no meaning under the dynamic
-  // budget (user feedback); the role tag alone identifies the nested line.
-  // Lead every nested-subagent line with the [AGENT] category badge so the stream
-  // is classifiable at a glance (parity with the live TUI and `jeo team`).
+  // budget (user feedback); a tree prefix makes nested subagent activity scan as
+  // one readable branch in plain logs and TUI scrollback.
   const badge = categoryBadge("subagent");
-  if (e.kind === "start") return `${badge} ${chalk.magenta(`▸ [${role}]`)} ${detail}`.slice(0, 240);
-  if (e.kind === "step") return `  ${badge} ${chalk.cyan(`[${role}]`)} ${detail || "working"}`;
-  if (e.kind === "tool") return `  ${badge} [${role}] ${e.success === false ? chalk.red("✗") : chalk.green("✓")} ${detail || "tool"}${summary}`;
-  if (e.kind === "error") return `  ${badge} [${role}] ${chalk.red("✗")} ${detail || "error"}`;
-  return `${badge} ${chalk.magenta(`◂ [${role}]`)} done${e.success === false ? " (incomplete)" : ""}${detail ? `: ${detail}` : ""}`;
+  if (e.kind === "start") return `${badge} ${chalk.magenta(`▸ ${roleLabel}`)} · ${detail}`.slice(0, 240);
+  if (e.kind === "step") return `  ${badge} ${chalk.cyan(`├─ ${roleLabel}`)} · ${detail || "working"}`;
+  if (e.kind === "tool") return `  ${badge} ${e.success === false ? chalk.red("├─") : chalk.green("├─")} ${roleLabel} ${e.success === false ? chalk.red("✗") : chalk.green("✓")} ${detail || "tool"}${summary}`;
+  if (e.kind === "error") return `  ${badge} ${chalk.red("├─")} ${roleLabel} ${chalk.red("✗")} ${detail || "error"}`;
+  return `${badge} ${e.success === false ? chalk.red("└─") : chalk.green("└─")} ${roleLabel} done${e.success === false ? " (incomplete)" : ""}${detail ? `: ${detail}` : ""}`;
 }
 
 function logTaskSubEvent(e: TaskSubEvent, log: (line: string) => void = (s: string) => console.log(s)): void {

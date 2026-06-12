@@ -650,30 +650,34 @@ export class LaunchTui {
     if (this.finished) return;
     const color = this.theme.color;
     const role = e.role || "subagent";
+    const roleLabel = role.toUpperCase();
     const badge = categoryBadge("subagent", { color });
     const ok = this.unicode ? "✓" : "v";
     const bad = this.unicode ? "✗" : "x";
+    const branch = this.unicode ? "├─" : "|-";
+    const last = this.unicode ? "└─" : "`-";
     const detail = (e.detail ?? "").split("\n").find(l => l.trim().length > 0)?.trim().slice(0, 140) ?? "";
     const summary = e.summary ? ` — ${e.summary}` : "";
     // No `step N/M` marker on nested lines — step counters carry no meaning
-    // under the dynamic budget (user feedback).
+    // under the dynamic budget (user feedback). A tree branch keeps subagent
+    // activity readable in scrollback and visually separate from parent tools.
     switch (e.kind) {
       case "start":
         this.subagentActive = true;
-        this.appendLedger(`${badge} ${role} ${this.unicode ? "▸" : ">"} start: ${detail}\n`, "subagent");
+        this.appendLedger(`${badge} ${this.unicode ? "▸" : ">"} ${roleLabel} · ${detail}\n`, "subagent");
         break;
       case "step":
-        this.appendLedger(`  ${badge} ${role}: ${detail || "working"}\n`, "subagent");
+        this.appendLedger(`  ${badge} ${branch} ${roleLabel} · ${detail || "working"}\n`, "subagent");
         break;
       case "tool":
-        this.appendLedger(`  ${badge} ${role} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`, "subagent");
+        this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`, "subagent");
         break;
       case "error":
-        this.appendLedger(`  ${badge} ${role} ${bad} ${detail || "error"}\n`, "subagent");
+        this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${bad} ${detail || "error"}\n`, "subagent");
         break;
       case "done":
         this.subagentActive = false;
-        this.appendLedger(`${badge} ${role} ${this.unicode ? "◂" : "<"} done${e.success === false ? " (incomplete)" : ""}: ${detail}\n`, "subagent");
+        this.appendLedger(`${badge} ${last} ${roleLabel} done${e.success === false ? " (incomplete)" : ""}: ${detail}\n`, "subagent");
         break;
     }
     this.draw();

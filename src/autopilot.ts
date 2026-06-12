@@ -21,6 +21,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
+import { renderAutopilotStatusPanel, type AutopilotStatusPanelData } from "./tui/components/autopilot-status";
 
 const AP_DIR = path.join(".jeo", "autopilot");
 const SESSION = path.join(AP_DIR, "session.json");
@@ -291,12 +292,12 @@ function cmdStatus(flags: Record<string, string>): void {
   else if (converged) recommendation = "converged — stop or change strategy";
   else recommendation = "continue";
 
-  const out = {
+  const out: AutopilotStatusPanelData = {
     task: s.task,
     goal: s.goal,
     eval: s.evalCmd,
-    baseline: baseline ? (baseline.score as number) : null,
-    best: best ?? null,
+    baseline: fmt(baseline ? (baseline.score as number) : null),
+    best: fmt(best ?? null),
     attempts: steps.length,
     kept,
     reverted,
@@ -306,17 +307,18 @@ function cmdStatus(flags: Record<string, string>): void {
   };
 
   if (flags.json === "true") {
-    console.log(JSON.stringify(out, null, 2));
+    console.log(JSON.stringify({
+      ...out,
+      baseline: baseline ? (baseline.score as number) : null,
+      best: best ?? null,
+    }, null, 2));
     return;
   }
-  console.log("jeo autopilot status\n");
-  console.log(`  task         ${out.task}`);
-  console.log(`  goal         ${out.goal}   eval: ${out.eval}`);
-  console.log(`  baseline     ${fmt(out.baseline)}`);
-  console.log(`  best         ${fmt(out.best)}`);
-  console.log(`  attempts     ${out.attempts}  (kept=${out.kept} reverted=${out.reverted})`);
-  console.log(`  sinceImprove ${out.sinceImprove}  converged=${out.converged}`);
-  console.log(`  → ${out.recommendation}`);
+  console.log(renderAutopilotStatusPanel(out, {
+    cols: process.stdout.columns || 88,
+    color: !!process.stdout.isTTY,
+    unicode: true,
+  }).join("\n"));
 }
 
 function fmt(n: number | null | undefined): string {

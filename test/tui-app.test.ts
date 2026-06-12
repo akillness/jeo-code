@@ -105,7 +105,7 @@ test("LaunchTui: subagent progress lines are flushed into scrollback mid-turn on
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
   const ledger = out.join("");
   // Both nested events became static scrollback lines (clear-frame + text + "\n").
-  expect(ledger).toContain("start: Add a retry guard\n");
+  expect(ledger).toContain("EXECUTOR · Add a retry guard\n");
   expect(ledger).toContain("read src/agent/engine.ts\n");
   tui.finish("done");
 });
@@ -512,11 +512,11 @@ test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result i
   const txt = logged.join("\n");
   expect(txt).toContain("[AGENT]"); // every nested line carries the subagent category badge
   // Glyph is "▸" on unicode-capable terminals, ">" otherwise — accept both.
-  expect(txt).toMatch(/executor [>▸] start: Add a retry guard to engine\.ts/); // assignment
-  expect(txt).toContain("[AGENT] executor:"); // step header
+  expect(txt).toMatch(/[>▸] EXECUTOR · Add a retry guard to engine\.ts/); // assignment
+  expect(txt).toMatch(/\[AGENT\] (├─|\|-) EXECUTOR/); // nested activity branch
   expect(txt).toContain("read src/agent/engine.ts");
   expect(txt).toContain("1|const ok = true;");
-  expect(txt).toContain("done: completed in 4 steps: guard added"); // result summary
+  expect(txt).toMatch(/(└─|`-) EXECUTOR done: completed in 4 steps: guard added/); // result summary
 });
 
 test("LaunchTui: onToolResult flushes a gjc-style glyph-led ledger line for the target", () => {

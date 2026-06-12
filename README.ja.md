@@ -70,10 +70,12 @@ jeo --tmux               # 独立した tmux セッションで実行
 | `/fast [on|off|status]` | 現在のモデルが minimal/low 推論をサポートする場合に fast thinking モードを切替 |
 | `/skill` · `$<skill> [intent]` | ワークフロースキルの一覧/実行(`$team "task"` 形式) |
 | `/view` · `/diff` · `/find` · `/search` | コード表示、git diff、ファイル/パターン検索 |
-| `/new` · `/resume` · `/sessions` · `/export` | セッション管理・トランスクリプト出力 |
+| `/new` · `/resume` · `/sessions` | セッション管理 |
+| `/history [n|all]` · `/export` | 作業アクティビティ履歴を読みやすくスクロールバックへ再出力・トランスクリプト出力 |
 | `/retry` · `/btw <q>` | 直前要求の再試行 · 履歴に残らないサイド質問 |
 | `/usage` · `/context` · `/compact` | トークン使用量、コンテキスト内訳、手動コンパクション |
 | `/theme` · `/config` · `/help` | テーマ、ランタイム設定、ヘルプ |
+| `jeo autopilot status` | スコア方向、keep/revert 数、次アクションを示す ratchet ステータスフィールド |
 
 ## Spec-first ワークフロー
 
@@ -148,11 +150,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.4.3]** (2026-06-13) — Readability pass for autopilot, subagent activity, and worked-history review.
 - **[0.4.2]** (2026-06-13) — Thinking-loop termination guarantees (cycle guard + turn wall-clock budget), unboxed live status without step counters, self-contained `.jeo` namespace, live next-prompt input card, role-targeted model/thinking picker.
 - **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
 - **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
 - **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.
-- **[0.2.1]** (2026-06-02) — Setup and model configuration.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

@@ -1,8 +1,8 @@
 /**
  * Provider credential/status inventory — the shared source of truth behind
- * `jeo models`, the TUI `/provider` command, and `jeo doctor`. Reports, for each
- * provider, how it will authenticate (API key / OAuth / keyless / none), its
- * effective base URL, and whether it is ready to serve a request.
+ * the TUI `/provider` command, `jeo doctor`, and setup probes. Reports, for
+ * each provider, how it will authenticate (API key / OAuth / keyless / none),
+ * its effective base URL, and whether it is ready to serve a request.
  */
 import { readGlobalConfig, type Config, type StoredOAuth } from "../agent/state";
 import type { AuthProvider, Credential } from "../auth";

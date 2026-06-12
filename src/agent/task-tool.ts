@@ -12,6 +12,7 @@
 import { runAgentLoop, type ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";
 import type { Message } from "./loop";
+import { loadProjectContext, withProjectContext } from "./context-files";
 import type { Config } from "./state";
 import {
   getSubagentRole,
@@ -139,8 +140,9 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     // gjc parity: a role may pin its own reasoning budget; absent = inherit the
     // session/global thinking level (the "(inherit)" row in the picker).
     const thinking = resolveSubagentThinking(role.id, opts.config) ?? opts.config.thinkingLevel;
+    const projectContext = await loadProjectContext(cwd);
     const history: Message[] = [
-      { role: "system", content: subagentSystemPrompt(role) },
+      { role: "system", content: withProjectContext(subagentSystemPrompt(role), projectContext) },
       { role: "user", content: `${taskText}${context}` },
     ];
     const trace: string[] = [];

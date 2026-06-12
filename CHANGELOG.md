@@ -17,6 +17,7 @@ _Thinking-loop termination guarantees (cycle guard + turn wall-clock budget), un
 - Config-driven custom subagent roles: a non-bundled id declaring `title`/`description`/`prompt` becomes a first-class role at runtime.
 - Ctrl+O mid-turn detail view: flush the full last reply + tool output into scrollback.
 - `/fast [on|off|status]` slash command: enables minimal/low reasoning fast mode only when the active model advertises support.
+- Task/team subagents now receive the same project context block as the parent agent, sourced from `JEO.md`, `AGENTS.md`, `.jeo/context.md`, `.agents/*`, and `.jeo/*` guidance — legacy `.gjc` context is not loaded.
 
 ### Changed
 - Live status is UNBOXED: a flat `⠙ thinking · <live activity> ⟦esc⟧` row plus one dim metrics row replaces the bordered status box — the message is never trapped inside a border.

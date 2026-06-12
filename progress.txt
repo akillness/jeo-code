@@ -344,3 +344,6 @@
 - catalog: SkillDoc.sourcePath — 디스커버리 로더(단일 .md / 디렉터리 SKILL.md)에서 원본 경로 기록; skillInvocationCard() 순수 빌더.
 - 실동작 검증(tmux, dist/jeo): `$ralplan` → "╭── [skill] ──╮ / Skill: ralplan / Path: ~/.agents/skills/ralplan/SKILL.md / Prompt: 25 lines" 카드 실표시 후 [workflow:ralplan] start.
 - Verified: tsc 0; bun test 1237 pass / 0 fail; dist/jeo 재빌드.
+[2026-06-12] 라운드 15 후속 — jeo 실동작 e2e 검증 (디스커버리 수리분)
+- dist 재빌드(라운드 15 포함) 후 실제 `jeo models` 라이브 실행: openai (oauth) 3 models — gpt-5.5/5.4/5.4-mini가 "Live models" 섹션에 실표시(이전: 죽은 400 경로 → 카탈로그 폴백 2개), gemini (api_key) 21 models — 페이지네이션 완전 리스트(3.5-flash/3.1-pro-preview 포함, lyria/nano-banana 누수 0), anthropic 9·antigravity 8·ollama 1 무손상.
+- 발견 모델 실호출 e2e: `--model gpt-5.5`(openai OAuth→Codex responses 경로) → done "verified-gpt55" / `--model gemini-3.5-flash`(API key 경로, 2페이지에서 발견되는 최신 모델) → done "verified-gemini35". 디스커버리가 보여주는 id가 실제 콜까지 동작함을 증명.

@@ -6651,3 +6651,16 @@ Artifacts verified directly: correct slugify (NFD normalization, hyphen collapse
 
 ### Marathon closure
 Both axes are now complete: mechanism-building (rounds 1–12, 1228 repo tests green) and live proof (round 9 core loop, round 13 full chain). Every gate that was once theater — ultragoal verification, ralplan consensus, approve — has been made real and then proven firing on a real model end-to-end.
+
+---
+
+**Date:** 2026-06-12 · **Dimension: gjc-inheritance marathon round 14 — backlog fully exhausted (slow-drip deadline, criteria floor), live-verified.**
+
+### Final LOW/WATCH items
+- **Slow-drip stream deadline (#7).** `StreamIdleOptions.deadlineAt` composes an OVERALL wall-clock with the per-chunk idle cap — a stream dripping one token just inside the idle window previously ran unbounded. Opt-in via `JEO_STREAM_MAX_MS` (default OFF, preserving the deliberate "never kill a long ACTIVE generation" tradeoff); wired into the `streamText` streaming path only.
+- **Criteria quality floor (#6).** `freezeReadiness` refuses to freeze when ALL criteria are vague filler ("It works", "ok", "동작한다", <8 chars) — conservative: one substantive criterion passes, any language safe.
+
+### Verification (round 14)
+- Unit: typecheck 0; `bun test` **1232 pass / 0 fail** (+4: slow-drip aborted by deadline while idle never fires, healthy stream undisturbed, env parsing incl. legacy prefix, vague-only freeze refusal).
+- **Live** (fresh dist build, OAuth config copy destroyed after): `jeo chat` (streaming path) with `JEO_STREAM_MAX_MS=50` → the new "stream exceeded the overall deadline (JEO_STREAM_MAX_MS)" error fired on a real model; default-OFF chat answered normally; `launch -p` (non-streaming by design) unaffected regardless of the env — the knob applies exactly where it should.
+- **Marathon status:** the architect/critic-discovered backlog is now exhausted at EVERY severity (HIGH/MED/LOW/WATCH) across 24 cycles.

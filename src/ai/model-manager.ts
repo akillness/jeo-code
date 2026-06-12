@@ -12,6 +12,7 @@ import { expandAlias, resolveModelId, effectiveAliasesFor } from "./model-regist
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
 import { toProviderModel, CODEX_MODELS } from "./model-catalog";
 import { withRetry, defaultRetryable, type RetryOptions } from "../util/retry";
+import { jeoEnv } from "../util/env";
 import type { Config } from "../agent/state";
 
 
@@ -397,24 +398,45 @@ function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
 export interface StreamIdleOptions {
   /** Abort + reject if no chunk arrives within this many ms (per-chunk, not total). */
   idleMs: number;
+  /** Optional OVERALL wall-clock deadline (epoch ms) — round-14, architect #7.
+   *  Default absent: per-chunk idle alone keeps long ACTIVE generations alive.
+   *  Non-interactive contexts opt in (JEO_STREAM_MAX_MS) so a slow-drip stream
+   *  (one token every idleMs-ε) cannot run unbounded. */
+  deadlineAt?: number;
   onIdle?: () => void;
 }
 
-/** `iter.next()`, optionally racing a per-chunk idle timeout that fires `onIdle`. */
+/** `iter.next()`, racing the per-chunk idle timeout AND (when set) the overall deadline. */
 async function nextMaybeIdle(iter: AsyncIterator<string>, idle?: StreamIdleOptions): Promise<IteratorResult<string>> {
   if (!idle) return iter.next();
+  const remaining = idle.deadlineAt !== undefined ? idle.deadlineAt - Date.now() : Infinity;
+  if (remaining <= 0) {
+    idle.onIdle?.();
+    throw new Error(`stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream aborted`);
+  }
+  const waitMs = Math.min(idle.idleMs, remaining);
+  const deadlineFires = remaining < idle.idleMs;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       idle.onIdle?.();
-      reject(new Error(`stream idle for ${idle.idleMs}ms (no chunk)`));
-    }, idle.idleMs);
+      reject(new Error(deadlineFires
+        ? `stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream aborted`
+        : `stream idle for ${idle.idleMs}ms (no chunk)`));
+    }, waitMs);
   });
   try {
     return await Promise.race([iter.next(), timeout]);
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/** Opt-in overall stream wall-clock from the environment; undefined = off (default). */
+export function streamMaxMs(env?: Record<string, string | undefined>): number | undefined {
+  const raw = jeoEnv("STREAM_MAX_MS", env);
+  const n = raw !== undefined ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 export async function* retryableStream(
@@ -447,13 +469,20 @@ export function createModelManager(): ModelManager {
         // Per-attempt abort controller fired by the idle timeout — so a stalled stream
         // is cancelled, but a long, actively-emitting generation is NOT killed by a
         // total wall-clock cap. The caller's signal (Ctrl-C) is preserved via composeAbort.
+        // JEO_STREAM_MAX_MS opts in to an OVERALL deadline (round-14): non-interactive
+        // runs can bound a slow-drip stream the per-chunk idle alone never catches.
         let attempt: AbortController | null = null;
         const makeIter = () => {
           attempt = new AbortController();
           const signal = composeAbort(callOptions.signal, attempt.signal);
           return streamFn(messages, { ...callOptions, signal }, credential)[Symbol.asyncIterator]();
         };
-        yield* retryableStream(makeIter, retry, { idleMs: STREAM_IDLE_TIMEOUT_MS, onIdle: () => attempt?.abort() });
+        const maxMs = streamMaxMs();
+        yield* retryableStream(makeIter, retry, {
+          idleMs: STREAM_IDLE_TIMEOUT_MS,
+          ...(maxMs !== undefined ? { deadlineAt: Date.now() + maxMs } : {}),
+          onIdle: () => attempt?.abort(),
+        });
       } else {
         // Fallback: providers without streaming yield the full response as one chunk.
         yield await withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, DEFAULT_CALL_TIMEOUT_MS) }, credential), retry);

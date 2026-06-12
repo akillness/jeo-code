@@ -328,3 +328,9 @@
 - 산출물 실검증: slugify(NFD 정규화·하이픈 붕괴·트림·빈문자) 정확 구현, bun test 6 pass / 0 fail 직접 확인.
 - 특기: team 1차 실패는 결함이 아니라 계약 동작 — 작업은 됐지만 done 계약 미신고면 성공을 주장하지 않는다(completion-contract의 라이브 증명). 재개 경로가 그 실패를 정확히 흡수.
 - 마라톤 양 축 완결: 메커니즘 구축(R1~12, 1228 tests) + 라이브 실증(R9 코어 루프, R13 풀 체인).
+[2026-06-12] gjc-계승 마라톤 라운드 14 (cycle 24) — 잔여 LOW/WATCH 소진 + 라이브 실검증
+- #7 슬로우드립 스트림 데드라인: StreamIdleOptions.deadlineAt(전체 wall-clock)을 per-chunk idle과 합성 — 토큰이 idle 한도 직전마다 똑똑 떨어지는 스트림은 기존엔 무한 실행. JEO_STREAM_MAX_MS 옵트인(기본 OFF — "긴 활성 생성을 죽이지 않는다" 트레이드오프 유지), streamText 스트림 경로 배선, streamMaxMs() env 파서 export.
+- LOW #6 기준 품질 플로어: freezeReadiness가 vague-only 기준("It works"/"ok"/"동작한다", <8자)만으로는 freeze 거부 — 보수적(실질 기준 1개면 통과, 비영어 안전).
+- Verified(유닛): typecheck 0; full bun test 1232 pass / 0 fail (+4종: 슬로우드립 중단/건강 스트림 무영향/env 파싱/vague 거부).
+- Verified(라이브): dist 재빌드 → ① chat(스트리밍)+JEO_STREAM_MAX_MS=50 → "stream exceeded the overall deadline (JEO_STREAM_MAX_MS)" 라이브 발화 ② 기본 OFF chat 정상 "hello" ③ launch -p(비스트리밍 설계) env 무관 정상 = 노브가 정확한 경로에만 적용. config 사본 즉시 폐기.
+- 결산: architect/critic 발굴 백로그 전량(HIGH/MED/LOW/WATCH) 소진 — 마라톤 24사이클.

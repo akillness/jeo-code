@@ -86,10 +86,20 @@ function normalizeList(values: string[] | undefined): string[] {
 // yamlList moved to ../agent/seed (round-12): the writer and ultragoal's reader
 // now share one module + one encoding, asserted round-trip at freeze time.
 
+/** Vague filler that proves nothing — a criterion must be a checkable statement
+ *  (round-14, architect LOW #6). Conservative: short-circuit only the obvious
+ *  non-criteria; anything substantive (any language) passes untouched. */
+const VAGUE_CRITERION_RE = /^(it works|works( well)?|ok(ay)?|good|fine|done|동작한다|잘 ?된다|잘 ?작동한다)[.!]?$/i;
+
 function freezeReadiness(parsed: SocraticResponse | undefined): { ok: boolean; reason?: string } {
   if (!parsed) return { ok: false, reason: "the interview never produced a structured assessment" };
-  if (normalizeList(parsed.acceptance_criteria).length === 0) {
+  const criteria = normalizeList(parsed.acceptance_criteria);
+  if (criteria.length === 0) {
     return { ok: false, reason: "concrete acceptance criteria are still missing" };
+  }
+  const substantive = criteria.filter(c => c.length >= 8 && !VAGUE_CRITERION_RE.test(c));
+  if (substantive.length === 0) {
+    return { ok: false, reason: `acceptance criteria are too vague to verify (e.g. ${JSON.stringify(criteria[0])}) — need concrete, checkable statements` };
   }
   return { ok: true };
 }

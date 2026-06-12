@@ -320,3 +320,29 @@ test("deep-interview: a NEW idea after a completed interview starts fresh instea
 
   await fs.rm(cwd, { recursive: true, force: true });
 });
+
+test("deep-interview --auto: refuses to freeze on vague-only criteria like 'It works' (round-14)", async () => {
+  const cwd = await tempDir();
+  const lines: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => lines.push(a.join(" "));
+  mockCallLlm = async () => JSON.stringify({
+    ambiguityScore: 0.1,
+    assessment: "Clear enough",
+    nextQuestion: "none",
+    goal: "Build a thing",
+    constraints: [],
+    acceptance_criteria: ["It works", "ok"], // vague filler — proves nothing
+  });
+  try {
+    process.chdir(cwd);
+    await runDeepInterviewCommand(["--auto", "build a thing"]);
+  } finally {
+    console.log = origLog;
+  }
+  const state = await readState(cwd);
+  expect(state.current_phase).not.toBe("complete"); // no freeze on unverifiable criteria
+  expect(state.seed_path).toBeUndefined();
+  expect(lines.join("\n")).toContain("too vague");
+  await fs.rm(cwd, { recursive: true, force: true });
+});

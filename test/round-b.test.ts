@@ -237,3 +237,41 @@ test("resolveRetryOptions: defaults still engage when unset (regression guard)",
   expect(o.rateLimitMaxServerDelayMs).toBe(5 * 60 * 1000);
   expect(o.retries).toBeUndefined();
 });
+
+test("retryableStream: overall deadline aborts a slow-drip stream the idle cap never catches (round-14)", async () => {
+  // One chunk every ~5ms — always inside a generous idleMs, so per-chunk idle
+  // alone would run this forever. The OVERALL deadline must end it.
+  let aborted = false;
+  const makeIter = (): AsyncIterator<string> => ({
+    next: () => new Promise(resolve => setTimeout(() => resolve({ value: "tok", done: false }), 5)),
+  });
+  const out: string[] = [];
+  await expect((async () => {
+    for await (const c of retryableStream(
+      makeIter,
+      { retries: 1, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable },
+      { idleMs: 1000, deadlineAt: Date.now() + 40, onIdle: () => { aborted = true; } },
+    )) out.push(c);
+  })()).rejects.toThrow("overall deadline");
+  expect(out.length).toBeGreaterThan(0); // it WAS dripping
+  expect(aborted).toBe(true);
+});
+
+test("retryableStream: a generous deadline does not disturb a healthy stream", async () => {
+  const out: string[] = [];
+  for await (const c of retryableStream(
+    () => iterFromChunks(["a", "b", "c"]),
+    { retries: 1, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable },
+    { idleMs: 1000, deadlineAt: Date.now() + 60_000 },
+  )) out.push(c);
+  expect(out).toEqual(["a", "b", "c"]);
+});
+
+test("streamMaxMs: env opt-in parsing — off by default, positive ints only", async () => {
+  const { streamMaxMs } = await import("../src/ai/model-manager");
+  expect(streamMaxMs({})).toBeUndefined(); // default OFF
+  expect(streamMaxMs({ JEO_STREAM_MAX_MS: "30000" })).toBe(30000);
+  expect(streamMaxMs({ JOC_STREAM_MAX_MS: "5000" })).toBe(5000); // legacy prefix
+  expect(streamMaxMs({ JEO_STREAM_MAX_MS: "0" })).toBeUndefined();
+  expect(streamMaxMs({ JEO_STREAM_MAX_MS: "nope" })).toBeUndefined();
+});

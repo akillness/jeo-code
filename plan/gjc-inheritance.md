@@ -161,3 +161,8 @@
   - **team 1차**: task1이 20스텝 버짓 소진(작업은 완료됐으나 done 계약 미신고) → **fail-closed 정지 + failed_task 마커 영속**(R8). 2차: "[WARN] … may have left partial edits" 재개 경고 발화(R8) 후 4태스크 전부 완료.
   - **ultragoal**: Suite GREEN, 기준 6건 ⚠️ UNVERIFIED 정직 기록(R7), 따옴표 포함 기준이 리포트에 비맹글링 왕복(R12), suite_green/SUITE_GREEN 영속. 산출물 실검증: slugify 구현 정확(NFD 정규화·하이픈 붕괴·트림), bun test 6 pass / 0 fail.
 - **라운드 13 종료** — 누적 23사이클. 라운드 7~12에서 실체화한 모든 게이트(합의·승인·실패마커·재개경고·정직검증·라운드트립)가 실모델 한 체인에서 합주 동작함을 증명. 마라톤의 양 축(메커니즘 구축 + 라이브 실증) 완결.
+
+## 사이클 렛저 (라운드 14 — 잔여 LOW/WATCH 소진 + 라이브 실검증)
+- cycle 24 (2026-06-12): **백로그 완전 소진.** ① #7 슬로우드립 스트림 데드라인 — StreamIdleOptions.deadlineAt(전체 wall-clock) 신설, per-chunk idle과 합성(남은시간<idle이면 데드라인 메시지로 발화), JEO_STREAM_MAX_MS 환경변수 옵트인(기본 OFF — 긴 활성 생성 보호라는 기존 트레이드오프 유지), streamText 스트림 경로 배선. ② LOW #6 기준 품질 플로어 — freezeReadiness가 vague-only 기준("It works"/"ok"/"동작한다" 류, <8자)만으로는 freeze 거부(보수적: 실질 기준 1개라도 있으면 통과). 신규 테스트 4종(round-b 3: 슬로우드립 중단/건강 스트림 무영향/env 파싱, deep-interview 1: vague 거부). full 1232 pass / 0 fail, typecheck 0.
+- **라이브 실검증**: dist 재빌드 후 ① chat 스트리밍 경로 + JEO_STREAM_MAX_MS=50 → "stream exceeded the overall deadline (JEO_STREAM_MAX_MS)" 신규 에러 라이브 발화 ② 기본 OFF chat → "hello" 정상 ③ launch -p(설계상 비스트리밍) → env 유무 무관 정상(노브가 올바르게 비적용). config 사본 즉시 폐기.
+- **라운드 14 종료** — 누적 24사이클. architect/critic 발굴 백로그 **전량(HIGH/MED/LOW/WATCH) 소진.**

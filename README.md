@@ -143,3 +143,15 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 
 - A **Granular Access Token** with Read/Write access to the `jeo-code` package, or a classic **Automation** token
 - "**bypass 2FA** for publishing" must be allowed — Automation tokens always bypass; granular tokens need the option enabled
+
+## Changelog
+
+<!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live mid-turn input queue, hardened Ctrl-C / Ctrl+O.
+- **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
+- **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
+- **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.
+- **[0.2.1]** (2026-06-02) — Setup and model configuration.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
+<!-- CHANGELOG:END -->

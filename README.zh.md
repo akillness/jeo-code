@@ -143,3 +143,15 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 
 - 对 `jeo-code` 包具有 Read/Write 权限的 **Granular Access Token**，或经典 **Automation** 令牌
 - 必须允许"发布时 **bypass 2FA**" — Automation 令牌始终绕过，granular 令牌需启用该选项
+
+## 更新日志 (Changelog)
+
+<!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live mid-turn input queue, hardened Ctrl-C / Ctrl+O.
+- **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
+- **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
+- **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.
+- **[0.2.1]** (2026-06-02) — Setup and model configuration.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
+<!-- CHANGELOG:END -->

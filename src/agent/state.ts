@@ -127,6 +127,11 @@ export interface WorkflowState {
   /** team: the task the previous run failed on — surfaces a partial-edits
    *  warning on resume (round-8). Cleared when the run resumes past it. */
   failed_task?: string;
+  /** ralplan: persisted consensus-critic verdict ("okay" | "iterate" | "reject" |
+   *  "unverified") — `jeo approve` requires "okay" (round-11 real consensus). */
+  consensus?: string;
+  /** ralplan: the critic's justification (bounded excerpt) for auditability. */
+  consensus_detail?: string;
   approved?: boolean;
   /** ultragoal terminal outcome. */
   status?: string;

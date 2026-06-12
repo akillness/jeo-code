@@ -144,3 +144,7 @@
 ## 사이클 렛저 (라운드 10)
 - cycle 20 (2026-06-12): #2 write-time 패리티+refuse-complete, #3 stale 인터뷰 차단+active 플립, #4 approve 게이트화, #1 리라벨, deps 키 거부, 주석. 신규 테스트 5종(workflow-integrity 3, deep-interview 1, team-schema 1). full 1222 pass / 0 fail, typecheck 0.
 - **라운드 10 종료** — 누적 20사이클. 라운드 11 후보: #1 전면(ralplan 실 서브에이전트 합의+critic 평결 게이트+평결 영속→approve가 평결 요구), #5 시드 기준 라운드트립 검증.
+
+## 사이클 렛저 (라운드 11 — 합의의 실체화)
+- cycle 21 (2026-06-12): **ralplan 실 합의 게이트** — runConsensusCriticGate: read-only critic 서브에이전트(repo 접근: read/search/find/ls)가 후보 플랜을 시드+실저장소 대조 검토, [OKAY]/[ITERATE]/[REJECT] 평결 강제(fail-closed: 계약 미충족=unverified=비승인). [ITERATE]는 1회 수정 라운드 후 재심. 평결+근거가 ralplan state에 영속(consensus/consensus_detail), [OKAY]만 complete. **approve가 영속 평결 요구** — consensus!=="okay"면 거부(구 상태는 ralplan 재실행으로 치유). 이로써 라운드 10 #1(합의 연극)의 전면 수정 완료: 드래프팅은 여전히 single-model이지만 **차단 가능한 게이트가 진짜**가 됐다. 신규/갱신 테스트 4종(critic OKAY 완료+평결 영속, REJECT 차단, approve 평결 거부, 기존 fixture 갱신). full 1224 pass / 0 fail, typecheck 0.
+- **라운드 11 종료** — 누적 21사이클. 체인의 모든 게이트가 실체화됨: write-time(ralplan 스키마/role) → 합의(critic 평결) → 승인(스키마+role+평결) → 실행(team 게이트+락+감사) → 검증(ultragoal 정직 기록). 잔여: #5 시드 라운드트립(MED), LOW/WATCH 2건.

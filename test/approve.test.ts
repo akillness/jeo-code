@@ -93,6 +93,7 @@ test("approve command: nonexistent plan rejection, validation, and idempotency",
         skill: "ralplan",
         plan_path: planPath,
         approved: false,
+        consensus: "okay", // round-11: approval requires the persisted critic verdict
       },
       tempDir
     );

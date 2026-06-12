@@ -248,17 +248,80 @@ test("ralplan: refuses to mark complete when no pass yields a schema/role-valid 
   await fs.rm(dir, { recursive: true, force: true });
 });
 
-test("ralplan: a valid plan still completes (role validation does not over-reject)", async () => {
+test("ralplan: a valid plan + critic [OKAY] completes with the verdict persisted", async () => {
   const dir = await tmpProject();
   await seedInterview(dir);
+  // Dual-mode mock: drafting passes carry opts.systemPrompt (bare callLlm);
+  // the consensus-critic SUBAGENT runs through the engine (system message in
+  // history, no opts.systemPrompt) and must emit a done tool call.
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => 'name: "ok plan"\nsteps:\n  - name: "Build it"\n    role: executor\n',
+    callLlm: async (_m: unknown, llmOpts?: { systemPrompt?: string }) =>
+      llmOpts?.systemPrompt
+        ? 'name: "ok plan"\nsteps:\n  - name: "Build it"\n    role: executor\n'
+        : JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: steps are actionable and match the repo." } }),
   }));
   const { runRalplanEngine } = await import("../src/commands/ralplan");
   const res = await runRalplanEngine({ cwd: dir, io: { output: () => {} } });
   expect(res.ok).toBe(true);
   const state = await readWorkflowState("ralplan", dir);
   expect(state?.current_phase).toBe("complete");
+  expect(state?.consensus).toBe("okay"); // round-11: verdict persisted
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("ralplan: critic [REJECT] blocks completion and persists the verdict (round-11)", async () => {
+  const dir = await tmpProject();
+  await seedInterview(dir);
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_m: unknown, llmOpts?: { systemPrompt?: string }) =>
+      llmOpts?.systemPrompt
+        ? 'steps:\n  - name: "Build it"\n    role: executor\n'
+        : JSON.stringify({ tool: "done", arguments: { reason: "[REJECT]\nJustification: the plan ignores the acceptance criteria entirely." } }),
+  }));
+  const { runRalplanEngine } = await import("../src/commands/ralplan");
+  const lines: string[] = [];
+  const res = await runRalplanEngine({ cwd: dir, io: { output: l => lines.push(l) } });
+  expect(res.ok).toBe(false);
+  const state = await readWorkflowState("ralplan", dir);
+  expect(state?.current_phase).not.toBe("complete"); // gate held
+  expect(state?.consensus).toBe("reject");
+  expect(state?.consensus_detail).toContain("acceptance criteria");
+  expect(lines.some(l => l.includes("did NOT approve"))).toBe(true);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("approve: refuses a plan without an [OKAY] consensus verdict (round-11)", async () => {
+  const dir = await tmpProject();
+  const planPath = path.join(dir, "good-shape.yaml");
+  await fs.writeFile(planPath, 'steps:\n  - name: "Build it"\n    role: executor\n'); // schema-valid
+  await writeWorkflowState("ralplan", {
+    active: false,
+    current_phase: "complete",
+    skill: "ralplan",
+    slug: "noverdict",
+    plan_path: planPath,
+    approved: false,
+    // consensus intentionally absent
+  }, dir);
+
+  const { runApproveCommand } = await import("../src/commands/approve");
+  const savedCwd = process.cwd();
+  const savedExit = process.exitCode;
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => logs.push(a.join(" "));
+  try {
+    process.chdir(dir);
+    await runApproveCommand([planPath]);
+  } finally {
+    console.log = origLog;
+    process.chdir(savedCwd);
+  }
+  const state = await readWorkflowState("ralplan", dir);
+  expect(state?.approved).toBe(false);
+  expect(logs.join("\n")).toContain("consensus verdict");
+  expect(process.exitCode).toBe(1);
+  process.exitCode = savedExit;
   await fs.rm(dir, { recursive: true, force: true });
 });
 

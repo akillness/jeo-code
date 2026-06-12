@@ -1,14 +1,68 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { callLlm } from "../agent/loop";
+import { callLlm, type Message } from "../agent/loop";
 import {
   readWorkflowState,
   writeWorkflowState,
+  readGlobalConfig,
   getLocalJocDir,
   type WorkflowState,
 } from "../agent/state";
 import { PlanSchema, normalizePlanShape, parseYaml } from "../agent/plan";
-import { getSubagentRole } from "../agent/subagents";
+import {
+  getSubagentRole,
+  subagentSystemPrompt,
+  subagentToolset,
+  validateSubagentDoneReason,
+  resolveSubagentModel,
+  resolveSubagentMaxSteps,
+} from "../agent/subagents";
+import { runAgentLoop } from "../agent/engine";
+
+/** Round-11 (architect ref 8-Round10Planning #1): the REAL consensus gate. A
+ *  read-only critic SUBAGENT (repo access via read/search/find) reviews the
+ *  candidate plan and must return an explicit verdict — unlike the drafting
+ *  passes, this one can actually BLOCK. Fail-closed: anything but a clean
+ *  [OKAY] contract is non-approval. */
+export async function runConsensusCriticGate(args: {
+  cwd: string;
+  seedContent: string;
+  plan: string;
+  signal?: AbortSignal;
+}): Promise<{ verdict: "okay" | "iterate" | "reject" | "unverified"; detail: string }> {
+  const role = getSubagentRole("critic")!;
+  const config = await readGlobalConfig();
+  const model = resolveSubagentModel(role.id, config);
+  const maxSteps = resolveSubagentMaxSteps(role.id, config);
+  const history: Message[] = [
+    { role: "system", content: subagentSystemPrompt(role) },
+    {
+      role: "user",
+      content:
+        `Review this implementation plan BEFORE it can be approved for execution.\n\n` +
+        `Crystallized spec (seed.yaml):\n${args.seedContent}\n\n` +
+        `Proposed plan (YAML — 'jeo team' executes the steps strictly top-to-bottom):\n${args.plan}\n\n` +
+        `Verify against the ACTUAL repository (use read/search/find/ls): file targets exist or are sensibly placed, ` +
+        `steps are ordered and independently verifiable, and the acceptance criteria are covered. ` +
+        `Then call done — your reason MUST start with [OKAY], [ITERATE], or [REJECT] and include a 'Justification:' section.`,
+    },
+  ];
+  const result = await runAgentLoop(history, {
+    cwd: args.cwd,
+    model,
+    maxSteps,
+    budget: { maxExtensions: 0 },
+    signal: args.signal,
+    tools: subagentToolset(role),
+  });
+  const reason = result.doneReason?.trim() ?? "";
+  if (!result.done) return { verdict: "unverified", detail: reason || `critic did not converge within ${result.steps} steps` };
+  const contract = validateSubagentDoneReason(role, reason);
+  if (!contract.ok) return { verdict: "unverified", detail: `critic report incomplete (missing ${contract.missing?.join(", ")}): ${reason.slice(0, 300)}` };
+  const firstLine = reason.split(/\r?\n/, 1)[0]?.trim() ?? "";
+  const verdict = firstLine === "[OKAY]" ? "okay" : firstLine === "[ITERATE]" ? "iterate" : firstLine === "[REJECT]" ? "reject" : "unverified";
+  return { verdict, detail: reason };
+}
 
 export interface RalplanEngineOptions {
   cwd?: string;
@@ -77,7 +131,7 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
   };
   await writeWorkflowState("ralplan", ralplanState, cwd);
 
-  log("Running Planner → Architect → Critic prompt passes (single-model drafting — schema/role validation happens at write time)…");
+  log("Running Planner → Architect drafting passes + a repo-grounded Critic consensus gate…");
 
   // Shared output contract (the exact shape `team` consumes) included in every pass.
   const SCHEMA_SPEC =
@@ -184,10 +238,45 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
       return { ok: false, reason: "no schema-valid plan produced" };
     }
 
+    // Round-11: REAL consensus gate — a read-only critic subagent with repo
+    // access must return [OKAY] before this plan can be marked complete. One
+    // [ITERATE] revision round is honored; anything else fails closed.
+    log("  [gate] Consensus critic (read-only subagent) reviewing the plan against the repo…");
+    if (opts.onProgress) {
+      opts.onProgress({ skill: "ralplan", phase: "planning", detail: "Critic gate reviewing" });
+    }
+    let gate = await runConsensusCriticGate({ cwd, seedContent, plan: cleanPlan, signal: opts.signal });
+    if (gate.verdict === "iterate") {
+      log(`[ralplan] Critic returned [ITERATE] — revising the plan once to address the justification…`);
+      const revised = await callRole(
+        CRITIC,
+        `The consensus critic returned [ITERATE] on the plan with this justification:\n\n${gate.detail}\n\n` +
+        `Revise the plan to address every point.\n\n${SCHEMA_SPEC}\n\nCurrent plan:\n\n${cleanPlan}`,
+      );
+      if (isValidPlan(revised)) {
+        cleanPlan = revised;
+        await fs.writeFile(planPath, cleanPlan, "utf-8");
+        gate = await runConsensusCriticGate({ cwd, seedContent, plan: cleanPlan, signal: opts.signal });
+      }
+    }
+    ralplanState.plan_path = planPath;
+    ralplanState.consensus = gate.verdict;
+    ralplanState.consensus_detail = gate.detail.slice(0, 600);
+    if (gate.verdict !== "okay") {
+      ralplanState.approved = false;
+      await writeWorkflowState("ralplan", ralplanState, cwd);
+      log(
+        `[ERROR] Consensus critic did NOT approve the plan (verdict: ${gate.verdict.toUpperCase()}).\n` +
+        `  Justification:\n${gate.detail.slice(0, 800)}\n` +
+        `  The plan was saved to ${planPath} but the workflow was NOT marked complete — address the justification and re-run 'jeo ralplan'.`,
+      );
+      return { ok: false, reason: `critic verdict: ${gate.verdict}` };
+    }
+    log(`  [gate] Critic verdict: [OKAY] — consensus recorded.`);
+
     log(`\n[SUCCESS] Plan successfully created and saved to: ${planPath}`);
 
     ralplanState.current_phase = "complete";
-    ralplanState.plan_path = planPath;
     ralplanState.approved = false;
     await writeWorkflowState("ralplan", ralplanState, cwd);
 

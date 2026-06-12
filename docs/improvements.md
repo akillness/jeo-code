@@ -6606,3 +6606,16 @@ that extends itself while the turn demonstrably progresses and fails fast when s
 
 ### Verification (round 10)
 - typecheck 0; `bun test` **1222 pass / 0 fail** across 159 files (+5: ralplan refuse-complete & valid-completes, approve refusal, new-idea interview restart, dependency-key rejection).
+
+---
+
+**Date:** 2026-06-12 · **Dimension: gjc-inheritance marathon round 11 — real consensus (the critic gate becomes blocking).**
+
+### ralplan consensus made real
+- **`runConsensusCriticGate`.** After drafting + write-time validation, a read-only CRITIC SUBAGENT (repo access via read/search/find/ls — unlike the no-tools drafting passes) reviews the candidate plan against the seed AND the actual repository. Its done-reason must satisfy the critic contract (`[OKAY]`/`[ITERATE]`/`[REJECT]` first line + `Justification:`); anything malformed is `unverified` — fail-closed.
+- **One [ITERATE] revision round.** The critic's justification is fed back to the drafting pass; the revised plan (if schema-valid) is re-reviewed once.
+- **Persisted verdict.** `consensus` + `consensus_detail` are written to the ralplan state. Only `[OKAY]` marks the workflow complete; otherwise the plan is saved for inspection, the justification is surfaced, and the run fails.
+- **`jeo approve` requires the verdict.** `consensus !== "okay"` is refused (older states without the field heal by re-running ralplan). This completes the round-10 finding #1: the drafting remains single-model, but the GATE — the thing that makes consensus mean something — is now real and blocking, mirroring how round 7 made ultragoal verification honest.
+
+### Verification (round 11)
+- typecheck 0; `bun test` **1224 pass / 0 fail** across 159 files (tests: [OKAY] completes + verdict persisted, [REJECT] blocks + justification persisted, approve refuses missing verdict, legacy fixture updated). Every gate in the deep-interview→ralplan→approve→team→ultragoal chain is now real: write-time schema/role → blocking consensus → validated approval → locked/audited execution → honest verification.

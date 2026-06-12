@@ -312,3 +312,8 @@
 - ralplan "consensus" 정직 리라벨(HIGH의 interim): 단일모델 3패스 프롬프트임을 로그에 명시(critic 평결 게이트 없음 — 라운드7 ultragoal과 동형). 전면 수정(실 서브에이전트+평결 게이트)은 라운드 11 후보.
 - LOW: PlanSchema가 depends_on/after/needs 등 dependency-형 키 거부(직렬 실행기가 존중 못 하는 순서 제약의 환상 차단), spawn-gate 동시성 명확화 주석.
 - Verified: typecheck 0; full bun test 1222 pass / 0 fail (+5종: ralplan refuse-complete/정상 완료, approve 거부, 인터뷰 신규 아이디어 재시작, deps 키 거부).
+[2026-06-12] gjc-계승 마라톤 라운드 11 (cycle 21) — ralplan 합의의 실체화
+- runConsensusCriticGate 신설: read-only critic 서브에이전트가 repo 접근(read/search/find/ls) 하에 후보 플랜을 시드+실저장소 대조 검토. 평결 계약 강제([OKAY]/[ITERATE]/[REJECT] + Justification, validateSubagentDoneReason) — 미충족은 unverified로 fail-closed. [ITERATE]는 1회 수정 라운드(critic 근거를 드래프터에 피드백) 후 재심.
+- 평결 영속: ralplan state에 consensus/consensus_detail 기록. [OKAY]만 current_phase=complete. 비승인 시 플랜은 검토용 저장 + 근거 표면화 + ok:false.
+- approve 강화: 영속 평결 consensus==="okay" 요구 — 평결 없는/실패한 플랜은 승인 불가(구 상태는 ralplan 재실행으로 치유). 라운드 10에서 "정직 리라벨"로 보류했던 #1(합의 연극)의 전면 수정 — 차단 가능한 게이트가 진짜가 됨.
+- Verified: typecheck 0; full bun test 1224 pass / 0 fail (신규/갱신 4종: OKAY 완료+평결 영속, REJECT 차단+근거 영속, approve 평결 거부, approve fixture 갱신). 체인 전 게이트 실체화 완료: write-time → 합의 → 승인 → 실행 → 검증.

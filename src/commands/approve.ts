@@ -100,6 +100,18 @@ export async function runApproveCommand(args: string[] = []): Promise<void> {
     return;
   }
 
+  // Round-11: approval also requires the PERSISTED consensus verdict — a plan
+  // that never passed (or failed) the critic gate cannot be approved. States
+  // from older ralplan runs lack the field; re-running ralplan heals them.
+  if (ralplanState.consensus !== "okay") {
+    console.log(
+      `[ERROR] Refusing to approve: the plan lacks an [OKAY] consensus verdict (recorded: ${ralplanState.consensus ?? "none"}).\n` +
+      `  Re-run 'jeo ralplan' so the consensus critic can review the plan, then approve again.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   // Update ralplan-state.json to approved: true
   ralplanState.approved = true;
   await writeWorkflowState("ralplan", ralplanState, cwd);

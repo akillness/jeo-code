@@ -690,36 +690,35 @@ test("LaunchTui.finish: a long reply is width-wrapped — no physical line excee
   expect(strip(out.join("")).replace(/\r/g, "")).toContain("Consolidated:");
 });
 
-test("LaunchTui: setQueuedInput surfaces mid-turn typed input as a live queued row (gjc parity)", () => {
+test("LaunchTui: live turn keeps the normal input box visible and editable", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
   tui.start();
   const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
 
-  // No row until the user types something.
-  expect(strip(out.join(""))).not.toContain("queued ›");
+  const initial = strip(out.join(""));
+  expect(initial).toContain("Type your next message...");
+  expect(initial).not.toContain("queued ›");
 
   out.length = 0;
-  tui.setQueuedInput({ text: "작업 확인", lines: 0 }); // in-flight partial line (CJK preserved)
-  expect(strip(out.join(""))).toContain("queued › 작업 확인");
-
-  out.length = 0;
-  tui.setQueuedInput({ text: "", lines: 2 }); // two complete lines promoted, partial cleared
-  const queued = strip(out.join(""));
-  expect(queued).toContain("queued ›");
-  expect(queued).toContain("+2 queued for next turn");
+  tui.setLivePromptInput("작업 확인"); // in-flight partial line (CJK preserved)
+  const typed = strip(out.join(""));
+  expect(typed).toContain("> 작업 확인");
+  expect(typed).toMatch(/[▌_]/);
+  expect(typed).not.toContain("queued");
 
   // Identical state is a no-op (no redundant repaint).
   out.length = 0;
-  tui.setQueuedInput({ text: "", lines: 2 });
+  tui.setLivePromptInput("작업 확인");
   expect(out.join("")).toBe("");
 
-  // A fresh turn clears the queued row.
+  // A fresh turn clears the draft but keeps the input box itself visible.
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
-  tui.start();
   out.length = 0;
-  (tui as unknown as { draw(): void }).draw();
-  expect(strip(out.join(""))).not.toContain("queued ›");
+  tui.start();
+  const fresh = strip(out.join(""));
+  expect(fresh).toContain("Type your next message...");
+  expect(fresh).not.toContain("작업 확인");
 
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
   tui.finish("ok");

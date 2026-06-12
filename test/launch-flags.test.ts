@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseFlags, gatedStdout, shouldUseOneShotTui, createInFlightAbortHarness, queuePromptInputChunk, formatResumeHint, PASTE_START, PASTE_END, type PromptInputQueue } from "../src/commands/launch";
+import { parseFlags, gatedStdout, shouldUseOneShotTui, createInFlightAbortHarness, queuePromptInputChunk, captureLivePromptInputChunk, formatResumeHint, PASTE_START, PASTE_END, type PromptInputQueue } from "../src/commands/launch";
 import { createInterface } from "node:readline/promises";
 import { Readable, Writable } from "node:stream";
 
@@ -97,16 +97,16 @@ test("gatedStdout: readline's own prompt/echo is suppressed while gated (single-
 
 const freshQueue = (): PromptInputQueue => ({ pendingLines: [], partial: "", pastedLines: [], inPaste: false });
 
-test("queuePromptInputChunk preserves Korean follow-up text typed during a live turn", () => {
+test("captureLivePromptInputChunk keeps live-turn text in the prompt draft, not a hidden queue", () => {
   const state = freshQueue();
-  expect(queuePromptInputChunk(state, "작업내용 확인")).toBe(true);
+  expect(captureLivePromptInputChunk(state, "작업내용 확인")).toBe(true);
   expect(state).toEqual({ ...freshQueue(), partial: "작업내용 확인" });
 
-  expect(queuePromptInputChunk(state, "해줘\r")).toBe(true);
-  expect(state).toEqual({ ...freshQueue(), pendingLines: ["작업내용 확인해줘"] });
+  expect(captureLivePromptInputChunk(state, "해줘\r")).toBe(true);
+  expect(state).toEqual({ ...freshQueue(), partial: "작업내용 확인해줘" });
 
-  expect(queuePromptInputChunk(state, "\u001b[A")).toBe(false);
-  expect(state).toEqual({ ...freshQueue(), pendingLines: ["작업내용 확인해줘"] });
+  expect(captureLivePromptInputChunk(state, "\u001b[A")).toBe(false);
+  expect(state).toEqual({ ...freshQueue(), partial: "작업내용 확인해줘" });
 });
 
 test("bracketed paste: multi-line paste splits into pastedLines + editable partial", () => {

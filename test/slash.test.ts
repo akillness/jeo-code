@@ -27,7 +27,7 @@ test("SLASH_COMMANDS includes the config and role-model commands", () => {
 
 test("slash command details stay in sync with command names", () => {
   expect(SLASH_COMMAND_DETAILS.map(c => c.command)).toEqual(SLASH_COMMANDS);
-  expect(SLASH_COMMAND_DETAILS.find(c => c.command === "/agents")?.usage).toContain("maxSteps");
+  expect(SLASH_COMMAND_DETAILS.find(c => c.command === "/agents")?.usage).toContain("thinking");
 });
 
 test("matchSlash distinguishes /model from /models; prefix beats fuzzy", () => {
@@ -53,11 +53,11 @@ test("matchSlash resolves the code-view command prefixes", () => {
 test("formatSlashCommandList lists all commands for bare slash and narrows by prefix", () => {
   const all = formatSlashCommandList("/").join("\n");
   expect(all).toContain("Slash Commands:");
-  expect(all).toContain("/model [id|#N|save|subagent <role> <model|#N>]");
-  expect(all).toContain("/agents [edit|role] [model|#N|maxSteps N|reset]");
+  expect(all).toContain("/model [id|#N|save|thinking <level>|subagent <role> <model|#N|thinking L>]");
+  expect(all).toContain("/agents [edit|role] [model|#N|thinking L|maxSteps N|reset]");
   expect(all).toContain("Subagents:");
   expect(all).toContain("/subagent [role]"); // view alias of /agents (re-added by user request)
-  expect(formatSlashCommandList("/?").join("\n")).toContain("/agents [edit|role] [model|#N|maxSteps N|reset]");
+  expect(formatSlashCommandList("/?").join("\n")).toContain("/agents [edit|role] [model|#N|thinking L|maxSteps N|reset]");
 
   const modelOnly = formatSlashCommandList("/m").join("\n");
   expect(modelOnly).toContain("Slash Commands matching '/m':");

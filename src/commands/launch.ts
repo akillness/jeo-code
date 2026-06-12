@@ -569,9 +569,65 @@ export function queuePromptInputChunk(state: PromptInputQueue, chunk: string): b
   return accepted;
 }
 
+/** Live-turn prompt capture: printable input edits the SAME next-prompt line the
+ * idle footer will show after the turn finishes. Enter does NOT promote a hidden
+ * queue entry; it merely marks the current line as ready, so the existing input
+ * box stays the single source of truth and the user presses Enter once more at
+ * the real prompt to run it. */
+function feedLivePromptSegment(state: PromptInputQueue, segment: string): boolean {
+  if (!segment || segment.includes("\u001b") || segment.includes("\u0003")) return false;
+  let accepted = false;
+  const normalized = segment.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  for (const ch of Array.from(normalized)) {
+    if (ch === "\n") {
+      accepted = true;
+    } else if (ch === "\u007f" || ch === "\b") {
+      const chars = Array.from(state.partial);
+      chars.pop();
+      state.partial = chars.join("");
+      accepted = true;
+    } else if (ch === "\t" || ch >= " ") {
+      state.partial += ch;
+      accepted = true;
+    }
+  }
+  return accepted;
+}
+
+function feedLivePromptPasteBody(state: PromptInputQueue, body: string): boolean {
+  if (!body) return false;
+  const normalized = body.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const flattened = normalized.split("\n").map(part => part.trim()).filter(Boolean).join(" ");
+  if (!flattened) return false;
+  state.partial = state.partial ? `${state.partial} ${flattened}` : flattened;
+  return true;
+}
+
+export function captureLivePromptInputChunk(state: PromptInputQueue, chunk: string): boolean {
+  if (!chunk) return false;
+  let accepted = false;
+  let rest = chunk;
+  while (rest.length > 0) {
+    if (state.inPaste) {
+      const end = rest.indexOf(PASTE_END);
+      const body = end === -1 ? rest : rest.slice(0, end);
+      if (end !== -1) state.inPaste = false;
+      rest = end === -1 ? "" : rest.slice(end + PASTE_END.length);
+      if (feedLivePromptPasteBody(state, body)) accepted = true;
+    } else {
+      const start = rest.indexOf(PASTE_START);
+      const plain = start === -1 ? rest : rest.slice(0, start);
+      if (start !== -1) state.inPaste = true;
+      rest = start === -1 ? "" : rest.slice(start + PASTE_START.length);
+      if (feedLivePromptSegment(state, plain)) accepted = true;
+    }
+  }
+  return accepted;
+}
+
 /**
- * TTY "new input first" contract: fold any queued FULL lines (typed while a
- * turn was running, or stray Enter-terminated buffer noise) into the editable
+ * TTY "new input first" contract: fold any queued FULL lines (stray
+ * Enter-terminated buffer noise, or older persisted queues) into the editable
  * prompt prefill instead of leaving them to auto-execute as the next prompt.
  * Without this, stale queued lines ran BEFORE the user's fresh input — jeo
  * appeared to "continue the previous work first". Returns the number of lines
@@ -1237,11 +1293,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const streamEvents = createStreamEvents(initialStepLimit);
   let queueBusyInput: ((chunk: string) => boolean) | undefined;
   let queueBusyPasteActive: (() => boolean) | undefined;
-  // Live snapshot of the busy-turn input queue (partial line + count of complete
-  // lines awaiting the next prompt) — feeds the TUI's mid-turn queued-input row so
-  // typing during a live turn is VISIBLE (gjc-parity: the input affordance never
-  // vanishes; the user sees what they queued / are about to steer).
-  let queueBusySnapshot: (() => { text: string; lines: number }) | undefined;
+  // Live snapshot of the busy-turn prompt draft — feeds the TUI's normal input
+  // box during a running turn so typed text stays in the same query surface
+  // instead of a separate queued row.
+  let queueBusySnapshot: (() => { text: string }) | undefined;
   let interactiveTurnActive = false;
 
 
@@ -1304,12 +1359,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         },
         onBufferedInput: chunk => {
           if (!tui) return;
-          const queued = queueBusyInput?.(chunk) ?? false;
-          // Live mid-turn queued-input row: reflect the in-flight partial + count
-          // after every accepted keystroke (incl. backspace edits and Enter
-          // promoting a line) so the user SEES their input being captured —
-          // the input affordance never vanishes during a turn (gjc parity).
-          if (queued) tui.setQueuedInput(queueBusySnapshot?.() ?? { text: "", lines: 0 });
+          const captured = queueBusyInput?.(chunk) ?? false;
+          // Keep the SAME query input box visible during a live turn. Printable
+          // keystrokes edit the next prompt draft; Enter does not create a hidden
+          // queue entry, so there is no separate "queued input" surface.
+          if (captured) tui.setLivePromptInput(queueBusySnapshot?.().text ?? "");
         },
         onAbortNotice: msg => {
           if (tui) tui.events().onNotice?.(msg);
@@ -1771,11 +1825,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // 'line' instead), so queue those and serve them before prompting again.
   const pendingStdinLines: string[] = [];
   const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: "", pastedLines: [], inPaste: false };
-  queueBusyInput = (chunk: string) => queuePromptInputChunk(queuedPromptInput, chunk);
+  queueBusyInput = (chunk: string) => captureLivePromptInputChunk(queuedPromptInput, chunk);
   queueBusyPasteActive = () => queuedPromptInput.inPaste;
   queueBusySnapshot = () => ({
     text: queuedPromptInput.partial,
-    lines: queuedPromptInput.pendingLines.length + queuedPromptInput.pastedLines.length,
   });
   // Bracketed-paste line routing at the PROMPT: readline strips the 2004 markers
   // and replays pasted lines as synthetic keypresses, emitting paste-start /
@@ -2314,6 +2367,74 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       },
     );
     return chosen;
+  };
+
+  const pickThinkingLevel = async (
+    title: string,
+    current: ThinkLevel | undefined,
+    inheritLabel?: string,
+  ): Promise<ThinkLevel | "inherit" | undefined> => {
+    const mark = (lvl: string): string => (current === lvl ? "current" : "");
+    const levels: { value: string; label: string; hint?: string }[] = [
+      ...(inheritLabel ? [{ value: "inherit", label: inheritLabel, hint: current === undefined ? "current" : "" }] : []),
+      { value: "minimal", label: "minimal — lightest reasoning", hint: mark("minimal") },
+      { value: "low", label: `low — light reasoning (~${Math.round(thinkingMaxTokens("low") / 1000)}k tokens)`, hint: mark("low") },
+      { value: "medium", label: `medium — moderate reasoning (~${Math.round(thinkingMaxTokens("medium") / 1000)}k tokens)`, hint: mark("medium") },
+      { value: "high", label: `high — deep reasoning (~${Math.round(thinkingMaxTokens("high") / 1000)}k tokens)`, hint: mark("high") },
+      { value: "xhigh", label: `xhigh — maximum reasoning (~${Math.round(thinkingMaxTokens("xhigh") / 1000)}k tokens)`, hint: mark("xhigh") },
+    ];
+    const picked = await pickFromOptions(title, levels);
+    return picked === "inherit" || isThinkingLevel(picked) ? picked : undefined;
+  };
+
+  const setRoleThinking = async (roleId: string, rawLevel: string | undefined): Promise<boolean> => {
+    const cfgForRole = await readGlobalConfig();
+    const role = getSubagentRole(roleId, cfgForRole);
+    if (!role) return false;
+    const level = (rawLevel ?? "").toLowerCase();
+    if (level === "inherit") {
+      await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { thinking: undefined }) }));
+      console.log(`${role.title} thinking now inherits the default → ~/.jeo/config.json`);
+      return true;
+    }
+    if (!isThinkingLevel(level)) {
+      console.log(`Usage: /model subagent ${role.id} thinking <inherit|minimal|low|medium|high|xhigh>`);
+      return true;
+    }
+    await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { thinking: level }) }));
+    console.log(`${role.title} thinking set to ${level} (~${thinkingMaxTokens(level)} max tokens/step) → ~/.jeo/config.json`);
+    return true;
+  };
+
+  const applyPickedModelWithTarget = async (target: string): Promise<boolean> => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+    const cfgForPick = await readGlobalConfig();
+    const choice = await pickFromOptions(`Apply ${target} to`, applyTargetChoices(cfgForPick));
+    const applyTo = choice || "default";
+    const roleTarget = applyTo !== "default" ? getSubagentRole(applyTo, cfgForPick) : undefined;
+    const { resolved, provider } = await describeModel(target);
+    const st = (await describeAllProviders(cfgForPick)).find(s => s.name === provider);
+    if (roleTarget) {
+      const lvl = await pickThinkingLevel(
+        `Reasoning for ${roleTarget.title}: ${target}`,
+        cfgForPick.subagents?.[roleTarget.id]?.thinking,
+        `inherit — follow default (${cfgForPick.thinkingLevel ?? "medium"})`,
+      );
+      const thinkPatch = lvl === "inherit" ? { thinking: undefined } : lvl ? { thinking: lvl } : {};
+      await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, roleTarget.id, { model: target, ...thinkPatch }) }));
+      const thinkNote = lvl ? ` · thinking ${lvl}` : "";
+      console.log(`Subagent '${roleTarget.id}' model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${thinkNote} — saved (change anytime via /model or /agents)`);
+      return true;
+    }
+    sessionModel = target;
+    const lvl = await pickThinkingLevel(`Reasoning for default: ${target}`, sessionThinking ?? cfgForPick.thinkingLevel);
+    if (lvl && lvl !== "inherit") {
+      sessionThinking = lvl;
+      await saveConfigPatch(() => ({ thinkingLevel: lvl }));
+    }
+    await saveConfigPatch(raw => rememberModelPatch(raw, target));
+    console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${lvl && lvl !== "inherit" ? ` · thinking ${lvl}` : ""} — saved as default`);
+    return true;
   };
 
   const pickSkillFromList = async (skills: SkillDoc[]): Promise<SkillDoc | undefined> => {
@@ -3176,10 +3297,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             maxSteps: resolveSubagentMaxSteps(r.id, cfgNow),
             thinking: resolveSubagentThinking(r.id, cfgNow),
           }))) console.log(line);
-          console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  provider: /agents <role> provider <name> [model]  ·  steps: /agents <role> maxSteps <N>  ·  picker: /agents edit");
-          console.log("Tip: set a role while choosing models with /model subagent <role> [model|#N]");
+          console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  provider: /agents <role> provider <name> [model]  ·  thinking: /agents <role> thinking <level|inherit>  ·  steps: /agents <role> maxSteps <N>  ·  picker: /agents edit");
+          console.log("Tip: primary model flow: /model → pick model → choose default or subagent role → choose thinking level");
           console.log(`Available: ${allSubagentRoles(cfgNow).map(r => r.id).join(", ")} (declare custom roles in config.subagents)`);
-          console.log("Subcommands: edit, <role> <model|#N>, <role> provider <name> [model], <role> maxSteps <N>, <role> reset");
+          console.log("Subcommands: edit, <role> <model|#N>, <role> thinking <level|inherit>, <role> provider <name> [model], <role> maxSteps <N>, <role> reset");
         };
         if (!roleArg || roleArg === "/" || roleArg === "?" || subcommand === "help") {
           printRoster();
@@ -3187,8 +3308,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         if (subcommand === "edit" || subcommand === "picker") {
           printRoster();
-          // Interactive editor (TTY): role picker → action picker → live model
-          // picker / reset — the arrows+Enter way to CHANGE an existing setting.
+          // Interactive editor (TTY): role picker → action picker → live model /
+          // thinking / reset — the arrows+Enter way to CHANGE an existing setting.
           const rolePick = await pickFromOptions(
             "Edit a subagent role (ESC to skip)",
             allSubagentRoles(cfgNow).map(r => ({
@@ -3201,7 +3322,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (!editRole) continue;
           const action = await pickFromOptions(`${editRole.title} — choose action`, [
             { value: "model", label: "change model", hint: resolveSubagentModel(editRole.id, cfgNow) },
-            { value: "reset", label: "reset to defaults", hint: "clears model + maxSteps override" },
+            { value: "thinking", label: "change thinking", hint: resolveSubagentThinking(editRole.id, cfgNow) ?? `inherit (${cfgNow.thinkingLevel ?? "medium"})` },
+            { value: "reset", label: "reset to defaults", hint: "clears model + maxSteps + thinking override" },
           ]);
           if (action === "reset") {
             await saveConfigPatch(raw => ({ subagents: clearSubagentSetting(raw, editRole.id) }));
@@ -3215,6 +3337,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, editRole.id, { model: pinned }) }));
               console.log(`Subagent '${editRole.id}' model set to ${pinned} → ~/.jeo/config.json`);
             }
+          } else if (action === "thinking") {
+            const lvl = await pickThinkingLevel(
+              `Reasoning for ${editRole.title}`,
+              cfgNow.subagents?.[editRole.id]?.thinking,
+              `inherit — follow default (${cfgNow.thinkingLevel ?? "medium"})`,
+            );
+            if (lvl) await setRoleThinking(editRole.id, lvl);
           }
           continue;
         }
@@ -3236,6 +3365,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           }
           await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { maxSteps }) }));
           console.log(`${role.title} maxSteps set to ${maxSteps} → ~/.jeo/config.json`);
+          continue;
+        }
+        if (modelArg?.toLowerCase() === "thinking" || modelArg?.toLowerCase() === "think") {
+          await setRoleThinking(role.id, tokens[2]);
           continue;
         }
         if (modelArg?.toLowerCase() === "provider") {
@@ -3457,16 +3590,34 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`Default model saved: ${formatModelLine({ label: finalSave, resolved, provider })} → ~/.jeo/config.json`);
           continue;
         }
+        const modelThinking = /^(?:thinking|think)(?:\s+(\S+))?$/i.exec(arg);
+        if (modelThinking) {
+          const level = (modelThinking[1] ?? "").toLowerCase();
+          if (!isThinkingLevel(level)) {
+            console.log("Usage: /model thinking <minimal|low|medium|high|xhigh>");
+            continue;
+          }
+          sessionThinking = level;
+          await saveConfigPatch(() => ({ thinkingLevel: level }));
+          console.log(`Default thinking set to ${level} (~${thinkingMaxTokens(level)} max tokens/step) → ~/.jeo/config.json`);
+          continue;
+        }
         const statuses = await describeAllProviders();
         const disabledModelProviders = statuses.filter(s => !s.ready && !selectableThoughNotReady(s)).map(s => s.name);
         const roleMatch = /^(subagent|role)\s+(\S+)(?:\s+(.+))?$/i.exec(arg);
         if (roleMatch) {
-          const role = getSubagentRole(roleMatch[2] ?? "");
+          const role = getSubagentRole(roleMatch[2] ?? "", await readGlobalConfig());
           if (!role) {
             console.log("Usage: /model subagent <executor|planner|architect|critic> [model|#N]");
             continue;
           }
           let roleModelArg = (roleMatch[3] ?? "").trim();
+          const roleThinking = /^(?:thinking|think)(?:\s+(\S+))?$/i.exec(roleModelArg);
+          if (roleThinking) {
+            await setRoleThinking(role.id, roleThinking[1]);
+            continue;
+          }
+          let roleModelPickedFromSelector = false;
           if (!roleModelArg && process.stdin.isTTY && process.stdout.isTTY) {
             const live = await getLiveModels();
             lastPickIndex = flattenModels(live);
@@ -3478,6 +3629,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
                 continue;
               }
               roleModelArg = qualifyModelId(picked.model, picked.provider);
+              roleModelPickedFromSelector = true;
             }
           }
           if (roleModelArg && lastPickIndex.length) {
@@ -3489,6 +3641,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
                 continue;
               }
               roleModelArg = qualifyModelId(sel.entry.model, sel.entry.provider);
+              roleModelPickedFromSelector = true;
             } else if (sel.kind === "ambiguous") {
               console.log(`'${roleModelArg}' matches ${sel.matches.length} models — be more specific:`);
               for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
@@ -3502,9 +3655,20 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             continue;
           }
           if (roleModelArg) {
-            await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: roleModelArg }) }));
+            let thinkPatch: { thinking?: ThinkLevel } = {};
+            if (roleModelPickedFromSelector && process.stdin.isTTY && process.stdout.isTTY) {
+              const cfgForRole = await readGlobalConfig();
+              const lvl = await pickThinkingLevel(
+                `Reasoning for ${role.title}: ${roleModelArg}`,
+                cfgForRole.subagents?.[role.id]?.thinking,
+                `inherit — follow default (${cfgForRole.thinkingLevel ?? "medium"})`,
+              );
+              thinkPatch = lvl === "inherit" ? { thinking: undefined } : lvl ? { thinking: lvl } : {};
+            }
+            await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: roleModelArg, ...thinkPatch }) }));
             const { provider } = await describeModel(roleModelArg);
-            console.log(`${role.title} model set to ${roleModelArg} (${provider}) — saved to ~/.jeo/config.json`);
+            const thinkNote = thinkPatch.thinking ? ` · thinking ${thinkPatch.thinking}` : "";
+            console.log(`${role.title} model set to ${roleModelArg} (${provider})${thinkNote} — saved to ~/.jeo/config.json`);
           } else {
             const current = resolveSubagentModel(role.id, await readGlobalConfig());
             const { resolved, provider } = await describeModel(current);
@@ -3518,6 +3682,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           }
           continue;
         }
+        let modelPickedFromSelector = false;
         if (!arg && process.stdin.isTTY && process.stdout.isTTY) {
           const live = await getLiveModels();
           lastPickIndex = flattenModels(live);
@@ -3529,6 +3694,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               continue;
             }
             arg = qualifyModelId(picked.model, picked.provider);
+            modelPickedFromSelector = true;
           }
         }
         // Selection from the last numbered pick list (`#N`) or a fuzzy substring.
@@ -3541,6 +3707,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               continue;
             }
             arg = qualifyModelId(sel.entry.model, sel.entry.provider);
+            modelPickedFromSelector = true;
           } else if (sel.kind === "ambiguous") {
             console.log(`'${arg}' matches ${sel.matches.length} models — be more specific:`);
             for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
@@ -3555,6 +3722,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           continue;
         }
         const label = arg || (sessionModel || defaultModel);
+        if (arg && modelPickedFromSelector && await applyPickedModelWithTarget(arg)) {
+          continue;
+        }
         if (arg) {
           sessionModel = arg;
           // MRU persistence: picking a model IS saving it — the newest pick wins

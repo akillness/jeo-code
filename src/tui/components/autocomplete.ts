@@ -156,10 +156,12 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
   switch (cmd) {
     case "/model": {
       if (token.startsWith("#")) return { completions: [], token, kind: "none" }; // numbered pick
-      if (argIndex === 0) return finish(["save", "subagent", "role", ...rankedModelPool(ctx)], "model");
+      if (argIndex === 0) return finish(["save", "subagent", "role", "thinking", ...rankedModelPool(ctx)], "model");
       if (argIndex === 1 && (tokens[1]?.toLowerCase() === "save")) return finish(rankedModelPool(ctx), "model");
+      if (argIndex === 1 && (tokens[1]?.toLowerCase() === "thinking" || tokens[1]?.toLowerCase() === "think")) return finish(ctx.thinkingLevels, "thinking");
       if (argIndex === 1 && (tokens[1]?.toLowerCase() === "subagent" || tokens[1]?.toLowerCase() === "role")) return finish(ctx.roleIds, "role");
-      if (argIndex === 2 && (tokens[1]?.toLowerCase() === "subagent" || tokens[1]?.toLowerCase() === "role")) return finish(rankedModelPool(ctx), "model");
+      if (argIndex === 2 && (tokens[1]?.toLowerCase() === "subagent" || tokens[1]?.toLowerCase() === "role")) return finish(["thinking", ...rankedModelPool(ctx)], "model");
+      if (argIndex === 3 && (tokens[1]?.toLowerCase() === "subagent" || tokens[1]?.toLowerCase() === "role") && (tokens[3]?.toLowerCase() === "thinking" || tokens[3]?.toLowerCase() === "think")) return finish(["inherit", ...ctx.thinkingLevels], "thinking");
       return { completions: [], token, kind: "none" };
     }
     case "/models":
@@ -176,7 +178,8 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       return argIndex === 0 ? finish(["anthropic", "openai", "gemini", "antigravity"], "provider") : { completions: [], token, kind: "none" };
     case "/agents": {
       if (argIndex === 0) return finish(["edit", ...ctx.roleIds], "role");
-      if (argIndex === 1) return finish(["reset", "maxSteps", ...rankedModelPool(ctx)], "model");
+      if (argIndex === 1) return finish(["reset", "thinking", "maxSteps", ...rankedModelPool(ctx)], "model");
+      if (argIndex === 2 && (tokens[2]?.toLowerCase() === "thinking" || tokens[2]?.toLowerCase() === "think")) return finish(["inherit", ...ctx.thinkingLevels], "thinking");
       if (argIndex === 2 && (tokens[2]?.toLowerCase() === "maxsteps" || tokens[2]?.toLowerCase() === "steps")) return { completions: [], token, kind: "none" };
       return { completions: [], token, kind: "none" };
     }

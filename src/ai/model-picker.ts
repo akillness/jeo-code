@@ -2,7 +2,7 @@
  * Model picker — turn a live discovery result set into a flat, 1-based pick list
  * so the TUI can select a model by number (`/model #3`) or by a fuzzy substring
  * (`/model gpt-4`). Pure functions over `ProviderModelsResult[]`, so they are
- * fully unit-testable and shared by `/model`, `/models`, and `/provider`.
+ * fully unit-testable and shared by `/model` and `/provider`.
  */
 import type { ProviderModelsResult } from "./model-discovery";
 import type { ProviderName } from "./types";

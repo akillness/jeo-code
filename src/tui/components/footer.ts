@@ -1,20 +1,15 @@
 import * as path from "node:path";
 import * as os from "node:os";
 import chalk from "chalk";
-import {
-  stageIndexForStep,
-
-  overallProgress,
-  nextStageName,
-  stepsToNextStage,
-  evolutionTrack,
-  EVOLUTION_STAGE_COUNT,
-} from "./evolution";
+import { stageIndexForStep, evolutionTrack } from "./evolution";
 import { formatCost } from "../../ai/pricing";
 
 export interface FooterData {
   model: string;
   provider?: string;
+  /** Drives the evolution-stage tag only — never rendered as a `step n/m` counter
+   *  (the dynamic step budget keeps extending the denominator, so the raw count
+   *  carries no information — user feedback). */
   step?: number;
   maxSteps?: number;
   elapsedMs?: number;
@@ -23,10 +18,6 @@ export interface FooterData {
   showStage?: boolean;
   /** Use ASCII track markers in the stage tag (default unicode). */
   unicode?: boolean;
-  /** Show an estimated time-to-completion (`eta Ns`); opt-in. */
-  showEta?: boolean;
-  /** Show whole-turn evolution progress (`evo NN%`) + steps to next stage; opt-in. */
-  showProgress?: boolean;
   /** Colorize the stage track (default true). Set false for the mono theme. */
   color?: boolean;
   /** Estimated context usage in tokens, when known. */
@@ -99,48 +90,14 @@ export function renderFooter(d: FooterData): string {
     }
   }
 
-  // Step
-  if (d.step !== undefined) {
-    if (d.maxSteps !== undefined) {
-      parts.push(`step ${d.step}/${d.maxSteps}`);
-    } else {
-      parts.push(`step ${d.step}`);
-    }
-  }
+  // No `step n/m` segment (and no step-derived eta/evo%): the dynamic step budget
+  // keeps extending the denominator, so those counters carried no information
+  // (user feedback). `step`/`maxSteps` still drive the stage tag below.
 
   // Elapsed
   if (d.elapsedMs !== undefined) {
     const secs = Math.round(d.elapsedMs / 1000);
     parts.push(`${secs}s`);
-  }
-
-  // Estimated remaining time (opt-in): linear extrapolation from elapsed/step.
-  if (
-    d.showEta &&
-    d.step !== undefined &&
-    // ETA from a single in-flight step is dominated by model-call/backoff latency and
-    // produces nonsense like "eta 442s" — require at least one COMPLETED step.
-    d.step > 1 &&
-    d.maxSteps !== undefined &&
-    d.step < d.maxSteps &&
-    d.elapsedMs !== undefined &&
-    d.elapsedMs > 0
-  ) {
-    const etaMs = (d.elapsedMs / d.step) * (d.maxSteps - d.step);
-    parts.push(`eta ${Math.round(etaMs / 1000)}s`);
-  }
-
-  // Whole-turn progress + countdown to the next stage (opt-in).
-  if (d.showProgress && d.step !== undefined && d.maxSteps !== undefined) {
-    const pct = Math.round(overallProgress(d.step, d.maxSteps) * 100);
-    const idx = stageIndexForStep(d.step, d.maxSteps);
-    if (idx < EVOLUTION_STAGE_COUNT - 1) {
-      const remaining = stepsToNextStage(d.step, d.maxSteps);
-      const arrow = unicode ? "\u2192" : "->";
-      parts.push(`evo ${pct}% ${arrow} ${nextStageName(d.step, d.maxSteps)} in ${remaining}`);
-    } else {
-      parts.push(`evo ${pct}%`);
-    }
   }
 
   // Estimated context usage (opt-in): cheap footer signal for context growth.

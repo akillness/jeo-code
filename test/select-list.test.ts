@@ -87,6 +87,18 @@ test("renderSelectList supports multi-line titles and pre-styled hints", () => {
   expect(text).toContain("Line one\n\nLine three");
   expect(text).toContain("\x1b[31mRAW\x1b[0m");
 });
+test("renderSelectList renders selectable nested sub-list rows", () => {
+  const list = new SelectList<string>([
+    { value: "heading", label: "Set as PLANNER (Planner)", disabled: true },
+    { value: "planner:inherit", label: "thinking inherit", depth: 1, branch: "mid" },
+    { value: "planner:xhigh", label: "thinking xhigh", depth: 1, branch: "last" },
+  ]);
+  const lines = renderSelectList(list, { rows: 5, color: false, unicode: true }).map(stripAnsi);
+  expect(list.selected()?.value).toBe("planner:inherit");
+  expect(lines.join("\n")).toContain("  Set as PLANNER (Planner)");
+  expect(lines.join("\n")).toContain("❯ ├─ thinking inherit");
+  expect(lines.join("\n")).toContain("  └─ thinking xhigh");
+});
 
 test("empty list renders a (no matches) line, not a crash", () => {
   const list = new SelectList<string>([]);

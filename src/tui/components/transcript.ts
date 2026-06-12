@@ -25,7 +25,7 @@ export interface TranscriptOptions {
 }
 
 const TOOL_RESULT_RE = /^Tool \[([^\]]+)\] result \((ok|fail)\):/;
-const BOUNCE_PREFIXES = ["Your last reply", "The step budget for this turn is exhausted"];
+const BOUNCE_PREFIXES = ["Your last reply", "The budget for this turn is exhausted", "The step budget for this turn is exhausted", "You are cycling through the same"];
 
 function clipBody(text: string, cap: number): string[] {
   const rows = text.replace(/\r/g, "").split("\n");

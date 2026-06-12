@@ -17,7 +17,7 @@ import { friendlyProviderError, isContextOverflowError, isRefusalError } from ".
 import { isRateLimitError } from "../util/retry";
 import { runPreToolHooks, runPostTurnHooks } from "./hooks";
 import { minimizeToolOutput } from "./output-minimizer";
-import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, type StepBudgetConfig } from "./step-budget";
+import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, hashSignature, type StepBudgetConfig } from "./step-budget";
 import { historyTokens, trimToolResultsInPlace } from "./compaction";
 import { jeoEnv } from "../util/env";
 
@@ -188,6 +188,19 @@ function envOutputMax(): number {
 }
 export const TOOL_OUTPUT_MAX = envOutputMax();
 
+/** Wall-clock budget for ONE agent turn (ms). JEO_TURN_MAX_MS overrides; 0 disables.
+ *  Default 30 minutes: long autonomous runs stay alive, while a turn that spins in
+ *  "thinking" (huge contexts, endless extensions) is guaranteed to terminate into
+ *  the consolidation wrap-up instead of running for hours. */
+export function turnMaxMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = jeoEnv("TURN_MAX_MS", env);
+  if (raw !== undefined && raw !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return Math.trunc(n);
+  }
+  return 30 * 60 * 1000;
+}
+
 /**
  * Cap a tool result fed back to the model, keeping both ends: the head holds the
  * start (e.g. a file's top / a command's invocation) and the tail holds what's
@@ -302,6 +315,14 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   const ev = opts.events ?? {};
   const maxHistoryTokens = Math.max(10_000, opts.maxHistoryTokens ?? 80_000);
 
+  // Wall-clock turn budget — the definitive "never sits in thinking forever"
+  // guarantee. Step budgets bound the COUNT of model calls; this bounds their total
+  // TIME: a turn that crosses it stops at the next loop boundary and consolidates a
+  // wrap-up instead of spinning for hours under a generous dynamic step cap.
+  const turnStartedAt = Date.now();
+  const turnBudgetMs = turnMaxMs();
+  // "steps" | "time" — drives honest wording in the consolidation message.
+  let stopKind: "steps" | "time" = "steps";
   let step = 1;
   const acc = { inputTokens: 0, outputTokens: 0 };
   let sawUsage = false;
@@ -340,6 +361,13 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   const VERIFY_SIGNAL_RE = /\b(test|tests|tsc|typecheck|lint|build|check|spec|pytest|vitest|jest)\b/i;
   let lastSig = "";
   let repeatCount = 0;
+  // Cycle guard (the A↔B ping-pong the exact-repeat guard cannot see): the recent
+  // executed step signatures, as fixed-size digests. When a full window cycles
+  // through ≤2 distinct calls, bounce ONCE with an explicit correction; a spin that
+  // persists through the correction stops the turn.
+  const CYCLE_WINDOW = 6;
+  const recentStepSigs: string[] = [];
+  let cycleBounceUsed = false;
   // Invalid-tool-call guard: a model that returns JSON without a usable `tool`
   // field can't drive the loop at all — surface that clearly instead of looping.
   let invalidToolCalls = 0;
@@ -348,6 +376,11 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   const MAX_PARSE_BOUNCES = 2;
   let parseFailures = 0;
   while (true) {
+    if (turnBudgetMs > 0 && Date.now() - turnStartedAt > turnBudgetMs) {
+      stopKind = "time";
+      budgetStopReason = `turn wall-clock budget of ${Math.round(turnBudgetMs / 60_000)}m exceeded (JEO_TURN_MAX_MS) without done`;
+      break;
+    }
     if (step > budget.limit()) {
       const decision = budget.tryExtend();
       if (!decision.extend) {
@@ -599,7 +632,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     //    repeating — a recovery prompt resolves that without killing the turn.
     //  - 3rd identical step (repeated through the explicit correction) → stop.
     const callSigs = toolCalls.map(c => `${c.tool}:${JSON.stringify(c.arguments ?? {})}`);
-    const sig = callSigs.join(" | ");
+    // Fixed-size digest of the whole step — `write` signatures embed entire file
+    // bodies, so the repeat/cycle guards compare digests, not megabyte strings.
+    const sig = hashSignature(callSigs.join(" | "));
     if (sig === lastSig) repeatCount++;
     else {
       repeatCount = 1;
@@ -625,6 +660,38 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         done: false,
         steps: step,
         doneReason: `Stopped: repeated ${what} ${MAX_REPEAT}× even after an explicit correction (the model never signaled done).`,
+      });
+    }
+
+    // Cycle guard: an A↔B (or A↔B↔C-minus-one) alternation never trips the
+    // exact-repeat guard above — each step differs from its immediate predecessor —
+    // yet it is the same spin (field case: re-reading one file and re-running one
+    // command forever, "thinking" never ends). Detect a full recent window that
+    // cycles through ≤2 distinct step signatures: ONE corrective bounce (skip
+    // execution — a repeated mutating call must not run again merely to be
+    // detected), then stop if the spin survives the explicit correction.
+    recentStepSigs.push(sig);
+    if (recentStepSigs.length > CYCLE_WINDOW) recentStepSigs.shift();
+    if (recentStepSigs.length === CYCLE_WINDOW && new Set(recentStepSigs).size <= 2) {
+      if (!cycleBounceUsed) {
+        cycleBounceUsed = true;
+        recentStepSigs.length = 0; // fresh window: the correction earns a real retry
+        history.push({ role: "assistant", content: responseText });
+        history.push({
+          role: "user",
+          content:
+            `You are cycling through the same ${new Set(callSigs).size <= 1 ? "tool call" : "tool calls"} you already ran in recent steps — this call was NOT re-executed and its result has not changed. ` +
+            `If the task is complete, reply {"tool":"done","arguments":{"reason":"<summary of what was accomplished>"}}; ` +
+            `otherwise take a genuinely DIFFERENT next action (a new file, a new command, or a fix you have not tried).`,
+        });
+        ev.onNotice?.("tool-call cycle detected — skipped execution and asked the model to act differently or call done");
+        step++;
+        continue;
+      }
+      return finish({
+        done: false,
+        steps: step,
+        doneReason: `Stopped: the model cycled through the same tool calls for ${CYCLE_WINDOW} consecutive steps even after an explicit correction (it never signaled done).`,
       });
     }
 
@@ -852,12 +919,15 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     step++;
   }
 
-  // Step budget exhausted without `done` (and the retry flow declined a further
-  // extension). Instead of dying with a bare "(reached the N-step limit)" error,
+  // Budget exhausted without `done` (step limit declined a further extension, or
+  // the turn wall-clock budget fired). Instead of dying with a bare limit error,
   // dynamically CONSOLIDATE: one final no-tools model call summarizes what was
   // accomplished, key findings, and what remains — a useful wrap-up, not a failure.
   const extInfo = budget.extensionsUsed() > 0 ? ` after ${budget.extensionsUsed()} extension(s)` : "";
   const stopInfo = budgetStopReason ? `; ${budgetStopReason}` : "";
+  const budgetLabel = stopKind === "time"
+    ? `turn time budget of ${Math.round(turnBudgetMs / 60_000)}m reached`
+    : `step budget of ${budget.limit()} reached`;
   try {
     if (!opts.signal?.aborted) {
       const wrapUp = await invokeCallLlm(
@@ -866,7 +936,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           {
             role: "user",
             content:
-              "The step budget for this turn is exhausted. Do NOT call any tool. " +
+              "The budget for this turn is exhausted. Do NOT call any tool. " +
               "Reply with plain prose (no JSON): consolidate what you accomplished this turn, " +
               "the key findings/changes so far, and what remains to be done next.",
           },
@@ -879,10 +949,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         return finish({
           done: false,
           steps: budget.limit(),
-          doneReason: `${consolidated}\n\n(step budget of ${budget.limit()} reached${extInfo}${stopInfo} — consolidated wrap-up above; continue with a follow-up request)`,
+          doneReason: `${consolidated}\n\n(${budgetLabel}${extInfo}${stopInfo} — consolidated wrap-up above; continue with a follow-up request)`,
         });
       }
     }
   } catch { /* wrap-up is best-effort; fall through to the plain budget message */ }
-  return finish({ done: false, steps: budget.limit(), doneReason: budgetStopReason ? `(step budget of ${budget.limit()} reached${extInfo} — ${budgetStopReason})` : undefined });
+  return finish({ done: false, steps: stopKind === "time" ? step : budget.limit(), doneReason: budgetStopReason ? `(${budgetLabel}${extInfo} — ${budgetStopReason})` : undefined });
 }

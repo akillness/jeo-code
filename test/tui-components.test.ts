@@ -79,14 +79,14 @@ test("StreamRegion.render(width, maxLines) truncates the result to maxLines", ()
   ]);
 });
 
-test("renderFooter includes model, step 2/25, 2s and omits step when undefined", () => {
+test("renderFooter shows model + elapsed + stage tag and never a step counter", () => {
   const footer1 = renderFooter({
     model: "m",
     step: 2,
     maxSteps: 25,
     elapsedMs: 2000
   });
-  expect(stripAnsi(footer1)).toBe("m · step 2/25 · 2s · \u25cf\u25cf\u25cb\u25cb\u25cb Double Helix (DNA) [2/5]");
+  expect(stripAnsi(footer1)).toBe("m · 2s · ●●○○○ Double Helix (DNA) [2/5]");
 
   const footer2 = renderFooter({
     model: "m",
@@ -102,7 +102,7 @@ test("renderFooter includes model, step 2/25, 2s and omits step when undefined",
     elapsedMs: 4000,
     sessionId: "1a2b3c4d5e6f"
   });
-  expect(stripAnsi(footer3)).toBe("claude (anthropic) · step 3/10 · 4s · 1a2b3c4d · \u25cf\u25cf\u25cf\u25cb\u25cb Tool User (Homo Habilis) [3/5]");
+  expect(stripAnsi(footer3)).toBe("claude (anthropic) · 4s · 1a2b3c4d · ●●●○○ Tool User (Homo Habilis) [3/5]");
 });
 
 test("StreamRegion caps retained lines so memory stays flat over a long session", () => {

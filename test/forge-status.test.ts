@@ -64,7 +64,7 @@ test("renderJeoStatus separates progress, insight status, and forge rows", () =>
     unicode: false,
   }).map(stripAnsi);
   expect(lines[0]).toContain("[STEP]");
-  expect(lines[0]).toContain("step 3/10");
+  expect(lines[0]).toContain("elapsed 2s");
   expect(lines[0]).not.toContain("Resolving type boundaries");
   expect(lines[1]).toContain("[STATUS]");
   expect(lines[1]).toContain("jeo status");
@@ -224,8 +224,8 @@ test("summarizeForgeInvocation and summarizeForgeResult polish and status step s
     avgStepMs: 8100,
     color: false,
   }).map(stripAnsi);
-  expect(statusLines[0]).toContain("step 5/10");
-  expect(statusLines[0]).toContain("step 12.3s");
+  expect(statusLines[0]).toContain("elapsed 5s");
+  expect(statusLines[0]).toContain("now 12.3s");
   expect(statusLines[0]).toContain("avg 8.1s");
 });
 test("bash invocation card echoes `$ <command>` and a unicode ⟦Timeout⟧ annotation", () => {

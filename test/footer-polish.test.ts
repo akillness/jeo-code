@@ -5,31 +5,7 @@ import { ToolList } from "../src/tui/components/tool-list";
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
-test("footer ETA is opt-in and extrapolates from elapsed/step", () => {
-  // default (no showEta) → no eta segment, exact as before
-  expect(stripAnsi(renderFooter({ model: "m", step: 2, maxSteps: 10, elapsedMs: 4000 }))).not.toContain("eta");
-  // opt-in: 4s for 2 steps → ~8 steps remaining → eta 16s
-  const out = stripAnsi(renderFooter({ model: "m", step: 2, maxSteps: 10, elapsedMs: 4000, showEta: true }));
-  expect(out).toContain("eta 16s");
-  // no eta at the final step
-  expect(stripAnsi(renderFooter({ model: "m", step: 10, maxSteps: 10, elapsedMs: 4000, showEta: true }))).not.toContain("eta");
-});
-
-test("footer progress is opt-in: percent + steps to next stage", () => {
-  const out = stripAnsi(renderFooter({ model: "m", step: 25, maxSteps: 100, showProgress: true }));
-  expect(out).toContain("evo 25%");
-  expect(out).toContain("Tool User (Homo Habilis) in"); // next stage countdown
-  // final stage: percent only, no countdown
-  const fin = stripAnsi(renderFooter({ model: "m", step: 100, maxSteps: 100, showProgress: true }));
-  expect(fin).toContain("evo 100%");
-  expect(fin).not.toContain(" in ");
-});
-
-test("footer unicode:false uses ASCII track + arrow", () => {
-  const out = stripAnsi(renderFooter({ model: "m", step: 25, maxSteps: 100, showProgress: true, unicode: false }));
-  expect(out).toContain("->"); // ascii arrow
-  expect(out).toContain("##"); // ascii track markers
-});
+// Step-derived ETA, progress, and ASCII track features were removed from the footer.
 
 test("sparkline renders a normalized ramp; empty → empty; ascii fallback", () => {
   const sp = sparkline([0, 1, 2, 3, 4, 5, 6, 7]);

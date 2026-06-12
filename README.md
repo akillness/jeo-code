@@ -63,10 +63,11 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 
 | Command | Description |
 | --- | --- |
-| `/model` · `/models` · `/provider` | Pick model/provider; `/model` shows default/role badges, Set-as-role actions, thinking level, and the OpenAI Codex role preset in one flow |
+| `/model` · `/provider` | Pick model/provider; `/model` shows default/role badges, Ralph-style nested Set-as-role thinking choices, and the OpenAI Codex role preset in one flow |
 | `/provider login <name>` · `/logout` | OAuth login/logout from the input box |
 | `/agents [role]` · `/subagent` | Per-role (executor/planner/architect/critic) model · thinking · step config |
 | `/thinking [level]` | Show/set default reasoning budget (minimal…xhigh) |
+| `/fast [on|off|status]` | Toggle fast thinking mode when the active model advertises minimal/low reasoning |
 | `/skill` · `$<skill> [intent]` | List/run workflow skills (`$team "task"` style) |
 | `/view` · `/diff` · `/find` · `/search` | Code view, git diff, file/pattern search |
 | `/new` · `/resume` · `/sessions` · `/export` | Session management & transcript export |
@@ -147,7 +148,7 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input box, role-targeted model/thinking picker, hardened Ctrl-C / Ctrl+O.
+- **[0.4.2]** (2026-06-13) — Thinking-loop termination guarantees (cycle guard + turn wall-clock budget), unboxed live status without step counters, self-contained `.jeo` namespace, live next-prompt input card, role-targeted model/thinking picker.
 - **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
 - **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
 - **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.

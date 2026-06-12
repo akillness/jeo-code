@@ -63,10 +63,11 @@ jeo --tmux               # 독립 tmux 세션에서 실행
 
 | 명령 | 설명 |
 | --- | --- |
-| `/model` · `/models` · `/provider` | 모델/프로바이더 선택; `/model`에서 기본/역할 배지, 역할 지정 액션, thinking 레벨, OpenAI Codex 역할 프리셋을 한 흐름으로 설정 |
+| `/model` · `/provider` | 모델/프로바이더 선택; `/model`에서 기본/역할 배지, Ralph식 하위 리스트 역할·thinking 선택, OpenAI Codex 역할 프리셋을 한 흐름으로 설정 |
 | `/provider login <name>` · `/logout` | 입력창에서 OAuth 로그인/로그아웃 |
 | `/agents [role]` · `/subagent` | 역할별(executor/planner/architect/critic) 모델·thinking·스텝 구성 |
 | `/thinking [level]` | 기본 추론 예산(minimal…xhigh) 조회/설정 |
+| `/fast [on|off|status]` | 현재 모델이 minimal/low 추론을 지원하면 fast thinking 모드를 켜고 끔 |
 | `/skill` · `$<skill> [intent]` | 워크플로 스킬 목록/실행(`$team "작업"` 스타일) |
 | `/view` · `/diff` · `/find` · `/search` | 코드 보기, git diff, 파일/패턴 검색 |
 | `/new` · `/resume` · `/sessions` · `/export` | 세션 관리·트랜스크립트 내보내기 |
@@ -147,7 +148,7 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input box, role-targeted model/thinking picker, hardened Ctrl-C / Ctrl+O.
+- **[0.4.2]** (2026-06-13) — Thinking-loop termination guarantees (cycle guard + turn wall-clock budget), unboxed live status without step counters, self-contained `.jeo` namespace, live next-prompt input card, role-targeted model/thinking picker.
 - **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
 - **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
 - **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.

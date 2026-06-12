@@ -6,21 +6,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
-## [Unreleased]
-_Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input box, role-targeted model/thinking picker, hardened Ctrl-C / Ctrl+O._
+## [0.4.2] - 2026-06-13
+_Thinking-loop termination guarantees (cycle guard + turn wall-clock budget), unboxed live status without step counters, self-contained `.jeo` namespace, live next-prompt input card, role-targeted model/thinking picker._
 
 ### Added
+- Agent-loop cycle guard: an A↔B tool-call ping-pong (re-reading one file ↔ re-running one command forever) now gets ONE corrective bounce, then a hard stop — the "stuck in thinking" spin the exact-repeat guard could never see.
+- Turn wall-clock budget (`JEO_TURN_MAX_MS`, default 30 minutes, `0` disables): step budgets bound the COUNT of model calls, this bounds their total TIME — a turn that crosses it consolidates a wrap-up instead of spinning for hours.
 - Live next-prompt input box in the TUI — text typed during a running turn stays in the same query surface instead of a separate queued row.
 - jeo discovers skills from its own `~/.jeo/agent/skills` (+ project `.jeo/agent/skills`) and resolves hooks/rules under `.jeo` instead of referencing `.gjc`.
 - Config-driven custom subagent roles: a non-bundled id declaring `title`/`description`/`prompt` becomes a first-class role at runtime.
 - Ctrl+O mid-turn detail view: flush the full last reply + tool output into scrollback.
+- `/fast [on|off|status]` slash command: enables minimal/low reasoning fast mode only when the active model advertises support.
 
 ### Changed
+- Live status is UNBOXED: a flat `⠙ thinking · <live activity> ⟦esc⟧` row plus one dim metrics row replaces the bordered status box — the message is never trapped inside a border.
+- Removed meaningless `step N/M` counters everywhere (status row, footer, plain-stream `[step N/M]` headers, nested subagent lines) along with step-driven `eta`/`evo %`: the dynamic step budget keeps extending the denominator, so the counters carried no information. The evolution stage track stays.
+- Tool-call signature bookkeeping (repeat/cycle guards, step-budget novelty set) now stores fixed-size FNV digests instead of full JSON argument strings — a long turn's guard memory stays flat even when `write` calls embed whole file bodies.
 - Unified model targeting: `/model` can now set default thinking, pick a model, apply it to the default agent or any subagent role, and set that target's thinking level in one flow.
 - `/model` picker now shows DEFAULT/role badges with each target's thinking level, and the post-pick action menu uses the unified Set-as-role format plus an OpenAI Codex role preset.
+- `/model` action selection now uses a Ralph-style nested sub-list: each DEFAULT/role header expands into selectable thinking rows, so target and thinking are chosen in one TUI screen.
+- During a live reasoning turn, typed next-user text now renders as a styled pending `user` card with dark background while the normal input box remains editable.
+- Update availability now renders as a yellow full-width field instead of a boxed card, matching the status-field TUI treatment.
+- Removed the legacy `/models` slash-menu path; `/model` and `/provider` own interactive model selection.
 - Canonicalized runtime naming on `.jeo` and `JEO_` only.
 
 ### Fixed
+- jeo can no longer sit in "thinking" forever: every turn now terminates via the cycle guard, the wall-clock budget, or the existing step/repeat/failure guards — pathological spins consolidate a wrap-up instead of running unbounded.
 - Ctrl-C now force-quits jeo immediately instead of being softened into an abort prompt.
 - Done-time todo reconciliation gate — stale Todos can no longer survive a finished turn.
 - MCP stdio framing for ralph tools.

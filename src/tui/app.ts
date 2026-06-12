@@ -237,8 +237,6 @@ export class LaunchTui {
       sessionId: opts.sessionId,
       maxSteps: opts.maxSteps ?? DEFAULT_MAX_STEPS,
       unicode: this.unicode,
-      showEta: true,
-      showProgress: true,
       cwd: opts.cwd,
       branch: opts.branch,
       dirtyCount: opts.dirtyCount,
@@ -503,6 +501,33 @@ export class LaunchTui {
     });
   }
 
+  private renderLiveUserQueryCard(cols: number): string[] {
+    const text = this.livePromptInput.trim();
+    if (!text) return [];
+    const boxWidth = Math.max(24, Math.min(120, cols));
+    const inner = Math.max(10, boxWidth - 2);
+    const g = this.unicode ? BOX_UNICODE : BOX_ASCII;
+    const accent = this.theme.color ? chalk.hex("#ff6b4a").bold : (s: string) => s;
+    const border = this.theme.color ? chalk.hex("#7f1d1d") : (s: string) => s;
+    const shadow = this.theme.color ? chalk.hex("#451a1a").dim : border;
+    const fill = this.theme.color ? (s: string) => chalk.bgHex("#210b10")(s) : (s: string) => s;
+    const body = text
+      .split("\n")
+      .flatMap(line => wrapTextWithAnsi(line, Math.max(8, inner - 2)))
+      .slice(0, 6);
+    const clipped = body.length === 6 && text.split("\n").length > 6
+      ? [...body.slice(0, 5), this.unicode ? "…" : "..."]
+      : body;
+    const rows = clipped.length ? clipped : [""];
+    const top = border(g.tl + g.h.repeat(inner) + g.tr);
+    const bottom = shadow(g.bl + g.h.repeat(inner) + g.br);
+    const mid = rows.map(line => {
+      const content = fill(padLineTo(` ${line}`, inner, "left"));
+      return border(g.v) + content + shadow(g.v);
+    });
+    return [`  ${accent("user")}`, top, ...mid, bottom];
+  }
+
   /** Append a completed progress-ledger line. In inline mode the line is flushed
    *  straight into normal scrollback ABOVE the live frame, so tmux / terminal
    *  mouse-wheel can review the full progress history mid-turn (gjc-style); the
@@ -630,14 +655,15 @@ export class LaunchTui {
     const bad = this.unicode ? "✗" : "x";
     const detail = (e.detail ?? "").split("\n").find(l => l.trim().length > 0)?.trim().slice(0, 140) ?? "";
     const summary = e.summary ? ` — ${e.summary}` : "";
-    const step = e.step && e.maxSteps ? ` step ${e.step}/${e.maxSteps}` : "";
+    // No `step N/M` marker on nested lines — step counters carry no meaning
+    // under the dynamic budget (user feedback).
     switch (e.kind) {
       case "start":
         this.subagentActive = true;
         this.appendLedger(`${badge} ${role} ${this.unicode ? "▸" : ">"} start: ${detail}\n`, "subagent");
         break;
       case "step":
-        this.appendLedger(`  ${badge} ${role}${step}: ${detail || "working"}\n`, "subagent");
+        this.appendLedger(`  ${badge} ${role}: ${detail || "working"}\n`, "subagent");
         break;
       case "tool":
         this.appendLedger(`  ${badge} ${role} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`, "subagent");
@@ -974,8 +1000,6 @@ export class LaunchTui {
         spinner: this.spinner.current(),
         activity: this.retryNotice ?? (this.streamingActivity || this.currentActivity()),
         escHint: true,
-        step: stepNow,
-        maxSteps: this.footer.maxSteps,
         elapsedMs,
         stepElapsedMs: this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined,
         avgStepMs: stepNow > 0 ? elapsedMs / stepNow : undefined,
@@ -994,6 +1018,13 @@ export class LaunchTui {
         costUsd,
         subagentActive: this.subagentActive,
       }));
+    }
+
+    // User text typed while the model is still thinking is surfaced as a live
+    // pending-user card (same query input underneath, no hidden auto-executing queue).
+    if (this.livePromptInput.trim()) {
+      tail.push("");
+      tail.push(...this.renderLiveUserQueryCard(cols));
     }
 
     // Agent task plan (the `todo` tool) as a Todos checklist.
@@ -1153,8 +1184,6 @@ export class LaunchTui {
           spinner: this.spinner.current(),
           activity: this.retryNotice ?? (this.streamingActivity || statusMsg),
           escHint: true,
-          step: stepNow,
-          maxSteps: this.footer.maxSteps,
           elapsedMs,
           stepElapsedMs: this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined,
           avgStepMs: stepNow > 0 ? elapsedMs / stepNow : undefined,
@@ -1182,9 +1211,13 @@ export class LaunchTui {
         }
         const redBold = this.theme.color ? chalk.red.bold : (s: string) => s;
         const guardBadge = this.mutationGuarded ? ` ${redBold("[MUTATION LOCKED]")}` : "";
-        bottom.push(`  ${categoryBadge("progress", { color: this.theme.color })} step ${stepNow}/${this.footer.maxSteps} · elapsed ${formatDuration(elapsedMs)}`);
+        bottom.push(`  ${categoryBadge("progress", { color: this.theme.color })} elapsed ${formatDuration(elapsedMs)}`);
         bottom.push(`  ${categoryBadge("status", { color: this.theme.color })} ${msg}${guardBadge}`);
       }
+    }
+    if (fit && this.livePromptInput.trim()) {
+      bottom.push("");
+      bottom.push(...this.renderLiveUserQueryCard(innerWidth));
     }
     // TTY only: keep the same query input box visible above the footer while the
     // turn is running; typed text edits the next-prompt draft, not a side queue.

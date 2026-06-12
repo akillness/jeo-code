@@ -23,6 +23,10 @@ export interface SelectItem<T> {
   hint?: string;
   /** When true, `hint` is already styled and should not be wrapped in gray. */
   hintRaw?: boolean;
+  /** Tree indentation depth for nested/sub-list choices. */
+  depth?: number;
+  /** Tree connector for nested rows; defaults to "mid" when depth > 0. */
+  branch?: "mid" | "last";
 }
 
 export class SelectList<T> {
@@ -180,7 +184,8 @@ export function renderSelectList<T>(list: SelectList<T>, opts: RenderSelectOptio
       }
       const isCur = i === cur;
       const marker = isCur ? tint(pointer, chalk.cyan) : " ";
-      let label = it.disabled ? tint(it.label, chalk.gray) : isCur ? tint(it.label, chalk.cyan.bold) : it.label;
+      const prefix = treePrefix(it, { unicode });
+      let label = it.disabled ? tint(`${prefix}${it.label}`, chalk.gray) : isCur ? tint(`${prefix}${it.label}`, chalk.cyan.bold) : `${prefix}${it.label}`;
       let line = `${marker} ${label}`;
       if (it.hint) {
         const hint = it.hintRaw ? it.hint : tint(it.hint, chalk.gray);
@@ -213,4 +218,12 @@ function clampToCols(line: string, cols: number): string {
   if (visibleWidth(line) <= cols) return padLineTo(line, cols, "left");
   const cut = truncateAnsi(line, cols);
   return visibleWidth(cut) <= cols ? padLineTo(cut, cols, "left") : cut;
+}
+
+function treePrefix<T>(item: SelectItem<T>, opts: { unicode: boolean }): string {
+  const depth = Math.max(0, item.depth ?? 0);
+  if (depth <= 0) return "";
+  const pad = "  ".repeat(Math.max(0, depth - 1));
+  if (!opts.unicode) return `${pad}${item.branch === "last" ? "`-" : "|-"} `;
+  return `${pad}${item.branch === "last" ? "└─" : "├─"} `;
 }

@@ -9,7 +9,7 @@ import {
   type CompletionContext,
 } from "../src/tui/components/autocomplete";
 const ctx = (over: Partial<CompletionContext> = {}): CompletionContext => ({
-  slashCommands: ["/model", "/models", "/provider", "/agents", "/thinking", "/help"],
+  slashCommands: ["/model", "/fast", "/provider", "/agents", "/thinking", "/help"],
   liveModels: ["claude-3-5-sonnet-live", "gpt-4o-live"],
   aliases: ["fast", "sonnet", "gpt"],
   catalogModels: ["claude-3-5-sonnet", "gpt-4o", "gemini-2.0-flash"],
@@ -43,7 +43,7 @@ test("@path mentions complete in free-text mode", () => {
 test("completes the slash command name by prefix", () => {
   const r = complete("/mod", ctx());
   expect(r.kind).toBe("command");
-  expect(r.completions).toEqual(["/model", "/models"]);
+  expect(r.completions).toEqual(["/model"]);
   expect(r.token).toBe("/mod");
 });
 
@@ -73,10 +73,10 @@ test("/model #N is not completed (numbered pick)", () => {
   expect(complete("/model #1", ctx()).completions).toEqual([]);
 });
 
-test("/models completes model-list subcommands", () => {
-  expect(complete("/models ", ctx()).completions).toEqual(["refresh", "caps", "catalog"]);
-  expect(complete("/models re", ctx()).completions).toEqual(["refresh"]);
-  expect(complete("/models ca", ctx()).completions).toEqual(["caps", "catalog"]);
+test("/fast completes fast-mode subcommands", () => {
+  expect(complete("/fast ", ctx()).completions).toEqual(["on", "off", "status"]);
+  expect(complete("/fast o", ctx()).completions).toEqual(["on", "off"]);
+  expect(complete("/fast st", ctx()).completions).toEqual(["status"]);
 });
 
 test("/provider completes login/auth + names, then that provider's live models", () => {
@@ -135,10 +135,10 @@ test("formatCompletionPreview lists argument completions after slash commands", 
   expect(login).toContain("anthropic");
   expect(login).toContain("gemini");
 
-  const models = formatCompletionPreview("/models ", ctx()).join("\n");
-  expect(models).toContain("Subcommands:");
-  expect(models).toContain("refresh");
-  expect(models).toContain("catalog");
+  const fast = formatCompletionPreview("/fast ", ctx()).join("\n");
+  expect(fast).toContain("Subcommands:");
+  expect(fast).toContain("on");
+  expect(fast).toContain("status");
 });
 
 test("formatCompletionPreview shows path suggestions for @mentions", () => {
@@ -172,7 +172,7 @@ test("commonPrefix returns the longest shared prefix", () => {
 });
 
 test("readlineCompleter returns [hits, token]; whole line when no hits", () => {
-  expect(readlineCompleter("/mod", ctx())).toEqual([["/model", "/models"], "/mod"]);
+  expect(readlineCompleter("/mod", ctx())).toEqual([["/model"], "/mod"]);
   const [hits, repl] = readlineCompleter("/zzz", ctx());
   expect(hits).toEqual([]);
   expect(repl).toBe("/zzz"); // untouched
@@ -240,7 +240,7 @@ test("/command mention completes mid-line against the plugin command list", () =
   const mid = complete("do X then /mo", ctx());
   expect(mid.kind).toBe("command");
   expect(mid.token).toBe("/mo");
-  expect(mid.completions).toEqual(["/model", "/models"]);
+  expect(mid.completions).toEqual(["/model"]);
   // Dynamic plugin/skill aliases in the context surface mid-line too.
   const dyn = complete("then /speckit.p", ctx({ slashCommands: ["/model", "/speckit.plan", "/speckit.tasks"] }));
   expect(dyn.completions).toEqual(["/speckit.plan"]);

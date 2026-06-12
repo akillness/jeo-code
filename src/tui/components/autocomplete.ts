@@ -2,7 +2,7 @@
  * Interactive autocomplete engine for the REPL.
  *
  * Completes slash-command *names* and their *arguments*:
- *  - `/mod`            → `/model`, `/models`
+ *  - `/mod`            → `/model`
  *  - `/model gpt`      → live (logged-in) model ids + aliases + catalog ids
  *  - `/provider an`    → provider names; second arg → that provider's live models
  *  - `/agents exec`    → subagent role ids; second arg → live model ids
@@ -164,8 +164,8 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       if (argIndex === 3 && (tokens[1]?.toLowerCase() === "subagent" || tokens[1]?.toLowerCase() === "role") && (tokens[3]?.toLowerCase() === "thinking" || tokens[3]?.toLowerCase() === "think")) return finish(["inherit", ...ctx.thinkingLevels], "thinking");
       return { completions: [], token, kind: "none" };
     }
-    case "/models":
-      return argIndex === 0 ? finish(["refresh", "caps", "catalog"], "subcommand") : { completions: [], token, kind: "none" };
+    case "/fast":
+      return argIndex === 0 ? finish(["on", "off", "status"], "subcommand") : { completions: [], token, kind: "none" };
     case "/provider": {
       const cloud = ["anthropic", "openai", "gemini", "antigravity"];
       if (argIndex === 0) return finish(["login", "auth", ...ctx.providers], "provider");

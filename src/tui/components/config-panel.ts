@@ -1,6 +1,6 @@
 /**
- * Pure formatters for the TUI configuration panels (`/model`, `/models`,
- * `/provider`, `/agents`, `/config`). Each returns plain string lines (color via
+ * Pure formatters for the TUI configuration panels (`/model`, `/provider`,
+ * `/agents`, `/config`). Each returns plain string lines (color via
  * chalk) so it can be unit-tested with an ANSI-stripping helper and reused by
  * both the interactive REPL and one-shot commands.
  */

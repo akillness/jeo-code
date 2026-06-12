@@ -352,3 +352,11 @@ test("code cards get a light highlight when color is on; color:false stays byte-
     chalk.level = prevLevel;
   }
 });
+
+test("summarize-stage clip markers (previewLines '… N more line(s)') also gain the Ctrl+O hint", () => {
+  // A bash result clipped by previewLines BEFORE the box ever sees it — the
+  // field case where '… 36 more line(s)' rendered without a reachable path.
+  const summary = summarizeForgeResult("bash", true, Array.from({ length: 40 }, (_, i) => String(i + 1)).join("\n"));
+  const box = formatForgeBox(summary, { width: 60, maxLines: 12, paint: s => s, color: false }).map(stripAnsi).join("\n");
+  expect(box).toMatch(/… \d+ more line\(s\) ⟦Ctrl\+O for more⟧/);
+});

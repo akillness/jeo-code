@@ -364,3 +364,7 @@
 - 스크린샷(gjc running-tool 카드) 반영 3종: ① 카드 클립 라인이 "… N more lines ⟦Ctrl+O for more⟧"(ASCII [Ctrl+O for more])로 — 숨긴 내용의 도달 경로를 명시; ② 코드 카드(bash/ts/js/py/json/yaml/rust/go) 본문에 lightHighlightLine 경량 하이라이트(주석·문자열·키워드) — 랩핑 후 적용으로 폭 계산 무손상, color:false 바이트 동일; ③ Ctrl+O 상세 뷰에 "detail · full last tool output (tool)" 섹션 추가 — withToolDetailCapture 이벤트 래퍼가 TUI/plain 양 싱크에서 마지막 도구의 전체(비절단) 출력을 캡처(2000행 캡 + sanitizeForTerminal), 응답이 없어도 도구 출력만으로 열람 가능.
 - 실동작: bash 카드 `$ seq 1 40` 렌더 확인; 클립 힌트·하이라이트는 단위 계약으로 고정(chalk 레벨 강제하에 ANSI 적용/미적용 검증).
 - Verified: tsc 0; bun test 1249 pass / 0 fail; dist/jeo 재빌드.
+[2026-06-12] Pass — 클립 힌트 실검증 갭 수정 (summarize-stage 마커)
+- 실동작 검증에서 발견: bash 결과 카드의 "… 36 more line(s)"는 previewLines(요약 단계) 클립이라 박스 단계 힌트가 안 붙었음. formatForgeBox가 요약 단계 마커를 감지해 유니코드 인지 힌트를 재작성 — 두 클립 레이어 모두 ⟦Ctrl+O for more⟧ 보장.
+- 실기기 증거(dist/jeo, tmux): ① 카드에 "… 36 more line(s) ⟦Ctrl+O for more⟧" 실표시, ② Ctrl+O → "detail · full last tool output (bash)" + seq 1 40 전체(39·40 포함) 열람 — 카드에서 잘린 36줄 전부 도달.
+- Verified: tsc 0; bun test 1250 pass / 0 fail; dist/jeo 재빌드.

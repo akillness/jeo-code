@@ -539,17 +539,22 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
         : padded;
     return paint(glyphs.v) + body + shadow(glyphs.v);
   };
+  // gjc-style clip hint: the hidden remainder is reachable via Ctrl+O. Two clip
+  // layers can produce an overflow marker — previewLines() at the SUMMARIZE
+  // stage ("… N more line(s)") and the box's own maxLines cut below; both must
+  // carry the hint, so summarize-stage markers are rewritten here where the
+  // unicode capability is known.
+  const hint = opts.unicode === false ? "[Ctrl+O for more]" : "⟦Ctrl+O for more⟧";
+  const CLIP_MARKER_RE = /^… \d+ more line\(s\)$/;
   const clipped = content.slice(0, maxLines);
   for (const line of clipped) {
     if (line.startsWith(FORGE_DIVIDER_PREFIX)) {
       rendered.push(renderDivider(line.slice(FORGE_DIVIDER_PREFIX.length)));
     } else {
-      rendered.push(contentRow(line));
+      rendered.push(contentRow(CLIP_MARKER_RE.test(line) ? `${line} ${hint}` : line));
     }
   }
   if (content.length > clipped.length) {
-    // gjc-style clip hint: the hidden remainder is reachable via Ctrl+O.
-    const hint = opts.unicode === false ? "[Ctrl+O for more]" : "⟦Ctrl+O for more⟧";
     rendered.push(contentRow(`… ${content.length - clipped.length} more lines ${hint}`));
   }
   rendered.push(bottom);

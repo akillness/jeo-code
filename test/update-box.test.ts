@@ -71,19 +71,19 @@ test("checkForUpdate - null when payload is malformed", async () => {
   expect(result2).toBeNull();
 });
 
-test("renderUpdateBox - output content", () => {
+test("renderUpdateBox - field content", () => {
   const current = "1.0.0";
   const latest = "2.0.0";
   const lines = renderUpdateBox(current, latest, { cols: 80, unicode: true, color: true });
 
   const joined = lines.join("\n");
   expect(joined).toContain("Update Available");
-  expect(joined).toContain("1.0.0");
+  expect(joined).not.toContain("1.0.0");
   expect(joined).toContain("2.0.0");
   expect(joined).toContain("jeo update");
 });
 
-test("renderUpdateBox - equal line widths", () => {
+test("renderUpdateBox - equal field widths", () => {
   const current = "1.0.0";
   const latest = "2.0.0";
   const lines = renderUpdateBox(current, latest, { cols: 80 });
@@ -93,6 +93,10 @@ test("renderUpdateBox - equal line widths", () => {
   for (const line of lines) {
     expect(visibleWidth(line)).toBe(expectedWidth);
   }
+  const plainFirst = stripAnsi(lines[0]!);
+  const plainLast = stripAnsi(lines.at(-1)!);
+  expect(plainFirst).toMatch(/^─+$/);
+  expect(plainLast).toBe(plainFirst);
 });
 
 test("renderUpdateBox - color:false has no ANSI", () => {

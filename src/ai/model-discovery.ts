@@ -1,8 +1,8 @@
 /**
  * Live model discovery — query a provider's `models` endpoint with the resolved
  * credential (OAuth bearer or API key) and return the model ids the account can
- * actually use. This powers the TUI `/models` / `/model` / `/provider` flows and
- * `jeo models`, so users pick from the real, logged-in catalog instead of a
+ * actually use. This powers the TUI `/model` / `/provider` flows and `jeo models`,
+ * so users pick from the real, logged-in catalog instead of a
  * static alias guess.
  *
  * Network access is injectable (`fetchImpl`) and every call is timeout-bounded so

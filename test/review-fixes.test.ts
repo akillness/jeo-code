@@ -124,10 +124,17 @@ function simulateTerminal(writes: string[]): string[] {
             const match = seq.match(/\d+/);
             const n = parseInt(match ? match[0] : "1", 10);
             cursorRow = Math.max(0, cursorRow - n);
+            cursorRow = Math.max(0, cursorRow - n);
           } else if (first.char === 'B') {
             const match = seq.match(/\d+/);
             const n = parseInt(match ? match[0] : "1", 10);
             cursorRow = cursorRow + n;
+            const maxRows = process.stdout.rows || 15;
+            if (cursorRow >= maxRows) {
+              const shift = cursorRow - (maxRows - 1);
+              lines.splice(0, shift);
+              cursorRow = maxRows - 1;
+            }
           } else if (first.char === 'K') {
             if (lines[cursorRow] !== undefined) {
               lines[cursorRow] = "";
@@ -149,6 +156,12 @@ function simulateTerminal(writes: string[]): string[] {
           for (let p = 0; p < parts.length; p++) {
             if (p > 0) {
               cursorRow++;
+              const maxRows = process.stdout.rows || 15;
+              if (cursorRow >= maxRows) {
+                const shift = cursorRow - (maxRows - 1);
+                lines.splice(0, shift);
+                cursorRow = maxRows - 1;
+              }
             }
             const part = parts[p];
             if (part) {

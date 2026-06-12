@@ -63,10 +63,11 @@ jeo --tmux               # 独立した tmux セッションで実行
 
 | コマンド | 説明 |
 | --- | --- |
-| `/model` · `/models` · `/provider` | モデル/プロバイダ選択; `/model` でデフォルト/ロールバッジ、ロール指定アクション、thinking レベル、OpenAI Codex ロールプリセットを一つの流れで設定 |
+| `/model` · `/provider` | モデル/プロバイダ選択; `/model` でデフォルト/ロールバッジ、Ralph 風の入れ子ロール・thinking 選択、OpenAI Codex ロールプリセットを一つの流れで設定 |
 | `/provider login <name>` · `/logout` | 入力欄から OAuth ログイン/ログアウト |
 | `/agents [role]` · `/subagent` | ロール別(executor/planner/architect/critic)モデル・thinking・ステップ設定 |
 | `/thinking [level]` | デフォルト推論予算(minimal…xhigh)の表示/設定 |
+| `/fast [on|off|status]` | 現在のモデルが minimal/low 推論をサポートする場合に fast thinking モードを切替 |
 | `/skill` · `$<skill> [intent]` | ワークフロースキルの一覧/実行(`$team "task"` 形式) |
 | `/view` · `/diff` · `/find` · `/search` | コード表示、git diff、ファイル/パターン検索 |
 | `/new` · `/resume` · `/sessions` · `/export` | セッション管理・トランスクリプト出力 |
@@ -147,7 +148,7 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input box, role-targeted model/thinking picker, hardened Ctrl-C / Ctrl+O.
+- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input card, role-targeted model/thinking picker, fast-mode slash command, hardened Ctrl-C / Ctrl+O.
 - **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
 - **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
 - **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.

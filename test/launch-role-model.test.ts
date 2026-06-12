@@ -112,3 +112,58 @@ test("antigravity stays selectable in /model with a gemini-fallback OAuth (warne
     await fs.rm(cfgDir, { recursive: true, force: true });
   }
 });
+
+test("/fast toggles the session thinking level for fast-capable models", async () => {
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-fast-mode-"));
+  const savedCfg = process.env.JEO_CONFIG_DIR;
+  const savedLog = console.log;
+  const logged: string[] = [];
+  console.log = (...a: unknown[]) => { logged.push(a.join(" ")); };
+  try {
+    process.env.JEO_CONFIG_DIR = cfgDir;
+    await fs.writeFile(
+      path.join(cfgDir, "config.json"),
+      JSON.stringify({ defaultModel: "gpt-5.5", thinkingLevel: "high" }),
+    );
+    mockQuestions = ["/fast status", "/fast on", "/thinking", "/fast off", "/thinking", "/exit"];
+    const { runLaunchCommand } = await import("../src/commands/launch");
+    await runLaunchCommand(["--no-tui", "--no-session"]);
+    const out = logged.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(out).toContain("Fast mode: off · supported (thinking minimal)");
+    expect(out).toContain("Fast mode on:");
+    expect(out).toContain("Thinking level: minimal");
+    expect(out).toContain("Fast mode off: restored thinking high");
+    expect(out).toContain("Thinking level: high");
+  } finally {
+    console.log = savedLog;
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = savedCfg;
+    await fs.rm(cfgDir, { recursive: true, force: true });
+  }
+});
+
+test("/fast rejects models without advertised fast thinking", async () => {
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-fast-mode-unsupported-"));
+  const savedCfg = process.env.JEO_CONFIG_DIR;
+  const savedLog = console.log;
+  const logged: string[] = [];
+  console.log = (...a: unknown[]) => { logged.push(a.join(" ")); };
+  try {
+    process.env.JEO_CONFIG_DIR = cfgDir;
+    await fs.writeFile(
+      path.join(cfgDir, "config.json"),
+      JSON.stringify({ defaultModel: "gpt-4o", thinkingLevel: "medium" }),
+    );
+    mockQuestions = ["/fast on", "/exit"];
+    const { runLaunchCommand } = await import("../src/commands/launch");
+    await runLaunchCommand(["--no-tui", "--no-session"]);
+    const out = logged.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(out).toContain("Fast mode is not advertised");
+    expect(out).toContain("pick a thinking-capable model with /model");
+  } finally {
+    console.log = savedLog;
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = savedCfg;
+    await fs.rm(cfgDir, { recursive: true, force: true });
+  }
+});

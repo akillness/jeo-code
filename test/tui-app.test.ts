@@ -704,6 +704,7 @@ test("LaunchTui: live turn keeps the normal input box visible and editable", () 
   tui.setLivePromptInput("작업 확인"); // in-flight partial line (CJK preserved)
   const typed = strip(out.join(""));
   expect(typed).toContain("> 작업 확인");
+  expect(typed).toContain("user");
   expect(typed).toMatch(/[▌_]/);
   expect(typed).not.toContain("queued");
 

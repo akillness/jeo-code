@@ -220,7 +220,7 @@ export function tryResolveSkillFromFilePath(filePath: string): SkillDoc | null {
   }
 }
 const BUILTIN_SLASH_ALIASES = new Set([
-  "/help", "/clear", "/compact", "/model", "/models", "/provider", "/logout",
+  "/help", "/clear", "/compact", "/model", "/fast", "/provider", "/logout",
   "/agents", "/config", "/roles", "/thinking",
   "/view", "/diff", "/find", "/search", "/sessions", "/skill", "/evolve",
   "/exit", "/quit",

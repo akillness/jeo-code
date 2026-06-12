@@ -63,10 +63,11 @@ jeo --tmux               # 在独立 tmux 会话中运行
 
 | 命令 | 说明 |
 | --- | --- |
-| `/model` · `/models` · `/provider` | 选择模型/提供商；`/model` 在一个流程内显示默认/角色徽章、角色设置动作、thinking 级别与 OpenAI Codex 角色预设 |
+| `/model` · `/provider` | 选择模型/提供商；`/model` 在一个流程内显示默认/角色徽章、Ralph 风格嵌套角色·thinking 选择与 OpenAI Codex 角色预设 |
 | `/provider login <name>` · `/logout` | 在输入框内 OAuth 登录/登出 |
 | `/agents [role]` · `/subagent` | 按角色(executor/planner/architect/critic)配置模型·thinking·步数 |
 | `/thinking [level]` | 查看/设置默认推理预算(minimal…xhigh) |
+| `/fast [on|off|status]` | 当前模型支持 minimal/low 推理时切换 fast thinking 模式 |
 | `/skill` · `$<skill> [intent]` | 列出/运行工作流技能(`$team "任务"` 风格) |
 | `/view` · `/diff` · `/find` · `/search` | 代码查看、git diff、文件/模式搜索 |
 | `/new` · `/resume` · `/sessions` · `/export` | 会话管理与记录导出 |
@@ -147,7 +148,7 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input box, role-targeted model/thinking picker, hardened Ctrl-C / Ctrl+O.
+- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input card, role-targeted model/thinking picker, fast-mode slash command, hardened Ctrl-C / Ctrl+O.
 - **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
 - **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
 - **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.

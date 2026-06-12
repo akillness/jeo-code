@@ -7,17 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
 ## [Unreleased]
-_Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input box, role-targeted model/thinking picker, hardened Ctrl-C / Ctrl+O._
+_Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input card, role-targeted model/thinking picker, fast-mode slash command, hardened Ctrl-C / Ctrl+O._
 
 ### Added
 - Live next-prompt input box in the TUI — text typed during a running turn stays in the same query surface instead of a separate queued row.
 - jeo discovers skills from its own `~/.jeo/agent/skills` (+ project `.jeo/agent/skills`) and resolves hooks/rules under `.jeo` instead of referencing `.gjc`.
 - Config-driven custom subagent roles: a non-bundled id declaring `title`/`description`/`prompt` becomes a first-class role at runtime.
 - Ctrl+O mid-turn detail view: flush the full last reply + tool output into scrollback.
+- `/fast [on|off|status]` slash command: enables minimal/low reasoning fast mode only when the active model advertises support.
 
 ### Changed
 - Unified model targeting: `/model` can now set default thinking, pick a model, apply it to the default agent or any subagent role, and set that target's thinking level in one flow.
 - `/model` picker now shows DEFAULT/role badges with each target's thinking level, and the post-pick action menu uses the unified Set-as-role format plus an OpenAI Codex role preset.
+- `/model` action selection now uses a Ralph-style nested sub-list: each DEFAULT/role header expands into selectable thinking rows, so target and thinking are chosen in one TUI screen.
+- During a live reasoning turn, typed next-user text now renders as a styled pending `user` card with dark background while the normal input box remains editable.
+- Update availability now renders as a yellow full-width field instead of a boxed card, matching the status-field TUI treatment.
+- Removed the legacy `/models` slash-menu path; `/model` and `/provider` own interactive model selection.
 - Canonicalized runtime naming on `.jeo` and `JEO_` only.
 
 ### Fixed

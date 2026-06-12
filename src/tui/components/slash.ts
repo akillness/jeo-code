@@ -34,7 +34,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/btw", usage: "/btw <question>", description: "Ask an ephemeral side question (history untouched)", group: "session" },
   { command: "/compact", usage: "/compact", description: "Summarize older turns to free context", group: "session" },
   { command: "/model", usage: "/model [id|#N|save|thinking <level>|subagent <role> <model|#N|thinking L>]", description: "Show/switch model; picker can apply to default or any subagent role and set thinking", group: "models" },
-  { command: "/models", usage: "/models [refresh|caps|catalog]", description: "Live OAuth/API-key models; caps/catalog add capability tables", group: "models" },
+  { command: "/fast", usage: "/fast [on|off|status]", description: "Toggle fast thinking mode when the active model supports it", group: "models" },
   { command: "/provider", usage: "/provider [name] [model|#N]", description: "Credentials, switch provider, set model; `login <name>` starts OAuth", group: "models" },
   { command: "/login", usage: "/login [provider]", description: "OAuth login (alias of /provider login)", group: "models" },
   { command: "/logout", usage: "/logout <anthropic|openai|gemini|antigravity>", description: "Remove the stored OAuth token for a provider", group: "models" },

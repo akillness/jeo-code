@@ -122,7 +122,11 @@ export function editBlockDiffLines(editBlock: string, maxRows = 10): string[] | 
   const push = (prefix: "+" | "-", text: string): void => {
     if (prefix === "+") added++;
     else removed++;
-    if (rows.length < maxRows) rows.push(redactSecrets(`${prefix} ${text}`));
+    if (rows.length < maxRows) {
+      const redacted = redactSecrets(text);
+      const colored = prefix === "+" ? chalk.green(`+ ${redacted}`) : chalk.red(`- ${redacted}`);
+      rows.push(colored);
+    }
   };
 
   if (block.includes("<<<<<<< SEARCH")) {

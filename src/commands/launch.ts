@@ -2651,7 +2651,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const themes = listThemes();
         if (!want) {
           const active = resolveTheme().name;
-          console.log("TUI themes (set with /theme <name>, persists for this run via JOC_TUI_THEME):");
+          console.log("TUI themes (set with /theme <name>, persists via ~/.joc/config.json):");
           for (const t of themes) console.log(`  ${t.name === active ? "*" : " "} ${t.name.padEnd(7)} ${t.description}`);
           continue;
         }
@@ -2660,8 +2660,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           continue;
         }
         process.env.JEO_TUI_THEME = want;
+        await saveConfigPatch(raw => ({ theme: want }));
         refreshUiTheme(); // re-resolve the keystroke-hot theme handle immediately
-        console.log(`Theme set to ${want} (input box/status bar update now; turn UI from the next turn).`);
+        console.log(`Theme set to ${want} — saved to ~/.joc/config.json`);
         continue;
       }
       if (input === "/evolve") {

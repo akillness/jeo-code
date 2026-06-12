@@ -24,7 +24,25 @@ export interface EvolutionTheme {
   color: boolean;
   /** Accent hex for UI chrome — borders, prompt mark, model status bar (gjc-style). */
   accent: string;
+  /** Shadow hex for the "shaded" box edges (bottom/right). A REAL darker hue —
+   *  not ANSI dim — so the lit/shaded two-tone reads as depth even on terminals
+   *  that render `dim` poorly. Falls back to dim(accent) when unset. */
+  accentShadow?: string;
+  /** Diff palette: themed +/- contrast for /diff, edit cards, and code views.
+   *  `addBg`/`delBg` are full-row background tints that give added/removed
+   *  lines block-level separation, not just a colored sign. */
+  diff?: { add: string; del: string; addBg: string; delBg: string; hunk: string };
 }
+
+/** Default diff palette (used when a theme defines none): high-contrast
+ *  green/red foregrounds over deep complementary background tints. */
+export const DEFAULT_DIFF_PALETTE = {
+  add: "#9ece6a",
+  del: "#f7768e",
+  addBg: "#16261c",
+  delBg: "#2a1a20",
+  hunk: "#7dcfff",
+} as const;
 
 const COSMIC: EvolutionTheme = {
   name: "cosmic",

@@ -174,3 +174,53 @@ test("discoverGoogleProjectId: outer turn abort cancels discovery immediately", 
   expect(err).toBeInstanceOf(Error);
   expect(Date.now() - started).toBeLessThan(2_000);
 });
+
+// Round-5 #5 follow-up: OpenAI-compatible backends that reject the optional
+// `stream_options` field get ONE retry without it instead of a dead turn.
+test("openai.stream: 400-on-stream_options retries once without the field", async () => {
+  const prevFetch = globalThis.fetch;
+  const bodies: string[] = [];
+  let calls = 0;
+  globalThis.fetch = (async (_url: any, init?: RequestInit) => {
+    bodies.push(String(init?.body ?? ""));
+    calls++;
+    if (calls === 1) {
+      return new Response(JSON.stringify({ error: { message: "Unknown field: stream_options" } }), {
+        status: 400, headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(
+      sse(['data: {"choices":[{"delta":{"content":"hi"}}]}\n\n', "data: [DONE]\n\n"]),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  }) as typeof fetch;
+  try {
+    let text = "";
+    for await (const d of openaiAdapter.stream!([{ role: "user", content: "x" }], { model: "local-model", baseUrl: "http://localhost:8080/v1" }, openaiCred)) text += d;
+    expect(text).toBe("hi");
+    expect(calls).toBe(2);
+    expect(bodies[0]).toContain("stream_options");
+    expect(bodies[1]).not.toContain("stream_options"); // stripped on the retry
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("openai.stream: unrelated 400s still throw without a retry", async () => {
+  const prevFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    return new Response(JSON.stringify({ error: { message: "invalid request" } }), { status: 400 });
+  }) as typeof fetch;
+  try {
+    const run = async () => {
+      for await (const _ of openaiAdapter.stream!([{ role: "user", content: "x" }], { model: "gpt-4.1" }, openaiCred)) { /* none */ }
+    };
+    const err = await run().catch(e => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(calls).toBe(1); // no blind retry on arbitrary 400s
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});

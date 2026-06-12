@@ -93,35 +93,25 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
 
   log(`Loaded ${criteria.length} acceptance criteria for verification.\n`);
 
-  const results: { criterion: string; passed: boolean; output: string }[] = [];
-
-  for (const criterion of criteria) {
-    if (opts.signal?.aborted) {
-      return { ok: false, reason: "aborted" };
-    }
-
-    log(`[CHECK] Verifying: "${criterion}"`);
-    
-    let cmd = "bun test";
-    if (criterion.toLowerCase().includes("run") || criterion.toLowerCase().includes("cli")) {
-      cmd = "bun run src/cli.ts --help";
-    }
-
-    log(`  └─ Running validation command: '${cmd}'`);
-    if (opts.onProgress) {
-      opts.onProgress({ skill: "ultragoal", phase: "verifying", detail: `Verifying: ${criterion}` });
-    }
-
-    const res = await bashTool(cmd, cwd);
-    
-    results.push({
-      criterion,
-      passed: res.success,
-      output: res.output.slice(0, 300) + (res.output.length > 300 ? "..." : "")
-    });
-
-    log(`  └─ Result: ${res.success ? "PASSED" : "FAILED"}`);
+  // Round-7 #2 (architect ref 7-Round7Workflow): the previous per-criterion loop
+  // was verification THEATER — every criterion ran the same global `bun test`
+  // (or a guaranteed-green `--help` when the text mentioned run/cli) and a
+  // fabricated per-criterion ✅/❌ matrix was written to the ledger. Honest
+  // contract: run the suite ONCE as a global signal; individual criteria are
+  // UNVERIFIED unless individually proven. SUCCESS is not claimable from a
+  // signal that cannot fail for the cases it pretends to cover.
+  log(`[CHECK] Running the verification suite once ('bun test') — a global signal, not per-criterion proof.`);
+  if (opts.onProgress) {
+    opts.onProgress({ skill: "ultragoal", phase: "verifying", detail: "Running verification suite" });
   }
+  const suite = await bashTool("bun test", cwd);
+  log(`  └─ Suite: ${suite.success ? "GREEN" : "FAILED"}`);
+
+  const results: { criterion: string; status: "unverified" | "failed"; note: string }[] = criteria.map(criterion =>
+    suite.success
+      ? { criterion, status: "unverified", note: "suite green — criterion not individually verified" }
+      : { criterion, status: "failed", note: "verification suite failed" },
+  );
 
   if (opts.signal?.aborted) {
     return { ok: false, reason: "aborted" };
@@ -132,23 +122,30 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
   await fs.mkdir(reportDir, { recursive: true });
   const reportPath = path.join(reportDir, "ultragoal-report.md");
 
-  const passedCount = results.filter(r => r.passed).length;
   const totalCount = results.length;
-  const status = passedCount === totalCount ? "SUCCESS" : "DEGRADED";
+  const status = suite.success ? "SUITE_GREEN" : "FAILED";
 
-  const reportContent = 
+  const reportContent =
     `# Ultragoal Verification Report: ${interviewState.slug}\n` +
     `Date: ${new Date().toISOString()}\n` +
-    `Status: ${status} (${passedCount}/${totalCount} criteria passed)\n` +
+    `Status: ${status} — suite ${suite.success ? "green" : "FAILED"}; ${totalCount} acceptance criteria recorded (not individually verified)\n` +
     `Plan: ${teamState?.plan_path ?? "(team not run)"}\n` +
     `Execution: ${teamState?.current_phase === "complete" ? "team complete" : "team NOT complete — verified current disk state"}\n\n` +
-    `## Criteria Verification Matrix\n` +
-    `| Criterion | Status | Verification Output |\n` +
+    `## Criteria Record\n` +
+    `| Criterion | Status | Note |\n` +
     `|---|---|---|\n` +
-    results.map(r => `| ${r.criterion} | ${r.passed ? "✅ PASSED" : "❌ FAILED"} | \`${r.output.replace(/\n/g, " ")}\` |`).join("\n") +
+    results.map(r => `| ${r.criterion} | ${r.status === "failed" ? "❌ FAILED" : "⚠️ UNVERIFIED"} | ${r.note} |`).join("\n") +
     `\n`;
 
-  await fs.writeFile(reportPath, reportContent, "utf-8");
+  // Atomic temp+rename (zeroclaw): a torn report must not disagree with the state JSON.
+  const tmpReport = `${reportPath}.${Math.random().toString(36).slice(2)}.tmp`;
+  try {
+    await fs.writeFile(tmpReport, reportContent, "utf-8");
+    await fs.rename(tmpReport, reportPath);
+  } catch (err) {
+    await fs.unlink(tmpReport).catch(() => {});
+    throw err;
+  }
 
   // Persist a machine-readable terminal phase so the chain is queryable end-to-end.
   const ultragoalState: WorkflowState = {
@@ -159,19 +156,19 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
     seed_path: seedPath,
     plan_path: teamState?.plan_path,
     status,
-    passed: passedCount,
+    suite_green: suite.success,
     total: totalCount,
   };
   await writeWorkflowState("ultragoal", ultragoalState, cwd);
 
   log(`\n[VERIFICATION COMPLETE] Report saved to: ${reportPath}`);
-  log(`Overall status: ${status} (${passedCount}/${totalCount} passed)`);
+  log(`Overall status: ${status} — ${totalCount} criteria recorded; none individually verified (add per-criterion checks for stronger claims).`);
 
   if (opts.onProgress) {
     opts.onProgress({ skill: "ultragoal", phase: "complete" });
   }
 
-  return { ok: status === "SUCCESS" };
+  return { ok: suite.success };
 }
 
 export async function runUltragoalCommand(): Promise<void> {

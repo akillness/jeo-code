@@ -33,7 +33,7 @@ import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLev
 
 import { listAliases } from "../ai/model-registry";
 
-import { SUBAGENT_ROLES, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, parseMaxSteps, withSubagentSetting, clearSubagentSetting, applyTargetChoices } from "../agent/subagents";
+import { SUBAGENT_ROLES, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting, applyTargetChoices } from "../agent/subagents";
 import { SelectList, renderSelectList } from "../tui/components/select-list";
 import {
   formatModelLine,
@@ -2319,6 +2319,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // gjc-parity command aliases (full behavior reuse, no duplicated handlers).
       if (input === "/login" || input.startsWith("/login ")) input = `/provider login${input.slice("/login".length)}`;
       else if (input === "/settings") input = "/config";
+      // `/subagent`(s) → the /agents roster/editor (view + change the current
+      // subagent composition: per-role model · thinking · steps).
+      else if (input === "/subagent" || input.startsWith("/subagent ")) input = `/agents${input.slice("/subagent".length)}`;
+      else if (input === "/subagents" || input.startsWith("/subagents ")) input = `/agents${input.slice("/subagents".length)}`;
       pendingSelection = undefined;
       navMatches = [];
       navIdx = -1;
@@ -2865,6 +2869,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           for (const line of formatAgentsPanel(SUBAGENT_ROLES, r => ({
             model: resolveSubagentModel(r.id, cfgNow),
             maxSteps: resolveSubagentMaxSteps(r.id, cfgNow),
+            thinking: resolveSubagentThinking(r.id, cfgNow),
           }))) console.log(line);
           console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  provider: /agents <role> provider <name> [model]  ·  steps: /agents <role> maxSteps <N>");
           console.log("Tip: set a role while choosing models with /model subagent <role> [model|#N]");
@@ -3015,6 +3020,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         for (const line of formatAgentDetail(role, {
           model: resolveSubagentModel(role.id, cfgNow),
           maxSteps: resolveSubagentMaxSteps(role.id, cfgNow),
+          thinking: resolveSubagentThinking(role.id, cfgNow),
         })) console.log(line);
         const live = await getLiveModels();
         const agentPick = flattenModels(live);

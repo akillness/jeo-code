@@ -269,6 +269,23 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
     return { ok: false, reason: "team-state.json is corrupt" };
   }
 
+  // Round-7 #1 (architect ref 7-Round7Workflow): a team-state left over from a
+  // PREVIOUS plan must never be reused — pending=[] from plan A would make plan B
+  // no-op into a false "all executed" success, and a mid-flight leftover would run
+  // plan-A task text under plan-B roles. A different plan reinitializes execution.
+  if (teamState.plan_path !== planPath || teamState.slug !== planState.slug) {
+    log(`${categoryBadge("progress")} New plan detected (${planPath}) — restarting execution from its task list.`);
+    teamState = {
+      active: true,
+      current_phase: "executing",
+      skill: "team" as const,
+      slug: planState.slug,
+      plan_path: planPath,
+      completed_tasks: [],
+      pending_tasks: [...tasks],
+    };
+  }
+
   await writeWorkflowState("team", teamState, cwd);
   const renderOpts: RalphRenderOptions = { color: !!process.stdout.isTTY, indexed: true };
   for (const line of formatRalphTodoGuide(tasks, activeStepIndex(tasks.length, teamState.pending_tasks), teamState.completed_tasks ?? [], renderOpts)) log(line);
@@ -313,6 +330,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
 
   if (teamState.pending_tasks && teamState.pending_tasks.length === 0) {
     teamState.current_phase = "complete";
+    teamState.active = false; // execution finished — the flag must not read as "in progress"
     await writeWorkflowState("team", teamState, cwd);
     log(`\n${categoryBadge("done")} All tasks in the plan executed successfully!`);
     log("Run 'jeo ultragoal' to run verify tests and evaluate metrics.");

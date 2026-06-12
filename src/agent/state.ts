@@ -128,6 +128,9 @@ export interface WorkflowState {
   status?: string;
   passed?: number;
   total?: number;
+  /** ultragoal: whether the global verification suite was green (round-7 honest
+   *  contract — criteria are recorded, not individually claimed as passed). */
+  suite_green?: boolean;
 }
 
 /** The built-in default model when neither disk config nor JOC_DEFAULT_MODEL provides one.

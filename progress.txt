@@ -269,3 +269,8 @@
 - #4(라운드5 보류분): isContextOverflowError(context_length/prompt too long/413 등) 신설 + friendlyProviderError에 overflow→"/compact" 안내·404→model-not-found "/model" 안내 케이스 추가 — 불투명한 raw 400/404 본문 수집 종료.
 - 엔진 반응적 복구: provider가 overflow를 보고하면(로컬 추정이 빗나간 케이스 — 이미지/토크나이저 편차) trimToolResultsInPlace(예산 절반, keepRecent 2)로 1회 트림 후 같은 스텝 free retry. 2번째 overflow 또는 트림 불가 시 friendly 에러로 턴 종료(one-shot 플래그).
 - Verified: typecheck 0; full bun test 1194 pass / 0 fail (+4종 provider-error-taxonomy: 감지기 패턴/taxonomy 문구/트림+재시도 성공/2차 overflow 표면화).
+[2026-06-12] Pass — /subagent 슬래시 명령 + 구성 패널 thinking 표기
+- /subagent(및 /subagents) 별칭 추가 → /agents 핸들러 전체 재사용(레지스터 별칭 패턴, /login→/provider login과 동일); 슬래시 팔레트에 "/subagent [role]" 등재(Subagents 그룹).
+- formatAgentsPanel/formatAgentDetail에 thinking 컬럼: 역할별 명시 레벨 또는 (inherit) 표기, 디테일 블록은 "inherit (follows the default thinking level)" 설명 — /agents·/subagent가 모델·thinking·스텝·read-only까지 현 구성 현황판 완성.
+- 실동작 검증(tmux, 샌드박스 config): /subagent → "executor — claude-opus-4-5 (xhigh) ≤20 steps / planner (inherit) …" 패널 실표시.
+- Verified: tsc 0; bun test 1198 pass / 0 fail; dist/jeo 재빌드.

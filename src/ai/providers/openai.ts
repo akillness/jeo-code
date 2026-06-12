@@ -77,7 +77,18 @@ export const openaiAdapter: ProviderAdapter = {
       return;
     }
     const { url, headers, body } = openaiRequest(messages, options, credential, true);
-    const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
+    let response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
+    if (response.status === 400) {
+      // Compat retry (round-5 #5): some OpenAI-compatible backends (llama.cpp,
+      // LM Studio, older vLLM) 400 on the OPTIONAL `stream_options` usage nicety.
+      // Retry once without it instead of killing the turn over a nicety.
+      const errBody = await response.clone().text().catch(() => "");
+      if (/stream_options/i.test(errBody)) {
+        const stripped = JSON.parse(body) as Record<string, unknown>;
+        delete stripped.stream_options;
+        response = await fetch(url, { method: "POST", headers, body: JSON.stringify(stripped), signal: options.signal });
+      }
+    }
     if (!response.ok) throw await providerHttpError("OpenAI", response, "(stream)");
     if (!response.body) return;
     let yieldedAny = false;

@@ -46,29 +46,31 @@ export function formatProviderPanel(statuses: ProviderStatus[]): string[] {
   });
 }
 
-/** Subagent roster: ` id        title — model ≤N steps  (read-only)`. */
+/** Subagent roster: ` id        title — model · thinking ≤N steps  (read-only)`. */
 export function formatAgentsPanel(
   roles: readonly SubagentRole[],
-  resolve: (role: SubagentRole) => { model: string; maxSteps: number },
+  resolve: (role: SubagentRole) => { model: string; maxSteps: number; thinking?: string },
 ): string[] {
   if (roles.length === 0) return ["  (no subagent roles)"];
   const width = Math.max(...roles.map(r => r.id.length), 8);
   return roles.map(r => {
-    const { model, maxSteps } = resolve(r);
+    const { model, maxSteps, thinking } = resolve(r);
     const ro = r.readOnly ? chalk.gray("  (read-only)") : "";
-    return `  ${chalk.cyan(r.id.padEnd(width))} ${r.title} — ${model} ≤${maxSteps} steps${ro}`;
+    const think = chalk.dim(`(${thinking ?? "inherit"})`);
+    return `  ${chalk.cyan(r.id.padEnd(width))} ${r.title} — ${model} ${think} ≤${maxSteps} steps${ro}`;
   });
 }
 
 /** Detail block for a single subagent role. */
 export function formatAgentDetail(
   role: SubagentRole,
-  resolved: { model: string; maxSteps: number },
+  resolved: { model: string; maxSteps: number; thinking?: string },
 ): string[] {
   return [
     `${chalk.cyan(role.id)} — ${role.title}`,
     `  ${role.description}`,
     `  model:     ${resolved.model}`,
+    `  thinking:  ${resolved.thinking ?? "inherit (follows the default thinking level)"}`,
     `  maxSteps:  ${resolved.maxSteps}`,
     `  mutates:   ${role.readOnly ? "no (read-only: read/find/search only)" : "yes (full toolset)"}`,
   ];

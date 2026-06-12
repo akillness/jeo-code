@@ -164,6 +164,15 @@ export class LaunchTui {
   private turnUsage: { inputTokens: number; outputTokens: number } | null = null;
   // True while a delegated subagent turn is in flight — drives the `(sub)` status marker.
   private subagentActive = false;
+  // Latest nested subagent activity (role + glyph + detail) — surfaced LIVE in the
+  // status row while a `task` runs, so a delegated turn never reads as an opaque
+  // "calling model" stall (the perceived-hang usability gap). Cleared on done.
+  private subagentLive: string | null = null;
+  // Bounded activity-history ring: one plain-text entry per ledger append, with a
+  // turn-relative timestamp. Powers Ctrl+O's "recent activity" tail so the detail
+  // view ALWAYS answers "what has been happening", even before the first reply.
+  private readonly activityLog: { at: number; line: string }[] = [];
+  private static readonly ACTIVITY_LOG_CAP = 200;
   // Live next-prompt draft. Printable keystrokes typed while a turn owns stdin
   // edit this same query surface; it is rendered as the normal input box during
   // the turn and becomes the editable prompt prefill when the turn finishes.
@@ -542,6 +551,7 @@ export class LaunchTui {
    *  the renderer's 1-line=1-row reservation math — the live frame then repaints at
    *  the wrong rows (the "screen tearing + garbled scrollback" corruption). */
   private appendLedger(text: string, kind = "line"): void {
+    this.recordActivity(text);
     const needsGap = this.lastLedgerKind !== null && (kind !== this.lastLedgerKind || kind === "card");
     this.lastLedgerKind = kind;
     const body0 = needsGap ? `\n${text}` : text;
@@ -555,6 +565,28 @@ export class LaunchTui {
         .join("\n");
       this.renderer.insertAbove(`${wrapped}\n`);
     }
+  }
+
+  /** Record one plain-text activity entry (ANSI-stripped first line, bounded ring). */
+  private recordActivity(text: string): void {
+    const first = text
+      .replace(/\x1b\[[0-9;]*m/g, "")
+      .split("\n")
+      .map(l => l.trim())
+      .find(l => l.length > 0);
+    if (!first) return;
+    this.activityLog.push({ at: Date.now(), line: first.slice(0, 160) });
+    if (this.activityLog.length > LaunchTui.ACTIVITY_LOG_CAP) this.activityLog.shift();
+  }
+
+  /** Recent activity entries (newest last) with turn-relative `+N.Ns` timestamps —
+   *  the Ctrl+O detail view's "what just happened" tail. */
+  recentActivity(n = 30): string[] {
+    const base = this.startedAt || Date.now();
+    return this.activityLog.slice(-Math.max(1, n)).map(e => {
+      const rel = Math.max(0, (e.at - base) / 1000);
+      return `+${rel.toFixed(1)}s ${e.line}`;
+    });
   }
 
   /** gjc-style ledger tree for list-shaped tool results (find / search / ls): a dim
@@ -612,6 +644,10 @@ export class LaunchTui {
       const detail = this.workflowStatus.detail ? ` — ${this.workflowStatus.detail}` : "";
       return `workflow ${this.workflowStatus.skill}: ${this.workflowStatus.phase}${detail}`;
     }
+    // A delegated subagent's LATEST nested event beats the parent's static
+    // "Task: <role> …" card title — a long task otherwise reads as a stall even
+    // though the subagent is actively reading/editing/running underneath.
+    if (this.subagentActive && this.subagentLive) return this.subagentLive;
     // Waiting on the model and no tool is mid-flight → make the pause legible.
     if (this.thinking && !running) {
       const elapsed = this.currentStepStartedAt ? ((Date.now() - this.currentStepStartedAt) / 1000).toFixed(1) : "0.0";
@@ -664,19 +700,24 @@ export class LaunchTui {
     switch (e.kind) {
       case "start":
         this.subagentActive = true;
+        this.subagentLive = `${roleLabel} ${this.unicode ? "▸" : ">"} ${detail || "starting"}`;
         this.appendLedger(`${badge} ${this.unicode ? "▸" : ">"} ${roleLabel} · ${detail}\n`, "subagent");
         break;
       case "step":
+        this.subagentLive = `${roleLabel} ${this.unicode ? "·" : "-"} ${detail || "working"}`;
         this.appendLedger(`  ${badge} ${branch} ${roleLabel} · ${detail || "working"}\n`, "subagent");
         break;
       case "tool":
+        this.subagentLive = `${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}`;
         this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`, "subagent");
         break;
       case "error":
+        this.subagentLive = `${roleLabel} ${bad} ${detail || "error"}`;
         this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${bad} ${detail || "error"}\n`, "subagent");
         break;
       case "done":
         this.subagentActive = false;
+        this.subagentLive = null;
         this.appendLedger(`${badge} ${last} ${roleLabel} done${e.success === false ? " (incomplete)" : ""}: ${detail}\n`, "subagent");
         break;
     }
@@ -688,6 +729,8 @@ export class LaunchTui {
     this.turnUsage = null;
     this.lastLedgerKind = null; // fresh turn: no leading spacer before the first ledger line
     this.livePromptInput = ""; // fresh turn: no next-prompt draft yet
+    this.subagentLive = null; // fresh turn: no nested subagent in flight
+    this.activityLog.length = 0; // per-turn ring: timestamps are turn-relative
     this.spinner.updateStep(0, this.footer.maxSteps);
     // On a real TTY the live turn renders gjc-style in the MAIN buffer by default:
     // completed ledger lines are flushed into normal scrollback as they happen, so a

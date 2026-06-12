@@ -109,7 +109,13 @@ export async function assertBashAllowed(
  * "a" (single line), or "a+n" (n lines starting at a). Out-of-range starts are
  * dropped; an explicit "a-b" with b<a is an error. Mirrors gjc's read selectors.
  */
-export function parseLineSelector(spec: string, total: number): { ranges: [number, number][] } | { error: string } {
+export function parseLineSelector(spec: string | number, total: number): { ranges: [number, number][] } | { error: string } {
+  // Field crash guard: models pass `lineRange: 10` (number) or other JSON junk —
+  // `spec.split is not a function` killed the read instead of degrading politely.
+  if (typeof spec !== "string") {
+    if (typeof spec === "number" && Number.isFinite(spec)) spec = String(spec);
+    else return { error: `selector must be a string like "10-20", got ${JSON.stringify(spec)}` };
+  }
   const segs = spec.split(",").map(s => s.trim()).filter(Boolean);
   if (segs.length === 0) return { error: "empty selector" };
   const ranges: [number, number][] = [];
@@ -229,7 +235,7 @@ async function staleReadError(absPath: string, filePath: string, verb: string): 
 }
 export async function readTool(
   filePath: string,
-  lineRange?: string,
+  lineRange?: string | number,
   cwd: string = process.cwd(),
   raw: boolean = false
 ): Promise<ToolResult> {
@@ -260,7 +266,7 @@ export async function readTool(
 
     const lines = content.split("\n");
 
-    if (lineRange) {
+    if (lineRange !== undefined && lineRange !== null && lineRange !== "") {
       const parsed = parseLineSelector(lineRange, lines.length);
       if ("error" in parsed) {
         return { success: false, output: "", error: `Invalid lineRange '${lineRange}': ${parsed.error}` };

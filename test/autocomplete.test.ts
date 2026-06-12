@@ -92,16 +92,22 @@ test("/logout completes cloud provider names", () => {
   expect(complete("/logout ", ctx()).completions).toEqual(["anthropic", "openai", "gemini", "antigravity"]);
 });
 
-test("/agents and /model subagent complete role ids, then models + maxSteps keyword", () => {
-  expect(complete("/agents ", ctx()).completions).toEqual(["executor", "planner", "architect", "critic"]);
+test("/agents and /model subagent complete role ids, models, thinking, and maxSteps keywords", () => {
+  expect(complete("/agents ", ctx()).completions).toEqual(["edit", "executor", "planner", "architect", "critic"]);
   expect(complete("/agents exec", ctx()).completions).toEqual(["executor"]);
   const m = complete("/agents executor ", ctx());
   expect(m.completions).toContain("reset");
+  expect(m.completions).toContain("thinking");
   expect(m.completions).toContain("maxSteps");
   expect(m.completions).toContain("gpt-4o-live");
+  expect(complete("/agents executor thinking h", ctx()).completions).toEqual(["high"]);
+  expect(complete("/model thinking h", ctx()).completions).toEqual(["high"]);
   expect(complete("/model subagent ", ctx()).completions).toEqual(["executor", "planner", "architect", "critic"]);
   expect(complete("/model role pla", ctx()).completions).toEqual(["planner"]);
-  expect(complete("/model subagent executor ", ctx()).completions).toContain("gpt-4o-live");
+  const subModel = complete("/model subagent executor ", ctx());
+  expect(subModel.completions).toContain("thinking");
+  expect(subModel.completions).toContain("gpt-4o-live");
+  expect(complete("/model subagent executor thinking in", ctx()).completions).toEqual(["inherit"]);
 });
 
 test("/skill completes resolved skill names (bundled + user) from the context", () => {

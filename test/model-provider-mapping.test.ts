@@ -58,20 +58,20 @@ test("alias sonnet resolves to claude-sonnet-4-5", () => {
 });
 
 test("OpenAI OAuth-only + non-Codex model fails fast", async () => {
-  const originalConfigDir = process.env.JOC_CONFIG_DIR;
+  const originalConfigDir = process.env.JEO_CONFIG_DIR;
   const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
   const originalOpenAiToken = process.env.OPENAI_OAUTH_TOKEN;
-  const originalDefaultModel = process.env.JOC_DEFAULT_MODEL;
+  const originalDefaultModel = process.env.JEO_DEFAULT_MODEL;
   const originalOpenAiBaseUrl = process.env.OPENAI_BASE_URL;
   
   delete process.env.OPENAI_API_KEY;
   delete process.env.OPENAI_OAUTH_TOKEN;
-  delete process.env.JOC_DEFAULT_MODEL;
+  delete process.env.JEO_DEFAULT_MODEL;
   delete process.env.OPENAI_BASE_URL;
 
   const tempConfigDir = path.join(os.tmpdir(), `jeo-test-config-${Math.random().toString(36).slice(2)}`);
   await fs.mkdir(tempConfigDir, { recursive: true });
-  process.env.JOC_CONFIG_DIR = tempConfigDir;
+  process.env.JEO_CONFIG_DIR = tempConfigDir;
 
   const config = {
     defaultModel: "gpt-4o",
@@ -89,14 +89,14 @@ test("OpenAI OAuth-only + non-Codex model fails fast", async () => {
     );
   } finally {
     if (originalConfigDir) {
-      process.env.JOC_CONFIG_DIR = originalConfigDir;
+      process.env.JEO_CONFIG_DIR = originalConfigDir;
     } else {
-      delete process.env.JOC_CONFIG_DIR;
+      delete process.env.JEO_CONFIG_DIR;
     }
     if (originalOpenAiApiKey) process.env.OPENAI_API_KEY = originalOpenAiApiKey;
     if (originalOpenAiToken) process.env.OPENAI_OAUTH_TOKEN = originalOpenAiToken;
-    if (originalDefaultModel) process.env.JOC_DEFAULT_MODEL = originalDefaultModel;
-    else delete process.env.JOC_DEFAULT_MODEL;
+    if (originalDefaultModel) process.env.JEO_DEFAULT_MODEL = originalDefaultModel;
+    else delete process.env.JEO_DEFAULT_MODEL;
     if (originalOpenAiBaseUrl) process.env.OPENAI_BASE_URL = originalOpenAiBaseUrl;
     else delete process.env.OPENAI_BASE_URL;
     await fs.rm(tempConfigDir, { recursive: true, force: true });
@@ -104,20 +104,20 @@ test("OpenAI OAuth-only + non-Codex model fails fast", async () => {
 });
 
 test("OpenAI OAuth-only + non-Codex model does NOT fail fast when base URL is configured", async () => {
-  const originalConfigDir = process.env.JOC_CONFIG_DIR;
+  const originalConfigDir = process.env.JEO_CONFIG_DIR;
   const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
   const originalOpenAiToken = process.env.OPENAI_OAUTH_TOKEN;
-  const originalDefaultModel = process.env.JOC_DEFAULT_MODEL;
+  const originalDefaultModel = process.env.JEO_DEFAULT_MODEL;
   const originalOpenAiBaseUrl = process.env.OPENAI_BASE_URL;
 
   delete process.env.OPENAI_API_KEY;
   delete process.env.OPENAI_OAUTH_TOKEN;
-  delete process.env.JOC_DEFAULT_MODEL;
+  delete process.env.JEO_DEFAULT_MODEL;
   delete process.env.OPENAI_BASE_URL;
 
   const tempConfigDir = path.join(os.tmpdir(), `jeo-test-config-${Math.random().toString(36).slice(2)}`);
   await fs.mkdir(tempConfigDir, { recursive: true });
-  process.env.JOC_CONFIG_DIR = tempConfigDir;
+  process.env.JEO_CONFIG_DIR = tempConfigDir;
 
   const config = {
     defaultModel: "gpt-4o",
@@ -137,14 +137,14 @@ test("OpenAI OAuth-only + non-Codex model does NOT fail fast when base URL is co
     expect(err.message).not.toContain("OpenAI OAuth 자격증명은 Codex 모델");
   } finally {
     if (originalConfigDir) {
-      process.env.JOC_CONFIG_DIR = originalConfigDir;
+      process.env.JEO_CONFIG_DIR = originalConfigDir;
     } else {
-      delete process.env.JOC_CONFIG_DIR;
+      delete process.env.JEO_CONFIG_DIR;
     }
     if (originalOpenAiApiKey) process.env.OPENAI_API_KEY = originalOpenAiApiKey;
     if (originalOpenAiToken) process.env.OPENAI_OAUTH_TOKEN = originalOpenAiToken;
-    if (originalDefaultModel) process.env.JOC_DEFAULT_MODEL = originalDefaultModel;
-    else delete process.env.JOC_DEFAULT_MODEL;
+    if (originalDefaultModel) process.env.JEO_DEFAULT_MODEL = originalDefaultModel;
+    else delete process.env.JEO_DEFAULT_MODEL;
     if (originalOpenAiBaseUrl) process.env.OPENAI_BASE_URL = originalOpenAiBaseUrl;
     else delete process.env.OPENAI_BASE_URL;
     await fs.rm(tempConfigDir, { recursive: true, force: true });

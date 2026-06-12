@@ -1,6 +1,6 @@
 # 05 — Provider Plan (adapters, OAuth, local, streaming)
 
-> How `joc` talks to LLM backends: the adapter interface, credential resolution
+> How `jeo` talks to LLM backends: the adapter interface, credential resolution
 > (API key / OAuth PKCE / local keyless), and the path to streaming + more backends.
 
 **Status:** `partially shipped` · **Last updated:** 2026-06-05 · **Tracking pass:** `docs/improvements.md §9, §11, §14`
@@ -26,13 +26,13 @@ overrides); local/offline works keylessly. Next: token streaming and more backen
 - **Adapter-aware selection** `model-manager.call()` (pass 14): a non-verified OAuth token never shadows a
   working API key for the bundled chat/generativelanguage adapters; clear error if only an incompatible token exists.
 - **Local/offline**: ollama + any OpenAI-compatible endpoint via `openaiBaseUrl` (keyless `kind:"none"` path).
-- **Hardening**: `~/.joc/config.json` `0600`, dir `0700`; bash tool timeout + output cap (`tools.ts`).
+- **Hardening**: `~/.jeo/config.json` `0600`, dir `0700`; bash tool timeout + output cap (`tools.ts`).
 
 ## 3. Target State (gjc / pi-mono parity)
 - **gjc** `packages/ai/src/providers`: ~14 backends (Anthropic, OpenAI Chat + Responses/Codex, Azure,
   Gemini, Vertex, Bedrock+SigV4, Ollama, Copilot, GitLab Duo, Kimi, Cursor) + a transform layer + auth-broker.
 - **pi-mono** `pi-ai`: unified provider-agnostic API with streaming.
-- **joc** decision: keep the lean adapter map; add **streaming** first (biggest UX win, unblocks TUI tokens),
+- **jeo** decision: keep the lean adapter map; add **streaming** first (biggest UX win, unblocks TUI tokens),
   then high-value backends (Bedrock/Vertex/Copilot) one file at a time. Skip the broker process.
 
 ## 4. Design & Architecture
@@ -67,7 +67,7 @@ overrides); local/offline works keylessly. Next: token streaming and more backen
 ```bash
 bun run typecheck && bun test test/stream.test.ts
 # real local: stream a short completion from ollama/qwen2.5:0.5b and assert non-empty chunked output
-joc doctor                                   # provider matrix + OAuth expiry, default model [READY]
+jeo doctor                                   # provider matrix + OAuth expiry, default model [READY]
 ```
 
 ## 9. Long-term / Future

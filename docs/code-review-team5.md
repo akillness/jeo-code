@@ -75,7 +75,7 @@ Consensus: **APPROVE-WITH-FIXES**. No critical blockers; multiple high-severity 
 14. `truncateSummary` with `budget ≤ prefix.length` returns header-only summary — `src/agent/compaction.ts:58-62`. Skip pushing the summary message instead.
 15. Gemini model name not URL-encoded — `src/ai/providers/gemini.ts:39`. Defensive `encodeURIComponent`.
 16. Corrupt `team-state.json` + partial-resume paths untested — `test/team-run.test.ts`.
-17. `JOC_SKILLS_DIR` positive-load path untested — `test/skills-config.test.ts`.
+17. `JEO_SKILLS_DIR` positive-load path untested — `test/skills-config.test.ts`.
 
 ## Positive Observations
 

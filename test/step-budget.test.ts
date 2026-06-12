@@ -14,10 +14,10 @@ test("resolveStepBudgetConfig: defaults derive from the base budget", () => {
 
 test("resolveStepBudgetConfig: env vars tune the flow and are clamped", () => {
   const cfg = resolveStepBudgetConfig(10, {
-    JOC_STEP_EXTENSIONS: "99", // clamped to 8
-    JOC_STEP_EXTENSION_SIZE: "5",
-    JOC_STEP_HARD_CAP: "4", // below base → raised to base
-    JOC_STEP_WINDOW: "1", // below min → raised to 2
+    JEO_STEP_EXTENSIONS: "99", // clamped to 8
+    JEO_STEP_EXTENSION_SIZE: "5",
+    JEO_STEP_HARD_CAP: "4", // below base → raised to base
+    JEO_STEP_WINDOW: "1", // below min → raised to 2
   });
   expect(cfg.maxExtensions).toBe(8);
   expect(cfg.extensionSteps).toBe(5);
@@ -26,7 +26,7 @@ test("resolveStepBudgetConfig: env vars tune the flow and are clamped", () => {
 });
 
 test("resolveStepBudgetConfig: caller overrides beat env (bounded delegation)", () => {
-  const cfg = resolveStepBudgetConfig(10, { JOC_STEP_EXTENSIONS: "5" }, { maxExtensions: 0 });
+  const cfg = resolveStepBudgetConfig(10, { JEO_STEP_EXTENSIONS: "5" }, { maxExtensions: 0 });
   expect(cfg.maxExtensions).toBe(0);
 });
 
@@ -191,7 +191,7 @@ test("dynamicStepBudgetConfig: no small hardcoded ceiling — unlimited extensio
 });
 
 test("dynamicStepBudgetConfig: env restores a bounded budget; caller overrides win", () => {
-  const bounded = dynamicStepBudgetConfig({ JOC_STEP_BASE: "10", JOC_STEP_EXTENSIONS: "1", JOC_STEP_HARD_CAP: "12" });
+  const bounded = dynamicStepBudgetConfig({ JEO_STEP_BASE: "10", JEO_STEP_EXTENSIONS: "1", JEO_STEP_HARD_CAP: "12" });
   expect(bounded.baseSteps).toBe(10);
   expect(bounded.maxExtensions).toBe(1);
   expect(bounded.hardCap).toBe(12);

@@ -51,8 +51,8 @@ test("dispatch reports unknown subcommands (non-flag) as before", async () => {
 });
 
 test("--worktree reuses an existing directory and chdirs into it", async () => {
-  const oldTmux = process.env.JOC_TMUX_LAUNCHED;
-  delete process.env.JOC_TMUX_LAUNCHED;
+  const oldTmux = process.env.JEO_TMUX_LAUNCHED;
+  delete process.env.JEO_TMUX_LAUNCHED;
   const originalCwd = process.cwd();
   const wt = await fsp.mkdtemp(path.join(os.tmpdir(), "jeo-wt-existing-"));
   try {
@@ -65,7 +65,7 @@ test("--worktree reuses an existing directory and chdirs into it", async () => {
   } finally {
     process.chdir(originalCwd);
     await fsp.rm(wt, { recursive: true, force: true });
-    if (oldTmux !== undefined) process.env.JOC_TMUX_LAUNCHED = oldTmux;
+    if (oldTmux !== undefined) process.env.JEO_TMUX_LAUNCHED = oldTmux;
   }
 });
 test("--worktree creates a git worktree when the path does not exist", async () => {

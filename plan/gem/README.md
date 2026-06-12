@@ -8,7 +8,7 @@ Long-horizon planning for `gem`, the spec-first, Gemini-optimized coding agent t
 | **gjc** | `Yeachan-Heo/gajae-code` | Socratic spec-first pipeline (`deep-interview` → `ralplan` → `team` → `ultragoal`), interactive dark/light crustacean TUIs, PKCE OAuth. |
 | **ooo** | `Q00/ouroboros` | Spec-first loop (`init` → `run` → `status` → `evaluate`), persistent ralph loop, Textual TUI (`ouroboros tui monitor`), and `uv`/pip packaging. |
 | **pi-mono** | `badlogic/pi-mono` | Lightweight JS/TS monorepo architecture, minimal tool loops, and `pi-tui` differential rendering. |
-| **joc** | `jeo-code` | Pure-TypeScript / Bun implementation of the core loop, stateful `MutationGuard`, and stdio MCP server. |
+| **jeo** | `jeo-code` | Pure-TypeScript / Bun implementation of the core loop, stateful `MutationGuard`, and stdio MCP server. |
 
 ## Plan index
 | # | Plan | Scope | Status |

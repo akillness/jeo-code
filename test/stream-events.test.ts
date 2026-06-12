@@ -61,20 +61,20 @@ test("end-to-end: a piped one-shot turn prints the per-step flow (not just the f
   const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-se-cfg-"));
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-se-work-"));
   await fs.writeFile(path.join(workDir, "note.txt"), "hello from note\n");
-  const savedCfg = process.env.JOC_CONFIG_DIR;
+  const savedCfg = process.env.JEO_CONFIG_DIR;
   const savedCwd = process.cwd();
   const logged: string[] = [];
   const origLog = console.log;
   console.log = (...a: unknown[]) => logged.push(a.join(" "));
   try {
-    process.env.JOC_CONFIG_DIR = cfgDir;
+    process.env.JEO_CONFIG_DIR = cfgDir;
     process.chdir(workDir);
     const { runLaunchCommand } = await import("../src/commands/launch");
     await runLaunchCommand(["read note.txt then done", "--model", "ollama/qwen2.5:0.5b", "--max-steps", "3", "--no-session", "--no-tui"]);
   } finally {
     console.log = origLog;
     process.chdir(savedCwd);
-    if (savedCfg === undefined) delete process.env.JOC_CONFIG_DIR; else process.env.JOC_CONFIG_DIR = savedCfg;
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR; else process.env.JEO_CONFIG_DIR = savedCfg;
     await fs.rm(cfgDir, { recursive: true, force: true });
     await fs.rm(workDir, { recursive: true, force: true });
   }
@@ -101,20 +101,20 @@ test("end-to-end: cmd-mode task subagent prints nested steps and result summarie
   const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-se-sub-cfg-"));
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-se-sub-work-"));
   await fs.writeFile(path.join(workDir, "note.txt"), "hello from note\n");
-  const savedCfg = process.env.JOC_CONFIG_DIR;
+  const savedCfg = process.env.JEO_CONFIG_DIR;
   const savedCwd = process.cwd();
   const logged: string[] = [];
   const origLog = console.log;
   console.log = (...a: unknown[]) => logged.push(a.join(" "));
   try {
-    process.env.JOC_CONFIG_DIR = cfgDir;
+    process.env.JEO_CONFIG_DIR = cfgDir;
     process.chdir(workDir);
     const { runLaunchCommand } = await import("../src/commands/launch");
     await runLaunchCommand(["delegate to a subagent", "--model", "ollama/qwen2.5:0.5b", "--max-steps", "4", "--no-session", "--no-tui"]);
   } finally {
     console.log = origLog;
     process.chdir(savedCwd);
-    if (savedCfg === undefined) delete process.env.JOC_CONFIG_DIR; else process.env.JOC_CONFIG_DIR = savedCfg;
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR; else process.env.JEO_CONFIG_DIR = savedCfg;
     await fs.rm(cfgDir, { recursive: true, force: true });
     await fs.rm(workDir, { recursive: true, force: true });
   }
@@ -154,19 +154,19 @@ test("end-to-end: a disk-persisted subagent model override is the model the in-l
     path.join(cfgDir, "config.json"),
     JSON.stringify({ defaultModel: "ollama/qwen2.5:0.5b", subagents: { executor: { model: "anthropic/claude-haiku-4-5" } } }),
   );
-  const savedCfg = process.env.JOC_CONFIG_DIR;
+  const savedCfg = process.env.JEO_CONFIG_DIR;
   const savedCwd = process.cwd();
   const origLog = console.log;
   console.log = () => {};
   try {
-    process.env.JOC_CONFIG_DIR = cfgDir;
+    process.env.JEO_CONFIG_DIR = cfgDir;
     process.chdir(workDir);
     const { runLaunchCommand } = await import("../src/commands/launch");
     await runLaunchCommand(["delegate", "--model", "ollama/qwen2.5:0.5b", "--max-steps", "4", "--no-session", "--no-tui"]);
   } finally {
     console.log = origLog;
     process.chdir(savedCwd);
-    if (savedCfg === undefined) delete process.env.JOC_CONFIG_DIR; else process.env.JOC_CONFIG_DIR = savedCfg;
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR; else process.env.JEO_CONFIG_DIR = savedCfg;
     await fs.rm(cfgDir, { recursive: true, force: true });
     await fs.rm(workDir, { recursive: true, force: true });
   }
@@ -193,20 +193,20 @@ test("end-to-end: one-shot skill alias executes configured skill instead of chat
     path.join(cfgDir, "skills", "spec-kit", "SKILL.md"),
     "summary: SDD wrapper\naliases: /speckit.plan\n\nPlan with spec-kit.",
   );
-  const savedCfg = process.env.JOC_CONFIG_DIR;
+  const savedCfg = process.env.JEO_CONFIG_DIR;
   const savedCwd = process.cwd();
   const logged: string[] = [];
   const origLog = console.log;
   console.log = (...a: unknown[]) => logged.push(a.join(" "));
   try {
-    process.env.JOC_CONFIG_DIR = cfgDir;
+    process.env.JEO_CONFIG_DIR = cfgDir;
     process.chdir(workDir);
     const { runLaunchCommand } = await import("../src/commands/launch");
     await runLaunchCommand(["/speckit.plan improve jeo", "--model", "ollama/qwen2.5:0.5b", "--no-session", "--no-tui"]);
   } finally {
     console.log = origLog;
     process.chdir(savedCwd);
-    if (savedCfg === undefined) delete process.env.JOC_CONFIG_DIR; else process.env.JOC_CONFIG_DIR = savedCfg;
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR; else process.env.JEO_CONFIG_DIR = savedCfg;
     await fs.rm(cfgDir, { recursive: true, force: true });
     await fs.rm(workDir, { recursive: true, force: true });
   }

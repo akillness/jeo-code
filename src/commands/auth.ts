@@ -111,7 +111,7 @@ async function runAuthLogin(rest: string[]): Promise<void> {
   try {
     const { email } = await interactiveOAuthLogin(chosen, rl);
     console.log(`\n[SUCCESS] OAuth login complete for ${chosen}${email ? ` (${email})` : ""}.`);
-    console.log("Stored access + refresh tokens in ~/.joc/config.json; jeo will auto-refresh on expiry.");
+    console.log("Stored access + refresh tokens in ~/.jeo/config.json; jeo will auto-refresh on expiry.");
   } catch (err) {
     console.log(`\n[FAILED] ${(err as Error).message}`);
     console.log("Tip: paste the redirect URL when prompted, or use 'jeo auth login <provider> --token <bearer>'.");

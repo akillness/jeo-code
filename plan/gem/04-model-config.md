@@ -13,7 +13,7 @@ Provide robust, multi-provider model routing. Route `google/*` or `gemini/*` que
 ## 2. Current State (cite evidence)
 - `jeo-code/coding-agent/src/ai/model-manager.ts:resolveProvider()` contains hardcoded substrings to route models.
 - `jeo-code/coding-agent/src/commands/setup.ts` prompts for provider type and probes `/api/tags` (Ollama) or `/v1/models` (OpenAI-compat) to find models.
-- Default configuration is saved to `~/.joc/config.json`.
+- Default configuration is saved to `~/.jeo/config.json`.
 - `doctor.ts` checks connectivity and defaults to `gemini-2.0-flash` (which fails under free tier; we manually shifted to `gemini-flash-latest` to get active quota).
 
 ## 3. Target State (gjc / pi-mono parity)

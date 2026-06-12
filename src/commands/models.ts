@@ -102,5 +102,5 @@ export async function runModelsCommand(args: string[] = []): Promise<void> {
   }
   for (const line of formatLiveModels(live, { current: resolved, perProvider: 20 })) console.log(line);
 
-  console.log("\nSet a default with 'jeo setup' or JOC_DEFAULT_MODEL=<id>.");
+  console.log("\nSet a default with 'jeo setup' or JEO_DEFAULT_MODEL=<id>.");
 }

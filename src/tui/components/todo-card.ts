@@ -11,7 +11,7 @@ export interface TodoCardOptions {
 }
 
 /**
- * joc-ref "Todo Write" scrollback card: a ✓-led header with a tree-connector
+ * jeo-ref "Todo Write" scrollback card: a ✓-led header with a tree-connector
  * checklist — done items get ☑ + strikethrough, the active item highlights,
  * pending stays dim. Pure `string[]`; the caller flushes it into the ledger so
  * the plan's evolution (items checking off turn by turn) reads as transcript

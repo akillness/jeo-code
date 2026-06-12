@@ -104,7 +104,7 @@ function previewLines(text: string, maxLines: number, maxChars: number): string[
   return out.length > 0 ? out : [""];
 }
 
-/** joc-ref file-content preview: a line-number gutter (` 1│ #…`) before each
+/** jeo-ref file-content preview: a line-number gutter (` 1│ #…`) before each
  *  previewed row, closed by `… N more lines` when clipped. ANSI-free so cards
  *  stay byte-stable across color modes; `│` degrades to `|` without unicode. */
 function numberedPreviewLines(text: string, maxLines: number, maxChars: number, unicode = true): string[] {
@@ -493,7 +493,7 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
     return g === s ? shadow(s) : g;
   };
   const inner = Math.max(1, width - 2);
-  // joc-ref layout: the title rides ON the top border (`╭── ✗ Bash ──────╮`)
+  // jeo-ref layout: the title rides ON the top border (`╭── ✗ Bash ──────╮`)
   // instead of occupying a title row + separator — two chrome rows become one,
   // and the card scans like the reference's labeled panel.
   const mark = opts.titleMark ? `${opts.titleMark} ` : "";
@@ -505,7 +505,7 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
   const bottom = flowBottom(glyphs.bl + glyphs.h.repeat(inner) + glyphs.br);
   const rendered: string[] = [top];
 
-  // joc-ref readability: a one-column gutter between the left border and the
+  // jeo-ref readability: a one-column gutter between the left border and the
   // content (`│ $ cmd …`), so text never touches the frame. Content word-wraps
   // to the guttered width; a labeled divider still counts as one content row.
   const gutterWidth = Math.max(1, inner - 1);
@@ -524,7 +524,7 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
   // padded row (background tint spans the card width), so added/removed lines
   // separate as blocks instead of relying on a colored sign alone.
   const diffRows = summary.language === "patch" && opts.color !== false ? opts.diffPaint : undefined;
-  // Code cards (joc-ref): conservative single-pass light highlight — comments,
+  // Code cards (jeo-ref): conservative single-pass light highlight — comments,
   // string literals, keywords — applied AFTER wrapping so padding math stays
   // visible-width true. color:false stays byte-identical.
   const CODE_LANGS = new Set(["bash", "typescript", "javascript", "python", "json", "yaml", "rust", "go"]);

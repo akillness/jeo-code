@@ -23,19 +23,19 @@ async function setHook(hook: Record<string, any>): Promise<void> {
   };
   await fs.writeFile(path.join(globalConfigDir, "config.json"), JSON.stringify(globalConfig), "utf-8");
   // No local override — exercise the global hook path.
-  try { await fs.unlink(path.join(projectDir, ".joc", "hooks.json")); } catch {}
+  try { await fs.unlink(path.join(projectDir, ".jeo", "hooks.json")); } catch {}
 }
 
 beforeAll(async () => {
-  originalConfigDir = process.env.JOC_CONFIG_DIR;
+  originalConfigDir = process.env.JEO_CONFIG_DIR;
   await fs.mkdir(globalConfigDir, { recursive: true });
-  await fs.mkdir(path.join(projectDir, ".joc"), { recursive: true });
-  process.env.JOC_CONFIG_DIR = globalConfigDir;
+  await fs.mkdir(path.join(projectDir, ".jeo"), { recursive: true });
+  process.env.JEO_CONFIG_DIR = globalConfigDir;
 });
 
 afterAll(async () => {
-  if (originalConfigDir === undefined) delete process.env.JOC_CONFIG_DIR;
-  else process.env.JOC_CONFIG_DIR = originalConfigDir;
+  if (originalConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
+  else process.env.JEO_CONFIG_DIR = originalConfigDir;
   await fs.rm(testDir, { recursive: true, force: true });
 });
 

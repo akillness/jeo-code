@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { defaultRetryable, isUsageLimitError, withRetry } from "../src/util/retry";
 import { ProviderHttpError } from "../src/ai/providers/errors";
 import { friendlyProviderError } from "../src/util/provider-error";
-import { renderJocStatus } from "../src/tui/components/status";
+import { renderJeoStatus } from "../src/tui/components/status";
 import { renderFooter } from "../src/tui/components/footer";
 import { LaunchTui } from "../src/tui/app";
 
@@ -50,7 +50,7 @@ test("friendlyProviderError: usage-limit gets a switch-model message, not the ge
 });
 
 test("[STEP] row shows the meter percent exactly once", () => {
-  const [stepRow] = renderJocStatus({ step: 1, maxSteps: 25, elapsedMs: 18_000, unicode: false, color: false });
+  const [stepRow] = renderJeoStatus({ step: 1, maxSteps: 25, elapsedMs: 18_000, unicode: false, color: false });
   const percents = stripAnsi(stepRow!).match(/\d+%/g) ?? [];
   expect(percents.length).toBe(1); // was "4% [..........] 4%" — duplicated
 });

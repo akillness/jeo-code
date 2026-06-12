@@ -292,25 +292,27 @@ export function skillSlashAliases(skill: SkillDoc): string[] {
  *  Covered install layouts:
  *  - Vercel `npx skills add [-g]` canonical store: `.agents/skills/` (project + ~)
  *  - Vercel agent-targeted installs (`-a claude-code`): `.claude/skills/` (project + ~)
- *  - gjc bundled/user agent skills: `~/.gjc/agent/skills/`
- *  - jeo-native: `<config>/skills/`, `<cwd>/.joc/skills/`, then `JEO_SKILLS_DIR`. */
+ *  - jeo agent skills (self-contained `.jeo` namespace, gjc-structure parity):
+ *    `<config>/agent/skills/` (+ project `<cwd>/.jeo/agent/skills/`)
+ *  - jeo-native flat: `<config>/skills/`, `<cwd>/.jeo/skills/`, then `JEO_SKILLS_DIR`. */
 export function skillDirs(cwd: string = process.cwd()): string[] {
   // $HOME wins over os.homedir(): Bun caches the system home, so tests (and
   // sandboxed runs) that re-point HOME would otherwise still scan the real one.
   const userHome = process.env.HOME || os.homedir();
-  const home = jeoEnv("CONFIG_DIR") || path.join(userHome, ".joc");
+  const home = jeoEnv("CONFIG_DIR") || path.join(userHome, ".jeo");
   const configured = (jeoEnv("SKILLS_DIR") ?? "")
     .split(path.delimiter)
     .map(s => s.trim())
     .filter(Boolean);
   return [
     path.join(userHome, ".claude", "skills"),
-    path.join(userHome, ".gjc", "agent", "skills"),
+    path.join(home, "agent", "skills"),
     path.join(userHome, ".agents", "skills"),
     path.join(home, "skills"),
     path.join(cwd, ".claude", "skills"),
     path.join(cwd, ".agents", "skills"),
-    path.join(cwd, ".joc", "skills"),
+    path.join(cwd, ".jeo", "skills"),
+    path.join(cwd, ".jeo", "agent", "skills"),
     ...configured,
   ];
 }
@@ -461,7 +463,7 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
  *  module path), and the prompt size actually injected. Pure — testable. */
 export function skillInvocationCard(skill: SkillDoc): string[] {
   const promptLines = (skill.raw ?? skill.details ?? "").split("\n").filter(l => l.trim().length > 0).length;
-  // joc-ref tree-connector detail: the skill name leads, resolved metadata hangs
+  // jeo-ref tree-connector detail: the skill name leads, resolved metadata hangs
   // off ├─/└─ connectors so the card scans like the reference's Skill panel.
   return [
     `Skill: ${skill.name}`,

@@ -1,17 +1,17 @@
 import chalk from "chalk";
 
-export type JocPhase = "thinking" | "planning" | "executing" | "reporting" | "done";
+export type JeoPhase = "thinking" | "planning" | "executing" | "reporting" | "done";
 
 export interface HudOptions {
   unicode?: boolean;
   color?: boolean;
 }
 
-export function renderHud(phase: JocPhase, opts: HudOptions = {}): string {
+export function renderHud(phase: JeoPhase, opts: HudOptions = {}): string {
   const unicode = opts.unicode !== false;
   const color = opts.color !== false;
 
-  const phases: JocPhase[] = ["thinking", "planning", "executing", "reporting", "done"];
+  const phases: JeoPhase[] = ["thinking", "planning", "executing", "reporting", "done"];
   const activeIndex = phases.indexOf(phase);
 
   const arrow = unicode ? " → " : " -> ";
@@ -56,7 +56,7 @@ export interface DerivePhaseInput {
   finished: boolean;
 }
 
-export function derivePhase(input: DerivePhaseInput): JocPhase {
+export function derivePhase(input: DerivePhaseInput): JeoPhase {
   if (input.finished) {
     return "done";
   }

@@ -71,8 +71,8 @@ export async function runSetupCommand(): Promise<void> {
   if (!process.stdin.isTTY) {
     console.log(
       "jeo setup needs an interactive terminal (TTY).\n" +
-      "Non-interactive options: set env vars (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY, JOC_DEFAULT_MODEL, OLLAMA_HOST),\n" +
-      "run 'jeo auth login <anthropic|openai|gemini|antigravity>' for OAuth, or edit ~/.joc/config.json directly. Verify with 'jeo doctor'.",
+      "Non-interactive options: set env vars (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY, JEO_DEFAULT_MODEL, OLLAMA_HOST),\n" +
+      "run 'jeo auth login <anthropic|openai|gemini|antigravity>' for OAuth, or edit ~/.jeo/config.json directly. Verify with 'jeo doctor'.",
     );
     return;
   }
@@ -101,8 +101,8 @@ export async function runSetupCommand(): Promise<void> {
 
   // Build the persisted config from the RAW on-disk state (NOT the env-overlaid
   // `current`), so `jeo setup` never bakes env-only values — OAuth bearer tokens
-  // (*_OAUTH_TOKEN), JOC_DEFAULT_MODEL, JOC_*_MODEL roles, OLLAMA_HOST/OPENAI_BASE_URL —
-  // permanently into ~/.joc/config.json. `current` is still used for display defaults.
+  // (*_OAUTH_TOKEN), JEO_DEFAULT_MODEL, JEO_*_MODEL roles, OLLAMA_HOST/OPENAI_BASE_URL —
+  // permanently into ~/.jeo/config.json. `current` is still used for display defaults.
   const next: Config = JSON.parse(JSON.stringify(await readRawGlobalConfig())) as Config;
   next.providers = next.providers || {};
   next.oauth = next.oauth || {};
@@ -225,7 +225,7 @@ export async function runSetupCommand(): Promise<void> {
   if (next.oauth && !next.oauth.anthropic && !next.oauth.openai && !next.oauth.gemini) delete next.oauth;
 
   await saveGlobalConfig(next);
-  console.log("\n[SUCCESS] Configuration saved to ~/.joc/config.json");
+  console.log("\n[SUCCESS] Configuration saved to ~/.jeo/config.json");
   for (const line of buildSetupSummary(next)) console.log(line);
   console.log("");
 }

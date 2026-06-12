@@ -155,7 +155,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "state",
-    summary: "Read or update workflow state receipts under .joc/state (gjc-state parity).",
+    summary: "Read or update workflow state receipts under .jeo/state (gjc-state parity).",
     usage: "state <deep-interview|ralplan|team|ultragoal> <read|write|clear|handoff> [--input '<json>'] [--to <skill>] [--json]",
     loader: async () => {
       const m = await import("../commands/state");
@@ -213,6 +213,24 @@ export const COMMANDS: readonly CommandSpec[] = [
     loader: async () => {
       const m = await import("../commands/evolve-core");
       return args => m.runEvolveCoreCommand(args);
+    },
+  },
+  {
+    name: "autopilot",
+    summary: "Autonomous build loop (autopilot × autoresearch ratchet).",
+    usage: "autopilot <subcommand> [flags]",
+    loader: async () => {
+      const m = await import("../autopilot");
+      return args => Promise.resolve(m.runAutopilot(args));
+    },
+  },
+  {
+    name: "ledger",
+    summary: "Cross-plan append-only ledger (ledger / review / cleanup).",
+    usage: "ledger <subcommand> [flags]",
+    loader: async () => {
+      const m = await import("../ledger");
+      return args => Promise.resolve(m.runLedger(args));
     },
   },
 ];

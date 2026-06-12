@@ -187,7 +187,7 @@ export function listThemes(): { name: string; description: string }[] {
 
 /** Process-lifetime memo: this runs on the keystroke-hot path (theme resolution
  *  inside the input-box repaint), and an UNCACHED call does a synchronous
- *  existsSync + readFileSync + JSON.parse of ~/.joc/config.json per keystroke.
+ *  existsSync + readFileSync + JSON.parse of ~/.jeo/config.json per keystroke.
  *  Env (`JEO_TUI_THEME`) takes precedence over this value in `resolveTheme`, so
  *  `/theme` switches stay live; external config edits apply on the next run. */
 let configThemeCache: { dir: string; value: string | undefined } | undefined;
@@ -199,7 +199,7 @@ export function resetThemeConfigCache(): void {
 
 function getExplicitThemeFromConfig(env: EnvLike): string | undefined {
   const home = os.homedir ? os.homedir() : undefined;
-  const dir = env.JEO_CONFIG_DIR || env.JOC_CONFIG_DIR || (home ? path.join(home, ".joc") : undefined);
+  const dir = env.JEO_CONFIG_DIR || env.JEO_CONFIG_DIR || (home ? path.join(home, ".jeo") : undefined);
   if (!dir) return undefined;
   if (configThemeCache && configThemeCache.dir === dir) return configThemeCache.value;
   const filePath = path.join(dir, "config.json");
@@ -217,12 +217,12 @@ function getExplicitThemeFromConfig(env: EnvLike): string | undefined {
   return value;
 }
 
-/** Resolve the active theme from the environment (`JEO_TUI_THEME`, legacy `JOC_TUI_THEME`) or config, default cosmic. */
+/** Resolve the active theme from the environment (`JEO_TUI_THEME`) or config, default cosmic. */
 export function resolveTheme(
   env: EnvLike = process.env,
   config?: { theme?: string; tuiTheme?: string; tui?: { theme?: string } }
 ): EvolutionTheme {
-  const explicit = env.JEO_TUI_THEME || env.JOC_TUI_THEME || config?.theme || config?.tuiTheme || config?.tui?.theme || getExplicitThemeFromConfig(env);
+  const explicit = env.JEO_TUI_THEME || config?.theme || config?.tuiTheme || config?.tui?.theme || getExplicitThemeFromConfig(env);
   if (explicit) {
     return getTheme(explicit);
   }

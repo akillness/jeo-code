@@ -30,7 +30,7 @@ jeo-code는 Bun 기반의 순수 TypeScript CLI 코딩 에이전트입니다(네
 🔗 jeo-code (dna\*claw): https://github.com/akillness/jeo-code
 ⭐ 피드백과 스타는 큰 힘이 됩니다!
 
-#AI #CodingAgent #OpenSource #LLM #Bun #TypeScript #DevTools #jeocode #gajaecode
+#AI #CodingAgent #OpenSource #LLM #Bun #TypeScript #DevTools #jeo-code #gajaecode
 
 ---
 
@@ -66,7 +66,7 @@ Original open source: https://github.com/Yeachan-Heo/gajae-code
 🔗 jeo-code (dna\*claw): https://github.com/akillness/jeo-code
 ⭐ Stars and feedback are always appreciated!
 
-#AI #CodingAgent #OpenSource #LLM #Bun #TypeScript #DevTools #jeocode #gajaecode
+#AI #CodingAgent #OpenSource #LLM #Bun #TypeScript #DevTools #jeo-code #gajaecode
 
 ---
 

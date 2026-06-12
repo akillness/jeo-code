@@ -56,38 +56,38 @@ test("tool results keep the classified ok/fail badges", () => {
 
 // gjc-parity (logs/gjc-tui-study analysis Gap B): [STEP] row shows a live
 // output-token rate derived from existing usage + elapsed.
-import { renderJocStatus } from "../src/tui/components/status";
+import { renderJeoStatus } from "../src/tui/components/status";
 
-test("renderJocStatus appends a live ⤴ tok/s rate once a second has elapsed", () => {
-  const lines = renderJocStatus({
+test("renderJeoStatus appends a live ⤴ tok/s rate once a second has elapsed", () => {
+  const lines = renderJeoStatus({
     step: 2, maxSteps: 25, elapsedMs: 10_000, color: false, unicode: true,
     usage: { inputTokens: 1200, outputTokens: 387 },
   });
   const stepRow = lines[0];
   expect(stepRow).toContain("⤴ 38.7/s");
   // ASCII fallback uses ^ instead of ⤴.
-  const ascii = renderJocStatus({
+  const ascii = renderJeoStatus({
     step: 2, maxSteps: 25, elapsedMs: 10_000, color: false, unicode: false,
     usage: { inputTokens: 1200, outputTokens: 387 },
   })[0];
   expect(ascii).toContain("^ 38.7/s");
 });
 
-test("renderJocStatus suppresses the rate before 1s elapsed and with zero output tokens", () => {
-  const early = renderJocStatus({
+test("renderJeoStatus suppresses the rate before 1s elapsed and with zero output tokens", () => {
+  const early = renderJeoStatus({
     step: 1, maxSteps: 25, elapsedMs: 500, color: false, unicode: true,
     usage: { inputTokens: 100, outputTokens: 50 },
   })[0];
   expect(early).not.toContain("/s");
-  const noOut = renderJocStatus({
+  const noOut = renderJeoStatus({
     step: 1, maxSteps: 25, elapsedMs: 5_000, color: false, unicode: true,
     usage: { inputTokens: 100, outputTokens: 0 },
   })[0];
   expect(noOut).not.toContain("/s");
 });
 
-test("renderJocStatus rate drops decimals at >=100 tok/s", () => {
-  const fast = renderJocStatus({
+test("renderJeoStatus rate drops decimals at >=100 tok/s", () => {
+  const fast = renderJeoStatus({
     step: 1, maxSteps: 25, elapsedMs: 2_000, color: false, unicode: true,
     usage: { inputTokens: 10, outputTokens: 500 },
   })[0];

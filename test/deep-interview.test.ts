@@ -30,7 +30,7 @@ async function tempDir(): Promise<string> {
 }
 
 async function readState(cwd: string): Promise<any> {
-  return JSON.parse(await fs.readFile(path.join(cwd, ".joc", "state", "deep-interview-state.json"), "utf-8"));
+  return JSON.parse(await fs.readFile(path.join(cwd, ".jeo", "state", "deep-interview-state.json"), "utf-8"));
 }
 
 test("deep-interview --auto: does not freeze a seed while ambiguity stays above the threshold", async () => {
@@ -55,7 +55,7 @@ test("deep-interview --auto: does not freeze a seed while ambiguity stays above 
   }
 
   expect(callCount).toBe(10);
-  await expect(fs.access(path.join(cwd, ".joc", "seeds"))).rejects.toThrow();
+  await expect(fs.access(path.join(cwd, ".jeo", "seeds"))).rejects.toThrow();
   const state = await readState(cwd);
   expect(state.current_phase).toBe("interviewing");
   expect(state.seed_path).toBeUndefined();
@@ -89,7 +89,7 @@ test("deep-interview --auto: does not fabricate acceptance criteria when the sco
   }
 
   expect(callCount).toBe(10);
-  await expect(fs.access(path.join(cwd, ".joc", "seeds"))).rejects.toThrow();
+  await expect(fs.access(path.join(cwd, ".jeo", "seeds"))).rejects.toThrow();
   const state = await readState(cwd);
   expect(state.current_phase).toBe("interviewing");
   expect(lines.join("\n")).toContain("acceptance criteria are still missing");

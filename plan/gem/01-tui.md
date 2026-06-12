@@ -65,7 +65,7 @@ Theme details:
 ## 6. Acceptance Criteria (testable)
 - [ ] `terminal.ts` accurately queries rows/columns and handles `SIGWINCH` resize events.
 - [ ] Changing a single line in a multi-line output does not cause full-screen flashes.
-- [ ] Running in `--no-tui` or redirection (`joc launch < task.txt`) bypasses TUI and falls back to clean, plain text stream.
+- [ ] Running in `--no-tui` or redirection (`jeo launch < task.txt`) bypasses TUI and falls back to clean, plain text stream.
 - [ ] Theme changes dynamically according to the `~/.gem/config.json` setting (`defaultTheme: "red-claw" | "blue-crab"`).
 
 ## 7. Risks & Mitigations

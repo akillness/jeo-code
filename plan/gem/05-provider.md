@@ -12,7 +12,7 @@ Provide secure, enterprise-grade authentication. Implement browser-directed PKCE
 
 ## 2. Current State (cite evidence)
 - `jeo-code/coding-agent/src/auth/` contains the callback server, PKCE utilities, and provider-specific flows (`anthropic.ts`, `openai.ts`, `google.ts`).
-- `jeo-code/coding-agent/src/commands/auth.ts` exposes `joc auth login`, `logout`, `refresh`, and `status` commands.
+- `jeo-code/coding-agent/src/commands/auth.ts` exposes `jeo auth login`, `logout`, `refresh`, and `status` commands.
 - `jeo-code/coding-agent/src/auth/storage.ts:resolveCredential()` has a dynamic import hook to check token expiration and trigger auto-refresh before API requests.
 - Configuration is loaded and saved via `readGlobalConfig()` / `saveGlobalConfig()` in `state.ts`.
 

@@ -9,7 +9,7 @@
 |---|---|---|
 | **pi-mono** (Zechner) | 미니멀 코어(4 tools, <1K토큰 프롬프트). "코어에 더한 기능만큼 모델의 자유 추론이 줄어든다." 기능은 확장/CLI+README로. | 코어 비대화 거부 — gjc 계승 시 **선별** 원칙. 도구 수 최소 유지, 무거운 기능은 스킬/외부 CLI로. |
 | **nullclaw** (Zig) | "as little as possible, as much as necessary". 단일 파일 구현으로 확장. SQLite 로컬 하이브리드 메모리. | 의존성 제로 유지(Bun 순수 TS). 메모리는 로컬 파일 기반. |
-| **zeroclaw** (Rust) | local-first 주권, swappable 서브시스템, "전원 뽑으면 멈추고 다른 건 안 깨진다". | 상태는 전부 `.joc/` 로컬. 크래시 내구 상태 쓰기. |
+| **zeroclaw** (Rust) | local-first 주권, swappable 서브시스템, "전원 뽑으면 멈추고 다른 건 안 깨진다". | 상태는 전부 `.jeo/` 로컬. 크래시 내구 상태 쓰기. |
 | **hermes** (Nous) | 경험→스킬 증류: 태스크 완료 후 reusable skill 자동 추출, 세션 간 누적 학습. | 턴/세션 경계 학습 루프 (로컬 MEMORY 증류). |
 | **gjc** (계승 대상) | "staff engineer" 규율: completion-contract, 검증 없는 done 금지, 편집 무결성(hashline), 구조적 능력 경계. | 아래 백로그. |
 
@@ -24,7 +24,7 @@
 | B3 | **completion-contract 프롬프트 이식** | system-prompt.md | executorSystemPrompt에 검증·완성 계약 문장 추가 (<300토큰) | 높음 / 매우 낮음 |
 | B4 | **done 검증 가드(경량)** | ultragoal-guard, goal continuation | 엔진: 변이 도구(write/edit/bash) 사용 턴에서 검증 신호(테스트/실행) 없이 done 호출 시 1회 푸시백 | 높음 / 낮음 |
 | B5 | **bashAllowedPrefixes 능력 경계** | task/types.ts AgentDefinition | subagent 역할별 bash 접두사 화이트리스트 (읽기전용 역할은 이미 도구 필터됨) | 중간 / 낮음 |
-| B6 | **경험→스킬 증류(hermes 루프)** | memories/ 2-phase, hindsight | 세션 종료 시 `.joc/memory/MEMORY.md` 로컬 증류(요약 1콜), 다음 세션 시스템 프롬프트에 토큰 캡 주입 | 높음 / 중간 |
+| B6 | **경험→스킬 증류(hermes 루프)** | memories/ 2-phase, hindsight | 세션 종료 시 `.jeo/memory/MEMORY.md` 로컬 증류(요약 1콜), 다음 세션 시스템 프롬프트에 토큰 캡 주입 | 높음 / 중간 |
 | B7 | **stale-read 가드** | edit/file-read-cache | edit 대상 파일이 마지막 read 이후 mtime 변경 시 경고/거부 | 중간 / 낮음 |
 | B8 | **컴팩션 핸드오프/파일연산 보존** | agent-session compaction | 요약에 touched-files 목록 보존; (promotion/원격은 비도입) | 중간 / 중간 |
 | B9 | **spawn-gate 경량판** | task/spawn-gate.ts | task 도구 N>4 fan-out 시 정당화 필드 요구 | 낮음 / 낮음 |
@@ -55,9 +55,9 @@
 - cycle 3 (2026-06-12): B7+B3.5 — file-freshness guard(거부+재제시+스냅샷 갱신) + SEARCH mismatch 현행 발췌 동봉. 신규 테스트 5종.
 - cycle 4 (2026-06-12): B4 — done-verification guard(1회 푸시백+escape hatch). 신규 테스트 4종. full 1128 pass / 0 fail.
 - cycle 5 (2026-06-12): B2 hashline-lite — read `LINEhh|` 앵커 + ≔ 앵커 검증(거부+재제시) + SEARCH 앵커 스트립 픽스업. 신규 테스트 6종. full 1134 pass / 0 fail.
-- cycle 6 (2026-06-12): B6 경험 증류 — src/agent/memory.ts(.joc/memory/MEMORY.md 증류+주입, JOC_NO_MEMORY 옵트아웃). 신규 테스트 3종.
+- cycle 6 (2026-06-12): B6 경험 증류 — src/agent/memory.ts(.jeo/memory/MEMORY.md 증류+주입, JEO_NO_MEMORY 옵트아웃). 신규 테스트 3종.
 - cycle 7 (2026-06-12): B8 — extractTouchedFiles로 컴팩션 요약에 변이 파일 목록 핀. 신규 테스트 2종. full 1139 pass / 0 fail.
-- cycle 8 (2026-06-12): B9 spawn-gate lite(fan-out>4 정당화 강제) + B10 출력 캡 설정화(JOC_TOOL_OUTPUT_MAX). full 1141 pass / 0 fail.
+- cycle 8 (2026-06-12): B9 spawn-gate lite(fan-out>4 정당화 강제) + B10 출력 캡 설정화(JEO_TOOL_OUTPUT_MAX). full 1141 pass / 0 fail.
 - **라운드 1 종료** — 8사이클, 신규 테스트 25종, B1~B10 소진(B5는 critic 판정으로 라운드 2 재설계). 라운드 2 진입 시 critic 합의 라운드 2 선행: 후보 = task-spawn bashPrefixes(B5 재설계), 도구 동시성 확대(shared/exclusive), 컴팩션 핸드오프 전략, _i intent 텔레메트리, LSP-lite(편집 후 진단), 3-way merge 복구(hashline 후속).
 
 ## 합의 라운드 2 (critic, 2026-06-12 — agent ref 3-Round2Critic)
@@ -79,7 +79,7 @@
 
 ## 합의 라운드 3 (critic ITERATE→OKAY, 2026-06-12 — agent://4-Round3Critic)
 **확정**: 단일 사이클 라운드. cycle 13만 실행, (b)(c)(d)는 정당화된 보류/탈락.
-- **cycle 13 (post-turn 훅 진단 피드백, 후보 (a) 재구성)**: runPostTurnHooks가 비정상종료(exit≠0) 훅의 출력을 반환 → engine이 해당 도구 결과 블록에 `[post-turn hook "<run>" — exit N]:\n<output>`로 첨부(모델 가시). gjc post-edit 진단 가치를 **기존 hooks 확장점**으로 실현 — 신규 의존성/코어 변경 0 (pi-mono). critic 5개 명확화 반영: (A1) exit≠0에만 표면화(exit0 출력 폐기), (A2) 배치 내 동일 출력 엔진측 dedup(중복은 "same diagnostics as above" 교차참조), (A3) timeout/abort는 기존 notice만(부분출력 없음), (A4) JOC_TOOL_OUTPUT_MAX로 독립 truncate, (A5) match.tool은 정확일치(edit+write는 항목 2개). 가드: 훅 실패가 도구 ok/fail 불변·budget 중립.
+- **cycle 13 (post-turn 훅 진단 피드백, 후보 (a) 재구성)**: runPostTurnHooks가 비정상종료(exit≠0) 훅의 출력을 반환 → engine이 해당 도구 결과 블록에 `[post-turn hook "<run>" — exit N]:\n<output>`로 첨부(모델 가시). gjc post-edit 진단 가치를 **기존 hooks 확장점**으로 실현 — 신규 의존성/코어 변경 0 (pi-mono). critic 5개 명확화 반영: (A1) exit≠0에만 표면화(exit0 출력 폐기), (A2) 배치 내 동일 출력 엔진측 dedup(중복은 "same diagnostics as above" 교차참조), (A3) timeout/abort는 기존 notice만(부분출력 없음), (A4) JEO_TOOL_OUTPUT_MAX로 독립 truncate, (A5) match.tool은 정확일치(edit+write는 항목 2개). 가드: 훅 실패가 도구 ok/fail 불변·budget 중립.
 - **보류/탈락 (critic 합의)**: (b) 잔여 hashline — cycle 9+letter-leading로 주요 사일런트 손상 차단, 잔여 실패 클래스 증거 無 → 보류. (c) _i intent — 코어 비대화, hooks가 tool+args 관찰 → 탈락. (d) cross-file read+write 혼합 동시성 — cycle 12가 distinct-file write 병렬화+read 격리 완료, 혼합은 read↔write 레이스 표면 생성 / 이득 미미 → 보류.
 
 ## 사이클 렛저 (라운드 3)
@@ -120,7 +120,7 @@
 - **#2 (HIGH)**: ultragoal 검증 연극 — 기준마다 동일 글로벌 `bun test`(run/cli 포함 시 무조건 green인 `--help`)를 돌리고 조작된 기준별 ✅/❌ 매트릭스를 렛저에 기록. 수정: suite 1회 실행, 기준은 UNVERIFIED로 정직 기록(개별 검증 없는 SUCCESS 주장 불가), status SUITE_GREEN/FAILED + suite_green 필드, run/cli 루프홀 제거.
 - **LOW 동반 수정**: team-state.active 완료 시 false 플립, ultragoal 리포트 temp+rename 원자 쓰기.
 - **#5 (라운드5 보류 LOW)**: openai stream_options 400 호환 — OpenAI-호환 백엔드(llama.cpp/LM Studio)가 옵션 필드에 400 시 1회 스트립 재시도(무관한 400은 재시도 없음).
-- **보류 (라운드 8 후보, MED)**: 부모의 Changed Files 실측 대조(서브에이전트 허위 성공), .joc/state 크로스 프로세스 락, 실패 태스크 마커+재개 경고.
+- **보류 (라운드 8 후보, MED)**: 부모의 Changed Files 실측 대조(서브에이전트 허위 성공), .jeo/state 크로스 프로세스 락, 실패 태스크 마커+재개 경고.
 
 ## 사이클 렛저 (라운드 7)
 - cycle 17 (2026-06-12): team stale-state 리셋 + ultragoal 정직 검증 + active 플립 + 리포트 원자쓰기 + stream_options 호환. WorkflowState.suite_green 신설. 신규 테스트 6종(workflow-integrity 4, provider-empty-completion +2). full 1202 pass / 0 fail, typecheck 0.

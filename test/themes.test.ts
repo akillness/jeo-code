@@ -17,9 +17,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Config isolation: resolveTheme falls back to the GLOBAL config's theme when the
-// env carries none — without pointing JOC_CONFIG_DIR at an empty dir, this test
-// breaks the moment the developer's real ~/.joc/config.json has a theme set.
-const ISO = { JOC_CONFIG_DIR: mkdtempSync(join(tmpdir(), "jeo-themes-iso-")) };
+// env carries none — without pointing JEO_CONFIG_DIR at an empty dir, this test
+// breaks the moment the developer's real ~/.jeo/config.json has a theme set.
+const ISO = { JEO_CONFIG_DIR: mkdtempSync(join(tmpdir(), "jeo-themes-iso-")) };
 
 test("every theme has a length-5 gradient table", () => {
   for (const t of THEMES) {
@@ -42,11 +42,11 @@ test("mono theme is colorless; others emit color", () => {
   expect(getTheme("matrix").color).toBe(true);
 });
 
-test("resolveTheme reads JOC_TUI_THEME from env or config with priorities", () => {
-  // 1. Explicit env JOC_TUI_THEME is top priority
-  expect(resolveTheme({ JOC_TUI_THEME: "solar" }).name).toBe("solar");
-  expect(resolveTheme({ JOC_TUI_THEME: "red-claw" }).name).toBe("red-claw");
-  expect(resolveTheme({ JOC_TUI_THEME: "blue-crab" }).name).toBe("blue-crab");
+test("resolveTheme reads JEO_TUI_THEME from env or config with priorities", () => {
+  // 1. Explicit env JEO_TUI_THEME is top priority
+  expect(resolveTheme({ JEO_TUI_THEME: "solar" }).name).toBe("solar");
+  expect(resolveTheme({ JEO_TUI_THEME: "red-claw" }).name).toBe("red-claw");
+  expect(resolveTheme({ JEO_TUI_THEME: "blue-crab" }).name).toBe("blue-crab");
 
   // 2. Config theme is second priority
   expect(resolveTheme({}, { theme: "matrix" }).name).toBe("matrix");

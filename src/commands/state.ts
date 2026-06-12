@@ -3,7 +3,7 @@ import {
   readWorkflowState,
   writeWorkflowState,
   clearWorkflowState,
-  getLocalJocDir,
+  getLocalJeoDir,
   type WorkflowState,
 } from "../agent/state";
 
@@ -75,7 +75,7 @@ export async function runStateCommand(args: string[] = []): Promise<void> {
     if (isJson) {
       console.log(JSON.stringify(state, null, 2));
     } else {
-      const statePath = path.join(getLocalJocDir(cwd), "state", `${skill}-state.json`);
+      const statePath = path.join(getLocalJeoDir(cwd), "state", `${skill}-state.json`);
       console.log(`Skill: ${state.skill}`);
       console.log(`Current Phase: ${state.current_phase}`);
       console.log(`File Path: ${statePath}`);

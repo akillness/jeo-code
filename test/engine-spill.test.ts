@@ -21,9 +21,9 @@ test("runAgentLoop: oversized tool output is spilled to a recoverable artifact +
   const history = [{ role: "system" as const, content: "s" }];
   await runAgentLoop(history, { cwd, maxSteps: 5, tools: { big: async () => ({ success: true, output: huge }) } });
 
-  const noted = history.find(m => m.content.includes("saved to .joc/artifacts/tool-results/"));
+  const noted = history.find(m => m.content.includes("saved to .jeo/artifacts/tool-results/"));
   expect(noted).toBeTruthy();
-  const m = noted!.content.match(/saved to (\.joc\/artifacts\/tool-results\/[^\s]+)/);
+  const m = noted!.content.match(/saved to (\.jeo\/artifacts\/tool-results\/[^\s]+)/);
   expect(m).toBeTruthy();
   const full = await fs.readFile(path.join(cwd, m![1]), "utf-8");
   expect(full.length).toBe(huge.length); // full output recoverable, not just the preview
@@ -43,7 +43,7 @@ test("runAgentLoop: small tool output is NOT spilled", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-spill2-"));
   const history = [{ role: "system" as const, content: "s" }];
   await runAgentLoop(history, { cwd, maxSteps: 5, tools: { small: async () => ({ success: true, output: "tiny" }) } });
-  expect(history.some(m => m.content.includes(".joc/artifacts"))).toBe(false);
+  expect(history.some(m => m.content.includes(".jeo/artifacts"))).toBe(false);
 });
 
 test("runAgentLoop: a FAILED tool with huge error output also spills", async () => {
@@ -61,7 +61,7 @@ test("runAgentLoop: a FAILED tool with huge error output also spills", async () 
   const hugeErr = "E".repeat(TOOL_SPILL_THRESHOLD + 3000);
   const history = [{ role: "system" as const, content: "s" }];
   await runAgentLoop(history, { cwd, maxSteps: 5, tools: { boom: async () => ({ success: false, output: "", error: hugeErr }) } });
-  expect(history.some(m => m.content.includes("saved to .joc/artifacts/tool-results/"))).toBe(true);
+  expect(history.some(m => m.content.includes("saved to .jeo/artifacts/tool-results/"))).toBe(true);
 });
 
 test("spillToolResult: retention caps the artifact directory at MAX_TOOL_ARTIFACTS", async () => {
@@ -70,6 +70,6 @@ test("spillToolResult: retention caps the artifact directory at MAX_TOOL_ARTIFAC
   for (let i = 0; i < MAX_TOOL_ARTIFACTS + 10; i++) {
     await spillToolResult("t", `payload ${i}`, cwd);
   }
-  const left = await fs.readdir(path.join(cwd, ".joc", "artifacts", "tool-results"));
+  const left = await fs.readdir(path.join(cwd, ".jeo", "artifacts", "tool-results"));
   expect(left.length).toBeLessThanOrEqual(MAX_TOOL_ARTIFACTS);
 });

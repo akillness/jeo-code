@@ -46,7 +46,7 @@ function exactTarget(name: string): string {
 const LIST_FORMAT =
   "#{session_name}\t#{session_created}\t#{session_attached}\t#{@jeo-profile}\t#{@jeo-branch}\t#{@jeo-project}";
 
-async function getJocSessions(runTmux: RunTmuxFn): Promise<SessionInfo[] | null> {
+async function getJeoSessions(runTmux: RunTmuxFn): Promise<SessionInfo[] | null> {
   try {
     const res = await runTmux(["list-sessions", "-F", LIST_FORMAT]);
     if (res.exitCode !== 0) {
@@ -62,9 +62,9 @@ async function getJocSessions(runTmux: RunTmuxFn): Promise<SessionInfo[] | null>
       const [name, created, attached, marker, branch, project] = parts;
       const owned = marker === "1";
       // Ownership: the `@jeo-profile` marker is authoritative (set by `jeo --tmux`
-      // regardless of how the session is named); the `jeo-` name prefix keeps
-      // sessions from older builds (and legacy `joc-`) manageable.
-      if (!owned && !name.startsWith("jeo-") && !name.startsWith("joc-")) continue;
+      // regardless of how the session is named); the `jeo-` name prefix is accepted
+      // for directly named sessions.
+      if (!owned && !name.startsWith("jeo-")) continue;
 
       const createdSeconds = parseInt(created, 10);
       const createdIso = isNaN(createdSeconds) ? "" : new Date(createdSeconds * 1000).toISOString();
@@ -100,7 +100,7 @@ export async function runSessionCommandWith(args: string[], runTmux: RunTmuxFn):
   const verb = cleanArgs[0];
 
   if (!verb || verb === "list") {
-    const sessions = await getJocSessions(runTmux);
+    const sessions = await getJeoSessions(runTmux);
     if (!sessions || sessions.length === 0) {
       if (isJson) {
         console.log("[]");
@@ -137,7 +137,7 @@ export async function runSessionCommandWith(args: string[], runTmux: RunTmuxFn):
       return;
     }
 
-    const sessions = await getJocSessions(runTmux);
+    const sessions = await getJeoSessions(runTmux);
     const exists = sessions ? sessions.some(s => s.name === name) : false;
     if (!exists) {
       console.log(`Error: Session '${name}' not found.`);
@@ -158,11 +158,11 @@ export async function runSessionCommandWith(args: string[], runTmux: RunTmuxFn):
       return;
     }
 
-    // Ownership gate (gjc parity): the `jeo-`/`joc-` name prefix allows directly,
+    // Ownership gate (gjc parity): the `jeo-` name prefix allows directly,
     // and any session carrying the `@jeo-profile` marker (set by `jeo --tmux`)
     // is jeo-owned regardless of its name. Everything else is refused.
-    if (!name.startsWith("jeo-") && !name.startsWith("joc-")) {
-      const sessions = await getJocSessions(runTmux);
+    if (!name.startsWith("jeo-")) {
+      const sessions = await getJeoSessions(runTmux);
       const owned = sessions?.some(s => s.name === name && s.owned) ?? false;
       if (!owned) {
         console.log(`Error: Refusing to kill non-jeo session '${name}'.`);

@@ -320,7 +320,7 @@ test("writeWorkflowState is atomic: valid JSON round-trip, no temp leftovers (F2
     }
     const state = await readWorkflowState("deep-interview", tempDir);
     expect(state?.current_phase).toBe("phase-4");
-    const stateDir = path.join(tempDir, ".joc", "state");
+    const stateDir = path.join(tempDir, ".jeo", "state");
     const leftovers = (await fs.readdir(stateDir)).filter(f => f.endsWith(".tmp"));
     expect(leftovers).toEqual([]); // temp files renamed away or cleaned up
   } finally {

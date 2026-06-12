@@ -21,6 +21,8 @@ export interface SelectItem<T> {
   disabled?: boolean;
   /** Optional right-aligned hint/badge (e.g. "✓ ready · 200k"). */
   hint?: string;
+  /** When true, `hint` is already styled and should not be wrapped in gray. */
+  hintRaw?: boolean;
 }
 
 export class SelectList<T> {
@@ -147,8 +149,10 @@ export function renderSelectList<T>(list: SelectList<T>, opts: RenderSelectOptio
 
   const out: string[] = [];
   if (opts.title) {
-    const title = tint(opts.title, chalk.bold);
-    out.push(cols ? clampToCols(title, cols) : title);
+    for (const rawTitle of opts.title.split("\n")) {
+      const title = rawTitle ? tint(rawTitle, chalk.bold) : "";
+      out.push(cols ? clampToCols(title, cols) : title);
+    }
   }
 
   const items = list.visible();
@@ -179,7 +183,7 @@ export function renderSelectList<T>(list: SelectList<T>, opts: RenderSelectOptio
       let label = it.disabled ? tint(it.label, chalk.gray) : isCur ? tint(it.label, chalk.cyan.bold) : it.label;
       let line = `${marker} ${label}`;
       if (it.hint) {
-        const hint = tint(it.hint, chalk.gray);
+        const hint = it.hintRaw ? it.hint : tint(it.hint, chalk.gray);
         if (cols) {
           // right-align the hint within cols
           const used = visibleWidth(line) + visibleWidth(hint) + 1;

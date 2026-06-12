@@ -43,14 +43,14 @@ test("anthropic: image-bearing last message puts the breakpoint on its tail bloc
 
 async function withTempConfigDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-cfgcache-"));
-  const prev = process.env.JOC_CONFIG_DIR;
-  process.env.JOC_CONFIG_DIR = dir;
+  const prev = process.env.JEO_CONFIG_DIR;
+  process.env.JEO_CONFIG_DIR = dir;
   clearConfigReadCache();
   try {
     return await fn(dir);
   } finally {
-    if (prev === undefined) delete process.env.JOC_CONFIG_DIR;
-    else process.env.JOC_CONFIG_DIR = prev;
+    if (prev === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = prev;
     clearConfigReadCache();
     await fs.rm(dir, { recursive: true, force: true });
   }

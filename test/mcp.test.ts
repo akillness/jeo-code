@@ -47,7 +47,7 @@ test("drainIncomingMessages: keeps incomplete MCP frames buffered", () => {
 });
 
 test("drainIncomingMessages: treats Content-Length as UTF-8 bytes, not string characters", () => {
-  const framedPayload = '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"joc_resolve_provider","arguments":{"model":"모델"}}}';
+  const framedPayload = '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"jeo_resolve_provider","arguments":{"model":"모델"}}}';
   const nextPayload = '{"jsonrpc":"2.0","id":2,"method":"ping"}';
   const framed = `Content-Length: ${Buffer.byteLength(framedPayload, "utf8")}\r\n\r\n${framedPayload}`;
 
@@ -66,11 +66,11 @@ test("handleLine: tool list exposes base tools and optional ralph workflow tools
   const tools = toolListFrom(response);
   const names = tools.map(t => t.name);
 
-  expect(names).toContain("joc_resolve_provider");
-  // The process-level JEO_MCP_PIPELINE/JOC_MCP_PIPELINE flag controls whether these are present
+  expect(names).toContain("jeo_resolve_provider");
+  // The process-level JEO_MCP_PIPELINE/JEO_MCP_PIPELINE flag controls whether these are present
   // in the exported TOOLS array. This assertion only runs when the test process has that flag.
-  if (process.env.JEO_MCP_PIPELINE === "1" || process.env.JOC_MCP_PIPELINE === "1") {
-    expect(names).toEqual(expect.arrayContaining(["joc_deep_interview", "joc_ralplan", "joc_team", "joc_ultragoal"]));
+  if (process.env.JEO_MCP_PIPELINE === "1" || process.env.JEO_MCP_PIPELINE === "1") {
+    expect(names).toEqual(expect.arrayContaining(["jeo_deep_interview", "jeo_ralplan", "jeo_team", "jeo_ultragoal"]));
   }
 });
 
@@ -96,7 +96,7 @@ test("stdio server: accepts framed MCP requests and advertises ralph workflow to
   expect(stderr).toContain("listening on stdio (8 tools)");
   const response = parseFramedResponse(stdout);
   const names = toolListFrom(response).map(t => t.name);
-  expect(names).toEqual(expect.arrayContaining(["joc_deep_interview", "joc_ralplan", "joc_team", "joc_ultragoal"]));
+  expect(names).toEqual(expect.arrayContaining(["jeo_deep_interview", "jeo_ralplan", "jeo_team", "jeo_ultragoal"]));
 });
 
 function toolListFrom(response: JsonRpcResponse | null | undefined): { name: string }[] {

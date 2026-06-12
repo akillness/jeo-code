@@ -23,7 +23,7 @@ export interface AuthSnapshot {
 
 const inFlightRefresh = new Map<AuthProvider, Promise<any>>();
 function getLockPath(provider: AuthProvider): string {
-  const dir = jeoEnv("CONFIG_DIR") || path.join(os.homedir(), ".joc");
+  const dir = jeoEnv("CONFIG_DIR") || path.join(os.homedir(), ".jeo");
   return path.join(dir, `oauth-${provider}.lock`);
 }
 
@@ -99,8 +99,8 @@ export async function resolveCredential(provider: AuthProvider): Promise<Credent
 
   // Auto-import gemini-cli credentials (~/.gemini/oauth_creds.json) when jeo has no
   // gemini OAuth of its own — the out-of-the-box antigravity/gemini unlock. Hermetic
-  // under tests/custom config sandboxes: if JOC_CONFIG_DIR is explicitly set, only an
-  // explicit JOC_GEMINI_CREDS_PATH opts in, so tests never read the developer's real
+  // under tests/custom config sandboxes: if JEO_CONFIG_DIR is explicitly set, only an
+  // explicit JEO_GEMINI_CREDS_PATH opts in, so tests never read the developer's real
   // credentials or refresh real tokens.
   const credsOverride = jeoEnv("GEMINI_CREDS_PATH");
   const configDirOverridden = !!jeoEnv("CONFIG_DIR");

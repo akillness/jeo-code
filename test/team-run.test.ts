@@ -26,7 +26,7 @@ async function seedPlan(steps: { name: string; role?: string }[]): Promise<void>
   const planPath = path.join(tmp, "plan.yaml");
   const yaml = ["name: demo-plan", "steps:", ...steps.flatMap(s => [`  - name: ${s.name}`, ...(s.role ? [`    role: ${s.role}`] : [])])].join("\n");
   await fs.writeFile(planPath, yaml + "\n");
-  const stateDir = path.join(tmp, ".joc", "state");
+  const stateDir = path.join(tmp, ".jeo", "state");
   await fs.mkdir(stateDir, { recursive: true });
   await fs.writeFile(
     path.join(stateDir, "ralplan-state.json"),
@@ -65,7 +65,7 @@ test("runTeamCommand routes each step to its declared subagent role and complete
   expect(out).toContain("[DONE] All tasks in the plan executed successfully!");
 
   // team state advanced to complete.
-  const teamState = JSON.parse(await fs.readFile(path.join(tmp, ".joc", "state", "team-state.json"), "utf-8"));
+  const teamState = JSON.parse(await fs.readFile(path.join(tmp, ".jeo", "state", "team-state.json"), "utf-8"));
   expect(teamState.current_phase).toBe("complete");
   expect(teamState.pending_tasks.length).toBe(0);
   expect(teamState.completed_tasks.length).toBe(3);
@@ -95,14 +95,14 @@ test("runTeamCommand routes duplicate task names by step index, not by name", as
   const architectAt = out.indexOf("Subagent: Architect");
   expect(plannerAt).toBeGreaterThanOrEqual(0);
   expect(architectAt).toBeGreaterThan(plannerAt);
-  const teamState = JSON.parse(await fs.readFile(path.join(tmp, ".joc", "state", "team-state.json"), "utf-8"));
+  const teamState = JSON.parse(await fs.readFile(path.join(tmp, ".jeo", "state", "team-state.json"), "utf-8"));
   expect(teamState.completed_tasks).toEqual(["review", "review"]);
 });
 
 test("runTeamCommand refuses an unapproved plan", async () => {
   const { runTeamCommand } = await import("../src/commands/team");
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-team-na-"));
-  const stateDir = path.join(tmp, ".joc", "state");
+  const stateDir = path.join(tmp, ".jeo", "state");
   await fs.mkdir(stateDir, { recursive: true });
   await fs.writeFile(
     path.join(stateDir, "ralplan-state.json"),
@@ -130,7 +130,7 @@ test("runTeamCommand refuses unknown plan subagent roles before execution", asyn
   expect(out).toContain("plannr");
   expect(out).toContain("executor, planner, architect, critic");
   expect(process.exitCode).toBe(1);
-  await expect(fs.readFile(path.join(tmp, ".joc", "state", "team-state.json"), "utf-8")).rejects.toThrow();
+  await expect(fs.readFile(path.join(tmp, ".jeo", "state", "team-state.json"), "utf-8")).rejects.toThrow();
 });
 
 test("runTeamCommand normalizes mixed-case plan roles", async () => {
@@ -247,7 +247,7 @@ test("runTeamCommand refuses to run when team-state.json is corrupt (no silent r
   }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "implement it" }]);
-  await fs.writeFile(path.join(tmp, ".joc", "state", "team-state.json"), "{ not json !!!");
+  await fs.writeFile(path.join(tmp, ".jeo", "state", "team-state.json"), "{ not json !!!");
 
   console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
   await runTeamCommand();
@@ -258,7 +258,7 @@ test("runTeamCommand refuses to run when team-state.json is corrupt (no silent r
   expect(out).not.toContain("[DONE]");
   expect(process.exitCode).toBe(1);
   // The corrupt file must not be overwritten/reset behind the user's back.
-  expect(await fs.readFile(path.join(tmp, ".joc", "state", "team-state.json"), "utf-8")).toBe("{ not json !!!");
+  expect(await fs.readFile(path.join(tmp, ".jeo", "state", "team-state.json"), "utf-8")).toBe("{ not json !!!");
 });
 
 test("runTeamCommand invokes maybeCompact on subagent execution", async () => {

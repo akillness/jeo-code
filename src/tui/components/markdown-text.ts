@@ -45,7 +45,7 @@ export interface MarkdownAnsiOptions {
 }
 
 /**
- * Render markdown as styled ANSI text (joc-ref final-report format): headings
+ * Render markdown as styled ANSI text (jeo-ref final-report format): headings
  * become painted section titles, **bold** / `inline code` keep visual weight,
  * fences/links/quotes degrade exactly like stripMarkdown. Fenced code BODIES are
  * passed through untouched (only the ``` fence rows are dropped) so code samples

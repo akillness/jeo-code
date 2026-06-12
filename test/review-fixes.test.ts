@@ -8,7 +8,7 @@ import { createSession, appendMessage, loadSession, sessionPath } from "../src/a
 import { LaunchTui } from "../src/tui/app";
 import { renderAsciiArt, getStageByIndex } from "../src/tui/components/ascii-art";
 import { resolveTheme } from "../src/tui/components/themes";
-import { renderJocStatus } from "../src/tui/components/status";
+import { renderJeoStatus } from "../src/tui/components/status";
 import { ToolList } from "../src/tui/components/tool-list";
 import { boxBlock, BOX_ASCII } from "../src/tui/components/layout";
 import { visibleWidth } from "../src/tui/components/color";
@@ -205,7 +205,7 @@ test("FIX 1: clamp composed frame to terminal rows", () => {
 
 test("FIX 2: render art with theme.color=false -> output has no \\x1b[", () => {
   const stage = getStageByIndex(0);
-  const theme = resolveTheme({ JOC_TUI_THEME: "mono" });
+  const theme = resolveTheme({ JEO_TUI_THEME: "mono" });
   expect(theme.color).toBe(false);
   const art = renderAsciiArt(stage, {
     color: theme.color,
@@ -214,8 +214,8 @@ test("FIX 2: render art with theme.color=false -> output has no \\x1b[", () => {
   expect(text).not.toContain("\x1b[");
 });
 
-test("FIX 3: renderJocStatus with color=false -> no \\x1b[", () => {
-  const status = renderJocStatus({
+test("FIX 3: renderJeoStatus with color=false -> no \\x1b[", () => {
+  const status = renderJeoStatus({
     step: 1,
     maxSteps: 25,
     message: "thinking",
@@ -265,8 +265,8 @@ test("FIX 7: all ascii stage-0 frames have equal string length", () => {
 
 test("FIX 8: non-TTY status fallback honors mono theme (no color)", () => {
   const out: string[] = [];
-  const originalEnv = process.env.JOC_TUI_THEME;
-  process.env.JOC_TUI_THEME = "mono";
+  const originalEnv = process.env.JEO_TUI_THEME;
+  process.env.JEO_TUI_THEME = "mono";
   try {
     const tui = new LaunchTui({
       model: "m1",
@@ -281,6 +281,6 @@ test("FIX 8: non-TTY status fallback honors mono theme (no color)", () => {
     // \x1b[?25l) is the renderer doing its job and is allowed.
     expect(text).not.toMatch(/\x1b\[[0-9;]*m/);
   } finally {
-    process.env.JOC_TUI_THEME = originalEnv;
+    process.env.JEO_TUI_THEME = originalEnv;
   }
 });

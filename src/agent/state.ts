@@ -96,7 +96,7 @@ export interface Config {
   };
   /**
    * Model role tiers (gjc `--smol`/`--slow`/`--plan` parity). Each falls back to
-   * `defaultModel`. Env `JOC_SMOL_MODEL`/`JOC_SLOW_MODEL`/`JOC_PLAN_MODEL` fill gaps.
+   * `defaultModel`. Env `JEO_SMOL_MODEL`/`JEO_SLOW_MODEL`/`JEO_PLAN_MODEL` fill gaps.
    */
   roles?: { smol?: string; slow?: string; plan?: string };
   hooks?: HookConfig;
@@ -154,18 +154,18 @@ export interface WorkflowState {
   suite_green?: boolean;
 }
 
-/** The built-in default model when neither disk config nor JOC_DEFAULT_MODEL provides one.
+/** The built-in default model when neither disk config nor JEO_DEFAULT_MODEL provides one.
  *  Shared by envDefaultConfig (runtime) and readRawGlobalConfig (persistence base) so a
  *  fresh-install saveConfigPatch never bakes a DIFFERENT default than the runtime resolves. */
 const DEFAULT_MODEL = "claude-sonnet-4-5";
 
 /**
  * Resolve the global config directory at call time (not import time) so that a
- * `JOC_CONFIG_DIR` override or a runtime `HOME` change is always honored.
- * `JOC_CONFIG_DIR` takes precedence; otherwise `~/.joc`.
+ * `JEO_CONFIG_DIR` override or a runtime `HOME` change is always honored.
+ * `JEO_CONFIG_DIR` takes precedence; otherwise `~/.jeo`.
  */
 function globalConfigDir(): string {
-  return jeoEnv("CONFIG_DIR") || path.join(os.homedir(), ".joc");
+  return jeoEnv("CONFIG_DIR") || path.join(os.homedir(), ".jeo");
 }
 function globalConfigPath(): string {
   return path.join(globalConfigDir(), "config.json");
@@ -225,7 +225,7 @@ function envDefaultConfig(): Config {
  * `readGlobalConfig`/`readRawGlobalConfig` run on EVERY model call (resolveCall,
  * credential resolution, per-turn config reads), so an uncached read paid a disk
  * read + JSON.parse + zod validation per agent-loop step. The cache is bounded
- * (≤8 paths — one per JOC_CONFIG_DIR seen) and invalidated by `saveGlobalConfig`;
+ * (≤8 paths — one per JEO_CONFIG_DIR seen) and invalidated by `saveGlobalConfig`;
  * any external write changes mtime/size, so a stale entry is never served. Reads
  * return a structuredClone so callers can never poison the cached object.
  */
@@ -303,9 +303,9 @@ export async function saveGlobalConfig(config: Config): Promise<void> {
 }
 
 /** Read the on-disk config WITHOUT the env overlay. Used as the base for
- *  persistence so env-only values (OAuth bearer tokens, JOC_DEFAULT_MODEL,
- *  JOC_*_MODEL role tiers, OLLAMA_HOST/OPENAI_BASE_URL) are never baked into
- *  ~/.joc/config.json by an unrelated `/agents`/`/roles`/`/model save`. */
+ *  persistence so env-only values (OAuth bearer tokens, JEO_DEFAULT_MODEL,
+ *  JEO_*_MODEL role tiers, OLLAMA_HOST/OPENAI_BASE_URL) are never baked into
+ *  ~/.jeo/config.json by an unrelated `/agents`/`/roles`/`/model save`. */
 export async function readRawGlobalConfig(): Promise<Config> {
   const clean: Config = { providers: {}, defaultModel: DEFAULT_MODEL, thinkingLevel: "medium" };
   const parsed = await readParsedConfigFile();
@@ -322,15 +322,15 @@ export async function saveConfigPatch(build: (raw: Config) => Partial<Config>): 
   return next;
 }
 
-export function getLocalJocDir(cwd: string = process.cwd()): string {
-  return path.join(cwd, ".joc");
+export function getLocalJeoDir(cwd: string = process.cwd()): string {
+  return path.join(cwd, ".jeo");
 }
 
 export async function readWorkflowState(
   skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
   cwd: string = process.cwd()
 ): Promise<WorkflowState | null> {
-  const statePath = path.join(getLocalJocDir(cwd), "state", `${skill}-state.json`);
+  const statePath = path.join(getLocalJeoDir(cwd), "state", `${skill}-state.json`);
   try {
     const data = await fs.readFile(statePath, "utf-8");
     return JSON.parse(data) as WorkflowState;
@@ -348,7 +348,7 @@ export async function readWorkflowStateStrict(
   skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
   cwd: string = process.cwd()
 ): Promise<WorkflowState | null> {
-  const statePath = path.join(getLocalJocDir(cwd), "state", `${skill}-state.json`);
+  const statePath = path.join(getLocalJeoDir(cwd), "state", `${skill}-state.json`);
   let data: string;
   try {
     data = await fs.readFile(statePath, "utf-8");
@@ -368,7 +368,7 @@ export async function writeWorkflowState(
   state: WorkflowState,
   cwd: string = process.cwd()
 ): Promise<string> {
-  const stateDir = path.join(getLocalJocDir(cwd), "state");
+  const stateDir = path.join(getLocalJeoDir(cwd), "state");
   await fs.mkdir(stateDir, { recursive: true });
   const statePath = path.join(stateDir, `${skill}-state.json`);
   // Atomic temp+rename (zeroclaw crash-durability): workflow state is rewritten
@@ -389,7 +389,7 @@ export async function clearWorkflowState(
   skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
   cwd: string = process.cwd()
 ): Promise<void> {
-  const statePath = path.join(getLocalJocDir(cwd), "state", `${skill}-state.json`);
+  const statePath = path.join(getLocalJeoDir(cwd), "state", `${skill}-state.json`);
   try {
     await fs.unlink(statePath);
   } catch {}
@@ -406,7 +406,7 @@ export async function acquireWorkflowRunLock(
   skill: "team" | "ultragoal",
   cwd: string = process.cwd(),
 ): Promise<() => Promise<void>> {
-  const stateDir = path.join(getLocalJocDir(cwd), "state");
+  const stateDir = path.join(getLocalJeoDir(cwd), "state");
   await fs.mkdir(stateDir, { recursive: true });
   const lockPath = path.join(stateDir, `${skill}.lock`);
   const payload = JSON.stringify({ pid: process.pid, at: Date.now() });

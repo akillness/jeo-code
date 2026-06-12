@@ -5,8 +5,7 @@
   "type": "module",
   "main": "src/cli.ts",
   "bin": {
-    "jeo": "src/cli.ts",
-    "joc": "src/cli.ts"
+    "jeo": "src/cli.ts"
   },
   "files": [
     "src",
@@ -48,6 +47,7 @@
     "build": "bun build src/cli.ts --compile --outfile dist/jeo",
     "pack:check": "npm pack --dry-run",
     "publish:npm": "npm publish --access public --registry https://registry.npmjs.org/",
+    "changelog:sync": "bun scripts/sync-changelog.ts",
     "test": "bun test"
   },
   "dependencies": {

@@ -1,3 +1,4 @@
+import chalk from "chalk";
 import type { PickEntry } from "../../ai/model-picker";
 import type { ProviderName } from "../../ai/types";
 import { catalogMetadata, formatTokens } from "../../ai/model-catalog";
@@ -18,22 +19,81 @@ function liveModelHint(model: string, current?: string): string {
   return parts.join(" · ");
 }
 
+export interface ModelAssignmentBadge {
+  /** Stable target id: "default" or a subagent role id. */
+  role: string;
+  /** Short badge text shown beside a matching model (DEFAULT, EXECUTOR, ...). */
+  label: string;
+  /** Configured model id for this target, qualified (`provider/model`) when possible. */
+  model: string;
+  /** Reasoning budget shown after the badge. Omit for no suffix; use "inherit" for inherited role thinking. */
+  thinking?: string;
+  /** Visual role color. Unknown values fall back to a neutral badge. */
+  color?: "default" | "executor" | "architect" | "planner" | "critic" | string;
+}
+
 export interface LiveModelPickerOptions {
   current?: string;
+  /** Role/default assignments to render as badges on matching models. */
+  assignments?: readonly ModelAssignmentBadge[];
+  /** Disable ANSI badge styling for deterministic tests or plain terminals. */
+  color?: boolean;
   /** Providers visible for context but not selectable because they cannot serve a turn. */
   disabledProviders?: readonly ProviderName[];
   disabledHint?: string;
 }
+function qualifiedModelId(entry: PickEntry): string {
+  return entry.model.includes("/") ? entry.model : `${entry.provider}/${entry.model}`;
+}
+
+function modelMatchesAssignment(entry: PickEntry, model: string): boolean {
+  const assigned = model.trim().toLowerCase();
+  if (!assigned) return false;
+  const bare = entry.model.toLowerCase();
+  const qualified = qualifiedModelId(entry).toLowerCase();
+  return assigned === bare || assigned === qualified;
+}
+
+function roleBadgeColor(label: string, color: ModelAssignmentBadge["color"]): string {
+  switch (color) {
+    case "default":
+      return chalk.bgGreen.black(` ${label} `);
+    case "executor":
+      return chalk.bgRedBright.black(` ${label} `);
+    case "architect":
+      return chalk.bgHex("#e7c7bd").black(` ${label} `);
+    case "planner":
+      return chalk.bgYellow.black(` ${label} `);
+    case "critic":
+      return chalk.bgMagenta.black(` ${label} `);
+    default:
+      return chalk.bgGray.black(` ${label} `);
+  }
+}
+
+function assignmentBadges(entry: PickEntry, opts: LiveModelPickerOptions): string[] {
+  return (opts.assignments ?? [])
+    .filter(a => modelMatchesAssignment(entry, a.model))
+    .map(a => {
+      const label = a.label.trim().toUpperCase();
+      const think = a.thinking ? ` (${a.thinking})` : "";
+      return opts.color === false ? `${label}${think}` : `${roleBadgeColor(label, a.color)}${chalk.dim(think)}`;
+    });
+}
+
 
 export function buildLiveModelChoices(entries: PickEntry[], opts: LiveModelPickerOptions = {}): SelectItem<PickEntry>[] {
   const disabled = new Set(opts.disabledProviders ?? []);
   return entries.map(entry => {
     const blocked = disabled.has(entry.provider);
+    const badges = assignmentBadges(entry, opts);
+    const caps = blocked ? `${liveModelHint(entry.model, opts.current)} · ${opts.disabledHint ?? "provider not ready"}` : liveModelHint(entry.model, opts.current);
     return {
       value: entry,
-      label: `#${entry.index} ${entry.model}`,
+      label: `#${entry.index} ${qualifiedModelId(entry)}`,
       group: blocked ? `${entry.provider} (not ready)` : entry.provider,
-      hint: blocked ? `${liveModelHint(entry.model, opts.current)} · ${opts.disabledHint ?? "provider not ready"}` : liveModelHint(entry.model, opts.current),
+      hint: badges.length ? `${badges.join(" ")}  ${opts.color === false ? "· " : chalk.dim("· ")}${caps}` : caps,
+      hintRaw: badges.length > 0 && opts.color !== false,
       disabled: blocked,
     };
   });

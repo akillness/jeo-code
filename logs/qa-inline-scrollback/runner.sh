@@ -26,7 +26,7 @@ log_report() {
 # Helper to verify clean tmux shutdown on exit
 cleanup() {
   echo "Cleaning up any leftover tmux sessions..."
-  for sess in $(tmux list-sessions -F '#S' 2>/dev/null | grep '^joc-qa-'); do
+  for sess in $(tmux list-sessions -F '#S' 2>/dev/null | grep '^jeo-qa-'); do
     echo "Killing session $sess"
     tmux kill-session -t "$sess" || true
   done
@@ -40,7 +40,7 @@ log_report "-----------------------------------------------------"
 log_report "CASE 1: HAPPY PATH — mid-turn scrollback"
 log_report "-----------------------------------------------------"
 
-SESS="joc-qa-happy-$$"
+SESS="jeo-qa-happy-$$"
 log_report "Creating tmux session $SESS (100x30)"
 tmux new-session -d -s "$SESS" -x 100 -y 30
 tmux send-keys -t "$SESS" "cd $PROJECT_DIR && bun run logs/qa-inline-scrollback/driver.ts happy-path" C-m
@@ -78,7 +78,7 @@ log_report "-----------------------------------------------------"
 log_report "CASE 2: COPY-MODE WHEEL"
 log_report "-----------------------------------------------------"
 
-SESS="joc-qa-copymode-$$"
+SESS="jeo-qa-copymode-$$"
 log_report "Creating tmux session $SESS (100x30)"
 tmux new-session -d -s "$SESS" -x 100 -y 30
 tmux send-keys -t "$SESS" "cd $PROJECT_DIR && bun run logs/qa-inline-scrollback/driver.ts copy-mode" C-m
@@ -151,7 +151,7 @@ log_report "-----------------------------------------------------"
 passed_alt=true
 
 # Sub-case 3a: NORMAL env (should be 0)
-SESS="joc-qa-alt0-$$"
+SESS="jeo-qa-alt0-$$"
 log_report "Creating tmux session $SESS (100x30) for normal env"
 tmux new-session -d -s "$SESS" -x 100 -y 30
 tmux send-keys -t "$SESS" "cd $PROJECT_DIR && bun run logs/qa-inline-scrollback/driver.ts no-alt-screen" C-m
@@ -169,21 +169,21 @@ else
 fi
 tmux kill-session -t "$SESS"
 
-# Sub-case 3b: JOC_TUI_ALT_SCREEN=1 env (should be 1)
-SESS="joc-qa-alt1-$$"
-log_report "Creating tmux session $SESS (100x30) for JOC_TUI_ALT_SCREEN=1"
+# Sub-case 3b: JEO_TUI_ALT_SCREEN=1 env (should be 1)
+SESS="jeo-qa-alt1-$$"
+log_report "Creating tmux session $SESS (100x30) for JEO_TUI_ALT_SCREEN=1"
 tmux new-session -d -s "$SESS" -x 100 -y 30
-tmux send-keys -t "$SESS" "cd $PROJECT_DIR && env JOC_TUI_ALT_SCREEN=1 bun run logs/qa-inline-scrollback/driver.ts no-alt-screen" C-m
+tmux send-keys -t "$SESS" "cd $PROJECT_DIR && env JEO_TUI_ALT_SCREEN=1 bun run logs/qa-inline-scrollback/driver.ts no-alt-screen" C-m
 
 log_report "Waiting for driver to start (2s)..."
 sleep 2
 
 ALT_ON_ALT=$(tmux display -p -t "$SESS" '#{alternate_on}')
-log_report "alternate_on value under JOC_TUI_ALT_SCREEN=1: $ALT_ON_ALT"
+log_report "alternate_on value under JEO_TUI_ALT_SCREEN=1: $ALT_ON_ALT"
 if [ "$ALT_ON_ALT" -eq 1 ]; then
   log_report "  [PASS] alternate_on is 1 (alt screen legacy fallback intact)"
 else
-  log_report "  [FAIL] alternate_on is $ALT_ON_ALT (alt screen was NOT used under JOC_TUI_ALT_SCREEN=1!)"
+  log_report "  [FAIL] alternate_on is $ALT_ON_ALT (alt screen was NOT used under JEO_TUI_ALT_SCREEN=1!)"
   passed_alt=false
 fi
 tmux kill-session -t "$SESS"
@@ -201,7 +201,7 @@ log_report "-----------------------------------------------------"
 log_report "CASE 4: RED TEAM — resize mid-turn"
 log_report "-----------------------------------------------------"
 
-SESS="joc-qa-resize-$$"
+SESS="jeo-qa-resize-$$"
 log_report "Creating tmux session $SESS (100x30)"
 tmux new-session -d -s "$SESS" -x 100 -y 30
 tmux send-keys -t "$SESS" "cd $PROJECT_DIR && bun run logs/qa-inline-scrollback/driver.ts resize" C-m
@@ -259,7 +259,7 @@ log_report "-----------------------------------------------------"
 log_report "CASE 5: RED TEAM — burst flushes"
 log_report "-----------------------------------------------------"
 
-SESS="joc-qa-burst-$$"
+SESS="jeo-qa-burst-$$"
 log_report "Creating tmux session $SESS (100x30)"
 tmux new-session -d -s "$SESS" -x 100 -y 30
 tmux send-keys -t "$SESS" "cd $PROJECT_DIR && bun run logs/qa-inline-scrollback/driver.ts burst" C-m
@@ -317,7 +317,7 @@ log_report "-----------------------------------------------------"
 log_report "CASE 6: RED TEAM — finish dedupe"
 log_report "-----------------------------------------------------"
 
-SESS="joc-qa-dedupe-$$"
+SESS="jeo-qa-dedupe-$$"
 log_report "Creating tmux session $SESS (100x30)"
 tmux new-session -d -s "$SESS" -x 100 -y 30
 tmux send-keys -t "$SESS" "cd $PROJECT_DIR && bun run logs/qa-inline-scrollback/driver.ts dedupe" C-m

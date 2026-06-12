@@ -36,11 +36,11 @@ afterAll(() => {
 
 test("/model subagent <role> <model> persists the role model override", async () => {
   const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-role-model-"));
-  const savedCfg = process.env.JOC_CONFIG_DIR;
+  const savedCfg = process.env.JEO_CONFIG_DIR;
   const savedLog = console.log;
   console.log = () => {};
   try {
-    process.env.JOC_CONFIG_DIR = cfgDir;
+    process.env.JEO_CONFIG_DIR = cfgDir;
     mockQuestions = ["/model subagent planner gpt-4o", "/exit"];
     const { runLaunchCommand } = await import("../src/commands/launch");
     await runLaunchCommand(["--no-tui", "--no-session"]);
@@ -48,20 +48,41 @@ test("/model subagent <role> <model> persists the role model override", async ()
     expect(raw.subagents?.planner?.model).toBe("gpt-4o");
   } finally {
     console.log = savedLog;
-    if (savedCfg === undefined) delete process.env.JOC_CONFIG_DIR;
-    else process.env.JOC_CONFIG_DIR = savedCfg;
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = savedCfg;
+    await fs.rm(cfgDir, { recursive: true, force: true });
+  }
+});
+
+test("/model thinking and /model subagent <role> thinking persist reasoning levels", async () => {
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-role-thinking-"));
+  const savedCfg = process.env.JEO_CONFIG_DIR;
+  const savedLog = console.log;
+  console.log = () => {};
+  try {
+    process.env.JEO_CONFIG_DIR = cfgDir;
+    mockQuestions = ["/model thinking high", "/model subagent planner thinking xhigh", "/exit"];
+    const { runLaunchCommand } = await import("../src/commands/launch");
+    await runLaunchCommand(["--no-tui", "--no-session"]);
+    const raw = JSON.parse(await fs.readFile(path.join(cfgDir, "config.json"), "utf8"));
+    expect(raw.thinkingLevel).toBe("high");
+    expect(raw.subagents?.planner?.thinking).toBe("xhigh");
+  } finally {
+    console.log = savedLog;
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = savedCfg;
     await fs.rm(cfgDir, { recursive: true, force: true });
   }
 });
 
 test("antigravity stays selectable in /model with a gemini-fallback OAuth (warned, not refused)", async () => {
   const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-role-ag-"));
-  const savedCfg = process.env.JOC_CONFIG_DIR;
+  const savedCfg = process.env.JEO_CONFIG_DIR;
   const savedLog = console.log;
   const logged: string[] = [];
   console.log = (...a: unknown[]) => { logged.push(a.join(" ")); };
   try {
-    process.env.JOC_CONFIG_DIR = cfgDir;
+    process.env.JEO_CONFIG_DIR = cfgDir;
     await fs.writeFile(
       path.join(cfgDir, "config.json"),
       JSON.stringify({
@@ -86,8 +107,8 @@ test("antigravity stays selectable in /model with a gemini-fallback OAuth (warne
     expect(raw.subagents?.executor?.model).toBe("antigravity/claude-sonnet-4-5");
   } finally {
     console.log = savedLog;
-    if (savedCfg === undefined) delete process.env.JOC_CONFIG_DIR;
-    else process.env.JOC_CONFIG_DIR = savedCfg;
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = savedCfg;
     await fs.rm(cfgDir, { recursive: true, force: true });
   }
 });

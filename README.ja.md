@@ -34,9 +34,9 @@
 - **編集の完全性** — read 出力にコンテンツアンカー(`42ab|`)が付き、アンカー付き編集は現在のファイルと照合・行移動時は自動再マッピング・不一致時は最新内容と共に拒否されます。
 - **自己修正の検証ループ** — post-edit フック(tsc / eslint / テスト)を設定すると、エージェントが診断を*自ら読み*ループ内で修正します。フックが赤のままだと `done` はブロックされます。
 - **芝居なしの本物のゲート** — `ralplan` の合議はリポジトリを実際に読む critic サブエージェントで、`[OKAY]` 評決が永続化され `jeo approve` がそれを*要求*します。`ultragoal` は誠実に報告します(スイート1回実行はグローバル信号であり、基準ごとの合格を捏造しません)。
-- **クラッシュ耐久・ローカルファースト** — 全状態は `.joc/` 配下にアトミック書き込み、プロセス間ロック、失敗タスクマーカー + 再開時の部分編集警告。
+- **クラッシュ耐久・ローカルファースト** — 全状態は `.jeo/` 配下にアトミック書き込み、プロセス間ロック、失敗タスクマーカー + 再開時の部分編集警告。
 - **動的ステップ予算** — 直近のツール呼び出しが新規の進捗を示す間は延長され、停滞すれば要約に収束。サブエージェントは厳密なステップ契約を維持。
-- **インライン TUI** — 完了した作業は実スクロールバックに流れ(ターン中も tmux ホイール可)、ステータス行は実際の処理対象を表示。テーマ、クリップボード画像貼り付け(Ctrl+V)、CJK/絵文字対応の幅計算。
+- **インライン TUI** — 完了した作業は実スクロールバックに流れ(ターン中も tmux ホイール可)、エージェント実行中も通常のクエリ入力欄が表示されたまま編集できます。Ctrl+O の詳細トグル、テーマ、クリップボード画像貼り付け(Ctrl+V)、CJK/絵文字対応の幅計算。
 
 ## インストール
 
@@ -63,10 +63,10 @@ jeo --tmux               # 独立した tmux セッションで実行
 
 | コマンド | 説明 |
 | --- | --- |
-| `/model` · `/models` · `/provider` | モデル/プロバイダ選択(3段階: モデル → 適用先 → 推論レベル)、選択は永続化 |
+| `/model` · `/models` · `/provider` | モデル/プロバイダ選択; `/model` でデフォルト/ロールバッジ、ロール指定アクション、thinking レベル、OpenAI Codex ロールプリセットを一つの流れで設定 |
 | `/provider login <name>` · `/logout` | 入力欄から OAuth ログイン/ログアウト |
 | `/agents [role]` · `/subagent` | ロール別(executor/planner/architect/critic)モデル・thinking・ステップ設定 |
-| `/thinking [level]` | 推論予算(minimal…xhigh) |
+| `/thinking [level]` | デフォルト推論予算(minimal…xhigh)の表示/設定 |
 | `/skill` · `$<skill> [intent]` | ワークフロースキルの一覧/実行(`$team "task"` 形式) |
 | `/view` · `/diff` · `/find` · `/search` | コード表示、git diff、ファイル/パターン検索 |
 | `/new` · `/resume` · `/sessions` · `/export` | セッション管理・トランスクリプト出力 |
@@ -76,7 +76,7 @@ jeo --tmux               # 独立した tmux セッションで実行
 
 ## Spec-first ワークフロー
 
-要件 → プラン → 承認 → 実行 → 検証が `.joc/state/` で繋がり、各ハンドオフに**ブロック可能な本物のゲート**があります:
+要件 → プラン → 承認 → 実行 → 検証が `.jeo/state/` で繋がり、各ハンドオフに**ブロック可能な本物のゲート**があります:
 
 ```bash
 jeo deep-interview "作りたいものを説明"
@@ -94,10 +94,10 @@ jeo ultragoal
 
 ## 検証フック(自己修正)
 
-グローバルで一度有効化(`~/.joc/config.json` に `"hooks": { "enabled": true }`)し、プロジェクトごとに post-edit チェックを追加すると、エージェントは失敗を読み `done` の前に修正します:
+グローバルで一度有効化(`~/.jeo/config.json` に `"hooks": { "enabled": true }`)し、プロジェクトごとに post-edit チェックを追加すると、エージェントは失敗を読み `done` の前に修正します:
 
 ```jsonc
-// .joc/hooks.json
+// .jeo/hooks.json
 {
   "enabled": true,
   "hooks": [
@@ -118,8 +118,8 @@ jeo doctor && jeo
 
 ## 設定
 
-- グローバル設定: `~/.joc/config.json`(モデル選択は MRU 永続)
-- プロジェクト状態/セッション: `<project>/.joc/`
+- グローバル設定: `~/.jeo/config.json`(モデル選択は MRU 永続)
+- プロジェクト状態/セッション: `<project>/.jeo/`
 
 ```bash
 ANTHROPIC_API_KEY=... OPENAI_API_KEY=... GEMINI_API_KEY=...
@@ -133,7 +133,7 @@ JEO_STREAM_MAX_MS=300000        # オプトインの全体ストリーム期限(
 JEO_TOOL_OUTPUT_MAX=4000        # モデル可視のツール出力上限(全文はアーティファクトへ)
 ```
 
-リトライ動作は `~/.joc/config.json` の `retry` で調整します(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` など)。ステップ予算はデフォルトで動的 — 新規進捗が見える間は延長され、停滞時は要約に収束します。`--max-steps N` で有限フローに戻ります。レガシー `JOC_*` 環境変数も引き続きサポートされます。
+リトライ動作は `~/.jeo/config.json` の `retry` で調整します(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` など)。ステップ予算はデフォルトで動的 — 新規進捗が見える間は延長され、停滞時は要約に収束します。`--max-steps N` で有限フローに戻ります。
 
 ## 公開 (Publishing)
 
@@ -143,3 +143,15 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 
 - `jeo-code` パッケージへの Read/Write 権限を持つ **Granular Access Token**、またはクラシック **Automation** トークン
 - 「公開時の **bypass 2FA**」許可が必須 — Automation トークンは常にバイパス、granular トークンはオプションの有効化が必要
+
+## 変更履歴 (Changelog)
+
+<!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input box, role-targeted model/thinking picker, hardened Ctrl-C / Ctrl+O.
+- **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
+- **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
+- **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.
+- **[0.2.1]** (2026-06-02) — Setup and model configuration.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
+<!-- CHANGELOG:END -->

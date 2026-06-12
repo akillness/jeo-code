@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { readWorkflowState, writeWorkflowState, getLocalJocDir, type WorkflowState } from "../agent/state";
+import { readWorkflowState, writeWorkflowState, getLocalJeoDir, type WorkflowState } from "../agent/state";
 import { bashTool } from "../agent/tools";
 import { parseSeedAcceptanceCriteria } from "../agent/seed";
 
@@ -105,7 +105,7 @@ export async function runUltragoalEngine(opts: UltragoalEngineOptions = {}): Pro
   }
 
   // Write verification report
-  const reportDir = path.join(getLocalJocDir(cwd), "state");
+  const reportDir = path.join(getLocalJeoDir(cwd), "state");
   await fs.mkdir(reportDir, { recursive: true });
   const reportPath = path.join(reportDir, "ultragoal-report.md");
 

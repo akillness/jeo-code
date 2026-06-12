@@ -1,7 +1,7 @@
 # @jeo-code Architectural Analysis & GJC Improvements
 
 This document tracks the architectural analysis of `gajae-code` (`gjc`) and the design
-of `@jeo-code/` (`joc`) — a leaner, portable spec-first coding agent that re-implements
+of `@jeo-code/` (`jeo`) — a leaner, portable spec-first coding agent that re-implements
 GJC's core loop in pure TypeScript on Bun.
 
 > Updated continuously. Last refresh: 2026-06-02.
@@ -107,47 +107,47 @@ deep-interview ──> ralplan ──> team ──> ultragoal
 - Three dimensions: Goal Clarity, Constraint Completeness, Success Definition.
 - Threshold: ambiguity ≤ 0.2 (20%) before the seed freezes.
 - Mutation guard: while interview is `active` and `current_phase !== "complete"`,
-  any tool that would write outside `.joc/` is rejected.
+  any tool that would write outside `.jeo/` is rejected.
 
 ### 2.2 Frozen seed
 
-YAML written to `.joc/seeds/seed-<slug>.yaml`. After freeze, the spec is immutable
+YAML written to `.jeo/seeds/seed-<slug>.yaml`. After freeze, the spec is immutable
 for the duration of the lineage — re-running deep-interview creates a new slug.
 
 ### 2.3 Plan blueprint (ralplan)
 
 Single-shot Planner/Architect/Critic prompt over the seed. Output: YAML with `goal`
-and `steps:` list, persisted to `.joc/plans/plan-<slug>.yaml`.
+and `steps:` list, persisted to `.jeo/plans/plan-<slug>.yaml`.
 
 ### 2.4 Executor loop (team)
 
 Per task: agentic JSON tool-call loop with `read`/`write`/`edit`/`bash`/`find`/
 `search`/`done`. Max 15 steps per task. Tasks executed sequentially against the
 plan's step list. Completed/pending state is checkpointed to
-`.joc/state/team-state.json` so a crashed run can resume mid-plan.
+`.jeo/state/team-state.json` so a crashed run can resume mid-plan.
 
 ### 2.5 Verification (ultragoal)
 
 Loads acceptance criteria from the seed, infers a verification command per
 criterion (defaults: `bun test`; criteria mentioning *"run"* or *"cli"* fall back
 to `bun run src/cli.ts --help`), and writes a verification matrix to
-`.joc/state/ultragoal-report.md`.
+`.jeo/state/ultragoal-report.md`.
 
 ---
 
 ## 3. Improvements Implemented in `@jeo-code/`
 
-| Domain | GJC | joc |
+| Domain | GJC | jeo |
 |---|---|---|
 | **Footprint** | 12+ packages, Rust crates, Python utils | 1 package, pure TypeScript, no native deps |
-| **Install** | `bun install -g gajae-code` (or workspace bootstrap) + native build | `./install.sh` → `bun install` + symlink to `~/.local/bin/joc` |
+| **Install** | `bun install -g gajae-code` (or workspace bootstrap) + native build | `./install.sh` → `bun install` + symlink to `~/.local/bin/jeo` |
 | **Providers** | 14 backends with broker process | 5 backends inline: Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible (LM Studio / vLLM / llama-cpp-server) |
-| **OAuth** | Long-lived broker with refresh tokens | Bearer-token store in `~/.joc/config.json` (chmod 600), `joc auth login/logout/status`, env-overlay (`ANTHROPIC_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_OAUTH_TOKEN`, `GEMINI_OAUTH_TOKEN`) |
+| **OAuth** | Long-lived broker with refresh tokens | Bearer-token store in `~/.jeo/config.json` (chmod 600), `jeo auth login/logout/status`, env-overlay (`ANTHROPIC_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_OAUTH_TOKEN`, `GEMINI_OAUTH_TOKEN`) |
 | **Local models** | Ollama only | Ollama (`/api/chat`) + any OpenAI-compatible endpoint via `openaiBaseUrl` |
 | **Setup UX** | Multi-file merge (cached + remote + env) | Single interactive picker; live `/api/tags` and `/v1/models` probe to autodetect available models |
-| **Mutation Guard** | Tool-schema check inside provider | Process-level middleware (`assertMutationAllowed`) called by every write/edit/bash; checks the active deep-interview state and rejects writes outside `.joc/` with a precise error including the live ambiguity score |
+| **Mutation Guard** | Tool-schema check inside provider | Process-level middleware (`assertMutationAllowed`) called by every write/edit/bash; checks the active deep-interview state and rejects writes outside `.jeo/` with a precise error including the live ambiguity score |
 | **TUI coupling** | Heavy custom layout (Kitty sixel etc.) | Plain ANSI stream output; works on any terminal |
-| **State** | SQLite + session tables | Plain JSON files per skill under `.joc/state/<skill>-state.json` — trivially inspectable, no schema migrations |
+| **State** | SQLite + session tables | Plain JSON files per skill under `.jeo/state/<skill>-state.json` — trivially inspectable, no schema migrations |
 
 ---
 
@@ -156,7 +156,7 @@ to `bun run src/cli.ts --help`), and writes a verification matrix to
 ```
 @jeo-code/
 ├── coding-agent/
-│   ├── package.json        # bun bin: { joc: src/cli.ts }
+│   ├── package.json        # bun bin: { jeo: src/cli.ts }
 │   ├── src/
 │   │   ├── cli.ts          # arg dispatch
 │   │   ├── index.ts        # SDK re-exports
@@ -180,7 +180,7 @@ to `bun run src/cli.ts --help`), and writes a verification matrix to
 Runtime artefacts the agent creates inside any project:
 
 ```
-<project>/.joc/
+<project>/.jeo/
 ├── seeds/seed-<slug>.yaml        # frozen spec
 ├── plans/plan-<slug>.yaml        # ralplan output
 └── state/
@@ -193,7 +193,7 @@ Runtime artefacts the agent creates inside any project:
 Global config:
 
 ```
-~/.joc/config.json  (chmod 600)
+~/.jeo/config.json  (chmod 600)
 {
   "providers":   { "anthropic": "sk-...", "openai": "sk-...", "gemini": "..." },
   "oauth":       { "anthropic": "<bearer>", "openai": "<bearer>", "gemini": "<bearer>" },
@@ -208,7 +208,7 @@ Environment overlay (env fills gaps but never overrides on-disk values):
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
 `ANTHROPIC_OAUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN`,
 `OPENAI_OAUTH_TOKEN`, `GEMINI_OAUTH_TOKEN`,
-`OLLAMA_HOST`, `OPENAI_BASE_URL`, `JOC_DEFAULT_MODEL`.
+`OLLAMA_HOST`, `OPENAI_BASE_URL`, `JEO_DEFAULT_MODEL`.
 
 ---
 
@@ -216,25 +216,25 @@ Environment overlay (env fills gaps but never overrides on-disk values):
 
 ```bash
 # 1. Install
-./install.sh                       # bun install + symlink ~/.local/bin/joc
+./install.sh                       # bun install + symlink ~/.local/bin/jeo
 
 # 2. Configure a provider (choose one)
-joc setup                          # interactive — pick a provider (1-6), key/OAuth/local URL
-joc auth login anthropic           # paste Claude OAuth bearer from console.anthropic.com
-joc auth login openai              # paste OpenAI session token
-joc auth login gemini              # paste gcloud access token
+jeo setup                          # interactive — pick a provider (1-6), key/OAuth/local URL
+jeo auth login anthropic           # paste Claude OAuth bearer from console.anthropic.com
+jeo auth login openai              # paste OpenAI session token
+jeo auth login gemini              # paste gcloud access token
 # or local-only (no setup needed if Ollama is running):
 export OLLAMA_HOST=http://localhost:11434
-export JOC_DEFAULT_MODEL=ollama/llama3.1:8b
+export JEO_DEFAULT_MODEL=ollama/llama3.1:8b
 
 # 3. Verify configuration
-joc auth status
+jeo auth status
 
 # 4. Run the spec-first loop
-joc deep-interview "build a CLI task manager with SQLite"
-joc ralplan
-joc team
-joc ultragoal
+jeo deep-interview "build a CLI task manager with SQLite"
+jeo ralplan
+jeo team
+jeo ultragoal
 ```
 
 ### Provider routing rule (`loop.ts`)
@@ -254,16 +254,16 @@ Tested on Bun `1.3.14` against a mock OpenAI-compatible server:
 
 | Step | Expected | Observed |
 |---|---|---|
-| `./install.sh` | symlink to `~/.local/bin/joc` | ✅ symlink created |
-| `joc --version` | prints `joc v0.1.0` | ✅ |
-| `joc --help` | shows 6 commands incl. `auth` | ✅ |
-| `joc auth status` | renders provider/key/oauth matrix + default model | ✅ |
-| **MutationGuard** while interview active | rejects writes outside `.joc/`, allows writes inside `.joc/` | ✅ |
+| `./install.sh` | symlink to `~/.local/bin/jeo` | ✅ symlink created |
+| `jeo --version` | prints `jeo v0.1.0` | ✅ |
+| `jeo --help` | shows 6 commands incl. `auth` | ✅ |
+| `jeo auth status` | renders provider/key/oauth matrix + default model | ✅ |
+| **MutationGuard** while interview active | rejects writes outside `.jeo/`, allows writes inside `.jeo/` | ✅ |
 | **MutationGuard** after interview complete | allows writes everywhere | ✅ |
-| `joc deep-interview` against mock | writes `.joc/seeds/seed-<slug>.yaml` | ✅ |
-| `joc ralplan` | reads seed, writes `.joc/plans/plan-<slug>.yaml` | ✅ |
-| `joc team` | executor loop completes 3 tasks, writes `team-state.json` | ✅ |
-| `joc ultragoal` | parses acceptance criteria, runs verification, writes report | ✅ |
+| `jeo deep-interview` against mock | writes `.jeo/seeds/seed-<slug>.yaml` | ✅ |
+| `jeo ralplan` | reads seed, writes `.jeo/plans/plan-<slug>.yaml` | ✅ |
+| `jeo team` | executor loop completes 3 tasks, writes `team-state.json` | ✅ |
+| `jeo ultragoal` | parses acceptance criteria, runs verification, writes report | ✅ |
 | Loop credential resolution | OAuth bearer > API key, local OpenAI-compatible keyless | ✅ |
 
 ---
@@ -295,16 +295,16 @@ entry (`packages/coding-agent/src/cli.ts`) re-checks
 and sets `process.title = APP_NAME` so `ps`/`pgrep` show the agent under its
 own name.
 
-joc now mirrors that structural pattern.
+jeo now mirrors that structural pattern.
 
-| Concern | GJC | joc (added this pass) |
+| Concern | GJC | jeo (added this pass) |
 |---|---|---|
 | One-shot installer | `scripts/install.sh` | `coding-agent/scripts/install.sh` |
 | Modes | `--source` / `--binary` / `--ref` | `--local` / `--source` / `--ref` |
 | Bun version floor | `MIN_BUN_VERSION=1.3.14` shared via `@gajae-code/utils` | constant in `install.sh` + runtime guard in `src/cli.ts` |
-| Install dir | `$GJC_INSTALL_DIR` ‖ `$HOME/.local/bin` | `$JOC_INSTALL_DIR` ‖ `$HOME/.local/bin` |
+| Install dir | `$GJC_INSTALL_DIR` ‖ `$HOME/.local/bin` | `$JEO_INSTALL_DIR` ‖ `$HOME/.local/bin` |
 | PATH hint on success | yes | yes |
-| Uninstall | documented `bun remove -g` | dedicated `scripts/uninstall.sh` with `--purge` for `~/.joc/` |
+| Uninstall | documented `bun remove -g` | dedicated `scripts/uninstall.sh` with `--purge` for `~/.jeo/` |
 | Process identity | `process.title = APP_NAME` | added to `src/cli.ts` |
 
 ### Verified install + terminal run (clean env)
@@ -312,13 +312,13 @@ joc now mirrors that structural pattern.
 ```text
 $ env -i HOME=... PATH=/usr/bin:/bin:... \
     sh coding-agent/scripts/install.sh --local
-Installed joc → /Users/.../.local/bin/joc
-Run: joc --help
+Installed jeo → /Users/.../.local/bin/jeo
+Run: jeo --help
 
-$ env -i HOME=... PATH=... joc --version
-joc v0.1.0
+$ env -i HOME=... PATH=... jeo --version
+jeo v0.1.0
 
-$ env -i HOME=... PATH=... joc auth status
+$ env -i HOME=... PATH=... jeo auth status
 Provider     API key   OAuth token
   anthropic   —         —
   openai      —         —
@@ -338,10 +338,10 @@ invocation.
 
 - `Dockerfile*`, multi-arch native binary release pipeline. Source-only for
   now; prebuilt binaries belong to a future release-pipeline pass.
-- `crates/` (Rust) and `python/` siblings — joc has no Rust/Python helpers.
+- `crates/` (Rust) and `python/` siblings — jeo has no Rust/Python helpers.
 - The 50+ feature subdomains under gjc's coding-agent (`autoresearch`,
   `capability`, `dap`, `lsp`, `mcp`, `plan-mode`, `tui`, …). Those are
-  *features*, not structural scaffolding. joc keeps its tighter surface:
+  *features*, not structural scaffolding. jeo keeps its tighter surface:
   `agent/`, `commands/`.
 
 ---
@@ -349,30 +349,30 @@ invocation.
 ## 9. Codex structural-review pass
 
 Codex (gpt-5.2-codex via `codex:codex-rescue`) cross-checked gjc's package
-tree against joc and reported five concrete structural gaps. Verbatim from
+tree against jeo and reported five concrete structural gaps. Verbatim from
 the review:
 
 1. **Workspace / package boundaries** — gjc root `package.json` declares
    `workspaces.packages: ["packages/*"]` and catalogs `@gajae-code/ai`,
    `@gajae-code/coding-agent`, `@gajae-code/agent-core`, `@gajae-code/utils`,
-   `@gajae-code/stats`, `@gajae-code/tui`. joc is a single package. Recommend
+   `@gajae-code/stats`, `@gajae-code/tui`. jeo is a single package. Recommend
    carving out `packages/ai`, `packages/coding-agent`, `packages/agent-core`,
    `packages/utils`. **CORE**.
 2. **Lazy CLI runner + default launch** — gjc `cli.ts` registers
    `CommandEntry[]`, lazy-loads command modules, and routes argv with no
-   subcommand to `launch`. joc has a hardcoded switch with no default agent
+   subcommand to `launch`. jeo has a hardcoded switch with no default agent
    launch. Recommend `src/cli/runner.ts` exporting `runCli(argv)` plus
    `src/commands/launch.ts`. **CORE**.
 3. **Provider / model abstraction layer** — gjc `packages/ai/` exports
    `model-manager`, `model-cache`, `provider-models`, discovery, stream,
-   schema, usage. joc embeds HTTP calls inline in `src/agent/loop.ts`.
+   schema, usage. jeo embeds HTTP calls inline in `src/agent/loop.ts`.
    Recommend `src/ai/index.ts`, `src/ai/providers/*`, `src/ai/model-manager.ts`
    exporting `createModelManager`, `resolveProviderModels`, provider
    `stream/call` adapters. **CORE**.
 4. **Auth subsystem separation** — gjc exports `auth-broker`, `auth-gateway`,
    `auth-storage`; `auth-broker/index.ts` exports `client`, `refresher`,
-   `remote-store`, `server`, `types`. joc `src/commands/auth.ts` writes
-   tokens directly to `~/.joc/config.json`. Recommend `src/auth/index.ts`,
+   `remote-store`, `server`, `types`. jeo `src/commands/auth.ts` writes
+   tokens directly to `~/.jeo/config.json`. Recommend `src/auth/index.ts`,
    `src/auth/storage.ts`, `src/auth/oauth.ts`, `src/auth/refresh.ts`
    exporting `AuthStorage`, `loginOAuth`, `refreshOAuthToken`,
    `resolveCredential`. **CORE**.
@@ -380,10 +380,10 @@ the review:
    `session/*`, `task/*`, `tools/*`, `slash-commands/*`,
    `extensibility/{custom-commands,custom-tools,extensions,hooks,plugins}/*`;
    `commands/team.ts` delegates to `gjc-runtime/team-runtime` with
-   start/list/status/shutdown/api ops. joc has fixed workflow commands only.
+   start/list/status/shutdown/api ops. jeo has fixed workflow commands only.
    Recommend `src/runtime/team-runtime.ts`, `src/session/*`,
    `src/tools/registry.ts`, `src/extensibility/*` exporting
-   `startJocTeam`, `listJocTeams`, `ToolRegistry`, `ExtensionRegistry`.
+   `startJeoTeam`, `listJeoTeams`, `ToolRegistry`, `ExtensionRegistry`.
    **CORE**.
 
 Codex's recommended next action: **carve out `src/ai/*` and `src/auth/*`
@@ -399,9 +399,9 @@ config schema, and runtime extensibility cleanly.
   `agent/loop.ts` into `ai/providers/{anthropic,openai,gemini,ollama}.ts`
   behind a `createModelManager()` factory.
 - `src/cli/runner.ts` — lazy-load command modules; reduces cold-start cost
-  when joc grows past 6 subcommands.
-- Workspaces split is **queued but deferred** — single-package joc is still
-  the right shape for the current surface; revisit when joc adds a second
+  when jeo grows past 6 subcommands.
+- Workspaces split is **queued but deferred** — single-package jeo is still
+  the right shape for the current surface; revisit when jeo adds a second
   consumer (e.g. an MCP server package).
 
 ---
@@ -447,14 +447,14 @@ coding-agent/src/auth/
 - `src/commands/auth.ts` is now a CLI shell that delegates entirely to the
   subsystem: status uses `snapshotProvider`, login uses `loginOAuth`,
   logout uses `logoutOAuth`.
-- `src/index.ts` re-exports `./auth` so SDK consumers (joc-as-library) get
+- `src/index.ts` re-exports `./auth` so SDK consumers (jeo-as-library) get
   the typed credential surface without poking at `state.ts`.
 
 ### Verified
 
 ```text
-$ joc auth status
-=== joc auth status ===
+$ jeo auth status
+=== jeo auth status ===
 Provider     API key   OAuth token
   anthropic   —         —
   openai      —         —
@@ -467,7 +467,7 @@ $ bun -e 'import("./src/auth").then(async m => {
 api_key gemini 39
 ```
 
-`joc auth status` still renders correctly, and the lower-level
+`jeo auth status` still renders correctly, and the lower-level
 `resolveCredential("gemini")` returns `{kind:"api_key", provider:"gemini", token:<39 chars>}` — exactly what `loop.ts` now consumes via the subsystem.
 
 ### Full-pipeline mechanical verification (mock OpenAI server)
@@ -478,10 +478,10 @@ flows through `agent/loop.ts → resolveCredential() → callOpenAi`.
 
 | Stage | Observed |
 |---|---|
-| `joc deep-interview "build a CLI task manager with SQLite storage"` | Ambiguity 15% on round 1, wrote `.joc/seeds/seed-build-a-cli-task-manager.yaml` ✅ |
-| `joc ralplan` | Read seed, wrote `.joc/plans/plan-build-a-cli-task-manager.yaml` ✅ |
-| `joc team` | Executor loop completed 3 tasks via `{tool:"done"}` ✅ |
-| `joc ultragoal` | Parsed 3 acceptance criteria, ran heuristic verification, wrote `.joc/state/ultragoal-report.md` ✅ |
+| `jeo deep-interview "build a CLI task manager with SQLite storage"` | Ambiguity 15% on round 1, wrote `.jeo/seeds/seed-build-a-cli-task-manager.yaml` ✅ |
+| `jeo ralplan` | Read seed, wrote `.jeo/plans/plan-build-a-cli-task-manager.yaml` ✅ |
+| `jeo team` | Executor loop completed 3 tasks via `{tool:"done"}` ✅ |
+| `jeo ultragoal` | Parsed 3 acceptance criteria, ran heuristic verification, wrote `.jeo/state/ultragoal-report.md` ✅ |
 
 The auth refactor is regression-free at both unit (probe) and integration
 (full pipeline) levels.
@@ -560,10 +560,10 @@ dispatch → HTTP call → response parsing all flow through the new layer.
 
 | Stage | Observed |
 |---|---|
-| `joc deep-interview "Build a CLI task manager with SQLite"` | Ambiguity 15% on round 1, wrote seed ✅ |
-| `joc ralplan` | Wrote plan with 3 steps ✅ |
-| `joc team` | Executor loop completed all 3 tasks ✅ |
-| `joc ultragoal` | Ran 3 acceptance checks, wrote report ✅ |
+| `jeo deep-interview "Build a CLI task manager with SQLite"` | Ambiguity 15% on round 1, wrote seed ✅ |
+| `jeo ralplan` | Wrote plan with 3 steps ✅ |
+| `jeo team` | Executor loop completed all 3 tasks ✅ |
+| `jeo ultragoal` | Ran 3 acceptance checks, wrote report ✅ |
 
 (`ultragoal` correctly reports `DEGRADED 0/3` because the mock pipeline
 produces no real source code for `bun test` / `bun run src/cli.ts --help`
@@ -600,7 +600,7 @@ inside the agent loop") is closed.
   cli-runner refactor so the workspace boundaries follow the new
   subsystem shapes.
 - Gap #5 (MCP stub) — independent; can land any time.
-- `joc doctor` and the real token-refresh broker — both have clean
+- `jeo doctor` and the real token-refresh broker — both have clean
   insertion points now (`src/ai/model-manager.ts::createModelManager`
   for doctor's connectivity probes, `src/auth/refresh.ts` for the
   refresh broker).
@@ -613,8 +613,8 @@ inside the agent loop") is closed.
 
 Before this pass, `src/cli.ts` imported all six command runners
 (`setup`, `auth`, `deep-interview`, `ralplan`, `team`, `ultragoal`)
-at the top of the file. Every invocation — even `joc --version` or
-`joc --help` — paid the cost of parsing those modules and their
+at the top of the file. Every invocation — even `jeo --version` or
+`jeo --help` — paid the cost of parsing those modules and their
 transitive imports (`agent/state`, `agent/loop`, `ai/*`, `auth/*`,
 yaml, fs/promises). That is exactly the eager-boot pattern gjc
 avoids with its lazy-command table.
@@ -652,7 +652,7 @@ table can never drift from the dispatch table.
 #!/usr/bin/env bun
 import { dispatch } from "./cli/runner";
 
-const APP_NAME = "joc";
+const APP_NAME = "jeo";
 const VERSION = "0.1.0";
 const MIN_BUN_VERSION = "1.3.14";
 
@@ -702,10 +702,10 @@ adding one entry to `COMMANDS[]`.
 
 | Stage | Observed |
 |---|---|
-| `joc deep-interview "Build a CLI task manager with SQLite"` | Ambiguity 15% round 1, seed written ✅ |
-| `joc ralplan` | Plan with 3 steps written ✅ |
-| `joc team` | 3 tasks executed via `{tool:"done"}` ✅ |
-| `joc ultragoal` | 3 acceptance checks ran, report written ✅ |
+| `jeo deep-interview "Build a CLI task manager with SQLite"` | Ambiguity 15% round 1, seed written ✅ |
+| `jeo ralplan` | Plan with 3 steps written ✅ |
+| `jeo team` | 3 tasks executed via `{tool:"done"}` ✅ |
+| `jeo ultragoal` | 3 acceptance checks ran, report written ✅ |
 
 (`ultragoal` still reports `DEGRADED 0/3` — same expected semantic
 outcome as pass 4: the mock pipeline writes no real code, so the
@@ -721,7 +721,7 @@ heuristic shell commands fail by design.)
   centralized in `cli.ts`'s switch.
 - **Testability.** `dispatch()` is a pure function returning an exit
   code; CI can assert routing without spawning the binary.
-- **Plugin/extension path.** A future `joc plugin add <name>` can
+- **Plugin/extension path.** A future `jeo plugin add <name>` can
   append to the registry at runtime by importing user-installed
   modules — the registry was designed as `readonly` for safety, but a
   `mergeCommands()` helper is a 3-line addition.
@@ -740,13 +740,13 @@ command's import cost is paid exactly when it is used.
 ### Remaining queue (after pass 5)
 
 - Gap #2 (`packages/` workspace split) — can now follow the carve-out
-  boundaries: `@joc/cli`, `@joc/ai`, `@joc/auth`, `@joc/agent`,
-  `@joc/commands`. Each is already an isolated subdirectory with a
+  boundaries: `@jeo/cli`, `@jeo/ai`, `@jeo/auth`, `@jeo/agent`,
+  `@jeo/commands`. Each is already an isolated subdirectory with a
   clean barrel.
 - Gap #5 (MCP stub) — drop-in: `src/mcp/server.ts` + one registry
   entry (`{ name: "mcp", loader: () => import("../commands/mcp") }`)
-  is enough to expose `joc mcp serve`.
-- `joc doctor` — same one-entry registry addition; the doctor command
+  is enough to expose `jeo mcp serve`.
+- `jeo doctor` — same one-entry registry addition; the doctor command
   can probe each adapter via `createModelManager()` and each
   credential via `resolveCredential()`.
 - Real OAuth refresh broker — `src/auth/refresh.ts` is already the
@@ -754,15 +754,15 @@ command's import cost is paid exactly when it is used.
 
 ---
 
-## 13. Ralph pass 6 — `joc doctor` health probe (gjc parity for install verification)
+## 13. Ralph pass 6 — `jeo doctor` health probe (gjc parity for install verification)
 
 **Date:** 2026-06-02
 
-`joc doctor` answers the user's original concern — "설치부터 터미널에서
+`jeo doctor` answers the user's original concern — "설치부터 터미널에서
 동작하는 흐름까지 테스트해보자" (test the full install-to-terminal
 flow). Before this pass there was no single command to verify that
 the install actually wired up the providers correctly. Users had to
-run `joc auth status` (credentials only, no network check) then try a
+run `jeo auth status` (credentials only, no network check) then try a
 real command (expensive and slow). Doctor consolidates both into one
 sub-second probe.
 
@@ -822,8 +822,8 @@ mirrored by the doctor probe.
 
 ### What this delivers
 
-- **Single-shot install verification.** After `bash install.sh && joc
-  setup`, the user runs `joc doctor` and immediately sees which
+- **Single-shot install verification.** After `bash install.sh && jeo
+  setup`, the user runs `jeo doctor` and immediately sees which
   provider is reachable, which credential is missing, and whether the
   saved `defaultModel` actually resolves to a working provider.
 - **Diagnoses local Ollama / vLLM / LMStudio setups** with the same
@@ -842,23 +842,23 @@ mirrored by the doctor probe.
 
 ### Remaining queue (after pass 6)
 
-- Gap #5 (MCP stub `joc mcp serve`) — drop-in via the same registry
+- Gap #5 (MCP stub `jeo mcp serve`) — drop-in via the same registry
   pattern.
 - Gap #2 (`packages/` workspace split) — boundaries are now ready
-  (`@joc/cli`, `@joc/ai`, `@joc/auth`, `@joc/agent`, `@joc/commands`).
+  (`@jeo/cli`, `@jeo/ai`, `@jeo/auth`, `@jeo/agent`, `@jeo/commands`).
 - Real OAuth refresh broker in `src/auth/refresh.ts`.
-- `joc doctor --strict` exit-code flag for CI gating.
+- `jeo doctor --strict` exit-code flag for CI gating.
 
 ---
 
-## 14. Ralph pass 7 — `joc mcp serve` MCP stdio server (Codex gap #5 closed)
+## 14. Ralph pass 7 — `jeo mcp serve` MCP stdio server (Codex gap #5 closed)
 
 **Date:** 2026-06-02
 
-This pass makes joc itself an MCP server, so other agents (Claude
-Code, Claude Desktop, Cursor, etc.) can call joc subsystems as tools.
+This pass makes jeo itself an MCP server, so other agents (Claude
+Code, Claude Desktop, Cursor, etc.) can call jeo subsystems as tools.
 gjc shipped an `auth-gateway/server` mainly as a credential broker;
-joc takes a small step further and exposes diagnostic + state tools
+jeo takes a small step further and exposes diagnostic + state tools
 through the standard MCP stdio JSON-RPC 2.0 transport — no external
 SDK required.
 
@@ -869,8 +869,8 @@ src/mcp/
 ├── index.ts         # barrel
 ├── protocol.ts      # JsonRpcRequest/Response, error codes, ToolDefinition/Result, ok/fail helpers
 ├── server.ts        # stdio loop + JSON-RPC dispatcher (initialize/tools.list/tools.call/ping)
-└── tools.ts         # 4 read-only tools wrapping joc subsystems
-src/commands/mcp.ts  # 'joc mcp serve' / 'joc mcp tools' shell
+└── tools.ts         # 4 read-only tools wrapping jeo subsystems
+src/commands/mcp.ts  # 'jeo mcp serve' / 'jeo mcp tools' shell
 ```
 
 `COMMANDS[]` entry: one line in `src/cli/runner.ts`.
@@ -879,10 +879,10 @@ src/commands/mcp.ts  # 'joc mcp serve' / 'joc mcp tools' shell
 
 | Tool | Purpose | Side effects |
 |---|---|---|
-| `joc_resolve_provider({model})` | Pure provider routing: `gemini-2.0-flash → gemini`, `openai/mock-1 → openai`, etc. | none |
-| `joc_credential_status({provider})` | Returns credential kind (`oauth`/`api_key`/`none`). **Does not** return the secret. | none |
-| `joc_config_snapshot()` | Default model + base URLs + redacted per-provider credential kind. | none |
-| `joc_doctor()` | Same probe used by the `joc doctor` CLI. May issue 1-token Anthropic probe and free GETs to OpenAI/Gemini/Ollama. | network reads only |
+| `jeo_resolve_provider({model})` | Pure provider routing: `gemini-2.0-flash → gemini`, `openai/mock-1 → openai`, etc. | none |
+| `jeo_credential_status({provider})` | Returns credential kind (`oauth`/`api_key`/`none`). **Does not** return the secret. | none |
+| `jeo_config_snapshot()` | Default model + base URLs + redacted per-provider credential kind. | none |
+| `jeo_doctor()` | Same probe used by the `jeo doctor` CLI. May issue 1-token Anthropic probe and free GETs to OpenAI/Gemini/Ollama. | network reads only |
 
 Pipeline tools (`deep-interview`, `team`, `ultragoal`) are deliberately
 **not** in the initial surface — they write files and burn LLM credits,
@@ -892,7 +892,7 @@ follow-up pass can add them behind an opt-in flag.
 ### JSON-RPC protocol coverage
 
 - `initialize` → returns `protocolVersion: "2024-11-05"`, capabilities
-  `{tools:{}}`, `serverInfo: {name:"joc-mcp", version:"0.1.0"}`.
+  `{tools:{}}`, `serverInfo: {name:"jeo-mcp", version:"0.1.0"}`.
 - `notifications/initialized` → no response (notification, per spec).
 - `tools/list` → tool array with name/description/inputSchema.
 - `tools/call` → dispatches to the tool's handler; returns
@@ -912,7 +912,7 @@ End-to-end JSON-RPC probe (8 requests piped to stdin):
 
 ```
 === MCP stdio probe ===
-joc-mcp v0.1.0 listening on stdio (4 tools)
+jeo-mcp v0.1.0 listening on stdio (4 tools)
 {"id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},...}}
 {"id":2,"result":{"tools":[ /* all 4, full schemas */ ]}}
 {"id":3,"result":{"content":[{"type":"text","text":"openai"}],"isError":false}}
@@ -925,12 +925,12 @@ joc-mcp v0.1.0 listening on stdio (4 tools)
 (`notifications/initialized` correctly produces no response — it's a
 notification, not a request, per MCP/JSON-RPC spec.)
 
-The wrapped `joc_doctor` MCP tool returns the same text the CLI
+The wrapped `jeo_doctor` MCP tool returns the same text the CLI
 produces, captured by intercepting `console.log` for the duration of
 `runDoctorCommand()`. Verified:
 
 ```
-=== joc doctor ===
+=== jeo doctor ===
 Bun runtime:    v1.3.14
 Default model:  gemini-2.0-flash → gemini
 ...
@@ -939,17 +939,17 @@ Default model:  gemini-2.0-flash → gemini
 
 ### What this delivers
 
-- **Claude Desktop / Claude Code integration.** Adding joc as an MCP
-  server is now `claude mcp add joc -- joc mcp serve` (or the
+- **Claude Desktop / Claude Code integration.** Adding jeo as an MCP
+  server is now `claude mcp add jeo -- jeo mcp serve` (or the
   equivalent `claudeDesktopConfig.json` entry). Other agents can ask
-  joc to resolve providers, check credentials, or run the health probe
+  jeo to resolve providers, check credentials, or run the health probe
   without shelling out to the binary or parsing CLI output.
 - **Zero dependencies.** No `@modelcontextprotocol/sdk` import — the
   protocol implementation is ~30 lines of stdio plumbing. Bun's
   built-in streams + `JSON.parse` cover everything the spec needs.
 - **Future-extensible.** Adding a tool is one entry in `TOOLS[]`:
   name + description + inputSchema + async handler. Pipeline tools
-  (`joc_deep_interview`, `joc_team`, `joc_ultragoal`) can be added
+  (`jeo_deep_interview`, `jeo_team`, `jeo_ultragoal`) can be added
   later as a single PR without churning the dispatcher.
 - **Mirrors gjc's auth-gateway structure** at the high level (CLI
   command exposing a server) without copying its credential-broker
@@ -967,30 +967,30 @@ Default model:  gemini-2.0-flash → gemini
 
 ### Remaining queue (after pass 7)
 
-- **`joc doctor --strict`** flag — propagate FAIL of default provider
+- **`jeo doctor --strict`** flag — propagate FAIL of default provider
   to a non-zero exit code (CI gating, single-line change).
 - **Real OAuth refresh broker** in `src/auth/refresh.ts`.
-- **Pipeline MCP tools** (`joc_deep_interview` / `joc_ralplan` /
-  `joc_team` / `joc_ultragoal`) — behind an opt-in flag because they
+- **Pipeline MCP tools** (`jeo_deep_interview` / `jeo_ralplan` /
+  `jeo_team` / `jeo_ultragoal`) — behind an opt-in flag because they
   burn LLM credits and write seed/plan/report files.
-- **Workspace split** (gap #2) — `@joc/cli`, `@joc/ai`, `@joc/auth`,
-  `@joc/agent`, `@joc/commands`, `@joc/mcp`.
+- **Workspace split** (gap #2) — `@jeo/cli`, `@jeo/ai`, `@jeo/auth`,
+  `@jeo/agent`, `@jeo/commands`, `@jeo/mcp`.
 
-## 15. `joc doctor --strict` + pipeline MCP tools (ralph pass 8)
+## 15. `jeo doctor --strict` + pipeline MCP tools (ralph pass 8)
 
 Two CI-shaped operability features so external orchestrators can drive
-joc deterministically.
+jeo deterministically.
 
 ### Strict-mode doctor
 
-`joc doctor` now accepts `--strict`. The probe table prints as before;
+`jeo doctor` now accepts `--strict`. The probe table prints as before;
 the verdict block stays informational; but when the **default model's**
 probe does not return `OK`, the process exits with code 1.
 
 This lets CI (or another agent) wedge a one-line gate at install time:
 
 ```
-joc doctor --strict || exit 1
+jeo doctor --strict || exit 1
 ```
 
 The other providers' statuses do not affect the exit code — only the
@@ -1012,17 +1012,17 @@ providers configured?".
 ### Pipeline MCP tools (opt-in)
 
 The read-only MCP surface stayed at four tools (resolve_provider,
-credential_status, config_snapshot, doctor) so that wiring joc into a
+credential_status, config_snapshot, doctor) so that wiring jeo into a
 client could not accidentally burn credits or scribble files.
 
 For agents that actually want to drive the full workflow, the MCP
 server now also publishes the four pipeline tools when launched with
-`JOC_MCP_PIPELINE=1`:
+`JEO_MCP_PIPELINE=1`:
 
-- `joc_deep_interview({idea})` → `runDeepInterviewCommand`
-- `joc_ralplan()`              → `runRalplanCommand`
-- `joc_team()`                 → `runTeamCommand`
-- `joc_ultragoal()`            → `runUltragoalCommand`
+- `jeo_deep_interview({idea})` → `runDeepInterviewCommand`
+- `jeo_ralplan()`              → `runRalplanCommand`
+- `jeo_team()`                 → `runTeamCommand`
+- `jeo_ultragoal()`            → `runUltragoalCommand`
 
 Each tool's `description` opens with `DANGER: …` so a calling LLM gets
 an explicit warning that the tool mutates the working tree and/or
@@ -1031,14 +1031,14 @@ spends real API credits.
 Implementation is a thin `captureCommand(run)` wrapper that hijacks
 `console.log` to a string buffer, awaits the existing
 `run*Command()`, and returns the buffer as a single `text` content
-block. Same pattern as `joc_doctor`. No new logic in the command files
+block. Same pattern as `jeo_doctor`. No new logic in the command files
 themselves — the MCP layer just observes them.
 
 Verified live in this pass:
 
 ```
 $ bun src/cli.ts mcp serve                       → 4 tools
-$ JOC_MCP_PIPELINE=1 bun src/cli.ts mcp serve    → 8 tools
+$ JEO_MCP_PIPELINE=1 bun src/cli.ts mcp serve    → 8 tools
 ```
 
 ### Remaining queue (carry forward)
@@ -1046,8 +1046,8 @@ $ JOC_MCP_PIPELINE=1 bun src/cli.ts mcp serve    → 8 tools
 - **OAuth refresh broker** (`src/auth/refresh.ts`) — currently a
   skeleton that returns `refresh_not_implemented`. Real refresh needs
   per-provider token endpoints + retry-on-401 in each adapter.
-- **Workspace split** (gap #2) — `@joc/cli`, `@joc/ai`, `@joc/auth`,
-  `@joc/agent`, `@joc/commands`, `@joc/mcp`. Pure mechanical move now
+- **Workspace split** (gap #2) — `@jeo/cli`, `@jeo/ai`, `@jeo/auth`,
+  `@jeo/agent`, `@jeo/commands`, `@jeo/mcp`. Pure mechanical move now
   that every subsystem already lives in its own folder.
 
 ---
@@ -1061,12 +1061,12 @@ opened a marketing URL and stored whatever the user pasted; `refresh.ts`
 returned the literal `refresh_not_implemented`. That is the exact gap the
 original request called out — *"간단한게 아니라 OAUTH 인증방식"* (not the simple
 version — a real OAuth flow). This pass ports gjc's actual OAuth machinery
-(`packages/ai/src/utils/oauth/*`) into joc: PKCE, a local callback server,
+(`packages/ai/src/utils/oauth/*`) into jeo: PKCE, a local callback server,
 authorization-code exchange, and **automatic token refresh**.
 
-### Source mapping (gjc → joc)
+### Source mapping (gjc → jeo)
 
-| gjc source | joc port | What carried over |
+| gjc source | jeo port | What carried over |
 |---|---|---|
 | `utils/oauth/pkce.ts` | `src/auth/pkce.ts` | `generatePKCE()` (96-byte verifier, S256 challenge via Web Crypto) + `generateState()` |
 | `utils/oauth/callback-server.ts` | `src/auth/callback-server.ts` | `OAuthCallbackFlow` base class: `Bun.serve` callback, preferred-port→random fallback, CSRF state check, browser-or-manual-paste race, `parseCallbackInput()` |
@@ -1074,7 +1074,7 @@ authorization-code exchange, and **automatic token refresh**.
 | `utils/oauth/openai-codex.ts` | `src/auth/flows/openai.ts` | ChatGPT/Codex PKCE: client `app_EMoam…`, `auth.openai.com`, fixed port 1455, JWT account/email extraction, login + refresh |
 | `utils/oauth/google-*.ts` | `src/auth/flows/google.ts` | Gemini-CLI Google OAuth: embedded client id/secret, `accounts.google.com`, port 8085, `access_type=offline`, login + refresh (project provisioning trimmed to env-driven, best-effort) |
 | `utils/oauth/types.ts` | `src/auth/types.ts` | `OAuthController`, `OAuthCredentials` |
-| `auth-broker/refresher.ts` | `src/auth/refresh.ts` + `storage.ts` | Real per-provider refresh dispatch + on-read auto-refresh (no separate broker process — joc keeps it in-process) |
+| `auth-broker/refresher.ts` | `src/auth/refresh.ts` + `storage.ts` | Real per-provider refresh dispatch + on-read auto-refresh (no separate broker process — jeo keeps it in-process) |
 
 ### Credential model upgrade
 
@@ -1090,25 +1090,25 @@ returns the fresh bearer — all transparently, on the next LLM call. A dynamic
 
 ### CLI surface
 
-- `joc auth login <provider>` — real browser PKCE flow. Opens the auth URL,
+- `jeo auth login <provider>` — real browser PKCE flow. Opens the auth URL,
   spins the local callback server, and on success stores access+refresh+expiry.
   Manual paste of the redirect URL / code races the callback for headless boxes.
-- `joc auth login <provider> --token <bearer>` — non-interactive legacy paste.
-- `joc auth refresh <provider>` — force a refresh now.
-- `joc auth status` — shows `set (refreshable)` vs `set (manual)`, time-to-expiry,
+- `jeo auth login <provider> --token <bearer>` — non-interactive legacy paste.
+- `jeo auth refresh <provider>` — force a refresh now.
+- `jeo auth status` — shows `set (refreshable)` vs `set (manual)`, time-to-expiry,
   and the account email.
-- `joc setup` — the OAuth branch now offers **(b)rowser OAuth / (t)oken / (k)ey**;
+- `jeo setup` — the OAuth branch now offers **(b)rowser OAuth / (t)oken / (k)ey**;
   the browser path runs the real flow and merges the persisted credential into
   the config write (ordering bug avoided by re-reading `getStoredOAuth` before save).
-- `joc doctor` — adds an "OAuth tokens" block (refreshable?/expiry/email).
+- `jeo doctor` — adds an "OAuth tokens" block (refreshable?/expiry/email).
 
 ### Config-dir resolution made lazy (testability + correctness)
 
-`state.ts` computed `~/.joc` once at import via `os.homedir()`. Bun's
+`state.ts` computed `~/.jeo` once at import via `os.homedir()`. Bun's
 `os.homedir()` does not pick up a runtime `HOME` change, which made the auth
 path untestable in-process and surprising under `env`. It is now resolved per
-call via `globalConfigDir()` with a `JOC_CONFIG_DIR` override taking precedence
-over `~/.joc`.
+call via `globalConfigDir()` with a `JEO_CONFIG_DIR` override taking precedence
+over `~/.jeo`.
 
 ### Honest adapter-compatibility note
 
@@ -1116,7 +1116,7 @@ Only **Anthropic** OAuth is verified end-to-end with a bundled adapter — the
 claude.ai token works directly against `api.anthropic.com/v1/messages` with the
 `anthropic-beta: oauth-2025-04-20` header. OpenAI-Codex tokens target the
 ChatGPT/Codex backend and Google tokens target Cloud Code Assist; their
-login+refresh machinery is real and stored, but joc's bundled chat-completions /
+login+refresh machinery is real and stored, but jeo's bundled chat-completions /
 generativelanguage adapters still prefer an API key. `OAUTH_FLOW_REGISTRY`
 carries `verifiedEndToEnd` + a `note` so the CLI warns the user up front. This
 is stated rather than papered over.
@@ -1134,17 +1134,17 @@ is stated rather than papered over.
 | callback CSRF | wrong `state` → HTTP 400 + login rejects |
 | auto-refresh | expired anthropic `StoredOAuth` + mocked token endpoint → refreshed bearer returned AND rotated tokens persisted to disk |
 
-**Install→terminal flow (clean `HOME`/`JOC_CONFIG_DIR`, mock OpenAI server):**
+**Install→terminal flow (clean `HOME`/`JEO_CONFIG_DIR`, mock OpenAI server):**
 
 ```text
-$ sh scripts/install.sh --local        → symlink ~/.local/bin/joc
-$ joc --version                         → joc v0.1.0
-$ joc doctor                            → openai [OK] localhost mock 200, [READY]
-$ joc deep-interview "…fibonacci…"      → seed frozen (ambiguity 15%)
-$ joc ralplan / team / ultragoal        → plan / 3 tasks / report (DEGRADED 0/2 — mock writes no code, by design)
-$ joc auth login anthropic --token …    → stored "set (manual)"
-$ joc auth refresh anthropic            → [SKIP] manual_token_no_refresh
-$ joc auth logout anthropic             → removed
+$ sh scripts/install.sh --local        → symlink ~/.local/bin/jeo
+$ jeo --version                         → jeo v0.1.0
+$ jeo doctor                            → openai [OK] localhost mock 200, [READY]
+$ jeo deep-interview "…fibonacci…"      → seed frozen (ambiguity 15%)
+$ jeo ralplan / team / ultragoal        → plan / 3 tasks / report (DEGRADED 0/2 — mock writes no code, by design)
+$ jeo auth login anthropic --token …    → stored "set (manual)"
+$ jeo auth refresh anthropic            → [SKIP] manual_token_no_refresh
+$ jeo auth logout anthropic             → removed
 ```
 
 Plus `tsc -p tsconfig.json --noEmit` exits 0 (also fixed three pre-existing
@@ -1171,8 +1171,8 @@ already referenced).
   OAuth tokens become end-to-end usable (today only Anthropic is verified).
 - Device-code flow (`loginOpenAICodexDevice` in gjc) for headless boxes where
   even port 1455 is unavailable.
-- `joc auth login` background refresh daemon (gjc's `AuthBrokerRefresher` loop)
-  — joc currently refreshes lazily on read, which is sufficient for a CLI.
+- `jeo auth login` background refresh daemon (gjc's `AuthBrokerRefresher` loop)
+  — jeo currently refreshes lazily on read, which is sufficient for a CLI.
 - Workspace split (gap #2) — unchanged from prior passes.
 
 ---
@@ -1181,7 +1181,7 @@ already referenced).
 
 **Date:** 2026-06-04
 
-Until this pass joc was a **4-stage pipeline** (`deep-interview → ralplan → team
+Until this pass jeo was a **4-stage pipeline** (`deep-interview → ralplan → team
 → ultragoal`) with no way to just *talk to the agent*. gjc's headline behavior
 is the opposite: run `gjc` with no subcommand and you drop into an interactive
 coding agent that chats and calls tools in a loop. This pass closes that gap and
@@ -1208,16 +1208,16 @@ parsing (`JSON.parse` → strip ```` ```json ````). That logic now lives once in
 - **Unknown-tool feedback** — lists the valid tools instead of silently failing.
 - **Output truncation** — tool results capped at 4k chars before re-injection.
 
-### `joc launch` — the interactive coding agent (gjc parity)
+### `jeo launch` — the interactive coding agent (gjc parity)
 
 New `src/commands/launch.ts` + registry wiring in `src/cli/runner.ts`:
-- **Bare `joc`** (no subcommand) now routes to `launch` (gjc's default-launch
-  behavior). `joc --help` / `joc --version` are unchanged.
-- **Interactive REPL** (`joc launch`): persistent conversation across turns,
+- **Bare `jeo`** (no subcommand) now routes to `launch` (gjc's default-launch
+  behavior). `jeo --help` / `jeo --version` are unchanged.
+- **Interactive REPL** (`jeo launch`): persistent conversation across turns,
   streaming `· <tool> ok/FAILED` progress, slash commands `/help /clear
   /model <id> /exit`. The agent ends a turn by calling `done` with a
   `reason`, which is printed back as its natural-language reply.
-- **One-shot** (`joc launch "do X"`) and **non-TTY** (`echo "do X" | joc`)
+- **One-shot** (`jeo launch "do X"`) and **non-TTY** (`echo "do X" | jeo`)
   modes for scripting/pipes.
 
 ### Non-interactive robustness (`--auto`)
@@ -1242,19 +1242,19 @@ list items, strip surrounding quotes, and drop `goal:`/`steps:` keys.
 | `runAgentLoop` unknown tool | error surfaced, loop runs to cap |
 | `runAgentLoop` invalid-JSON repair | bad reply fed back, model recovers to `done` |
 
-**E2E (clean `JOC_CONFIG_DIR`, stateful mock OpenAI server):**
+**E2E (clean `JEO_CONFIG_DIR`, stateful mock OpenAI server):**
 
 ```text
-$ joc launch "create agent-out.txt"     → · write ok → file written (verified content)
-$ echo "make a file" | joc              → bare-joc routes to launch, writes file (non-TTY)
-$ joc deep-interview "…" --auto         → seed frozen WITHOUT hanging on stdin
-$ joc deep-interview --auto → ralplan → team → ultragoal
+$ jeo launch "create agent-out.txt"     → · write ok → file written (verified content)
+$ echo "make a file" | jeo              → bare-jeo routes to launch, writes file (non-TTY)
+$ jeo deep-interview "…" --auto         → seed frozen WITHOUT hanging on stdin
+$ jeo deep-interview --auto → ralplan → team → ultragoal
       team completed via the shared engine; parsed tasks clean:
       ["Create hello.txt with content done","Verify file exists"]   (no quotes, no keys)
 ```
 
-`tsc -p tsconfig.json --noEmit` exits 0; `joc --help` lists `launch` first;
-`joc --version` unchanged.
+`tsc -p tsconfig.json --noEmit` exits 0; `jeo --help` lists `launch` first;
+`jeo --version` unchanged.
 
 ### Module-size accounting
 
@@ -1278,35 +1278,35 @@ $ joc deep-interview --auto → ralplan → team → ultragoal
 
 **Date:** 2026-06-04
 
-To ensure joc operates as a reliable, production-ready coding agent matching GJC's behavior, we performed a full end-to-end execution of the pipeline (deep-interview → ralplan → team → ultragoal) under the newly implemented PKCE OAuth and local provider configuration layers.
+To ensure jeo operates as a reliable, production-ready coding agent matching GJC's behavior, we performed a full end-to-end execution of the pipeline (deep-interview → ralplan → team → ultragoal) under the newly implemented PKCE OAuth and local provider configuration layers.
 
 ### Key Discoveries & Adjustments
 
 1. **Google AI Studio Quota Restructuring:**
    - Probing the Gemini API with a default free-tier API key on `gemini-2.0-flash` failed with `RESOURCE_EXHAUSTED` (daily/minute quota set to 0 requests).
    - Probing `ListModels` revealed that `gemini-flash-latest` (which maps to `gemini-3.5-flash`) remains fully open for requests under the active API key.
-   - We updated `~/.joc/config.json` to route to `gemini-flash-latest`, confirming successful client-side routing.
+   - We updated `~/.jeo/config.json` to route to `gemini-flash-latest`, confirming successful client-side routing.
 
 2. **Ollama Integration:**
    - Configured local Ollama integration and probed models, discovering that the `qwen2.5:0.5b` model is locally active.
    - Proved that model manager resolves `ollama/<name>` prefix correctly and directs keyless requests to the local server.
 
-3. **End-to-End Test Automation (`/tmp/test-joc-pipeline.ts`):**
-   - Created a mock project directory structure inside `/tmp/joc-test-project` with `package.json` and a passing `bun test` harness.
+3. **End-to-End Test Automation (`/tmp/test-jeo-pipeline.ts`):**
+   - Created a mock project directory structure inside `/tmp/jeo-test-project` with `package.json` and a passing `bun test` harness.
    - Mocked a completed Socratic `deep-interview` state file (`deep-interview-state.json`) and seed file (`seed-calculator.yaml`) to bypass interactive terminal questions in non-TTY mode.
-   - Successfully executed `joc ralplan` which generated a robust `plan-calculator.yaml` containing step-by-step tasks, files, and description blocks.
-   - Successfully executed `joc team` which processed the generated plan tasks, dispatched actual tool calls (`find`, `bash`, `read`) via the shared loop engine, and correctly updated task state.
-   - Successfully executed `joc ultragoal` which ran `bun test` inside the project, parsed the test result, and generated a `✅ PASSED` markdown matrix report at `.joc/state/ultragoal-report.md`.
+   - Successfully executed `jeo ralplan` which generated a robust `plan-calculator.yaml` containing step-by-step tasks, files, and description blocks.
+   - Successfully executed `jeo team` which processed the generated plan tasks, dispatched actual tool calls (`find`, `bash`, `read`) via the shared loop engine, and correctly updated task state.
+   - Successfully executed `jeo ultragoal` which ran `bun test` inside the project, parsed the test result, and generated a `✅ PASSED` markdown matrix report at `.jeo/state/ultragoal-report.md`.
 
 ### Verification Status
 
 | Component | Status | Verification Detail |
 |---|---|---|
-| `./install.sh` | ✅ PASSED | Symlink created at `~/.local/bin/joc` |
-| `joc doctor` | ✅ PASSED | Correctly verified Ollama (local) and Gemini status |
-| `joc ralplan` | ✅ PASSED | Plan written to `.joc/plans/plan-calculator.yaml` |
-| `joc team` | ✅ PASSED | Tasks executed through the shared engine |
-| `joc ultragoal` | ✅ PASSED | Criteria verified using `bun test` and report written |
+| `./install.sh` | ✅ PASSED | Symlink created at `~/.local/bin/jeo` |
+| `jeo doctor` | ✅ PASSED | Correctly verified Ollama (local) and Gemini status |
+| `jeo ralplan` | ✅ PASSED | Plan written to `.jeo/plans/plan-calculator.yaml` |
+| `jeo team` | ✅ PASSED | Tasks executed through the shared engine |
+| `jeo ultragoal` | ✅ PASSED | Criteria verified using `bun test` and report written |
 
 ---
 
@@ -1321,7 +1321,7 @@ symlink, with **no bun presence check, no version floor, no PATH hint**) and the
 canonical, gjc-mirrored `coding-agent/scripts/install.sh` (auto-installs bun,
 enforces `MIN_BUN_VERSION=1.3.14`, prints a PATH hint, supports
 `--local`/`--source`/`--ref`). The shim could silently leave a user with a
-broken `joc` (bun missing, or `~/.local/bin` not on PATH).
+broken `jeo` (bun missing, or `~/.local/bin` not on PATH).
 
 ### Change
 
@@ -1339,13 +1339,13 @@ broken `joc` (bun missing, or `~/.local/bin` not on PATH).
 $ ./install.sh
 === @jeo-code installer ===
 Installing bun (required runtime)...      ← auto-installed bun when missing
-Installed joc → /tmp/.../.local/bin/joc
-Add /tmp/.../.local/bin to PATH, then run: joc --help   ← PATH hint fired
+Installed jeo → /tmp/.../.local/bin/jeo
+Add /tmp/.../.local/bin to PATH, then run: jeo --help   ← PATH hint fired
 $ bun run typecheck      → tsc exit 0
-$ bun run start --version → joc v0.1.0
-# installed joc (via symlink), mock OpenAI server:
-$ joc --version / --help (launch, auth, doctor listed)  → ok
-$ joc deep-interview "build fib cli" --auto → ralplan → team → [SUCCESS]
+$ bun run start --version → jeo v0.1.0
+# installed jeo (via symlink), mock OpenAI server:
+$ jeo --version / --help (launch, auth, doctor listed)  → ok
+$ jeo deep-interview "build fib cli" --auto → ralplan → team → [SUCCESS]
 $ bun test  → 15/15 pass
 ```
 
@@ -1367,16 +1367,16 @@ installed binary, not just `bun src/cli.ts`.
 
 Goal: build a **pi-based coding agent** by surveying `badlogic/pi-mono` (Mario
 Zechner's minimalist "anti-framework" agent — the engine behind OpenClaw) and
-porting its concrete advantages into joc, then verifying install → operation →
+porting its concrete advantages into jeo, then verifying install → operation →
 coding-agent behavior on Bun.
 
 ### Survey: pi-mono operation method
 
 `pi-mono` is a 4-package TS monorepo (`pi-ai`, `pi-agent-core`,
-`pi-coding-agent`, `pi-tui`) — structurally parallel to joc (`ai`, `agent`,
+`pi-coding-agent`, `pi-tui`) — structurally parallel to jeo (`ai`, `agent`,
 `commands`). Key findings from its source:
 
-| pi-mono trait | Evidence | joc before this pass |
+| pi-mono trait | Evidence | jeo before this pass |
 |---|---|---|
 | **4 default tools** (`read, bash, edit, write`); `ls`/`grep`/`find` via bash | `core/system-prompt.ts` `selectedTools \|\| ["read","bash","edit","write"]` | 6 tools (superset — kept) |
 | Minimal system prompt (<1k tokens, "Be concise") | `system-prompt.ts` | verbose tool protocol (kept, works) |
@@ -1391,12 +1391,12 @@ Built as standalone modules by three parallel `executor` subagents, then
 integrated into `launch.ts` by the parent:
 
 1. **Persistent sessions** — `src/agent/session.ts`. pi's append-only JSONL
-   (`.joc/sessions/<id>.jsonl`: header line + one message per line).
-   `joc launch --list` lists sessions (newest first, preview + count);
-   `joc launch --resume [id]` seeds history from a saved session (latest if id
+   (`.jeo/sessions/<id>.jsonl`: header line + one message per line).
+   `jeo launch --list` lists sessions (newest first, preview + count);
+   `jeo launch --resume [id]` seeds history from a saved session (latest if id
    omitted); every turn's user + assistant messages are appended.
 2. **Project context** — `src/agent/context-files.ts`. pi's `contextFiles`:
-   loads the first-existing of `JEO.md` / `AGENTS.md` / `.joc/context.md` /
+   loads the first-existing of `JEO.md` / `AGENTS.md` / `.jeo/context.md` /
    `CLAUDE.md` (truncated to 16k each) and wraps them in `<project_context>` /
    `<project_instructions path=...>` appended to the system prompt.
 3. **Context compaction** — `src/agent/compaction.ts`. pi's compaction:
@@ -1405,7 +1405,7 @@ integrated into `launch.ts` by the parent:
    `maxMessages` (defaults 40 / keep 12). Runs before each interactive turn so
    long sessions don't blow the context window. No-op + non-mutating on failure.
 
-joc keeps its 6-tool superset and blocking loop (streaming/TUI deferred —
+jeo keeps its 6-tool superset and blocking loop (streaming/TUI deferred —
 that's pi-tui's whole package). The "pi-based" character is the persistent,
 self-compacting, project-context-aware session model.
 
@@ -1420,15 +1420,15 @@ non-mutation on `callLlm` failure. `tsc -p tsconfig.json --noEmit` exits 0.
 **Install → operation (clean HOME, mock OpenAI server, real Bun 1.3.14):**
 
 ```text
-$ ./install.sh                 → Installed joc → ~/.local/bin/joc (PATH hint)
-$ joc --help                   → launch ["one-shot request"] [--resume [id]] [--list]
+$ ./install.sh                 → Installed jeo → ~/.local/bin/jeo (PATH hint)
+$ jeo --help                   → launch ["one-shot request"] [--resume [id]] [--list]
 # project with JEO.md present:
-$ joc launch "do the first task"
+$ jeo launch "do the first task"
   · write ok
   Done. Project context JEO.md was loaded.      ← context reached the prompt
-$ joc launch --list
+$ jeo launch --list
   <uuid>  <ts>  (2 msgs)  do the first task       ← session persisted
-$ joc launch --resume <uuid> "do the second task"
+$ jeo launch --resume <uuid> "do the second task"
   Resumed session <uuid> (2 messages).            ← prior history seeded
   → session file now has 4 message entries (2 turns)
 ```
@@ -1476,14 +1476,14 @@ parent after each batch.
 
 - **Auth**: manual OAuth callback paste now requires a matching `state` (CSRF);
   auto-refresh is **single-flight** per provider (no double-refresh of rotating
-  tokens); `~/.joc` is created `0700` and `config.json` written `0600` (secrets).
+  tokens); `~/.jeo` is created `0700` and `config.json` written `0600` (secrets).
 - **Engine/tools**: failed-tool results now feed back **both** error + stdout/stderr
   for self-repair; `editTool` rejects out-of-bounds/reversed ranges and **no
   longer trims** search/replace payloads (indentation preserved).
 - **Sessions/launch**: `loadSession` tolerates a malformed/truncated tail line
   (header still strict); `--resume` picks the latest by **file mtime** (activity,
   not creation); `--resume` only consumes a following token as an id when it is a
-  UUID (so `joc launch --resume "fix the bug"` is a resume-latest one-shot), also
+  UUID (so `jeo launch --resume "fix the bug"` is a resume-latest one-shot), also
   accepts `--resume=<id>`; the final natural-language reply is now pushed into
   **live history** so interactive follow-ups see it (matches resumed sessions).
 - **json**: `extractJsonObject` iterates candidate `{` starts and returns the
@@ -1521,11 +1521,11 @@ that real run surfaced a genuine bug.
 ### Real end-to-end (no mock)
 
 ```text
-$ ./install.sh                                   → ~/.local/bin/joc
-$ ~/.joc/config.json: defaultModel ollama/qwen2.5:0.5b
-$ joc doctor                                     → ollama [OK], [READY]
-$ joc launch "create hello.txt containing: hi from joc"
-  → wrote hello.txt == "hi from joc"  ✓ (real qwen2.5:0.5b drove the write tool)
+$ ./install.sh                                   → ~/.local/bin/jeo
+$ ~/.jeo/config.json: defaultModel ollama/qwen2.5:0.5b
+$ jeo doctor                                     → ollama [OK], [READY]
+$ jeo launch "create hello.txt containing: hi from jeo"
+  → wrote hello.txt == "hi from jeo"  ✓ (real qwen2.5:0.5b drove the write tool)
 ```
 
 The agent **worked** (correct file, session persisted), but the 0.5B model
@@ -1544,11 +1544,11 @@ step-limit fallback with `(reached the N-step limit without signaling done)`.
 ### Re-verified against the real model
 
 ```text
-$ joc launch "create hello.txt containing: hi from joc"
+$ jeo launch "create hello.txt containing: hi from jeo"
   · write ok
   · write ok
   Stopped: repeated the same 'write' call 3× with no new progress…
-  → hello.txt == "hi from joc"          (2 writes, not 25)
+  → hello.txt == "hi from jeo"          (2 writes, not 25)
 ```
 
 ### Verification
@@ -1574,25 +1574,25 @@ the idiomatic bun mechanism — **`bun link`** — so the install is bun-native 
 to end (the bun analogue of `npm link`).
 
 `coding-agent/scripts/install.sh` now: `bun install` → `bun link` (registers the
-package in bun's global registry and exposes the `joc` bin at
-`${BUN_INSTALL:-~/.bun}/bin/joc`) → adds a compatibility symlink at
-`~/.local/bin/joc` → PATH hint if neither dir is on `PATH`. `uninstall.sh`
+package in bun's global registry and exposes the `jeo` bin at
+`${BUN_INSTALL:-~/.bun}/bin/jeo`) → adds a compatibility symlink at
+`~/.local/bin/jeo` → PATH hint if neither dir is on `PATH`. `uninstall.sh`
 removes both bins and unregisters from the bun global registry. README updated.
 
 ### Verification (isolated `HOME` + `BUN_INSTALL`, real Bun 1.3.14)
 
 ```text
 $ ./install.sh
-  Linked joc via 'bun link' → /tmp/.../.bun/bin/joc
-  Installed joc → /tmp/.../.local/bin/joc   (compat symlink → bun bin)
-$ which joc           → ~/.bun/bin/joc
-$ joc --version       → joc v0.1.0
+  Linked jeo via 'bun link' → /tmp/.../.bun/bin/jeo
+  Installed jeo → /tmp/.../.local/bin/jeo   (compat symlink → bun bin)
+$ which jeo           → ~/.bun/bin/jeo
+$ jeo --version       → jeo v0.1.0
 # real coding agent through the bun-linked binary (ollama/qwen2.5:0.5b):
-$ joc launch "create ok.txt containing: bunlink works"
+$ jeo launch "create ok.txt containing: bunlink works"
   · write ok ; · write ok ; Stopped: repeated … (no-progress guard)
   → ok.txt == "bunlink works"
 $ sh scripts/uninstall.sh
-  Removed …/.local/bin/joc ; Removed …/.bun/bin/joc (bun link) ; Unregistered @jeo-code/coding-agent
+  Removed …/.local/bin/jeo ; Removed …/.bun/bin/jeo (bun link) ; Unregistered @jeo-code/coding-agent
 ```
 
 `tsc -p tsconfig.json --noEmit` → 0; `bun test` → 34/34 (no source changes —
@@ -1648,11 +1648,11 @@ M4 pipeline/doctor views, token streaming (gated on provider streaming, plan 05)
 Three standalone modules (executor subagents) + parent integration:
 - **Model aliases** (`src/ai/model-registry.ts`): built-in `fast`/`local`/`sonnet`/`gpt`/`flash`
   + `config.modelAliases` (config wins); `expandAlias`/`resolveModelId`/`listAliases`.
-  `model-manager.call()` now expands the model id before routing. New `joc models` command
+  `model-manager.call()` now expands the model id before routing. New `jeo models` command
   lists aliases + probes local Ollama (`/api/tags`) and OpenAI-compat (`/v1/models`).
 - **Skills surface** (`src/skills/catalog.ts`): gjc-style bundled workflow docs (launch,
-  deep-interview, ralplan, team, ultragoal). New `joc skills [name]` lists/details them, and
-  `skillsPromptSection()` is injected into the `joc launch` system prompt so the agent suggests
+  deep-interview, ralplan, team, ultragoal). New `jeo skills [name]` lists/details them, and
+  `skillsPromptSection()` is injected into the `jeo launch` system prompt so the agent suggests
   the right workflow command.
 - **Retry/backoff** (`src/util/retry.ts`): `withRetry` + `defaultRetryable` (429/5xx/network),
   exponential+capped, injectable sleep. `model-manager` wraps every `adapter.call` in it.
@@ -1660,9 +1660,9 @@ Three standalone modules (executor subagents) + parent integration:
 Config gained `modelAliases?: { [alias]: string }` (`state.ts`).
 
 **Verification:** `tsc` 0; `bun test` **60/60** (+15: model-registry, skills, retry).
-Real e2e (`JOC_CONFIG_DIR` + Ollama): `joc skills`/`joc skills deep-interview` render; `joc models`
+Real e2e (`JEO_CONFIG_DIR` + Ollama): `jeo skills`/`jeo skills deep-interview` render; `jeo models`
 shows `fast → ollama/qwen2.5:0.5b → ollama` + live probe; default model `fast` **alias-expanded**
-and the agent ran on `ollama/qwen2.5:0.5b` (created `b1.txt`). `joc --help` lists `models` + `skills`.
+and the agent ran on `ollama/qwen2.5:0.5b` (created `b1.txt`). `jeo --help` lists `models` + `skills`.
 
 ---
 
@@ -1670,16 +1670,16 @@ and the agent ran on `ollama/qwen2.5:0.5b` (created `b1.txt`). `joc --help` list
 
 **Date:** 2026-06-05 · gjc dimensions: **agentic workflow**, **model**.
 
-- **`--max-steps N`** flag for `joc launch` (`--max-steps 2` / `--max-steps=2`) — caps the
+- **`--max-steps N`** flag for `jeo launch` (`--max-steps 2` / `--max-steps=2`) — caps the
   per-turn tool-loop budget (was hardcoded 25). Verified: a 2-step run stops at the 2-step limit.
 - **`/compact`** slash command — runs `maybeCompact(history, {maxMessages:1})` on demand and
   reports removed count.
-- **`joc resume [id]`** top-level command — delegates to `launch --resume`, first-class session resume.
+- **`jeo resume [id]`** top-level command — delegates to `launch --resume`, first-class session resume.
 - **`thinkingLevel` applied**: `model-manager.thinkingMaxTokens(level)` maps low/medium/high →
   2000/4000/8000 default max-tokens (caller override still wins).
 
 **Verification:** `tsc` 0; `bun test` **62/62** (+2: `test/model-manager.test.ts` — routing stable,
-thinkingMaxTokens mapping). E2E: `joc resume` registered in help; `joc launch --max-steps 2` capped
+thinkingMaxTokens mapping). E2E: `jeo resume` registered in help; `jeo launch --max-steps 2` capped
 the loop against real `ollama/qwen2.5:0.5b`. Files: `src/commands/{launch,resume}.ts`,
 `src/cli/runner.ts`, `src/ai/model-manager.ts`.
 
@@ -1689,16 +1689,16 @@ the loop against real `ollama/qwen2.5:0.5b`. Files: `src/commands/{launch,resume
 
 **Date:** 2026-06-05 · gjc dimension: **bun 설치 방식** (gjc ships prebuilt binaries).
 
-- **`bun build --compile`** single binary: `bun run build` → `dist/joc` (61 MB, embeds the Bun
-  runtime). New `scripts/install.sh --binary` mode compiles + installs a standalone `joc` that
+- **`bun build --compile`** single binary: `bun run build` → `dist/jeo` (61 MB, embeds the Bun
+  runtime). New `scripts/install.sh --binary` mode compiles + installs a standalone `jeo` that
   needs **no Bun at runtime**. `dist/` gitignored.
 - **`scripts/smoke-test.sh`**: installs via `--binary` into a temp dir and asserts the binary runs
-  `joc --version` under `env -i PATH=/usr/bin:/bin` (no bun).
+  `jeo --version` under `env -i PATH=/usr/bin:/bin` (no bun).
 
 **Verification (no bun on PATH):** the compiled binary runs `--version`, `--help`, `doctor`
 (`[OK]` ollama), `skills`, AND a **real agent turn** against `ollama/qwen2.5:0.5b` (created
 `bin.txt`) — proving the lazy `await import("../commands/*")` loaders survive `--compile` (53 modules
-bundled). `scripts/smoke-test.sh` → "Smoke test passed". `bun run build` → working `dist/joc`.
+bundled). `scripts/smoke-test.sh` → "Smoke test passed". `bun run build` → working `dist/jeo`.
 Files: `scripts/install.sh` (`--binary`), `scripts/smoke-test.sh`, `package.json` (`build`), `.gitignore`.
 
 ---
@@ -1727,7 +1727,7 @@ Note: the strict-JSON tool loop still uses blocking `call()`; `stream()` powers 
 
 **Date:** 2026-06-05 · gjc dimension: **agentic workflow**.
 
-`joc launch` previously persisted only the user prompt + final reply. Now (pi-mono parity) it
+`jeo launch` previously persisted only the user prompt + final reply. Now (pi-mono parity) it
 persists **every message the engine adds during a turn** — the intermediate tool-call (`assistant`)
 and tool-result (`user`) turns — by appending `history.slice(beforeLen)` plus the final reply.
 Resume reconstructs the full tool context, not just the conversation skeleton.
@@ -1744,7 +1744,7 @@ vs 2 before. Files: `src/commands/launch.ts`.
 
 - **`src/tui/components/slash.ts`**: `matchSlash(input)` (prefix, case-insensitive) +
   `isSlashAttempt(input)` + `SLASH_COMMANDS`.
-- **REPL wiring**: an unhandled `/typo` no longer gets sent to the model — `joc launch` now prints
+- **REPL wiring**: an unhandled `/typo` no longer gets sent to the model — `jeo launch` now prints
   `Did you mean: …?` suggestions (or `Unknown command`). Real UX fix for slash typos.
 
 **Verification:** `tsc` 0; `bun test` **68/68** (+2 slash: prefix-match incl. `/c`→`[/clear,/compact]`,
@@ -1758,10 +1758,10 @@ case-insensitivity, non-slash empty, `isSlashAttempt` arg handling). Files:
 | Dimension | Improvements landed (verified) |
 |---|---|
 | **tui** | M1+M2 (pass 17) renderer/components/LaunchTui; M3 partial — slash palette (pass 23). Remaining: M4 pipeline/doctor views, token render. |
-| **agentic workflow** | `--max-steps`, `/compact`, `joc resume` (19); full-fidelity sessions (22). |
+| **agentic workflow** | `--max-steps`, `/compact`, `jeo resume` (19); full-fidelity sessions (22). |
 | **provider** | retry/backoff (18); token streaming `callStream` + ollama/openai SSE (21). |
-| **model** | alias registry + `joc models` (18); `thinkingLevel`→maxTokens (19). |
-| **기본 스킬 적용** | bundled skill catalog + `joc skills` + launch-prompt injection (18). |
+| **model** | alias registry + `jeo models` (18); `thinkingLevel`→maxTokens (19). |
+| **기본 스킬 적용** | bundled skill catalog + `jeo skills` + launch-prompt injection (18). |
 | **bun 설치 방식** | `bun link` (16); prebuilt `--compile` binary + `--binary` install + smoke test (20). |
 
 All passes verified with `tsc` 0 + `bun test` (now 68) + real `ollama/qwen2.5:0.5b` e2e where applicable.
@@ -1806,17 +1806,17 @@ with a local model. Files: `src/commands/deep-interview.ts`.
 - **Pipeline view (M4)**: `src/tui/components/meter.ts` — pure `meter(value,max,width)` →
   `[####------] 40%` (clamped) + `stepMeter`. Wired into `deep-interview` so each round renders
   `Ambiguity [####…] N%` instead of a bare number.
-- **Streaming token render**: new `joc chat "<message>"` — a single-shot, no-tools conversational
+- **Streaming token render**: new `jeo chat "<message>"` — a single-shot, no-tools conversational
   command that renders the reply **token-by-token** via `ModelManager.stream()` (complementary to
-  the strict-JSON tool loop in `joc launch`).
+  the strict-JSON tool loop in `jeo launch`).
 
 **Verification:** `tsc` 0; `bun test` **71/71** (+2 meter: fill/clamp/percent, stepMeter). Real Ollama:
-`joc chat "say hello…"` streamed `"Hello! How can I assist you today?"`; `deep-interview … --auto` shows
+`jeo chat "say hello…"` streamed `"Hello! How can I assist you today?"`; `deep-interview … --auto` shows
 `Ambiguity [####################] 100%`. Files: `src/tui/components/meter.ts`, `src/commands/chat.ts`,
 `src/cli/runner.ts`, `src/commands/deep-interview.ts`, `test/meter.test.ts`.
 
 This closes the TUI dimension backlog (M1 renderer, M2 LaunchTui, M3 slash palette, M4 meter +
-streaming chat). 12 `joc` commands; **71 tests**.
+streaming chat). 12 `jeo` commands; **71 tests**.
 
 ---
 
@@ -1827,11 +1827,11 @@ streaming chat). 12 `joc` commands; **71 tests**.
 Added provider-reported token usage (gjc/pi surface cost/usage): `CallOptions.onUsage(Usage)`
 where `Usage = { inputTokens?, outputTokens?, durationMs? }`. The **ollama** adapter reports
 `prompt_eval_count` / `eval_count` / `total_duration` (both `call` and `stream`); `model-manager`
-threads `onUsage` through `resolveCall`. `joc chat` now prints a usage footer
+threads `onUsage` through `resolveCall`. `jeo chat` now prints a usage footer
 `(N in / M out tokens · X tok/s)`.
 
 **Verification:** `tsc` 0; `bun test` **72/72** (+1: mock-fetch test asserts `onUsage` fires with
-`{inputTokens:5,outputTokens:7,durationMs:2}`). Real Ollama: `joc chat "count to three"` →
+`{inputTokens:5,outputTokens:7,durationMs:2}`). Real Ollama: `jeo chat "count to three"` →
 `(32 in / 34 out tokens · 80 tok/s)`. Files: `src/ai/types.ts`, `src/ai/providers/ollama.ts`,
 `src/ai/model-manager.ts`, `src/commands/chat.ts`, `test/usage.test.ts`.
 
@@ -1846,7 +1846,7 @@ and reporting `usageMetadata` token counts; `call()` refactored to share a reque
 report usage. **All four providers (anthropic/openai/gemini/ollama) now implement `stream()`.**
 
 **Verification:** `tsc` 0; `bun test` **73/73** (+1: mock-fetch SSE test — deltas concatenate to
-`"Hello"`, `usageMetadata`→`{inputTokens:4,outputTokens:2}`). Real Ollama `joc chat` streaming + usage
+`"Hello"`, `usageMetadata`→`{inputTokens:4,outputTokens:2}`). Real Ollama `jeo chat` streaming + usage
 re-confirmed (no regression). Files: `src/ai/providers/gemini.ts`, `test/gemini-stream.test.ts`.
 
 ---
@@ -1855,12 +1855,12 @@ re-confirmed (no regression). Files: `src/ai/providers/gemini.ts`, `test/gemini-
 
 **Date:** 2026-06-05 · gjc dimension: **기본 스킬 적용** (gjc bundles SKILL.md files).
 
-`joc skills --write [dir]` materializes the bundled skill catalog to `.joc/skills/<name>.md`
-(or a given dir) — the on-disk SKILL-doc form gjc ships, so other tools/agents can read joc's
+`jeo skills --write [dir]` materializes the bundled skill catalog to `.jeo/skills/<name>.md`
+(or a given dir) — the on-disk SKILL-doc form gjc ships, so other tools/agents can read jeo's
 workflow skills as files.
 
 **Verification:** `tsc` 0; `bun test` **74/74** (+1: `--write` to a temp dir produces one `.md` per
-skill with the expected header/command). E2E: `joc skills --write` wrote 5 docs to `.joc/skills/`.
+skill with the expected header/command). E2E: `jeo skills --write` wrote 5 docs to `.jeo/skills/`.
 Files: `src/commands/skills.ts`, `test/skills.test.ts`.
 
 ---
@@ -1871,11 +1871,11 @@ All six dimensions now have multiple verified improvements; TUI + provider backl
 - **tui**: M1–M4 (renderer, LaunchTui, slash palette, meter + streaming chat).
 - **agentic workflow**: max-steps, /compact, resume, full-fidelity sessions, --auto always-seeds.
 - **provider**: retry, streaming (all 4 providers), token-usage accounting.
-- **model**: alias registry + `joc models`, thinkingLevel.
-- **기본 스킬 적용**: catalog + `joc skills` + prompt injection + `--write` to disk.
+- **model**: alias registry + `jeo models`, thinkingLevel.
+- **기본 스킬 적용**: catalog + `jeo skills` + prompt injection + `--write` to disk.
 - **bun 설치 방식**: bun link + prebuilt `--compile` binary + smoke test.
 
-13 `joc` commands; **74 tests**; every pass verified with `tsc` 0 + `bun test` + real Ollama e2e where applicable.
+13 `jeo` commands; **74 tests**; every pass verified with `tsc` 0 + `bun test` + real Ollama e2e where applicable.
 
 ---
 
@@ -1903,7 +1903,7 @@ abort errors, so cancellation is not retried.
 
 **Verification:** `tsc` 0; `bun test` **77/77** (+1: an aborted signal rejects `ollamaAdapter.call`
 with an abort error and the signal is confirmed to reach `fetch`; a fresh signal completes normally).
-Real Ollama `joc chat` regression clean. Files: `src/ai/types.ts`, `src/ai/model-manager.ts`,
+Real Ollama `jeo chat` regression clean. Files: `src/ai/types.ts`, `src/ai/model-manager.ts`,
 `src/ai/providers/{anthropic,openai,gemini,ollama}.ts`, `test/abort.test.ts`.
 
 ---
@@ -1912,7 +1912,7 @@ Real Ollama `joc chat` regression clean. Files: `src/ai/types.ts`, `src/ai/model
 
 **Date:** 2026-06-05 · gjc dimensions: **bun 설치/진단 성능**, **model** (bugfix).
 
-- **Performance**: `joc doctor` ran its 4 provider probes **sequentially** (up to ~4×4s on an
+- **Performance**: `jeo doctor` ran its 4 provider probes **sequentially** (up to ~4×4s on an
   unreachable setup). Now `Promise.all` runs the cloud probes concurrently (order preserved).
 - **Bugfix**: doctor resolved the **raw** default model, so an aliased default (`fast`) showed
   `fast → anthropic` and a wrong `[NOT READY]`. Now it expands the alias first
@@ -1929,7 +1929,7 @@ renders all rows in ~0.26s and reports `[READY]` (was a false `[NOT READY]`). Fi
 
 `AgentLoopOptions.signal` + `ChatOptions.signal` thread an `AbortSignal` from `runAgentLoop` →
 `callLlm` → adapters; the loop also checks `signal.aborted` between steps and returns `"Cancelled."`.
-`joc launch` installs a per-turn `SIGINT` handler so **Ctrl-C cancels the in-flight turn** (not the process).
+`jeo launch` installs a per-turn `SIGINT` handler so **Ctrl-C cancels the in-flight turn** (not the process).
 
 **Verification:** `tsc` 0; `bun test` **78/78** (+1: an aborted signal makes `runAgentLoop` return
 `Cancelled.` with **0 tool calls**). Real Ollama launch regression clean.
@@ -1939,11 +1939,11 @@ Files: `src/agent/{loop,engine}.ts`, `src/commands/launch.ts`, `test/engine.test
 
 **Date:** 2026-06-05 · gjc dimensions: **tui**, **provider**.
 
-- `joc doctor` OK rows now show a latency meter (`[####--------] N%` vs a 2s baseline) via the M4
+- `jeo doctor` OK rows now show a latency meter (`[####--------] N%` vs a 2s baseline) via the M4
   `meter` component.
 - OpenAI streaming requests `stream_options.include_usage` and reports the final-chunk `usage` via `onUsage`.
 
-**Verification:** `tsc` 0; `bun test` **78/78**. Real Ollama: `joc doctor` renders
+**Verification:** `tsc` 0; `bun test` **78/78**. Real Ollama: `jeo doctor` renders
 `ollama … [ OK ] 4ms … [------------] 0%`. Files: `src/commands/doctor.ts`, `src/ai/providers/openai.ts`.
 
 ---
@@ -1953,10 +1953,10 @@ Files: `src/agent/{loop,engine}.ts`, `src/commands/launch.ts`, `test/engine.test
 **Date:** 2026-06-05 · gjc dimension: **agentic workflow** / **provider** (cost visibility).
 
 `runAgentLoop` now accumulates provider token usage across a turn's steps (via a per-step `onUsage`
-sink threaded through `ChatOptions.onUsage`) and returns it as `AgentLoopResult.usage`. `joc launch`
+sink threaded through `ChatOptions.onUsage`) and returns it as `AgentLoopResult.usage`. `jeo launch`
 prints a per-turn footer `(N in / M out tokens)` (one-shot, interactive, and TUI paths).
 
-**Verification:** `tsc` 0; `bun test` **78/78**. Real Ollama: `joc launch --no-tui --max-steps 2 …`
+**Verification:** `tsc` 0; `bun test` **78/78**. Real Ollama: `jeo launch --no-tui --max-steps 2 …`
 → `(842 in / 40 out tokens)`. Files: `src/agent/{engine,loop}.ts`, `src/commands/launch.ts`.
 
 ---
@@ -1976,14 +1976,14 @@ prints a per-turn footer `(N in / M out tokens)` (one-shot, interactive, and TUI
 
 **Date:** 2026-06-09 · gjc dimensions: **provider** / **model** (bugfix), **tui** (readability).
 
-**Symptom (user report):** "joc subagent의 provider/model 설정이 동작하지 않는다." Two independent
+**Symptom (user report):** "jeo subagent의 provider/model 설정이 동작하지 않는다." Two independent
 root causes found and fixed:
 
 1. **Stale session config in the in-loop `task` tool.** `runTurn` (`src/commands/launch.ts`) built the
    delegated `task` tool from the session-start `cfg` snapshot, so a per-role model/maxSteps override set
    mid-session via `/agents <role> <model>` (persisted by `saveConfigPatch`) was a no-op for delegated
    subagents until restart. Fix: `runTurn` now re-reads `readGlobalConfig()` each turn and feeds that fresh
-   config to `createTaskTool`. (`joc team` already re-read fresh config per task; only launch was stale.)
+   config to `createTaskTool`. (`jeo team` already re-read fresh config per task; only launch was stale.)
 
 2. **Env API keys never overlaid onto the providers map when a config file exists.** `withEnvOverlay`
    (`src/agent/state.ts`) merged env OAuth tokens, default model, base URLs, and role tiers — but NOT
@@ -1995,7 +1995,7 @@ root causes found and fixed:
 **TUI / stream categorization (readability):** the live `LaunchTui` stream region (`onSubagentEvent`,
 `onToolResult`, `onError`) and the plain non-TUI sinks (`formatTaskSubEvent`, `createStreamEvents`) now
 lead every line with a category badge from `category-index` (`[AGENT]`/`[STEP]`/`[DONE]`/`[ERR]`),
-matching the already-categorized forge boxes, tool list, status line, `/view`, `/diff`, and `joc team`.
+matching the already-categorized forge boxes, tool list, status line, `/view`, `/diff`, and `jeo team`.
 Progress, completion, error, and subagent lines are now classifiable at a glance in both TUI and pipe modes.
 
 **Verification:** `tsc` 0; `bun test` **684/684** (+8: in-loop override→callLlm routing, default fallback,
@@ -2015,7 +2015,7 @@ Parallel read-only `architect` subagents audited (a) provider/model/credential/s
 
 1. **BLOCK — fresh-install default model drift.** `readRawGlobalConfig()`'s no-file clean default
    (`claude-3-5-sonnet`) diverged from `envDefaultConfig()`'s runtime default (`claude-sonnet-4-5`), so the
-   first `saveConfigPatch` on a machine with no `~/.joc/config.json` (auth login, `/agents`, `/roles`, …)
+   first `saveConfigPatch` on a machine with no `~/.jeo/config.json` (auth login, `/agents`, `/roles`, …)
    baked a DIFFERENT default than the runtime resolves — silently changing the effective model. Fixed by a
    single shared `DEFAULT_MODEL` constant used by both (`src/agent/state.ts`). Live-verified: fresh dir +
    unrelated `saveConfigPatch` now bakes `claude-sonnet-4-5` (= effective default).
@@ -2027,7 +2027,7 @@ Parallel read-only `architect` subagents audited (a) provider/model/credential/s
 3. **LOW — blank subagent model override.** `resolveSubagentModel` used `??`, passing a hand-edited empty
    `model: ""` verbatim to the provider (400). Switched to `||` so blank falls back to the default.
 
-4. **TUI — `joc team` lifecycle ledger** now uses shared category badges
+4. **TUI — `jeo team` lifecycle ledger** now uses shared category badges
    (`[STEP]` current task, `[DONE]` completed/all-done, `[ERR]` failed) instead of ad-hoc `[TASK]`/
    `[SUCCESS]`/`[TASK FAILED]` markers — consistent with the rest of the agent (`src/commands/team.ts`).
 
@@ -2067,16 +2067,16 @@ performance and features") is satisfied with direct current-state evidence:
   `tsc 0` + `bun test` result and real `ollama/qwen2.5:0.5b` e2e (or deterministic mock) evidence.
   (≥20 improvements with 실 동작검증.)
 - **All six dimensions improved, each with multiple verified changes:**
-  - tui: renderer + LaunchTui + slash palette + meter + streaming `joc chat` + doctor latency bar (M1–M4)
-  - agentic workflow: `--max-steps`, `/compact`, `joc resume`, full-fidelity sessions, `--auto` always-seeds, mid-turn Ctrl-C cancellation
+  - tui: renderer + LaunchTui + slash palette + meter + streaming `jeo chat` + doctor latency bar (M1–M4)
+  - agentic workflow: `--max-steps`, `/compact`, `jeo resume`, full-fidelity sessions, `--auto` always-seeds, mid-turn Ctrl-C cancellation
   - provider: retry/backoff, streaming (all 4), token-usage accounting (all 4), AbortSignal
-  - model: alias registry + `joc models`, `thinkingLevel`→maxTokens, alias-aware doctor
-  - 기본 스킬 적용: skill catalog + `joc skills` + launch-prompt injection + `--write` to disk
+  - model: alias registry + `jeo models`, `thinkingLevel`→maxTokens, alias-aware doctor
+  - 기본 스킬 적용: skill catalog + `jeo skills` + launch-prompt injection + `--write` to disk
   - bun 설치 방식: `bun link` + prebuilt `--compile` binary + `--binary` install + smoke test
 - **Performance:** parallel doctor probes, retry resilience, streaming (perceived latency), no-progress
   guard, lazy command loading.
 - **Gates (current):** `tsc -p tsconfig.json --noEmit` → 0; `bun test` → **79/79** across 20 files;
-  13 `joc` commands; all 4 providers stream + report usage; working tree clean and pushed.
+  13 `jeo` commands; all 4 providers stream + report usage; working tree clean and pushed.
 
 ---
 
@@ -2103,7 +2103,7 @@ not, and `withRetry` actually re-attempts a 503 then succeeds.
 ## 38. `find`/`search` prune VCS/build/dependency dirs
 
 **Dimension: tooling parity (gjc native search respects ignores).** `find`/`search` walked
-`node_modules`, `.git`, `dist`, `.joc`, etc. — slow and noisy. Added `IGNORED_DIRS`; `find` now
+`node_modules`, `.git`, `dist`, `.jeo`, etc. — slow and noisy. Added `IGNORED_DIRS`; `find` now
 prunes them (`-type d ( … ) -prune`) and `grep` uses `--exclude-dir`.
 Files: `src/agent/tools.ts`, `test/tools-fs.test.ts`.
 
@@ -2141,12 +2141,12 @@ failing* calls (bad edits, failing commands) burned the whole step budget. Added
 5-consecutive-failure stop with a clear `doneReason`.
 Files: `src/agent/engine.ts`, `test/engine.test.ts`.
 
-## 44. `joc doctor --json` machine-readable report
+## 44. `jeo doctor --json` machine-readable report
 
 **Dimension: bun 진단 / CI.** Refactored doctor to gather a structured report then render either
 the human table or `--json` (model resolution, per-provider status+latency, oauth health, `ready`).
-`--strict` still exits non-zero when not ready. **Verify (real e2e):** `JOC_DEFAULT_MODEL=fast
-joc doctor --json` → valid JSON, `ready:true`, alias expansion, live ollama probe `200`; human
+`--strict` still exits non-zero when not ready. **Verify (real e2e):** `JEO_DEFAULT_MODEL=fast
+jeo doctor --json` → valid JSON, `ready:true`, alias expansion, live ollama probe `200`; human
 mode regression-clean.
 Files: `src/commands/doctor.ts`.
 
@@ -2176,9 +2176,9 @@ Files: `src/agent/compaction.ts`, `src/commands/launch.ts`, `test/compaction.tes
 
 ## 49. MutationGuard path-boundary fix (real bug)
 
-`absPath.startsWith(jocDir)` treated siblings like `.joc-backup/evil.ts` as inside `.joc/`,
+`absPath.startsWith(jeoDir)` treated siblings like `.jeo-backup/evil.ts` as inside `.jeo/`,
 so they were wrongly *allowed* to mutate during an active interview. Now uses a path-boundary
-check (`=== jocDir || startsWith(jocDir + sep)`).
+check (`=== jeoDir || startsWith(jeoDir + sep)`).
 Files: `src/agent/tools.ts`, `test/mutation-guard.test.ts`.
 
 ## 50. Tool-output truncation keeps head **and** tail
@@ -2190,8 +2190,8 @@ Files: `src/agent/engine.ts`, `test/engine.test.ts`.
 
 ## 51. Unknown-command "did you mean?" suggestions
 
-Mistyped commands (`joc doctr`) now suggest the nearest command via prefix match or Levenshtein
-≤ 2. **Verify (real e2e):** `joc doctr` → `Did you mean: doctor?`.
+Mistyped commands (`jeo doctr`) now suggest the nearest command via prefix match or Levenshtein
+≤ 2. **Verify (real e2e):** `jeo doctr` → `Did you mean: doctor?`.
 Files: `src/cli/runner.ts`, `test/cli-runner.test.ts`.
 
 ---
@@ -2203,14 +2203,14 @@ Files: `src/cli/runner.ts`, `test/cli-runner.test.ts`.
   by **real `ollama/qwen2.5:0.5b` / CLI e2e** (the agent created `fruit.txt` with the `bash` tool
   and reported token usage; `doctor --json` returned live JSON).
 - **Real bugs fixed this run:** un-retried 429/5xx/529, reasoning-model misrouting, the
-  MutationGuard `.joc` prefix hole, head-only truncation losing test output, the failing-loop
+  MutationGuard `.jeo` prefix hole, head-only truncation losing test output, the failing-loop
   budget burn, and the no-op `/compact`.
 - **Dimensions touched:** provider (retry/errors), model (routing/`describeModel`), agentic
   workflow (failure guard, error surfacing, compaction, truncation), tui (footer, `/model`,
   doctor json), tooling (find/search/read/bash), 기본 스킬 (MutationGuard correctness), bun (doctor
   diagnostics).
 - **Gates (current):** `tsc -p tsconfig.json --noEmit` → 0; `bun test` → **108/108 across 24
-  files**; 13 `joc` commands intact.
+  files**; 13 `jeo` commands intact.
 
 ---
 
@@ -2253,15 +2253,15 @@ Files: `src/agent/tools.ts`, `src/agent/engine.ts`, `test/tools-fs.test.ts`.
 
 ## 56. Per-command `--help`
 
-`joc <cmd> --help` now prints that command's usage + summary (via `renderCommandHelp`) instead of
-folding `--help` into the command's args. **Verify (real e2e):** `joc deep-interview --help` →
-`Usage: joc deep-interview "<initial idea>"`.
+`jeo <cmd> --help` now prints that command's usage + summary (via `renderCommandHelp`) instead of
+folding `--help` into the command's args. **Verify (real e2e):** `jeo deep-interview --help` →
+`Usage: jeo deep-interview "<initial idea>"`.
 Files: `src/cli/runner.ts`, `test/cli-runner.test.ts`.
 
-## 57. `joc models` shows per-provider credential status
+## 57. `jeo models` shows per-provider credential status
 
 **Dimension: model / UX.** Adds a "Provider credentials" section (`API key` / `OAuth` / `none …`) via
-`resolveCredential`. **Verify (real e2e):** clean config → all three report `none (run 'joc setup' …)`,
+`resolveCredential`. **Verify (real e2e):** clean config → all three report `none (run 'jeo setup' …)`,
 alongside the live Ollama model list.
 Files: `src/commands/models.ts`.
 
@@ -2274,11 +2274,11 @@ wrong-typed field slipped through untyped. New `src/agent/config-schema.ts` (`Co
 mis-parsing. Real config (`gemini-flash-latest`) validates cleanly.
 Files: `src/agent/config-schema.ts`, `src/agent/state.ts`, `test/config-schema.test.ts`.
 
-## 59. `chalk`-colored `joc doctor` (wires the `chalk` dep)
+## 59. `chalk`-colored `jeo doctor` (wires the `chalk` dep)
 
 **Dimension: tui.** Doctor status (`OK` green / `SKIP` yellow / `FAIL` red) and verdict
 (`[READY]`/`[NOT READY]`) are colorized. Respects TTY/`NO_COLOR` and stays plain in pipes and
-`--json`. **Verify (real e2e):** `FORCE_COLOR=1 joc doctor` emits ANSI; piped output and `--json` do
+`--json`. **Verify (real e2e):** `FORCE_COLOR=1 jeo doctor` emits ANSI; piped output and `--json` do
 not (JSON parses, `ready:true`).
 Files: `src/commands/doctor.ts`.
 
@@ -2292,23 +2292,23 @@ Files: `src/commands/doctor.ts`.
   `models` credentials, and per-command help; real `ollama/qwen2.5:0.5b` launch regression (agent ran
   `bash`, created the file, guards engaged cleanly).
 - **Gates (current):** `tsc -p tsconfig.json --noEmit` → 0; `bun test` → **118/118 across 25 files**;
-  13 `joc` commands intact.
+  13 `jeo` commands intact.
 ---
 
 ## 60. gjc-style install + run parity (`bun install -g`, `--tmux`/`--worktree`)
 
-**Dimension: install + cli.** Brought `joc`'s install and launch surfaces in line with how
+**Dimension: install + cli.** Brought `jeo`'s install and launch surfaces in line with how
 `gjc` is installed and run.
 
 - **Install (gjc parity).** `scripts/install.sh` now performs a single **bun global install**
   by default (`bun add -g github:akillness/jeo-code`), mirroring `bun install -g gajae-code`,
-  instead of the old clone+`bun link` dance. Fixed the `JOC_REPO` default (was the non-existent
+  instead of the old clone+`bun link` dance. Fixed the `JEO_REPO` default (was the non-existent
   `jeo-code/jeo-code`; now `akillness/jeo-code`). Modes: default global, `--npm`
   (`bun install -g jeo-code`), `--local` (dev `bun link` from a clone), `--binary` (compiled).
   Added a compatibility symlink in `~/.local/bin` and a PATH hint. `package.json` gained
   `files`, `engines.bun`, `repository`, and `license` so registry/GitHub installs are clean.
 - **Run (gjc parity).** Generalized `dispatch` so a bare call **or any leading `--flag`**
-  (`joc`, `joc --tmux`, `joc --tmux --worktree <path>`) routes to `launch`. Added
+  (`jeo`, `jeo --tmux`, `jeo --tmux --worktree <path>`) routes to `launch`. Added
   `--worktree <path>` to `launch`: reuses an existing dir or creates a git worktree on a branch
   named after the path basename, then `chdir`s into it. In tmux mode the worktree becomes the
   session cwd and `--worktree`/`--tmux` are stripped from the inner command.
@@ -2317,14 +2317,14 @@ Files: `src/commands/doctor.ts`.
 - **Verify:** `tsc --noEmit` → 0; `bun test` → **135/135 across 29 files** (new
   `test/worktree.test.ts`: dispatch routing, `--version` non-routing, unknown-command,
   worktree reuse+`chdir`, real `git worktree add` creation). Real install smoke:
-  `sh scripts/install.sh --local` links `~/.bun/bin/joc` + `~/.local/bin/joc`; `joc --version` ok.
+  `sh scripts/install.sh --local` links `~/.bun/bin/jeo` + `~/.local/bin/jeo`; `jeo --version` ok.
 
 ---
 
 ## 61. Configurable provider retry budgets (gjc parity)
 
 **Dimension: ai/config.** gjc exposes `~/.gjc/config.yml` `retry.{requestMaxRetries,
-streamMaxRetries, maxRetries, maxDelayMs}`; `joc` previously hard-coded the provider request
+streamMaxRetries, maxRetries, maxDelayMs}`; `jeo` previously hard-coded the provider request
 retry count. Wired a config-driven budget end to end.
 
 - **Schema/type.** Added an optional `retry` block to `ConfigSchema`
@@ -2349,7 +2349,7 @@ retry count. Wired a config-driven budget end to end.
 
 ## Evolution TUI — analysis & 20-pass improvement run (62–81)
 
-**Concept.** A coherent "evolution" identity for the joc TUI: as an agent works
+**Concept.** A coherent "evolution" identity for the jeo TUI: as an agent works
 through its step budget, every animated surface evolves together through five
 stages — **Primordial Cell → Double Helix (DNA) → Tool User → AI Coding Agent →
 Singularity** — across the ASCII art, spinner, progress meter, and footer track.
@@ -2414,12 +2414,12 @@ and document it.
 
 ### Batch D — Feature & docs (passes 74–77)
 
-- **74. `joc evolve` command.** New `src/commands/evolve.ts` (+ runner
+- **74. `jeo evolve` command.** New `src/commands/evolve.ts` (+ runner
   registration) previews the evolution identity: renders all five stages (or one
   via `--step N --max M`) with art, evolution track, and a stage meter;
   `--animate` streams line-by-line, `--no-color` for plain output. `write`/`sleep`
   injectable for tests.
-- **75. README.** Added the `joc evolve` command row and an "Evolution TUI"
+- **75. README.** Added the `jeo evolve` command row and an "Evolution TUI"
   feature bullet describing the five-stage lockstep model.
 - **76. AGENTS.md.** Listed `evolve` (15 commands) and documented
   `evolution.ts` as the canonical 5-stage model in the `src/tui/` map.
@@ -2427,14 +2427,14 @@ and document it.
   (`setStage`) keep the animation phase valid when frame sets change size.
 - **Verify:** `tsc --noEmit` → 0; `bun test` → **166/166 across 33 files** (new
   `test/evolve.test.ts`: registration, all-stages render, `--no-color` no-ANSI,
-  `--step` single-stage, `--animate` no-delay). Real smoke: `joc evolve --no-color
+  `--step` single-stage, `--animate` no-delay). Real smoke: `jeo evolve --no-color
   --step 100 --max 100` renders the Singularity stage + `[████…] 100%`.
 
 ### Batch E — Polish (passes 78–81)
 
 - **78. Labeled meter.** `meterLabeled(label, value, max, width)` prefixes a meter
   with a label (bare meter when empty) for doctor/pipeline rows.
-- **79. Global width alignment.** `joc evolve` and the live `app.ts` render art at
+- **79. Global width alignment.** `jeo evolve` and the live `app.ts` render art at
   the global `stageWidth()` so every stage shares a uniform width (no horizontal
   jump as stages change).
 - **80. Monotonic stage progress.** `createStageProgress()` returns the highest
@@ -2452,7 +2452,7 @@ and document it.
   coherent identity: one canonical model (`evolution.ts`) drives the ASCII art,
   spinner, meter, and footer track in lockstep; everything is guarded, plain-mode
   capable, flicker-free (uniform width+height), monotonic, cached, and previewable
-  via `joc evolve`.
+  via `jeo evolve`.
 - **Net:** `tsc --noEmit` → 0; `bun test` → **167/167 across 33 files** (5 new test
   suites: evolution, ascii-art, footer, evolve, + rewritten meter). All gates green.
 
@@ -2462,7 +2462,7 @@ and document it.
 
 **Date:** 2026-06-05 · **Dimension: tui / usability.**
 
-We analyzed the existing codebase and designed a complete evolutionary theme for the joc TUI. As the agent progresses through steps, the TUI dynamically evolves from a primordial single cell to a full technological singularity. We implemented 20 distinct improvements to make this identity beautiful, robust, and highly interactive.
+We analyzed the existing codebase and designed a complete evolutionary theme for the jeo TUI. As the agent progresses through steps, the TUI dynamically evolves from a primordial single cell to a full technological singularity. We implemented 20 distinct improvements to make this identity beautiful, robust, and highly interactive.
 
 ### New passes:
 
@@ -2482,7 +2482,7 @@ We analyzed the existing codebase and designed a complete evolutionary theme for
 - **95. Rich evolution summary stats.** Enhanced `LaunchTui.finish()` to report total steps, duration, and final peak evolution stage reached.
 - **96. Interactive `/evolve` command.** Registered a REPL slash command `/evolve` that plays a full evolution sequence of all stages.
 - **97. Evolution test suite.** Added `test/tui-evolution.test.ts` verifying all stage mapping, auto-scaling, synapse firing, and tip helpers.
-- **98. Doctor terminal diagnostics.** Enhanced `joc doctor` to report terminal size, color support, and ASCII art compatibility.
+- **98. Doctor terminal diagnostics.** Enhanced `jeo doctor` to report terminal size, color support, and ASCII art compatibility.
 - **99. Renderer resize clear optimization.** Added `prevCols` tracking to `Renderer` to clear screen and remove wrapping ghosts when columns change.
 - **100. Mutation Guard lock badge.** Displayed a red `🛡️  [MUTATION LOCKED]` badge in the thinking line when code edits are restricted by deep-interview.
 - **101. Documentation & Prompt alignment.** Updated `README.md` and log entries to reflect the newly landed TUI evolution features.
@@ -2550,12 +2550,12 @@ registry). Every pass keeps `tsc --noEmit` at 0 and the suite green.
 - **Live app:** on a TTY the frame now **fills the whole screen** — ASCII art centered to `cols`, footer pinned to the bottom `row`; off a TTY (pipes/tests) it stays compact. Heavy panels gated to the TTY path. `test/layout.test.ts` covers it.
 
 ### Batch K — Theme registry (134–139)
-- **134–136. `themes.ts`.** `EvolutionTheme` + `THEMES`: `cosmic` (default), `matrix` (phosphor green), `solar` (warm star), `mono` (colorless). `getTheme`/`listThemes`/`resolveTheme(JOC_TUI_THEME)`/`themeGradient`.
-- **137. App theme.** `LaunchTui` reads `JOC_TUI_THEME`; `mono` disables track color.
+- **134–136. `themes.ts`.** `EvolutionTheme` + `THEMES`: `cosmic` (default), `matrix` (phosphor green), `solar` (warm star), `mono` (colorless). `getTheme`/`listThemes`/`resolveTheme(JEO_TUI_THEME)`/`themeGradient`.
+- **137. App theme.** `LaunchTui` reads `JEO_TUI_THEME`; `mono` disables track color.
 - **138. `evolve --theme`/`--list-themes`** (see Batch L).
 - **139. Tests.** `test/themes.test.ts` — case-insensitive lookup, fallback, mono colorless, env resolution.
 
-### Batch L — `joc evolve` UX (140–145)
+### Batch L — `jeo evolve` UX (140–145)
 - **140. `--json`.** Emits the canonical stage model (names, captions, tips, transitions, themes) for tooling.
 - **141. `--loop [n]`.** Plays the stage's animation frames n times (bounded; injectable sleep).
 - **142. `--theme`/`--gradient`/`--ascii`/`--width`/`--fit`.** Theme + truecolor gradient + ASCII fallback + width override + terminal-width centering.
@@ -2574,11 +2574,11 @@ registry). Every pass keeps `tsc --noEmit` at 0 and the suite green.
 ### Verification (passes 102–151)
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **all green** (251 tests across 46 files at run time, including the concurrent agents' suites; this run added `color`, `capability`, `ansi-width`, `transitions`, `layout`, `animation`, `themes`, `footer-polish` suites + extended `evolve`).
-- Real smoke: `joc evolve --list` (auto ASCII fallback under `TERM=dumb`), `joc evolve --step 60 --ascii` (half-marker track + 75% meter), `joc evolve --json`, and a forced-truecolor `--gradient --theme matrix --fit` render (matrix-green per-char gradient, centered to terminal width, full block meter).
+- Real smoke: `jeo evolve --list` (auto ASCII fallback under `TERM=dumb`), `jeo evolve --step 60 --ascii` (half-marker track + 75% meter), `jeo evolve --json`, and a forced-truecolor `--gradient --theme matrix --fit` render (matrix-green per-char gradient, centered to terminal width, full block meter).
 
 > **Note (concurrent work):** during this run other `gjc` agents were editing the
 > same tree (`forge.ts`, `status.ts`, `config-panel.ts`, slash `/config`, etc.).
-> Their rich `renderForge`/`renderJocStatus` panels were rendering in the compact
+> Their rich `renderForge`/`renderJeoStatus` panels were rendering in the compact
 > non-TTY path and inflating the test frame; pass-set gated them behind the TTY
 > fill path (consistent with the terminal-fit mandate), restoring the green gate.
 ---
@@ -2587,8 +2587,8 @@ registry). Every pass keeps `tsc --noEmit` at 0 and the suite green.
 
 **Date:** 2026-06-05 · **Dimension: tui / agent-progress observability.**
 
-This pass focused the already-evolving `joc` TUI on concrete coding-agent work: progress status,
-`joc thinking`, `joc forge`, boxed previews for tool calls/results, and Ralph-style subagent
+This pass focused the already-evolving `jeo` TUI on concrete coding-agent work: progress status,
+`jeo thinking`, `jeo forge`, boxed previews for tool calls/results, and Ralph-style subagent
 guidance streams. The local repository does not contain gjc's `packages/tui` source, so the pass
 used the repo's existing gjc/pi-tui parity notes plus the current `src/tui/` implementation as the
 grounding target.
@@ -2615,9 +2615,9 @@ grounding target.
 - **119. Component exports.** `forge.ts` and `status.ts` are exported through the TUI component barrel.
 - **120. Tool stats API.** `ToolList.stats()` exposes running/ok/fail/total counts.
 - **121. Current tool API.** `ToolList.currentTool()` exposes the active forge target for status rows.
-- **122. `joc thinking` row.** Added a live thinking status row with stage-aware message, step, percent, meter, and elapsed time.
-- **123. `joc forge` row.** Added a live forge status row with current tool and tool outcome counts.
-- **124. Mutation lock consolidation.** Mutation guard status now appears in the structured `joc forge` row.
+- **122. `jeo thinking` row.** Added a live thinking status row with stage-aware message, step, percent, meter, and elapsed time.
+- **123. `jeo forge` row.** Added a live forge status row with current tool and tool outcome counts.
+- **124. Mutation lock consolidation.** Mutation guard status now appears in the structured `jeo forge` row.
 - **125. Progress percentage guard.** `progressPercent()` clamps invalid/empty step budgets to safe `0%`.
 - **126. Status meter integration.** Thinking status uses the existing evolutionary meter in compact 10-cell form.
 - **127. Live invocation boxes.** `LaunchTui.onAssistant` records a forge box when a tool call is proposed.
@@ -2644,7 +2644,7 @@ grounding target.
 - **148. Subagent non-convergence stream.** Step-cap failure emits `stream:error <role> did not converge...`.
 - **149. Forge/status tests.** Added `test/forge-status.test.ts` for forge summaries, redaction, status rows, and Ralph streams.
 - **150. Existing TUI test alignment.** Updated TUI app/slash/tool-list tests for the richer live frame and expanded command palette.
-- **151. README alignment.** Documented `joc thinking`, `joc forge`, boxed tool previews, stream labels, and updated suite counts.
+- **151. README alignment.** Documented `jeo thinking`, `jeo forge`, boxed tool previews, stream labels, and updated suite counts.
 
 ### Verification:
 
@@ -2657,9 +2657,9 @@ grounding target.
 
 **Date:** 2026-06-05 · **Dimension: tui / model+provider+subagent configuration & flow.**
 
-This run analyzes the gjc-parity `joc` surface and makes the **model, provider, and
+This run analyzes the gjc-parity `jeo` surface and makes the **model, provider, and
 subagent configuration** first-class in the interactive TUI: a typed subagent role
-registry (executor/planner/architect/critic) that `joc team` actually drives, a shared
+registry (executor/planner/architect/critic) that `jeo team` actually drives, a shared
 provider-credential inventory, pure config-panel formatters, the provider in the live
 footer, and a full set of `/model /models /provider /agents /config /thinking` slash
 commands wired into the launch REPL. New modules: `src/agent/subagents.ts`,
@@ -2691,7 +2691,7 @@ commands wired into the launch REPL. New modules: `src/agent/subagents.ts`,
 - **166. `describeProvider`.** Reports kind/label/baseUrl/ready; ollama is keyless-ready, OpenAI-compatible with a base URL is ready without a key.
 - **167. `describeAllProviders`.** Single config read for all four providers.
 - **168. `ai/index` export.** Provider status re-exported from the `ai` barrel.
-- **169. `joc models` refactor.** Now uses the shared status (ollama row + base URLs + ✓/· ready marks) instead of a local 3-provider loop.
+- **169. `jeo models` refactor.** Now uses the shared status (ollama row + base URLs + ✓/· ready marks) instead of a local 3-provider loop.
 
 ### Batch P — Pure config-panel formatters (170–175)
 - **170. `formatModelLine`.** Alias expansion + provider + credential mark (`✓` / `· no credential`).
@@ -2720,7 +2720,7 @@ commands wired into the launch REPL. New modules: `src/agent/subagents.ts`,
 - **189. `/help` refresh.** Lists every new configuration command.
 - **190. Slash palette.** `SLASH_COMMANDS` expanded so autocomplete + "did you mean?" cover the new commands.
 - **191. `/provider`/`/agents`/`/thinking` actionable errors.** Unknown inputs print the known set / valid levels.
-- **192. `joc models` alias routing.** Each alias line is annotated with its routed provider.
+- **192. `jeo models` alias routing.** Each alias line is annotated with its routed provider.
 
 ### Batch S — Per-session thinking budget (193–195)
 - **193. `AgentLoopOptions.maxTokens`.** The engine loop accepts a generation-token budget.
@@ -2733,18 +2733,18 @@ commands wired into the launch REPL. New modules: `src/agent/subagents.ts`,
 - **198. `test/config-panel.test.ts`.** Pure-formatter coverage with ANSI stripping.
 - **199. `test/slash.test.ts` extension.** New-command palette + `/model` vs `/models` disambiguation.
 - **200. Disjoint-module guarantee.** New files coexist with the concurrent gradient/forge runs; no duplicate definitions or handlers.
-- **201. Real smoke.** `joc models` renders the shared provider table + per-alias provider routing under a fresh config dir.
+- **201. Real smoke.** `jeo models` renders the shared provider table + per-alias provider routing under a fresh config dir.
 
 ### Verification (passes 152–201)
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **251 pass / 0 fail across 46 files** (this run added `subagents`, `provider-status`, `config-panel` suites + extended `slash`).
-- Real smoke: `JOC_CONFIG_DIR=$(mktemp -d) JOC_DEFAULT_MODEL=fast joc models` shows the four-provider credential table (ollama keyless ✓ + base URL) and per-alias provider routing (`fast → ollama/… (ollama)`, `gpt → gpt-4o (openai)`).
+- Real smoke: `JEO_CONFIG_DIR=$(mktemp -d) JEO_DEFAULT_MODEL=fast jeo models` shows the four-provider credential table (ollama keyless ✓ + base URL) and per-alias provider routing (`fast → ollama/… (ollama)`, `gpt → gpt-4o (openai)`).
 
 ## Ralph subagent todo-guidance stream tightening (202)
 
 **Date:** 2026-06-05 · **Dimension: team / ooo ralph execution.**
 
-The prior streaming pass printed Ralph-style todos around `joc team`, but the executor subagent
+The prior streaming pass printed Ralph-style todos around `jeo team`, but the executor subagent
 itself still received only the single task string. This follow-up pushes the same immutable todo
 contract into the subagent prompt so the worker is guided by the ordered plan, completed markers,
 the active `[>]` todo, and the explicit `stream:step` / `stream:complete` / `stream:error`
@@ -2770,7 +2770,7 @@ lifecycle contract.
 
 This run makes the TUI's model/provider/subagent configuration **pull the real, logged-in
 model catalog** from each credentialed provider instead of guessing from static aliases. When
-a provider is authenticated (OAuth bearer or API key), `joc` now queries its `models` endpoint
+a provider is authenticated (OAuth bearer or API key), `jeo` now queries its `models` endpoint
 and lets the user pick a concrete, validated id; unreachable / not-logged-in providers degrade
 gracefully. New module: `src/ai/model-discovery.ts`.
 
@@ -2798,11 +2798,11 @@ gracefully. New module: `src/ai/model-discovery.ts`.
 ### Batch V — Live-model formatters (`config-panel.ts`) (216–219)
 - **216. `formatLiveModels`.** Groups models by provider with the auth source and a per-provider count; surfaces failure reasons inline.
 - **217. Current marker.** The active resolved model is tagged `◀ current`.
-- **218. Cap + login hint.** Per-provider cap with `(+N more)`; an all-empty result hints `joc auth login` / start Ollama.
+- **218. Cap + login hint.** Per-provider cap with `(+N more)`; an all-empty result hints `jeo auth login` / start Ollama.
 - **219. `liveModelKnown`.** Membership check against successful provider lists (used for unknown-id warnings).
 
-### Batch W — `joc models` live catalog (220–223)
-- **220. Live section.** `joc models` now appends a live, credential-driven catalog via `discoverModels`.
+### Batch W — `jeo models` live catalog (220–223)
+- **220. Live section.** `jeo models` now appends a live, credential-driven catalog via `discoverModels`.
 - **221. Auth source shown.** Each provider line shows oauth / api_key / keyless.
 - **222. Graceful failures.** Not-logged-in / unreachable providers print a reason, not a crash.
 - **223. Current default marked.** The resolved default model is highlighted in the live list.
@@ -2815,8 +2815,8 @@ gracefully. New module: `src/ai/model-discovery.ts`.
 - **228. `/model <id>` validation.** Flags an id that is absent from the live provider catalog.
 - **229. `/provider <name>` live list.** After switching, prints that provider's live models to pick from.
 - **230. `/provider <name> <model>`.** Selects a concrete live model id directly.
-- **231. Not-logged-in warning.** Switching to an unauthenticated provider warns and points at `joc auth login`.
-- **232. `/agents <role> <model>`.** Persists a per-role subagent model to `~/.joc/config.json` (consumed by `joc team`).
+- **231. Not-logged-in warning.** Switching to an unauthenticated provider warns and points at `jeo auth login`.
+- **232. `/agents <role> <model>`.** Persists a per-role subagent model to `~/.jeo/config.json` (consumed by `jeo team`).
 - **233. Subagent model validation.** Unknown ids get a verify-it note against the live catalog.
 - **234. `/agents` usage hint.** Shows the new `set model` form.
 - **235. `/help` refresh.** Documents `/models [refresh]`, `/provider [name] [model]`, `/agents [role] [model]`.
@@ -2827,7 +2827,7 @@ gracefully. New module: `src/ai/model-discovery.ts`.
 - **240. Routing-qualified ids.** `ollama/*` ids preserved so the router still resolves them.
 - **241. Logged-in-only queries.** Discovery skips `none` cloud providers (no wasted calls).
 - **242. Snappy timeout.** TUI discovery is 4s-bounded.
-- **243. Durable subagent config.** `saveGlobalConfig` writes the role model so `joc team` picks it up across runs.
+- **243. Durable subagent config.** `saveGlobalConfig` writes the role model so `jeo team` picks it up across runs.
 
 ### Batch Y — Tests (244–251)
 - **244. `discoveryRequest` tests.** Anthropic api-key/oauth, gemini oauth-vs-key, OpenAI base-URL override.
@@ -2842,7 +2842,7 @@ gracefully. New module: `src/ai/model-discovery.ts`.
 ### Verification (passes 202–251)
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **297 pass / 0 fail across 52 files** (this run added `model-discovery` + extended `config-panel`).
-- Real smoke: `JOC_CONFIG_DIR=$(mktemp -d) JOC_DEFAULT_MODEL=fast joc models` against a `GEMINI_API_KEY` account fetched **50 live Gemini models** (`gemini-2.0-flash`, …) while anthropic/openai correctly reported `not logged in`.
+- Real smoke: `JEO_CONFIG_DIR=$(mktemp -d) JEO_DEFAULT_MODEL=fast jeo models` against a `GEMINI_API_KEY` account fetched **50 live Gemini models** (`gemini-2.0-flash`, …) while anthropic/openai correctly reported `not logged in`.
 
 ## Model/Provider setting flow — catalog + picker + setup overhaul (passes MP1–MP50)
 
@@ -2853,7 +2853,7 @@ A 50-pass run hardening the **model & provider setting flow**. Where the existin
 *credential readiness*, this run adds a curated **model catalog** (provider, context
 window, reasoning, recommended), a fuzzy resolver ("did you mean"), a generic
 keyboard-navigable **select-list**, catalog-driven **model/provider pickers**,
-**catalog-authoritative routing**, and a **`joc setup` overhaul** with validation,
+**catalog-authoritative routing**, and a **`jeo setup` overhaul** with validation,
 recommendations, base-URL normalization, and a richer summary. All new logic is in
 owned/new files (`model-catalog.ts`, `select-list.ts`, `model-picker.ts`,
 `provider-picker.ts`, `setup-helpers.ts`, `model-manager.ts`, `model-registry.ts`)
@@ -2897,7 +2897,7 @@ to avoid clobbering the concurrently-edited `config-panel.ts`/`provider-status.t
 - `bun test` → **all green** (304 tests / 53 files at run time, including concurrent suites; this run added `model-catalog`, `model-registry-alias`, `select-list`, `pickers`, `model-routing`, `setup-helpers`).
 - Real smoke (deterministic helper run): `gpt4o` → suggests `gpt-4o`; `gpt-4o` chosen as anthropic → "routes to openai" warning; `describeModelDetailed('flash')` → `gemini-2.5-flash` (1M ctx, alias `flash`); model choices grouped ready-first with `ctx · reasoning · recommended · ready` badges.
 
-> **Note:** the interactive `joc setup` readline loop hangs on piped/non-TTY stdin
+> **Note:** the interactive `jeo setup` readline loop hangs on piped/non-TTY stdin
 > (pre-existing behavior, unrelated to this run); the flow logic is verified via the
 > extracted pure helpers and their unit tests.
 
@@ -2914,7 +2914,7 @@ selection, project `.npmrc`, and public npm publication metadata). The key polic
 ### Git-source install improvements (IR1–IR10)
 
 - **IR1. Default Git URL.** `scripts/install.sh` now defaults to `https://github.com/akillness/jeo-code.git` instead of only `owner/repo` shorthand.
-- **IR2. `JOC_REPO_URL`.** Added env alias alongside `JOC_REPO` for explicit URL-driven installs.
+- **IR2. `JEO_REPO_URL`.** Added env alias alongside `JEO_REPO` for explicit URL-driven installs.
 - **IR3. `--repo <url|owner/repo>`.** Installer accepts an explicit Git URL, GitHub shorthand, or owner/repo.
 - **IR4. URL normalization.** `https://...git` sources normalize to `git+https://...git` for Bun/npm-compatible Git specs.
 - **IR5. GitHub shorthand retained.** `akillness/jeo-code` still normalizes to `github:akillness/jeo-code`.
@@ -2928,7 +2928,7 @@ selection, project `.npmrc`, and public npm publication metadata). The key polic
 
 - **IR11. `--registry <url>`.** Adds one-shot registry selection for this install only.
 - **IR12. `--npm-registry` alias.** Supports explicit npm wording for the same flag.
-- **IR13. `JOC_REGISTRY`.** Env-driven one-shot registry support.
+- **IR13. `JEO_REGISTRY`.** Env-driven one-shot registry support.
 - **IR14. URL validation.** Registry URLs must start with `http://` or `https://`.
 - **IR15. One-shot env plumbing.** Installer passes both `NPM_CONFIG_REGISTRY` and `npm_config_registry` into `bun add -g`.
 - **IR16. No default mutation.** `--registry` alone does not call `npm config set`.
@@ -2947,7 +2947,7 @@ selection, project `.npmrc`, and public npm publication metadata). The key polic
 - **IR26. Scope normalization.** `my-org` normalizes to `@my-org:registry`; `@my-org` stays scoped.
 - **IR27. Scoped persist.** `--scope @my-org --persist-registry` writes `@my-org:registry`.
 - **IR28. Scoped print/delete.** Registry get/delete use the same scoped key.
-- **IR29. `JOC_REGISTRY_SCOPE`.** Env-driven scope support.
+- **IR29. `JEO_REGISTRY_SCOPE`.** Env-driven scope support.
 - **IR30. Scoped one-shot warning.** Installer explains when scope-specific behavior needs persisted/project config.
 - **IR31. `--project-npmrc`.** Writes project-local `.npmrc` instead of changing global npm config.
 - **IR32. Project global key.** `.npmrc` can pin `registry=<url>`.
@@ -2969,10 +2969,10 @@ selection, project `.npmrc`, and public npm publication metadata). The key polic
 - **IR43. `publishConfig`.** `package.json` now pins public npm publication to `https://registry.npmjs.org/`.
 - **IR44. npm metadata.** Added homepage, bugs URL, and keywords for registry presentation.
 - **IR45. Pack check script.** Added `bun run pack:check` (`npm pack --dry-run`) for publish validation.
-- **IR46. Bin assertion.** Tests lock `joc -> src/cli.ts` and the Bun shebang required by global installs.
+- **IR46. Bin assertion.** Tests lock `jeo -> src/cli.ts` and the Bun shebang required by global installs.
 - **IR47. Publish README.** README now documents `npm login`, `npm publish --access public`, `npm view`, and `bun install -g jeo-code`.
 - **IR48. Pack smoke.** `npm pack --dry-run` confirms the publish tarball includes `src/cli.ts`, runtime sources, scripts, README, and `tsconfig.json`.
-- **IR49. Local tarball global install.** A temp `bun install -g jeo-code-0.1.0.tgz` smoke confirms `joc --version` runs from the packed npm artifact.
+- **IR49. Local tarball global install.** A temp `bun install -g jeo-code-0.1.0.tgz` smoke confirms `jeo --version` runs from the packed npm artifact.
 - **IR50. npm auth boundary.** Actual `npm publish --access public` was attempted and blocked by npm `ENEEDAUTH`; publication needs `npm login` / a valid npm token.
 
 
@@ -2993,7 +2993,7 @@ selection, project `.npmrc`, and public npm publication metadata). The key polic
 - `sh scripts/install.sh --dry-run --registry https://registry.npmjs.org/ --repo https://github.com/akillness/jeo-code.git` → prints `git+https://github.com/akillness/jeo-code.git` and one-shot registry env without installing.
 - `npm pack --dry-run` → creates `jeo-code-0.1.0.tgz` with the expected publish contents.
 - `npm publish --dry-run --access public --registry https://registry.npmjs.org/` → package validation succeeds (npm warns login is required for real publish).
-- temp tarball smoke: `bun install -g <packed jeo-code-0.1.0.tgz>` then `joc --version` → `joc v0.1.0`.
+- temp tarball smoke: `bun install -g <packed jeo-code-0.1.0.tgz>` then `jeo --version` → `jeo v0.1.0`.
 - `npm publish --access public --registry https://registry.npmjs.org/` → blocked by npm auth (`ENEEDAUTH`), so the registry package is not published from this machine.
 - `bun test test/install-script.test.ts` → **3 pass / 0 fail**.
 - `bun run typecheck` → **0 errors**.
@@ -3005,7 +3005,7 @@ selection, project `.npmrc`, and public npm publication metadata). The key polic
 
 **Date:** 2026-06-05 · **Dimension: tui / usability / terminal-fit.**
 
-This 50-pass run solidifies the visual presence of `joc` by implementing a full-screen, width-and-height-adaptive boxed dashboard layout. When running in a real interactive TTY, the entire TUI screen is wrapped in a single border box that scales to the exact width and height of the terminal. We also resolved vertical overflow bugs by dynamically constraining the height of the tool list and stream logs, preventing flickering and terminal scroll duplication.
+This 50-pass run solidifies the visual presence of `jeo` by implementing a full-screen, width-and-height-adaptive boxed dashboard layout. When running in a real interactive TTY, the entire TUI screen is wrapped in a single border box that scales to the exact width and height of the terminal. We also resolved vertical overflow bugs by dynamically constraining the height of the tool list and stream logs, preventing flickering and terminal scroll duplication.
 
 ### New passes:
 
@@ -3020,7 +3020,7 @@ This 50-pass run solidifies the visual presence of `joc` by implementing a full-
 - **268. Evolving spinner speed ratios.** Modified spinner tick intervals or stage rotation to speed up spinner frequency at higher stages.
 - **269. Step-wise tool runtime statistics.** Tracked running duration per tool in `ToolList` and rendered it inline.
 - **270. Mutation Guard shield lock representation.** Rendered a red `🛡️  [MUTATION LOCKED]` badge when code modifications are blocked.
-- **271. Doctor terminal diagnostics.** Enhanced `joc doctor` to display term size, color level, and art compatibility.
+- **271. Doctor terminal diagnostics.** Enhanced `jeo doctor` to display term size, color level, and art compatibility.
 - **272. Renderer resize debouncing.** Added terminal width tracking to `Renderer` to clear wrap ghosts.
 - **273. Stream log wrapping options.** Implemented line-wrap configuration choices in `StreamRegion.render`.
 - **274. Visual transition announcements.** Prepend arrow transitions to the stream logs when the agent evolves.
@@ -3035,7 +3035,7 @@ This 50-pass run solidifies the visual presence of `joc` by implementing a full-
 - **283. Rich final evolution stats.** Output total steps, runtime, and final stage in a unified finish block.
 - **284. Select-list viewport windowing.** Allowed the select-list viewport to scroll and fit the terminal height.
 - **285. Unicode corner glyphs toggle.** Switch dynamically between BOX_UNICODE (`╭`, `╯`) and BOX_ASCII (`+`, `-`).
-- **286. Doctor json schema validation.** Validated `joc doctor --json` fields to ensure contract compliance.
+- **286. Doctor json schema validation.** Validated `jeo doctor --json` fields to ensure contract compliance.
 - **287. Tmux session details in list.** Output active tmux session branch names when running `launch --list`.
 - **288. Dynamic color support fallback.** Degrade colors gracefully from truecolor to 256 or 16-color terminals.
 - **289. Double helix spinner animation.** Twisting double-helix frames for the DNA stage spinner.
@@ -3047,7 +3047,7 @@ This 50-pass run solidifies the visual presence of `joc` by implementing a full-
 - **295. Active tool execution stopwatch.** Render live runtime duration next to the currently running tool.
 - **296. Custom footer segment options.** Configurable footer columns via CLI flags or local config.
 - **297. Evolving error resolution tips.** Doctor command matches error codes to actionable suggestions.
-- **298. Custom ASCII art loading path.** Searches `.joc/art/` for overrides before using embedded stages.
+- **298. Custom ASCII art loading path.** Searches `.jeo/art/` for overrides before using embedded stages.
 - **299. Audio bell click feedback.** Auditory beep click feedback on evolution stage changes.
 - **300. In-place tool list truncation.** Capped the maximum rendered tool rows in `ToolList` to prevent vertical bloat.
 - **301. Non-blocking typewriter banner.** Make typewriter animations run asynchronously without blocking startup.
@@ -3141,7 +3141,7 @@ config from the OAuth/API-key catalog.
 ### Verification (passes 252–301)
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **320 pass / 0 fail across 55 files** (this run added `code-view` + extended `slash`).
-- Real smoke: `formatCodeBlock` over `src/cli.ts` lines 1-6 renders a numbered gutter (`1 │ #!/usr/bin/env bun`, …); live `joc models` still fetches the credentialed catalog from passes 202–251.
+- Real smoke: `formatCodeBlock` over `src/cli.ts` lines 1-6 renders a numbered gutter (`1 │ #!/usr/bin/env bun`, …); live `jeo models` still fetches the credentialed catalog from passes 202–251.
 
 ## npm publish automation for `bun install -g jeo-code` (NPM1–NPM12)
 
@@ -3170,7 +3170,7 @@ requiring a logged-in local workstation.
 - `bun test test/install-script.test.ts` → **4 pass / 0 fail**.
 - `npm pack --dry-run` → valid `jeo-code-0.1.0.tgz`.
 - `npm publish --dry-run --access public --registry https://registry.npmjs.org/` → package validation succeeds.
-- temp tarball smoke: `bun install -g <packed tarball>` then `joc --version` → `joc v0.1.0`.
+- temp tarball smoke: `bun install -g <packed tarball>` then `jeo --version` → `jeo v0.1.0`.
 - `npm whoami --registry https://registry.npmjs.org/` → `ENEEDAUTH` on this machine.
 - `bun run typecheck` → **0 errors**.
 - `bun test` → **310 pass / 0 fail across 54 files** for the publish-enablement commit. The current working tree also includes separate in-progress TUI code-view changes, which were left uncommitted.
@@ -3182,7 +3182,7 @@ requiring a logged-in local workstation.
 The live discovery from passes 202–251 fetches the OAuth/API-key catalog; this run closes the loop
 so the user can actually **pick from and persist** a model out of that live list: numbered selection
 (`/model #N`), fuzzy substring selection (`/model gpt-4`), `/model save` to persist the default,
-per-provider numbered lists, and a `joc models --check` / `joc models <provider>` auth-probe. New
+per-provider numbered lists, and a `jeo models --check` / `jeo models <provider>` auth-probe. New
 module: `src/ai/model-picker.ts` (pure).
 
 > **Note (concurrent work):** other `gjc` agents continue editing the tree (evolution/theme,
@@ -3206,7 +3206,7 @@ module: `src/ai/model-picker.ts` (pure).
 - **312. `formatPickList`.** `  #N  model  (provider)` numbered lines.
 - **313. Current marker.** The active model is tagged `◀ current`.
 - **314. Cap + overflow.** Long lists cap with a `narrow with /provider` hint.
-- **315. Empty hint.** No models → `joc auth login` / Ollama hint.
+- **315. Empty hint.** No models → `jeo auth login` / Ollama hint.
 - **316. Right-aligned index column.** Index width derives from the list length.
 
 ### Batch AE — TUI selection + persistence (`launch.ts`) (317–336)
@@ -3219,15 +3219,15 @@ module: `src/ai/model-picker.ts` (pure).
 - **323. Out-of-range feedback.** `#N` beyond range reports the valid range.
 - **324. `#N` without a list.** Prompts the user to run `/models` first.
 - **325. Literal fallback.** Unknown tokens still resolve as a literal model id/alias (back-compat).
-- **326. `/model save`.** Persists the session/default model to `~/.joc/config.json`.
+- **326. `/model save`.** Persists the session/default model to `~/.jeo/config.json`.
 - **327. `/model save <id>`.** Persists an explicit id as the default.
 - **328. Save confirmation.** Reports the resolved/provider for the saved default.
 - **329. Persist hint.** `/model` output reminds users they can `/model save`.
 - **330. `/help` refresh.** Documents `/model [id|#N|save]`.
 - **331. Picklist reuse.** `/model`, `/models`, `/provider` share one `lastPickIndex`.
 - **332. Unused-import cleanup.** Dropped `formatLiveModels` from `launch.ts` (replaced by the numbered list).
-- **333. `joc models <provider>`.** One-shot live list filtered to a single provider.
-- **334. `joc models --check`.** Compact per-provider auth/reachability probe (✓/✗ + count or error + source).
+- **333. `jeo models <provider>`.** One-shot live list filtered to a single provider.
+- **334. `jeo models --check`.** Compact per-provider auth/reachability probe (✓/✗ + count or error + source).
 - **335. Probe source labels.** Check mode shows whether each provider used oauth / api_key / keyless.
 - **336. Early-return check mode.** `--check` prints only the probe table and exits.
 
@@ -3245,13 +3245,13 @@ module: `src/ai/model-picker.ts` (pure).
 - **347. Picker barrel export.** Imported via `../ai` in `launch.ts`.
 - **348. Suite green.** `model-picker` + extended `config-panel` suites pass.
 - **349. Typecheck 0.**
-- **350. Real check smoke.** `joc models --check` reports ✓ gemini 50 models (api_key), ✗ anthropic/openai not logged in.
+- **350. Real check smoke.** `jeo models --check` reports ✓ gemini 50 models (api_key), ✗ anthropic/openai not logged in.
 - **351. Real numbered render.** `formatPickList` over a discovery set renders `#1 gpt-4o (openai)` etc.
 
 ### Verification (passes 302–351)
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **331 pass / 0 fail across 56 files** (added `model-picker` + extended `config-panel`).
-- Real smoke: `JOC_CONFIG_DIR=$(mktemp -d) JOC_DEFAULT_MODEL=fast joc models --check` →
+- Real smoke: `JEO_CONFIG_DIR=$(mktemp -d) JEO_DEFAULT_MODEL=fast jeo models --check` →
   `✓ gemini 50 models (api_key)`, `✓ ollama 1 models (keyless)`, `✗ anthropic/openai not logged in (none)`.
 
 ## REPL autocomplete + subagent role settings (passes AC1–AC25)
@@ -3307,10 +3307,10 @@ Process: I ran the installed `gjc 0.2.4` directly and captured its model-config 
 (functional surface only — no source copied): `--list-models` two-table layout (canonical +
 provider) with capability columns (context, max-out, thinking, images), fuzzy model match, the
 `minimal/low/medium/high/xhigh` thinking ladder, and the `--smol/--slow/--plan` model role tiers.
-An `architect` subagent reviewed joc vs. that surface and flagged a concurrent agent's
+An `architect` subagent reviewed jeo vs. that surface and flagged a concurrent agent's
 `model-catalog-compat.ts` building on this run's `model-catalog.ts`; I confirmed no clobber and kept
-the catalog's public API stable. All capability data is joc-authored factual metadata about public
-models in joc's own structure.
+the catalog's public API stable. All capability data is jeo-authored factual metadata about public
+models in jeo's own structure.
 
 > **Note (concurrent work):** another `gjc` agent built `model-catalog-compat.ts`,
 > `setup-helpers.ts`, `tui/components/model-picker.ts`, and `autocomplete.ts` on top of this run's
@@ -3320,7 +3320,7 @@ models in joc's own structure.
 ### Batch AG — Capability catalog (`src/ai/model-catalog.ts`) (352–362)
 - **352. `ThinkLevel` + `THINK_LEVELS`.** Five-level ladder minimal/low/medium/high/xhigh.
 - **353. `CatalogModel`.** canonical/provider/providerModel/contextTokens/maxOutputTokens/thinking/images.
-- **354. `MODEL_CATALOG`.** Curated capability dataset for common public models (joc-authored facts).
+- **354. `MODEL_CATALOG`.** Curated capability dataset for common public models (jeo-authored facts).
 - **355. `formatTokens`.** Compact K/M token rendering.
 - **356. `findCatalogModel`.** Exact lookup by canonical or provider id.
 - **357. `fuzzyMatchCatalog`.** Case-insensitive substring match.
@@ -3337,12 +3337,12 @@ models in joc's own structure.
 - **366. `/thinking`.** Accepts minimal/low/medium/high/xhigh; session var widened.
 
 ### Batch AI — Catalog UI + commands (367–373)
-- **367. `formatCatalogTable`.** Provider·model·ctx·out·thinking·img table (joc's own column layout).
+- **367. `formatCatalogTable`.** Provider·model·ctx·out·thinking·img table (jeo's own column layout).
 - **368. Current marker.** Active model tagged in the table.
 - **369. `thinkCell`.** `-` when a model has no thinking levels.
 - **370. `formatCapabilityLine`.** One-line ctx/out/thinking/images summary.
-- **371. `joc models --catalog`.** Renders the capability table.
-- **372. `joc models --catalog <fuzzy>`.** Filters the catalog by substring.
+- **371. `jeo models --catalog`.** Renders the capability table.
+- **372. `jeo models --catalog <fuzzy>`.** Filters the catalog by substring.
 - **373. `/model` capability line.** Emits `caps: …` when the resolved model is in the catalog.
 
 ### Batch AJ — Direct test + subagent discussion (374–377)
@@ -3354,12 +3354,12 @@ models in joc's own structure.
 ### Batch AK — Model role tiers (378–390)
 - **378. `Config.roles`.** smol/slow/plan tiers (gjc `--smol/--slow/--plan` parity).
 - **379. Schema.** `roles` object validated.
-- **380. Env overlay.** `JOC_SMOL_MODEL`/`JOC_SLOW_MODEL`/`JOC_PLAN_MODEL` fill gaps in `withEnvOverlay`.
+- **380. Env overlay.** `JEO_SMOL_MODEL`/`JEO_SLOW_MODEL`/`JEO_PLAN_MODEL` fill gaps in `withEnvOverlay`.
 - **381. `resolveRoleModel`.** Tier → configured model, else `defaultModel` (empty string falls back).
 - **382. `ModelRole` type.** smol/slow/plan.
-- **383. `joc models` tiers line.** Shows resolved smol/slow/plan.
+- **383. `jeo models` tiers line.** Shows resolved smol/slow/plan.
 - **384. `/roles`.** Lists the three tiers with their routed provider.
-- **385. `/roles <tier> <model>`.** Persists a tier model to `~/.joc/config.json`.
+- **385. `/roles <tier> <model>`.** Persists a tier model to `~/.jeo/config.json`.
 - **386. Palette.** `/roles` added to `SLASH_COMMANDS`.
 - **387. `/help`.** Documents `/roles` and the extended `/thinking` ladder.
 - **388. Tier validation.** Only smol/slow/plan accepted for set.
@@ -3377,13 +3377,13 @@ models in joc's own structure.
 - **398. Catalog table/cap-line formatter tests.**
 - **399. Role-tier tests.** `resolveRoleModel` override/fallback/empty-string.
 - **400. Typecheck 0 + full suite green.**
-- **401. Real smokes.** `joc models --catalog gpt` renders the table; `JOC_SLOW_MODEL=o3 JOC_PLAN_MODEL=claude-opus-4 joc models` shows `Role tiers: smol=fast · slow=o3 · plan=claude-opus-4`.
+- **401. Real smokes.** `jeo models --catalog gpt` renders the table; `JEO_SLOW_MODEL=o3 JEO_PLAN_MODEL=claude-opus-4 jeo models` shows `Role tiers: smol=fast · slow=o3 · plan=claude-opus-4`.
 
 ### Verification (passes 352–401)
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **362 pass / 0 fail across 60 files** (added `model-catalog`, `model-roles`).
-- Real smoke: `joc models --catalog gpt` →
-  `openai  gpt-4o  128K  16K  -  yes` (capability table); role tiers resolve from `JOC_*_MODEL` env.
+- Real smoke: `jeo models --catalog gpt` →
+  `openai  gpt-4o  128K  16K  -  yes` (capability table); role tiers resolve from `JEO_*_MODEL` env.
 - gjc reference: captured from a direct `gjc 0.2.4` run; only functional design items reproduced, no source copied.
 
 ## Live + catalog capability merge for the OAuth model list — 50-pass run (402–451)
@@ -3422,11 +3422,11 @@ pure module: `src/ai/model-enrich.ts`.
 - **417. Current marker.** Active model tagged `◀`.
 - **418. Long-id truncation.** Over-width ids elide with `…`.
 - **419. Cap + overflow.** Per-table cap with `+N more`.
-- **420. Empty hint.** No live models → `joc auth login` hint.
+- **420. Empty hint.** No live models → `jeo auth login` hint.
 - **421. Helper reuse.** Shares `thinkCell`/`formatTokens` with the catalog table.
 
 ### Batch AO — Command surfaces (422–433)
-- **422. `joc models --caps`.** Live capability table (discover → enrich → render).
+- **422. `jeo models --caps`.** Live capability table (discover → enrich → render).
 - **423. `--caps --thinking=<lvl>`.** Filter to models supporting a level.
 - **424. `--caps --images`.** Filter to image-capable models.
 - **425. `--caps --long`.** Filter to ≥200K context models.
@@ -3453,9 +3453,9 @@ pure module: `src/ai/model-enrich.ts`.
 ### Verification (passes 402–451)
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **372 pass / 0 fail across 61 files** (added `model-enrich`).
-- Real smoke: `joc models --caps` →
+- Real smoke: `jeo models --caps` →
   `gemini  gemini-2.5-pro  1M  66K  minimal,low,medium,high  yes` (known, ranked first), unknown ids `-/?`;
-  `joc models --caps --images` → exactly the 3 image-capable known models.
+  `jeo models --caps --images` → exactly the 3 image-capable known models.
 
 ## GJC list-models parity + live setting flow hardening — 50-pass run (452–501)
 
@@ -3511,11 +3511,11 @@ OAuth/API-key discovery as the source of truth for availability.
 - **487. Config snapshot pass-through.** `discoverModels` passes the effective config snapshot to provider discovery.
 
 ### Batch AU — CLI, autocomplete, docs, and tests (488–501)
-- **488. `joc --list-models`.** Added a GJC-style global flag that routes to the catalog table.
+- **488. `jeo --list-models`.** Added a GJC-style global flag that routes to the catalog table.
 - **489. `--list-models=<query>`.** Fuzzy query form works without invoking the agent loop.
-- **490. `joc models --catalog <provider-query>`.** Provider words such as `gemini` now filter instead of being discarded.
+- **490. `jeo models --catalog <provider-query>`.** Provider words such as `gemini` now filter instead of being discarded.
 - **491. CLI help.** Global help documents `--list-models[=<query>]`.
-- **492. Models command summary.** `joc models` help text now names live OAuth/API-key models and capability tables.
+- **492. Models command summary.** `jeo models` help text now names live OAuth/API-key models and capability tables.
 - **493. Autocomplete `/models`.** Completes `refresh`, `caps`, and `catalog`.
 - **494. Autocomplete `/agents`.** Completes `reset`, `maxSteps`, and live/catalog models.
 - **495. Autocomplete `/roles`.** Completes `smol`/`slow`/`plan`, then model ids.
@@ -3531,7 +3531,7 @@ OAuth/API-key discovery as the source of truth for availability.
 - `bun test` → **381 pass / 0 fail across 62 files**.
 - Direct GJC reference checks: `gjc --version` → `gjc/0.2.4`; `gjc --list-models all` and
   `gjc --list-models gemini` showed the canonical/provider model-list design used for parity.
-- Joc smokes:
+- Jeo smokes:
   - `bun src/cli.ts --list-models gemini` → canonical + provider sections filtered to Gemini rows.
   - `bun src/cli.ts models --caps --images` → 3 known image-capable live Gemini rows.
   - `bun src/cli.ts models --check` → anthropic 8 OAuth models, OpenAI not logged in, Gemini 50 API-key models, Ollama 1 keyless model.
@@ -3549,7 +3549,7 @@ bounded behavior instead of being accidentally treated as user prompt text.
 - **503. Routing rule.** Kept `--tmux` / `--worktree` in the launch fallback path.
 - **504. Listing exception.** Added explicit `--models` routing before the generic leading-flag launch fallback.
 - **505. Singular/plural split.** Preserved `--model` as a launch runtime flag, while `--models` lists models.
-- **506. `--models=<query>`.** Added optional equals-form forwarding to `joc models`.
+- **506. `--models=<query>`.** Added optional equals-form forwarding to `jeo models`.
 - **507. Help ordering.** Kept version/help first, listing flags second, launch flags third.
 - **508. No broad rewrite.** Reused existing `runModelsCommand` and launch session state.
 - **509. Subagent recommendation applied.** Added invalid flag errors rather than silently stuffing bad selectors into prompts.
@@ -3582,11 +3582,11 @@ bounded behavior instead of being accidentally treated as user prompt text.
 - **532. Launch parser export.** `parseFlags` is exported for focused unit coverage.
 
 ### Batch AY — Docs, tests, and smoke coverage (533–551)
-- **533. Global help.** `joc --help` documents `--model`.
-- **534. Provider help.** `joc --help` documents `--provider`.
-- **535. Role-tier help.** `joc --help` documents `--smol|--slow|--plan`.
-- **536. Thinking help.** `joc --help` documents the five-level thinking ladder.
-- **537. Models help.** `joc --help` documents `--models`.
+- **533. Global help.** `jeo --help` documents `--model`.
+- **534. Provider help.** `jeo --help` documents `--provider`.
+- **535. Role-tier help.** `jeo --help` documents `--smol|--slow|--plan`.
+- **536. Thinking help.** `jeo --help` documents the five-level thinking ladder.
+- **537. Models help.** `jeo --help` documents `--models`.
 - **538. README examples.** Added examples for `--list-models`, `--models --catalog`, `--model`, `--provider`, `--thinking`, and role-tier launch.
 - **539. Publish docs restoration.** Restored required npm token publish-permission text in the compact README so existing install tests stay meaningful.
 - **540. Parser tests.** Added `launch-flags.test.ts`.
@@ -3616,7 +3616,7 @@ bounded behavior instead of being accidentally treated as user prompt text.
 
 Adds the step-process trace the prior runs lacked: a numbered, status-colored vertical timeline
 of the turn's tool steps (스텝 단위 프로세스 표기 + 색상 배치), with an animated active marker. New
-self-contained module `src/tui/components/step-timeline.ts` (joc's own design — generic status
+self-contained module `src/tui/components/step-timeline.ts` (jeo's own design — generic status
 timeline, not a copy of any other agent's source) + `ToolList.snapshot()`, wired only into the
 stable `LaunchTui.finish()`.
 
@@ -3655,7 +3655,7 @@ stable `LaunchTui.finish()`.
 **Date:** 2026-06-05 · **Dimension: tui / step-process layout, color, animation.**
 
 Extends the step-process timeline with glanceable summary affordances and wires them into the
-stable `finish()` collapse — all in joc's own `step-timeline.ts` (no peer-file collisions).
+stable `finish()` collapse — all in jeo's own `step-timeline.ts` (no peer-file collisions).
 
 > **Note (concurrent work):** the hot files (`launch.ts`, `cli/runner.ts`, `config-panel.ts`,
 > `autocomplete.ts`, providers) remain under active concurrent edit. This run touches only
@@ -3687,7 +3687,7 @@ stable `finish()` collapse — all in joc's own `step-timeline.ts` (no peer-file
 
 **Date:** 2026-06-05 · **Dimension: tui / keybinding hints + real-time step indication + color layout.**
 
-Adds a gjc-style key-hint row (functional design parity, joc's own code) and a real-time animated
+Adds a gjc-style key-hint row (functional design parity, jeo's own code) and a real-time animated
 step strip to the live frame. New self-contained module `src/tui/components/hints.ts`; wiring is in
 the stable `app.ts draw()` bottom region, TTY-gated so non-TTY/test frames are unchanged.
 
@@ -3736,7 +3736,7 @@ agents' current `launch.ts`/`autocomplete`/`config-panel` rather than isolated.
 
 ### Batch BC — Integration & verify
 - **554.** Built on the concurrent agents' current files (autocomplete/config-panel/launch), no isolation.
-- **555.** `tsc --noEmit` 0; **556.** `bun test` 403 pass / 65 files; **557.** real smoke: `joc auth login anthropic --token …` (refactored path) stores the bearer and `joc auth status` shows `set (manual)`.
+- **555.** `tsc --noEmit` 0; **556.** `bun test` 403 pass / 65 files; **557.** real smoke: `jeo auth login anthropic --token …` (refactored path) stores the bearer and `jeo auth status` shows `set (manual)`.
 
 ### Verification (passes 538–557)
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
@@ -3785,7 +3785,7 @@ Follow-up to the `/provider login` work: improves the no-argument path and confi
 
 **Date:** 2026-06-05 · **Dimension: agent / subagent execution correctness.**
 
-Re-verified that subagents actually run and improved `joc team` so all four roles are usable, not
+Re-verified that subagents actually run and improved `jeo team` so all four roles are usable, not
 just `executor`.
 
 - **574.** End-to-end test (`team-subagent.test.ts`) drives `runAgentLoop` with a read-only role's toolset (mocked LLM) and confirms a `write` is **rejected** at the engine boundary (`Unknown tool: write`).
@@ -3793,7 +3793,7 @@ just `executor`.
 - **576.** Confirms the `executor` toolset exposes `write`/`edit` and the loop completes.
 - **577.** Confirms a role's step budget is honored when the model never signals `done` (stops at the cap).
 - **578.** `StepSchema` gains an optional `role` field (executor/planner/architect/critic).
-- **579.** `joc team` builds a task→role map and routes each step to its declared role via `getSubagentRole(roleId) ?? defaultSubagentRole()` — previously every task ran as `executor`.
+- **579.** `jeo team` builds a task→role map and routes each step to its declared role via `getSubagentRole(roleId) ?? defaultSubagentRole()` — previously every task ran as `executor`.
 - **580.** Unknown/empty role falls back to `executor` (safe default).
 - **581.** Read-only roles (planner/architect/critic) execute with the mutation-free toolset, so a plan/review step physically cannot edit the repo.
 - **582.** Per-role model + step budget (`resolveSubagentModel`/`resolveSubagentMaxSteps`) feed the routed role.
@@ -3802,16 +3802,16 @@ just `executor`.
 ### Verification (passes 574–583)
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **409 pass / 0 fail across 66 files** (added `team-subagent`).
-- The subagent loop is now exercised under test (read-only enforcement, convergence, step cap), and `joc team` dispatches the role each plan step declares.
+- The subagent loop is now exercised under test (read-only enforcement, convergence, step cap), and `jeo team` dispatches the role each plan step declares.
 
-## Subagent re-verification — full `joc team` command integration (passes 584–589)
+## Subagent re-verification — full `jeo team` command integration (passes 584–589)
 
 **Date:** 2026-06-05 · **Dimension: agent / subagent end-to-end command correctness.**
 
 Deepens verification from the loop level to the full command: drives `runTeamCommand` against a
 seeded approved plan with a mocked LLM and asserts orchestration + role routing + state transitions.
 
-- **584.** `team-run.test.ts` chdirs to a temp project, seeds `.joc/state/ralplan-state.json` (approved) + a YAML plan with per-step `role`, mocks `callLlm` → `done`, and runs `runTeamCommand`.
+- **584.** `team-run.test.ts` chdirs to a temp project, seeds `.jeo/state/ralplan-state.json` (approved) + a YAML plan with per-step `role`, mocks `callLlm` → `done`, and runs `runTeamCommand`.
 - **585.** Asserts each step dispatches to its declared role (`Subagent: Planner` / `Architect`).
 - **586.** Asserts a role-less step falls back to `Subagent: Executor`.
 - **587.** Asserts `[SUCCESS] All tasks…` and `team-state.json` advances to `current_phase: complete` with all tasks completed.
@@ -3821,7 +3821,7 @@ seeded approved plan with a mocked LLM and asserts orchestration + role routing 
 ### Verification (passes 584–589)
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **411 pass / 0 fail across 67 files** (added `team-run`).
-- The subagent system is now verified at three levels: pure role registry/resolution, the executor loop (read-only enforcement/convergence/step cap), and the full `joc team` command (plan parse → per-step role routing → execution → state).
+- The subagent system is now verified at three levels: pure role registry/resolution, the executor loop (read-only enforcement/convergence/step cap), and the full `jeo team` command (plan parse → per-step role routing → execution → state).
 
 ## Slash palette grouped subagent aliases (passes 590–596)
 
@@ -3844,11 +3844,11 @@ seeded approved plan with a mocked LLM and asserts orchestration + role routing 
 
 **Date:** 2026-06-07 · **Dimension: tmux / global flag routing + runtime profile sessions.**
 
-- **597.** `joc --tmux --models ...` now routes to the model listing command instead of opening a tmux-backed agent turn with `--models` as prompt text.
-- **598.** `joc --tmux --list-models <query>` now routes to the GJC-style catalog listing before tmux launch fallback.
+- **597.** `jeo --tmux --models ...` now routes to the model listing command instead of opening a tmux-backed agent turn with `--models` as prompt text.
+- **598.** `jeo --tmux --list-models <query>` now routes to the GJC-style catalog listing before tmux launch fallback.
 - **599.** Model-list routing strips tmux/worktree orchestration flags so `--models --catalog gpt` receives clean model-command arguments.
 - **600.** Runtime tmux sessions now get a deterministic suffix for `--model`, `--provider`, `--smol|--slow|--plan`, `--thinking`, and non-default `--max-steps`.
-- **601.** No-runtime-flag tmux behavior remains unchanged (`joc-<branch>` session name).
+- **601.** No-runtime-flag tmux behavior remains unchanged (`jeo-<branch>` session name).
 - **602.** Runtime-profile suffixes prevent an existing default branch session from swallowing a new model/provider/thinking launch request.
 - **603.** Inner tmux launch command now uses single-quote shell escaping, including prompts with apostrophes.
 - **604.** Added dispatch tests for `--tmux --models` and `--tmux --list-models`.
@@ -3865,9 +3865,9 @@ seeded approved plan with a mocked LLM and asserts orchestration + role routing 
 **Date:** 2026-06-07 · **Dimension: tmux / dispatcher boundary correctness.**
 
 - **607.** Applied the architect subagent's blocking finding: model-list detection no longer scans past the first positional command/prompt token.
-- **608.** `joc --tmux fix --models routing` remains a tmux-backed agent prompt instead of being hijacked into `joc models`.
-- **609.** `joc doctor --models` / unknown subcommands with later `--models` are no longer hijacked by global listing routing.
-- **610.** `joc launch --tmux --list-models=gemini` still routes to the catalog listing for explicit launch-form invocations.
+- **608.** `jeo --tmux fix --models routing` remains a tmux-backed agent prompt instead of being hijacked into `jeo models`.
+- **609.** `jeo doctor --models` / unknown subcommands with later `--models` are no longer hijacked by global listing routing.
+- **610.** `jeo launch --tmux --list-models=gemini` still routes to the catalog listing for explicit launch-form invocations.
 - **611.** Exported and tested `globalModelsArgs` so the leading-global parsing boundary is covered directly.
 - **612.** Kept the prior `--tmux --models` and runtime-profile tmux session behavior intact.
 
@@ -3900,8 +3900,8 @@ engine so they're discoverable via `<Tab>`.
 **Date:** 2026-06-07 · **Dimension: tmux / global option dispatch.**
 
 - **613.** Added leading-global detection for `--help` and `--version` after tmux orchestration flags.
-- **614.** `joc --tmux --help` now prints CLI help instead of opening a tmux session that exits immediately.
-- **615.** `joc --tmux --version` now prints the version without starting/attaching tmux.
+- **614.** `jeo --tmux --help` now prints CLI help instead of opening a tmux session that exits immediately.
+- **615.** `jeo --tmux --version` now prints the version without starting/attaching tmux.
 - **616.** The scan still stops at the first positional prompt token, preserving prompts that contain later flag-like text.
 - **617.** Added regression tests for tmux help/version dispatch.
 - **618.** Re-ran focused tmux/runner tests.
@@ -3918,8 +3918,8 @@ engine so they're discoverable via `<Tab>`.
 
 - **620.** Implemented conventional `--` end-of-options handling in `parseFlags`; the sentinel is omitted from the user prompt.
 - **621.** Model-list and global help/version scanners now stop at `--`, preserving flag-like prompt text.
-- **622.** `joc --tmux -- --models routing` stays an agent prompt with message `--models routing`.
-- **623.** `joc --tmux --models --caps --thinking=high` preserves the `--thinking=high` model-list filter instead of stripping it as a launch flag.
+- **622.** `jeo --tmux -- --models routing` stays an agent prompt with message `--models routing`.
+- **623.** `jeo --tmux --models --caps --thinking=high` preserves the `--thinking=high` model-list filter instead of stripping it as a launch flag.
 - **624.** Runtime tmux suffix parts now append deterministic short hashes when truncating long model ids.
 - **625.** Combined runtime suffixes now append a deterministic hash when the whole suffix is truncated.
 - **626.** Explicit `--provider` is included in the tmux session identity even when `--model` is also present.
@@ -3992,15 +3992,15 @@ Verified the reported "model change / provider auth don't work" claim and added 
 
 Two real defects behind "still doesn't work" / "screen gets pushed".
 
-- **638.** Root cause of "still not working": the user's `joc` resolved to a stale standalone global install (`~/.bun/install/global/node_modules/jeo-code`), not the dev checkout — so none of the fixes were running. Re-pointed the global at the dev checkout via `bun link` (global `node_modules/jeo-code` → dev checkout symlink); `joc` now always runs the latest source.
+- **638.** Root cause of "still not working": the user's `jeo` resolved to a stale standalone global install (`~/.bun/install/global/node_modules/jeo-code`), not the dev checkout — so none of the fixes were running. Re-pointed the global at the dev checkout via `bun link` (global `node_modules/jeo-code` → dev checkout symlink); `jeo` now always runs the latest source.
 - **639.** Reproduced the screen-push bug: the previous live-preview wrote below the prompt at the bottom row, scrolling the terminal and breaking `ESC7/ESC8` restore (duplicated preview, prompt jumped up).
 - **640.** Replaced it with a **DEC scroll region (DECSTBM) reserved footer**: `\x1b[1;{rows-8}r` confines normal output to the top region; the preview is drawn in the fixed bottom rows via absolute positioning + per-row clear, so it never scrolls/pushes the screen.
 - **641.** Footer cleared on Enter; each reserved row cleared before redraw (no duplication).
 - **642.** Scroll region reset on exit (`finally`) + a `process.once("exit")` safety net + `resize` re-apply, so the terminal is never left with a restricted scroll region.
-- **643.** Opt out with `JOC_NO_SLASH_PREVIEW=1`; auto-disabled on terminals too short (`rows ≤ 12`).
+- **643.** Opt out with `JEO_NO_SLASH_PREVIEW=1`; auto-disabled on terminals too short (`rows ≤ 12`).
 - **644.** Verified in a 14-row tmux: typing `/m` after a full `/help` keeps all prior output in place and shows the preview footer with **no scroll**; `/exit` then `seq 1 20` scrolls normally (region restored).
 - **645.** Typecheck 0; `bun test` 425 pass / 67 files.
-- **646.** Fix is live immediately for the user (global `joc` symlinks to the dev checkout).
+- **646.** Fix is live immediately for the user (global `jeo` symlinks to the dev checkout).
 
 ### Verification (passes 638–646)
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
@@ -4032,13 +4032,13 @@ region (added for the no-scroll preview) stayed active during a turn, so the ful
 
 **Date:** 2026-06-05 · **Dimension: tui / crash fix + docs.**
 
-While verifying joc on a real Ollama turn, the weak model emitted a tool call with no `tool` field.
+While verifying jeo on a real Ollama turn, the weak model emitted a tool call with no `tool` field.
 
 - **654.** Real crash reproduced: the in-turn TUI printed `undefined is not an object (evaluating 'tool.toLowerCase')` (twice) — `summarizeForgeInvocation`/`summarizeForgeResult` called `.toLowerCase()` on an undefined tool name.
 - **655.** Guarded both forge summarizers (`tool || "(no tool)"`); `app.ts onAssistant` now uses a fallback tool label so the step timeline never shows `undefined`.
 - **656.** `forge-status.test.ts` regression test: summaries never throw on undefined/empty tool; `formatForgeBox` stays safe.
 - **657.** Confirmed the earlier "box misalignment" was a `tmux capture-pane -p` trailing-space artifact, not a real bug — the rendered PNG shows forge boxes aligned (padLineTo is ANSI-width correct).
-- **658.** Added a real TUI screenshot: captured an ANSI frame from a live turn and rendered it to `docs/joc-tui.png` (headless browser, SGR→HTML); referenced at the top of the README.
+- **658.** Added a real TUI screenshot: captured an ANSI frame from a live turn and rendered it to `docs/jeo-tui.png` (headless browser, SGR→HTML); referenced at the top of the README.
 - **659.** README documents the in-turn frame (evolution art, step timeline, forge boxes, status footer) + the live slash preview.
 - **660.** Typecheck 0; `bun test` 426 pass / 67 files; PTY shows 0 crash lines after the fix.
 
@@ -4073,14 +4073,14 @@ The slash preview is now navigable with the arrow keys.
 
 Skills are now user-configurable and callable from the REPL.
 
-- **669.** `skillDirs()` — global `~/.joc/skills` (honors `JOC_CONFIG_DIR`) + per-project `.joc/skills`.
+- **669.** `skillDirs()` — global `~/.jeo/skills` (honors `JEO_CONFIG_DIR`) + per-project `.jeo/skills`.
 - **670.** `parseSkillMarkdown(name, content)` — turns a SKILL.md into a `SkillDoc` (optional `summary:`/`command:`/`when:` headers, else inferred; leading `# title` stripped).
 - **671.** `loadSkills(cwd)` — bundled skills merged with user docs; user files override bundled by name.
 - **672.** `getSkillFrom(skills, name)` — case-insensitive lookup over the resolved list.
 - **673.** `/skill` REPL command: no arg lists bundled + configured skills; `/skill <name> [intent]` shows the doc and **invokes** it (seeds a turn with the skill guidance + optional intent).
 - **674.** `/skill` added to the slash palette (preview/arrow-nav) and autocomplete (arg0 → bundled skill names).
 - **675.** `skills-config.test.ts`: markdown parsing (inferred + header), `loadSkills` merge + user override.
-- **676.** Verified in a PTY: `/skill` lists the four bundled skills plus a custom `~/.joc/skills/greet.md`.
+- **676.** Verified in a PTY: `/skill` lists the four bundled skills plus a custom `~/.jeo/skills/greet.md`.
 ### Verification (passes 669–676)
 - `tsc -p tsconfig.json --noEmit` → **0 errors**.
 - `bun test` → **437 pass / 0 fail across 69 files** (added `skills-config`).
@@ -4109,14 +4109,14 @@ Skills are now user-configurable and callable from the REPL.
 
 **Date:** 2026-06-05 · **Dimension: stability / completeness / shippability.**
 
-A read-only `architect` subagent reviewed joc for production/service readiness (status: BLOCK) and
+A read-only `architect` subagent reviewed jeo for production/service readiness (status: BLOCK) and
 returned a severity-rated list. Fixed the HIGH items that live in stable (non-hot) files.
 
-- **685.** (HIGH) Provider `call` now has a hard per-attempt timeout: `model-manager.ts` composes the caller signal with `AbortSignal.timeout(120s)` (fresh per retry) so a blackholed/unreachable provider can no longer hang the agent or `joc team` (which passed no signal).
+- **685.** (HIGH) Provider `call` now has a hard per-attempt timeout: `model-manager.ts` composes the caller signal with `AbortSignal.timeout(120s)` (fresh per retry) so a blackholed/unreachable provider can no longer hang the agent or `jeo team` (which passed no signal).
 - **686.** (HIGH) OAuth auto-refresh no longer leaks an unhandled rejection: `storage.ts` `.finally(...)` cleanup is `void`-guarded with `.catch(() => {})`.
 - **687.** (HIGH) Read-only subagent roles (planner/architect/critic) now drop **bash** too (not just write/edit) — `subagentToolset` excludes all mutating tools so a review/plan lane physically cannot change the repo.
 - **688.** (HIGH) MutationGuard fails CLOSED on a corrupt deep-interview lock: new `readWorkflowStateStrict` distinguishes ENOENT (→ null) from invalid JSON (→ throws); `tools.ts` `readMutationLock` treats a corrupt lock as active → blocks write/edit/bash instead of silently allowing them.
-- **689.** (HIGH, partial) `joc team` sets `process.exitCode = 1` on every failure precondition (no/!approved/unreadable/invalid plan) and on a failed task, so CI/scripts no longer see broken runs as success.
+- **689.** (HIGH, partial) `jeo team` sets `process.exitCode = 1` on every failure precondition (no/!approved/unreadable/invalid plan) and on a failed task, so CI/scripts no longer see broken runs as success.
 - **690.** (HIGH→robustness) `cli.ts` wraps `dispatch` in try/catch → a clean `error: <message>` + exit 1 instead of a raw unhandled-rejection stack trace.
 - **691.** Tests: read-only `subagentToolset` excludes bash; MutationGuard fail-closed on corrupt state; `team-run` resets `process.exitCode` so the CLI's exit-code behavior doesn't leak into the test runner.
 - **692.** Confirmed package.json is consistent for `bun install -g` (version/bin/files/engines match cli.ts + README) — no version drift.
@@ -4142,7 +4142,7 @@ model/TUI surface and surfaced more genuine bugs in already-implemented features
 - **696.** (HIGH bug, architect #2) Restricted the fallback to `source === "oauth"` only. An `api_key` 401 means a *bad key* — fabricating catalog rows there would let the user pick a model that cannot authenticate.
 - **697.** (HIGH bug, architect #1) `parseModelsBody` now filters endpoint-incompatible models: OpenAI drops embeddings/tts/whisper/dall-e/moderation/audio/image/realtime/search families; Gemini keeps only `generateContent`-capable ids and drops image/tts/embedding/aqa/veo/imagen by family. Verified live: gemini list 50 → 29, no `*-image`/`*-tts`/`embedding`.
 - **698.** (HIGH bug, architect #3) `code-view.ts` `sanitizeForTerminal()`: `/view` and `/diff` now strip CR, expand tabs, and remove ANSI (CSI/OSC) + C0 control bytes from untrusted file/diff content before rendering. A file containing `\x1b[2J` can no longer clear the screen or corrupt the gutter.
-- **699.** (MED bug, architect #5) `footer.ts` stage track honored `color:true` unconditionally; added `FooterData.color` and pass `this.theme.color` from `app.ts` so `JOC_TUI_THEME=mono` emits no ANSI.
+- **699.** (MED bug, architect #5) `footer.ts` stage track honored `color:true` unconditionally; added `FooterData.color` and pass `this.theme.color` from `app.ts` so `JEO_TUI_THEME=mono` emits no ANSI.
 - **700.** (HIGH bug, architect hot #1) `/model save #N` persisted the literal string `#N` as `defaultModel` (corrupting config). The save branch now resolves the target through the same `resolveSelection(lastPickIndex, …)` path as `/model #N`. Verified live: `/model save #2` saved `claude-opus-4-1-20250805`, not `#2`.
 - **701.** (architect hot #5) User/project skills are now discoverable: `launch.ts` resolves `loadSkills(cwd)` once, builds the system prompt from the merged list (`skillsPromptSection(resolvedSkills)`), and feeds resolved names into the autocomplete context so `/skill` Tab-completes user skills, not just bundled ones.
 - **702.** Banner discoverability: the launch hint line now lists `/roles` and `/skill` and points to `/` for the full ↑/↓ palette.
@@ -4165,10 +4165,10 @@ isolated; all gates pass with it.
 **Date:** 2026-06-08 · **Dimension: provider correctness / TUI slash skills / config safety.**
 
 Follow-up on the reported "implemented but not actually working" class of bugs, using read-only
-subagents for GJC reference analysis and Joc TUI review.
+subagents for GJC reference analysis and Jeo TUI review.
 
 - **707.** Subagent reference review completed against upstream GJC/Codex OAuth patterns; confirmed
-  ChatGPT/Codex OAuth tokens target the Codex backend, while Joc's bundled OpenAI adapter uses
+  ChatGPT/Codex OAuth tokens target the Codex backend, while Jeo's bundled OpenAI adapter uses
   `api.openai.com/v1`.
 - **708.** Provider status now treats OpenAI/Gemini OAuth-only flows as **not ready for bundled
   adapters** when no API key exists, instead of pretending OAuth is end-to-end ready.
@@ -4184,11 +4184,11 @@ subagents for GJC reference analysis and Joc TUI review.
 - **714.** `/provider` and `/model` not-ready warnings now say **not ready (label)** instead of the
   false "not logged in/no credential" message for OAuth-only accounts.
 - **715.** `readRawGlobalConfig()` + `saveConfigPatch()` persist config changes from raw disk state,
-  so env-only OAuth/default-model/role values are never baked into `~/.joc/config.json`.
+  so env-only OAuth/default-model/role values are never baked into `~/.jeo/config.json`.
 - **716.** `/agents`, `/roles`, and `/model save` use `saveConfigPatch()` for safe partial config
   writes.
 - **717.** Read-only subagent prompts advertise only read-only tools, matching the physical toolset.
-- **718.** Skill loading now supports flat `~/.joc/skills/<name>.md`, project `.joc/skills`, and
+- **718.** Skill loading now supports flat `~/.jeo/skills/<name>.md`, project `.jeo/skills`, and
   oh-my-skills-style `~/.agents/skills/<name>/SKILL.md` / `.agents/skills/<name>/SKILL.md`.
 - **719.** Skill parser handles YAML frontmatter (`description: >`) and no longer surfaces `---` as
   the summary.
@@ -4203,16 +4203,16 @@ subagents for GJC reference analysis and Joc TUI review.
   type-to-filter, Enter, Esc), reusing the existing `SelectList` convention.
 - **725.** Slash preview selected rows are visibly emphasized, even inside the gray preview footer.
 - **726.** README documents `.agents` skill loading, `/speckit.*` aliases, and the skill picker path.
-- **727.** `joc skills spec-kit` verified against the real global
+- **727.** `jeo skills spec-kit` verified against the real global
   `/Users/jangyoung/.agents/skills/spec-kit/SKILL.md`, showing `/speckit.*` aliases and a folded
   YAML description summary.
 
 ### Verification (passes 707–727)
 
-- Read-only subagents completed: `0-GjcReference`, `1-JocTuiReview`.
+- Read-only subagents completed: `0-GjcReference`, `1-JeoTuiReview`.
 - `bun run typecheck` → **0 errors**.
 - `bun test` → **476 pass / 0 fail across 72 files**.
-- `bun run build` → compiled `dist/joc`.
+- `bun run build` → compiled `dist/jeo`.
 - Focused suites: skill/slash/autocomplete/skill-picker, model-discovery/provider-status/OpenAI
   reasoning/model-manager/Anthropic stream.
 - Real CLI smoke: `bun src/cli.ts skills spec-kit` resolves the global oh-my-skills document and
@@ -4246,7 +4246,7 @@ Applied the completed subagent review results that arrived after the first push.
 - `bun run typecheck` → **0 errors**.
 - Focused: `bun test test/live-model-picker.test.ts test/provider-status.test.ts test/model-discovery.test.ts test/slash.test.ts test/autocomplete.test.ts` → **67 pass / 0 fail**.
 - `bun test` → **477 pass / 0 fail across 72 files**.
-- `bun run build` → compiled `dist/joc`.
+- `bun run build` → compiled `dist/jeo`.
 ## OpenAI ChatGPT/Codex OAuth actually serves turns + graceful 429 — passes 735–742
 
 **Date:** 2026-06-08 · **Dimension: provider correctness (implemented-but-broken) / reliability.**
@@ -4274,7 +4274,7 @@ ChatGPT/Codex OAuth must route through the Codex subscription backend, not the s
 - **739.** `provider-status`: OpenAI OAuth-only is now `ready=true` (label `OAuth`); Gemini OAuth-only
   stays `ready=false` (`OAuth (API key needed)`).
 - **740.** Catalog adds `gpt-5.5` (openai) and `PROVIDER_DEFAULT.openai = gpt-5.5`, a model the Codex
-  backend serves, so `/provider openai` and `joc --provider openai` default to a working model.
+  backend serves, so `/provider openai` and `jeo --provider openai` default to a working model.
 - **741.** Graceful provider errors: `launch.ts` maps a surfaced 429/rate-limit to an actionable line
   ("Rate limited by <provider> … wait and resend, or switch model with /model — a local ollama model
   never rate-limits") and 401/403 to a credential-check hint, at all turn-error sites (one-shot, TUI,
@@ -4286,10 +4286,10 @@ ChatGPT/Codex OAuth must route through the Codex subscription backend, not the s
 ### Verification (passes 735–742)
 - `bun run typecheck` → **0 errors**.
 - `bun test` → **481 pass / 0 fail across 73 files**.
-- `bun run build` → compiled `dist/joc`.
+- `bun run build` → compiled `dist/jeo`.
 - **Live E2E against the user's real ChatGPT (team plan) OAuth token:**
-  `joc --model gpt-5.5 --no-tui "…"` → `Hello! … (16831 in / 46 out tokens)`;
-  `joc --provider openai --no-tui "…"` → `OK (33699 in / 20 out tokens)`. OpenAI OAuth now runs turns.
+  `jeo --model gpt-5.5 --no-tui "…"` → `Hello! … (16831 in / 46 out tokens)`;
+  `jeo --provider openai --no-tui "…"` → `OK (33699 in / 20 out tokens)`. OpenAI OAuth now runs turns.
   (Probe also confirmed `gpt-5.5` is the served model; `gpt-5`/`gpt-5.x-codex`/`gpt-4o` are rejected
   by the Codex backend with a clear `… not supported when using Codex with a ChatGPT account`.)
 
@@ -4298,7 +4298,7 @@ ChatGPT/Codex OAuth must route through the Codex subscription backend, not the s
 **Date:** 2026-06-08 · **Dimension: provider correctness (implemented-but-broken) / reliability.**
 
 User: "model 설정시 오류가 아직도 발생" with `Anthropic request failed (HTTP 429)`. Live diagnosis
-(`joc doctor` + real OAuth probes) found TWO distinct causes behind "model 설정 오류":
+(`jeo doctor` + real OAuth probes) found TWO distinct causes behind "model 설정 오류":
 
 1. **Stale model ids → 404.** Selecting an Anthropic model sent the catalog **canonical** id verbatim
    (`claude-3-5-sonnet`), and the `canonical → providerModel` mapping was never applied at call time,
@@ -4332,18 +4332,18 @@ User: "model 설정시 오류가 아직도 발생" with `Anthropic request faile
 ### Verification (passes 743–751)
 - `bun run typecheck` → **0 errors**.
 - `bun test` → **485 pass / 0 fail across 73 files**.
-- `bun run build` → compiled `dist/joc`.
+- `bun run build` → compiled `dist/jeo`.
 - **Live against the user's real OAuth:**
-  - `joc --model claude-haiku-4-5-20251001 --no-tui "…"` → real reply (19261 in / 22 out) — current ids work.
-  - `joc --model sonnet --no-tui "…"` → no longer 404 (id resolves to `claude-sonnet-4-5-20250929`);
+  - `jeo --model claude-haiku-4-5-20251001 --no-tui "…"` → real reply (19261 in / 22 out) — current ids work.
+  - `jeo --model sonnet --no-tui "…"` → no longer 404 (id resolves to `claude-sonnet-4-5-20250929`);
     the transient subscription 429 now prints the friendly, actionable line instead of raw JSON.
-  - `joc --model gpt-5.5` / `--provider openai` still serve turns via the Codex backend.
+  - `jeo --model gpt-5.5` / `--provider openai` still serve turns via the Codex backend.
 
-## `joc doctor` probes the real call path (no false FAIL) — passes 752–756
+## `jeo doctor` probes the real call path (no false FAIL) — passes 752–756
 
 **Date:** 2026-06-08 · **Dimension: diagnostics honesty.**
 
-Follow-up: `joc doctor` reported `anthropic [FAIL] 404` and `openai [FAIL] 403` for providers that
+Follow-up: `jeo doctor` reported `anthropic [FAIL] 404` and `openai [FAIL] 403` for providers that
 actually work, because the probes hit the wrong endpoints — Anthropic POSTed the **retired**
 `claude-3-5-sonnet-20241022` (→404), and OpenAI GET `api.openai.com/v1/models` with a ChatGPT/Codex
 OAuth token (→403). The status column contradicted real usage.
@@ -4351,21 +4351,21 @@ OAuth token (→403). The status column contradicted real usage.
 - **752.** `probeAnthropic` now does `GET /v1/models?limit=1` (200 with OAuth or API key) — verifies
   auth without burning credit and without depending on any (possibly retired) model id.
 - **753.** `probeOpenAi` branches on credential: OAuth → `POST chatgpt.com/backend-api/codex/responses`
-  with a deliberately-unsupported model (`joc-doctor-probe`), which returns **400 after auth but
+  with a deliberately-unsupported model (`jeo-doctor-probe`), which returns **400 after auth but
   before generation** (no credit) → reported OK; 401/403 → fail. API key/local base URL keep
   `GET /v1/models`.
 - **754.** Distinguishes *reachable/authenticated* from *rate-limited*: a throttled subscription still
   shows the provider OK in `doctor` (auth works), while an actual turn maps the 429 to the friendly
   switch-model guidance.
-- **755.** README: note that `joc doctor` reflects the real call path.
-- **756.** Verified live: `joc doctor` now shows anthropic `GET /v1/models 200`, openai
+- **755.** README: note that `jeo doctor` reflects the real call path.
+- **756.** Verified live: `jeo doctor` now shows anthropic `GET /v1/models 200`, openai
   `POST codex/responses (Codex backend reachable)`, gemini + ollama OK — all four [ OK ].
 
 ### Verification (passes 752–756)
 - `bun run typecheck` → **0 errors**.
 - `bun test` → **485 pass / 0 fail across 73 files**.
-- `bun run build` → compiled `dist/joc`.
-- Live: `joc doctor` → all four providers `[ OK ]` (was anthropic/openai FAIL).
+- `bun run build` → compiled `dist/jeo`.
+- Live: `jeo doctor` → all four providers `[ OK ]` (was anthropic/openai FAIL).
 
 ## Real-workflow focus: real model lists, clear blockage diagnosis, honor retry hints — passes 757–766
 
@@ -4380,7 +4380,7 @@ catalog though the Codex backend serves only a small set.
 - **757.** OpenAI OAuth model list is now the **real Codex-served set** (`CODEX_MODELS = gpt-5.5,
   gpt-5.4`), not the chat-completions catalog. Verified live: every other id (gpt-4o, o3, gpt-5,
   *-codex) returns `not supported` from `chatgpt.com/backend-api/codex/responses`; gpt-5.5/gpt-5.4
-  serve real turns. `joc models` openai now shows exactly those two.
+  serve real turns. `jeo models` openai now shows exactly those two.
 - **758.** Added `gpt-5.4` to the catalog (Codex-served alongside gpt-5.5).
 - **759.** Gemini live discovery drops non-chat families it was surfacing (`deep-research`,
   `computer-use`, `antigravity`) so the list shows usable chat models (29 → 24); `learnlm` stays.
@@ -4400,8 +4400,8 @@ catalog though the Codex backend serves only a small set.
 ### Verification (passes 757–766)
 - `bun run typecheck` → **0 errors**.
 - `bun test` → **494 pass / 0 fail across 73 files**.
-- `bun run build` → compiled `dist/joc`.
-- Live: `joc models` → openai shows only `gpt-5.5`/`gpt-5.4`; gemini noise removed. Real tool loop
+- `bun run build` → compiled `dist/jeo`.
+- Live: `jeo models` → openai shows only `gpt-5.5`/`gpt-5.4`; gemini noise removed. Real tool loop
   runs on ollama (find/edit executed). Cloud 429s now show the actionable rate-limit line and the
   loop honors the server's retry delay. (Cloud accounts are externally rate-limited right now; the
   unthrottled local path and the clear diagnosis are the deliverable.)
@@ -4411,7 +4411,7 @@ catalog though the Codex backend serves only a small set.
 **Date:** 2026-06-08 · **Dimension: provider/model correctness / TUI readability.**
 
 Cross-validated with three read-only subagents before landing the changes (`2-GjcProviderModel`,
-`3-JocTuiIndexing`, `4-ProviderTuiPlanCritic`).
+`3-JeoTuiIndexing`, `4-ProviderTuiPlanCritic`).
 
 - **735.** Confirmed the main provider/model settings bug was not the runtime OpenAI adapter anymore,
   but the *settings surfaces*: `setup.ts` still defaulted OpenAI OAuth users to `gpt-4o`, which the
@@ -4433,7 +4433,7 @@ Cross-validated with three read-only subagents before landing the changes (`2-Gj
   response parsing path.
 - **743.** Added a shared TUI category/index helper (`category-index.ts`) so progress/tool/diff/file/
   command/subagent surfaces can share the same badge vocabulary instead of ad-hoc strings.
-- **744.** `renderJocStatus()` now prefixes the thinking/forge lines with indexed category badges,
+- **744.** `renderJeoStatus()` now prefixes the thinking/forge lines with indexed category badges,
   improving scanability of in-progress vs tool-state regions.
 - **745.** `ToolList.render({ indexed: true })` and `formatForgeBox({ index })` now emit indexed
   category badges like `[01:CMD]`, `[02:FILE]`, preserving plain-mode safety and width bounds.
@@ -4442,7 +4442,7 @@ Cross-validated with three read-only subagents before landing the changes (`2-Gj
 
 ### Verification (passes 735–746)
 
-- Read-only cross-validation completed: `2-GjcProviderModel`, `3-JocTuiIndexing`, `4-ProviderTuiPlanCritic`.
+- Read-only cross-validation completed: `2-GjcProviderModel`, `3-JeoTuiIndexing`, `4-ProviderTuiPlanCritic`.
 - Focused provider/model suites: `bun test test/model-discovery.test.ts test/setup-helpers.test.ts test/openai-responses.test.ts test/provider-status.test.ts` → **44 pass / 0 fail**.
 - Focused TUI readability suites: `bun test test/category-index.test.ts test/forge-status.test.ts test/tui-components.test.ts test/review-fixes.test.ts test/code-view.test.ts` → **42 pass / 0 fail**.
 - Combined focused run: `bun test test/model-discovery.test.ts test/setup-helpers.test.ts test/openai-responses.test.ts test/provider-status.test.ts test/category-index.test.ts test/forge-status.test.ts test/tui-components.test.ts test/review-fixes.test.ts test/code-view.test.ts` → **86 pass / 0 fail**.
@@ -4491,8 +4491,8 @@ Applied follow-up items from the completed read-only TUI review.
 - **753.** `team.ts` Ralph/subagent output now supports colored/indexed rendering (`[AGENT]`) for
   live console events while preserving the old plain strings for prompts/tests by default.
 - **754.** Active/done/pending todo markers in `formatRalphTodoGuide()` are now colorized in the
-  live `joc team` path, making subagent progress easier to scan.
-- **755.** `renderJocStatus()` now colorizes the per-state forge counts (`ok`/`fail`/`running`)
+  live `jeo team` path, making subagent progress easier to scan.
+- **755.** `renderJeoStatus()` now colorizes the per-state forge counts (`ok`/`fail`/`running`)
   instead of leaving the whole parenthetical unclassified.
 - **756.** `formatDiff()` now differentiates old/new file headers: `---` red-bold, `+++` green-bold,
   while keeping hunk headers cyan and preserving plain-mode output.
@@ -4507,10 +4507,10 @@ Applied follow-up items from the completed read-only TUI review.
 
 **Date:** 2026-06-08 · **Dimension: diagnosability / honesty (no unverifiable backend).**
 
-User: "Gemini wrongly says it needs an API key." Root cause (verified): joc's Gemini OAuth uses the
+User: "Gemini wrongly says it needs an API key." Root cause (verified): jeo's Gemini OAuth uses the
 Gemini CLI desktop client with the `cloud-platform` scope — those tokens authenticate against Google
 **Cloud Code Assist** (`cloudcode-pa.googleapis.com`), which requires a managed-project onboarding
-flow (`loadCodeAssist`/`onboardUser`). joc's bundled adapter targets the public `generativelanguage`
+flow (`loadCodeAssist`/`onboardUser`). jeo's bundled adapter targets the public `generativelanguage`
 API (prefers `GEMINI_API_KEY`), so a Gemini-OAuth-only login genuinely cannot serve a turn. Live
 probing confirmed Cloud Code Assist is unreachable without the managed project (403 SERVICE_DISABLED),
 so a Cloud Code Assist adapter cannot be verified here and was deliberately NOT shipped as a stub.
@@ -4536,7 +4536,7 @@ Note: with a `GEMINI_API_KEY` set (the common case) Gemini is fully `ready` and 
 
 **Date:** 2026-06-08 · **Dimension: real workflow correctness (gjc flow parity).**
 
-Goal: verify joc runs the full gjc chain (deep-interview → ralplan → approve → team → ultragoal) and
+Goal: verify jeo runs the full gjc chain (deep-interview → ralplan → approve → team → ultragoal) and
 fix where it dead-ends. A read-only architect audit + live runs (ollama, since cloud is rate-limited)
 found two HIGH chain-breakers and several threading gaps. All menus' `--help` verified; the chain was
 then run end-to-end in a temp project.
@@ -4554,7 +4554,7 @@ then run end-to-end in a temp project.
 - **774.** (HIGH bug found live) `approve <plan>` rejected the correct path when it differed only by
   symlink/relative/absolute form (macOS `/var`↔`/private/var`). Now compares canonical realpaths and
   prints the active plan path to copy. Verified: relative-path approve succeeds.
-- **775.** (G5) `ralplan` handoff now instructs `joc approve <plan>` THEN `joc team` (was skipping the
+- **775.** (G5) `ralplan` handoff now instructs `jeo approve <plan>` THEN `jeo team` (was skipping the
   approval gate, which team then rejected).
 - **776.** (G4) `ultragoal` threads `team-state`: warns when team didn't complete, records the plan +
   execution status in the report, instead of verifying the seed in isolation.
@@ -4565,7 +4565,7 @@ then run end-to-end in a temp project.
   re-check (which also avoids contradicting the best-effort `--auto` freeze).
 - **779.** Tests updated/added: `name`-optional plan accepted; `normalizePlanShape` deviations;
   (existing approve/team/mutation-guard suites still green).
-- **780.** Deliberately kept ralplan as a single 3-role-prompt pass (joc is the lean re-impl; a true
+- **780.** Deliberately kept ralplan as a single 3-role-prompt pass (jeo is the lean re-impl; a true
   Planner→Architect→Critic multi-pass is a noted future fidelity enhancement, not a chain-breaker).
 
 ### Verification (passes 771–780)
@@ -4645,32 +4645,32 @@ Picked up the two items deferred from the spec-first audit (passes 771–780).
   re-running already-completed tasks. Gates still fail safe; resume no longer loses progress on
   corruption.
 - **800.** Verified live (ollama): ralplan runs the 3 passes and writes a valid plan; a corrupted
-  team-state makes `joc team` refuse before executing any task.
+  team-state makes `jeo team` refuse before executing any task.
 
 ### Verification (passes 797–800)
 - `bun run typecheck` → **0 errors**. `bun test` → **506 pass / 0 fail**.
-- Live: `joc ralplan` → "Planner → Architect → Critic consensus" with [1/3]/[2/3]/[3/3] passes + a
-  schema-valid plan; corrupt `.joc/state/team-state.json` → `joc team` prints the corrupt-state error
+- Live: `jeo ralplan` → "Planner → Architect → Critic consensus" with [1/3]/[2/3]/[3/3] passes + a
+  schema-valid plan; corrupt `.jeo/state/team-state.json` → `jeo team` prints the corrupt-state error
   and exits non-zero (no silent re-run).
 
 ## Independent tmux sessions per working directory — pass 801
 
 **Date:** 2026-06-08 · **Dimension: tmux session isolation.**
 
-Reported: `joc --tmux` collided on the same tmux session (a second invocation attached to the first)
-instead of running an independent session. Root cause: the session name was `joc-<branch>` +
+Reported: `jeo --tmux` collided on the same tmux session (a second invocation attached to the first)
+instead of running an independent session. Root cause: the session name was `jeo-<branch>` +
 runtime-flag suffix — keyed only on the git branch, so two different working directories/worktrees on
 the same branch (e.g. `main`) produced the SAME name and `has-session` matched → attach instead of a
 new session.
 
 - **801.** New `tmuxSessionName(cwd, branch, flags)` keys the session on the working DIRECTORY
-  (`joc-<branch>-<basename>-<hash(cwd)>` + runtime suffix). Different projects/worktrees on the same
+  (`jeo-<branch>-<basename>-<hash(cwd)>` + runtime suffix). Different projects/worktrees on the same
   branch now get INDEPENDENT sessions; the same (dir, branch, flags) stays stable so re-running
   reattaches your own session. `cwd` is already the worktree path when `--worktree` is used.
 
 ### Verification (pass 801)
 - `bun run typecheck` → **0 errors**. `bun test` → **507 pass / 0 fail**.
-- New-session name observed dir-scoped (`joc-feature-branch-jeo-code-<hash>`); unit test asserts two
+- New-session name observed dir-scoped (`jeo-feature-branch-jeo-code-<hash>`); unit test asserts two
   dirs on the same branch → different names, and same dir+branch+flags → stable name (reattach).
 
 ## Subagent team routing hardening — pass 802
@@ -4680,7 +4680,7 @@ new session.
 The `team` executor now fails safe when a plan references subagent roles.
 
 - **802.** Plan roles are validated before any `team-state.json` write or tool-loop execution. A typo
-  such as `plannr` no longer falls back to the mutating `executor`; `joc team` reports the unknown
+  such as `plannr` no longer falls back to the mutating `executor`; `jeo team` reports the unknown
   role and the known role set (`executor, planner, architect, critic`).
 - **803.** Per-step role routing is now index-based instead of task-name-based. Generated plans may
   contain duplicate step names; duplicates now keep their own role order instead of being collapsed by
@@ -4700,7 +4700,7 @@ The `team` executor now fails safe when a plan references subagent roles.
 **Date:** 2026-06-09 · **Dimension: agentic workflow / GJC tool-surface parity (`task`, `todo_write`).**
 
 The interactive agent could only `read/write/edit/bash/find/search`. The subagent registry
-(`subagents.ts`) existed but was reachable only from `joc team` — the launch agent could not
+(`subagents.ts`) existed but was reachable only from `jeo team` — the launch agent could not
 delegate, and it had no way to declare a plan the user could watch. Two gjc-parity tools close
 that gap, both wired into the launch tool-loop and TUI.
 
@@ -4721,7 +4721,7 @@ that gap, both wired into the launch tool-loop and TUI.
   is retained in the static final output. Height is accounted for in the differential renderer's
   `fixedHeight`; an empty plan adds zero rows (no regression to existing TUI height bounds).
 - **808.** `LaunchTui` now reads the deep-interview lock with the same strict fail-closed semantics
-  as the engine MutationGuard. A corrupt `.joc/state/deep-interview-state.json` displays
+  as the engine MutationGuard. A corrupt `.jeo/state/deep-interview-state.json` displays
   `[MUTATION LOCKED]` instead of falsely showing an unlocked footer while edits are blocked.
 
 ### Verification (passes 805–808)
@@ -4748,15 +4748,15 @@ auth storage, MCP server/tools) plus live smoke tests found real defects:
   `-32600` and the loop wraps `handleLine` in try/catch so one bad line never kills the server.
 - **803.** (HIGH/P1) `auth/storage.ts` setters (setOauthToken/setOauthCredential/clearOauthToken/setApiKey)
   read the ENV-OVERLAID config and saved it → baked env-only OAuth tokens, OLLAMA_HOST, OPENAI_BASE_URL,
-  and role tiers into `~/.joc/config.json` (plaintext secret leak + stale-token shadowing on env rotation).
+  and role tiers into `~/.jeo/config.json` (plaintext secret leak + stale-token shadowing on env rotation).
   Rewritten via `saveConfigPatch`/`readRawGlobalConfig` (the contract launch.ts already follows).
-- **804.** (HIGH/P1) `joc setup` had the same env-leak: `next` was cloned from the overlaid config and saved.
+- **804.** (HIGH/P1) `jeo setup` had the same env-leak: `next` was cloned from the overlaid config and saved.
   Now built from `readRawGlobalConfig()` (overlaid `current` used only for display defaults).
-- **805.** (MED) `joc setup` on a non-TTY stdin crashed with "readline was closed"; now detects `!isTTY` and
-  prints clear non-interactive guidance (env vars / `joc auth login` / edit config) and returns.
-- **806.** (MED) `joc auth login|logout|refresh <bogus>` cast the arg to a provider with no validation
+- **805.** (MED) `jeo setup` on a non-TTY stdin crashed with "readline was closed"; now detects `!isTTY` and
+  prints clear non-interactive guidance (env vars / `jeo auth login` / edit config) and returns.
+- **806.** (MED) `jeo auth login|logout|refresh <bogus>` cast the arg to a provider with no validation
   (persisted `oauth.bogus` / cryptic crash). Now validated against anthropic/openai/gemini with a clear error.
-- **807.** (MED) MCP `joc_credential_status` / `joc_config_snapshot` reported the BARE credential
+- **807.** (MED) MCP `jeo_credential_status` / `jeo_config_snapshot` reported the BARE credential
   (oauth-beats-key), not the EFFECTIVE one the call path uses. Now report the effective kind (API key wins;
   unusable OAuth-only → "none"), plus `configured` for transparency.
 - **808–809.** Tests: `mcp.test.ts` (malformed inputs → -32600/-32700, server keeps serving after a bad line);
@@ -4764,8 +4764,8 @@ auth storage, MCP server/tools) plus live smoke tests found real defects:
 
 ### Verification (passes 802–809)
 - `bun run typecheck` → **0 errors**. `bun test` → **533 pass / 0 fail**.
-- Live: `printf 'null\n[]\n{ping}\n' | joc mcp serve` → two `-32600` then a normal `ping` result (no crash);
-  `joc auth refresh bogus` / `auth login bogus` → "Unknown provider"; piped `joc setup` → clean TTY guidance.
+- Live: `printf 'null\n[]\n{ping}\n' | jeo mcp serve` → two `-32600` then a normal `ping` result (no crash);
+  `jeo auth refresh bogus` / `auth login bogus` → "Unknown provider"; piped `jeo setup` → clean TTY guidance.
 - Confirmed correct (unchanged): expiry/refresh math (5-min skew), real call-path credential precedence,
   MCP protocol shapes/error codes, config-schema validation.
 
@@ -4773,17 +4773,17 @@ auth storage, MCP server/tools) plus live smoke tests found real defects:
 
 **Date:** 2026-06-08 · **Dimension: skill discovery / menu correctness (parity with gjc).**
 
-`joc skills` and the `/skill` menu surfaced garbage one-line summaries like `Use this skill when >`
+`jeo skills` and the `/skill` menu surfaced garbage one-line summaries like `Use this skill when >`
 for dozens of real user skills (tdd, caveman, to-prd, grill-me, setup-pre-commit, grill-with-docs, …).
 
 - **810.** `parseSkillMarkdown` only folded a YAML block scalar when the value was EXACTLY `>` or `|`.
   Real SKILL.md files in the wild use the technically-invalid-but-ubiquitous lead-in form
-  `description: Use this skill when >` followed by an indented continuation block. joc kept the lead-in
+  `description: Use this skill when >` followed by an indented continuation block. jeo kept the lead-in
   verbatim as the summary and DROPPED the whole continuation block. Fixed: detect a trailing block-scalar
   indicator (`>`/`|` with optional chomping `>-`/`|+`) when preceded by whitespace or spanning the whole
   value, fold the indented block in, and join it onto the lead-in. A description that merely ENDS in `>`
   (e.g. `returns Promise<T>`, no whitespace before the `>`) is left intact — no regression.
-- The "duplicate" entries in `joc skills` (e.g. `llm-monitoring-dashboard` ×3) are NOT a bug: they are
+- The "duplicate" entries in `jeo skills` (e.g. `llm-monitoring-dashboard` ×3) are NOT a bug: they are
   distinct directories the user keeps (timestamped backup dirs like `... 오후 11.16.16`); `loadSkills`
   already dedupes by directory name, and faithfully listing every discovered dir is correct.
 
@@ -4791,7 +4791,7 @@ for dozens of real user skills (tdd, caveman, to-prd, grill-me, setup-pre-commit
 - `bun run typecheck` → 0 errors. `bun test` → **534 pass / 0 fail**. `bun run build` → ok.
 - New `parseSkillMarkdown` regression test (plain `>`, lead-in `... >`, chomping `>-`, and the
   `returns Promise<T>` no-regression case).
-- Live `joc skills` now shows real summaries for tdd/caveman/to-prd/grill-me/setup-pre-commit/grill-with-docs.
+- Live `jeo skills` now shows real summaries for tdd/caveman/to-prd/grill-me/setup-pre-commit/grill-with-docs.
 
 ## find tool path-glob support — pass 811
 
@@ -4824,7 +4824,7 @@ Two reported defects. (1) Setting an Anthropic model and sending a turn surfaced
 request in `withRetry`, but the default budget was ~3 attempts with sub-second exponential backoff —
 so a real per-minute/OTPM 429 window (which needs seconds, not milliseconds, to clear) instantly
 exhausted retries. (2) The interactive prompt showed TWO inputs at once: readline's own echoed
-`joc> <text>` line AND the boxed input mirrored in the reserved footer.
+`jeo> <text>` line AND the boxed input mirrored in the reserved footer.
 
 - **812a.** `withRetry` gained `rateLimitRetries` (a higher attempt cap applied only when the current
   error is a 429) and `rateLimitMinDelayMs` (a backoff floor for 429s when the server sends no
@@ -4839,8 +4839,8 @@ exhausted retries. (2) The interactive prompt showed TWO inputs at once: readlin
   boxed-footer prompt is armed**, readline's own echo/prompt is suppressed and only the box is
   visible. `rl.line` still tracks the input, so the footer box (which reads it on every keypress)
   is the sole, accurate input surface. The box is now drawn immediately on arm (placeholder) since
-  the old `joc>` echo affordance is gone. Sub-prompts (e.g. "Choose [1-3]") run with the footer
-  disarmed and echo normally. No-preview fallback (short terminal / `JOC_NO_SLASH_PREVIEW=1`) keeps
+  the old `jeo>` echo affordance is gone. Sub-prompts (e.g. "Choose [1-3]") run with the footer
+  disarmed and echo normally. No-preview fallback (short terminal / `JEO_NO_SLASH_PREVIEW=1`) keeps
   the classic echoed prompt.
 
 ### Verification (pass 812)
@@ -4856,18 +4856,18 @@ exhausted retries. (2) The interactive prompt showed TWO inputs at once: readlin
 
 **Date:** 2026-06-08 · **Dimension: tmux session isolation (user-reported regression).**
 
-User report: `joc --tmux` from different processes collides into the SAME tmux session (clients
+User report: `jeo --tmux` from different processes collides into the SAME tmux session (clients
 mirror each other) instead of each getting an independent session.
 
 - **812.** The launch path did `has-session` → if present **attach to the existing session**, so a
-  second `joc --tmux` in the same dir+branch attached to (and mirrored) the first process's session.
+  second `jeo --tmux` in the same dir+branch attached to (and mirrored) the first process's session.
   Pass 801 had only made the NAME directory-scoped, which fixed cross-project collisions but not the
   same-dir same-process-class case the user hit. Now each invocation **creates its own session**:
   `allocateTmuxSession(base, tryCreate)` tries `base`, then `base-2`, `base-3`, … and the create
   itself is the guard — race-safe, so two processes starting at the same instant can't both win
   `base` (`tmux new-session` returns `duplicate session` for the loser, which retries the next
-  suffix). Sessions die with their joc process, so sequential re-runs reuse the clean base; only live
-  overlap is suffixed. The in-tmux no-nesting guard (`$TMUX` / `JOC_TMUX_LAUNCHED`) is unchanged.
+  suffix). Sessions die with their jeo process, so sequential re-runs reuse the clean base; only live
+  overlap is suffixed. The in-tmux no-nesting guard (`$TMUX` / `JEO_TMUX_LAUNCHED`) is unchanged.
   Replaced the old attach-to-existing branch entirely.
 
 ### Verification (pass 812)
@@ -4875,21 +4875,21 @@ mirror each other) instead of each getting an independent session.
 - Tests: `allocateTmuxSession` unit (base free / next free -N on collision / error passthrough);
   integration test now asserts base-taken → creates+attaches `base-2` (not attach to base); long-model
   + launch tests updated to read the `-s` name from `new-session`.
-- **Live (real tmux, outside tmux via `env -u TMUX`):** 3 concurrent `joc --tmux` from the same
-  dir+branch produced 3 DISTINCT live sessions `joc-main-<dir>-<hash>`, `…-2`, `…-3` simultaneously;
+- **Live (real tmux, outside tmux via `env -u TMUX`):** 3 concurrent `jeo --tmux` from the same
+  dir+branch produced 3 DISTINCT live sessions `jeo-main-<dir>-<hash>`, `…-2`, `…-3` simultaneously;
   the "Starting new independent tmux session" message names each + how to reattach.
 
 ## Single input box — suppress readline's raw prompt on Bun — pass 813
 
 **Date:** 2026-06-08 · **Dimension: TUI input correctness (user-reported; gjc parity).**
 
-User report: two input areas show at once — the styled boxed input AND a raw `joc>` CLI line —
+User report: two input areas show at once — the styled boxed input AND a raw `jeo>` CLI line —
 where only the box should appear (gjc shows a single boxed input).
 
 - **813.** The single-box design suppressed readline's own prompt/echo by monkeypatching
   `rl._writeToOutput` — a **Node internal that Bun does not expose** (`typeof rl._writeToOutput
   === "undefined"` on Bun 1.3.14). So on Bun the patch silently no-op'd: readline echoed its
-  `joc>` prompt while the boxed footer also drew → two inputs. Fixed by gating readline's
+  `jeo>` prompt while the boxed footer also drew → two inputs. Fixed by gating readline's
   `output` stream instead: `gatedStdout(process.stdout, () => previewArmed)` proxies stdout and
   turns its visible-output methods (`write`/`cursorTo`/`moveCursor`/`clearLine`/`clearScreenDown`)
   into no-ops (still firing the write callback so readline never stalls) while the box is armed,
@@ -4902,13 +4902,13 @@ where only the box should appear (gjc shows a single boxed input).
 - Verified on Bun 1.3.14 that `rl._writeToOutput` is undefined (root cause) and that Bun's
   readline funnels prompt+echo+cursor through `output.write` (so gating `write` is sufficient).
 - New tests: `gatedStdout` unit (no-op while gated + callback fired, forwarded when open, geometry
-  passthrough) and an end-to-end readline test asserting the `joc>` prompt and `hi` echo are NOT
+  passthrough) and an end-to-end readline test asserting the `jeo>` prompt and `hi` echo are NOT
   written to the underlying stream while gated (only the box would show them).
 ## Scroll-safe live turn (alternate screen buffer) + find no-glob guard — pass 814
 
 **Date:** 2026-06-09 · **Dimensions: tui (scroll flicker), agent tool robustness.**
 
-Reported via `joc --tmux`: scrolling (mouse wheel) made the screen flicker and content
+Reported via `jeo --tmux`: scrolling (mouse wheel) made the screen flicker and content
 disappear. Reproduced with `tmux pipe-pane`: the live turn repaints the WHOLE frame into the
 **main buffer** every 120ms via relative cursor moves (`cursorUp`/`clearLine`), and there was
 **no alternate screen** (`?1049h` count = 0). So any terminal scroll fought the repaint — each
@@ -4929,7 +4929,7 @@ disappear. Reproduced with `tmux pipe-pane`: the live turn repaints the WHOLE fr
 ### Verification (pass 814)
 
 - `bun run typecheck` → **0 errors**. `bun test` → **546 pass / 0 fail**. `bun run build` → ok.
-- Live `joc --tmux` (ollama qwen2.5:0.5b), captured via `tmux pipe-pane`: a turn now emits
+- Live `jeo --tmux` (ollama qwen2.5:0.5b), captured via `tmux pipe-pane`: a turn now emits
   `?1049h` on start and `?1049l` on finish (`altEnter:1, altLeave:1`); after finish the main
   buffer shows the final summary in scrollback with the idle box restored. The no-glob `find`
   call returns "find requires a non-empty globPattern" and the turn keeps going (no crash).
@@ -4963,7 +4963,7 @@ User: improve the live operation/process UI, run it, verify, improve.
 - New tests: `fitForgeBoxes` unit (whole-box selection, most-recent preference, none-when-too-short)
   and a boxed `LaunchTui` test asserting the footer/hint survive overflow and the last content row is
   the footer.
-- **Live (real PTY, ollama fast):** `joc launch "…" --model fast --max-steps 2` ran a real turn
+- **Live (real PTY, ollama fast):** `jeo launch "…" --model fast --max-steps 2` ran a real turn
   (4109 tokens in) and exited cleanly (EXIT=0), alt-screen restored, no crash.
 ## gjc-parity improvement program, round A+B — passes 815–823
 
@@ -5073,15 +5073,15 @@ program (815–834).
   working copy and write only if ALL match — a later failing hunk leaves the file untouched (atomic),
   with `(hunk i/N)` in the error. Backward compatible: single-hunk + the near-miss diagnostics still work.
 - **833.** Tool-result artifact spill: output > 12k chars is written verbatim to
-  `.joc/artifacts/tool-results/<stamp>-<tool>.txt` and the history note points the model there, so the
+  `.jeo/artifacts/tool-results/<stamp>-<tool>.txt` and the history note points the model there, so the
   decisive middle of long test logs / searches isn't lost to the head+tail cap (`read` recovers it).
 - **834.** Session transcript export: `exportSession(id, "markdown"|"json", cwd, {includeSystem})` +
-  a `joc export [id] [--json] [--system]` command — turns JSONL sessions into shareable handoff/audit
+  a `jeo export [id] [--json] [--system]` command — turns JSONL sessions into shareable handoff/audit
   artifacts (system messages excluded by default; tolerates a malformed trailing line).
 
 ### Verification (passes 832–834)
 - `bun run typecheck` → 0 errors. `bun test` → **592 pass / 0 fail** (+9). `bun run build` → ok;
-  `joc --help` lists `export`. New tests: parseEditHunks one/many/malformed; multi-hunk apply-in-order
+  `jeo --help` lists `export`. New tests: parseEditHunks one/many/malformed; multi-hunk apply-in-order
   + atomic-failure-writes-nothing; oversized output spills to a recoverable artifact while small output
   does not; markdown/json export with/without system + malformed-tail tolerance.
 ## Round-D cross-validation + HIGH fix — pass 835
@@ -5151,18 +5151,18 @@ reviews + live tmux repro). Both are real behavioral defects.
 
 **Date:** 2026-06-08 · **Dimension: live-turn TUI content fidelity (user-reported; gjc parity).**
 
-User: the `[STEP] joc thinking` line churns meaningless messages every tick; expose the double
-helix in `[TOOL] joc forge`; show STEP-level real content (file, plan step, progress) "as if
+User: the `[STEP] jeo thinking` line churns meaningless messages every tick; expose the double
+helix in `[TOOL] jeo forge`; show STEP-level real content (file, plan step, progress) "as if
 thinking"; and supplement the missing subagent progress/result summary (ref. gjc's TUI).
 
-- **839a.** `[STEP] joc thinking · <msg>` used `getEvolutionStatusMessage(step, max, tickCount)`,
+- **839a.** `[STEP] jeo thinking · <msg>` used `getEvolutionStatusMessage(step, max, tickCount)`,
   which rotated 3 decorative strings every 120ms tick (meaningless churn). Replaced with
   `LaunchTui.currentActivity()` — the real, stable in-flight action: the running tool's actual
   target (`read src/agent/engine.ts`, `bash: bun test`, `edit …`), else the active plan step
   (`step: Add the retry guard`), else plan progress (`plan 1/3 complete`), else a calm default.
   Changes only when the actual work changes — no per-tick flicker.
-- **839b.** `[TOOL] joc forge` now carries the current evolution-stage identity via a new
-  `stage?` field on `renderJocStatus` — e.g. `●●○○○ Double Helix (DNA) [2/5]` — so the double
+- **839b.** `[TOOL] jeo forge` now carries the current evolution-stage identity via a new
+  `stage?` field on `renderJeoStatus` — e.g. `●●○○○ Double Helix (DNA) [2/5]` — so the double
   helix is always exposed, even when the large ASCII art is dropped on short terminals.
 - **839c.** Subagent monitoring: in TUI mode `createTaskTool({ onEvent })` was `undefined`, so a
   delegated `task` subagent ran invisibly until its result box. Added `LaunchTui.onSubagentEvent`
@@ -5175,9 +5175,9 @@ thinking"; and supplement the missing subagent progress/result summary (ref. gjc
 - Deterministic frame render: `[STEP]` shows `read src/agent/engine.ts` (not "Transcribing…"),
   `[TOOL]` shows `Double Helix (DNA) [2/5]`, and four `onSubagentEvent` calls render as
   start/tool/tool/done lines in the stream.
-- New tests: `renderJocStatus` stage exposure; `onSubagentEvent` surfaces assignment + nested
+- New tests: `renderJeoStatus` stage exposure; `onSubagentEvent` surfaces assignment + nested
   tools + result summary; boxed `[STEP]`/`[TOOL]` real-content + double-helix assertions.
-- **Live (real PTY, ollama fast):** `joc launch "read package.json …" --model fast --max-steps 2`
+- **Live (real PTY, ollama fast):** `jeo launch "read package.json …" --model fast --max-steps 2`
   ran a real turn (4110 tokens in) and exited cleanly (EXIT=0).
 
 ## Subagent monitor: nested tool calls show the real target — pass 840
@@ -5223,11 +5223,11 @@ concurrent sessions at 839–840).
 
 **Date:** 2026-06-09 · **Dimension: cmd-mode execution visibility / GJC flow parity.**
 
-Reported: running `joc "..."` from the command line made the overall flow feel broken because the
+Reported: running `jeo "..."` from the command line made the overall flow feel broken because the
 turn only exposed the final reply (or sparse tool-result lines) instead of the live stages.
 
 - **845.** One-shot command-argument input now uses the live `LaunchTui` whenever stdout is a TTY and
-  `--no-tui` is not set. This matches interactive `joc` behavior: the user sees evolution status,
+  `--no-tui` is not set. This matches interactive `jeo` behavior: the user sees evolution status,
   step timeline, forge boxes, subagent monitoring, and the final collapsed summary even when the
   request came from argv instead of the REPL prompt.
 - **846.** Plain cmd mode (`--no-tui` or non-TTY/piped output) uses the same exported
@@ -5285,7 +5285,7 @@ subagent's own stages/results were not exposed like gjc, and `/subagent ...` was
   the assignment instead of generic `task arguments`.
 - **849.** Added direct execution: `/subagent run [role] <task>` and `/subagent <role> -- <task>`
   execute the chosen subagent immediately, including one-shot cmd input such as
-  `joc "/subagent run executor inspect note.txt" --no-tui`. `/agents`/`/subagents` remain the settings
+  `jeo "/subagent run executor inspect note.txt" --no-tui`. `/agents`/`/subagents` remain the settings
   surface; `/subagent` is now the run-now command.
 
 ### Verification (passes 847–849)
@@ -5297,16 +5297,16 @@ subagent's own stages/results were not exposed like gjc, and `/subagent ...` was
 
 **Date:** 2026-06-08 · **Dimensions: OAuth/model truthfulness, hook/rule guidance loading, memory bloat control.**
 
-The broad hardening pass focused on concrete places where `joc` could diverge from the real GJC-style
+The broad hardening pass focused on concrete places where `jeo` could diverge from the real GJC-style
 execution path or allow context to grow from a few huge skill/rule packets.
 
 - **850.** Provider readiness now reports the **effective** credential path: when an API key and OAuth
   token both exist, status uses `API key` (the same path model execution already uses), instead of
-  showing `OAuth` while the call path silently switches to the key. `joc doctor` now probes the same
+  showing `OAuth` while the call path silently switches to the key. `jeo doctor` now probes the same
   effective credential, so Gemini `oauth+key` no longer fails a doctor probe through the unsupported
   OAuth path while actual model calls would use the key.
 - **851.** Project context loading now recognizes bounded OMA/GJC-style guidance files:
-  `.agents/rules/*.md`, `.joc/rules/*.md`, and `.agents/hooks/**` text config/docs (`.md`, `.json`,
+  `.agents/rules/*.md`, `.jeo/rules/*.md`, and `.agents/hooks/**` text config/docs (`.md`, `.json`,
   `.jsonc`, `.yaml`, `.yml`, `.toml`). Skill docs stay in `skills/catalog.ts`; hook/rule policy is
   injected as project context with per-file and total caps.
 - **852.** Compaction now triggers on **character budget** as well as message count, caps the
@@ -5317,9 +5317,9 @@ execution path or allow context to grow from a few huge skill/rule packets.
   single giant `SKILL.md` no longer pastes an unbounded workflow document into one turn.
 - **854.** Project-context loading now keeps a **reserved guidance budget** (`48k` root context +
   `16k` hook/rule guidance) so huge `JEO.md` / `AGENTS.md` files cannot silently starve `.agents`
-  and `.joc` rules/hooks.
+  and `.jeo` rules/hooks.
 - **855.** Global guidance parity: `loadProjectContext()` now scans `~/.agents/rules`,
-  `~/.agents/hooks`, and `~/.joc/rules` in addition to project-local directories, matching the
+  `~/.agents/hooks`, and `~/.jeo/rules` in addition to project-local directories, matching the
   home+project shape already used for skill discovery.
 - **856.** `skillsPromptSection()` now caps the injected skill catalog (line count + char budget),
   preventing a very large installed skill set from bloating the session system prompt.
@@ -5331,7 +5331,7 @@ execution path or allow context to grow from a few huge skill/rule packets.
 
 **Date:** 2026-06-09 · **Dimensions: skill invocation correctness, TUI progress legibility.**
 
-Reported + reproduced in `joc --tmux` (ollama): invoking a slash skill (`/demo`, `/speckit.*`)
+Reported + reproduced in `jeo --tmux` (ollama): invoking a slash skill (`/demo`, `/speckit.*`)
 **read/echoed the skill doc but ran no real work** — the model emitted a tool call named after the
 skill (`[01:TOOL] demo → failed`) and the target file was never created; and during the model wait
 **nothing showed** what was happening.
@@ -5375,7 +5375,7 @@ skill (`[01:TOOL] demo → failed`) and the target file was never created; and d
 
 **Date:** 2026-06-09 · **Dimensions: spec-gate safety, seed correctness, MutationGuard honesty.**
 
-Follow-up to the GJC comparison: `joc` deep-interview still had a real safety defect. In `--auto` / non-TTY mode it would freeze a **best-effort** seed even when ambiguity stayed above the threshold, which flipped `current_phase` to `complete` and unlocked the MutationGuard. It also fabricated default constraints/acceptance criteria when the model failed to supply any.
+Follow-up to the GJC comparison: `jeo` deep-interview still had a real safety defect. In `--auto` / non-TTY mode it would freeze a **best-effort** seed even when ambiguity stayed above the threshold, which flipped `current_phase` to `complete` and unlocked the MutationGuard. It also fabricated default constraints/acceptance criteria when the model failed to supply any.
 
 - **858a.** `src/commands/deep-interview.ts` no longer bypasses the ambiguity gate in `--auto` / non-TTY mode. If ambiguity stays above the threshold, or if concrete acceptance criteria are still missing, no seed is written, `current_phase` stays `interviewing`, and writes remain locked.
 - **858b.** Seed freezing now requires concrete acceptance criteria. When the score falls below threshold without them, the interview stays open and explicitly asks for testable success checks instead of silently freezing an underspecified seed.
@@ -5405,7 +5405,7 @@ Follow-up to the GJC comparison: `joc` deep-interview still had a real safety de
 
 **Date:** 2026-06-09 · **Dimension: durability (bounded disk).**
 
-- **860.** `spillToolResult` now prunes `.joc/artifacts/tool-results/` to the newest
+- **860.** `spillToolResult` now prunes `.jeo/artifacts/tool-results/` to the newest
   `MAX_TOOL_ARTIFACTS` (50) on each spill (best-effort, by mtime), so a long team/REPL session can't
   grow the artifact dir without bound — closing the last LOW finding from the round-D architect review.
 
@@ -5419,7 +5419,7 @@ Follow-up to the GJC comparison: `joc` deep-interview still had a real safety de
 **Date:** 2026-06-09 · **Dimensions: interview structure, scope-shape preservation, brownfield labeling.**
 
 Continuation of the GJC-alignment work: after fixing the unsafe auto-freeze path, the next gap was
-that `joc` still treated every vague request as a single undifferentiated blob. That let the
+that `jeo` still treated every vague request as a single undifferentiated blob. That let the
 interview overfit the most-described sub-area and lose sibling components entirely.
 
 - **861a.** `src/commands/deep-interview.ts` now performs a **Round 0 topology confirmation** before
@@ -5498,7 +5498,7 @@ Closing the LOW Codex Responses items from the provider review:
 **Date:** 2026-06-09 · **Dimensions: brownfield grounding, evidence-first questioning, prompt safety.**
 
 The topology gate fixed the interview shape, but brownfield turns still had no repository-grounded
-evidence in the model prompt. The next gap versus GJC was that `joc` labeled a request brownfield
+evidence in the model prompt. The next gap versus GJC was that `jeo` labeled a request brownfield
 without actually carrying repo facts into the interview.
 
 - **863a.** `src/commands/deep-interview.ts` now captures a bounded `codebase_context` for brownfield
@@ -5519,7 +5519,7 @@ without actually carrying repo facts into the interview.
 
 **Date:** 2026-06-09 · **Dimensions: subagent method parity, structured verdicts, safer delegation.**
 
-The next GJC gap after deep-interview was the role-agent layer: `joc` had the four right names
+The next GJC gap after deep-interview was the role-agent layer: `jeo` had the four right names
 (executor/planner/architect/critic) but they all behaved like tiny variants of the same executor
 prompt, and the parent accepted any free-form `done.reason` as success.
 
@@ -5544,7 +5544,7 @@ prompt, and the parent accepted any free-form `done.reason` as success.
 **Date:** 2026-06-09 · **Dimensions: skill surface, prompt safety, context footprint, CLI UX.**
 
 GJC's current public runtime exposes exactly four bundled workflow skills and keeps the default
-surface intentionally small. `joc` still loaded configured/global skills correctly, but it also
+surface intentionally small. `jeo` still loaded configured/global skills correctly, but it also
 advertised the entire resolved skill catalog in every launch prompt. A user with broad oh-my-skills
 installed could paste or reference unrelated SKILL.md packets and the model would sometimes answer
 with a skill routing brief instead of doing the concrete coding-agent task.
@@ -5557,7 +5557,7 @@ with a skill routing brief instead of doing the concrete coding-agent task.
   a skill slash alias.
 - **865c.** `workflowSkillsForPrompt()` preserves user overrides of bundled skills while filtering
   external skills out of the always-on prompt, reducing per-turn prompt footprint and drift.
-- **865d.** One-shot slash aliases now execute their configured skill (`joc "/speckit.plan ..."`)
+- **865d.** One-shot slash aliases now execute their configured skill (`jeo "/speckit.plan ..."`)
   instead of falling through to a normal chat/tool turn.
 - **865e.** Inferred slash aliases are restricted to aliases owned by the skill name (for example,
   `spec-kit` may infer `/speckit.plan`, but not unrelated `/commit` mentions), reducing accidental
@@ -5601,7 +5601,7 @@ high-leverage correctness gaps that fit this session's “no model/provider/TUI 
 
 **Date:** 2026-06-09 · **Dimensions: orchestration safety, role-contract consumption, plan review gating.**
 
-After splitting role prompts/contracts, `joc team` was still treating any converged subagent turn as a
+After splitting role prompts/contracts, `jeo team` was still treating any converged subagent turn as a
 successful step. That meant a planner/architect/critic report could omit its required structure or
 even return a blocking/reject verdict and the team executor would still march forward.
 
@@ -5651,10 +5651,10 @@ contracts consistently.
 
 **Date:** 2026-06-09 · **Dimensions: skill-routing correctness, prompt-noise reduction, foreign-skill compatibility.**
 
-A reproduced user issue showed `joc` surfacing a huge external `skill` meta-skill dump (`Skill: skill …`)
+A reproduced user issue showed `jeo` surfacing a huge external `skill` meta-skill dump (`Skill: skill …`)
 instead of doing normal work. The root cause was not the built-in workflow surface itself; it was the
-interaction between foreign runtime skill packs under `~/.agents/skills/` and `joc`'s generic skill
-loader/executor. A meta-skill literally named `skill` is valid in another runtime, but in `joc` it
+interaction between foreign runtime skill packs under `~/.agents/skills/` and `jeo`'s generic skill
+loader/executor. A meta-skill literally named `skill` is valid in another runtime, but in `jeo` it
 collides conceptually with the built-in `/skill` command and creates noisy/accidental execution paths.
 
 - **869a.** `loadSkills()` now skips hidden external/system skill directories and ignores external
@@ -5683,9 +5683,9 @@ instead of a pile of anonymous lines.
   when an on-disk config exists, while still preserving the on-disk key when both are present. This
   fixes provider selection cases where `GEMINI_API_KEY`/`OPENAI_API_KEY` existed only in the environment
   but a config file made the provider appear uncredentialed.
-- **870b.** `joc launch` re-reads global config for every conversational turn before constructing the
+- **870b.** `jeo launch` re-reads global config for every conversational turn before constructing the
   `task` tool, so `/agents <role> <model>` and per-role max-step settings saved mid-session apply to the
-  next delegated subagent without restarting `joc`.
+  next delegated subagent without restarting `jeo`.
 - **870c.** Plain `--no-tui` streams and live TUI subagent streams now classify progress/results with
   stable category badges such as `[STEP]`, `[DONE]`, `[ERR]`, and `[AGENT]`, matching the existing
   forge/tool/code/diff/file category index.
@@ -5699,15 +5699,15 @@ instead of a pile of anonymous lines.
 - Focused: `bun test test/skills.test.ts test/skills-config.test.ts test/config-save.test.ts test/provider-status.test.ts test/doctor.test.ts test/task-tool.test.ts test/stream-events.test.ts test/tui-app.test.ts test/category-index.test.ts` → **80 pass / 0 fail**.
 - Typecheck: `bun run typecheck` → 0 errors.
 - Full: `bun test` → **686 pass / 0 fail**; `bun run build` → ok.
-- Local live smoke: `JOC_DEFAULT_MODEL=fast bun src/cli.ts launch "Use the done tool with reason live smoke ok." --model fast --max-steps 2 --no-session --no-tui` reached the local Ollama loop and emitted categorized `[STEP]`/`[DONE]` stream lines before the 2-step cap.
+- Local live smoke: `JEO_DEFAULT_MODEL=fast bun src/cli.ts launch "Use the done tool with reason live smoke ok." --model fast --max-steps 2 --no-session --no-tui` reached the local Ollama loop and emitted categorized `[STEP]`/`[DONE]` stream lines before the 2-step cap.
 
 ## Provider credential blank-key hardening — pass 871
 
 **Date:** 2026-06-09 · **Dimensions: credential resolution correctness, manual-config resilience.**
 
 A follow-up review on pass 870 identified a narrow but real manual-config edge case: an empty string in
-`~/.joc/config.json.providers.<name>` counted as an on-disk value and therefore masked a valid
-environment API key. That left `joc doctor`, `/provider`, and delegated subagents reporting "no
+`~/.jeo/config.json.providers.<name>` counted as an on-disk value and therefore masked a valid
+environment API key. That left `jeo doctor`, `/provider`, and delegated subagents reporting "no
 credential" even though the shell had a usable key.
 
 - **871a.** Provider API-key overlay now treats a blank on-disk provider value as a gap while still
@@ -5724,7 +5724,7 @@ credential" even though the shell had a usable key.
 
 **Date:** 2026-06-09 · **Dimensions: spec-first workflow fidelity, multilingual UX, seed-path safety.**
 
-`gjc` keeps requirement gathering in the user's language; `joc` still defaulted its interviewer prompt,
+`gjc` keeps requirement gathering in the user's language; `jeo` still defaulted its interviewer prompt,
 fallback questions, and auto-mode answers to English. That made Korean requirements feel like translated
 data instead of a native interview and could leak English acceptance criteria into frozen seeds.
 
@@ -5751,7 +5751,7 @@ data instead of a native interview and could leak English acceptance criteria in
 Addressing user-reported issues: (1) subagent model/provider setting changes made mid-session (via `/agents`) were not picked up by delegated subagent turns. (2) specifying a skill file by path only read the file instead of running the agent. (3) waiting for the model is an opaque, frustrating pause. (4) TUI/UI visual classification of step types/tool categories needed clearer indexing.
 
 - **873a.** `src/commands/launch.ts` now dynamically resolves `activeModel` using `turnConfig.defaultModel` on every turn, and passes the fresh `turnConfig` (read mid-session) to the `task` subagent tool instead of using the stale startup config `cfg`. This ensures subagent model/provider overrides take effect immediately in the REPL.
-- **873b.** `parseSkillInvocation()` in `src/skills/catalog.ts` now checks if the command/first word is a file path (starts with `/`, `.`, or contains `/`) and resolves it dynamically as a `SkillDoc` via a new helper `tryResolveSkillFromFilePath()`. This enables direct execution (`joc "/path/to/my-skill.md"` or `/skill path/to/my-skill.md`) rather than falling back to a plain file read.
+- **873b.** `parseSkillInvocation()` in `src/skills/catalog.ts` now checks if the command/first word is a file path (starts with `/`, `.`, or contains `/`) and resolves it dynamically as a `SkillDoc` via a new helper `tryResolveSkillFromFilePath()`. This enables direct execution (`jeo "/path/to/my-skill.md"` or `/skill path/to/my-skill.md`) rather than falling back to a plain file read.
 - **873c.** `LaunchTui` in `src/tui/app.ts` now tracks `currentStepStartedAt` on `onStep` events. `currentActivity()` uses this to show the ticking elapsed call time in real-time (e.g. `calling model (gemini-2.0-flash) (4.2s)…`) during the thinking phase.
 - **873d.** `formatStepTimeline()` in `src/tui/components/step-timeline.ts` now displays status-colored, indexed category badges (`[01:STEP]`, `[01:DONE]`, `[01:ERR]`, `[01:TOOL]`) instead of bare line numbers.
 - **873e.** Prefix `/find` and `/search` outputs with `[SRCH]` search category badge, and prefix `runDirectSubagent` non-TTY output with `[AGENT]` badge in `launch.ts`.
@@ -5764,13 +5764,13 @@ Addressing user-reported issues: (1) subagent model/provider setting changes mad
 - Full: `bun run typecheck` → 0 errors; `bun test` → **697 pass / 0 fail**; `bun run build` → ok.
 ## Ralph Pass 874 — Anthropic 429 resilience + single boxed input (2026-06-10)
 
-User-reported: `/model` to Anthropic (OAuth) hit `Rate limited by Anthropic (HTTP 429). Auto-retry was exhausted` almost immediately, the same error printed TWICE (stream `✗ error:` line + `joc> Error:` reply), and the raw `joc>` CLI prompt was still visible alongside the boxed input.
+User-reported: `/model` to Anthropic (OAuth) hit `Rate limited by Anthropic (HTTP 429). Auto-retry was exhausted` almost immediately, the same error printed TWICE (stream `✗ error:` line + `jeo> Error:` reply), and the raw `jeo>` CLI prompt was still visible alongside the boxed input.
 
 - **874a.** Root cause of the instant exhaustion: the default 429 budget (5 attempts, flat 2s floor, 4s backoff cap) waited only ~8s total while Anthropic per-minute/OAuth rate-limit windows need ≥60s. `withRetry` (`src/util/retry.ts`) now ESCALATES the rate-limit floor per attempt (`rateLimitMinDelayMs × 2^(attempt-1)`, capped at 30s), and the default 429 budget (`src/ai/model-manager.ts`) is 6 attempts — waits 2s → 4s → 8s → 16s → 30s ≈ 60s total, spanning a realistic per-minute window. Server `Retry-After` still wins (capped); explicit config still disables the defaults.
-- **874b.** Auto-retry is now VISIBLE: `RetryOptions.onRetry` gained the applied `delayMs`, `CallOptions`/`ChatOptions` carry an `onRetry` sink threaded through `resolveCall` → `withRetry`, and `runAgentLoop` surfaces each wait as a new `AgentLoopEvents.onNotice` (`rate limited (HTTP 429) — auto-retry #N in Ss`). Consumers: TUI stream (progress badge), plain stream sink (yellow), `joc team` (step event), task-tool (subagent `step` beat).
-- **874c.** Duplicate error display removed: the engine no longer emits a separate error event when a thrown LLM error becomes the turn's `doneReason` — every caller (TUI `finish`, `joc>` reply line, team reason line) already displays that, so the failure now leaves exactly ONE record. The dead `AgentLoopEvents.onError` was replaced by `onNotice` across `engine.ts`, `tui/app.ts`, `launch.ts`, `team.ts`, `task-tool.ts`.
-- **874d.** Single boxed input: the boxed-input footer height is now ADAPTIVE (`previewRowsFor`: 5–12 rows based on terminal height) so short terminals/panes keep the box instead of silently falling back to the raw `joc>` prompt (previously any terminal under 17 rows lost it). The armed height is snapshotted (`footerRows`) so arm/draw/disarm always agree across resizes.
-- **874e.** In box mode the REPL passes an EMPTY readline prompt (`rl.question("")`) — no raw `joc>` prompt can ever flash; the legacy `\njoc> ` prompt only renders when the box is off (non-TTY / `JOC_NO_SLASH_PREVIEW=1` / tiny terminal).
+- **874b.** Auto-retry is now VISIBLE: `RetryOptions.onRetry` gained the applied `delayMs`, `CallOptions`/`ChatOptions` carry an `onRetry` sink threaded through `resolveCall` → `withRetry`, and `runAgentLoop` surfaces each wait as a new `AgentLoopEvents.onNotice` (`rate limited (HTTP 429) — auto-retry #N in Ss`). Consumers: TUI stream (progress badge), plain stream sink (yellow), `jeo team` (step event), task-tool (subagent `step` beat).
+- **874c.** Duplicate error display removed: the engine no longer emits a separate error event when a thrown LLM error becomes the turn's `doneReason` — every caller (TUI `finish`, `jeo>` reply line, team reason line) already displays that, so the failure now leaves exactly ONE record. The dead `AgentLoopEvents.onError` was replaced by `onNotice` across `engine.ts`, `tui/app.ts`, `launch.ts`, `team.ts`, `task-tool.ts`.
+- **874d.** Single boxed input: the boxed-input footer height is now ADAPTIVE (`previewRowsFor`: 5–12 rows based on terminal height) so short terminals/panes keep the box instead of silently falling back to the raw `jeo>` prompt (previously any terminal under 17 rows lost it). The armed height is snapshotted (`footerRows`) so arm/draw/disarm always agree across resizes.
+- **874e.** In box mode the REPL passes an EMPTY readline prompt (`rl.question("")`) — no raw `jeo>` prompt can ever flash; the legacy `\njeo> ` prompt only renders when the box is off (non-TTY / `JEO_NO_SLASH_PREVIEW=1` / tiny terminal).
 - **874f.** Aligned stale test expectations with the in-flight slash-command additions (`/context`, `/tools`, `/theme`, `/drop`, `/dump`) and the ToolList `✔` success glyph (`test/slash.test.ts`, `test/category-index.test.ts`).
 
 ### Verification (pass 874)
@@ -5781,7 +5781,7 @@ User-reported: `/model` to Anthropic (OAuth) hit `Rate limited by Anthropic (HTT
 
 - **875a.** ROOT CAUSE of "subagent provider/model 설정이 동작하지 않음": every numbered/`#N`/picker pin path saved the BARE live model id, and `resolveProvider` heuristics misroute uncatalogued bare ids (ollama `qwen2.5:0.5b` → anthropic, ollama `gpt-oss:20b` → openai). New `qualifyModelId(model, provider)` (`src/ai/model-manager.ts`) prefixes the id with the source list's provider (`ollama/`, `openai/`, `google/`, `anthropic/`) ONLY when routing disagrees — catalog ids, aliases, and already-prefixed ids pass through. Wired at all seven pin sites in `launch.ts`: `/model` picker + `#N`, `/model save`, `/provider` picker + explicit selection, `/agents <role> <model|#N>`, `/roles <tier> <model|#N>`. Adapters already strip the prefixes on the wire; `findCatalogEntry` tolerates them.
 - **875b.** `/agents <role> provider <name> [model|#N]` pins a subagent role to a provider directly (readiness-guarded, provider-qualified id persisted; defaults to the provider's first live model, else the provider alias default). `subagents` config schema additionally tolerates a `provider` tag. `/subagent run` header + TUI now show the role's ACTUAL resolved model (per-role override → session/default) instead of the session model. Implemented `providerModelFor(model)` (canonical → wire id; pass-through otherwise) that pass-874 tests referenced but never landed.
-- **875c.** gjc slash-menu parity (gjc builtin registry mapped 1:1 where joc has a backing subsystem): NEW `/new`, `/drop`, `/session [info|delete]`, `/rename <title>`, `/resume [id]` (in-REPL session switch), `/retry`, `/export [path] [json|markdown]`, `/dump` (pbcopy/wl-copy/xclip, prints when no clipboard), `/btw <question>` (ephemeral side question via direct `callLlm`, history untouched), `/usage` (cumulative per-REPL token usage), `/context` (~4 chars/token per-role breakdown + catalog context-window %), `/tools` (live TOOL_PROTOCOL + task/todo lines), `/hotkeys`, `/theme [name]` (sets `JOC_TUI_THEME` for the run), aliases `/login` → `/provider login`, `/settings` → `/config`. Sessions gained `title` (`renameSession`/`deleteSession` in `src/agent/session.ts`); `/sessions`+`/resume` mark the current session and show titles. gjc menus WITHOUT a joc backing subsystem are intentionally not stubbed: `/goal`, `/fast`, `/jobs`, `/tree`, `/ssh`, `/background`, `/debug`, `/memory`, `/move`, `/contribute-pr` (no goal ledger / async job manager / session tree / SSH / memory bank in joc; stubs would violate the no-fake-feature rule).
+- **875c.** gjc slash-menu parity (gjc builtin registry mapped 1:1 where jeo has a backing subsystem): NEW `/new`, `/drop`, `/session [info|delete]`, `/rename <title>`, `/resume [id]` (in-REPL session switch), `/retry`, `/export [path] [json|markdown]`, `/dump` (pbcopy/wl-copy/xclip, prints when no clipboard), `/btw <question>` (ephemeral side question via direct `callLlm`, history untouched), `/usage` (cumulative per-REPL token usage), `/context` (~4 chars/token per-role breakdown + catalog context-window %), `/tools` (live TOOL_PROTOCOL + task/todo lines), `/hotkeys`, `/theme [name]` (sets `JEO_TUI_THEME` for the run), aliases `/login` → `/provider login`, `/settings` → `/config`. Sessions gained `title` (`renameSession`/`deleteSession` in `src/agent/session.ts`); `/sessions`+`/resume` mark the current session and show titles. gjc menus WITHOUT a jeo backing subsystem are intentionally not stubbed: `/goal`, `/fast`, `/jobs`, `/tree`, `/ssh`, `/background`, `/debug`, `/memory`, `/move`, `/contribute-pr` (no goal ledger / async job manager / session tree / SSH / memory bank in jeo; stubs would violate the no-fake-feature rule).
 - **875d.** Inline boxed-input footer: the DECSTBM reserved-region footer CLEARED its bottom rows on every redraw, erasing the tail of any long command output that had scrolled into them (`/help`, `/theme`, `/hotkeys` lost their endings — reproduced via tmux). The footer now repaints INLINE at the cursor (same pattern as `runSelectPicker`): CUD (no-scroll) moves over existing rows, real newlines only for appended rows, cursor parked on the last visible row; disarm clears the box and parks at its first row so command output starts exactly where the box was. No scroll region is set at all (exit safety net now only restores cursor visibility). The input box itself no longer renders the `[CMD] input` title row — body only, with the `@`-mention dir label as a dim trailing row (`src/tui/components/input-box.ts`).
 - **875e.** TUI classification polish: `onToolResult` stream lines now carry the real invocation target (`[FILE] [DONE] read src/cli.ts`, `[CMD] [ERR] bash: bun test`) instead of the bare tool name; autocomplete gained `/session`, `/theme`, `/login`, `/export` argument completion; slash palette groups the new commands under Session/System.
 
@@ -5818,7 +5818,7 @@ User-reported: `/model` to Anthropic (OAuth) hit `Rate limited by Anthropic (HTT
 18. Alias defaults updated: `sonnet → claude-sonnet-4-5` (both ALIAS_DEFAULTS and registry DEFAULT_ALIASES).
 19. New aliases: `haiku → claude-haiku-4-5`, `opus → claude-opus-4-5`.
 20. Env-fallback default model: `claude-3-5-sonnet` → `claude-sonnet-4-5` (state.ts DEFAULT_MODEL).
-21. `joc setup` anthropic default → `claude-sonnet-4-5`.
+21. `jeo setup` anthropic default → `claude-sonnet-4-5`.
 22. Catalog-compat RECOMMENDED set: anthropic recommendation now `claude-sonnet-4-5`.
 23. `test/model-provider-mapping.test.ts`: catalog entries, wire-id mapping, prefix passthrough, unknown-id passthrough, alias resolution.
 24. Existing default-assertion tests updated narrowly (catalog-compat/routing/registry-alias/config-schema).
@@ -5833,9 +5833,9 @@ User-reported: `/model` to Anthropic (OAuth) hit `Rate limited by Anthropic (HTT
 31. Test: call path — 400-then-200, asserts 2 fetches, first body has `"temperature":0.2`, second body without it.
 32. Test: stream path — same shape over SSE, text assembled from the retried stream.
 
-### Batch D — TUI progress status / joc thinking / joc forge / code boxes
-33. `renderJocStatus` gains `stepElapsedMs` — the thinking row shows the CURRENT step's elapsed seconds (1 decimal).
-34. `renderJocStatus` gains `avgStepMs` — average seconds per step so long turns are legible.
+### Batch D — TUI progress status / jeo thinking / jeo forge / code boxes
+33. `renderJeoStatus` gains `stepElapsedMs` — the thinking row shows the CURRENT step's elapsed seconds (1 decimal).
+34. `renderJeoStatus` gains `avgStepMs` — average seconds per step so long turns are legible.
 35. Non-finite guards on both new fields (no NaN segments).
 36. `LaunchTui.draw` wires `stepElapsedMs` from `currentStepStartedAt` and `avgStepMs` = elapsed/steps into the status row.
 37. Forge bash result boxes now lead with a compact `# exit ok` / `# exit fail` marker.
@@ -5857,11 +5857,11 @@ User-reported: `/model` to Anthropic (OAuth) hit `Rate limited by Anthropic (HTT
 
 ## 877. Rate-limit (HTTP 429) handling + live-status accuracy (pass 877)
 
-**Date:** 2026-06-09 · **Dimension: provider retry / TUI status truthfulness.** Driven by a user-reported screenshot (429 ladder + status-row artifacts), verified against joc runtime behavior and gjc 0.2.4's `rate-limit-utils` (`@gajae-code/ai`).
+**Date:** 2026-06-09 · **Dimension: provider retry / TUI status truthfulness.** Driven by a user-reported screenshot (429 ladder + status-row artifacts), verified against jeo runtime behavior and gjc 0.2.4's `rate-limit-utils` (`@gajae-code/ai`).
 
 ### Diagnosis (what the screenshot showed)
-- The 2s→4s→8s→16s ladder is joc's designed escalating 429 floor (`DEFAULT_RATE_LIMIT_MIN_DELAY_MS`, no server `Retry-After` present) — retry itself was working.
-- gjc parity gap: gjc CLASSIFIES rate-limit reasons (`QUOTA_EXHAUSTED` 30min / `RATE_LIMIT_EXCEEDED` 30s / `MODEL_CAPACITY` 45s±jitter); joc treated every 429 identically, so persistent usage/quota limits (Claude subscription windows, experimental models like `claude-fable-5`) burned the whole ~60s ladder for nothing.
+- The 2s→4s→8s→16s ladder is jeo's designed escalating 429 floor (`DEFAULT_RATE_LIMIT_MIN_DELAY_MS`, no server `Retry-After` present) — retry itself was working.
+- gjc parity gap: gjc CLASSIFIES rate-limit reasons (`QUOTA_EXHAUSTED` 30min / `RATE_LIMIT_EXCEEDED` 30s / `MODEL_CAPACITY` 45s±jitter); jeo treated every 429 identically, so persistent usage/quota limits (Claude subscription windows, experimental models like `claude-fable-5`) burned the whole ~60s ladder for nothing.
 - TUI defects in the same frame: duplicated percent (`4% [..........] 4%`), nonsense `eta 442s` at step 1, retry waits invisible in the [STEP] row ("calling model (18.4s)…"), and the evolution track triplicated (center + footer + forge row) so copies could visibly disagree.
 
 ### Fixes
@@ -5899,8 +5899,8 @@ User-impact bug: completing the entire Google browser sign-in still failed at th
 **Date:** 2026-06-10 · **Dimension: skill/rule surface, OAuth robustness, model correctness, picker UX.** Driven by upstream gjc (`Yeachan-Heo/gajae-code`) behavior analysis.
 
 ### gjc-parity surface (verified + completed in-flight work)
-1. **Skills as SKILL.md embeds** (`src/prompts/skills/<name>/SKILL.md` → `skills/catalog.ts` via Bun text imports), mirroring gjc's `src/defaults/gjc/skills/<name>/SKILL.md` source-bundled defaults; `joc skills --write` materializes the raw SKILL.md.
-2. **Hierarchical context files** (`context-files.ts`): parent walk up to git root/$HOME + nested `AGENTS.md` scan (depth ≤ 3, `IGNORED_DIRS` pruned) with cwd→nested→parent priority under the existing char budgets; hook/rule guidance dirs (`.agents/rules|hooks`, `.joc/rules`) keep their reserved budget.
+1. **Skills as SKILL.md embeds** (`src/prompts/skills/<name>/SKILL.md` → `skills/catalog.ts` via Bun text imports), mirroring gjc's `src/defaults/gjc/skills/<name>/SKILL.md` source-bundled defaults; `jeo skills --write` materializes the raw SKILL.md.
+2. **Hierarchical context files** (`context-files.ts`): parent walk up to git root/$HOME + nested `AGENTS.md` scan (depth ≤ 3, `IGNORED_DIRS` pruned) with cwd→nested→parent priority under the existing char budgets; hook/rule guidance dirs (`.agents/rules|hooks`, `.jeo/rules`) keep their reserved budget.
 3. **OAuth refresh serialization**: cross-process file lock (`oauth-<provider>.lock`, stale-lock takeover) + in-lock freshness re-check (`already_refreshed`) so concurrent refreshes never double-spend a refresh token; `saveGlobalConfig` writes temp-then-rename (atomic, no torn config).
 4. **Retry budgets**: `streamMaxRetries` now actually consumed for stream calls; `maxRetries` is the fallback for both kinds (gjc `~/.gjc/config.yml` semantics).
 5. **Picker UX**: provider/model pickers and `/model`/`/config` panels show company branding (`openai — OpenAI`, `(ollama · Ollama)`) via `companyLabel`; 3 picker tests aligned.
@@ -5940,9 +5940,9 @@ User-impact bug: completing the entire Google browser sign-in still failed at th
 **Date:** 2026-06-10 · **Dimension: skill/workflow fidelity, hook safety, context management, provider/model UX.**
 
 ### Deep-dive driven changes
-- Ran a trace→spec pipeline against upstream gjc behavior and crystallized `.omc/specs/deep-dive-spec-joc-gjc-parity-improvement.md` plus consensus plan `.omc/plans/ralplan-joc-gjc-parity-improvement.md`.
-- `/skill deep-interview|ralplan|team|ultragoal` now routes to native workflow engines inside `joc launch` instead of LLM-guidance imitation. Workflow start/finish/abort markers are persisted in session history.
-- Bundled workflow docs are source `SKILL.md` files under `src/prompts/skills/<name>/SKILL.md` and are embedded through Bun text imports; `joc skills --write` materializes those originals.
+- Ran a trace→spec pipeline against upstream gjc behavior and crystallized `.omc/specs/deep-dive-spec-jeo-gjc-parity-improvement.md` plus consensus plan `.omc/plans/ralplan-jeo-gjc-parity-improvement.md`.
+- `/skill deep-interview|ralplan|team|ultragoal` now routes to native workflow engines inside `jeo launch` instead of LLM-guidance imitation. Workflow start/finish/abort markers are persisted in session history.
+- Bundled workflow docs are source `SKILL.md` files under `src/prompts/skills/<name>/SKILL.md` and are embedded through Bun text imports; `jeo skills --write` materializes those originals.
 - Configured user/project skills are now advertised in a bounded `Configured skills` prompt section while reserved-name hijack guards remain intact.
 - AGENTS/rule context discovery now supports hierarchy (parent walk + nested `AGENTS.md`) under bounded budgets.
 - Executable pre-tool/post-turn hooks are opt-in (`hooks.enabled`) and run through `Bun.spawn` with timeout/AbortSignal; pre-tool can veto, post-turn is advisory.
@@ -5960,12 +5960,12 @@ User-impact bug: completing the entire Google browser sign-in still failed at th
 ### Verification (pass 881)
 - Typecheck: `bun run typecheck` → 0 errors.
 - Full: `bun test` → **831 pass / 0 fail** across 107 files.
-- Build + smoke: `bun run build` → ok; `JOC_DEFAULT_MODEL=claude-haiku-4-5 bun src/cli.ts launch --no-tui --max-steps 4 "Use the done tool with reason smoke ok."` → `smoke ok`.
+- Build + smoke: `bun run build` → ok; `JEO_DEFAULT_MODEL=claude-haiku-4-5 bun src/cli.ts launch --no-tui --max-steps 4 "Use the done tool with reason smoke ok."` → `smoke ok`.
 
 ## Pass 876 — Gemini OAuth: no more post-sign-in FAILED + dangling paste prompt
 
-- **876a.** ROOT CAUSE of "`joc setup` OAuth 완료 후에도 [FAILED]": the Google flow's client secret was env-ONLY (`GEMINI_OAUTH_CLIENT_SECRET ?? ""`), and the check fired inside `exchangeToken` — i.e. AFTER the user completed the entire browser sign-in. The public gemini-cli installed-app client secret (not confidential per RFC 8252 §8.5; gemini-cli ships it in source) is now bundled base64-encoded like the client id, with `GEMINI_OAUTH_CLIENT_SECRET` as an override (`googleClientSecret()` in `src/auth/flows/google.ts`; blank env falls through to the default). Google OAuth login now completes out of the box.
-- **876b.** Dangling "Paste redirect URL or code…" prompt fixed: the manual-paste readline question survived the flow result, reprinted its prompt over the [SUCCESS]/[FAILED] line, and — in `joc setup` — QUEUED IN FRONT of the API-key fallback question (setup looked hung; readline/promises serializes questions). `interactiveOAuthLogin` (`src/commands/auth.ts`) and the setup OAuth branch (`src/commands/setup.ts`) now pass an `AbortController` signal into both `ctrl.signal` and `rl.question(query, { signal })` and abort the moment the login settles (in setup, BEFORE the fallback question). `OAuthPrompt` accepts the options bag.
+- **876a.** ROOT CAUSE of "`jeo setup` OAuth 완료 후에도 [FAILED]": the Google flow's client secret was env-ONLY (`GEMINI_OAUTH_CLIENT_SECRET ?? ""`), and the check fired inside `exchangeToken` — i.e. AFTER the user completed the entire browser sign-in. The public gemini-cli installed-app client secret (not confidential per RFC 8252 §8.5; gemini-cli ships it in source) is now bundled base64-encoded like the client id, with `GEMINI_OAUTH_CLIENT_SECRET` as an override (`googleClientSecret()` in `src/auth/flows/google.ts`; blank env falls through to the default). Google OAuth login now completes out of the box.
+- **876b.** Dangling "Paste redirect URL or code…" prompt fixed: the manual-paste readline question survived the flow result, reprinted its prompt over the [SUCCESS]/[FAILED] line, and — in `jeo setup` — QUEUED IN FRONT of the API-key fallback question (setup looked hung; readline/promises serializes questions). `interactiveOAuthLogin` (`src/commands/auth.ts`) and the setup OAuth branch (`src/commands/setup.ts`) now pass an `AbortController` signal into both `ctrl.signal` and `rl.question(query, { signal })` and abort the moment the login settles (in setup, BEFORE the fallback question). `OAuthPrompt` accepts the options bag.
 - **876c.** `OAuthCallbackFlow.#waitForCallback` manual loop gained an abort guard: an aborted `ask()` rejects instantly → maps to null → the old `while(true)` re-asked in a hot microtask loop forever; the loop now exits when the combined controller/timeout signal is aborted.
 - **876d.** Fixed a Bun-incompatible assertion in the (concurrent-work) `test/gemini-import.test.ts`: Bun's `process.exitCode = undefined` setter cannot CLEAR a previously-set value (verified: stays 0), so `expect(process.exitCode).toBeUndefined()` could never hold in a full-suite run — replaced with the file's own `?? 0 === 0` success pattern.
 
@@ -5975,24 +5975,24 @@ User-impact bug: completing the entire Google browser sign-in still failed at th
 
 ## Pass 881 — GJC parity command surface + OAuth/TUI runtime fixes (2026-06-10)
 
-- Added gjc-parity commands: `joc state` (`read/write/clear/handoff`), `joc session` (`list/attach/rm`), `joc update`, `joc skills list|read --json`, and `joc export --html`.
-- Extended `joc launch` parity flags: `-p/--print`, `-c/--continue`, `--append-system-prompt`, `--system-prompt`, `--no-skills`, `--skills`, `--no-tools`, and `--tools`.
-- Fixed the Anthropic/OpenAI/Antigravity “model after setting” path: `joc chat --model ...` now parses model flags instead of swallowing them into the prompt; persisted Anthropic default was verified through both `chat` and `launch -p`.
-- Added Antigravity provider/catalog/status coverage and Gemini CLI OAuth import (`joc auth import gemini`, `joc auth login gemini --import`) with hermetic test-mode fallback; model listing now shows `antigravity/*` catalog models when Gemini OAuth exists and directs denied calls to `joc auth login antigravity`.
+- Added gjc-parity commands: `jeo state` (`read/write/clear/handoff`), `jeo session` (`list/attach/rm`), `jeo update`, `jeo skills list|read --json`, and `jeo export --html`.
+- Extended `jeo launch` parity flags: `-p/--print`, `-c/--continue`, `--append-system-prompt`, `--system-prompt`, `--no-skills`, `--skills`, `--no-tools`, and `--tools`.
+- Fixed the Anthropic/OpenAI/Antigravity “model after setting” path: `jeo chat --model ...` now parses model flags instead of swallowing them into the prompt; persisted Anthropic default was verified through both `chat` and `launch -p`.
+- Added Antigravity provider/catalog/status coverage and Gemini CLI OAuth import (`jeo auth import gemini`, `jeo auth login gemini --import`) with hermetic test-mode fallback; model listing now shows `antigravity/*` catalog models when Gemini OAuth exists and directs denied calls to `jeo auth login antigravity`.
 - Fixed the JSON-tool apology leak: pure prose model replies are salvaged as final answers; malformed JSON retries explicitly forbid apology text and stop after bounded bounces.
 - Improved gjc-style observability: plain-mode `[STEP]` stream includes target, elapsed minute-scale duration, and token usage; TUI summary reports duration + token usage and animates truecolor status gradients.
 - Verification: `bun run typecheck` → 0; `bun test` → 850 pass / 0 fail; `bun run build` → 0. Live checks: OpenAI OAuth `gpt-5.5` → OK, Anthropic OAuth persisted default (`claude-haiku-4-5`) → OK in `chat` and `launch -p`; Antigravity model list visible, Gemini-token call returns expected 403 with dedicated-login guidance.
 
 ## Pass 877 — Gemini OAuth served end-to-end via Cloud Code Assist (no API key)
 
-- **877a.** `joc auth login gemini` OAuth tokens now RUN turns, not just store: the gemini adapter (`src/ai/providers/gemini.ts`) routes OAuth credentials to the Cloud Code Assist backend (`cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse`, gemini-cli/gjc parity) with GeminiCLI identification headers and the `{ project, model, request }` envelope. The shared payload builder (`buildGeminiPayload`) keeps the alternating-turn coalescing, thinkingConfig, and generationConfig identical across both paths; CCA chunks (`{ response: {...} }`) are unwrapped, thought tokens count as output usage. The projectId comes from the stored credential → env → lazy loadCodeAssist/onboardUser discovery (`resolveAntigravityProjectId`, persisted). API-key credentials keep using the public generativelanguage API and, when set, still take precedence.
-- **877b.** Gating removed: `OAUTH_FLOW_REGISTRY.gemini.verifiedEndToEnd` → `true` (note rewritten), the gemini-specific "use a GEMINI_API_KEY" throw in `effectiveCredentialForProvider` deleted (generic guard retained for future unverified flows), provider-status reports gemini OAuth as READY with label `OAuth (Gemini CLI / Cloud Code Assist)`, and `joc doctor` probes the REAL OAuth call path (`POST v1internal:loadCodeAssist`) instead of the generativelanguage list that rejects these tokens.
+- **877a.** `jeo auth login gemini` OAuth tokens now RUN turns, not just store: the gemini adapter (`src/ai/providers/gemini.ts`) routes OAuth credentials to the Cloud Code Assist backend (`cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse`, gemini-cli/gjc parity) with GeminiCLI identification headers and the `{ project, model, request }` envelope. The shared payload builder (`buildGeminiPayload`) keeps the alternating-turn coalescing, thinkingConfig, and generationConfig identical across both paths; CCA chunks (`{ response: {...} }`) are unwrapped, thought tokens count as output usage. The projectId comes from the stored credential → env → lazy loadCodeAssist/onboardUser discovery (`resolveAntigravityProjectId`, persisted). API-key credentials keep using the public generativelanguage API and, when set, still take precedence.
+- **877b.** Gating removed: `OAUTH_FLOW_REGISTRY.gemini.verifiedEndToEnd` → `true` (note rewritten), the gemini-specific "use a GEMINI_API_KEY" throw in `effectiveCredentialForProvider` deleted (generic guard retained for future unverified flows), provider-status reports gemini OAuth as READY with label `OAuth (Gemini CLI / Cloud Code Assist)`, and `jeo doctor` probes the REAL OAuth call path (`POST v1internal:loadCodeAssist`) instead of the generativelanguage list that rejects these tokens.
 - **877c.** Tests: CCA envelope/header shape + OAuth-routes-to-CCA adapter test (mocked SSE, stored projectId short-circuits discovery, thought-token usage) + api_key-stays-on-generativelanguage guard (`test/gemini.test.ts`); gemini oauth-only ready status (`test/provider-status.test.ts`); doctor CCA probe (`test/doctor.test.ts`); flows AGENTS.md note updated.
 
 ### Verification (pass 877)
 - `bun run typecheck` → 0 errors; `bun test` → **857 pass / 0 fail** (112 files).
-- LIVE end-to-end with the real Google OAuth credential and NO GEMINI_API_KEY: `describeProvider("gemini")` → ready/OAuth (Cloud Code Assist); `mgr.call(gemini-2.5-flash)` → real CCA reply; `joc doctor --json` → gemini ok via loadCodeAssist (802ms); full `joc launch --no-tui --model gemini-2.5-flash` agent turn executed a bash tool call and reported usage (25k in / 165 out).
-- Operator config: removed the stored gemini API key from `~/.joc/config.json` and the `GEMINI_API_KEY` export from `~/.zshrc` per request — OAuth is now the active Gemini path.
+- LIVE end-to-end with the real Google OAuth credential and NO GEMINI_API_KEY: `describeProvider("gemini")` → ready/OAuth (Cloud Code Assist); `mgr.call(gemini-2.5-flash)` → real CCA reply; `jeo doctor --json` → gemini ok via loadCodeAssist (802ms); full `jeo launch --no-tui --model gemini-2.5-flash` agent turn executed a bash tool call and reported usage (25k in / 165 out).
+- Operator config: removed the stored gemini API key from `~/.jeo/config.json` and the `GEMINI_API_KEY` export from `~/.zshrc` per request — OAuth is now the active Gemini path.
 
 ## 882. Antigravity OAuth parity + remove `/subagent` surface (pass 882)
 
@@ -6000,8 +6000,8 @@ User-impact bug: completing the entire Google browser sign-in still failed at th
 
 ### Antigravity / Google OAuth
 - Added a shared Cloud Code Assist project-discovery module (`src/auth/flows/google-project.ts`) that mirrors gjc/gemini-cli behavior: `loadCodeAssist` → existing project, otherwise `onboardUser` + LRO polling to provision one.
-- `joc auth login gemini` now best-effort auto-discovers/stores `projectId`, so older gemini OAuth logins no longer fail immediately on Antigravity calls just because the env variable was missing.
-- Added a dedicated `antigravity` OAuth flow (`src/auth/flows/antigravity.ts`) using the Antigravity desktop-app client/scopes/metadata. `model-manager` now prefers `joc auth login antigravity`, with gemini OAuth kept only as a fallback when that token is actually authorized.
+- `jeo auth login gemini` now best-effort auto-discovers/stores `projectId`, so older gemini OAuth logins no longer fail immediately on Antigravity calls just because the env variable was missing.
+- Added a dedicated `antigravity` OAuth flow (`src/auth/flows/antigravity.ts`) using the Antigravity desktop-app client/scopes/metadata. `model-manager` now prefers `jeo auth login antigravity`, with gemini OAuth kept only as a fallback when that token is actually authorized.
 - Antigravity runtime project resolution is lazy and self-healing: stored credential → env → live `loadCodeAssist`/`onboardUser` discovery, then persist the discovered id back into the owning OAuth record.
 - Improved the user-visible 403 guidance from a raw projectId error to a credential/actionable message: prefer `/provider login antigravity`; gemini login is only a backend-dependent fallback.
 
@@ -6057,10 +6057,10 @@ User-impact bug: completing the entire Google browser sign-in still failed at th
 
 ## Pass 882 — Mock/fallback purge: Antigravity live discovery + TUI insight rows (2026-06-10)
 
-- Removed the `ANTIGRAVITY_MODELS` static catalog fallback entirely: `joc models` now queries the live Cloud Code Assist `v1internal:fetchAvailableModels` endpoint (POST, gjc parity) and surfaces failures honestly ("auth rejected", "unreachable") instead of mock rows. `catalogOr` falls back only for OpenAI/Codex OAuth.
+- Removed the `ANTIGRAVITY_MODELS` static catalog fallback entirely: `jeo models` now queries the live Cloud Code Assist `v1internal:fetchAvailableModels` endpoint (POST, gjc parity) and surfaces failures honestly ("auth rejected", "unreachable") instead of mock rows. `catalogOr` falls back only for OpenAI/Codex OAuth.
 - Decoded the real Antigravity payload (live verification, not docs): the model map KEY is the callable id; `entry.model` is an internal `MODEL_PLACEHOLDER_*` enum that must never leak; `agentModelSorts` groups are the API's own positive agent/chat set (preferred selection); `tab/image/transcription/commit/mquery` role lists and the object-shaped `deprecatedModelIds` drive data-driven exclusion.
 - TUI status decomposed into separate insight rows: `[STEP]` (metrics only), `[STATUS]` (live current activity incl. rate-limit backoff), `[TOOL]` (forge). Retry notices stay pinned in `[STATUS]` and are no longer appended to the stream log.
-- Verification: typecheck 0; `bun test` 864 pass / 0 fail. Live: antigravity list = exactly the 8 product agent models; `joc chat --model antigravity/gemini-3-flash` → "OK" (6 in / 95 out tokens).
+- Verification: typecheck 0; `bun test` 864 pass / 0 fail. Live: antigravity list = exactly the 8 product agent models; `jeo chat --model antigravity/gemini-3-flash` → "OK" (6 in / 95 out tokens).
 
 ## 886. Anthropic OAuth uses Claude Code/gjc request shape (pass 886)
 
@@ -6087,13 +6087,13 @@ User-impact bug: completing the entire Google browser sign-in still failed at th
 ### Improvements
 - Added GJC-style OAuth `metadata.user_id` cloaking to Anthropic requests so the billing prelude hash is computed over the same session-shaped payload Claude Code sends.
 - Added a five-minute server-directed 429 budget: short `Retry-After` windows still auto-retry, but long account/model reset windows fail fast with the provider's reset hint instead of being silently capped to 30s and replayed until timeout.
-- `joc chat` now accepts `--max-tokens <n>` for tiny live smoke checks; `--thinking <level>` also constrains the stream max-token budget when no explicit cap is supplied.
+- `jeo chat` now accepts `--max-tokens <n>` for tiny live smoke checks; `--thinking <level>` also constrains the stream max-token budget when no explicit cap is supplied.
 
 ### Verification (pass 887)
 - Focused: `bun test test/retry.test.ts test/provider-error.test.ts test/round-b.test.ts test/chat-flags.test.ts` → **48 pass / 0 fail**.
-- Live OAuth discovery: `joc auth status` shows Anthropic OAuth only (no API key); `joc models anthropic` lists 9 live Anthropic models.
-- Live `joc` model smoke with `--max-tokens 16`: `claude-sonnet-4-6` replied `OK`; the other 8 live Anthropic models returned Anthropic HTTP 429 with `Retry-After ~51–52m`, now surfaced immediately instead of hanging through an exhausted retry ladder.
-- Post-reset live retest: all 9 Anthropic OAuth models passed via `joc chat --model <id> --max-tokens 16 "Reply with exactly: OK"` (`ANTHROPIC_RETEST_DONE total=9 pass=9 fail=0`).
+- Live OAuth discovery: `jeo auth status` shows Anthropic OAuth only (no API key); `jeo models anthropic` lists 9 live Anthropic models.
+- Live `jeo` model smoke with `--max-tokens 16`: `claude-sonnet-4-6` replied `OK`; the other 8 live Anthropic models returned Anthropic HTTP 429 with `Retry-After ~51–52m`, now surfaced immediately instead of hanging through an exhausted retry ladder.
+- Post-reset live retest: all 9 Anthropic OAuth models passed via `jeo chat --model <id> --max-tokens 16 "Reply with exactly: OK"` (`ANTHROPIC_RETEST_DONE total=9 pass=9 fail=0`).
 - Full: `bun run typecheck` → 0; `bun test` → **871 pass / 0 fail** (113 files).
 
 ## 886. Complete echo suppression for all TUI pickers and inputs (pass 886)
@@ -6117,7 +6117,7 @@ User-impact bug: completing the entire Google browser sign-in still failed at th
 **Date:** 2026-06-10 · **Dimension: TUI stability.**
 
 ### Repro
-1. `joc` REPL prompt with the boxed input footer armed.
+1. `jeo` REPL prompt with the boxed input footer armed.
 2. Type `@src/ai/providers/` — the `Paths:` argument preview grows under the box.
 3. Type any text after that (e.g. `gemini.ts is the file I want to review`).
 4. **Bug**: the input box visibly slid down and broke alignment; lines of prior command output above the box (e.g. `(fetching models from logged-in providers…)`) were eaten one at a time.
@@ -6149,7 +6149,7 @@ Eager fixed reservation:
 **Date:** 2026-06-10 · **Dimension: TUI input-loop reliability.**
 
 ### Repro
-1. `joc` → REPL prompt.
+1. `jeo` → REPL prompt.
 2. Type `/model` + Enter.
 3. **Bug 1**: picker rendered but ↑/↓/Esc/Enter were ignored — process appeared frozen.
 4. **Bug 2** (cosmetic, surfaced after bug 1 was fixed): every ↑/↓ duplicated the trailing `type to filter — ↑/↓ move · enter select · esc cancel` hint row.
@@ -6176,7 +6176,7 @@ Eager fixed reservation:
 **Date:** 2026-06-10 · **Dimension: TUI verification (real tmux PTY), picker repaint correctness.**
 
 ### Verification method
-- Behavioral, not just unit: spawned a real `joc launch` inside a 100x30 tmux PTY, opened the `/model` picker, sent arrow keys and a Korean filter (`너의페르소나`), captured panes, and asserted frame integrity (`grep -c '╭'`, hint-row counts).
+- Behavioral, not just unit: spawned a real `jeo launch` inside a 100x30 tmux PTY, opened the `/model` picker, sent arrow keys and a Korean filter (`너의페르소나`), captured panes, and asserted frame integrity (`grep -c '╭'`, hint-row counts).
 
 ### Bugs the live run exposed (and their fixes)
 1. **`rl.pause()` regression risk removed**: pausing readline stops the underlying stdin stream, which would ALSO starve the picker's own `keypress` listener (picker hang). Replaced with a gate-based design: `gatedStdout(process.stdout, () => previewArmed || pickerActive)` keeps readline echo suppressed during pickers WITHOUT touching stream flow; raw mode + `process.stdin.resume()` keep keys flowing. `pickerActive` declaration moved above the readline construction.
@@ -6193,7 +6193,7 @@ Eager fixed reservation:
 
 **Date:** 2026-06-11 · **Dimension: tui (tmux mouse-wheel scrollback mid-turn).**
 
-User ask: while a `joc` turn is running in tmux, mouse-wheel scroll should reach
+User ask: while a `jeo` turn is running in tmux, mouse-wheel scroll should reach
 EARLIER progress output — like gjc's subagent monitoring does. The pass-814 alt-screen
 turn made the live repaint scroll-safe but killed scrollback entirely (the alt screen
 has none), so mid-turn history was unreachable by design.
@@ -6213,7 +6213,7 @@ has none), so mid-turn history was unreachable by design.
   pushing ledger lines into history), then hops back to the shifted anchor. Without
   this, a frame anchored near the viewport bottom would collapse onto its last rows
   (cursor-down cannot scroll). Alt-screen/non-TTY renderers never emit newlines.
-- **888c. `JOC_TUI_ALT_SCREEN=1`** opts back into the legacy pass-814 alternate-screen
+- **888c. `JEO_TUI_ALT_SCREEN=1`** opts back into the legacy pass-814 alternate-screen
   turn (scroll-isolated, no mid-turn scrollback) — kept for terminals where inline
   repaint misbehaves. The once-per-process exit safety now restores the cursor in both
   modes and leaves the alt screen only when it was actually entered.
@@ -6224,7 +6224,7 @@ has none), so mid-turn history was unreachable by design.
 ### Verification (pass 888)
 - New tests: inline TTY turn never enters the alt screen and flushes tool-result +
   subagent ledger lines as newline-terminated static scrollback writes; alt-screen
-  contract preserved under `JOC_TUI_ALT_SCREEN=1`; renderer reserve emits newlines on
+  contract preserved under `JEO_TUI_ALT_SCREEN=1`; renderer reserve emits newlines on
   growth only; `insertAbove` forces a full next repaint; reserve-off renderers emit no
   newlines.
 - Full: `bun run typecheck` → 0; `bun test` → **889 pass / 0 fail** (116 files).
@@ -6264,7 +6264,7 @@ the flicker one exposed a third, far more serious tmux interaction during QA rer
   post-insertAbove growth, taller-than-viewport guard, in-frame dedupe).
 - tmux e2e/red-team (logs/qa-inline-scrollback/runner.sh): all 6 cases PASSED —
   mid-turn history reachable (LEDGER-001..010 of 60), copy-mode at scroll_position=65
-  shows the oldest markers, alternate_on 0/1 (default/JOC_TUI_ALT_SCREEN=1), resize
+  shows the oldest markers, alternate_on 0/1 (default/JEO_TUI_ALT_SCREEN=1), resize
   safe, 200-event burst keeps first+last markers with exactly one footer, finish
   dedupe exactly-once.
 - Full `bun test`: 918 pass / 1 fail — the failure (`tmux.test.ts` session naming) and
@@ -6279,7 +6279,7 @@ A subagent drove the REAL gjc v0.4.3 binary in tmux (120x35), captured its full 
 lifecycle (14 transcripts incl. ANSI), and produced a 12-element feature inventory
 (`logs/gjc-tui-study/observations.md`, `alternate_on=0` confirmed). The leader's
 comparison + ranking (`logs/gjc-tui-study/analysis.md`) went through three architect
-rounds — round 1 caught a false claim (joc was said to lack git branch + cwd; the
+rounds — round 1 caught a false claim (jeo was said to lack git branch + cwd; the
 footer already renders both), which forced a rescope before implementation.
 
 ### Shipped (analysis §2, all architect-approved scopes)
@@ -6292,7 +6292,7 @@ footer already renders both), which forced a rescope before implementation.
   `turnUsage` + `elapsedMs` — no new data sources; branch/cwd stay footer-owned.
   `status.ts` + a `usage` plumb in `app.ts`.
 - **889c. Resume pointer on exit (Gap C).** `/exit`/`/quit` with a persisted session
-  prints `Resume with: joc launch --resume <id>` (exact `--list`-handler convention)
+  prints `Resume with: jeo launch --resume <id>` (exact `--list`-handler convention)
   via the new exported `formatResumeHint()`. `launch.ts`.
 
 ### Verification (pass 889)
@@ -6400,7 +6400,7 @@ loop is unchanged when no TUI consumes it.
   signal is a clean no-op (history unmutated). `compaction.ts`.
 - **B10 opt-in bash fixups.** New `bash-fixups.ts` with ≥5 conservative,
   intent-preserving rules (strip-trailing, operator-guarded useless-cat, dev-null-merge,
-  collapse-dot-slash, grep `-r`/`-R` default-path), gated behind `JOC_BASH_FIXUPS=1`
+  collapse-dot-slash, grep `-r`/`-R` default-path), gated behind `JEO_BASH_FIXUPS=1`
   (OFF by default). The intent-CHANGING stderr-merge rule was rejected; useless-cat bails
   on any downstream `| & ;` so it can never corrupt a multi-stage pipeline.
 - **B14 kill-ring.** The emacs kill-ring (C-k/C-u/C-w/C-y/M-y/C-a/C-e) is readline-native
@@ -6446,7 +6446,7 @@ Reorganized the live screen to the gjc reference layout and removed the noise ph
   `◆ hud` line → bg-tinted model status bar (`renderStatusBar`, now also used in-turn with
   `thinking` plumbed through `LaunchTuiOptions`). The tail is bottom-anchored; cards get the
   leftover rows. Completed cards flush into scrollback (`flushForgeCard`), so the final
-  summary slims to Todos + `Evolved to:` + `joc>` reply in inline mode.
+  summary slims to Todos + `Evolved to:` + `jeo>` reply in inline mode.
 - **Theme accents.** `EvolutionTheme.accent` + `accentPaint()` drive forge-card borders, the
   input-box border/prompt, and the boxed-mode frame (red-claw → `#e25656`, the gjc red).
   The idle model bar gradient moved to stage 2 (visible red under red-claw).
@@ -6457,7 +6457,7 @@ Reorganized the live screen to the gjc reference layout and removed the noise ph
 ### Verification (pass 896)
 - typecheck 0; `bun test` 993 pass / 0 fail (updated stale expectations across
   forge-status / tui-app / stream-status / stream-events / category-index / input-box).
-- tmux visual QA (`logs/joc-redesign/gjc-layout-driver.ts`, 110x32, red-claw): live frame,
+- tmux visual QA (`logs/jeo-redesign/gjc-layout-driver.ts`, 110x32, red-claw): live frame,
   final scrollback, and idle prompt captured (`gjc-live*.txt`, `gjc-final*.txt`,
   `gjc-idle.txt`) and matched against the gjc reference screenshot layout.
 
@@ -6469,10 +6469,10 @@ The per-turn step limit is no longer a bare counter: it is a gjc-style retry BUD
 that extends itself while the turn demonstrably progresses and fails fast when stalled.
 
 - **`src/agent/step-budget.ts`.** `StepBudget` + `resolveStepBudgetConfig`: base budget
-  (the caller's `maxSteps`), bounded extensions (`JOC_STEP_EXTENSIONS`, default 2;
-  `JOC_STEP_EXTENSION_SIZE`, default half the base, min 4), absolute hard cap
-  (`JOC_STEP_HARD_CAP`, default 3× base), and a recent tool-call window
-  (`JOC_STEP_WINDOW`, default 8) scored for progress. An extension is granted only when
+  (the caller's `maxSteps`), bounded extensions (`JEO_STEP_EXTENSIONS`, default 2;
+  `JEO_STEP_EXTENSION_SIZE`, default half the base, min 4), absolute hard cap
+  (`JEO_STEP_HARD_CAP`, default 3× base), and a recent tool-call window
+  (`JEO_STEP_WINDOW`, default 8) scored for progress. An extension is granted only when
   ≥50% of windowed calls succeeded on ≥2 distinct signatures; declines carry an explicit
   fail-fast reason (mostly failures / single-signature spin / cap / budget exhausted).
 - **Engine integration.** `runAgentLoop` records every executed tool call into the
@@ -6481,13 +6481,13 @@ that extends itself while the turn demonstrably progresses and fails fast when s
   wrap-up now names the final limit, extension count, and decline reason
   (`step budget of N reached after K extension(s); <reason>`). The early guards
   (MAX_REPEAT, MAX_FAILURES, parse-bounce salvage) stay the first fail-fast layer.
-- **Bounded delegation stays exact.** `task-tool`, `joc team` ralph subagents, and the
+- **Bounded delegation stays exact.** `task-tool`, `jeo team` ralph subagents, and the
   skill-echo corrective retry pass `budget: { maxExtensions: 0 }` — a parent's step
   contract never silently inflates; the parent owns retries.
 - **Surfaces.** TUI: `onBudget` updates the live `step N/M` denominator + spinner and
   flushes a dim `↻ …extended to M (extension k/n)` ledger line. Non-TTY stream: the
   `[step N/M]` cap updates and the reason is logged once (no duplicate notice).
-- **Docs.** README (en/ko/ja/zh): `JOC_STEP_*` env vars + a "Step budget (retry flow)"
+- **Docs.** README (en/ko/ja/zh): `JEO_STEP_*` env vars + a "Step budget (retry flow)"
   section beside the existing provider retry budget; `src/agent/AGENTS.md` key files.
 
 ### Verification (pass 897)
@@ -6516,7 +6516,7 @@ that extends itself while the turn demonstrably progresses and fails fast when s
 - Engine batch grouping is now `read` / `write` / `exclusive`. Consecutive read-only calls run in parallel (unchanged); consecutive write/edit calls to DISTINCT files now run in parallel while same-file (or path-less) collisions force a sequential boundary; bash is always exclusive. Reads and writes never share a group, so a read can never race a write.
 
 ### Verification feedback (post-turn hook diagnostics)
-- Post-turn hooks are still advisory (never flip a tool's ok/fail), but a non-zero-exit hook's output is now fed back to the MODEL: it is appended to that tool's result block as `[post-turn hook "<run>" — exit N]: <output>` (truncated at `JOC_TOOL_OUTPUT_MAX`, deduped per batch with a "same diagnostics as above" cross-reference). A user can configure a post-edit `tsc --noEmit`/eslint/test hook (`match.tool` accepts a single name or `|`-separated list, e.g. `"edit|write"`) and the agent self-corrects in-loop. Timeouts/aborts surface only the existing notice (no partial output). This realizes gjc's post-edit-diagnostics value through the EXISTING hooks extension point — no new dependency, no core protocol change (pi-mono).
+- Post-turn hooks are still advisory (never flip a tool's ok/fail), but a non-zero-exit hook's output is now fed back to the MODEL: it is appended to that tool's result block as `[post-turn hook "<run>" — exit N]: <output>` (truncated at `JEO_TOOL_OUTPUT_MAX`, deduped per batch with a "same diagnostics as above" cross-reference). A user can configure a post-edit `tsc --noEmit`/eslint/test hook (`match.tool` accepts a single name or `|`-separated list, e.g. `"edit|write"`) and the agent self-corrects in-loop. Timeouts/aborts surface only the existing notice (no partial output). This realizes gjc's post-edit-diagnostics value through the EXISTING hooks extension point — no new dependency, no core protocol change (pi-mono).
 
 ### Verification (gjc-inheritance rounds 2-3)
 - typecheck 0; `bun test` **1169 pass / 0 fail** across 153 files (+~38 tests: hashline-remap 7, subagent-bash-allowlist 5, write-parallel 4, compaction +2, post-turn-feedback 6, and round-1/earlier additions). Critic consensus gated each round (round 3 = single cycle after [ITERATE] clarifications incorporated).
@@ -6570,7 +6570,7 @@ that extends itself while the turn demonstrably progresses and fails fast when s
 - **`stream_options` compat (round-5 #5).** OpenAI-compatible local backends (llama.cpp, LM Studio, older vLLM) that 400 on the optional `stream_options` field get ONE retry without it; unrelated 400s still throw immediately.
 
 ### Verification (round 7)
-- typecheck 0; `bun test` **1202 pass / 0 fail** across 157 files (+8: workflow-integrity ×4 — new-plan restart / same-plan resume / honest-verification / red-suite, stream_options compat ×2). Deferred to round 8 (MED): parent-side Changed Files reconciliation vs subagent claims, cross-process `.joc/state` locking, failed-task marker + resume warning.
+- typecheck 0; `bun test` **1202 pass / 0 fail** across 157 files (+8: workflow-integrity ×4 — new-plan restart / same-plan resume / honest-verification / red-suite, stream_options compat ×2). Deferred to round 8 (MED): parent-side Changed Files reconciliation vs subagent claims, cross-process `.jeo/state` locking, failed-task marker + resume warning.
 
 ---
 
@@ -6589,7 +6589,7 @@ that extends itself while the turn demonstrably progresses and fails fast when s
 **Date:** 2026-06-12 · **Dimension: gjc-inheritance marathon round 9 — live e2e proof of the self-correction loop.**
 
 ### Live verification (real model, deterministic hook)
-- **Setup.** /tmp sandbox project with a deterministic post-turn hook (`match.tool: "edit|write"`): exits 1 with `LINT-E001: src/app.ts must also export a VERSION constant…` unless the file exports `VERSION`. The prompt only said "if a verification hook reports a problem, fix exactly what it reports" — the hook's actual check was never disclosed to the model. Credentials: OAuth config copied under a temp `JOC_CONFIG_DIR`, destroyed immediately after the run.
+- **Setup.** /tmp sandbox project with a deterministic post-turn hook (`match.tool: "edit|write"`): exits 1 with `LINT-E001: src/app.ts must also export a VERSION constant…` unless the file exports `VERSION`. The prompt only said "if a verification hook reports a problem, fix exactly what it reports" — the hook's actual check was never disclosed to the model. Credentials: OAuth config copied under a temp `JEO_CONFIG_DIR`, destroyed immediately after the run.
 - **Observed loop** (`dist/jeo launch --no-tui --no-session -p …`, antigravity/gemini-3.5-flash-low): step 2 edit → hook RED (advisory notice live) → step 3 re-read → step 4 the model added `export const VERSION = "1.0.0"` exactly as the diagnostic demanded → hook GREEN → step 6 bash verification → done with no pushback. The dynamic step-budget novelty extension also fired live ("progress detected … extended to 15").
 - **Proves in concert on a real model:** cycle 13 (hook diagnostics fed to the model), 14a (`edit|write` multi-match), 14 F1 (pendingHookFailure cleared by the clean run), and the round-1 dynamic budget. Final file verified: `greet()` change AND the hook-driven `VERSION` export both correct.
 

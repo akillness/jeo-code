@@ -6,7 +6,7 @@ when: When you need to perform significant code changes, refactoring, or feature
 
 # gjc (Gajae-Code Process)
 
-Executes the primary code implementation workflow by leveraging the underlying `gjc` engine (jeoclaw).
+Executes the primary code implementation workflow by leveraging the underlying `gjc` engine (jeo-claw).
 This process manages the heavy lifting of code transformation, while the surrounding `jeo-code` ecosystem handles loop-level orchestration.
 
 1. **Mutation Guard**: Ensures safe code writes by blocking operations until ambiguity is low (≤ 20%).

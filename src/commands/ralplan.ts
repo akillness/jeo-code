@@ -5,7 +5,7 @@ import {
   readWorkflowState,
   writeWorkflowState,
   readGlobalConfig,
-  getLocalJocDir,
+  getLocalJeoDir,
   type WorkflowState,
 } from "../agent/state";
 import { PlanSchema, normalizePlanShape, parseYaml } from "../agent/plan";
@@ -220,7 +220,7 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
       }
     }
 
-    const planDir = path.join(getLocalJocDir(cwd), "plans");
+    const planDir = path.join(getLocalJeoDir(cwd), "plans");
     await fs.mkdir(planDir, { recursive: true });
     const planPath = path.join(planDir, `plan-${interviewState.slug}.yaml`);
 

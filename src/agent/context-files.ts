@@ -17,8 +17,8 @@ export interface ProjectContextFile {
   content: string;
 }
 
-export const CONTEXT_CANDIDATES = ["JEO.md", "AGENTS.md", ".joc/context.md", "CLAUDE.md"];
-export const AGENT_GUIDANCE_DIRS = [".agents/rules", ".joc/rules", ".agents/hooks"] as const;
+export const CONTEXT_CANDIDATES = ["JEO.md", "AGENTS.md", ".jeo/context.md", "CLAUDE.md"];
+export const AGENT_GUIDANCE_DIRS = [".agents/rules", ".jeo/rules", ".agents/hooks", ".jeo/hooks"] as const;
 const PER_CONTEXT_FILE_CHARS = 16_000;
 const TOTAL_CONTEXT_CHARS = 64_000;
 const BASE_CONTEXT_CHARS = 48_000;
@@ -63,7 +63,7 @@ interface WorkspaceScan {
   // Nested AGENTS.md found by the downward walk (depth 0..3, skipping IGNORED_DIRS).
   nested: Array<{ filePath: string; displayPath: string; depth: number }>;
   // Local (cwd-rooted) guidance files in canonical order: explicit oma-config/triggers
-  // first, then `.agents/rules`, `.joc/rules`, `.agents/hooks` buckets. Pre-dedupe/cap.
+  // first, then `.agents/rules`, `.jeo/rules`, `.agents/hooks` buckets. Pre-dedupe/cap.
   localGuidance: Array<{ filePath: string; displayPath: string }>;
 }
 
@@ -99,7 +99,7 @@ interface GuidanceCtx {
 }
 
 // Single downward traversal from resolvedCwd that, in ONE readdir per directory,
-// collects BOTH nested AGENTS.md files and the local `.agents`/`.joc` guidance files.
+// collects BOTH nested AGENTS.md files and the local `.agents`/`.jeo` guidance files.
 // Replaces the previous separate walkDown + per-root collectTextFiles recursions
 // (which re-read the overlapping `.agents/rules` and `.agents/hooks` subtrees).
 async function scanWorkspaceDownwards(resolvedCwd: string): Promise<WorkspaceScan> {
@@ -170,7 +170,7 @@ async function getWorkspaceScan(cwd: string): Promise<WorkspaceScan> {
 /**
  * Invalidate the cached single-pass workspace scan. Pass a `cwd` to clear just that
  * entry (resolved), or omit to clear the entire cache. Call this after the workspace's
- * AGENTS.md / `.agents` / `.joc` guidance files change on disk.
+ * AGENTS.md / `.agents` / `.jeo` guidance files change on disk.
  */
 export function invalidateWorkspaceScan(cwd?: string): void {
   if (cwd === undefined) {
@@ -186,8 +186,9 @@ export async function discoverAgentGuidanceFiles(cwd = process.cwd()): Promise<A
   const home = path.join(process.env.HOME || "", "");
   const homeRoots = [
     { rootDir: path.join(home, ".agents", "rules"), displayPrefix: "~/.agents/rules" },
-    { rootDir: path.join(home, ".joc", "rules"), displayPrefix: "~/.joc/rules" },
+    { rootDir: path.join(home, ".jeo", "rules"), displayPrefix: "~/.jeo/rules" },
     { rootDir: path.join(home, ".agents", "hooks"), displayPrefix: "~/.agents/hooks" },
+    { rootDir: path.join(home, ".jeo", "hooks"), displayPrefix: "~/.jeo/hooks" },
   ];
   for (const root of homeRoots) {
     await collectTextFiles(root.rootDir, root.displayPrefix, 2, out);
@@ -323,7 +324,7 @@ export async function loadProjectContext(cwd = process.cwd()): Promise<ProjectCo
 
   // GJC/OMA parity: skill docs are loaded by `skills/catalog.ts`; hook/rule guidance is
   // separate project policy. Keep a reserved guidance budget so large root context files do
-  // not completely crowd out `.agents` / `.joc` rules and hooks.
+  // not completely crowd out `.agents` / `.jeo` rules and hooks.
   for (const entry of await discoverAgentGuidanceFiles(cwd)) {
     await addGuidanceFile(entry.filePath, entry.displayPath);
     if (guidanceChars >= GUIDANCE_CONTEXT_CHARS) break;

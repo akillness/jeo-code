@@ -131,7 +131,7 @@ test("buildToolProtocol respects allowed tools list", () => {
   expect(protocolSubset).not.toContain("bash");
 });
 
-test("createInFlightAbortHarness: first Ctrl-C aborts, second triggers hard exit", () => {
+test("createInFlightAbortHarness: first Ctrl-C is an immediate hard exit", () => {
   const notices: string[] = [];
   let hardExit = 0;
   const h = createInFlightAbortHarness({
@@ -143,9 +143,7 @@ test("createInFlightAbortHarness: first Ctrl-C aborts, second triggers hard exit
     expect(h.controller.signal.aborted).toBe(false);
     h.handleSigint();
     expect(h.controller.signal.aborted).toBe(true);
-    expect(notices[0]).toContain("Ctrl-C again");
-    expect(hardExit).toBe(0);
-    h.handleSigint();
+    expect(notices).toEqual([]);
     expect(hardExit).toBe(1);
   } finally {
     h.dispose();
@@ -176,9 +174,10 @@ test("createInFlightAbortHarness: ESC aborts and raw mode is restored on dispose
   expect(rawCalls).toEqual([true, false]);
 });
 
-test("createInFlightAbortHarness: raw-mode Ctrl-C data aborts; wheel noise auto-repaints without aborting", () => {
+test("createInFlightAbortHarness: raw-mode Ctrl-C data hard-exits; wheel noise auto-repaints without aborting", () => {
   const notices: string[] = [];
   let noise = 0;
+  let hardExit = 0;
   const stdin = {
     isTTY: true,
     isRaw: false,
@@ -192,6 +191,7 @@ test("createInFlightAbortHarness: raw-mode Ctrl-C data aborts; wheel noise auto-
     stdin,
     onAbortNotice: msg => notices.push(msg),
     onNoise: () => { noise++; },
+    onHardExit: () => { hardExit++; },
   });
   try {
     // Mouse-wheel scroll arrives as arrow escape bursts → auto-repair, NOT an abort.
@@ -201,7 +201,8 @@ test("createInFlightAbortHarness: raw-mode Ctrl-C data aborts; wheel noise auto-
     // Raw mode swallows terminal SIGINT generation: Ctrl-C arrives as \u0003 data.
     h.handleData("\u0003");
     expect(h.controller.signal.aborted).toBe(true);
-    expect(notices[0]).toContain("Ctrl-C again");
+    expect(notices).toEqual([]);
+    expect(hardExit).toBe(1);
   } finally {
     h.dispose();
   }

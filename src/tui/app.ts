@@ -25,7 +25,7 @@ import { SECTION_GAP, stackSections } from "./components/section";
 import { resolveTheme, themeGradient, accentPaint, accentShadowPaint, diffPaint } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, webSearchCardLines, type ForgeSummary } from "./components/forge";
-import { renderJocStatus, renderStatusBar, renderStatusBox } from "./components/status";
+import { renderJeoStatus, renderStatusBar, renderStatusBox } from "./components/status";
 import { costForUsage, formatCost } from "../ai/pricing";
 import { renderMarkdownTables } from "./components/markdown-table";
  
@@ -35,8 +35,9 @@ import { categoryBadge } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
 import { formatDuration, formatUsage } from "./components/duration";
-import { renderHud, derivePhase, type JocPhase } from "./components/hud";
+import { renderHud, derivePhase, type JeoPhase } from "./components/hud";
 import { formatTodoWriteCard } from "./components/todo-card";
+import { renderInputBox } from "./components/input-box";
 import { jeoEnv } from "../util/env";
 import chalk from "chalk";
 
@@ -120,7 +121,7 @@ function todoListChanged(
 // open synchronized update, and always bring the cursor back — so the TTY is never
 // left hidden-cursor, sync-frozen, or stuck on a blank alt screen. The mode flag is
 // mutable and refreshed on every start() so a later turn in a different mode (e.g. a
-// test flipping JOC_TUI_ALT_SCREEN) is restored correctly.
+// test flipping JEO_TUI_ALT_SCREEN) is restored correctly.
 let exitSafetyArmed = false;
 let exitSafetyAltScreen = false;
 function armExitSafety(altScreen: boolean): void {
@@ -152,7 +153,7 @@ export class LaunchTui {
   // True between a step start and the model's reply — i.e. we're waiting on the model.
   // Surfaced in the status line ("calling model…") so the wait isn't an opaque pause.
   private thinking = false;
-  private hudPhase: JocPhase = "thinking";
+  private hudPhase: JeoPhase = "thinking";
   private runningTool = false;
   // Latest transient provider notice (rate-limit auto-retry countdown); pinned into the
   // [STEP] status row while waiting so backoff is visible at a glance. Cleared on the
@@ -163,6 +164,10 @@ export class LaunchTui {
   private turnUsage: { inputTokens: number; outputTokens: number } | null = null;
   // True while a delegated subagent turn is in flight — drives the `(sub)` status marker.
   private subagentActive = false;
+  // Live next-prompt draft. Printable keystrokes typed while a turn owns stdin
+  // edit this same query surface; it is rendered as the normal input box during
+  // the turn and becomes the editable prompt prefill when the turn finishes.
+  private livePromptInput = "";
   // Auto-derived turn title (no LLM call): seeded from the first user message, refined
   // once to the first tool's verb+target. Shown in the HUD and synced to the tmux pane
   // title under --tmux so multiple sessions are distinguishable at a glance (gjc parity).
@@ -204,14 +209,14 @@ export class LaunchTui {
   private readonly progress: StageProgress = createStageProgress();
   // Terminal unicode capability, detected once (drives spinner/track glyph set).
   private readonly unicode: boolean = supportsUnicode();
-  // Active color theme (JOC_TUI_THEME), default cosmic; `mono` disables color.
+  // Active color theme (JEO_TUI_THEME), default cosmic; `mono` disables color.
   private readonly theme = resolveTheme(process.env);
   // Whether the live turn may use the alternate screen buffer (real TTY only).
   private readonly tty: boolean;
   // gjc-style inline rendering (default on a TTY): the live frame repaints in place in
   // the MAIN buffer and every completed ledger line is flushed into normal scrollback
   // first, so tmux / terminal mouse-wheel can scroll back through earlier progress
-  // mid-turn. JOC_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen turn
+  // mid-turn. JEO_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen turn
   // (scroll-isolated, but no mid-turn scrollback).
   private readonly inline: boolean;
   // Thinking-level label for the gjc-style model status bar.
@@ -252,7 +257,7 @@ export class LaunchTui {
     if (hasInProgress && changed && !this.runningTool) {
       this.hudPhase = "planning";
     }
-    // joc-ref transcript: every plan CHANGE flushes a "Todo Write" tree card into
+    // jeo-ref transcript: every plan CHANGE flushes a "Todo Write" tree card into
     // scrollback (☑ + strikethrough as items complete), so the checklist's history
     // is reviewable. The live pinned plan stays in the frame tail as before.
     if (changed && items.length > 0 && !this.finished) {
@@ -282,11 +287,11 @@ export class LaunchTui {
     this.draw();
   }
 
-  /** Write an OSC window/pane title (`ESC]2;joc: <title>BEL`). tmux maps this to the
+  /** Write an OSC window/pane title (`ESC]2;jeo: <title>BEL`). tmux maps this to the
    *  pane title, so multiple --tmux sessions are distinguishable at a glance. TTY only. */
   private emitPaneTitle(): void {
     if (!this.tty || !this.turnTitle) return;
-    try { this.write(`\x1b]2;joc: ${this.turnTitle}\x07`); } catch { /* terminal gone */ }
+    try { this.write(`\x1b]2;jeo: ${this.turnTitle}\x07`); } catch { /* terminal gone */ }
   }
 
   /** Render the task plan as a status-colored checklist; empty when no plan. */
@@ -321,7 +326,7 @@ export class LaunchTui {
         // fallback (tool being formed / reply prose head) — so no model leaves the
         // status box silent while it streams.
         // Draws are THROTTLED to one per 100ms: the old per-delta draw() rendered
-        // the full frame hundreds of times per response (a real chunk of joc's
+        // the full frame hundreds of times per response (a real chunk of jeo's
         // per-step latency); the 120ms timer tick covers the gaps anyway.
         const r = extractStreamingReasoning(textSoFar);
         let changed = false;
@@ -344,7 +349,7 @@ export class LaunchTui {
       onAssistant: (_raw, invocation) => {
         this.thinking = false; // model replied; now dispatching the tool
         this.retryNotice = null; // the call got through — clear any backoff notice
-        // Flush the streamed reasoning once into scrollback as a joc-ref reasoning
+        // Flush the streamed reasoning once into scrollback as a jeo-ref reasoning
         // block — the agent NAME on its own accent line, the prose below it (the
         // durable record) — then stop showing the transient live reasoning row.
         if (this.streamingReasoning && this.streamingReasoning !== this.flushedReasoning) {
@@ -473,12 +478,37 @@ export class LaunchTui {
     this.draw();
   }
 
+  /** Mirror the REPL's live next-prompt draft into the running frame. The input
+   * box remains visible during a turn, so typing never appears in a separate
+   * queued row and Enter does not create hidden auto-execute work. */
+  setLivePromptInput(text: string): void {
+    if (this.finished) return;
+    const next = text ?? "";
+    if (next === this.livePromptInput) return;
+    this.livePromptInput = next;
+    this.draw();
+  }
+
+  private renderLiveInputBox(cols: number): string[] {
+    const caret = this.unicode ? "▌" : "_";
+    const display = this.livePromptInput ? `${this.livePromptInput}${caret}` : "";
+    return renderInputBox(display, {
+      cols: Math.max(24, Math.min(120, cols)),
+      color: this.theme.color,
+      unicode: this.unicode,
+      accent: this.theme.color ? accentPaint(this.theme) : undefined,
+      accentShadow: this.theme.color ? accentShadowPaint(this.theme) : undefined,
+      placeholder: "Type your next message...",
+      maxBodyRows: 2,
+    });
+  }
+
   /** Append a completed progress-ledger line. In inline mode the line is flushed
    *  straight into normal scrollback ABOVE the live frame, so tmux / terminal
    *  mouse-wheel can review the full progress history mid-turn (gjc-style); the
    *  StreamRegion copy still feeds the in-frame tail and the non-TTY / alt-screen
    *  final summary.
-   *  `kind` drives the readability rhythm (joc-ref layout): a blank spacer row is
+   *  `kind` drives the readability rhythm (jeo-ref layout): a blank spacer row is
    *  inserted when the ledger switches between groups (tool lines ↔ reasoning ↔
    *  cards ↔ notices) and around every card — same-kind lines stay adjacent so a
    *  burst of ✓ reads still scans as one block.
@@ -543,7 +573,7 @@ export class LaunchTui {
   }
 
   /**
-   * Real, stable "what joc is doing right now" for the [STEP] line — the in-flight tool's
+   * Real, stable "what jeo is doing right now" for the [STEP] line — the in-flight tool's
    * actual target (file / command), else the active plan step, else overall plan progress.
    * Replaces the per-tick cycling status text so the line shows genuine content (thinking
    * about a real file/step) instead of churning decorative messages every 120ms.
@@ -627,13 +657,14 @@ export class LaunchTui {
     this.startedAt = Date.now();
     this.turnUsage = null;
     this.lastLedgerKind = null; // fresh turn: no leading spacer before the first ledger line
+    this.livePromptInput = ""; // fresh turn: no next-prompt draft yet
     this.spinner.updateStep(0, this.footer.maxSteps);
     // On a real TTY the live turn renders gjc-style in the MAIN buffer by default:
     // completed ledger lines are flushed into normal scrollback as they happen, so a
     // tmux / terminal mouse-wheel scroll can review earlier progress mid-turn. The
     // differential renderer reserves frame rows with real newlines, keeping the
     // in-place repaint anchored even at the bottom of the viewport.
-    // JOC_TUI_ALT_SCREEN=1 restores the legacy alternate-screen turn (scroll-isolated,
+    // JEO_TUI_ALT_SCREEN=1 restores the legacy alternate-screen turn (scroll-isolated,
     // but with no scrollback until the turn ends).
     if (this.tty) {
       if (this.inline) {
@@ -722,7 +753,7 @@ export class LaunchTui {
     const timelineSteps = stepsFromTools(this.tools.snapshot());
     const totalElapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
     const finalLines: string[] = [];
-    // joc-ref final-report order: the ANSWER leads; the Todos checklist follows it
+    // jeo-ref final-report order: the ANSWER leads; the Todos checklist follows it
     // (done = checked + struck through), so the plan reads as a completion receipt.
     const planLines = this.renderPlan(this.theme.color);
     if (!this.inline) {
@@ -746,7 +777,7 @@ export class LaunchTui {
     if (!this.inline) {
       // Inline turns flushed every completed card into scrollback live; re-printing
       // the cards here would duplicate them right below themselves. A spacer row
-      // keeps the card block from gluing to the stream above (joc-ref rhythm).
+      // keeps the card block from gluing to the stream above (jeo-ref rhythm).
       const forge = this.renderForge(size().cols, 3);
       if (forge.length && finalLines.length) finalLines.push("");
       finalLines.push(...forge);
@@ -760,7 +791,7 @@ export class LaunchTui {
       const doneBadge = categoryBadge("done", { color: this.theme.color });
       finalLines.push(`${doneBadge} ${flow} · ${stepsCount} steps · ${durationStr}${usageStr}`);
     }
-    // joc-ref final-report rendering: GFM tables become box-drawn tables, then
+    // jeo-ref final-report rendering: GFM tables become box-drawn tables, then
     // headings/bold/inline-code are styled (theme accent) instead of stripped.
     // color:false keeps the plain stripMarkdown text for pipes/tests.
     const tabled = renderMarkdownTables(reply, { unicode: this.unicode });
@@ -771,10 +802,10 @@ export class LaunchTui {
     const peak = this.progress.current();
     const usageSuffix = this.turnUsage ? ` · ${formatUsage(this.turnUsage)}` : "";
     if (this.inline) {
-      // joc-ref clean ending: the ANSWER leads, then the Todos completion receipt,
+      // jeo-ref clean ending: the ANSWER leads, then the Todos completion receipt,
       // then exactly ONE compact dim status line (steps · time · usage · evolution
       // track). The live ledger above already recorded every step. A blank spacer
-      // row separates the ledger from the answer (joc-ref vertical rhythm).
+      // row separates the ledger from the answer (jeo-ref vertical rhythm).
       finalLines.push("");
       finalLines.push(`jeo> ${renderedReply}`);
       if (planLines.length) {
@@ -978,6 +1009,7 @@ export class LaunchTui {
       : renderHud(this.hudPhase, { unicode: this.unicode, color: this.theme.color });
     tail.push("");
     tail.push(`${diamond} ${dim("hud")} ${hudTail}`);
+    tail.push(...this.renderLiveInputBox(cols));
     tail.push(this.renderModelBar(cols, elapsedMs));
 
     // Bottom-anchor: on a too-short terminal drop tail rows from the TOP so the
@@ -1154,8 +1186,12 @@ export class LaunchTui {
         bottom.push(`  ${categoryBadge("status", { color: this.theme.color })} ${msg}${guardBadge}`);
       }
     }
-    // TTY only: a key-hint bar above the footer (kept out of non-TTY/test frames).
-    if (fit) bottom.push(formatHintBar(undefined, { unicode: this.unicode, color: this.theme.color, cols: innerWidth }));
+    // TTY only: keep the same query input box visible above the footer while the
+    // turn is running; typed text edits the next-prompt draft, not a side queue.
+    if (fit) {
+      bottom.push(formatHintBar(undefined, { unicode: this.unicode, color: this.theme.color, cols: innerWidth }));
+      bottom.push(...this.renderLiveInputBox(innerWidth));
+    }
     // Live animated step strip appended to the footer when the turn has steps.
     const liveSteps = stepsFromTools(this.tools.snapshot());
     const strip = liveSteps.length

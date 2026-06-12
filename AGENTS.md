@@ -29,7 +29,7 @@
 ## For AI Agents
 
 ### Working In This Directory
-- This is the project root. Do not document ignored runtime state (like `.omc`, `.omx`, `.joc`, `.gjc`) as source architecture.
+- This is the project root. Do not document ignored runtime state (like `.omc`, `.omx`, `.jeo`, `.gjc`) as source architecture.
 - Always use `bun` for dependency management and execution.
 - Maintain the multilingual README structure when updating documentation.
 

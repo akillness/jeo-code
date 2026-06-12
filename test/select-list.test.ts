@@ -78,6 +78,15 @@ test("renderSelectList renders group headers + hints, fitted to cols", () => {
   expect(text).toContain("h1");
   expect(lines.map(stripAnsi).every(line => line.length <= 30)).toBe(true);
 });
+test("renderSelectList supports multi-line titles and pre-styled hints", () => {
+  const list = new SelectList<string>([
+    { value: "x", label: "x", hint: "\x1b[31mRAW\x1b[0m", hintRaw: true },
+  ]);
+  const lines = renderSelectList(list, { title: "Line one\n\nLine three", rows: 2, color: false, unicode: false });
+  const text = lines.join("\n");
+  expect(text).toContain("Line one\n\nLine three");
+  expect(text).toContain("\x1b[31mRAW\x1b[0m");
+});
 
 test("empty list renders a (no matches) line, not a crash", () => {
   const list = new SelectList<string>([]);

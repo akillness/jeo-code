@@ -28,7 +28,7 @@ export async function loadHooks(cwd: string): Promise<NonNullable<HookConfig["ho
     return [];
   }
 
-  const localPath = path.join(cwd, ".joc", "hooks.json");
+  const localPath = path.join(cwd, ".jeo", "hooks.json");
   try {
     const content = await fs.readFile(localPath, "utf-8");
     const parsed = JSON.parse(content);

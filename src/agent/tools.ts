@@ -31,7 +31,7 @@ export const IGNORED_DIRS = [
   "build",
   "coverage",
   ".next",
-  ".joc",
+  ".jeo",
   "vendor",
   ".cache",
 ];
@@ -69,7 +69,7 @@ export async function readGitignore(cwd: string): Promise<{ dirs: string[]; file
 /**
  * Validates if codebase mutation tools are blocked due to an active Socratic interview.
  * Mutation is blocked only if deep-interview is active, not completed, and the file
- * is NOT under the `.joc/` directory (planning/spec files are allowed).
+ * is NOT under the `.jeo/` directory (planning/spec files are allowed).
  */
 export async function assertMutationAllowed(
   filePath: string,
@@ -77,16 +77,16 @@ export async function assertMutationAllowed(
 ): Promise<void> {
   const deepInterviewState = await readMutationLock(cwd);
   if (deepInterviewState && deepInterviewState.active && deepInterviewState.current_phase !== "complete") {
-    // Check if the target is NOT inside the local .joc folder. Use a path-boundary
-    // check (not bare startsWith) so siblings like ".joc-backup" aren't mistaken for ".joc/".
+    // Check if the target is NOT inside the local .jeo folder. Use a path-boundary
+    // check (not bare startsWith) so siblings like ".jeo-backup" aren't mistaken for ".jeo/".
     const absPath = path.resolve(cwd, filePath);
-    const jocDir = path.resolve(cwd, ".joc");
-    const insideJoc = absPath === jocDir || absPath.startsWith(jocDir + path.sep);
-    if (!insideJoc) {
+    const jeoDir = path.resolve(cwd, ".jeo");
+    const insideJeo = absPath === jeoDir || absPath.startsWith(jeoDir + path.sep);
+    if (!insideJeo) {
       throw new Error(
         `[MutationGuard Blocked] Code mutation is blocked while a Socratic interview is active (the requirements seed is not yet frozen).\n` +
         `Current ambiguity: ${((deepInterviewState.current_ambiguity ?? 1) * 100).toFixed(0)}%. Finish the interview to freeze the seed and unlock writes — run 'jeo deep-interview'. Non-interactive '--auto' can continue clarification, but it does not bypass the ambiguity gate.\n` +
-        `Only spec/planning writes under '.joc/' are permitted until then.`
+        `Only spec/planning writes under '.jeo/' are permitted until then.`
       );
     }
   }

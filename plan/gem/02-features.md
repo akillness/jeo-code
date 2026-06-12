@@ -12,7 +12,7 @@ Provide the complete spec-first workflow loop inside `gem` to prevent codebase c
 
 ## 2. Current State (cite evidence)
 - `jeo-code/coding-agent/src/agent/engine.ts` implements a tool execution loop with basic self-repair.
-- `jeo-code/coding-agent/src/agent/tools.ts:assertMutationAllowed()` blocks changes outside `.joc/` when deep-interview is active.
+- `jeo-code/coding-agent/src/agent/tools.ts:assertMutationAllowed()` blocks changes outside `.jeo/` when deep-interview is active.
 - `jeo-code/coding-agent/src/commands/` contains commands (`setup`, `auth`, `deep-interview`, `ralplan`, `team`, `ultragoal`, `doctor`, `mcp`).
 - MCP server (`jeo-code/coding-agent/src/mcp/server.ts`) supports stdio JSON-RPC for helper tools.
 

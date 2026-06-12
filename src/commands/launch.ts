@@ -34,7 +34,7 @@ import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLev
 
 import { listAliases } from "../ai/model-registry";
 
-import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting, applyTargetChoices } from "../agent/subagents";
+import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting } from "../agent/subagents";
 import { SelectList, renderSelectList } from "../tui/components/select-list";
 import {
   formatModelLine,
@@ -50,7 +50,7 @@ import {
   formatCatalogTable,
   formatCanonicalCatalogTable,
 } from "../tui/components/config-panel";
-import { liveModelPicker, renderLiveModelPicker } from "../tui/components/live-model-picker";
+import { liveModelPicker, renderLiveModelPicker, type ModelAssignmentBadge } from "../tui/components/live-model-picker";
 import { skillPicker, renderSkillPicker } from "../tui/components/skill-picker";
 import { providerPicker, renderProviderPicker } from "../tui/components/provider-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff, sanitizeForTerminal } from "../tui/components/code-view";
@@ -226,13 +226,13 @@ function shellQuote(arg: string): string {
  * session-scoped mouse mode for the CURRENT session: no jeo-owned session is created
  * on this path, so without `mouse on` tmux ignores the wheel entirely and the
  * mid-turn scrollback (ledger lines flushed above the live frame) is unreachable.
- * Skipped for jeo-spawned sessions (JOC_TMUX_LAUNCHED=1 — the creator already set
- * it) and when JOC_TMUX_MOUSE=0 opts out.
+ * Skipped for jeo-spawned sessions (JEO_TMUX_LAUNCHED=1 — the creator already set
+ * it) and when JEO_TMUX_MOUSE=0 opts out.
  */
 export function shouldEnableCurrentTmuxMouse(env: Record<string, string | undefined>): boolean {
   return !!env.TMUX
-    && (env.JEO_TMUX_LAUNCHED ?? env.JOC_TMUX_LAUNCHED) !== "1"
-    && (env.JEO_TMUX_MOUSE ?? env.JOC_TMUX_MOUSE) !== "0";
+    && (env.JEO_TMUX_LAUNCHED ?? env.JEO_TMUX_LAUNCHED) !== "1"
+    && (env.JEO_TMUX_MOUSE ?? env.JEO_TMUX_MOUSE) !== "0";
 }
 
 /**
@@ -291,7 +291,7 @@ export function tmuxProfileCommands(
   // `mouse on` unset, killing wheel-up scrollback in jeo-owned sessions.
   const t = `=${target}:`;
   const commands: TmuxProfileCommand[] = [];
-  if ((env.JEO_TMUX_MOUSE ?? env.JOC_TMUX_MOUSE) !== "0") {
+  if ((env.JEO_TMUX_MOUSE ?? env.JEO_TMUX_MOUSE) !== "0") {
     commands.push({
       description: "enable tmux mouse scrolling (wheel-up → copy-mode over real history)",
       args: ["set-option", "-t", t, "mouse", "on"],
@@ -313,7 +313,7 @@ export function tmuxProfileCommands(
       args: ["set-option", "-t", t, "@jeo-project", meta.project],
     });
   }
-  if ((env.JEO_TMUX_PROFILE ?? env.JOC_TMUX_PROFILE) !== "0") {
+  if ((env.JEO_TMUX_PROFILE ?? env.JEO_TMUX_PROFILE) !== "0") {
     commands.push(
       {
         description: "enable tmux clipboard integration",
@@ -569,9 +569,65 @@ export function queuePromptInputChunk(state: PromptInputQueue, chunk: string): b
   return accepted;
 }
 
+/** Live-turn prompt capture: printable input edits the SAME next-prompt line the
+ * idle footer will show after the turn finishes. Enter does NOT promote a hidden
+ * queue entry; it merely marks the current line as ready, so the existing input
+ * box stays the single source of truth and the user presses Enter once more at
+ * the real prompt to run it. */
+function feedLivePromptSegment(state: PromptInputQueue, segment: string): boolean {
+  if (!segment || segment.includes("\u001b") || segment.includes("\u0003")) return false;
+  let accepted = false;
+  const normalized = segment.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  for (const ch of Array.from(normalized)) {
+    if (ch === "\n") {
+      accepted = true;
+    } else if (ch === "\u007f" || ch === "\b") {
+      const chars = Array.from(state.partial);
+      chars.pop();
+      state.partial = chars.join("");
+      accepted = true;
+    } else if (ch === "\t" || ch >= " ") {
+      state.partial += ch;
+      accepted = true;
+    }
+  }
+  return accepted;
+}
+
+function feedLivePromptPasteBody(state: PromptInputQueue, body: string): boolean {
+  if (!body) return false;
+  const normalized = body.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const flattened = normalized.split("\n").map(part => part.trim()).filter(Boolean).join(" ");
+  if (!flattened) return false;
+  state.partial = state.partial ? `${state.partial} ${flattened}` : flattened;
+  return true;
+}
+
+export function captureLivePromptInputChunk(state: PromptInputQueue, chunk: string): boolean {
+  if (!chunk) return false;
+  let accepted = false;
+  let rest = chunk;
+  while (rest.length > 0) {
+    if (state.inPaste) {
+      const end = rest.indexOf(PASTE_END);
+      const body = end === -1 ? rest : rest.slice(0, end);
+      if (end !== -1) state.inPaste = false;
+      rest = end === -1 ? "" : rest.slice(end + PASTE_END.length);
+      if (feedLivePromptPasteBody(state, body)) accepted = true;
+    } else {
+      const start = rest.indexOf(PASTE_START);
+      const plain = start === -1 ? rest : rest.slice(0, start);
+      if (start !== -1) state.inPaste = true;
+      rest = start === -1 ? "" : rest.slice(start + PASTE_START.length);
+      if (feedLivePromptSegment(state, plain)) accepted = true;
+    }
+  }
+  return accepted;
+}
+
 /**
- * TTY "new input first" contract: fold any queued FULL lines (typed while a
- * turn was running, or stray Enter-terminated buffer noise) into the editable
+ * TTY "new input first" contract: fold any queued FULL lines (stray
+ * Enter-terminated buffer noise, or older persisted queues) into the editable
  * prompt prefill instead of leaving them to auto-execute as the next prompt.
  * Without this, stale queued lines ran BEFORE the user's fresh input — jeo
  * appeared to "continue the previous work first". Returns the number of lines
@@ -601,7 +657,11 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
   };
 
   const handleSigint = () => {
-    if (abortNow("Cancelling current run… Press Ctrl-C again to exit.")) return;
+    // Ctrl+C is a hard terminal break. Older jeo softened the first press into
+    // "abort current run; press again to exit", which left users trapped in raw
+    // TTY/TUI states when they expected the terminal to stop. Abort the controller
+    // for cleanup observers, then invoke the hard-exit hook immediately.
+    if (!controller.signal.aborted) controller.abort();
     opts.onHardExit?.();
   };
 
@@ -1010,7 +1070,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         const cmd = tmuxLaunchCommand(process.argv[1], process.execPath, cwd);
 
-        const innerCmd = `exec env JOC_TMUX_LAUNCHED=1 ${[...cmd, "launch", ...innerArgs].map(shellQuote).join(" ")}`;
+        const innerCmd = `exec env JEO_TMUX_LAUNCHED=1 ${[...cmd, "launch", ...innerArgs].map(shellQuote).join(" ")}`;
 
         // Create a fresh, independent session (race-safe: the create is the guard).
         const alloc = allocateTmuxSession(sessionBase, name => {
@@ -1054,7 +1114,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // wheel scrolling still needs tmux mouse mode — without it tmux ignores the
       // wheel entirely, so the live-turn scrollback contract (ledger lines flushed
       // above the inline frame) is unreachable ("scroll doesn't work"). Session-
-      // scoped (never -g), best-effort; JOC_TMUX_MOUSE=0 opts out.
+      // scoped (never -g), best-effort; JEO_TMUX_MOUSE=0 opts out.
       const tmuxBin = Bun.which("tmux");
       if (tmuxBin) {
         try { Bun.spawnSync([tmuxBin, "set-option", "mouse", "on"]); } catch { /* best-effort */ }
@@ -1067,7 +1127,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   if (flags.list) {
     const sessions = await listSessions(cwd);
     if (sessions.length === 0) {
-      console.log("No saved sessions in .joc/sessions/.");
+      console.log("No saved sessions in .jeo/sessions/.");
       return;
     }
     console.log("Saved sessions (newest first):");
@@ -1078,7 +1138,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     return;
   }
 
-  // pi-style: load project context (JEO.md / AGENTS.md / .joc/context.md / CLAUDE.md) into the prompt.
+  // pi-style: load project context (JEO.md / AGENTS.md / .jeo/context.md / CLAUDE.md) into the prompt.
   const contextFiles = await loadProjectContext(cwd);
 
   const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "todo"]);
@@ -1125,7 +1185,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const protocol = buildToolProtocol(allowedTools);
   const preamble = flags.systemPrompt ?? "You are the jeo, an interactive coding agent.\nAccomplish the user's request by calling tools and verifying your work.";
-  // Prior-session learnings (B6 경험 증류) — "" when absent or JOC_NO_MEMORY=1.
+  // Prior-session learnings (B6 경험 증류) — "" when absent or JEO_NO_MEMORY=1.
   const memoryBlock = await memoryPromptSection(cwd);
 
   const baseSystemPrompt =
@@ -1137,7 +1197,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     " Call task with {\"role\": <one of the advertised roles>, \"task\": <assignment>, \"context\": <optional>} to hand a focused slice to a subagent." : "") +
     (allowedTools.has("todo") ? "\n\nPlanning: " + TODO_TOOL_PROTOCOL_LINE : "") +
     (effectiveNoSkills ? "" :
-    "\n\nJOC workflow routing:\n" +
+    "\n\nJEO workflow routing:\n" +
     "- Answer the user's request DIRECTLY. Never reply with a catalog, list, or summary of skills unless the user explicitly asks what skills exist.\n" +
     "- Advertise both bundled workflow skills and configured skills below. Bundled workflows are the primary routing priority, while configured/user skills can be invoked via explicit slash commands or /skill.\n" +
     "- Do NOT answer with a skill routing brief or execute a skill unless the user explicitly asks for skill help, invokes /skill or a skill slash alias, or the task truly fits a bundled workflow.\n" +
@@ -1233,6 +1293,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const streamEvents = createStreamEvents(initialStepLimit);
   let queueBusyInput: ((chunk: string) => boolean) | undefined;
   let queueBusyPasteActive: (() => boolean) | undefined;
+  // Live snapshot of the busy-turn prompt draft — feeds the TUI's normal input
+  // box during a running turn so typed text stays in the same query surface
+  // instead of a separate queued row.
+  let queueBusySnapshot: (() => { text: string }) | undefined;
   let interactiveTurnActive = false;
 
 
@@ -1283,7 +1347,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         interactiveTurnActive = true;
         tui.start();
       }
-      let queuedInputNotified = false;
       const harness = createInFlightAbortHarness({
         captureEsc: !!tui,
         onNoise: () => tui?.repaint(),
@@ -1296,11 +1359,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         },
         onBufferedInput: chunk => {
           if (!tui) return;
-          const queued = queueBusyInput?.(chunk) ?? false;
-          if (queued && !queuedInputNotified) {
-            queuedInputNotified = true;
-            tui.events().onNotice?.("Keyboard input queued for the next prompt…");
-          }
+          const captured = queueBusyInput?.(chunk) ?? false;
+          // Keep the SAME query input box visible during a live turn. Printable
+          // keystrokes edit the next prompt draft; Enter does not create a hidden
+          // queue entry, so there is no separate "queued input" surface.
+          if (captured) tui.setLivePromptInput(queueBusySnapshot?.().text ?? "");
         },
         onAbortNotice: msg => {
           if (tui) tui.events().onNotice?.(msg);
@@ -1448,7 +1511,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       if (cmd === "/" || cmd === "/?" || cmd === "/help") {
         for (const line of formatSlashCommandList("/", skillSlashDetails)) console.log(line);
-        console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .joc/sessions/.");
+        console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .jeo/sessions/.");
         return;
       }
     }
@@ -1741,16 +1804,32 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     output: gatedStdout(process.stdout, () => previewArmed || pickerActive || interactiveTurnActive),
     completer: (line: string) => readlineCompleter(line, completionContext()),
   });
+  const promptStdin = process.stdin as typeof process.stdin & { isRaw?: boolean; setRawMode?(raw: boolean): void };
+  const promptWasRaw = !!promptStdin.isRaw;
+  let promptRawChanged = false;
+  const restorePromptRawMode = () => {
+    if (!promptRawChanged) return;
+    try { promptStdin.setRawMode?.(false); } catch { /* terminal gone */ }
+    promptRawChanged = false;
+  };
+  if (promptStdin.isTTY && promptStdin.setRawMode && !promptWasRaw) {
+    promptStdin.setRawMode(true);
+    promptRawChanged = true;
+  }
+  process.once("exit", restorePromptRawMode);
   // Stdin EOF must END the REPL, not hang it: under Bun a pending `rl.question`
   // NEVER settles once the input stream closes (Ctrl-D, exhausted pipe) — the
-  // while(true) prompt loop then waits forever (the "joc never exits" hang).
+  // while(true) prompt loop then waits forever (the "jeo never exits" hang).
   // Bun's readline also DROPS piped lines that arrive between prompts (question()
   // only captures the line submitted while it is registered; orphan lines emit
   // 'line' instead), so queue those and serve them before prompting again.
   const pendingStdinLines: string[] = [];
   const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: "", pastedLines: [], inPaste: false };
-  queueBusyInput = (chunk: string) => queuePromptInputChunk(queuedPromptInput, chunk);
+  queueBusyInput = (chunk: string) => captureLivePromptInputChunk(queuedPromptInput, chunk);
   queueBusyPasteActive = () => queuedPromptInput.inPaste;
+  queueBusySnapshot = () => ({
+    text: queuedPromptInput.partial,
+  });
   // Bracketed-paste line routing at the PROMPT: readline strips the 2004 markers
   // and replays pasted lines as synthetic keypresses, emitting paste-start /
   // paste-end around them. Lines submitted INSIDE that window are intentional
@@ -1777,8 +1856,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   });
   let stdinClosed = false;
   let notifyStdinClosed: (() => void) | undefined;
+  let gracefulReadlineClose = false;
+  let hardExitOnLoopEnd = false;
   // `on` + one-shot guard (not `once`): test harnesses stub readline with `on`/`question` only.
-  rl.on("close", () => { if (stdinClosed) return; stdinClosed = true; notifyStdinClosed?.(); });
+  rl.on("close", () => {
+    if (stdinClosed) return;
+    // Bun/readline can turn Ctrl+C into a bare close event without SIGINT/key
+    // delivery. In an interactive terminal, an unexpected close is therefore a
+    // hard break, not a graceful `/exit`. Some Bun/tmux paths leave stdin.isTTY
+    // false while stdout is still a TTY, so accept either side as interactive.
+    if ((process.stdin.isTTY || process.stdout.isTTY || previewEnabled) && !gracefulReadlineClose) {
+      hardExitOnLoopEnd = true;
+      forceExitFromCtrlC();
+    }
+    stdinClosed = true;
+    notifyStdinClosed?.();
+  });
   /** `rl.question` that resolves "/exit" on stdin EOF instead of hanging forever. */
   let promptServedFromPaste = false;
   const promptInput = async (prompt: string): Promise<string> => {
@@ -1791,11 +1884,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     const queued = pendingStdinLines.shift();
     if (queued !== undefined) return queued;
-    if (stdinClosed) return "/exit";
+    if (stdinClosed) {
+      if (hardExitOnLoopEnd || process.stdin.isTTY || process.stdout.isTTY) forceExitFromCtrlC();
+      return "/exit";
+    }
     try {
       return await Promise.race([
         rl.question(prompt),
-        new Promise<string>(resolve => { notifyStdinClosed = () => resolve(pendingStdinLines.shift() ?? "/exit"); }),
+        new Promise<string>(resolve => {
+          notifyStdinClosed = () => {
+            if (hardExitOnLoopEnd || process.stdin.isTTY || process.stdout.isTTY) forceExitFromCtrlC();
+            resolve(pendingStdinLines.shift() ?? "/exit");
+          };
+        }),
       ]);
     } finally {
       notifyStdinClosed = undefined;
@@ -1828,7 +1929,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // (DECSTBM). The region is armed ONLY while waiting for input, and disarmed for
   // turns/command output so the full-screen turn TUI renders normally. The footer
   // is drawn at absolute rows (per-row clear → no scroll, no duplication).
-  // Opt out with JOC_NO_SLASH_PREVIEW=1; auto-off on short terminals.
+  // Opt out with JEO_NO_SLASH_PREVIEW=1; auto-off on short terminals.
   const currentAtLabel = (line: string): string | undefined => {
     const { tokens } = tokenize(line);
     const token = [...tokens].reverse().find(t => t.startsWith("@"));
@@ -1987,7 +2088,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       cursor: caret,
     });
     const input = frame.lines.map(l => truncateAnsi(l, cols));
-    // joc-ref layout: a blank spacer row between the status bar (row 0) and the
+    // jeo-ref layout: a blank spacer row between the status bar (row 0) and the
     // input box, so the box breathes instead of gluing to the bar — the caret
     // (and everything below) therefore shifts down TWO rows.
     footerCursor = {
@@ -2048,9 +2149,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     out.write(s);
   };
 
-  // ESC / Ctrl+C at the prompt: wipe the typed text (and detach any pending
-  // clipboard images — their `[image #N]` tags live in that text) instead of
-  // leaving stale input. Returns true when something was actually cleared.
+  // ESC at the prompt: wipe the typed text (and detach any pending clipboard
+  // images — their `[image #N]` tags live in that text) instead of leaving stale
+  // input. Ctrl+C is no longer a line editor shortcut; it hard-exits below.
   const clearTypedInput = (): boolean => {
     const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
     const hadPastedQueue = queuedPromptInput.pastedLines.length > 0;
@@ -2071,48 +2172,28 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (previewArmed) drawFooter(previewLines(""));
     return true;
   };
-  // Ctrl+C at the prompt: the FIRST press clears the typed line (zsh/gjc-style)
-  // — and pressing ^C again in quick succession (≤2s, nothing left to clear)
-  // EXITS the process gracefully by resolving the pending prompt as /exit, so
-  // the normal quit path (session save, resume pointer) runs. Mid-turn ^C
-  // aborts stay with the separate raw-mode turn harness, not this listener.
-  let lastSigintAt = 0;
-  const SIGINT_EXIT_WINDOW_MS = 2000;
-  rl.on("SIGINT", () => {
-    if (pickerActive) return;
-    const now = Date.now();
-    const consecutive = now - lastSigintAt <= SIGINT_EXIT_WINDOW_MS;
-    lastSigintAt = now;
-    if (clearTypedInput()) {
-      if (previewArmed) {
-        const lines = previewLines("");
-        lines.push(chalk.gray("  ^C cleared input — press ^C again to exit"));
-        drawFooter(lines);
-      }
-      return;
+  // Ctrl+C at the prompt is a hard terminal break (exit code 130), not a line
+  // editor shortcut. `/exit` remains the graceful session-save path; ^C is the
+  // emergency "get me back to my shell now" path and must work on the first press.
+  const forceExitFromCtrlC = () => {
+    try {
+      disarmPreview();
+      out.write("\x1b[?25h\n");
+      restorePromptRawMode();
+    } catch {
+      // Best-effort terminal restore; process exit is the contract.
     }
-    if (consecutive) {
-      // Second consecutive ^C with nothing to clear → graceful /exit: inject the
-      // command through readline's own input path (rl.write submits the line and
-      // resolves the pending rl.question), so the normal quit path — session save,
-      // resume pointer — runs exactly as if the user typed /exit.
-      try {
-        rl.write("/exit\n");
-      } catch {
-        // Input path unavailable (stream closing) — exit directly but restore the
-        // terminal first so the shell prompt isn't left on a hidden cursor.
-        disarmPreview();
-        out.write("\x1b[?25h\n");
-        process.exit(0);
-      }
-      return;
-    }
-    if (previewArmed) {
-      const lines = previewLines("");
-      lines.push(chalk.gray("  ^C — press ^C again to exit · /exit to quit"));
-      drawFooter(lines);
-    }
-  });
+    process.exit(130);
+  };
+  const forceExitOnCtrlCByte = (chunk: string | Uint8Array) => {
+    const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    if (text.includes("\u0003")) forceExitFromCtrlC();
+  };
+  // Bun/readline can deliver Ctrl+C as readline SIGINT, process SIGINT, or (tmux)
+  // a raw \u0003 byte before readline resolves the question; wire all three.
+  process.on("SIGINT", forceExitFromCtrlC);
+  process.stdin.on("data", forceExitOnCtrlCByte);
+  rl.on("SIGINT", forceExitFromCtrlC);
 
   const runSelectPicker = async <T>(
     render: (cols: number, rows: number) => string[],
@@ -2206,6 +2287,62 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const notReadyWarning = (st: { name: string; label: string }): string =>
     `  ! ${st.name} is not call-ready yet (${st.label}) — run /provider login antigravity before the first turn.`;
 
+  const CORE_MODEL_ACTION_ROLE_ORDER = ["executor", "architect", "planner", "critic"] as const;
+  const MODEL_BADGE_ROLE_ORDER = ["planner", "architect", "executor", "critic"] as const;
+
+  const roleBadgeColor = (roleId: string): ModelAssignmentBadge["color"] =>
+    roleId === "executor" || roleId === "architect" || roleId === "planner" || roleId === "critic" ? roleId : "critic";
+
+  const orderedModelRoles = (config: Awaited<ReturnType<typeof readGlobalConfig>>) => {
+    const roles = allSubagentRoles(config);
+    const emitted = new Set<string>();
+    const out: ReturnType<typeof allSubagentRoles> = [];
+    for (const id of CORE_MODEL_ACTION_ROLE_ORDER) {
+      const role = roles.find(r => r.id === id);
+      if (role) {
+        emitted.add(role.id);
+        out.push(role);
+      }
+    }
+    for (const role of roles) {
+      if (!emitted.has(role.id)) out.push(role);
+    }
+    return out;
+  };
+
+  const modelPickerAssignments = async (): Promise<ModelAssignmentBadge[]> => {
+    const cfg = await readGlobalConfig();
+    const defaultModelForBadges = sessionModel || cfg.defaultModel;
+    const cfgForBadges = { ...cfg, defaultModel: defaultModelForBadges };
+    const roles = allSubagentRoles(cfgForBadges);
+    const byId = new Map(roles.map(role => [role.id, role]));
+    const orderedRoleIds = [
+      ...MODEL_BADGE_ROLE_ORDER,
+      ...roles.map(role => role.id).filter(id => !MODEL_BADGE_ROLE_ORDER.includes(id as (typeof MODEL_BADGE_ROLE_ORDER)[number])),
+    ];
+    const assignments: ModelAssignmentBadge[] = [
+      {
+        role: "default",
+        label: "DEFAULT",
+        model: defaultModelForBadges,
+        thinking: sessionThinking ?? cfg.thinkingLevel ?? "medium",
+        color: "default",
+      },
+    ];
+    for (const roleId of orderedRoleIds) {
+      const role = byId.get(roleId);
+      if (!role) continue;
+      assignments.push({
+        role: role.id,
+        label: role.title.toUpperCase(),
+        model: resolveSubagentModel(role.id, cfgForBadges),
+        thinking: resolveSubagentThinking(role.id, cfgForBadges) ?? "inherit",
+        color: roleBadgeColor(role.id),
+      });
+    }
+    return assignments;
+  };
+
   const pickLiveProviderModel = async (
     providerName: string,
     entries: PickEntry[],
@@ -2213,7 +2350,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     disabledProviders: readonly ProviderName[] = [],
   ): Promise<PickEntry | undefined> => {
     if (!process.stdin.isTTY || entries.length === 0) return undefined;
-    const list = liveModelPicker(entries, { current, disabledProviders, disabledHint: "needs API key/base URL" });
+    const list = liveModelPicker(entries, { current, assignments: await modelPickerAssignments(), disabledProviders, disabledHint: "needs API key/base URL" });
     let chosen: PickEntry | undefined;
     await runSelectPicker(
       (cols, rows) =>
@@ -2286,6 +2423,124 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       },
     );
     return chosen;
+  };
+
+  const pickThinkingLevel = async (
+    title: string,
+    current: ThinkLevel | undefined,
+    inheritLabel?: string,
+  ): Promise<ThinkLevel | "inherit" | undefined> => {
+    const mark = (lvl: string): string => (current === lvl ? "current" : "");
+    const levels: { value: string; label: string; hint?: string }[] = [
+      ...(inheritLabel ? [{ value: "inherit", label: inheritLabel, hint: current === undefined ? "current" : "" }] : []),
+      { value: "minimal", label: "minimal — lightest reasoning", hint: mark("minimal") },
+      { value: "low", label: `low — light reasoning (~${Math.round(thinkingMaxTokens("low") / 1000)}k tokens)`, hint: mark("low") },
+      { value: "medium", label: `medium — moderate reasoning (~${Math.round(thinkingMaxTokens("medium") / 1000)}k tokens)`, hint: mark("medium") },
+      { value: "high", label: `high — deep reasoning (~${Math.round(thinkingMaxTokens("high") / 1000)}k tokens)`, hint: mark("high") },
+      { value: "xhigh", label: `xhigh — maximum reasoning (~${Math.round(thinkingMaxTokens("xhigh") / 1000)}k tokens)`, hint: mark("xhigh") },
+    ];
+    const picked = await pickFromOptions(title, levels);
+    return picked === "inherit" || isThinkingLevel(picked) ? picked : undefined;
+  };
+
+  const setRoleThinking = async (roleId: string, rawLevel: string | undefined): Promise<boolean> => {
+    const cfgForRole = await readGlobalConfig();
+    const role = getSubagentRole(roleId, cfgForRole);
+    if (!role) return false;
+    const level = (rawLevel ?? "").toLowerCase();
+    if (level === "inherit") {
+      await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { thinking: undefined }) }));
+      console.log(`${role.title} thinking now inherits the default → ~/.jeo/config.json`);
+      return true;
+    }
+    if (!isThinkingLevel(level)) {
+      console.log(`Usage: /model subagent ${role.id} thinking <inherit|minimal|low|medium|high|xhigh>`);
+      return true;
+    }
+    await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { thinking: level }) }));
+    console.log(`${role.title} thinking set to ${level} (~${thinkingMaxTokens(level)} max tokens/step) → ~/.jeo/config.json`);
+    return true;
+  };
+  const displayModelName = (model: string): string => {
+    const leaf = (model.split("/").pop() || model).trim();
+    return leaf.replace(/^gpt/i, "GPT");
+  };
+
+  const modelActionChoices = (config: Awaited<ReturnType<typeof readGlobalConfig>>) => {
+    const choices: { value: string; label: string }[] = [
+      { value: "default", label: "Set as DEFAULT (Default)" },
+    ];
+    for (const role of orderedModelRoles(config)) {
+      choices.push({ value: role.id, label: `Set as ${role.title.toUpperCase()} (${role.title})` });
+    }
+    choices.push({
+      value: "preset:openai-codex",
+      label: "Apply OpenAI Codex role preset (Default medium, Executor low, Architect xhigh, Planner medium, Critic high)",
+    });
+    return choices;
+  };
+
+  const applyOpenAiCodexRolePreset = async (target: string, cfgForPick: Awaited<ReturnType<typeof readGlobalConfig>>): Promise<void> => {
+    const roleThinking: Record<(typeof CORE_MODEL_ACTION_ROLE_ORDER)[number], ThinkLevel> = {
+      executor: "low",
+      architect: "xhigh",
+      planner: "medium",
+      critic: "high",
+    };
+    await saveConfigPatch(raw => {
+      let subagents = raw.subagents ?? {};
+      for (const roleId of CORE_MODEL_ACTION_ROLE_ORDER) {
+        subagents = withSubagentSetting({ subagents }, roleId, { model: target, thinking: roleThinking[roleId] });
+      }
+      return {
+        ...rememberModelPatch(raw, target),
+        thinkingLevel: "medium",
+        subagents,
+      };
+    });
+    sessionModel = target;
+    sessionThinking = "medium";
+    const { resolved, provider } = await describeModel(target);
+    const st = (await describeAllProviders(cfgForPick)).find(s => s.name === provider);
+    console.log(`OpenAI Codex role preset applied to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })} — Default medium, Executor low, Architect xhigh, Planner medium, Critic high`);
+  };
+
+
+  const applyPickedModelWithTarget = async (target: string): Promise<boolean> => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+    const cfgForPick = await readGlobalConfig();
+    const choice = await pickFromOptions(`Model Name: ${displayModelName(target)}\n\nAction for: ${target}`, modelActionChoices(cfgForPick));
+    const applyTo = choice || "default";
+    if (applyTo === "preset:openai-codex") {
+      await applyOpenAiCodexRolePreset(target, cfgForPick);
+      return true;
+    }
+    const roleTarget = applyTo !== "default" ? getSubagentRole(applyTo, cfgForPick) : undefined;
+    const { resolved, provider } = await describeModel(target);
+    const st = (await describeAllProviders(cfgForPick)).find(s => s.name === provider);
+    if (roleTarget) {
+      const lvl = await pickThinkingLevel(
+        `Reasoning for ${roleTarget.title}: ${target}`,
+        cfgForPick.subagents?.[roleTarget.id]?.thinking,
+        `inherit — follow default (${cfgForPick.thinkingLevel ?? "medium"})`,
+      );
+      const thinkPatch = lvl === "inherit" ? { thinking: undefined } : lvl ? { thinking: lvl } : {};
+      await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, roleTarget.id, { model: target, ...thinkPatch }) }));
+      const thinkNote = lvl ? ` · thinking ${lvl}` : "";
+      console.log(`Subagent '${roleTarget.id}' model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${thinkNote} — saved (change anytime via /model or /agents)`);
+      return true;
+    }
+    sessionModel = target;
+    const lvl = await pickThinkingLevel(`Reasoning for default: ${target}`, sessionThinking ?? cfgForPick.thinkingLevel);
+    if (lvl && lvl !== "inherit") {
+      sessionThinking = lvl;
+    }
+    await saveConfigPatch(raw => ({
+      ...rememberModelPatch(raw, target),
+      ...(lvl && lvl !== "inherit" ? { thinkingLevel: lvl } : {}),
+    }));
+    console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${lvl && lvl !== "inherit" ? ` · thinking ${lvl}` : ""} — saved as default`);
+    return true;
   };
 
   const pickSkillFromList = async (skills: SkillDoc[]): Promise<SkillDoc | undefined> => {
@@ -2390,6 +2645,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   if (previewEnabled) {
     process.once("exit", () => out.write("\x1b[?25h")); // safety net: never leave the cursor hidden
     process.stdin.on("keypress", (_ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
+      if (key?.ctrl && key.name === "c") {
+        forceExitFromCtrlC();
+        return;
+      }
       if (!previewArmed || pickerActive) return;
       // Ctrl+O: toggle a reversible history/detail panel. The live-turn TUI path
       // uses LaunchTui.showDetail(); this idle-prompt path paints the same content
@@ -2442,8 +2701,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         clearTypedInput();
         return;
       }
-      // Ctrl+C is owned end-to-end by the rl SIGINT listener (clear or quit hint);
-      // skipping the generic redraw here keeps that hint from being overwritten.
+      // Ctrl+C hard-exits above; keep this guard for defensive ordering only.
       if (key?.ctrl && key.name === "c") return;
       previewPending = true;
       setImmediate(() => {
@@ -2555,7 +2813,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // Box mode: NO raw `jeo>` prompt at all — the boxed footer IS the input UI
       // (gating already suppresses readline echo, the empty prompt guarantees no
       // raw CLI input line can ever flash). Legacy prompt only without the box.
-      const raw = (await promptInput(previewEnabled ? "" : "\njeo> ")).trim();
+      const rawText = await promptInput(previewEnabled ? "" : "\njeo> ");
+      if (rawText.includes("\u0003")) forceExitFromCtrlC();
+      const raw = rawText.trim();
       disarmPreview();
       // Pasted batch command: echo what is about to run (with the remaining queue
       // depth) so a multi-line paste reads as a visible, ordered script.
@@ -2589,7 +2849,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       if (input === "/" || input === "/?" || input === "/help") {
         logLines(formatSlashCommandList(input === "/help" ? "/" : input, skillSlashDetails));
-        console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .joc/sessions/.");
+        console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .jeo/sessions/.");
         const tip = getEvolutionTip(history.length, flags.maxSteps > 0 ? flags.maxSteps : initialStepLimit);
         console.log(`\n${chalk.cyan("Evolutionary Tip:")} ${tip}`);
         continue;
@@ -2887,7 +3147,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const themes = listThemes();
         if (!want) {
           const active = resolveTheme().name;
-          console.log("TUI themes (set with /theme <name>, persists via ~/.joc/config.json):");
+          console.log("TUI themes (set with /theme <name>, persists via ~/.jeo/config.json):");
           for (const t of themes) console.log(`  ${t.name === active ? "*" : " "} ${t.name.padEnd(10)} ${t.description}`);
           continue;
         }
@@ -2898,7 +3158,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         process.env.JEO_TUI_THEME = want;
         await saveConfigPatch(raw => ({ theme: want }));
         refreshUiTheme(); // re-resolve the keystroke-hot theme handle immediately
-        console.log(`Theme set to ${want} — saved to ~/.joc/config.json`);
+        console.log(`Theme set to ${want} — saved to ~/.jeo/config.json`);
         continue;
       }
       if (input === "/evolve") {
@@ -2983,7 +3243,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`Starting OAuth login for ${target}…`);
           try {
             const { email } = await interactiveOAuthLogin(target as AuthProvider, rl);
-            console.log(`[SUCCESS] OAuth login complete for ${target}${email ? ` (${email})` : ""}. Tokens saved to ~/.joc/config.json.`);
+            console.log(`[SUCCESS] OAuth login complete for ${target}${email ? ` (${email})` : ""}. Tokens saved to ~/.jeo/config.json.`);
             const live = await refreshLiveModelsCache();
             const after = (await describeAllProviders()).find(s => s.name === target);
             if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
@@ -3062,49 +3322,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (providerPick.length) logLines(formatPickListWithCapabilities(providerPick, { cap: 20 }));
           continue;
         }
-        // gjc parity 3-step pick: WHO uses the model (default / subagent role),
-        // then HOW HARD it thinks (reasoning level — gjc's "Reasoning for <role>"
-        // menu). ESC at either step keeps the current value; non-TTY / explicit
-        // `/provider <name> <model>` keep the legacy default-apply behavior.
-        let applyTo = "default";
-        const cfgForPick = await readGlobalConfig();
-        if (pickedFromPicker) {
-          const choice = await pickFromOptions(`Apply ${target} to`, applyTargetChoices(cfgForPick));
-          if (choice) applyTo = choice;
-        }
-        const roleTarget = applyTo !== "default" ? getSubagentRole(applyTo) : undefined;
-        const pickThinking = async (forRole: boolean, current: string | undefined): Promise<string | undefined> => {
-          if (!pickedFromPicker) return undefined;
-          const mark = (lvl: string): string => (current === lvl ? "current" : "");
-          const levels: { value: string; label: string; hint?: string }[] = [
-            ...(forRole ? [{ value: "inherit", label: `inherit — follow default (${cfgForPick.thinkingLevel ?? "medium"})`, hint: current === undefined ? "current" : "" }] : []),
-            { value: "minimal", label: "minimal — lightest reasoning", hint: mark("minimal") },
-            { value: "low", label: `low — light reasoning (~${Math.round(thinkingMaxTokens("low") / 1000)}k tokens)`, hint: mark("low") },
-            { value: "medium", label: `medium — moderate reasoning (~${Math.round(thinkingMaxTokens("medium") / 1000)}k tokens)`, hint: mark("medium") },
-            { value: "high", label: `high — deep reasoning (~${Math.round(thinkingMaxTokens("high") / 1000)}k tokens)`, hint: mark("high") },
-            { value: "xhigh", label: `xhigh — maximum reasoning (~${Math.round(thinkingMaxTokens("xhigh") / 1000)}k tokens)`, hint: mark("xhigh") },
-          ];
-          return pickFromOptions(`Reasoning for ${forRole ? roleTarget!.title : "default"}: ${target}`, levels);
-        };
-        type Lvl = "minimal" | "low" | "medium" | "high" | "xhigh";
-        if (roleTarget) {
-          const lvl = await pickThinking(true, cfgForPick.subagents?.[roleTarget.id]?.thinking);
-          const thinkPatch = lvl === "inherit" ? { thinking: undefined } : lvl ? { thinking: lvl as Lvl } : {};
-          await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, roleTarget.id, { model: target, ...thinkPatch }) }));
-          const thinkNote = lvl ? ` · thinking ${lvl}` : "";
-          console.log(`Subagent '${roleTarget.id}' model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${thinkNote} — saved (change anytime via /agents or this picker)`);
+        if (pickedFromPicker && await applyPickedModelWithTarget(target)) {
+          if (providerPick.length) lastPickIndex = providerPick;
           continue;
         }
         sessionModel = target;
-        const lvl = await pickThinking(false, sessionThinking ?? cfgForPick.thinkingLevel);
-        if (lvl && lvl !== "inherit") {
-          sessionThinking = lvl as Lvl;
-          await saveConfigPatch(() => ({ thinkingLevel: lvl as Lvl }));
-        }
         // MRU persistence: a provider/model pick becomes the default for EVERY
         // future session and the head of the recents rotation.
         await saveConfigPatch(raw => rememberModelPatch(raw, target));
-        console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${lvl && lvl !== "inherit" ? ` · thinking ${lvl}` : ""} — saved as default`);
+        console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })} — saved as default`);
         // Show the provider's live, credentialed catalog so the user can pick a concrete id.
         if (providerPick.length) {
           lastPickIndex = providerPick;
@@ -3135,19 +3361,27 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const roleArg = tokens[0];
         const modelArg = tokens[1];
         const cfgNow = await readGlobalConfig();
-        if (!roleArg || roleArg === "/" || roleArg === "?" || roleArg.toLowerCase() === "help") {
+        const subcommand = roleArg?.toLowerCase();
+        const printRoster = () => {
           console.log("Subagent roles (used by 'jeo team'):");
           for (const line of formatAgentsPanel(allSubagentRoles(cfgNow), r => ({
             model: resolveSubagentModel(r.id, cfgNow),
             maxSteps: resolveSubagentMaxSteps(r.id, cfgNow),
             thinking: resolveSubagentThinking(r.id, cfgNow),
           }))) console.log(line);
-          console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  provider: /agents <role> provider <name> [model]  ·  steps: /agents <role> maxSteps <N>");
-          console.log("Tip: set a role while choosing models with /model subagent <role> [model|#N]");
+          console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  provider: /agents <role> provider <name> [model]  ·  thinking: /agents <role> thinking <level|inherit>  ·  steps: /agents <role> maxSteps <N>  ·  picker: /agents edit");
+          console.log("Tip: primary model flow: /model → pick model → choose default or subagent role → choose thinking level");
           console.log(`Available: ${allSubagentRoles(cfgNow).map(r => r.id).join(", ")} (declare custom roles in config.subagents)`);
-          console.log("Subcommands: <role> <model|#N>, <role> provider <name> [model], <role> maxSteps <N>, <role> reset");
-          // Interactive editor (TTY): role picker → action picker → live model
-          // picker / reset — the arrows+Enter way to CHANGE an existing setting.
+          console.log("Subcommands: edit, <role> <model|#N>, <role> thinking <level|inherit>, <role> provider <name> [model], <role> maxSteps <N>, <role> reset");
+        };
+        if (!roleArg || roleArg === "/" || roleArg === "?" || subcommand === "help") {
+          printRoster();
+          continue;
+        }
+        if (subcommand === "edit" || subcommand === "picker") {
+          printRoster();
+          // Interactive editor (TTY): role picker → action picker → live model /
+          // thinking / reset — the arrows+Enter way to CHANGE an existing setting.
           const rolePick = await pickFromOptions(
             "Edit a subagent role (ESC to skip)",
             allSubagentRoles(cfgNow).map(r => ({
@@ -3160,11 +3394,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (!editRole) continue;
           const action = await pickFromOptions(`${editRole.title} — choose action`, [
             { value: "model", label: "change model", hint: resolveSubagentModel(editRole.id, cfgNow) },
-            { value: "reset", label: "reset to defaults", hint: "clears model + maxSteps override" },
+            { value: "thinking", label: "change thinking", hint: resolveSubagentThinking(editRole.id, cfgNow) ?? `inherit (${cfgNow.thinkingLevel ?? "medium"})` },
+            { value: "reset", label: "reset to defaults", hint: "clears model + maxSteps + thinking override" },
           ]);
           if (action === "reset") {
             await saveConfigPatch(raw => ({ subagents: clearSubagentSetting(raw, editRole.id) }));
-            console.log(`${editRole.title} settings reset to defaults → ~/.joc/config.json`);
+            console.log(`${editRole.title} settings reset to defaults → ~/.jeo/config.json`);
           } else if (action === "model") {
             const live = await getLiveModels();
             const entries = flattenModels(live);
@@ -3172,8 +3407,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             if (picked) {
               const pinned = qualifyModelId(picked.model, picked.provider);
               await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, editRole.id, { model: pinned }) }));
-              console.log(`Subagent '${editRole.id}' model set to ${pinned} → ~/.joc/config.json`);
+              console.log(`Subagent '${editRole.id}' model set to ${pinned} → ~/.jeo/config.json`);
             }
+          } else if (action === "thinking") {
+            const lvl = await pickThinkingLevel(
+              `Reasoning for ${editRole.title}`,
+              cfgNow.subagents?.[editRole.id]?.thinking,
+              `inherit — follow default (${cfgNow.thinkingLevel ?? "medium"})`,
+            );
+            if (lvl) await setRoleThinking(editRole.id, lvl);
           }
           continue;
         }
@@ -3184,7 +3426,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         if (modelArg?.toLowerCase() === "reset") {
           await saveConfigPatch(raw => ({ subagents: clearSubagentSetting(raw, role.id) }));
-          console.log(`${role.title} settings reset to defaults → ~/.joc/config.json`);
+          console.log(`${role.title} settings reset to defaults → ~/.jeo/config.json`);
           continue;
         }
         if (modelArg?.toLowerCase() === "maxsteps" || modelArg?.toLowerCase() === "steps") {
@@ -3194,7 +3436,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             continue;
           }
           await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { maxSteps }) }));
-          console.log(`${role.title} maxSteps set to ${maxSteps} → ~/.joc/config.json`);
+          console.log(`${role.title} maxSteps set to ${maxSteps} → ~/.jeo/config.json`);
+          continue;
+        }
+        if (modelArg?.toLowerCase() === "thinking" || modelArg?.toLowerCase() === "think") {
+          await setRoleThinking(role.id, tokens[2]);
           continue;
         }
         if (modelArg?.toLowerCase() === "provider") {
@@ -3238,7 +3484,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             chosenModel = PROVIDER_DEFAULT[want];
           }
           await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: chosenModel }) }));
-          console.log(`${role.title} pinned to ${want} via model ${chosenModel} — saved to ~/.joc/config.json`);
+          console.log(`${role.title} pinned to ${want} via model ${chosenModel} — saved to ~/.jeo/config.json`);
           if (forProvider.length) {
             lastPickIndex = forProvider;
             console.log(`Live ${want} models — refine with /agents ${role.id} #N:`);
@@ -3278,10 +3524,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             console.log("Run /models first to build the numbered live model list.");
             continue;
           }
-          // Persist a per-role model override to ~/.joc/config.json (consumed by 'jeo team').
+          // Persist a per-role model override to ~/.jeo/config.json (consumed by 'jeo team').
           await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: chosenModel }) }));
           const { provider } = await describeModel(chosenModel);
-          console.log(`${role.title} model set to ${chosenModel} (${provider}) — saved to ~/.joc/config.json`);
+          console.log(`${role.title} model set to ${chosenModel} (${provider}) — saved to ~/.jeo/config.json`);
           const live = await getLiveModels();
           if (!liveModelKnown(live, chosenModel)) {
             console.log(`  (note: '${chosenModel}' is not in any live model list — verify it is valid for ${provider})`);
@@ -3353,7 +3599,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             continue;
           }
           await saveConfigPatch(raw => ({ roles: { ...(raw.roles ?? {}), [tier]: chosenModel } }));
-          console.log(`Role '${tier}' model set to ${chosenModel} → ~/.joc/config.json`);
+          console.log(`Role '${tier}' model set to ${chosenModel} → ~/.jeo/config.json`);
           continue;
         }
         console.log("Model role tiers (fall back to the default model):");
@@ -3413,19 +3659,37 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           const finalSave = toSave || sessionModel || (await readGlobalConfig()).defaultModel;
           await saveConfigPatch(raw => rememberModelPatch(raw, finalSave));
           const { resolved, provider } = await describeModel(finalSave);
-          console.log(`Default model saved: ${formatModelLine({ label: finalSave, resolved, provider })} → ~/.joc/config.json`);
+          console.log(`Default model saved: ${formatModelLine({ label: finalSave, resolved, provider })} → ~/.jeo/config.json`);
+          continue;
+        }
+        const modelThinking = /^(?:thinking|think)(?:\s+(\S+))?$/i.exec(arg);
+        if (modelThinking) {
+          const level = (modelThinking[1] ?? "").toLowerCase();
+          if (!isThinkingLevel(level)) {
+            console.log("Usage: /model thinking <minimal|low|medium|high|xhigh>");
+            continue;
+          }
+          sessionThinking = level;
+          await saveConfigPatch(() => ({ thinkingLevel: level }));
+          console.log(`Default thinking set to ${level} (~${thinkingMaxTokens(level)} max tokens/step) → ~/.jeo/config.json`);
           continue;
         }
         const statuses = await describeAllProviders();
         const disabledModelProviders = statuses.filter(s => !s.ready && !selectableThoughNotReady(s)).map(s => s.name);
         const roleMatch = /^(subagent|role)\s+(\S+)(?:\s+(.+))?$/i.exec(arg);
         if (roleMatch) {
-          const role = getSubagentRole(roleMatch[2] ?? "");
+          const role = getSubagentRole(roleMatch[2] ?? "", await readGlobalConfig());
           if (!role) {
             console.log("Usage: /model subagent <executor|planner|architect|critic> [model|#N]");
             continue;
           }
           let roleModelArg = (roleMatch[3] ?? "").trim();
+          const roleThinking = /^(?:thinking|think)(?:\s+(\S+))?$/i.exec(roleModelArg);
+          if (roleThinking) {
+            await setRoleThinking(role.id, roleThinking[1]);
+            continue;
+          }
+          let roleModelPickedFromSelector = false;
           if (!roleModelArg && process.stdin.isTTY && process.stdout.isTTY) {
             const live = await getLiveModels();
             lastPickIndex = flattenModels(live);
@@ -3437,6 +3701,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
                 continue;
               }
               roleModelArg = qualifyModelId(picked.model, picked.provider);
+              roleModelPickedFromSelector = true;
             }
           }
           if (roleModelArg && lastPickIndex.length) {
@@ -3448,6 +3713,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
                 continue;
               }
               roleModelArg = qualifyModelId(sel.entry.model, sel.entry.provider);
+              roleModelPickedFromSelector = true;
             } else if (sel.kind === "ambiguous") {
               console.log(`'${roleModelArg}' matches ${sel.matches.length} models — be more specific:`);
               for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
@@ -3461,9 +3727,20 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             continue;
           }
           if (roleModelArg) {
-            await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: roleModelArg }) }));
+            let thinkPatch: { thinking?: ThinkLevel } = {};
+            if (roleModelPickedFromSelector && process.stdin.isTTY && process.stdout.isTTY) {
+              const cfgForRole = await readGlobalConfig();
+              const lvl = await pickThinkingLevel(
+                `Reasoning for ${role.title}: ${roleModelArg}`,
+                cfgForRole.subagents?.[role.id]?.thinking,
+                `inherit — follow default (${cfgForRole.thinkingLevel ?? "medium"})`,
+              );
+              thinkPatch = lvl === "inherit" ? { thinking: undefined } : lvl ? { thinking: lvl } : {};
+            }
+            await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: roleModelArg, ...thinkPatch }) }));
             const { provider } = await describeModel(roleModelArg);
-            console.log(`${role.title} model set to ${roleModelArg} (${provider}) — saved to ~/.joc/config.json`);
+            const thinkNote = thinkPatch.thinking ? ` · thinking ${thinkPatch.thinking}` : "";
+            console.log(`${role.title} model set to ${roleModelArg} (${provider})${thinkNote} — saved to ~/.jeo/config.json`);
           } else {
             const current = resolveSubagentModel(role.id, await readGlobalConfig());
             const { resolved, provider } = await describeModel(current);
@@ -3477,6 +3754,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           }
           continue;
         }
+        let modelPickedFromSelector = false;
         if (!arg && process.stdin.isTTY && process.stdout.isTTY) {
           const live = await getLiveModels();
           lastPickIndex = flattenModels(live);
@@ -3488,6 +3766,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               continue;
             }
             arg = qualifyModelId(picked.model, picked.provider);
+            modelPickedFromSelector = true;
           }
         }
         // Selection from the last numbered pick list (`#N`) or a fuzzy substring.
@@ -3500,6 +3779,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               continue;
             }
             arg = qualifyModelId(sel.entry.model, sel.entry.provider);
+            modelPickedFromSelector = true;
           } else if (sel.kind === "ambiguous") {
             console.log(`'${arg}' matches ${sel.matches.length} models — be more specific:`);
             for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
@@ -3514,6 +3794,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           continue;
         }
         const label = arg || (sessionModel || defaultModel);
+        if (arg && modelPickedFromSelector && await applyPickedModelWithTarget(arg)) {
+          continue;
+        }
         if (arg) {
           sessionModel = arg;
           // MRU persistence: picking a model IS saving it — the newest pick wins
@@ -3708,6 +3991,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
     }
   disarmPreview(); // clear footer + restore full-screen scrolling before leaving the REPL
+  if (hardExitOnLoopEnd) {
+    try {
+      disarmPreview();
+      out.write("\x1b[?25h\n");
+    } catch { /* best effort */ }
+    process.removeListener("SIGINT", forceExitFromCtrlC);
+    process.stdin.off("data", forceExitOnCtrlCByte);
+    restorePromptRawMode();
+    process.exit(130);
+  }
   // hermes-style experience distill (plan/gjc-inheritance.md B6) — now handed to a
   // DETACHED child (round-16): /exit and ^C^C return the shell IMMEDIATELY instead
   // of blocking up to 20s on a final LLM call. The child writes MEMORY.md atomically.
@@ -3718,5 +4011,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // gjc-parity resume pointer (logs/gjc-tui-study analysis Gap C): leave the exact
   // resume command in scrollback on exit, mirroring the --list handler's convention.
   if (sessionId && !flags.noSession) console.log(formatResumeHint(sessionId));
+  process.removeListener("SIGINT", forceExitFromCtrlC);
+  process.stdin.off("data", forceExitOnCtrlCByte);
+  restorePromptRawMode();
+  gracefulReadlineClose = true;
   rl.close();
 }

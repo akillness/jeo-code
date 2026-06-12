@@ -34,9 +34,9 @@
 - **编辑完整性** — read 输出携带内容锚点(`42ab|`)；带锚点的编辑会与当前文件校验、行移动时自动重映射、不匹配时连同最新内容一起拒绝 — 绝不污染文件。
 - **自我修正的验证循环** — 配置 post-edit 钩子(tsc / eslint / 测试)，代理会*亲自读取*诊断并在循环内修复；钩子未通过时 `done` 会被阻断。
 - **没有表演的真实门禁** — `ralplan` 共识由真正读取仓库的 critic 子代理执行，`[OKAY]` 裁决被持久化且 `jeo approve` *强制要求*它；`ultragoal` 诚实报告(套件运行只是全局信号，绝不伪造逐条通过)。
-- **崩溃耐久、本地优先** — 全部状态位于 `.joc/`，原子写入、跨进程运行锁、失败任务标记 + 恢复时的部分编辑警告。
+- **崩溃耐久、本地优先** — 全部状态位于 `.jeo/`，原子写入、跨进程运行锁、失败任务标记 + 恢复时的部分编辑警告。
 - **动态步数预算** — 只要近期工具调用展现新的进展就持续延长，停滞时优雅收敛为总结；子代理保持精确的步数契约。
-- **内联 TUI** — 已完成的工作流入真实滚动缓冲区(回合中也可用 tmux 滚轮)，状态行显示真实的处理对象。主题、剪贴板图片粘贴(Ctrl+V)、CJK/表情安全的宽度计算。
+- **内联 TUI** — 已完成的工作流入真实滚动缓冲区(回合中也可用 tmux 滚轮)，代理运行时普通查询输入框仍保持可见并可编辑。Ctrl+O 详细信息切换、主题、剪贴板图片粘贴(Ctrl+V)、CJK/表情安全的宽度计算。
 
 ## 安装
 
@@ -63,10 +63,10 @@ jeo --tmux               # 在独立 tmux 会话中运行
 
 | 命令 | 说明 |
 | --- | --- |
-| `/model` · `/models` · `/provider` | 选择模型/提供商(三步: 模型 → 应用目标 → 推理级别)，选择即持久化 |
+| `/model` · `/models` · `/provider` | 选择模型/提供商；`/model` 在一个流程内显示默认/角色徽章、角色设置动作、thinking 级别与 OpenAI Codex 角色预设 |
 | `/provider login <name>` · `/logout` | 在输入框内 OAuth 登录/登出 |
 | `/agents [role]` · `/subagent` | 按角色(executor/planner/architect/critic)配置模型·thinking·步数 |
-| `/thinking [level]` | 推理预算(minimal…xhigh) |
+| `/thinking [level]` | 查看/设置默认推理预算(minimal…xhigh) |
 | `/skill` · `$<skill> [intent]` | 列出/运行工作流技能(`$team "任务"` 风格) |
 | `/view` · `/diff` · `/find` · `/search` | 代码查看、git diff、文件/模式搜索 |
 | `/new` · `/resume` · `/sessions` · `/export` | 会话管理与记录导出 |
@@ -76,7 +76,7 @@ jeo --tmux               # 在独立 tmux 会话中运行
 
 ## Spec-first 工作流
 
-需求 → 计划 → 批准 → 执行 → 验证，经由 `.joc/state/` 串联，每次交接都有**可阻断的真实门禁**:
+需求 → 计划 → 批准 → 执行 → 验证，经由 `.jeo/state/` 串联，每次交接都有**可阻断的真实门禁**:
 
 ```bash
 jeo deep-interview "描述你想构建的东西"
@@ -94,10 +94,10 @@ jeo ultragoal
 
 ## 验证钩子(自我修正)
 
-先全局启用一次(在 `~/.joc/config.json` 中设置 `"hooks": { "enabled": true }`)，再为项目添加 post-edit 检查，代理会读取失败并在 `done` 之前修复:
+先全局启用一次(在 `~/.jeo/config.json` 中设置 `"hooks": { "enabled": true }`)，再为项目添加 post-edit 检查，代理会读取失败并在 `done` 之前修复:
 
 ```jsonc
-// .joc/hooks.json
+// .jeo/hooks.json
 {
   "enabled": true,
   "hooks": [
@@ -118,8 +118,8 @@ jeo doctor && jeo
 
 ## 配置
 
-- 全局配置: `~/.joc/config.json`(模型选择 MRU 持久化)
-- 项目状态/会话: `<project>/.joc/`
+- 全局配置: `~/.jeo/config.json`(模型选择 MRU 持久化)
+- 项目状态/会话: `<project>/.jeo/`
 
 ```bash
 ANTHROPIC_API_KEY=... OPENAI_API_KEY=... GEMINI_API_KEY=...
@@ -133,7 +133,7 @@ JEO_STREAM_MAX_MS=300000        # 可选的整体流截止(默认关闭; 约束�
 JEO_TOOL_OUTPUT_MAX=4000        # 模型可见的工具输出上限(全文溢出到 artifacts)
 ```
 
-重试行为通过 `~/.joc/config.json` 的 `retry` 调整(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` 等)。步数预算默认动态 — 只要看到新的进展就延长，停滞时收敛为总结；`--max-steps N` 恢复有界流程。旧的 `JOC_*` 环境变量仍然受支持。
+重试行为通过 `~/.jeo/config.json` 的 `retry` 调整(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` 等)。步数预算默认动态 — 只要看到新的进展就延长，停滞时收敛为总结；`--max-steps N` 恢复有界流程。
 
 ## 发布 (Publishing)
 
@@ -143,3 +143,15 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 
 - 对 `jeo-code` 包具有 Read/Write 权限的 **Granular Access Token**，或经典 **Automation** 令牌
 - 必须允许"发布时 **bypass 2FA**" — Automation 令牌始终绕过，granular 令牌需启用该选项
+
+## 更新日志 (Changelog)
+
+<!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[Unreleased]** — Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input box, role-targeted model/thinking picker, hardened Ctrl-C / Ctrl+O.
+- **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
+- **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
+- **[0.3.0]** (2026-06-02) — OAuth credentials + local Ollama provider.
+- **[0.2.1]** (2026-06-02) — Setup and model configuration.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
+<!-- CHANGELOG:END -->

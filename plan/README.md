@@ -1,4 +1,4 @@
-# jeo-code (`joc`) — Work Plans
+# jeo-code (`jeo`) — Work Plans
 
 Long-horizon planning for `@jeo-code`, the pure-TypeScript/Bun coding agent that
 re-implements the gajae-code (`gjc`) workflow contract and adopts pi-mono
@@ -18,7 +18,7 @@ so the structure, workflow, and configuration stay reusable across future work.
 | 01 | [TUI](./01-tui.md) | gjc/pi-tui-style terminal UI (differential render, streaming, footer, slash palette) | planned |
 | 02 | [Features](./02-features.md) | agent loop, spec-first pipeline, sessions, MCP — roadmap | living |
 | 03 | [Install](./03-install.md) | bun-native install (`bun link`), prebuilt binary, npm/Homebrew | partially shipped |
-| 04 | [Model config](./04-model-config.md) | routing, `joc setup`, thinking level, registry/aliases | partially shipped |
+| 04 | [Model config](./04-model-config.md) | routing, `jeo setup`, thinking level, registry/aliases | partially shipped |
 | 05 | [Provider](./05-provider.md) | adapter interface, OAuth flows, local providers, transforms | partially shipped |
 
 ## Long-term roadmap (milestones)
@@ -28,7 +28,7 @@ Phases are ordered by dependency, not calendar. Each milestone ends at a green g
 ```
 M0  Foundations (SHIPPED, passes 9–16)
     OAuth(PKCE)+refresh · providers+local · model routing · spec-first pipeline ·
-    interactive `joc launch` · shared engine · sessions · compaction · project context ·
+    interactive `jeo launch` · shared engine · sessions · compaction · project context ·
     bun-link install · no-progress guard
         │
 M1  TUI core            → plan 01 §M1   (pure-TS differential renderer, TTY/no-TTY split)
@@ -58,10 +58,10 @@ M7  Model registry      → plan 04       (discovery, aliases, cost/usage tracki
 5. **Review gate** — `architect` review on auth/agent-core changes; resolve BLOCK findings before landing.
 
 ## Configuration conventions (stable contracts future work must honor)
-- **Global config**: `~/.joc/config.json` (override dir via `JOC_CONFIG_DIR`); dir `0700`, file `0600`.
+- **Global config**: `~/.jeo/config.json` (override dir via `JEO_CONFIG_DIR`); dir `0700`, file `0600`.
   Shape in `src/agent/state.ts:Config` (`providers`, `oauth`, `defaultModel`,
   `ollamaBaseUrl`, `openaiBaseUrl`, `thinkingLevel`).
-- **Per-project runtime**: `<cwd>/.joc/` — `seeds/`, `plans/`, `state/`, `sessions/` (see plan 02).
+- **Per-project runtime**: `<cwd>/.jeo/` — `seeds/`, `plans/`, `state/`, `sessions/` (see plan 02).
 - **Bun-native**: deps + bin via `bun install` + `bun link`; entry `src/cli.ts`
-  (bin `joc`), lazy command registry `src/cli/runner.ts:COMMANDS`.
+  (bin `jeo`), lazy command registry `src/cli/runner.ts:COMMANDS`.
 - **Env overlay** never overrides on-disk config (`state.ts:withEnvOverlay`).

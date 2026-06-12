@@ -19,7 +19,7 @@ Example: `src/agent/engine.ts:runAgentLoop()` drives the tool loop and emits `Ag
 What "done" looks like, anchored to the reference implementations:
 - **gjc** (`Yeachan-Heo/gajae-code`, `packages/<pkg>`): …
 - **pi-mono** (`badlogic/pi-mono`, `packages/<pkg>`): …
-- **joc** decision: which advantage we adopt, what we deliberately skip, and why.
+- **jeo** decision: which advantage we adopt, what we deliberately skip, and why.
 
 ## 4. Design & Architecture
 Module layout (new files + edited files), data shapes/interfaces, control flow.
@@ -31,7 +31,7 @@ Ordered, **bounded** slices (each ≤ ~3 files, parallelizable where disjoint). 
 
 ## 6. Acceptance Criteria (testable)
 Checklist of **concrete, verifiable** outcomes (90%+ must be objectively checkable).
-Example: `joc launch` renders a footer line showing `model · tokens · elapsed`, redrawn in place (no scroll spam).
+Example: `jeo launch` renders a footer line showing `model · tokens · elapsed`, redrawn in place (no scroll spam).
 
 ## 7. Risks & Mitigations
 Table: Risk → Severity → Mitigation. Every risk has a mitigation.

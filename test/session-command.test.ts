@@ -15,7 +15,7 @@ test("list filters non-jeo sessions and formats output", async () => {
       expect(argv).toEqual(["list-sessions", "-F", "#{session_name}\t#{session_created}\t#{session_attached}\t#{@jeo-profile}\t#{@jeo-branch}\t#{@jeo-project}"]);
       return {
         exitCode: 0,
-        stdout: "jeo-session-1\t1686259200\t1\nnon-jeo-session\t1686259200\t0\njoc-session-2\t1686262800\t0\n",
+        stdout: "jeo-session-1\t1686259200\t1\nnon-jeo-session\t1686259200\t0\njeo-session-2\t1686262800\t0\n",
         stderr: "",
       };
     };
@@ -25,7 +25,7 @@ test("list filters non-jeo sessions and formats output", async () => {
     expect(process.exitCode).toBe(0);
     const output = logs.join("\n");
     expect(output).toContain("jeo-session-1");
-    expect(output).toContain("joc-session-2"); // legacy pre-rename sessions stay listed
+    expect(output).toContain("jeo-session-2");
     expect(output).not.toContain("non-jeo-session");
     expect(output).toContain(new Date(1686259200 * 1000).toISOString());
     expect(output).toContain("yes");

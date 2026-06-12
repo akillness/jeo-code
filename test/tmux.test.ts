@@ -60,7 +60,7 @@ test("tmux session launch behavior", async () => {
 
     // Make sure we are not treated as already inside tmux
     delete process.env.TMUX;
-    delete process.env.JOC_TMUX_LAUNCHED;
+    delete process.env.JEO_TMUX_LAUNCHED;
 
     // Run launch command with --tmux
     await runLaunchCommand(["--tmux", "--no-session", "--no-tui", "hello"]);
@@ -116,7 +116,7 @@ test("tmux runtime model flags get a distinct session and propagate to inner lau
     Bun.spawn = (() => ({ exited: Promise.resolve(0) })) as any;
 
     delete process.env.TMUX;
-    delete process.env.JOC_TMUX_LAUNCHED;
+    delete process.env.JEO_TMUX_LAUNCHED;
 
     await runLaunchCommand(["--tmux", "--no-session", "--model", "gemini-2.5-flash", "--thinking", "high", "--max-steps=7", "it's ok"]);
 
@@ -161,7 +161,7 @@ test("tmux long runtime model ids get hash-distinct session names", async () => 
     Bun.spawn = (() => ({ exited: Promise.resolve(0) })) as any;
 
     delete process.env.TMUX;
-    delete process.env.JOC_TMUX_LAUNCHED;
+    delete process.env.JEO_TMUX_LAUNCHED;
 
     const prefix = "provider/same-very-long-model-name-that-shares-the-prefix-";
     await runLaunchCommand(["--tmux", "--no-session", "--model", `${prefix}alpha`]);
@@ -205,7 +205,7 @@ test("tmux validates provider/model mismatch before attaching to existing sessio
     }) as any;
 
     delete process.env.TMUX;
-    delete process.env.JOC_TMUX_LAUNCHED;
+    delete process.env.JEO_TMUX_LAUNCHED;
 
     await runLaunchCommand(["--tmux", "--provider", "openai", "--model", "sonnet", "hello"]);
 
@@ -266,7 +266,7 @@ test("tmux creates an INDEPENDENT session (base-2) when the base name is already
     };
 
     delete process.env.TMUX;
-    delete process.env.JOC_TMUX_LAUNCHED;
+    delete process.env.JEO_TMUX_LAUNCHED;
 
     await runLaunchCommand(["--tmux", "--no-session", "--no-tui", "hello"]);
 
@@ -320,9 +320,9 @@ test("shouldEnableCurrentTmuxMouse: only inside a foreign tmux session, opt-out 
   // Outside tmux there is nothing to configure.
   expect(shouldEnableCurrentTmuxMouse({})).toBe(false);
   // jeo-spawned sessions already had mouse mode set by the creator.
-  expect(shouldEnableCurrentTmuxMouse({ TMUX: "/tmp/tmux-1/default,123,0", JOC_TMUX_LAUNCHED: "1" })).toBe(false);
+  expect(shouldEnableCurrentTmuxMouse({ TMUX: "/tmp/tmux-1/default,123,0", JEO_TMUX_LAUNCHED: "1" })).toBe(false);
   // Explicit opt-out wins.
-  expect(shouldEnableCurrentTmuxMouse({ TMUX: "/tmp/tmux-1/default,123,0", JOC_TMUX_MOUSE: "0" })).toBe(false);
+  expect(shouldEnableCurrentTmuxMouse({ TMUX: "/tmp/tmux-1/default,123,0", JEO_TMUX_MOUSE: "0" })).toBe(false);
 });
 
 test("tmuxProfileCommands: gjc-parity profile — mouse, markers, clipboard, copy-mode style", () => {
@@ -354,8 +354,8 @@ test("tmuxProfileCommands: gjc-parity profile — mouse, markers, clipboard, cop
   expect(bare.some(c => c.args.includes("@jeo-project"))).toBe(false);
   expect(bare.some(c => c.args.includes("@jeo-profile"))).toBe(true);
 
-  // JEO_TMUX_MOUSE=0 drops only the mouse switch (legacy JOC_ name honored too).
-  for (const env of [{ JEO_TMUX_MOUSE: "0" }, { JOC_TMUX_MOUSE: "0" }]) {
+  // JEO_TMUX_MOUSE=0 drops only the mouse switch (legacy JEO_ name honored too).
+  for (const env of [{ JEO_TMUX_MOUSE: "0" }, { JEO_TMUX_MOUSE: "0" }]) {
     const noMouse = tmuxProfileCommands("s", env);
     expect(noMouse.some(c => c.args.includes("mouse"))).toBe(false);
     expect(noMouse.some(c => c.args.includes("set-clipboard"))).toBe(true);
@@ -393,11 +393,11 @@ test("tmux launch applies the gjc-parity profile to the CREATED session before a
     }) as any;
 
     delete process.env.TMUX;
-    delete process.env.JOC_TMUX_LAUNCHED;
     delete process.env.JEO_TMUX_LAUNCHED;
-    delete process.env.JOC_TMUX_MOUSE;
+    delete process.env.JEO_TMUX_LAUNCHED;
     delete process.env.JEO_TMUX_MOUSE;
-    delete process.env.JOC_TMUX_PROFILE;
+    delete process.env.JEO_TMUX_MOUSE;
+    delete process.env.JEO_TMUX_PROFILE;
     delete process.env.JEO_TMUX_PROFILE;
 
     await runLaunchCommand(["--tmux", "--no-session", "--no-tui", "hello"]);

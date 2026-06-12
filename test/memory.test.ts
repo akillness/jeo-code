@@ -4,9 +4,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 // hermes-style local experience memory (plan/gjc-inheritance.md B6):
-// session end distills durable learnings into .joc/memory/MEMORY.md (one model
+// session end distills durable learnings into .jeo/memory/MEMORY.md (one model
 // call, merge-with-existing, atomic write, best-effort); the next session
-// injects the doc back under a hard char cap. JOC_NO_MEMORY=1 disables both.
+// injects the doc back under a hard char cap. JEO_NO_MEMORY=1 disables both.
 
 async function tmp(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "jeo-memory-"));
@@ -70,11 +70,11 @@ test("memoryPromptSection injects capped doc; empty/disabled yields nothing", as
   expect(block).toContain("…(memory truncated");
   expect(block.length).toBeLessThan(MEMORY_INJECT_MAX_CHARS + 400); // hard cap holds
 
-  process.env.JOC_NO_MEMORY = "1";
+  process.env.JEO_NO_MEMORY = "1";
   try {
     expect(await memoryPromptSection(dir)).toBe("");
   } finally {
-    delete process.env.JOC_NO_MEMORY;
+    delete process.env.JEO_NO_MEMORY;
   }
   await fs.rm(dir, { recursive: true, force: true });
 });
@@ -101,8 +101,8 @@ test("memory injection neutralizes fence-breakout tags and frames content as DAT
 test("distillInvocation: compiled/source/shim runtime shapes", async () => {
   const { distillInvocation } = await import("../src/agent/memory");
   // compiled standalone binary: argv[1] is a Bun virtual path → run the binary itself
-  expect(distillInvocation("/$bunfs/root/cli", "/usr/local/bin/jeo", "/p", "/p/.joc/memory/x.json"))
-    .toEqual(["/usr/local/bin/jeo", "memory-distill", "/p/.joc/memory/x.json"]);
+  expect(distillInvocation("/$bunfs/root/cli", "/usr/local/bin/jeo", "/p", "/p/.jeo/memory/x.json"))
+    .toEqual(["/usr/local/bin/jeo", "memory-distill", "/p/.jeo/memory/x.json"]);
   // source run: re-run the script through the runtime
   expect(distillInvocation("/repo/src/cli.ts", "/usr/bin/bun", "/p", "/f.json"))
     .toEqual(["/usr/bin/bun", "/repo/src/cli.ts", "memory-distill", "/f.json"]);
@@ -135,11 +135,11 @@ test("spawnDetachedDistill: gates on disabled / too-short sessions without spawn
   const { spawnDetachedDistill } = await import("../src/agent/memory");
   let spawned = 0;
   const spy = () => { spawned++; return { unref: () => {} }; };
-  process.env.JOC_NO_MEMORY = "1";
+  process.env.JEO_NO_MEMORY = "1";
   try {
     expect(await spawnDetachedDistill(HISTORY, dir, undefined, spy)).toBe(false);
   } finally {
-    delete process.env.JOC_NO_MEMORY;
+    delete process.env.JEO_NO_MEMORY;
   }
   expect(await spawnDetachedDistill(HISTORY.slice(0, 2), dir, undefined, spy)).toBe(false); // too short
   expect(spawned).toBe(0);

@@ -131,7 +131,7 @@ test("ultragoal: suite runs ONCE; criteria are UNVERIFIED, never fabricated PASS
 
   expect(res.ok).toBe(true);
   expect(bashCalls).toEqual(["bun test"]); // ONE suite run; no --help loophole
-  const report = await fs.readFile(path.join(dir, ".joc", "state", "ultragoal-report.md"), "utf-8");
+  const report = await fs.readFile(path.join(dir, ".jeo", "state", "ultragoal-report.md"), "utf-8");
   expect(report).toContain("UNVERIFIED");
   expect(report).not.toContain("✅ PASSED"); // no fabricated per-criterion pass
   const state = await readWorkflowState("ultragoal", dir);
@@ -151,7 +151,7 @@ test("ultragoal: a red suite fails the run and the criteria record says FAILED",
   const res = await runUltragoalEngine({ cwd: dir, io: { output: () => {} } });
 
   expect(res.ok).toBe(false);
-  const report = await fs.readFile(path.join(dir, ".joc", "state", "ultragoal-report.md"), "utf-8");
+  const report = await fs.readFile(path.join(dir, ".jeo", "state", "ultragoal-report.md"), "utf-8");
   expect(report).toContain("❌ FAILED");
   const state = await readWorkflowState("ultragoal", dir);
   expect(state?.status).toBe("FAILED");
@@ -176,7 +176,7 @@ test("acquireWorkflowRunLock: live holder refuses, release reopens, dead-pid loc
   await release2();
 
   // Stale lock from a DEAD pid → taken over instead of wedging forever.
-  const lockPath = path.join(dir, ".joc", "state", "team.lock");
+  const lockPath = path.join(dir, ".jeo", "state", "team.lock");
   await fs.writeFile(lockPath, JSON.stringify({ pid: 999_999_999, at: 0 }));
   const release3 = await acquireWorkflowRunLock("team", dir);
   await release3();

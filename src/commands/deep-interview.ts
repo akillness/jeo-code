@@ -11,9 +11,33 @@ import {
   type WorkflowState,
   type WorkflowTopologyComponent,
   type WorkflowTopologyState,
-  getLocalJocDir,
+  getLocalJeoDir,
 } from "../agent/state";
 import { yamlList, parseSeedAcceptanceCriteria } from "../agent/seed";
+import { jeoEnv } from "../util/env";
+
+/** Non-interactive automation detection beyond `!isTTY`: an orchestrator (ralph /
+ *  ooo / CI) often runs jeo inside a PTY, so `process.stdin.isTTY` is TRUE yet no
+ *  human is there to answer prompts. `CI`/`JEO_NONINTERACTIVE` make that explicit so
+ *  interactive `rl.question` calls never block forever waiting for input that never
+ *  comes (the "workflow hangs mid-run" bug). */
+export function nonInteractiveEnv(env: Record<string, string | undefined> = process.env): boolean {
+  const truthy = (v: string | undefined) => {
+    const s = (v ?? "").trim().toLowerCase();
+    return s !== "" && s !== "0" && s !== "false" && s !== "no";
+  };
+  return truthy(jeoEnv("NONINTERACTIVE", env)) || truthy(env.CI);
+}
+
+/** Idle bound (ms) for an interactive prompt so a PTY automation that never answers
+ *  cannot hang the workflow forever. `JEO_INPUT_TIMEOUT_MS` overrides; default 5 min
+ *  (generous for a human, finite for automation); `0` disables (legacy block-forever). */
+export function inputTimeoutMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = jeoEnv("INPUT_TIMEOUT_MS", env);
+  if (raw === undefined) return 300_000;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : 300_000;
+}
 
 interface SocraticResponse {
   ambiguityScore: number;
@@ -288,7 +312,7 @@ export interface DeepInterviewEngineOptions {
 export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = {}): Promise<{ ok: boolean; reason?: string }> {
   const cwd = opts.cwd ?? process.cwd();
   const args = opts.args ?? [];
-  const auto = args.includes("--auto") || (opts.io?.input ? false : !process.stdin.isTTY);
+  const auto = args.includes("--auto") || (!opts.io?.input && nonInteractiveEnv()) || (opts.io?.input ? false : !process.stdin.isTTY);
   const filteredArgs = args.filter(arg => arg !== "--auto");
 
   const log = (msg?: any) => {
@@ -315,8 +339,24 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
     if (opts.io?.input) {
       log(query);
       return await opts.io.input();
-    } else {
-      return await rl.question(query);
+    }
+    // Idle-bounded interactive prompt: a PTY automation (isTTY true, no human) must
+    // not block the workflow forever. On timeout, cancel the pending question and
+    // return "" (the safe default) so the run proceeds non-interactively.
+    const timeoutMs = inputTimeoutMs();
+    if (timeoutMs <= 0) return await rl.question(query);
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    try {
+      return await rl.question(query, { signal: ac.signal });
+    } catch (err) {
+      if (ac.signal.aborted) {
+        log(`\n[non-interactive] no input within ${Math.round(timeoutMs / 1000)}s — proceeding with defaults. Pass --auto (or set JEO_NONINTERACTIVE=1) for automation; JEO_INPUT_TIMEOUT_MS adjusts this bound.`);
+        return "";
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
   };
 
@@ -531,7 +571,7 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
       const readiness = freezeReadiness(parsed);
       if (!readiness.ok) throw new Error(`Refusing to freeze seed: ${readiness.reason}.`);
 
-      const seedDir = path.join(getLocalJocDir(cwd), "seeds");
+      const seedDir = path.join(getLocalJeoDir(cwd), "seeds");
       await fs.mkdir(seedDir, { recursive: true });
       const seedPath = path.join(seedDir, `seed-${slug}.yaml`);
       const constraints = normalizeList(parsed.constraints);

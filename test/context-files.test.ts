@@ -67,19 +67,19 @@ test("loadProjectContext loads AGENTS.md with correct relative path and content"
 test("loadProjectContext returns multiple files in priority order", async () => {
   const tmpDir = await createTempDir();
   try {
-    const jeoContent = "JEO instructions";
+    const jeoInstructions = "JEO instructions";
     const agentsContent = "Agents instructions";
     const claudeContent = "Claude instructions";
 
     await fs.writeFile(path.join(tmpDir, "AGENTS.md"), agentsContent, "utf-8");
-    await fs.writeFile(path.join(tmpDir, "JEO.md"), jeoContent, "utf-8");
+    await fs.writeFile(path.join(tmpDir, "JEO.md"), jeoInstructions, "utf-8");
     await fs.writeFile(path.join(tmpDir, "CLAUDE.md"), claudeContent, "utf-8");
 
     const context = await loadProjectContext(tmpDir);
     expect(context).toHaveLength(3);
     // Order should match CONTEXT_CANDIDATES priority: "JEO.md", "AGENTS.md", "CLAUDE.md"
     expect(context[0].path).toBe("JEO.md");
-    expect(context[0].content).toBe(jeoContent);
+    expect(context[0].content).toBe(jeoInstructions);
     expect(context[1].path).toBe("AGENTS.md");
     expect(context[1].content).toBe(agentsContent);
     expect(context[2].path).toBe("CLAUDE.md");

@@ -106,7 +106,7 @@ export function renderStatusBar(d: StatusBarData): string {
   return `${paintedLeft}${" ".repeat(gap)}${right}`;
 }
 
-export interface JocStatusData {
+export interface JeoStatusData {
   colorLevel?: number;
   phase?: number;
   palette?: readonly string[];
@@ -147,7 +147,7 @@ function seconds(ms: number | undefined): number {
   return Number.isFinite(ms) && (ms ?? 0) > 0 ? Math.round((ms ?? 0) / 1000) : 0;
 }
 
-export function renderJocStatus(data: JocStatusData): string[] {
+export function renderJeoStatus(data: JeoStatusData): string[] {
   const step = Number.isFinite(data.step) ? Math.max(0, Math.trunc(data.step ?? 0)) : 0;
   const max = Number.isFinite(data.maxSteps) && (data.maxSteps ?? 0) > 0 ? Math.trunc(data.maxSteps ?? 0) : 0;
   const useColor = data.color !== false;
@@ -211,7 +211,7 @@ export function renderJocStatus(data: JocStatusData): string[] {
 
 }
 
-export interface StatusBoxData extends JocStatusData {
+export interface StatusBoxData extends JeoStatusData {
   /** Inner frame width the box should fill. */
   cols: number;
   /** Phase label embedded in the title border (thinking/planning/executing/reporting). */

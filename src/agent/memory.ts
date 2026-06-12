@@ -3,10 +3,10 @@
  * (plan/gjc-inheritance.md B6; gjc memories/ 2-phase consolidation 참조).
  *
  * Session end distills durable learnings (repo facts, commands that work,
- * gotchas, user preferences) into `.joc/memory/MEMORY.md` with ONE model call,
+ * gotchas, user preferences) into `.jeo/memory/MEMORY.md` with ONE model call,
  * merging into the existing doc. The next session injects the doc back into
  * the system prompt under a hard char cap — local-first (nullclaw/zeroclaw),
- * no remote backend, disable with JOC_NO_MEMORY=1.
+ * no remote backend, disable with JEO_NO_MEMORY=1.
  */
 import * as fs from "node:fs/promises";
 import { spawn as nodeSpawn } from "node:child_process";
@@ -24,7 +24,7 @@ const TRANSCRIPT_MAX_CHARS = 12_000;
 const MIN_HISTORY_MESSAGES = 4;
 
 export function memoryFilePath(cwd: string): string {
-  return path.join(cwd, ".joc", "memory", "MEMORY.md");
+  return path.join(cwd, ".jeo", "memory", "MEMORY.md");
 }
 
 export async function loadMemory(cwd: string): Promise<string> {
@@ -44,7 +44,7 @@ export async function memoryPromptSection(cwd: string): Promise<string> {
   let memory = await loadMemory(cwd);
   if (!memory) return "";
   if (memory.length > MEMORY_INJECT_MAX_CHARS) {
-    memory = memory.slice(0, MEMORY_INJECT_MAX_CHARS) + "\n…(memory truncated — full doc in .joc/memory/MEMORY.md)";
+    memory = memory.slice(0, MEMORY_INJECT_MAX_CHARS) + "\n…(memory truncated — full doc in .jeo/memory/MEMORY.md)";
   }
   // Neutralize the fence tags so distilled content can never close the block and
   // smuggle instruction-shaped text into the bare system prompt.
@@ -88,7 +88,7 @@ export async function distillSessionMemory(
   cwd: string,
   opts: { model?: string; timeoutMs?: number } = {},
 ): Promise<DistillResult> {
-  if (jeoEnv("NO_MEMORY") === "1") return { updated: false, skipped: "disabled (JOC_NO_MEMORY=1)" };
+  if (jeoEnv("NO_MEMORY") === "1") return { updated: false, skipped: "disabled (JEO_NO_MEMORY=1)" };
   const body = history.filter(m => m.role !== "system");
   if (body.length < MIN_HISTORY_MESSAGES) return { updated: false, skipped: "session too short" };
   try {
@@ -165,7 +165,7 @@ export async function spawnDetachedDistill(
   if (jeoEnv("NO_MEMORY") === "1") return false;
   if (history.filter(m => m.role !== "system").length < MIN_HISTORY_MESSAGES) return false;
   try {
-    const dir = path.join(cwd, ".joc", "memory");
+    const dir = path.join(cwd, ".jeo", "memory");
     await fs.mkdir(dir, { recursive: true });
     const payloadPath = path.join(dir, `pending-distill-${process.pid}-${Date.now()}.json`);
     await fs.writeFile(payloadPath, JSON.stringify({ model, messages: history }), "utf-8");

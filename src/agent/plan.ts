@@ -4,11 +4,25 @@
  */
 import { z } from "zod";
 
+/** Dependency-shaped keys the SERIAL executor cannot honor: `jeo team` runs steps
+ *  in array order, so a plan that EXPRESSES ordering constraints must fail loudly
+ *  instead of silently creating the illusion they are enforced (round-10 LOW). */
+const UNSUPPORTED_DEP_KEYS = ["depends_on", "dependsOn", "after", "needs", "requires", "dependencies"] as const;
+
 export const StepSchema = z.object({
   name: z.string(),
   /** Optional subagent role for this step (executor/planner/architect/critic). */
   role: z.string().optional(),
-}).passthrough();
+}).passthrough().superRefine((step, ctx) => {
+  for (const key of UNSUPPORTED_DEP_KEYS) {
+    if (key in step) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `step "${String((step as Record<string, unknown>).name ?? "?")}" declares "${key}", but jeo team executes steps strictly in array order and does NOT honor dependency metadata — reorder the steps array instead and remove "${key}".`,
+      });
+    }
+  }
+});
 
 export const PlanSchema = z.object({
   name: z.string().optional(),

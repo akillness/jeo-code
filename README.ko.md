@@ -9,6 +9,8 @@ p align="center">
   Bun 기반 AI 코딩 에이전트 CLI — 인터뷰, 검토된 계획, tmux 네이티브 실행, 영구적 검증.
 </p>
 
+
+**대화형 모델 설정(gjc 패리티 3단계 픽)**: `/provider <name>` 픽이 모델 → 적용 대상(기본값 또는 subagent 역할 — executor/planner/architect/critic, 힌트에 현재 모델+thinking 표시) → Reasoning 레벨(minimal…xhigh, 역할은 `inherit` 추가)로 이어집니다. 역할 thinking은 서브에이전트 실제 토큰 예산에 반영됩니다. `/subagent`로 전체 구성 확인, `/`·`$` 팝업은 **Tab** 자동완성, `/btw`는 스트리밍 응답, 입력은 **new-input-first** 계약(턴 중 타이핑은 자동 실행 대신 편집 가능한 프롬프트로 복원)입니다. 테마에 aurora/synthwave/sakura 추가.
 <p align="center">
   <a href="https://github.com/akillness/jeo-code"><img alt="license" src="https://img.shields.io/badge/license-MIT-green?style=flat-square"></a>
   <img alt="runtime" src="https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3.14-f9f1e1?style=flat-square&logo=bun&logoColor=black">

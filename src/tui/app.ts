@@ -36,6 +36,7 @@ import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelin
 import { formatHintBar } from "./components/hints";
 import { formatDuration, formatUsage } from "./components/duration";
 import { renderHud, derivePhase, type JocPhase } from "./components/hud";
+import { jeoEnv } from "../util/env";
 import chalk from "chalk";
 
 export interface LaunchTuiOptions {
@@ -214,7 +215,7 @@ export class LaunchTui {
   constructor(opts: LaunchTuiOptions) {
     this.write = opts.write ?? ((s: string) => process.stdout.write(s));
     this.tty = opts.tty ?? isTTY();
-    this.inline = this.tty && process.env.JOC_TUI_ALT_SCREEN !== "1";
+    this.inline = this.tty && jeoEnv("TUI_ALT_SCREEN") !== "1";
     // Row reservation is only needed (and only safe) for the inline main-buffer frame;
     // the alt screen starts at the top with a full-height frame.
     this.renderer = new Renderer(this.write, undefined, { reserve: this.inline });

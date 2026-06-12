@@ -871,7 +871,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (wt !== cwd) {
       process.chdir(wt);
       cwd = wt;
-      if ((process.env.JEO_TMUX_LAUNCHED ?? process.env.JOC_TMUX_LAUNCHED) !== "1") console.log(`Using worktree: ${wt}`);
+      if (jeoEnv("TMUX_LAUNCHED") !== "1") console.log(`Using worktree: ${wt}`);
     }
   }
   let branch: string | undefined;
@@ -902,7 +902,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   }
 
   if (flags.tmux) {
-    if (!process.env.TMUX && (process.env.JEO_TMUX_LAUNCHED ?? process.env.JOC_TMUX_LAUNCHED) !== "1") {
+    if (!process.env.TMUX && jeoEnv("TMUX_LAUNCHED") !== "1") {
       const tmuxBin = Bun.which("tmux");
       if (tmuxBin) {
         let branch = "";
@@ -1680,7 +1680,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const previewRowsFor = (rows: number): number => Math.max(MIN_PREVIEW_ROWS, Math.min(MAX_PREVIEW_ROWS, rows - 6));
   const previewEnabled =
     process.stdin.isTTY &&
-    (process.env.JEO_NO_SLASH_PREVIEW ?? process.env.JOC_NO_SLASH_PREVIEW) !== "1" &&
+    jeoEnv("NO_SLASH_PREVIEW") !== "1" &&
     (process.stdout.rows ?? 24) >= MIN_PREVIEW_ROWS + 6; // box + ≥6 scrollable content rows
   // Footer height reserved by the CURRENTLY armed region; disarm/draw must use the
   // same value the arm computed, even if the terminal was resized in between.

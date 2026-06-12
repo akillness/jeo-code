@@ -9,6 +9,8 @@
   A Bun-based AI coding-agent CLI — interviews, reviewed plans, tmux-native execution, durable verification.
 </p>
 
+
+**Interactive model setup (gjc-parity 3-step pick)**: an interactive `/provider <name>` pick now chains model → apply-target (default or a subagent role — executor/planner/architect/critic, hints show each target's current model + thinking) → Reasoning level (minimal…xhigh, roles add `inherit`); role thinking feeds the subagent's real token budget. `/subagent` shows the whole composition. The `/`·`$` popup completes with **Tab** (highlighted row or top match), `/btw` streams its answer with a light reasoning cap, and input follows a **new-input-first** contract — lines typed during a turn are restored into the editable prompt instead of auto-running ahead of fresh input. Themes now include aurora / synthwave / sakura.
 <p align="center">
   <a href="https://github.com/akillness/jeo-code"><img alt="license" src="https://img.shields.io/badge/license-MIT-green?style=flat-square"></a>
   <img alt="runtime" src="https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3.14-f9f1e1?style=flat-square&logo=bun&logoColor=black">

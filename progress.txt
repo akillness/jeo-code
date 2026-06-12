@@ -301,3 +301,7 @@
 - 동시 패스 테마 확장(aurora/synthwave/sakura + accentShadow 색조 + diff 팔레트)의 미정렬 테스트 2건 정합.
 - Tests: new-input-first 3케이스(전량 드레인·prefill 결합 순서·공백 제거·no-op·chunk→line→prefill 엔드투엔드).
 - Verified: tsc 0; bun test 1213 pass / 0 fail; dist/jeo 재빌드.
+[2026-06-12] Pass — jeoEnv 이관 마감 + README 최신화 (이어서 진행)
+- jeoEnv 마이그레이션 완료: 보류했던 핫사이트 잔여분 이관 — launch.ts 3곳(TMUX_LAUNCHED ×2, NO_SLASH_PREVIEW) + app.ts TUI_ALT_SCREEN(레거시 단일 JOC_ 읽기였던 곳도 JEO_ 우선 폴백 획득). 인라인 (JEO_X ?? JOC_X) 패턴 소스 전체 0건.
+- README ×4: 최근 UX 배치 문서화 — 3단계 모델 픽(역할+Reasoning, inherit), /subagent 구성판, Tab 팝업 자동완성, /btw 스트리밍, new-input-first 입력 계약, aurora/synthwave/sakura 테마.
+- Verified: tsc 0; bun test 1218 pass / 0 fail; dist/jeo 재빌드.

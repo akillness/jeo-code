@@ -95,3 +95,28 @@ test("normalizePlanShape: tolerates common plan deviations so a valid-enough pla
   expect(PlanSchema.safeParse(norm).success).toBe(true);
   expect(norm.steps[0].name).toBe("implement reverse");
 });
+
+test("PlanSchema: rejects dependency-shaped step keys the serial executor cannot honor", () => {
+  // round-10 LOW: `jeo team` runs steps in array order; a plan that DECLARES
+  // ordering constraints must fail loudly instead of silently pretending
+  // they are enforced.
+  const yaml = `
+steps:
+  - name: "Task A"
+  - name: "Task B"
+    depends_on: "Task A"
+`;
+  const result = PlanSchema.safeParse(parseYaml(yaml));
+  expect(result.success).toBe(false);
+  if (!result.success) {
+    expect(result.error.issues.some(i => i.message.includes("array order"))).toBe(true);
+  }
+  // Unknown NON-dependency keys remain tolerated (passthrough unchanged).
+  const ok = PlanSchema.safeParse(parseYaml(`
+steps:
+  - name: "Task A"
+    files:
+      - src/x.ts
+`));
+  expect(ok.success).toBe(true);
+});

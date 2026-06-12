@@ -9,6 +9,8 @@
   Bun ベースの AI コーディングエージェント CLI — インタビュー、レビュー済みプラン、tmux ネイティブ実行、永続的検証。
 </p>
 
+
+**対話型モデル設定（gjcパリティ 3ステップ）**: `/provider <name>` の選択がモデル → 適用先（デフォルトまたは subagent ロール） → Reasoning レベル（minimal…xhigh、ロールは `inherit` 付き）と続きます。`/subagent` で構成確認、`/`・`$` ポップアップは **Tab** 補完、`/btw` はストリーミング応答、入力は **new-input-first**（ターン中の入力は自動実行せず編集可能なプロンプトに復元）。テーマに aurora/synthwave/sakura を追加。
 <p align="center">
   <a href="https://github.com/akillness/jeo-code"><img alt="license" src="https://img.shields.io/badge/license-MIT-green?style=flat-square"></a>
   <img alt="runtime" src="https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3.14-f9f1e1?style=flat-square&logo=bun&logoColor=black">

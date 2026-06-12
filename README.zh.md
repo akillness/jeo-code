@@ -9,6 +9,8 @@
   基于 Bun 的 AI 编码代理 CLI — interviews, reviewed plans, tmux-native execution, durable verification.
 </p>
 
+
+**交互式模型设置（gjc 对齐 3 步选择）**: `/provider <name>` 选择依次为模型 → 应用目标（默认或 subagent 角色） → Reasoning 级别（minimal…xhigh，角色额外提供 `inherit`）。`/subagent` 查看全部配置，`/`·`$` 弹窗支持 **Tab** 补全，`/btw` 流式回复，输入遵循 **new-input-first**（回合中输入会恢复到可编辑提示而非自动执行）。主题新增 aurora/synthwave/sakura。
 <p align="center">
   <a href="https://github.com/akillness/jeo-code"><img alt="license" src="https://img.shields.io/badge/license-MIT-green?style=flat-square"></a>
   <img alt="runtime" src="https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3.14-f9f1e1?style=flat-square&logo=bun&logoColor=black">

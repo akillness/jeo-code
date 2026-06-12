@@ -219,6 +219,8 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       // Spawn-gate lite (plan/gjc-inheritance.md B9, gjc spawn-gate 계승): a batch
       // wider than MAX_FANOUT is refused BEFORE any subagent launches unless the
       // model justifies the parallelism — silent capping hid the cost decision.
+      // NOTE: the justification permits a LARGER QUEUE only; running concurrency
+      // stays bounded at MAX_FANOUT (read-only) or 1 (mutating) regardless.
       if (items.length > MAX_FANOUT) {
         const justification = typeof args.justification === "string" ? args.justification.trim() : "";
         if (justification.length < 20) {

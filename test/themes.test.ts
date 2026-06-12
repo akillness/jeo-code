@@ -1,10 +1,15 @@
 import { test, expect } from "bun:test";
+import chalk from "chalk";
 import {
   THEMES,
   getTheme,
   listThemes,
   resolveTheme,
   themeGradient,
+  accentPaint,
+  accentShadowPaint,
+  diffPaint,
+  DEFAULT_DIFF_PALETTE,
 } from "../src/tui/components/themes";
 import { EVOLUTION_STAGE_COUNT } from "../src/tui/components/evolution";
 
@@ -77,4 +82,66 @@ test("themeGradient is clamped and returns hex pairs", () => {
   expect(themeGradient(matrix, 0)).toEqual(matrix.gradients[0]!);
   expect(themeGradient(matrix, 99)).toEqual(matrix.gradients[EVOLUTION_STAGE_COUNT - 1]!);
   expect(themeGradient(matrix, 1).from).toMatch(/^#[0-9a-f]{6}$/i);
+});
+
+test("nine themes are registered, including the three new palettes", () => {
+  const names = THEMES.map(t => t.name);
+  expect(names).toEqual(["cosmic", "matrix", "solar", "red-claw", "blue-crab", "aurora", "synthwave", "sakura", "mono"]);
+  for (const fresh of ["aurora", "synthwave", "sakura"]) {
+    const t = getTheme(fresh);
+    expect(t.color).toBe(true);
+    expect(t.gradients.length).toBe(EVOLUTION_STAGE_COUNT);
+    expect(t.accentShadow).toBeDefined();
+    expect(t.diff).toBeDefined();
+  }
+});
+
+test("accentShadowPaint uses the theme's REAL shadow hue (depth two-tone), distinct from the lit accent", () => {
+  const savedLevel = chalk.level;
+  chalk.level = 3; // force truecolor — bun test runs without a TTY (level 0 → no escapes)
+  try {
+  for (const t of THEMES.filter(t => t.color && t.accentShadow)) {
+    const lit = accentPaint(t)("x");
+    const shaded = accentShadowPaint(t)("x");
+    expect(shaded).not.toBe(lit);            // two-tone: edges must differ
+    expect(shaded).not.toContain("\x1b[2m"); // real darker hue, not ANSI dim
+    expect(shaded).toContain("\x1b[");       // still colored
+  }
+  // mono: identity painters (no escapes at all)
+  expect(accentShadowPaint(getTheme("mono"))("x")).toBe("x");
+  } finally {
+    chalk.level = savedLevel;
+  }
+});
+
+test("diffPaint: themed palettes with bg tints; default palette fallback; mono identity", () => {
+  const savedLevel = chalk.level;
+  chalk.level = 3;
+  try {
+  // blue-crab defines its own diff palette → painters differ from the default-palette themes.
+  const crab = diffPaint(getTheme("blue-crab"));
+  const cosmic = diffPaint(getTheme("cosmic")); // no diff field → DEFAULT_DIFF_PALETTE
+  expect(crab.add("+x")).not.toBe(cosmic.add("+x"));
+  // Added/removed rows carry a background tint (48;2;… truecolor bg sequence).
+  expect(cosmic.add("+x")).toContain("\x1b[48;2;");
+  expect(cosmic.del("-x")).toContain("\x1b[48;2;");
+  expect(crab.add("+x")).toContain("\x1b[48;2;");
+  // Hunk headers are bold-accented, not bg-tinted.
+  expect(cosmic.hunk("@@ -1 +1 @@")).toContain("\x1b[1m");
+  expect(cosmic.hunk("@@ -1 +1 @@")).not.toContain("\x1b[48;2;");
+  expect(DEFAULT_DIFF_PALETTE.add).toBeTruthy();
+  // mono → identity
+  const mono = diffPaint(getTheme("mono"));
+  expect(mono.add("+x")).toBe("+x");
+  expect(mono.del("-x")).toBe("-x");
+  } finally {
+    chalk.level = savedLevel;
+  }
+});
+
+test("blue-crab is the fancy bioluminescent revamp (new accent + seafoam arc)", () => {
+  const crab = getTheme("blue-crab");
+  expect(crab.accent).toBe("#0096c7");
+  expect(crab.accentShadow).toBe("#023e8a");
+  expect(crab.gradients[4]!.to.toLowerCase()).toBe("#caf0f8"); // seafoam glow finale
 });

@@ -274,3 +274,8 @@
 - formatAgentsPanel/formatAgentDetail에 thinking 컬럼: 역할별 명시 레벨 또는 (inherit) 표기, 디테일 블록은 "inherit (follows the default thinking level)" 설명 — /agents·/subagent가 모델·thinking·스텝·read-only까지 현 구성 현황판 완성.
 - 실동작 검증(tmux, 샌드박스 config): /subagent → "executor — claude-opus-4-5 (xhigh) ≤20 steps / planner (inherit) …" 패널 실표시.
 - Verified: tsc 0; bun test 1198 pass / 0 fail; dist/jeo 재빌드.
+[2026-06-12] gjc-계승 마라톤 라운드 7 (cycle 17) — 워크플로 렛저 무결성 (architect 발굴 HIGH 2건)
+- team stale-state 리셋(HIGH): plan A 완료 후의 team-state(pending=[])가 plan B에 재사용되어 plan B가 no-op으로 "All tasks executed successfully" 가짜 성공을 기록하던 구멍 — plan_path/slug 불일치 시 새 플랜 태스크로 재초기화. 같은 플랜 재개(resume)는 불변. 완료 시 active=false 플립(죽은 필드 정리).
+- ultragoal 검증 연극 제거(HIGH): 기준마다 동일 글로벌 bun test(run/cli 텍스트 포함 시 무조건 green인 --help)를 돌려 조작된 기준별 ✅/❌ 매트릭스를 렛저에 기록하던 구조 — suite 1회 실행, 기준은 ⚠️ UNVERIFIED 정직 기록, status SUITE_GREEN/FAILED + suite_green 필드, 리포트 temp+rename 원자 쓰기. "검증이 실패할 수 없는 검증"은 검증이 아니다.
+- openai stream_options 호환(라운드5 #5): OpenAI-호환 로컬 백엔드가 옵션 필드에 400 시 1회 스트립 재시도 — 무관한 400은 블라인드 재시도 없음.
+- Verified: typecheck 0; full bun test 1202 pass / 0 fail (+8: workflow-integrity 4종 — 새플랜 재시작/동일플랜 재개/정직 검증/red suite, provider-empty-completion +2, 기타). plan 라운드7 렛저, improvements.md 갱신.

@@ -6559,3 +6559,15 @@ that extends itself while the turn demonstrably progresses and fails fast when s
 
 ### Verification (round 6)
 - typecheck 0; `bun test` **1194 pass / 0 fail** across 155 files (+4: detector patterns, taxonomy wording, trim+retry success path, second-overflow surfacing). Remaining deferred: `stream_options` compat (#5, LOW), slow-drip overall deadline (#7, LOW/WATCH).
+
+---
+
+**Date:** 2026-06-12 · **Dimension: gjc-inheritance marathon round 7 — workflow ledger integrity (team/ultragoal), stream_options compat.**
+
+### Workflow ledger integrity (architect ref 7-Round7Workflow, REQUEST CHANGES → fixed)
+- **Stale team-state reset (HIGH).** A team-state left over from a previous plan (pending=[]) was silently reused for the NEXT approved plan — `jeo team` no-opped and logged "All tasks executed successfully" without running anything (and a mid-flight leftover would run plan-A task text under plan-B roles). The engine now reinitializes execution from the new plan whenever `plan_path`/`slug` differ, logging "New plan detected — restarting execution". Same-plan resume is unchanged. Completion now also flips `active: false`.
+- **Honest ultragoal verification (HIGH).** The per-criterion loop was verification theater: every criterion ran the same global `bun test` — or a guaranteed-green `src/cli.ts --help` whenever the criterion text mentioned run/cli — and a fabricated per-criterion ✅/❌ matrix was written to the ledger. Now the suite runs ONCE as a global signal; criteria are recorded as ⚠️ UNVERIFIED (suite green) or ❌ FAILED (suite red), status becomes `SUITE_GREEN`/`FAILED` with a `suite_green` state field, and the report is written atomically (temp+rename). A verification that cannot fail for the cases it claims to cover is not verification.
+- **`stream_options` compat (round-5 #5).** OpenAI-compatible local backends (llama.cpp, LM Studio, older vLLM) that 400 on the optional `stream_options` field get ONE retry without it; unrelated 400s still throw immediately.
+
+### Verification (round 7)
+- typecheck 0; `bun test` **1202 pass / 0 fail** across 157 files (+8: workflow-integrity ×4 — new-plan restart / same-plan resume / honest-verification / red-suite, stream_options compat ×2). Deferred to round 8 (MED): parent-side Changed Files reconciliation vs subagent claims, cross-process `.joc/state` locking, failed-task marker + resume warning.

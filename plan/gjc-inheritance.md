@@ -113,3 +113,15 @@
 ## 사이클 렛저 (라운드 6)
 - cycle 16 (2026-06-12): #4 컨텍스트 오버플로 — isContextOverflowError(메시지 패턴+413) + friendlyProviderError에 overflow("/compact" 안내)·404(model-not-found, "/model" 안내) 케이스 + 엔진 1회 반응적 트림+재시도(provider 신호가 로컬 추정 우선; keepRecent 2로 공격적 트림, 스텝 미소모 free retry, 2번째 overflow는 friendly 에러 표면화). 신규 테스트 4종(provider-error-taxonomy.test.ts). full 1194 pass / 0 fail, typecheck 0.
 - **라운드 6 종료** — 누적 16사이클. 잔여 보류: #5 stream_options 호환(LOW), #7 슬로우드립 데드라인(LOW/WATCH), F5 잔여.
+
+## 합의 라운드 7 (architect REQUEST CHANGES, 2026-06-12 — agent ref 7-Round7Workflow)
+**축 전환**: 워크플로/오케스트레이션(team/ultragoal/task-tool). 구조적 사실: `jeo team`은 tmux 워커풀이 아니라 직렬 플랜 실행기. HIGH 2건은 둘 다 completion-contract 직격(가짜 성공 보고).
+- **#1 (HIGH)**: stale team-state 재사용 — plan A 완료 후 plan B 실행 시 pending=[]가 재사용되어 plan B가 **no-op으로 가짜 성공**(중간 잔존 시 plan-A 태스크를 plan-B 역할로 실행). 수정: plan_path/slug 불일치 시 새 플랜 태스크로 재초기화 + "New plan detected" 로그.
+- **#2 (HIGH)**: ultragoal 검증 연극 — 기준마다 동일 글로벌 `bun test`(run/cli 포함 시 무조건 green인 `--help`)를 돌리고 조작된 기준별 ✅/❌ 매트릭스를 렛저에 기록. 수정: suite 1회 실행, 기준은 UNVERIFIED로 정직 기록(개별 검증 없는 SUCCESS 주장 불가), status SUITE_GREEN/FAILED + suite_green 필드, run/cli 루프홀 제거.
+- **LOW 동반 수정**: team-state.active 완료 시 false 플립, ultragoal 리포트 temp+rename 원자 쓰기.
+- **#5 (라운드5 보류 LOW)**: openai stream_options 400 호환 — OpenAI-호환 백엔드(llama.cpp/LM Studio)가 옵션 필드에 400 시 1회 스트립 재시도(무관한 400은 재시도 없음).
+- **보류 (라운드 8 후보, MED)**: 부모의 Changed Files 실측 대조(서브에이전트 허위 성공), .joc/state 크로스 프로세스 락, 실패 태스크 마커+재개 경고.
+
+## 사이클 렛저 (라운드 7)
+- cycle 17 (2026-06-12): team stale-state 리셋 + ultragoal 정직 검증 + active 플립 + 리포트 원자쓰기 + stream_options 호환. WorkflowState.suite_green 신설. 신규 테스트 6종(workflow-integrity 4, provider-empty-completion +2). full 1202 pass / 0 fail, typecheck 0.
+- **라운드 7 종료** — 누적 17사이클.

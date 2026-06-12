@@ -1196,6 +1196,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // Plain (non-TTY / --no-tui) progress sink — the cmd-mode equivalent of the live TUI.
   const streamEvents = createStreamEvents(initialStepLimit);
   let queueBusyInput: ((chunk: string) => boolean) | undefined;
+  let queueBusyPasteActive: (() => boolean) | undefined;
   let interactiveTurnActive = false;
 
 
@@ -1250,6 +1251,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       const harness = createInFlightAbortHarness({
         captureEsc: !!tui,
         onNoise: () => tui?.repaint(),
+        pasteActive: () => queueBusyPasteActive?.() ?? false,
         onBufferedInput: chunk => {
           if (!tui) return;
           const queued = queueBusyInput?.(chunk) ?? false;
@@ -1691,15 +1693,47 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // only captures the line submitted while it is registered; orphan lines emit
   // 'line' instead), so queue those and serve them before prompting again.
   const pendingStdinLines: string[] = [];
-  rl.on("line", l => { if (!interactiveTurnActive) pendingStdinLines.push(l); });
-  const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: "" };
+  const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: "", pastedLines: [], inPaste: false };
   queueBusyInput = (chunk: string) => queuePromptInputChunk(queuedPromptInput, chunk);
+  queueBusyPasteActive = () => queuedPromptInput.inPaste;
+  // Bracketed-paste line routing at the PROMPT: readline strips the 2004 markers
+  // and replays pasted lines as synthetic keypresses, emitting paste-start /
+  // paste-end around them. Lines submitted INSIDE that window are intentional
+  // batch commands → pastedLines (one command per prompt, in order). Lines
+  // outside it keep the existing contracts (typed-line prefill fold on a TTY,
+  // in-order auto-serve for piped stdin).
+  let promptPasteActive = false;
+  if (process.stdin.isTTY) {
+    process.stdin.on("keypress", (_ch: string, key: { name?: string } | undefined) => {
+      if (key?.name === "paste-start") promptPasteActive = true;
+      else if (key?.name === "paste-end") promptPasteActive = false;
+    });
+    // Enable bracketed paste for the REPL lifetime (restored on exit below):
+    // terminals only wrap pastes in the 200~/201~ markers once the app opts in.
+    process.stdout.write("\x1b[?2004h");
+    process.once("exit", () => { try { process.stdout.write("\x1b[?2004l"); } catch { /* terminal gone */ } });
+  }
+  rl.on("line", l => {
+    if (promptPasteActive) {
+      queuedPromptInput.pastedLines.push(l);
+      return;
+    }
+    if (!interactiveTurnActive) pendingStdinLines.push(l);
+  });
   let stdinClosed = false;
   let notifyStdinClosed: (() => void) | undefined;
   // `on` + one-shot guard (not `once`): test harnesses stub readline with `on`/`question` only.
   rl.on("close", () => { if (stdinClosed) return; stdinClosed = true; notifyStdinClosed?.(); });
   /** `rl.question` that resolves "/exit" on stdin EOF instead of hanging forever. */
+  let promptServedFromPaste = false;
   const promptInput = async (prompt: string): Promise<string> => {
+    promptServedFromPaste = false;
+    // Pasted batch commands first — they execute one per prompt, in order.
+    const pasted = queuedPromptInput.pastedLines.shift();
+    if (pasted !== undefined) {
+      promptServedFromPaste = true;
+      return pasted;
+    }
     const queued = pendingStdinLines.shift();
     if (queued !== undefined) return queued;
     if (stdinClosed) return "/exit";
@@ -1947,7 +1981,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // leaving stale input. Returns true when something was actually cleared.
   const clearTypedInput = (): boolean => {
     const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
-    if ((rli.line?.length ?? 0) === 0 && pendingImages.length === 0) return false;
+    const hadPastedQueue = queuedPromptInput.pastedLines.length > 0;
+    if ((rli.line?.length ?? 0) === 0 && pendingImages.length === 0 && !hadPastedQueue) return false;
+    // ESC is the escape hatch for an accidental giant paste: drop the queued batch.
+    if (hadPastedQueue) {
+      const dropped = queuedPromptInput.pastedLines.splice(0).length;
+      console.log(chalk.dim(`(discarded ${dropped} queued pasted command${dropped > 1 ? "s" : ""})`));
+    }
     rli.line = "";
     rli.cursor = 0;
     rli._refreshLine?.();
@@ -2417,10 +2457,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // Render the boxed input immediately so the prompt is visible even though
       // readline's own echo is suppressed. If the user typed while the previous
       // live turn/subagent was still running, seed that text into readline and the
-      // box instead of dropping it as "noise".
-      typedLine = prefilledLine;
+      // box instead of dropping it as "noise". A pasted batch's TRAILING partial
+      // (no final newline) survives in readline's own buffer — adopt it as the
+      // visible typed line so the box never hides editable input.
+      const rli = rl as unknown as { line?: string; cursor?: number; _refreshLine?: () => void };
+      const residualPartial = !prefilledLine && typeof rli.line === "string" && rli.line.length > 0 && !/\x1b/.test(rli.line)
+        ? rli.line
+        : "";
+      typedLine = prefilledLine || residualPartial;
       if (prefilledLine) {
-        const rli = rl as unknown as { line?: string; cursor?: number; _refreshLine?: () => void };
         rli.line = prefilledLine;
         rli.cursor = prefilledLine.length;
         rli._refreshLine?.();
@@ -2433,6 +2478,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // raw CLI input line can ever flash). Legacy prompt only without the box.
       const raw = (await promptInput(previewEnabled ? "" : "\njeo> ")).trim();
       disarmPreview();
+      // Pasted batch command: echo what is about to run (with the remaining queue
+      // depth) so a multi-line paste reads as a visible, ordered script.
+      if (promptServedFromPaste && raw) {
+        const remaining = queuedPromptInput.pastedLines.length;
+        console.log(`${categoryBadge("progress")} ▶ pasted command: ${raw}${remaining > 0 ? chalk.dim(`  (+${remaining} queued)`) : ""}`);
+      }
       // If an arrow-key selection was made over the slash/skill preview, apply it
       // to the ACTIVE trigger token (which may sit anywhere in the line —
       // mention-style): only the token is replaced, surrounding text survives.
@@ -3561,6 +3612,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       try {
         const { done, steps, reply, rendered, usage } = await runTurn(input, useTui, turnImages);
         lastReply = reply;
+        // A cancelled turn (ESC / Ctrl-C) must also cancel the pasted batch —
+        // continuing to auto-run the rest of a paste after an abort is hostile.
+        if (reply === "Cancelled." && queuedPromptInput.pastedLines.length > 0) {
+          const dropped = queuedPromptInput.pastedLines.splice(0).length;
+          console.log(chalk.dim(`(cancelled — dropped ${dropped} queued pasted command${dropped > 1 ? "s" : ""})`));
+        }
         if (!rendered) {
           console.log(`jeo> ${renderMarkdownTables(reply)}${usage}`);
           if (!done) console.log(`(agent did not converge in ${steps} steps)`);

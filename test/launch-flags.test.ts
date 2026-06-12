@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseFlags, gatedStdout, shouldUseOneShotTui, createInFlightAbortHarness, queuePromptInputChunk, formatResumeHint } from "../src/commands/launch";
+import { parseFlags, gatedStdout, shouldUseOneShotTui, createInFlightAbortHarness, queuePromptInputChunk, formatResumeHint, PASTE_START, PASTE_END, type PromptInputQueue } from "../src/commands/launch";
 import { createInterface } from "node:readline/promises";
 import { Readable, Writable } from "node:stream";
 
@@ -95,18 +95,90 @@ test("gatedStdout: readline's own prompt/echo is suppressed while gated (single-
   expect(joined).not.toContain("hi");   // no raw echo either — only our box would show it
 });
 
+const freshQueue = (): PromptInputQueue => ({ pendingLines: [], partial: "", pastedLines: [], inPaste: false });
+
 test("queuePromptInputChunk preserves Korean follow-up text typed during a live turn", () => {
-  const state = { pendingLines: [] as string[], partial: "" };
+  const state = freshQueue();
   expect(queuePromptInputChunk(state, "작업내용 확인")).toBe(true);
-  expect(state).toEqual({ pendingLines: [], partial: "작업내용 확인" });
+  expect(state).toEqual({ ...freshQueue(), partial: "작업내용 확인" });
 
   expect(queuePromptInputChunk(state, "해줘\r")).toBe(true);
-  expect(state).toEqual({ pendingLines: ["작업내용 확인해줘"], partial: "" });
+  expect(state).toEqual({ ...freshQueue(), pendingLines: ["작업내용 확인해줘"] });
 
   expect(queuePromptInputChunk(state, "\u001b[A")).toBe(false);
-  expect(state).toEqual({ pendingLines: ["작업내용 확인해줘"], partial: "" });
+  expect(state).toEqual({ ...freshQueue(), pendingLines: ["작업내용 확인해줘"] });
 });
 
+test("bracketed paste: multi-line paste splits into pastedLines + editable partial", () => {
+  const state = freshQueue();
+  const chunk = `${PASTE_START}/help\n/config\n테마 정리해줘\npartial tail${PASTE_END}`;
+  expect(queuePromptInputChunk(state, chunk)).toBe(true);
+  expect(state.pastedLines).toEqual(["/help", "/config", "테마 정리해줘"]);
+  expect(state.partial).toBe("partial tail");
+  expect(state.pendingLines).toEqual([]); // pasted lines NEVER fold into the prefill path
+  expect(state.inPaste).toBe(false);
+});
+
+test("bracketed paste: a paste spanning chunks keeps paste mode across reads", () => {
+  const state = freshQueue();
+  expect(queuePromptInputChunk(state, `${PASTE_START}first li`)).toBe(true);
+  expect(state.inPaste).toBe(true);
+  expect(queuePromptInputChunk(state, "ne\nsecond line\n")).toBe(true);
+  expect(queuePromptInputChunk(state, PASTE_END)).toBe(false); // marker only — no new content
+  expect(state.inPaste).toBe(false);
+  expect(state.pastedLines).toEqual(["first line", "second line"]);
+  expect(state.partial).toBe("");
+});
+
+test("bracketed paste: typed noise outside markers is still rejected; CRLF normalizes", () => {
+  const state = freshQueue();
+  expect(queuePromptInputChunk(state, `${PASTE_START}a\r\nb\r${PASTE_END}`)).toBe(true);
+  expect(state.pastedLines).toEqual(["a", "b"]);
+  expect(queuePromptInputChunk(state, "\u001b[B")).toBe(false); // arrow noise after the paste
+  expect(state.pastedLines).toEqual(["a", "b"]);
+});
+
+test("in-flight abort harness routes bracketed-paste chunks to the queue, never to noise/abort", () => {
+  const chunks: string[] = [];
+  let noise = 0;
+  let aborted = false;
+  let pasteActive = false;
+  const stdin = {
+    isTTY: true,
+    isRaw: false,
+    setRawMode() {},
+    resume() {},
+    on() {},
+    off() {},
+  };
+  const harness = createInFlightAbortHarness({
+    stdin,
+    captureEsc: true,
+    pasteActive: () => pasteActive,
+    onBufferedInput: chunk => chunks.push(chunk),
+    onNoise: () => { noise++; },
+    onAbortNotice: () => { aborted = true; },
+  });
+
+  // Marker-carrying chunk: contains ESC but must route to the queue, not noise/abort.
+  harness.handleData(`${PASTE_START}/help\n/conf`);
+  expect(chunks).toEqual([`${PASTE_START}/help\n/conf`]);
+  expect(noise).toBe(0);
+  expect(aborted).toBe(false);
+
+  // Mid-paste continuation (no marker): pasteActive() keeps it on the queue path.
+  pasteActive = true;
+  harness.handleData("ig\n");
+  harness.handleData(PASTE_END); // end marker contains ESC — still queue-routed
+  pasteActive = false;
+  expect(chunks).toEqual([`${PASTE_START}/help\n/conf`, "ig\n", PASTE_END]);
+  expect(noise).toBe(0);
+
+  // After the paste, a lone ESC is still the abort key.
+  harness.handleData("\u001b");
+  expect(aborted).toBe(true);
+  harness.dispose();
+});
 test("in-flight abort harness forwards printable live-turn input for the next prompt", () => {
   const listeners = new Set<(chunk: string | Uint8Array) => void>();
   const rawModes: boolean[] = [];

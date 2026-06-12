@@ -49,11 +49,14 @@ test("engine: one refusal is retried in place and the turn completes", async () 
   expect(notices.join("\n")).toContain("provider refused the last call");
 });
 
-test("engine: second refusal re-grounds the history, third surfaces the friendly error", async () => {
+test("engine: persistent refusal resets tool-result context, then surfaces the friendly error", async () => {
   let calls = 0;
   await mock.module("../src/agent/loop", () => ({
     callLlm: async () => {
       calls++;
+      // Call 2 succeeds with a tool call so the history gains a tool RESULT —
+      // the content the classifier-reset rung must elide on the later refusals.
+      if (calls === 2) return JSON.stringify({ tool: "probe", arguments: {} });
       throw new Error("Anthropic returned no content (stop_reason=refusal).");
     },
   }));
@@ -62,14 +65,23 @@ test("engine: second refusal re-grounds the history, third surfaces the friendly
   const history = [{ role: "user" as const, content: "search the theme files" }];
   const result = await runAgentLoop(history, {
     cwd: process.cwd(),
-    maxSteps: 4,
-    tools: {},
+    maxSteps: 6,
+    tools: { probe: async () => ({ success: true, output: `suspicious-looking tool output that trips the classifier\n${"filler line of file content\n".repeat(20)}` }) },
     events: { onNotice: m => notices.push(m) },
   });
-  expect(calls).toBe(3); // initial + plain resend + re-grounded retry, then stop
-  expect(history.some(m => m.role === "user" && m.content.includes("safety layer"))).toBe(true); // re-grounding note
+  // calls: 1 refused → free resend; 2 tool call ok; 3 refused → context reset; 4 refused → stop.
+  expect(calls).toBe(4);
   expect(result.done).toBe(false);
-  expect(result.doneReason).toContain("declined to answer"); // friendly, actionable
-  expect(result.doneReason).not.toContain("returned no content (stop_reason=refusal)"); // raw shape gone
-  expect(notices.join("\n")).toContain("re-grounding");
+  // Anthropic contract: refusal requires a context RESET — the tool-result body is elided…
+  expect(history.some(m => m.role === "user" && /elided/.test(m.content) && /Tool \[probe\]/.test(m.content))).toBe(true);
+  expect(history.some(m => m.content.includes("suspicious-looking tool output"))).toBe(false);
+  // …and the continuation note stays NEUTRAL (mentioning the safety layer reads as a jailbreak).
+  const note = history.find(m => m.role === "user" && m.content.startsWith("(continuation)"));
+  expect(note).toBeTruthy();
+  expect(note!.content).not.toMatch(/safety|refus/i);
+  expect(notices.join("\n")).toContain("context reset");
+  // Final surface is friendly + actionable (context reset hint, OAuth/API-key guidance), not the raw shape.
+  expect(result.doneReason).toContain("declined to answer");
+  expect(result.doneReason).toContain("ANTHROPIC_API_KEY");
+  expect(result.doneReason).not.toContain("returned no content (stop_reason=refusal)");
 });

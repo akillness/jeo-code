@@ -125,3 +125,7 @@
 ## 사이클 렛저 (라운드 7)
 - cycle 17 (2026-06-12): team stale-state 리셋 + ultragoal 정직 검증 + active 플립 + 리포트 원자쓰기 + stream_options 호환. WorkflowState.suite_green 신설. 신규 테스트 6종(workflow-integrity 4, provider-empty-completion +2). full 1202 pass / 0 fail, typecheck 0.
 - **라운드 7 종료** — 누적 17사이클.
+
+## 사이클 렛저 (라운드 8 — 라운드7 architect MED 보류분 소진)
+- cycle 18 (2026-06-12): (A) 부모측 변이 감사 — task-tool/team이 서브에이전트의 성공한 write/edit/bash를 실측 카운트, mutating 역할이 0건 변이로 "완료" 시 "[parent audit] … UNVERIFIED" 주석/경고(보고서 마커는 형식 증명일 뿐 작업 증명이 아님). (B) 크로스 프로세스 런 락 — acquireWorkflowRunLock(O_EXCL+pid, 死pid stale 인수, 생존 보유자는 명확 거부), runTeamEngine 본문 try/finally 래핑(동시 team 런의 이중 실행/완료 소실 차단). (C) 실패 태스크 마커 — 실패 시 current_phase=failed+failed_task 영속, 다음 런이 부분 편집 경고 후 마커 해제. WorkflowState.failed_task 신설. 신규 테스트 3종(workflow-integrity: 락 수명주기/실패 마커+재개 경고/parent audit). full 1206 pass / 0 fail, typecheck 0.
+- **라운드 8 종료** — 누적 18사이클. architect 발굴 백로그(라운드 4~7) 전부 소진(잔여는 LOW/WATCH뿐: 슬로우드립 데드라인, plan deps 거부, spawn-gate 주석).

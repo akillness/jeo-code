@@ -5,6 +5,7 @@ import {
   readWorkflowState,
   readWorkflowStateStrict,
   writeWorkflowState,
+  acquireWorkflowRunLock,
   type WorkflowState,
 } from "../agent/state";
 import { runAgentLoop } from "../agent/engine";
@@ -250,95 +251,125 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
 
   log(`Loaded ${tasks.length} tasks for execution.`);
 
-  let teamState: WorkflowState;
+  // Round-8 (architect ref 7-Round7Workflow): cross-process run lock — two
+  // concurrent `jeo team` runs would each pop pending_tasks[0] and last-writer-
+  // wins the state file (tasks executed twice, completions lost).
+  let releaseLock: () => Promise<void>;
   try {
-    teamState = (await readWorkflowStateStrict("team", cwd)) ?? {
-      active: true,
-      current_phase: "executing",
-      skill: "team" as const,
-      slug: planState.slug,
-      plan_path: planPath,
-      completed_tasks: [],
-      pending_tasks: [...tasks],
-    };
-  } catch {
-    log(
-      `[ERROR] .joc/state/team-state.json is corrupt. Fix or delete it before re-running 'jeo team' ` +
-      `(refusing to silently restart and re-run already-completed tasks).`,
-    );
-    return { ok: false, reason: "team-state.json is corrupt" };
+    releaseLock = await acquireWorkflowRunLock("team", cwd);
+  } catch (err: any) {
+    log(`[ERROR] ${err.message}`);
+    return { ok: false, reason: "another team run holds the lock" };
   }
-
-  // Round-7 #1 (architect ref 7-Round7Workflow): a team-state left over from a
-  // PREVIOUS plan must never be reused — pending=[] from plan A would make plan B
-  // no-op into a false "all executed" success, and a mid-flight leftover would run
-  // plan-A task text under plan-B roles. A different plan reinitializes execution.
-  if (teamState.plan_path !== planPath || teamState.slug !== planState.slug) {
-    log(`${categoryBadge("progress")} New plan detected (${planPath}) — restarting execution from its task list.`);
-    teamState = {
-      active: true,
-      current_phase: "executing",
-      skill: "team" as const,
-      slug: planState.slug,
-      plan_path: planPath,
-      completed_tasks: [],
-      pending_tasks: [...tasks],
-    };
-  }
-
-  await writeWorkflowState("team", teamState, cwd);
-  const renderOpts: RalphRenderOptions = { color: !!process.stdout.isTTY, indexed: true };
-  for (const line of formatRalphTodoGuide(tasks, activeStepIndex(tasks.length, teamState.pending_tasks), teamState.completed_tasks ?? [], renderOpts)) log(line);
-
-  while (teamState.pending_tasks && teamState.pending_tasks.length > 0) {
-    if (opts.signal?.aborted) {
-      return { ok: false, reason: "aborted" };
+  try {
+    let teamState: WorkflowState;
+    try {
+      teamState = (await readWorkflowStateStrict("team", cwd)) ?? {
+        active: true,
+        current_phase: "executing",
+        skill: "team" as const,
+        slug: planState.slug,
+        plan_path: planPath,
+        completed_tasks: [],
+        pending_tasks: [...tasks],
+      };
+    } catch {
+      log(
+        `[ERROR] .joc/state/team-state.json is corrupt. Fix or delete it before re-running 'jeo team' ` +
+        `(refusing to silently restart and re-run already-completed tasks).`,
+      );
+      return { ok: false, reason: "team-state.json is corrupt" };
     }
 
-    const currentTask = teamState.pending_tasks[0];
-    log(`\n${categoryBadge("progress")} Current task: "${currentTask}"`);
-    const activeIndex = activeStepIndex(tasks.length, teamState.pending_tasks);
-    for (const line of formatRalphTodoGuide(tasks, activeIndex, teamState.completed_tasks ?? [], renderOpts)) log(line);
-
-    if (opts.onProgress) {
-      opts.onProgress({ skill: "team", phase: "executing", detail: `Current task: ${currentTask}` });
+    // Round-7 #1 (architect ref 7-Round7Workflow): a team-state left over from a
+    // PREVIOUS plan must never be reused — pending=[] from plan A would make plan B
+    // no-op into a false "all executed" success, and a mid-flight leftover would run
+    // plan-A task text under plan-B roles. A different plan reinitializes execution.
+    if (teamState.plan_path !== planPath || teamState.slug !== planState.slug) {
+      log(`${categoryBadge("progress")} New plan detected (${planPath}) — restarting execution from its task list.`);
+      teamState = {
+        active: true,
+        current_phase: "executing",
+        skill: "team" as const,
+        slug: planState.slug,
+        plan_path: planPath,
+        completed_tasks: [],
+        pending_tasks: [...tasks],
+      };
     }
 
-    const success = await executeTaskWithAgent({
-      task: currentTask,
-      tasks,
-      activeIndex,
-      completed: teamState.completed_tasks ?? [],
-      cwd,
-      roleId: roleByIndex[activeIndex],
-    });
-
-    if (opts.signal?.aborted) {
-      return { ok: false, reason: "aborted" };
+    // Round-8: a previous run halted on a task — its partial edits may still be
+    // on disk. Warn loudly before re-running on top of them, then clear the marker.
+    if (teamState.current_phase === "failed" && teamState.failed_task) {
+      log(
+        `[WARN] The previous run FAILED on "${teamState.failed_task}" and may have left partial edits on disk. ` +
+        `Review the working tree before trusting this re-run — executing the task again on top of partial work can duplicate changes.`,
+      );
+      teamState.current_phase = "executing";
+      delete teamState.failed_task;
     }
 
-    if (success) {
-      teamState.completed_tasks = [...(teamState.completed_tasks ?? []), currentTask];
-      teamState.pending_tasks = teamState.pending_tasks.slice(1);
-      await writeWorkflowState("team", teamState, cwd);
-      log(`${categoryBadge("done")} Completed: "${currentTask}"`);
-    } else {
-      log(`${categoryBadge("error")} Failed on task: "${currentTask}". Halting execution.`);
-      return { ok: false, reason: `Failed on task: "${currentTask}"` };
-    }
-  }
-
-  if (teamState.pending_tasks && teamState.pending_tasks.length === 0) {
-    teamState.current_phase = "complete";
-    teamState.active = false; // execution finished — the flag must not read as "in progress"
     await writeWorkflowState("team", teamState, cwd);
-    log(`\n${categoryBadge("done")} All tasks in the plan executed successfully!`);
-    log("Run 'jeo ultragoal' to run verify tests and evaluate metrics.");
-    if (opts.onProgress) {
-      opts.onProgress({ skill: "team", phase: "complete" });
+    const renderOpts: RalphRenderOptions = { color: !!process.stdout.isTTY, indexed: true };
+    for (const line of formatRalphTodoGuide(tasks, activeStepIndex(tasks.length, teamState.pending_tasks), teamState.completed_tasks ?? [], renderOpts)) log(line);
+
+    while (teamState.pending_tasks && teamState.pending_tasks.length > 0) {
+      if (opts.signal?.aborted) {
+        return { ok: false, reason: "aborted" };
+      }
+
+      const currentTask = teamState.pending_tasks[0];
+      log(`\n${categoryBadge("progress")} Current task: "${currentTask}"`);
+      const activeIndex = activeStepIndex(tasks.length, teamState.pending_tasks);
+      for (const line of formatRalphTodoGuide(tasks, activeIndex, teamState.completed_tasks ?? [], renderOpts)) log(line);
+
+      if (opts.onProgress) {
+        opts.onProgress({ skill: "team", phase: "executing", detail: `Current task: ${currentTask}` });
+      }
+
+      const success = await executeTaskWithAgent({
+        task: currentTask,
+        tasks,
+        activeIndex,
+        completed: teamState.completed_tasks ?? [],
+        cwd,
+        roleId: roleByIndex[activeIndex],
+      });
+
+      if (opts.signal?.aborted) {
+        return { ok: false, reason: "aborted" };
+      }
+
+      if (success) {
+        teamState.completed_tasks = [...(teamState.completed_tasks ?? []), currentTask];
+        teamState.pending_tasks = teamState.pending_tasks.slice(1);
+        await writeWorkflowState("team", teamState, cwd);
+        log(`${categoryBadge("done")} Completed: "${currentTask}"`);
+      } else {
+        // Round-8: persist a failed marker so the NEXT run can warn about the
+        // partial edits this halted task may have left behind.
+        teamState.current_phase = "failed";
+        teamState.failed_task = currentTask;
+        await writeWorkflowState("team", teamState, cwd);
+        log(`${categoryBadge("error")} Failed on task: "${currentTask}". Halting execution.`);
+        return { ok: false, reason: `Failed on task: "${currentTask}"` };
+      }
     }
+
+    if (teamState.pending_tasks && teamState.pending_tasks.length === 0) {
+      teamState.current_phase = "complete";
+      teamState.active = false; // execution finished — the flag must not read as "in progress"
+      await writeWorkflowState("team", teamState, cwd);
+      log(`\n${categoryBadge("done")} All tasks in the plan executed successfully!`);
+      log("Run 'jeo ultragoal' to run verify tests and evaluate metrics.");
+      if (opts.onProgress) {
+        opts.onProgress({ skill: "team", phase: "complete" });
+      }
+    }
+    return { ok: true };
+  } finally {
+    await releaseLock();
   }
-  return { ok: true };
 }
 
 export async function runTeamCommand(): Promise<void> {
@@ -369,6 +400,7 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
     // LLM summary failure does not halt team
   }
 
+  let mutationsOk = 0; // round-8 parent audit: successful write/edit/bash count
   const result = await runAgentLoop(history, {
     cwd: ctx.cwd,
     model,
@@ -393,7 +425,10 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
           // LLM summary failure does not halt team
         }
       },
-      onToolResult: (tool, ok) => console.log(formatRalphStreamEvent(ok ? "complete" : "error", `tool ${tool}`, renderOpts)),
+      onToolResult: (tool, ok) => {
+        if (ok && (tool === "write" || tool === "edit" || tool === "bash")) mutationsOk++;
+        console.log(formatRalphStreamEvent(ok ? "complete" : "error", `tool ${tool}`, renderOpts));
+      },
       onNotice: msg => console.log(formatRalphStreamEvent("step", msg, renderOpts)),
     },
   });
@@ -416,6 +451,12 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
     return false;
   }
 
+  if (!role.readOnly && mutationsOk === 0) {
+    // Round-8: a mutating role finished without ONE successful mutation — the
+    // task may be legitimately read-only, but its "Changed Files:" claim is
+    // unverified; warn instead of silently trusting the report.
+    console.log(formatRalphStreamEvent("error", `${role.title} completed WITHOUT any successful write/edit/bash — treat its changed-files claim as unverified.`, renderOpts));
+  }
   console.log(formatRalphStreamEvent("complete", `${role.title} finished task`, renderOpts));
   return true;
 }

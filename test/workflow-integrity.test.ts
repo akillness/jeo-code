@@ -158,3 +158,72 @@ test("ultragoal: a red suite fails the run and the criteria record says FAILED",
   expect(state?.suite_green).toBe(false);
   await fs.rm(dir, { recursive: true, force: true });
 });
+
+// ── Round-8 (architect ref 7-Round7Workflow, MED deferrals) ──
+
+test("acquireWorkflowRunLock: live holder refuses, release reopens, dead-pid lock is taken over", async () => {
+  const dir = await tmpProject();
+  const { acquireWorkflowRunLock } = await import("../src/agent/state");
+
+  const release = await acquireWorkflowRunLock("team", dir);
+  // Second acquire while the (live, current-pid) holder exists → refuse.
+  const err = await acquireWorkflowRunLock("team", dir).catch(e => e);
+  expect(err).toBeInstanceOf(Error);
+  expect(err.message).toContain("holds");
+  await release();
+  // Released → acquirable again.
+  const release2 = await acquireWorkflowRunLock("team", dir);
+  await release2();
+
+  // Stale lock from a DEAD pid → taken over instead of wedging forever.
+  const lockPath = path.join(dir, ".joc", "state", "team.lock");
+  await fs.writeFile(lockPath, JSON.stringify({ pid: 999_999_999, at: 0 }));
+  const release3 = await acquireWorkflowRunLock("team", dir);
+  await release3();
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("team: a failed task persists a marker; the next run warns about partial edits", async () => {
+  const dir = await tmpProject();
+  let reply = JSON.stringify({ tool: "done", arguments: { reason: "no contract markers here" } }); // contract fails
+  await mock.module("../src/agent/loop", () => ({ callLlm: async () => reply }));
+  await seedApprovedPlan(dir, "plan-f", "plan-f.yaml", "fragile task");
+
+  const { runTeamEngine } = await import("../src/commands/team");
+  const first = await runTeamEngine({ cwd: dir, io: { output: () => {} } });
+  expect(first.ok).toBe(false);
+  const failedState = await readWorkflowState("team", dir);
+  expect(failedState?.current_phase).toBe("failed");
+  expect(failedState?.failed_task).toBe("fragile task");
+
+  // Re-run with a healthy executor: the engine must WARN about partial edits,
+  // clear the marker, and complete.
+  reply = DONE;
+  const lines: string[] = [];
+  const second = await runTeamEngine({ cwd: dir, io: { output: l => lines.push(l) } });
+  expect(second.ok).toBe(true);
+  expect(lines.some(l => l.includes("may have left partial edits"))).toBe(true);
+  const doneState = await readWorkflowState("team", dir);
+  expect(doneState?.current_phase).toBe("complete");
+  expect(doneState?.failed_task).toBeUndefined();
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("task-tool: an executor that 'completes' with zero successful mutations gets a parent audit note", async () => {
+  await mock.module("../src/agent/loop", () => ({ callLlm: async () => DONE })); // done immediately, no tool calls
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const config = { defaultModel: "claude-sonnet-4-5", providers: {}, thinkingLevel: "medium" } as any;
+
+  const handler = createTaskTool({ config });
+  const res = await handler({ role: "executor", task: "change the code" }, process.cwd());
+  expect(res.success).toBe(true);
+  expect(res.output).toContain("[parent audit]");
+  expect(res.output).toContain("UNVERIFIED");
+
+  // Read-only roles legitimately mutate nothing — no audit note.
+  const planner = await handler(
+    { role: "planner", task: "plan it" },
+    process.cwd(),
+  );
+  expect(planner.output).not.toContain("[parent audit]");
+});

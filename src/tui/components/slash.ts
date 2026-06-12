@@ -240,3 +240,15 @@ export function slashPreviewMatches(
   const details = mergeSlashCommandDetails(extra);
   return matchSlash(trigger.token, details.map(c => c.command));
 }
+
+/**
+ * Tab-completion target for the live `/`·`$` popup: the highlighted row when the
+ * user arrowed to one, else the TOP match (prefix hits sort first). Returns the
+ * completed line WITH a trailing space — arguments follow, and the space closes
+ * the keyword popup (a space means a real invocation is being typed). Pure.
+ */
+export function tabCompleteSelection(matches: readonly string[], selected: number): string | undefined {
+  if (matches.length === 0) return undefined;
+  const pick = matches[selected >= 0 && selected < matches.length ? selected : 0]!;
+  return `${pick} `;
+}

@@ -243,3 +243,14 @@ test("slashPreviewMatches: arrow-selection matches follow the mid-text token", (
   expect(slashPreviewMatches("do X then /mo", [], skills).slice(0, 2)).toEqual(["/model", "/models"]);
   expect(slashPreviewMatches("do X then $te done", [], skills)).toEqual([]);
 });
+
+import { tabCompleteSelection } from "../src/tui/components/slash";
+
+test("tabCompleteSelection: highlighted row wins, else top match; trailing space closes the popup", () => {
+  const matches = ["/model", "/models"];
+  expect(tabCompleteSelection(matches, -1)).toBe("/model ");  // no highlight → top (prefix-first) match
+  expect(tabCompleteSelection(matches, 1)).toBe("/models ");  // arrowed selection wins
+  expect(tabCompleteSelection(matches, 99)).toBe("/model ");  // out-of-range → top
+  expect(tabCompleteSelection([], 0)).toBeUndefined();        // nothing to complete
+  expect(tabCompleteSelection(["$spec-kit"], -1)).toBe("$spec-kit "); // $ skills complete the same way
+});

@@ -13,7 +13,7 @@ import { skillsPromptSection, loadSkills, formatSkill, buildSkillTask, getSkillF
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
-import { matchSlash, isSlashAttempt, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, type SlashCommandInfo } from "../tui/components/slash";
+import { matchSlash, isSlashAttempt, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, tabCompleteSelection, type SlashCommandInfo } from "../tui/components/slash";
 import { staticCompletionContext, readlineCompleter, formatCompletionPreview, tokenize, type CompletionContext } from "../tui/components/autocomplete";
 import { EVOLUTION_STAGES, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
@@ -2258,6 +2258,26 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             drawFooter(previewLines(typedLine, navIdx));
             return;
           }
+          // Tab: complete the line to the highlighted popup row (or the TOP match
+          // when nothing is highlighted) — `/mod`+Tab → `/model `, `$sp`+Tab →
+          // `$spec-kit `. Runs AFTER readline's own completer fired; overwriting
+          // rl.line here makes the popup's choice the deterministic final state
+          // (the completer's candidate dump is gated while the preview is armed).
+          if (key && key.name === "tab" && navMatches.length > 0) {
+            const completed = tabCompleteSelection(navMatches, navIdx);
+            if (completed) {
+              const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
+              rli.line = completed;
+              rli.cursor = completed.length;
+              rli._refreshLine?.();
+              typedLine = completed;
+              navMatches = slashPreviewMatches(typedLine, skillSlashDetails, resolvedSkills);
+              navIdx = -1;
+              pendingSelection = undefined;
+              drawFooter(previewLines(typedLine));
+              return;
+            }
+          }
           // Any other key edits the line: refresh the slash-keyword matches (if any),
           // reset the highlight, and show either the command preview or argument preview.
           typedLine = rl.line;
@@ -2552,10 +2572,24 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             ...history.slice(1).filter(m => m.role === "user" || m.role === "assistant").slice(-20),
             { role: "user", content: q },
           ];
-          const answer = await callLlm(side, { model: sessionModel, maxTokens: thinkingMaxTokens(sessionThinking) });
-          console.log(`btw> ${answer.trim()}`);
+          // Side questions are quick lookups: STREAM the reply (immediate feedback
+          // instead of a silent 10-30s wait that reads as "broken") and cap the
+          // reasoning budget at LOW — an xhigh session level made slow models burn
+          // a huge thinking budget before the first byte.
+          process.stdout.write("btw> ");
+          let streamed = "";
+          const answer = await callLlm(side, {
+            model: sessionModel,
+            maxTokens: thinkingMaxTokens("low"),
+            onToken: delta => {
+              streamed += delta;
+              process.stdout.write(delta);
+            },
+          });
+          if (!streamed.trim() && answer.trim()) process.stdout.write(answer.trim());
+          process.stdout.write("\n");
         } catch (err) {
-          console.log(`! ${friendlyProviderError(err)}`);
+          console.log(`\n! ${friendlyProviderError(err)}`);
         }
         continue;
       }

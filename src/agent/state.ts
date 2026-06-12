@@ -123,6 +123,9 @@ export interface WorkflowState {
   plan_path?: string;
   completed_tasks?: string[];
   pending_tasks?: string[];
+  /** team: the task the previous run failed on — surfaces a partial-edits
+   *  warning on resume (round-8). Cleared when the run resumes past it. */
+  failed_task?: string;
   approved?: boolean;
   /** ultragoal terminal outcome. */
   status?: string;
@@ -372,6 +375,51 @@ export async function clearWorkflowState(
   try {
     await fs.unlink(statePath);
   } catch {}
+}
+
+/**
+ * Cross-process run lock for a workflow engine (round-8, architect ref
+ * 7-Round7Workflow): two concurrent `jeo team` processes would read-modify-write
+ * team-state.json last-writer-wins — tasks executed twice, completions lost.
+ * O_EXCL lockfile carrying the holder's pid; a DEAD holder's stale lock is taken
+ * over once, a LIVE holder refuses with an actionable error. Returns a release fn.
+ */
+export async function acquireWorkflowRunLock(
+  skill: "team" | "ultragoal",
+  cwd: string = process.cwd(),
+): Promise<() => Promise<void>> {
+  const stateDir = path.join(getLocalJocDir(cwd), "state");
+  await fs.mkdir(stateDir, { recursive: true });
+  const lockPath = path.join(stateDir, `${skill}.lock`);
+  const payload = JSON.stringify({ pid: process.pid, at: Date.now() });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await fs.writeFile(lockPath, payload, { flag: "wx" });
+      return async () => {
+        await fs.unlink(lockPath).catch(() => {});
+      };
+    } catch {
+      let holder: { pid?: number } = {};
+      try {
+        holder = JSON.parse(await fs.readFile(lockPath, "utf-8")) as { pid?: number };
+      } catch { /* unreadable/torn lock → treat as stale */ }
+      const alive = typeof holder.pid === "number" && holder.pid > 0 && (() => {
+        try {
+          process.kill(holder.pid!, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+      if (alive) {
+        throw new Error(
+          `another 'jeo ${skill}' run (pid ${holder.pid}) holds ${lockPath} — wait for it to finish, or delete the lock file if that process is gone.`,
+        );
+      }
+      await fs.unlink(lockPath).catch(() => {}); // stale (dead/unreadable) → take over once
+    }
+  }
+  throw new Error(`could not acquire ${lockPath} even after stale-lock takeover.`);
 }
 
 /** Returns true if the agent is running in development mode (enables self-improvement). */

@@ -279,3 +279,9 @@
 - ultragoal 검증 연극 제거(HIGH): 기준마다 동일 글로벌 bun test(run/cli 텍스트 포함 시 무조건 green인 --help)를 돌려 조작된 기준별 ✅/❌ 매트릭스를 렛저에 기록하던 구조 — suite 1회 실행, 기준은 ⚠️ UNVERIFIED 정직 기록, status SUITE_GREEN/FAILED + suite_green 필드, 리포트 temp+rename 원자 쓰기. "검증이 실패할 수 없는 검증"은 검증이 아니다.
 - openai stream_options 호환(라운드5 #5): OpenAI-호환 로컬 백엔드가 옵션 필드에 400 시 1회 스트립 재시도 — 무관한 400은 블라인드 재시도 없음.
 - Verified: typecheck 0; full bun test 1202 pass / 0 fail (+8: workflow-integrity 4종 — 새플랜 재시작/동일플랜 재개/정직 검증/red suite, provider-empty-completion +2, 기타). plan 라운드7 렛저, improvements.md 갱신.
+[2026-06-12] Pass — 팝업 Tab 자동완성 + /btw 스트리밍 개선
+- Tab 자동완성: 입력창에서 `/`·`$` 팝업 리스트가 떠 있을 때 Tab이 하이라이트 행(화살표 선택) 또는 최상위 매치(프리픽스 우선)로 라인을 완성 — `/mod`+Tab→`/model `, `$sp`+Tab→`$spec-kit `. 후행 공백이 팝업을 닫아 바로 인자 입력. tabCompleteSelection() 순수 헬퍼(slash.ts) + 키프레스 Tab 분기(readline 자체 컴플리터가 먼저 돌아도 rl.line 덮어쓰기로 팝업 선택이 최종 상태; 후보 덤프는 게이트로 차단).
+- /btw(직전 패스분): 응답을 토큰 스트리밍으로 즉시 표출(무피드백 10-30초 침묵 = "고장" 체감 해소) + 사이드 질문은 reasoning LOW 캡(xhigh 세션에서 느린 모델이 첫 바이트 전에 거대 thinking 예산을 태우던 문제). haiku/antigravity 실호출 양쪽 `btw> OK` 검증.
+- 실동작 검증(tmux): `/mod`+Tab→`/model`, `/ag`+↓+Tab→`/agents` 입력창 실완성 캡처.
+- Tests: tabCompleteSelection 계약(하이라이트 우선/최상위 폴백/범위외/빈/$ 동작).
+- Verified: tsc 0; bun test 1206 pass / 0 fail; dist/jeo 재빌드.

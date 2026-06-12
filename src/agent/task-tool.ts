@@ -139,6 +139,10 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     const trace: string[] = [];
     let lastTarget = "";
     let currentStep = 0;
+    // Round-8 (architect ref 7-Round7Workflow): count the subagent's SUCCESSFUL
+    // mutating calls so the parent can audit a "Changed Files:" claim against
+    // observed reality instead of trusting the report's substring markers.
+    let mutationsOk = 0;
     opts.onEvent?.({ role: role.id, kind: "start", detail: taskText, maxSteps, model });
     const result = await runAgentLoop(history, {
       cwd,
@@ -160,6 +164,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
           }
         },
         onToolResult: (tool, success, output) => {
+          if (success && (tool === "write" || tool === "edit" || tool === "bash")) mutationsOk++;
           const label = lastTarget || tool;
           const summary = firstUsefulLine(output);
           const suffix = summary ? ` — ${summary}` : "";
@@ -179,7 +184,13 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     opts.onEvent?.({ role: role.id, kind: "done", detail, success: complete, step: result.steps, maxSteps, model });
     const header = `[${role.title} subagent] ${complete ? "completed" : "stopped"} in ${result.steps} step(s) on ${model}.`;
     const body = trace.length ? `\nSteps:\n${trace.join("\n")}` : "";
-    return { success: complete, output: `${header}${body}\n\nResult:\n${fenceSubagentReport(detail)}` };
+    // Parent-side audit: a mutating role that "completed" without ONE successful
+    // write/edit/bash cannot have changed anything — flag the claim as unverified
+    // (the report's markers prove formatting, not work).
+    const audit = complete && !role.readOnly && mutationsOk === 0
+      ? `\n[parent audit] No successful write/edit/bash was observed in this run — treat any "Changed Files:" claims above as UNVERIFIED.`
+      : "";
+    return { success: complete, output: `${header}${body}\n\nResult:\n${fenceSubagentReport(detail)}${audit}` };
   };
 
   return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {

@@ -9,6 +9,7 @@
  * no remote backend, disable with JOC_NO_MEMORY=1.
  */
 import * as fs from "node:fs/promises";
+import { spawn as nodeSpawn } from "node:child_process";
 import * as path from "node:path";
 import { callLlm, type Message } from "./loop";
 import { jeoEnv } from "../util/env";
@@ -126,5 +127,75 @@ export async function distillSessionMemory(
     return { updated: true };
   } catch (err: any) {
     return { updated: false, skipped: `distill failed: ${err?.message ?? String(err)}` };
+  }
+}
+
+// ── Detached background distillation (round-16) ──
+// The exit-path `await distillSessionMemory(...)` blocked /exit and ^C^C for up
+// to 20s on a final LLM call. Quitting must be INSTANT: the parent now writes a
+// payload file, spawns a detached `jeo memory-distill <file>` child (stdio
+// ignored, unref'd), and returns immediately — the hermes loop still happens,
+// just not on the user's clock.
+
+/** Self-invocation argv for the distill child (pure — mirrors tmuxLaunchCommand's
+ *  three runtime shapes: compiled /$bunfs virtual path → run the binary itself;
+ *  .ts/.js source → through the runtime; anything else → directly). */
+export function distillInvocation(argv1: string | undefined, execPath: string, cwd: string, payloadPath: string): string[] {
+  const entrypoint = argv1 ?? "";
+  let base: string[];
+  if (entrypoint === "" || entrypoint.startsWith("/$bunfs/") || entrypoint.startsWith("B:\\~BUN\\")) {
+    base = [execPath];
+  } else {
+    const resolved = path.isAbsolute(entrypoint) ? entrypoint : path.resolve(cwd, entrypoint);
+    base = /\.(ts|js|mjs)$/.test(entrypoint) ? [execPath, resolved] : [resolved];
+  }
+  return [...base, "memory-distill", payloadPath];
+}
+
+type SpawnLike = (opts: { cmd: string[]; cwd: string; stdin: "ignore"; stdout: "ignore"; stderr: "ignore" }) => { unref(): void };
+
+/** Write the payload and hand distillation to a detached child. Returns true when
+ *  a child was spawned. Best-effort: failure means no memory update, never a slow exit. */
+export async function spawnDetachedDistill(
+  history: Message[],
+  cwd: string,
+  model: string | undefined,
+  spawnImpl?: SpawnLike,
+): Promise<boolean> {
+  if (jeoEnv("NO_MEMORY") === "1") return false;
+  if (history.filter(m => m.role !== "system").length < MIN_HISTORY_MESSAGES) return false;
+  try {
+    const dir = path.join(cwd, ".joc", "memory");
+    await fs.mkdir(dir, { recursive: true });
+    const payloadPath = path.join(dir, `pending-distill-${process.pid}-${Date.now()}.json`);
+    await fs.writeFile(payloadPath, JSON.stringify({ model, messages: history }), "utf-8");
+    const cmd = distillInvocation(process.argv[1], process.execPath, cwd, payloadPath);
+    // node:child_process with detached:true (NOT Bun.spawn): the child must get
+    // its OWN session/process group, or the tmux pane / terminal closing on exit
+    // kills it before the distill call completes (observed live).
+    const spawn = spawnImpl ?? ((o: Parameters<SpawnLike>[0]) => {
+      const child = nodeSpawn(o.cmd[0]!, o.cmd.slice(1), { cwd: o.cwd, detached: true, stdio: "ignore" });
+      return { unref: () => child.unref() };
+    });
+    spawn({ cmd, cwd, stdin: "ignore", stdout: "ignore", stderr: "ignore" }).unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** CLI worker for the detached child: payload → distill → cleanup. Silent by design. */
+export async function runMemoryDistillCommand(args: string[]): Promise<void> {
+  const payloadPath = (args[0] ?? "").trim();
+  if (!payloadPath) return;
+  try {
+    const payload = JSON.parse(await fs.readFile(payloadPath, "utf-8")) as { model?: string; messages?: Message[] };
+    if (Array.isArray(payload.messages)) {
+      await distillSessionMemory(payload.messages, process.cwd(), { model: payload.model });
+    }
+  } catch {
+    // best-effort — a broken payload must not leave error noise in a detached child
+  } finally {
+    await fs.unlink(payloadPath).catch(() => {});
   }
 }

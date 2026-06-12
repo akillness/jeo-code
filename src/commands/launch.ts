@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, type AgentLoopEvents } from "../agent/engine";
 import { initialDynamicStepLimit } from "../agent/step-budget";
-import { memoryPromptSection, distillSessionMemory } from "../agent/memory";
+import { memoryPromptSection, spawnDetachedDistill } from "../agent/memory";
 import { createTaskTool, TASK_TOOL_PROTOCOL_LINE, type TaskSubEvent } from "../agent/task-tool";
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { LaunchTui } from "../tui/app";
@@ -476,17 +476,35 @@ interface AbortHarnessOptions {
   onNoise?: () => void;
   /** Invoked with printable keyboard input received while the live turn owns stdin. */
   onBufferedInput?: (chunk: string) => void;
+  /** True while the input queue is inside a bracketed paste (mid-paste chunks
+   *  carry no marker and must keep routing to the queue, not the noise path). */
+  pasteActive?: () => boolean;
 }
+
+/** Bracketed-paste markers (DECSET 2004): terminals wrap pasted text in these so
+ *  an app can treat the paste as DATA instead of keystrokes — the prompt_toolkit
+ *  paste contract. jeo enables the mode for the REPL TTY so a multi-line paste
+ *  arrives atomically and executes one command per line, in order. */
+export const PASTE_START = "\u001b[200~";
+export const PASTE_END = "\u001b[201~";
 
 export interface PromptInputQueue {
   pendingLines: string[];
   partial: string;
+  /** Complete lines that arrived inside a bracketed PASTE: intentional batch
+   *  commands, served one per prompt in order. Never folded into the typed-line
+   *  prefill (that contract is for keystrokes typed during a live turn). */
+  pastedLines: string[];
+  /** True while a bracketed paste spans chunks (between \x1b[200~ and \x1b[201~). */
+  inPaste: boolean;
 }
 
-export function queuePromptInputChunk(state: PromptInputQueue, chunk: string): boolean {
-  if (!chunk || chunk.includes("\u001b") || chunk.includes("\u0003")) return false;
+/** Typed (non-paste) keystrokes: printable chars build the partial, Enter promotes
+ *  it to pendingLines, backspace edits — ESC/ctrl noise segments are rejected. */
+function feedTypedSegment(state: PromptInputQueue, segment: string): boolean {
+  if (!segment || segment.includes("\u001b") || segment.includes("\u0003")) return false;
   let accepted = false;
-  const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const normalized = segment.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   for (const ch of Array.from(normalized)) {
     if (ch === "\n") {
       if (state.partial.length > 0) accepted = true;
@@ -500,6 +518,48 @@ export function queuePromptInputChunk(state: PromptInputQueue, chunk: string): b
     } else if (ch === "\t" || ch >= " ") {
       state.partial += ch;
       accepted = true;
+    }
+  }
+  return accepted;
+}
+
+/** Pasted body: pure DATA — newlines split commands into pastedLines, the trailing
+ *  partial stays editable, and control bytes (incl. any stray ESC from copied ANSI
+ *  text) are dropped instead of being interpreted as keystrokes. */
+function feedPasteBody(state: PromptInputQueue, body: string): boolean {
+  if (!body) return false;
+  let accepted = false;
+  const normalized = body.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  for (const ch of Array.from(normalized)) {
+    if (ch === "\n") {
+      state.pastedLines.push(state.partial);
+      state.partial = "";
+      accepted = true;
+    } else if (ch === "\t" || ch >= " ") {
+      state.partial += ch;
+      accepted = true;
+    }
+  }
+  return accepted;
+}
+
+export function queuePromptInputChunk(state: PromptInputQueue, chunk: string): boolean {
+  if (!chunk) return false;
+  let accepted = false;
+  let rest = chunk;
+  while (rest.length > 0) {
+    if (state.inPaste) {
+      const end = rest.indexOf(PASTE_END);
+      const body = end === -1 ? rest : rest.slice(0, end);
+      if (end !== -1) state.inPaste = false;
+      rest = end === -1 ? "" : rest.slice(end + PASTE_END.length);
+      if (feedPasteBody(state, body)) accepted = true;
+    } else {
+      const start = rest.indexOf(PASTE_START);
+      const plain = start === -1 ? rest : rest.slice(0, start);
+      if (start !== -1) state.inPaste = true;
+      rest = start === -1 ? "" : rest.slice(start + PASTE_START.length);
+      if (feedTypedSegment(state, plain)) accepted = true;
     }
   }
   return accepted;
@@ -544,6 +604,14 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
   const handleData = (chunk: string | Uint8Array) => {
     if (!captureEsc || controller.signal.aborted) return;
     const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    // Bracketed paste is DATA, not keystrokes (the prompt_toolkit contract):
+    // marker-carrying and mid-paste chunks go straight to the input queue BEFORE
+    // any ESC interpretation — the markers themselves contain ESC, and a paste
+    // must never be classified as cancel/noise.
+    if (text.includes(PASTE_START) || opts.pasteActive?.()) {
+      opts.onBufferedInput?.(text);
+      return;
+    }
     const escAt = text.indexOf("\u001b");
     const sigintAt = text.indexOf("\u0003");
     const controlAt =
@@ -3504,12 +3572,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
     }
   disarmPreview(); // clear footer + restore full-screen scrolling before leaving the REPL
-  // hermes-style experience distill (plan/gjc-inheritance.md B6): a session that did
-  // real work leaves durable learnings in .joc/memory/MEMORY.md for the next session.
-  // Best-effort with a hard timeout — memory must never block or break exit.
+  // hermes-style experience distill (plan/gjc-inheritance.md B6) — now handed to a
+  // DETACHED child (round-16): /exit and ^C^C return the shell IMMEDIATELY instead
+  // of blocking up to 20s on a final LLM call. The child writes MEMORY.md atomically.
   if (sessionUsage.turns > 0) {
-    const distill = await distillSessionMemory(history, cwd, { model: sessionModel || defaultModel });
-    if (distill.updated) console.log("(session memory updated — .joc/memory/MEMORY.md)");
+    const spawned = await spawnDetachedDistill(history, cwd, sessionModel || defaultModel);
+    if (spawned) console.log(chalk.gray("(session memory distilling in background)"));
   }
   // gjc-parity resume pointer (logs/gjc-tui-study analysis Gap C): leave the exact
   // resume command in scrollback on exit, mirroring the --list handler's convention.

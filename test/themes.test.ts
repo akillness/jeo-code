@@ -12,6 +12,14 @@ import {
   DEFAULT_DIFF_PALETTE,
 } from "../src/tui/components/themes";
 import { EVOLUTION_STAGE_COUNT } from "../src/tui/components/evolution";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Config isolation: resolveTheme falls back to the GLOBAL config's theme when the
+// env carries none — without pointing JOC_CONFIG_DIR at an empty dir, this test
+// breaks the moment the developer's real ~/.joc/config.json has a theme set.
+const ISO = { JOC_CONFIG_DIR: mkdtempSync(join(tmpdir(), "jeo-themes-iso-")) };
 
 test("every theme has a length-5 gradient table", () => {
   for (const t of THEMES) {
@@ -46,30 +54,30 @@ test("resolveTheme reads JOC_TUI_THEME from env or config with priorities", () =
   expect(resolveTheme({}, { tui: { theme: "red-claw" } }).name).toBe("red-claw");
 
   // 3. NO_COLOR fallback
-  expect(resolveTheme({ NO_COLOR: "1" }).name).toBe("mono");
+  expect(resolveTheme({ ...ISO, NO_COLOR: "1" }).name).toBe("mono");
 
   // 4. COLORFGBG appearance detection (needs color capability to not fallback to mono)
   // 0-6, 8, 232-243: dark -> cosmic
-  expect(resolveTheme({ COLORFGBG: "7;0", COLORTERM: "truecolor" }).name).toBe("cosmic");
-  expect(resolveTheme({ COLORFGBG: "15;8", COLORTERM: "truecolor" }).name).toBe("cosmic");
+  expect(resolveTheme({ ...ISO, COLORFGBG: "7;0", COLORTERM: "truecolor" }).name).toBe("cosmic");
+  expect(resolveTheme({ ...ISO, COLORFGBG: "15;8", COLORTERM: "truecolor" }).name).toBe("cosmic");
   // 7, 9-15, 244-255: light -> blue-crab
-  expect(resolveTheme({ COLORFGBG: "0;7", COLORTERM: "truecolor" }).name).toBe("blue-crab");
-  expect(resolveTheme({ COLORFGBG: "0;15", COLORTERM: "truecolor" }).name).toBe("blue-crab");
-  expect(resolveTheme({ COLORFGBG: "0;244", COLORTERM: "truecolor" }).name).toBe("blue-crab");
+  expect(resolveTheme({ ...ISO, COLORFGBG: "0;7", COLORTERM: "truecolor" }).name).toBe("blue-crab");
+  expect(resolveTheme({ ...ISO, COLORFGBG: "0;15", COLORTERM: "truecolor" }).name).toBe("blue-crab");
+  expect(resolveTheme({ ...ISO, COLORFGBG: "0;244", COLORTERM: "truecolor" }).name).toBe("blue-crab");
 
   // 16-231 (color cube): Y = 0.299 * R + 0.587 * G + 0.114 * B
   // index 16 -> r=0, g=0, b=0 -> Y=0 -> dark -> cosmic
-  expect(resolveTheme({ COLORFGBG: "0;16", COLORTERM: "truecolor" }).name).toBe("cosmic");
+  expect(resolveTheme({ ...ISO, COLORFGBG: "0;16", COLORTERM: "truecolor" }).name).toBe("cosmic");
   // index 231 -> r=5, g=5, b=5 -> Y=255 -> light -> blue-crab
-  expect(resolveTheme({ COLORFGBG: "0;231", COLORTERM: "truecolor" }).name).toBe("blue-crab");
+  expect(resolveTheme({ ...ISO, COLORFGBG: "0;231", COLORTERM: "truecolor" }).name).toBe("blue-crab");
 
   // 5. Unknown fallback
   if (process.platform !== "darwin") {
-    expect(resolveTheme({ COLORTERM: "truecolor" }).name).toBe("cosmic");
+    expect(resolveTheme({ ...ISO, COLORTERM: "truecolor" }).name).toBe("cosmic");
   } else {
-    expect(["cosmic", "blue-crab"]).toContain(resolveTheme({ COLORTERM: "truecolor" }).name);
+    expect(["cosmic", "blue-crab"]).toContain(resolveTheme({ ...ISO, COLORTERM: "truecolor" }).name);
   }
-  expect(resolveTheme({}).name).toBe("mono");
+  expect(resolveTheme({ ...ISO }).name).toBe("mono");
 });
 
 test("listThemes returns all names + descriptions including red-claw and blue-crab", () => {

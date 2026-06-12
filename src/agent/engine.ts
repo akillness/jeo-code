@@ -328,7 +328,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // as-is, then once more with an explicit re-grounding note; only a third
   // refusal in the turn surfaces the (friendly) error. Bounded per turn so a
   // genuinely refused request can never burn billed calls in a loop.
-  const MAX_REFUSAL_RETRIES = 2;
+  const MAX_REFUSAL_RETRIES = 3;
   let refusalRetries = 0;
   const VERIFY_SIGNAL_RE = /\b(test|tests|tsc|typecheck|lint|build|check|spec|pytest|vitest|jest)\b/i;
   let lastSig = "";
@@ -420,28 +420,46 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       //      NEUTRAL continuation note. The note deliberately never mentions the
       //      safety layer: arguing with the filter reads as a jailbreak attempt
       //      and escalates instead of recovering.
+      //   3) guidance strip — with tool results already gone, the remaining
+      //      classifier-trigger candidate is the repo-authored prose injected
+      //      into the SYSTEM prompt (<project_context> — AGENTS.md / rules can
+      //      contain text that trips content filters even though the task is
+      //      routine). Strip that block for the rest of the turn and retry once;
+      //      core instructions stay intact. Field case: `$gjc init` inside a
+      //      repo whose guidance files refuse-trip the OAuth classifier.
       if (isRefusalError(err) && refusalRetries < MAX_REFUSAL_RETRIES) {
         refusalRetries++;
         if (refusalRetries === 1) {
           ev.onNotice?.("provider refused the last call (no content) — retrying the same step");
           continue; // free resend: the step counter is unchanged
         }
-        const res = trimToolResultsInPlace(history, { budgetTokens: 0, keepRecent: 0 });
-        ev.onNotice?.(
-          res.trimmed > 0
-            ? `provider refused again — reset ${res.trimmed} tool result(s) from the context and retrying (refusals require a context reset)`
-            : "provider refused again — continuing with a fresh instruction",
-        );
-        history.push({
-          role: "user",
-          content:
-            "(continuation) The previous response returned no content and older tool outputs were elided from this conversation. " +
-            "Re-assess the task from the remaining context and reply with exactly one JSON tool call " +
-            '{"tool":"<name>","arguments":{...}} — re-run any tool whose output you still need, ' +
-            'or send {"tool":"done","arguments":{"reason":"<summary>"}} if the task is finished.',
-        });
-        step++;
-        continue;
+        if (refusalRetries === 2) {
+          const res = trimToolResultsInPlace(history, { budgetTokens: 0, keepRecent: 0 });
+          ev.onNotice?.(
+            res.trimmed > 0
+              ? `provider refused again — reset ${res.trimmed} tool result(s) from the context and retrying (refusals require a context reset)`
+              : "provider refused again — continuing with a fresh instruction",
+          );
+          history.push({
+            role: "user",
+            content:
+              "(continuation) The previous response returned no content and older tool outputs were elided from this conversation. " +
+              "Re-assess the task from the remaining context and reply with exactly one JSON tool call " +
+              '{"tool":"<name>","arguments":{...}} — re-run any tool whose output you still need, ' +
+              'or send {"tool":"done","arguments":{"reason":"<summary>"}} if the task is finished.',
+          });
+          step++;
+          continue;
+        }
+        const sys = history[0];
+        if (sys?.role === "system" && sys.content.includes("<project_context>")) {
+          const stripped = sys.content.replace(/\n*<project_context>[\s\S]*?<\/project_context>/, "").trimEnd();
+          history[0] = { ...sys, content: stripped }; // replace, never mutate (identity caches)
+          ev.onNotice?.("provider refused a third time — removed project-context guidance from the system prompt and retrying once more");
+          continue; // same step, reduced system prompt
+        }
+        // Nothing left to strip — fall through to the friendly terminal error
+        // instead of burning an identical billed call.
       }
       const message = friendlyProviderError(err);
       // The error IS the turn's doneReason and every caller displays that — emitting a

@@ -92,6 +92,17 @@ export const ConfigSchema = z
           maxSteps: z.number().int().min(1).optional(),
           /** Per-role reasoning budget; absent = inherit the global thinkingLevel. */
           thinking: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
+          // ─── Custom-role declaration (SYSTEM-driven registry) ───
+          // An entry under a NON-bundled id that sets any of these becomes a
+          // first-class subagent role at runtime — no code change required.
+          /** Human title shown in /agents listings. */
+          title: z.string().optional(),
+          /** One-line purpose (also fed into the default prompt template). */
+          description: z.string().optional(),
+          /** Role prompt template ({{TOOL_PROTOCOL}}/{{ROLE_TITLE}}/{{ROLE_DESCRIPTION}} supported). */
+          prompt: z.string().optional(),
+          /** Custom roles default to READ-ONLY; set false to allow edits. */
+          readOnly: z.boolean().optional(),
         }),
       )
       .optional(),

@@ -77,11 +77,23 @@ export interface Config {
     failFastPatterns?: string[];
   };
   /**
-   * Per-subagent-role overrides (gjc role-agent parity). Keyed by role id
-   * (executor / planner / architect / critic); each may pin a model and/or a
-   * tool-loop step budget.
+   * Per-subagent-role overrides (gjc role-agent parity), keyed by role id.
+   * Bundled ids (executor / planner / architect / critic) take model / maxSteps /
+   * thinking pins. A NON-bundled id that declares `title`, `description`, or
+   * `prompt` becomes a config-defined CUSTOM ROLE (system-driven registry —
+   * see rolesFromConfig). Custom roles are read-only unless `readOnly: false`.
    */
-  subagents?: { [roleId: string]: { model?: string; maxSteps?: number; thinking?: "minimal" | "low" | "medium" | "high" | "xhigh" } };
+  subagents?: {
+    [roleId: string]: {
+      model?: string;
+      maxSteps?: number;
+      thinking?: "minimal" | "low" | "medium" | "high" | "xhigh";
+      title?: string;
+      description?: string;
+      prompt?: string;
+      readOnly?: boolean;
+    };
+  };
   /**
    * Model role tiers (gjc `--smol`/`--slow`/`--plan` parity). Each falls back to
    * `defaultModel`. Env `JOC_SMOL_MODEL`/`JOC_SLOW_MODEL`/`JOC_PLAN_MODEL` fill gaps.

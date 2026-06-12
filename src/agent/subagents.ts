@@ -167,7 +167,7 @@ export function resolveSubagentModel(roleId: string, config: Pick<Config, "defau
 export function resolveSubagentMaxSteps(roleId: string, config: Pick<Config, "subagents">): number {
   const entry = config.subagents?.[normalizeRoleId(roleId)];
   if (typeof entry?.maxSteps === "number" && entry.maxSteps > 0) return entry.maxSteps;
-  return getSubagentRole(roleId)?.defaultMaxSteps ?? 15;
+  return getSubagentRole(roleId, config)?.defaultMaxSteps ?? 15;
 }
 
 function renderRolePrompt(template: string, role: SubagentRole): string {

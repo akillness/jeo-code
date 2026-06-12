@@ -2,7 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, type AgentLoopEvents } from "../agent/engine";
 import { initialDynamicStepLimit } from "../agent/step-budget";
 import { memoryPromptSection, spawnDetachedDistill } from "../agent/memory";
-import { createTaskTool, TASK_TOOL_PROTOCOL_LINE, type TaskSubEvent } from "../agent/task-tool";
+import { createTaskTool, taskToolProtocolLine, type TaskSubEvent } from "../agent/task-tool";
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { LaunchTui } from "../tui/app";
 import { runDeepInterviewEngine } from "./deep-interview";
@@ -34,7 +34,7 @@ import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLev
 
 import { listAliases } from "../ai/model-registry";
 
-import { SUBAGENT_ROLES, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting, applyTargetChoices } from "../agent/subagents";
+import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting, applyTargetChoices } from "../agent/subagents";
 import { SelectList, renderSelectList } from "../tui/components/select-list";
 import {
   formatModelLine,
@@ -474,6 +474,10 @@ interface AbortHarnessOptions {
   onHardExit?: () => void;
   /** Invoked when stray escape-sequence noise (wheel scroll etc.) arrives mid-turn. */
   onNoise?: () => void;
+  /** Invoked when Ctrl+O (\u000f) is pressed mid-turn — the detail-view binding.
+   *  Without this hook the byte would be swallowed into the buffered input queue,
+   *  which is why Ctrl+O historically "did nothing" while the TUI owned stdin. */
+  onDetailKey?: () => void;
   /** Invoked with printable keyboard input received while the live turn owns stdin. */
   onBufferedInput?: (chunk: string) => void;
   /** True while the input queue is inside a bracketed paste (mid-paste chunks
@@ -610,6 +614,13 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
     // must never be classified as cancel/noise.
     if (text.includes(PASTE_START) || opts.pasteActive?.()) {
       opts.onBufferedInput?.(text);
+      return;
+    }
+    // Ctrl+O — detail view. Exact-match like the lone-ESC cancel: a raw \u000f
+    // keystroke arrives as its own chunk; embedded \u000f inside pasted/streamed
+    // data must NOT trigger the view.
+    if (text === "\u000f") {
+      opts.onDetailKey?.();
       return;
     }
     const escAt = text.indexOf("\u001b");
@@ -1122,8 +1133,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     WORKING_DISCIPLINE + "\n\n" +
     "Always verify (run tests / execute the program) before calling done." +
     "\nWhen you have finished the user's request, or need to reply to or ask the user something, call done with {\"reason\": <your natural-language reply to the user>}. The reason text is shown to the user as your message." +
-    (allowedTools.has("task") ? "\n\nDelegation: " + TASK_TOOL_PROTOCOL_LINE +
-    " Call task with {\"role\": \"executor|planner|architect|critic\", \"task\": <assignment>, \"context\": <optional>} to hand a focused slice to a subagent." : "") +
+    (allowedTools.has("task") ? "\n\nDelegation: " + taskToolProtocolLine(cfg) +
+    " Call task with {\"role\": <one of the advertised roles>, \"task\": <assignment>, \"context\": <optional>} to hand a focused slice to a subagent." : "") +
     (allowedTools.has("todo") ? "\n\nPlanning: " + TODO_TOOL_PROTOCOL_LINE : "") +
     (effectiveNoSkills ? "" :
     "\n\nJOC workflow routing:\n" +
@@ -1176,6 +1187,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       base.onToolResult?.(tool, success, output);
     },
   });
+  /** The Ctrl+O detail block (shared by the prompt-time keypress handler and the
+   *  mid-turn TUI binding): full last reply + full last tool output. */
+  const composeDetailLines = (): string[] => {
+    if (!lastReply && !lastToolDetail) return [];
+    const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
+    const toolDetail = lastToolDetail
+      ? [sep, `detail · full last tool output (${lastToolDetail.tool})`, sep, ...lastToolDetail.output.split("\n").slice(0, 2000).map(sanitizeForTerminal)]
+      : [];
+    const replyDetail = lastReply
+      ? [sep, "detail · full last response (ctrl+o)", sep, ...renderMarkdownTables(lastReply).split("\n")]
+      : [];
+    return [...replyDetail, ...toolDetail, sep];
+  };
 
   // pi-style session persistence: resume an existing session or create a new one.
   let sessionId: string | undefined;
@@ -1264,6 +1288,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         captureEsc: !!tui,
         onNoise: () => tui?.repaint(),
         pasteActive: () => queueBusyPasteActive?.() ?? false,
+        // Ctrl+O mid-turn: flush the detail view into the TUI ledger/scrollback.
+        onDetailKey: () => {
+          const detail = composeDetailLines();
+          if (detail.length === 0 || !tui) return;
+          tui.showDetail(detail);
+        },
         onBufferedInput: chunk => {
           if (!tui) return;
           const queued = queueBusyInput?.(chunk) ?? false;
@@ -2348,14 +2378,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // scrollback as a detail view, then restore the boxed footer. (Cmd+O is intercepted
       // by the OS/terminal and never reaches the app, so Ctrl+O is the portable binding.)
       if (key?.ctrl && key.name === "o") {
-        if (!lastReply && !lastToolDetail) return;
+        const detail = composeDetailLines();
+        if (detail.length === 0) return;
         const wasArmed = previewArmed;
         if (wasArmed) disarmPreview();
-        const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
-        const toolDetail = lastToolDetail
-          ? [sep, `detail · full last tool output (${(lastToolDetail as { tool: string; output: string }).tool})`, sep, ...(lastToolDetail as { tool: string; output: string }).output.split("\n").slice(0, 2000).map(sanitizeForTerminal)]
-          : [];
-        logLines([sep, "detail · full last response (ctrl+o)", sep, ...renderMarkdownTables(lastReply).split("\n"), ...toolDetail, sep]);
+        logLines(detail);
         if (wasArmed) { armPreview(); drawFooter(previewLines(typedLine, navIdx)); }
         return;
       }
@@ -2811,7 +2838,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (input === "/tools") {
         console.log("Tools visible to the agent:");
         for (const line of TOOL_PROTOCOL.split("\n")) console.log(`  ${line}`);
-        console.log(`  ${TASK_TOOL_PROTOCOL_LINE}`);
+        console.log(`  ${taskToolProtocolLine(await readGlobalConfig())}`);
         console.log(`  ${TODO_TOOL_PROTOCOL_LINE}`);
         continue;
       }
@@ -3086,26 +3113,26 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const cfgNow = await readGlobalConfig();
         if (!roleArg || roleArg === "/" || roleArg === "?" || roleArg.toLowerCase() === "help") {
           console.log("Subagent roles (used by 'jeo team'):");
-          for (const line of formatAgentsPanel(SUBAGENT_ROLES, r => ({
+          for (const line of formatAgentsPanel(allSubagentRoles(cfgNow), r => ({
             model: resolveSubagentModel(r.id, cfgNow),
             maxSteps: resolveSubagentMaxSteps(r.id, cfgNow),
             thinking: resolveSubagentThinking(r.id, cfgNow),
           }))) console.log(line);
           console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  provider: /agents <role> provider <name> [model]  ·  steps: /agents <role> maxSteps <N>");
           console.log("Tip: set a role while choosing models with /model subagent <role> [model|#N]");
-          console.log("Available: executor, planner, architect, critic");
+          console.log(`Available: ${allSubagentRoles(cfgNow).map(r => r.id).join(", ")} (declare custom roles in config.subagents)`);
           console.log("Subcommands: <role> <model|#N>, <role> provider <name> [model], <role> maxSteps <N>, <role> reset");
           // Interactive editor (TTY): role picker → action picker → live model
           // picker / reset — the arrows+Enter way to CHANGE an existing setting.
           const rolePick = await pickFromOptions(
             "Edit a subagent role (ESC to skip)",
-            SUBAGENT_ROLES.map(r => ({
+            allSubagentRoles(cfgNow).map(r => ({
               value: r.id,
               label: `${r.id} — ${r.title}`,
               hint: `${resolveSubagentModel(r.id, cfgNow)} · ${resolveSubagentMaxSteps(r.id, cfgNow)} steps${cfgNow.subagents?.[r.id]?.model ? "" : " (default)"}`,
             })),
           );
-          const editRole = rolePick ? getSubagentRole(rolePick) : undefined;
+          const editRole = rolePick ? getSubagentRole(rolePick, cfgNow) : undefined;
           if (!editRole) continue;
           const action = await pickFromOptions(`${editRole.title} — choose action`, [
             { value: "model", label: "change model", hint: resolveSubagentModel(editRole.id, cfgNow) },
@@ -3126,9 +3153,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           }
           continue;
         }
-        const role = getSubagentRole(roleArg);
+        const role = getSubagentRole(roleArg, cfgNow);
         if (!role) {
-          console.log(`Unknown role '${roleArg}'. Known: ${SUBAGENT_ROLES.map(r => r.id).join(", ")}.`);
+          console.log(`Unknown role '${roleArg}'. Known: ${allSubagentRoles(cfgNow).map(r => r.id).join(", ")}.`);
           continue;
         }
         if (modelArg?.toLowerCase() === "reset") {

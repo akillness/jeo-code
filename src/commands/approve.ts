@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
+  readGlobalConfig,
   readWorkflowState,
   writeWorkflowState,
 } from "../agent/state";
@@ -85,11 +86,12 @@ export async function runApproveCommand(args: string[] = []): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    const unknown = [...new Set(parsed.data.steps.map(s => s.role?.trim()).filter((r): r is string => !!r && !getSubagentRole(r)))];
+    const cfg = await readGlobalConfig();
+    const unknown = [...new Set(parsed.data.steps.map(s => s.role?.trim()).filter((r): r is string => !!r && !getSubagentRole(r, cfg)))];
     if (unknown.length > 0) {
       console.log(
         `[ERROR] Refusing to approve: plan references unknown subagent role(s): ${unknown.join(", ")}.\n` +
-        `  Known roles: ${subagentRoleIds().join(", ")}. Fix ${resolvedInputPath} or re-run 'jeo ralplan'.`,
+        `  Known roles: ${subagentRoleIds(cfg).join(", ")}. Fix ${resolvedInputPath} or re-run 'jeo ralplan'.`,
       );
       process.exitCode = 1;
       return;

@@ -55,11 +55,18 @@ export interface TaskToolOptions {
 /** Max concurrent read-only subagents in a fan-out batch. */
 const MAX_FANOUT = 4;
 
-/** One-line protocol description appended to the launch system prompt. */
-export const TASK_TOOL_PROTOCOL_LINE =
-  `task   {role, task|tasks[], context?}  — delegate to a subagent ` +
-  `(role: ${subagentRoleIds().join("|")}; executor can edit, planner/architect/critic are read-only). ` +
-  `Pass 'tasks' (array) to fan out — read-only roles run in parallel, executor serially. Integrate the findings yourself.`;
+/** One-line protocol description appended to the launch system prompt. Pass a
+ *  config so CONFIG-DECLARED custom roles are advertised to the model too. */
+export function taskToolProtocolLine(config?: Pick<Config, "subagents">): string {
+  return (
+    `task   {role, task|tasks[], context?}  — delegate to a subagent ` +
+    `(role: ${subagentRoleIds(config).join("|")}; executor can edit, planner/architect/critic are read-only). ` +
+    `Pass 'tasks' (array) to fan out — read-only roles run in parallel, executor serially. Integrate the findings yourself.`
+  );
+}
+
+/** @deprecated static snapshot (bundled roles only) — prefer taskToolProtocolLine(config). */
+export const TASK_TOOL_PROTOCOL_LINE = taskToolProtocolLine();
 
 /**
  * A concise, gjc-style label for a subagent's tool call — the actual TARGET (file / command /
@@ -195,9 +202,9 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
 
   return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {
     const roleArg = typeof args.role === "string" ? args.role.trim() : "";
-    const role = roleArg ? getSubagentRole(roleArg) : defaultSubagentRole();
+    const role = roleArg ? getSubagentRole(roleArg, opts.config) : defaultSubagentRole();
     if (!role) {
-      return { success: false, output: "", error: `Unknown subagent role '${roleArg}'. Valid roles: ${subagentRoleIds().join(", ")}.` };
+      return { success: false, output: "", error: `Unknown subagent role '${roleArg}'. Valid roles: ${subagentRoleIds(opts.config).join(", ")}.` };
     }
     const ctx = (c: unknown) => (typeof c === "string" && c.trim() ? `\n\nContext:\n${c.trim()}` : "");
 
@@ -256,7 +263,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     // Single-task form.
     const taskText = String(args.task ?? args.prompt ?? args.assignment ?? "").trim();
     if (!taskText) {
-      return { success: false, output: "", error: `task tool requires a non-empty 'task' (or a 'tasks' array). Valid roles: ${subagentRoleIds().join(", ")}.` };
+      return { success: false, output: "", error: `task tool requires a non-empty 'task' (or a 'tasks' array). Valid roles: ${subagentRoleIds(opts.config).join(", ")}.` };
     }
     return runOne(role, taskText, ctx(args.context), cwd);
   };

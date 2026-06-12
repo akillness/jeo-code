@@ -454,6 +454,16 @@ export class LaunchTui {
     };
   }
 
+  /** Ctrl+O detail view, mid-turn: flush the full last reply / tool output into
+   *  the scrollback ledger as one card-spaced block. The harness owns the
+   *  keystroke (raw stdin); the TUI only renders. No-op after finish() — the
+   *  prompt-time readline binding owns the key from then on. */
+  showDetail(lines: string[]): void {
+    if (this.finished || lines.length === 0) return;
+    this.appendLedger(lines.join("\n") + "\n", "card");
+    this.draw();
+  }
+
   /** Append a completed progress-ledger line. In inline mode the line is flushed
    *  straight into normal scrollback ABOVE the live frame, so tmux / terminal
    *  mouse-wheel can review the full progress history mid-turn (gjc-style); the

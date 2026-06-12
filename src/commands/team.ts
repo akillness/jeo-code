@@ -234,20 +234,21 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
     return { ok: false, reason: "Plan is not in the expected shape" };
   }
 
+  const teamCfg = await readGlobalConfig();
   const unknownRoles = parsed.data.steps
     .map(step => step.role?.trim())
-    .filter((role): role is string => !!role && !getSubagentRole(role));
+    .filter((role): role is string => !!role && !getSubagentRole(role, teamCfg));
   if (unknownRoles.length > 0) {
     const unique = [...new Set(unknownRoles)];
     log(
       `[ERROR] Plan references unknown subagent role(s): ${unique.join(", ")}. ` +
-      `Known roles: ${subagentRoleIds().join(", ")}. Fix ${planPath} or re-run 'jeo ralplan'.`
+      `Known roles: ${subagentRoleIds(teamCfg).join(", ")}. Fix ${planPath} or re-run 'jeo ralplan'.`
     );
     return { ok: false, reason: "Plan references unknown subagent role(s)" };
   }
 
   const tasks = parsed.data.steps.map(step => step.name);
-  const roleByIndex = parsed.data.steps.map(step => getSubagentRole(step.role)?.id);
+  const roleByIndex = parsed.data.steps.map(step => getSubagentRole(step.role, teamCfg)?.id);
 
   log(`Loaded ${tasks.length} tasks for execution.`);
 
@@ -381,7 +382,7 @@ export async function runTeamCommand(): Promise<void> {
 
 async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: string; roleId?: string }): Promise<boolean> {
   const config = await readGlobalConfig();
-  const role = getSubagentRole(ctx.roleId) ?? defaultSubagentRole();
+  const role = getSubagentRole(ctx.roleId, config) ?? defaultSubagentRole();
   const renderOpts: RalphRenderOptions = { color: !!process.stdout.isTTY, indexed: true };
   const model = resolveSubagentModel(role.id, config);
   const maxSteps = resolveSubagentMaxSteps(role.id, config);

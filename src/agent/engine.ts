@@ -140,6 +140,11 @@ export interface AgentLoopEvents {
   /** Step-budget change (gjc-style retry flow): the limit was extended because the
    *  turn is making progress. `limit` is the new max; `reason` is display-ready. */
   onBudget?(limit: number, reason: string): void;
+  /** Consulted when a lone `done` arrives. Return a corrective message to bounce
+   *  the done ONCE (e.g. "todo list still shows unfinished items — update it
+   *  first"); return null to let the turn finish. The engine guarantees at most
+   *  one bounce per turn, so a stubborn model can never loop here. */
+  onBeforeDone?(reason: string): string | null;
 }
 
 export interface AgentLoopOptions {
@@ -315,6 +320,8 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   let sawMutation = false;
   let sawVerification = false;
   let donePushbackUsed = false;
+  // Caller-owned done gate (onBeforeDone) — also strictly once per turn.
+  let beforeDoneNudgeUsed = false;
   // F1 (round 4): the run-command of the most recent post-turn hook FAILURE whose
   // diagnostics the model saw but has not yet resolved (a later clean hook run
   // clears it). The done guard treats this as "verification missing" — the hook
@@ -563,6 +570,21 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         });
         step++;
         continue;
+      }
+      // Caller-owned done gate (e.g. stale-todo reconciliation): ONE bounded
+      // bounce, then any later done passes — field case: a 28-step turn ended
+      // [DONE] with the Todos checklist still showing 1 in-progress + 4 pending
+      // because nothing ever forced a status update.
+      if (!beforeDoneNudgeUsed && ev.onBeforeDone) {
+        const nudge = ev.onBeforeDone((toolCalls[0].arguments?.reason as string) ?? "");
+        if (nudge) {
+          beforeDoneNudgeUsed = true;
+          history.push({ role: "assistant", content: responseText });
+          history.push({ role: "user", content: nudge });
+          ev.onNotice?.("done deferred once — final plan reconciliation requested");
+          step++;
+          continue;
+        }
       }
       return finish({ done: true, steps: step, doneReason: (toolCalls[0].arguments?.reason as string) ?? "" });
     }

@@ -1283,6 +1283,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       });
       const ac = harness.controller;
       try {
+        // Per-turn todo snapshot: drives the done-time reconciliation gate (the
+        // Todos checklist used to end a finished turn stuck at "✓0 ◐1 ·4 / 5"
+        // because nothing ever forced the model to update item statuses).
+        let turnTodos: { title: string; status: string }[] = [];
+        const onBeforeDone = (): string | null => {
+          const unfinished = turnTodos.filter(t => t.status !== "done");
+          if (turnTodos.length === 0 || unfinished.length === 0) return null;
+          return (
+            `Your todo list still shows ${unfinished.length} unfinished item(s): ${unfinished.map(t => `"${t.title}"`).join(", ")}. ` +
+            `Reconcile the plan first — call the todo tool resending the FULL list with every actually-completed item marked "done" ` +
+            `(drop items that no longer apply), then call done again.`
+          );
+        };
         const fullTools = {
           ...DEFAULT_TOOLS,
           task: createTaskTool({
@@ -1292,7 +1305,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               ? (e => tui?.onSubagentEvent(e))
               : (e => logTaskSubEvent(e)),
           }),
-          todo: createTodoTool({ onChange: items => tui?.setTodos(items) }),
+          todo: createTodoTool({ onChange: items => { turnTodos = items; tui?.setTodos(items); } }),
         };
         const tools = filterToolMap(fullTools, Array.from(allowedTools));
         result = await runAgentLoop(history, {
@@ -1302,7 +1315,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           model: sessionModel,
           maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
           signal: ac.signal,
-          events: withToolDetailCapture(tui ? tui.events() : streamEvents),
+          events: { ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone },
         });
         if (result.done && looksLikeSkillEcho(result.doneReason ?? "", resolvedSkills)) {
           history.push({

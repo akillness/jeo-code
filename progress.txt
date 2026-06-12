@@ -368,3 +368,9 @@
 - 실동작 검증에서 발견: bash 결과 카드의 "… 36 more line(s)"는 previewLines(요약 단계) 클립이라 박스 단계 힌트가 안 붙었음. formatForgeBox가 요약 단계 마커를 감지해 유니코드 인지 힌트를 재작성 — 두 클립 레이어 모두 ⟦Ctrl+O for more⟧ 보장.
 - 실기기 증거(dist/jeo, tmux): ① 카드에 "… 36 more line(s) ⟦Ctrl+O for more⟧" 실표시, ② Ctrl+O → "detail · full last tool output (bash)" + seq 1 40 전체(39·40 포함) 열람 — 카드에서 잘린 36줄 전부 도달.
 - Verified: tsc 0; bun test 1250 pass / 0 fail; dist/jeo 재빌드.
+[2026-06-12] Pass — Todos 미갱신 고착 수정 (done-시점 reconcile 게이트)
+- 현장 증상: 28스텝 [DONE] 턴이 Todos "✓0 ◐1 ·4 / 5"로 종료 — 프로토콜 문구("Resend the FULL list, marking progress")만 있고 강제 장치가 없어 모델이 초기 계획 후 상태 갱신을 전부 생략.
+- 수정: AgentLoopEvents.onBeforeDone(reason) 훅 — 단독 done 도착 시 1회 한정 바운스(엔진이 beforeDoneNudgeUsed로 무한루프 차단, 두 번째 done은 무조건 통과하는 escape hatch). launch가 턴별 todo 스냅샷(turnTodos)으로 미완료 항목을 열거하는 reconcile 메시지를 공급 — "FULL 리스트를 done 마킹으로 재전송 후 done 재호출".
+- Tests: 바운스→todo 갱신→done 수락(정확히 3호출), 완고한 done 2회째 통과(훅 1회만 소비), 깨끗한 플랜 즉시 종료(추가 비용 0).
+- 실동작(dist/jeo, tmux): 모델에 "todo 갱신 없이 done" 지시 → 게이트 바운스 → "Reconciled the todo list…" → 최종 Todos ✓2/2.
+- Verified: tsc 0; bun test 1253 pass / 0 fail; dist/jeo 재빌드.

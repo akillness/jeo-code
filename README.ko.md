@@ -134,3 +134,12 @@ JEO_TOOL_OUTPUT_MAX=4000        # 모델 가시 도구 출력 캡(전체는 아�
 ```
 
 재시도 동작은 `~/.joc/config.json`의 `retry`로 조정합니다(`requestMaxRetries`, `streamMaxRetries`, `rateLimitRetries`, `failFastStatuses`, …). 스텝 버짓은 기본 동적 — 새로운 진전이 보이는 동안 연장되고 정체 시 요약으로 수렴하며, `--max-steps N`이면 유한 플로로 복귀합니다. 레거시 `JOC_*` 환경변수도 계속 지원됩니다.
+
+## 배포 (Publishing)
+
+CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리즈 게시 시 자동, 또는 `workflow_dispatch` 수동 실행(드라이런 옵션). 워크플로는 타입체크·테스트·토큰 검증(`npm whoami`) 후 `npm publish --provenance`를 실행합니다.
+
+필요한 npm 토큰 권한(저장소 시크릿 `NPM_TOKEN`):
+
+- `jeo-code` 패키지에 Read/Write 권한이 있는 **Granular Access Token**, 또는 클래식 **Automation** 토큰
+- "배포 시 **bypass 2FA**" 허용 필수 — Automation 토큰은 항상 우회, granular 토큰은 옵션 활성화 필요

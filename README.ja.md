@@ -134,3 +134,12 @@ JEO_TOOL_OUTPUT_MAX=4000        # モデル可視のツール出力上限(全文
 ```
 
 リトライ動作は `~/.joc/config.json` の `retry` で調整します(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` など)。ステップ予算はデフォルトで動的 — 新規進捗が見える間は延長され、停滞時は要約に収束します。`--max-steps N` で有限フローに戻ります。レガシー `JOC_*` 環境変数も引き続きサポートされます。
+
+## 公開 (Publishing)
+
+CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリース公開時に自動、または `workflow_dispatch` の手動実行(ドライラン可)。ワークフローは型チェック・テスト・トークン検証(`npm whoami`)の後、`npm publish --provenance` を実行します。
+
+必要な npm トークン権限(リポジトリシークレット `NPM_TOKEN`):
+
+- `jeo-code` パッケージへの Read/Write 権限を持つ **Granular Access Token**、またはクラシック **Automation** トークン
+- 「公開時の **bypass 2FA**」許可が必須 — Automation トークンは常にバイパス、granular トークンはオプションの有効化が必要

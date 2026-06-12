@@ -134,3 +134,12 @@ JEO_TOOL_OUTPUT_MAX=4000        # 模型可见的工具输出上限(全文溢出
 ```
 
 重试行为通过 `~/.joc/config.json` 的 `retry` 调整(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` 等)。步数预算默认动态 — 只要看到新的进展就延长，停滞时收敛为总结；`--max-steps N` 恢复有界流程。旧的 `JOC_*` 环境变量仍然受支持。
+
+## 发布 (Publishing)
+
+CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release 时自动触发，或手动 `workflow_dispatch`(可选 dry-run)。工作流执行类型检查、测试、令牌校验(`npm whoami`)后运行 `npm publish --provenance`。
+
+所需 npm 令牌权限(仓库 secret `NPM_TOKEN`):
+
+- 对 `jeo-code` 包具有 Read/Write 权限的 **Granular Access Token**，或经典 **Automation** 令牌
+- 必须允许"发布时 **bypass 2FA**" — Automation 令牌始终绕过，granular 令牌需启用该选项

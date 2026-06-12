@@ -134,3 +134,12 @@ JEO_TOOL_OUTPUT_MAX=4000        # model-visible tool output cap (full output spi
 ```
 
 Retry behavior is tunable via `retry` in `~/.joc/config.json` (`requestMaxRetries`, `streamMaxRetries`, `rateLimitRetries`, `failFastStatuses`, …). The step budget is dynamic by default — it extends while recent tool calls show novel progress and consolidates with a wrap-up when stalled; `--max-steps N` restores a bounded flow. Legacy `JOC_*` env names remain supported.
+
+## Publishing
+
+CI publishes via `.github/workflows/npm-publish.yml` — triggered by a published GitHub release, or manually with `workflow_dispatch` (optional dry-run). The workflow typechecks, tests, verifies the token (`npm whoami`), then runs `npm publish --provenance`.
+
+Required npm token permissions (repository secret `NPM_TOKEN`):
+
+- A **Granular Access Token** with Read/Write access to the `jeo-code` package, or a classic **Automation** token
+- "**bypass 2FA** for publishing" must be allowed — Automation tokens always bypass; granular tokens need the option enabled

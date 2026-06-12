@@ -6592,3 +6592,17 @@ that extends itself while the turn demonstrably progresses and fails fast when s
 - **Setup.** /tmp sandbox project with a deterministic post-turn hook (`match.tool: "edit|write"`): exits 1 with `LINT-E001: src/app.ts must also export a VERSION constant…` unless the file exports `VERSION`. The prompt only said "if a verification hook reports a problem, fix exactly what it reports" — the hook's actual check was never disclosed to the model. Credentials: OAuth config copied under a temp `JOC_CONFIG_DIR`, destroyed immediately after the run.
 - **Observed loop** (`dist/jeo launch --no-tui --no-session -p …`, antigravity/gemini-3.5-flash-low): step 2 edit → hook RED (advisory notice live) → step 3 re-read → step 4 the model added `export const VERSION = "1.0.0"` exactly as the diagnostic demanded → hook GREEN → step 6 bash verification → done with no pushback. The dynamic step-budget novelty extension also fired live ("progress detected … extended to 15").
 - **Proves in concert on a real model:** cycle 13 (hook diagnostics fed to the model), 14a (`edit|write` multi-match), 14 F1 (pendingHookFailure cleared by the clean run), and the round-1 dynamic budget. Final file verified: `greet()` change AND the hook-driven `VERSION` export both correct.
+
+---
+
+**Date:** 2026-06-12 · **Dimension: gjc-inheritance marathon round 10 — planning front-end integrity (architect BLOCK → fixed).**
+
+### Planning front-end fixes (architect ref 8-Round10Planning)
+- **Write-time validation parity (HIGH).** `ralplan`'s `isValidPlan` now also rejects steps whose role is not a known subagent role — `role: developer` (the common LLM deviation) used to pass write-time and abort only at `jeo team`, after the planning model was gone. And when NO pass produces a valid plan, the file is saved for inspection but the workflow is NOT marked complete (previously: warning + complete anyway).
+- **Stale-interview shadowing (HIGH).** A completed deep-interview stayed `active: true` forever and a new idea argument was silently dropped — `jeo deep-interview "idea B"` re-used idea A and the whole chain planned/executed the OLD idea. `freezeSeed` now flips `active: false`, and a different non-empty idea against a completed state clears it and starts a fresh interview.
+- **Approval gate (MED).** `jeo approve` validated nothing (file-exists + path-match only). It now parses the plan and enforces the exact contract `jeo team` executes (PlanSchema + known roles) before flipping `approved` — a rubber stamp no more.
+- **Consensus honesty relabel (HIGH, interim).** ralplan's "Planner → Architect → Critic consensus" is three single-model prompt passes with no tools and no critic verdict gate (the same theater pattern as round-7 ultragoal). The log now states this plainly; the full fix (real role subagents + persisted verdict gating approve) is the round-11 candidate.
+- **LOW.** `PlanSchema` rejects dependency-shaped step keys (`depends_on`/`after`/`needs`/…) the serial executor cannot honor — failing loudly beats pretending ordering constraints are enforced. Spawn-gate concurrency semantics clarified in a comment.
+
+### Verification (round 10)
+- typecheck 0; `bun test` **1222 pass / 0 fail** across 159 files (+5: ralplan refuse-complete & valid-completes, approve refusal, new-idea interview restart, dependency-key rejection).

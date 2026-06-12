@@ -132,3 +132,15 @@
 
 ## 사이클 렛저 (라운드 9 — 라이브 e2e 실증)
 - cycle 19 (2026-06-12): **자기수정 루프 라이브 실증** — 샌드박스(/tmp, OAuth 사본 config + 즉시 폐기)에서 dist/jeo 실모델 런(antigravity/gemini-3.5-flash-low, --no-tui -p). 결정적 post-turn 훅(match.tool "edit|write", VERSION export 강제 grep)으로 검증: ① step2 편집 → 훅 RED(LINT-E001 advisory 발화) ② 모델이 훅 내용을 사전에 모름에도 진단만으로 step4에서 `export const VERSION = "1.0.0"` 정확 추가(cycle 13 피드백 실증) ③ 훅 GREEN → pendingHookFailure 해제(cycle 14 F1) ④ bash 검증 후 done 무푸시백 통과 ⑤ 동적 스텝버짓 novelty 연장("progress detected → extended to 15") 라이브 발화. 파일 결과 확인: greet 변경+VERSION 추가 모두 정확. 라운드 1~8 스택(훅 진단 피드백·다중매칭·done 가드·스텝버짓)이 실모델에서 합주 동작함을 증명.
+
+## 합의 라운드 10 (architect BLOCK→fixed, 2026-06-12 — agent ref 8-Round10Planning)
+**축**: 플래닝 프런트엔드(deep-interview→ralplan→approve). team의 실행시 게이트는 견고하나 그 상류가 전부 약했음 — HIGH 3건.
+- **#2 (HIGH)**: ralplan write-time 검증이 team보다 약함 — role: "developer" 같은 흔한 LLM 편차가 write-time 통과 후 team에서야 abort(모델 부재 시점). 또한 전 패스 무효여도 WARNING만 내고 complete 마킹. 수정: isValidPlan에 role 검증(getSubagentRole), 무효 시 파일은 검토용 저장하되 complete 마킹 거부+ok:false.
+- **#3 (HIGH)**: 완료된 인터뷰가 영구 active:true + 새 아이디어 인자 무시 — `jeo deep-interview "idea B"`가 idea A를 조용히 재사용해 체인 전체가 옛 아이디어를 실행. 수정: freezeSeed에서 active=false, 완료 상태+다른 새 아이디어면 clear 후 신규 인터뷰.
+- **#4 (MED)**: approve가 고무도장 — 스키마/role 무검증 승인. 수정: 승인 전 team과 동일 계약(PlanSchema+role) 검증, 불합격 시 거부.
+- **#1 (HIGH, 정직 리라벨만)**: ralplan "consensus"는 단일모델 3패스 프롬프트(critic 평결 게이트 없음 — 라운드7 ultragoal과 동형의 연극). 전면 수정(실 서브에이전트+평결 게이트, ~80-150 LoC)은 라운드 11 후보로 보류, 로그 문구를 실체대로 리라벨.
+- **LOW 동반**: PlanSchema가 dependency-형 키(depends_on 등) 거부(직렬 실행기가 존중 못 하는 제약의 환상 차단), spawn-gate 동시성 주석.
+
+## 사이클 렛저 (라운드 10)
+- cycle 20 (2026-06-12): #2 write-time 패리티+refuse-complete, #3 stale 인터뷰 차단+active 플립, #4 approve 게이트화, #1 리라벨, deps 키 거부, 주석. 신규 테스트 5종(workflow-integrity 3, deep-interview 1, team-schema 1). full 1222 pass / 0 fail, typecheck 0.
+- **라운드 10 종료** — 누적 20사이클. 라운드 11 후보: #1 전면(ralplan 실 서브에이전트 합의+critic 평결 게이트+평결 영속→approve가 평결 요구), #5 시드 기준 라운드트립 검증.

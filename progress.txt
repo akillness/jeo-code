@@ -305,3 +305,10 @@
 - jeoEnv 마이그레이션 완료: 보류했던 핫사이트 잔여분 이관 — launch.ts 3곳(TMUX_LAUNCHED ×2, NO_SLASH_PREVIEW) + app.ts TUI_ALT_SCREEN(레거시 단일 JOC_ 읽기였던 곳도 JEO_ 우선 폴백 획득). 인라인 (JEO_X ?? JOC_X) 패턴 소스 전체 0건.
 - README ×4: 최근 UX 배치 문서화 — 3단계 모델 픽(역할+Reasoning, inherit), /subagent 구성판, Tab 팝업 자동완성, /btw 스트리밍, new-input-first 입력 계약, aurora/synthwave/sakura 테마.
 - Verified: tsc 0; bun test 1218 pass / 0 fail; dist/jeo 재빌드.
+[2026-06-12] gjc-계승 마라톤 라운드 10 (cycle 20) — 플래닝 프런트엔드 무결성 (architect BLOCK→fixed)
+- ralplan write-time 패리티(HIGH): isValidPlan에 role 검증 추가(getSubagentRole) — role "developer" 같은 흔한 LLM 편차가 write-time을 통과해 team에서야 abort하던 늦은 실패 제거. 전 패스 무효 시 파일은 검토용으로 저장하되 current_phase=complete 마킹 거부 + ok:false(기존엔 WARNING만 내고 complete).
+- stale 인터뷰 차단(HIGH): freezeSeed가 active=false 플립 + 완료 상태에서 다른 새 아이디어 인자가 오면 clear 후 신규 인터뷰 — `jeo deep-interview "idea B"`가 idea A를 조용히 재사용해 체인 전체가 옛 아이디어를 실행하던 사일런트 요구사항 소실 봉합.
+- approve 게이트화(MED): 승인 전 PlanSchema+role 검증(team과 동일 계약) — 고무도장 제거, 불합격 평면은 실행 전 거부.
+- ralplan "consensus" 정직 리라벨(HIGH의 interim): 단일모델 3패스 프롬프트임을 로그에 명시(critic 평결 게이트 없음 — 라운드7 ultragoal과 동형). 전면 수정(실 서브에이전트+평결 게이트)은 라운드 11 후보.
+- LOW: PlanSchema가 depends_on/after/needs 등 dependency-형 키 거부(직렬 실행기가 존중 못 하는 순서 제약의 환상 차단), spawn-gate 동시성 명확화 주석.
+- Verified: typecheck 0; full bun test 1222 pass / 0 fail (+5종: ralplan refuse-complete/정상 완료, approve 거부, 인터뷰 신규 아이디어 재시작, deps 키 거부).

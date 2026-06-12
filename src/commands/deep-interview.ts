@@ -341,6 +341,17 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
       }
     }
 
+    // Round-10 #3 (architect ref 8-Round10Planning): a COMPLETED interview must
+    // not shadow a NEW idea — previously `jeo deep-interview "idea B"` silently
+    // reused the completed idea-A state and the whole chain planned/executed the
+    // OLD idea while the user believed they specified the new one.
+    const newIdeaArg = filteredArgs.join(" ").trim();
+    if (state && state.current_phase === "complete" && newIdeaArg && newIdeaArg !== (state.initial_idea ?? "").trim()) {
+      await clearWorkflowState("deep-interview", cwd);
+      state = null;
+      log(`Previous interview is already complete — starting a NEW interview for: "${newIdeaArg}"`);
+    }
+
     if (opts.signal?.aborted) {
       return { ok: false, reason: "aborted" };
     }
@@ -526,6 +537,7 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
         `${yamlList("acceptance_criteria", criteria)}\n`;
       await fs.writeFile(seedPath, seedContent, "utf-8");
       state!.current_phase = "complete";
+      state!.active = false; // finished — must not read as "interview in progress" forever
       state!.seed_path = seedPath;
       state!.current_ambiguity = Math.min(state!.current_ambiguity ?? threshold, threshold);
       await writeWorkflowState("deep-interview", state!, cwd);

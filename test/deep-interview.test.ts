@@ -292,3 +292,31 @@ test("deep-interview: brownfield scanner sanitizes file names and skips symlinke
   await fs.rm(cwd, { recursive: true, force: true });
   await fs.rm(outside, { recursive: true, force: true });
 });
+
+test("deep-interview: a NEW idea after a completed interview starts fresh instead of reusing the old one (round-10 #3)", async () => {
+  const cwd = await tempDir();
+  mockCallLlm = async () => JSON.stringify({
+    ambiguityScore: 0.1,
+    assessment: "Clear enough",
+    nextQuestion: "none",
+    goal: "whatever the idea is",
+    constraints: [],
+    acceptance_criteria: ["It does the thing"],
+  });
+
+  process.chdir(cwd);
+  await runDeepInterviewCommand(["--auto", "idea A: notes app"]);
+  const first = await readState(cwd);
+  expect(first.current_phase).toBe("complete");
+  expect(first.active).toBe(false); // round-10: completed interviews deactivate
+  const slugA = first.slug;
+
+  // Pre-fix: this silently re-ran idea A. Now it must clear and interview idea B.
+  await runDeepInterviewCommand(["--auto", "idea B: todo dashboard"]);
+  const second = await readState(cwd);
+  expect(second.current_phase).toBe("complete");
+  expect(second.initial_idea).toBe("idea B: todo dashboard");
+  expect(second.slug).not.toBe(slugA);
+
+  await fs.rm(cwd, { recursive: true, force: true });
+});

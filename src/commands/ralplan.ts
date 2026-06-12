@@ -8,6 +8,7 @@ import {
   type WorkflowState,
 } from "../agent/state";
 import { PlanSchema, normalizePlanShape, parseYaml } from "../agent/plan";
+import { getSubagentRole } from "../agent/subagents";
 
 export interface RalplanEngineOptions {
   cwd?: string;
@@ -76,7 +77,7 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
   };
   await writeWorkflowState("ralplan", ralplanState, cwd);
 
-  log("Running Planner → Architect → Critic consensus on the spec…");
+  log("Running Planner → Architect → Critic prompt passes (single-model drafting — schema/role validation happens at write time)…");
 
   // Shared output contract (the exact shape `team` consumes) included in every pass.
   const SCHEMA_SPEC =
@@ -99,7 +100,12 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     };
     const isValidPlan = (yaml: string): boolean => {
       try {
-        return PlanSchema.safeParse(normalizePlanShape(parseYaml(yaml))).success;
+        const parsed = PlanSchema.safeParse(normalizePlanShape(parseYaml(yaml)));
+        if (!parsed.success) return false;
+        // Round-10 #2 (architect ref 8-Round10Planning): write-time parity with
+        // team's execution gate — an unknown role (e.g. "developer") used to pass
+        // here and abort only at `jeo team`, after the planning model was gone.
+        return parsed.data.steps.every(s => !s.role?.trim() || !!getSubagentRole(s.role));
       } catch {
         return false;
       }
@@ -140,18 +146,22 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
       return { ok: false, reason: "aborted" };
     }
 
-    // Self-validate the Critic's output against team's schema; repair once, else fall
-    // back to the best valid earlier pass so a malformed plan never reaches approve/team.
+    // Self-validate the Critic's output against team's schema (incl. role names);
+    // repair once, else fall back to the best valid earlier pass. When NO pass is
+    // valid, the plan is saved for inspection but the workflow is NOT marked
+    // complete (round-10 #2) — failing here, while the model is still in the loop,
+    // beats failing later at `jeo team` with the same plan.
+    let planValid = true;
     if (!isValidPlan(cleanPlan)) {
       log("[ralplan] Final plan did not match the required shape; requesting a corrected plan…");
-      cleanPlan = await callRole(CRITIC, `Your previous output was not valid for the required schema. Fix it.\n\n${SCHEMA_SPEC}\n\nPlan to fix:\n\n${cleanPlan}`);
+      cleanPlan = await callRole(CRITIC, `Your previous output was not valid for the required schema. Fix it (roles MUST be one of executor|planner|architect|critic).\n\n${SCHEMA_SPEC}\n\nPlan to fix:\n\n${cleanPlan}`);
       if (!isValidPlan(cleanPlan)) {
         const fallback = [reviewed, draft].find(isValidPlan);
         if (fallback) {
           cleanPlan = fallback;
           log("[ralplan] Using an earlier valid pass output (Critic output was unparseable).");
         } else {
-          log("[ralplan] WARNING: no pass produced a schema-valid plan. Saving the Critic output, but 'jeo team' may reject it — review/edit the plan or re-run with a stronger model.");
+          planValid = false;
         }
       }
     }
@@ -161,6 +171,19 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     const planPath = path.join(planDir, `plan-${interviewState.slug}.yaml`);
 
     await fs.writeFile(planPath, cleanPlan, "utf-8");
+
+    if (!planValid) {
+      ralplanState.plan_path = planPath; // saved for inspection — but NOT complete
+      ralplanState.approved = false;
+      await writeWorkflowState("ralplan", ralplanState, cwd);
+      log(
+        `[ERROR] No pass produced a schema/role-valid plan. The last output was saved to ${planPath} for review, ` +
+        `but the workflow was NOT marked complete — edit the plan to match the schema (roles: executor|planner|architect|critic) ` +
+        `and re-run 'jeo ralplan', or retry with a stronger model.`,
+      );
+      return { ok: false, reason: "no schema-valid plan produced" };
+    }
+
     log(`\n[SUCCESS] Plan successfully created and saved to: ${planPath}`);
 
     ralplanState.current_phase = "complete";

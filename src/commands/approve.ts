@@ -4,6 +4,8 @@ import {
   readWorkflowState,
   writeWorkflowState,
 } from "../agent/state";
+import { PlanSchema, normalizePlanShape, parseYaml } from "../agent/plan";
+import { getSubagentRole, subagentRoleIds } from "../agent/subagents";
 
 export async function runApproveCommand(args: string[] = []): Promise<void> {
   const cwd = process.cwd();
@@ -65,6 +67,36 @@ export async function runApproveCommand(args: string[] = []): Promise<void> {
   // Idempotency: check if already approved
   if (ralplanState.approved) {
     console.log(`[SUCCESS] Plan is already approved.`);
+    return;
+  }
+
+  // Round-10 #4 (architect ref 8-Round10Planning): approval is a GATE, not a
+  // rubber stamp — validate the plan against the exact contract `jeo team`
+  // enforces, so a schema-invalid/unknown-role plan is refused HERE instead of
+  // aborting later at execution time.
+  try {
+    const parsed = PlanSchema.safeParse(normalizePlanShape(parseYaml(await fs.readFile(resolvedInputPath, "utf-8"))));
+    if (!parsed.success) {
+      console.log(
+        `[ERROR] Refusing to approve: the plan is not in the shape 'jeo team' executes (top-level 'steps:' list of { name, role? }).\n` +
+        `  ${parsed.error.issues[0]?.message ?? "schema mismatch"}\n` +
+        `  Fix ${resolvedInputPath} or re-run 'jeo ralplan'.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const unknown = [...new Set(parsed.data.steps.map(s => s.role?.trim()).filter((r): r is string => !!r && !getSubagentRole(r)))];
+    if (unknown.length > 0) {
+      console.log(
+        `[ERROR] Refusing to approve: plan references unknown subagent role(s): ${unknown.join(", ")}.\n` +
+        `  Known roles: ${subagentRoleIds().join(", ")}. Fix ${resolvedInputPath} or re-run 'jeo ralplan'.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+  } catch (err: any) {
+    console.log(`[ERROR] Refusing to approve: the plan file is not parseable YAML (${err.message}). Fix ${resolvedInputPath} or re-run 'jeo ralplan'.`);
+    process.exitCode = 1;
     return;
   }
 

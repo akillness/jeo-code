@@ -227,3 +227,71 @@ test("task-tool: an executor that 'completes' with zero successful mutations get
   );
   expect(planner.output).not.toContain("[parent audit]");
 });
+
+// ── Round-10 (architect ref 8-Round10Planning) — planning front-end integrity ──
+
+test("ralplan: refuses to mark complete when no pass yields a schema/role-valid plan", async () => {
+  const dir = await tmpProject();
+  await seedInterview(dir); // completed deep-interview + seed file
+  // Every pass (incl. the repair re-prompt) emits an unknown role — the common
+  // LLM deviation that used to pass write-time and abort later at `jeo team`.
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => 'steps:\n  - name: "Build it"\n    role: developer\n',
+  }));
+  const { runRalplanEngine } = await import("../src/commands/ralplan");
+  const res = await runRalplanEngine({ cwd: dir, io: { output: () => {} } });
+  expect(res.ok).toBe(false);
+  const state = await readWorkflowState("ralplan", dir);
+  expect(state?.current_phase).not.toBe("complete"); // NOT handed to approve/team
+  expect(state?.approved).toBe(false);
+  expect(state?.plan_path).toBeDefined(); // saved for inspection
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("ralplan: a valid plan still completes (role validation does not over-reject)", async () => {
+  const dir = await tmpProject();
+  await seedInterview(dir);
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => 'name: "ok plan"\nsteps:\n  - name: "Build it"\n    role: executor\n',
+  }));
+  const { runRalplanEngine } = await import("../src/commands/ralplan");
+  const res = await runRalplanEngine({ cwd: dir, io: { output: () => {} } });
+  expect(res.ok).toBe(true);
+  const state = await readWorkflowState("ralplan", dir);
+  expect(state?.current_phase).toBe("complete");
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("approve: refuses a plan that team would reject (unknown role / malformed)", async () => {
+  const dir = await tmpProject();
+  const planPath = path.join(dir, "bad-plan.yaml");
+  await fs.writeFile(planPath, 'steps:\n  - name: "Build it"\n    role: developer\n');
+  await writeWorkflowState("ralplan", {
+    active: false,
+    current_phase: "complete",
+    skill: "ralplan",
+    slug: "bad",
+    plan_path: planPath,
+    approved: false,
+  }, dir);
+
+  const { runApproveCommand } = await import("../src/commands/approve");
+  const savedCwd = process.cwd();
+  const savedExit = process.exitCode;
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => logs.push(a.join(" "));
+  try {
+    process.chdir(dir);
+    await runApproveCommand([planPath]);
+  } finally {
+    console.log = origLog;
+    process.chdir(savedCwd);
+  }
+  const state = await readWorkflowState("ralplan", dir);
+  expect(state?.approved).toBe(false); // gate held
+  expect(logs.join("\n")).toContain("unknown subagent role");
+  expect(process.exitCode).toBe(1);
+  process.exitCode = savedExit;
+  await fs.rm(dir, { recursive: true, force: true });
+});

@@ -18,7 +18,7 @@ export interface ProjectContextFile {
 }
 
 export const CONTEXT_CANDIDATES = ["JEO.md", "AGENTS.md", ".jeo/context.md", "CLAUDE.md"];
-export const AGENT_GUIDANCE_DIRS = [".agents/rules", ".jeo/rules", ".agents/hooks"] as const;
+export const AGENT_GUIDANCE_DIRS = [".agents/rules", ".jeo/rules", ".agents/hooks", ".jeo/hooks"] as const;
 const PER_CONTEXT_FILE_CHARS = 16_000;
 const TOTAL_CONTEXT_CHARS = 64_000;
 const BASE_CONTEXT_CHARS = 48_000;
@@ -188,6 +188,7 @@ export async function discoverAgentGuidanceFiles(cwd = process.cwd()): Promise<A
     { rootDir: path.join(home, ".agents", "rules"), displayPrefix: "~/.agents/rules" },
     { rootDir: path.join(home, ".jeo", "rules"), displayPrefix: "~/.jeo/rules" },
     { rootDir: path.join(home, ".agents", "hooks"), displayPrefix: "~/.agents/hooks" },
+    { rootDir: path.join(home, ".jeo", "hooks"), displayPrefix: "~/.jeo/hooks" },
   ];
   for (const root of homeRoots) {
     await collectTextFiles(root.rootDir, root.displayPrefix, 2, out);

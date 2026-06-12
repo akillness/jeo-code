@@ -6,7 +6,7 @@ import { loadSkills, getSkillFrom, skillDirs, parseSkillMarkdown } from "../src/
 
 // Tolerance for the Vercel `npx skills add` ecosystem (agent-skills standard):
 // canonical `.agents/skills/` store, agent-targeted `.claude/skills/` installs,
-// gjc's `~/.gjc/agent/skills/`, SYMLINKED skill dirs, and frontmatter `name:`
+// jeo's own `~/.jeo/agent/skills/`, SYMLINKED skill dirs, and frontmatter `name:`
 // as the authoritative identity for external skills.
 
 let home: string;
@@ -42,11 +42,11 @@ beforeAll(async () => {
     "---\nname: ralph-loop\ndescription: persistent verify-before-done loop\n---\n\nLoop until verified.",
   );
 
-  // 3. gjc global skills dir.
-  await fs.mkdir(path.join(home, ".gjc", "agent", "skills", "gjc-only"), { recursive: true });
+  // 3. jeo's self-contained agent-skills dir (gjc-structure parity, under .jeo not .gjc).
+  await fs.mkdir(path.join(home, ".jeo", "agent", "skills", "jeo-only"), { recursive: true });
   await fs.writeFile(
-    path.join(home, ".gjc", "agent", "skills", "gjc-only", "SKILL.md"),
-    "summary: lives in the gjc tree\n\ngjc-installed skill body.",
+    path.join(home, ".jeo", "agent", "skills", "jeo-only", "SKILL.md"),
+    "summary: lives in the jeo tree\n\njeo-installed skill body.",
   );
 
   // 4. Frontmatter name beats a mismatched directory name for external skills.
@@ -68,13 +68,16 @@ afterAll(async () => {
   await fs.rm(cwd, { recursive: true, force: true });
 });
 
-test("skillDirs covers Vercel canonical, agent-targeted, and gjc install roots", () => {
+test("skillDirs covers Vercel canonical, agent-targeted, and jeo's own .jeo/agent roots (never .gjc)", () => {
   const dirs = skillDirs(cwd);
   expect(dirs).toContain(path.join(home, ".claude", "skills"));
-  expect(dirs).toContain(path.join(home, ".gjc", "agent", "skills"));
+  expect(dirs).toContain(path.join(home, ".jeo", "agent", "skills"));
+  expect(dirs).toContain(path.join(cwd, ".jeo", "agent", "skills"));
   expect(dirs).toContain(path.join(home, ".agents", "skills"));
   expect(dirs).toContain(path.join(cwd, ".claude", "skills"));
   expect(dirs).toContain(path.join(cwd, ".agents", "skills"));
+  // jeo no longer piggybacks on gjc's namespace — it owns a `.jeo` tree instead.
+  expect(dirs.some(d => d.includes(`${path.sep}.gjc${path.sep}`))).toBe(false);
   // jeo-native project dir stays highest-precedence among scanned defaults.
   expect(dirs.indexOf(path.join(cwd, ".jeo", "skills"))).toBeGreaterThan(dirs.indexOf(path.join(cwd, ".agents", "skills")));
 });
@@ -86,10 +89,10 @@ test("loadSkills follows symlinked skill dirs and skips dangling links", async (
   expect(getSkillFrom(skills, "dangling")).toBeUndefined();
 });
 
-test("loadSkills discovers .claude/skills and ~/.gjc/agent/skills installs", async () => {
+test("loadSkills discovers .claude/skills and jeo's own ~/.jeo/agent/skills installs", async () => {
   const skills = await loadSkills(cwd);
   expect(getSkillFrom(skills, "ralph-loop")?.summary).toBe("persistent verify-before-done loop");
-  expect(getSkillFrom(skills, "gjc-only")?.summary).toBe("lives in the gjc tree");
+  expect(getSkillFrom(skills, "jeo-only")?.summary).toBe("lives in the jeo tree");
 });
 
 test("frontmatter name: is the identity for external skills (directory name loses)", async () => {

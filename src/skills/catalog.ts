@@ -292,8 +292,9 @@ export function skillSlashAliases(skill: SkillDoc): string[] {
  *  Covered install layouts:
  *  - Vercel `npx skills add [-g]` canonical store: `.agents/skills/` (project + ~)
  *  - Vercel agent-targeted installs (`-a claude-code`): `.claude/skills/` (project + ~)
- *  - gjc bundled/user agent skills: `~/.gjc/agent/skills/`
- *  - jeo-native: `<config>/skills/`, `<cwd>/.jeo/skills/`, then `JEO_SKILLS_DIR`. */
+ *  - jeo agent skills (self-contained `.jeo` namespace, gjc-structure parity):
+ *    `<config>/agent/skills/` (+ project `<cwd>/.jeo/agent/skills/`)
+ *  - jeo-native flat: `<config>/skills/`, `<cwd>/.jeo/skills/`, then `JEO_SKILLS_DIR`. */
 export function skillDirs(cwd: string = process.cwd()): string[] {
   // $HOME wins over os.homedir(): Bun caches the system home, so tests (and
   // sandboxed runs) that re-point HOME would otherwise still scan the real one.
@@ -305,12 +306,13 @@ export function skillDirs(cwd: string = process.cwd()): string[] {
     .filter(Boolean);
   return [
     path.join(userHome, ".claude", "skills"),
-    path.join(userHome, ".gjc", "agent", "skills"),
+    path.join(home, "agent", "skills"),
     path.join(userHome, ".agents", "skills"),
     path.join(home, "skills"),
     path.join(cwd, ".claude", "skills"),
     path.join(cwd, ".agents", "skills"),
     path.join(cwd, ".jeo", "skills"),
+    path.join(cwd, ".jeo", "agent", "skills"),
     ...configured,
   ];
 }

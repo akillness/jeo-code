@@ -69,7 +69,7 @@ test("resolveTheme reads JOC_TUI_THEME from env or config with priorities", () =
 
 test("listThemes returns all names + descriptions including red-claw and blue-crab", () => {
   const list = listThemes();
-  expect(list.map(t => t.name).sort()).toEqual(["blue-crab", "cosmic", "matrix", "mono", "red-claw", "solar"]);
+  expect(list.map(t => t.name).sort()).toEqual(["aurora", "blue-crab", "cosmic", "matrix", "mono", "red-claw", "sakura", "solar", "synthwave"]);
 });
 
 test("themeGradient is clamped and returns hex pairs", () => {

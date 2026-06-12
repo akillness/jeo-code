@@ -28,6 +28,10 @@ export interface ForgeBoxOptions {
   flow?: { palette: readonly string[]; phase: number; colorLevel: number };
   /** Width-1 mark prepended to the border title (e.g. the DNA claw beat glyph). */
   titleMark?: string;
+  /** Themed +/- painters for `language: "patch"` cards (edit diffs): applied to
+   *  the FULL padded row so added/removed lines read as background-tinted
+   *  stripes — block-level contrast inside the card. */
+  diffPaint?: { add: (s: string) => string; del: (s: string) => string };
 }
 
 const SECRET_VALUE_RE = /(api[_-]?key|authorization|bearer|password|secret|token)(\s*[:=]\s*)(["']?)[^"'\s,}]+/gi;
@@ -493,8 +497,19 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
     const bar = `${lead}${text}${glyphs.h.repeat(rest)}`;
     return paint(glyphs.v) + paint(padLineTo(bar, inner, "left")) + shadow(glyphs.v);
   };
-  const contentRow = (line: string): string =>
-    paint(glyphs.v) + padLineTo(` ${line}`, inner, "left") + shadow(glyphs.v);
+  // Patch cards: +/- rows get the themed diff stripe painted over the FULL
+  // padded row (background tint spans the card width), so added/removed lines
+  // separate as blocks instead of relying on a colored sign alone.
+  const diffRows = summary.language === "patch" && opts.color !== false ? opts.diffPaint : undefined;
+  const contentRow = (line: string): string => {
+    const padded = padLineTo(` ${line}`, inner, "left");
+    const body = diffRows && line.startsWith("+")
+      ? diffRows.add(padded)
+      : diffRows && line.startsWith("-")
+        ? diffRows.del(padded)
+        : padded;
+    return paint(glyphs.v) + body + shadow(glyphs.v);
+  };
   const clipped = content.slice(0, maxLines);
   for (const line of clipped) {
     if (line.startsWith(FORGE_DIVIDER_PREFIX)) {

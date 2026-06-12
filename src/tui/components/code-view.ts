@@ -7,6 +7,7 @@
  */
 import chalk from "chalk";
 import { truncate } from "../terminal";
+import { diffPaint, getTheme, type EvolutionTheme } from "./themes";
 
 const LANG_BY_EXT: Record<string, string> = {
   ts: "ts", tsx: "ts", mts: "ts", cts: "ts",
@@ -159,25 +160,28 @@ export function formatCodeBlock(content: string, opts: CodeViewOptions = {}): st
   return out;
 }
 
-/** Render a unified diff with +/-/@@ coloring, clamped to `cols`. */
-export function formatDiff(diffText: string, opts: { cols?: number; maxLines?: number; color?: boolean } = {}): string[] {
+/** Render a unified diff with themed contrast: added/removed lines carry a
+ *  foreground + full-row background tint (block-level separation, not just a
+ *  colored sign), file heads are bold, and hunk headers get a distinct accent.
+ *  `theme` selects the palette; the default palette applies when omitted. */
+export function formatDiff(
+  diffText: string,
+  opts: { cols?: number; maxLines?: number; color?: boolean; theme?: EvolutionTheme } = {},
+): string[] {
   const cols = opts.cols ?? 100;
   const maxLines = opts.maxLines ?? 400;
   const color = opts.color !== false;
+  const dp = diffPaint(opts.theme ?? getTheme(undefined));
   const lines = diffText.split("\n");
   const shown = lines.slice(0, maxLines);
   const out = shown.map(raw => {
     const l = sanitizeForTerminal(raw);
     if (!color) return truncate(l, cols);
-    if (l.startsWith("+++")) return truncate(chalk.bold.green(l), cols);
-    if (l.startsWith("---")) return truncate(chalk.bold.red(l), cols);
-    if (l.startsWith("@@")) return truncate(chalk.cyan.bold(l), cols);
-    if (l.startsWith("+")) {
-      return truncate(chalk.green.bold("+") + chalk.green(l.slice(1)), cols);
-    }
-    if (l.startsWith("-")) {
-      return truncate(chalk.red.bold("-") + chalk.red(l.slice(1)), cols);
-    }
+    if (l.startsWith("+++")) return truncate(dp.addHead(l), cols);
+    if (l.startsWith("---")) return truncate(dp.delHead(l), cols);
+    if (l.startsWith("@@")) return truncate(dp.hunk(l), cols);
+    if (l.startsWith("+")) return truncate(dp.add(l), cols);
+    if (l.startsWith("-")) return truncate(dp.del(l), cols);
     return truncate(l, cols);
   });
   if (lines.length > maxLines) out.push(color ? chalk.gray(`  …(+${lines.length - maxLines} more)`) : `  …(+${lines.length - maxLines} more)`);

@@ -50,6 +50,7 @@ const COSMIC: EvolutionTheme = {
   gradients: EVOLUTION_STAGE_GRADIENTS,
   color: true,
   accent: "#48dbfb",
+  accentShadow: "#1b6f8c",
 };
 
 const MATRIX: EvolutionTheme = {
@@ -64,6 +65,8 @@ const MATRIX: EvolutionTheme = {
   ],
   color: true,
   accent: "#39ff14",
+  accentShadow: "#0b6623",
+  diff: { add: "#7fff00", del: "#ff5f5f", addBg: "#0c2410", delBg: "#2a1212", hunk: "#00e5a0" },
 };
 
 const SOLAR: EvolutionTheme = {
@@ -78,6 +81,7 @@ const SOLAR: EvolutionTheme = {
   ],
   color: true,
   accent: "#ff8c00",
+  accentShadow: "#8a4500",
 };
 
 const RED_CLAW: EvolutionTheme = {
@@ -92,20 +96,71 @@ const RED_CLAW: EvolutionTheme = {
   ],
   color: true,
   accent: "#e25656",
+  accentShadow: "#5c0f0f",
 };
 
 const BLUE_CRAB: EvolutionTheme = {
   name: "blue-crab",
-  description: "Light theme — cool ocean blue crab shell concept for light backgrounds.",
+  description: "Bioluminescent ocean — abyssal navy through reef teal to seafoam glow (light-background friendly).",
   gradients: [
-    { from: "#0a192f", to: "#172a45" },
-    { from: "#172a45", to: "#3066be" },
-    { from: "#3066be", to: "#118ab2" },
-    { from: "#118ab2", to: "#006d77" },
-    { from: "#006d77", to: "#023e8a" },
+    { from: "#03045e", to: "#0077b6" },
+    { from: "#0077b6", to: "#00b4d8" },
+    { from: "#00b4d8", to: "#06d6a0" },
+    { from: "#0096c7", to: "#48cae4" },
+    { from: "#48cae4", to: "#caf0f8" },
   ],
   color: true,
-  accent: "#118ab2",
+  accent: "#0096c7",
+  accentShadow: "#023e8a",
+  diff: { add: "#06d6a0", del: "#ef476f", addBg: "#0a2922", delBg: "#2b1320", hunk: "#48cae4" },
+};
+
+const AURORA: EvolutionTheme = {
+  name: "aurora",
+  description: "Northern lights — arctic teal ribbons bending into violet sky.",
+  gradients: [
+    { from: "#0b1f3a", to: "#16c79a" },
+    { from: "#16c79a", to: "#3ddad7" },
+    { from: "#3ddad7", to: "#7c83fd" },
+    { from: "#7c83fd", to: "#b388eb" },
+    { from: "#b388eb", to: "#e7f9f3" },
+  ],
+  color: true,
+  accent: "#3ddad7",
+  accentShadow: "#1d5c8f",
+  diff: { add: "#16c79a", del: "#fd7c9b", addBg: "#0c2620", delBg: "#2a1626", hunk: "#7c83fd" },
+};
+
+const SYNTHWAVE: EvolutionTheme = {
+  name: "synthwave",
+  description: "Retro neon — sunset-grid magenta pulsing against electric cyan.",
+  gradients: [
+    { from: "#2b1055", to: "#7303c0" },
+    { from: "#7303c0", to: "#ec38bc" },
+    { from: "#ec38bc", to: "#ff5e99" },
+    { from: "#ff5e99", to: "#03e9f4" },
+    { from: "#03e9f4", to: "#fdeff9" },
+  ],
+  color: true,
+  accent: "#ec38bc",
+  accentShadow: "#5b1a8a",
+  diff: { add: "#03e9f4", del: "#ff5e99", addBg: "#0a2330", delBg: "#33122a", hunk: "#b388eb" },
+};
+
+const SAKURA: EvolutionTheme = {
+  name: "sakura",
+  description: "Cherry blossom — soft petal pink deepening to spring magenta (light-background friendly).",
+  gradients: [
+    { from: "#5c2a3d", to: "#b85c79" },
+    { from: "#b85c79", to: "#d6336c" },
+    { from: "#d6336c", to: "#f06595" },
+    { from: "#f06595", to: "#faa2c1" },
+    { from: "#faa2c1", to: "#fff0f6" },
+  ],
+  color: true,
+  accent: "#d6336c",
+  accentShadow: "#862e59",
+  diff: { add: "#37b24d", del: "#e03131", addBg: "#13260f", delBg: "#2b1212", hunk: "#cc5de8" },
 };
 
 const MONO: EvolutionTheme = {
@@ -116,7 +171,7 @@ const MONO: EvolutionTheme = {
   accent: "#ffffff",
 };
 
-export const THEMES: readonly EvolutionTheme[] = [COSMIC, MATRIX, SOLAR, RED_CLAW, BLUE_CRAB, MONO];
+export const THEMES: readonly EvolutionTheme[] = [COSMIC, MATRIX, SOLAR, RED_CLAW, BLUE_CRAB, AURORA, SYNTHWAVE, SAKURA, MONO];
 
 /** Look up a theme by name (case-insensitive); unknown names fall back to cosmic. */
 export function getTheme(name: string | undefined): EvolutionTheme {
@@ -197,11 +252,41 @@ export function accentPaint(theme: EvolutionTheme): (s: string) => string {
   return (s: string) => chalk.hex(hex)(s);
 }
 
-/** A dimmed accent painter for the "shaded" box edges (bottom/right). Paired with
- *  `accentPaint` on the lit top/left edges, the two-tone contrast gives every
- *  bordered panel a pseudo-3D depth cue. Identity when the theme is colorless. */
+/** The shaded-edge painter for box bottoms/rights. Pairs with `accentPaint` on
+ *  the lit top/left edges — the two-tone contrast gives every bordered panel a
+ *  pseudo-3D depth cue. Themes with an explicit `accentShadow` get a REAL
+ *  darker hue (richer separation than ANSI dim); others fall back to
+ *  dim(accent). Identity when the theme is colorless. */
 export function accentShadowPaint(theme: EvolutionTheme): (s: string) => string {
   if (!theme.color) return (s: string) => s;
+  if (theme.accentShadow) {
+    const hex = theme.accentShadow;
+    return (s: string) => chalk.hex(hex)(s);
+  }
   const hex = theme.accent;
   return (s: string) => chalk.dim(chalk.hex(hex)(s));
+}
+
+/** Themed diff painters: foreground + full-row background tints for added /
+ *  removed lines (block-level separation, not just a colored sign) and a
+ *  distinct hunk-header color. Identity painters when the theme is colorless. */
+export function diffPaint(theme: EvolutionTheme): {
+  add: (s: string) => string;
+  del: (s: string) => string;
+  hunk: (s: string) => string;
+  addHead: (s: string) => string;
+  delHead: (s: string) => string;
+} {
+  if (!theme.color) {
+    const id = (s: string) => s;
+    return { add: id, del: id, hunk: id, addHead: id, delHead: id };
+  }
+  const p = theme.diff ?? DEFAULT_DIFF_PALETTE;
+  return {
+    add: (s: string) => chalk.bgHex(p.addBg).hex(p.add)(s),
+    del: (s: string) => chalk.bgHex(p.delBg).hex(p.del)(s),
+    hunk: (s: string) => chalk.hex(p.hunk).bold(s),
+    addHead: (s: string) => chalk.hex(p.add).bold(s),
+    delHead: (s: string) => chalk.hex(p.del).bold(s),
+  };
 }

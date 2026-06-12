@@ -504,6 +504,23 @@ export function queuePromptInputChunk(state: PromptInputQueue, chunk: string): b
   return accepted;
 }
 
+/**
+ * TTY "new input first" contract: fold any queued FULL lines (typed while a
+ * turn was running, or stray Enter-terminated buffer noise) into the editable
+ * prompt prefill instead of leaving them to auto-execute as the next prompt.
+ * Without this, stale queued lines ran BEFORE the user's fresh input — jeo
+ * appeared to "continue the previous work first". Returns the number of lines
+ * folded. Pure over the queue object — piped/non-TTY callers must NOT use this
+ * (scripted stdin relies on in-order line execution).
+ */
+export function restoreQueuedLinesToPrefill(state: PromptInputQueue): number {
+  const lines = state.pendingLines.splice(0, state.pendingLines.length).map(l => l.trim()).filter(Boolean);
+  if (lines.length === 0) return 0;
+  const restored = lines.join(" ");
+  state.partial = state.partial ? `${restored} ${state.partial}`.trim() : restored;
+  return lines.length;
+}
+
 export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFlightAbortHarness {
   const controller = opts.controller ?? new AbortController();
   const stdin = opts.stdin ?? process.stdin;
@@ -2303,6 +2320,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   while (true) {
       drainPendingTtyInput();
+      // "New input first": queued FULL lines from the previous turn are folded
+      // into the editable prefill (visible in the input box, Enter to run,
+      // Esc/Ctrl+U to discard) instead of auto-executing ahead of fresh input —
+      // the "continues the previous work first" bug. Piped stdin keeps the
+      // legacy in-order auto-serve (scripted runs depend on it).
+      if (process.stdin.isTTY) {
+        const folded = restoreQueuedLinesToPrefill(queuedPromptInput);
+        if (folded > 0) {
+          console.log(chalk.dim(`(restored ${folded} queued input line${folded > 1 ? "s" : ""} into the prompt — Enter to run, Esc to discard)`));
+        }
+      }
       // Refresh the status bar's dirty flag once per prompt (one git spawn, not per frame).
       idleDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
       const prefilledLine = queuedPromptInput.partial;
@@ -2652,7 +2680,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (!want) {
           const active = resolveTheme().name;
           console.log("TUI themes (set with /theme <name>, persists via ~/.joc/config.json):");
-          for (const t of themes) console.log(`  ${t.name === active ? "*" : " "} ${t.name.padEnd(7)} ${t.description}`);
+          for (const t of themes) console.log(`  ${t.name === active ? "*" : " "} ${t.name.padEnd(10)} ${t.description}`);
           continue;
         }
         if (!themes.some(t => t.name === want)) {
@@ -3357,7 +3385,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         const { cols } = await import("../tui/terminal").then(m => m.size());
         console.log(`${categoryBadge("diff")} git diff${target ? ` -- ${target}` : ""}`);
-        for (const line of formatDiff(text, { cols: Math.max(40, cols - 1), maxLines: 400 })) console.log(line);
+        for (const line of formatDiff(text, { cols: Math.max(40, cols - 1), maxLines: 400, theme: uiTheme })) console.log(line);
         continue;
       }
       if (input.startsWith("/find") && (input === "/find" || input[5] === " ")) {

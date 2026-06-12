@@ -22,7 +22,7 @@ import type { TaskSubEvent } from "../agent/task-tool";
 import { supportsUnicode } from "./components/capability";
 import { centerBlock, padLineTo, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
 import { SECTION_GAP, stackSections } from "./components/section";
-import { resolveTheme, themeGradient, accentPaint, accentShadowPaint } from "./components/themes";
+import { resolveTheme, themeGradient, accentPaint, accentShadowPaint, diffPaint } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, webSearchCardLines, type ForgeSummary } from "./components/forge";
 import { renderJocStatus, renderStatusBar, renderStatusBox } from "./components/status";
@@ -801,6 +801,7 @@ export class LaunchTui {
       unicode: this.unicode,
       paint: accentPaint(this.theme),
       paintShadow: accentShadowPaint(this.theme),
+      diffPaint: diffPaint(this.theme),
       color: this.theme.color,
     });
     this.appendLedger(lines.join("\n") + "\n", "card");
@@ -827,6 +828,7 @@ export class LaunchTui {
         unicode: this.unicode,
         paint,
         paintShadow: accentShadowPaint(this.theme),
+        diffPaint: diffPaint(this.theme),
         index: i + 1,
         color: this.theme.color,
         // DNA-flow identity on LIVE cards only: the flowing helix gradient rides

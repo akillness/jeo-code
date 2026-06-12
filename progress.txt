@@ -295,3 +295,9 @@
 - 실행(dist/jeo, antigravity/gemini-3.5-flash-low, --no-tui --no-session -p): step2 편집 → 훅 RED(LINT-E001 advisory 라이브 발화) → step3 재읽기 → step4 진단대로 `export const VERSION = "1.0.0"` 정확 추가 → 훅 GREEN → step6 bash 검증 → done 무푸시백. 동적 스텝버짓 novelty 연장도 라이브 발화("progress detected … extended to 15 (extension 1/2)").
 - 결과 파일 검증: greet()='hello, jeo' + VERSION export 둘 다 정확. cycle 13(훅 진단→모델 피드백)·14a(다중매칭)·14 F1(pendingHookFailure 해제)·라운드1(동적 버짓)이 실모델 합주로 증명됨.
 - 비고: 소스 트리(src/tui/app.ts)는 동시 세션 편집 중이라 빌드 불가 — dist/jeo 바이너리로 우회 실행(이 우회 자체가 standalone 배포 경로 검증이기도 함).
+[2026-06-12] Pass — "이전 작업 우선 이어가기" 버그 수정 (new-input-first 계약)
+- 근본 원인: promptInput()이 pendingStdinLines에 남은 옛 라인(턴 중 타이핑, Enter 포함 버퍼 노이즈)을 다음 프롬프트로 **무표시 자동 실행** — 새 입력을 넣어도 큐의 이전 작업이 먼저 실행되는 체감("잔여가 남아 이전 작업을 우선 이어감").
+- 수정: restoreQueuedLinesToPrefill() — TTY에서는 큐 라인을 자동 실행하지 않고 입력창 prefill로 복원(보이고 편집 가능; Enter=실행, Esc=폐기) + "(restored N queued input line(s)…)" 안내. 파이프/비TTY는 레거시 순차 자동 서빙 유지(launch-repl-eof 계약 보존). 메인 루프 톱에서 매 프롬프트마다 큐를 비워 서브 프롬프트 오염도 차단.
+- 동시 패스 테마 확장(aurora/synthwave/sakura + accentShadow 색조 + diff 팔레트)의 미정렬 테스트 2건 정합.
+- Tests: new-input-first 3케이스(전량 드레인·prefill 결합 순서·공백 제거·no-op·chunk→line→prefill 엔드투엔드).
+- Verified: tsc 0; bun test 1213 pass / 0 fail; dist/jeo 재빌드.

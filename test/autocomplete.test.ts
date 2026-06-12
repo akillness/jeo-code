@@ -193,7 +193,7 @@ test("/session completes its subcommands", () => {
 test("/theme completes the bundled theme names", () => {
   const r = complete("/theme ", ctx());
   expect(r.kind).toBe("subcommand");
-  expect(r.completions).toEqual(["cosmic", "matrix", "solar", "red-claw", "blue-crab", "mono"]);
+  expect(r.completions).toEqual(["cosmic", "matrix", "solar", "red-claw", "blue-crab", "aurora", "synthwave", "sakura", "mono"]);
   expect(complete("/theme m", ctx()).completions).toEqual(["matrix", "mono"]);
 });
 

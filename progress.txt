@@ -285,3 +285,8 @@
 - 실동작 검증(tmux): `/mod`+Tab→`/model`, `/ag`+↓+Tab→`/agents` 입력창 실완성 캡처.
 - Tests: tabCompleteSelection 계약(하이라이트 우선/최상위 폴백/범위외/빈/$ 동작).
 - Verified: tsc 0; bun test 1206 pass / 0 fail; dist/jeo 재빌드.
+[2026-06-12] gjc-계승 마라톤 라운드 8 (cycle 18) — 오케스트레이션 MED 3건 소진
+- (A) 부모측 변이 감사: task-tool·team이 서브에이전트의 성공한 write/edit/bash를 onToolResult에서 실측 카운트 — mutating 역할이 0건 변이로 "완료"하면 "[parent audit] … treat Changed Files claims as UNVERIFIED" 주석(task-tool)/경고(team). 보고서의 Summary:/Changed Files: 마커는 형식 증명일 뿐 작업 증명이 아니라는 원칙의 기계화.
+- (B) 크로스 프로세스 런 락: state.ts acquireWorkflowRunLock — O_EXCL 락파일(pid 포함), 死pid stale 락은 1회 인수, 생존 보유자는 actionable 에러로 거부. runTeamEngine 본문 try/finally 래핑 — 동시 jeo team 2개가 pending[0]을 각자 pop해 이중 실행/완료 소실하던 레이스 차단.
+- (C) 실패 태스크 마커: 실패 시 current_phase=failed + failed_task 영속(이전엔 성공만 상태를 남김). 다음 런이 "partial edits may be on disk" 경고 후 마커 해제·재개. WorkflowState.failed_task 신설.
+- Verified: typecheck 0; full bun test 1206 pass / 0 fail (+3종 workflow-integrity: 락 수명주기, 실패마커+재개경고, parent audit — 실스트림에서 경고 발화 확인). 라운드 4~7 architect 백로그 전부 소진.

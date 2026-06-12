@@ -6571,3 +6571,15 @@ that extends itself while the turn demonstrably progresses and fails fast when s
 
 ### Verification (round 7)
 - typecheck 0; `bun test` **1202 pass / 0 fail** across 157 files (+8: workflow-integrity ×4 — new-plan restart / same-plan resume / honest-verification / red-suite, stream_options compat ×2). Deferred to round 8 (MED): parent-side Changed Files reconciliation vs subagent claims, cross-process `.joc/state` locking, failed-task marker + resume warning.
+
+---
+
+**Date:** 2026-06-12 · **Dimension: gjc-inheritance marathon round 8 — delegation audit, cross-process locking, failure markers.**
+
+### Orchestration MED fixes (round-7 architect deferrals, all exhausted)
+- **Parent-side mutation audit (A).** The parent (task-tool and team) now counts the subagent's SUCCESSFUL write/edit/bash calls via `onToolResult`. A mutating role that "completes" with zero successful mutations gets a `[parent audit] … treat "Changed Files:" claims as UNVERIFIED` annotation (task-tool) / loud warning (team). The report's `Summary:/Changed Files:/Verification:` markers prove formatting, not work — this mechanizes that distinction.
+- **Cross-process run lock (B).** `acquireWorkflowRunLock(skill, cwd)`: O_EXCL lockfile carrying the holder's pid; a dead holder's stale lock is taken over once, a live holder refuses with an actionable error. `runTeamEngine` wraps its body in try/finally — two concurrent `jeo team` runs previously each popped `pending_tasks[0]` and last-writer-won the state file (tasks executed twice, completions lost).
+- **Failed-task marker (C).** A failed task now persists `current_phase: "failed"` + `failed_task` (previously only success mutated state). The next run warns that the halted task may have left PARTIAL edits on disk before re-running on top of them, then clears the marker.
+
+### Verification (round 8)
+- typecheck 0; `bun test` **1206 pass / 0 fail** across 157 files (+3: lock lifecycle incl. dead-pid takeover, failure marker + resume warning, parent audit incl. read-only exemption). The architect-driven backlog from rounds 4–7 is now exhausted; remaining items are LOW/WATCH only (slow-drip stream deadline, plan dependency-key rejection, spawn-gate comment).

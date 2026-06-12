@@ -2,6 +2,7 @@ import chalk from "chalk";
 import { BOX_ASCII, BOX_UNICODE, padLineTo, type BoxGlyphs } from "./layout";
 import { stripAnsi, visibleWidth, animatedGradientText } from "./color";
 import { truncateToWidth } from "./width";
+import { lightHighlightLine } from "./code-view";
 import { type UiCategory } from "./category-index";
 
 export interface ForgeSummary {
@@ -523,8 +524,14 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
   // padded row (background tint spans the card width), so added/removed lines
   // separate as blocks instead of relying on a colored sign alone.
   const diffRows = summary.language === "patch" && opts.color !== false ? opts.diffPaint : undefined;
+  // Code cards (joc-ref): conservative single-pass light highlight — comments,
+  // string literals, keywords — applied AFTER wrapping so padding math stays
+  // visible-width true. color:false stays byte-identical.
+  const CODE_LANGS = new Set(["bash", "typescript", "javascript", "python", "json", "yaml", "rust", "go"]);
+  const highlightLang = opts.color !== false && summary.language && CODE_LANGS.has(summary.language) ? summary.language : undefined;
   const contentRow = (line: string): string => {
-    const padded = padLineTo(` ${line}`, inner, "left");
+    const lit = highlightLang ? lightHighlightLine(line, highlightLang) : line;
+    const padded = padLineTo(` ${lit}`, inner, "left");
     const body = diffRows && line.startsWith("+")
       ? diffRows.add(padded)
       : diffRows && line.startsWith("-")
@@ -541,7 +548,9 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
     }
   }
   if (content.length > clipped.length) {
-    rendered.push(contentRow(`… ${content.length - clipped.length} hidden line(s)`));
+    // gjc-style clip hint: the hidden remainder is reachable via Ctrl+O.
+    const hint = opts.unicode === false ? "[Ctrl+O for more]" : "⟦Ctrl+O for more⟧";
+    rendered.push(contentRow(`… ${content.length - clipped.length} more lines ${hint}`));
   }
   rendered.push(bottom);
   return rendered;

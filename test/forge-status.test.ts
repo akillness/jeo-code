@@ -327,3 +327,28 @@ test("edit card renders ≔ directives as +added lines; unknown formats fall bac
   const raw = summarizeForgeInvocation("edit", { filePath: "a.ts", editBlock: "<<<<<<< SEARCH\noops" });
   expect(raw.lines.join("\n")).toContain("oops");
 });
+
+test("clipped cards show the gjc-style ⟦Ctrl+O for more⟧ hint", () => {
+  const summary = { title: "Bash", language: "bash", lines: Array.from({ length: 20 }, (_, i) => `line ${i}`) };
+  const uni = formatForgeBox(summary, { width: 60, maxLines: 4, paint: s => s, color: false }).map(stripAnsi);
+  expect(uni.some(l => l.includes("… 16 more lines ⟦Ctrl+O for more⟧"))).toBe(true);
+  const ascii = formatForgeBox(summary, { width: 60, maxLines: 4, unicode: false, paint: s => s, color: false }).map(stripAnsi);
+  expect(ascii.some(l => l.includes("[Ctrl+O for more]"))).toBe(true);
+});
+
+test("code cards get a light highlight when color is on; color:false stays byte-stable", () => {
+  // bun test runs without a TTY → chalk auto-disables; force truecolor so the
+  // highlight path is observable, then restore.
+  const prevLevel = chalk.level;
+  chalk.level = 3;
+  try {
+    const summary = { title: "Bash", language: "bash", lines: ['const ed = await tab.waitFor("div.editor");'] };
+    const colored = formatForgeBox(summary, { width: 70, paint: s => s, color: true }).join("\n");
+    expect(colored).toContain("\x1b["); // string literal / keyword coloring applied
+    const plain = formatForgeBox(summary, { width: 70, paint: s => s, color: false }).join("\n");
+    expect(plain).not.toContain("\x1b[");
+    expect(plain).toContain('const ed = await tab.waitFor("div.editor");');
+  } finally {
+    chalk.level = prevLevel;
+  }
+});

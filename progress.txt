@@ -360,3 +360,7 @@
 - 라이브 검증(tmux 인터랙티브, dist/jeo): 턴 1회 후 /exit → **종료 지연 ≈ 0.1s**(이전 최대 20s), 종료 직후 pending 페이로드 존재 → 12초 후 자식이 MEMORY.md 작성+페이로드 정리(터미널 사망 생존). hermes 루프 유지, 사용자 시계에서만 제거.
 - 부수 수리: themes.test.ts가 실 ~/.joc/config.json의 테마(blue-crab)를 읽어 깨지던 격리 버그 — fallback 분기 호출에 빈 JOC_CONFIG_DIR 주입.
 - Verified: typecheck 0; full bun test 1239+ pass / 0 fail; 신규 테스트 4종(memory: invocation 3형태/스폰 계약+unref/게이트/워커 e2e).
+[2026-06-12] Pass — gjc 카드 패리티: 클립 ⟦Ctrl+O for more⟧ 힌트 + 코드 하이라이트 + Ctrl+O 도구 출력 전문
+- 스크린샷(gjc running-tool 카드) 반영 3종: ① 카드 클립 라인이 "… N more lines ⟦Ctrl+O for more⟧"(ASCII [Ctrl+O for more])로 — 숨긴 내용의 도달 경로를 명시; ② 코드 카드(bash/ts/js/py/json/yaml/rust/go) 본문에 lightHighlightLine 경량 하이라이트(주석·문자열·키워드) — 랩핑 후 적용으로 폭 계산 무손상, color:false 바이트 동일; ③ Ctrl+O 상세 뷰에 "detail · full last tool output (tool)" 섹션 추가 — withToolDetailCapture 이벤트 래퍼가 TUI/plain 양 싱크에서 마지막 도구의 전체(비절단) 출력을 캡처(2000행 캡 + sanitizeForTerminal), 응답이 없어도 도구 출력만으로 열람 가능.
+- 실동작: bash 카드 `$ seq 1 40` 렌더 확인; 클립 힌트·하이라이트는 단위 계약으로 고정(chalk 레벨 강제하에 ANSI 적용/미적용 검증).
+- Verified: tsc 0; bun test 1249 pass / 0 fail; dist/jeo 재빌드.

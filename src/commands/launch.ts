@@ -53,7 +53,7 @@ import {
 import { liveModelPicker, renderLiveModelPicker } from "../tui/components/live-model-picker";
 import { skillPicker, renderSkillPicker } from "../tui/components/skill-picker";
 import { providerPicker, renderProviderPicker } from "../tui/components/provider-picker";
-import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff } from "../tui/components/code-view";
+import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff, sanitizeForTerminal } from "../tui/components/code-view";
 import { categoryBadge } from "../tui/components/category-index";
 import { renderInputFrame } from "../tui/components/input-box";
 import { renderStatusBar } from "../tui/components/status";
@@ -1164,6 +1164,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let lastUserInput = "";
   // Full untruncated text of the last assistant reply — surfaced in detail by Ctrl+O.
   let lastReply = "";
+  // Full untruncated output of the most recent tool call — the clipped forge
+  // card's `⟦Ctrl+O for more⟧` hint resolves here.
+  let lastToolDetail: { tool: string; output: string } | null = null;
+  /** Wrap turn events so EVERY sink (TUI or plain stream) records the last full
+   *  tool output for the Ctrl+O detail view. */
+  const withToolDetailCapture = (base: ReturnType<LaunchTui["events"]>): ReturnType<LaunchTui["events"]> => ({
+    ...base,
+    onToolResult: (tool, success, output) => {
+      lastToolDetail = { tool, output };
+      base.onToolResult?.(tool, success, output);
+    },
+  });
 
   // pi-style session persistence: resume an existing session or create a new one.
   let sessionId: string | undefined;
@@ -1290,7 +1302,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           model: sessionModel,
           maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
           signal: ac.signal,
-          events: tui ? tui.events() : streamEvents,
+          events: withToolDetailCapture(tui ? tui.events() : streamEvents),
         });
         if (result.done && looksLikeSkillEcho(result.doneReason ?? "", resolvedSkills)) {
           history.push({
@@ -1307,7 +1319,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             model: sessionModel,
             maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
             signal: ac.signal,
-            events: tui ? tui.events() : streamEvents,
+            events: withToolDetailCapture(tui ? tui.events() : streamEvents),
           });
           const usage =
             result.usage && retry.usage
@@ -2323,11 +2335,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // scrollback as a detail view, then restore the boxed footer. (Cmd+O is intercepted
       // by the OS/terminal and never reaches the app, so Ctrl+O is the portable binding.)
       if (key?.ctrl && key.name === "o") {
-        if (!lastReply) return;
+        if (!lastReply && !lastToolDetail) return;
         const wasArmed = previewArmed;
         if (wasArmed) disarmPreview();
         const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
-        logLines([sep, "detail · full last response (ctrl+o)", sep, ...renderMarkdownTables(lastReply).split("\n"), sep]);
+        const toolDetail = lastToolDetail
+          ? [sep, `detail · full last tool output (${(lastToolDetail as { tool: string; output: string }).tool})`, sep, ...(lastToolDetail as { tool: string; output: string }).output.split("\n").slice(0, 2000).map(sanitizeForTerminal)]
+          : [];
+        logLines([sep, "detail · full last response (ctrl+o)", sep, ...renderMarkdownTables(lastReply).split("\n"), ...toolDetail, sep]);
         if (wasArmed) { armPreview(); drawFooter(previewLines(typedLine, navIdx)); }
         return;
       }

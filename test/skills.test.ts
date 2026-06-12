@@ -220,15 +220,15 @@ test("SKILLS is derived from SKILL.md embeds", () => {
 
 import { skillInvocationCard } from "../src/skills/catalog";
 
-test("skillInvocationCard: name + resolved path + prompt size; bundled skills labeled", () => {
+test("skillInvocationCard: name + tree-connector path/prompt detail; bundled skills labeled", () => {
   const discovered = { name: "ralplan", command: "", summary: "", whenToUse: "", details: "", sourcePath: "/Users/me/.agents/skills/ralplan/SKILL.md", raw: "a\nb\n\nc\n" };
   expect(skillInvocationCard(discovered)).toEqual([
     "Skill: ralplan",
-    "Path: /Users/me/.agents/skills/ralplan/SKILL.md",
-    "Prompt: 3 lines", // blank lines excluded
+    "├─ path: /Users/me/.agents/skills/ralplan/SKILL.md",
+    "└─ prompt: 3 lines", // blank lines excluded
   ]);
   const bundled = { name: "team", command: "", summary: "", whenToUse: "", details: "one\ntwo" };
   const card = skillInvocationCard(bundled);
-  expect(card[1]).toBe("Path: (bundled) src/prompts/skills/team/SKILL.md");
-  expect(card[2]).toBe("Prompt: 2 lines");
+  expect(card[1]).toBe("├─ path: (bundled) src/prompts/skills/team/SKILL.md");
+  expect(card[2]).toBe("└─ prompt: 2 lines");
 });

@@ -103,6 +103,29 @@ function previewLines(text: string, maxLines: number, maxChars: number): string[
   return out.length > 0 ? out : [""];
 }
 
+/** joc-ref file-content preview: a line-number gutter (` 1│ #…`) before each
+ *  previewed row, closed by `… N more lines` when clipped. ANSI-free so cards
+ *  stay byte-stable across color modes; `│` degrades to `|` without unicode. */
+function numberedPreviewLines(text: string, maxLines: number, maxChars: number, unicode = true): string[] {
+  const clean = redactSecrets(text.replace(/\r\n/g, "\n"));
+  const raw = clean.split("\n");
+  const gutter = unicode ? "│" : "|";
+  const width = String(Math.min(raw.length, maxLines)).length;
+  const out: string[] = [];
+  let used = 0;
+  for (let i = 0; i < raw.length; i++) {
+    if (out.length >= maxLines || used >= maxChars) break;
+    const remaining = Math.max(0, maxChars - used);
+    const line = raw[i]!;
+    const next = line.length > remaining ? `${line.slice(0, Math.max(0, remaining - 1))}…` : line;
+    out.push(`${String(i + 1).padStart(width)}${gutter} ${next}`);
+    used += next.length + 1;
+  }
+  const hidden = raw.length - out.length;
+  if (hidden > 0) out.push(`… ${hidden} more line${hidden === 1 ? "" : "s"}`);
+  return out.length > 0 ? out : [""];
+}
+
 /**
  * Render an edit tool's `editBlock` as gjc-style diff lines for the forge card:
  *  - SEARCH/REPLACE hunks → `- old` / `+ new` rows per hunk (capped), closed by a
@@ -226,13 +249,12 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
       title: `Write ${filePath}`,
       language: lang || "text",
       lines: [
-        ...previewLines(content, 8, 800),
+        ...numberedPreviewLines(content, 6, 700, opts.unicode !== false),
         FORGE_DIVIDER_PREFIX + "Summary",
         `wrote ${lineCount} lines, ${content.length} bytes${langTag}`
       ],
     };
   }
-
   if (normalized === "edit") {
     const filePath = stringArg(args, "filePath", "path") ?? "<missing path>";
     const editBlock = stringArg(args, "editBlock", "edit") ?? "";

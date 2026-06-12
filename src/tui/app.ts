@@ -36,6 +36,7 @@ import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelin
 import { formatHintBar } from "./components/hints";
 import { formatDuration, formatUsage } from "./components/duration";
 import { renderHud, derivePhase, type JocPhase } from "./components/hud";
+import { formatTodoWriteCard } from "./components/todo-card";
 import { jeoEnv } from "../util/env";
 import chalk from "chalk";
 
@@ -247,6 +248,13 @@ export class LaunchTui {
     if (hasInProgress && changed && !this.runningTool) {
       this.hudPhase = "planning";
     }
+    // joc-ref transcript: every plan CHANGE flushes a "Todo Write" tree card into
+    // scrollback (☑ + strikethrough as items complete), so the checklist's history
+    // is reviewable. The live pinned plan stays in the frame tail as before.
+    if (changed && items.length > 0 && !this.finished) {
+      const card = formatTodoWriteCard(items, { unicode: this.unicode, color: this.theme.color });
+      this.appendLedger(card.join("\n") + "\n", "card");
+    }
     this.todos = items;
     this.draw();
   }
@@ -332,12 +340,13 @@ export class LaunchTui {
       onAssistant: (_raw, invocation) => {
         this.thinking = false; // model replied; now dispatching the tool
         this.retryNotice = null; // the call got through — clear any backoff notice
-        // Flush the streamed reasoning once into scrollback as a `jeo · …` ledger line
-        // (the durable record), then stop showing the transient live reasoning row.
+        // Flush the streamed reasoning once into scrollback as a joc-ref reasoning
+        // block — the agent NAME on its own accent line, the prose below it (the
+        // durable record) — then stop showing the transient live reasoning row.
         if (this.streamingReasoning && this.streamingReasoning !== this.flushedReasoning) {
           this.flushedReasoning = this.streamingReasoning;
-          const dim = this.theme.color ? chalk.dim : (s: string) => s;
-          this.appendLedger(dim(`jeo · ${this.streamingReasoning}`) + "\n", "reasoning");
+          const name = this.theme.color ? chalk.bold(accentPaint(this.theme)("jeo")) : "jeo";
+          this.appendLedger(`${name}\n${this.streamingReasoning}\n`, "reasoning");
         }
         this.streamingReasoning = "";
         this.streamingActivity = "";

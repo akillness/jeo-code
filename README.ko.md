@@ -63,7 +63,7 @@ jeo --tmux               # 독립 tmux 세션에서 실행
 
 | 명령 | 설명 |
 | --- | --- |
-| `/model` · `/models` · `/provider` | 모델/프로바이더 선택; `/model`에서 기본/서브에이전트 적용 대상과 thinking 레벨까지 한 흐름으로 설정 |
+| `/model` · `/models` · `/provider` | 모델/프로바이더 선택; `/model`에서 기본/역할 배지, 역할 지정 액션, thinking 레벨, OpenAI Codex 역할 프리셋을 한 흐름으로 설정 |
 | `/provider login <name>` · `/logout` | 입력창에서 OAuth 로그인/로그아웃 |
 | `/agents [role]` · `/subagent` | 역할별(executor/planner/architect/critic) 모델·thinking·스텝 구성 |
 | `/thinking [level]` | 기본 추론 예산(minimal…xhigh) 조회/설정 |

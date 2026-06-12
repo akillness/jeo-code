@@ -63,7 +63,7 @@ jeo --tmux               # 独立した tmux セッションで実行
 
 | コマンド | 説明 |
 | --- | --- |
-| `/model` · `/models` · `/provider` | モデル/プロバイダ選択; `/model` でデフォルト/サブエージェント適用先と thinking レベルまで一つの流れで設定 |
+| `/model` · `/models` · `/provider` | モデル/プロバイダ選択; `/model` でデフォルト/ロールバッジ、ロール指定アクション、thinking レベル、OpenAI Codex ロールプリセットを一つの流れで設定 |
 | `/provider login <name>` · `/logout` | 入力欄から OAuth ログイン/ログアウト |
 | `/agents [role]` · `/subagent` | ロール別(executor/planner/architect/critic)モデル・thinking・ステップ設定 |
 | `/thinking [level]` | デフォルト推論予算(minimal…xhigh)の表示/設定 |

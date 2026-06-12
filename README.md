@@ -63,7 +63,7 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 
 | Command | Description |
 | --- | --- |
-| `/model` · `/models` · `/provider` | Pick model/provider; `/model` handles default vs subagent target plus thinking level in one flow |
+| `/model` · `/models` · `/provider` | Pick model/provider; `/model` shows default/role badges, Set-as-role actions, thinking level, and the OpenAI Codex role preset in one flow |
 | `/provider login <name>` · `/logout` | OAuth login/logout from the input box |
 | `/agents [role]` · `/subagent` | Per-role (executor/planner/architect/critic) model · thinking · step config |
 | `/thinking [level]` | Show/set default reasoning budget (minimal…xhigh) |

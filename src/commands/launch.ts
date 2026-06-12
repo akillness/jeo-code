@@ -34,7 +34,7 @@ import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLev
 
 import { listAliases } from "../ai/model-registry";
 
-import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting, applyTargetChoices } from "../agent/subagents";
+import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting } from "../agent/subagents";
 import { SelectList, renderSelectList } from "../tui/components/select-list";
 import {
   formatModelLine,
@@ -50,7 +50,7 @@ import {
   formatCatalogTable,
   formatCanonicalCatalogTable,
 } from "../tui/components/config-panel";
-import { liveModelPicker, renderLiveModelPicker } from "../tui/components/live-model-picker";
+import { liveModelPicker, renderLiveModelPicker, type ModelAssignmentBadge } from "../tui/components/live-model-picker";
 import { skillPicker, renderSkillPicker } from "../tui/components/skill-picker";
 import { providerPicker, renderProviderPicker } from "../tui/components/provider-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff, sanitizeForTerminal } from "../tui/components/code-view";
@@ -2287,6 +2287,62 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const notReadyWarning = (st: { name: string; label: string }): string =>
     `  ! ${st.name} is not call-ready yet (${st.label}) — run /provider login antigravity before the first turn.`;
 
+  const CORE_MODEL_ACTION_ROLE_ORDER = ["executor", "architect", "planner", "critic"] as const;
+  const MODEL_BADGE_ROLE_ORDER = ["planner", "architect", "executor", "critic"] as const;
+
+  const roleBadgeColor = (roleId: string): ModelAssignmentBadge["color"] =>
+    roleId === "executor" || roleId === "architect" || roleId === "planner" || roleId === "critic" ? roleId : "critic";
+
+  const orderedModelRoles = (config: Awaited<ReturnType<typeof readGlobalConfig>>) => {
+    const roles = allSubagentRoles(config);
+    const emitted = new Set<string>();
+    const out: ReturnType<typeof allSubagentRoles> = [];
+    for (const id of CORE_MODEL_ACTION_ROLE_ORDER) {
+      const role = roles.find(r => r.id === id);
+      if (role) {
+        emitted.add(role.id);
+        out.push(role);
+      }
+    }
+    for (const role of roles) {
+      if (!emitted.has(role.id)) out.push(role);
+    }
+    return out;
+  };
+
+  const modelPickerAssignments = async (): Promise<ModelAssignmentBadge[]> => {
+    const cfg = await readGlobalConfig();
+    const defaultModelForBadges = sessionModel || cfg.defaultModel;
+    const cfgForBadges = { ...cfg, defaultModel: defaultModelForBadges };
+    const roles = allSubagentRoles(cfgForBadges);
+    const byId = new Map(roles.map(role => [role.id, role]));
+    const orderedRoleIds = [
+      ...MODEL_BADGE_ROLE_ORDER,
+      ...roles.map(role => role.id).filter(id => !MODEL_BADGE_ROLE_ORDER.includes(id as (typeof MODEL_BADGE_ROLE_ORDER)[number])),
+    ];
+    const assignments: ModelAssignmentBadge[] = [
+      {
+        role: "default",
+        label: "DEFAULT",
+        model: defaultModelForBadges,
+        thinking: sessionThinking ?? cfg.thinkingLevel ?? "medium",
+        color: "default",
+      },
+    ];
+    for (const roleId of orderedRoleIds) {
+      const role = byId.get(roleId);
+      if (!role) continue;
+      assignments.push({
+        role: role.id,
+        label: role.title.toUpperCase(),
+        model: resolveSubagentModel(role.id, cfgForBadges),
+        thinking: resolveSubagentThinking(role.id, cfgForBadges) ?? "inherit",
+        color: roleBadgeColor(role.id),
+      });
+    }
+    return assignments;
+  };
+
   const pickLiveProviderModel = async (
     providerName: string,
     entries: PickEntry[],
@@ -2294,7 +2350,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     disabledProviders: readonly ProviderName[] = [],
   ): Promise<PickEntry | undefined> => {
     if (!process.stdin.isTTY || entries.length === 0) return undefined;
-    const list = liveModelPicker(entries, { current, disabledProviders, disabledHint: "needs API key/base URL" });
+    const list = liveModelPicker(entries, { current, assignments: await modelPickerAssignments(), disabledProviders, disabledHint: "needs API key/base URL" });
     let chosen: PickEntry | undefined;
     await runSelectPicker(
       (cols, rows) =>
@@ -2405,12 +2461,60 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     console.log(`${role.title} thinking set to ${level} (~${thinkingMaxTokens(level)} max tokens/step) → ~/.jeo/config.json`);
     return true;
   };
+  const displayModelName = (model: string): string => {
+    const leaf = (model.split("/").pop() || model).trim();
+    return leaf.replace(/^gpt/i, "GPT");
+  };
+
+  const modelActionChoices = (config: Awaited<ReturnType<typeof readGlobalConfig>>) => {
+    const choices: { value: string; label: string }[] = [
+      { value: "default", label: "Set as DEFAULT (Default)" },
+    ];
+    for (const role of orderedModelRoles(config)) {
+      choices.push({ value: role.id, label: `Set as ${role.title.toUpperCase()} (${role.title})` });
+    }
+    choices.push({
+      value: "preset:openai-codex",
+      label: "Apply OpenAI Codex role preset (Default medium, Executor low, Architect xhigh, Planner medium, Critic high)",
+    });
+    return choices;
+  };
+
+  const applyOpenAiCodexRolePreset = async (target: string, cfgForPick: Awaited<ReturnType<typeof readGlobalConfig>>): Promise<void> => {
+    const roleThinking: Record<(typeof CORE_MODEL_ACTION_ROLE_ORDER)[number], ThinkLevel> = {
+      executor: "low",
+      architect: "xhigh",
+      planner: "medium",
+      critic: "high",
+    };
+    await saveConfigPatch(raw => {
+      let subagents = raw.subagents ?? {};
+      for (const roleId of CORE_MODEL_ACTION_ROLE_ORDER) {
+        subagents = withSubagentSetting({ subagents }, roleId, { model: target, thinking: roleThinking[roleId] });
+      }
+      return {
+        ...rememberModelPatch(raw, target),
+        thinkingLevel: "medium",
+        subagents,
+      };
+    });
+    sessionModel = target;
+    sessionThinking = "medium";
+    const { resolved, provider } = await describeModel(target);
+    const st = (await describeAllProviders(cfgForPick)).find(s => s.name === provider);
+    console.log(`OpenAI Codex role preset applied to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })} — Default medium, Executor low, Architect xhigh, Planner medium, Critic high`);
+  };
+
 
   const applyPickedModelWithTarget = async (target: string): Promise<boolean> => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
     const cfgForPick = await readGlobalConfig();
-    const choice = await pickFromOptions(`Apply ${target} to`, applyTargetChoices(cfgForPick));
+    const choice = await pickFromOptions(`Model Name: ${displayModelName(target)}\n\nAction for: ${target}`, modelActionChoices(cfgForPick));
     const applyTo = choice || "default";
+    if (applyTo === "preset:openai-codex") {
+      await applyOpenAiCodexRolePreset(target, cfgForPick);
+      return true;
+    }
     const roleTarget = applyTo !== "default" ? getSubagentRole(applyTo, cfgForPick) : undefined;
     const { resolved, provider } = await describeModel(target);
     const st = (await describeAllProviders(cfgForPick)).find(s => s.name === provider);
@@ -2430,9 +2534,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const lvl = await pickThinkingLevel(`Reasoning for default: ${target}`, sessionThinking ?? cfgForPick.thinkingLevel);
     if (lvl && lvl !== "inherit") {
       sessionThinking = lvl;
-      await saveConfigPatch(() => ({ thinkingLevel: lvl }));
     }
-    await saveConfigPatch(raw => rememberModelPatch(raw, target));
+    await saveConfigPatch(raw => ({
+      ...rememberModelPatch(raw, target),
+      ...(lvl && lvl !== "inherit" ? { thinkingLevel: lvl } : {}),
+    }));
     console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${lvl && lvl !== "inherit" ? ` · thinking ${lvl}` : ""} — saved as default`);
     return true;
   };
@@ -3216,49 +3322,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (providerPick.length) logLines(formatPickListWithCapabilities(providerPick, { cap: 20 }));
           continue;
         }
-        // gjc parity 3-step pick: WHO uses the model (default / subagent role),
-        // then HOW HARD it thinks (reasoning level — gjc's "Reasoning for <role>"
-        // menu). ESC at either step keeps the current value; non-TTY / explicit
-        // `/provider <name> <model>` keep the legacy default-apply behavior.
-        let applyTo = "default";
-        const cfgForPick = await readGlobalConfig();
-        if (pickedFromPicker) {
-          const choice = await pickFromOptions(`Apply ${target} to`, applyTargetChoices(cfgForPick));
-          if (choice) applyTo = choice;
-        }
-        const roleTarget = applyTo !== "default" ? getSubagentRole(applyTo) : undefined;
-        const pickThinking = async (forRole: boolean, current: string | undefined): Promise<string | undefined> => {
-          if (!pickedFromPicker) return undefined;
-          const mark = (lvl: string): string => (current === lvl ? "current" : "");
-          const levels: { value: string; label: string; hint?: string }[] = [
-            ...(forRole ? [{ value: "inherit", label: `inherit — follow default (${cfgForPick.thinkingLevel ?? "medium"})`, hint: current === undefined ? "current" : "" }] : []),
-            { value: "minimal", label: "minimal — lightest reasoning", hint: mark("minimal") },
-            { value: "low", label: `low — light reasoning (~${Math.round(thinkingMaxTokens("low") / 1000)}k tokens)`, hint: mark("low") },
-            { value: "medium", label: `medium — moderate reasoning (~${Math.round(thinkingMaxTokens("medium") / 1000)}k tokens)`, hint: mark("medium") },
-            { value: "high", label: `high — deep reasoning (~${Math.round(thinkingMaxTokens("high") / 1000)}k tokens)`, hint: mark("high") },
-            { value: "xhigh", label: `xhigh — maximum reasoning (~${Math.round(thinkingMaxTokens("xhigh") / 1000)}k tokens)`, hint: mark("xhigh") },
-          ];
-          return pickFromOptions(`Reasoning for ${forRole ? roleTarget!.title : "default"}: ${target}`, levels);
-        };
-        type Lvl = "minimal" | "low" | "medium" | "high" | "xhigh";
-        if (roleTarget) {
-          const lvl = await pickThinking(true, cfgForPick.subagents?.[roleTarget.id]?.thinking);
-          const thinkPatch = lvl === "inherit" ? { thinking: undefined } : lvl ? { thinking: lvl as Lvl } : {};
-          await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, roleTarget.id, { model: target, ...thinkPatch }) }));
-          const thinkNote = lvl ? ` · thinking ${lvl}` : "";
-          console.log(`Subagent '${roleTarget.id}' model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${thinkNote} — saved (change anytime via /agents or this picker)`);
+        if (pickedFromPicker && await applyPickedModelWithTarget(target)) {
+          if (providerPick.length) lastPickIndex = providerPick;
           continue;
         }
         sessionModel = target;
-        const lvl = await pickThinking(false, sessionThinking ?? cfgForPick.thinkingLevel);
-        if (lvl && lvl !== "inherit") {
-          sessionThinking = lvl as Lvl;
-          await saveConfigPatch(() => ({ thinkingLevel: lvl as Lvl }));
-        }
         // MRU persistence: a provider/model pick becomes the default for EVERY
         // future session and the head of the recents rotation.
         await saveConfigPatch(raw => rememberModelPatch(raw, target));
-        console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${lvl && lvl !== "inherit" ? ` · thinking ${lvl}` : ""} — saved as default`);
+        console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })} — saved as default`);
         // Show the provider's live, credentialed catalog so the user can pick a concrete id.
         if (providerPick.length) {
           lastPickIndex = providerPick;

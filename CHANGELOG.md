@@ -17,6 +17,7 @@ _Self-contained `.jeo` namespace for skills/hooks/rules, live next-prompt input 
 
 ### Changed
 - Unified model targeting: `/model` can now set default thinking, pick a model, apply it to the default agent or any subagent role, and set that target's thinking level in one flow.
+- `/model` picker now shows DEFAULT/role badges with each target's thinking level, and the post-pick action menu uses the unified Set-as-role format plus an OpenAI Codex role preset.
 - Canonicalized runtime naming on `.jeo` and `JEO_` only.
 
 ### Fixed

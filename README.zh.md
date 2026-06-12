@@ -63,7 +63,7 @@ jeo --tmux               # 在独立 tmux 会话中运行
 
 | 命令 | 说明 |
 | --- | --- |
-| `/model` · `/models` · `/provider` | 选择模型/提供商；`/model` 在一个流程内设置默认/子代理应用目标与 thinking 级别 |
+| `/model` · `/models` · `/provider` | 选择模型/提供商；`/model` 在一个流程内显示默认/角色徽章、角色设置动作、thinking 级别与 OpenAI Codex 角色预设 |
 | `/provider login <name>` · `/logout` | 在输入框内 OAuth 登录/登出 |
 | `/agents [role]` · `/subagent` | 按角色(executor/planner/architect/critic)配置模型·thinking·步数 |
 | `/thinking [level]` | 查看/设置默认推理预算(minimal…xhigh) |

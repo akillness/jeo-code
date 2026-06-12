@@ -21,14 +21,15 @@ test("LaunchTui: streams the model's reasoning live, then flushes it once to scr
   ev.onModelStream!('{"reasoning":"checking the package version');
   expect(strip(out.join(""))).toContain("checking the package version");
 
-  // On the tool dispatch, the reasoning is flushed ONCE into scrollback as `jeo · …`.
+  // On the tool dispatch, the reasoning is flushed ONCE into scrollback as a
+  // joc-ref reasoning block: the agent name on its own line, the prose below.
   out.length = 0;
   ev.onAssistant!(
     '{"reasoning":"checking the package version","tool":"read","arguments":{"filePath":"package.json"}}',
     { tool: "read", arguments: { filePath: "package.json" } },
   );
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
-  expect(strip(out.join(""))).toContain("jeo · checking the package version");
+  expect(strip(out.join(""))).toContain("jeo\nchecking the package version");
   tui.finish("done");
 });
 

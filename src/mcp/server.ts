@@ -20,6 +20,11 @@ interface ServerOptions {
   log?: (line: string) => void;
 }
 
+interface IncomingMessage {
+  payload: string;
+  framed: boolean;
+}
+
 export async function runMcpServer(options: ServerOptions = {}): Promise<void> {
   const tools = options.tools ?? TOOLS;
   const log = options.log ?? (line => process.stderr.write(`${line}\n`));
@@ -30,21 +35,100 @@ export async function runMcpServer(options: ServerOptions = {}): Promise<void> {
 
   for await (const chunk of (process.stdin as unknown as AsyncIterable<Uint8Array>)) {
     buffer += decoder.decode(chunk, { stream: true });
-    let newlineIndex: number;
-    while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
-      const line = buffer.slice(0, newlineIndex).trim();
-      buffer = buffer.slice(newlineIndex + 1);
-      if (!line) continue;
+    const drained = drainIncomingMessages(buffer);
+    buffer = drained.remaining;
+    for (const message of drained.messages) {
       let response: JsonRpcResponse | null = null;
       try {
-        response = await handleLine(line, tools);
+        response = await handleLine(message.payload, tools);
       } catch (err) {
-        // A bad line must never kill the stdin read loop (the whole server).
+        // A bad request must never kill the stdin read loop (the whole server).
         response = fail(null, INTERNAL_ERROR, (err as Error)?.message ?? "internal error");
       }
-      if (response) writeResponse(response);
+      if (response) writeResponse(response, message.framed);
     }
   }
+}
+
+export function drainIncomingMessages(buffer: string): { messages: IncomingMessage[]; remaining: string } {
+  const messages: IncomingMessage[] = [];
+  let remaining = buffer;
+
+  while (remaining.length > 0) {
+    const frame = readContentLengthFrame(remaining);
+    if (frame === "incomplete") break;
+    if (frame) {
+      messages.push({ payload: frame.payload, framed: true });
+      remaining = frame.remaining;
+      continue;
+    }
+
+    const newlineIndex = remaining.indexOf("\n");
+    if (newlineIndex === -1) break;
+    const line = remaining.slice(0, newlineIndex).trim();
+    remaining = remaining.slice(newlineIndex + 1);
+    if (line) messages.push({ payload: line, framed: false });
+  }
+
+  return { messages, remaining };
+}
+
+function readContentLengthFrame(buffer: string): { payload: string; remaining: string } | "incomplete" | null {
+  const headerEnd = findHeaderEnd(buffer);
+  if (headerEnd === null) return looksLikeHeaderPrefix(buffer) ? "incomplete" : null;
+
+  const header = buffer.slice(0, headerEnd.index);
+  const contentLength = parseContentLength(header);
+  if (contentLength === null) return null;
+
+  const bodyStart = headerEnd.index + headerEnd.separator.length;
+  const body = buffer.slice(bodyStart);
+  const bodyByteLength = Buffer.byteLength(body, "utf8");
+  if (bodyByteLength < contentLength) return "incomplete";
+
+  const split = splitAtUtf8ByteLength(body, contentLength);
+  if (!split) return null;
+
+  return {
+    payload: split.prefix,
+    remaining: split.suffix,
+  };
+}
+
+function splitAtUtf8ByteLength(input: string, byteLength: number): { prefix: string; suffix: string } | null {
+  if (byteLength === 0) return { prefix: "", suffix: input };
+
+  let bytes = 0;
+  let endIndex = 0;
+  for (const char of input) {
+    bytes += Buffer.byteLength(char, "utf8");
+    endIndex += char.length;
+    if (bytes === byteLength) return { prefix: input.slice(0, endIndex), suffix: input.slice(endIndex) };
+    if (bytes > byteLength) return null;
+  }
+  return null;
+}
+
+function findHeaderEnd(buffer: string): { index: number; separator: "\r\n\r\n" | "\n\n" } | null {
+  const crlf = buffer.indexOf("\r\n\r\n");
+  const lf = buffer.indexOf("\n\n");
+  if (crlf === -1 && lf === -1) return null;
+  if (crlf !== -1 && (lf === -1 || crlf < lf)) return { index: crlf, separator: "\r\n\r\n" };
+  return { index: lf, separator: "\n\n" };
+}
+
+function looksLikeHeaderPrefix(buffer: string): boolean {
+  return /^content-length\s*:/i.test(buffer) || /^[A-Za-z-]+\s*:/i.test(buffer);
+}
+
+function parseContentLength(header: string): number | null {
+  for (const line of header.split(/\r?\n/)) {
+    const match = /^content-length\s*:\s*(\d+)\s*$/i.exec(line);
+    if (!match) continue;
+    const length = Number(match[1]);
+    return Number.isSafeInteger(length) && length >= 0 ? length : null;
+  }
+  return null;
 }
 
 export async function handleLine(line: string, tools: ToolDefinition[]): Promise<JsonRpcResponse | null> {
@@ -104,6 +188,11 @@ async function handleToolCall(req: JsonRpcRequest, tools: ToolDefinition[]): Pro
   return ok(req.id ?? null, result);
 }
 
-function writeResponse(response: JsonRpcResponse): void {
-  process.stdout.write(`${JSON.stringify(response)}\n`);
+function writeResponse(response: JsonRpcResponse, framed: boolean): void {
+  const json = JSON.stringify(response);
+  if (framed) {
+    process.stdout.write(`Content-Length: ${Buffer.byteLength(json, "utf8")}\r\n\r\n${json}`);
+    return;
+  }
+  process.stdout.write(`${json}\n`);
 }

@@ -134,7 +134,3 @@ JEO_TOOL_OUTPUT_MAX=4000        # 模型可见的工具输出上限(全文溢出
 ```
 
 重试行为通过 `~/.joc/config.json` 的 `retry` 调整(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` 等)。步数预算默认动态 — 只要看到新的进展就延长，停滞时收敛为总结；`--max-steps N` 恢复有界流程。旧的 `JOC_*` 环境变量仍然受支持。
-
-## 发布
-
-CI 使用 npm **Granular Access Token**(`NPM_TOKEN`、Automation 类型、允许工作流绕过 2FA)发布。

@@ -134,7 +134,3 @@ JEO_TOOL_OUTPUT_MAX=4000        # 모델 가시 도구 출력 캡(전체는 아�
 ```
 
 재시도 동작은 `~/.joc/config.json`의 `retry`로 조정합니다(`requestMaxRetries`, `streamMaxRetries`, `rateLimitRetries`, `failFastStatuses`, …). 스텝 버짓은 기본 동적 — 새로운 진전이 보이는 동안 연장되고 정체 시 요약으로 수렴하며, `--max-steps N`이면 유한 플로로 복귀합니다. 레거시 `JOC_*` 환경변수도 계속 지원됩니다.
-
-## 배포
-
-CI는 npm **Granular Access Token**(`NPM_TOKEN`, Automation 타입, 워크플로 2FA 우회 허용)으로 배포합니다.

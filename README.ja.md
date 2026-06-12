@@ -134,7 +134,3 @@ JEO_TOOL_OUTPUT_MAX=4000        # モデル可視のツール出力上限(全文
 ```
 
 リトライ動作は `~/.joc/config.json` の `retry` で調整します(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` など)。ステップ予算はデフォルトで動的 — 新規進捗が見える間は延長され、停滞時は要約に収束します。`--max-steps N` で有限フローに戻ります。レガシー `JOC_*` 環境変数も引き続きサポートされます。
-
-## 公開
-
-CI は npm **Granular Access Token**(`NPM_TOKEN`、Automation タイプ、ワークフローの 2FA バイパス許可)で公開します。

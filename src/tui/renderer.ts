@@ -51,17 +51,22 @@ export class Renderer {
     this.prevCols = currentCols;
 
     const next = lines.map(line => truncate(line, currentCols));
+    // Rows physically occupied by the prior frame — or recorded by reset() when the
+    // baseline was dropped WITHOUT clearing the screen. The diff below EL-clears any
+    // of these that the new (possibly shorter) frame does not cover, and the reserve
+    // block below uses it so a post-reset repaint does not spuriously re-scroll.
+    const occupied = Math.max(this.prev.length, this.coverRows);
     const maxLen = Math.max(this.prev.length, next.length, this.coverRows);
     this.coverRows = 0;
     let cursorRow = 0;
     let out = "";
 
-    if (this.reserve && next.length > this.prev.length && next.length <= Math.max(1, size().rows)) {
+    if (this.reserve && next.length > occupied && next.length <= Math.max(1, size().rows)) {
       // The cursor rests on the frame's first row (the anchor). Walk to the last
       // currently-occupied row, emit one newline per missing row (scrolling the
       // viewport when at the bottom margin), then hop back up to the — possibly
       // shifted — anchor so the diff below paints at stable relative positions.
-      const have = Math.max(this.prev.length, 1);
+      const have = Math.max(occupied, 1);
       out += cursorDown(have - 1) + "\n".repeat(next.length - have) + cursorUp(next.length - 1) + toColumn(1);
     }
 
@@ -92,16 +97,17 @@ export class Renderer {
     }
     out += toColumn(1);
 
-    // Close the synchronized update opened by insertAbove() now that the full
-    // repaint is in the same buffered stream — the terminal presents the overwritten
-    // first row(s), the flushed ledger line, and the repainted frame as ONE atomic update.
-    if (this.syncOpen) {
-      out += END_SYNC;
-      this.syncOpen = false;
-    }
-
+    // Atomic present (DECSET-2026 synchronized update): wrap the WHOLE repaint so the
+    // terminal never shows a half-painted frame — no torn row, no transient duplicate
+    // bar a mid-repaint snapshot could catch. An insertAbove() may have already opened
+    // the update (syncOpen); otherwise this render opens its own. Exactly one BSU/ESU
+    // pair is emitted per write.
     if (out.length > 0) {
-      this.write(out);
+      this.write((this.syncOpen ? "" : BEGIN_SYNC) + out + END_SYNC);
+      this.syncOpen = false;
+    } else if (this.syncOpen) {
+      this.write(END_SYNC);
+      this.syncOpen = false;
     }
 
     this.prev = next;
@@ -137,7 +143,13 @@ export class Renderer {
     // clamped cursor-down desynced the row bookkeeping — each subsequent frame then
     // painted one row higher, devouring the flushed scrollback content above (the
     // "truncated card" corruption).
-    const stale = this.prev.length - written;
+    // Use the same occupancy measure the reserve block uses (max of prev.length and
+    // coverRows). A reset() between frames drops prev but records coverRows; ignoring it
+    // here left the old frame's lower rows uncleared and the cursor below the true
+    // anchor, so the next render's cursorDown crossed the bottom margin and clamped —
+    // the persistent off-by-one that duplicated the model bar.
+    const occupied = Math.max(this.prev.length, this.coverRows);
+    const stale = occupied - written;
     if (stale > 0) {
       for (let i = 0; i < stale; i++) {
         out += toColumn(1) + clearLine() + (i < stale - 1 ? cursorDown(1) : "");
@@ -146,6 +158,7 @@ export class Renderer {
     }
     this.write(out);
     this.prev = [];
+    this.coverRows = 0; // consumed: the frame below is now the single source of truth
   }
 
   /** Clear the live frame. Inline (reserve) mode walks the known frame rows with
@@ -174,6 +187,19 @@ export class Renderer {
   }
 
   reset(): void {
+    // Drop the diff baseline so the next render() repaints every line — but REMEMBER
+    // how many rows are physically on screen so that repaint also EL-clears any the
+    // new (possibly shorter) frame doesn't cover. Without this, a self-heal reset on a
+    // frame that just shrank left stale rows behind (duplicate model bars / orphaned
+    // borders — the live-analysis screen corruption).
+    this.coverRows = Math.max(this.coverRows, this.prev.length);
     this.prev = [];
+    // Close any synchronized update opened by a preceding insertAbove() so a reset()
+    // landing between insertAbove() and the next render() cannot strand an open BSU
+    // window (which times out ~150ms later and flashes a partial frame).
+    if (this.syncOpen) {
+      this.write(END_SYNC);
+      this.syncOpen = false;
+    }
   }
 }

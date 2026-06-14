@@ -135,6 +135,57 @@ export function truncateToWidth(s: string, cols: number): string {
 }
 
 /**
+ * Strip control bytes that would corrupt the live differential frame. KEEPS SGR color
+ * escapes (`\x1b[…m`); DROPS every other CSI (cursor moves, EL/ED erase, etc.), OSC
+ * sequences, other escapes, and bare C0/C1 control bytes except tab/newline; and DROPS
+ * an INCOMPLETE trailing escape (a chunk that ends mid-sequence) so it can never eat the
+ * next line's `\x1b[2K`. Used to sanitize raw child stdout (e.g. a streaming `bun test`
+ * with `\r\x1b[2K` progress lines) before it enters the frame — the torn-escape /
+ * cursor-hijack class of screen corruption.
+ */
+export function sanitizeForFrame(s: string): string {
+  if (!s.includes("\x1b") && !/[\x00-\x08\x0b-\x1f\x7f]/.test(s)) return s; // fast path
+  let out = "";
+  let i = 0;
+  const n = s.length;
+  while (i < n) {
+    const ch = s[i]!;
+    if (ch === "\x1b") {
+      if (s[i + 1] === "[") {
+        // CSI: ESC [ params (0-9;:?<>= space) final (@-~)
+        let j = i + 2;
+        while (j < n && /[0-9;:?<>= ]/.test(s[j]!)) j++;
+        if (j < n && /[@-~]/.test(s[j]!)) {
+          const seq = s.slice(i, j + 1);
+          if (seq.endsWith("m")) out += seq; // keep SGR color, drop all other CSI
+          i = j + 1;
+          continue;
+        }
+        break; // incomplete CSI at the chunk tail → drop the rest
+      }
+      if (s[i + 1] === "]") {
+        // OSC: ESC ] … (BEL | ST = ESC \)
+        let j = i + 2;
+        while (j < n && s[j] !== "\x07" && !(s[j] === "\x1b" && s[j + 1] === "\\")) j++;
+        if (j >= n) break; // incomplete OSC → drop
+        i = s[j] === "\x07" ? j + 1 : j + 2;
+        continue;
+      }
+      i += i + 1 < n ? 2 : 1; // other ESC x → drop ESC (+ its single byte)
+      continue;
+    }
+    const code = ch.charCodeAt(0);
+    if ((code < 0x20 && code !== 0x09 && code !== 0x0a) || code === 0x7f) {
+      i++; // strip bare control bytes (CR/BS/…), keep tab + newline
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/**
  * Hard-wrap text to `cols` display columns, breaking long words and preserving
  * existing newlines. SGR-aware (escapes don't consume width). Returns the wrapped
  * lines. Used by markdown/table rendering where alignment must be column-correct.

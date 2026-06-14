@@ -150,11 +150,11 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.4.8]** (2026-06-14) — Live-frame stability: constant-height live turn, renderer self-heal off-by-one fix, and frame-safe child-stdout sanitizing — no more duplicate model bar or torn escapes.
 - **[0.4.7]** (2026-06-14) — Detached subagents + `subagent` control tool, live shaded in-flight output, registry-driven providers, fuller `read` budget, styled italics in the final report, and `gjc` retired.
 - **[0.4.6]** (2026-06-14) — Width-correct forge cards for CJK/emoji, red borders on failed tool cards, aligned `ooo ralph` monitor HUD, and a per-theme user-card palette.
 - **[0.4.5]** (2026-06-14) — First-class filesystem make/remove tools.
 - **[0.4.4]** (2026-06-13) — Live subagent status mirroring, always-useful Ctrl+O activity tail, read lineRange crash guard.
-- **[0.4.3]** (2026-06-13) — Readability pass for autopilot, subagent activity, and worked-history review.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

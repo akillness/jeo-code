@@ -144,10 +144,13 @@ test("Renderer insertAbove opens a synchronized update; next render closes it", 
   expect(repaint).toContain("\x1b[?2026l"); // ESU closes after the full repaint
   expect(repaint.endsWith("\x1b[?2026l")).toBe(true);
 
-  // A later plain render never re-emits sync sequences.
+  // Every render now wraps its OWN repaint in a synchronized update (atomic present),
+  // so a half-painted frame can never be shown (no torn row / transient duplicate bar).
   out.length = 0;
   r.render(["frame1", "CHANGED"]);
-  expect(out.join("")).not.toContain("\x1b[?2026");
+  const plain = out.join("");
+  expect(plain).toContain("\x1b[?2026h");
+  expect(plain.endsWith("\x1b[?2026l")).toBe(true);
 });
 
 test("Renderer clear() closes a dangling synchronized update", () => {
@@ -169,6 +172,57 @@ test("Renderer reserve mode: shrinking frames reserve nothing and clear removed 
   expect(shrunk).not.toContain("\n"); // no reservation on shrink
   const clears = shrunk.split(clearLine()).length - 1;
   expect(clears).toBeGreaterThanOrEqual(2); // rows 3+4 cleared
+});
+
+test("Renderer reserve mode: reset() then a shorter frame clears stale rows and does not re-reserve", () => {
+  const out: string[] = [];
+  const r = new Renderer(s => out.push(s), () => 40, { reserve: true });
+  // A tall frame is on screen (4 rows).
+  r.render(["a", "b", "c", "d"]);
+  // Self-heal: drop the diff baseline (tickCount % 25 resync / resize repaint).
+  r.reset();
+  out.length = 0;
+  // The next frame is SHORTER (2 rows). Before the fix, reset() forgot the 4 physical
+  // rows, so the repaint left rows 3+4 (stale model bar / border) on screen.
+  r.render(["a", "b"]);
+  const joined = out.join("");
+  // No spurious reservation: the rows already exist physically, the frame is shorter.
+  expect(joined).not.toContain("\n");
+  // Rows 3 and 4 must be EL-cleared (the stale-row guarantee).
+  const clears = joined.split(clearLine()).length - 1;
+  expect(clears).toBeGreaterThanOrEqual(2);
+});
+
+test("Renderer reserve mode: reset() then a taller frame still reserves the extra rows", () => {
+  const out: string[] = [];
+  const r = new Renderer(s => out.push(s), () => 40, { reserve: true });
+  r.render(["a", "b"]);
+  r.reset();
+  out.length = 0;
+  r.render(["a", "b", "c", "d"]); // grew 2 → 4 after reset
+  const joined = out.join("");
+  expect(joined).toContain("\n"); // reserves the 2 new rows
+});
+
+test("Renderer reserve mode: reset() then insertAbove() then render() clears the old frame's lower rows (no off-by-one drift)", () => {
+  const out: string[] = [];
+  const r = new Renderer(s => out.push(s), () => 40, { reserve: true });
+  // A 5-row frame is on screen.
+  r.render(["a", "b", "c", "d", "e"]);
+  // Self-heal reset drops the baseline but records occupancy via coverRows.
+  r.reset();
+  // A ledger line is flushed (1 written row) BEFORE the next render — the exact path
+  // that previously ignored coverRows, leaving rows 2-5 stale + the cursor below anchor.
+  out.length = 0;
+  r.insertAbove("flushed line\n");
+  const flushed = out.join("");
+  // insertAbove must EL-clear the 4 rows the 1-row flush did not cover (5 occupied - 1).
+  const clears = flushed.split(clearLine()).length - 1;
+  expect(clears).toBeGreaterThanOrEqual(4);
+  // The next render repaints cleanly with no stale rows carried over.
+  out.length = 0;
+  r.render(["x", "y"]);
+  expect(out.join("")).toContain("x");
 });
 
 test("Renderer reserve mode: growth after insertAbove re-reserves the full frame", () => {

@@ -1,0 +1,53 @@
+import { test, expect, afterEach } from "bun:test";
+import { LaunchTui } from "../src/tui/app";
+import { visibleWidth } from "../src/tui/components/width";
+
+// Drive size() via process.stdout.columns (what terminal.size() reads) instead of
+// mock.module — a module mock on the shared "terminal" leaks into other test files
+// in a full run. Setting + restoring the columns is fully isolated.
+const origCols = process.stdout.columns;
+const origRows = process.stdout.rows;
+afterEach(() => {
+  process.stdout.columns = origCols;
+  process.stdout.rows = origRows;
+});
+
+// Regression for the live-frame screen-corruption bug: a status/model-bar line wider
+// than the terminal soft-wraps into 2 physical rows while the differential renderer
+// counts it as 1, desyncing row accounting (stacked model bars, orphaned borders).
+// The fix clamps every rendered line to `cols`, so the live frame can never overflow.
+test("LaunchTui: every live-frame line is clamped to the terminal width (no wrap → no diff desync)", () => {
+  process.stdout.columns = 40;
+  process.stdout.rows = 24;
+
+  const tui = new LaunchTui({
+    model: "antigravity/gemini-3.5-flash-low",
+    provider: "antigravity",
+    write: () => {},
+  });
+  const internals = tui as unknown as {
+    tty: boolean;
+    inline: boolean;
+    footer: { cwd?: string; branch?: string };
+    renderer: { render: (lines: string[]) => void };
+    timer: ReturnType<typeof setInterval>;
+    draw: () => void;
+  };
+  internals.tty = true;
+  internals.inline = true;
+  // A long cwd + branch would push the model bar well past 40 cols without the clamp.
+  internals.footer.cwd = "/Users/jangyoung/.superset/projects/jeo-code/deeply/nested";
+  internals.footer.branch = "feature/super-long-branch-name";
+  tui.start();
+
+  const captured: string[] = [];
+  internals.renderer.render = (lines: string[]) => { captured.push(...lines); };
+  tui.events().onStep!(1); // mark a thinking step so the model bar + status render
+  internals.draw();
+  clearInterval(internals.timer);
+
+  expect(captured.length).toBeGreaterThan(0);
+  for (const line of captured) {
+    expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+  }
+});

@@ -30,7 +30,7 @@ import { costForUsage, formatCost } from "../ai/pricing";
 import { renderMarkdownTables } from "./components/markdown-table";
  
 import { stripMarkdown, renderMarkdownAnsi } from "./components/markdown-text";
-import { visibleWidth, wrapTextWithAnsi } from "./components/width";
+import { visibleWidth, wrapTextWithAnsi, truncateToWidth, sanitizeForFrame } from "./components/width";
 import { categoryBadge } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
@@ -428,7 +428,10 @@ export class LaunchTui {
       },
       onToolProgress: (_tool, partial) => {
         if (this.finished) return;
-        this.liveToolOutput = partial;
+        // Sanitize raw child stdout (CR / EL / cursor-move escapes) before it enters the
+        // frame — unsanitized control bytes tore the renderer's next \x1b[2K (literal "2K")
+        // and hijacked the cursor, corrupting the live frame.
+        this.liveToolOutput = sanitizeForFrame(partial);
         if (Date.now() - this.lastStreamDraw >= 100) {
           this.lastStreamDraw = Date.now();
           this.draw();
@@ -1119,12 +1122,16 @@ export class LaunchTui {
         .split("\n")
         .flatMap(l => wrapTextWithAnsi(l, wrapW))
         .filter(l => l.length > 0);
-      const shown = wrapped.slice(-6); // bottom-anchored tail of the live trace
-      if (shown.length) {
-        tail.push(dim(`${this.unicode ? "│" : "|"} thinking`));
-        for (const l of shown) tail.push(dim(`  ${l}`));
-        tail.push("");
-      }
+      // FIXED reserved height (bottom-anchored, blank-padded at top): once present the
+      // block's row count is CONSTANT, so streaming content never changes the frame
+      // height. The per-100ms height thrash that desynced the differential renderer
+      // (duplicate model bar) is gone; height now toggles only at lifecycle boundaries.
+      const ROWS = 6;
+      const shown = wrapped.slice(-ROWS);
+      tail.push(dim(`${this.unicode ? "│" : "|"} thinking`));
+      for (let k = 0; k < ROWS - shown.length; k++) tail.push("");
+      for (const l of shown) tail.push(dim(`  ${l}`));
+      tail.push("");
     }
 
     // Live tool output (gjc-style streaming bash stdout): while a tool runs, its
@@ -1136,12 +1143,14 @@ export class LaunchTui {
         .split("\n")
         .flatMap(l => wrapTextWithAnsi(l, wrapW))
         .filter(l => l.length > 0);
-      const shown = wrapped.slice(-8); // bottom-anchored tail of the live output
-      if (shown.length) {
-        tail.push(dim(`${this.unicode ? "│" : "|"} output`));
-        for (const l of shown) tail.push(dim(`  ${l}`));
-        tail.push("");
-      }
+      // FIXED reserved height (see thinking block): constant rows while a tool streams,
+      // so cumulative stdout growth does not thrash the frame height.
+      const ROWS = 8;
+      const shown = wrapped.slice(-ROWS);
+      tail.push(dim(`${this.unicode ? "│" : "|"} output`));
+      for (let k = 0; k < ROWS - shown.length; k++) tail.push("");
+      for (const l of shown) tail.push(dim(`  ${l}`));
+      tail.push("");
     }
 
     // Live status field: unboxed thinking line + compact metrics row. The model's
@@ -1307,7 +1316,18 @@ export class LaunchTui {
     // model bar), no outer border, no mascot art — completed work lives in scrollback.
     if (fit && this.inline) {
       const inlineFrame = this.composeInlineFrame({ cols, rows, stepNow, elapsedMs, idx, isThinking, planLines });
-      this.renderer.render(inlineFrame.slice(0, rows));
+      // Option C (constant live-frame height): pad the composed frame to EXACTLY `rows`
+      // — blank rows at the TOP, the tail (status/hud/input/model bar) pinned to the
+      // bottom. With a constant height the differential renderer reserves rows ONCE and
+      // thereafter only does in-place, within-frame cursor moves; the bottom-margin
+      // reserve-GROW that drifted the anchor by one row (the duplicate model bar during
+      // rapid tool churn) never runs again. Every line is still width-clamped so a long
+      // line cannot soft-wrap into a second physical row and desync the row accounting.
+      const capped = inlineFrame.length > rows ? inlineFrame.slice(inlineFrame.length - rows) : inlineFrame;
+      const fixedHeight = capped.length < rows
+        ? [...new Array(rows - capped.length).fill(""), ...capped]
+        : capped;
+      this.renderer.render(fixedHeight.map(l => truncateToWidth(l, cols)));
       return;
     }
 
@@ -1492,6 +1512,6 @@ export class LaunchTui {
     if (fit) {
       frame = frame.slice(0, rows);
     }
-    this.renderer.render(frame);
+    this.renderer.render(frame.map(l => truncateToWidth(l, cols)));
   }
 }

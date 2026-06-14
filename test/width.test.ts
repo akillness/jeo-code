@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { charWidth, visibleWidth, truncateToWidth, wrapTextWithAnsi } from "../src/tui/components/width";
+import { charWidth, visibleWidth, truncateToWidth, wrapTextWithAnsi, sanitizeForFrame } from "../src/tui/components/width";
 
 test("charWidth: wide / narrow / zero-width classes", () => {
   expect(charWidth("a".codePointAt(0)!)).toBe(1);
@@ -43,4 +43,29 @@ test("wrapTextWithAnsi: hard-wraps by display width, keeps newlines", () => {
   expect(wrapTextWithAnsi("a\nbcdef", 3)).toEqual(["a", "bcd", "ef"]);
   // CJK: each char is 2 cols, so width-4 wrap fits 2 per line.
   expect(wrapTextWithAnsi("한글한글", 4)).toEqual(["한글", "한글"]);
+});
+
+test("sanitizeForFrame: keeps SGR color, strips control bytes and non-SGR escapes", () => {
+  // SGR color is preserved.
+  expect(sanitizeForFrame("\x1b[31mred\x1b[0m")).toBe("\x1b[31mred\x1b[0m");
+  // EL (\x1b[2K) and CR are stripped (the torn-escape / cursor-reset source).
+  expect(sanitizeForFrame("\r\x1b[2K50%")).toBe("50%");
+  // Cursor moves are stripped.
+  expect(sanitizeForFrame("a\x1b[3Ab\x1b[2Bc")).toBe("abc");
+  // OSC (title) is stripped, terminated by BEL.
+  expect(sanitizeForFrame("\x1b]0;title\x07keep")).toBe("keep");
+  // Plain text + newline/tab untouched.
+  expect(sanitizeForFrame("a\tb\nc")).toBe("a\tb\nc");
+  // Fast path: nothing to strip returns the input.
+  expect(sanitizeForFrame("plain text")).toBe("plain text");
+});
+
+test("sanitizeForFrame: an INCOMPLETE trailing escape is dropped (cannot eat the next \\x1b[2K)", () => {
+  // A chunk that ends mid-CSI: the dangling escape must be dropped entirely so it
+  // never swallows the renderer's following \x1b[2K (which printed literal "2K").
+  expect(sanitizeForFrame("done\x1b[3")).toBe("done");
+  expect(sanitizeForFrame("x\x1b[")).toBe("x");
+  expect(sanitizeForFrame("y\x1b")).toBe("y");
+  // Incomplete OSC tail dropped too.
+  expect(sanitizeForFrame("z\x1b]0;partial")).toBe("z");
 });

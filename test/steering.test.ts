@@ -173,3 +173,45 @@ test("createTaskTool: fan-out does NOT consume parent steering", async () => {
   // The steering message is left intact for the parent to drain after the batch.
   expect(steerQueue).toEqual(["redirect everything"]);
 });
+
+test("runAgentLoop: steering during the final step reopens the turn instead of finishing", async () => {
+  const seenUser: string[] = [];
+  let modelCalls = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (history: { role: string; content: string }[]) => {
+      modelCalls++;
+      const lastUser = [...history].reverse().find(m => m.role === "user");
+      seenUser.push(lastUser?.content ?? "");
+      return JSON.stringify({ tool: "done", arguments: { reason: `done#${modelCalls}` } });
+    },
+  }));
+
+  const { runAgentLoop } = await import("../src/agent/engine");
+  // drain #1 = step-1 top-of-loop (empty); drain #2 = step-1 done-time (the steer
+  // "arrived during the final step"); later drains empty.
+  let drains = 0;
+  const steer = () => {
+    drains++;
+    return drains === 2 ? ["one more thing: add a test"] : [];
+  };
+  const steered: string[] = [];
+  const history = [
+    { role: "system" as const, content: "sys" },
+    { role: "user" as const, content: "go" },
+  ];
+
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 5,
+    steer,
+    events: { onSteer: t => steered.push(t) },
+  });
+
+  expect(result.done).toBe(true);
+  // The turn reopened: the model was called again after the first `done`.
+  expect(modelCalls).toBeGreaterThanOrEqual(2);
+  expect(seenUser.some(s => s.includes("one more thing: add a test"))).toBe(true);
+  expect(steered).toContain("one more thing: add a test");
+  // The reopened turn still terminates cleanly.
+  expect(result.doneReason).toBe(`done#${modelCalls}`);
+});

@@ -655,6 +655,29 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           continue;
         }
       }
+      // Steering that arrived DURING this final step (after the top-of-loop drain,
+      // while the model was generating its `done`): reopen the turn and handle it now
+      // instead of letting it bounce to the next prompt. Bounded by the step/time budget.
+      if (opts.steer) {
+        const pending = opts.steer().map(s => (s ?? "").trim()).filter(Boolean);
+        if (pending.length) {
+          history.push({ role: "assistant", content: responseText });
+          for (const text of pending) {
+            history.push({
+              role: "user",
+              content: `[mid-turn steering — additional instruction from the user; incorporate it now before finishing]\n${text}`,
+            });
+            ev.onSteer?.(text);
+          }
+          repeatCount = 0;
+          lastSig = "";
+          consecutiveFailures = 0;
+          recentStepSigs.length = 0;
+          budget.noteSteer();
+          step++;
+          continue;
+        }
+      }
       return finish({ done: true, steps: step, doneReason: (toolCalls[0].arguments?.reason as string) ?? "" });
     }
 

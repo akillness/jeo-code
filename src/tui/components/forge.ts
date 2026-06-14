@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { BOX_ASCII, BOX_UNICODE, padLineTo, type BoxGlyphs } from "./layout";
-import { stripAnsi, visibleWidth, animatedGradientText } from "./color";
-import { truncateToWidth } from "./width";
+import { visibleWidth, animatedGradientText } from "./color";
+import { truncateToWidth, wrapTextWithAnsi } from "./width";
 import { lightHighlightLine } from "./code-view";
 import { type UiCategory } from "./category-index";
 
@@ -421,12 +421,13 @@ export function summarizeForgeResult(tool: string, success: boolean, output: str
 }
 
 function wrapPlainLine(line: string, width: number): string[] {
-  const plain = stripAnsi(line);
   if (width <= 0) return [""];
+  // Wrap by DISPLAY width (SGR-aware, wide-glyph-aware) so CJK/emoji content
+  // breaks on column boundaries and never overflows the card border. The old
+  // `slice(i, i+width)` counted code points, so a Hangul/CJK line (2 cols each)
+  // rendered ~2× the intended width and tore the right edge.
   if (visibleWidth(line) <= width) return [line];
-  const out: string[] = [];
-  for (let i = 0; i < plain.length; i += width) out.push(plain.slice(i, i + width));
-  return out;
+  return wrapTextWithAnsi(line, width);
 }
 
 function borderGlyphs(unicode: boolean | undefined): BoxGlyphs {

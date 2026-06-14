@@ -32,6 +32,8 @@ export interface EvolutionTheme {
    *  `addBg`/`delBg` are full-row background tints that give added/removed
    *  lines block-level separation, not just a colored sign. */
   diff?: { add: string; del: string; addBg: string; delBg: string; hunk: string };
+  /** User query card palette: themed colors for the mid-turn steering user card. */
+  userCard?: { accent: string; border: string; shadow: string; fill: string };
 }
 
 /** Default diff palette (used when a theme defines none): high-contrast
@@ -44,13 +46,14 @@ export const DEFAULT_DIFF_PALETTE = {
   hunk: "#7dcfff",
 } as const;
 
-const COSMIC: EvolutionTheme = {
+const COSMIC: EvolutionTheme = { 
   name: "cosmic",
   description: "Default — deep-space arc from cyan tide to white-hot singularity.",
   gradients: EVOLUTION_STAGE_GRADIENTS,
   color: true,
   accent: "#48dbfb",
   accentShadow: "#1b6f8c",
+  userCard: { accent: "#48dbfb", border: "#1b6f8c", shadow: "#0e3c4c", fill: "#081b24" },
 };
 
 const MATRIX: EvolutionTheme = {
@@ -67,6 +70,7 @@ const MATRIX: EvolutionTheme = {
   accent: "#39ff14",
   accentShadow: "#0b6623",
   diff: { add: "#7fff00", del: "#ff5f5f", addBg: "#0c2410", delBg: "#2a1212", hunk: "#00e5a0" },
+  userCard: { accent: "#39ff14", border: "#0b6623", shadow: "#053311", fill: "#031a08" },
 };
 
 const SOLAR: EvolutionTheme = {
@@ -82,6 +86,7 @@ const SOLAR: EvolutionTheme = {
   color: true,
   accent: "#ff8c00",
   accentShadow: "#8a4500",
+  userCard: { accent: "#ff8c00", border: "#8a4500", shadow: "#452200", fill: "#241100" },
 };
 
 const RED_CLAW: EvolutionTheme = {
@@ -97,6 +102,7 @@ const RED_CLAW: EvolutionTheme = {
   color: true,
   accent: "#e25656",
   accentShadow: "#5c0f0f",
+  userCard: { accent: "#e25656", border: "#5c0f0f", shadow: "#2e0707", fill: "#170303" },
 };
 
 const BLUE_CRAB: EvolutionTheme = {
@@ -113,6 +119,7 @@ const BLUE_CRAB: EvolutionTheme = {
   accent: "#0096c7",
   accentShadow: "#023e8a",
   diff: { add: "#06d6a0", del: "#ef476f", addBg: "#0a2922", delBg: "#2b1320", hunk: "#48cae4" },
+  userCard: { accent: "#0096c7", border: "#023e8a", shadow: "#011f45", fill: "#000f24" },
 };
 
 const AURORA: EvolutionTheme = {
@@ -129,6 +136,7 @@ const AURORA: EvolutionTheme = {
   accent: "#3ddad7",
   accentShadow: "#1d5c8f",
   diff: { add: "#16c79a", del: "#fd7c9b", addBg: "#0c2620", delBg: "#2a1626", hunk: "#7c83fd" },
+  userCard: { accent: "#3ddad7", border: "#1d5c8f", shadow: "#0e2e47", fill: "#071724" },
 };
 
 const SYNTHWAVE: EvolutionTheme = {
@@ -145,6 +153,7 @@ const SYNTHWAVE: EvolutionTheme = {
   accent: "#ec38bc",
   accentShadow: "#5b1a8a",
   diff: { add: "#03e9f4", del: "#ff5e99", addBg: "#0a2330", delBg: "#33122a", hunk: "#b388eb" },
+  userCard: { accent: "#ec38bc", border: "#5b1a8a", shadow: "#2d0d45", fill: "#160624" },
 };
 
 const SAKURA: EvolutionTheme = {
@@ -161,6 +170,7 @@ const SAKURA: EvolutionTheme = {
   accent: "#d6336c",
   accentShadow: "#862e59",
   diff: { add: "#37b24d", del: "#e03131", addBg: "#13260f", delBg: "#2b1212", hunk: "#cc5de8" },
+  userCard: { accent: "#d6336c", border: "#862e59", shadow: "#43172c", fill: "#210b16" },
 };
 
 const MONO: EvolutionTheme = {

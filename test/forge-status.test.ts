@@ -9,6 +9,7 @@ import {
   summarizeForgeResult,
 } from "../src/tui/components";
 import { buildRalphSubagentPrompt, formatRalphStreamEvent, formatRalphTodoGuide } from "../src/commands/team";
+import { visibleWidth } from "../src/tui/components/width";
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -37,6 +38,21 @@ test("forge boxes are width-bounded and redact secret-like values", () => {
   expect(box[0]).toContain("bash result failed");
   expect(box.some(line => line.includes("<redacted>"))).toBe(true);
   expect(box.every(line => line.length <= 36)).toBe(true);
+});
+
+test("forge cards keep CJK/emoji content inside the border (display-width wrap)", () => {
+  // Wide glyphs (Hangul, CJK, emoji) are 2 columns each. Wrapping by code-point
+  // count let a Korean line render ~2× wide and tore the right edge — every row
+  // must measure exactly the card width regardless of content script.
+  const summary = summarizeForgeResult(
+    "bash",
+    true,
+    "한국어 출력 라인입니다 이것은 매우 긴 한글 문자열이고 카드 너비를 초과합니다 정렬 테스트 emoji 🚀🔥 mixed ASCII",
+  );
+  for (const width of [32, 40, 60]) {
+    const box = formatForgeBox(summary, { width, unicode: true, color: false, paint: s => s });
+    for (const line of box) expect(visibleWidth(line)).toBe(width);
+  }
 });
 
 test("forge summaries never throw on an undefined/empty tool name (malformed model output)", () => {

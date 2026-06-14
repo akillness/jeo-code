@@ -96,9 +96,13 @@ export function thinkingToReasoningEffort(
   return "medium";
 }
 
-/** Describe a model id: alias expansion + the provider it routes to. For `/model` + diagnostics. */
-export async function describeModel(input: string): Promise<{ input: string; resolved: string; provider: ProviderName }> {
-  const resolved = await resolveModelId(input);
+/** Describe a model id: alias expansion + the provider it routes to. For `/model` + diagnostics.
+ *  Pass an already-read `config` to skip a redundant readGlobalConfig() on the turn hot path. */
+export async function describeModel(
+  input: string,
+  config?: { modelAliases?: Record<string, string> },
+): Promise<{ input: string; resolved: string; provider: ProviderName }> {
+  const resolved = await resolveModelId(input, config);
   return { input, resolved, provider: resolveProvider(resolved) };
 }
 

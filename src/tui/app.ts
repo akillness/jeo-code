@@ -417,7 +417,7 @@ export class LaunchTui {
           // the non-TTY summary both show the merged card.
           card.title = `${paintedMark} Bash`;
           card.lines.push(...result.lines);
-          this.flushForgeCard(card);
+          this.flushForgeCard(card, success);
         } else if (card && t === "web_search" && success && webSearchCardLines(output, { unicode: this.unicode })) {
           // gjc-style Web Search card: `✓ Web Search: <provider> · N sources` header
           // over Query / Answer / Sources / Metadata divider sections rebuilt from
@@ -426,12 +426,12 @@ export class LaunchTui {
           const ws = webSearchCardLines(output, { unicode: this.unicode })!;
           card.title = `${paintedMark} Web Search: ${ws.titleMeta}`;
           card.lines = ws.lines;
-          this.flushForgeCard(card);
+          this.flushForgeCard(card, success);
         } else if (card) {
           card.title = `${paintedMark} ${card.title}`;
           if (!success) this.rememberForge(result);
-          this.flushForgeCard(card);
-          if (!success) this.flushForgeCard(result);
+          this.flushForgeCard(card, success);
+          if (!success) this.flushForgeCard(result, false);
         } else {
           // Light tool: one ✓/✗ line, plus a dim result tree for list-shaped output
           // (find/search/ls) and an error card when the tool failed.
@@ -439,7 +439,7 @@ export class LaunchTui {
           this.appendLedger(`${paintedMark} ${target}${suffix}\n${children.map(c => `${c}\n`).join("")}`, "tool");
           if (!success) {
             this.rememberForge(result);
-            this.flushForgeCard(result);
+            this.flushForgeCard(result, false);
           }
         }
         this.draw();
@@ -943,15 +943,22 @@ export class LaunchTui {
   /** Flush a completed forge card into scrollback (inline mode) and retire it from the
    *  live array so the in-frame card region and the final summary never repeat it.
    *  Non-inline modes keep the card in `forgeSummaries` for the final static summary. */
-  private flushForgeCard(summary: ForgeSummary): void {
+  private flushForgeCard(summary: ForgeSummary, success?: boolean): void {
     if (!this.inline || this.finished) return;
     const width = Math.max(24, Math.min(120, size().cols));
+    // gjc D2 (state-encoded border): a FAILED card gets a red border so it pops
+    // out of scrollback at a glance; OK/neutral cards keep the theme accent
+    // identity. The ✓/✗ title mark already encodes state, but the border tone
+    // is what the eye catches first when scanning back through history.
+    const errored = success === false && this.theme.color;
+    const paint = errored ? (s: string) => chalk.red(s) : accentPaint(this.theme);
+    const paintShadow = errored ? (s: string) => chalk.dim(chalk.red(s)) : accentShadowPaint(this.theme);
     const lines = formatForgeBox(summary, {
       width,
       maxLines: 12,
       unicode: this.unicode,
-      paint: accentPaint(this.theme),
-      paintShadow: accentShadowPaint(this.theme),
+      paint,
+      paintShadow,
       diffPaint: diffPaint(this.theme),
       color: this.theme.color,
     });

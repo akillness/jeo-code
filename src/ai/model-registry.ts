@@ -25,9 +25,14 @@ export function expandAlias(input: string, aliases: ModelAliases = BUILTIN_ALIAS
 }
 
 // Async: merge BUILTIN_ALIASES with config.modelAliases (config wins) and expand.
-export async function resolveModelId(input: string): Promise<string> {
-  const config = await readGlobalConfig();
-  const modelAliases = (config as any).modelAliases ?? {};
+// Pass an already-read `config` to skip the readGlobalConfig() round-trip (turn
+// hot path: avoids re-reading the config file mid-turn for model resolution).
+export async function resolveModelId(
+  input: string,
+  config?: { modelAliases?: ModelAliases },
+): Promise<string> {
+  const cfg = config ?? (await readGlobalConfig());
+  const modelAliases = (cfg as any).modelAliases ?? {};
   const merged: ModelAliases = { ...BUILTIN_ALIASES, ...modelAliases };
   return expandAlias(input, merged);
 }

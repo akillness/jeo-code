@@ -21,11 +21,18 @@ import { join } from "node:path";
 // breaks the moment the developer's real ~/.jeo/config.json has a theme set.
 const ISO = { JEO_CONFIG_DIR: mkdtempSync(join(tmpdir(), "jeo-themes-iso-")) };
 
-test("every theme has a length-5 gradient table", () => {
+test("every theme has a length-5 gradient table and userCard if colored", () => {
   for (const t of THEMES) {
     expect(t.gradients.length).toBe(EVOLUTION_STAGE_COUNT);
     expect(typeof t.name).toBe("string");
     expect(typeof t.description).toBe("string");
+    if (t.color) {
+      expect(t.userCard).toBeDefined();
+      expect(typeof t.userCard?.accent).toBe("string");
+      expect(typeof t.userCard?.border).toBe("string");
+      expect(typeof t.userCard?.shadow).toBe("string");
+      expect(typeof t.userCard?.fill).toBe("string");
+    }
   }
 });
 

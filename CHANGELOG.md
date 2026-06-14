@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.4.5] - 2026-06-14
+_First-class filesystem make/remove tools._
+
+### Added
+- `mkdir {dirPath}` tool: create a directory (parents included, idempotent) as a first-class tool instead of shelling out to `bash` — honors the deep-interview mutation lock and prefix-restricted roles.
+- `delete {path, recursive?}` tool: remove a file (or a directory with `recursive:true`); refuses to wipe the working directory, treats a missing path as a soft error, and clears the file-freshness snapshot so a later write to the same path is not rejected as stale.
+
+### Changed
+- Read-only subagent lanes (planner/architect/critic) now also drop `mkdir`/`delete`, keeping review roles physically unable to mutate the repo.
+
 ## [0.4.4] - 2026-06-13
 _Live subagent status mirroring, always-useful Ctrl+O activity tail, read lineRange crash guard._
 
@@ -109,7 +119,11 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.4.5...HEAD
+[0.4.5]: https://github.com/akillness/jeo-code/releases/tag/v0.4.5
+[0.4.4]: https://github.com/akillness/jeo-code/releases/tag/v0.4.4
+[0.4.3]: https://github.com/akillness/jeo-code/releases/tag/v0.4.3
+[0.4.2]: https://github.com/akillness/jeo-code/releases/tag/v0.4.2
 [0.4.1]: https://github.com/akillness/jeo-code/releases/tag/v0.4.1
 [0.4.0]: https://github.com/akillness/jeo-code/releases/tag/v0.4.0
 [0.3.0]: https://github.com/akillness/jeo-code/releases/tag/v0.3.0

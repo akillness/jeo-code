@@ -11,7 +11,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Message } from "./loop";
 import { extractJsonObject } from "./json";
-import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, type ToolResult } from "./tools";
+import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, mkdirTool, deleteTool, type ToolResult } from "./tools";
 import { webSearchTool, setWebSearchActiveModel } from "./web-search";
 import { friendlyProviderError, isContextOverflowError, isRefusalError } from "../util/provider-error";
 import { isRateLimitError } from "../util/retry";
@@ -50,6 +50,8 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
   find: (a, cwd) => findTool(a.globPattern ?? a.pattern, cwd),
   search: (a, cwd) => searchTool(a.pattern, a.globPattern ?? "*", cwd, !!(a.ignoreCase ?? a.i), { before: a.before, after: a.after, context: a.context, maxMatches: a.maxMatches }),
   ls: (a, cwd) => lsTool(a.dirPath ?? a.path ?? a.dir ?? ".", cwd),
+  mkdir: (a, cwd) => mkdirTool(a.dirPath ?? a.path ?? a.dir, cwd),
+  delete: (a, cwd) => deleteTool(a.path ?? a.filePath ?? a.targetPath ?? a.dirPath, cwd, !!(a.recursive ?? a.r)),
   web_search: (a, cwd) => webSearchTool(a, cwd),
 };
 
@@ -63,8 +65,10 @@ export const TOOL_PROTOCOL = [
   "5. find   {globPattern}               — find files by name",
   "6. search {pattern, globPattern?, ignoreCase?, context?, maxMatches?} — grep (context: N lines around each match)",
   "7. ls     {dirPath}                   — list a directory's entries (dirs first)",
-  "8. web_search {query, recency?, limit?} — search the web (Anthropic-native: synthesized answer + sources + citations)",
-  "9. done   {reason?}                   — call when the task is fully implemented AND verified",
+  "8. mkdir  {dirPath}                   — create a directory (parents included; idempotent)",
+  "9. delete {path, recursive?}          — remove a file (or directory with recursive:true)",
+  "10. web_search {query, recency?, limit?} — search the web (Anthropic-native: synthesized answer + sources + citations)",
+  "11. done   {reason?}                  — call when the task is fully implemented AND verified",
   "",
   "Reply with STRICT JSON only — no code fences. You MAY include an optional leading",
   '"reasoning" string (one short sentence on your plan) before "tool":',

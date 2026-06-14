@@ -2,7 +2,7 @@ import { test, expect, beforeAll, afterAll } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { findTool, searchTool, readTool, writeTool, bashTool, lsTool, parseLineSelector, parseEditHunks, editTool, readGitignore, IGNORED_DIRS } from "../src/agent/tools";
+import { findTool, searchTool, readTool, writeTool, bashTool, lsTool, mkdirTool, deleteTool, parseLineSelector, parseEditHunks, editTool, readGitignore, IGNORED_DIRS } from "../src/agent/tools";
 
 let dir = "";
 
@@ -489,4 +489,67 @@ test("editTool: ≔A+ inserts after a line, ≔$ appends, ≔A..B replaces", asy
   r = await editTool(f, "≔999+\nnope", dir);
   expect(r.success).toBe(false);
   expect(r.error).toContain("out of bounds");
+});
+
+test("mkdirTool: creates nested dirs and is idempotent", async () => {
+  const r1 = await mkdirTool("a/b/c", dir);
+  expect(r1.success).toBe(true);
+  const st = await fs.stat(path.join(dir, "a", "b", "c"));
+  expect(st.isDirectory()).toBe(true);
+  // second call on an existing dir is success, not an error
+  const r2 = await mkdirTool("a/b/c", dir);
+  expect(r2.success).toBe(true);
+});
+
+test("mkdirTool: a path that exists as a file is a clear error", async () => {
+  await fs.writeFile(path.join(dir, "afile.txt"), "x");
+  const r = await mkdirTool("afile.txt", dir);
+  expect(r.success).toBe(false);
+  expect(r.error).toContain("not a directory");
+});
+
+test("mkdirTool: empty dirPath is a soft error", async () => {
+  const r = await mkdirTool("   ", dir);
+  expect(r.success).toBe(false);
+  expect(r.error).toContain("non-empty");
+});
+
+test("deleteTool: removes a file", async () => {
+  await fs.writeFile(path.join(dir, "doomed.txt"), "bye");
+  const r = await deleteTool("doomed.txt", dir);
+  expect(r.success).toBe(true);
+  expect(await fs.stat(path.join(dir, "doomed.txt")).catch(() => null)).toBeNull();
+});
+
+test("deleteTool: a directory requires recursive:true", async () => {
+  await fs.mkdir(path.join(dir, "popdir"), { recursive: true });
+  await fs.writeFile(path.join(dir, "popdir", "f.txt"), "x");
+  const guarded = await deleteTool("popdir", dir, false);
+  expect(guarded.success).toBe(false);
+  expect(guarded.error).toContain("recursive:true");
+  const ok = await deleteTool("popdir", dir, true);
+  expect(ok.success).toBe(true);
+  expect(await fs.stat(path.join(dir, "popdir")).catch(() => null)).toBeNull();
+});
+
+test("deleteTool: missing path is a soft error", async () => {
+  const r = await deleteTool("nope-not-here.txt", dir);
+  expect(r.success).toBe(false);
+  expect(r.error).toContain("Nothing to delete");
+});
+
+test("deleteTool: refuses to delete the working directory itself", async () => {
+  const r = await deleteTool(".", dir, true);
+  expect(r.success).toBe(false);
+  expect(r.error).toContain("working directory");
+});
+
+test("DEFAULT_TOOLS exposes mkdir and delete", async () => {
+  const { DEFAULT_TOOLS } = await import("../src/agent/engine");
+  expect(typeof DEFAULT_TOOLS.mkdir).toBe("function");
+  expect(typeof DEFAULT_TOOLS.delete).toBe("function");
+  const made = await DEFAULT_TOOLS.mkdir({ dirPath: "viatools/x" }, dir);
+  expect(made.success).toBe(true);
+  const del = await DEFAULT_TOOLS.delete({ path: "viatools", recursive: true }, dir);
+  expect(del.success).toBe(true);
 });

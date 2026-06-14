@@ -150,11 +150,11 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.4.5]** (2026-06-14) — First-class filesystem make/remove tools.
 - **[0.4.4]** (2026-06-13) — Live subagent status mirroring, always-useful Ctrl+O activity tail, read lineRange crash guard.
 - **[0.4.3]** (2026-06-13) — Readability pass for autopilot, subagent activity, and worked-history review.
 - **[0.4.2]** (2026-06-13) — Thinking-loop termination guarantees (cycle guard + turn wall-clock budget), unboxed live status without step counters, self-contained `.jeo` namespace, live next-prompt input card, role-targeted model/thinking picker.
 - **[0.4.1]** (2026-06-12) — TUI card parity polish + done-time todo reconciliation.
-- **[0.4.0]** (2026-06-12) — Verified TUI, resilient engine, batch input, multilingual docs.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

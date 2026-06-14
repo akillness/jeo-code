@@ -1800,6 +1800,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     };
   };
   let previewArmed = false;
+  // True while a prompt line is being awaited. Folded into the readline output
+  // gate so native echo is suppressed for the WHOLE await window — including the
+  // brief gap between turn-end and armPreview() — so no keystroke can leak into
+  // scrollback before the boxed footer takes over.
+  let promptActive = false;
   let pickerActive = false;
   const rl = createInterface({
     input: process.stdin,
@@ -1810,7 +1815,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // previously OPENED the gate and let readline echo typed filter characters
     // (CJK wide chars especially) straight onto the picker frame — the
     // "stacked input-box borders" corruption.
-    output: gatedStdout(process.stdout, () => previewArmed || pickerActive || interactiveTurnActive),
+    output: gatedStdout(process.stdout, () => previewArmed || promptActive || pickerActive || interactiveTurnActive),
     completer: (line: string) => readlineCompleter(line, completionContext()),
   });
   const promptStdin = process.stdin as typeof process.stdin & { isRaw?: boolean; setRawMode?(raw: boolean): void };
@@ -1897,6 +1902,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (hardExitOnLoopEnd || process.stdin.isTTY || process.stdout.isTTY) forceExitFromCtrlC();
       return "/exit";
     }
+    promptActive = true;
     try {
       return await Promise.race([
         rl.question(prompt),
@@ -1908,6 +1914,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }),
       ]);
     } finally {
+      promptActive = false;
       notifyStdinClosed = undefined;
     }
   };
@@ -1955,10 +1962,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const MAX_PREVIEW_ROWS = 12;
   const MIN_PREVIEW_ROWS = 7; // status bar (1) + spacer (1) + input box (3 rows) + 2 preview rows
   const previewRowsFor = (rows: number): number => Math.max(MIN_PREVIEW_ROWS, Math.min(MAX_PREVIEW_ROWS, rows - 6));
+  // Enable the boxed input footer for ANY interactive TTY. It paints inside a
+  // reserved bottom region (never scrollback) and only commits the line on
+  // Enter, so typed characters never leak into the conversation history while
+  // typing. previewRowsFor() clamps the reservation height for short terminals,
+  // so even small panes get the box instead of the raw `jeo>` echo fallback
+  // (which echoes every keystroke straight into scrollback). The raw fallback is
+  // now reserved for non-TTY/piped input, where live history echo is moot.
   const previewEnabled =
     process.stdin.isTTY &&
-    jeoEnv("NO_SLASH_PREVIEW") !== "1" &&
-    (process.stdout.rows ?? 24) >= MIN_PREVIEW_ROWS + 6; // box + ≥6 scrollable content rows
+    jeoEnv("NO_SLASH_PREVIEW") !== "1";
   // Footer height reserved by the CURRENTLY armed region; disarm/draw must use the
   // same value the arm computed, even if the terminal was resized in between.
   let footerRows = MAX_PREVIEW_ROWS;
@@ -2112,7 +2125,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
   const historyPreviewLines = (detail: string[]): string[] => {
     const cols = Math.max(24, (process.stdout.columns ?? 80) - 1);
-    const title = `${chalk.cyan.bold("history")} ${chalk.gray("· Ctrl+O closes")}`;
+    const title = `${uiAccent("history")} ${chalk.dim("· Ctrl+O closes")}`;
     const budget = Math.max(0, footerRows - 2);
     const physical = detail.flatMap(line => line.split("\n")).map(line => truncateAnsi(line, cols));
     let body = physical;

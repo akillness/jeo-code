@@ -115,7 +115,7 @@ export function renderInputFrame(line: string, opts: InputBoxOptions = {}): Inpu
   if (crow - hidden < 0) { visRow = 0; ccol = 0; }
 
   const promptMark = "> ";
-  const paintPrompt = useColor ? (opts.accent ?? chalk.red) : (s: string) => s;
+  const paintPrompt = useColor ? (opts.accent ?? chalk.blueBright) : (s: string) => s;
   const paintGhost = useColor ? chalk.dim : (s: string) => s;
   const body = rows.map((r, i) => {
     const content = placeholderRow ? paintGhost(r) : r;
@@ -123,11 +123,16 @@ export function renderInputFrame(line: string, opts: InputBoxOptions = {}): Inpu
   });
 
   const content = [...body];
+  // Label rows follow the active theme: the attachment hint uses the accent and
+  // the cwd label a dimmed accent (shadow), so the whole box reads in one tone
+  // instead of off-theme cyan/gray.
+  const labelAccent = useColor ? (opts.accent ?? chalk.cyan) : (s: string) => s;
+  const labelMuted = useColor ? (opts.accentShadow ?? chalk.gray) : (s: string) => s;
   if (opts.attachmentLabel) {
-    content.push(useColor ? chalk.cyan(opts.attachmentLabel) : opts.attachmentLabel);
+    content.push(labelAccent(opts.attachmentLabel));
   }
   if (opts.cwdLabel) {
-    content.push(useColor ? chalk.gray(opts.cwdLabel) : opts.cwdLabel);
+    content.push(labelMuted(opts.cwdLabel));
   }
   const glyphs = opts.unicode === false ? BOX_ASCII : BOX_UNICODE;
   // Depth cue: lit top/left edge (bright accent) vs shaded bottom/right edge (dim).

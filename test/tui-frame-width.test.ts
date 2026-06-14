@@ -3,9 +3,14 @@ import { LaunchTui } from "../src/tui/app";
 import { visibleWidth } from "../src/tui/components/width";
 import { size } from "../src/tui/terminal";
 
-// Drive size() via process.stdout.columns (what terminal.size() reads) instead of
-// mock.module — a module mock on the shared "terminal" leaks into other test files
-// in a full run. Setting + restoring the columns is fully isolated.
+// terminal.size() reads process.stdout.columns/rows. In a non-TTY process (CI) those
+// are READ-ONLY accessors, so a plain `process.stdout.columns = 40` throws
+// "Attempted to assign to readonly property". Define them as configurable data
+// properties instead so the override works in both TTY (local) and non-TTY (CI).
+function setStdoutSize(cols: number | undefined, rows: number | undefined): void {
+  Object.defineProperty(process.stdout, "columns", { value: cols, configurable: true, writable: true });
+  Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true, writable: true });
+}
 const origCols = process.stdout.columns;
 const origRows = process.stdout.rows;
 // A full `bun test` run leaves module mocks active from files that mock.module without
@@ -14,8 +19,7 @@ const origRows = process.stdout.rows;
 beforeEach(() => mock.restore());
 afterEach(() => {
   mock.restore();
-  process.stdout.columns = origCols;
-  process.stdout.rows = origRows;
+  setStdoutSize(origCols, origRows);
 });
 
 // Regression for the live-frame screen-corruption bug: a status/model-bar line wider
@@ -23,8 +27,7 @@ afterEach(() => {
 // counts it as 1, desyncing row accounting (stacked model bars, orphaned borders).
 // The fix clamps every rendered line to `cols`, so the live frame can never overflow.
 test("LaunchTui: every live-frame line is clamped to the terminal width (no wrap → no diff desync)", () => {
-  process.stdout.columns = 40;
-  process.stdout.rows = 24;
+  setStdoutSize(40, 24);
 
   const tui = new LaunchTui({
     model: "antigravity/gemini-3.5-flash-low",

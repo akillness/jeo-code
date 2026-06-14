@@ -19,6 +19,8 @@ export interface ChatOptions {
    *  delivered here (concatenation equals the returned string). Absent ⇒ a single
    *  non-streaming `call()` (unchanged behavior for non-interactive/test callers). */
   onToken?: (delta: string) => void;
+  /** Streaming sink for native reasoning/thinking deltas (drives the dimmed live view). */
+  onReasoning?: (delta: string) => void;
 }
 
 const manager = createModelManager();

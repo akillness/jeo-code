@@ -3,7 +3,10 @@
 > How `jeo` talks to LLM backends: the adapter interface, credential resolution
 > (API key / OAuth PKCE / local keyless), and the path to streaming + more backends.
 
-**Status:** `partially shipped` · **Last updated:** 2026-06-05 · **Tracking pass:** `docs/improvements.md §9, §11, §14`
+**Status:** `shipped` · **Last updated:** 2026-06-12 · **Tracking pass:** `docs/improvements.md` & `progress.txt`
+≔78xh..79rt
+- 2026-06-05 — plan created; adapters + real OAuth + adapter-aware selection already shipped (§9, §11, §14).
+- 2026-06-11 — Token streaming, SSE parsing, and Antigravity OAuth integration shipped.
 
 ---
 

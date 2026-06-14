@@ -10,6 +10,10 @@ import {
   accentShadowPaint,
   diffPaint,
   DEFAULT_DIFF_PALETTE,
+  mutedPaint,
+  cardFillPaint,
+  DEFAULT_MUTED,
+  liftHex,
 } from "../src/tui/components/themes";
 import { EVOLUTION_STAGE_COUNT } from "../src/tui/components/evolution";
 import { mkdtempSync } from "node:fs";
@@ -159,4 +163,65 @@ test("blue-crab is the fancy bioluminescent revamp (new accent + seafoam arc)", 
   expect(crab.accent).toBe("#0096c7");
   expect(crab.accentShadow).toBe("#023e8a");
   expect(crab.gradients[4]!.to.toLowerCase()).toBe("#caf0f8"); // seafoam glow finale
+});
+
+test("mutedPaint: a real readable hue (not ANSI dim), identity when colorless", () => {
+  const prev = chalk.level;
+  chalk.level = 3;
+  try {
+    const cosmic = getTheme("cosmic");
+    const painted = mutedPaint(cosmic)("done item");
+    expect(painted).toContain("done item");
+    // Uses a 24-bit foreground (SGR 38;2), NOT the dim attribute (SGR 2) that
+    // washes out on dark terminals.
+    expect(painted).toContain("\x1b[38;2;");
+    expect(painted).not.toContain("\x1b[2m");
+    // Default muted hue applies when the theme defines none.
+    expect(cosmic.muted ?? DEFAULT_MUTED).toBe(DEFAULT_MUTED);
+    // Colorless theme → identity.
+    expect(mutedPaint(getTheme("mono"))("x")).toBe("x");
+  } finally {
+    chalk.level = prev;
+  }
+});
+
+test("cardFillPaint: applies a background tint, falls back to userCard.fill, identity when colorless", () => {
+  const prev = chalk.level;
+  chalk.level = 3;
+  try {
+    const cosmic = getTheme("cosmic");
+    const filled = cardFillPaint(cosmic)("row");
+    expect(filled).toContain("row");
+    expect(filled).toContain("\x1b[48;2;"); // 24-bit background set
+    // Colorless theme → no fill.
+    expect(cardFillPaint(getTheme("mono"))("row")).toBe("row");
+  } finally {
+    chalk.level = prev;
+  }
+});
+
+test("liftHex: lightens each channel, clamps at 255, passes through invalid input", () => {
+  expect(liftHex("#081b24", 12)).toBe("#142730"); // 08→14, 1b→27, 24→30
+  expect(liftHex("#000000", 0)).toBe("#000000");
+  expect(liftHex("#f8f8f8", 12)).toBe("#ffffff"); // clamps
+  expect(liftHex("nope", 12)).toBe("nope"); // invalid → unchanged
+});
+
+test("cardFillPaint: tint LIFTS userCard.fill so the panel separates from the terminal bg", () => {
+  // The card tint must be a notch brighter than userCard.fill (which is near-black
+  // input chrome), or the panel is invisible on a dark terminal.
+  const cosmic = getTheme("cosmic");
+  expect(cosmic.userCard).toBeDefined();
+  const lifted = liftHex(cosmic.userCard!.fill, 12);
+  expect(lifted).not.toBe(cosmic.userCard!.fill);
+  const prev = chalk.level;
+  chalk.level = 3;
+  try {
+    const filled = cardFillPaint(cosmic)("row");
+    // The emitted background is the LIFTED hex, not the raw userCard.fill.
+    const rgb = [parseInt(lifted.slice(1, 3), 16), parseInt(lifted.slice(3, 5), 16), parseInt(lifted.slice(5, 7), 16)];
+    expect(filled).toContain(`\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`);
+  } finally {
+    chalk.level = prev;
+  }
 });

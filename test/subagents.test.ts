@@ -113,7 +113,7 @@ test("validateSubagentDoneReason enforces role-specific done markers", () => {
   expect(
     validateSubagentDoneReason(
       architect,
-      "Summary:\nFindings:\nRecommendations:\nArchitectural Status: WATCH\nCode Review Recommendation: COMMENT",
+      "Summary: reviewed the module\nFindings: one coupling risk\nRecommendations: extract a helper\nArchitectural Status: WATCH\nCode Review Recommendation: COMMENT",
     ).ok,
   ).toBe(true);
   expect(validateSubagentDoneReason(architect, "reviewed").ok).toBe(false);
@@ -134,7 +134,7 @@ test("validateSubagentDoneReason enforces role-specific done markers", () => {
 test("validateSubagentDoneReason covers executor + planner happy + missing-section paths", () => {
   const executor = getSubagentRole("executor")!;
   expect(
-    validateSubagentDoneReason(executor, "Summary:\nChanged Files:\nVerification:").ok,
+    validateSubagentDoneReason(executor, "Summary: did the task\nChanged Files: a.ts\nVerification: ran tests").ok,
   ).toBe(true);
   const execMissing = validateSubagentDoneReason(executor, "Summary:\nVerification:");
   expect(execMissing.ok).toBe(false);
@@ -144,7 +144,7 @@ test("validateSubagentDoneReason covers executor + planner happy + missing-secti
   expect(
     validateSubagentDoneReason(
       planner,
-      "Summary:\nIn Scope:\nOut of Scope:\nFile-level Changes:\nSequencing:\nAcceptance Criteria:\nVerification:\nRisks:",
+      "Summary: plan ready\nIn Scope: feature X\nOut of Scope: refactors\nFile-level Changes: a.ts edits\nSequencing: step 1 then 2\nAcceptance Criteria: tests pass\nVerification: bun test\nRisks: none",
     ).ok,
   ).toBe(true);
   // Planner contract drift used to accept a report that only had Summary/File-level/Verification.

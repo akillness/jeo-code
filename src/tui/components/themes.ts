@@ -34,6 +34,14 @@ export interface EvolutionTheme {
   diff?: { add: string; del: string; addBg: string; delBg: string; hunk: string };
   /** User query card palette: themed colors for the mid-turn steering user card. */
   userCard?: { accent: string; border: string; shadow: string; fill: string };
+  /** Muted foreground for secondary text (done/pending todo items, counts, tree
+   *  connectors). A real readable mid-tone — replaces `chalk.dim`, which washes
+   *  out to near-invisible on dark backgrounds. Falls back to a neutral gray. */
+  muted?: string;
+  /** Faint background tint for tool/todo cards — a subtle panel fill so cards read
+   *  as distinct blocks instead of floating on the terminal background. Falls back
+   *  to `userCard.fill`. No fill when the theme is colorless. */
+  card?: { fill: string };
 }
 
 /** Default diff palette (used when a theme defines none): high-contrast
@@ -275,6 +283,44 @@ export function accentShadowPaint(theme: EvolutionTheme): (s: string) => string 
   }
   const hex = theme.accent;
   return (s: string) => chalk.dim(chalk.hex(hex)(s));
+}
+
+/** Default muted foreground when a theme defines no `muted` — a readable mid-gray
+ *  that holds up on dark terminals (unlike ANSI `dim`, which collapses toward the
+ *  background). */
+export const DEFAULT_MUTED = "#9aa0a6";
+
+/** Painter for secondary/muted text. A real mid-tone hue, NOT `chalk.dim` — dim
+ *  renders near-invisible on dark backgrounds (the washed-out done/pending todo
+ *  rows). Identity when the theme is colorless. */
+export function mutedPaint(theme: EvolutionTheme): (s: string) => string {
+  if (!theme.color) return (s: string) => s;
+  const hex = theme.muted ?? DEFAULT_MUTED;
+  return (s: string) => chalk.hex(hex)(s);
+}
+
+/** Lighten a `#rrggbb` hex by a per-channel delta (clamped 0–255). Used to lift a
+ *  near-black `userCard.fill` (tuned for input chrome) into a card tint that reads
+ *  as a distinct panel without becoming loud. */
+export function liftHex(hex: string, delta: number): string {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const ch = (shift: number) => Math.max(0, Math.min(255, ((n >> shift) & 0xff) + delta));
+  return "#" + [ch(16), ch(8), ch(0)].map(v => v.toString(16).padStart(2, "0")).join("");
+}
+
+/** Painter that applies the theme's faint card background tint, so tool/todo cards
+ *  read as panels. Uses an explicit `card.fill`, else lifts `userCard.fill` (which is
+ *  near-black, tuned for input chrome) by a small delta so the panel separates from
+ *  the terminal background. Identity when the theme is colorless or has no fill. The
+ *  fill wraps whole, width-padded lines whose interior coloring uses targeted close
+ *  codes (never a full `\x1b[0m` reset), so the background spans the row. */
+export function cardFillPaint(theme: EvolutionTheme): (s: string) => string {
+  if (!theme.color) return (s: string) => s;
+  const fill = theme.card?.fill ?? (theme.userCard?.fill ? liftHex(theme.userCard.fill, 12) : undefined);
+  if (!fill) return (s: string) => s;
+  return (s: string) => chalk.bgHex(fill)(s);
 }
 
 /** Themed diff painters: foreground + full-row background tints for added /

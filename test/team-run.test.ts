@@ -40,9 +40,9 @@ test("runTeamCommand routes each step to its declared subagent role and complete
   await mock.module("../src/agent/loop", () => ({
     callLlm: async () => {
       turn++;
-      if (turn === 1) return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nIn Scope:\nOut of Scope:\nFile-level Changes:\nSequencing:\nAcceptance Criteria:\nVerification:\nRisks:" } });
-      if (turn === 2) return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nFindings:\nRecommendations:\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } });
-      return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nChanged Files:\nVerification:\nOpen Risks:" } });
+      if (turn === 1) return JSON.stringify({ tool: "done", arguments: { reason: "Summary: plan ready\nIn Scope: feature\nOut of Scope: refactors\nFile-level Changes: a.ts\nSequencing: step 1\nAcceptance Criteria: tests pass\nVerification: bun test\nRisks: none" } });
+      if (turn === 2) return JSON.stringify({ tool: "done", arguments: { reason: "Summary: reviewed\nFindings: none\nRecommendations: ship\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } });
     },
   }));
   const { runTeamCommand } = await import("../src/commands/team");
@@ -76,8 +76,8 @@ test("runTeamCommand routes duplicate task names by step index, not by name", as
   await mock.module("../src/agent/loop", () => ({
     callLlm: async () => {
       turn++;
-      if (turn === 1) return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nIn Scope:\nOut of Scope:\nFile-level Changes:\nSequencing:\nAcceptance Criteria:\nVerification:\nRisks:" } });
-      return JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nFindings:\nRecommendations:\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } });
+      if (turn === 1) return JSON.stringify({ tool: "done", arguments: { reason: "Summary: plan ready\nIn Scope: feature\nOut of Scope: refactors\nFile-level Changes: a.ts\nSequencing: step 1\nAcceptance Criteria: tests pass\nVerification: bun test\nRisks: none" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: reviewed\nFindings: none\nRecommendations: ship\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } });
     },
   }));
   const { runTeamCommand } = await import("../src/commands/team");
@@ -135,7 +135,7 @@ test("runTeamCommand refuses unknown plan subagent roles before execution", asyn
 
 test("runTeamCommand normalizes mixed-case plan roles", async () => {
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nFindings:\nRecommendations:\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } }),
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: reviewed\nFindings: none\nRecommendations: ship\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } }),
   }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "review design", role: "ARCHITECT" }]);
@@ -188,7 +188,7 @@ test("runTeamCommand halts when an architect review returns a blocking verdict",
   await mock.module("../src/agent/loop", () => ({
     callLlm: async () => JSON.stringify({
       tool: "done",
-      arguments: { reason: "Summary:\nFindings:\nRecommendations:\nArchitectural Status: BLOCK\nCode Review Recommendation: REQUEST CHANGES" },
+      arguments: { reason: "Summary: reviewed\nFindings: a blocker\nRecommendations: fix it\nArchitectural Status: BLOCK\nCode Review Recommendation: REQUEST CHANGES" },
     }),
   }));
   const { runTeamCommand } = await import("../src/commands/team");
@@ -243,7 +243,7 @@ test("runTeamCommand halts when a planner report misses required sections", asyn
 
 test("runTeamCommand refuses to run when team-state.json is corrupt (no silent restart)", async () => {
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nChanged Files:\nVerification:" } }),
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran" } }),
   }));
   const { runTeamCommand } = await import("../src/commands/team");
   await seedPlan([{ name: "implement it" }]);
@@ -278,7 +278,7 @@ test("runTeamCommand invokes maybeCompact on subagent execution", async () => {
     await seedPlan([{ name: "implement it", role: "executor" }]);
 
     mock.module("../src/agent/loop", () => ({
-      callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary:\nChanged Files:\nVerification:\nOpen Risks:" } }),
+      callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } }),
     }));
 
     console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));

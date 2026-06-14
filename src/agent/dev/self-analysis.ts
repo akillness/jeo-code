@@ -22,7 +22,12 @@ export async function runSelfAnalysis(cwd: string): Promise<string> {
   const content = await fs.readFile(targetPath, "utf-8");
   
   const lineCount = content.split("\n").length;
-  const hasTooManyResponsibilities = content.includes("runAgentLoop") && content.includes("truncateToolOutput") && content.includes("spillToolResult");
+  // Ownership-accurate SRP check: the loop drives steps, while output shaping
+  // (truncate/spill) lives in tool-output.ts. Flag only when those are DEFINED
+  // here again, not merely imported or re-exported for backward compatibility.
+  const definesOutputShaping =
+    /\bfunction\s+truncateToolOutput\b/.test(content) && /\bfunction\s+spillToolResult\b/.test(content);
+  const hasTooManyResponsibilities = content.includes("runAgentLoop") && definesOutputShaping;
 
   let report = "Analysis of src/agent/engine.ts:\n";
   report += "- File length: " + lineCount + " lines.\n";

@@ -178,20 +178,39 @@ function renderRolePrompt(template: string, role: SubagentRole): string {
     .trim();
 }
 
+/** True when `marker` is present in `text` AND the span between it and the next
+ *  required marker (or end of text) carries non-whitespace content. A label-only
+ *  section ("Summary:" with an empty body) is not a real report, so it fails. */
+function markerHasContent(text: string, marker: string, allMarkers: string[]): boolean {
+  const start = text.indexOf(marker);
+  if (start < 0) return false;
+  const after = start + marker.length;
+  let end = text.length;
+  for (const other of allMarkers) {
+    if (other === marker) continue;
+    const j = text.indexOf(other, after);
+    if (j >= 0 && j < end) end = j;
+  }
+  return text.slice(after, end).trim().length > 0;
+}
+
 export function validateSubagentDoneReason(role: SubagentRole, reason: string | undefined): { ok: boolean; missing?: string[] } {
   const trimmed = (reason ?? "").trim();
   if (!trimmed) return { ok: false, missing: ["done.reason"] };
+  const markers = role.requiredDoneMarkers ?? [];
+  // Each required section must be PRESENT and carry non-empty content — a report of
+  // bare labels (no prose) is rejected, which the substring-presence check let pass.
+  const sectionMissing = markers.filter(m => !markerHasContent(trimmed, m, markers));
   if (role.id === "critic") {
     const verdicts = ["[OKAY]", "[ITERATE]", "[REJECT]"];
     const hasVerdict = verdicts.some(marker => trimmed.startsWith(marker));
     const missing = [
       ...(hasVerdict ? [] : ["[OKAY]|[ITERATE]|[REJECT]"]),
-      ...((role.requiredDoneMarkers ?? []).filter(marker => !trimmed.includes(marker))),
+      ...sectionMissing,
     ];
     return { ok: missing.length === 0, missing };
   }
-  const missing = (role.requiredDoneMarkers ?? []).filter(marker => !trimmed.includes(marker));
-  return { ok: missing.length === 0, missing };
+  return { ok: sectionMissing.length === 0, missing: sectionMissing };
 }
 
 /** Build a role-specific system prompt from its dedicated template. */

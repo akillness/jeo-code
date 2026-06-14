@@ -3,7 +3,10 @@
 > How a user picks and configures the model `jeo` runs, and how the agent routes
 > a model id to the right provider/endpoint.
 
-**Status:** `partially shipped` · **Last updated:** 2026-06-05 · **Tracking pass:** `docs/improvements.md §4, §6`
+**Status:** `shipped` · **Last updated:** 2026-06-12 · **Tracking pass:** `docs/improvements.md` & `progress.txt`
+≔69au..70rt
+- 2026-06-05 — plan created; routing + setup + doctor already shipped (§4, §6, §13, §15).
+- 2026-06-11 — Model registry, aliases, and interactive role targeting shipped. `jeo models` lists configured aliases and probed local models.
 
 ---
 

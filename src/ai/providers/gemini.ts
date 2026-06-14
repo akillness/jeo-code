@@ -119,7 +119,7 @@ export function geminiCliRequest(messages: Message[], options: CallOptions, acce
 }
 
 interface GeminiChunk {
-  candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[];
+  candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] }; finishReason?: string }[];
   promptFeedback?: { blockReason?: string };
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
 }
@@ -130,7 +130,13 @@ interface CcaChunk {
 }
 
 function textOf(chunk: GeminiChunk): string {
-  return chunk.candidates?.[0]?.content?.parts?.map(p => p.text ?? "").join("") ?? "";
+  return chunk.candidates?.[0]?.content?.parts?.filter(p => !p.thought).map(p => p.text ?? "").join("") ?? "";
+}
+
+/** Native thinking text (`thought` parts), present only when the model emits thought
+ *  summaries. Kept SEPARATE from textOf so thoughts never pollute the JSON tool call. */
+function thoughtOf(chunk: GeminiChunk): string {
+  return chunk.candidates?.[0]?.content?.parts?.filter(p => p.thought).map(p => p.text ?? "").join("") ?? "";
 }
 
 /** When Gemini returns HTTP 200 with no text, surface the real cause (safety block /
@@ -176,6 +182,8 @@ async function* ccaTurn(messages: Message[], options: CallOptions, credential: C
     }
     const inner = chunk.response;
     if (!inner) continue;
+    const thought = thoughtOf(inner);
+    if (thought) options.onReasoning?.(thought);
     const delta = textOf(inner);
     if (delta) {
       yieldedAny = true;
@@ -239,6 +247,8 @@ export const geminiAdapter: ProviderAdapter = {
       } catch {
         continue;
       }
+      const thought = thoughtOf(chunk);
+      if (thought) options.onReasoning?.(thought);
       const delta = textOf(chunk);
       if (delta) {
         yieldedAny = true;

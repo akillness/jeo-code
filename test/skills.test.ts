@@ -58,9 +58,9 @@ test("parseSkillMarkdown caps oversized details to keep skill invocation prompts
   expect(parsed.details.endsWith("…")).toBe(true);
 });
 
-test("skillNames returns all six bundled skills", () => {
+test("skillNames returns all five bundled skills", () => {
   const names = skillNames();
-  expect(names.length).toBe(6);
+  expect(names.length).toBe(5);
   expect(names).toContain("deep-interview");
   expect(names).toContain("deep-dive");
   expect(names).toContain("ralplan");
@@ -204,7 +204,7 @@ test("runSkillsCommand --write: materializes one .md per skill", async () => {
   }
 });
 test("SKILLS is derived from SKILL.md embeds", () => {
-  expect(SKILLS.length).toBe(6);
+  expect(SKILLS.length).toBe(5);
   for (const s of SKILLS) {
     expect(s.raw).toBeDefined();
     expect(typeof s.raw).toBe("string");

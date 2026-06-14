@@ -519,6 +519,28 @@ test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result i
   expect(txt).toMatch(/(└─|`-) EXECUTOR done: completed in 4 steps: guard added/); // result summary
 });
 
+test("LaunchTui: native reasoning stream drives the dimmed thinking state and is ephemeral (cleared on commit, never flushed)", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
+  tui.start();
+  const ev = tui.events();
+  const internals = tui as unknown as { streamingThought: string; timer: ReturnType<typeof setInterval> };
+  ev.onStep!(1);
+  ev.onReasoningStream!("weighing two approaches to the cap");
+  expect(internals.streamingThought).toContain("weighing two approaches");
+  // Committing to a tool clears the ephemeral native thought (unlike the JSON reasoning
+  // field, the raw thought trace is NOT flushed un-dimmed into scrollback).
+  ev.onAssistant!("{}", { tool: "read", arguments: { filePath: "x.ts" } });
+  expect(internals.streamingThought).toBe("");
+  clearInterval(internals.timer);
+
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => logged.push(a.join(" "));
+  try { tui.finish("done"); } finally { console.log = origLog; }
+  expect(logged.join("\n")).not.toContain("weighing two approaches");
+});
+
 test("LaunchTui: onToolResult flushes a gjc-style glyph-led ledger line for the target", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
@@ -722,6 +744,29 @@ test("LaunchTui.flushSteerCard: a mid-turn steering query renders a user box in 
   // Empty/whitespace steering flushes nothing.
   out.length = 0;
   tui.flushSteerCard("   ");
+  expect(out.join("")).toBe("");
+
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  tui.finish("ok");
+});
+
+test("LaunchTui.flushUserCard: the turn-starting prompt persists as a user box in scrollback", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
+
+  out.length = 0;
+  tui.flushUserCard("refactor the read budget");
+  const flushed = strip(out.join(""));
+  // The submitted query lands in scrollback as a `user`-labeled card, so the
+  // transcript keeps the prompt instead of only the transient HUD turn-title.
+  expect(flushed).toContain("user");
+  expect(flushed).toContain("refactor the read budget");
+
+  // Empty/whitespace flushes nothing.
+  out.length = 0;
+  tui.flushUserCard("   ");
   expect(out.join("")).toBe("");
 
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);

@@ -22,7 +22,7 @@ import type { TaskSubEvent } from "../agent/task-tool";
 import { supportsUnicode } from "./components/capability";
 import { centerBlock, padLineTo, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
 import { SECTION_GAP, stackSections } from "./components/section";
-import { resolveTheme, themeGradient, accentPaint, accentShadowPaint, diffPaint } from "./components/themes";
+import { resolveTheme, themeGradient, accentPaint, accentShadowPaint, diffPaint, mutedPaint, cardFillPaint } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, webSearchCardLines, type ForgeSummary } from "./components/forge";
 import { renderJeoStatus, renderStatusBar, renderStatusBox } from "./components/status";
@@ -63,9 +63,11 @@ export interface AgentEventsLike {
   onStep?(step: number): void;
   onAssistant?(raw: string, invocation: { tool: string; arguments?: unknown } | null): void;
   onToolResult?(tool: string, success: boolean, output: string): void;
+  onToolProgress?(tool: string, partial: string): void;
   onNotice?(message: string): void;
   onUsage?(usage: { inputTokens: number; outputTokens: number }): void;
   onModelStream?(textSoFar: string): void;
+  onReasoningStream?(textSoFar: string): void;
   onBudget?(limit: number, reason: string): void;
 
 }
@@ -186,11 +188,19 @@ export class LaunchTui {
   // `"reasoning"` field of the forming tool-call JSON). Shown dim under the HUD while
   // the model responds, then flushed once into scrollback as a `jeo · …` ledger line.
   private streamingReasoning = "";
+  /** Native model thinking text (separate reasoning channel), shown DIMMED while it
+   *  streams and cleared on commit — ephemeral, never flushed (the durable record is the
+   *  action/reply the thinking produced). */
+  private streamingThought = "";
   /** Uniform live-activity text for the live status field (reasoning OR derived fallback). */
   private streamingActivity = "";
   /** Last stream-driven draw (ms epoch) — throttles per-delta repaints to ≤10/s. */
   private lastStreamDraw = 0;
   private flushedReasoning = "";
+  // Live streaming output of the currently-running tool (bash stdout via onToolProgress).
+  // Shown as a DIMMED bounded block while the tool runs; cleared when the formatted
+  // result card lands (onToolResult) — the gjc-style "shaded until complete" effect.
+  private liveToolOutput = "";
   // Ctrl+O history/detail panel. When set, the live inline frame shows this
   // block above the heartbeat; pressing Ctrl+O again clears it and restores the
   // normal activity view. Kept as data, not scrollback text, so it can actually close.
@@ -268,7 +278,14 @@ export class LaunchTui {
     // scrollback (☑ + strikethrough as items complete), so the checklist's history
     // is reviewable. The live pinned plan stays in the frame tail as before.
     if (changed && items.length > 0 && !this.finished) {
-      const card = formatTodoWriteCard(items, { unicode: this.unicode, color: this.theme.color });
+      const card = formatTodoWriteCard(items, {
+        unicode: this.unicode,
+        color: this.theme.color,
+        muted: mutedPaint(this.theme),
+        accent: this.theme.color ? accentPaint(this.theme) : undefined,
+        fill: cardFillPaint(this.theme),
+        width: Math.max(24, Math.min(100, size().cols)),
+      });
       this.appendLedger(card.join("\n") + "\n", "card");
     }
     this.todos = items;
@@ -320,8 +337,10 @@ export class LaunchTui {
         this.hudPhase = "thinking";
         this.retryNotice = null; // a new step starts a fresh model call
         this.streamingReasoning = ""; // fresh model response this step
+        this.streamingThought = "";
         this.streamingActivity = "";
         this.flushedReasoning = "";
+        this.liveToolOutput = ""; // fresh step: no tool output yet
         this.currentStepStartedAt = Date.now();
         this.spinner.updateStep(step, this.footer.maxSteps);
         this.spinner.next();
@@ -353,6 +372,18 @@ export class LaunchTui {
           this.draw();
         }
       },
+      onReasoningStream: textSoFar => {
+        if (this.finished) return;
+        // Native thinking deltas → the SAME transient dimmed block as the JSON-reasoning
+        // path (reuses the screen-safe tail renderer; no new frame structure). Ephemeral:
+        // cleared on commit, never flushed into scrollback.
+        if (textSoFar === this.streamingThought) return;
+        this.streamingThought = textSoFar;
+        if (Date.now() - this.lastStreamDraw >= 100) {
+          this.lastStreamDraw = Date.now();
+          this.draw();
+        }
+      },
       onAssistant: (_raw, invocation) => {
         this.thinking = false; // model replied; now dispatching the tool
         this.retryNotice = null; // the call got through — clear any backoff notice
@@ -365,6 +396,7 @@ export class LaunchTui {
           this.appendLedger(`${name}\n${this.streamingReasoning}\n`, "reasoning");
         }
         this.streamingReasoning = "";
+        this.streamingThought = "";
         this.streamingActivity = "";
         if (invocation && invocation.tool !== "done") {
           this.runningTool = true;
@@ -394,8 +426,17 @@ export class LaunchTui {
           this.hudPhase = "reporting";
         }
       },
+      onToolProgress: (_tool, partial) => {
+        if (this.finished) return;
+        this.liveToolOutput = partial;
+        if (Date.now() - this.lastStreamDraw >= 100) {
+          this.lastStreamDraw = Date.now();
+          this.draw();
+        }
+      },
       onToolResult: (tool, success, output) => {
         this.runningTool = false;
+        this.liveToolOutput = ""; // formatted result card now replaces the live dim output
         if (this.pendingIndex !== null) {
           this.tools.finish(this.pendingIndex, success);
           this.pendingIndex = null;
@@ -544,15 +585,21 @@ export class LaunchTui {
     return [`  ${accent("user")}`, top, ...mid, bottom];
   }
 
-  /** Flush a `user` card into scrollback for a mid-turn steering query: signals that
-   *  the additional input was accepted and is now driving the running turn (gjc parity),
-   *  instead of only a transient status notice. */
-  flushSteerCard(text: string): void {
+  /** Flush a `user` card into scrollback so a submitted query stays visible there
+   *  (gjc parity), instead of only as the transient HUD turn-title / a status notice.
+   *  Shared by the prompt that STARTS a turn and the mid-turn steering flush. */
+  flushUserCard(text: string): void {
     const t = (text ?? "").trim();
     if (!t || this.finished) return;
     const cols = Math.max(20, size().cols);
     const lines = this.renderUserCard(t, cols);
     if (lines.length) this.appendLedger(lines.join("\n"), "card");
+  }
+
+  /** Mid-turn steering query → a `user` card in scrollback (accepted input that is
+   *  now driving the running turn). Alias of {@link flushUserCard}. */
+  flushSteerCard(text: string): void {
+    this.flushUserCard(text);
   }
 
   /** Append a completed progress-ledger line. In inline mode the line is flushed
@@ -704,7 +751,7 @@ export class LaunchTui {
     if (this.finished) return;
     const color = this.theme.color;
     const role = e.role || "subagent";
-    const roleLabel = role.toUpperCase();
+    const roleLabel = e.index && e.total ? `${role.toUpperCase()}[${e.index}/${e.total}]` : role.toUpperCase();
     const badge = categoryBadge("subagent", { color });
     const ok = this.unicode ? "✓" : "v";
     const bad = this.unicode ? "✗" : "x";
@@ -736,7 +783,7 @@ export class LaunchTui {
       case "done":
         this.subagentActive = false;
         this.subagentLive = null;
-        this.appendLedger(`${badge} ${last} ${roleLabel} done${e.success === false ? " (incomplete)" : ""}: ${detail}\n`, "subagent");
+        this.appendLedger(`${badge} ${last} ${roleLabel} done${e.tokens ? ` (${e.tokens.input + e.tokens.output} tok)` : ""}${e.success === false ? " (incomplete)" : ""}: ${detail}\n`, "subagent");
         break;
     }
     this.draw();
@@ -960,6 +1007,7 @@ export class LaunchTui {
       paint,
       paintShadow,
       diffPaint: diffPaint(this.theme),
+      fill: cardFillPaint(this.theme),
       color: this.theme.color,
     });
     this.appendLedger(lines.join("\n") + "\n", "card");
@@ -971,6 +1019,7 @@ export class LaunchTui {
     width: number,
     maxEntries: number,
     anim?: { phase: number; colorLevel: ColorLevel; beat: string },
+    dim = false,
   ): string[] {
     const floor = Math.min(24, width);
     // Fill the available width (cap at formatForgeBox's own 120 ceiling) so an
@@ -987,12 +1036,14 @@ export class LaunchTui {
         paint,
         paintShadow: accentShadowPaint(this.theme),
         diffPaint: diffPaint(this.theme),
+        fill: cardFillPaint(this.theme),
         index: i + 1,
         color: this.theme.color,
+        dim,
         // DNA-flow identity on LIVE cards only: the flowing helix gradient rides
         // the card border and the claw beat marks the title. Flushed/final cards
-        // stay static — scrollback never carries animation frames.
-        ...(anim
+        // stay static. Suppressed while `dim` (in-flight shading takes precedence).
+        ...(anim && !dim
           ? { flow: { palette: DNA_FLOW_PALETTE, phase: anim.phase, colorLevel: anim.colorLevel }, titleMark: anim.beat }
           : {}),
       }));
@@ -1057,6 +1108,41 @@ export class LaunchTui {
     // it is the live heartbeat and must always be visible; the in-flight card gets
     // whatever rows remain above it.
     const tail: string[] = [];
+    // Live reasoning (gjc-style muted thinking): stream the model's forming thought
+    // as a DIMMED, bounded block above the status line. It is transient — flushed
+    // UN-dimmed into scrollback once the model commits to a tool/reply (onAssistant),
+    // so the in-progress trace stays shaded while the final record reads in normal text.
+    const liveThink = this.streamingThought.trim() || this.streamingReasoning.trim();
+    if (isThinking && liveThink) {
+      const wrapW = Math.max(8, Math.min(120, cols) - 2);
+      const wrapped = liveThink
+        .split("\n")
+        .flatMap(l => wrapTextWithAnsi(l, wrapW))
+        .filter(l => l.length > 0);
+      const shown = wrapped.slice(-6); // bottom-anchored tail of the live trace
+      if (shown.length) {
+        tail.push(dim(`${this.unicode ? "│" : "|"} thinking`));
+        for (const l of shown) tail.push(dim(`  ${l}`));
+        tail.push("");
+      }
+    }
+
+    // Live tool output (gjc-style streaming bash stdout): while a tool runs, its
+    // output arrives via onToolProgress and is shown as a DIMMED, bounded tail block.
+    // It is transient — cleared on result, when the formatted forge card takes over.
+    if (this.runningTool && this.liveToolOutput.trim()) {
+      const wrapW = Math.max(8, Math.min(120, cols) - 2);
+      const wrapped = this.liveToolOutput
+        .split("\n")
+        .flatMap(l => wrapTextWithAnsi(l, wrapW))
+        .filter(l => l.length > 0);
+      const shown = wrapped.slice(-8); // bottom-anchored tail of the live output
+      if (shown.length) {
+        tail.push(dim(`${this.unicode ? "│" : "|"} output`));
+        for (const l of shown) tail.push(dim(`  ${l}`));
+        tail.push("");
+      }
+    }
 
     // Live status field: unboxed thinking line + compact metrics row. The model's
     // streamed activity is uniform across providers via streamingActivity and keeps
@@ -1128,7 +1214,7 @@ export class LaunchTui {
       const forgeAnim = isThinking && this.theme.color && colorLevel >= ColorLevel.TrueColor
         ? { phase, colorLevel, beat }
         : undefined;
-      const forgeK = budget > 0 ? fitForgeBoxes(this.renderForge(cols, 2, forgeAnim), budget) : [];
+      const forgeK = budget > 0 ? fitForgeBoxes(this.renderForge(cols, 2, forgeAnim, true), budget) : [];
       if (forgeK.length) {
         frame.push(...forgeK);
         frame.push("");

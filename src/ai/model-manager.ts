@@ -2,11 +2,7 @@ import { providerRegistry } from "./provider-registry";
 import { OAUTH_FLOW_REGISTRY } from "../auth/flows";
 import { readGlobalConfig } from "../agent/state";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
-import { anthropicAdapter } from "./providers/anthropic";
-import { openaiAdapter } from "./providers/openai";
-import { geminiAdapter } from "./providers/gemini";
-import { ollamaAdapter } from "./providers/ollama";
-import { antigravityAdapter } from "./providers/antigravity";
+import "./register-providers"; // side-effect: registers built-in adapters into providerRegistry
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId, effectiveAliasesFor } from "./model-registry";
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
@@ -16,12 +12,6 @@ import { jeoEnv } from "../util/env";
 import type { Config } from "../agent/state";
 
 
-// Initialize Provider Registry
-providerRegistry.register("anthropic", anthropicAdapter);
-providerRegistry.register("openai", openaiAdapter);
-providerRegistry.register("gemini", geminiAdapter);
-providerRegistry.register("antigravity", antigravityAdapter);
-providerRegistry.register("ollama", ollamaAdapter);
 
 
 export function resolveProvider(model: string): ProviderName {
@@ -315,6 +305,7 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
     onUsage: options.onUsage,
     signal: options.signal,
     reasoningEffort: options.reasoningEffort ?? thinkingToReasoningEffort(config.thinkingLevel),
+    onReasoning: options.onReasoning,
   };
   // Caller-supplied retry sink rides on the config-derived retry budget so the
   // engine/TUI can surface "rate limited — retrying in Ns" instead of a silent wait.

@@ -3,7 +3,10 @@
 > Bun-native install today; a prebuilt single binary and package-manager
 > distribution next, so `jeo` installs without a source checkout.
 
-**Status:** `partially shipped` · **Last updated:** 2026-06-05 · **Tracking pass:** `docs/improvements.md §12, §16`
+**Status:** `shipped` · **Last updated:** 2026-06-12 · **Tracking pass:** `docs/improvements.md` & `progress.txt`
+≔73y5..74rt
+- 2026-06-05 — plan created; M0 install (bun link) already shipped (§12, §16).
+- 2026-06-11 — Single binary compilation (`bun build --compile`) and distribution shipped. `dist/jeo` is now the primary execution target.
 
 ---
 

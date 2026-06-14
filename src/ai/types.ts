@@ -43,6 +43,10 @@ export interface CallOptions {
   /** Notified before each auto-retry backoff wait (rate limits / transient errors).
    *  NOT forwarded to provider adapters — consumed by the manager's retry layer. */
   onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
+  /** Streaming sink for native model reasoning/thinking text deltas (separate from the
+   *  answer text). Surfaced as a transient dimmed view; absent for models that emit no
+   *  thought text. */
+  onReasoning?: (delta: string) => void;
 }
 
 export interface ProviderAdapter {

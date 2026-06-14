@@ -33,6 +33,16 @@ export interface ForgeBoxOptions {
    *  the FULL padded row so added/removed lines read as background-tinted
    *  stripes — block-level contrast inside the card. */
   diffPaint?: { add: (s: string) => string; del: (s: string) => string };
+  /** Faint card background tint painter — applied to every WHOLE box row (borders
+   *  + content) so the card reads as a panel. Interior coloring uses targeted close
+   *  codes, so the fill spans each row. Identity/omitted = transparent card. Patch
+   *  `diffPaint` rows set their own background and intentionally override it. */
+  fill?: (s: string) => string;
+  /** In-flight shading: render the card as a flat DIMMED block (gjc-style "not done
+   *  yet" look). Strips inner color and wraps every row in `chalk.dim`, so a live
+   *  card reads as shaded until the result arrives and the normal formatted card
+   *  replaces it. Overrides `fill`/`flow` coloring. */
+  dim?: boolean;
 }
 
 const SECRET_VALUE_RE = /(api[_-]?key|authorization|bearer|password|secret|token)(\s*[:=]\s*)(["']?)[^"'\s,}]+/gi;
@@ -559,5 +569,12 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
     rendered.push(contentRow(`… ${content.length - clipped.length} more lines ${hint}`));
   }
   rendered.push(bottom);
-  return rendered;
+  // In-flight shading takes precedence: strip inner color and dim every row so a
+  // live card reads as a flat shaded block until its formatted result replaces it.
+  if (opts.dim) {
+    return rendered.map(l => chalk.dim(l.replace(/\x1b\[[0-9;]*m/g, "")));
+  }
+  // Faint panel tint: wrap each whole, width-padded row so the card background spans
+  // the full rectangle (borders + content). No-op when no fill painter is supplied.
+  return opts.fill ? rendered.map(opts.fill) : rendered;
 }

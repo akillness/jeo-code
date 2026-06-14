@@ -1,6 +1,6 @@
 import { test, expect, mock } from "bun:test";
 import { extractJsonObject, tryExtractJsonObject } from "../src/agent/json";
-import { truncateToolOutput } from "../src/agent/engine";
+import { truncateToolOutput, READ_OUTPUT_MAX, TOOL_OUTPUT_MAX } from "../src/agent/engine";
 
 test("extractJsonObject: pure JSON", () => {
   expect(extractJsonObject('{"tool":"done","arguments":{"reason":"x"}}')).toEqual({
@@ -209,6 +209,24 @@ test("truncateToolOutput: keeps head and tail (tail holds the decisive part)", (
   expect(out).toContain("HEAD_MARKER");
   expect(out).toContain("TAIL_MARKER"); // would be lost by a pure head-cut
   expect(out).toContain("chars truncated");
+});
+
+test("truncateToolOutput: headOnly keeps a contiguous front slice (read mode)", () => {
+  const body = "HEAD_MARKER" + "x".repeat(5000) + "TAIL_MARKER";
+  const out = truncateToolOutput(body, 1000, true);
+  expect(out.length).toBeLessThan(body.length);
+  expect(out).toContain("HEAD_MARKER");
+  expect(out).not.toContain("TAIL_MARKER"); // head-only: no tail fragment to mangle the slice
+  expect(out).toContain("chars truncated");
+  // The kept content is a single contiguous prefix, not two stitched ends.
+  expect(out.slice(0, 1000)).toBe(body.slice(0, 1000));
+});
+
+test("READ_OUTPUT_MAX: read budget is far larger than the generic cap (fits ~500 lines)", () => {
+  // A 500-line read (~50 chars/line incl. anchors) must fit without truncation so
+  // reads are no longer silently re-shrunk to ~100 lines by the generic 4k cap.
+  expect(READ_OUTPUT_MAX).toBeGreaterThanOrEqual(25_000);
+  expect(READ_OUTPUT_MAX).toBeGreaterThan(TOOL_OUTPUT_MAX);
 });
 
 test("runAgentLoop: a model that never emits a 'tool' field stops with a clear, actionable reason", async () => {

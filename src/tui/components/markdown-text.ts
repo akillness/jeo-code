@@ -64,7 +64,13 @@ export function renderMarkdownAnsi(text: string, opts: MarkdownAnsiOptions = {})
       .replace(/`([^`]+)`/g, (_m, code: string) => chalk.cyan(code))
       .replace(/\*\*\*([^\*]+)\*\*\*/g, (_m, t: string) => chalk.bold.italic(t))
       .replace(/\*\*([^\*]+)\*\*/g, (_m, t: string) => chalk.bold(t))
-      .replace(/__([^\_]+)__/g, (_m, t: string) => chalk.bold(t));
+      .replace(/__([^\_]+)__/g, (_m, t: string) => chalk.bold(t))
+      // Single *italic* / _italic_ run AFTER the ***/**/__ passes so the doubles
+      // are already consumed. The `*` form ignores list bullets ("* item" has no
+      // closing `*`); the `_` form is word-boundary guarded so snake_case
+      // identifiers (foo_bar_baz) are never mistaken for emphasis.
+      .replace(/\*([^\s*][^*\n]*?[^\s*]|[^\s*])\*/g, (_m, t: string) => chalk.italic(t))
+      .replace(/(?<![\p{L}\p{N}_])_(?=\S)([^_\n]*?)(?<=\S)_(?![\p{L}\p{N}_])/gu, (_m, t: string) => chalk.italic(t));
 
   const out: string[] = [];
   let inFence = false;
@@ -79,6 +85,9 @@ export function renderMarkdownAnsi(text: string, opts: MarkdownAnsiOptions = {})
     }
     const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
+      // Vertical rhythm: a heading that follows content gets one blank line of
+      // breathing room above it (final-report readability), never a leading blank.
+      if (out.length > 0 && out[out.length - 1]!.trim() !== "") out.push("");
       out.push(accent(styleInline(heading[2]!)));
       continue;
     }

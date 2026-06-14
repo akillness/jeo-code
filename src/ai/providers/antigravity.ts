@@ -160,13 +160,18 @@ export function antigravityRequest(messages: Message[], options: CallOptions, cr
 type CcaUsage = { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
 interface CcaChunk {
   response?: {
-    candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[];
+    candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] }; finishReason?: string }[];
     usageMetadata?: CcaUsage;
   };
 }
 
 function textOf(chunk: CcaChunk): string {
-  return chunk.response?.candidates?.[0]?.content?.parts?.map(p => p.text ?? "").join("") ?? "";
+  return chunk.response?.candidates?.[0]?.content?.parts?.filter(p => !p.thought).map(p => p.text ?? "").join("") ?? "";
+}
+
+/** Native thinking text (`thought` parts) — kept separate so it never pollutes the JSON tool call. */
+function thoughtOf(chunk: CcaChunk): string {
+  return chunk.response?.candidates?.[0]?.content?.parts?.filter(p => p.thought).map(p => p.text ?? "").join("") ?? "";
 }
 
 async function fetchAntigravity(messages: Message[], options: CallOptions, credential: Credential): Promise<Response> {
@@ -194,6 +199,8 @@ export const antigravityAdapter: ProviderAdapter = {
     for await (const data of readSse(response.body)) {
       let chunk: CcaChunk;
       try { chunk = JSON.parse(data); } catch { continue; }
+      const thought = thoughtOf(chunk);
+      if (thought) options.onReasoning?.(thought);
       out += textOf(chunk);
       if (chunk.response?.usageMetadata) usage = chunk.response.usageMetadata;
     }
@@ -209,6 +216,8 @@ export const antigravityAdapter: ProviderAdapter = {
     for await (const data of readSse(response.body)) {
       let chunk: CcaChunk;
       try { chunk = JSON.parse(data); } catch { continue; }
+      const thought = thoughtOf(chunk);
+      if (thought) options.onReasoning?.(thought);
       const delta = textOf(chunk);
       if (delta) { yielded = true; yield delta; }
       if (chunk.response?.usageMetadata) usage = chunk.response.usageMetadata;

@@ -78,3 +78,28 @@ test("renderMarkdownAnsi: empty input and plain text pass through", () => {
   expect(renderMarkdownAnsi("")).toBe("");
   expect(renderMarkdownAnsi("plain text, no markdown")).toBe("plain text, no markdown");
 });
+
+test("renderMarkdownAnsi: single *italic* / _italic_ is styled and never breaks lists or snake_case", () => {
+  const prev = chalk.level;
+  chalk.level = 3;
+  try {
+    const stripAnsi = (s: string) => s.replace(/\u001b\[[0-9;]*m/g, "");
+    const styled = renderMarkdownAnsi("This is *important* and _also italic_ text.");
+    expect(styled).toContain("\u001b[3m"); // italic SGR applied
+    expect(stripAnsi(styled)).toBe("This is important and also italic text."); // markers gone
+    // Bullet "* item" (no closing *), inline math "a * b", and snake_case must NOT italicize.
+    const safe = renderMarkdownAnsi("keep snake_case_name and a * b and\n* bullet item");
+    expect(safe).not.toContain("\u001b[3m");
+    expect(stripAnsi(safe)).toContain("snake_case_name");
+  } finally {
+    chalk.level = prev;
+  }
+});
+
+test("renderMarkdownAnsi: a heading following content gets one blank line above (vertical rhythm)", () => {
+  const stripAnsi = (s: string) => s.replace(/\u001b\[[0-9;]*m/g, "");
+  const out = stripAnsi(renderMarkdownAnsi("intro paragraph here.\n## Heading Two\nbody text")).split("\n");
+  expect(out).toEqual(["intro paragraph here.", "", "Heading Two", "body text"]);
+  // A leading heading never gains a blank line above it.
+  expect(stripAnsi(renderMarkdownAnsi("## Top\nbody")).split("\n")[0]).toBe("Top");
+});

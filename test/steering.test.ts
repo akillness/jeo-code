@@ -123,7 +123,7 @@ test("createTaskTool: forwards steering to a single running subagent", async () 
       seenUser.push(lastUser?.content ?? "");
       return JSON.stringify({
         tool: "done",
-        arguments: { reason: "Summary:\nChanged Files:\nVerification:\nOpen Risks:\ndone" },
+        arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none\ndone" },
       });
     },
   }));
@@ -146,7 +146,7 @@ test("createTaskTool: forwards steering to a single running subagent", async () 
   expect(steerEvents.some(d => d.includes("also check the empty-input edge case"))).toBe(true);
 });
 
-test("createTaskTool: fan-out does NOT consume parent steering", async () => {
+test("createTaskTool: fan-out broadcasts parent steering to every running worker", async () => {
   const seenUser: string[] = [];
   await mock.module("../src/agent/loop", () => ({
     callLlm: async (history: { role: string; content: string }[]) => {
@@ -154,7 +154,7 @@ test("createTaskTool: fan-out does NOT consume parent steering", async () => {
       seenUser.push(lastUser?.content ?? "");
       return JSON.stringify({
         tool: "done",
-        arguments: { reason: "Architectural Status: CLEAR\nlooks fine" },
+        arguments: { reason: "Summary: ok\nFindings: none\nRecommendations: ship\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" },
       });
     },
   }));
@@ -166,12 +166,14 @@ test("createTaskTool: fan-out does NOT consume parent steering", async () => {
     steer: () => steerQueue.splice(0, steerQueue.length),
   });
 
-  // architect is read-only → fan-out path (concurrent), which must not forward steering.
+  // architect is read-only → concurrent fan-out; #7 routes steering through a
+  // broadcast hub so the redirect reaches the running subagents (each once)
+  // instead of being dropped.
   await tool({ role: "architect", tasks: ["review a", "review b"] }, await tmpDir());
 
-  expect(seenUser.some(s => s.includes("redirect everything"))).toBe(false);
-  // The steering message is left intact for the parent to drain after the batch.
-  expect(steerQueue).toEqual(["redirect everything"]);
+  // The redirect reached at least one running subagent and the parent queue drained.
+  expect(seenUser.some(s => s.includes("redirect everything"))).toBe(true);
+  expect(steerQueue).toEqual([]);
 });
 
 test("runAgentLoop: steering during the final step reopens the turn instead of finishing", async () => {

@@ -173,15 +173,6 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
-    name: "gjc",
-    summary: "Run the gjc workflow skill as an autonomous build loop (plan → implement → verify).",
-    usage: "gjc \"<intent>\"",
-    loader: async () => {
-      const m = await import("../commands/gjc");
-      return args => m.runGjcCommand(args);
-    },
-  },
-  {
     name: "ooo-seed",
     summary: "Generate an immutable ooo seed from a specification (spec-first automation).",
     usage: "ooo-seed [args]",

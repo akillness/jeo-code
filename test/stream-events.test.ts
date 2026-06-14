@@ -93,7 +93,7 @@ test("end-to-end: cmd-mode task subagent prints nested steps and result summarie
       turn++;
       if (turn === 1) return JSON.stringify({ tool: "task", arguments: { role: "executor", task: "inspect note.txt" } });
       if (turn === 2) return JSON.stringify({ tool: "read", arguments: { filePath: "note.txt" } });
-      if (turn === 3) return JSON.stringify({ tool: "done", arguments: { reason: "subagent read it\nSummary:\nChanged Files:\nVerification:" } });
+      if (turn === 3) return JSON.stringify({ tool: "done", arguments: { reason: "subagent read it\nSummary: read note\nChanged Files: none\nVerification: n/a" } });
       return JSON.stringify({ tool: "done", arguments: { reason: "parent integrated" } });
     },
   }));
@@ -141,7 +141,7 @@ test("end-to-end: a disk-persisted subagent model override is the model the in-l
       // turn 1: parent delegates. turns 2-3: subagent works + done. turn 4: parent done.
       if (turn === 1) return JSON.stringify({ tool: "task", arguments: { role: "executor", task: "inspect note.txt" } });
       if (turn === 2) { subagentModels.push(options.model); return JSON.stringify({ tool: "read", arguments: { filePath: "note.txt" } }); }
-      if (turn === 3) { subagentModels.push(options.model); return JSON.stringify({ tool: "done", arguments: { reason: "ok\nSummary:\nChanged Files:\nVerification:" } }); }
+      if (turn === 3) { subagentModels.push(options.model); return JSON.stringify({ tool: "done", arguments: { reason: "ok\nSummary: read note\nChanged Files: none\nVerification: n/a" } }); }
       return JSON.stringify({ tool: "done", arguments: { reason: "parent done" } });
     },
   }));

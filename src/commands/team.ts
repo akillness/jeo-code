@@ -403,7 +403,8 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
     // LLM summary failure does not halt team
   }
 
-  let mutationsOk = 0; // round-8 parent audit: successful write/edit/bash count
+  let fileMutations = 0; // round-8 parent audit: successful write/edit/mkdir/delete
+  let bashRuns = 0;      // bash counted apart so read-only bash isn't edit evidence
   const result = await runAgentLoop(history, {
     cwd: ctx.cwd,
     model,
@@ -429,7 +430,10 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
         }
       },
       onToolResult: (tool, ok) => {
-        if (ok && (tool === "write" || tool === "edit" || tool === "bash")) mutationsOk++;
+        if (ok) {
+          if (tool === "write" || tool === "edit" || tool === "mkdir" || tool === "delete") fileMutations++;
+          else if (tool === "bash") bashRuns++;
+        }
         console.log(formatRalphStreamEvent(ok ? "complete" : "error", `tool ${tool}`, renderOpts));
       },
       onNotice: msg => console.log(formatRalphStreamEvent("step", msg, renderOpts)),
@@ -454,11 +458,14 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
     return false;
   }
 
-  if (!role.readOnly && mutationsOk === 0) {
-    // Round-8: a mutating role finished without ONE successful mutation — the
+  if (!role.readOnly && fileMutations === 0) {
+    // Round-8: a mutating role finished without a successful file mutation — the
     // task may be legitimately read-only, but its "Changed Files:" claim is
-    // unverified; warn instead of silently trusting the report.
-    console.log(formatRalphStreamEvent("error", `${role.title} completed WITHOUT any successful write/edit/bash — treat its changed-files claim as unverified.`, renderOpts));
+    // unverified. bash is tracked apart: an only-bash run MIGHT have mutated.
+    const msg = bashRuns === 0
+      ? `${role.title} completed WITHOUT any successful write/edit/bash — treat its changed-files claim as unverified.`
+      : `${role.title} completed with only bash (no write/edit) — verify its changed-files claim independently.`;
+    console.log(formatRalphStreamEvent("error", msg, renderOpts));
   }
   console.log(formatRalphStreamEvent("complete", `${role.title} finished task`, renderOpts));
   return true;

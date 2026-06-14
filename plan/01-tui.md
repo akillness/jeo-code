@@ -4,7 +4,7 @@
 > agent and pipeline render like gjc — live tool calls, streaming text, a status
 > footer, and a slash-command palette — instead of scrolling raw `console.log`.
 
-**Status:** `in-progress` (M1+M2 shipped; M3 slash palette + M4 pipeline views pending) · **Last updated:** 2026-06-05 · **Tracking pass:** `docs/improvements.md §24`
+**Status:** `shipped` (M1–M4 fully shipped) · **Last updated:** 2026-06-12 · **Tracking pass:** `docs/improvements.md` & `progress.txt` (Pass 889–897)
 
 ---
 
@@ -101,13 +101,13 @@ jeo launch --no-tui "say hi"                               # explicit fallback p
 ```
 
 ## 9. Long-term / Future
-- Token-level streaming text once providers stream (plan 05 §M6) — `stream.ts` already append-based.
-- Pipeline/doctor TUI views (plan 01 §M4): ambiguity meter for `deep-interview`, step progress for
-  `team`, a doctor table widget.
+- Token-level streaming text once providers stream (plan 05 §M6) — `stream.ts` already append-based. (Shipped)
+- Pipeline/doctor TUI views (plan 01 §M4): ambiguity meter for `deep-interview`, step progress for `team`, a doctor table widget. (Shipped)
+- Live subagent status mirroring and Ctrl+O history panel. (Shipped)
 - Optional Rust-native renderer behind the same `Renderer` interface (gjc-style speed) — deferred.
 
 ## 10. Changelog
 - 2026-06-05 — plan created.
-- 2026-06-05 — M1+M2 shipped: `src/tui/{terminal,renderer,app}.ts` + `src/tui/components/*`, wired into
-  `jeo launch` behind `isTTY() && !--no-tui` with the stream fallback preserved. 11 TUI tests; full
-  suite 45/45; `docs/improvements.md §24`. Remaining: M3 (slash palette/autocomplete), M4 (pipeline/doctor views).
+- 2026-06-05 — M1+M2 shipped: `src/tui/{terminal,renderer,app}.ts` + `src/tui/components/*`, wired into `jeo launch` behind `isTTY() && !--no-tui` with the stream fallback preserved. 11 TUI tests; full suite 45/45; `docs/improvements.md §24`.
+- 2026-06-11 — M3+M4 shipped: slash-command palette, autocomplete, model picker, subagent status mirroring, Ctrl+O history panel, and two-tone box depth. 1263 tests green.
+- 2026-06-12 — Updated with subagent status mirroring and Ctrl+O history panel details.

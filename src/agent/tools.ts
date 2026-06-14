@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { readWorkflowState, readWorkflowStateStrict, type WorkflowState } from "./state";
 import { jeoEnv } from "../util/env";
+import { READ_OUTPUT_MAX } from "./tool-output";
 
 /** Read the deep-interview lock; on corrupt state fail CLOSED (treat as active lock). */
 async function readMutationLock(cwd: string): Promise<WorkflowState | null> {
@@ -291,10 +292,27 @@ export async function readTool(
       return { success: true, output: out.join("\n") };
     }
 
-    const MAX_LINES = 500;
-    const annotated = lines.slice(0, MAX_LINES).map((l, i) => `${i + 1}${lineAnchor(l)}|${l}`).join("\n");
-    if (lines.length > MAX_LINES) {
-      const notice = `\n…(showing lines 1-${MAX_LINES} of ${lines.length}; pass lineRange "${MAX_LINES + 1}-" to read the rest)`;
+    // Default (no lineRange): fill the model-visible read budget with WHOLE lines
+    // instead of a fixed 500-line cap that left half the 32k budget unused and forced
+    // needless pagination (the read tool's biggest "reads too little per call" pain).
+    // READ_OUTPUT_MAX is the real cap; a hard line ceiling (JEO_READ_MAX_LINES) guards
+    // pathological files, and a small reserve keeps the pagination notice inside the
+    // budget so it is never trimmed by the downstream head-only truncation.
+    const HARD_LINE_CEILING = Math.max(500, Number(jeoEnv("READ_MAX_LINES") ?? "") || 5000);
+    const charBudget = Math.max(1_000, READ_OUTPUT_MAX - 256);
+    const shownLines: string[] = [];
+    let usedChars = 0;
+    for (let i = 0; i < lines.length && shownLines.length < HARD_LINE_CEILING; i++) {
+      const annotatedLine = `${i + 1}${lineAnchor(lines[i]!)}|${lines[i]}`;
+      const cost = annotatedLine.length + 1; // + newline
+      if (shownLines.length > 0 && usedChars + cost > charBudget) break; // always emit ≥1 line
+      shownLines.push(annotatedLine);
+      usedChars += cost;
+    }
+    const annotated = shownLines.join("\n");
+    if (shownLines.length < lines.length) {
+      const shown = shownLines.length;
+      const notice = `\n…(showing lines 1-${shown} of ${lines.length}; pass lineRange "${shown + 1}-" to read the rest)`;
       return { success: true, output: annotated + notice };
     }
     return { success: true, output: annotated };
@@ -574,7 +592,8 @@ export async function bashTool(
   cwd: string = process.cwd(),
   timeoutMs: number = 120_000,
   subdir?: string,
-  env?: Record<string, string>
+  env?: Record<string, string>,
+  onProgress?: (partialOutput: string) => void,
 ): Promise<ToolResult> {
   if (jeoEnv("BASH_FIXUPS") === "1") {
     const fx = applyBashFixups(command);
@@ -608,12 +627,27 @@ export async function bashTool(
       killTimer = setTimeout(() => { try { proc.kill(9); } catch {} }, 3_000);
     }, TIMEOUT_MS);
 
+    // Stream stdout incrementally when a progress sink is attached (drives the live
+    // DIMMED bash output view); read stderr fully in parallel. Without a sink, fall
+    // back to a single post-exit read (identical content, no streaming overhead).
+    const stderrPromise = new Response(proc.stderr).text();
+    let stdout = "";
+    if (onProgress) {
+      const decoder = new TextDecoder();
+      let lastEmit = 0;
+      for await (const chunk of proc.stdout as unknown as AsyncIterable<Uint8Array>) {
+        stdout += decoder.decode(chunk, { stream: true });
+        const now = Date.now();
+        if (now - lastEmit >= 80) { lastEmit = now; onProgress(stdout); }
+      }
+      stdout += decoder.decode();
+      onProgress(stdout);
+    }
     await proc.exited;
     clearTimeout(timer);
     if (killTimer) clearTimeout(killTimer);
-
-    const stdout = await new Response(proc.stdout).text();
-    const stderr = await new Response(proc.stderr).text();
+    if (!onProgress) stdout = await new Response(proc.stdout).text();
+    const stderr = await stderrPromise;
 
     let output = [stdout, stderr].filter(Boolean).join("\n");
     const MAX_OUTPUT = 100_000;

@@ -35,6 +35,46 @@ test("formatTodoWriteCard: ASCII fallback and empty input", () => {
   expect(formatTodoWriteCard([])).toEqual([]);
 });
 
+test("formatTodoWriteCard: panel mode tints every row, pads to width, drives muted painter", () => {
+  const fill = (s: string) => `«bg»${s}«/bg»`;
+  const muted = (s: string) => `«m»${s}«/m»`;
+  const lines = formatTodoWriteCard(
+    [
+      { title: "done one", status: "done" },
+      { title: "active two", status: "in_progress" },
+      { title: "pending three", status: "pending" },
+    ],
+    { unicode: true, color: true, fill, muted, width: 50 },
+  );
+  // Every row is wrapped by the fill painter → a panel rectangle.
+  expect(lines.every(l => l.startsWith("«bg»") && l.endsWith("«/bg»"))).toBe(true);
+  // The muted painter drives secondary text (count, connectors, done + pending labels).
+  expect(lines[0]).toContain("«m»3 tasks«/m»");           // count
+  expect(lines[1]).toContain("«m»done one«/m»");            // done label via muted
+  expect(lines[3]).toContain("«m»pending three«/m»");       // pending label via muted
+  // Active item stays accented (cyan bold), NOT muted.
+  expect(lines[2]).not.toContain("«m»active two«/m»");
+  // Without panel opts the bare rows return unchanged (back-compat).
+  const bare = formatTodoWriteCard([{ title: "x", status: "pending" }], { color: false, unicode: false });
+  expect(bare).toEqual(["v Todo Write 1 task", "  `- [ ] x"]);
+});
+
+test("formatTodoWriteCard: the in_progress item uses the theme accent painter (not hardcoded cyan)", () => {
+  const accent = (s: string) => `«a»${s}«/a»`;
+  const lines = formatTodoWriteCard(
+    [
+      { title: "active two", status: "in_progress" },
+      { title: "pending three", status: "pending" },
+    ],
+    { unicode: true, color: true, accent },
+  );
+  // The active row is painted by the theme accent (so it matches green/red/warm
+  // palettes), NOT a fixed cyan.
+  expect(lines[1]).toContain("«a»active two«/a»");
+  // Pending is NOT accented.
+  expect(lines[2]).not.toContain("«a»pending three«/a»");
+});
+
 test("LaunchTui.setTodos flushes a Todo Write card into the ledger on change only", () => {
   const prevTerm = process.env.TERM;
   const prevLang = process.env.LANG;

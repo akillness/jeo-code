@@ -376,3 +376,19 @@ test("summarize-stage clip markers (previewLines '… N more line(s)') also gain
   const box = formatForgeBox(summary, { width: 60, maxLines: 12, paint: s => s, color: false }).map(stripAnsi).join("\n");
   expect(box).toMatch(/… \d+ more line\(s\) ⟦Ctrl\+O for more⟧/);
 });
+
+test("formatForgeBox: fill painter tints every row (panel) without changing visible width", () => {
+  const summary = summarizeForgeResult("bash", true, "build complete");
+  const fill = (s: string) => `«bg»${s}«/bg»`;
+  const width = 40;
+  const box = formatForgeBox(summary, { width, unicode: false, color: false, paint: s => s, fill });
+  // Every box row — top border, content, bottom border — is wrapped by the fill.
+  expect(box.every(l => l.startsWith("«bg»") && l.endsWith("«/bg»"))).toBe(true);
+  // The tint is zero-width chrome: the box keeps its exact column width.
+  for (const line of box) {
+    expect(visibleWidth(line.replace(/«\/?bg»/g, ""))).toBe(width);
+  }
+  // No fill painter → rows are returned untinted (back-compat).
+  const bare = formatForgeBox(summary, { width, unicode: false, color: false, paint: s => s });
+  expect(bare.some(l => l.includes("«bg»"))).toBe(false);
+});

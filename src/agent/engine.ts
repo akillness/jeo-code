@@ -16,7 +16,8 @@ import { webSearchTool, setWebSearchActiveModel } from "./web-search";
 import { friendlyProviderError, isContextOverflowError, isRefusalError } from "../util/provider-error";
 import { isRateLimitError } from "../util/retry";
 import { runPreToolHooks, runPostTurnHooks } from "./hooks";
-import { minimizeToolOutput } from "./output-minimizer";
+import { truncateToolOutput, formatToolResultBody } from "./tool-output";
+export { TOOL_OUTPUT_MAX, READ_OUTPUT_MAX, TOOL_SPILL_THRESHOLD, MAX_TOOL_ARTIFACTS, truncateToolOutput, spillToolResult } from "./tool-output";
 import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, hashSignature, type StepBudgetConfig } from "./step-budget";
 import { historyTokens, trimToolResultsInPlace } from "./compaction";
 import { jeoEnv } from "../util/env";
@@ -30,6 +31,7 @@ async function invokeCallLlm(history: Message[], options: {
   onUsage?: (u: { inputTokens?: number; outputTokens?: number }) => void;
   onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
   onToken?: (delta: string) => void;
+  onReasoning?: (delta: string) => void;
 }): Promise<string> {
   const mod = await import("./loop");
   return mod.callLlm(history, options);
@@ -39,14 +41,14 @@ export interface ToolInvocation {
   arguments?: Record<string, any>;
 }
 
-export type ToolHandler = (args: Record<string, any>, cwd: string) => Promise<ToolResult>;
+export type ToolHandler = (args: Record<string, any>, cwd: string, onProgress?: (partialOutput: string) => void) => Promise<ToolResult>;
 
-/** The default executor toolset (read / write / edit / bash / find / search). */
+/** The default executor toolset (read / write / edit / bash / find / search / ls / mkdir / delete / web_search). */
 export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
   read: (a, cwd) => readTool(a.filePath ?? a.path, a.lineRange ?? a.range, cwd, !!a.raw),
   write: (a, cwd) => writeTool(a.filePath ?? a.path, a.content ?? "", cwd),
   edit: (a, cwd) => editTool(a.filePath ?? a.path, a.editBlock ?? a.edit ?? "", cwd),
-  bash: (a, cwd) => bashTool(a.command ?? a.cmd, cwd, typeof a.timeoutMs === "number" ? a.timeoutMs : undefined, typeof a.cwd === "string" ? a.cwd : (typeof a.subdir === "string" ? a.subdir : undefined), a.env && typeof a.env === "object" ? a.env : undefined),
+  bash: (a, cwd, onProgress) => bashTool(a.command ?? a.cmd, cwd, typeof a.timeoutMs === "number" ? a.timeoutMs : undefined, typeof a.cwd === "string" ? a.cwd : (typeof a.subdir === "string" ? a.subdir : undefined), a.env && typeof a.env === "object" ? a.env : undefined, onProgress),
   find: (a, cwd) => findTool(a.globPattern ?? a.pattern, cwd),
   search: (a, cwd) => searchTool(a.pattern, a.globPattern ?? "*", cwd, !!(a.ignoreCase ?? a.i), { before: a.before, after: a.after, context: a.context, maxMatches: a.maxMatches }),
   ls: (a, cwd) => lsTool(a.dirPath ?? a.path ?? a.dir ?? ".", cwd),
@@ -134,6 +136,10 @@ export interface AgentLoopEvents {
   onStep?(step: number): void | Promise<void>;
   onAssistant?(raw: string, invocation: ToolInvocation | null): void;
   onToolResult?(tool: string, success: boolean, output: string): void;
+  /** Streaming partial output of the currently-running tool (e.g. bash stdout as it
+   *  arrives) — drives a live DIMMED output view that the final formatted result
+   *  replaces on onToolResult. Only bash emits today; other tools are unaffected. */
+  onToolProgress?(tool: string, partial: string): void;
   /** Transient progress notice (e.g. "rate limited — retrying in Ns"); NOT a terminal error. */
   onNotice?(message: string): void;
   /** Cumulative token usage after each LLM call — drives live usage meters. */
@@ -141,6 +147,9 @@ export interface AgentLoopEvents {
   /** Accumulated streamed model response so far — drives the live reasoning view. Only
    *  requested when a consumer sets it (the engine streams solely for the TUI). */
   onModelStream?(textSoFar: string): void;
+  /** Accumulated native reasoning/thinking text so far — drives a transient dimmed
+   *  "thinking" view. Only requested when a consumer (TUI) attaches. */
+  onReasoningStream?(textSoFar: string): void;
   /** Step-budget change (gjc-style retry flow): the limit was extended because the
    *  turn is making progress. `limit` is the new max; `reason` is display-ready. */
   onBudget?(limit: number, reason: string): void;
@@ -192,14 +201,6 @@ export interface AgentLoopResult {
   usage?: { inputTokens: number; outputTokens: number };
 }
 
-/** Env-tunable output budget (plan/gjc-inheritance.md B10, gjc settings-driven
- *  output handling 계승): JEO_TOOL_OUTPUT_MAX caps the model-visible tool result;
- *  the spill threshold tracks it so anything truncated stays artifact-recoverable. */
-function envOutputMax(): number {
-  const raw = Number(jeoEnv("TOOL_OUTPUT_MAX") ?? "");
-  return Number.isFinite(raw) && raw >= 500 && raw <= 200_000 ? Math.trunc(raw) : 4_000;
-}
-export const TOOL_OUTPUT_MAX = envOutputMax();
 
 /** Wall-clock budget for ONE agent turn (ms). JEO_TURN_MAX_MS overrides; 0 disables.
  *  Default 30 minutes: long autonomous runs stay alive, while a turn that spins in
@@ -214,55 +215,6 @@ export function turnMaxMs(env: Record<string, string | undefined> = process.env)
   return 30 * 60 * 1000;
 }
 
-/**
- * Cap a tool result fed back to the model, keeping both ends: the head holds the
- * start (e.g. a file's top / a command's invocation) and the tail holds what's
- * usually decisive (test summaries, the final error). A pure head-cut loses that.
- */
-export function truncateToolOutput(s: string, max = TOOL_OUTPUT_MAX): string {
-  if (s.length <= max) return s;
-  const head = Math.floor(max * 0.6);
-  const tail = max - head;
-  return `${s.slice(0, head)}\n…(${s.length - max} chars truncated)…\n${s.slice(s.length - tail)}`;
-}
-
-/** Tool output larger than this is spilled to a recoverable artifact file. Aligned
- *  with `truncateToolOutput`'s cap so that whenever the model-visible result drops
- *  content, the full output is recoverable via the artifact. */
-export const TOOL_SPILL_THRESHOLD = TOOL_OUTPUT_MAX;
-
-/**
- * Write an oversized tool result verbatim under `.jeo/artifacts/tool-results/` and
- * return the workspace-relative path (for the model to `read`). Best-effort: throws
- * are caught by the caller, which simply omits the artifact note.
- */
-/** Most recent tool-result artifacts to keep; older ones are pruned on each spill. */
-export const MAX_TOOL_ARTIFACTS = 50;
-
-/** Best-effort retention: keep the newest `MAX_TOOL_ARTIFACTS` files in `dir`, delete the rest. */
-async function pruneToolArtifacts(dir: string): Promise<void> {
-  const files = await fs.readdir(dir).catch(() => [] as string[]);
-  if (files.length <= MAX_TOOL_ARTIFACTS) return;
-  const stamped = await Promise.all(
-    files.map(async f => ({ f, m: (await fs.stat(path.join(dir, f)).catch(() => null))?.mtimeMs ?? 0 })),
-  );
-  stamped.sort((a, b) => b.m - a.m); // newest first
-  for (const { f } of stamped.slice(MAX_TOOL_ARTIFACTS)) {
-    await fs.rm(path.join(dir, f), { force: true }).catch(() => {});
-  }
-}
-
-export async function spillToolResult(tool: string, output: string, cwd: string): Promise<string> {
-  const dir = path.join(cwd, ".jeo", "artifacts", "tool-results");
-  await fs.mkdir(dir, { recursive: true });
-  const safeTool = tool.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 32) || "tool";
-  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const rel = path.join(".jeo", "artifacts", "tool-results", `${stamp}-${safeTool}.txt`);
-  await fs.writeFile(path.join(cwd, rel), output, "utf-8");
-  // Retention so a long session can't grow the artifact dir without bound.
-  await pruneToolArtifacts(dir);
-  return rel;
-}
 
 /** Levenshtein distance (small inputs: tool/command names). */
 function editDistance(a: string, b: string): number {
@@ -453,6 +405,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     const onToken = ev.onModelStream
       ? (delta: string) => { streamBuf += delta; ev.onModelStream!(streamBuf); }
       : undefined;
+    let reasonBuf = "";
+    const onReasoning = ev.onReasoningStream
+      ? (delta: string) => { reasonBuf += delta; ev.onReasoningStream!(reasonBuf); }
+      : undefined;
     let responseText: string;
     try {
       responseText = await invokeCallLlm(history, {
@@ -462,6 +418,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               signal: opts.signal,
               onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
               onToken,
+              onReasoning,
               // Make provider auto-retry visible: previously a rate-limited call sat in a
               // silent backoff wait, then surfaced "auto-retry was exhausted" with no trace
               // of the retries that DID happen.
@@ -783,7 +740,8 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
             output = preHookResult.error + (preHookResult.output ? `\n${preHookResult.output}` : "");
           } else {
             try {
-              const res = await handler(args ?? {}, cwd);
+              const onProgress = ev.onToolProgress ? (partial: string) => ev.onToolProgress!(tool, partial) : undefined;
+              const res = await handler(args ?? {}, cwd, onProgress);
               success = res.success;
               output = res.success ? res.output : (res.error ? (res.output ? `${res.error}\n${res.output}` : res.error) : res.output);
             } catch (err: any) {
@@ -875,15 +833,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
 
         ev.onToolResult?.(call.tool, res.success, res.output);
 
-        const minimized = minimizeToolOutput(res.output, call.tool);
-        const visible = minimized.text;
-        let resultBody = truncateToolOutput(visible);
-        if (res.output.length > TOOL_SPILL_THRESHOLD) {
-          const artifact = await spillToolResult(call.tool, res.output, cwd).catch(() => null);
-          if (artifact) {
-            resultBody += `\n[full output (${res.output.length} chars) saved to ${artifact} — read it for the elided middle]`;
-          }
-        }
+        const resultBody = await formatToolResultBody(call.tool, res.output, cwd);
 
         const { diags: hookDiags, ran: hooksRan } = await runPostTurnHooks(
           cwd,

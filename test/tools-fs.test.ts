@@ -425,12 +425,29 @@ test("readTool: open-ended range, single line, and out-of-order error", async ()
   expect(bad.error).toContain("Invalid lineRange");
 });
 
-test("readTool: appends a truncation notice past 500 lines", async () => {
+test("readTool: a file that fits the read budget is returned in ONE call (no fixed 500-line cap)", async () => {
+  // 600 short lines (~8k chars) sit well under the read budget → all shown, no pagination.
   const res = await readTool("src/big.ts", undefined, dir);
   expect(res.success).toBe(true);
-  expect(res.output).toContain("showing lines 1-500 of 600");
-  expect(res.output).toContain('lineRange "501-"');
-  expect(res.output).not.toContain("|line 501");
+  expect(res.output).toMatch(/600[a-z0-9]{2}\|line 600/);
+  expect(res.output).not.toContain("showing lines 1-");
+});
+
+test("readTool: a file exceeding the read budget paginates with an accurate notice", async () => {
+  // Long lines so the total blows past READ_OUTPUT_MAX well before the line count.
+  const lines = Array.from({ length: 1000 }, (_, i) => `line ${i + 1} ${"x".repeat(200)}`);
+  await fs.writeFile(path.join(dir, "src", "huge.ts"), lines.join("\n"));
+  const res = await readTool("src/huge.ts", undefined, dir);
+  expect(res.success).toBe(true);
+  const m = res.output.match(/showing lines 1-(\d+) of 1000/);
+  expect(m).not.toBeNull();
+  const shown = Number(m![1]);
+  expect(shown).toBeGreaterThan(0);
+  expect(shown).toBeLessThan(1000);
+  expect(res.output).toContain(`lineRange "${shown + 1}-"`);
+  expect(res.output).not.toContain("|line 1000 ");
+  // Budget-filling stays within the read budget so the notice is never truncated downstream.
+  expect(res.output.length).toBeLessThanOrEqual(33_000);
 });
 
 test("bashTool: runs a command and captures stdout", async () => {

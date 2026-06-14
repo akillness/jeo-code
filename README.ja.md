@@ -150,11 +150,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.4.7]** (2026-06-14) — Detached subagents + `subagent` control tool, live shaded in-flight output, registry-driven providers, fuller `read` budget, styled italics in the final report, and `gjc` retired.
 - **[0.4.6]** (2026-06-14) — Width-correct forge cards for CJK/emoji, red borders on failed tool cards, aligned `ooo ralph` monitor HUD, and a per-theme user-card palette.
 - **[0.4.5]** (2026-06-14) — First-class filesystem make/remove tools.
 - **[0.4.4]** (2026-06-13) — Live subagent status mirroring, always-useful Ctrl+O activity tail, read lineRange crash guard.
 - **[0.4.3]** (2026-06-13) — Readability pass for autopilot, subagent activity, and worked-history review.
-- **[0.4.2]** (2026-06-13) — Thinking-loop termination guarantees (cycle guard + turn wall-clock budget), unboxed live status without step counters, self-contained `.jeo` namespace, live next-prompt input card, role-targeted model/thinking picker.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

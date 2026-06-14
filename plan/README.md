@@ -15,11 +15,11 @@ so the structure, workflow, and configuration stay reusable across future work.
 | # | Plan | Scope | Status |
 |---|------|-------|--------|
 | 00 | [TEMPLATE](./TEMPLATE.md) | the shared section format every plan uses | n/a |
-| 01 | [TUI](./01-tui.md) | gjc/pi-tui-style terminal UI (differential render, streaming, footer, slash palette) | planned |
-| 02 | [Features](./02-features.md) | agent loop, spec-first pipeline, sessions, MCP — roadmap | living |
-| 03 | [Install](./03-install.md) | bun-native install (`bun link`), prebuilt binary, npm/Homebrew | partially shipped |
-| 04 | [Model config](./04-model-config.md) | routing, `jeo setup`, thinking level, registry/aliases | partially shipped |
-| 05 | [Provider](./05-provider.md) | adapter interface, OAuth flows, local providers, transforms | partially shipped |
+|| 01 | [TUI](./01-tui.md) | gjc/pi-tui-style terminal UI (differential render, streaming, footer, slash palette) | shipped |
+|| 02 | [Features](./02-features.md) | agent loop, spec-first pipeline, sessions, MCP, subagents — roadmap | living |
+|| 03 | [Install](./03-install.md) | bun-native install (`bun link`), prebuilt binary, npm/Homebrew | shipped |
+|| 04 | [Model config](./04-model-config.md) | routing, `jeo setup`, thinking level, registry/aliases | shipped |
+|| 05 | [Provider](./05-provider.md) | adapter interface, OAuth flows, local providers, transforms | shipped |
 
 ## Long-term roadmap (milestones)
 Phases are ordered by dependency, not calendar. Each milestone ends at a green gate
@@ -31,20 +31,19 @@ M0  Foundations (SHIPPED, passes 9–16)
     interactive `jeo launch` · shared engine · sessions · compaction · project context ·
     bun-link install · no-progress guard
         │
-M1  TUI core            → plan 01 §M1   (pure-TS differential renderer, TTY/no-TTY split)
+M1  TUI core            (SHIPPED) → plan 01 §M1   (pure-TS differential renderer, TTY/no-TTY split)
         │
-M2  Interactive TUI     → plan 01 §M2   (launch: streaming text + live tool list + status footer)
+M2  Interactive TUI     (SHIPPED) → plan 01 §M2   (launch: streaming text + live tool list + status footer)
         │
-M3  Input affordances   → plan 01 §M3   (slash-command palette + autocomplete, gjc parity)
+M3  Input affordances   (SHIPPED) → plan 01 §M3   (slash-command palette + autocomplete, gjc parity)
         │
-M4  Pipeline/doctor TUI → plan 01 §M4 + plan 02   (ambiguity meter, plan/exec progress, doctor table)
+M4  Pipeline/doctor TUI (SHIPPED) → plan 01 §M4 + plan 02   (ambiguity meter, plan/exec progress, doctor table)
         │
-M5  Distribution        → plan 03       (`bun build --compile` single binary; npm thin wrapper)
+M5  Distribution        (SHIPPED) → plan 03       (`bun build --compile` single binary; npm thin wrapper)
         │
-M6  Provider breadth    → plan 05       (streaming tokens; Bedrock/Vertex/Copilot adapters; transform layer)
+M6  Provider breadth    (SHIPPED) → plan 05       (streaming tokens; Bedrock/Vertex/Copilot adapters; transform layer)
         │
-M7  Model registry      → plan 04       (discovery, aliases, cost/usage tracking)
-```
+M7  Model registry      (SHIPPED) → plan 04       (discovery, aliases, cost/usage tracking)
 
 ## Workflow conventions (how every plan gets executed)
 1. **Ralph loop** — run → verify → adjust → repeat until the acceptance checklist passes; treat

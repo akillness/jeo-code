@@ -1,6 +1,39 @@
-import { runGjcCommand } from "../../commands/gjc";
+import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS } from "../engine";
+import { readGlobalConfig } from "../state";
+import { runPostImplementationHooks } from "../hooks";
 import { runAdvancedAnalysis } from "./advanced-analyzer";
 import { logEvolution } from "./evolution-logger";
+
+async function runEvolutionLoop(intent: string, cwd: string): Promise<void> {
+  const config = await readGlobalConfig();
+  const model = config.defaultModel || "fast";
+  const systemPrompt = executorSystemPrompt();
+
+  await runAgentLoop([{ role: "user", content: intent }], {
+    cwd,
+    systemPrompt,
+    model,
+    tools: DEFAULT_TOOLS,
+    maxSteps: 50,
+  });
+
+  console.log("\n[jeo] Verifying implementation...");
+  const verify = await runPostImplementationHooks(cwd, intent);
+  
+  if (!verify.success) {
+    console.error("\n[jeo] Verification FAILED. Auto-repairing...");
+    const repairTask = `Previous implementation failed verification.\nErrors:\n${verify.output}\n\nPlease fix.`;
+    await runAgentLoop([{ role: "user", content: repairTask }], {
+      cwd,
+      systemPrompt,
+      model,
+      tools: DEFAULT_TOOLS,
+      maxSteps: 30,
+    });
+  } else {
+    console.log("\n[jeo] Verification SUCCESSFUL.");
+  }
+}
 
 export async function consultGjcForAdvancedEvolution(cwd: string) {
   const report = await runAdvancedAnalysis(cwd);
@@ -27,7 +60,7 @@ As my implementation guide (gjc), please:
   `;
 
   try {
-    await runGjcCommand([request]);
+    await runEvolutionLoop(request, cwd);
     
     await logEvolution({
       timestamp: new Date().toISOString(),
@@ -62,7 +95,7 @@ export async function consultGjcForEvolution(cwd: string) {
 
   console.log();
   try {
-    await runGjcCommand([report]);
+    await runEvolutionLoop(report, cwd);
     await logEvolution({
       timestamp: new Date().toISOString(),
       target: "src/agent/engine.ts",

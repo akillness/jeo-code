@@ -3,6 +3,8 @@ import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKI
 import { initialDynamicStepLimit } from "../agent/step-budget";
 import { memoryPromptSection, spawnDetachedDistill } from "../agent/memory";
 import { createTaskTool, taskToolProtocolLine, type TaskSubEvent } from "../agent/task-tool";
+import { createSubagentTool, SUBAGENT_TOOL_PROTOCOL_LINE } from "../agent/subagent-tool";
+import { SubagentRegistry } from "../agent/subagent-registry";
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { LaunchTui } from "../tui/app";
 import { runDeepInterviewEngine } from "./deep-interview";
@@ -19,7 +21,7 @@ import { staticCompletionContext, readlineCompleter, formatCompletionPreview, to
 import { EVOLUTION_STAGES, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
 import { renderWelcome, playWelcomeSweep } from "../tui/components/welcome";
-import { checkForUpdate } from "../util/update-check";
+import { checkForUpdate, readUpdateCache, writeUpdateCache } from "../util/update-check";
 import { jeoEnv } from "../util/env";
 import { renderUpdateBox } from "../tui/components/update-box";
 import { supportsUnicode } from "../tui/components/capability";
@@ -379,7 +381,8 @@ function streamResultSuffix(tool: string, ok: boolean, output: string | undefine
 
 export function formatTaskSubEvent(e: TaskSubEvent): string {
   const role = e.role || "subagent";
-  const roleLabel = role.toUpperCase();
+  const roleLabel = e.index && e.total ? `${role.toUpperCase()}[${e.index}/${e.total}]` : role.toUpperCase();
+  const tokTag = e.tokens ? ` (${e.tokens.input + e.tokens.output} tok)` : "";
   const detail = firstOutputLine(e.detail);
   const summary = e.summary ? ` — ${e.summary}` : "";
   // No ` step N/M` marker — step counters carry no meaning under the dynamic
@@ -390,7 +393,7 @@ export function formatTaskSubEvent(e: TaskSubEvent): string {
   if (e.kind === "step") return `  ${badge} ${chalk.cyan(`├─ ${roleLabel}`)} · ${detail || "working"}`;
   if (e.kind === "tool") return `  ${badge} ${e.success === false ? chalk.red("├─") : chalk.green("├─")} ${roleLabel} ${e.success === false ? chalk.red("✗") : chalk.green("✓")} ${detail || "tool"}${summary}`;
   if (e.kind === "error") return `  ${badge} ${chalk.red("├─")} ${roleLabel} ${chalk.red("✗")} ${detail || "error"}`;
-  return `${badge} ${e.success === false ? chalk.red("└─") : chalk.green("└─")} ${roleLabel} done${e.success === false ? " (incomplete)" : ""}${detail ? `: ${detail}` : ""}`;
+  return `${badge} ${e.success === false ? chalk.red("└─") : chalk.green("└─")} ${roleLabel} done${tokTag}${e.success === false ? " (incomplete)" : ""}${detail ? `: ${detail}` : ""}`;
 }
 
 function logTaskSubEvent(e: TaskSubEvent, log: (line: string) => void = (s: string) => console.log(s)): void {
@@ -1141,7 +1144,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // pi-style: load project context (JEO.md / AGENTS.md / .jeo/context.md / CLAUDE.md) into the prompt.
   const contextFiles = await loadProjectContext(cwd);
 
-  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "todo"]);
+  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "todo", "subagent"]);
   let allowedTools = new Set(KNOWN_TOOLS);
 
   if (flags.noTools) {
@@ -1196,6 +1199,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     (allowedTools.has("task") ? "\n\nDelegation: " + taskToolProtocolLine(cfg) +
     " Call task with {\"role\": <one of the advertised roles>, \"task\": <assignment>, \"context\": <optional>} to hand a focused slice to a subagent." : "") +
     (allowedTools.has("todo") ? "\n\nPlanning: " + TODO_TOOL_PROTOCOL_LINE : "") +
+    (allowedTools.has("subagent") ? "\n\nDetached subagents: " + SUBAGENT_TOOL_PROTOCOL_LINE +
+    " Launch background work with task {\"detached\": true, \"role\": <role>, \"task\": <assignment>}; it returns a subagent id immediately so you can keep working and collect the result later." : "") +
     (effectiveNoSkills ? "" :
     "\n\nJEO workflow routing:\n" +
     "- Answer the user's request DIRECTLY. Never reply with a catalog, list, or summary of skills unless the user explicitly asks what skills exist.\n" +
@@ -1355,6 +1360,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         else console.log(warn);
       }
       history.push(images?.length ? { role: "user", content: userInput, images } : { role: "user", content: userInput });
+      // Keep the submitted query in scrollback: the prompt that STARTS a turn shows
+      // only as the transient HUD turn-title otherwise, which vanishes when the live
+      // frame clears at turn-end — so the conversation transcript lost every user
+      // prompt. Flush a `user` card (same surface as a mid-turn steer) so it persists.
+      if (tui && userInput.trim()) tui.flushUserCard(userInput);
       tui?.setContextUsage(historyTokens(history), contextTokens);
 
       // Per-turn steering inbox (gjc parity): additional queries typed mid-turn land
@@ -1408,9 +1418,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               return;
             }
           }
-          // Keep the SAME query input box visible during a live turn. Printable
-          // keystrokes edit the next prompt draft; there is no separate queue surface.
-          if (captured) tui.setLivePromptInput(queueBusySnapshot?.().text ?? "");
+          // Mid-turn additional input is committed (and shown) ONLY on Enter (above):
+          // the running turn does NOT echo half-typed text per keystroke. Captured
+          // printable input accumulates silently in the draft buffer and surfaces as a
+          // `user` card the moment Enter lifts it into the steering inbox (or folds into
+          // the next prompt if the turn ends first). JEO_LIVE_DRAFT=1 restores the
+          // legacy live per-keystroke echo in the input box.
+          if (captured && jeoEnv("LIVE_DRAFT") === "1") {
+            tui.setLivePromptInput(queueBusySnapshot?.().text ?? "");
+          }
         },
         onAbortNotice: msg => {
           if (tui) tui.events().onNotice?.(msg);
@@ -1422,6 +1438,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         },
       });
       const ac = harness.controller;
+      // #9: per-turn registry for DETACHED subagents (task{detached:true}); the
+      // `subagent` tool controls them and cancelAll() in finally prevents orphans.
+      const subagentRegistry = new SubagentRegistry();
       try {
         // Per-turn todo snapshot: drives the done-time reconciliation gate (the
         // Todos checklist used to end a finished turn stuck at "✓0 ◐1 ·4 / 5"
@@ -1442,11 +1461,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             config: { ...turnConfig, defaultModel: activeModel },
             signal: ac.signal,
             steer: drainSteer,
+            registry: subagentRegistry,
             onEvent: useTui
               ? (e => tui?.onSubagentEvent(e))
               : (e => logTaskSubEvent(e)),
           }),
           todo: createTodoTool({ onChange: items => { turnTodos = items; tui?.setTodos(items); } }),
+          subagent: createSubagentTool(subagentRegistry),
         };
         const tools = filterToolMap(fullTools, Array.from(allowedTools));
         result = await runAgentLoop(history, {
@@ -1488,6 +1509,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
       } finally {
         harness.dispose();
+        subagentRegistry.cancelAll(); // #9: no detached run leaks past the turn
         // Steering typed but never drained (e.g. entered just after the final step)
         // must not be lost — fold it into the next prompt draft so it runs next.
         const leftover = steerInbox.splice(0, steerInbox.length).map(s => s.trim()).filter(Boolean);
@@ -1660,6 +1682,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   // INTERACTIVE mode
   const updatePromise = checkForUpdate({ timeoutMs: 2500 });
+  // Refresh the on-disk update cache for the NEXT launch regardless of whether
+  // this launch's bounded wait below catches the result. Screen-safe: writes
+  // only, never renders (rendering after the prompt is armed would corrupt the
+  // boxed input footer).
+  void updatePromise.then(u => { if (u) void writeUpdateCache(u.latest); }).catch(() => {});
   // Terminal hygiene BEFORE anything renders: a previous program (or stale tmux
   // pane) can leave xterm mouse-tracking ON, so the terminal reports clicks and
   // motion as escape sequences from the very first prompt — the "starts out
@@ -1695,8 +1722,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   if (sweepable) await playWelcomeSweep(welcomeData, { cycles: sweepCycles });
   else console.log(renderWelcome(welcomeData).join("\n"));
 
-  const upd = await Promise.race([updatePromise, new Promise<null>(r => setTimeout(() => r(null), 1200))]);
-  if (upd?.updateAvailable) console.log(renderUpdateBox(upd.current, upd.latest).join("\n"));
+  // Surface the "New version" banner reliably: render ONCE from the on-disk cache
+  // instantly (no network wait, works offline — the common path after the first
+  // successful check), and ALSO from a bounded live check so a first run / version
+  // bump still shows it this launch. Both must run BEFORE the prompt is armed.
+  let updateBannerShown = false;
+  const showUpdateBanner = (u: { current: string; latest: string; updateAvailable: boolean } | null): void => {
+    if (updateBannerShown || !u?.updateAvailable) return;
+    updateBannerShown = true;
+    console.log(renderUpdateBox(u.current, u.latest).join("\n"));
+  };
+  showUpdateBanner(await readUpdateCache(pkg.version));
+  showUpdateBanner(await Promise.race([updatePromise, new Promise<null>(r => setTimeout(() => r(null), 1200))]));
   if (!LaunchTui.usable(flags.noTui)) console.log("(plain output)");
 
   const useTui = LaunchTui.usable(flags.noTui);
@@ -3238,6 +3275,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         for (const line of TOOL_PROTOCOL.split("\n")) console.log(`  ${line}`);
         console.log(`  ${taskToolProtocolLine(await readGlobalConfig())}`);
         console.log(`  ${TODO_TOOL_PROTOCOL_LINE}`);
+        console.log(`  ${SUBAGENT_TOOL_PROTOCOL_LINE}`);
         continue;
       }
       if (input === "/hotkeys") {

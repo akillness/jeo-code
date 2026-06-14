@@ -1,4 +1,4 @@
-import { test, expect, afterEach } from "bun:test";
+import { test, expect, afterEach, beforeEach, mock } from "bun:test";
 import { LaunchTui } from "../src/tui/app";
 import { visibleWidth } from "../src/tui/components/width";
 
@@ -7,7 +7,12 @@ import { visibleWidth } from "../src/tui/components/width";
 // in a full run. Setting + restoring the columns is fully isolated.
 const origCols = process.stdout.columns;
 const origRows = process.stdout.rows;
+// A full `bun test` run leaves module mocks active from files that mock.module without
+// restoring; those can swap out the width/terminal helpers this test relies on. Clear
+// the global mock registry up front so this test always exercises the REAL helpers.
+beforeEach(() => mock.restore());
 afterEach(() => {
+  mock.restore();
   process.stdout.columns = origCols;
   process.stdout.rows = origRows;
 });

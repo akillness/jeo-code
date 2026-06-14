@@ -1418,13 +1418,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               return;
             }
           }
-          // Mid-turn additional input is committed (and shown) ONLY on Enter (above):
-          // the running turn does NOT echo half-typed text per keystroke. Captured
-          // printable input accumulates silently in the draft buffer and surfaces as a
-          // `user` card the moment Enter lifts it into the steering inbox (or folds into
-          // the next prompt if the turn ends first). JEO_LIVE_DRAFT=1 restores the
-          // legacy live per-keystroke echo in the input box.
-          if (captured && jeoEnv("LIVE_DRAFT") === "1") {
+          // Mid-turn typing is echoed LIVE into the input box so the field never looks
+          // frozen/disabled while a turn runs — the typed text IS captured, so it must be
+          // visible. This updates the in-frame input box via the differential renderer
+          // only; it never leaks into scrollback/history (native readline echo stays
+          // suppressed for the whole turn). On Enter the draft is lifted into the steering
+          // inbox and surfaces as a `user` card (above). JEO_NO_LIVE_DRAFT=1 opts out.
+          if (captured && jeoEnv("NO_LIVE_DRAFT") !== "1") {
             tui.setLivePromptInput(queueBusySnapshot?.().text ?? "");
           }
         },

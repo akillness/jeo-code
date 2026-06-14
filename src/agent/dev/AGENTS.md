@@ -1,5 +1,5 @@
-<!-- Parent: ../../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Parent: ../AGENTS.md -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # dev
 
@@ -9,6 +9,11 @@ Developer-specific agent tooling and spec automation.
 ## Key Files
 | File | Description |
 |------|-------------|
+| `advanced-analyzer.ts` | Brief description of purpose |
+| `evolution-bridge.ts` | Brief description of purpose |
+| `evolution-logger.ts` | Brief description of purpose |
+| `self-analysis.ts` | Brief description of purpose |
+| `self-improve.ts` | Brief description of purpose |
 | `spec-automation.ts` | Tools to sync `.specify/` artifacts to ooo seeds |
 
 ## Subdirectories

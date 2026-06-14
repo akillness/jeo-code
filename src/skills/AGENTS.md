@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # skills
 
@@ -9,8 +9,7 @@ Framework for discovering, loading, and executing workflow skills (both bundled 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `registry.ts` | Discovers and catalogs available skills |
-| `executor.ts` | Mechanism to inject skill prompts into the active session |
+| `catalog.ts` | Brief description of purpose |
 
 ## Subdirectories
 *(None)*

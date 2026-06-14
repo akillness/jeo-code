@@ -1,5 +1,5 @@
-<!-- Parent: ../../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Parent: ../AGENTS.md -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # providers
 
@@ -10,10 +10,12 @@ Concrete implementations for various LLM providers, translating generic requests
 | File | Description |
 |------|-------------|
 | `anthropic.ts` | Anthropic Claude integration |
-| `openai.ts` | OpenAI (and Codex backend) integration |
-| `gemini.ts` | Google Gemini (and Cloud Code Assist) integration |
 | `antigravity.ts` | Antigravity desktop-app OAuth client integration |
+| `errors.ts` | Brief description of purpose |
+| `gemini.ts` | Google Gemini (and Cloud Code Assist) integration |
 | `ollama.ts` | Local Ollama integration |
+| `openai-responses.ts` | Brief description of purpose |
+| `openai.ts` | OpenAI (and Codex backend) integration |
 
 ## Subdirectories
 *(None)*

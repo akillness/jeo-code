@@ -1,5 +1,5 @@
-<!-- Parent: ../../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Parent: ../AGENTS.md -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # skills
 
@@ -7,16 +7,16 @@
 Bundled workflow skills offering specialized, multi-step procedures for the agent.
 
 ## Key Files
-*(See subdirectories)*
+*(None)*
 
 ## Subdirectories
 | Directory | Purpose |
 |-----------|---------|
+| `deep-dive/` | What it contains (see `deep-dive/AGENTS.md`) |
 | `deep-interview/` | Socratic requirements gathering |
 | `ralplan/` | Spec-first planning and consensus building |
 | `team/` | Coordinated multi-agent execution |
 | `ultragoal/` | Durable verification and ledger tracking |
-| `gjc/` | Legacy parity configurations |
 
 ## For AI Agents
 
@@ -31,6 +31,11 @@ Bundled workflow skills offering specialized, multi-step procedures for the agen
 *(None)*
 
 ## Dependencies
-*(None)*
+
+### Internal
+{References to other parts of the codebase this depends on}
+
+### External
+{Key external packages/libraries used}
 
 <!-- MANUAL: -->

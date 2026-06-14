@@ -224,7 +224,6 @@ test("Renderer reserve mode: reset() then insertAbove() then render() clears the
   r.render(["x", "y"]);
   expect(out.join("")).toContain("x");
 });
-
 test("Renderer reserve mode: growth after insertAbove re-reserves the full frame", () => {
   const out: string[] = [];
   const r = new Renderer(s => out.push(s), () => 40, { reserve: true });

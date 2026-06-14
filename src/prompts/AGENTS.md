@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # prompts
 
@@ -7,9 +7,7 @@
 Bundled system prompts, role definitions, and workflow skill documentation for the agent.
 
 ## Key Files
-| File | Description |
-|------|-------------|
-| `system.md` | Core system prompt template |
+*(None)*
 
 ## Subdirectories
 | Directory | Purpose |

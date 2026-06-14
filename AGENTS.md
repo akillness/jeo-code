@@ -1,4 +1,4 @@
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # jeo-code
 
@@ -8,26 +8,35 @@
 ## Key Files
 | File | Description |
 |------|-------------|
-| `package.json` | Project dependencies, scripts, and publication metadata |
-| `tsconfig.json` | TypeScript configuration enabling strict types and Bun imports |
-| `bun.lock` | Lockfile for Bun package dependencies |
+| `CHANGELOG.md` | Brief description of purpose |
+| `README.ja.md` | Brief description of purpose |
+| `README.ko.md` | Brief description of purpose |
 | `README.md` | Primary entrypoint documentation (also mapped to ko, ja, zh) |
+| `README.zh.md` | Brief description of purpose |
+| `analyze_image.py` | Brief description of purpose |
+| `bun.lock` | Lockfile for Bun package dependencies |
+| `describe_character.py` | Brief description of purpose |
+| `install.sh` | Brief description of purpose |
+| `package.json` | Project dependencies, scripts, and publication metadata |
 | `prd.json` | Product Requirements Document |
-| `run-evolution.py` / `.sh` | Scripts to orchestrate evolutionary improvement passes |
+| `problem.md` | Brief description of purpose |
 | `progress.txt` | Rolling ledger of completed passes and evolutionary notes |
+| `run-evolution.py` | Scripts to orchestrate evolutionary improvement passes |
+| `run-evolution.sh` | Brief description of purpose |
+| `skills-lock.json` | Brief description of purpose |
+| `test_output.log` | Brief description of purpose |
+| `test_output.txt` | Brief description of purpose |
+| `tsconfig.json` | TypeScript configuration enabling strict types and Bun imports |
 
 ## Subdirectories
 | Directory | Purpose |
 |-----------|---------|
+| `assets/` | Branding/character images used by docs and animations (see `assets/AGENTS.md`) |
+| `docs/` | Documentation and improvements tracker (see `docs/AGENTS.md`) |
+| `plan/` | Implementation blueprints (see `plan/AGENTS.md`) |
+| `scripts/` | Installation and maintenance scripts (see `scripts/AGENTS.md`) |
 | `src/` | Application source code (see `src/AGENTS.md`) |
 | `test/` | Unit and integration test suites (see `test/AGENTS.md`) |
-| `docs/` | Documentation and improvements tracker (see `docs/AGENTS.md`) |
-| `scripts/` | Installation and maintenance scripts (see `scripts/AGENTS.md`) |
-| `plan/` | Implementation blueprints (see `plan/AGENTS.md`) |
-| `assets/` | Branding/character images used by docs and animations (see `assets/AGENTS.md`) |
-| `skills/` | Top-level git-tracked workflow skills for external AI agents (see `skills/AGENTS.md`) |
-| `.github/` | GitHub Actions CI and npm publish workflows (see `.github/AGENTS.md`) |
-| `jeo-claw/` | Workflow analysis report artifacts (see `jeo-claw/AGENTS.md`) |
 
 ## For AI Agents
 
@@ -44,6 +53,9 @@
 - The project follows a strict Spec-first loop (`deep-interview` -> `ralplan` -> `approve` -> `team` -> `ultragoal`).
 
 ## Dependencies
+
+### Internal
+{References to other parts of the codebase this depends on}
 
 ### External
 - `zod` for schema validation

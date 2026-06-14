@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # mcp
 
@@ -9,8 +9,10 @@ Model Context Protocol (MCP) integration, allowing `jeo-code` to expose tools or
 ## Key Files
 | File | Description |
 |------|-------------|
+| `index.ts` | Brief description of purpose |
+| `protocol.ts` | Brief description of purpose |
 | `server.ts` | MCP server implementation (if exposing tools) |
-| `client.ts` | MCP client implementation (for consuming external tools) |
+| `tools.ts` | Brief description of purpose |
 
 ## Subdirectories
 *(None)*

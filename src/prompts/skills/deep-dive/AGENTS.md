@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # deep-dive
 
@@ -26,6 +26,11 @@ Bundled SKILL.md for the `deep-dive` workflow.
 *(None)*
 
 ## Dependencies
-*(None)*
+
+### Internal
+{References to other parts of the codebase this depends on}
+
+### External
+{Key external packages/libraries used}
 
 <!-- MANUAL: -->

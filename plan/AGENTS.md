@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # plan
 
@@ -9,9 +9,14 @@ Implementation blueprints, product requirement documents, and historical plannin
 ## Key Files
 | File | Description |
 |------|-------------|
+| `01-tui.md` | Brief description of purpose |
+| `02-features.md` | Brief description of purpose |
+| `03-install.md` | Brief description of purpose |
+| `04-model-config.md` | Brief description of purpose |
+| `05-provider.md` | Brief description of purpose |
 | `README.md` | Overview of the planning structure |
 | `TEMPLATE.md` | Template for creating new plans |
-| `*.md` | Individual feature or phase plans |
+| `gjc-inheritance.md` | Brief description of purpose |
 
 ## Subdirectories
 | Directory | Purpose |

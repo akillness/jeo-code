@@ -1,5 +1,5 @@
-<!-- Parent: ../../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Parent: ../AGENTS.md -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # flows
 
@@ -9,8 +9,12 @@ Specific OAuth flow implementations for various providers.
 ## Key Files
 | File | Description |
 |------|-------------|
-| `oauth.ts` / `pkce.ts` | Generic OAuth and PKCE utilities |
-| `*.ts` | Provider-specific login flows (e.g., anthropic, openai, gemini) |
+| `anthropic.ts` | Brief description of purpose |
+| `antigravity.ts` | Brief description of purpose |
+| `google-project.ts` | Brief description of purpose |
+| `google.ts` | Brief description of purpose |
+| `index.ts` | Brief description of purpose |
+| `openai.ts` | Brief description of purpose |
 
 ## Subdirectories
 *(None)*
@@ -27,6 +31,11 @@ Specific OAuth flow implementations for various providers.
 - Loopback HTTP servers for receiving OAuth callbacks.
 
 ## Dependencies
-*(None)*
+
+### Internal
+{References to other parts of the codebase this depends on}
+
+### External
+{Key external packages/libraries used}
 
 <!-- MANUAL: -->

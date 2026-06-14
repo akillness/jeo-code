@@ -1,5 +1,5 @@
-<!-- Parent: ../../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Parent: ../AGENTS.md -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # agents
 
@@ -9,10 +9,10 @@ Role-specific system prompts defining the behavior of subagents (executor, plann
 ## Key Files
 | File | Description |
 |------|-------------|
-| `executor.md` | Mutating agent for executing bounded tasks |
-| `planner.md` | Read-only agent for sequencing tasks |
 | `architect.md` | Read-only agent for structural review |
 | `critic.md` | Read-only agent for plan critique |
+| `executor.md` | Mutating agent for executing bounded tasks |
+| `planner.md` | Read-only agent for sequencing tasks |
 
 ## Subdirectories
 *(None)*
@@ -30,6 +30,11 @@ Role-specific system prompts defining the behavior of subagents (executor, plann
 *(None)*
 
 ## Dependencies
-*(None)*
+
+### Internal
+{References to other parts of the codebase this depends on}
+
+### External
+{Key external packages/libraries used}
 
 <!-- MANUAL: -->

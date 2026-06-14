@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # assets
 
@@ -9,8 +9,8 @@ Static binary assets (images) used for project branding, documentation, and TUI/
 ## Key Files
 | File | Description |
 |------|-------------|
-| `hero.png` | Primary hero/banner image for documentation |
 | `character.png` | Mascot/character artwork used in branding and helper scripts |
+| `hero.png` | Primary hero/banner image for documentation |
 
 ## Subdirectories
 *(None)*

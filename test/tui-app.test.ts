@@ -711,9 +711,10 @@ test("LaunchTui: live turn keeps the normal input box visible and editable", () 
   out.length = 0;
   tui.setLivePromptInput("작업 확인"); // in-flight partial line (CJK preserved)
   const typed = strip(out.join(""));
-  expect(typed).toContain("> 작업 확인");
-  expect(typed).toContain("user");
-  expect(typed).toMatch(/[▌_]/);
+  expect(typed).toContain("> 작업 확인");      // the input box echoes the typed draft
+  expect(typed).not.toContain("user");         // but NOT a live `user` card — that lands in
+                                               // history only on Enter (flushSteerCard)
+  expect(typed).toMatch(/[▌_]/);               // caret present
   expect(typed).not.toContain("queued");
 
   // Identical state is a no-op (no redundant repaint).

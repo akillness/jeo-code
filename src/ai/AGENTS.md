@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # ai
 
@@ -9,9 +9,20 @@ Abstractions for LLM inference, provider management, tool formatting, and token 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `registry.ts` | Central registry for available providers and model resolution |
+| `index.ts` | Brief description of purpose |
+| `model-catalog-compat.ts` | Brief description of purpose |
+| `model-catalog.ts` | Brief description of purpose |
+| `model-discovery.ts` | Brief description of purpose |
+| `model-enrich.ts` | Brief description of purpose |
+| `model-manager.ts` | Brief description of purpose |
+| `model-picker.ts` | Brief description of purpose |
+| `model-registry.ts` | Brief description of purpose |
+| `pricing.ts` | Brief description of purpose |
+| `provider-registry.ts` | Brief description of purpose |
+| `provider-status.ts` | Brief description of purpose |
+| `register-providers.ts` | Brief description of purpose |
+| `sse.ts` | Brief description of purpose |
 | `types.ts` | Common interfaces for AI requests, responses, and streams |
-| `format.ts` | Conversion between internal tool schemas and provider-specific formats |
 
 ## Subdirectories
 | Directory | Purpose |

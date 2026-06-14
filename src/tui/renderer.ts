@@ -134,20 +134,10 @@ export class Renderer {
       .map((line, i, arr) => (i === arr.length - 1 && line === "" ? "" : toColumn(1) + clearLine() + line))
       .join("\n");
     let out = BEGIN_SYNC + body;
-    // Eagerly EL-clear the old frame rows the inserted block did NOT cover, then hop
-    // back to the row right below the insert (where the next render() anchors).
-    // The geometry is provably safe HERE: when stale > 0 the body write never hit
-    // the bottom margin (the old frame fit on screen and the insert is shorter), so
-    // every stale row exists and cursor-down cannot clamp. Deferring this clear to
-    // the next render() via coverRows walked PAST the bottom margin, where the
-    // clamped cursor-down desynced the row bookkeeping — each subsequent frame then
-    // painted one row higher, devouring the flushed scrollback content above (the
-    // "truncated card" corruption).
-    // Use the same occupancy measure the reserve block uses (max of prev.length and
-    // coverRows). A reset() between frames drops prev but records coverRows; ignoring it
-    // here left the old frame's lower rows uncleared and the cursor below the true
-    // anchor, so the next render's cursorDown crossed the bottom margin and clamped —
-    // the persistent off-by-one that duplicated the model bar.
+    // EL-clear the old frame rows the inserted block did NOT cover, then hop back to the
+    // row right below the insert (where the next render() anchors). occupied = max(prev,
+    // coverRows) matches the reserve block so a reset()->insertAbove() ordering still
+    // clears the old frame's lower rows (the off-by-one that duplicated the model bar).
     const occupied = Math.max(this.prev.length, this.coverRows);
     const stale = occupied - written;
     if (stale > 0) {
@@ -158,7 +148,7 @@ export class Renderer {
     }
     this.write(out);
     this.prev = [];
-    this.coverRows = 0; // consumed: the frame below is now the single source of truth
+    this.coverRows = 0;
   }
 
   /** Clear the live frame. Inline (reserve) mode walks the known frame rows with

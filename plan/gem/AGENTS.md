@@ -1,5 +1,5 @@
-<!-- Parent: ../../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Parent: ../AGENTS.md -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # gem
 
@@ -9,7 +9,12 @@ Detailed specifications and blueprints for specific feature modules ("gems").
 ## Key Files
 | File | Description |
 |------|-------------|
-| `*.md` | Module-specific implementation plans |
+| `01-tui.md` | Brief description of purpose |
+| `02-features.md` | Brief description of purpose |
+| `03-install.md` | Brief description of purpose |
+| `04-model-config.md` | Brief description of purpose |
+| `05-provider.md` | Brief description of purpose |
+| `README.md` | Brief description of purpose |
 
 ## Subdirectories
 *(None)*
@@ -26,6 +31,11 @@ Detailed specifications and blueprints for specific feature modules ("gems").
 - Focused, bounded feature specifications.
 
 ## Dependencies
-*(None)*
+
+### Internal
+{References to other parts of the codebase this depends on}
+
+### External
+{Key external packages/libraries used}
 
 <!-- MANUAL: -->

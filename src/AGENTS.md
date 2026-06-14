@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # src
 
@@ -9,9 +9,12 @@ Core application source code for the `jeo-code` CLI and agent runtime. It orches
 ## Key Files
 | File | Description |
 |------|-------------|
+| `autopilot.ts` | Brief description of purpose |
+| `bun-imports.d.ts` | TypeScript declarations for Bun built-ins and raw module imports |
 | `cli.ts` | The main binary entrypoint |
 | `index.ts` | Library exports |
-| `bun-imports.d.ts` / `md-modules.d.ts` | TypeScript declarations for Bun built-ins and raw module imports |
+| `ledger.ts` | Brief description of purpose |
+| `md-modules.d.ts` | TypeScript declarations for Bun built-ins and raw module imports |
 
 ## Subdirectories
 | Directory | Purpose |

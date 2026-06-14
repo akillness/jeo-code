@@ -554,10 +554,6 @@ export class LaunchTui {
     });
   }
 
-  private renderLiveUserQueryCard(cols: number): string[] {
-    return this.renderUserCard(this.livePromptInput, cols);
-  }
-
   /** Render a `user`-labeled query card (orange "user" header over a filled box).
    *  Shared by the live next-prompt draft and the mid-turn steering flush. */
   private renderUserCard(rawText: string, cols: number): string[] {
@@ -1186,12 +1182,6 @@ export class LaunchTui {
       }));
     }
 
-    // User text typed while the model is still thinking is surfaced as a live
-    // pending-user card (same query input underneath, no hidden auto-executing queue).
-    if (this.livePromptInput.trim()) {
-      tail.push("");
-      tail.push(...this.renderLiveUserQueryCard(cols));
-    }
 
     // Agent task plan (the `todo` tool) as a Todos checklist.
     if (args.planLines.length) {
@@ -1316,18 +1306,11 @@ export class LaunchTui {
     // model bar), no outer border, no mascot art — completed work lives in scrollback.
     if (fit && this.inline) {
       const inlineFrame = this.composeInlineFrame({ cols, rows, stepNow, elapsedMs, idx, isThinking, planLines });
-      // Option C (constant live-frame height): pad the composed frame to EXACTLY `rows`
-      // — blank rows at the TOP, the tail (status/hud/input/model bar) pinned to the
-      // bottom. With a constant height the differential renderer reserves rows ONCE and
-      // thereafter only does in-place, within-frame cursor moves; the bottom-margin
-      // reserve-GROW that drifted the anchor by one row (the duplicate model bar during
-      // rapid tool churn) never runs again. Every line is still width-clamped so a long
-      // line cannot soft-wrap into a second physical row and desync the row accounting.
-      const capped = inlineFrame.length > rows ? inlineFrame.slice(inlineFrame.length - rows) : inlineFrame;
-      const fixedHeight = capped.length < rows
-        ? [...new Array(rows - capped.length).fill(""), ...capped]
-        : capped;
-      this.renderer.render(fixedHeight.map(l => truncateToWidth(l, cols)));
+      // Screen-safety: every rendered line is width-clamped to `cols` so a long line
+      // (e.g. the model bar with a deep cwd) cannot soft-wrap into a second physical row
+      // and desync the differential renderer's 1-line=1-row accounting. Frame height stays
+      // content-sized so completed cards remain visible in scrollback above the live frame.
+      this.renderer.render(inlineFrame.slice(0, rows).map(l => truncateToWidth(l, cols)));
       return;
     }
 
@@ -1390,10 +1373,6 @@ export class LaunchTui {
         bottom.push(`  ${categoryBadge("progress", { color: this.theme.color })} elapsed ${formatDuration(elapsedMs)}`);
         bottom.push(`  ${categoryBadge("status", { color: this.theme.color })} ${msg}${guardBadge}`);
       }
-    }
-    if (fit && this.livePromptInput.trim()) {
-      bottom.push("");
-      bottom.push(...this.renderLiveUserQueryCard(innerWidth));
     }
     // TTY only: keep the same query input box visible above the footer while the
     // turn is running; typed text edits the next-prompt draft, not a side queue.

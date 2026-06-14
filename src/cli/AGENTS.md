@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # cli
 
@@ -9,8 +9,8 @@ Command-line interface routing, argument parsing, and initialization logic. Defi
 ## Key Files
 | File | Description |
 |------|-------------|
-| `parser.ts` | Argument parsing and flag validation |
-| `router.ts` | Dispatches CLI commands to their respective implementations |
+| `index.ts` | Brief description of purpose |
+| `runner.ts` | Brief description of purpose |
 
 ## Subdirectories
 *(None)*

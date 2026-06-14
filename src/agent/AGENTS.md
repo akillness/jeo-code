@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # agent
 
@@ -9,13 +9,33 @@ The core runtime loop, tool registry, session management, and state persistence 
 ## Key Files
 | File | Description |
 |------|-------------|
+| `bash-fixups.ts` | Brief description of purpose |
+| `compaction.ts` | Brief description of purpose |
+| `config-schema.ts` | Brief description of purpose |
+| `context-files.ts` | Brief description of purpose |
+| `engine.ts` | Brief description of purpose |
+| `hooks.ts` | Brief description of purpose |
+| `json.ts` | Brief description of purpose |
 | `loop.ts` | The primary execution loop orchestrating model calls and tool execution |
-| `tools.ts` | Built-in tool definitions (bash, read, write, edit, etc.) |
-| `state.ts` | File-backed state and session persistence (`.jeo/state/`) |
-| `session.ts` | Session context building, compaction, and history management |
+| `memory.ts` | Brief description of purpose |
+| `model-recency.ts` | Brief description of purpose |
+| `output-minimizer.ts` | Brief description of purpose |
+| `output-util.ts` | Brief description of purpose |
 | `plan.ts` | Subagent planning structures and validation |
+| `seed.ts` | Brief description of purpose |
+| `session.ts` | Session context building, compaction, and history management |
+| `state.ts` | File-backed state and session persistence (`.jeo/state/`) |
 | `step-budget.ts` | gjc-style flexible step budgeting: progress-scored extensions, hard cap, fail-fast |
-| `subagents.ts` / `task-tool.ts` | Delegation mechanisms and background execution of task subagents |
+| `subagent-registry.ts` | Brief description of purpose |
+| `subagent-tool.ts` | Brief description of purpose |
+| `subagents.ts` | Brief description of purpose |
+| `task-tool.ts` | Brief description of purpose |
+| `todo-tool.ts` | Brief description of purpose |
+| `tokenizer.ts` | Brief description of purpose |
+| `tool-output.ts` | Brief description of purpose |
+| `tool-registry.ts` | Brief description of purpose |
+| `tools.ts` | Built-in tool definitions (bash, read, write, edit, etc.) |
+| `web-search.ts` | Brief description of purpose |
 
 ## Subdirectories
 | Directory | Purpose |

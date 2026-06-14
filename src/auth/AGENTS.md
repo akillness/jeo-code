@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # auth
 
@@ -9,8 +9,13 @@ Authentication and credential management for OAuth flows and API keys. Ensures s
 ## Key Files
 | File | Description |
 |------|-------------|
-| `store.ts` | Secure credential storage mechanism |
-| `config.ts` | Resolution of keys from environment variables and config files |
+| `callback-server.ts` | Brief description of purpose |
+| `index.ts` | Brief description of purpose |
+| `oauth.ts` | Brief description of purpose |
+| `pkce.ts` | Brief description of purpose |
+| `refresh.ts` | Brief description of purpose |
+| `storage.ts` | Brief description of purpose |
+| `types.ts` | Brief description of purpose |
 
 ## Subdirectories
 | Directory | Purpose |

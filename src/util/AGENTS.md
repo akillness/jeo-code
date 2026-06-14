@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # util
 
@@ -9,9 +9,11 @@ General utilities, helper functions, and shared types used across the applicatio
 ## Key Files
 | File | Description |
 |------|-------------|
-| `update-check.ts` | Async check for newer npm versions |
-| `retry.ts` | Rate-limit backoff and generic retry mechanisms |
+| `clipboard-image.ts` | Brief description of purpose |
+| `env.ts` | Brief description of purpose |
 | `provider-error.ts` | Error normalization helpers |
+| `retry.ts` | Rate-limit backoff and generic retry mechanisms |
+| `update-check.ts` | Async check for newer npm versions |
 
 ## Subdirectories
 *(None)*

@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # scripts
 
@@ -9,9 +9,12 @@ Utility, maintenance, and installation scripts for `jeo-code`. Contains standalo
 ## Key Files
 | File | Description |
 |------|-------------|
+| `deepinit.ts` | Brief description of purpose |
+| `evolution-schedule.sh` | Brief description of purpose |
 | `install.sh` | Global installation script for macOS/Linux |
-| `uninstall.sh` | Uninstallation script |
 | `smoke-test.sh` | Basic sanity verification script |
+| `sync-changelog.ts` | Brief description of purpose |
+| `uninstall.sh` | Uninstallation script |
 | `verify-models.ts` | Tests connectivity and model availability across providers |
 
 ## Subdirectories

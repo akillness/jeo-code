@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # docs
 
@@ -7,9 +7,7 @@
 Contains documentation, evolution notes, and improvement logs for `jeo-code`. Used to track long-term project trajectory and architectural decisions.
 
 ## Key Files
-| File | Description |
-|------|-------------|
-| `improvements.md` | Rolling log of structural and workflow improvements |
+*(None)*
 
 ## Subdirectories
 *(None)*

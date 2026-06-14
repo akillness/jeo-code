@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # tui
 
@@ -10,6 +10,7 @@ Terminal User Interface logic, layout systems, and the differential renderer. Re
 | File | Description |
 |------|-------------|
 | `app.ts` | High-level TUI orchestrator (`LaunchTui`) |
+| `index.ts` | Brief description of purpose |
 | `renderer.ts` | The differential, atomic terminal renderer (handles scrollback, resizing, DECSET 2026) |
 | `terminal.ts` | Low-level ANSI escape codes and terminal size utilities |
 

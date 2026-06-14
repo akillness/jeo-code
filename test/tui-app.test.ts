@@ -43,7 +43,11 @@ test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll
   const ledger = out.join("");
   const flushIdx = ledger.indexOf("\x1b[?2026h"); // BSU opens the atomic flush
   expect(flushIdx).toBeGreaterThanOrEqual(0);
-  expect(ledger.slice(flushIdx)).toContain("Read src/cli.ts\n"); // static line, newline-terminated
+  // 0.4.8's pinned fast-path scrolls the completed line into history as
+  // "<text>\x1b[<N>B\n" (write at the anchor, drop to the bottom, newline scrolls it
+  // up). It still reaches scrollback with a real newline — assert that, tolerant of
+  // the interposed cursor-down.
+  expect(ledger.slice(flushIdx)).toMatch(/Read src\/cli\.ts(?:\x1b\[\d+B)?\n/); // flushed to history
   expect(ledger.slice(flushIdx)).toContain("\x1b[?2026l");       // ESU after the repaint
   expect(ledger).not.toContain("\x1b[0J");                       // never ED mid-turn (history flood)
 
@@ -104,9 +108,11 @@ test("LaunchTui: subagent progress lines are flushed into scrollback mid-turn on
   tui.onSubagentEvent({ role: "executor", kind: "tool", detail: "read src/agent/engine.ts", success: true });
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
   const ledger = out.join("");
-  // Both nested events became static scrollback lines (clear-frame + text + "\n").
-  expect(ledger).toContain("EXECUTOR · Add a retry guard\n");
-  expect(ledger).toContain("read src/agent/engine.ts\n");
+  // Both nested events flush into scrollback as static lines ending in a newline.
+  // 0.4.8's pinned fast-path may interpose a cursor-down (\x1b[<N>B) before the
+  // newline that scrolls the line into history — tolerate it.
+  expect(ledger).toMatch(/EXECUTOR · Add a retry guard(?:\x1b\[\d+B)?\n/);
+  expect(ledger).toMatch(/read src\/agent\/engine\.ts(?:\x1b\[\d+B)?\n/);
   tui.finish("done");
 });
 

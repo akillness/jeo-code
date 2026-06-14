@@ -233,7 +233,7 @@ type ParsedFile =
   | { kind: "ok"; config: Config }
   | { kind: "missing" }
   | { kind: "bad-json"; warned: boolean }
-  | { kind: "invalid"; message: string; warned: boolean };
+  | { kind: "invalid"; message: string; warned: boolean; rawObject?: unknown };
 const configReadCache = new Map<string, { mtimeMs: number; size: number; parsed: ParsedFile }>();
 const CONFIG_CACHE_CAP = 8;
 
@@ -259,7 +259,9 @@ async function readParsedConfigFile(): Promise<ParsedFile> {
     const result = parseConfig(raw);
     parsed = result.ok
       ? { kind: "ok", config: result.config as Config }
-      : { kind: "invalid", message: result.message, warned: false };
+      // Keep the raw JSON object on a schema-invalid (but JSON-valid) config so
+      // readRawGlobalConfig can salvage the credential blocks instead of dropping them.
+      : { kind: "invalid", message: result.message, warned: false, rawObject: raw };
   } catch {
     parsed = { kind: "bad-json", warned: false };
   }
@@ -271,6 +273,20 @@ async function readParsedConfigFile(): Promise<ParsedFile> {
   return parsed;
 }
 
+/** Overlay the `oauth` + `providers` credential blocks from a schema-invalid (but
+ *  JSON-valid) config's raw object onto `base`. A single bad scalar field (e.g. a
+ *  non-string defaultModel) must never cost the user their stored credentials — neither
+ *  when resolving them at runtime (readGlobalConfig) nor when persisting (readRawGlobalConfig). */
+function salvageCredentials(base: Config, parsed: ParsedFile): Config {
+  if (parsed.kind !== "invalid" || !parsed.rawObject || typeof parsed.rawObject !== "object") return base;
+  const ro = parsed.rawObject as Record<string, unknown>;
+  if (ro.oauth && typeof ro.oauth === "object") base.oauth = structuredClone(ro.oauth) as Config["oauth"];
+  if (ro.providers && typeof ro.providers === "object") {
+    base.providers = { ...base.providers, ...(structuredClone(ro.providers) as Config["providers"]) };
+  }
+  return base;
+}
+
 export async function readGlobalConfig(): Promise<Config> {
   const parsed = await readParsedConfigFile();
   if (parsed.kind === "bad-json" || parsed.kind === "invalid") {
@@ -280,7 +296,9 @@ export async function readGlobalConfig(): Promise<Config> {
       const detail = parsed.kind === "invalid" ? ` is invalid (${parsed.message})` : " is not valid JSON";
       process.stderr.write(`[jeo] ${globalConfigPath()}${detail}; using environment defaults.\n`);
     }
-    return withEnvOverlay(envDefaultConfig());
+    // Credential salvage: keep oauth/providers from a JSON-valid-but-schema-invalid
+    // config so the runtime stays authenticated (and a later write repairs the file).
+    return withEnvOverlay(salvageCredentials(envDefaultConfig(), parsed));
   }
   if (parsed.kind === "missing") return withEnvOverlay(envDefaultConfig());
   return withEnvOverlay(structuredClone(parsed.config));
@@ -307,9 +325,15 @@ export async function saveGlobalConfig(config: Config): Promise<void> {
  *  JEO_*_MODEL role tiers, OLLAMA_HOST/OPENAI_BASE_URL) are never baked into
  *  ~/.jeo/config.json by an unrelated `/agents`/`/roles`/`/model save`. */
 export async function readRawGlobalConfig(): Promise<Config> {
-  const clean: Config = { providers: {}, defaultModel: DEFAULT_MODEL, thinkingLevel: "medium" };
   const parsed = await readParsedConfigFile();
-  return parsed.kind === "ok" ? structuredClone(parsed.config) : clean;
+  if (parsed.kind === "ok") return structuredClone(parsed.config);
+  // CREDENTIAL SAFETY: when the on-disk config is JSON-valid but fails schema validation
+  // on some unrelated field, salvage the `oauth` + `providers` blocks. Without this, the
+  // next saveConfigPatch (e.g. an auto token refresh that patches ONE provider) bases on
+  // a clean config and silently wipes every OTHER stored credential — the "OAuth de-authed
+  // after a session" bug. The invalid scalar field is dropped (reset to default).
+  const clean: Config = { providers: {}, defaultModel: DEFAULT_MODEL, thinkingLevel: "medium" };
+  return salvageCredentials(clean, parsed);
 }
 
 /** Merge a patch onto the RAW on-disk config and persist. The `build` callback

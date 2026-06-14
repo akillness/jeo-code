@@ -144,3 +144,39 @@ test("saveGlobalConfig writes to a temp file first and then atomically renames t
     renameSpy.mockRestore();
   }
 });
+
+test("saveConfigPatch on a schema-INVALID config preserves every OTHER stored credential (OAuth de-auth regression)", async () => {
+  // A config that is valid JSON but fails schema validation on ONE unrelated field
+  // (defaultModel must be a string). Pre-fix, readRawGlobalConfig fell back to a clean
+  // config with no oauth/providers, so the next saveConfigPatch (e.g. an auto token
+  // refresh of ONE provider) silently wiped every other provider's credentials.
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: { anthropic: "sk-disk-key" },
+      oauth: {
+        anthropic: { access: "AAA", refresh: "RA", expires: 9999999999999, email: "a@x" },
+        gemini: { access: "GGG", refresh: "RG", expires: 9999999999999, email: "g@x" },
+        openai: { access: "OOO", refresh: "RO", expires: 9999999999999, email: "o@x" },
+      },
+      defaultModel: 123, // invalid type → schema-invalid config
+      thinkingLevel: "medium",
+    }),
+  );
+
+  // Simulate refreshOAuthToken → setOauthCredentialNoLock: patch ONLY anthropic's oauth.
+  await saveConfigPatch(raw => ({
+    oauth: { ...(raw.oauth ?? {}), anthropic: { access: "BBB", refresh: "RA2", expires: 1, email: "a@x" } },
+  }));
+
+  const onDisk = JSON.parse(await fs.readFile(path.join(dir, "config.json"), "utf-8"));
+  // Every OTHER provider's OAuth survives the single-provider patch.
+  expect(Object.keys(onDisk.oauth).sort()).toEqual(["anthropic", "gemini", "openai"]);
+  expect(onDisk.oauth.gemini.access).toBe("GGG");
+  expect(onDisk.oauth.openai.access).toBe("OOO");
+  expect(onDisk.oauth.anthropic.access).toBe("BBB"); // the intended refresh applied
+  // The provider API key survives too.
+  expect(onDisk.providers.anthropic).toBe("sk-disk-key");
+  // The invalid scalar field is coerced to the runtime default (not left invalid).
+  expect(typeof onDisk.defaultModel).toBe("string");
+});

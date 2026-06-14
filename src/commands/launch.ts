@@ -1297,6 +1297,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // box during a running turn so typed text stays in the same query surface
   // instead of a separate queued row.
   let queueBusySnapshot: (() => { text: string }) | undefined;
+  // Clears the live next-prompt draft — used after a mid-turn Enter is lifted into
+  // the steering inbox so the consumed line does not also become the next prompt.
+  let queueBusyClear: (() => void) | undefined;
   let interactiveTurnActive = false;
 
 
@@ -1311,42 +1314,56 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const activeModel = sessionModel || turnConfig.defaultModel;
     const contextTokens = catalogMetadata(activeModel)?.contextTokens;
 
-    const compRes = await maybeCompact(history, {
-      model: sessionModel,
-      contextTokens,
-    });
-    
-    if (compRes.error) {
-      throw new Error(compRes.error);
-    }
-
-    if (compRes.compacted && sessionId && compRes.replacesThrough !== undefined) {
-      const touchedNote = compRes.touchedFiles?.length ? ` Files touched: ${compRes.touchedFiles.join(", ")}.` : "";
-      const summaryText = compRes.summary ?? `[Earlier conversation omitted: ${compRes.removed} messages — summary unavailable.${touchedNote}]`;
-      await appendCompaction(sessionId, ++compactionSeq, summaryText, compRes.replacesThrough, cwd);
-    }
-
-    const beforeLen = history.length;
-    if (images?.length && catalogMetadata(activeModel)?.images === false) {
-      console.log(`! ${activeModel} does not advertise image input — sending the attachment anyway.`);
-    }
-    history.push(images?.length ? { role: "user", content: userInput, images } : { role: "user", content: userInput });
-
-    // `turnConfig` was read before compaction so both the compactor and delegated
-    // task tool see mid-session config changes (e.g. `/agents <role> <model>`).
-    const { provider: activeProvider } = await describeModel(activeModel);
-    // Dirty count is recomputed at each turn start (gjc parity P1.B5: per-turn, not
-    // per-render) so `?N` grows as the agent edits files; one spawn/turn, not per frame.
+    // Resolve provider + dirty count up front — both are cheap and feed the live
+    // frame's footer. `turnConfig` is reused so describeModel does NOT re-read the
+    // config file. (gjc parity P1.B5: dirty count per-turn, not per-render.)
+    const { provider: activeProvider } = await describeModel(activeModel, turnConfig);
     const turnDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
     const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: initialStepLimit, cwd, branch, dirtyCount: turnDirtyCount, thinking: sessionThinking }) : null;
-    tui?.setContextUsage(historyTokens(history), contextTokens);
     tui?.setTurnTitle(userInput); // gjc-parity turn title → HUD + tmux pane title (no LLM call)
+    // `beforeLen` marks where this turn's appended messages start; it is re-read
+    // AFTER compaction (which mutates history) and consumed by the post-turn
+    // persistence block below.
+    let beforeLen = history.length;
     let result;
     try {
+      // Paint the live frame + spinner the INSTANT the turn is accepted, BEFORE the
+      // potentially slow / LLM-driven compaction below. Otherwise the gap between the
+      // submitted prompt and the first feedback reads as a dead "no response" window
+      // (the reported symptom). All remaining preflight runs UNDER the spinner now.
       if (tui) {
         interactiveTurnActive = true;
         tui.start();
       }
+      const compRes = await maybeCompact(history, {
+        model: sessionModel,
+        contextTokens,
+      });
+      if (compRes.error) {
+        throw new Error(compRes.error);
+      }
+      if (compRes.compacted && sessionId && compRes.replacesThrough !== undefined) {
+        const touchedNote = compRes.touchedFiles?.length ? ` Files touched: ${compRes.touchedFiles.join(", ")}.` : "";
+        const summaryText = compRes.summary ?? `[Earlier conversation omitted: ${compRes.removed} messages — summary unavailable.${touchedNote}]`;
+        await appendCompaction(sessionId, ++compactionSeq, summaryText, compRes.replacesThrough, cwd);
+        tui?.events().onNotice?.(`(compacted ${compRes.removed} older message${compRes.removed === 1 ? "" : "s"})`);
+      }
+      beforeLen = history.length;
+      if (images?.length && catalogMetadata(activeModel)?.images === false) {
+        const warn = `! ${activeModel} does not advertise image input — sending the attachment anyway.`;
+        if (tui) tui.events().onNotice?.(warn);
+        else console.log(warn);
+      }
+      history.push(images?.length ? { role: "user", content: userInput, images } : { role: "user", content: userInput });
+      tui?.setContextUsage(historyTokens(history), contextTokens);
+
+      // Per-turn steering inbox (gjc parity): additional queries typed mid-turn land
+      // here and the engine drains them at each step boundary; createTaskTool forwards
+      // the same drain so a single running subagent receives them live. Unconsumed
+      // messages are folded into the next prompt in the finally block (race safety).
+      const steerInbox: string[] = [];
+      const steeringEnabled = !!tui && jeoEnv("NO_STEER") !== "1";
+      const drainSteer = () => steerInbox.splice(0, steerInbox.length);
       const harness = createInFlightAbortHarness({
         captureEsc: !!tui,
         onNoise: () => tui?.repaint(),
@@ -1368,10 +1385,30 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         },
         onBufferedInput: chunk => {
           if (!tui) return;
+          // gjc-style mid-turn steering: a typed Enter (outside a bracketed paste)
+          // lifts the current draft into the steering inbox so the RUNNING turn picks
+          // it up at the next step, instead of only becoming the next prompt.
+          // JEO_NO_STEER=1 restores the legacy draft-only behavior.
+          const typedEnter =
+            steeringEnabled &&
+            !(queueBusyPasteActive?.() ?? false) &&
+            /[\r\n]/.test(chunk) &&
+            !chunk.includes(PASTE_START) &&
+            !chunk.includes(PASTE_END);
           const captured = queueBusyInput?.(chunk) ?? false;
+          if (typedEnter) {
+            const line = (queueBusySnapshot?.().text ?? "").trim();
+            if (line) {
+              steerInbox.push(line);
+              queueBusyClear?.();
+              tui.setLivePromptInput("");
+              const preview = line.length > 60 ? `${line.slice(0, 57)}…` : line;
+              tui.events().onNotice?.(`↳ steering queued (applies at next step): ${preview}`);
+              return;
+            }
+          }
           // Keep the SAME query input box visible during a live turn. Printable
-          // keystrokes edit the next prompt draft; Enter does not create a hidden
-          // queue entry, so there is no separate "queued input" surface.
+          // keystrokes edit the next prompt draft; there is no separate queue surface.
           if (captured) tui.setLivePromptInput(queueBusySnapshot?.().text ?? "");
         },
         onAbortNotice: msg => {
@@ -1403,6 +1440,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           task: createTaskTool({
             config: { ...turnConfig, defaultModel: activeModel },
             signal: ac.signal,
+            steer: drainSteer,
             onEvent: useTui
               ? (e => tui?.onSubagentEvent(e))
               : (e => logTaskSubEvent(e)),
@@ -1417,6 +1455,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           model: sessionModel,
           maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
           signal: ac.signal,
+          steer: drainSteer,
           events: { ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone },
         });
         if (result.done && looksLikeSkillEcho(result.doneReason ?? "", resolvedSkills)) {
@@ -1434,6 +1473,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             model: sessionModel,
             maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
             signal: ac.signal,
+            steer: drainSteer,
             events: withToolDetailCapture(tui ? tui.events() : streamEvents),
           });
           const usage =
@@ -1447,6 +1487,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
       } finally {
         harness.dispose();
+        // Steering typed but never drained (e.g. entered just after the final step)
+        // must not be lost — fold it into the next prompt draft so it runs next.
+        const leftover = steerInbox.splice(0, steerInbox.length).map(s => s.trim()).filter(Boolean);
+        if (leftover.length) {
+          const merged = [queuedPromptInput.partial, ...leftover].filter(Boolean).join(" ");
+          queuedPromptInput.partial = merged;
+        }
       }
     } catch (err) {
       if (tui) {
@@ -1844,6 +1891,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   queueBusySnapshot = () => ({
     text: queuedPromptInput.partial,
   });
+  queueBusyClear = () => { queuedPromptInput.partial = ""; };
   // Bracketed-paste line routing at the PROMPT: readline strips the 2004 markers
   // and replays pasted lines as synthetic keypresses, emitting paste-start /
   // paste-end around them. Lines submitted INSIDE that window are intentional
@@ -2846,29 +2894,34 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(chalk.dim(`(restored ${folded} queued input line${folded > 1 ? "s" : ""} into the prompt — Enter to run, Esc to discard)`));
         }
       }
-      // Refresh the status bar's dirty flag once per prompt (one git spawn, not per frame).
-      idleDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
       const prefilledLine = queuedPromptInput.partial;
       queuedPromptInput.partial = "";
-      armPreview();
-      // Render the boxed input immediately so the prompt is visible even though
-      // readline's own echo is suppressed. If the user typed while the previous
-      // live turn/subagent was still running, seed that text into readline and the
-      // box instead of dropping it as "noise". A pasted batch's TRAILING partial
-      // (no final newline) survives in readline's own buffer — adopt it as the
-      // visible typed line so the box never hides editable input.
+      // Resolve the visible input text FIRST (cheap, no I/O): the queued prefill, else
+      // any partial the user typed while the previous live turn/subagent was running
+      // (that text survives in readline's own buffer — adopt it so the box never hides
+      // editable input). A pasted batch's TRAILING partial is recovered the same way.
       const rli = rl as unknown as { line?: string; cursor?: number; _refreshLine?: () => void };
       const residualPartial = !prefilledLine && typeof rli.line === "string" && rli.line.length > 0 && !/\x1b/.test(rli.line)
         ? rli.line
         : "";
       typedLine = prefilledLine || residualPartial;
+      navMatches = [];
+      navIdx = -1;
+      // Reserve + paint the boxed input IMMEDIATELY — WITH its real text — so the
+      // prompt is visible the instant the turn ends, BEFORE the git spawn below.
+      // Otherwise the dirty-flag spawn (slow on a large / just-edited repo) runs in a
+      // window where the box is gone and keystrokes echo nowhere (the "no response
+      // after the result" gap). readline's own echo stays gated while armed.
+      armPreview();
       if (prefilledLine) {
         rli.line = prefilledLine;
         rli.cursor = prefilledLine.length;
         rli._refreshLine?.();
       }
-      navMatches = [];
-      navIdx = -1;
+      drawFooter(previewLines(typedLine));
+      // Refresh the status bar's dirty flag once per prompt (one git spawn, not per
+      // frame); the second drawFooter repaints only if the count actually changed.
+      idleDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
       drawFooter(previewLines(typedLine));
       // Box mode: NO raw `jeo>` prompt at all — the boxed footer IS the input UI
       // (gating already suppresses readline echo, the empty prompt guarantees no

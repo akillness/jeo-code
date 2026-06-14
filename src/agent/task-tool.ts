@@ -51,6 +51,13 @@ export interface TaskToolOptions {
   signal?: AbortSignal;
   /** Optional live sink (e.g. plain-stream rendering of nested progress). */
   onEvent?: (ev: TaskSubEvent) => void;
+  /** Mid-turn steering drain (gjc parity). Forwarded to a SINGLE running subagent so
+   *  an additional user query typed while the subagent works reaches it live. While
+   *  the subagent runs the parent loop is blocked inside this tool call, so the
+   *  subagent is the only active drainer — the message is not double-consumed.
+   *  Fan-out batches do NOT forward it (parallel drains would deliver to one arbitrary
+   *  subagent); pending steering stays for the parent after the batch returns. */
+  steer?: () => string[];
 }
 
 /** Max concurrent read-only subagents in a fan-out batch. */
@@ -134,6 +141,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     taskText: string,
     context: string,
     cwd: string,
+    steer?: () => string[],
   ): Promise<ToolResult> => {
     const model = resolveSubagentModel(role.id, opts.config);
     const maxSteps = resolveSubagentMaxSteps(role.id, opts.config);
@@ -162,6 +170,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       // owns any retry/extension decision, so the gjc retry flow is disabled here.
       budget: { maxExtensions: 0 },
       signal: opts.signal,
+      steer,
       tools: subagentToolset(role),
       events: {
         onStep: n => { currentStep = n; },
@@ -184,6 +193,9 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
         // Retry notices (rate-limit backoff etc.) surface as live "step" beats so the
         // parent's monitor shows WHY a subagent is pausing instead of going silent.
         onNotice: msg => opts.onEvent?.({ role: role.id, kind: "step", detail: msg, step: currentStep, maxSteps, model }),
+        // Mid-turn steering reached this subagent: surface it as a live beat so the
+        // parent's monitor shows the redirect instead of an unexplained behavior change.
+        onSteer: text => opts.onEvent?.({ role: role.id, kind: "step", detail: `↳ steer: ${text}`, step: currentStep, maxSteps, model }),
       },
     });
     const reason = result.doneReason?.trim() || `(subagent reached the ${result.steps}-step limit without signaling done)`;
@@ -267,6 +279,6 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     if (!taskText) {
       return { success: false, output: "", error: `task tool requires a non-empty 'task' (or a 'tasks' array). Valid roles: ${subagentRoleIds(opts.config).join(", ")}.` };
     }
-    return runOne(role, taskText, ctx(args.context), cwd);
+    return runOne(role, taskText, ctx(args.context), cwd, opts.steer);
   };
 }

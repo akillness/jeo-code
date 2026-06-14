@@ -149,6 +149,10 @@ export interface AgentLoopEvents {
    *  first"); return null to let the turn finish. The engine guarantees at most
    *  one bounce per turn, so a stubborn model can never loop here. */
   onBeforeDone?(reason: string): string | null;
+  /** Fired when a mid-turn steering message (an additional user query typed while
+   *  the turn is running) is injected into the live history. `text` is the raw
+   *  user line — drives a TUI notice so the user sees their input was picked up. */
+  onSteer?(text: string): void;
 }
 
 export interface AgentLoopOptions {
@@ -173,6 +177,11 @@ export interface AgentLoopOptions {
   /** Step-budget overrides (gjc-style retry flow). `{ maxExtensions: 0 }` restores the
    *  legacy fixed counter — used by bounded subagent delegation. */
   budget?: Partial<StepBudgetConfig>;
+  /** Mid-turn steering drain (gjc parity): called at each step boundary. Any strings
+   *  returned are appended to `history` as user messages BEFORE the next model call,
+   *  so an additional query typed while the turn runs steers the live turn instead of
+   *  waiting for the next prompt. Return [] when nothing is pending. */
+  steer?: () => string[];
 }
 
 export interface AgentLoopResult {
@@ -399,6 +408,29 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       return finish({ done: false, steps: step - 1, doneReason: "Cancelled." });
     }
     await ev.onStep?.(step);
+
+    // MID-TURN steering (gjc parity): drain any additional user queries typed while
+    // the turn is running and inject them as user messages BEFORE this step's model
+    // call, so the live turn adapts immediately instead of deferring to the next
+    // prompt. A genuine new instruction resets the stall/failure guards (it is fresh
+    // progress, not a repeat) and earns a budget extension so the loop has room to act.
+    if (opts.steer) {
+      const pending = opts.steer();
+      for (const raw of pending) {
+        const text = (raw ?? "").trim();
+        if (!text) continue;
+        history.push({
+          role: "user",
+          content: `[mid-turn steering — additional instruction from the user; incorporate it now]\n${text}`,
+        });
+        ev.onSteer?.(text);
+        repeatCount = 0;
+        lastSig = "";
+        consecutiveFailures = 0;
+        recentStepSigs.length = 0;
+        budget.noteSteer?.();
+      }
+    }
 
     // MID-TURN context guard: a single long turn (60+ steps) otherwise grows the
     // history without bound — turn-boundary compaction never runs inside a turn,

@@ -180,6 +180,16 @@ export class StepBudget {
     if (this.window.length > this.cfg.windowSize) this.window.shift();
   }
 
+  /** A mid-turn steering message arrived — fresh, user-driven work. Grant headroom
+   *  (capped at the hard cap, without consuming the extension budget) and clear the
+   *  scoring window so the new instruction is never declined by the previous
+   *  sub-task's stall/failure signals. */
+  noteSteer(): void {
+    this.window.length = 0;
+    this.novelSinceExtension = 0;
+    this.currentLimit = Math.min(this.currentLimit + this.cfg.extensionSteps, this.cfg.hardCap);
+  }
+
   /** Progress over the recent window: ok count, total, distinct signatures. */
   progress(): { ok: number; total: number; distinct: number } {
     const ok = this.window.filter(r => r.success).length;

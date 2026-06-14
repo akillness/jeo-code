@@ -524,6 +524,15 @@ export const DNA_CLAW_ART_GRAND_ASCII: string[] = [
   "        [ D N A . C L A W ]         "
 ];
 
+// Bounded memo of fully-rendered DNA Claw frames keyed by every input that affects
+// output (grand/unicode/cols/color/colorLevel/phase/frame). The live HUD cycles a
+// FIXED ~60-frame set (3 twists × 20 gradient phases) at ~120ms; without this each
+// recurrence recomputed per-line animatedGradientText (ANSI gradient) from scratch.
+// The memo makes the 2nd+ cycle O(1) lookups, cutting steady-state HUD CPU. LRU-capped.
+const dnaClawMemo = new Map<string, string[]>();
+const DNA_CLAW_MEMO_CAP = 256;
+const EMPTY_DNA_FRAME: string[] = [];
+
 export function renderDnaClaw(opts: {
   cols?: number;
   phase?: number;
@@ -537,6 +546,9 @@ export function renderDnaClaw(opts: {
    *  `phase` this animates the forge identity without any frame-count growth. */
   frame?: number;
 }): string[] {
+  const memoKey = `${opts.grand ? "g" : "c"}|${opts.unicode !== false ? 1 : 0}|${opts.cols ?? -1}|${opts.color !== false ? 1 : 0}|${opts.colorLevel ?? ColorLevel.TrueColor}|${opts.phase ?? 0}|${opts.frame ?? 0}`;
+  const memoHit = dnaClawMemo.get(memoKey);
+  if (memoHit) return memoHit;
   const useUnicode = opts.unicode !== false;
   let source: string[];
   if (opts.grand) {
@@ -549,7 +561,8 @@ export function renderDnaClaw(opts: {
   const width = Math.max(0, ...source.map(l => l.length));
 
   if (opts.cols !== undefined && opts.cols < width) {
-    return [];
+    dnaClawMemo.set(memoKey, EMPTY_DNA_FRAME);
+    return EMPTY_DNA_FRAME;
   }
 
   const phase = opts.phase ?? 0;
@@ -557,13 +570,20 @@ export function renderDnaClaw(opts: {
   const colorLevel = opts.colorLevel ?? ColorLevel.TrueColor;
   const palette = DNA_FLOW_PALETTE;
 
-  return source.map((line, idx) => {
+  const result = source.map((line, idx) => {
     const padded = line.length < width ? line + " ".repeat(width - line.length) : line;
     if (!useColor || colorLevel < ColorLevel.TrueColor) {
       return padded;
     }
     return animatedGradientText(padded, palette, phase + idx * 0.07, { colorLevel });
   });
+
+  if (dnaClawMemo.size >= DNA_CLAW_MEMO_CAP) {
+    const oldest = dnaClawMemo.keys().next().value;
+    if (oldest !== undefined) dnaClawMemo.delete(oldest);
+  }
+  dnaClawMemo.set(memoKey, result);
+  return result;
 }
 
 /** The DNA Claw identity palette (emerald → cyan → violet helix flow). Shared by

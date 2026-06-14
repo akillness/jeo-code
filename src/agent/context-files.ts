@@ -78,7 +78,10 @@ const EXPLICIT_GUIDANCE_FILES = [".agents/oma-config.yaml", ".agents/oma-config.
 
 // Module-level cache of the downward scan, keyed by resolved cwd. The scan is
 // independent of $HOME (it only walks the cwd subtree), so caching by cwd is safe.
+// Bounded LRU: a long-running session that scans many distinct cwds (subagents,
+// worktrees, /view of other trees) must not grow this Map without bound.
 const workspaceScanCache = new Map<string, WorkspaceScan>();
+const WORKSPACE_SCAN_CACHE_CAP = 32;
 
 function segsEqual(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
@@ -161,8 +164,18 @@ async function scanWorkspaceDownwards(resolvedCwd: string): Promise<WorkspaceSca
 async function getWorkspaceScan(cwd: string): Promise<WorkspaceScan> {
   const resolvedCwd = path.resolve(cwd);
   const cached = workspaceScanCache.get(resolvedCwd);
-  if (cached) return cached;
+  if (cached) {
+    // LRU refresh: re-insert so the most-recently-used entry is evicted last.
+    workspaceScanCache.delete(resolvedCwd);
+    workspaceScanCache.set(resolvedCwd, cached);
+    return cached;
+  }
   const scan = await scanWorkspaceDownwards(resolvedCwd);
+  // Evict the oldest entry (Map preserves insertion order) once at capacity.
+  if (workspaceScanCache.size >= WORKSPACE_SCAN_CACHE_CAP) {
+    const oldest = workspaceScanCache.keys().next().value;
+    if (oldest !== undefined) workspaceScanCache.delete(oldest);
+  }
   workspaceScanCache.set(resolvedCwd, scan);
   return scan;
 }

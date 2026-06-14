@@ -350,17 +350,65 @@ export function getLocalJeoDir(cwd: string = process.cwd()): string {
   return path.join(cwd, ".jeo");
 }
 
+// mtime+size-validated cache for the small per-skill workflow-state JSON. readWorkflowState
+// runs repeatedly (the mutation guard reads before every mutating tool), so re-reading +
+// re-parsing each call is wasteful. CROSS-PROCESS-SAFE: a write by another process bumps
+// mtime/size → forces a fresh read, so the security-sensitive guard never serves a stale
+// lock. Same-process write/clear update or drop the entry directly. LRU-capped.
+const workflowStateCache = new Map<string, { mtimeMs: number; size: number; value: WorkflowState | null }>();
+const WORKFLOW_STATE_CACHE_CAP = 16;
+
+function cacheWorkflowState(statePath: string, mtimeMs: number, size: number, value: WorkflowState | null): void {
+  workflowStateCache.delete(statePath);
+  if (workflowStateCache.size >= WORKFLOW_STATE_CACHE_CAP) {
+    const oldest = workflowStateCache.keys().next().value;
+    if (oldest !== undefined) workflowStateCache.delete(oldest);
+  }
+  workflowStateCache.set(statePath, { mtimeMs, size, value });
+}
+
+async function loadWorkflowStateFile(statePath: string, strict: boolean): Promise<WorkflowState | null> {
+  let st: { mtimeMs: number; size: number };
+  try {
+    st = await fs.stat(statePath);
+  } catch (err) {
+    workflowStateCache.delete(statePath);
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (strict) throw err;
+    return null;
+  }
+  const hit = workflowStateCache.get(statePath);
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
+    workflowStateCache.delete(statePath); // LRU refresh
+    workflowStateCache.set(statePath, hit);
+    return hit.value;
+  }
+  let data: string;
+  try {
+    data = await fs.readFile(statePath, "utf-8");
+  } catch (err) {
+    workflowStateCache.delete(statePath);
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (strict) throw err;
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(data) as WorkflowState;
+    cacheWorkflowState(statePath, st.mtimeMs, st.size, parsed);
+    return parsed;
+  } catch {
+    workflowStateCache.delete(statePath);
+    if (strict) throw new Error(`workflow state ${statePath} is corrupt (invalid JSON)`);
+    return null;
+  }
+}
+
 export async function readWorkflowState(
   skill: "deep-interview" | "ralplan" | "team" | "ultragoal",
   cwd: string = process.cwd()
 ): Promise<WorkflowState | null> {
   const statePath = path.join(getLocalJeoDir(cwd), "state", `${skill}-state.json`);
-  try {
-    const data = await fs.readFile(statePath, "utf-8");
-    return JSON.parse(data) as WorkflowState;
-  } catch {
-    return null;
-  }
+  return loadWorkflowStateFile(statePath, false);
 }
 
 /**
@@ -373,18 +421,7 @@ export async function readWorkflowStateStrict(
   cwd: string = process.cwd()
 ): Promise<WorkflowState | null> {
   const statePath = path.join(getLocalJeoDir(cwd), "state", `${skill}-state.json`);
-  let data: string;
-  try {
-    data = await fs.readFile(statePath, "utf-8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw err;
-  }
-  try {
-    return JSON.parse(data) as WorkflowState;
-  } catch {
-    throw new Error(`workflow state ${statePath} is corrupt (invalid JSON)`);
-  }
+  return loadWorkflowStateFile(statePath, true);
 }
 
 export async function writeWorkflowState(
@@ -406,6 +443,14 @@ export async function writeWorkflowState(
     await fs.unlink(tmpPath).catch(() => {});
     throw err;
   }
+  // Cache the just-written state keyed on the new file fingerprint so the next read
+  // (often the mutation guard milliseconds later) is served from memory.
+  try {
+    const st = await fs.stat(statePath);
+    cacheWorkflowState(statePath, st.mtimeMs, st.size, state);
+  } catch {
+    workflowStateCache.delete(statePath);
+  }
   return statePath;
 }
 
@@ -417,6 +462,7 @@ export async function clearWorkflowState(
   try {
     await fs.unlink(statePath);
   } catch {}
+  workflowStateCache.delete(statePath);
 }
 
 /**

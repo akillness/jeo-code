@@ -48,6 +48,19 @@ test("gradient animates across phases at TrueColor; plain output is phase-stable
   expect(p0).toBe(p1);
 });
 
+test("renderDnaClaw memoizes identical frames (same args → cached ref; different args → recomputed)", () => {
+  const args = { phase: 0.15, frame: 1, cols: 80, color: true, colorLevel: ColorLevel.TrueColor } as const;
+  const a = renderDnaClaw({ ...args });
+  const b = renderDnaClaw({ ...args });
+  expect(b).toBe(a); // identical inputs return the cached array (no per-frame ANSI recompute)
+  // Any input that changes the output is a distinct cache key.
+  expect(renderDnaClaw({ ...args, phase: 0.2 })).not.toBe(a);
+  expect(renderDnaClaw({ ...args, frame: 2 })).not.toBe(a);
+  expect(renderDnaClaw({ ...args, cols: 40 })).not.toBe(a);
+  // Content is still correct (memo is transparent).
+  expect(stripAnsi(a.join("\n"))).toBe(stripAnsi(renderDnaClaw({ ...args, phase: 0.99 }).join("\n")));
+});
+
 test("grand variant ignores the twist frame (static welcome hero)", () => {
   const g0 = renderDnaClaw({ color: false, grand: true, frame: 0 }).join("\n");
   const g1 = renderDnaClaw({ color: false, grand: true, frame: 1 }).join("\n");

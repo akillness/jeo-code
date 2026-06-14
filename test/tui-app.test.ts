@@ -704,3 +704,26 @@ test("LaunchTui: live turn keeps the normal input box visible and editable", () 
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
   tui.finish("ok");
 });
+
+test("LaunchTui.flushSteerCard: a mid-turn steering query renders a user box in scrollback", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  tui.events().onStep!(1); // a turn is running
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
+
+  out.length = 0;
+  tui.flushSteerCard("also include src/agent/session.ts");
+  const flushed = strip(out.join(""));
+  // A `user`-labeled card carrying the steered query lands in scrollback.
+  expect(flushed).toContain("user");
+  expect(flushed).toContain("also include src/agent/session.ts");
+
+  // Empty/whitespace steering flushes nothing.
+  out.length = 0;
+  tui.flushSteerCard("   ");
+  expect(out.join("")).toBe("");
+
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  tui.finish("ok");
+});

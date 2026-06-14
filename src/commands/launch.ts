@@ -1402,8 +1402,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               steerInbox.push(line);
               queueBusyClear?.();
               tui.setLivePromptInput("");
-              const preview = line.length > 60 ? `${line.slice(0, 57)}…` : line;
-              tui.events().onNotice?.(`↳ steering queued (applies at next step): ${preview}`);
+              // Surface the steered query as a `user` card in scrollback so it reads
+              // as an accepted input that started work — not just a transient notice.
+              tui.flushSteerCard(line);
               return;
             }
           }

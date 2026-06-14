@@ -511,15 +511,22 @@ export class LaunchTui {
   }
 
   private renderLiveUserQueryCard(cols: number): string[] {
-    const text = this.livePromptInput.trim();
+    return this.renderUserCard(this.livePromptInput, cols);
+  }
+
+  /** Render a `user`-labeled query card (orange "user" header over a filled box).
+   *  Shared by the live next-prompt draft and the mid-turn steering flush. */
+  private renderUserCard(rawText: string, cols: number): string[] {
+    const text = (rawText ?? "").trim();
     if (!text) return [];
     const boxWidth = Math.max(24, Math.min(120, cols));
     const inner = Math.max(10, boxWidth - 2);
     const g = this.unicode ? BOX_UNICODE : BOX_ASCII;
-    const accent = this.theme.color ? chalk.hex("#ff6b4a").bold : (s: string) => s;
-    const border = this.theme.color ? chalk.hex("#7f1d1d") : (s: string) => s;
-    const shadow = this.theme.color ? chalk.hex("#451a1a").dim : border;
-    const fill = this.theme.color ? (s: string) => chalk.bgHex("#210b10")(s) : (s: string) => s;
+    const uc = this.theme.userCard;
+    const accent = this.theme.color && uc ? chalk.hex(uc.accent).bold : (s: string) => s;
+    const border = this.theme.color && uc ? chalk.hex(uc.border) : (s: string) => s;
+    const shadow = this.theme.color && uc ? chalk.hex(uc.shadow) : border;
+    const fill = this.theme.color && uc ? (s: string) => chalk.bgHex(uc.fill)(s) : (s: string) => s;
     const body = text
       .split("\n")
       .flatMap(line => wrapTextWithAnsi(line, Math.max(8, inner - 2)))
@@ -535,6 +542,17 @@ export class LaunchTui {
       return border(g.v) + content + shadow(g.v);
     });
     return [`  ${accent("user")}`, top, ...mid, bottom];
+  }
+
+  /** Flush a `user` card into scrollback for a mid-turn steering query: signals that
+   *  the additional input was accepted and is now driving the running turn (gjc parity),
+   *  instead of only a transient status notice. */
+  flushSteerCard(text: string): void {
+    const t = (text ?? "").trim();
+    if (!t || this.finished) return;
+    const cols = Math.max(20, size().cols);
+    const lines = this.renderUserCard(t, cols);
+    if (lines.length) this.appendLedger(lines.join("\n"), "card");
   }
 
   /** Append a completed progress-ledger line. In inline mode the line is flushed

@@ -812,3 +812,65 @@ export async function lsTool(
     return { success: false, output: "", error: err.message };
   }
 }
+
+/**
+ * Create a directory (and any missing parents). Idempotent: an already-existing
+ * directory is a success, not an error — the model should not need to branch on
+ * existence. Respects the deep-interview mutation lock like write/edit.
+ */
+export async function mkdirTool(
+  dirPath: string,
+  cwd: string = process.cwd()
+): Promise<ToolResult> {
+  try {
+    if (typeof dirPath !== "string" || dirPath.trim() === "") {
+      return { success: false, output: "", error: 'mkdir requires a non-empty "dirPath".' };
+    }
+    await assertMutationAllowed(dirPath, cwd);
+    const abs = path.resolve(cwd, dirPath);
+    const existing = await fs.stat(abs).catch(() => null);
+    if (existing && !existing.isDirectory()) {
+      return { success: false, output: "", error: `Path exists and is not a directory: ${dirPath}` };
+    }
+    await fs.mkdir(abs, { recursive: true });
+    return { success: true, output: `Directory ready: ${dirPath}` };
+  } catch (err: any) {
+    return { success: false, output: "", error: err.message };
+  }
+}
+
+/**
+ * Delete a file or directory. A directory requires `recursive: true` so a stray
+ * call cannot wipe a populated tree by accident. Missing paths are a soft error
+ * (nothing to delete) rather than a crash. Respects the mutation lock like
+ * write/edit; the file-freshness snapshot is cleared so a later write to the
+ * same path is not rejected as stale.
+ */
+export async function deleteTool(
+  targetPath: string,
+  cwd: string = process.cwd(),
+  recursive: boolean = false
+): Promise<ToolResult> {
+  try {
+    if (typeof targetPath !== "string" || targetPath.trim() === "") {
+      return { success: false, output: "", error: 'delete requires a non-empty "path".' };
+    }
+    await assertMutationAllowed(targetPath, cwd);
+    const abs = path.resolve(cwd, targetPath);
+    if (abs === path.resolve(cwd)) {
+      return { success: false, output: "", error: "Refusing to delete the working directory itself." };
+    }
+    const st = await fs.stat(abs).catch(() => null);
+    if (!st) {
+      return { success: false, output: "", error: `Nothing to delete: ${targetPath} (does not exist).` };
+    }
+    if (st.isDirectory() && !recursive) {
+      return { success: false, output: "", error: `${targetPath} is a directory — pass recursive:true to remove it and its contents.` };
+    }
+    await fs.rm(abs, { recursive, force: false });
+    lastReadSnapshots.delete(abs); // a future write to this path must not be flagged stale
+    return { success: true, output: `Deleted ${st.isDirectory() ? "directory" : "file"}: ${targetPath}` };
+  } catch (err: any) {
+    return { success: false, output: "", error: err.message };
+  }
+}

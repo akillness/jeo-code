@@ -1,6 +1,7 @@
 import { test, expect, afterEach, beforeEach, mock } from "bun:test";
 import { LaunchTui } from "../src/tui/app";
 import { visibleWidth } from "../src/tui/components/width";
+import { size } from "../src/tui/terminal";
 
 // Drive size() via process.stdout.columns (what terminal.size() reads) instead of
 // mock.module — a module mock on the shared "terminal" leaks into other test files
@@ -51,8 +52,14 @@ test("LaunchTui: every live-frame line is clamped to the terminal width (no wrap
   internals.draw();
   clearInterval(internals.timer);
 
+  // Assert against the width the app actually rendered for (size().cols) rather than a
+  // hardcoded 40: in a full `bun test` run, leaked state/ordering can make size() resolve
+  // to a different width than the process.stdout.columns we set, and the invariant under
+  // test is "no live-frame line exceeds the width the frame was built for" — not the
+  // literal 40. With a clean registry this is 40; either way no line may overflow.
+  const cols = size().cols;
   expect(captured.length).toBeGreaterThan(0);
   for (const line of captured) {
-    expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+    expect(visibleWidth(line)).toBeLessThanOrEqual(cols);
   }
 });

@@ -25,7 +25,7 @@ import { SECTION_GAP, stackSections } from "./components/section";
 import { resolveTheme, themeGradient, accentPaint, accentShadowPaint, diffPaint, mutedPaint, cardFillPaint } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, webSearchCardLines, type ForgeSummary } from "./components/forge";
-import { renderJeoStatus, renderStatusBar, renderStatusBox } from "./components/status";
+import { renderJeoStatus, renderStatusBar, renderStatusBox, type StatusBoxData } from "./components/status";
 import { costForUsage, formatCost } from "../ai/pricing";
 import { renderMarkdownTables } from "./components/markdown-table";
  
@@ -1105,6 +1105,40 @@ export class LaunchTui {
       align: "left",
     });
   }
+
+  /** Build the live status-box data — the ~20-field payload shared by the inline and
+   *  the bottom-pinned (non-inline) frames so they can't drift (color, verify-yellow,
+   *  metrics, usage all defined once). Only `cols` differs between callers. */
+  private statusBoxData(args: { cols: number; elapsedMs: number; stepNow: number; phase: number; colorLevel: number; idx: number }): StatusBoxData {
+    const { cols, elapsedMs, stepNow, phase, colorLevel, idx } = args;
+    const grad = themeGradient(this.theme, idx);
+    const verifying = this.runningTool;
+    const stats = this.tools.stats();
+    return {
+      cols,
+      phaseLabel: this.workflowStatus ? `${this.workflowStatus.skill}:${this.workflowStatus.phase}` : this.hudPhase,
+      spinner: verifying && this.theme.color ? chalk.yellow(this.spinner.current()) : this.spinner.current(),
+      activity: this.retryNotice ?? (this.streamingActivity || this.currentActivity()),
+      escHint: true,
+      elapsedMs,
+      stepElapsedMs: this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined,
+      avgStepMs: stepNow > 0 ? elapsedMs / stepNow : undefined,
+      okCount: stats.ok,
+      failCount: stats.fail,
+      runningCount: stats.running,
+      totalCount: stats.total,
+      mutationGuarded: this.mutationGuarded,
+      unicode: this.unicode,
+      color: this.theme.color,
+      colorLevel,
+      phase,
+      palette: verifying ? [...STATUS_VERIFY_PALETTE] : [grad.from, grad.to],
+      isThinking: true,
+      usage: this.turnUsage,
+      costUsd: costForUsage(this.footer.model, this.turnUsage) ?? undefined,
+      subagentActive: this.subagentActive,
+    };
+  }
   /**
    * The gjc-style inline live frame: a flat stack with no outer border —
    *   <live forge card(s)> · <spinner status line> · <todos> · <hud line> · <model bar>
@@ -1178,37 +1212,7 @@ export class LaunchTui {
     // streamed activity is uniform across providers via streamingActivity and keeps
     // the ⟦esc⟧ cancel hint visible without trapping the message inside a border.
     if (isThinking) {
-      const grad = themeGradient(this.theme, idx);
-      // While a tool/process runs (background verification), the status animation turns
-      // amber/yellow — distinct from the cool thinking gradient (gjc warning-color parity).
-      const verifying = this.runningTool;
-      const verifySpin = verifying && this.theme.color ? chalk.yellow(this.spinner.current()) : this.spinner.current();
-      const costUsd = costForUsage(this.footer.model, this.turnUsage) ?? undefined;
-      const stats = this.tools.stats();
-      tail.push(...renderStatusBox({
-        cols: Math.max(24, Math.min(120, cols)),
-        phaseLabel: this.workflowStatus ? `${this.workflowStatus.skill}:${this.workflowStatus.phase}` : this.hudPhase,
-        spinner: verifySpin,
-        activity: this.retryNotice ?? (this.streamingActivity || this.currentActivity()),
-        escHint: true,
-        elapsedMs,
-        stepElapsedMs: this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined,
-        avgStepMs: stepNow > 0 ? elapsedMs / stepNow : undefined,
-        okCount: stats.ok,
-        failCount: stats.fail,
-        runningCount: stats.running,
-        totalCount: stats.total,
-        mutationGuarded: this.mutationGuarded,
-        unicode: this.unicode,
-        color: this.theme.color,
-        colorLevel,
-        phase,
-        palette: verifying ? [...STATUS_VERIFY_PALETTE] : [grad.from, grad.to],
-        isThinking: true,
-        usage: this.turnUsage,
-        costUsd,
-        subagentActive: this.subagentActive,
-      }));
+      tail.push(...renderStatusBox(this.statusBoxData({ cols: Math.max(24, Math.min(120, cols)), elapsedMs, stepNow, phase, colorLevel, idx })));
     }
 
 
@@ -1365,31 +1369,7 @@ export class LaunchTui {
         // Live status field: unboxed thinking line + compact metrics row. The
         // streamed activity is uniform across providers, with the ⟦esc⟧ cancel hint
         // right-aligned and no misleading step counter.
-        const stats = this.tools.stats();
-        for (const line of renderStatusBox({
-          cols: innerWidth,
-          phaseLabel: this.workflowStatus ? `${this.workflowStatus.skill}:${this.workflowStatus.phase}` : this.hudPhase,
-          spinner: this.runningTool && this.theme.color ? chalk.yellow(this.spinner.current()) : this.spinner.current(),
-          activity: this.retryNotice ?? (this.streamingActivity || statusMsg),
-          escHint: true,
-          elapsedMs,
-          stepElapsedMs: this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined,
-          avgStepMs: stepNow > 0 ? elapsedMs / stepNow : undefined,
-          okCount: stats.ok,
-          failCount: stats.fail,
-          runningCount: stats.running,
-          totalCount: stats.total,
-          mutationGuarded: this.mutationGuarded,
-          unicode: this.unicode,
-          color: this.theme.color,
-          colorLevel,
-          phase,
-          palette: this.runningTool ? [...STATUS_VERIFY_PALETTE] : palette,
-          isThinking: true,
-          usage: this.turnUsage,
-          costUsd,
-          subagentActive: this.subagentActive,
-        })) bottom.push(line);
+        for (const line of renderStatusBox(this.statusBoxData({ cols: innerWidth, elapsedMs, stepNow, phase, colorLevel, idx }))) bottom.push(line);
       } else {
         // Compact fallback still keeps progress and insight separate: no decorative
         // mixed "thinking/status" line, and retry notices never become stream logs.

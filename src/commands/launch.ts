@@ -3095,7 +3095,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       if (input === "/clear") {
         history.length = 1;
-        console.log("(history cleared)");
+        // Back to the initial screen: wipe the conversation, clear the terminal +
+        // scrollback, and re-render the welcome banner so /clear looks like a fresh launch.
+        if (process.stdout.isTTY) {
+          disarmPreview();
+          process.stdout.write("\x1b[2J\x1b[3J\x1b[H"); // clear screen + scrollback + cursor home
+          console.log(renderWelcome(welcomeData).join("\n"));
+        }
+        console.log("(history cleared — back to the start screen)");
         continue;
       }
       if (input === "/compact") {

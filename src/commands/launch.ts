@@ -1935,12 +1935,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       return kf;
     };
     Object.defineProperty(kf, "isRaw", { get: () => (process.stdin as { isRaw?: boolean }).isRaw });
-    // Forward stdin → filter, rewriting Shift+Enter sequences (sent atomically, so a
-    // per-chunk replace is sufficient; no partial-sequence buffering that could swallow
-    // a lone ESC/cancel).
+    // Forward stdin → filter, rewriting Shift+Enter into the newline sentinel BEFORE
+    // readline sees it. Three encodings are handled so it works across setups:
+    //   • a lone "\n" (0x0a) chunk — what ghostty's `keybind = shift+enter=text:\n`
+    //     sends; a normal byte that passes through tmux UNCHANGED (works even with
+    //     tmux extended-keys off). Enter sends "\r" in raw mode, so a lone "\n" is
+    //     unambiguously Shift+Enter. This is the reliable ghostty+tmux path.
+    //   • the xterm legacy "\x1b[27;2;13~" and kitty "\x1b[13;2u" sequences — direct
+    //     terminal (no tmux) or tmux with extended-keys on. (Sent atomically, so a
+    //     per-chunk replace suffices; no partial buffering that could swallow ESC.)
     process.stdin.on("data", (chunk: Buffer) => {
       let data = chunk.toString("utf8");
-      for (const seq of SHIFT_ENTER_SEQS) if (data.includes(seq)) data = data.split(seq).join(SENTINEL);
+      if (data === "\n") data = SENTINEL;
+      else for (const seq of SHIFT_ENTER_SEQS) if (data.includes(seq)) data = data.split(seq).join(SENTINEL);
       kf.write(data);
     });
     keyFilter = kf;

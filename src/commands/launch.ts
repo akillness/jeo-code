@@ -1937,10 +1937,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // outside it keep the existing contracts (typed-line prefill fold on a TTY,
   // in-order auto-serve for piped stdin).
   let promptPasteActive = false;
+  // PASTE-MERGE: a multi-line bracketed paste must arrive as ONE message, not split into
+  // one command per line. Lines that fire WHILE a paste is open are buffered here instead
+  // of run individually; promptInput joins them with the trailing residual on resolve.
+  // `endWaiters` wake that merge the moment the 201~ paste-end marker arrives.
+  const pasteMerge: { buf: string[]; endWaiters: Array<() => void> } = { buf: [], endWaiters: [] };
+  let pasteLineFired = false; // the line that resolved rl.question came from inside a paste
   if (process.stdin.isTTY) {
     process.stdin.on("keypress", (_ch: string, key: { name?: string } | undefined) => {
-      if (key?.name === "paste-start") promptPasteActive = true;
-      else if (key?.name === "paste-end") promptPasteActive = false;
+      if (key?.name === "paste-start") { promptPasteActive = true; pasteMerge.buf = []; }
+      else if (key?.name === "paste-end") {
+        promptPasteActive = false;
+        for (const w of pasteMerge.endWaiters.splice(0)) w();
+      }
     });
     // Enable bracketed paste for the REPL lifetime (restored on exit below):
     // terminals only wrap pastes in the 200~/201~ markers once the app opts in.
@@ -1949,7 +1958,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   }
   rl.on("line", l => {
     if (promptPasteActive) {
-      queuedPromptInput.pastedLines.push(l);
+      // Inside a bracketed paste: buffer the line, never run it on its own.
+      pasteMerge.buf.push(l);
+      pasteLineFired = true;
       return;
     }
     if (!interactiveTurnActive) pendingStdinLines.push(l);
@@ -1989,8 +2000,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       return "/exit";
     }
     promptActive = true;
+    pasteLineFired = false;
     try {
-      return await Promise.race([
+      const value = await Promise.race([
         rl.question(prompt),
         new Promise<string>(resolve => {
           notifyStdinClosed = () => {
@@ -1999,6 +2011,29 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           };
         }),
       ]);
+      // PASTE-MERGE: if the resolving line came from inside a bracketed paste, the rest of
+      // the paste (buffered in pasteMerge.buf) plus the trailing residual still in the line
+      // buffer belong to the SAME message. Wait for paste-end, then join them with newlines
+      // and return ONE multi-line input instead of running line 1 and queuing the rest.
+      if (pasteLineFired) {
+        if (promptPasteActive) {
+          await new Promise<void>(resolve => {
+            if (!promptPasteActive) { resolve(); return; }
+            pasteMerge.endWaiters.push(resolve);
+            setTimeout(resolve, 250); // safety: never hang if the 201~ marker is dropped
+          });
+        }
+        const residual = (rl as unknown as { line?: string }).line ?? "";
+        // Clear the residual so it does NOT prefill (and re-submit) the next prompt.
+        try { rl.write(null, { ctrl: true, name: "u" }); } catch { /* best-effort */ }
+        try { (rl as unknown as { line: string; cursor: number }).line = ""; (rl as unknown as { cursor: number }).cursor = 0; } catch { /* best-effort */ }
+        const parts = [...pasteMerge.buf];
+        if (residual !== "") parts.push(residual);
+        pasteMerge.buf = [];
+        pasteLineFired = false;
+        return parts.join("\n");
+      }
+      return value;
     } finally {
       promptActive = false;
       notifyStdinClosed = undefined;

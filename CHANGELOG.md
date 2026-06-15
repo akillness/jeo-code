@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.5.5] - 2026-06-15
+_Full multi-line visibility — the input box scrolls to the caret and the submitted card shows every line._
+
+### Fixed
+- Full multi-line visibility for the multi-line input added in 0.5.4: the input box now scrolls so the caret row always stays in view as you move through a long draft (`…` markers flag rows hidden above/below, so no line is unreachable), and a submitted multi-line query renders ALL of its wrapped lines in the user card — the card lives in scrollback rather than the bounded live frame, so nothing is truncated.
+
 ## [0.5.4] - 2026-06-15
 _Reliable multi-line input is ON by default — a paste fills the box and submits as one message._
 

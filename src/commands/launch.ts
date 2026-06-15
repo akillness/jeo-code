@@ -1,4 +1,6 @@
 import { createInterface } from "node:readline/promises";
+import { emitKeypressEvents } from "node:readline";
+import { PassThrough } from "node:stream";
 import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, type AgentLoopEvents } from "../agent/engine";
 import { initialDynamicStepLimit } from "../agent/step-budget";
 import { memoryPromptSection, spawnDetachedDistill } from "../agent/memory";
@@ -1912,8 +1914,43 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // scrollback before the boxed footer takes over.
   let promptActive = false;
   let pickerActive = false;
+  // ── Multi-line input (JEO_MULTILINE=1, gated) ──────────────────────────────────
+  // Shift+Enter inserts a newline instead of submitting. ghostty (and most terminals)
+  // send Shift+Enter as a distinct escape sequence (\x1b[27;2;13~ legacy, \x1b[13;2u
+  // kitty) that node:readline otherwise mangles into garbage. We route stdin through a
+  // filter that rewrites those sequences to a private-use SENTINEL char BEFORE readline
+  // sees them — readline inserts it as an ordinary character (no submit), and we render
+  // it as a real line break and expand it to "\n" on submit. Default OFF: when disabled
+  // the prompt reads process.stdin directly, exactly as before (zero risk).
+  const SENTINEL = "\uE000";
+  const SHIFT_ENTER_SEQS = ["\u001b[27;2;13~", "\u001b[13;2u"];
+  const multilineInput = jeoEnv("MULTILINE") === "1" && !!process.stdin.isTTY;
+  const expandSentinel = (s: string): string => (multilineInput ? s.split(SENTINEL).join("\n") : s);
+  let keyFilter: PassThrough | undefined;
+  if (multilineInput) {
+    const kf = new PassThrough();
+    (kf as unknown as { isTTY: boolean }).isTTY = true;
+    (kf as unknown as { setRawMode: (m: boolean) => unknown }).setRawMode = (m: boolean) => {
+      try { (process.stdin as { setRawMode?(r: boolean): void }).setRawMode?.(m); } catch { /* terminal gone */ }
+      return kf;
+    };
+    Object.defineProperty(kf, "isRaw", { get: () => (process.stdin as { isRaw?: boolean }).isRaw });
+    // Forward stdin → filter, rewriting Shift+Enter sequences (sent atomically, so a
+    // per-chunk replace is sufficient; no partial-sequence buffering that could swallow
+    // a lone ESC/cancel).
+    process.stdin.on("data", (chunk: Buffer) => {
+      let data = chunk.toString("utf8");
+      for (const seq of SHIFT_ENTER_SEQS) if (data.includes(seq)) data = data.split(seq).join(SENTINEL);
+      kf.write(data);
+    });
+    keyFilter = kf;
+    // readline now decodes keypresses on `keyFilter`; keep process.stdin emitting
+    // 'keypress' too so the footer-redraw / paste-marker / picker listeners (registered
+    // on process.stdin below) still fire.
+    emitKeypressEvents(process.stdin);
+  }
   const rl = createInterface({
-    input: process.stdin,
+    input: keyFilter ?? process.stdin,
     // Single-box input: gate readline's output while the boxed footer is armed so its own
     // `jeo>` prompt/echo is suppressed and ONLY our box shows. (Bun exposes no
     // `_writeToOutput` to patch, so gating the shared output stream is the portable fix.)
@@ -2052,9 +2089,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (residual !== "") parts.push(residual);
         pasteMerge.buf = [];
         pasteLineFired = false;
-        return parts.join("\n");
+        return expandSentinel(parts.join("\n"));
       }
-      return value;
+      return expandSentinel(value);
     } finally {
       promptActive = false;
       notifyStdinClosed = undefined;
@@ -2260,7 +2297,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const rli = rl as unknown as { line?: string; cursor?: number };
     const caret = rli.line === line && typeof rli.cursor === "number" ? rli.cursor : line.length;
     const { accent: boxAccent, shadow: boxShadow } = boxAccents(line);
-    const frame = renderInputFrame(line, {
+    const frame = renderInputFrame(expandSentinel(line), {
       cols,
       color: true,
       unicode: true,

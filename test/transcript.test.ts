@@ -71,3 +71,30 @@ test("formatTranscript clips long bodies and handles empty history", () => {
   expect(out).toContain("(+16 more lines)");
   expect(formatTranscript([{ role: "system", content: "s" }], { color: false }).join("\n")).toContain("no worked history yet");
 });
+
+test("formatTranscript renders BATCHED tool calls as ledger lines, not raw JSON (/resume fix)", () => {
+  const batch = JSON.stringify({
+    reasoning: "look at both",
+    tools: [
+      { tool: "read", arguments: { filePath: "a.ts" } },
+      { tool: "search", arguments: { pattern: "foo" } },
+    ],
+  });
+  const messages: Message[] = [
+    { role: "user", content: "inspect a.ts and find foo" },
+    { role: "assistant", content: batch },
+    { role: "user", content: "Tool [read] result (ok):\nfile a.ts contents\n\nTool [search] result (fail):\nno matches" },
+    { role: "assistant", content: JSON.stringify({ tool: "done", arguments: { reason: "done looking" } }) },
+  ];
+  const out = formatTranscript(messages, { color: false, unicode: true }).map(stripAnsi).join("\n");
+  // One compact ledger line PER batched call, with the right per-call verdict glyph.
+  const ledgerLines = out.split("\n").filter(l => /^\s+[✔✗]\s/.test(l));
+  expect(ledgerLines.length).toBe(2);
+  expect(out).toMatch(/✔ .*a\.ts/); // read ok
+  expect(out).toContain("✗");        // search fail verdict from the second result block
+  // The raw batch JSON must NEVER leak into the transcript (the bug being fixed).
+  expect(out).not.toContain('"tools"');
+  expect(out).not.toContain('"reasoning"');
+  expect(out).not.toContain("[{");
+  expect(out).toContain("  done looking");
+});

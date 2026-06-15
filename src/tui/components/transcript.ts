@@ -46,6 +46,20 @@ function firstToolResultLine(text: string | undefined): string {
     .slice(0, 96) ?? "";
 }
 
+const TOOL_RESULT_GLOBAL = /^Tool \[([^\]]+)\] result \((ok|fail)\):/gm;
+/** Split a tool-result user message — which for a BATCH holds several
+ *  `Tool [x] result (ok|fail):` blocks joined by blank lines — into per-call
+ *  verdicts in the order the engine emitted them (= the batch's call order). */
+function parseToolVerdicts(text: string | undefined): { tool: string; status: string; firstLine: string }[] {
+  if (!text) return [];
+  const matches = [...text.matchAll(TOOL_RESULT_GLOBAL)];
+  return matches.map((mt, k) => {
+    const start = mt.index ?? 0;
+    const end = k + 1 < matches.length ? (matches[k + 1]!.index ?? text.length) : text.length;
+    return { tool: mt[1]!, status: mt[2]!, firstLine: firstToolResultLine(text.slice(start, end)) };
+  });
+}
+
 /** Format engine history as a scrollback-friendly transcript. */
 export function formatTranscript(messages: readonly Message[], opts: TranscriptOptions = {}): string[] {
   const color = opts.color !== false;
@@ -92,25 +106,41 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
       lines.push(...clipBody(m.content, bodyCap));
       continue;
     }
-    // assistant: a JSON tool call (one compact ledger line) or a prose reply.
-    let invocation: { tool?: unknown; arguments?: unknown } | null = null;
+    // assistant: one or more JSON tool calls (compact ledger lines) or a prose reply.
+    // Handles BOTH the single `{tool,arguments}` form AND the batched `{tools:[...]}`
+    // form — the batch case previously parsed to no `tool` field, fell through, and
+    // dumped the raw JSON object into the transcript (the "/resume shows JSON" bug).
+    let parsed: { tool?: unknown; tools?: unknown; arguments?: unknown } | null = null;
     try {
-      const parsed = JSON.parse(m.content) as { tool?: unknown; arguments?: unknown };
-      if (parsed && typeof parsed === "object" && typeof parsed.tool === "string") invocation = parsed;
+      const p: unknown = JSON.parse(m.content);
+      if (p && typeof p === "object") parsed = p as { tool?: unknown; tools?: unknown; arguments?: unknown };
     } catch { /* prose reply */ }
-    if (invocation && typeof invocation.tool === "string" && invocation.tool !== "done") {
-      // The matching `Tool [x] result (ok|fail)` user message tells success/failure.
+    const calls: { tool: string; arguments?: unknown }[] =
+      parsed && typeof parsed.tool === "string"
+        ? [{ tool: parsed.tool, arguments: parsed.arguments }]
+        : parsed && Array.isArray(parsed.tools)
+          ? (parsed.tools as { tool?: unknown; arguments?: unknown }[])
+              .filter(c => c && typeof c.tool === "string")
+              .map(c => ({ tool: c.tool as string, arguments: c.arguments }))
+          : [];
+    const toolCalls = calls.filter(c => c.tool !== "done");
+    if (toolCalls.length > 0) {
+      // The matching `Tool [x] result (ok|fail)` user message follows; for a batch it
+      // is ONE message with several blocks. Parse verdicts in call order.
       const next = messages[i + 1];
-      const verdict = next?.role === "user" ? next.content.match(TOOL_RESULT_RE) : null;
-      const mark = verdict?.[2] === "fail" ? red(bad) : green(ok);
-      const title = summarizeForgeInvocation(invocation.tool, invocation.arguments).title;
-      const resultLine = firstToolResultLine(next?.content);
-      const suffix = resultLine ? dim(` — ${resultLine}`) : "";
-      lines.push(`  ${mark} ${title}${suffix}`);
+      const verdicts = next?.role === "user" ? parseToolVerdicts(next.content) : [];
+      toolCalls.forEach((c, ci) => {
+        const v = verdicts[ci] ?? verdicts.find(x => x.tool === c.tool);
+        const mark = v?.status === "fail" ? red(bad) : green(ok);
+        const title = summarizeForgeInvocation(c.tool, c.arguments).title;
+        const suffix = v?.firstLine ? dim(` — ${v.firstLine}`) : "";
+        lines.push(`  ${mark} ${title}${suffix}`);
+      });
       continue;
     }
-    const reason = invocation
-      ? String((invocation.arguments as { reason?: unknown } | undefined)?.reason ?? "")
+    // A lone `done` (show its reason) or a plain prose reply.
+    const reason = parsed
+      ? String((parsed.arguments as { reason?: unknown } | undefined)?.reason ?? "")
       : m.content;
     if (!reason.trim()) continue;
     lines.push(`${magentaBold(`jeo ${jeoMark}`)}`);

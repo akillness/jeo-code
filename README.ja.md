@@ -150,11 +150,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.5.10]** (2026-06-15) — `/resume` transcript no longer dumps raw JSON for batched tool calls.
 - **[0.5.9]** (2026-06-15) — Bounded per-frame wrap for the live thinking/tool-output blocks — re-render cost no longer grows with stream length.
 - **[0.5.8]** (2026-06-15) — Native Opik observability for the turn loop (opt-in `JEO_OPIK`, pure-TS no-op when unset) + autopilot convergence tracking.
 - **[0.5.7]** (2026-06-15) — `/model` picker is default-only, `/clear` resets to the initial screen, ESC clears the input box, and a launch process-listener leak is fixed.
 - **[0.5.6]** (2026-06-15) — `/model` sets only the default thinking; per-role reasoning moved to `/agents`.
-- **[0.5.5]** (2026-06-15) — Full multi-line visibility — the input box scrolls to the caret and the submitted card shows every line.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

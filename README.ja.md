@@ -150,7 +150,7 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[0.5.7]** (2026-06-15) — `/model` picker is default-only — every role/preset menu removed.
+- **[0.5.7]** (2026-06-15) — `/model` picker is default-only, `/clear` resets to the initial screen, ESC clears the input box, and a launch process-listener leak is fixed.
 - **[0.5.6]** (2026-06-15) — `/model` sets only the default thinking; per-role reasoning moved to `/agents`.
 - **[0.5.5]** (2026-06-15) — Full multi-line visibility — the input box scrolls to the caret and the submitted card shows every line.
 - **[0.5.4]** (2026-06-15) — Reliable multi-line input is ON by default — a paste fills the box and submits as one message.

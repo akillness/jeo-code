@@ -54,19 +54,26 @@ test("/model subagent <role> <model> persists the role model override", async ()
   }
 });
 
-test("/model thinking and /model subagent <role> thinking persist reasoning levels", async () => {
+test("/model sets only the DEFAULT thinking; role thinking is owned by /agents", async () => {
   const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-role-thinking-"));
   const savedCfg = process.env.JEO_CONFIG_DIR;
   const savedLog = console.log;
   console.log = () => {};
   try {
     process.env.JEO_CONFIG_DIR = cfgDir;
-    mockQuestions = ["/model thinking high", "/model subagent planner thinking xhigh", "/exit"];
+    // `/model thinking` sets the default; `/model subagent … thinking` is redirected
+    // to /agents and must NOT persist; `/agents … thinking` is the path that does.
+    mockQuestions = [
+      "/model thinking high",
+      "/model subagent planner thinking xhigh",
+      "/agents planner thinking medium",
+      "/exit",
+    ];
     const { runLaunchCommand } = await import("../src/commands/launch");
     await runLaunchCommand(["--no-tui", "--no-session"]);
     const raw = JSON.parse(await fs.readFile(path.join(cfgDir, "config.json"), "utf8"));
-    expect(raw.thinkingLevel).toBe("high");
-    expect(raw.subagents?.planner?.thinking).toBe("xhigh");
+    expect(raw.thinkingLevel).toBe("high");                 // /model owns the default thinking
+    expect(raw.subagents?.planner?.thinking).toBe("medium"); // set by /agents, NOT the ignored /model xhigh
   } finally {
     console.log = savedLog;
     if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;

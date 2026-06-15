@@ -2753,17 +2753,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         disabled: true,
       });
       appendChildren([
-        { value: `${role.id}:keep`, label: "Set model only", hint: `keep thinking ${roleThinking}` },
-        {
-          value: `${role.id}:inherit`,
-          label: "thinking inherit",
-          hint: `follow default (${config.thinkingLevel ?? "medium"})`,
-        },
-        ...levels.map(level => ({
-          value: `${role.id}:${level}`,
-          label: `thinking ${level}`,
-          hint: roleThinking === level ? "current" : `~${Math.round(thinkingMaxTokens(level) / 1000)}k tokens`,
-        })),
+        { value: `${role.id}:keep`, label: "Set model only", hint: `keep thinking ${roleThinking} · set via /agents edit` },
       ]);
     }
 
@@ -4022,10 +4012,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           let roleModelArg = (roleMatch[3] ?? "").trim();
           const roleThinking = /^(?:thinking|think)(?:\s+(\S+))?$/i.exec(roleModelArg);
           if (roleThinking) {
-            await setRoleThinking(role.id, roleThinking[1]);
+            console.log(`Subagent thinking is set via /agents — try: /agents ${role.id} thinking ${roleThinking[1] ?? "<level|inherit>"}  (or /agents edit). /model only sets the default thinking.`);
             continue;
           }
-          let roleModelPickedFromSelector = false;
+
           if (!roleModelArg && process.stdin.isTTY && process.stdout.isTTY) {
             const live = await getLiveModels();
             lastPickIndex = flattenModels(live);
@@ -4037,7 +4027,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
                 continue;
               }
               roleModelArg = qualifyModelId(picked.model, picked.provider);
-              roleModelPickedFromSelector = true;
+
             }
           }
           if (roleModelArg && lastPickIndex.length) {
@@ -4049,7 +4039,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
                 continue;
               }
               roleModelArg = qualifyModelId(sel.entry.model, sel.entry.provider);
-              roleModelPickedFromSelector = true;
+
             } else if (sel.kind === "ambiguous") {
               console.log(`'${roleModelArg}' matches ${sel.matches.length} models — be more specific:`);
               for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
@@ -4063,20 +4053,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             continue;
           }
           if (roleModelArg) {
-            let thinkPatch: { thinking?: ThinkLevel } = {};
-            if (roleModelPickedFromSelector && process.stdin.isTTY && process.stdout.isTTY) {
-              const cfgForRole = await readGlobalConfig();
-              const lvl = await pickThinkingLevel(
-                `Reasoning for ${role.title}: ${roleModelArg}`,
-                cfgForRole.subagents?.[role.id]?.thinking,
-                `inherit — follow default (${cfgForRole.thinkingLevel ?? "medium"})`,
-              );
-              thinkPatch = lvl === "inherit" ? { thinking: undefined } : lvl ? { thinking: lvl } : {};
-            }
-            await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: roleModelArg, ...thinkPatch }) }));
+            await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: roleModelArg }) }));
             const { provider } = await describeModel(roleModelArg);
-            const thinkNote = thinkPatch.thinking ? ` · thinking ${thinkPatch.thinking}` : "";
-            console.log(`${role.title} model set to ${roleModelArg} (${provider})${thinkNote} — saved to ~/.jeo/config.json`);
+            console.log(`${role.title} model set to ${roleModelArg} (${provider}) — saved to ~/.jeo/config.json. Set its thinking via /agents ${role.id} thinking <level> (or /agents edit).`);
           } else {
             const current = resolveSubagentModel(role.id, await readGlobalConfig());
             const { resolved, provider } = await describeModel(current);

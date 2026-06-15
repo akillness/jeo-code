@@ -150,11 +150,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.5.6]** (2026-06-15) — `/model` sets only the default thinking; per-role reasoning moved to `/agents`.
 - **[0.5.5]** (2026-06-15) — Full multi-line visibility — the input box scrolls to the caret and the submitted card shows every line.
 - **[0.5.4]** (2026-06-15) — Reliable multi-line input is ON by default — a paste fills the box and submits as one message.
 - **[0.5.3]** (2026-06-15) — `$` chains multiple skills in one line (all run, in order), plus multi-line prompt input — paste-merge and gated Shift+Enter.
 - **[0.5.2]** (2026-06-14) — `$skill` prompt invocation with prefix/fuzzy suggestions, and a per-session input-box hue (amber in cmd-mode).
-- **[0.5.1]** (2026-06-14) — cmd-mode `!<command>` shell escape — run a shell command without engaging the agent.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

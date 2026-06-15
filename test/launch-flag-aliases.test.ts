@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseFlags } from "../src/commands/launch";
+import { parseFlags, normalizeSlashAlias } from "../src/commands/launch";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -86,4 +86,17 @@ test("parseFlags: --append-system-prompt literal + @file + missing file", () => 
   expect(flags3.appendSystemPrompt).toBeUndefined();
   expect(flags3.errors.length).toBeGreaterThan(0);
   expect(flags3.errors[0]).toContain("failed to read system prompt file");
+});
+test("normalizeSlashAlias rewrites gjc-parity command aliases (preserving args)", () => {
+  expect(normalizeSlashAlias("/login")).toBe("/provider login");
+  expect(normalizeSlashAlias("/login gemini")).toBe("/provider login gemini");
+  expect(normalizeSlashAlias("/settings")).toBe("/config");
+  expect(normalizeSlashAlias("/subagent")).toBe("/agents");
+  expect(normalizeSlashAlias("/subagent edit")).toBe("/agents edit");
+  expect(normalizeSlashAlias("/subagents planner")).toBe("/agents planner");
+  // non-aliases pass through untouched
+  expect(normalizeSlashAlias("/model")).toBe("/model");
+  expect(normalizeSlashAlias("/help")).toBe("/help");
+  expect(normalizeSlashAlias("hello /login")).toBe("hello /login"); // only a leading command is rewritten
+  expect(normalizeSlashAlias("/settingsx")).toBe("/settingsx"); // exact-match guard
 });

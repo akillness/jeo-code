@@ -509,6 +509,17 @@ export function isStandaloneBackspace(chunk: string): boolean {
   return chunk.length > 0 && /^[\x7f\b]+$/.test(chunk);
 }
 
+/** gjc-parity slash-command aliases, applied once before dispatch so each real command
+ *  keeps a SINGLE handler: `/login`→`/provider login`, `/settings`→`/config`,
+ *  `/subagent(s)`→`/agents`. Pure rewrite that preserves any trailing args. */
+export function normalizeSlashAlias(input: string): string {
+  if (input === "/login" || input.startsWith("/login ")) return `/provider login${input.slice("/login".length)}`;
+  if (input === "/settings") return "/config";
+  if (input === "/subagent" || input.startsWith("/subagent ")) return `/agents${input.slice("/subagent".length)}`;
+  if (input === "/subagents" || input.startsWith("/subagents ")) return `/agents${input.slice("/subagents".length)}`;
+  return input;
+}
+
 export interface PromptInputQueue {
   pendingLines: string[];
   partial: string;
@@ -3132,13 +3143,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       let input = pendingSelection && trigger && pendingSelection.startsWith(trigger.token)
         ? raw.slice(0, trigger.start) + pendingSelection
         : raw;
-      // gjc-parity command aliases (full behavior reuse, no duplicated handlers).
-      if (input === "/login" || input.startsWith("/login ")) input = `/provider login${input.slice("/login".length)}`;
-      else if (input === "/settings") input = "/config";
-      // `/subagent`(s) → the /agents roster/editor (view + change the current
-      // subagent composition: per-role model · thinking · steps).
-      else if (input === "/subagent" || input.startsWith("/subagent ")) input = `/agents${input.slice("/subagent".length)}`;
-      else if (input === "/subagents" || input.startsWith("/subagents ")) input = `/agents${input.slice("/subagents".length)}`;
+      // gjc-parity command aliases (full behavior reuse, no duplicated handlers):
+      // /login→/provider login, /settings→/config, /subagent(s)→/agents.
+      input = normalizeSlashAlias(input);
       pendingSelection = undefined;
       navMatches = [];
       navIdx = -1;

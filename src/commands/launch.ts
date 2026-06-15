@@ -1935,20 +1935,38 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       return kf;
     };
     Object.defineProperty(kf, "isRaw", { get: () => (process.stdin as { isRaw?: boolean }).isRaw });
-    // Forward stdin → filter, rewriting Shift+Enter into the newline sentinel BEFORE
-    // readline sees it. Three encodings are handled so it works across setups:
-    //   • a lone "\n" (0x0a) chunk — what ghostty's `keybind = shift+enter=text:\n`
-    //     sends; a normal byte that passes through tmux UNCHANGED (works even with
-    //     tmux extended-keys off). Enter sends "\r" in raw mode, so a lone "\n" is
-    //     unambiguously Shift+Enter. This is the reliable ghostty+tmux path.
-    //   • the xterm legacy "\x1b[27;2;13~" and kitty "\x1b[13;2u" sequences — direct
-    //     terminal (no tmux) or tmux with extended-keys on. (Sent atomically, so a
-    //     per-chunk replace suffices; no partial buffering that could swallow ESC.)
+    // Forward stdin → filter, rewriting line breaks into a newline SENTINEL BEFORE
+    // readline sees them, so multi-line input arrives as ONE buffer (no per-line submit
+    // and no racy paste-merge). Stateful across chunks:
+    //   • Inside a bracketed paste (200~..201~): every line break → sentinel, so the
+    //     whole paste inserts as one multi-line buffer that the user reviews + submits
+    //     with Enter (fixes "paste only kept line 1").
+    //   • Outside a paste: Shift+Enter encodings → sentinel — a lone "\n" (ghostty
+    //     `keybind = shift+enter=text:\n`, passes tmux unchanged even with extended-keys
+    //     off) and the xterm "\x1b[27;2;13~" / kitty "\x1b[13;2u" sequences. Enter ("\r")
+    //     passes through and submits.
+    let kfInPaste = false;
     process.stdin.on("data", (chunk: Buffer) => {
-      let data = chunk.toString("utf8");
-      if (data === "\n") data = SENTINEL;
-      else for (const seq of SHIFT_ENTER_SEQS) if (data.includes(seq)) data = data.split(seq).join(SENTINEL);
-      kf.write(data);
+      const data = chunk.toString("utf8");
+      let out = "";
+      let i = 0;
+      while (i < data.length) {
+        if (!kfInPaste && data.startsWith(PASTE_START, i)) { kfInPaste = true; out += PASTE_START; i += PASTE_START.length; continue; }
+        if (kfInPaste && data.startsWith(PASTE_END, i)) { kfInPaste = false; out += PASTE_END; i += PASTE_END.length; continue; }
+        if (kfInPaste) {
+          if (data.startsWith("\r\n", i)) { out += SENTINEL; i += 2; continue; }
+          if (data[i] === "\n" || data[i] === "\r") { out += SENTINEL; i += 1; continue; }
+          out += data[i]; i += 1; continue;
+        }
+        let matched = false;
+        for (const seq of SHIFT_ENTER_SEQS) {
+          if (data.startsWith(seq, i)) { out += SENTINEL; i += seq.length; matched = true; break; }
+        }
+        if (matched) continue;
+        if (data[i] === "\n") { out += SENTINEL; i += 1; continue; } // lone LF = Shift+Enter
+        out += data[i]; i += 1;
+      }
+      kf.write(out);
     });
     keyFilter = kf;
     // readline now decodes keypresses on `keyFilter`; keep process.stdin emitting

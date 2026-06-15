@@ -793,7 +793,7 @@ test("LaunchTui: completed tool card shows elapsed (Nms) timing detail", async (
   expect(txt).toMatch(/Bash.*\(\d+ms\)/); // result card title carries the elapsed ms
 });
 
-test("LaunchTui: a sub-second light tool also reports (Nms) on its ledger line", async () => {
+test("LaunchTui: a light tool's ledger line stays clean — no ms suffix (duration lives on forge cards)", async () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", tty: false, write: s => out.push(s) });
   tui.start();
@@ -803,5 +803,6 @@ test("LaunchTui: a sub-second light tool also reports (Nms) on its ledger line",
   await new Promise(r => setTimeout(r, 12));
   ev.onToolResult!("read", true, "1|ok");
   const txt = out.join("").replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
-  expect(txt).toMatch(/\(\d+ms\)/); // light-tool ledger line carries the elapsed ms
+  expect(txt).toMatch(/Read x\.ts/);    // light-tool ledger line is present
+  expect(txt).not.toMatch(/\(\d+ms\)/); // …but stays a clean single line (ms is for forge cards)
 });

@@ -505,9 +505,11 @@ export class LaunchTui {
           if (!success) this.flushForgeCard(result, false);
         } else {
           // Light tool: one ✓/✗ line, plus a dim result tree for list-shaped output
-          // (find/search/ls) and an error card when the tool failed.
+          // (find/search/ls) and an error card when the tool failed. The ledger line
+          // stays a clean single line (no ms suffix) — light tools are sub-ms and the
+          // duration detail lives on the heavier forge cards instead.
           const { suffix, children } = this.ledgerTree(tool, success, output);
-          this.appendLedger(`${paintedMark} ${target}${suffix}${durSuffix}\n${children.map(c => `${c}\n`).join("")}`, "tool");
+          this.appendLedger(`${paintedMark} ${target}${suffix}\n${children.map(c => `${c}\n`).join("")}`, "tool");
           if (!success) {
             this.rememberForge(result);
             this.flushForgeCard(result, false);

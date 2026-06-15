@@ -1914,17 +1914,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // scrollback before the boxed footer takes over.
   let promptActive = false;
   let pickerActive = false;
-  // ── Multi-line input (JEO_MULTILINE=1, gated) ──────────────────────────────────
-  // Shift+Enter inserts a newline instead of submitting. ghostty (and most terminals)
-  // send Shift+Enter as a distinct escape sequence (\x1b[27;2;13~ legacy, \x1b[13;2u
-  // kitty) that node:readline otherwise mangles into garbage. We route stdin through a
-  // filter that rewrites those sequences to a private-use SENTINEL char BEFORE readline
-  // sees them — readline inserts it as an ordinary character (no submit), and we render
-  // it as a real line break and expand it to "\n" on submit. Default OFF: when disabled
-  // the prompt reads process.stdin directly, exactly as before (zero risk).
+  // ── Multi-line input ───────────────────────────────────────────────────────────
+  // Reliable multi-line input: a bracketed paste arrives as ONE buffer (fills the box,
+  // submits intact) and Shift+Enter can insert a newline. We route the prompt's stdin
+  // through a filter that rewrites line breaks to a private-use SENTINEL char BEFORE
+  // readline sees them — readline inserts it as an ordinary character (no per-line
+  // submit/race), the box renders it as a real line break, and it is expanded back to
+  // "\n" on submit. On for any interactive TTY; JEO_NO_MULTILINE=1 reads stdin directly.
   const SENTINEL = "\uE000";
   const SHIFT_ENTER_SEQS = ["\u001b[27;2;13~", "\u001b[13;2u"];
-  const multilineInput = jeoEnv("MULTILINE") === "1" && !!process.stdin.isTTY;
+  // Multi-line input filter is ON for any interactive TTY: reliable multi-line paste
+  // (fills the box, submits intact into the user card) is the default. The lone-"\n"
+  // Shift+Enter rule stays opt-in (JEO_MULTILINE=1) — it needs ghostty's
+  // `keybind = shift+enter=text:\n` and could misfire on the rare terminal that sends
+  // LF for Enter. JEO_NO_MULTILINE=1 fully disables the filter (reads stdin directly).
+  const multilineInput = !!process.stdin.isTTY && jeoEnv("NO_MULTILINE") !== "1";
+  const loneLfShiftEnter = jeoEnv("MULTILINE") === "1";
   const expandSentinel = (s: string): string => (multilineInput ? s.split(SENTINEL).join("\n") : s);
   let keyFilter: PassThrough | undefined;
   if (multilineInput) {
@@ -1963,7 +1968,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (data.startsWith(seq, i)) { out += SENTINEL; i += seq.length; matched = true; break; }
         }
         if (matched) continue;
-        if (data[i] === "\n") { out += SENTINEL; i += 1; continue; } // lone LF = Shift+Enter
+        if (loneLfShiftEnter && data[i] === "\n") { out += SENTINEL; i += 1; continue; } // lone LF = Shift+Enter (opt-in)
         out += data[i]; i += 1;
       }
       kf.write(out);

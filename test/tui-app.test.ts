@@ -779,3 +779,29 @@ test("LaunchTui.flushUserCard: the turn-starting prompt persists as a user box i
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
   tui.finish("ok");
 });
+
+test("LaunchTui: completed tool card shows elapsed (Nms) timing detail", async () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  const ev = tui.events();
+  ev.onStep!(1);
+  ev.onAssistant!("", { tool: "bash", arguments: { command: "echo hi" } }); // tool starts (toolStartedAt set)
+  await new Promise(r => setTimeout(r, 12));                                  // let measurable time pass
+  ev.onToolResult!("bash", true, "hi");                                       // completes → card flushed with (Nms)
+  const txt = out.join("").replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+  expect(txt).toMatch(/Bash.*\(\d+ms\)/); // result card title carries the elapsed ms
+});
+
+test("LaunchTui: a sub-second light tool also reports (Nms) on its ledger line", async () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: false, write: s => out.push(s) });
+  tui.start();
+  const ev = tui.events();
+  ev.onStep!(1);
+  ev.onAssistant!("", { tool: "read", arguments: { filePath: "x.ts" } });
+  await new Promise(r => setTimeout(r, 12));
+  ev.onToolResult!("read", true, "1|ok");
+  const txt = out.join("").replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+  expect(txt).toMatch(/\(\d+ms\)/); // light-tool ledger line carries the elapsed ms
+});

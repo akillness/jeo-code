@@ -32,7 +32,7 @@ import { renderMarkdownTables } from "./components/markdown-table";
 import { stripMarkdown, renderMarkdownAnsi } from "./components/markdown-text";
 import { visibleWidth, wrapTextWithAnsi, truncateToWidth, sanitizeForFrame } from "./components/width";
 import { categoryBadge } from "./components/category-index";
-import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, type StepState } from "./components/step-timeline";
+import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, formatDuration as formatToolMs, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
 import { formatDuration, formatUsage } from "./components/duration";
 import { renderHud, derivePhase, type JeoPhase } from "./components/hud";
@@ -112,6 +112,12 @@ export const FRAME_WRAP_TAIL_CHARS = 16 * 1024;
 export function tailForWrap(text: string, maxChars = FRAME_WRAP_TAIL_CHARS): string {
   return text.length > maxChars ? text.slice(text.length - maxChars) : text;
 }
+
+/** Status animation palette while a tool/process runs (background verification): an
+ *  amber→yellow gradient, distinct from the cool thinking gradient, so "the agent is
+ *  running a process / verifying" reads at a glance (gjc parity: `theme.fg("warning")`
+ *  on the in-flight tool line). */
+export const STATUS_VERIFY_PALETTE = ["#ffd24a", "#ffb300"] as const;
 const DEFAULT_MAX_STEPS = 100;
 // Tools light enough that they never get a forge card (gjc parity): completion is a
 // single ✓/✗ ledger line; only failures surface a result card with the error body.
@@ -169,6 +175,8 @@ export class LaunchTui {
   private thinking = false;
   private hudPhase: JeoPhase = "thinking";
   private runningTool = false;
+  // When the current tool started (Date.now()); drives the result card's elapsed `(Nms)`.
+  private toolStartedAt = 0;
   // Latest transient provider notice (rate-limit auto-retry countdown); pinned into the
   // [STEP] status row while waiting so backoff is visible at a glance. Cleared on the
   // next step / model reply.
@@ -412,6 +420,7 @@ export class LaunchTui {
         this.streamingActivity = "";
         if (invocation && invocation.tool !== "done") {
           this.runningTool = true;
+          this.toolStartedAt = Date.now();
           this.hudPhase = "executing";
           const toolName = invocation.tool || "(no tool)";
           this.pendingIndex = this.tools.start(toolName);
@@ -464,6 +473,12 @@ export class LaunchTui {
         // tool checklist — no category/status badge clutter.
         const mark = this.unicode ? (success ? "✓" : "✗") : success ? "v" : "x";
         const paintedMark = this.theme.color ? (success ? chalk.green(mark) : chalk.red(mark)) : mark;
+        // gjc-parity timing detail: the completed card shows how long the tool ran,
+        // dim after the ✓/✗ glyph (e.g. `✓ Bash · (438ms)`).
+        const toolMs = this.toolStartedAt ? Date.now() - this.toolStartedAt : 0;
+        this.toolStartedAt = 0;
+        const durDim = this.theme.color ? chalk.dim : (s: string) => s;
+        const durSuffix = toolMs > 0 ? durDim(` ${this.unicode ? "·" : "-"} (${formatToolMs(toolMs)})`) : "";
         const result = summarizeForgeResult(tool, success, output);
         const card = this.pendingForge;
         this.pendingForge = null;
@@ -471,7 +486,7 @@ export class LaunchTui {
           // gjc-style single Bash card: command echo + `Output` divider + body + exit
           // note, under one ✓/✗-marked header — mutated in place so the live frame and
           // the non-TTY summary both show the merged card.
-          card.title = `${paintedMark} Bash`;
+          card.title = `${paintedMark} Bash${durSuffix}`;
           card.lines.push(...result.lines);
           this.flushForgeCard(card, success);
         } else if (card && t === "web_search" && success && webSearchCardLines(output, { unicode: this.unicode })) {
@@ -480,11 +495,11 @@ export class LaunchTui {
           // the structured tool output (provider chain — Anthropic native or the
           // keyless DuckDuckGo fallback).
           const ws = webSearchCardLines(output, { unicode: this.unicode })!;
-          card.title = `${paintedMark} Web Search: ${ws.titleMeta}`;
+          card.title = `${paintedMark} Web Search: ${ws.titleMeta}${durSuffix}`;
           card.lines = ws.lines;
           this.flushForgeCard(card, success);
         } else if (card) {
-          card.title = `${paintedMark} ${card.title}`;
+          card.title = `${paintedMark} ${card.title}${durSuffix}`;
           if (!success) this.rememberForge(result);
           this.flushForgeCard(card, success);
           if (!success) this.flushForgeCard(result, false);
@@ -492,7 +507,7 @@ export class LaunchTui {
           // Light tool: one ✓/✗ line, plus a dim result tree for list-shaped output
           // (find/search/ls) and an error card when the tool failed.
           const { suffix, children } = this.ledgerTree(tool, success, output);
-          this.appendLedger(`${paintedMark} ${target}${suffix}\n${children.map(c => `${c}\n`).join("")}`, "tool");
+          this.appendLedger(`${paintedMark} ${target}${suffix}${durSuffix}\n${children.map(c => `${c}\n`).join("")}`, "tool");
           if (!success) {
             this.rememberForge(result);
             this.flushForgeCard(result, false);
@@ -1164,12 +1179,16 @@ export class LaunchTui {
     // the ⟦esc⟧ cancel hint visible without trapping the message inside a border.
     if (isThinking) {
       const grad = themeGradient(this.theme, idx);
+      // While a tool/process runs (background verification), the status animation turns
+      // amber/yellow — distinct from the cool thinking gradient (gjc warning-color parity).
+      const verifying = this.runningTool;
+      const verifySpin = verifying && this.theme.color ? chalk.yellow(this.spinner.current()) : this.spinner.current();
       const costUsd = costForUsage(this.footer.model, this.turnUsage) ?? undefined;
       const stats = this.tools.stats();
       tail.push(...renderStatusBox({
         cols: Math.max(24, Math.min(120, cols)),
         phaseLabel: this.workflowStatus ? `${this.workflowStatus.skill}:${this.workflowStatus.phase}` : this.hudPhase,
-        spinner: this.spinner.current(),
+        spinner: verifySpin,
         activity: this.retryNotice ?? (this.streamingActivity || this.currentActivity()),
         escHint: true,
         elapsedMs,
@@ -1184,7 +1203,7 @@ export class LaunchTui {
         color: this.theme.color,
         colorLevel,
         phase,
-        palette: [grad.from, grad.to],
+        palette: verifying ? [...STATUS_VERIFY_PALETTE] : [grad.from, grad.to],
         isThinking: true,
         usage: this.turnUsage,
         costUsd,
@@ -1350,7 +1369,7 @@ export class LaunchTui {
         for (const line of renderStatusBox({
           cols: innerWidth,
           phaseLabel: this.workflowStatus ? `${this.workflowStatus.skill}:${this.workflowStatus.phase}` : this.hudPhase,
-          spinner: this.spinner.current(),
+          spinner: this.runningTool && this.theme.color ? chalk.yellow(this.spinner.current()) : this.spinner.current(),
           activity: this.retryNotice ?? (this.streamingActivity || statusMsg),
           escHint: true,
           elapsedMs,
@@ -1365,7 +1384,7 @@ export class LaunchTui {
           color: this.theme.color,
           colorLevel,
           phase,
-          palette,
+          palette: this.runningTool ? [...STATUS_VERIFY_PALETTE] : palette,
           isThinking: true,
           usage: this.turnUsage,
           costUsd,

@@ -475,6 +475,32 @@ export function getSkillFrom(skills: SkillDoc[], name: string): SkillDoc | undef
   return skills.find(s => s.name.toLowerCase() === name.toLowerCase());
 }
 
+/** The single skill whose name PREFIX-matches `query` (case-insensitive), or undefined
+ *  when zero or many match. Lets `$te` precisely resolve to `$team` without full spelling. */
+export function uniquePrefixSkill(skills: SkillDoc[], query: string): SkillDoc | undefined {
+  const q = query.toLowerCase();
+  if (!q) return undefined;
+  const hits = skills.filter(s => s.name.toLowerCase().startsWith(q));
+  return hits.length === 1 ? hits[0] : undefined;
+}
+
+/** Prefix-first, then fuzzy-subsequence skill suggestions for a `$query` that did NOT
+ *  resolve — drives the REPL's clear "did you mean / available" feedback. */
+export function suggestSkills(skills: SkillDoc[], query: string): SkillDoc[] {
+  const q = query.toLowerCase();
+  const prefix = skills.filter(s => s.name.toLowerCase().startsWith(q));
+  const seen = new Set(prefix.map(s => s.name));
+  const fuzzy = skills.filter(s => !seen.has(s.name) && skillNameSubsequence(q, s.name.toLowerCase()));
+  return [...prefix, ...fuzzy];
+}
+
+/** Order-preserving subsequence test (every char of `needle` appears in `hay` L→R). */
+function skillNameSubsequence(needle: string, hay: string): boolean {
+  let i = 0;
+  for (let j = 0; j < hay.length && i < needle.length; j++) if (hay[j] === needle[i]) i++;
+  return i === needle.length;
+}
+
 /** Case-insensitive lookup by direct slash alias, e.g. `/speckit.plan`. */
 export function getSkillBySlash(skills: SkillDoc[], command: string): SkillDoc | undefined {
   const q = command.toLowerCase();
@@ -514,7 +540,7 @@ export function parseSkillInvocation(input: string, skills: SkillDoc[]): SkillIn
   // only when a skill with that exact name is loaded — `$HOME is what?` or any
   // unknown `$word` falls through to the model as an ordinary prompt.
   if (command.length > 1 && command.startsWith("$")) {
-    const dollarSkill = getSkillFrom(skills, command.slice(1));
+    const dollarSkill = getSkillFrom(skills, command.slice(1)) ?? uniquePrefixSkill(skills, command.slice(1));
     if (dollarSkill) {
       return { skill: dollarSkill, intent: trimmed.slice(command.length).trim(), invokedAs: command };
     }

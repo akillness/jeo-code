@@ -2148,6 +2148,27 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let uiTheme = resolveTheme(process.env);
   let uiAccent = accentPaint(uiTheme);
   let uiAccentShadow = accentShadowPaint(uiTheme);
+  // Input-box border colors. Each opened session gets a DISTINCT hue (so several jeo
+  // sessions are tellable apart at a glance), and cmd-mode (`!`) overrides it with a
+  // caution amber so entering the shell escape is unmistakable.
+  const SESSION_BOX_ACCENTS = ["#48dbfb", "#39ff14", "#a29bfe", "#1dd1a1", "#ff9ff3", "#54a0ff", "#ff6b81", "#c8d6e5"];
+  const CMD_MODE_BOX_ACCENT = "#ffb300";
+  const hexPaint = (hex: string) => (s: string) => chalk.hex(hex)(s);
+  const hexShadowPaint = (hex: string) => (s: string) => chalk.dim(chalk.hex(hex)(s));
+  // Per-process random start so different jeo processes differ at a glance; advanced on
+  // each newly opened session (advanceSessionBoxColor) so consecutive sessions never match.
+  let sessionBoxColorIdx = Math.floor(Math.random() * SESSION_BOX_ACCENTS.length);
+  const advanceSessionBoxColor = (): void => {
+    sessionBoxColorIdx = (sessionBoxColorIdx + 1) % SESSION_BOX_ACCENTS.length;
+  };
+  // Resolve the box painters for the current draft: cmd-mode amber when it starts with
+  // `!`, else the per-session hue, else the theme accent (colorless theme / no session).
+  const boxAccents = (line: string): { accent: (s: string) => string; shadow: (s: string) => string } => {
+    if (!uiTheme.color) return { accent: uiAccent, shadow: uiAccentShadow };
+    if (line.startsWith("!")) return { accent: hexPaint(CMD_MODE_BOX_ACCENT), shadow: hexShadowPaint(CMD_MODE_BOX_ACCENT) };
+    if (sessionId) { const hex = SESSION_BOX_ACCENTS[sessionBoxColorIdx]!; return { accent: hexPaint(hex), shadow: hexShadowPaint(hex) }; }
+    return { accent: uiAccent, shadow: uiAccentShadow };
+  };
   const refreshUiTheme = (): void => {
     uiTheme = resolveTheme(process.env);
     uiAccent = accentPaint(uiTheme);
@@ -2182,12 +2203,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // sits at the end of the text.
     const rli = rl as unknown as { line?: string; cursor?: number };
     const caret = rli.line === line && typeof rli.cursor === "number" ? rli.cursor : line.length;
+    const { accent: boxAccent, shadow: boxShadow } = boxAccents(line);
     const frame = renderInputFrame(line, {
       cols,
       color: true,
       unicode: true,
-      accent: uiAccent,
-      accentShadow: uiAccentShadow,
+      accent: boxAccent,
+      accentShadow: boxShadow,
       cwdLabel: currentAtLabel(line),
       attachmentLabel: pendingImages.length
         ? `⧉ ${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""} attached — sent with the next message`
@@ -3062,6 +3084,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         history.length = 1;
         if (!flags.noSession) {
           sessionId = (await createSession(cwd)).id;
+          advanceSessionBoxColor(); // distinct input-box hue per newly opened session
           console.log(`(${verb} — new session ${sessionId})`);
         } else {
           sessionId = undefined;
@@ -4114,6 +4137,25 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`! ${(err as Error).message}`);
         }
         continue;
+      }
+      // Unresolved `$skill` → suggest precisely, never silently send the typo to the model.
+      // `$exact`/`$prefix` already ran above; a leftover `$word` is a missed skill attempt,
+      // EXCEPT `$UPPERCASE` env-var-style tokens (e.g. `$HOME`), which pass through untouched.
+      if (input.startsWith("$")) {
+        const token = (input.split(/\s+/, 1)[0] ?? "").slice(1);
+        if (token && !/^[A-Z_][A-Z0-9_]*$/.test(token)) {
+          const lc = token.toLowerCase();
+          const prefix = resolvedSkills.filter(s => s.name.toLowerCase().startsWith(lc));
+          if (prefix.length) {
+            console.log(`Ambiguous skill '$${token}'. Did you mean: ${prefix.slice(0, 6).map(s => `$${s.name}`).join(", ")}?`);
+          } else {
+            const names = resolvedSkills.map(s => `$${s.name}`);
+            const shown = names.slice(0, 12).join(", ");
+            const more = names.length > 12 ? ` … +${names.length - 12} more` : "";
+            console.log(`No skill '$${token}'. ${names.length ? `Available: ${shown}${more}` : "No skills are loaded."}  (Type $ to autocomplete.)`);
+          }
+          continue;
+        }
       }
       // Unhandled slash attempt → suggest, don't send the typo to the model.
       if (isSlashAttempt(input)) {

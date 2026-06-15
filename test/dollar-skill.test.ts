@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseSkillInvocation, parseSkillMarkdown, SKILLS } from "../src/skills/catalog";
+import { parseSkillInvocation, parseSkillMarkdown, SKILLS, uniquePrefixSkill, suggestSkills } from "../src/skills/catalog";
 import { complete } from "../src/tui/components/autocomplete";
 import type { CompletionContext } from "../src/tui/components/autocomplete";
 
@@ -36,6 +36,31 @@ test("unknown $word falls through to the model (null invocation)", () => {
 
 test("$name mentioned mid-prompt does NOT invoke (first token only)", () => {
   expect(parseSkillInvocation("please run $team for me", skills)).toBeNull();
+});
+
+test("$prefix uniquely resolves the skill (precise invoke without full spelling)", () => {
+  expect(parseSkillInvocation("$te do x", skills)?.skill.name).toBe("team"); // only "te*" skill
+  expect(parseSkillInvocation("$ultra", skills)?.skill.name).toBe("ultragoal");
+  // An ambiguous prefix does NOT auto-resolve (stays null, the REPL then suggests).
+  const two = [...skills, parseSkillMarkdown("teamwork", "summary: x\n\ny")];
+  expect(parseSkillInvocation("$te plan", two)).toBeNull(); // team + teamwork → ambiguous
+  // …but an EXACT name still wins even when a longer sibling exists.
+  expect(parseSkillInvocation("$team plan", two)?.skill.name).toBe("team");
+});
+
+test("uniquePrefixSkill: unique → skill, ambiguous/none → undefined", () => {
+  expect(uniquePrefixSkill(skills, "team")?.name).toBe("team");
+  expect(uniquePrefixSkill(skills, "te")?.name).toBe("team");
+  expect(uniquePrefixSkill(skills, "zzz")).toBeUndefined();
+  expect(uniquePrefixSkill(skills, "")).toBeUndefined();
+  const two = [...skills, parseSkillMarkdown("teamwork", "summary: x\n\ny")];
+  expect(uniquePrefixSkill(two, "team")).toBeUndefined(); // team + teamwork
+});
+
+test("suggestSkills: prefix-first then fuzzy; empty for no match", () => {
+  expect(suggestSkills(skills, "tea").map(s => s.name)).toContain("team");
+  expect(suggestSkills(skills, "tm").map(s => s.name)).toContain("team"); // fuzzy t…m
+  expect(suggestSkills(skills, "qqqzzz")).toEqual([]);
 });
 
 function ctx(): CompletionContext {

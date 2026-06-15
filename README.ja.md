@@ -150,7 +150,7 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[0.5.3]** (2026-06-15) — `$` chains multiple skills in one line — they all run, in order.
+- **[0.5.3]** (2026-06-15) — `$` chains multiple skills in one line (all run, in order), plus multi-line prompt input — paste-merge and gated Shift+Enter.
 - **[0.5.2]** (2026-06-14) — `$skill` prompt invocation with prefix/fuzzy suggestions, and a per-session input-box hue (amber in cmd-mode).
 - **[0.5.1]** (2026-06-14) — cmd-mode `!<command>` shell escape — run a shell command without engaging the agent.
 - **[0.5.0]** (2026-06-14) — Performance: workspace-scan, workflow-state, and DNA-Claw HUD caches; plus a credential-safety fix that never wipes OAuth over an invalid config.

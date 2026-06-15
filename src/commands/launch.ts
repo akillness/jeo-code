@@ -10,10 +10,10 @@ import { createSubagentTool, SUBAGENT_TOOL_PROTOCOL_LINE } from "../agent/subage
 import { SubagentRegistry } from "../agent/subagent-registry";
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { LaunchTui } from "../tui/app";
-import { runDeepInterviewEngine } from "./deep-interview";
-import { runRalplanEngine } from "./ralplan";
-import { runTeamEngine } from "./team";
-import { runUltragoalEngine } from "./ultragoal";
+import { runDeepInterviewEngine, type DeepInterviewEngineOptions } from "./deep-interview";
+import { runRalplanEngine, type RalplanEngineOptions } from "./ralplan";
+import { runTeamEngine, type TeamEngineOptions } from "./team";
+import { runUltragoalEngine, type UltragoalEngineOptions } from "./ultragoal";
 import { skillsPromptSection, loadSkills, formatSkill, buildSkillTask, getSkillFrom, skillSlashAliases, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
 import { formatForgeBox } from "../tui/components/forge";
 import { interactiveOAuthLogin } from "./auth";
@@ -1013,6 +1013,28 @@ function resolveWorktree(cwd: string, wt: string): string {
   return abs;
 }
 
+/** The bundled workflow skills that run through a dedicated engine (deep-interview /
+ *  ralplan / team / ultragoal), not the ordinary agent loop. Single source of truth —
+ *  the menu listing, the dispatch guards, and the engine switch all read from here. */
+export const WORKFLOW_NAMES = ["deep-interview", "ralplan", "team", "ultragoal"] as const;
+
+/** True when a skill name is one of the bundled workflow engines. */
+export function isWorkflowSkill(name: string): boolean {
+  return (WORKFLOW_NAMES as readonly string[]).includes(name);
+}
+
+/** Dispatch a bundled workflow by name to its engine. Keeps the name→engine mapping in
+ *  ONE place so the one-shot and interactive skill runners can't drift apart. */
+export function runWorkflowEngine(
+  name: string,
+  opts: DeepInterviewEngineOptions & RalplanEngineOptions & TeamEngineOptions & UltragoalEngineOptions,
+): Promise<{ ok: boolean; reason?: string }> {
+  if (name === "deep-interview") return runDeepInterviewEngine(opts);
+  if (name === "ralplan") return runRalplanEngine(opts);
+  if (name === "team") return runTeamEngine(opts);
+  return runUltragoalEngine(opts);
+}
+
 export async function runLaunchCommand(args: string[]): Promise<void> {
   let cwd = process.cwd();
   const flags = parseFlags(args, cwd);
@@ -1196,10 +1218,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // ultragoal), surfaced in the `/` menu even when their SKILL.md self-references no
   // slash token — `parseSkillInvocation` dispatches `/name` by skill name. Aliases the
   // SKILL.md does declare are listed too (deduped, case-insensitive).
-  const WORKFLOW_SLASH_NAMES = ["deep-interview", "ralplan", "team", "ultragoal"];
+
   const skillSlashDetails: SlashCommandInfo[] = resolvedSkills.flatMap(skill => {
     const aliases = skillSlashAliases(skill);
-    const nameSlash = WORKFLOW_SLASH_NAMES.includes(skill.name) ? [`/${skill.name}`] : [];
+    const nameSlash = isWorkflowSkill(skill.name) ? [`/${skill.name}`] : [];
     const seen = new Set<string>();
     const commands = [...nameSlash, ...aliases].filter(a => {
       const k = a.toLowerCase();
@@ -1618,9 +1640,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (cmd === "/exit" || cmd === "/quit") {
         return;
       }
-      if (cmd === "/clear" || cmd === "/new" || cmd === "/drop") {
+      if (cmd === "/clear" || cmd === "/session new" || cmd === "/session drop" || cmd === "/session delete") {
         // Reset history to just the system prompt and overwrite the session file so
-        // the persisted transcript matches (a fresh session for /new and /drop).
+        // the persisted transcript matches (a fresh session for /session new and /session drop).
         history.length = 1;
         if (sessionId && !flags.noSession) {
           try {
@@ -1639,7 +1661,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // One skill run (bundle workflow → engine; regular skill → agent turn). Shared by the
     // single-invocation path and the `$a $b …` chain path so every `$` skill actually runs.
     const runOneSkillShot = async (inv: SkillInvocation): Promise<void> => {
-      const isBundleWorkflow = ["deep-interview", "ralplan", "team", "ultragoal"].includes(inv.skill.name);
+      const isBundleWorkflow = isWorkflowSkill(inv.skill.name);
       if (isBundleWorkflow) {
         const startMsg: Message = {
           role: "system",
@@ -1672,16 +1694,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         let ok = false;
         let reason: string | undefined;
         try {
-          let res: { ok: boolean; reason?: string };
-          if (inv.skill.name === "deep-interview") {
-            res = await runDeepInterviewEngine(opts);
-          } else if (inv.skill.name === "ralplan") {
-            res = await runRalplanEngine(opts);
-          } else if (inv.skill.name === "team") {
-            res = await runTeamEngine(opts);
-          } else {
-            res = await runUltragoalEngine(opts);
-          }
+          const res: { ok: boolean; reason?: string } = await runWorkflowEngine(inv.skill.name, opts);
           ok = res.ok;
           reason = res.reason;
         } catch (err: any) {
@@ -1821,7 +1834,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       );
       logLines(card);
     }
-    const isBundleWorkflow = ["deep-interview", "ralplan", "team", "ultragoal"].includes(skill.name);
+    const isBundleWorkflow = isWorkflowSkill(skill.name);
     if (isBundleWorkflow) {
       const startMsg: Message = {
         role: "system",
@@ -1871,16 +1884,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       let ok = false;
       let reason: string | undefined;
       try {
-        let res: { ok: boolean; reason?: string };
-        if (skill.name === "deep-interview") {
-          res = await runDeepInterviewEngine(opts);
-        } else if (skill.name === "ralplan") {
-          res = await runRalplanEngine(opts);
-        } else if (skill.name === "team") {
-          res = await runTeamEngine(opts);
-        } else {
-          res = await runUltragoalEngine(opts);
-        }
+        const res: { ok: boolean; reason?: string } = await runWorkflowEngine(skill.name, opts);
         ok = res.ok;
         reason = res.reason;
       } catch (err: any) {
@@ -3199,156 +3203,169 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         continue;
       }
-      if (input === "/sessions") {
-        const sessions = await listSessions(cwd);
-        if (sessions.length === 0) console.log("(no saved sessions)");
-        for (const s of sessions) {
-          const marker = s.id === sessionId ? "*" : " ";
-          const title = s.title ? `[${s.title}] ` : "";
-          console.log(` ${marker}${s.id}  (${s.messageCount} msgs)  ${title}${s.preview}`);
-        }
-        continue;
-      }
-      // ---- gjc-parity session management ------------------------------------
-      const startFreshSession = async (verb: string): Promise<void> => {
-        history.length = 1;
-        if (!flags.noSession) {
-          sessionId = (await createSession(cwd)).id;
-          advanceSessionBoxColor(); // distinct input-box hue per newly opened session
-          console.log(`(${verb} — new session ${sessionId})`);
-        } else {
-          sessionId = undefined;
-          console.log(`(${verb} — sessions disabled)`);
-        }
-      };
-      if (input === "/new") {
-        await startFreshSession("started fresh");
-        continue;
-      }
-      if (input === "/drop") {
-        if (sessionId) {
-          const removed = await deleteSession(sessionId, cwd);
-          console.log(removed ? `(deleted session ${sessionId})` : `(session ${sessionId} already gone)`);
-        }
-        await startFreshSession("dropped");
-        continue;
-      }
       if (input === "/session" || input.startsWith("/session ")) {
-        const sub = input.substring(8).trim().toLowerCase();
-        if (sub === "delete") {
-          if (!sessionId) {
-            console.log("(sessions are disabled — nothing to delete)");
-            continue;
+        const tokens = input.substring(8).trim().split(/\s+/).filter(Boolean);
+        const sub = (tokens[0] ?? "").toLowerCase();
+
+        const startFreshSession = async (verb: string): Promise<void> => {
+          history.length = 1;
+          if (!flags.noSession) {
+            sessionId = (await createSession(cwd)).id;
+            advanceSessionBoxColor(); // distinct input-box hue per newly opened session
+            console.log(`(${verb} — new session ${sessionId})`);
+          } else {
+            sessionId = undefined;
+            console.log(`(${verb} — sessions disabled)`);
           }
-          const removed = await deleteSession(sessionId, cwd);
-          console.log(removed ? `(deleted session ${sessionId})` : `(session ${sessionId} already gone)`);
+        };
+
+        if (sub === "new") {
+          await startFreshSession("started fresh");
+          continue;
+        }
+        if (sub === "drop" || sub === "delete") {
+          if (sessionId) {
+            const removed = await deleteSession(sessionId, cwd);
+            console.log(removed ? `(deleted session ${sessionId})` : `(session ${sessionId} already gone)`);
+          }
           await startFreshSession("dropped");
           continue;
         }
-        if (sub && sub !== "info") {
-          console.log("Usage: /session [info|delete]");
-          continue;
-        }
-        if (!sessionId) {
-          console.log("Session: disabled (--no-session)");
-          continue;
-        }
-        const all = await listSessions(cwd);
-        const current = all.find(s => s.id === sessionId);
-        console.log("Session info:");
-        console.log(`  id        ${sessionId}`);
-        if (current?.title) console.log(`  title     ${current.title}`);
-        console.log(`  file      ${sessionPath(sessionId, cwd)}`);
-        console.log(`  started   ${current?.timestamp ?? "(this run)"}`);
-        console.log(`  messages  ${current?.messageCount ?? Math.max(0, history.length - 1)} persisted · ${history.length - 1} in context`);
-        console.log(`  workspace ${cwd}`);
-        continue;
-      }
-      if (input === "/rename" || input.startsWith("/rename ")) {
-        const title = input.substring(7).trim();
-        if (!title) {
-          console.log("Usage: /rename <title>");
-          continue;
-        }
-        if (!sessionId) {
-          console.log("(sessions are disabled — nothing to rename)");
-          continue;
-        }
-        try {
-          await renameSession(sessionId, title, cwd);
-          console.log(`(session renamed to '${title}')`);
-        } catch (err) {
-          console.log(`! rename failed: ${(err as Error).message}`);
-        }
-        continue;
-      }
-      if (input === "/resume" || input.startsWith("/resume ")) {
-        const arg = input.substring(7).trim();
-        // Load a session into history and print its transcript so the resume is visible.
-        const applyResume = async (rid: string): Promise<void> => {
-          try {
-            const { messages } = await loadSession(rid, cwd);
-            history.length = 1;
-            for (const m of messages) history.push(m);
-            sessionId = rid;
-            // Seed /retry + reply marker from the last user/assistant turn.
-            lastUserInput = ""; lastReply = "";
-            for (let k = history.length - 1; k >= 1; k--) {
-              if (history[k]!.role === "user" && !lastUserInput) lastUserInput = String(history[k]!.content ?? "");
-              if (history[k]!.role === "assistant" && !lastReply) lastReply = String(history[k]!.content ?? "");
-              if (lastUserInput && lastReply) break;
-            }
-            // Seed readline's input history so ↑ in the prompt recalls THIS session's
-            // prior prompts (not just lines typed in the current run). readline history
-            // is newest-first; unshift in chronological order so the session's newest
-            // prompt lands at the front (first ↑). Skip injected/framed messages.
-            const rli = rl as unknown as { history?: string[] };
-            if (Array.isArray(rli.history)) {
-              const priorPrompts = history
-                .filter(m => m.role === "user")
-                .map(m => String(m.content ?? "").trim())
-                .filter(c => c && !c.startsWith("Tool [") && !c.startsWith("[mid-turn steering") && !c.startsWith("[Earlier conversation summary]"));
-              for (const p of priorPrompts) {
-                if (rli.history[0] !== p) rli.history.unshift(p);
-              }
-            }
-            const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
-            logLines([
-              sep,
-              `resumed session ${rid} · ${messages.length} message(s) (/history all for the full transcript)`,
-              sep,
-              ...formatTranscript(history, { maxTurns: 6, color: true, unicode: true }),
-              sep,
-            ]);
-          } catch (err) {
-            console.log(`! ${(err as Error).message}`);
+        if (sub === "rename") {
+          const title = tokens.slice(1).join(" ").trim();
+          if (!title) {
+            console.log("Usage: /session rename <title>");
+            continue;
           }
-        };
-        if (arg) { await applyResume(arg); continue; }
-        // No id → only sessions with a real conversation are resumable (every launch
-        // creates an empty session; those are noise).
-        const sessions = (await listSessions(cwd)).filter(s => s.messageCount > 0);
+          if (!sessionId) {
+            console.log("(sessions are disabled — nothing to rename)");
+            continue;
+          }
+          try {
+            await renameSession(sessionId, title, cwd);
+            console.log(`(session renamed to '${title}')`);
+          } catch (err) {
+            console.log(`! rename failed: ${(err as Error).message}`);
+          }
+          continue;
+        }
+        if (sub === "resume") {
+          const arg = tokens.slice(1).join(" ").trim();
+          const applyResume = async (rid: string): Promise<void> => {
+            try {
+              const { messages } = await loadSession(rid, cwd);
+              history.length = 1;
+              for (const m of messages) history.push(m);
+              sessionId = rid;
+              // Seed /retry + reply marker from the last user/assistant turn.
+              lastUserInput = ""; lastReply = "";
+              for (let k = history.length - 1; k >= 1; k--) {
+                if (history[k]!.role === "user" && !lastUserInput) lastUserInput = String(history[k]!.content ?? "");
+                if (history[k]!.role === "assistant" && !lastReply) lastReply = String(history[k]!.content ?? "");
+                if (lastUserInput && lastReply) break;
+              }
+              // Seed readline's input history so ↑ in the prompt recalls THIS session's
+              // prior prompts (not just lines typed in the current run). readline history
+              // is newest-first; unshift in chronological order so the session's newest
+              // prompt lands at the front (first ↑). Skip injected/framed messages.
+              const rli = rl as unknown as { history?: string[] };
+              if (Array.isArray(rli.history)) {
+                const priorPrompts = history
+                  .filter(m => m.role === "user")
+                  .map(m => String(m.content ?? "").trim())
+                  .filter(c => c && !c.startsWith("Tool [") && !c.startsWith("[mid-turn steering") && !c.startsWith("[Earlier conversation summary]"));
+                for (const p of priorPrompts) {
+                  if (rli.history[0] !== p) rli.history.unshift(p);
+                }
+              }
+              const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
+              logLines([
+                sep,
+                `resumed session ${rid} · ${messages.length} message(s) (/history all for the full transcript)`,
+                sep,
+                ...formatTranscript(history, { maxTurns: 6, color: true, unicode: true }),
+                sep,
+              ]);
+            } catch (err) {
+              console.log(`! ${(err as Error).message}`);
+            }
+          };
+          if (arg) { await applyResume(arg); continue; }
+          // No id → only sessions with a real conversation are resumable (every launch
+          // creates an empty session; those are noise).
+          const sessions = (await listSessions(cwd)).filter(s => s.messageCount > 0);
+          if (sessions.length === 0) {
+            console.log("(no saved sessions with history)");
+            continue;
+          }
+          // Interactive arrow-key picker on a TTY: ↑↓ to move, Enter to resume, Esc cancels.
+          if (process.stdin.isTTY && process.stdout.isTTY) {
+            const items: SelectItem<string>[] = sessions.slice(0, 50).map(s => ({
+              value: s.id,
+              label: `${s.title ? `[${s.title}] ` : ""}${(s.preview || s.id).replace(/\s+/g, " ")}`.slice(0, 76) || s.id,
+              hint: `${s.messageCount} msgs${s.id === sessionId ? " · current" : ""}`,
+            }));
+            const picked = await pickFromOptions("Resume a session  ↑↓ move · Enter resume · Esc cancel", items);
+            if (picked) await applyResume(picked);
+            else console.log("(resume cancelled)");
+            continue;
+          }
+          // Non-TTY fallback: static list (resume with /session resume <id>).
+          console.log("Saved sessions — resume with /session resume <id>:");
+          for (const s of sessions.slice(0, 15)) {
+            const marker = s.id === sessionId ? "*" : " ";
+            console.log(` ${marker}${s.id}  (${s.messageCount} msgs)  ${s.title ? `[${s.title}] ` : ""}${s.preview}`);
+          }
+          continue;
+        }
+        if (sub === "list") {
+          const sessions = await listSessions(cwd);
+          if (sessions.length === 0) console.log("(no saved sessions)");
+          for (const s of sessions) {
+            const marker = s.id === sessionId ? "*" : " ";
+            const title = s.title ? `[${s.title}] ` : "";
+            console.log(` ${marker}${s.id}  (${s.messageCount} msgs)  ${title}${s.preview}`);
+          }
+          continue;
+        }
+        if (sub === "info") {
+          if (!sessionId) {
+            console.log("Session: disabled (--no-session)");
+            continue;
+          }
+          const all = await listSessions(cwd);
+          const current = all.find(s => s.id === sessionId);
+          console.log("Session info:");
+          console.log(`  id        ${sessionId}`);
+          if (current?.title) console.log(`  title     ${current.title}`);
+          console.log(`  file      ${sessionPath(sessionId, cwd)}`);
+          console.log(`  started   ${current?.timestamp ?? "(this run)"}`);
+          console.log(`  messages  ${current?.messageCount ?? Math.max(0, history.length - 1)} persisted · ${history.length - 1} in context`);
+          console.log(`  workspace ${cwd}`);
+          continue;
+        }
+        if (sub && sub !== "info") {
+          console.log("Usage: /session [list|info|new|drop|rename <title>|resume [id]]");
+          continue;
+        }
+
+        // Default: list sessions AND show current session info
+        const sessions = await listSessions(cwd);
         if (sessions.length === 0) {
-          console.log("(no saved sessions with history)");
-          continue;
+          console.log("(no saved sessions)");
+        } else {
+          console.log("Saved sessions:");
+          for (const s of sessions) {
+            const marker = s.id === sessionId ? "*" : " ";
+            const title = s.title ? `[${s.title}] ` : "";
+            console.log(` ${marker}${s.id}  (${s.messageCount} msgs)  ${title}${s.preview}`);
+          }
         }
-        // Interactive arrow-key picker on a TTY: ↑↓ to move, Enter to resume, Esc cancels.
-        if (process.stdin.isTTY && process.stdout.isTTY) {
-          const items: SelectItem<string>[] = sessions.slice(0, 50).map(s => ({
-            value: s.id,
-            label: `${s.title ? `[${s.title}] ` : ""}${(s.preview || s.id).replace(/\s+/g, " ")}`.slice(0, 76) || s.id,
-            hint: `${s.messageCount} msgs${s.id === sessionId ? " · current" : ""}`,
-          }));
-          const picked = await pickFromOptions("Resume a session  ↑↓ move · Enter resume · Esc cancel", items);
-          if (picked) await applyResume(picked);
-          else console.log("(resume cancelled)");
-          continue;
-        }
-        // Non-TTY fallback: static list (resume with /resume <id>).
-        console.log("Saved sessions — resume with /resume <id>:");
-        for (const s of sessions.slice(0, 15)) {
-          const marker = s.id === sessionId ? "*" : " ";
-          console.log(` ${marker}${s.id}  (${s.messageCount} msgs)  ${s.title ? `[${s.title}] ` : ""}${s.preview}`);
+        if (sessionId) {
+          const current = sessions.find(s => s.id === sessionId);
+          console.log(`\nCurrent session: ${sessionId}${current?.title ? ` [${current.title}]` : ""}`);
+        } else {
+          console.log("\nCurrent session: disabled (--no-session)");
         }
         continue;
       }
@@ -4249,6 +4266,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         console.log(res.success ? (res.output || "(no matches)") : `! ${res.error}`);
         continue;
       }
+
       const skillEntrypoint = input.startsWith("/skill:") ? "/skill:" : input.startsWith("/skill") && (input === "/skill" || input[6] === " ") ? "/skill" : "";
       if (skillEntrypoint) {
         if (flags.noSkills) {

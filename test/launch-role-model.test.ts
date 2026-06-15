@@ -218,3 +218,24 @@ test("characterization: /agents <role> reset clears that role's overrides (handl
     await fs.rm(cfgDir, { recursive: true, force: true });
   }
 });
+
+test("characterization: /agents <role> <model> pins a per-role model; unknown role no-ops", async () => {
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-agents-model-"));
+  const savedCfg = process.env.JEO_CONFIG_DIR;
+  const savedLog = console.log;
+  console.log = () => {};
+  try {
+    process.env.JEO_CONFIG_DIR = cfgDir;
+    mockQuestions = ["/agents executor claude-haiku-4-5-20251001", "/agents bogusrole somemodel", "/exit"];
+    const { runLaunchCommand } = await import("../src/commands/launch");
+    await runLaunchCommand(["--no-tui", "--no-session"]);
+    const raw = JSON.parse(await fs.readFile(path.join(cfgDir, "config.json"), "utf8"));
+    expect(raw.subagents?.executor?.model).toBe("claude-haiku-4-5-20251001"); // role model pinned
+    expect(raw.subagents?.bogusrole).toBeUndefined();                          // unknown role never persisted
+  } finally {
+    console.log = savedLog;
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = savedCfg;
+    await fs.rm(cfgDir, { recursive: true, force: true });
+  }
+});

@@ -100,6 +100,18 @@ function extractStreamingActivity(buf: string): string {
   return t.replace(/\s+/g, " ").slice(0, 140);
 }
 
+/** Bound the input to a per-frame wrap to a fixed trailing window. The live thinking
+ *  and tool-output blocks only ever DISPLAY their last few wrapped rows, but they
+ *  accumulate the whole step's text — re-wrapping the FULL string every 120ms tick made
+ *  per-frame work (and GC churn) grow linearly with how much had streamed (a long
+ *  reasoning trace or a chatty tool can be hundreds of KB). Slicing to the last
+ *  `maxChars` first keeps the visible tail byte-identical while capping wrap cost at
+ *  O(maxChars) regardless of total size. 16 KiB is far more than the ~1 KB the visible
+ *  rows need, so no on-screen row is ever lost to the cut. */
+export const FRAME_WRAP_TAIL_CHARS = 16 * 1024;
+export function tailForWrap(text: string, maxChars = FRAME_WRAP_TAIL_CHARS): string {
+  return text.length > maxChars ? text.slice(text.length - maxChars) : text;
+}
 const DEFAULT_MAX_STEPS = 100;
 // Tools light enough that they never get a forge card (gjc parity): completion is a
 // single ✓/✗ ledger line; only failures surface a result card with the error body.
@@ -1112,7 +1124,7 @@ export class LaunchTui {
     const liveThink = this.streamingThought.trim() || this.streamingReasoning.trim();
     if (isThinking && liveThink) {
       const wrapW = Math.max(8, Math.min(120, cols) - 2);
-      const wrapped = liveThink
+      const wrapped = tailForWrap(liveThink)
         .split("\n")
         .flatMap(l => wrapTextWithAnsi(l, wrapW))
         .filter(l => l.length > 0);
@@ -1133,7 +1145,7 @@ export class LaunchTui {
     // It is transient — cleared on result, when the formatted forge card takes over.
     if (this.runningTool && this.liveToolOutput.trim()) {
       const wrapW = Math.max(8, Math.min(120, cols) - 2);
-      const wrapped = this.liveToolOutput
+      const wrapped = tailForWrap(this.liveToolOutput)
         .split("\n")
         .flatMap(l => wrapTextWithAnsi(l, wrapW))
         .filter(l => l.length > 0);

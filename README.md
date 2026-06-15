@@ -150,11 +150,11 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.5.9]** (2026-06-15) — Bounded per-frame wrap for the live thinking/tool-output blocks — re-render cost no longer grows with stream length.
 - **[0.5.8]** (2026-06-15) — Native Opik observability for the turn loop (opt-in `JEO_OPIK`, pure-TS no-op when unset) + autopilot convergence tracking.
 - **[0.5.7]** (2026-06-15) — `/model` picker is default-only, `/clear` resets to the initial screen, ESC clears the input box, and a launch process-listener leak is fixed.
 - **[0.5.6]** (2026-06-15) — `/model` sets only the default thinking; per-role reasoning moved to `/agents`.
 - **[0.5.5]** (2026-06-15) — Full multi-line visibility — the input box scrolls to the caret and the submitted card shows every line.
-- **[0.5.4]** (2026-06-15) — Reliable multi-line input is ON by default — a paste fills the box and submits as one message.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

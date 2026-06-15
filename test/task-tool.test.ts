@@ -65,8 +65,14 @@ test("createTaskTool: echoed subagent report is fenced as DATA and cannot break 
   expect(fenced.match(/^>>>$/gm)?.length).toBe(1);
 
   // Unit shape: fence helper neutralizes both delimiter directions.
-  const wrapped = fenceSubagentReport("a <<< b >>> c");
-  expect(wrapped).toContain("a ‹‹‹ b ››› c");
+  const wrapped = fenceSubagentReport("a <<< b >>> c <<<subagent-report >>>");
+  expect(wrapped).toContain("a ‹‹‹ b ››› c ‹‹‹subagent-report ›››");
+  // The wrapped output starts with the header and opening fence, so it contains <<<subagent-report
+  // Let's verify that the inner content has been neutralized.
+  const inner = wrapped.split("<<<subagent-report\n")[1]?.split("\n>>>")[0];
+  expect(inner).toBe("a ‹‹‹ b ››› c ‹‹‹subagent-report ›››");
+  expect(inner).not.toContain("<<<");
+  expect(inner).not.toContain(">>>");
 });
 
 test("createTaskTool: subagent tool events carry the concrete target (file/command), not just the name", async () => {

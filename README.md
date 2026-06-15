@@ -150,11 +150,11 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.5.4]** (2026-06-15) — Reliable multi-line input is ON by default — a paste fills the box and submits as one message.
 - **[0.5.3]** (2026-06-15) — `$` chains multiple skills in one line (all run, in order), plus multi-line prompt input — paste-merge and gated Shift+Enter.
 - **[0.5.2]** (2026-06-14) — `$skill` prompt invocation with prefix/fuzzy suggestions, and a per-session input-box hue (amber in cmd-mode).
 - **[0.5.1]** (2026-06-14) — cmd-mode `!<command>` shell escape — run a shell command without engaging the agent.
 - **[0.5.0]** (2026-06-14) — Performance: workspace-scan, workflow-state, and DNA-Claw HUD caches; plus a credential-safety fix that never wipes OAuth over an invalid config.
-- **[0.4.9]** (2026-06-14) — Live-frame width-clamp (content-sized height) replaces the constant-height approach, typed text shows during a running turn, and a docs/AGENTS refresh.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

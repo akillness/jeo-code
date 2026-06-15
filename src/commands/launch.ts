@@ -2540,28 +2540,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const notReadyWarning = (st: { name: string; label: string }): string =>
     `  ! ${st.name} is not call-ready yet (${st.label}) — run /provider login antigravity before the first turn.`;
 
-  const CORE_MODEL_ACTION_ROLE_ORDER = ["executor", "architect", "planner", "critic"] as const;
+
   const MODEL_BADGE_ROLE_ORDER = ["planner", "architect", "executor", "critic"] as const;
 
   const roleBadgeColor = (roleId: string): ModelAssignmentBadge["color"] =>
     roleId === "executor" || roleId === "architect" || roleId === "planner" || roleId === "critic" ? roleId : "critic";
 
-  const orderedModelRoles = (config: Awaited<ReturnType<typeof readGlobalConfig>>) => {
-    const roles = allSubagentRoles(config);
-    const emitted = new Set<string>();
-    const out: ReturnType<typeof allSubagentRoles> = [];
-    for (const id of CORE_MODEL_ACTION_ROLE_ORDER) {
-      const role = roles.find(r => r.id === id);
-      if (role) {
-        emitted.add(role.id);
-        out.push(role);
-      }
-    }
-    for (const role of roles) {
-      if (!emitted.has(role.id)) out.push(role);
-    }
-    return out;
-  };
+
 
   const modelPickerAssignments = async (): Promise<ModelAssignmentBadge[]> => {
     const cfg = await readGlobalConfig();
@@ -2732,7 +2717,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     choices.push({
       value: "heading:default",
       label: "Set as DEFAULT (Default)",
-      hint: `${config.defaultModel} (${currentDefaultThinking})`,
+      hint: `${config.defaultModel} (${currentDefaultThinking}) · roles → /agents`,
       disabled: true,
     });
     appendChildren([
@@ -2744,73 +2729,21 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       })),
     ]);
 
-    for (const role of orderedModelRoles(config)) {
-      const roleThinking = resolveSubagentThinking(role.id, config) ?? "inherit";
-      choices.push({
-        value: `heading:${role.id}`,
-        label: `Set as ${role.title.toUpperCase()} (${role.title})`,
-        hint: `${resolveSubagentModel(role.id, config)} (${roleThinking})`,
-        disabled: true,
-      });
-      appendChildren([
-        { value: `${role.id}:keep`, label: "Set model only", hint: `keep thinking ${roleThinking} · set via /agents edit` },
-      ]);
-    }
-
-    choices.push({
-      value: "preset:openai-codex",
-      label: "Apply OpenAI Codex role preset",
-      hint: "Default medium · Executor low · Architect xhigh · Planner medium · Critic high",
-    });
     return choices;
   };
 
-  const applyOpenAiCodexRolePreset = async (target: string, cfgForPick: Awaited<ReturnType<typeof readGlobalConfig>>): Promise<void> => {
-    const roleThinking: Record<(typeof CORE_MODEL_ACTION_ROLE_ORDER)[number], ThinkLevel> = {
-      executor: "low",
-      architect: "xhigh",
-      planner: "medium",
-      critic: "high",
-    };
-    await saveConfigPatch(raw => {
-      let subagents = raw.subagents ?? {};
-      for (const roleId of CORE_MODEL_ACTION_ROLE_ORDER) {
-        subagents = withSubagentSetting({ subagents }, roleId, { model: target, thinking: roleThinking[roleId] });
-      }
-      return {
-        ...rememberModelPatch(raw, target),
-        thinkingLevel: "medium",
-        subagents,
-      };
-    });
-    sessionModel = target;
-    sessionThinking = "medium";
-    const { resolved, provider } = await describeModel(target);
-    const st = (await describeAllProviders(cfgForPick)).find(s => s.name === provider);
-    console.log(`OpenAI Codex role preset applied to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })} — Default medium, Executor low, Architect xhigh, Planner medium, Critic high`);
-  };
+
 
 
   const applyPickedModelWithTarget = async (target: string): Promise<boolean> => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
     const cfgForPick = await readGlobalConfig();
+    // `/model` only assigns the DEFAULT model + (optionally) the default thinking.
+    // Per-role model and thinking are configured in /agents (and /agents edit).
     const choice = await pickFromOptions(`Model Name: ${displayModelName(target)}\n\nAction for: ${target}`, modelActionChoices(cfgForPick)) ?? "default:keep";
-    if (choice === "preset:openai-codex") {
-      await applyOpenAiCodexRolePreset(target, cfgForPick);
-      return true;
-    }
-    const [applyTo, action = "keep"] = choice.split(":", 2);
-    if (applyTo === "heading") return false;
-    const roleTarget = applyTo !== "default" ? getSubagentRole(applyTo, cfgForPick) : undefined;
+    const [, action = "keep"] = choice.split(":", 2);
     const { resolved, provider } = await describeModel(target);
     const st = (await describeAllProviders(cfgForPick)).find(s => s.name === provider);
-    if (roleTarget) {
-      const thinkPatch = action === "inherit" ? { thinking: undefined } : isThinkingLevel(action) ? { thinking: action } : {};
-      await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, roleTarget.id, { model: target, ...thinkPatch }) }));
-      const thinkNote = action !== "keep" ? ` · thinking ${action}` : "";
-      console.log(`Subagent '${roleTarget.id}' model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${thinkNote} — saved (change anytime via /model or /agents)`);
-      return true;
-    }
     sessionModel = target;
     const defaultThinking = isThinkingLevel(action) ? action : undefined;
     if (defaultThinking) {
@@ -2820,7 +2753,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       ...rememberModelPatch(raw, target),
       ...(defaultThinking ? { thinkingLevel: defaultThinking } : {}),
     }));
-    console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${defaultThinking ? ` · thinking ${defaultThinking}` : ""} — saved as default`);
+    console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${defaultThinking ? ` · thinking ${defaultThinking}` : ""} — saved as default. Role models/thinking: /agents`);
     return true;
   };
 
@@ -3280,6 +3213,20 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               if (history[k]!.role === "user" && !lastUserInput) lastUserInput = String(history[k]!.content ?? "");
               if (history[k]!.role === "assistant" && !lastReply) lastReply = String(history[k]!.content ?? "");
               if (lastUserInput && lastReply) break;
+            }
+            // Seed readline's input history so ↑ in the prompt recalls THIS session's
+            // prior prompts (not just lines typed in the current run). readline history
+            // is newest-first; unshift in chronological order so the session's newest
+            // prompt lands at the front (first ↑). Skip injected/framed messages.
+            const rli = rl as unknown as { history?: string[] };
+            if (Array.isArray(rli.history)) {
+              const priorPrompts = history
+                .filter(m => m.role === "user")
+                .map(m => String(m.content ?? "").trim())
+                .filter(c => c && !c.startsWith("Tool [") && !c.startsWith("[mid-turn steering") && !c.startsWith("[Earlier conversation summary]"));
+              for (const p of priorPrompts) {
+                if (rli.history[0] !== p) rli.history.unshift(p);
+              }
             }
             const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
             logLines([

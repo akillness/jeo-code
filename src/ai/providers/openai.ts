@@ -3,6 +3,7 @@ import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
 import { codexResponsesCall, codexResponsesStream } from "./openai-responses";
+import { serializeToolCalls } from "../../agent/tool-schemas";
 
 export function openaiRequest(messages: Message[], options: CallOptions, credential: Credential, stream: boolean): { url: string; headers: Record<string, string>; body: string } {
   const model = options.model.startsWith("openai/") ? options.model.slice(7) : options.model;
@@ -39,7 +40,11 @@ export function openaiRequest(messages: Message[], options: CallOptions, credent
     payload.stream = true;
     payload.stream_options = { include_usage: true };
   }
-  if (options.jsonMode) payload.response_format = { type: "json_object" };
+  if (options.tools?.length) {
+    payload.tools = options.tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
+    payload.tool_choice = "auto";
+  }
+  if (options.jsonMode && !options.tools?.length) payload.response_format = { type: "json_object" };
   const base = (options.baseUrl ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
   return {
     url: `${base}/chat/completions`,
@@ -59,14 +64,18 @@ function emptyCompletionError(finishReason: string | undefined): Error {
 
 export const openaiAdapter: ProviderAdapter = {
   name: "openai",
+  supportsNativeTools: true,
   async call(messages, options, credential) {
     // ChatGPT/Codex OAuth can't use /chat/completions — route to the Codex Responses backend.
     if (credential.kind === "oauth") return codexResponsesCall(messages, options, credential);
     const { url, headers, body } = openaiRequest(messages, options, credential, false);
     const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (!response.ok) throw await providerHttpError("OpenAI", response);
-    const result = (await response.json()) as { choices: { message: { content: string }; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+    const result = (await response.json()) as { choices: { message: { content?: string; tool_calls?: { function?: { name?: string; arguments?: string } }[] }; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     if (result.usage) options.onUsage?.({ inputTokens: result.usage.prompt_tokens, outputTokens: result.usage.completion_tokens });
+    // Prefer a native tool call (re-serialized to canonical JSON) over any stray text.
+    const envelope = serializeToolCalls(parseOpenaiToolCalls(result.choices[0]?.message?.tool_calls));
+    if (envelope) return envelope;
     const text = result.choices[0]?.message?.content ?? "";
     if (!text) throw emptyCompletionError(result.choices[0]?.finish_reason);
     return text;
@@ -93,8 +102,9 @@ export const openaiAdapter: ProviderAdapter = {
     if (!response.body) return;
     let yieldedAny = false;
     let finishReason: string | undefined;
+    const toolAcc = new Map<number, { name: string; args: string }>();
     for await (const data of readSse(response.body)) {
-      let chunk: { choices?: { delta?: { content?: string }; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+      let chunk: { choices?: { delta?: { content?: string; tool_calls?: { index?: number; function?: { name?: string; arguments?: string } }[] }; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
       try {
         chunk = JSON.parse(data);
       } catch {
@@ -105,12 +115,45 @@ export const openaiAdapter: ProviderAdapter = {
         yieldedAny = true;
         yield delta;
       }
+      const tcs = chunk.choices?.[0]?.delta?.tool_calls;
+      if (tcs) {
+        for (const tc of tcs) {
+          const idx = tc.index ?? 0;
+          const b = toolAcc.get(idx) ?? { name: "", args: "" };
+          if (tc.function?.name) b.name = tc.function.name;
+          if (tc.function?.arguments) b.args += tc.function.arguments;
+          toolAcc.set(idx, b);
+        }
+      }
       if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
       if (chunk.usage) options.onUsage?.({ inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens });
+    }
+    // Native tool calls stream as tool_calls argument fragments — re-serialize once at end.
+    if (toolAcc.size > 0) {
+      const calls = [...toolAcc.values()].map(b => {
+        let args: Record<string, unknown> = {};
+        try { args = b.args ? JSON.parse(b.args) : {}; } catch { args = {}; }
+        return { tool: b.name, arguments: args };
+      });
+      const envelope = serializeToolCalls(calls);
+      if (envelope) { yieldedAny = true; yield envelope; }
     }
     if (!yieldedAny) throw emptyCompletionError(finishReason);
   },
 };
+
+function parseOpenaiToolCalls(toolCalls: { function?: { name?: string; arguments?: string } }[] | undefined): { tool: string; arguments: Record<string, unknown> }[] {
+  if (!toolCalls?.length) return [];
+  const out: { tool: string; arguments: Record<string, unknown> }[] = [];
+  for (const tc of toolCalls) {
+    const name = tc.function?.name;
+    if (!name) continue;
+    let args: Record<string, unknown> = {};
+    try { args = tc.function?.arguments ? JSON.parse(tc.function.arguments) : {}; } catch { args = {}; }
+    out.push({ tool: name, arguments: args });
+  }
+  return out;
+}
 
 function bearerFor(credential: Credential): string {
   if (credential.kind === "oauth") return credential.token;

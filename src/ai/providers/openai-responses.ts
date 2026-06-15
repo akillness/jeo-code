@@ -14,6 +14,7 @@ import type { Credential } from "../../auth";
 import type { CallOptions, Message } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
+import { serializeToolCalls } from "../../agent/tool-schemas";
 
 export const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 
@@ -63,6 +64,11 @@ export function codexResponsesRequest(
     stream: true, // the Codex backend only streams
     store: false,
   };
+  if (options.tools?.length) {
+    // Responses API function tools (flat shape). tool_choice "auto" keeps prose + `done`.
+    payload.tools = options.tools.map(t => ({ type: "function", name: t.name, description: t.description, parameters: t.parameters, strict: false }));
+    payload.tool_choice = "auto";
+  }
   // Map thinkingLevel → reasoning effort for Codex reasoning models (gjc parity).
   // Drop out-of-enum values instead of forwarding them — the backend 400s on unknown efforts.
   if (options.reasoningEffort && VALID_REASONING_EFFORTS.has(options.reasoningEffort)) {
@@ -87,6 +93,10 @@ export interface ResponsesEvent {
   /** `response.incomplete` cause (e.g. max_output_tokens) — surfaced when the
    *  whole response produced no text (round-5 #1). */
   incompleteReason?: string;
+  /** NATIVE function_call output items (accumulated by the caller across SSE events). */
+  toolCallName?: string;
+  toolCallArgsDelta?: string;
+  toolCallIndex?: number;
 }
 
 /** Parse one Responses SSE `data:` payload into a delta / usage / error. */
@@ -94,6 +104,8 @@ export function parseResponsesEvent(data: string): ResponsesEvent {
   let o: {
     type?: string;
     delta?: unknown;
+    item?: { type?: string; name?: string };
+    output_index?: number;
     response?: {
       usage?: { input_tokens?: number; output_tokens?: number };
       error?: { message?: string };
@@ -105,6 +117,12 @@ export function parseResponsesEvent(data: string): ResponsesEvent {
     o = JSON.parse(data);
   } catch {
     return {};
+  }
+  if (o.type === "response.output_item.added" && o.item?.type === "function_call") {
+    return { toolCallName: o.item.name, toolCallIndex: o.output_index };
+  }
+  if (o.type === "response.function_call_arguments.delta" && typeof o.delta === "string") {
+    return { toolCallArgsDelta: o.delta, toolCallIndex: o.output_index };
   }
   if (o.type === "response.output_text.delta" && typeof o.delta === "string") return { delta: o.delta };
   // `response.incomplete` (max_output_tokens / content filter) also carries usage — don't drop it.
@@ -118,6 +136,33 @@ export function parseResponsesEvent(data: string): ResponsesEvent {
     return { error: o.response?.error?.message ?? o.error?.message ?? "Codex response failed" };
   }
   return {};
+}
+
+/** Accumulate Responses function_call name + streamed argument fragments by output index. */
+function accumulateResponsesToolCall(acc: Map<number, { name: string; args: string }>, ev: ResponsesEvent): void {
+  if (ev.toolCallName !== undefined) {
+    const i = ev.toolCallIndex ?? 0;
+    const b = acc.get(i) ?? { name: "", args: "" };
+    b.name = ev.toolCallName;
+    acc.set(i, b);
+  }
+  if (ev.toolCallArgsDelta) {
+    const i = ev.toolCallIndex ?? 0;
+    const b = acc.get(i) ?? { name: "", args: "" };
+    b.args += ev.toolCallArgsDelta;
+    acc.set(i, b);
+  }
+}
+
+/** Re-serialize accumulated Responses function calls into the engine's canonical JSON. */
+function serializeResponsesToolCalls(acc: Map<number, { name: string; args: string }>): string | null {
+  if (acc.size === 0) return null;
+  const calls = [...acc.values()].map(b => {
+    let args: Record<string, unknown> = {};
+    try { args = b.args ? JSON.parse(b.args) : {}; } catch { args = {}; }
+    return { tool: b.name, arguments: args };
+  });
+  return serializeToolCalls(calls);
 }
 
 /** Round-5 #1: no-text completions surface their cause instead of returning "". */
@@ -136,13 +181,18 @@ export async function codexResponsesCall(messages: Message[], options: CallOptio
   if (!response.body) return "";
   let out = "";
   let incompleteReason: string | undefined;
+  const toolAcc = new Map<number, { name: string; args: string }>();
   for await (const data of readSse(response.body)) {
     const ev = parseResponsesEvent(data);
     if (ev.delta) out += ev.delta;
+    accumulateResponsesToolCall(toolAcc, ev);
     if (ev.usage) options.onUsage?.(ev.usage);
     if (ev.incompleteReason) incompleteReason = ev.incompleteReason;
     if (ev.error) throw new Error(`OpenAI Codex response failed: ${ev.error}`);
   }
+  // Prefer a native tool call (re-serialized to canonical JSON) over any stray text.
+  const envelope = serializeResponsesToolCalls(toolAcc);
+  if (envelope) return envelope;
   if (!out) throw emptyCompletionError(incompleteReason);
   return out;
 }
@@ -159,15 +209,20 @@ export async function* codexResponsesStream(
   if (!response.body) return;
   let yieldedAny = false;
   let incompleteReason: string | undefined;
+  const toolAcc = new Map<number, { name: string; args: string }>();
   for await (const data of readSse(response.body)) {
     const ev = parseResponsesEvent(data);
     if (ev.delta) {
       yieldedAny = true;
       yield ev.delta;
     }
+    accumulateResponsesToolCall(toolAcc, ev);
     if (ev.usage) options.onUsage?.(ev.usage);
     if (ev.incompleteReason) incompleteReason = ev.incompleteReason;
     if (ev.error) throw new Error(`OpenAI Codex response failed: ${ev.error}`);
   }
+  // Native tool calls have no output_text deltas — yield the re-serialized envelope once.
+  const envelope = serializeResponsesToolCalls(toolAcc);
+  if (envelope) { yieldedAny = true; yield envelope; }
   if (!yieldedAny) throw emptyCompletionError(incompleteReason);
 }

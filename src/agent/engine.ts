@@ -503,7 +503,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
 
     let invocation: any;
     try {
-      invocation = extractJsonObject<any>(responseText);
+      invocation = extractJsonObject<any>(responseText, { preferKeys: ["tool", "tools"] });
     } catch (err) {
       ev.onAssistant?.(responseText, null);
       // Prose salvage: a reply with no JSON object at all is a chat-style final

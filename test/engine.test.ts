@@ -32,6 +32,45 @@ test("extractJsonObject: throws on garbage", () => {
   expect(() => extractJsonObject("totally not json")).toThrow();
 });
 
+
+// --- gjc-robustness hardening: trailing commas + tool-key preference ---
+
+test("extractJsonObject: tolerates a trailing comma before }", () => {
+  expect(extractJsonObject('{"tool":"read","arguments":{"filePath":"a.ts",}}')).toEqual({
+    tool: "read",
+    arguments: { filePath: "a.ts" },
+  });
+});
+
+test("extractJsonObject: tolerates a trailing comma before ]", () => {
+  expect(
+    extractJsonObject('{"tools":[{"tool":"read","arguments":{"filePath":"a.ts"}},]}'),
+  ).toEqual({ tools: [{ tool: "read", arguments: { filePath: "a.ts" } }] });
+});
+
+test("extractJsonObject: a comma inside a string is never stripped", () => {
+  expect(extractJsonObject('{"tool":"bash","arguments":{"command":"echo a,}"}}')).toEqual({
+    tool: "bash",
+    arguments: { command: "echo a,}" },
+  });
+});
+
+test("extractJsonObject: preferKeys picks the tool object after an earlier valid JSON object", () => {
+  // A model emits a complete, parseable JSON object in its reasoning prose BEFORE
+  // the real tool call. Without preferKeys the first object wins (wrong); with it,
+  // the object carrying "tool" is selected.
+  const text = 'Plan: {"step":1,"note":"first read the file"} then {"tool":"read","arguments":{"filePath":"a.ts"}}';
+  expect(extractJsonObject(text, { preferKeys: ["tool", "tools"] })).toEqual({
+    tool: "read",
+    arguments: { filePath: "a.ts" },
+  });
+});
+
+test("extractJsonObject: without preferKeys the first parseable object still wins (generic callers unchanged)", () => {
+  const text = '{"step":1,"note":"first"} then {"tool":"read","arguments":{}}';
+  expect(extractJsonObject(text)).toEqual({ step: 1, note: "first" });
+});
+
 // --- engine loop, with callLlm mocked via module mock ---
 
 test("runAgentLoop: dispatches a tool then completes on done", async () => {

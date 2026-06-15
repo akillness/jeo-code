@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseSkillInvocation, parseSkillMarkdown, SKILLS, uniquePrefixSkill, suggestSkills } from "../src/skills/catalog";
+import { parseSkillInvocation, parseSkillChain, parseSkillMarkdown, SKILLS, uniquePrefixSkill, suggestSkills } from "../src/skills/catalog";
 import { complete } from "../src/tui/components/autocomplete";
 import type { CompletionContext } from "../src/tui/components/autocomplete";
 
@@ -61,6 +61,35 @@ test("suggestSkills: prefix-first then fuzzy; empty for no match", () => {
   expect(suggestSkills(skills, "tea").map(s => s.name)).toContain("team");
   expect(suggestSkills(skills, "tm").map(s => s.name)).toContain("team"); // fuzzy t…m
   expect(suggestSkills(skills, "qqqzzz")).toEqual([]);
+});
+
+test("parseSkillChain: multiple leading $skills all resolve, sharing the trailing intent", () => {
+  const c = parseSkillChain("$ralplan $team build the auth flow", skills);
+  expect(c?.invocations.map(i => i.skill.name)).toEqual(["ralplan", "team"]);
+  expect(c?.invocations.every(i => i.intent === "build the auth flow")).toBe(true);
+  expect(c?.invocations.map(i => i.invokedAs)).toEqual(["$ralplan", "$team"]);
+  expect(c?.unresolved).toEqual([]);
+});
+
+test("parseSkillChain: prefixes resolve and a lone $skill is a chain of one", () => {
+  expect(parseSkillChain("$te $ultra go", skills)?.invocations.map(i => i.skill.name)).toEqual(["team", "ultragoal"]);
+  const one = parseSkillChain("$team only", skills);
+  expect(one?.invocations.map(i => i.skill.name)).toEqual(["team"]);
+  expect(one?.invocations[0]?.intent).toBe("only");
+});
+
+test("parseSkillChain: unknown tokens collected, env-var token ends the chain", () => {
+  const c = parseSkillChain("$team $nope build", skills);
+  expect(c?.invocations.map(i => i.skill.name)).toEqual(["team"]);
+  expect(c?.unresolved).toEqual(["nope"]);
+  // `$HOME` is env-var-style → boundary; it and the rest become the intent.
+  const env = parseSkillChain("$team $HOME run", skills);
+  expect(env?.invocations.map(i => i.skill.name)).toEqual(["team"]);
+  expect(env?.invocations[0]?.intent).toBe("$HOME run");
+  // A leading env-var token means no chain at all (passes through to the model).
+  expect(parseSkillChain("$HOME is what?", skills)).toBeNull();
+  // Non-$ input is never a chain.
+  expect(parseSkillChain("explain $team", skills)).toBeNull();
 });
 
 function ctx(): CompletionContext {

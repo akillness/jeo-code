@@ -11,7 +11,7 @@ import { runDeepInterviewEngine } from "./deep-interview";
 import { runRalplanEngine } from "./ralplan";
 import { runTeamEngine } from "./team";
 import { runUltragoalEngine } from "./ultragoal";
-import { skillsPromptSection, loadSkills, formatSkill, buildSkillTask, getSkillFrom, skillSlashAliases, workflowSkillsForPrompt, parseSkillInvocation, looksLikeSkillEcho, skillInvocationCard, type SkillDoc } from "../skills/catalog";
+import { skillsPromptSection, loadSkills, formatSkill, buildSkillTask, getSkillFrom, skillSlashAliases, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
 import { formatForgeBox } from "../tui/components/forge";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
@@ -1594,13 +1594,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         return;
       }
     }
-    const skillInvocation = parseSkillInvocation(messageContent, resolvedSkills);
-    if (skillInvocation) {
-      const isBundleWorkflow = ["deep-interview", "ralplan", "team", "ultragoal"].includes(skillInvocation.skill.name);
+    // One skill run (bundle workflow → engine; regular skill → agent turn). Shared by the
+    // single-invocation path and the `$a $b …` chain path so every `$` skill actually runs.
+    const runOneSkillShot = async (inv: SkillInvocation): Promise<void> => {
+      const isBundleWorkflow = ["deep-interview", "ralplan", "team", "ultragoal"].includes(inv.skill.name);
       if (isBundleWorkflow) {
         const startMsg: Message = {
           role: "system",
-          content: `[workflow:${skillInvocation.skill.name}:start]${skillInvocation.intent ? ` intent: ${skillInvocation.intent}` : ""}`
+          content: `[workflow:${inv.skill.name}:start]${inv.intent ? ` intent: ${inv.intent}` : ""}`
         };
         history.push(startMsg);
         if (sessionId) {
@@ -1623,18 +1624,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               console.log(line);
             }
           },
-          args: skillInvocation.skill.name === "deep-interview" ? (skillInvocation.intent ? skillInvocation.intent.split(/\s+/) : []) : undefined
+          args: inv.skill.name === "deep-interview" ? (inv.intent ? inv.intent.split(/\s+/) : []) : undefined
         };
 
         let ok = false;
         let reason: string | undefined;
         try {
           let res: { ok: boolean; reason?: string };
-          if (skillInvocation.skill.name === "deep-interview") {
+          if (inv.skill.name === "deep-interview") {
             res = await runDeepInterviewEngine(opts);
-          } else if (skillInvocation.skill.name === "ralplan") {
+          } else if (inv.skill.name === "ralplan") {
             res = await runRalplanEngine(opts);
-          } else if (skillInvocation.skill.name === "team") {
+          } else if (inv.skill.name === "team") {
             res = await runTeamEngine(opts);
           } else {
             res = await runUltragoalEngine(opts);
@@ -1650,9 +1651,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
         const endMsg: Message = {
           role: "system",
-          content: ok 
-            ? `[workflow:${skillInvocation.skill.name}:finish]` 
-            : `[workflow:${skillInvocation.skill.name}:abort]${reason ? ` reason: ${reason}` : ""}`
+          content: ok
+            ? `[workflow:${inv.skill.name}:finish]`
+            : `[workflow:${inv.skill.name}:abort]${reason ? ` reason: ${reason}` : ""}`
         };
         if (sessionId) {
           await appendMessage(sessionId, endMsg, cwd);
@@ -1662,12 +1663,32 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
       const useOneShotTui = shouldUseOneShotTui(flags.noTui);
       if (!useOneShotTui) {
-        console.log(`▶ Running skill: ${skillInvocation.skill.name}${skillInvocation.intent ? ` — ${skillInvocation.intent}` : ""}`);
+        console.log(`▶ Running skill: ${inv.skill.name}${inv.intent ? ` — ${inv.intent}` : ""}`);
       }
-      const task = buildSkillTask(skillInvocation.skill, skillInvocation.intent, skillInvocation.invokedAs);
+      const task = buildSkillTask(inv.skill, inv.intent, inv.invokedAs);
       const { reply, rendered, usage } = await runTurn(task, useOneShotTui);
       if (!rendered) console.log(stripMarkdown(renderMarkdownTables(reply)) + usage);
       else if (usage) console.log(usage.trim());
+    };
+
+    // `$a $b … [intent]` — run every resolved skill in order; a lone `$skill` is a chain of 1.
+    const skillChain = parseSkillChain(messageContent, resolvedSkills);
+    if (skillChain && skillChain.invocations.length) {
+      if (skillChain.unresolved.length) {
+        console.log(`(skipping unknown skill${skillChain.unresolved.length > 1 ? "s" : ""}: ${skillChain.unresolved.map(u => `$${u}`).join(", ")})`);
+      }
+      if (skillChain.invocations.length > 1) {
+        console.log(`▶ Chaining ${skillChain.invocations.length} skills: ${skillChain.invocations.map(i => `$${i.skill.name}`).join(" → ")}`);
+      }
+      for (const inv of skillChain.invocations) {
+        await runOneSkillShot(inv);
+      }
+      return;
+    }
+    // Slash / file-path / `/skill:` entrypoints (non-`$`) still resolve to a single skill.
+    const skillInvocation = parseSkillInvocation(messageContent, resolvedSkills);
+    if (skillInvocation) {
+      await runOneSkillShot(skillInvocation);
       return;
     }
     try {
@@ -4164,6 +4185,25 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         continue;
       }
+      // `$a $b ... [intent]` — run EVERY resolved skill in the leading run, in order, each
+      // with the shared trailing intent. A lone `$skill` is just a chain of length 1.
+      const dollarChain = input.startsWith("$") ? parseSkillChain(input, resolvedSkills) : null;
+      if (dollarChain && dollarChain.invocations.length) {
+        if (dollarChain.unresolved.length) {
+          console.log(`(skipping unknown skill${dollarChain.unresolved.length > 1 ? "s" : ""}: ${dollarChain.unresolved.map(u => `$${u}`).join(", ")})`);
+        }
+        if (dollarChain.invocations.length > 1) {
+          console.log(`▶ Chaining ${dollarChain.invocations.length} skills: ${dollarChain.invocations.map(i => `$${i.skill.name}`).join(" → ")}`);
+        }
+        for (const inv of dollarChain.invocations) {
+          try {
+            await runSkillInvocation(inv.skill, inv.intent, inv.invokedAs);
+          } catch (err) {
+            console.log(`! ${(err as Error).message}`);
+          }
+        }
+        continue;
+      }
       const aliasInvocation = parseSkillInvocation(input, resolvedSkills);
       if (aliasInvocation?.invokedAs) {
         try {
@@ -4174,11 +4214,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
       // Unresolved `$skill` → suggest precisely, never silently send the typo to the model.
-      // `$exact`/`$prefix` already ran above; a leftover `$word` is a missed skill attempt,
-      // EXCEPT `$UPPERCASE` env-var-style tokens (e.g. `$HOME`), which pass through untouched.
+      // `$exact`/`$prefix`/chains already ran above; a leftover `$word` is a missed skill
+      // attempt, EXCEPT `$UPPERCASE` env-var-style tokens (e.g. `$HOME`) which pass through.
       if (input.startsWith("$")) {
-        const token = (input.split(/\s+/, 1)[0] ?? "").slice(1);
-        if (token && !/^[A-Z_][A-Z0-9_]*$/.test(token)) {
+        const unresolved = (dollarChain?.unresolved.length
+          ? dollarChain.unresolved
+          : [(input.split(/\s+/, 1)[0] ?? "").slice(1)]
+        ).filter(t => t && !/^[A-Z_][A-Z0-9_]*$/.test(t));
+        if (unresolved.length > 1) {
+          console.log(`No skills: ${unresolved.map(u => `$${u}`).join(", ")}.  (Type $ to autocomplete.)`);
+          continue;
+        }
+        if (unresolved.length === 1) {
+          const token = unresolved[0]!;
           const lc = token.toLowerCase();
           const prefix = resolvedSkills.filter(s => s.name.toLowerCase().startsWith(lc));
           if (prefix.length) {

@@ -556,6 +556,38 @@ export function parseSkillInvocation(input: string, skills: SkillDoc[]): SkillIn
   }
   return skill ? { skill, intent: trimmed.slice(command.length).trim(), invokedAs: command } : null;
 }
+
+/** Parse a LEADING run of `$skill` tokens into an ordered chain that shares the trailing
+ *  text as one intent: `$ralplan $team build auth` → [ralplan, team] each with intent
+ *  "build auth". This is what lets `$` invoke several skills in one line — they all run,
+ *  in order. Scanning stops at the first non-`$` token, OR a `$UPPERCASE` env-var-style
+ *  token (e.g. `$HOME`), which is left in the intent so shell-style references pass through.
+ *  Each `$name` resolves by exact name then unique prefix; names that resolve to nothing go
+ *  into `unresolved` (so the REPL can report every typo, not just the first). Returns null
+ *  only when the input opens with no parseable `$skill` token at all. */
+export function parseSkillChain(
+  input: string,
+  skills: SkillDoc[],
+): { invocations: SkillInvocation[]; unresolved: string[] } | null {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("$")) return null;
+  const tokens = trimmed.split(/\s+/);
+  const invocations: SkillInvocation[] = [];
+  const unresolved: string[] = [];
+  let i = 0;
+  for (; i < tokens.length; i++) {
+    const tok = tokens[i] ?? "";
+    if (!tok.startsWith("$") || tok.length < 2) break;
+    const name = tok.slice(1);
+    if (/^[A-Z_][A-Z0-9_]*$/.test(name)) break; // env-var-style → boundary; keep in intent
+    const skill = getSkillFrom(skills, name) ?? uniquePrefixSkill(skills, name);
+    if (skill) invocations.push({ skill, intent: "", invokedAs: tok });
+    else unresolved.push(name);
+  }
+  if (invocations.length === 0 && unresolved.length === 0) return null;
+  const intent = tokens.slice(i).join(" ").trim();
+  return { invocations: invocations.map(inv => ({ ...inv, intent })), unresolved };
+}
 export function looksLikeSkillEcho(reply: string, skills: SkillDoc[]): boolean {
   if (reply.length < 80) {
     return false;

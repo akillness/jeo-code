@@ -1931,6 +1931,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const multilineInput = !!process.stdin.isTTY && jeoEnv("NO_MULTILINE") !== "1";
   const loneLfShiftEnter = jeoEnv("MULTILINE") === "1";
   const expandSentinel = (s: string): string => (multilineInput ? s.split(SENTINEL).join("\n") : s);
+  // Prompt-scoped process listeners (stdin data/keypress, stdout resize). Registered
+  // once per launch but previously anonymous and never removed — benign for a single
+  // CLI run, but repeated launch() (test harness) accumulated them past Node's
+  // 10-listener default → MaxListenersExceededWarning + a real leak. Track each remover
+  // and drain it on every exit path so the process listener set returns to baseline.
+  const promptListenerCleanups: Array<() => void> = [];
+  const drainPromptListeners = () => {
+    for (const off of promptListenerCleanups.splice(0)) { try { off(); } catch { /* best effort */ } }
+  };
   let keyFilter: PassThrough | undefined;
   if (multilineInput) {
     const kf = new PassThrough();
@@ -1951,7 +1960,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     //     off) and the xterm "\x1b[27;2;13~" / kitty "\x1b[13;2u" sequences. Enter ("\r")
     //     passes through and submits.
     let kfInPaste = false;
-    process.stdin.on("data", (chunk: Buffer) => {
+    const kfDataHandler = (chunk: Buffer) => {
       const data = chunk.toString("utf8");
       let out = "";
       let i = 0;
@@ -1972,7 +1981,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         out += data[i]; i += 1;
       }
       kf.write(out);
-    });
+    };
+    process.stdin.on("data", kfDataHandler);
+    promptListenerCleanups.push(() => process.stdin.off("data", kfDataHandler));
     keyFilter = kf;
     // readline now decodes keypresses on `keyFilter`; keep process.stdin emitting
     // 'keypress' too so the footer-redraw / paste-marker / picker listeners (registered
@@ -2032,13 +2043,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const pasteMerge: { buf: string[]; endWaiters: Array<() => void> } = { buf: [], endWaiters: [] };
   let pasteLineFired = false; // the line that resolved rl.question came from inside a paste
   if (process.stdin.isTTY) {
-    process.stdin.on("keypress", (_ch: string, key: { name?: string } | undefined) => {
+    const pasteKeypressHandler = (_ch: string, key: { name?: string } | undefined) => {
       if (key?.name === "paste-start") { promptPasteActive = true; pasteMerge.buf = []; }
       else if (key?.name === "paste-end") {
         promptPasteActive = false;
         for (const w of pasteMerge.endWaiters.splice(0)) w();
       }
-    });
+    };
+    process.stdin.on("keypress", pasteKeypressHandler);
+    promptListenerCleanups.push(() => process.stdin.off("keypress", pasteKeypressHandler));
     // Enable bracketed paste for the REPL lifetime (restored on exit below):
     // terminals only wrap pastes in the 200~/201~ markers once the app opts in.
     process.stdout.write("\x1b[?2004h");
@@ -2858,7 +2871,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   if (previewEnabled) {
     process.once("exit", () => out.write("\x1b[?25h")); // safety net: never leave the cursor hidden
-    process.stdin.on("keypress", (_ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
+    const footerKeypressHandler = (_ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
       if (key?.ctrl && key.name === "c") {
         forceExitFromCtrlC();
         return;
@@ -2973,18 +2986,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           drawFooter(previewLines(typedLine));
         } catch { /* ignore render races */ }
       });
-    });
+    };
+    process.stdin.on("keypress", footerKeypressHandler);
+    promptListenerCleanups.push(() => process.stdin.off("keypress", footerKeypressHandler));
     // Idle-prompt resize: re-reserve the footer at the new terminal height so the
     // fixed reservation stays accurate (otherwise the next paint would target the
     // old row count and either over-shoot or under-paint the reserved region).
-    process.stdout.on("resize", () => {
+    const idleResizeHandler = () => {
       if (!previewArmed) return;
       try {
         disarmPreview();
         armPreview();
         drawFooter(promptHistoryLines ? historyPreviewLines(promptHistoryLines) : previewLines(typedLine, navIdx));
       } catch { /* ignore resize render races */ }
-    });
+    };
+    process.stdout.on("resize", idleResizeHandler);
+    promptListenerCleanups.push(() => process.stdout.off("resize", idleResizeHandler));
   }
 
   while (true) {
@@ -4313,6 +4330,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     } catch { /* best effort */ }
     process.removeListener("SIGINT", forceExitFromCtrlC);
     process.stdin.off("data", forceExitOnCtrlCByte);
+    drainPromptListeners();
     restorePromptRawMode();
     process.exit(130);
   }
@@ -4328,6 +4346,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   if (sessionId && !flags.noSession) console.log(formatResumeHint(sessionId));
   process.removeListener("SIGINT", forceExitFromCtrlC);
   process.stdin.off("data", forceExitOnCtrlCByte);
+  drainPromptListeners();
   restorePromptRawMode();
   gracefulReadlineClose = true;
   rl.close();

@@ -174,3 +174,47 @@ test("/fast rejects models without advertised fast thinking", async () => {
     await fs.rm(cfgDir, { recursive: true, force: true });
   }
 });
+
+// Characterization tests pinning the /agents command-handler branches BEFORE any
+// extraction of that ~190-line handler out of runLaunchCommand (behavior-freeze-first).
+test("characterization: /agents <role> maxSteps + thinking persist (handler branches)", async () => {
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-agents-char-"));
+  const savedCfg = process.env.JEO_CONFIG_DIR;
+  const savedLog = console.log;
+  console.log = () => {};
+  try {
+    process.env.JEO_CONFIG_DIR = cfgDir;
+    mockQuestions = ["/agents executor maxSteps 20", "/agents executor thinking high", "/exit"];
+    const { runLaunchCommand } = await import("../src/commands/launch");
+    await runLaunchCommand(["--no-tui", "--no-session"]);
+    const raw = JSON.parse(await fs.readFile(path.join(cfgDir, "config.json"), "utf8"));
+    expect(raw.subagents?.executor?.maxSteps).toBe(20);
+    expect(raw.subagents?.executor?.thinking).toBe("high");
+  } finally {
+    console.log = savedLog;
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = savedCfg;
+    await fs.rm(cfgDir, { recursive: true, force: true });
+  }
+});
+
+test("characterization: /agents <role> reset clears that role's overrides (handler branch)", async () => {
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-agents-reset-"));
+  const savedCfg = process.env.JEO_CONFIG_DIR;
+  const savedLog = console.log;
+  console.log = () => {};
+  try {
+    process.env.JEO_CONFIG_DIR = cfgDir;
+    mockQuestions = ["/agents architect thinking xhigh", "/agents architect maxSteps 30", "/agents architect reset", "/exit"];
+    const { runLaunchCommand } = await import("../src/commands/launch");
+    await runLaunchCommand(["--no-tui", "--no-session"]);
+    const raw = JSON.parse(await fs.readFile(path.join(cfgDir, "config.json"), "utf8"));
+    expect(raw.subagents?.architect?.thinking ?? undefined).toBeUndefined();
+    expect(raw.subagents?.architect?.maxSteps ?? undefined).toBeUndefined();
+  } finally {
+    console.log = savedLog;
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = savedCfg;
+    await fs.rm(cfgDir, { recursive: true, force: true });
+  }
+});

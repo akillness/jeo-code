@@ -3278,9 +3278,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (input === "/resume" || input.startsWith("/resume ")) {
         const id = input.substring(7).trim();
         if (!id) {
-          const sessions = await listSessions(cwd);
+          // Only sessions that actually have a conversation are resumable — empty
+          // sessions (created on each launch but never used) are noise here.
+          const sessions = (await listSessions(cwd)).filter(s => s.messageCount > 0);
           if (sessions.length === 0) {
-            console.log("(no saved sessions)");
+            console.log("(no saved sessions with history)");
             continue;
           }
           console.log("Saved sessions — resume with /resume <id>:");
@@ -3295,7 +3297,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           history.length = 1;
           for (const m of messages) history.push(m);
           sessionId = id;
-          console.log(`Resumed session ${id} (${messages.length} messages).`);
+          // Restore the conversation VISIBLY — print the transcript into scrollback so
+          // the resumed history is on screen, not just a one-line confirmation. The
+          // last user/assistant turn also seeds /retry and the next reply marker.
+          for (let k = history.length - 1; k >= 1; k--) {
+            if (history[k]!.role === "user" && !lastUserInput) lastUserInput = String(history[k]!.content ?? "");
+            if (history[k]!.role === "assistant" && !lastReply) lastReply = String(history[k]!.content ?? "");
+            if (lastUserInput && lastReply) break;
+          }
+          const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
+          logLines([
+            sep,
+            `resumed session ${id} · ${messages.length} message(s) (/history all for the full transcript)`,
+            sep,
+            ...formatTranscript(history, { maxTurns: 6, color: true, unicode: true }),
+            sep,
+          ]);
         } catch (err) {
           console.log(`! ${(err as Error).message}`);
         }

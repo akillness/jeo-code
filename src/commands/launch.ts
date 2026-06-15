@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { emitKeypressEvents } from "node:readline";
 import { PassThrough } from "node:stream";
-import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, type AgentLoopEvents } from "../agent/engine";
+import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, OUTPUT_DISCIPLINE, type AgentLoopEvents } from "../agent/engine";
 import { createOpikTracer, wrapEvents } from "../agent/opik-tracer";
 import { initialDynamicStepLimit } from "../agent/step-budget";
 import { memoryPromptSection, spawnDetachedDistill } from "../agent/memory";
@@ -27,6 +27,7 @@ import { renderWelcome, playWelcomeSweep } from "../tui/components/welcome";
 import { checkForUpdate, readUpdateCache, writeUpdateCache } from "../util/update-check";
 import { jeoEnv } from "../util/env";
 import { renderUpdateBox } from "../tui/components/update-box";
+import { consumeLaunchWhatsNew } from "../util/whats-new";
 import { supportsUnicode } from "../tui/components/capability";
 import pkg from "../../package.json";
 import chalk from "chalk";
@@ -498,6 +499,16 @@ interface AbortHarnessOptions {
 export const PASTE_START = "\u001b[200~";
 export const PASTE_END = "\u001b[201~";
 
+/** True when a stdin chunk is ONLY backspace bytes (DEL 0x7f or BS 0x08) — i.e. a
+ *  standalone Backspace keystroke with nothing else. A backspace on an EMPTY input
+ *  line is a no-op edit, but some Bun readline builds turn it into a spurious `close`
+ *  event, which the REPL would treat as a hard exit ("Backspace quits jeo"). The
+ *  input filter swallows these when the line buffer is already empty so the byte never
+ *  reaches readline and the close can't fire. */
+export function isStandaloneBackspace(chunk: string): boolean {
+  return chunk.length > 0 && /^[\x7f\b]+$/.test(chunk);
+}
+
 export interface PromptInputQueue {
   pendingLines: string[];
   partial: string;
@@ -963,6 +974,7 @@ export function buildToolProtocol(allowedTools: Set<string>): string {
   lines.push("Reply with STRICT JSON only — no code fences. You MAY include an optional leading");
   lines.push('"reasoning" string (one short sentence on your plan, shown live to the user) before "tool":');
   lines.push('{ "reasoning": "<one short sentence>", "tool": "<name>", "arguments": { ... } }');
+  lines.push("Tool calibration: scale calls to difficulty — one for a known fact, a few for a normal task, more only when evidence is genuinely missing. Locate before you open: search/find first, then read the hit, instead of guessing paths.");
   return lines.join("\n");
 }
 
@@ -1197,7 +1209,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const baseSystemPrompt =
     preamble + "\n\n" + protocol + "\n\n" +
     WORKING_DISCIPLINE + "\n\n" +
-    "Always verify (run tests / execute the program) before calling done." +
+    OUTPUT_DISCIPLINE + "\n\n" +
+    "Before calling done, self-check: did I run the test or command that exercises this change, are directly-affected callsites/tests/docs updated, and does my claim match real output? If any answer is no, keep working — do not call done." +
     "\nWhen you have finished the user's request, or need to reply to or ask the user something, call done with {\"reason\": <your natural-language reply to the user>}. The reason text is shown to the user as your message." +
     (allowedTools.has("task") ? "\n\nDelegation: " + taskToolProtocolLine(cfg) +
     " Call task with {\"role\": <one of the advertised roles>, \"task\": <assignment>, \"context\": <optional>} to hand a focused slice to a subagent." : "") +
@@ -1770,6 +1783,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
   showUpdateBanner(await readUpdateCache(pkg.version));
   showUpdateBanner(await Promise.race([updatePromise, new Promise<null>(r => setTimeout(() => r(null), 1200))]));
+  // First launch after a version bump: surface the bundled release notes ONCE
+  // (offline, from the new package's CHANGELOG.md) and record the seen version
+  // so it never repeats. Screen-safe: prints BEFORE the prompt is armed.
+  try {
+    const whatsNew = await consumeLaunchWhatsNew({
+      cols: Math.min(100, Math.max(40, (process.stdout.columns ?? 80) - 2)),
+      unicode: supportsUnicode(),
+      color: welcomeTheme.color,
+    });
+    if (whatsNew && whatsNew.length) console.log(whatsNew.join("\n"));
+  } catch { /* release notes are a courtesy; never block launch */ }
   if (!LaunchTui.usable(flags.noTui)) console.log("(plain output)");
 
   const useTui = LaunchTui.usable(flags.noTui);
@@ -1954,6 +1978,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     for (const off of promptListenerCleanups.splice(0)) { try { off(); } catch { /* best effort */ } }
   };
   let keyFilter: PassThrough | undefined;
+  // Holder for the active readline so the input filter can see the current line
+  // buffer (used by the empty-line backspace guard below). Set after rl is created.
+  let activeRl: { line?: string } | undefined;
   if (multilineInput) {
     const kf = new PassThrough();
     (kf as unknown as { isTTY: boolean }).isTTY = true;
@@ -1975,6 +2002,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     let kfInPaste = false;
     const kfDataHandler = (chunk: Buffer) => {
       const data = chunk.toString("utf8");
+      // Empty-line Backspace guard: a standalone Backspace with nothing to delete is a
+      // no-op, but some Bun readline builds emit a spurious `close` for it — which the
+      // REPL treats as a hard exit. Drop it before it reaches readline. (Inside a paste,
+      // or with text in the buffer, backspace is forwarded normally so editing works.)
+      if (!kfInPaste && isStandaloneBackspace(data) && !(activeRl?.line ?? "")) return;
       let out = "";
       let i = 0;
       while (i < data.length) {
@@ -2015,6 +2047,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     output: gatedStdout(process.stdout, () => previewArmed || promptActive || pickerActive || interactiveTurnActive),
     completer: (line: string) => readlineCompleter(line, completionContext()),
   });
+  activeRl = rl; // wire the input filter's empty-line backspace guard to the live buffer
   const promptStdin = process.stdin as typeof process.stdin & { isRaw?: boolean; setRawMode?(raw: boolean): void };
   const promptWasRaw = !!promptStdin.isRaw;
   let promptRawChanged = false;

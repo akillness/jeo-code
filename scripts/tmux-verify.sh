@@ -45,7 +45,11 @@ launch_session() {
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/jeo-verify.XXXXXX")"
   LOG="$(mktemp "${TMPDIR:-/tmp}/jeo-verify-log.XXXXXX")"
   local cli="${JEO_CLI:-bun "$ROOT/src/cli.ts"}"
-  # Detach from any ambient tmux/launch markers so jeo spawns its OWN session.
+  # Detach from ambient tmux/launch markers so jeo spawns its OWN session. NOTE: jeo
+  # attaches to the already-running tmux SERVER, which does NOT inherit this launcher's
+  # env, so config CANNOT be isolated via JEO_CONFIG_DIR here — the harness drives the
+  # user's REAL ~/.jeo. Therefore every probe MUST be non-mutating (no /model thinking,
+  # /agents writes, /provider login, etc.). The cwd is still a throwaway dir (no repo edits).
   ( cd "$WORK" && env -u TMUX -u JEO_TMUX_LAUNCHED $cli --tmux "$@" </dev/null >"$LOG" 2>&1 ) &
   LAUNCH_PID=$!
   local waited=0
@@ -125,10 +129,43 @@ cmd_capture() {
   capture $ansi
 }
 
+# One battery probe in an ISOLATED session: boot, optionally type INPUT+Enter, then
+# assert the pane matches REGEX (empty REGEX = boot-only) AND that the input box
+# survived (no mid-flow crash). Prints ✓/✗ and returns 0/1.
+_probe() {
+  local label="$1" input="$2" regex="${3:-}" wait="${4:-2}"
+  if ! launch_session; then echo "  ✗ ${label}  (boot failed)"; cleanup_session; return 1; fi
+  [ -n "$input" ] && send_line "$input"
+  sleep "$wait"
+  local frame rc=0; frame="$(capture)"
+  [ -n "$regex" ] && { echo "$frame" | grep -qE "$regex" || rc=1; }
+  echo "$frame" | grep -qiE 'Type your (message|next message)' || rc=1
+  cleanup_session
+  if [ "$rc" = 0 ]; then echo "  ✓ ${label}"; else echo "  ✗ ${label}  (/${regex}/)"; fi
+  return $rc
+}
+
+# Curated stability + behavior suite. Each probe boots its OWN isolated session, so a
+# crash in one can't poison the next. All checks are client-side (no model call needed).
+cmd_battery() {
+  echo "jeo --tmux verification battery"
+  local pass=0 fail=0
+  _bp() { if _probe "$@"; then pass=$((pass+1)); else fail=$((fail+1)); fi; }
+  _bp "boot: input box + model bar render" ""                       '⬢|claude|gpt|gemini|ollama|antigravity'
+  _bp "/help lists the Skills section"     "/help"                  'Skills:'
+  _bp "unknown \$skill → clear feedback"   '$nope build'            'No skill'
+  _bp "/agents lists subagent roster"      "/agents"                'executor|planner|architect|critic'
+  _bp "/ultragoal dispatches the workflow" "/ultragoal"             'workflow:ultragoal|Skill: ultragoal'
+  _bp "unresolved /command is reported"    "/zzznope"               "Unknown command|No skill"
+  echo ""
+  if [ "$fail" = 0 ]; then echo "battery: ALL ${pass} PASSED"; return 0; fi
+  echo "battery: ${pass} passed, ${fail} FAILED"; return 1
+}
 case "${1:-}" in
   smoke)   shift; cmd_smoke "$@" ;;
+  battery) shift; cmd_battery "$@" ;;
   check)   shift; cmd_check "$@" ;;
   capture) shift; cmd_capture "$@" ;;
   ""|-h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown subcommand '$1' (smoke|check|capture)" ;;
+  *) die "unknown subcommand '$1' (smoke|battery|check|capture)" ;;
 esac

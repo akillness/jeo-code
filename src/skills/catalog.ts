@@ -546,6 +546,14 @@ export function parseSkillInvocation(input: string, skills: SkillDoc[]): SkillIn
     }
   }
   let skill = getSkillBySlash(skills, command);
+  // `/team`, `/deep-interview`, `/ultragoal`, … — a bare slash + skill NAME (or unique
+  // prefix) is the SAME entrypoint as `$name` and `/skill:name`. Only when getSkillBySlash
+  // found no alias and the token is a plain `/word` (no nested `/path` and no `.` so
+  // `/speckit.plan` aliases and `./file` paths keep their own resolution). This is what
+  // makes the bundled workflows actually run from the `/` menu, not just `/ralplan`.
+  if (!skill && command.length > 1 && command.startsWith("/") && !command.includes(".") && command.indexOf("/", 1) === -1) {
+    skill = getSkillFrom(skills, command.slice(1)) ?? uniquePrefixSkill(skills, command.slice(1));
+  }
   if (!skill) {
     if (command.startsWith("/") || command.startsWith(".") || command.includes("/")) {
       const resolved = tryResolveSkillFromFilePath(command);

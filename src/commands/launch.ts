@@ -1192,14 +1192,28 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const workflowSkills = workflowSkillsForPrompt(resolvedSkills);
   const resolvedSkillNames = resolvedSkills.map(s => s.name);
-  const skillSlashDetails: SlashCommandInfo[] = resolvedSkills.flatMap(skill =>
-    skillSlashAliases(skill).map(alias => ({
+  // Bundled workflows are first-class `/name` commands (deep-interview/ralplan/team/
+  // ultragoal), surfaced in the `/` menu even when their SKILL.md self-references no
+  // slash token — `parseSkillInvocation` dispatches `/name` by skill name. Aliases the
+  // SKILL.md does declare are listed too (deduped, case-insensitive).
+  const WORKFLOW_SLASH_NAMES = ["deep-interview", "ralplan", "team", "ultragoal"];
+  const skillSlashDetails: SlashCommandInfo[] = resolvedSkills.flatMap(skill => {
+    const aliases = skillSlashAliases(skill);
+    const nameSlash = WORKFLOW_SLASH_NAMES.includes(skill.name) ? [`/${skill.name}`] : [];
+    const seen = new Set<string>();
+    const commands = [...nameSlash, ...aliases].filter(a => {
+      const k = a.toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    return commands.map(alias => ({
       command: alias,
       usage: `${alias} [intent]`,
       description: `Run ${skill.name} skill${skill.summary ? ` — ${skill.summary}` : ""}`,
       group: "skills" as const,
-    })),
-  );
+    }));
+  });
 
   const protocol = buildToolProtocol(allowedTools);
   const preamble = flags.systemPrompt ?? "You are the jeo, an interactive coding agent.\nAccomplish the user's request by calling tools and verifying your work.";

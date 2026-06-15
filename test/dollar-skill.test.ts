@@ -121,3 +121,17 @@ test("autocomplete: $ completes skill names at any position (mention-style)", ()
   // Glued $ inside a word (env vars) never completes.
   expect(complete("echo FOO$BAR", ctx()).completions).toEqual([]);
 });
+
+test("/name dispatches a workflow by skill name (slash entrypoint, gjc parity)", () => {
+  expect(parseSkillInvocation("/team split into 3 lanes", skills)?.skill.name).toBe("team");
+  expect(parseSkillInvocation("/team split into 3 lanes", skills)?.invokedAs).toBe("/team");
+  expect(parseSkillInvocation("/deep-interview", skills)?.skill.name).toBe("deep-interview");
+  expect(parseSkillInvocation("/ultragoal go", skills)?.skill.name).toBe("ultragoal");
+  // unique prefix resolves like $te → $team
+  expect(parseSkillInvocation("/ultra", skills)?.skill.name).toBe("ultragoal");
+  // unknown /word stays null so the REPL shows "Unknown command", not a wrong skill
+  expect(parseSkillInvocation("/nope", skills)).toBeNull();
+  // dotted (/speckit.plan) and nested (/a/b) tokens are NOT name-matched — alias/path only
+  expect(parseSkillInvocation("/speckit.plan", skills)).toBeNull();
+  expect(parseSkillInvocation("/team is great", skills)?.intent).toBe("is great");
+});

@@ -150,11 +150,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.5.14]** (2026-06-16) — `jeo --tmux` live-verification harness — repeatable stability + behavior checks.
 - **[0.5.13]** (2026-06-15) — Workflow `/` commands actually run — `/deep-interview`, `/team`, `/ultragoal`, `/ralplan` dispatch by name.
 - **[0.5.12]** (2026-06-15) — Yellow status animation while a process runs, and elapsed `(Nms)` on every completed tool card.
 - **[0.5.11]** (2026-06-15) — Backspace on an empty prompt line no longer quits jeo.
 - **[0.5.10]** (2026-06-15) — `/resume` transcript no longer dumps raw JSON for batched tool calls.
-- **[0.5.9]** (2026-06-15) — Bounded per-frame wrap for the live thinking/tool-output blocks — re-render cost no longer grows with stream length.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

@@ -567,14 +567,12 @@ export class LaunchTui {
     const border = this.theme.color && uc ? chalk.hex(uc.border) : (s: string) => s;
     const shadow = this.theme.color && uc ? chalk.hex(uc.shadow) : border;
     const fill = this.theme.color && uc ? (s: string) => chalk.bgHex(uc.fill)(s) : (s: string) => s;
+    // Show ALL wrapped lines — the card lives in scrollback (not a bounded live frame),
+    // so a long submitted query stays fully visible (no truncation).
     const body = text
       .split("\n")
-      .flatMap(line => wrapTextWithAnsi(line, Math.max(8, inner - 2)))
-      .slice(0, 6);
-    const clipped = body.length === 6 && text.split("\n").length > 6
-      ? [...body.slice(0, 5), this.unicode ? "…" : "..."]
-      : body;
-    const rows = clipped.length ? clipped : [""];
+      .flatMap(line => wrapTextWithAnsi(line, Math.max(8, inner - 2)));
+    const rows = body.length ? body : [""];
     const top = border(g.tl + g.h.repeat(inner) + g.tr);
     const bottom = shadow(g.bl + g.h.repeat(inner) + g.br);
     const mid = rows.map(line => {

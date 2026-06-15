@@ -101,17 +101,23 @@ export function renderInputFrame(line: string, opts: InputBoxOptions = {}): Inpu
     ccol = wrapped.col;
   }
 
-  // Tail-truncate to maxBodyRows (caret usually edits near the end); the first
-  // visible row carries an `…` marker when earlier rows are hidden.
+  // Scroll the visible window so the caret row stays in view — cursor movement reveals
+  // every line (no content is unreachable). `…` markers flag rows hidden above/below.
   const maxBodyRows = Math.max(1, Math.trunc(opts.maxBodyRows ?? rows.length));
+  const totalRows = rows.length;
   let hidden = 0;
-  if (rows.length > maxBodyRows) {
-    hidden = rows.length - maxBodyRows;
-    rows = rows.slice(hidden);
-    rows[0] = `…${rows[0] ?? ""}`.slice(0, textWidth);
+  if (totalRows > maxBodyRows) {
+    hidden = Math.min(Math.max(0, crow - maxBodyRows + 1), totalRows - maxBodyRows);
+    if (crow < hidden) hidden = crow; // caret above the window → scroll up to it
+    rows = rows.slice(hidden, hidden + maxBodyRows);
+    if (hidden > 0) rows[0] = `…${rows[0] ?? ""}`.slice(0, textWidth);
+    if (hidden + maxBodyRows < totalRows) {
+      const last = rows.length - 1;
+      rows[last] = `${rows[last] ?? ""}…`.slice(0, textWidth);
+    }
   }
   let visRow = Math.max(0, Math.min(crow - hidden, rows.length - 1));
-  if (hidden > 0 && crow - hidden === 0) ccol += 1; // shifted by the `…` marker
+  if (hidden > 0 && crow - hidden === 0) ccol += 1; // shifted by the leading `…`
   if (crow - hidden < 0) { visRow = 0; ccol = 0; }
 
   const promptMark = "> ";

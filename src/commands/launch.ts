@@ -3276,45 +3276,58 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
       if (input === "/resume" || input.startsWith("/resume ")) {
-        const id = input.substring(7).trim();
-        if (!id) {
-          // Only sessions that actually have a conversation are resumable — empty
-          // sessions (created on each launch but never used) are noise here.
-          const sessions = (await listSessions(cwd)).filter(s => s.messageCount > 0);
-          if (sessions.length === 0) {
-            console.log("(no saved sessions with history)");
-            continue;
+        const arg = input.substring(7).trim();
+        // Load a session into history and print its transcript so the resume is visible.
+        const applyResume = async (rid: string): Promise<void> => {
+          try {
+            const { messages } = await loadSession(rid, cwd);
+            history.length = 1;
+            for (const m of messages) history.push(m);
+            sessionId = rid;
+            // Seed /retry + reply marker from the last user/assistant turn.
+            lastUserInput = ""; lastReply = "";
+            for (let k = history.length - 1; k >= 1; k--) {
+              if (history[k]!.role === "user" && !lastUserInput) lastUserInput = String(history[k]!.content ?? "");
+              if (history[k]!.role === "assistant" && !lastReply) lastReply = String(history[k]!.content ?? "");
+              if (lastUserInput && lastReply) break;
+            }
+            const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
+            logLines([
+              sep,
+              `resumed session ${rid} · ${messages.length} message(s) (/history all for the full transcript)`,
+              sep,
+              ...formatTranscript(history, { maxTurns: 6, color: true, unicode: true }),
+              sep,
+            ]);
+          } catch (err) {
+            console.log(`! ${(err as Error).message}`);
           }
-          console.log("Saved sessions — resume with /resume <id>:");
-          for (const s of sessions.slice(0, 15)) {
-            const marker = s.id === sessionId ? "*" : " ";
-            console.log(` ${marker}${s.id}  (${s.messageCount} msgs)  ${s.title ? `[${s.title}] ` : ""}${s.preview}`);
-          }
+        };
+        if (arg) { await applyResume(arg); continue; }
+        // No id → only sessions with a real conversation are resumable (every launch
+        // creates an empty session; those are noise).
+        const sessions = (await listSessions(cwd)).filter(s => s.messageCount > 0);
+        if (sessions.length === 0) {
+          console.log("(no saved sessions with history)");
           continue;
         }
-        try {
-          const { messages } = await loadSession(id, cwd);
-          history.length = 1;
-          for (const m of messages) history.push(m);
-          sessionId = id;
-          // Restore the conversation VISIBLY — print the transcript into scrollback so
-          // the resumed history is on screen, not just a one-line confirmation. The
-          // last user/assistant turn also seeds /retry and the next reply marker.
-          for (let k = history.length - 1; k >= 1; k--) {
-            if (history[k]!.role === "user" && !lastUserInput) lastUserInput = String(history[k]!.content ?? "");
-            if (history[k]!.role === "assistant" && !lastReply) lastReply = String(history[k]!.content ?? "");
-            if (lastUserInput && lastReply) break;
-          }
-          const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
-          logLines([
-            sep,
-            `resumed session ${id} · ${messages.length} message(s) (/history all for the full transcript)`,
-            sep,
-            ...formatTranscript(history, { maxTurns: 6, color: true, unicode: true }),
-            sep,
-          ]);
-        } catch (err) {
-          console.log(`! ${(err as Error).message}`);
+        // Interactive arrow-key picker on a TTY: ↑↓ to move, Enter to resume, Esc cancels.
+        if (process.stdin.isTTY && process.stdout.isTTY) {
+          const items: SelectItem<string>[] = sessions.slice(0, 50).map(s => ({
+            value: s.id,
+            label: `${s.title ? `[${s.title}] ` : ""}${(s.preview || s.id).replace(/\s+/g, " ")}`.slice(0, 76) || s.id,
+            hint: `${s.messageCount} msgs${s.id === sessionId ? " · current" : ""}`,
+          }));
+          const picked = await pickFromOptions("Resume a session  ↑↓ move · Enter resume · Esc cancel", items);
+          if (picked) await applyResume(picked);
+          else console.log("(resume cancelled)");
+          continue;
+        }
+        // Non-TTY fallback: static list (resume with /resume <id>).
+        console.log("Saved sessions — resume with /resume <id>:");
+        for (const s of sessions.slice(0, 15)) {
+          const marker = s.id === sessionId ? "*" : " ";
+          console.log(` ${marker}${s.id}  (${s.messageCount} msgs)  ${s.title ? `[${s.title}] ` : ""}${s.preview}`);
         }
         continue;
       }

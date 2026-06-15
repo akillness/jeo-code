@@ -2,6 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { emitKeypressEvents } from "node:readline";
 import { PassThrough } from "node:stream";
 import { runAgentLoop, executorSystemPrompt, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, type AgentLoopEvents } from "../agent/engine";
+import { createOpikTracer, wrapEvents } from "../agent/opik-tracer";
 import { initialDynamicStepLimit } from "../agent/step-budget";
 import { memoryPromptSection, spawnDetachedDistill } from "../agent/memory";
 import { createTaskTool, taskToolProtocolLine, type TaskSubEvent } from "../agent/task-tool";
@@ -1472,6 +1473,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           subagent: createSubagentTool(subagentRegistry),
         };
         const tools = filterToolMap(fullTools, Array.from(allowedTools));
+        // Opik observability (opt-in via JEO_OPIK): one trace per turn, spans per
+        // step/tool, token usage, and completed/verified/efficiency eval scores.
+        // No-op (zero network) when disabled or unconfigured; never breaks a turn.
+        const opik = createOpikTracer({
+          name: userInput.trim().slice(0, 80) || "jeo turn",
+          input: userInput,
+          metadata: { model: sessionModel, cwd },
+          tags: ["jeo", "launch"],
+        });
+        opik.startTurn();
         result = await runAgentLoop(history, {
           cwd,
           tools,
@@ -1480,7 +1491,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
           signal: ac.signal,
           steer: drainSteer,
-          events: { ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone },
+          events: wrapEvents({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone }, opik),
         });
         if (result.done && looksLikeSkillEcho(result.doneReason ?? "", resolvedSkills)) {
           history.push({
@@ -1498,7 +1509,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
             signal: ac.signal,
             steer: drainSteer,
-            events: withToolDetailCapture(tui ? tui.events() : streamEvents),
+            events: wrapEvents(withToolDetailCapture(tui ? tui.events() : streamEvents), opik),
           });
           const usage =
             result.usage && retry.usage
@@ -1509,6 +1520,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               : retry.usage ?? result.usage;
           result = { ...retry, steps: result.steps + retry.steps, usage };
         }
+        // Close the Opik trace once per turn (done or budget-stop). Errors swallowed.
+        await opik.endTurn({ done: result.done, steps: result.steps, output: result.doneReason });
       } finally {
         harness.dispose();
         subagentRegistry.cancelAll(); // #9: no detached run leaks past the turn

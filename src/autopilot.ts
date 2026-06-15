@@ -142,6 +142,33 @@ function isImprovement(goal: Goal, score: number, best: number | undefined): boo
   return true; // gate handled via passed, not score
 }
 
+/**
+ * Single source of truth for the ratchet keep/revert decision. Shared by step,
+ * loop, and status so they can never diverge.
+ *  - gate goal: keep iff the eval passed (score is irrelevant).
+ *  - min/max goal: a non-measurable (NaN) score can never prove improvement, so
+ *    it is always reverted; otherwise keep iff it improves on the best so far.
+ */
+export function decideStep(
+  goal: Goal,
+  score: number,
+  passed: boolean,
+  best: number | undefined,
+): "keep" | "revert" {
+  if (goal === "gate") return passed ? "keep" : "revert";
+  if (Number.isNaN(score)) return "revert";
+  return isImprovement(goal, score, best) ? "keep" : "revert";
+}
+
+/**
+ * Convergence is a streak of consecutive no-progress steps (reverts) reaching
+ * patience — for every goal, gate included. A gate loop that keeps failing has
+ * made no forward progress and must stop early instead of burning the budget.
+ */
+export function isConverged(sinceImprove: number, patience: number): boolean {
+  return sinceImprove >= patience;
+}
+
 function hasBaseline(): boolean {
   return readLog().some((e) => e.type === "baseline");
 }
@@ -189,14 +216,7 @@ function cmdStep(flags: Record<string, string>): void {
   const best = currentBest(s);
   const { score, passed, output } = runEval(s);
 
-  let decision: "keep" | "revert";
-  if (s.goal === "gate") {
-    decision = passed ? "keep" : "revert";
-  } else if (Number.isNaN(score)) {
-    decision = "revert"; // no measurable score => cannot prove improvement
-  } else {
-    decision = isImprovement(s.goal, score, best) ? "keep" : "revert";
-  }
+  const decision = decideStep(s.goal, score, passed, best);
 
   if (decision === "revert" && flags["on-revert"]) {
     try {
@@ -242,10 +262,7 @@ function cmdLoop(flags: Record<string, string>): void {
 
     const best = currentBest(s);
     const { score, passed, output } = runEval(s);
-    let decision: "keep" | "revert";
-    if (s.goal === "gate") decision = passed ? "keep" : "revert";
-    else if (Number.isNaN(score)) decision = "revert";
-    else decision = isImprovement(s.goal, score, best) ? "keep" : "revert";
+    const decision = decideStep(s.goal, score, passed, best);
 
     if (decision === "revert" && flags["on-revert"]) {
       try {
@@ -255,11 +272,12 @@ function cmdLoop(flags: Record<string, string>): void {
       }
     }
     appendLog({ type: "step", iteration: i, change: `loop#${i}`, score, passed, decision, prevBest: best ?? null, output });
-    const improved = decision === "keep" && (s.goal === "gate" || !Number.isNaN(score));
-    sinceImprove = improved && (best === undefined || s.goal === "gate" || isImprovement(s.goal, score, best)) ? 0 : sinceImprove + 1;
+    // A keep is forward progress (min/max: provably an improvement; gate: a pass).
+    // Anything else extends the no-progress streak toward convergence.
+    sinceImprove = decision === "keep" ? 0 : sinceImprove + 1;
     console.log(`jeo autopilot: loop ${i}/${max} ${decision.toUpperCase()} score=${fmt(score)} (sinceImprove=${sinceImprove})`);
 
-    if (s.goal !== "gate" && sinceImprove >= s.patience) {
+    if (isConverged(sinceImprove, s.patience)) {
       appendLog({ type: "stop", reason: "converged", iteration: i, patience: s.patience });
       console.log(`jeo autopilot: stop — converged (no improvement in ${s.patience} steps)`);
       return;
@@ -279,13 +297,13 @@ function cmdStatus(flags: Record<string, string>): void {
   const best = currentBest(s);
   const stop = [...log].reverse().find((e) => e.type === "stop");
 
-  // convergence: steps since last keep-with-improvement
+  // convergence: steps since last keep (forward progress)
   let sinceImprove = 0;
   for (const e of steps) {
     if (e.decision === "keep") sinceImprove = 0;
     else sinceImprove++;
   }
-  const converged = s.goal !== "gate" && sinceImprove >= s.patience;
+  const converged = isConverged(sinceImprove, s.patience);
 
   let recommendation: string;
   if (stop) recommendation = `stopped: ${stop.reason as string}`;

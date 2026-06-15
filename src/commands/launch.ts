@@ -66,7 +66,7 @@ import { stripMarkdown } from "../tui/components/markdown-text";
 import { summarizeForgeInvocation } from "../tui/components/forge";
 import { formatDuration, formatUsage } from "../tui/components/duration";
 
-import { findTool, searchTool } from "../agent/tools";
+import { findTool, searchTool, bashTool } from "../agent/tools";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { maybeCompact, historyTokens } from "../agent/compaction";
 import * as path from "node:path";
@@ -2998,9 +2998,29 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (pendingImages.length === 0) continue;
         input = "Please look at the attached image(s)."; // image-only submit
       }
+      // gjc-parity shell escape: `!<cmd>` runs the command directly in cmd-mode and
+      // prints its output WITHOUT engaging the agent (history untouched), like a REPL
+      // shell escape. The user is explicitly driving their own shell, so the deep-interview
+      // mutation guard (which gates the AGENT's tools) does not apply here.
+      if (input.startsWith("!")) {
+        const cmd = input.slice(1).trim();
+        if (!cmd) {
+          console.log("Usage: !<shell command>   (run a command in cmd-mode; the agent and history are untouched)");
+          continue;
+        }
+        try {
+          const res = await bashTool(cmd, cwd);
+          if (res.output) console.log(res.output);
+          if (!res.success && res.error) console.log(chalk.red(res.error));
+        } catch (err) {
+          console.log(chalk.red(`! command failed: ${(err as Error).message}`));
+        }
+        continue;
+      }
       if (input === "/" || input === "/?" || input === "/help") {
         logLines(formatSlashCommandList(input === "/help" ? "/" : input, skillSlashDetails));
         console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .jeo/sessions/.");
+        console.log("Shell: !<command>   runs a command in cmd-mode directly (agent/history untouched).");
         const tip = getEvolutionTip(history.length, flags.maxSteps > 0 ? flags.maxSteps : initialStepLimit);
         console.log(`\n${chalk.cyan("Evolutionary Tip:")} ${tip}`);
         continue;

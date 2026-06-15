@@ -112,10 +112,21 @@ export function nativeToolSchemasFor(toolNames: Iterable<string>): NativeToolSch
  * when there are no calls. Shared by capable provider adapters (antigravity/openai/…).
  */
 export function serializeToolCalls(calls: { tool: string; arguments: Record<string, unknown> }[]): string | null {
-  const valid = calls.filter(c => c.tool);
+  // Gemini (antigravity) intermittently namespaces native functions under `default_api`
+  // (e.g. functionCall.name = "default_api.done" / "default_api:done") when handed raw
+  // functionDeclarations, which the engine then rejects as an unknown tool. Strip that
+  // namespace back to the bare tool name so the call dispatches normally.
+  const valid = calls
+    .map(c => ({ ...c, tool: normalizeNativeToolName(c.tool) }))
+    .filter(c => c.tool);
   if (valid.length === 0) return null;
   const done = valid.find(c => c.tool === "done");
   if (done) return JSON.stringify(done);
   if (valid.length === 1) return JSON.stringify(valid[0]);
   return JSON.stringify({ tools: valid });
+}
+
+/** Strip the Gemini `default_api.` / `default_api:` namespace prefix from a tool name. */
+export function normalizeNativeToolName(name: string): string {
+  return (name ?? "").replace(/^default_api\s*[.:]\s*/, "").trim();
 }

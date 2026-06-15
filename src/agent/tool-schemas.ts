@@ -105,3 +105,17 @@ export function nativeToolSchemasFor(toolNames: Iterable<string>): NativeToolSch
   if (!seen.has("done")) out.push(SCHEMAS.done!);
   return out;
 }
+
+/**
+ * Re-serialize parsed native tool calls into the engine's canonical JSON string. Coalesces
+ * a batched `done` to a single envelope (the engine rejects done-in-batch). Returns null
+ * when there are no calls. Shared by capable provider adapters (antigravity/openai/…).
+ */
+export function serializeToolCalls(calls: { tool: string; arguments: Record<string, unknown> }[]): string | null {
+  const valid = calls.filter(c => c.tool);
+  if (valid.length === 0) return null;
+  const done = valid.find(c => c.tool === "done");
+  if (done) return JSON.stringify(done);
+  if (valid.length === 1) return JSON.stringify(valid[0]);
+  return JSON.stringify({ tools: valid });
+}

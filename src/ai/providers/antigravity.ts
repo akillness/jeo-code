@@ -3,6 +3,7 @@ import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
+import { serializeToolCalls } from "../../agent/tool-schemas";
 
 const ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
@@ -136,6 +137,12 @@ export function antigravityRequest(messages: Message[], options: CallOptions, cr
   };
   if (systemPrompt) request.systemInstruction = { role: "user", parts: [{ text: systemPrompt }] };
   if (Object.keys(generationConfig).length > 0) request.generationConfig = generationConfig;
+  if (options.tools?.length) {
+    // NATIVE tool-calling: Gemini functionDeclarations through the CCA proxy. AUTO mode
+    // keeps prose answers + the `done` tool both reachable.
+    request.tools = [{ functionDeclarations: options.tools.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })) }];
+    request.toolConfig = { functionCallingConfig: { mode: "AUTO" } };
+  }
 
   const body = JSON.stringify({
     project,
@@ -160,7 +167,7 @@ export function antigravityRequest(messages: Message[], options: CallOptions, cr
 type CcaUsage = { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
 interface CcaChunk {
   response?: {
-    candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] }; finishReason?: string }[];
+    candidates?: { content?: { parts?: { text?: string; thought?: boolean; functionCall?: { name?: string; args?: Record<string, unknown> } }[] }; finishReason?: string }[];
     usageMetadata?: CcaUsage;
   };
 }
@@ -172,6 +179,18 @@ function textOf(chunk: CcaChunk): string {
 /** Native thinking text (`thought` parts) — kept separate so it never pollutes the JSON tool call. */
 function thoughtOf(chunk: CcaChunk): string {
   return chunk.response?.candidates?.[0]?.content?.parts?.filter(p => p.thought).map(p => p.text ?? "").join("") ?? "";
+}
+
+/** Native Gemini functionCall parts (Cloud Code Assist) → {tool, arguments}. */
+function functionCallsOf(chunk: CcaChunk): { tool: string; arguments: Record<string, unknown> }[] {
+  const parts = chunk.response?.candidates?.[0]?.content?.parts ?? [];
+  const out: { tool: string; arguments: Record<string, unknown> }[] = [];
+  for (const p of parts) {
+    if (p.functionCall && typeof p.functionCall.name === "string") {
+      out.push({ tool: p.functionCall.name, arguments: (p.functionCall.args ?? {}) as Record<string, unknown> });
+    }
+  }
+  return out;
 }
 
 async function fetchAntigravity(messages: Message[], options: CallOptions, credential: Credential): Promise<Response> {
@@ -191,20 +210,26 @@ async function fetchAntigravity(messages: Message[], options: CallOptions, crede
 
 export const antigravityAdapter: ProviderAdapter = {
   name: "antigravity",
+  supportsNativeTools: true,
   async call(messages, options, credential) {
     const response = await fetchAntigravity(messages, options, credential);
     if (!response.body) return "";
     let out = "";
     let usage: CcaUsage | undefined;
+    const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
     for await (const data of readSse(response.body)) {
       let chunk: CcaChunk;
       try { chunk = JSON.parse(data); } catch { continue; }
       const thought = thoughtOf(chunk);
       if (thought) options.onReasoning?.(thought);
       out += textOf(chunk);
+      fnCalls.push(...functionCallsOf(chunk));
       if (chunk.response?.usageMetadata) usage = chunk.response.usageMetadata;
     }
     if (usage) options.onUsage?.({ inputTokens: usage.promptTokenCount, outputTokens: (usage.candidatesTokenCount ?? 0) + (usage.thoughtsTokenCount ?? 0) });
+    // Prefer a native tool call (re-serialized to canonical JSON) over any stray text.
+    const envelope = serializeToolCalls(fnCalls);
+    if (envelope) return envelope;
     if (!out) throw new Error("Antigravity Cloud Code Assist returned an empty response.");
     return out;
   },
@@ -213,6 +238,7 @@ export const antigravityAdapter: ProviderAdapter = {
     if (!response.body) return;
     let yielded = false;
     let usage: CcaUsage | undefined;
+    const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
     for await (const data of readSse(response.body)) {
       let chunk: CcaChunk;
       try { chunk = JSON.parse(data); } catch { continue; }
@@ -220,9 +246,13 @@ export const antigravityAdapter: ProviderAdapter = {
       if (thought) options.onReasoning?.(thought);
       const delta = textOf(chunk);
       if (delta) { yielded = true; yield delta; }
+      fnCalls.push(...functionCallsOf(chunk));
       if (chunk.response?.usageMetadata) usage = chunk.response.usageMetadata;
     }
     if (usage) options.onUsage?.({ inputTokens: usage.promptTokenCount, outputTokens: (usage.candidatesTokenCount ?? 0) + (usage.thoughtsTokenCount ?? 0) });
+    // Native tool calls have no text deltas — yield the re-serialized envelope once at end.
+    const envelope = serializeToolCalls(fnCalls);
+    if (envelope) { yielded = true; yield envelope; }
     if (!yielded) throw new Error("Antigravity Cloud Code Assist returned an empty response.");
   },
 };

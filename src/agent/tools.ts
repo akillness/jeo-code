@@ -787,9 +787,15 @@ export async function searchTool(
   try {
     const flags = ignoreCase ? "-rnIi" : "-rnI";
     const gi = await readGitignore(cwd);
+    // A gitignore glob like `.*` (or a bare `*`/`**`) is meant to skip dotfiles, but as a
+    // grep --exclude/--exclude-dir it matches the `./`-prefixed traversal paths and silently
+    // excludes EVERY file on BSD grep (the field bug: search returned "No matches found" for
+    // text that existed). Drop these all-matching globs — IGNORED_DIRS still covers the key
+    // dotdirs (.git/.jeo/.next/.cache), and find() is unaffected (it matches via -name).
+    const safeGlob = (g: string) => !/^\.?\*+$/.test(g);
     const excludes = [
-      ...[...IGNORED_DIRS, ...gi.dirs].map(d => `--exclude-dir=${d}`),
-      ...gi.fileGlobs.map(f => `--exclude=${f}`),
+      ...[...IGNORED_DIRS, ...gi.dirs.filter(safeGlob)].map(d => `--exclude-dir=${d}`),
+      ...gi.fileGlobs.filter(safeGlob).map(f => `--exclude=${f}`),
     ];
     const n = (v: unknown): number | undefined =>
       typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : undefined;

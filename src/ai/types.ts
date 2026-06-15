@@ -26,6 +26,16 @@ export interface Usage {
   durationMs?: number;
 }
 
+/** Provider-neutral function/tool schema for NATIVE tool-calling. Capable adapters
+ *  (anthropic/openai/gemini) map this onto their wire format (Anthropic input_schema,
+ *  OpenAI function.parameters, Gemini functionDeclarations); fallback adapters
+ *  (antigravity/ollama) ignore it and keep the JSON-in-prose protocol. */
+export interface NativeToolSchema {
+  name: string;
+  description: string;
+  parameters: { type: "object"; properties: Record<string, unknown>; required?: string[] };
+}
+
 export interface CallOptions {
   model: string;
   systemPrompt?: string;
@@ -47,10 +57,19 @@ export interface CallOptions {
    *  answer text). Surfaced as a transient dimmed view; absent for models that emit no
    *  thought text. */
   onReasoning?: (delta: string) => void;
+  /** NATIVE tool-calling: function declarations the model may call. Present only on the
+   *  main agent step (never the prose wrap-up). Adapters with `supportsNativeTools` send
+   *  these on the wire and re-serialize the structured tool call back into the engine's
+   *  canonical {"tool":...}/{"tools":[...]} string; others ignore it. */
+  tools?: NativeToolSchema[];
 }
 
 export interface ProviderAdapter {
   readonly name: ProviderName;
+  /** True when this adapter implements native function-calling (re-serialized to the
+   *  canonical JSON string). When false/absent, `CallOptions.tools` is ignored and the
+   *  model drives tools via the JSON-in-prose protocol. */
+  readonly supportsNativeTools?: boolean;
   /** Local providers ignore the credential argument; cloud adapters require it. */
   call(messages: Message[], options: CallOptions, credential: Credential): Promise<string>;
   /** Optional token streaming. Yields text deltas; concatenation equals the `call()` result. */

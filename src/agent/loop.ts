@@ -21,6 +21,8 @@ export interface ChatOptions {
   onToken?: (delta: string) => void;
   /** Streaming sink for native reasoning/thinking deltas (drives the dimmed live view). */
   onReasoning?: (delta: string) => void;
+  /** NATIVE tool-calling function declarations (forwarded to capable adapters). */
+  tools?: import("../ai/types").NativeToolSchema[];
 }
 
 const manager = createModelManager();

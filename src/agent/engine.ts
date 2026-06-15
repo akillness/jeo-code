@@ -11,6 +11,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Message } from "./loop";
 import { extractJsonObject } from "./json";
+import { nativeToolSchemasFor } from "./tool-schemas";
 import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, mkdirTool, deleteTool, type ToolResult } from "./tools";
 import { webSearchTool, setWebSearchActiveModel } from "./web-search";
 import { friendlyProviderError, isContextOverflowError, isRefusalError } from "../util/provider-error";
@@ -32,6 +33,7 @@ async function invokeCallLlm(history: Message[], options: {
   onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
   onToken?: (delta: string) => void;
   onReasoning?: (delta: string) => void;
+  tools?: import("../ai/types").NativeToolSchema[];
 }): Promise<string> {
   const mod = await import("./loop");
   return mod.callLlm(history, options);
@@ -429,6 +431,12 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     try {
       responseText = await invokeCallLlm(history, {
               jsonMode: true,
+              // NATIVE tool-calling: declare the ACTIVE toolset (read-only subagents
+              // expose only their non-mutating tools). Capable adapters (anthropic …)
+              // use these and re-serialize the structured call to canonical JSON; the
+              // antigravity/ollama fallback ignores them. Only on the main step — never
+              // the prose wrap-up call below.
+              tools: nativeToolSchemasFor(Object.keys(tools)),
               model: opts.model,
               maxTokens: opts.maxTokens,
               signal: opts.signal,

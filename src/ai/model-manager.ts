@@ -306,6 +306,7 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
     signal: options.signal,
     reasoningEffort: options.reasoningEffort ?? thinkingToReasoningEffort(config.thinkingLevel),
     onReasoning: options.onReasoning,
+    tools: options.tools,
   };
   // Caller-supplied retry sink rides on the config-derived retry budget so the
   // engine/TUI can surface "rate limited — retrying in Ns" instead of a silent wait.

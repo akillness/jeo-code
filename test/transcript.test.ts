@@ -98,3 +98,32 @@ test("formatTranscript renders BATCHED tool calls as ledger lines, not raw JSON 
   expect(out).not.toContain("[{");
   expect(out).toContain("  done looking");
 });
+test("formatTranscript renders a ```json-FENCED tool call as a card, not raw JSON (/resume fix)", () => {
+  const fenced = "```json\n" + JSON.stringify({
+    reasoning: "run echo",
+    tool: "bash",
+    arguments: { command: "echo v0514_ok" },
+  }, null, 2) + "\n```";
+  const messages: Message[] = [
+    { role: "user", content: "echo v0514_ok 를 bash로 실행" },
+    { role: "assistant", content: fenced },
+    { role: "user", content: "Tool [bash] result (ok):\nv0514_ok" },
+    { role: "assistant", content: JSON.stringify({ tool: "done", arguments: { reason: "ran it" } }) },
+  ];
+  const out = formatTranscript(messages, { color: false, unicode: true }).map(stripAnsi).join("\n");
+  expect(out).toMatch(/✔ .*[Bb]ash/);       // rendered as a tool card
+  expect(out).not.toContain("```json");      // the fence is gone
+  expect(out).not.toContain('"reasoning"');  // raw JSON never leaks
+  expect(out).not.toContain('"arguments"');
+  expect(out).toContain("ran it");
+});
+
+test("formatTranscript keeps a prose reply that merely CONTAINS a JSON snippet", () => {
+  const prose = 'You can call it like {"tool":"bash"} — here is what that means in practice.';
+  const messages: Message[] = [
+    { role: "user", content: "how do tool calls look?" },
+    { role: "assistant", content: prose },
+  ];
+  const out = formatTranscript(messages, { color: false, unicode: true }).map(stripAnsi).join("\n");
+  expect(out).toContain("here is what that means"); // prose preserved, not dropped/misrendered
+});

@@ -63,6 +63,7 @@ import { renderStatusBar } from "../tui/components/status";
 import { detectColorLevel, ColorLevel } from "../tui/components/color";
 import { readClipboardImage } from "../util/clipboard-image";
 import { formatTranscript } from "../tui/components/transcript";
+import { loadInputHistory, appendInputHistory } from "../agent/input-history";
 import type { ImageAttachment } from "../ai/types";
 import { renderMarkdownTables } from "../tui/components/markdown-table";
  
@@ -2073,6 +2074,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     completer: (line: string) => readlineCompleter(line, completionContext()),
   });
   activeRl = rl; // wire the input filter's empty-line backspace guard to the live buffer
+  // Cross-launch input history: hydrate readline's ↑/↓ ring with prompts from
+  // previous sessions in this workspace, so a fresh launch can recall "이전에
+  // 사용한 쿼리" — not just lines typed in the current run. readline keeps history
+  // newest-first, which is exactly the order loadInputHistory returns.
+  if (process.stdin.isTTY) {
+    const rliHist = rl as unknown as { history?: string[] };
+    if (Array.isArray(rliHist.history)) {
+      for (const entry of loadInputHistory(cwd)) {
+        if (!rliHist.history.includes(entry)) rliHist.history.push(entry);
+      }
+    }
+  }
   const promptStdin = process.stdin as typeof process.stdin & { isRaw?: boolean; setRawMode?(raw: boolean): void };
   const promptWasRaw = !!promptStdin.isRaw;
   let promptRawChanged = false;
@@ -3059,6 +3072,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (rawText.includes("\u0003")) forceExitFromCtrlC();
       const raw = rawText.trim();
       disarmPreview();
+      // Persist the submitted line so ↑ recalls it on a future launch (best-effort).
+      if (raw && process.stdin.isTTY) appendInputHistory(cwd, raw);
       // Pasted batch command: echo what is about to run (with the remaining queue
       // depth) so a multi-line paste reads as a visible, ordered script.
       if (promptServedFromPaste && raw) {

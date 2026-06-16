@@ -150,7 +150,7 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[0.5.17]** (2026-06-16) — Mid-turn Ctrl+O detail panel is now scrollable — long replies are fully readable, no clipping.
+- **[0.5.17]** (2026-06-16) — TUI quality of life: durable input history (↑ recalls past queries across launches), clean `/resume` rendering, and a scrollable mid-turn Ctrl+O panel.
 - **[0.5.16]** (2026-06-16) — `/resume` and Ctrl+O no longer corrupt the TUI — clean screen restore + scrollback expand.
 - **[0.5.15]** (2026-06-16) — `jeo update` now actually upgrades — bare command installs the latest release instead of just printing a manual command.
 - **[0.5.14]** (2026-06-16) — `jeo --tmux` live-verification harness — repeatable stability + behavior checks.

@@ -14,6 +14,7 @@
 import chalk from "chalk";
 import type { Message } from "../../ai/types";
 import { summarizeForgeInvocation } from "./forge";
+import { tryExtractJsonObject } from "../../agent/json";
 
 export interface TranscriptOptions {
   color?: boolean;
@@ -106,15 +107,20 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
       lines.push(...clipBody(m.content, bodyCap));
       continue;
     }
-    // assistant: one or more JSON tool calls (compact ledger lines) or a prose reply.
-    // Handles BOTH the single `{tool,arguments}` form AND the batched `{tools:[...]}`
-    // form — the batch case previously parsed to no `tool` field, fell through, and
-    // dumped the raw JSON object into the transcript (the "/resume shows JSON" bug).
-    let parsed: { tool?: unknown; tools?: unknown; arguments?: unknown } | null = null;
-    try {
-      const p: unknown = JSON.parse(m.content);
-      if (p && typeof p === "object") parsed = p as { tool?: unknown; tools?: unknown; arguments?: unknown };
-    } catch { /* prose reply */ }
+    // assistant: a JSON tool call (compact ledger lines) or a prose/done reply.
+    // A tool-call message IS a JSON object (optionally inside a ```json fence) — so
+    // only parse when the content actually begins with `{` after stripping a leading
+    // fence. This renders fenced/decorated tool calls as cards (the "/resume shows
+    // raw JSON and breaks the TUI" bug — naive JSON.parse failed on any fence and
+    // dumped the block) while prose that merely CONTAINS tool-like JSON stays prose.
+    const stripped = m.content.trim().replace(/^```(?:json)?[ \t]*\r?\n?/i, "").trimStart();
+    const looksLikeCall = stripped.startsWith("{");
+    const parsed = looksLikeCall
+      ? tryExtractJsonObject<{ tool?: unknown; tools?: unknown; arguments?: unknown }>(
+          m.content,
+          { preferKeys: ["tool", "tools"] },
+        )
+      : null;
     const calls: { tool: string; arguments?: unknown }[] =
       parsed && typeof parsed.tool === "string"
         ? [{ tool: parsed.tool, arguments: parsed.arguments }]
@@ -138,10 +144,14 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
       });
       continue;
     }
-    // A lone `done` (show its reason) or a plain prose reply.
-    const reason = parsed
-      ? String((parsed.arguments as { reason?: unknown } | undefined)?.reason ?? "")
-      : m.content;
+    // No tool calls → a lone `{tool:"done", reason}` (show its reason), a JSON object
+    // that isn't a renderable call (skip — never dump raw JSON), or genuine prose.
+    const reason =
+      parsed && parsed.tool === "done"
+        ? String((parsed.arguments as { reason?: unknown } | undefined)?.reason ?? "")
+        : looksLikeCall
+          ? ""
+          : m.content;
     if (!reason.trim()) continue;
     lines.push(`${magentaBold(`jeo ${jeoMark}`)}`);
     lines.push(...clipBody(reason.trim(), bodyCap));

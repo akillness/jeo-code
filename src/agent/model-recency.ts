@@ -1,7 +1,7 @@
 /**
  * Most-recently-used default-model persistence.
  *
- * Picking a model (`/model <id>`, `/provider <name>`, live picker) now persists
+ * Picking a model (`/model <id>`, the live picker) now persists
  * immediately: the choice becomes `defaultModel` for EVERY future session, and
  * `recentModels` keeps the selection history newest-first so pickers can offer
  * the user's recent rotation. Pure functions over Config — no I/O here; callers

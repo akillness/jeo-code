@@ -72,6 +72,18 @@ function anthropicSystemBlocks(
   return blocks;
 }
 
+/** Anthropic extended-thinking budget by reasoning effort (kept under max_tokens). Off for
+ *  low/minimal/unset effort so /fast and minimal thinking stay non-thinking (cheaper/faster). */
+function anthropicThinkingBudget(effort: CallOptions["reasoningEffort"], maxTokens: number): number | undefined {
+  let budget: number;
+  switch (effort) {
+    case "medium": budget = 4096; break;
+    case "high": budget = 10000; break;
+    default: return undefined;
+  }
+  return Math.min(budget, Math.max(1024, maxTokens - 1024));
+}
+
 export function anthropicPayload(
   messages: Message[],
   options: CallOptions,
@@ -109,13 +121,24 @@ export function anthropicPayload(
       last.content[last.content.length - 1] = { ...tail, cache_control: { type: "ephemeral" } };
     }
   }
+  const maxTokens = options.maxTokens ?? 4000;
+  const thinkingBudget = anthropicThinkingBudget(options.reasoningEffort, maxTokens);
   const payload: Record<string, unknown> = {
     model,
     messages: anthropicMessages,
-    max_tokens: options.maxTokens ?? 4000,
+    // Extended thinking requires max_tokens strictly above the thinking budget.
+    max_tokens: thinkingBudget !== undefined ? Math.max(maxTokens, thinkingBudget + 1024) : maxTokens,
   };
   if (credential.kind === "oauth") payload.metadata = { user_id: createClaudeCloakingUserId() };
-  if (includeTemperature && options.temperature !== undefined) payload.temperature = options.temperature;
+  if (thinkingBudget !== undefined) {
+    // Apply the thinking level: enable Claude extended thinking (the interleaved-thinking
+    // beta is already in the headers). Extended thinking forbids a custom temperature, so
+    // temperature is only set on the non-thinking path. Previously the thinking level only
+    // changed max_tokens and never reached Claude as actual reasoning depth.
+    payload.thinking = { type: "enabled", budget_tokens: thinkingBudget };
+  } else if (includeTemperature && options.temperature !== undefined) {
+    payload.temperature = options.temperature;
+  }
   if (options.tools?.length) {
     // NATIVE tool-calling: declare jeo's tools as Anthropic functions. tool_choice
     // "auto" keeps prose-salvage reachable and lets the model call `done` (declared as
@@ -232,7 +255,7 @@ export const anthropicAdapter: ProviderAdapter = {
         type?: string;
         index?: number;
         content_block?: { type?: string; name?: string };
-        delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string };
+        delta?: { type?: string; text?: string; partial_json?: string; thinking?: string; stop_reason?: string };
         message?: { usage?: AnthropicUsage };
         usage?: { output_tokens?: number };
       };
@@ -249,6 +272,8 @@ export const anthropicAdapter: ProviderAdapter = {
       } else if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta" && evt.delta.text) {
         yieldedAny = true;
         yield evt.delta.text;
+      } else if (evt.type === "content_block_delta" && evt.delta?.type === "thinking_delta" && evt.delta.thinking) {
+        options.onReasoning?.(evt.delta.thinking);
       } else if (evt.type === "message_start" && evt.message?.usage) {
         // Cache only — usage is reported ONCE at message_delta so an accumulating
         // sink can't double-count input (and a pre-first-chunk retry that replays

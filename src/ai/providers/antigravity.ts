@@ -4,6 +4,7 @@ import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
 import { serializeToolCalls } from "../../agent/tool-schemas";
+import { geminiThinkingBudget } from "./gemini";
 
 const ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
@@ -130,6 +131,11 @@ export function antigravityRequest(messages: Message[], options: CallOptions, cr
   if (options.temperature !== undefined) generationConfig.temperature = options.temperature;
   // Upstream Antigravity strips maxOutputTokens for non-Claude models; do the same.
   if (model.toLowerCase().includes("claude")) generationConfig.maxOutputTokens = options.maxTokens ?? 4000;
+  // Apply the thinking level: antigravity serves Gemini models through CCA, so reuse the
+  // Gemini thinkingConfig budget (off at minimal, scaling with reasoning effort). Without
+  // this the thinking level only changed token budget, never actual reasoning depth.
+  const agThinkingBudget = geminiThinkingBudget(model, options.reasoningEffort);
+  if (agThinkingBudget !== undefined) generationConfig.thinkingConfig = { thinkingBudget: agThinkingBudget };
 
   const request: Record<string, unknown> = {
     contents: antigravityContents(messages),

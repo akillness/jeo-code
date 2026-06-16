@@ -79,13 +79,14 @@ test("/fast completes fast-mode subcommands", () => {
   expect(complete("/fast st", ctx()).completions).toEqual(["status"]);
 });
 
-test("/provider completes login/auth + names, then that provider's live models", () => {
-  expect(complete("/provider ", ctx()).completions).toEqual(["login", "auth", "add", "anthropic", "openai", "gemini", "ollama"]);
+test("/provider completes onboarding subcommands (login/add); switching moved to /model", () => {
+  expect(complete("/provider ", ctx()).completions).toEqual(["login", "add", "help"]);
   // `/provider login ` → OAuth-capable cloud providers
   expect(complete("/provider login ", ctx()).completions).toEqual(["anthropic", "openai", "gemini", "antigravity"]);
-  const second = complete("/provider openai ", ctx());
-  expect(second.kind).toBe("model");
-  expect(second.completions).toEqual(["gpt-4o-live", "gpt-4o-mini-live"]);
+  // `/provider add ` → endpoint flags (gjc style)
+  expect(complete("/provider add ", ctx()).completions).toEqual(["--base-url", "--model", "--compat", "clear"]);
+  // A provider name is no longer a /provider subcommand — no model completion here.
+  expect(complete("/provider openai ", ctx()).completions).toEqual([]);
 });
 
 test("/logout completes cloud provider names", () => {

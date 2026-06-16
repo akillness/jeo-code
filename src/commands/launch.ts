@@ -3159,29 +3159,42 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // Idle-prompt resize: re-reserve the footer at the new terminal height so the
     // fixed reservation stays accurate (otherwise the next paint would target the
     // old row count and either over-shoot or under-paint the reserved region).
-    // Coalesce SIGWINCH bursts: a drag-resize fires many events, and each
-    // disarm→arm cycle writes newlines that can scroll content. Debounce so the
-    // footer is re-reserved ONCE at the final size, and skip same-geometry events.
+    // gjc-style responsiveness: re-reserve the footer IMMEDIATELY on the first resize
+    // event (leading edge → no lag), then cap re-reservations to ~30fps during a
+    // drag-resize, with a trailing settle so the FINAL height is always reserved exactly.
+    // Skip same-geometry events; each re-reserve disarms→arms so it must not run per-event.
+    const RESIZE_THROTTLE_MS = 33;
     let idleResizeTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastIdleAt = 0;
     let lastIdleCols = process.stdout.columns ?? 80;
     let lastIdleRows = process.stdout.rows ?? 24;
+    const reReserveFooter = () => {
+      if (!previewArmed) return;
+      const cols = process.stdout.columns ?? 80;
+      const rows = process.stdout.rows ?? 24;
+      if (cols === lastIdleCols && rows === lastIdleRows) return;
+      lastIdleCols = cols;
+      lastIdleRows = rows;
+      try {
+        disarmPreview();
+        armPreview();
+        drawFooter(promptHistoryLines ? historyPreviewLines(promptHistoryLines) : previewLines(typedLine, navIdx));
+      } catch { /* ignore resize render races */ }
+    };
     const idleResizeHandler = () => {
       if (!previewArmed) return;
+      const now = Date.now();
+      if (now - lastIdleAt >= RESIZE_THROTTLE_MS) {
+        lastIdleAt = now;
+        reReserveFooter();
+        return;
+      }
       if (idleResizeTimer) clearTimeout(idleResizeTimer);
       idleResizeTimer = setTimeout(() => {
         idleResizeTimer = undefined;
-        if (!previewArmed) return;
-        const cols = process.stdout.columns ?? 80;
-        const rows = process.stdout.rows ?? 24;
-        if (cols === lastIdleCols && rows === lastIdleRows) return;
-        lastIdleCols = cols;
-        lastIdleRows = rows;
-        try {
-          disarmPreview();
-          armPreview();
-          drawFooter(promptHistoryLines ? historyPreviewLines(promptHistoryLines) : previewLines(typedLine, navIdx));
-        } catch { /* ignore resize render races */ }
-      }, 40);
+        lastIdleAt = Date.now();
+        reReserveFooter();
+      }, RESIZE_THROTTLE_MS);
     };
     process.stdout.on("resize", idleResizeHandler);
     promptListenerCleanups.push(() => {
@@ -3768,6 +3781,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             }
           } catch (err) {
             console.log(`[FAILED] ${(err as Error).message} — or set ${target.toUpperCase()}_API_KEY.`);
+          } finally {
+            // The OAuth manual-code prompt opens an rl.question that is aborted the
+            // instant the browser callback (or a failure) settles the flow. Bun leaves
+            // that abandoned question's buffer behind, so the next prompt would adopt
+            // it as residual prefill and resurrect the submitted "/provider login" in
+            // the input box. Reset the readline line buffer so the prompt starts empty.
+            const rli = rl as unknown as { line?: string; cursor?: number };
+            rli.line = "";
+            rli.cursor = 0;
           }
           continue;
         }

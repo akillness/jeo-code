@@ -119,6 +119,9 @@ export function tailForWrap(text: string, maxChars = FRAME_WRAP_TAIL_CHARS): str
  *  on the in-flight tool line). */
 export const STATUS_VERIFY_PALETTE = ["#ffd24a", "#ffb300"] as const;
 const DEFAULT_MAX_STEPS = 100;
+// Resize repaint cap (~30fps): the leading edge fires instantly, follow-ups during a
+// drag-resize are throttled to this interval, and a trailing repaint paints the final size.
+const RESIZE_THROTTLE_MS = 33;
 // Tools light enough that they never get a forge card (gjc parity): completion is a
 // single ✓/✗ ledger line; only failures surface a result card with the error body.
 const LIGHT_TOOLS = new Set(["read", "find", "search", "ls", "todo"]);
@@ -167,11 +170,13 @@ export class LaunchTui {
   private mutationGuarded = false;
   private finished = false;
   private timer: ReturnType<typeof setInterval> | undefined;
-  // Coalesce SIGWINCH bursts: a terminal drag-resize emits many resize events in
-  // quick succession. Repainting on every one flickers and races the differential
-  // baseline, so we debounce to a single repaint ~40ms after the LAST event (at the
-  // final size). lastCols/lastRows drop spurious same-size resizes some terminals emit.
+  // Resize handling (gjc-style responsiveness): repaint IMMEDIATELY on the first event
+  // so a deliberate resize never lags, then cap follow-ups to ~30fps so a drag-resize
+  // tracks the cursor live (instead of staying stale until the drag pauses — the lag a
+  // pure trailing debounce caused). A trailing timer always fires once more so the FINAL
+  // geometry paints exactly. lastCols/lastRows drop spurious same-size resize events.
   private resizeTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastResizeAt = 0;
   private lastCols = -1;
   private lastRows = -1;
   private pendingIndex: number | null = null;
@@ -943,21 +948,35 @@ export class LaunchTui {
   }
 
   private readonly onResize = (): void => {
-    // Debounce: clear any pending repaint and schedule one after the burst settles.
+    if (this.finished) return;
+    const now = Date.now();
+    // Leading edge: a deliberate resize reflows instantly (no perceived lag).
+    if (now - this.lastResizeAt >= RESIZE_THROTTLE_MS) {
+      this.lastResizeAt = now;
+      this.resizeRepaint();
+      return;
+    }
+    // Mid-throttle (continuous drag): coalesce, but ALWAYS schedule a trailing repaint
+    // so the final geometry paints exactly — never leave the frame stale at the old size.
     if (this.resizeTimer) clearTimeout(this.resizeTimer);
     this.resizeTimer = setTimeout(() => {
       this.resizeTimer = undefined;
-      if (this.finished) return;
-      try {
-        const { cols, rows } = size();
-        // Skip spurious resize events that report the same geometry (no reflow needed).
-        if (cols === this.lastCols && rows === this.lastRows) return;
-        this.lastCols = cols;
-        this.lastRows = rows;
-        this.repaint();
-      } catch { /* resize race — next tick repaints */ }
-    }, 40);
+      this.lastResizeAt = Date.now();
+      this.resizeRepaint();
+    }, RESIZE_THROTTLE_MS);
   };
+
+  /** Repaint for a resize: re-measure, skip spurious same-geometry events, full repaint. */
+  private resizeRepaint(): void {
+    if (this.finished) return;
+    try {
+      const { cols, rows } = size();
+      if (cols === this.lastCols && rows === this.lastRows) return;
+      this.lastCols = cols;
+      this.lastRows = rows;
+      this.repaint();
+    } catch { /* resize race — next tick repaints */ }
+  }
 
   /** gjc-style agent identity: a bold accent `jeo` name label on its own line that leads
    *  every assistant segment — thought blocks (onAssistant) and the final reply (finish). */

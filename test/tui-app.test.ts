@@ -239,7 +239,7 @@ test("LaunchTui auto-repair: resize listener is registered on start and removed 
   }
 });
 
-test("LaunchTui resize coalescing: a SIGWINCH burst repaints once after the debounce", async () => {
+test("LaunchTui resize: leading-edge repaints immediately (no lag) and coalesces a burst", async () => {
   const realRender = Renderer.prototype.render;
   (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function () {};
   try {
@@ -250,18 +250,21 @@ test("LaunchTui resize coalescing: a SIGWINCH burst repaints once after the debo
     let repaints = 0;
     const orig = (tui as unknown as { repaint: () => void }).repaint.bind(tui);
     (tui as unknown as { repaint: () => void }).repaint = () => { repaints++; orig(); };
-    // Drag-resize fires many events in quick succession; they must collapse to ONE repaint.
+    // Leading edge: the FIRST resize reflows synchronously — no debounce lag.
+    process.stdout.emit("resize");
+    expect(repaints).toBe(1);
+    // A burst (same geometry) is coalesced + throttled, not one repaint per event.
     for (let i = 0; i < 5; i++) process.stdout.emit("resize");
-    expect(repaints).toBe(0); // nothing painted synchronously — the repaint is debounced
+    expect(repaints).toBe(1); // still bounded immediately after the burst
     await new Promise(r => setTimeout(r, 70));
-    expect(repaints).toBe(1); // exactly one coalesced repaint at the final size
+    expect(repaints).toBeLessThanOrEqual(2); // at most a trailing settle, never N
     tui.finish("done");
   } finally {
     Renderer.prototype.render = realRender;
   }
 });
 
-test("LaunchTui resize coalescing: finish() cancels a pending resize repaint", async () => {
+test("LaunchTui resize: finish() stops repaints and cancels a pending trailing one", async () => {
   const realRender = Renderer.prototype.render;
   (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function () {};
   try {
@@ -271,10 +274,12 @@ test("LaunchTui resize coalescing: finish() cancels a pending resize repaint", a
     let repaints = 0;
     const orig = (tui as unknown as { repaint: () => void }).repaint.bind(tui);
     (tui as unknown as { repaint: () => void }).repaint = () => { repaints++; orig(); };
-    process.stdout.emit("resize"); // schedule a debounced repaint…
-    tui.finish("done");           // …then finish before it fires
+    process.stdout.emit("resize"); // leading repaint
+    process.stdout.emit("resize"); // within the throttle window → schedules a trailing repaint
+    const beforeFinish = repaints;
+    tui.finish("done");            // removes the listener + clears the pending trailing timer
     await new Promise(r => setTimeout(r, 70));
-    expect(repaints).toBe(0); // the pending repaint was cancelled by finish()
+    expect(repaints).toBe(beforeFinish); // the pending trailing repaint never fired
   } finally {
     Renderer.prototype.render = realRender;
   }

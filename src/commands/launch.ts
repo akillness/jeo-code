@@ -14,7 +14,7 @@ import { runDeepInterviewEngine, type DeepInterviewEngineOptions } from "./deep-
 import { runRalplanEngine, type RalplanEngineOptions } from "./ralplan";
 import { runTeamEngine, type TeamEngineOptions } from "./team";
 import { runUltragoalEngine, type UltragoalEngineOptions } from "./ultragoal";
-import { skillsPromptSection, loadSkills, formatSkill, buildSkillTask, getSkillFrom, skillSlashAliases, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
+import { skillsPromptSection, loadSkills, formatSkill, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
 import { formatForgeBox } from "../tui/components/forge";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
@@ -54,7 +54,7 @@ import {
   formatCapabilityLine,
 } from "../tui/components/config-panel";
 import { liveModelPicker, renderLiveModelPicker, type ModelAssignmentBadge } from "../tui/components/live-model-picker";
-import { skillPicker, renderSkillPicker } from "../tui/components/skill-picker";
+
 import { providerPicker, renderProviderPicker } from "../tui/components/provider-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff, sanitizeForTerminal } from "../tui/components/code-view";
 import { categoryBadge } from "../tui/components/category-index";
@@ -2829,54 +2829,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     return true;
   };
 
-  const pickSkillFromList = async (skills: SkillDoc[]): Promise<SkillDoc | undefined> => {
-    if (!process.stdin.isTTY || skills.length === 0) return undefined;
-    const list = skillPicker(skills);
-    let chosen: SkillDoc | undefined;
-    await runSelectPicker(
-      (cols, rows) =>
-        renderSkillPicker(list, {
-          cols,
-          rows: Math.max(4, Math.min(rows, 12)),
-          unicode: true,
-          color: true,
-        }),
-      (ch, key) => {
-        if (key?.name === "up") {
-          list.up();
-          return false;
-        }
-        if (key?.name === "down") {
-          list.down();
-          return false;
-        }
-        if (key?.name === "pageup") {
-          list.page(-1, 6);
-          return false;
-        }
-        if (key?.name === "pagedown") {
-          list.page(1, 6);
-          return false;
-        }
-        if (key?.name === "backspace") {
-          list.backspace();
-          return false;
-        }
-        if (key?.name === "escape" || (key?.ctrl && key.name === "c")) {
-          return true;
-        }
-        if (key?.name === "return" || key?.name === "enter") {
-          chosen = list.selected()?.value;
-          return true;
-        }
-        if (ch && ch >= " " && !key?.ctrl && !key?.meta) {
-          list.typeChar(ch);
-        }
-        return false;
-      },
-    );
-    return chosen;
-  };
 
   const pickCloudProvider = async (statuses: Awaited<ReturnType<typeof describeAllProviders>>): Promise<AuthProvider | undefined> => {
     const cloud = new Set(["anthropic", "openai", "gemini", "antigravity"]);

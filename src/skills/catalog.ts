@@ -183,40 +183,9 @@ export function skillsPromptSection(skills: SkillDoc[] = SKILLS): string {
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import { existsSync, statSync, readFileSync } from "node:fs";
+
 import { jeoEnv } from "../util/env";
 
-export function tryResolveSkillFromFilePath(filePath: string): SkillDoc | null {
-  try {
-    let targetPath = path.resolve(filePath);
-    if (!existsSync(targetPath)) {
-      return null;
-    }
-    const stat = statSync(targetPath);
-    if (stat.isDirectory()) {
-      const skillMd = path.join(targetPath, "SKILL.md");
-      if (existsSync(skillMd) && statSync(skillMd).isFile()) {
-        targetPath = skillMd;
-      } else {
-        return null;
-      }
-    } else if (!stat.isFile() || !targetPath.endsWith(".md")) {
-      return null;
-    }
-
-    const content = readFileSync(targetPath, "utf-8");
-    // Determine a name for this skill
-    let skillName = path.basename(targetPath, ".md");
-    if (skillName.toLowerCase() === "skill" || skillName.toLowerCase() === "readme") {
-      // Use the directory name if the filename is generic
-      skillName = path.basename(path.dirname(targetPath));
-    }
-    const parsed = parseSkillMarkdown(skillName, content, { preferMetaName: true });
-    return isSupportedExternalSkill(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
 const BUILTIN_SLASH_ALIASES = new Set([
   "/help", "/clear", "/compact", "/model", "/fast", "/provider", "/logout",
   "/agents", "/config", "/roles", "/thinking",

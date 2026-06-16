@@ -16,14 +16,16 @@ export function providerHint(s: ProviderStatus, unicode = true): string {
   return parts.join(" \u00b7 ");
 }
 
-/** Build provider choices, ready providers first (stable within each group). */
-export function buildProviderChoices(statuses: ProviderStatus[], unicode = true): SelectItem<ProviderName>[] {
+/** Build provider choices, ready providers first (stable within each group). When
+ *  `current` is given, that provider's row is marked `· ● current` so the active
+ *  provider is obvious in the picker (gjc-style). */
+export function buildProviderChoices(statuses: ProviderStatus[], unicode = true, current?: ProviderName): SelectItem<ProviderName>[] {
   const sorted = [...statuses].sort((a, b) => (a.ready === b.ready ? 0 : a.ready ? -1 : 1));
   return sorted.map(s => ({
     value: s.name,
     label: `${s.name} (${companyLabel(s.name)})`,
     group: s.ready ? "ready" : "needs setup",
-    hint: providerHint(s, unicode),
+    hint: s.name === current ? `${providerHint(s, unicode)} · ${unicode ? "●" : "*"} current` : providerHint(s, unicode),
   }));
 }
 

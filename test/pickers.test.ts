@@ -68,6 +68,17 @@ test("providerHint + buildProviderChoices sort ready first", () => {
   expect(providerHint(statuses[1]!, false)).toContain("http://x");
 });
 
+test("buildProviderChoices marks the current provider in its hint", () => {
+  const statuses = [status("anthropic", true), status("openai", true)];
+  const choices = buildProviderChoices(statuses, true, "openai");
+  const openai = choices.find(c => c.value === "openai")!;
+  const anthropic = choices.find(c => c.value === "anthropic")!;
+  expect(openai.hint).toContain("● current");
+  expect(anthropic.hint).not.toContain("current");
+  // No current given → no marker anywhere.
+  expect(buildProviderChoices(statuses, true).every(c => !c.hint?.includes("current"))).toBe(true);
+});
+
 test("recommendedProvider is the first ready provider", () => {
   expect(recommendedProvider([status("anthropic", false), status("ollama", true)])).toBe("ollama");
   expect(recommendedProvider([status("anthropic", false)])).toBe("anthropic"); // none ready → first

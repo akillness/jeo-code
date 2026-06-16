@@ -45,6 +45,7 @@ import { SelectList, renderSelectList, type SelectItem } from "../tui/components
 import {
   formatModelLine,
   formatProviderPanel,
+  emitLoginCleanup,
   formatAgentsPanel,
   formatAgentDetail,
   formatConfigPanel,
@@ -55,7 +56,7 @@ import {
 } from "../tui/components/config-panel";
 import { liveModelPicker, renderLiveModelPicker, type ModelAssignmentBadge } from "../tui/components/live-model-picker";
 
-import { providerPicker, renderProviderPicker } from "../tui/components/provider-picker";
+import { providerPicker, renderProviderPicker, buildProviderChoices } from "../tui/components/provider-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff, sanitizeForTerminal } from "../tui/components/code-view";
 import { categoryBadge } from "../tui/components/category-index";
 import { renderInputFrame } from "../tui/components/input-box";
@@ -3631,7 +3632,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       if (input.startsWith("/provider") && (input === "/provider" || input[9] === " ")) {
         const tokens = input.substring(9).trim().split(/\s+/).filter(Boolean);
-        const name = (tokens[0] ?? "").toLowerCase();
+        let name = (tokens[0] ?? "").toLowerCase();
         const explicitModel = tokens[1];
         // `/provider login|auth [name]` → run OAuth login from the REPL.
         if (name === "login" || name === "auth") {
@@ -3660,20 +3661,34 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`Starting OAuth login for ${target}…`);
           try {
             const { email } = await interactiveOAuthLogin(target as AuthProvider, rl);
-            console.log(`[SUCCESS] OAuth login complete for ${target}${email ? ` (${email})` : ""}. Tokens saved to ~/.jeo/config.json.`);
+            // Tidy back to the initial query-input screen: the OAuth flow printed
+            // browser prompts / "waiting…" lines that clutter scrollback. Clear the
+            // screen + scrollback and re-render the welcome (same path as /clear),
+            // then a single concise confirmation. lastPickIndex is still seeded so
+            // `/model #N` works; the verbose live-model dump is dropped (it cluttered).
             const live = await refreshLiveModelsCache();
             const after = (await describeAllProviders()).find(s => s.name === target);
-            if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
             const forProvider = live.filter(r => r.provider === target);
-            if (forProvider.some(r => r.ok && r.models.length > 0)) {
-              lastPickIndex = flattenModels(forProvider);
-              const viaCatalog = forProvider.some(r => r.fallback);
-              console.log(`  ${viaCatalog ? "catalog" : "live"} ${target} models → /model #N or /provider ${target} #N${viaCatalog ? "  (live list endpoint rejected this token; showing known models)" : ""}`);
-              logLines(formatPickListWithCapabilities(lastPickIndex, { cap: 12 }));
-            } else {
-              const failed = forProvider.find(r => !r.ok);
-              if (failed?.error) console.log(`  live ${target} models unavailable: ${failed.error}`);
-            }
+            if (forProvider.some(r => r.ok && r.models.length > 0)) lastPickIndex = flattenModels(forProvider);
+            // Tidy back to the initial query-input screen: the OAuth flow printed
+            // browser prompts / "waiting…" lines that clutter scrollback. emitLoginCleanup
+            // clears + re-renders the welcome (same path as /clear) then prints one
+            // confirmation; the verbose live-model dump is dropped (lastPickIndex is
+            // still seeded so /model #N works). Orchestration is unit-tested.
+            emitLoginCleanup(
+              {
+                clear: () => { disarmPreview(); process.stdout.write("\x1b[2J\x1b[3J\x1b[H"); },
+                write: line => console.log(line),
+              },
+              {
+                isTty: process.stdout.isTTY === true,
+                provider: target,
+                email,
+                ready: after?.ready ?? false,
+                label: after?.label,
+                welcomeLines: renderWelcome(welcomeData),
+              },
+            );
           } catch (err) {
             console.log(`[FAILED] ${(err as Error).message} — or set ${target.toUpperCase()}_API_KEY.`);
           }
@@ -3682,10 +3697,25 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const cfgNow = await readGlobalConfig();
         const statuses = await describeAllProviders(cfgNow);
         if (!name) {
-          console.log("Providers (credential · base URL):");
-          logLines(formatProviderPanel(statuses));
-          console.log("Switch with: /provider <name> [model]  ·  arrows+Enter picker: /provider <name>  ·  choose models: /model");
-          continue;
+          if (process.stdin.isTTY && process.stdout.isTTY) {
+            // gjc-style interactive picker (grouped ready / needs-setup, current marked)
+            // instead of a static text dump — arrows + Enter switch, Esc cancels.
+            const current = (await describeModel(sessionModel || cfgNow.defaultModel, cfgNow)).provider;
+            const items = buildProviderChoices(statuses, true, current).map(c => ({
+              value: c.value as string,
+              label: c.label,
+              hint: c.hint,
+              group: c.group,
+            }));
+            const picked = await pickFromOptions("Select a provider  ↑↓ move · Enter switch · Esc cancel", items);
+            if (!picked) { console.log("(switch cancelled)"); continue; }
+            name = picked.toLowerCase(); // fall through to the switch logic below
+          } else {
+            console.log("Providers (credential · base URL):");
+            logLines(formatProviderPanel(statuses));
+            console.log("Switch with: /provider <name> [model]  ·  choose models: /model");
+            continue;
+          }
         }
         if (!isProviderName(name)) {
           console.log(`Unknown provider '${name}'. Known: ${statuses.map(s => s.name).join(", ")}.`);

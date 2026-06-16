@@ -22,14 +22,18 @@ test("LaunchTui: streams the model's reasoning live, then flushes it once to scr
   expect(strip(out.join(""))).toContain("checking the package version");
 
   // On the tool dispatch, the reasoning is flushed ONCE into scrollback as a
-  // jeo-ref reasoning block: the agent name on its own line, the prose below.
+  // jeo-ref reasoning block: a muted "jeo · thinking" divider header, the prose below.
   out.length = 0;
   ev.onAssistant!(
     '{"reasoning":"checking the package version","tool":"read","arguments":{"filePath":"package.json"}}',
     { tool: "read", arguments: { filePath: "package.json" } },
   );
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
-  expect(strip(out.join(""))).toContain("jeo\nchecking the package version");
+  const flushed = strip(out.join(""));
+  expect(flushed).toContain("Reasoning");
+  expect(flushed).toContain("checking the package version");
+  // Header divider precedes the prose (boundary, not inline).
+  expect(flushed.indexOf("Reasoning")).toBeLessThan(flushed.indexOf("checking the package version"));
   tui.finish("done");
 });
 

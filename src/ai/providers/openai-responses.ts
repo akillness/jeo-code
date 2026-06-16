@@ -72,7 +72,9 @@ export function codexResponsesRequest(
   // Map thinkingLevel → reasoning effort for Codex reasoning models (gjc parity).
   // Drop out-of-enum values instead of forwarding them — the backend 400s on unknown efforts.
   if (options.reasoningEffort && VALID_REASONING_EFFORTS.has(options.reasoningEffort)) {
-    payload.reasoning = { effort: options.reasoningEffort };
+    // `summary: "auto"` makes the backend stream reasoning-summary deltas so the live
+    // frame can show the model's thinking instead of a frozen "calling model (Ns)…".
+    payload.reasoning = { effort: options.reasoningEffort, summary: "auto" };
   }
   const accountId = extractChatgptAccountId(token);
   const headers: Record<string, string> = {
@@ -88,6 +90,9 @@ export function codexResponsesRequest(
 
 export interface ResponsesEvent {
   delta?: string;
+  /** Reasoning-summary text delta (`response.reasoning_summary_text.delta` and the
+   *  Codex backend's `reasoning_text` variant) — streamed live as the model thinks. */
+  reasoningDelta?: string;
   usage?: { inputTokens?: number; outputTokens?: number };
   error?: string;
   /** `response.incomplete` cause (e.g. max_output_tokens) — surfaced when the
@@ -125,6 +130,12 @@ export function parseResponsesEvent(data: string): ResponsesEvent {
     return { toolCallArgsDelta: o.delta, toolCallIndex: o.output_index };
   }
   if (o.type === "response.output_text.delta" && typeof o.delta === "string") return { delta: o.delta };
+  // Reasoning-summary streaming: surface the model's thinking live. Accept the
+  // documented `response.reasoning_summary_text.delta` and the Codex backend's
+  // `response.reasoning_text.delta` (any reasoning*.delta variant) uniformly.
+  if (typeof o.delta === "string" && /^response\.reasoning[a-z_]*\.delta$/.test(o.type ?? "")) {
+    return { reasoningDelta: o.delta };
+  }
   // `response.incomplete` (max_output_tokens / content filter) also carries usage — don't drop it.
   if ((o.type === "response.completed" || o.type === "response.incomplete") && o.response?.usage) {
     return {
@@ -175,6 +186,7 @@ export async function codexResponsesCall(messages: Message[], options: CallOptio
   for await (const data of readSse(response.body)) {
     const ev = parseResponsesEvent(data);
     if (ev.delta) out += ev.delta;
+    if (ev.reasoningDelta) options.onReasoning?.(ev.reasoningDelta);
     accumulateResponsesToolCall(toolAcc, ev);
     if (ev.usage) options.onUsage?.(ev.usage);
     if (ev.incompleteReason) incompleteReason = ev.incompleteReason;
@@ -202,6 +214,7 @@ export async function* codexResponsesStream(
   const toolAcc = new Map<number, { name: string; args: string }>();
   for await (const data of readSse(response.body)) {
     const ev = parseResponsesEvent(data);
+    if (ev.reasoningDelta) options.onReasoning?.(ev.reasoningDelta);
     if (ev.delta) {
       yieldedAny = true;
       yield ev.delta;

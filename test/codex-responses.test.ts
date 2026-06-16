@@ -7,7 +7,7 @@ test("codexResponsesRequest: forwards reasoningEffort as reasoning.effort", () =
   const withEffort = JSON.parse(
     codexResponsesRequest([{ role: "user", content: "hi" }], { model: "gpt-5.5", reasoningEffort: "high" } as any, oauth).body,
   );
-  expect(withEffort.reasoning).toEqual({ effort: "high" });
+  expect(withEffort.reasoning).toEqual({ effort: "high", summary: "auto" });
 
   const without = JSON.parse(
     codexResponsesRequest([{ role: "user", content: "hi" }], { model: "gpt-5.5" } as any, oauth).body,

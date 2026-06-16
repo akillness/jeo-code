@@ -317,9 +317,59 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   const acc = { inputTokens: 0, outputTokens: 0 };
   let sawUsage = false;
   const finish = (r: AgentLoopResult): AgentLoopResult => (sawUsage ? { ...r, usage: { ...acc } } : r);
+  // Salvage a spin-stop into a useful answer (C): instead of returning a bare
+  // "Stopped: …" — throwing away everything found this turn — do ONE final no-tools
+  // call asking the model to answer with what it already has. Mirrors the
+  // budget-exhaustion wrap-up below. Best-effort: falls back to the plain stop.
+  const consolidateStop = async (stopReason: string): Promise<AgentLoopResult> => {
+    try {
+      if (!opts.signal?.aborted) {
+        const wrapUp = await invokeCallLlm(
+          [
+            ...history,
+            {
+              role: "user",
+              content:
+                "Stop calling tools — you have been repeating the same call without making progress. " +
+                "Do NOT call any tool or emit JSON. Reply in plain prose: answer the request as best you can " +
+                "with what you have already found this turn, and state explicitly anything that is still uncertain.",
+            },
+          ],
+          { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: opts.signal },
+        );
+        const consolidated = wrapUp.trim();
+        if (consolidated) {
+          history.push({ role: "assistant", content: consolidated });
+          return finish({
+            done: false,
+            steps: step,
+            doneReason: `${consolidated}\n\n(Stopped: ${stopReason} — consolidated answer above from what was found; continue with a follow-up request)`,
+          });
+        }
+      }
+    } catch { /* best-effort; fall through to the plain stop message */ }
+    return finish({ done: false, steps: step, doneReason: `Stopped: ${stopReason}` });
+  };
+  // Result-aware repeat nudge (A): tell the model WHY repeating won't help and what to
+  // try instead, tailored to the repeated tool and its last actual result.
+  const repeatHint = (tool: string, prev?: { success: boolean; output: string }): string => {
+    const out = prev?.output ?? "";
+    const empty = !prev || !prev.success || out.trim() === "" || /no match|0 match|no result|not found|no file/i.test(out);
+    if (tool === "search" || tool === "find" || tool === "ls") {
+      return empty
+        ? `That '${tool}' returned nothing useful and will again — BROADEN it (a looser pattern, a parent directory, or a different tool such as ${tool === "search" ? "find" : "search"}), or call done if this lookup isn't needed.`
+        : `That '${tool}' already returned results — open one of the hits with read, or move on; re-running it changes nothing.`;
+    }
+    if (tool === "read") return `You already read that and its content is unchanged — use what you read, or read a DIFFERENT file.`;
+    if (tool === "bash") return `That command already ran with the same output — change the command, or call done.`;
+    return `That call's result is unchanged — take a different action, or call done.`;
+  };
   // No-progress guard: weak/local models often repeat the same tool call without
-  // ever emitting `done`. Stop after MAX_REPEAT identical consecutive calls.
-  const MAX_REPEAT = 3;
+  // ever emitting `done`. Two escalating corrections (B), then a consolidated stop.
+  const MAX_REPEAT = 4;
+  // Last executed step's per-call results — fed to repeatHint so a corrective bounce
+  // can cite the repeated call's ACTUAL last outcome (A).
+  let lastResults: { success: boolean; output: string; executed: boolean }[] = [];
   // Consecutive-failure guard: a model that keeps emitting *different* but failing
   // calls (bad edits, failing commands) would otherwise burn the whole step budget.
   const MAX_FAILURES = 5;
@@ -361,6 +411,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // Invalid-tool-call guard: a model that returns JSON without a usable `tool`
   // field can't drive the loop at all — surface that clearly instead of looping.
   let invalidToolCalls = 0;
+  // A JSON reply with no usable `tool` field can't drive the loop — stop sooner than the
+  // repeat-spin guard (no escalating correction helps a model that isn't producing a call).
+  const MAX_INVALID_CALLS = 3;
   // Prose-bounce guard: after this many invalid-JSON corrections, salvage the
   // model's text as the final answer instead of burning the whole step budget.
   const MAX_PARSE_BOUNCES = 2;
@@ -587,11 +640,11 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
 
     if (toolCalls.length === 0) {
       invalidToolCalls++;
-      if (invalidToolCalls >= MAX_REPEAT) {
+      if (invalidToolCalls >= MAX_INVALID_CALLS) {
         return finish({
           done: false,
           steps: step,
-          doneReason: `Stopped: the model returned no valid tool call ${MAX_REPEAT}× (a JSON reply with no valid "tool" or "tools" field). The selected model may be too small to follow the JSON tool protocol — switch to a stronger model with /model.`,
+          doneReason: `Stopped: the model returned no valid tool call ${MAX_INVALID_CALLS}× (a JSON reply with no valid "tool" or "tools" field). The selected model may be too small to follow the JSON tool protocol — switch to a stronger model with /model.`,
         });
       }
       history.push({ role: "assistant", content: responseText });
@@ -687,27 +740,28 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       repeatCount = 1;
       lastSig = sig;
     }
-    if (repeatCount === 2) {
-      const what = toolCalls.length === 1 ? `'${toolCalls[0].tool}' call` : "tool batch";
+    if (repeatCount === 2 || repeatCount === MAX_REPEAT - 1) {
+      const single = toolCalls.length === 1;
+      const what = single ? `'${toolCalls[0].tool}' call` : "tool batch";
+      const hint = single ? repeatHint(toolCalls[0].tool, lastResults[0]) : "Its results have not changed.";
+      const lastChance = repeatCount === MAX_REPEAT - 1
+        ? "This is your LAST attempt: if you emit the same call again the turn will end. "
+        : "";
       history.push({ role: "assistant", content: responseText });
       history.push({
         role: "user",
         content:
-          `You just repeated the EXACT same ${what} you already ran in the previous step — it was not re-executed. ` +
-          `Its result has not changed. If the task is complete, reply {"tool":"done","arguments":{"reason":"<summary of what was accomplished>"}}; ` +
-          `otherwise take a DIFFERENT next action (verify the result, move to the next file, or fix something new).`,
+          `You just repeated the EXACT same ${what} from a previous step — it was NOT re-executed and its result has not changed. ${hint} ${lastChance}` +
+          `If the task is complete, reply {"tool":"done","arguments":{"reason":"<summary of what was accomplished>"}}; ` +
+          `otherwise take a genuinely DIFFERENT next action.`,
       });
-      ev.onNotice?.(`repeated ${what} skipped — asked the model to act differently or call done`);
+      ev.onNotice?.(`repeated ${what} skipped (correction ${repeatCount - 1}/${MAX_REPEAT - 2}) — asked the model to act differently or call done`);
       step++;
       continue;
     }
     if (repeatCount >= MAX_REPEAT) {
       const what = toolCalls.length === 1 ? `the same '${toolCalls[0].tool}' call` : "the same tool calls";
-      return finish({
-        done: false,
-        steps: step,
-        doneReason: `Stopped: repeated ${what} ${MAX_REPEAT}× even after an explicit correction (the model never signaled done).`,
-      });
+      return await consolidateStop(`repeated ${what} ${MAX_REPEAT}× even after explicit corrections (the model never signaled done)`);
     }
 
     // Cycle guard: an A↔B (or A↔B↔C-minus-one) alternation never trips the
@@ -735,11 +789,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         step++;
         continue;
       }
-      return finish({
-        done: false,
-        steps: step,
-        doneReason: `Stopped: the model cycled through the same tool calls for ${CYCLE_WINDOW} consecutive steps even after an explicit correction (it never signaled done).`,
-      });
+      return await consolidateStop(`the model cycled through the same tool calls for ${CYCLE_WINDOW} consecutive steps even after an explicit correction (it never signaled done)`);
     }
 
     // Helper to execute a single tool call
@@ -956,6 +1006,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         doneReason: stopMsg,
       });
     }
+    // Snapshot this step's results so the next iteration's repeat guard can cite the
+    // repeated call's ACTUAL last outcome (A). A skipped/bounced step never reaches
+    // here, so this always holds the last REAL execution's results.
+    lastResults = results;
     step++;
   }
 

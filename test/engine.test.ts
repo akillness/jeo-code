@@ -154,9 +154,9 @@ test("runAgentLoop: stops on repeated identical tool calls (weak-model no-progre
   });
   expect(result.done).toBe(false);
   expect(result.doneReason).toContain("repeated the same 'write' call");
-  // Repeat handling runs BEFORE execution: the 1st call runs, the 2nd identical
-  // call is SKIPPED with a corrective bounce, and the 3rd (repeated through the
-  // correction) trips the stop — a mutating call never re-executes.
+  // Repeat handling runs BEFORE execution: the 1st call runs, the 2nd and 3rd identical
+  // calls are SKIPPED with escalating corrective bounces, and the 4th (repeated through
+  // both corrections) trips the consolidated stop — a mutating call never re-executes.
   expect(writes).toBe(1);
   expect(history.some(m => m.content.includes("repeated the EXACT same"))).toBe(true);
   expect(calls).toBeLessThan(25);

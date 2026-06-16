@@ -28,9 +28,14 @@ test("repeat bounce: a 2nd identical write is SKIPPED with a corrective prompt; 
   expect(writeRuns).toBe(1); // the duplicate was skipped, not re-executed
 });
 
-test("repeat bounce: repeating THROUGH the correction still stops the turn (anti-spin)", async () => {
+test("repeat bounce: repeating THROUGH both corrections still stops the turn (anti-spin)", async () => {
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "write", arguments: { filePath: "a.txt", content: "x" } }),
+    // jsonMode:false is the consolidation salvage call — return a plain wrap-up so the
+    // stop carries a useful answer; every tool-call step repeats the same write.
+    callLlm: async (_h: Message[], options: { jsonMode?: boolean } = {}) =>
+      options.jsonMode === false
+        ? "wrap-up: I kept retrying the same write."
+        : JSON.stringify({ tool: "write", arguments: { filePath: "a.txt", content: "x" } }),
   }));
   const { runAgentLoop } = await import("../src/agent/engine");
   let writeRuns = 0;
@@ -41,8 +46,38 @@ test("repeat bounce: repeating THROUGH the correction still stops the turn (anti
     tools: { write: async () => { writeRuns++; return { success: true, output: "ok" }; } },
   });
   expect(result.done).toBe(false);
-  expect(result.doneReason).toContain("even after an explicit correction");
-  expect(writeRuns).toBe(1); // executed once; bounce and detection never re-ran it
+  expect(result.doneReason).toContain("repeated the same 'write' call");
+  expect(result.doneReason).toContain("even after explicit corrections");
+  expect(result.doneReason).toContain("wrap-up:"); // consolidated salvage answer, not a cold stop
+  expect(writeRuns).toBe(1); // executed once; both bounces and the stop never re-ran it
+});
+
+test("repeat spin: two escalating result-aware corrections, then a consolidated salvage answer", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_h: Message[], options: { jsonMode?: boolean } = {}) =>
+      options.jsonMode === false
+        ? "What I found: nothing matched 'zzz' — the symbol likely does not exist in this repo."
+        : JSON.stringify({ tool: "search", arguments: { pattern: "zzz", paths: ["."] } }),
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history: Message[] = [{ role: "system", content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 20,
+    budget: { maxExtensions: 0 },
+    tools: { search: async () => ({ success: true, output: "no matches" }) },
+  });
+  expect(result.done).toBe(false);
+  // C — consolidated salvage answer is returned instead of a bare stop.
+  expect(result.doneReason).toContain("What I found:");
+  expect(result.doneReason).toContain("repeated the same 'search' call");
+  // B — exactly two escalating corrections were pushed before the stop.
+  const corrections = history.filter(m => m.role === "user" && m.content.includes("repeated the EXACT same"));
+  expect(corrections.length).toBe(2);
+  // A — result-aware hint tells the model to broaden an empty search.
+  expect(corrections[0]!.content).toContain("BROADEN");
+  // B — the second correction warns it is the last attempt.
+  expect(corrections[1]!.content).toContain("LAST attempt");
 });
 
 test("trimToolResultsInPlace: elides OLDEST tool results down to budget, keeps recent + non-tool messages", () => {

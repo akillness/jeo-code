@@ -152,10 +152,10 @@ cmd_battery() {
   local pass=0 fail=0
   _bp() { if _probe "$@"; then pass=$((pass+1)); else fail=$((fail+1)); fi; }
   _bp "boot: input box + model bar render" ""                       '⬢|claude|gpt|gemini|ollama|antigravity'
-  _bp "/help lists the Skills section"     "/help"                  'Skills:'
+  _bp "/help renders command groups"       "/help"                  'Subagents:|Code tools:'
   _bp "unknown \$skill → clear feedback"   '$nope build'            'No skill'
   _bp "/agents lists subagent roster"      "/agents"                'executor|planner|architect|critic'
-  _bp "/ultragoal dispatches the workflow" "/ultragoal"             'workflow:ultragoal|Skill: ultragoal'
+  _bp "\$ultragoal dispatches the workflow" '$ultragoal hi'          'workflow:ultragoal|Skill: ultragoal'
   _bp "unresolved /command is reported"    "/zzznope"               "Unknown command|No skill"
   echo ""
   if [ "$fail" = 0 ]; then echo "battery: ALL ${pass} PASSED"; return 0; fi

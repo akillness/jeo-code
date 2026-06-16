@@ -1,7 +1,7 @@
 import { applyBashFixups } from "./bash-fixups";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { readWorkflowState, readWorkflowStateStrict, type WorkflowState } from "./state";
+import { readWorkflowStateStrict, type WorkflowState } from "./state";
 import { jeoEnv } from "../util/env";
 import { READ_OUTPUT_MAX } from "./tool-output";
 

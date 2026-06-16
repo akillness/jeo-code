@@ -2508,7 +2508,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const caret = rli.line === line && typeof rli.cursor === "number" ? rli.cursor : line.length;
     const { accent: boxAccent, shadow: boxShadow } = boxAccents(line);
     const frame = renderInputFrame(expandSentinel(line), {
-      cols,
+      // Cap the input box at 120 cols to match the live-turn box (renderLiveInputBox)
+      // and the user-card width, so the box doesn't visibly jump width on the
+      // idle→live transition on wide terminals. The status bar below stays full-width.
+      cols: Math.min(120, cols),
       color: true,
       unicode: true,
       accent: boxAccent,

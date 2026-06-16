@@ -84,46 +84,28 @@ export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchF
       flags.noSession = true;
     } else if (a === "--no-tui") {
       flags.noTui = true;
-    } else if (a === "--max-steps") {
-      const n = parseInt(args[i + 1] ?? "", 10);
-      if (Number.isFinite(n) && n > 0) {
-        flags.maxSteps = n;
-        i++;
-      }
-    } else if (a.startsWith("--max-steps=")) {
-      const n = parseInt(a.slice(12), 10);
+    } else if (a === "--max-steps" || a.startsWith("--max-steps=")) {
+      const { value, nextIndex } = takeValue(args, i, "--max-steps=");
+      const n = parseInt(value ?? "", 10);
       if (Number.isFinite(n) && n > 0) flags.maxSteps = n;
-    } else if (a === "--model") {
+      i = nextIndex;
+    } else if (a === "--model" || a.startsWith("--model=")) {
       const { value, nextIndex } = takeValue(args, i, "--model=");
       if (value) flags.model = value;
       else flags.errors.push("--model requires a value");
       i = nextIndex;
-    } else if (a.startsWith("--model=")) {
-      const { value } = takeValue(args, i, "--model=");
-      if (value) flags.model = value;
-      else flags.errors.push("--model requires a value");
-    } else if (a === "--provider") {
+    } else if (a === "--provider" || a.startsWith("--provider=")) {
       const { value, nextIndex } = takeValue(args, i, "--provider=");
       const normalized = value?.toLowerCase();
       if (isProviderName(normalized)) flags.provider = normalized;
       else flags.errors.push("--provider must be one of: anthropic, openai, gemini, ollama");
       i = nextIndex;
-    } else if (a.startsWith("--provider=")) {
-      const { value } = takeValue(args, i, "--provider=");
-      const normalized = value?.toLowerCase();
-      if (isProviderName(normalized)) flags.provider = normalized;
-      else flags.errors.push("--provider must be one of: anthropic, openai, gemini, ollama");
-    } else if (a === "--thinking") {
+    } else if (a === "--thinking" || a.startsWith("--thinking=")) {
       const { value, nextIndex } = takeValue(args, i, "--thinking=");
       const normalized = value?.toLowerCase();
       if (isThinkingLevel(normalized)) flags.thinking = normalized;
       else flags.errors.push("--thinking must be one of: minimal, low, medium, high, xhigh");
       i = nextIndex;
-    } else if (a.startsWith("--thinking=")) {
-      const { value } = takeValue(args, i, "--thinking=");
-      const normalized = value?.toLowerCase();
-      if (isThinkingLevel(normalized)) flags.thinking = normalized;
-      else flags.errors.push("--thinking must be one of: minimal, low, medium, high, xhigh");
     } else if (a === "--smol" || a === "--slow" || a === "--plan") {
       flags.modelRole = a.slice(2) as ModelRole;
     } else if (a === "--resume" || a === "--continue" || a === "-c") {
@@ -142,52 +124,30 @@ export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchF
       } else {
         rest.push(val);
       }
-    } else if (a === "--append-system-prompt") {
+    } else if (a === "--append-system-prompt" || a.startsWith("--append-system-prompt=")) {
       const { value, nextIndex } = takeValue(args, i, "--append-system-prompt=");
-      if (value) {
-        flags.appendSystemPromptRaw = value;
-      } else {
-        flags.errors.push("--append-system-prompt requires a value");
-      }
+      if (value) flags.appendSystemPromptRaw = value;
+      else flags.errors.push("--append-system-prompt requires a value");
       i = nextIndex;
-    } else if (a.startsWith("--append-system-prompt=")) {
-      const { value } = takeValue(args, i, "--append-system-prompt=");
-      if (value) {
-        flags.appendSystemPromptRaw = value;
-      } else {
-        flags.errors.push("--append-system-prompt requires a value");
-      }
     } else if (a === "--no-skills") {
       flags.noSkills = true;
-    } else if (a === "--skills") {
+    } else if (a === "--skills" || a.startsWith("--skills=")) {
       const { value, nextIndex } = takeValue(args, i, "--skills=");
       if (value) flags.skills = value;
       else flags.errors.push("--skills requires a value");
       i = nextIndex;
-    } else if (a.startsWith("--skills=")) {
-      const { value } = takeValue(args, i, "--skills=");
-      if (value) flags.skills = value;
-      else flags.errors.push("--skills requires a value");
     } else if (a === "--no-tools") {
       flags.noTools = true;
-    } else if (a === "--tools") {
+    } else if (a === "--tools" || a.startsWith("--tools=")) {
       const { value, nextIndex } = takeValue(args, i, "--tools=");
       if (value) flags.tools = value;
       else flags.errors.push("--tools requires a value");
       i = nextIndex;
-    } else if (a.startsWith("--tools=")) {
-      const { value } = takeValue(args, i, "--tools=");
-      if (value) flags.tools = value;
-      else flags.errors.push("--tools requires a value");
-    } else if (a === "--system-prompt") {
+    } else if (a === "--system-prompt" || a.startsWith("--system-prompt=")) {
       const { value, nextIndex } = takeValue(args, i, "--system-prompt=");
       if (value) flags.systemPromptRaw = value;
       else flags.errors.push("--system-prompt requires a value");
       i = nextIndex;
-    } else if (a.startsWith("--system-prompt=")) {
-      const { value } = takeValue(args, i, "--system-prompt=");
-      if (value) flags.systemPromptRaw = value;
-      else flags.errors.push("--system-prompt requires a value");
     } else {
       rest.push(a);
     }

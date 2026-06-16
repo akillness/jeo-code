@@ -23,6 +23,7 @@ export function stripMarkdown(text: string): string {
   out = out.replace(/___([^\_]+)___/g, "$1");
   out = out.replace(/__([^\_]+)__/g, "$1");
   out = out.replace(/_([^\_]+)_/g, "$1");
+  out = out.replace(/~~([^~\n]+)~~/g, "$1");
 
   // 5. Convert links [text](url) -> text (url)
   out = out.replace(/\[([^\]]+)\]\(([^\)]+)\)/g, "$1 ($2)");
@@ -42,6 +43,13 @@ export function stripMarkdown(text: string): string {
 export interface MarkdownAnsiOptions {
   /** Heading painter (theme accent + bold); default chalk.bold. */
   accent?: (s: string) => string;
+  /** Secondary-text painter for link URLs, the blockquote gutter, horizontal rules,
+   *  and ~~struck~~ text. jeo tone uses a REAL theme mid-tone hue here instead of ANSI
+   *  `dim`, which collapses to near-invisible on dark terminals (parity with the
+   *  todo/forge cards). Default chalk.dim when no theme painter is threaded. */
+  muted?: (s: string) => string;
+  /** Inline `code` painter; default chalk.cyan so code stays distinct from accent headings. */
+  code?: (s: string) => string;
 }
 
 /**
@@ -54,14 +62,16 @@ export interface MarkdownAnsiOptions {
 export function renderMarkdownAnsi(text: string, opts: MarkdownAnsiOptions = {}): string {
   if (!text) return "";
   const accent = opts.accent ?? ((s: string) => chalk.bold(s));
+  const muted = opts.muted ?? ((s: string) => chalk.dim(s));
+  const code = opts.code ?? ((s: string) => chalk.cyan(s));
 
   // Links/images FIRST: bold/code styling injects ANSI escapes whose `[` would
   // otherwise be swallowed by the `[label](url)` matcher (corrupting both).
   const styleInline = (line: string): string =>
     line
       .replace(/!\[([^\]]*)\]\(([^\)]+)\)/g, "$1")
-      .replace(/\[([^\]]+)\]\(([^\)]+)\)/g, (_m, label: string, url: string) => `${label} ${chalk.dim(`(${url})`)}`)
-      .replace(/`([^`]+)`/g, (_m, code: string) => chalk.cyan(code))
+      .replace(/\[([^\]]+)\]\(([^\)]+)\)/g, (_m, label: string, url: string) => `${label} ${muted(`(${url})`)}`)
+      .replace(/`([^`]+)`/g, (_m, c: string) => code(c))
       .replace(/\*\*\*([^\*]+)\*\*\*/g, (_m, t: string) => chalk.bold.italic(t))
       .replace(/\*\*([^\*]+)\*\*/g, (_m, t: string) => chalk.bold(t))
       .replace(/__([^\_]+)__/g, (_m, t: string) => chalk.bold(t))
@@ -70,7 +80,11 @@ export function renderMarkdownAnsi(text: string, opts: MarkdownAnsiOptions = {})
       // closing `*`); the `_` form is word-boundary guarded so snake_case
       // identifiers (foo_bar_baz) are never mistaken for emphasis.
       .replace(/\*([^\s*][^*\n]*?[^\s*]|[^\s*])\*/g, (_m, t: string) => chalk.italic(t))
-      .replace(/(?<![\p{L}\p{N}_])_(?=\S)([^_\n]*?)(?<=\S)_(?![\p{L}\p{N}_])/gu, (_m, t: string) => chalk.italic(t));
+      .replace(/(?<![\p{L}\p{N}_])_(?=\S)([^_\n]*?)(?<=\S)_(?![\p{L}\p{N}_])/gu, (_m, t: string) => chalk.italic(t))
+      // ~~strikethrough~~ → struck + muted: retracted/superseded text reads as
+      // de-emphasized (jeo tone parity with done-todo rows). Runs last so it never
+      // eats an earlier emphasis marker.
+      .replace(/~~([^~\n]+)~~/g, (_m, t: string) => chalk.strikethrough(muted(t)));
 
   const out: string[] = [];
   let inFence = false;
@@ -121,14 +135,14 @@ export function renderMarkdownAnsi(text: string, opts: MarkdownAnsiOptions = {})
       if (lastType !== "blockquote" && lastType !== "empty") {
         ensureBlankLine();
       }
-      out.push(chalk.dim(`▎ ${styleInline(quote[1]!)}`));
+      out.push(muted(`▎ ${styleInline(quote[1]!)}`));
       lastType = "blockquote";
       continue;
     }
 
     if (/^[-\*_]{3,}\s*$/.test(line)) {
       ensureBlankLine();
-      out.push(chalk.dim("─".repeat(24)));
+      out.push(muted("─".repeat(24)));
       ensureBlankLine();
       lastType = "empty";
       continue;

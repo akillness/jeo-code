@@ -3121,16 +3121,35 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // Idle-prompt resize: re-reserve the footer at the new terminal height so the
     // fixed reservation stays accurate (otherwise the next paint would target the
     // old row count and either over-shoot or under-paint the reserved region).
+    // Coalesce SIGWINCH bursts: a drag-resize fires many events, and each
+    // disarm→arm cycle writes newlines that can scroll content. Debounce so the
+    // footer is re-reserved ONCE at the final size, and skip same-geometry events.
+    let idleResizeTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastIdleCols = process.stdout.columns ?? 80;
+    let lastIdleRows = process.stdout.rows ?? 24;
     const idleResizeHandler = () => {
       if (!previewArmed) return;
-      try {
-        disarmPreview();
-        armPreview();
-        drawFooter(promptHistoryLines ? historyPreviewLines(promptHistoryLines) : previewLines(typedLine, navIdx));
-      } catch { /* ignore resize render races */ }
+      if (idleResizeTimer) clearTimeout(idleResizeTimer);
+      idleResizeTimer = setTimeout(() => {
+        idleResizeTimer = undefined;
+        if (!previewArmed) return;
+        const cols = process.stdout.columns ?? 80;
+        const rows = process.stdout.rows ?? 24;
+        if (cols === lastIdleCols && rows === lastIdleRows) return;
+        lastIdleCols = cols;
+        lastIdleRows = rows;
+        try {
+          disarmPreview();
+          armPreview();
+          drawFooter(promptHistoryLines ? historyPreviewLines(promptHistoryLines) : previewLines(typedLine, navIdx));
+        } catch { /* ignore resize render races */ }
+      }, 40);
     };
     process.stdout.on("resize", idleResizeHandler);
-    promptListenerCleanups.push(() => process.stdout.off("resize", idleResizeHandler));
+    promptListenerCleanups.push(() => {
+      process.stdout.off("resize", idleResizeHandler);
+      if (idleResizeTimer) clearTimeout(idleResizeTimer);
+    });
   }
 
   while (true) {

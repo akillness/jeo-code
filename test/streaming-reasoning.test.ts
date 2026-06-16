@@ -21,8 +21,8 @@ test("LaunchTui: streams the model's reasoning live, then flushes it once to scr
   ev.onModelStream!('{"reasoning":"checking the package version');
   expect(strip(out.join(""))).toContain("checking the package version");
 
-  // On the tool dispatch, the reasoning is flushed ONCE into scrollback as a
-  // jeo-ref reasoning block: a muted "jeo · thinking" divider header, the prose below.
+  // On the tool dispatch, the reasoning is flushed ONCE into scrollback grouped under a
+  // single `jeo` agent-name label, the (italic dimmed) prose below it — gjc layout.
   out.length = 0;
   ev.onAssistant!(
     '{"reasoning":"checking the package version","tool":"read","arguments":{"filePath":"package.json"}}',
@@ -30,10 +30,11 @@ test("LaunchTui: streams the model's reasoning live, then flushes it once to scr
   );
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
   const flushed = strip(out.join(""));
-  expect(flushed).toContain("Reasoning");
   expect(flushed).toContain("checking the package version");
-  // Header divider precedes the prose (boundary, not inline).
-  expect(flushed.indexOf("Reasoning")).toBeLessThan(flushed.indexOf("checking the package version"));
+  // The `jeo` agent label leads the grouped thought block (boundary, not inline).
+  const labelIdx = flushed.search(/(^|\n)jeo(\s|$)/m);
+  expect(labelIdx).toBeGreaterThanOrEqual(0);
+  expect(labelIdx).toBeLessThan(flushed.indexOf("checking the package version"));
   tui.finish("done");
 });
 
@@ -47,5 +48,29 @@ test("LaunchTui: onModelStream with no reasoning field renders nothing extra", (
   ev.onModelStream!('{"tool":"read","arguments":{}}'); // no reasoning
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
   expect(strip(out.join(""))).not.toContain("💭");
+  tui.finish("done");
+});
+
+test("LaunchTui: streams native thinking live, then persists it under a jeo label on commit", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  const ev = tui.events();
+  ev.onStep!(1);
+  // Native reasoning channel (Anthropic/OpenAI-style) streams plain text, not JSON.
+  out.length = 0;
+  ev.onReasoningStream!("weighing two approaches");
+  expect(strip(out.join(""))).toContain("weighing two approaches");
+
+  // On commit the native thought is flushed ONCE into scrollback grouped under a single
+  // `jeo` agent-name label, the (italic dimmed) prose below it — gjc layout.
+  out.length = 0;
+  ev.onAssistant!('{"tool":"read","arguments":{}}', { tool: "read", arguments: {} });
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  const flushed = strip(out.join(""));
+  expect(flushed).toContain("weighing two approaches");
+  const labelIdx = flushed.search(/(^|\n)jeo(\s|$)/m);
+  expect(labelIdx).toBeGreaterThanOrEqual(0);
+  expect(labelIdx).toBeLessThan(flushed.indexOf("weighing two approaches"));
   tui.finish("done");
 });

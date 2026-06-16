@@ -41,6 +41,36 @@ test("LaunchTui: sequential turns and resize listener cleanup (including error a
   }
 });
 
+test("LaunchTui: process 'exit' listener does not accumulate across many turns", () => {
+  // The exit-safety net (armExitSafety) registers a single process.once("exit")
+  // handler guarded by a module-level flag. A regression that drops the guard would
+  // add one handler PER turn — a real long-term leak on the global process object in
+  // a long-lived REPL. Lock the guard in: the count must never grow across turns.
+  const before = process.listenerCount("exit");
+  const realRender = Renderer.prototype.render;
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function () {};
+  try {
+    for (let i = 0; i < 25; i++) {
+      const out: string[] = [];
+      const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+      tui.start();
+      tui.finish("done");
+      expect(process.listenerCount("exit")).toBeLessThanOrEqual(before + 1);
+    }
+    // After the first turn arms the net, the count is fixed for the rest of the run.
+    const settled = process.listenerCount("exit");
+    for (let i = 0; i < 10; i++) {
+      const out: string[] = [];
+      const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+      tui.start();
+      tui.finish("done");
+    }
+    expect(process.listenerCount("exit")).toBe(settled);
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});
+
 test("LaunchTui: no live timers leak after finish", async () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });

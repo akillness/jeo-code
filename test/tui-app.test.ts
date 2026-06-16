@@ -59,7 +59,8 @@ test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll
   expect(tail).not.toContain(leaveAltScreen()); // never entered, never left
   expect(tail).toContain(showCursor());
   // Final summary still printed with clear-to-EOL per line + clear-below hygiene…
-  expect(tail).toContain("jeo> ok");
+  expect(tail).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // gjc-style agent name label leads the reply
+  expect(tail).toContain("ok"); // reply printed statically (no `jeo>` prefix)
   expect(tail).toContain("\x1b[K");
   expect(tail).toContain("\x1b[0J");
   // …but WITHOUT re-printing the ledger lines already flushed into scrollback live.
@@ -91,7 +92,8 @@ test("LaunchTui: JEO_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen
     // screen, with clear-to-EOL per line + clear-below so stale pre-turn rows (old
     // footer box, context lines) never merge into the summary or leave a torn box.
     const afterLeave = tail.slice(tail.indexOf(leaveAltScreen()));
-    expect(afterLeave).toContain("jeo> ok");
+    expect(afterLeave).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // gjc-style agent name label
+    expect(afterLeave).toContain("ok");
     expect(afterLeave).toContain("\x1b[K");
     expect(afterLeave).toContain("\x1b[0J");
   } finally {
@@ -236,6 +238,47 @@ test("LaunchTui auto-repair: resize listener is registered on start and removed 
     Renderer.prototype.render = realRender;
   }
 });
+
+test("LaunchTui resize coalescing: a SIGWINCH burst repaints once after the debounce", async () => {
+  const realRender = Renderer.prototype.render;
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function () {};
+  try {
+    const tui = new LaunchTui({ model: "m1", maxSteps: 25, tty: true, write: () => {} });
+    tui.start();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    // Spy on THIS instance's repaint so co-resident TUIs from other tests can't skew the count.
+    let repaints = 0;
+    const orig = (tui as unknown as { repaint: () => void }).repaint.bind(tui);
+    (tui as unknown as { repaint: () => void }).repaint = () => { repaints++; orig(); };
+    // Drag-resize fires many events in quick succession; they must collapse to ONE repaint.
+    for (let i = 0; i < 5; i++) process.stdout.emit("resize");
+    expect(repaints).toBe(0); // nothing painted synchronously — the repaint is debounced
+    await new Promise(r => setTimeout(r, 70));
+    expect(repaints).toBe(1); // exactly one coalesced repaint at the final size
+    tui.finish("done");
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});
+
+test("LaunchTui resize coalescing: finish() cancels a pending resize repaint", async () => {
+  const realRender = Renderer.prototype.render;
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function () {};
+  try {
+    const tui = new LaunchTui({ model: "m1", maxSteps: 25, tty: true, write: () => {} });
+    tui.start();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    let repaints = 0;
+    const orig = (tui as unknown as { repaint: () => void }).repaint.bind(tui);
+    (tui as unknown as { repaint: () => void }).repaint = () => { repaints++; orig(); };
+    process.stdout.emit("resize"); // schedule a debounced repaint…
+    tui.finish("done");           // …then finish before it fires
+    await new Promise(r => setTimeout(r, 70));
+    expect(repaints).toBe(0); // the pending repaint was cancelled by finish()
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});
 test("LaunchTui.usable is false under a non-TTY test process", () => {
   expect(LaunchTui.usable(false)).toBe(false); // bun test stdout is not a TTY
   expect(LaunchTui.usable(true)).toBe(false); // --no-tui always false
@@ -322,7 +365,8 @@ test("LaunchTui: live region renders tool list + footer, finish collapses to sta
   }
 
   const finalText = logged.join("\n");
-  expect(finalText).toContain("jeo> all done"); // reply printed statically
+  expect(finalText).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // gjc-style agent name label leads the reply
+  expect(finalText).toContain("all done"); // reply printed statically
   expect(finalText).toContain("write"); // tool summary retained
   const tail = out.join("");
   expect(tail).toContain(showCursor()); // cursor restored
@@ -526,7 +570,7 @@ test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result i
   expect(txt).toMatch(/(└─|`-) EXECUTOR done: completed in 4 steps: guard added/); // result summary
 });
 
-test("LaunchTui: native reasoning stream drives the dimmed thinking state and is ephemeral (cleared on commit, never flushed)", () => {
+test("LaunchTui: native reasoning stream drives the dimmed thinking state and persists as a Thinking block on commit", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
   tui.start();
@@ -535,8 +579,8 @@ test("LaunchTui: native reasoning stream drives the dimmed thinking state and is
   ev.onStep!(1);
   ev.onReasoningStream!("weighing two approaches to the cap");
   expect(internals.streamingThought).toContain("weighing two approaches");
-  // Committing to a tool clears the ephemeral native thought (unlike the JSON reasoning
-  // field, the raw thought trace is NOT flushed un-dimmed into scrollback).
+  // Committing to a tool flushes the native thought into scrollback as a "Thinking" block
+  // (gjc "think → answer" parity) and clears the transient live state.
   ev.onAssistant!("{}", { tool: "read", arguments: { filePath: "x.ts" } });
   expect(internals.streamingThought).toBe("");
   clearInterval(internals.timer);
@@ -545,7 +589,9 @@ test("LaunchTui: native reasoning stream drives the dimmed thinking state and is
   const origLog = console.log;
   console.log = (...a: unknown[]) => logged.push(a.join(" "));
   try { tui.finish("done"); } finally { console.log = origLog; }
-  expect(logged.join("\n")).not.toContain("weighing two approaches");
+  const txt = logged.join("\n");
+  expect(txt).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // grouped under the gjc-style `jeo` label
+  expect(txt).toContain("weighing two approaches");
 });
 
 test("LaunchTui: onToolResult flushes a gjc-style glyph-led ledger line for the target", () => {

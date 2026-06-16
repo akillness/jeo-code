@@ -80,7 +80,7 @@ test("/fast completes fast-mode subcommands", () => {
 });
 
 test("/provider completes login/auth + names, then that provider's live models", () => {
-  expect(complete("/provider ", ctx()).completions).toEqual(["login", "auth", "anthropic", "openai", "gemini", "ollama"]);
+  expect(complete("/provider ", ctx()).completions).toEqual(["login", "auth", "add", "anthropic", "openai", "gemini", "ollama"]);
   // `/provider login ` → OAuth-capable cloud providers
   expect(complete("/provider login ", ctx()).completions).toEqual(["anthropic", "openai", "gemini", "antigravity"]);
   const second = complete("/provider openai ", ctx());

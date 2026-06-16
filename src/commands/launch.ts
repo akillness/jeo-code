@@ -3740,8 +3740,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
                 const st = statuses.find(s => s.name === p);
                 console.log(`  ${i + 1}) ${p.padEnd(10)} ${st?.ready ? `✓ ${st.label}` : "· not ready"}`);
               });
-              const ans = (await promptInput("Choose [1-3] or name (blank to cancel): ")).trim().toLowerCase();
-              const byNum: Record<string, string> = { "1": "anthropic", "2": "openai", "3": "gemini" };
+              const ans = (await promptInput(`Choose [1-${cloud.length}] or name (blank to cancel): `)).trim().toLowerCase();
+              const byNum: Record<string, string> = Object.fromEntries(cloud.map((p, i) => [String(i + 1), p]));
               target = byNum[ans] ?? ((cloud as readonly string[]).includes(ans) ? ans : undefined);
             }
             if (!target) {

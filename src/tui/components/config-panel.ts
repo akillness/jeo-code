@@ -173,7 +173,7 @@ export function formatPickList(entries: PickEntry[], opts: { current?: string; c
     const mark = opts.current && e.model === opts.current ? chalk.green(" ◀ current") : "";
     return `  ${chalk.yellow(tag)}  ${e.model} ${chalk.gray(`(${e.provider})`)}${mark}`;
   });
-  if (entries.length > cap) lines.push(chalk.gray(`  …(+${entries.length - cap} more — narrow with /provider <name> or /search)`));
+  if (entries.length > cap) lines.push(chalk.gray(`  …(+${entries.length - cap} more — narrow with /model or /search)`));
   return lines;
 }
 
@@ -202,7 +202,7 @@ export function formatPickListWithCapabilities(entries: PickEntry[], opts: { cur
       `  ${chalk.yellow(`#${e.index}`.padStart(iw))}  ${chalk.gray(e.provider.padEnd(pw))}  ${id}  ${ctx.padStart(5)}  ${out.padStart(5)}  ${chalk.cyan(think)}  ${img}${mark}`,
     );
   }
-  if (entries.length > cap) lines.push(chalk.gray(`  …(+${entries.length - cap} more — narrow with /provider <name>)`));
+  if (entries.length > cap) lines.push(chalk.gray(`  …(+${entries.length - cap} more — narrow with /model)`));
   return lines;
 }
 

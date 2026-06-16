@@ -419,8 +419,8 @@ export function summarizeForgeResult(tool: string, success: boolean, output: str
     }
   }
   const lines = previewLines(body, success ? 5 : 10, success ? 600 : 1200);
+  lines.unshift(forgeDivider("Output"));
   if (normalized === "bash") {
-    lines.unshift(forgeDivider("Output"));
     if (exitNote) lines.push("", exitNote);
   }
   return {

@@ -4,6 +4,7 @@ import { spinnerFramesFor, stageIndexForStep, clampStageIndex } from "./evolutio
  * Stage-aware spinner. Frames evolve with the agent's step against its budget,
  * sourced from the canonical evolution model so the spinner stays in lockstep
  * with the ASCII art, meter, and footer track.
+ * Enriched with 3D/dimensional quadrant and twisting braille helix elements.
  */
 export class Spinner {
   private defaultFrames: string[];

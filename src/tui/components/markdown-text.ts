@@ -74,33 +74,85 @@ export function renderMarkdownAnsi(text: string, opts: MarkdownAnsiOptions = {})
 
   const out: string[] = [];
   let inFence = false;
-  for (const line of text.split("\n")) {
-    if (/^```/.test(line.trim())) {
-      inFence = !inFence;
-      continue; // drop the fence row itself (stripMarkdown parity)
+  
+  // Track the type of the last pushed content line to manage rhythm
+  // Types: "empty" | "heading" | "blockquote" | "list" | "code" | "prose"
+  let lastType: "empty" | "heading" | "blockquote" | "list" | "code" | "prose" = "empty";
+
+  const ensureBlankLine = () => {
+    if (out.length > 0 && out[out.length - 1] !== "") {
+      out.push("");
     }
-    if (inFence) {
-      out.push(line); // code bodies verbatim — never styled or reflowed
+  };
+
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    
+    // Check if we are toggling a code fence
+    if (/^```/.test(trimmed)) {
+      ensureBlankLine();
+      inFence = !inFence;
+      lastType = inFence ? "code" : "empty";
       continue;
     }
+
+    if (inFence) {
+      out.push(line); // code bodies verbatim
+      lastType = "code";
+      continue;
+    }
+
+    if (trimmed === "") {
+      ensureBlankLine();
+      lastType = "empty";
+      continue;
+    }
+
     const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
-      // Vertical rhythm: a heading that follows content gets one blank line of
-      // breathing room above it (final-report readability), never a leading blank.
-      if (out.length > 0 && out[out.length - 1]!.trim() !== "") out.push("");
+      ensureBlankLine();
       out.push(accent(styleInline(heading[2]!)));
+      lastType = "heading";
       continue;
     }
+
     const quote = line.match(/^>\s+(.+)$/);
     if (quote) {
+      if (lastType !== "blockquote" && lastType !== "empty") {
+        ensureBlankLine();
+      }
       out.push(chalk.dim(`▎ ${styleInline(quote[1]!)}`));
+      lastType = "blockquote";
       continue;
     }
+
     if (/^[-\*_]{3,}\s*$/.test(line)) {
+      ensureBlankLine();
       out.push(chalk.dim("─".repeat(24)));
+      ensureBlankLine();
+      lastType = "empty";
       continue;
+    }
+
+    // Check if list item
+    const isList = /^\s*([*\-+]\s|\d+\.\s)/.test(line);
+    if (isList) {
+      if (lastType !== "list" && lastType !== "empty") {
+        ensureBlankLine();
+      }
+      out.push(styleInline(line));
+      lastType = "list";
+      continue;
+    }
+
+    // Default prose line
+    if (lastType !== "prose" && lastType !== "empty" && lastType !== "list" && lastType !== "heading") {
+      // Transitioning from list/quote/code to prose -> ensure blank line
+      ensureBlankLine();
     }
     out.push(styleInline(line));
+    lastType = "prose";
   }
+
   return out.join("\n").trim();
 }

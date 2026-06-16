@@ -1,3 +1,4 @@
+import { ColorLevel, hexToRgb, lerpColor, fgEscape, bgEscape, resetEscape, stripAnsi } from "./color";
 import chalk from "chalk";
 
 /**
@@ -33,10 +34,10 @@ export const EVOLUTION_STAGE_COLORS: readonly ((s: string) => string)[] = [
 /** Spinner frame sets, one per evolution stage. */
 export const EVOLUTION_SPINNER_FRAMES: readonly string[][] = [
   [".   ", "..  ", "... ", "....", "... ", "..  "],
-  ["\u2801", "\u2802", "\u2804", "\u2808", "\u2810", "\u2820"],
-  ["|", "/", "-", "\\"],
+  ["\u2801", "\u2803", "\u2807", "\u2827", "\u2837", "\u283f", "\u283e", "\u283d", "\u283b", "\u2819", "\u2818", "\u2810"],
+  ["▲", "▶", "▼", "◀"],
   ["\u280b", "\u2819", "\u2839", "\u2838", "\u283c", "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"],
-  ["\u25dc", "\u25dd", "\u25de", "\u25df"],
+  ["\u25f0", "\u25f3", "\u25f2", "\u25f1"],
 ];
 
 /**
@@ -302,4 +303,82 @@ export const EVOLUTION_TRANSITION_MESSAGES: readonly string[] = [
 /** Transition message for a stage index (clamped). */
 export function transitionMessage(index: number): string {
   return EVOLUTION_TRANSITION_MESSAGES[clampStageIndex(index)]!;
+}
+/**
+ * Applies a dimensional, animated gradient (foreground or background) to a string of text.
+ * Driven by a phaseMs timestamp, it creates a slow, tasteful shimmer wave
+ * and adds depth cues (bright core, dimmer edges).
+ */
+export function applyDimensionalGradient(
+  text: string,
+  timeMs: number,
+  fromHex: string,
+  toHex: string,
+  level: ColorLevel,
+  isBg: boolean,
+  fgHex: string = "#ebebeb"
+): string {
+  const plain = stripAnsi(text);
+  if (level === ColorLevel.None || plain.length === 0) return plain;
+
+  const from = hexToRgb(fromHex);
+  const to = hexToRgb(toHex);
+  const fg = hexToRgb(fgHex);
+
+  const L = plain.length;
+  let out = "";
+  if (isBg) {
+    out += fgEscape(fg, level);
+  }
+
+  // Slow period: 4.5 seconds for a complete wave cycle
+  const p = (timeMs / 4500) % 1;
+
+  for (let i = 0; i < L; i++) {
+    const ch = plain[i]!;
+    if (!isBg && ch === " ") {
+      out += ch;
+      continue;
+    }
+
+    const x = L > 1 ? i / (L - 1) : 0;
+    const base = lerpColor(from, to, x);
+
+    // 3D depth cue: bright center (1.0), dimmer edges (0.75)
+    // Using a parabolic/sin curve
+    const depth = 0.75 + 0.25 * Math.sin(x * Math.PI);
+
+    // Shimmer highlight wave
+    // Shortest circular distance between position x and wave phase p
+    let dist = Math.abs(x - p);
+    if (dist > 0.5) dist = 1 - dist;
+
+    const waveWidth = 0.22;
+    const highlight = dist < waveWidth ? Math.cos((dist / waveWidth) * (Math.PI / 2)) : 0;
+
+    // Apply depth
+    let r = base.r * depth;
+    let g = base.g * depth;
+    let b = base.b * depth;
+
+    // Apply shimmer highlight (blending towards white)
+    const shimmerIntensity = 0.45;
+    r += (255 - r) * highlight * shimmerIntensity;
+    g += (255 - g) * highlight * shimmerIntensity;
+    b += (255 - b) * highlight * shimmerIntensity;
+
+    const rgb = {
+      r: Math.max(0, Math.min(255, Math.round(r))),
+      g: Math.max(0, Math.min(255, Math.round(g))),
+      b: Math.max(0, Math.min(255, Math.round(b))),
+    };
+
+    if (isBg) {
+      out += bgEscape(rgb, level) + ch;
+    } else {
+      out += fgEscape(rgb, level) + ch;
+    }
+  }
+
+  return out + resetEscape(level);
 }

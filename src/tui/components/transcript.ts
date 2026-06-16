@@ -131,6 +131,9 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
           : [];
     const toolCalls = calls.filter(c => c.tool !== "done");
     if (toolCalls.length > 0) {
+      if (lines.length > 0 && lines[lines.length - 1] !== "") {
+        lines.push("");
+      }
       // The matching `Tool [x] result (ok|fail)` user message follows; for a batch it
       // is ONE message with several blocks. Parse verdicts in call order.
       const next = messages[i + 1];
@@ -153,6 +156,9 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
           ? ""
           : m.content;
     if (!reason.trim()) continue;
+    if (lines.length > 0 && lines[lines.length - 1] !== "") {
+      lines.push("");
+    }
     lines.push(`${magentaBold(`jeo ${jeoMark}`)}`);
     lines.push(...clipBody(reason.trim(), bodyCap));
   }

@@ -62,7 +62,7 @@ import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBl
 import { categoryBadge } from "../tui/components/category-index";
 import { renderInputFrame } from "../tui/components/input-box";
 import { renderStatusBar } from "../tui/components/status";
-import { detectColorLevel, ColorLevel } from "../tui/components/color";
+import { detectColorLevel, ColorLevel, visibleWidth } from "../tui/components/color";
 import { readClipboardImage } from "../util/clipboard-image";
 import { formatTranscript } from "../tui/components/transcript";
 import { loadInputHistory, appendInputHistory } from "../agent/input-history";
@@ -92,7 +92,7 @@ import {
   sessionPath,
   appendCompaction,
 } from "../agent/session";
-import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize, resetMouseTracking } from "../tui/terminal";
+import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize, resetMouseTracking, clearScreen, clearToEnd } from "../tui/terminal";
 
 export interface LaunchFlags {
   list: boolean;
@@ -519,6 +519,53 @@ export const PASTE_END = "\u001b[201~";
  *  reaches readline and the close can't fire. */
 export function isStandaloneBackspace(chunk: string): boolean {
   return chunk.length > 0 && /^[\x7f\b]+$/.test(chunk);
+}
+
+/**
+ * macOS / fixterms combo-key normalization for the boxed prompt's line editor.
+ *
+ * Bun's readline acts on Ctrl+arrow (CSI `1;5D`/`1;5C` → word jump), Home/End, and the
+ * Emacs control bytes (Ctrl+A/E/W/U/K, Meta+b/f/d, Meta+DEL) — but it does NOT act on
+ * the modifier-flagged cursor keys macOS users reach for most: Option+Left/Right (word
+ * jump, CSI `1;3D`/`1;3C`) and Cmd+Left/Right (line start/end, CSI `1;9D`/`1;9C`) are
+ * inert. Rather than racing readline for cursor state in a keypress handler, we rewrite
+ * each inert combo to the canonical control byte readline DOES act on, BEFORE it reaches
+ * readline. readline stays the single owner of `rl.line`/`rl.cursor`; the box just reads
+ * and repaints. Replacement targets are empirically verified against Bun's readline.
+ *
+ * Modifier digit in `CSI 1;<m><dir>`: 3=Alt/Option, 5=Ctrl (already handled), 9=Cmd/Super.
+ * Both the CSI form and the ESC-prefixed alt-as-meta form (`ESC ESC [ D`) are covered. */
+export const CURSOR_COMBO_REWRITES: ReadonlyArray<readonly [string, string]> = [
+  ["\u001b[1;3D", "\u001bb"],     // Option+Left   → word left
+  ["\u001b[1;3C", "\u001bf"],     // Option+Right  → word right
+  ["\u001b\u001b[D", "\u001bb"],  // Option+Left   (ESC-prefixed alt-as-meta)
+  ["\u001b\u001b[C", "\u001bf"],  // Option+Right  (ESC-prefixed alt-as-meta)
+  ["\u001b[1;9D", "\u0001"],      // Cmd+Left      → line start (Ctrl+A)
+  ["\u001b[1;9C", "\u0005"],      // Cmd+Right     → line end   (Ctrl+E)
+  ["\u001b[127;3u", "\u0017"],    // Option+Backspace (kitty CSI-u) → delete word left (Ctrl+W)
+  ["\u001b[127;9u", "\u0015"],    // Cmd+Backspace    (kitty CSI-u) → delete to line start (Ctrl+U)
+  ["\u001b[3;3~", "\u001bd"],     // Option+Delete (forward) → delete word right (Meta+d)
+];
+
+/** First combo-key rewrite whose source sequence begins at `data[i]`, else undefined. */
+export function matchCursorCombo(data: string, i: number): readonly [string, string] | undefined {
+  for (const pair of CURSOR_COMBO_REWRITES) if (data.startsWith(pair[0], i)) return pair;
+  return undefined;
+}
+
+/** Apply combo-key rewrites across a plain (non-paste) input segment. Shares
+ *  `matchCursorCombo` with the live input filter, so the filter and this exported
+ *  helper can never diverge. */
+export function rewriteCursorCombos(plain: string): string {
+  let out = "";
+  let i = 0;
+  while (i < plain.length) {
+    const combo = matchCursorCombo(plain, i);
+    if (combo) { out += combo[1]; i += combo[0].length; continue; }
+    out += plain[i];
+    i += 1;
+  }
+  return out;
 }
 
 /** gjc-parity slash-command aliases, applied once before dispatch so each real command
@@ -1871,6 +1918,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     accent: accentPaint(welcomeTheme),
     accentShadow: accentShadowPaint(welcomeTheme),
   };
+  // gjc-style fresh-start clear so the banner opens atop a clean screen. TTY only,
+  // never mid-turn (scrollback flood). ponytail: add an opt-out env if anyone misses their scrollback.
+  if (process.stdout.isTTY) process.stdout.write(clearScreen());
   // Launch sweep: the DNA Claw's gradient loops seamlessly (default 2 full
   // cycles, JEO_WELCOME_ANIM_CYCLES overrides), ending on the static banner.
   // Truecolor TTYs only; JEO_NO_WELCOME_ANIM=1 opts out.
@@ -2125,6 +2175,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (data.startsWith(seq, i)) { out += SENTINEL; i += seq.length; matched = true; break; }
         }
         if (matched) continue;
+        // Normalize macOS/fixterms combo cursor keys readline ignores (Option/Cmd+arrow,
+        // Option/Cmd+Backspace) into the canonical control bytes it DOES act on.
+        const combo = matchCursorCombo(data, i);
+        if (combo) { out += combo[1]; i += combo[0].length; continue; }
         if (loneLfShiftEnter && data[i] === "\n") { out += SENTINEL; i += 1; continue; } // lone LF = Shift+Enter (opt-in)
         out += data[i]; i += 1;
       }
@@ -2225,7 +2279,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       pasteLineFired = true;
       return;
     }
-    if (!interactiveTurnActive) pendingStdinLines.push(l);
+    // A select picker (/model, /agents, …) reads keypresses directly while NO
+    // rl.question is active, so its filter-text + selecting Enter fire an ORPHAN
+    // `line` event here. Queuing that would auto-serve the leftover filter as the
+    // next prompt (the "/model · /agents leaves typed text behind" bug). Drop it:
+    // the picker owns those keystrokes and clears the readline buffer on exit.
+    if (!interactiveTurnActive && !pickerActive) pendingStdinLines.push(l);
   });
   let stdinClosed = false;
   let notifyStdinClosed: (() => void) | undefined;
@@ -2402,6 +2461,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // Row (within the reservation) where the real cursor was last parked; the next
   // drawFooter/disarmPreview must hop back to the top from here before painting.
   let footerParkedRow = 0;
+  // The footer's last painted lines (padded to the reservation height). The resize
+  // relayout uses these to find the frame's physical top at the live width — a full-width
+  // line painted at an older, wider geometry reflows onto extra rows after a width shrink.
+  let lastDrawnLines: string[] = [];
   const padToFooter = (lines: string[]): string[] => {
     if (lines.length >= footerRows) return lines.slice(0, footerRows);
     return [...lines, ...new Array(footerRows - lines.length).fill("")];
@@ -2439,6 +2502,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       s += toColumn(1) + "\x1b[?25h";
       out.write(s);
       footerRendered = 0;
+      lastDrawnLines = [];
     } else {
       out.write("\x1b[?25h");
     }
@@ -2581,6 +2645,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // and no row can spill past it — the bug fix that kept `@folder<more text>`
     // typing from scrolling the input box (and prior output) off the top.
     const padded = padToFooter(lines);
+    // Remember the exact painted frame so resize/disarm can clear its real physical
+    // footprint at the (possibly changed) live width instead of trusting logical rows.
+    lastDrawnLines = padded;
     // Pure caret moves (arrow keys) change no content — include the caret cell in
     // the repaint key so they still reposition the terminal cursor.
     const tRow = lines.length ? Math.min(footerCursor.row, footerRendered - 1) : 0;
@@ -3176,8 +3243,43 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       lastIdleCols = cols;
       lastIdleRows = rows;
       try {
-        disarmPreview();
-        armPreview();
+        // Resolution-safe relayout, anchored to the CURSOR (not the screen bottom). The
+        // previous frame was painted at the OLD width; on resize the terminal reflows its
+        // full-width rows AND repositions the frame — a width shrink wraps lines and floats
+        // the frame UP by its blank tail, while a height grow leaves the frame high while
+        // adding rows at the bottom. In every case the terminal keeps the REAL cursor on
+        // the input caret's cell, so the caret is the one stable anchor. The old logical
+        // disarm→arm cycle ignored this, clearing the wrong rows and scrolling the stray
+        // frame into scrollback (the stacked status-bar corruption).
+        //
+        // Hop UP from the caret to the frame's physical top — `footerParkedRow` logical
+        // rows of content sit above the caret; recompute their PHYSICAL height at the new
+        // width (wrapped lines count for more) — then clear-to-end-of-display in one op.
+        // This wipes the whole stray frame regardless of which way it drifted, and is
+        // banner-safe: the hop stops exactly at the frame top (just below the static
+        // content). ED is safe here — this path emits no bottom-margin scroll, so (unlike
+        // the mid-turn ledger flush) tmux never copies the erased rows into history.
+        const c = Math.max(1, cols);
+        let abovePhysical = 0;
+        for (let i = 0; i < footerParkedRow && i < lastDrawnLines.length; i++) {
+          abovePhysical += Math.max(1, Math.ceil(Math.max(1, visibleWidth(lastDrawnLines[i]!)) / c));
+        }
+        // The caret may sit on a LOWER physical sub-row of its own (now-wrapped) line: a
+        // long input wraps and the terminal keeps the cursor on its cell, so add the
+        // caret's sub-row offset (caret column / width) or the hop stops below the top.
+        const caretSubRow = Math.floor(Math.max(0, footerCursor.col - 1) / c);
+        const hopUp = abovePhysical + caretSubRow;
+        let s = (hopUp > 0 ? cursorUp(hopUp) : "") + toColumn(1) + clearToEnd();
+        // Re-pin a clean reservation to the screen bottom and repaint. ED already blanked
+        // from the frame top down to the bottom, so just position at the bottom region.
+        footerRows = previewRowsFor(rows);
+        s += `\x1b[${Math.max(1, rows)};1H`;
+        if (footerRows > 1) s += cursorUp(footerRows - 1);
+        s += toColumn(1);
+        out.write(s);
+        footerRendered = footerRows;
+        footerParkedRow = 0;
+        lastFooterKey = "";
         drawFooter(promptHistoryLines ? historyPreviewLines(promptHistoryLines) : previewLines(typedLine, navIdx));
       } catch { /* ignore resize render races */ }
     };
@@ -3314,7 +3416,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         // scrollback, and re-render the welcome banner so /clear looks like a fresh launch.
         if (process.stdout.isTTY) {
           disarmPreview();
-          process.stdout.write("\x1b[2J\x1b[3J\x1b[H"); // clear screen + scrollback + cursor home
+          process.stdout.write(clearScreen()); // clear screen + scrollback + cursor home
           console.log(renderWelcome(welcomeData).join("\n"));
         }
         console.log("(history cleared — back to the start screen)");
@@ -3419,7 +3521,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               // so the resumed view reads like a fresh, intact screen.
               if (process.stdout.isTTY) {
                 disarmPreview();
-                process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+                process.stdout.write(clearScreen());
                 console.log(renderWelcome(welcomeData).join("\n"));
               }
               const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));

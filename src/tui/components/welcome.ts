@@ -55,7 +55,20 @@ export function renderWelcome(d: WelcomeData): string[] {
     return [ `jeo v${d.version} · ${d.model}` ];
   }
 
-  const W = Math.min(100, cols - 2);
+  // The banner hugs a NATURAL hero width so it reads as a proportional box — the
+  // grand DNA-claw framed by even margins — instead of stretching into a mostly
+  // empty rectangle on wide terminals. When the terminal is SMALLER than that
+  // initial/native width it shrinks proportionally: the box narrows and the claw
+  // steps grand→compact (below) so the art keeps its shape and never clips.
+  const grandWidth = Math.max(...DNA_CLAW_ART_GRAND.map(l => l.length));
+  // Title rides ON the top border: `─── jeo v{version} · JEO forge ───`. Defined
+  // once here so the natural-width calc and the border render below can't drift.
+  const titleDashes = 3;
+  const titleLabel = ` jeo v${d.version} · JEO forge `;
+  const titleWidth = titleDashes + titleLabel.length;
+  // grand art (36) + a 6-col margin each side, never narrower than the title.
+  const naturalInner = Math.max(grandWidth + 12, titleWidth + 2);
+  const W = Math.min(cols - 2, naturalInner + 2);
   const inner = W - 2;
 
   const BOX_UNICODE = { tl: "╭", tr: "╮", bl: "╰", br: "╯", h: "─", v: "│" };
@@ -67,9 +80,9 @@ export function renderWelcome(d: WelcomeData): string[] {
   const lit = useColor ? (d.accent ?? chalk.gray) : (s: string) => s;
   const shadow = useColor ? (d.accentShadow ?? ((s: string) => chalk.dim(chalk.gray(s)))) : (s: string) => s;
 
-  // Title text: ─── jeo v{version} · JEO forge ─── (bold for contrast against the border)
-  const dashStr = g.h.repeat(3);
-  const titleLabel = ` jeo v${d.version} · JEO forge `;
+  // Title text: ─── jeo v{version} · JEO forge ─── (bold for contrast against the border).
+  // `titleDashes`/`titleLabel` were fixed above so width and render stay in sync.
+  const dashStr = g.h.repeat(titleDashes);
   const titleHead = `${dashStr}${titleLabel}`;
   let topBorderLine: string;
   if (titleHead.length + 2 > inner) {
@@ -87,7 +100,6 @@ export function renderWelcome(d: WelcomeData): string[] {
 
   // Grand symbol when the box is wide enough; compact DNA Claw otherwise.
   const colorLevel = useColor ? detectColorLevel(process.env, isTTY()) : ColorLevel.None;
-  const grandWidth = Math.max(...DNA_CLAW_ART_GRAND.map(l => l.length));
   const grand = inner >= grandWidth;
   const artLines = renderDnaClaw({
     color: useColor,

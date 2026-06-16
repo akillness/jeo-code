@@ -29,6 +29,7 @@ export class Renderer {
   private cols: () => number;
   private prev: string[] = [];
   private prevCols?: number;
+  private prevRows?: number;
   private readonly reserve: boolean;
   // Stale rows left on screen by the previous frame after insertAbove() dropped the
   // baseline; the next render() must EL-clear any of them beyond the new frame.
@@ -45,10 +46,13 @@ export class Renderer {
 
   render(lines: string[]): void {
     const currentCols = this.cols();
-    if (this.prevCols !== undefined && this.prevCols !== currentCols) {
+    const currentRows = size().rows;
+    if ((this.prevCols !== undefined && this.prevCols !== currentCols) ||
+        (this.prevRows !== undefined && this.prevRows !== currentRows)) {
       this.clear();
     }
     this.prevCols = currentCols;
+    this.prevRows = currentRows;
 
     const next = lines.map(line => truncate(line, currentCols));
     // Rows physically occupied by the prior frame — or recorded by reset() when the
@@ -61,7 +65,7 @@ export class Renderer {
     let cursorRow = 0;
     let out = "";
 
-    if (this.reserve && next.length > occupied && next.length <= Math.max(1, size().rows)) {
+    if (this.reserve && next.length > occupied && next.length <= Math.max(1, currentRows)) {
       // The cursor rests on the frame's first row (the anchor). Walk to the last
       // currently-occupied row, emit one newline per missing row (scrolling the
       // viewport when at the bottom margin), then hop back up to the — possibly

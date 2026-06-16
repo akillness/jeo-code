@@ -265,3 +265,38 @@ test("Renderer insertAbove eagerly EL-clears the old frame's uncovered rows (no 
   // the flushed ledger/card lines above (the truncated-card corruption).
   expect(repaint.split(clearLine()).length - 1).toBe(2);
 });
+
+test("Renderer clears on column or row changes", () => {
+  const out: string[] = [];
+  let currentCols = 40;
+  const r = new Renderer(s => out.push(s), () => currentCols);
+
+  r.render(["a", "b"]);
+  out.length = 0;
+
+  // Render with same dimensions -> no clear
+  r.render(["a", "b"]);
+  expect(out.join("")).not.toContain("\x1b[0J");
+  out.length = 0;
+
+  // Change columns -> should clear
+  currentCols = 50;
+  r.render(["a", "b"]);
+  expect(out.join("")).toContain("\x1b[0J");
+  out.length = 0;
+
+  // Change rows -> should clear
+  // We mock size() or process.stdout.rows. Let's temporarily mock process.stdout.rows
+  const originalRows = process.stdout.rows;
+  try {
+    process.stdout.rows = 24;
+    r.render(["a", "b"]);
+    out.length = 0;
+
+    process.stdout.rows = 30;
+    r.render(["a", "b"]);
+    expect(out.join("")).toContain("\x1b[0J");
+  } finally {
+    process.stdout.rows = originalRows;
+  }
+});

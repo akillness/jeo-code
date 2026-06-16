@@ -11,7 +11,7 @@ import type { OAuthController, OAuthCredentials } from "./types";
 import { generateState } from "./pkce";
 
 const DEFAULT_TIMEOUT_MS = 300_000;
-const DEFAULT_HOSTNAME = "127.0.0.1";
+const DEFAULT_HOSTNAME = "localhost";
 const DEFAULT_CALLBACK_PATH = "/callback";
 
 export interface OAuthCallbackFlowOptions {

@@ -46,7 +46,10 @@ test("box borders with unicode: false", () => {
 
 test("every line has equal visible width", () => {
   const cols = 80;
-  const W = Math.min(100, cols - 2); // 78
+  const grandWidth = 36; // DNA_CLAW_ART_GRAND width
+  const titleWidth = 3 + ` jeo v1.2.3 · JEO forge `.length;
+  const naturalInner = Math.max(grandWidth + 12, titleWidth + 2);
+  const W = Math.min(cols - 2, naturalInner + 2);
   const lines = renderWelcome({
     version: "1.2.3",
     model: "claude-3-5-sonnet",
@@ -133,7 +136,10 @@ test("workspace / session details no longer render inside the hero box (gjc pari
 test("an overlong model pill truncates instead of breaking the border", () => {
   const model = "antigravity/gemini-3.1-pro-extremely-long-model-identifier-overflowing";
   const cols = 60;
-  const W = Math.min(100, cols - 2);
+  const grandWidth = 36;
+  const titleWidth = 3 + ` jeo v1.2.3 · JEO forge `.length;
+  const naturalInner = Math.max(grandWidth + 12, titleWidth + 2);
+  const W = Math.min(cols - 2, naturalInner + 2);
   const lines = renderWelcome({
     version: "1.2.3",
     model,
@@ -170,6 +176,19 @@ test("narrow cols (<30) -> single-line fallback", () => {
   });
 
   expect(lines).toEqual(["jeo v1.2.3 · claude-3-5-sonnet"]);
+});
+
+test("wide terminals keep the banner at its natural hero width; narrow ones shrink it", () => {
+  const stripW = (cols: number) =>
+    stripAnsi(renderWelcome({ version: "1.2.3", model: "m", cols, unicode: true, color: false })[0]!).length;
+  // At/above the natural hero width the box does NOT stretch with the terminal —
+  // proportions are preserved instead of leaving the claw floating in whitespace.
+  expect(stripW(200)).toBe(stripW(120));
+  expect(stripW(120)).toBe(stripW(54));
+  expect(stripW(200)).toBeLessThan(100);
+  // Below the natural width it shrinks proportionally with the terminal.
+  expect(stripW(44)).toBe(42);
+  expect(stripW(44)).toBeLessThan(stripW(200));
 });
 
 test("color:false emits no ANSI", () => {

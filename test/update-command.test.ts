@@ -344,3 +344,30 @@ test("update - --help", async () => {
   expect(logged.some(line => line.includes("Usage: jeo update"))).toBe(true);
   expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true);
 });
+
+// Post-install verification: a successful install that leaves an OLDER binary on PATH
+// (bun-vs-npm / PATH mismatch) must warn loudly instead of looking like a silent no-op.
+test("update: warns when install succeeds but the active jeo on PATH is still old", async () => {
+  const deps: UpdateDeps = {
+    localVersion: () => "0.5.13",
+    fetchJson: async () => ({ version: "0.5.16" }),
+    install: async () => ({ success: true }),
+    activeVersion: () => "0.5.13", // PATH still points at the old binary
+  };
+  await runUpdateCommandWith([], deps);
+  expect(logged.some(l => l.includes("Successfully installed jeo-code@0.5.16"))).toBe(true);
+  expect(warned.some(l => l.includes("still reports 0.5.13"))).toBe(true);
+  expect(warned.some(l => l.includes("jeo-code@0.5.16"))).toBe(true);
+});
+
+test("update: no PATH warning when the active jeo matches the installed version", async () => {
+  const deps: UpdateDeps = {
+    localVersion: () => "0.5.13",
+    fetchJson: async () => ({ version: "0.5.16" }),
+    install: async () => ({ success: true }),
+    activeVersion: () => "0.5.16",
+  };
+  await runUpdateCommandWith([], deps);
+  expect(logged.some(l => l.includes("Successfully installed jeo-code@0.5.16"))).toBe(true);
+  expect(warned.some(l => l.includes("still reports"))).toBe(false);
+});

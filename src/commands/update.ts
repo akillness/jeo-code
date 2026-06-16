@@ -38,6 +38,9 @@ export interface UpdateDeps {
   install: (version?: string) => Promise<{ success: boolean; stdout?: string; stderr?: string }>;
   /** Display release notes after a successful self-update (best-effort, no-op in tests). */
   showWhatsNew?: () => void;
+  /** Version of the `jeo` actually on PATH, read after install to catch a silent no-op
+   *  (installed but PATH still points at a different/older binary). Optional in tests. */
+  activeVersion?: () => string | null;
 }
 
 export const defaultDeps: UpdateDeps = {
@@ -59,15 +62,41 @@ export const defaultDeps: UpdateDeps = {
     return pkg.version;
   },
   install: async (version?: string) => {
-    // Self-update the global install. jeo runs on Bun (see the `#!/usr/bin/env bun`
-    // shebang), so Bun is always present; `@<version>` (default `latest`) forces the
-    // newest publish even if a stale global is cached.
+    // Self-update the global install via the SAME toolchain it was installed with. jeo
+    // ships as a `#!/usr/bin/env bun` script so bun is the common case, but npm-installed
+    // globals exist too — try bun first, fall back to npm (and tolerate either missing).
+    // `@<version>` (the resolved latest) forces the newest publish past a stale global cache.
     const target = `jeo-code@${version ?? "latest"}`;
-    const proc = Bun.spawnSync(["bun", "install", "-g", target], {
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    return { success: proc.success };
+    const managers: string[][] = [
+      ["bun", "install", "-g", target],
+      ["npm", "install", "-g", target],
+    ];
+    let lastErr = "";
+    for (const cmd of managers) {
+      try {
+        const proc = Bun.spawnSync(cmd, { stdout: "inherit", stderr: "inherit" });
+        if (proc.success) return { success: true };
+        lastErr = `${cmd[0]} exited with code ${proc.exitCode}`;
+      } catch (err: any) {
+        lastErr = `${cmd[0]} unavailable: ${err?.message ?? String(err)}`;
+      }
+    }
+    return { success: false, stderr: lastErr };
+  }
+,
+  activeVersion: () => {
+    // Read the version of the `jeo` actually on PATH (may differ from this process's bundled
+    // version after a self-update, e.g. when bun installed to ~/.bun/bin but PATH prefers an
+    // npm global). Used to detect a silent "installed but PATH unchanged" no-op.
+    try {
+      const proc = Bun.spawnSync(["jeo", "--version"], { stdout: "pipe", stderr: "pipe" });
+      if (!proc.success) return null;
+      const out = new TextDecoder().decode(proc.stdout);
+      const m = out.match(/(\d+\.\d+\.\d+(?:-[\w.]+)?)/);
+      return m ? m[1] : null;
+    } catch {
+      return null;
+    }
   }
   ,
   showWhatsNew: () => {
@@ -193,6 +222,16 @@ export async function runUpdateCommandWith(args: string[], deps: UpdateDeps): Pr
             }));
           } else {
             console.log(`Successfully installed jeo-code@${latest}`);
+            // Verify the `jeo` on PATH actually picked up the new install — a bun-vs-npm or
+            // PATH mismatch can leave an older binary in front, which looks like "update did
+            // nothing". Surface that loudly with the manual fix instead of failing silently.
+            const active = deps.activeVersion?.();
+            if (active && latest && compareVersions(active, latest) < 0) {
+              console.warn(`Warning: installed ${latest}, but the active 'jeo' on PATH still reports ${active}.`);
+              console.warn(`Your PATH points at a different install. Fix it with one of:`);
+              console.warn(`  npm install -g jeo-code@${latest}`);
+              console.warn(`  bun install -g jeo-code@${latest}`);
+            }
             deps.showWhatsNew?.();
           }
         } else {

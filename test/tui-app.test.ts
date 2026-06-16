@@ -59,7 +59,8 @@ test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll
   expect(tail).not.toContain(leaveAltScreen()); // never entered, never left
   expect(tail).toContain(showCursor());
   // Final summary still printed with clear-to-EOL per line + clear-below hygiene…
-  expect(tail).toContain("jeo> ok");
+  expect(tail).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // gjc-style agent name label leads the reply
+  expect(tail).toContain("ok"); // reply printed statically (no `jeo>` prefix)
   expect(tail).toContain("\x1b[K");
   expect(tail).toContain("\x1b[0J");
   // …but WITHOUT re-printing the ledger lines already flushed into scrollback live.
@@ -91,7 +92,8 @@ test("LaunchTui: JEO_TUI_ALT_SCREEN=1 opts back into the legacy alternate-screen
     // screen, with clear-to-EOL per line + clear-below so stale pre-turn rows (old
     // footer box, context lines) never merge into the summary or leave a torn box.
     const afterLeave = tail.slice(tail.indexOf(leaveAltScreen()));
-    expect(afterLeave).toContain("jeo> ok");
+    expect(afterLeave).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // gjc-style agent name label
+    expect(afterLeave).toContain("ok");
     expect(afterLeave).toContain("\x1b[K");
     expect(afterLeave).toContain("\x1b[0J");
   } finally {
@@ -363,7 +365,8 @@ test("LaunchTui: live region renders tool list + footer, finish collapses to sta
   }
 
   const finalText = logged.join("\n");
-  expect(finalText).toContain("jeo> all done"); // reply printed statically
+  expect(finalText).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // gjc-style agent name label leads the reply
+  expect(finalText).toContain("all done"); // reply printed statically
   expect(finalText).toContain("write"); // tool summary retained
   const tail = out.join("");
   expect(tail).toContain(showCursor()); // cursor restored
@@ -567,7 +570,7 @@ test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result i
   expect(txt).toMatch(/(└─|`-) EXECUTOR done: completed in 4 steps: guard added/); // result summary
 });
 
-test("LaunchTui: native reasoning stream drives the dimmed thinking state and is ephemeral (cleared on commit, never flushed)", () => {
+test("LaunchTui: native reasoning stream drives the dimmed thinking state and persists as a Thinking block on commit", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
   tui.start();
@@ -576,8 +579,8 @@ test("LaunchTui: native reasoning stream drives the dimmed thinking state and is
   ev.onStep!(1);
   ev.onReasoningStream!("weighing two approaches to the cap");
   expect(internals.streamingThought).toContain("weighing two approaches");
-  // Committing to a tool clears the ephemeral native thought (unlike the JSON reasoning
-  // field, the raw thought trace is NOT flushed un-dimmed into scrollback).
+  // Committing to a tool flushes the native thought into scrollback as a "Thinking" block
+  // (gjc "think → answer" parity) and clears the transient live state.
   ev.onAssistant!("{}", { tool: "read", arguments: { filePath: "x.ts" } });
   expect(internals.streamingThought).toBe("");
   clearInterval(internals.timer);
@@ -586,7 +589,9 @@ test("LaunchTui: native reasoning stream drives the dimmed thinking state and is
   const origLog = console.log;
   console.log = (...a: unknown[]) => logged.push(a.join(" "));
   try { tui.finish("done"); } finally { console.log = origLog; }
-  expect(logged.join("\n")).not.toContain("weighing two approaches");
+  const txt = logged.join("\n");
+  expect(txt).toMatch(/(^|\n)(\x1b\[[0-9;]*m)*jeo\b/m); // grouped under the gjc-style `jeo` label
+  expect(txt).toContain("weighing two approaches");
 });
 
 test("LaunchTui: onToolResult flushes a gjc-style glyph-led ledger line for the target", () => {

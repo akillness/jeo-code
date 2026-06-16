@@ -19,8 +19,9 @@ import { formatForgeBox } from "../tui/components/forge";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
-import { matchSlash, isSlashAttempt, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, tabCompleteSelection, type SlashCommandInfo } from "../tui/components/slash";
+import { matchSlash, isSlashAttempt, suggestSlashCommands, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, tabCompleteSelection, type SlashCommandInfo } from "../tui/components/slash";
 import { staticCompletionContext, readlineCompleter, formatCompletionPreview, tokenize, type CompletionContext } from "../tui/components/autocomplete";
+import { normalizeBaseUrl } from "./setup-helpers";
 import { EVOLUTION_STAGES, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
 import { renderWelcome, playWelcomeSweep } from "../tui/components/welcome";
@@ -37,6 +38,7 @@ import { readGlobalConfig, saveConfigPatch } from "../agent/state";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
 import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
+import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
 
 import { listAliases } from "../ai/model-registry";
 
@@ -45,7 +47,6 @@ import { SelectList, renderSelectList, type SelectItem } from "../tui/components
 import {
   formatModelLine,
   formatProviderPanel,
-  emitLoginCleanup,
   formatAgentsPanel,
   formatAgentDetail,
   formatConfigPanel,
@@ -56,7 +57,7 @@ import {
 } from "../tui/components/config-panel";
 import { liveModelPicker, renderLiveModelPicker, type ModelAssignmentBadge } from "../tui/components/live-model-picker";
 
-import { providerPicker, renderProviderPicker, buildProviderChoices } from "../tui/components/provider-picker";
+import { providerPicker, renderProviderPicker } from "../tui/components/provider-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff, sanitizeForTerminal } from "../tui/components/code-view";
 import { categoryBadge } from "../tui/components/category-index";
 import { renderInputFrame } from "../tui/components/input-box";
@@ -1549,14 +1550,48 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         // Todos checklist used to end a finished turn stuck at "✓0 ◐1 ·4 / 5"
         // because nothing ever forced the model to update item statuses).
         let turnTodos: { title: string; status: string }[] = [];
-        const onBeforeDone = (): string | null => {
+        const onBeforeDone = async (reason: string): Promise<string | null> => {
           const unfinished = turnTodos.filter(t => t.status !== "done");
-          if (turnTodos.length === 0 || unfinished.length === 0) return null;
-          return (
-            `Your todo list still shows ${unfinished.length} unfinished item(s): ${unfinished.map(t => `"${t.title}"`).join(", ")}. ` +
-            `Reconcile the plan first — call the todo tool resending the FULL list with every actually-completed item marked "done" ` +
-            `(drop items that no longer apply), then call done again.`
-          );
+          if (turnTodos.length > 0 && unfinished.length > 0) {
+            return (
+              `Your todo list still shows ${unfinished.length} unfinished item(s): ${unfinished.map(t => `"${t.title}"`).join(", ")}. ` +
+              `Reconcile the plan first — call the todo tool resending the FULL list with every actually-completed item marked "done" ` +
+              `(drop items that no longer apply), then call done again.`
+            );
+          }
+
+          const goalState = await readGoalState(cwd);
+          if (goalState && goalState.condition) {
+            const reBlockCount = goalState.verdicts.filter(v => v.verdict === "NOT_MET" || v.verdict === "IMPOSSIBLE").length;
+            const MAX_RE_BLOCKS = 2;
+
+            if (reBlockCount >= MAX_RE_BLOCKS) {
+              if (tui) tui.events().onNotice?.(`[Goal Verifier] Re-block cap of ${MAX_RE_BLOCKS} reached. Auto-allowing done.`);
+              else console.log(`[Goal Verifier] Re-block cap of ${MAX_RE_BLOCKS} reached. Auto-allowing done.`);
+              return null;
+            }
+
+            if (tui) tui.events().onNotice?.("[Goal Verifier] Running goal verification...");
+            const verdict = await verifyGoal(goalState.condition, history, sessionModel);
+
+            goalState.verdicts.push({
+              at: Date.now(),
+              verdict: verdict.verdict,
+              gap: verdict.reason,
+            });
+            await writeGoalState(goalState, cwd);
+
+            if (verdict.verdict === "NOT_MET" || verdict.verdict === "IMPOSSIBLE") {
+              const prefix = verdict.verdict === "IMPOSSIBLE" ? "[IMPOSSIBLE] " : "";
+              return (
+                `Goal verifier check failed: The goal "${goalState.condition}" is not yet met.\n` +
+                `Reason: ${prefix}${verdict.reason}\n` +
+                `Please address the remaining gaps and call done again.`
+              );
+            }
+          }
+
+          return null;
         };
         const fullTools = {
           ...DEFAULT_TOOLS,
@@ -3567,6 +3602,32 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         continue;
       }
+      if (input === "/goal" || input.startsWith("/goal ")) {
+        const arg = input.substring(5).trim();
+        if (!arg) {
+          const current = await readGoalState(cwd);
+          if (current) {
+            console.log(`Current goal: "${current.condition}" (set at ${new Date(current.setAt).toLocaleTimeString()})`);
+          } else {
+            console.log("Usage: /goal <condition>   (set a natural language stop condition for the session)");
+            console.log("       /goal clear         (clear the current goal)");
+          }
+          continue;
+        }
+        if (arg === "clear" || arg === "none") {
+          await clearGoalState(cwd);
+          console.log("Goal cleared.");
+          continue;
+        }
+        const state = {
+          condition: arg,
+          setAt: Date.now(),
+          verdicts: [],
+        };
+        await writeGoalState(state, cwd);
+        console.log(`Goal set to: "${arg}"`);
+        continue;
+      }
       // ---- gjc-parity inspection commands ------------------------------------
       if (input === "/usage") {
         const total = sessionUsage.inputTokens + sessionUsage.outputTokens;
@@ -3651,7 +3712,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       if (input.startsWith("/provider") && (input === "/provider" || input[9] === " ")) {
         const tokens = input.substring(9).trim().split(/\s+/).filter(Boolean);
-        let name = (tokens[0] ?? "").toLowerCase();
+        const name = (tokens[0] ?? "").toLowerCase();
         const explicitModel = tokens[1];
         // `/provider login|auth [name]` → run OAuth login from the REPL.
         if (name === "login" || name === "auth") {
@@ -3680,61 +3741,78 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`Starting OAuth login for ${target}…`);
           try {
             const { email } = await interactiveOAuthLogin(target as AuthProvider, rl);
-            // Tidy back to the initial query-input screen: the OAuth flow printed
-            // browser prompts / "waiting…" lines that clutter scrollback. Clear the
-            // screen + scrollback and re-render the welcome (same path as /clear),
-            // then a single concise confirmation. lastPickIndex is still seeded so
-            // `/model #N` works; the verbose live-model dump is dropped (it cluttered).
+            console.log(`[SUCCESS] OAuth login complete for ${target}${email ? ` (${email})` : ""}. Tokens saved to ~/.jeo/config.json.`);
             const live = await refreshLiveModelsCache();
             const after = (await describeAllProviders()).find(s => s.name === target);
+            if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
             const forProvider = live.filter(r => r.provider === target);
-            if (forProvider.some(r => r.ok && r.models.length > 0)) lastPickIndex = flattenModels(forProvider);
-            // Tidy back to the initial query-input screen: the OAuth flow printed
-            // browser prompts / "waiting…" lines that clutter scrollback. emitLoginCleanup
-            // clears + re-renders the welcome (same path as /clear) then prints one
-            // confirmation; the verbose live-model dump is dropped (lastPickIndex is
-            // still seeded so /model #N works). Orchestration is unit-tested.
-            emitLoginCleanup(
-              {
-                clear: () => { disarmPreview(); process.stdout.write("\x1b[2J\x1b[3J\x1b[H"); },
-                write: line => console.log(line),
-              },
-              {
-                isTty: process.stdout.isTTY === true,
-                provider: target,
-                email,
-                ready: after?.ready ?? false,
-                label: after?.label,
-                welcomeLines: renderWelcome(welcomeData),
-              },
-            );
+            if (forProvider.some(r => r.ok && r.models.length > 0)) {
+              lastPickIndex = flattenModels(forProvider);
+              const viaCatalog = forProvider.some(r => r.fallback);
+              console.log(`  ${viaCatalog ? "catalog" : "live"} ${target} models → /model #N or /provider ${target} #N${viaCatalog ? "  (live list endpoint rejected this token; showing known models)" : ""}`);
+              logLines(formatPickListWithCapabilities(lastPickIndex, { cap: 12 }));
+            } else {
+              const failed = forProvider.find(r => !r.ok);
+              if (failed?.error) console.log(`  live ${target} models unavailable: ${failed.error}`);
+            }
           } catch (err) {
             console.log(`[FAILED] ${(err as Error).message} — or set ${target.toUpperCase()}_API_KEY.`);
+          }
+          continue;
+        }
+        // `/provider add <base-url> [model]` → register an OpenAI-compatible endpoint
+        // (sets openaiBaseUrl) and refresh the live model list, without leaving the REPL.
+        // gjc parity for `/provider add`. `/provider add clear` removes it.
+        if (name === "add") {
+          const rawUrl = tokens[1];
+          if (!rawUrl) {
+            const cur = (await readGlobalConfig()).openaiBaseUrl;
+            console.log(cur ? `OpenAI-compatible base URL: ${cur}` : "No OpenAI-compatible base URL set.");
+            console.log("Set one with: /provider add <url> [model]   ·   clear with: /provider add clear");
+            continue;
+          }
+          if (rawUrl.toLowerCase() === "clear") {
+            await saveConfigPatch(() => ({ openaiBaseUrl: undefined }));
+            await refreshLiveModelsCache();
+            console.log("OpenAI-compatible base URL cleared — saved to ~/.jeo/config.json.");
+            continue;
+          }
+          const url = normalizeBaseUrl(rawUrl, "");
+          if (!url) {
+            console.log("Provide a base URL, e.g. /provider add http://localhost:1234/v1");
+            continue;
+          }
+          await saveConfigPatch(() => ({ openaiBaseUrl: url }));
+          const modelArg = tokens[2];
+          if (modelArg) {
+            const qualified = qualifyModelId(modelArg, "openai");
+            sessionModel = qualified;
+            await saveConfigPatch(raw => rememberModelPatch(raw, qualified));
+            console.log(`OpenAI-compatible endpoint set: ${url} · default model ${qualified} — saved to ~/.jeo/config.json.`);
+          } else {
+            console.log(`OpenAI-compatible endpoint set: ${url} — saved to ~/.jeo/config.json.`);
+          }
+          const live = await refreshLiveModelsCache();
+          const forProvider = live.filter(r => r.provider === "openai");
+          const pick = flattenModels(forProvider);
+          if (pick.length) {
+            lastPickIndex = pick;
+            console.log("Discovered models at this endpoint — select with /model #N or /provider openai #N:");
+            logLines(formatPickListWithCapabilities(pick, { cap: 12 }));
+          } else {
+            const failed = forProvider.find(r => !r.ok);
+            console.log(failed?.error ? `  could not list models: ${failed.error}` : "  no models discovered yet — the endpoint may need a key (set OPENAI_API_KEY).");
           }
           continue;
         }
         const cfgNow = await readGlobalConfig();
         const statuses = await describeAllProviders(cfgNow);
         if (!name) {
-          if (process.stdin.isTTY && process.stdout.isTTY) {
-            // gjc-style interactive picker (grouped ready / needs-setup, current marked)
-            // instead of a static text dump — arrows + Enter switch, Esc cancels.
-            const current = (await describeModel(sessionModel || cfgNow.defaultModel, cfgNow)).provider;
-            const items = buildProviderChoices(statuses, true, current).map(c => ({
-              value: c.value as string,
-              label: c.label,
-              hint: c.hint,
-              group: c.group,
-            }));
-            const picked = await pickFromOptions("Select a provider  ↑↓ move · Enter switch · Esc cancel", items);
-            if (!picked) { console.log("(switch cancelled)"); continue; }
-            name = picked.toLowerCase(); // fall through to the switch logic below
-          } else {
-            console.log("Providers (credential · base URL):");
-            logLines(formatProviderPanel(statuses));
-            console.log("Switch with: /provider <name> [model]  ·  choose models: /model");
-            continue;
-          }
+          console.log("Providers (credential · base URL):");
+          logLines(formatProviderPanel(statuses));
+          console.log("Switch with: /provider <name> [model]  ·  arrows+Enter picker: /provider <name>  ·  choose models: /model");
+          console.log("OAuth: /provider login [name]  ·  OpenAI-compatible endpoint: /provider add <url> [model]");
+          continue;
         }
         if (!isProviderName(name)) {
           console.log(`Unknown provider '${name}'. Known: ${statuses.map(s => s.name).join(", ")}.`);
@@ -4469,7 +4547,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (m.length) {
           for (const line of formatSlashCommandList(input, skillSlashDetails)) console.log(line);
         } else {
-          console.log(`Unknown command '${input}'. Try /help.`);
+          const cmds = [...completionContext().slashCommands];
+          const near = suggestSlashCommands(input, cmds);
+          console.log(near.length ? `Unknown command '${input}'. Did you mean ${near.join(", ")}?` : `Unknown command '${input}'. Try /help.`);
         }
         continue;
       }

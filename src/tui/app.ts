@@ -216,14 +216,17 @@ export class LaunchTui {
   // the model responds, then flushed once into scrollback as a `jeo · …` ledger line.
   private streamingReasoning = "";
   /** Native model thinking text (separate reasoning channel), shown DIMMED while it
-   *  streams and cleared on commit — ephemeral, never flushed (the durable record is the
-   *  action/reply the thinking produced). */
+   *  streams, then persisted once into scrollback as a "Thinking" block on commit so the
+   *  model's reasoning stays visible above the answer (gjc "think → answer" parity). */
   private streamingThought = "";
   /** Uniform live-activity text for the live status field (reasoning OR derived fallback). */
   private streamingActivity = "";
   /** Last stream-driven draw (ms epoch) — throttles per-delta repaints to ≤10/s. */
   private lastStreamDraw = 0;
   private flushedReasoning = "";
+  // Native thinking text already persisted into scrollback this step (gjc parity: the
+  // model's reasoning stays VISIBLE above the answer instead of vanishing on commit).
+  private flushedThought = "";
   // Live streaming output of the currently-running tool (bash stdout via onToolProgress).
   // Shown as a DIMMED bounded block while the tool runs; cleared when the formatted
   // result card lands (onToolResult) — the gjc-style "shaded until complete" effect.
@@ -373,6 +376,7 @@ export class LaunchTui {
         this.streamingThought = "";
         this.streamingActivity = "";
         this.flushedReasoning = "";
+        this.flushedThought = "";
         this.liveToolOutput = ""; // fresh step: no tool output yet
         this.currentStepStartedAt = Date.now();
         this.spinner.updateStep(step, this.footer.maxSteps);
@@ -407,9 +411,9 @@ export class LaunchTui {
       },
       onReasoningStream: textSoFar => {
         if (this.finished) return;
-        // Native thinking deltas → the SAME transient dimmed block as the JSON-reasoning
-        // path (reuses the screen-safe tail renderer; no new frame structure). Ephemeral:
-        // cleared on commit, never flushed into scrollback.
+        // Native thinking deltas → the SAME live dimmed block as the JSON-reasoning path
+        // (reuses the screen-safe tail renderer; no new frame structure). On commit it is
+        // persisted into scrollback as a "Thinking" block (see onAssistant).
         if (textSoFar === this.streamingThought) return;
         this.streamingThought = textSoFar;
         if (Date.now() - this.lastStreamDraw >= 100) {
@@ -420,22 +424,28 @@ export class LaunchTui {
       onAssistant: (_raw, invocation) => {
         this.thinking = false; // model replied; now dispatching the tool
         this.retryNotice = null; // the call got through — clear any backoff notice
-        // Flush the streamed reasoning once into scrollback as a jeo-ref reasoning
-        // block — a muted "Reasoning" divider header, the prose below it (the durable
-        // record) — then stop showing the transient live reasoning row.
-        if (this.streamingReasoning && this.streamingReasoning !== this.flushedReasoning) {
-          this.flushedReasoning = this.streamingReasoning;
-          // A muted "Reasoning" card-header divider announces the reasoning block
-          // boundary (consistent with the section design tokens — Thinking/Reasoning/
-          // Output share one visual language); the prose below it is the durable record.
-          // A full-width divider ROW respects appendLedger's 1-line=1-row pre-wrap
-          // invariant (no per-line prefix), unlike a left-border enclosure which would
-          // push wrapped lines past `cols` and tear the frame.
-          const header = sectionLabel("Reasoning", Math.max(20, size().cols), {
-            color: this.theme.color,
-            unicode: this.unicode,
-          });
-          this.appendLedger(`${header}\n${this.streamingReasoning}\n`, "reasoning");
+        // Persist the model's pre-answer thought into scrollback (gjc parity: "think →
+        // answer" reads visibly instead of vanishing on commit). gjc layout: a single
+        // `jeo` agent-name label leads the segment, then the thought as ITALIC + dimmed
+        // prose (subordinate to the reply) — native reasoning first, then the JSON-protocol
+        // plan, both grouped under the one label (no per-block divider header).
+        const willFlushThought = !!this.streamingThought && this.streamingThought !== this.flushedThought;
+        const willFlushReasoning = !!this.streamingReasoning && this.streamingReasoning !== this.flushedReasoning;
+        if (willFlushThought || willFlushReasoning) {
+          const styleThought = this.theme.color
+            ? (s: string) => chalk.italic(mutedPaint(this.theme)(s))
+            : (s: string) => s;
+          const style = (prose: string) => prose.split("\n").map(styleThought).join("\n");
+          const parts: string[] = [this.agentLabel()];
+          if (willFlushThought) {
+            this.flushedThought = this.streamingThought;
+            parts.push(style(this.streamingThought));
+          }
+          if (willFlushReasoning) {
+            this.flushedReasoning = this.streamingReasoning;
+            parts.push(style(this.streamingReasoning));
+          }
+          this.appendLedger(`${parts.join("\n")}\n`, "reasoning");
         }
         this.streamingReasoning = "";
         this.streamingThought = "";
@@ -949,6 +959,12 @@ export class LaunchTui {
     }, 40);
   };
 
+  /** gjc-style agent identity: a bold accent `jeo` name label on its own line that leads
+   *  every assistant segment — thought blocks (onAssistant) and the final reply (finish). */
+  private agentLabel(): string {
+    return this.theme.color ? chalk.bold(accentPaint(this.theme)("jeo")) : "jeo";
+  }
+
   /** Collapse the live region to static final output. */
   finish(reply: string): void {
     this.finished = true;
@@ -1022,6 +1038,9 @@ export class LaunchTui {
     const renderedReply = this.theme.color
       ? renderMarkdownAnsi(tabled, { accent: s => chalk.bold(accentPaint(this.theme)(s)), muted: mutedPaint(this.theme) })
       : stripMarkdown(tabled);
+    // gjc-style agent identity: a bold accent `jeo` label on its OWN line leads the reply
+    // (mirrors gjc's `gajae` header), instead of an inline `jeo>` prompt prefix.
+    const nameLabel = this.agentLabel();
     const steps = this.footer.step || 0;
     const peak = this.progress.current();
     const usageSuffix = this.turnUsage ? ` · ${formatUsage(this.turnUsage)}` : "";
@@ -1031,7 +1050,8 @@ export class LaunchTui {
       // track). The live ledger above already recorded every step. A blank spacer
       // row separates the ledger from the answer (jeo-ref vertical rhythm).
       finalLines.push("");
-      finalLines.push(`jeo> ${renderedReply}`);
+      finalLines.push(nameLabel);
+      finalLines.push(renderedReply);
       if (planLines.length) {
         finalLines.push("");
         finalLines.push(...planLines);
@@ -1040,7 +1060,8 @@ export class LaunchTui {
       finalLines.push(this.theme.color ? chalk.dim(statusLine) : statusLine);
     } else {
       finalLines.push(`Evolved to: ${evolutionTrack(peak, { unicode: this.unicode, color: this.theme.color })} (took ${steps} steps in ${formatDuration(Date.now() - this.startedAt)}${usageSuffix})`);
-      finalLines.push(`jeo> ${renderedReply}`);
+      finalLines.push(nameLabel);
+      finalLines.push(renderedReply);
       if (planLines.length) {
         finalLines.push(...planLines);
       }

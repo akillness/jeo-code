@@ -1,5 +1,6 @@
 /** Slash-command palette/autocomplete for the interactive REPL (TUI M3). */
 import chalk from "chalk";
+import { editDistance } from "../../ai/model-catalog-compat";
 
 /** Order-preserving subsequence test: every char of `needle` appears in `hay`
  *  left-to-right (gjc-style fuzzy match, e.g. "expt" ⊑ "export"). */
@@ -33,9 +34,10 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/dump", usage: "/dump", description: "Copy the session transcript to the clipboard", group: "session" },
   { command: "/btw", usage: "/btw <question>", description: "Ask an ephemeral side question (history untouched)", group: "session" },
   { command: "/compact", usage: "/compact", description: "Summarize older turns to free context", group: "session" },
+  { command: "/goal", usage: "/goal <condition>", description: "Set a natural language stop condition for the session", group: "session" },
   { command: "/model", usage: "/model [id|#N|save|thinking <level>|subagent <role> <model|#N|thinking L>]", description: "Show/switch model; picker can apply to default or any subagent role and set thinking", group: "models" },
   { command: "/fast", usage: "/fast [on|off|status]", description: "Toggle fast thinking mode when the active model supports it", group: "models" },
-  { command: "/provider", usage: "/provider [name] [model|#N]", description: "Credentials, switch provider, set model; `login <name>` starts OAuth", group: "models" },
+  { command: "/provider", usage: "/provider [name] [model|#N] | add <url> [model] | login [name]", description: "Credentials, switch provider, set model; `add <url>` registers an OpenAI-compatible endpoint; `login <name>` starts OAuth", group: "models" },
   { command: "/login", usage: "/login [provider]", description: "OAuth login (alias of /provider login)", group: "models" },
   { command: "/logout", usage: "/logout <anthropic|openai|gemini|antigravity>", description: "Remove the stored OAuth token for a provider", group: "models" },
   { command: "/roles", usage: "/roles [tier model]", description: "Show or set model role tiers (smol/slow/plan)", group: "models" },
@@ -87,6 +89,23 @@ export function isSlashAttempt(input: string): boolean {
   return input.startsWith("/") && !input.slice(1).includes(" ");
 }
 
+/** Near-miss slash commands for a true typo — edit distance ≤ 2 on the command body,
+ *  excluding the prefix/fuzzy hits `matchSlash` already surfaces. gjc parity for the
+ *  `/provicer` → `/provider` correction. Ranked closest-first and capped. */
+export function suggestSlashCommands(input: string, commands: string[] = SLASH_COMMANDS, limit = 3): string[] {
+  if (!input.startsWith("/")) return [];
+  const body = input.slice(1).toLowerCase();
+  if (body === "") return [];
+  const already = new Set(matchSlash(input, commands));
+  return commands
+    .filter(c => !already.has(c))
+    .map(c => ({ c, d: editDistance(body, c.slice(1).toLowerCase()) }))
+    .filter(s => s.d <= 2)
+    .sort((a, b) => a.d - b.d || a.c.localeCompare(b.c))
+    .slice(0, limit)
+    .map(s => s.c);
+}
+
 const GROUP_LABELS: Record<SlashCommandInfo["group"], string> = {
   session: "Session",
   models: "Models / Providers",
@@ -103,7 +122,11 @@ export function formatSlashCommandList(input = "/", extra: readonly SlashCommand
   const commands = details.map(c => c.command);
   const query = input === "/?" ? "/" : input;
   const matches = matchSlash(query, commands);
-  if (matches.length === 0) return [`Unknown command '${input}'. Try /help.`];
+  if (matches.length === 0) {
+    const near = suggestSlashCommands(query, commands);
+    const tail = near.length ? `Did you mean ${near.join(", ")}?` : "Try /help.";
+    return [`Unknown command '${input}'. ${tail}`];
+  }
   const wanted = new Set(matches);
   const rows = details.filter(c => wanted.has(c.command));
   const usageWidth = Math.max(...rows.map(c => c.usage.length), 6);

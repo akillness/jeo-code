@@ -1,0 +1,115 @@
+import { callLlm, type Message } from "./loop";
+
+export interface GoalVerdict {
+  verdict: "MET" | "NOT_MET" | "IMPOSSIBLE";
+  reason: string;
+}
+
+/**
+ * Verify if the user's goal has been met by analyzing the conversation history.
+ */
+export async function verifyGoal(
+  goal: string,
+  history: Message[],
+  model?: string
+): Promise<GoalVerdict> {
+  // Format the history messages into a readable transcript for the verifier
+  const transcript = history
+    .map((m) => {
+      if (m.role === "system") return ""; // skip system prompt to avoid clutter
+      const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+      return `[${m.role.toUpperCase()}]:\n${content}`;
+    })
+    .filter(Boolean)
+    .join("\n\n");
+
+  const systemPrompt = `You are an independent Goal Verifier. Your job is to analyze the conversation transcript and determine if the user's goal has been fully met.
+
+The user's goal is:
+"${goal}"
+
+Analyze the transcript carefully. Pay attention to:
+1. What the user requested.
+2. What actions the agent took (tool calls, file modifications, tests run).
+3. The final outcome and verification results.
+
+You must respond with a JSON object containing:
+{
+  "verdict": "MET" | "NOT_MET" | "IMPOSSIBLE",
+  "reason": "A detailed explanation of your verdict. If the verdict is NOT_MET, specify exactly what is missing or what needs to be done next."
+}
+
+Do not include any other text, markdown formatting, or code blocks. Output raw JSON only.`;
+
+  const userMessage = `Here is the conversation transcript:\n\n${transcript}\n\nAnalyze the transcript and provide your verdict.`;
+
+  try {
+    const response = await callLlm([
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage }
+    ], {
+      model,
+      jsonMode: true,
+      maxTokens: 1000
+    });
+
+    const parsed = JSON.parse(response.trim());
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      (parsed.verdict === "MET" || parsed.verdict === "NOT_MET" || parsed.verdict === "IMPOSSIBLE") &&
+      typeof parsed.reason === "string"
+    ) {
+      return {
+        verdict: parsed.verdict,
+        reason: parsed.reason
+      };
+    }
+    throw new Error("Invalid verdict format");
+  } catch (err) {
+    return {
+      verdict: "NOT_MET",
+      reason: `Goal verification failed to parse or execute: ${(err as Error).message}. Please verify the goal manually.`
+    };
+  }
+}
+ 
+
+export interface GoalState {
+  condition: string;
+  setAt: number;
+  verdicts: Array<{
+    at: number;
+    verdict: "MET" | "NOT_MET" | "IMPOSSIBLE";
+    gap?: string;
+  }>;
+}
+
+import * as path from "node:path";
+import * as fs from "node:fs/promises";
+import { getLocalJeoDir } from "./state";
+
+export function getGoalPath(cwd: string = process.cwd()): string {
+  return path.join(getLocalJeoDir(cwd), "state", "goal.json");
+}
+
+export async function readGoalState(cwd: string = process.cwd()): Promise<GoalState | null> {
+  const p = getGoalPath(cwd);
+  try {
+    const data = await fs.readFile(p, "utf-8");
+    return JSON.parse(data) as GoalState;
+  } catch {
+    return null;
+  }
+}
+
+export async function writeGoalState(state: GoalState, cwd: string = process.cwd()): Promise<void> {
+  const p = getGoalPath(cwd);
+  await fs.mkdir(path.dirname(p), { recursive: true });
+  await fs.writeFile(p, JSON.stringify(state, null, 2), "utf-8");
+}
+
+export async function clearGoalState(cwd: string = process.cwd()): Promise<void> {
+  const p = getGoalPath(cwd);
+  await fs.unlink(p).catch(() => {});
+}

@@ -570,3 +570,46 @@ test("DEFAULT_TOOLS exposes mkdir and delete", async () => {
   const del = await DEFAULT_TOOLS.delete({ path: "viatools", recursive: true }, dir);
   expect(del.success).toBe(true);
 });
+
+test("bashTool: an AbortSignal fired mid-run kills the child and returns an aborted result", async () => {
+  const ac = new AbortController();
+  // A unique marker so we can hunt for an orphaned child afterwards.
+  const marker = `jeo-abort-probe-${process.pid}-${Date.now()}`;
+  let streamed = 0;
+  const p = bashTool(
+    // Emit output (so onProgress fires) then sleep long enough to outlive the test.
+    `echo ${marker}; sleep 30`,
+    dir, 120_000, undefined, undefined,
+    () => { if (++streamed === 1) ac.abort(); },
+    ac.signal,
+  );
+  // Safety net: abort even if onProgress never fires before completion.
+  const safety = setTimeout(() => ac.abort(), 500);
+  const res = await p;
+  clearTimeout(safety);
+
+  expect(res.success).toBe(false);
+  expect(res.error).toBe("Command aborted");
+
+  // The child must have been reaped — no orphaned `sleep 30` carrying our marker.
+  // (pgrep matches the full command line including the marker echo.)
+  await new Promise(r => setTimeout(r, 200));
+  const hunt = await bashTool(`pgrep -fc ${marker} || true`, dir, 5_000);
+  // pgrep -fc would also match THIS pgrep invocation if the marker were in its own
+  // argv, so we additionally assert no detached sleeper survives by name+marker.
+  const strays = await bashTool(`pgrep -fl 'sleep 30' | grep ${marker} | wc -l | tr -d ' '`, dir, 5_000);
+  expect(strays.output.trim()).toBe("0");
+  void hunt;
+});
+
+test("bashTool: a pre-aborted signal returns immediately without leaving a child", async () => {
+  const ac = new AbortController();
+  ac.abort();
+  const marker = `jeo-preabort-${process.pid}-${Date.now()}`;
+  const res = await bashTool(`echo ${marker}; sleep 30`, dir, 120_000, undefined, undefined, undefined, ac.signal);
+  expect(res.success).toBe(false);
+  expect(res.error).toBe("Command aborted");
+  await new Promise(r => setTimeout(r, 200));
+  const strays = await bashTool(`pgrep -fl 'sleep 30' | grep ${marker} | wc -l | tr -d ' '`, dir, 5_000);
+  expect(strays.output.trim()).toBe("0");
+});

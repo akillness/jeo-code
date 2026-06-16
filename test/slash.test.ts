@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { matchSlash, isSlashAttempt, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, type SlashCommandInfo } from "../src/tui/components/slash";
+import { matchSlash, isSlashAttempt, suggestSlashCommands, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, type SlashCommandInfo } from "../src/tui/components/slash";
 
 test("matchSlash: prefix matches lead, fuzzy subsequence hits trail (case-insensitive)", () => {
   expect(matchSlash("/")).toEqual(SLASH_COMMANDS);
@@ -69,6 +69,22 @@ test("formatSlashCommandList lists all commands for bare slash and narrows by pr
 
 test("formatSlashCommandList returns an unknown hint for non-matches", () => {
   expect(formatSlashCommandList("/zzz")).toEqual(["Unknown command '/zzz'. Try /help."]);
+});
+
+test("suggestSlashCommands: a near-miss typo resolves to the closest command (gjc /provicer → /provider)", () => {
+  expect(suggestSlashCommands("/provicer")).toContain("/provider");
+  expect(suggestSlashCommands("/proivder")).toContain("/provider");
+  expect(suggestSlashCommands("/modle")).toContain("/model");
+});
+
+test("suggestSlashCommands: no suggestion for far-off input or exact/prefix hits", () => {
+  expect(suggestSlashCommands("/zzz")).toEqual([]);
+  // exact + prefix hits are surfaced by matchSlash, so they are excluded here
+  expect(suggestSlashCommands("/model")).not.toContain("/model");
+});
+
+test("formatSlashCommandList suggests the nearest command for a typo", () => {
+  expect(formatSlashCommandList("/provicer")).toEqual(["Unknown command '/provicer'. Did you mean /provider?"]);
 });
 
 test("formatSlashPreview: live preview for a slash keyword prefix", () => {

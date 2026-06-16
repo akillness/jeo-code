@@ -594,6 +594,7 @@ export async function bashTool(
   subdir?: string,
   env?: Record<string, string>,
   onProgress?: (partialOutput: string) => void,
+  signal?: AbortSignal,
 ): Promise<ToolResult> {
   if (jeoEnv("BASH_FIXUPS") === "1") {
     const fx = applyBashFixups(command);
@@ -618,6 +619,7 @@ export async function bashTool(
     });
 
     let timedOut = false;
+    let aborted = false;
     const TIMEOUT_MS = timeoutMs;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => {
@@ -626,27 +628,82 @@ export async function bashTool(
       try { proc.kill(); } catch {}
       killTimer = setTimeout(() => { try { proc.kill(9); } catch {} }, 3_000);
     }, TIMEOUT_MS);
-
-    // Stream stdout incrementally when a progress sink is attached (drives the live
-    // DIMMED bash output view); read stderr fully in parallel. Without a sink, fall
-    // back to a single post-exit read (identical content, no streaming overhead).
-    const stderrPromise = new Response(proc.stderr).text();
-    let stdout = "";
-    if (onProgress) {
-      const decoder = new TextDecoder();
-      let lastEmit = 0;
-      for await (const chunk of proc.stdout as unknown as AsyncIterable<Uint8Array>) {
-        stdout += decoder.decode(chunk, { stream: true });
-        const now = Date.now();
-        if (now - lastEmit >= 80) { lastEmit = now; onProgress(stdout); }
-      }
-      stdout += decoder.decode();
-      onProgress(stdout);
+    // Abort wiring: if the turn is cancelled, SIGKILL the child immediately AND cancel
+    // both pipe readers so the drain loops below unwind at once. We own the readers
+    // explicitly (rather than `for await` / `new Response`, whose hidden iterator locks
+    // we cannot cancel): cancel() resolves the in-flight read({ done:true }) immediately,
+    // unwinding each loop even when the killed child's pipe is slow to hit EOF. Cancelling
+    // stderr also prevents a hang — after kill(9) its pipe never sees EOF, so awaiting an
+    // uncancellable Response would block forever. Without all this the child is orphaned,
+    // holding two pipe FDs (proven by scripts/subproc-probe.ts ABANDON mode: +1 fd & +1
+    // child per call).
+    let stdoutReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let stderrReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    const onAbort = () => {
+      aborted = true;
+      try { proc.kill(9); } catch {}
+      try { stdoutReader?.cancel(); } catch {}
+      try { stderrReader?.cancel(); } catch {}
+    };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
     }
-    await proc.exited;
-    clearTimeout(timer);
-    if (killTimer) clearTimeout(killTimer);
-    if (!onProgress) stdout = await new Response(proc.stdout).text();
+
+    // Drain a pipe to a string, cancel-safe. An optional onChunk sink receives the
+    // running output (throttled by the caller) to drive the live DIMMED bash view.
+    const drainAll = async (
+      r: ReadableStreamDefaultReader<Uint8Array>,
+      onChunk?: (partial: string) => void,
+    ): Promise<string> => {
+      const dec = new TextDecoder();
+      let out = "";
+      try {
+        for (;;) {
+          if (aborted) break;
+          const { done, value } = await r.read();
+          if (done) break;
+          out += dec.decode(value, { stream: true });
+          onChunk?.(out);
+        }
+        out += dec.decode();
+        onChunk?.(out);
+      } catch { /* cancelled reader surfaces here; return what we have */ }
+      return out;
+    };
+    stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
+    const stderrPromise = drainAll(stderrReader).catch(() => "");
+    let stdout = "";
+    try {
+      if (onProgress) {
+        // Throttle the live sink to ~80ms; drainAll owns the cancel-safe read loop.
+        let lastEmit = 0;
+        stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
+        stdout = await drainAll(stdoutReader, (partial) => {
+          const now = Date.now();
+          if (now - lastEmit >= 80) { lastEmit = now; onProgress(partial); }
+        });
+        onProgress(stdout);
+      } else if (!aborted) {
+        stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
+        stdout = await drainAll(stdoutReader);
+      }
+      if (!aborted) await proc.exited;
+    } catch (streamErr) {
+      // A cancelled stdout reader (from onAbort) surfaces here; swallow it so we can
+      // return a clean aborted result rather than a stream-internal error.
+      if (!aborted) throw streamErr;
+    } finally {
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      if (signal) signal.removeEventListener("abort", onAbort);
+      // Belt-and-suspenders: if we are leaving for ANY reason (normal exit, stdout-loop
+      // throw, abort) and the child is somehow still alive, reap it so no orphaned
+      // process or pipe FD survives the call.
+      if (proc.exitCode === null && proc.signalCode === null) { try { proc.kill(9); } catch {} }
+      // Always settle the stderr reader to release its pipe FD.
+      await stderrPromise;
+    }
     const stderr = await stderrPromise;
 
     let output = [stdout, stderr].filter(Boolean).join("\n");
@@ -655,6 +712,9 @@ export async function bashTool(
       output = output.slice(0, MAX_OUTPUT) + "\n…(output truncated at 100000 chars)";
     }
 
+    if (aborted) {
+      return { success: false, output, error: "Command aborted" };
+    }
     if (timedOut) {
       return {
         success: false,

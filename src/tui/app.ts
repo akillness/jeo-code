@@ -21,7 +21,7 @@ import { evolutionTrack, createStageProgress, type StageProgress, transitionMess
 import type { TaskSubEvent } from "../agent/task-tool";
 import { supportsUnicode } from "./components/capability";
 import { centerBlock, padLineTo, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
-import { SECTION_GAP, stackSections } from "./components/section";
+import { SECTION_GAP, sectionLabel, stackSections } from "./components/section";
 import { resolveTheme, themeGradient, accentPaint, accentShadowPaint, diffPaint, mutedPaint, cardFillPaint } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, webSearchCardLines, type ForgeSummary } from "./components/forge";
@@ -414,12 +414,21 @@ export class LaunchTui {
         this.thinking = false; // model replied; now dispatching the tool
         this.retryNotice = null; // the call got through — clear any backoff notice
         // Flush the streamed reasoning once into scrollback as a jeo-ref reasoning
-        // block — the agent NAME on its own accent line, the prose below it (the
-        // durable record) — then stop showing the transient live reasoning row.
+        // block — a muted "Reasoning" divider header, the prose below it (the durable
+        // record) — then stop showing the transient live reasoning row.
         if (this.streamingReasoning && this.streamingReasoning !== this.flushedReasoning) {
           this.flushedReasoning = this.streamingReasoning;
-          const name = this.theme.color ? chalk.bold(accentPaint(this.theme)("jeo")) : "jeo";
-          this.appendLedger(`${name}\n${this.streamingReasoning}\n`, "reasoning");
+          // A muted "Reasoning" card-header divider announces the reasoning block
+          // boundary (consistent with the section design tokens — Thinking/Reasoning/
+          // Output share one visual language); the prose below it is the durable record.
+          // A full-width divider ROW respects appendLedger's 1-line=1-row pre-wrap
+          // invariant (no per-line prefix), unlike a left-border enclosure which would
+          // push wrapped lines past `cols` and tear the frame.
+          const header = sectionLabel("Reasoning", Math.max(20, size().cols), {
+            color: this.theme.color,
+            unicode: this.unicode,
+          });
+          this.appendLedger(`${header}\n${this.streamingReasoning}\n`, "reasoning");
         }
         this.streamingReasoning = "";
         this.streamingThought = "";
@@ -1236,7 +1245,7 @@ export class LaunchTui {
       // (duplicate model bar) is gone; height now toggles only at lifecycle boundaries.
       const ROWS = 6;
       const shown = wrapped.slice(-ROWS);
-      tail.push(dim(`${this.unicode ? "│" : "|"} thinking`));
+      tail.push(sectionLabel("Thinking", Math.max(8, Math.min(120, cols)), { color: this.theme.color, unicode: this.unicode }));
       for (let k = 0; k < ROWS - shown.length; k++) tail.push("");
       for (const l of shown) tail.push(dim(`  ${l}`));
       tail.push("");
@@ -1255,7 +1264,7 @@ export class LaunchTui {
       // so cumulative stdout growth does not thrash the frame height.
       const ROWS = 8;
       const shown = wrapped.slice(-ROWS);
-      tail.push(dim(`${this.unicode ? "│" : "|"} output`));
+      tail.push(sectionLabel("Output", Math.max(8, Math.min(120, cols)), { color: this.theme.color, unicode: this.unicode }));
       for (let k = 0; k < ROWS - shown.length; k++) tail.push("");
       for (const l of shown) tail.push(dim(`  ${l}`));
       tail.push("");

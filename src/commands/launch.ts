@@ -2274,7 +2274,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
   };
   let previewPending = false;
-  let promptHistoryLines: string[] | null = null;
 
   // Inline boxed-footer rendering with a FIXED reservation (the "@-mention typing
   // pushes the box down" fix). The footer reserves its full `footerRows` height
@@ -2425,22 +2424,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const args = !slash.length && budget > 0 ? formatCompletionPreview(line, completionContext(), budget) : [];
     const preview = (slash.length ? slash : args).map(l => chalk.gray(truncateAnsi(l, cols)));
     return [statusBarLine(cols), "", ...input, ...preview].slice(0, footerRows);
-  };
-  const historyPreviewLines = (detail: string[]): string[] => {
-    const cols = Math.max(24, (process.stdout.columns ?? 80) - 1);
-    const title = `${uiAccent("history")} ${chalk.dim("· Ctrl+O closes")}`;
-    const budget = Math.max(0, footerRows - 2);
-    const physical = detail.flatMap(line => line.split("\n")).map(line => truncateAnsi(line, cols));
-    let body = physical;
-    if (physical.length > budget) {
-      const keep = Math.max(0, budget - 1);
-      body = physical.slice(0, keep);
-      body.push(chalk.gray(`… ${physical.length - keep} more line(s)`));
-    } else {
-      body = physical.slice(0, budget);
-    }
-    footerCursor = { row: Math.min(1, footerRows - 1), col: 1 };
-    return [statusBarLine(cols), title, ...body].slice(0, footerRows);
   };
   const drawFooter = (lines: string[]) => {
     if (!previewArmed || footerRendered === 0) return;
@@ -2888,23 +2871,24 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         return;
       }
       if (!previewArmed || pickerActive) return;
-      // Ctrl+O: toggle a reversible history/detail panel. The live-turn TUI path
-      // uses LaunchTui.showDetail(); this idle-prompt path paints the same content
-      // into the fixed footer reservation, so the second Ctrl+O can close it.
+      // Ctrl+O: expand the last assistant response into scrollback for a full,
+      // scrollable read. The live-turn TUI path uses LaunchTui.showDetail(); this
+      // idle-prompt path prints the same content above a cleanly re-armed footer.
       // (Cmd+O is intercepted by macOS/terminal and never reaches the app.)
       if (key?.ctrl && key.name === "o") {
-        if (promptHistoryLines) {
-          promptHistoryLines = null;
-          drawFooter(previewLines(typedLine, navIdx));
-          return;
-        }
         const detail = composeDetailLines();
         if (detail.length === 0) return;
-        promptHistoryLines = detail;
-        drawFooter(historyPreviewLines(detail));
+        // Expand the last response into scrollback CLEANLY instead of cramming it
+        // into the ~10-row footer reservation (which clipped long/CJK content and
+        // could garble the box). Disarm → print full detail → re-arm + repaint is
+        // the same path the resize handler/main loop use, so the input box and the
+        // typed draft restore without corruption.
+        disarmPreview();
+        logLines(detail);
+        armPreview();
+        drawFooter(previewLines(typedLine, navIdx));
         return;
       }
-      if (promptHistoryLines) promptHistoryLines = null;
       // Ctrl+V: attach a clipboard IMAGE to the next message. Terminal text paste
       // never arrives as a ctrl+v keypress (it streams as plain stdin data), so this
       // binding is image-only; when the clipboard holds no image it's a silent no-op.
@@ -2947,7 +2931,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (!previewArmed) return;
         try {
           if (key && (key.name === "return" || key.name === "enter")) {
-            promptHistoryLines = null;
             drawFooter([]);
             return;
           }
@@ -3008,7 +2991,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       try {
         disarmPreview();
         armPreview();
-        drawFooter(promptHistoryLines ? historyPreviewLines(promptHistoryLines) : previewLines(typedLine, navIdx));
+        drawFooter(previewLines(typedLine, navIdx));
       } catch { /* ignore resize render races */ }
     };
     process.stdout.on("resize", idleResizeHandler);
@@ -3220,6 +3203,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
                 for (const p of priorPrompts) {
                   if (rli.history[0] !== p) rli.history.unshift(p);
                 }
+              }
+              // Clean restore: wipe the screen + scrollback BEFORE replaying the
+              // transcript so it can't collide with picker remnants, the prior
+              // conversation, or the live input frame — the "/resume corrupts the
+              // TUI" fix. Same proven path as /clear; re-render the welcome banner
+              // so the resumed view reads like a fresh, intact screen.
+              if (process.stdout.isTTY) {
+                disarmPreview();
+                process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+                console.log(renderWelcome(welcomeData).join("\n"));
               }
               const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
               logLines([

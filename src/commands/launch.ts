@@ -3716,7 +3716,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (input.startsWith("/provider") && (input === "/provider" || input[9] === " ")) {
         const tokens = input.substring(9).trim().split(/\s+/).filter(Boolean);
         const name = (tokens[0] ?? "").toLowerCase();
-        const explicitModel = tokens[1];
+        // gjc-parity (semantic): /provider is ONBOARDING ONLY — set up OAuth credentials
+        // or an API-compatible endpoint. Switching the active provider/model lives in /model.
+        const providerOnboardingUsage = (): string[] => [
+          "Provider onboarding — set up credentials or an API-compatible endpoint:",
+          "  OAuth / subscription : /provider login [anthropic|openai|gemini|antigravity]   (alias: /login)",
+          "  API-compatible       : /provider add --base-url <url> [--model <model>] [--compat openai]   (reads OPENAI_API_KEY)",
+          "                         show current / clear: /provider add   ·   /provider add clear",
+          "  Logout               : /logout <provider>",
+          "Switch the active model or provider with /model.",
+        ];
         // `/provider login|auth [name]` → run OAuth login from the REPL.
         if (name === "login" || name === "auth") {
           const cloud = ["anthropic", "openai", "gemini", "antigravity"] as const;
@@ -3726,7 +3735,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             if (process.stdin.isTTY && process.stdout.isTTY) {
               target = await pickCloudProvider(statuses);
             } else {
-              // No provider given → show current status and let the user pick.
               console.log("Log in to which provider?");
               cloud.forEach((p, i) => {
                 const st = statuses.find(s => s.name === p);
@@ -3752,7 +3760,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             if (forProvider.some(r => r.ok && r.models.length > 0)) {
               lastPickIndex = flattenModels(forProvider);
               const viaCatalog = forProvider.some(r => r.fallback);
-              console.log(`  ${viaCatalog ? "catalog" : "live"} ${target} models → /model #N or /provider ${target} #N${viaCatalog ? "  (live list endpoint rejected this token; showing known models)" : ""}`);
+              console.log(`  ${viaCatalog ? "catalog" : "live"} ${target} models → /model #N${viaCatalog ? "  (live list endpoint rejected this token; showing known models)" : ""}`);
               logLines(formatPickListWithCapabilities(lastPickIndex, { cap: 12 }));
             } else {
               const failed = forProvider.find(r => !r.ok);
@@ -3763,30 +3771,45 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           }
           continue;
         }
-        // `/provider add <base-url> [model]` → register an OpenAI-compatible endpoint
-        // (sets openaiBaseUrl) and refresh the live model list, without leaving the REPL.
-        // gjc parity for `/provider add`. `/provider add clear` removes it.
+        // `/provider add --base-url <url> [--model <m>] [--compat openai]` → register an
+        // OpenAI-compatible endpoint (sets openaiBaseUrl). gjc flag style; bare positional
+        // URL/model still accepted for leniency. `/provider add clear` removes it.
         if (name === "add") {
-          const rawUrl = tokens[1];
-          if (!rawUrl) {
-            const cur = (await readGlobalConfig()).openaiBaseUrl;
-            console.log(cur ? `OpenAI-compatible base URL: ${cur}` : "No OpenAI-compatible base URL set.");
-            console.log("Set one with: /provider add <url> [model]   ·   clear with: /provider add clear");
-            continue;
-          }
-          if (rawUrl.toLowerCase() === "clear") {
+          const rest = tokens.slice(1);
+          if ((rest[0] ?? "").toLowerCase() === "clear") {
             await saveConfigPatch(() => ({ openaiBaseUrl: undefined }));
             await refreshLiveModelsCache();
             console.log("OpenAI-compatible base URL cleared — saved to ~/.jeo/config.json.");
             continue;
           }
-          const url = normalizeBaseUrl(rawUrl, "");
+          let baseUrl: string | undefined;
+          let modelArg: string | undefined;
+          let compat: string | undefined;
+          for (let i = 0; i < rest.length; i++) {
+            const t = rest[i]!;
+            if (t === "--base-url" || t === "--url") baseUrl = rest[++i];
+            else if (t === "--model") modelArg = rest[++i];
+            else if (t === "--compat") compat = (rest[++i] ?? "").toLowerCase();
+            else if (t === "--api-key-env" || t === "--provider") { i++; /* gjc-only: jeo has no named-provider registry — ignored */ }
+            else if (!t.startsWith("--") && baseUrl === undefined) baseUrl = t; // positional url
+            else if (!t.startsWith("--") && modelArg === undefined) modelArg = t; // positional model
+          }
+          if (compat && compat !== "openai") {
+            console.log(`Only --compat openai is supported (got '${compat}') — jeo registers a single OpenAI-compatible endpoint.`);
+            continue;
+          }
+          if (!baseUrl) {
+            const cur = (await readGlobalConfig()).openaiBaseUrl;
+            console.log(cur ? `OpenAI-compatible base URL: ${cur}` : "No OpenAI-compatible base URL set.");
+            console.log("Set one with: /provider add --base-url <url> [--model <model>]   ·   clear with: /provider add clear");
+            continue;
+          }
+          const url = normalizeBaseUrl(baseUrl, "");
           if (!url) {
-            console.log("Provide a base URL, e.g. /provider add http://localhost:1234/v1");
+            console.log("Provide a base URL, e.g. /provider add --base-url http://localhost:1234/v1");
             continue;
           }
           await saveConfigPatch(() => ({ openaiBaseUrl: url }));
-          const modelArg = tokens[2];
           if (modelArg) {
             const qualified = qualifyModelId(modelArg, "openai");
             sessionModel = qualified;
@@ -3800,7 +3823,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           const pick = flattenModels(forProvider);
           if (pick.length) {
             lastPickIndex = pick;
-            console.log("Discovered models at this endpoint — select with /model #N or /provider openai #N:");
+            console.log("Discovered models at this endpoint — select with /model #N:");
             logLines(formatPickListWithCapabilities(pick, { cap: 12 }));
           } else {
             const failed = forProvider.find(r => !r.ok);
@@ -3808,84 +3831,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           }
           continue;
         }
-        const cfgNow = await readGlobalConfig();
-        const statuses = await describeAllProviders(cfgNow);
-        if (!name) {
+        // Bare `/provider` (or `help`): show readiness + the onboarding usage. No switching.
+        if (!name || name === "help") {
+          const cfgNow = await readGlobalConfig();
+          const statuses = await describeAllProviders(cfgNow);
           console.log("Providers (credential · base URL):");
           logLines(formatProviderPanel(statuses));
-          console.log("Switch with: /provider <name> [model]  ·  arrows+Enter picker: /provider <name>  ·  choose models: /model");
-          console.log("OAuth: /provider login [name]  ·  OpenAI-compatible endpoint: /provider add <url> [model]");
+          for (const line of providerOnboardingUsage()) console.log(line);
           continue;
         }
-        if (!isProviderName(name)) {
-          console.log(`Unknown provider '${name}'. Known: ${statuses.map(s => s.name).join(", ")}.`);
-          continue;
-        }
-        const st = statuses.find(s => s.name === name);
-        if (st && !st.ready) {
-          console.log(`! ${name} is not ready (${st.label}) — set ${st.envVar ?? "the provider key"} or configure a compatible base URL. Switching anyway.`);
-        }
-        const live = await getLiveModels();
-        const forProvider = live.filter(r => r.provider === name);
-        const providerPick = flattenModels(forProvider);
-        const currentResolved = (await describeModel(sessionModel || cfgNow.defaultModel)).resolved;
-        let pickedFromPicker = false;
-        let target = explicitModel ?? PROVIDER_DEFAULT[name];
-        if (!explicitModel && providerPick.length && process.stdin.isTTY && process.stdout.isTTY) {
-          const picked = await pickLiveProviderModel(name, providerPick, currentResolved, st && !st.ready && !selectableThoughNotReady(st) ? [name] : []);
-          if (!picked) {
-            console.log("(cancelled)");
-            continue;
-          }
-          pickedFromPicker = true;
-          target = qualifyModelId(picked.model, picked.provider);
-        } else if (explicitModel && providerPick.length) {
-          const sel = resolveSelection(providerPick, explicitModel);
-          if (sel.kind === "index" || sel.kind === "match") {
-            target = qualifyModelId(sel.entry.model, sel.entry.provider);
-            if (st && !st.ready) {
-              if (selectableThoughNotReady(st)) {
-                console.log(notReadyWarning(st));
-              } else {
-                console.log(`Cannot select ${sel.entry.model}: ${name} is not ready (${st.label}). Set ${st.envVar ?? "the provider key"} first.`);
-                continue;
-              }
-            }
-          } else if (sel.kind === "ambiguous") {
-            console.log(`'${explicitModel}' matches ${sel.matches.length} ${name} models — be more specific:`);
-            for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
-            continue;
-          } else if (sel.kind === "out-of-range") {
-            console.log(`#${explicitModel.slice(1)} is out of range for ${name} (1-${sel.max}).`);
-            continue;
-          }
-        } else if (explicitModel?.startsWith("#")) {
-          console.log(`No numbered ${name} model list is available yet.`);
-          continue;
-        }
-        const { resolved, provider } = await describeModel(target);
-        if (explicitModel && provider !== name) {
-          console.log(`! '${target}' resolves to ${provider}, not ${name}. Pick a ${name} model from the live list below.`);
-          if (providerPick.length) logLines(formatPickListWithCapabilities(providerPick, { cap: 20 }));
-          continue;
-        }
-        if (pickedFromPicker && await applyPickedModelWithTarget(target)) {
-          if (providerPick.length) lastPickIndex = providerPick;
-          continue;
-        }
-        sessionModel = target;
-        // MRU persistence: a provider/model pick becomes the default for EVERY
-        // future session and the head of the recents rotation.
-        await saveConfigPatch(raw => rememberModelPatch(raw, target));
-        console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })} — saved as default`);
-        // Show the provider's live, credentialed catalog so the user can pick a concrete id.
-        if (providerPick.length) {
-          lastPickIndex = providerPick;
-          if (!pickedFromPicker) {
-            console.log(`Live ${name} models — select with /model #N, /provider ${name} #N, or rerun /provider ${name} and use arrows+Enter:`);
-            logLines(formatPickListWithCapabilities(lastPickIndex, { current: resolved }));
-          }
-        }
+        // Anything else (a provider name) used to switch the active provider — that moved
+        // to /model (gjc semantics: /provider onboards, /model selects).
+        console.log(`'/provider ${name}' no longer switches providers — provider/model selection moved to /model.`);
+        console.log("Run /model to pick any provider's model (or /model <id|#N>). /provider now only onboards — see /provider help.");
         continue;
       }
       if (input.startsWith("/logout") && (input === "/logout" || input[7] === " ")) {
@@ -4064,11 +4022,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
               continue;
             } else if (sel.kind === "out-of-range") {
-              console.log(`#${modelArg.slice(1)} is out of range (1-${sel.max}). Use /model or /provider <name> first.`);
+              console.log(`#${modelArg.slice(1)} is out of range (1-${sel.max}). Use /model first.`);
               continue;
             }
           } else if (modelArg.startsWith("#")) {
-            console.log("Use /model or /provider <name> first to build the numbered live model list.");
+            console.log("Use /model first to build the numbered live model list.");
             continue;
           }
           // Persist a per-role model override to ~/.jeo/config.json (consumed by 'jeo team').
@@ -4138,11 +4096,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
               continue;
             } else if (sel.kind === "out-of-range") {
-              console.log(`#${chosenModel.slice(1)} is out of range (1-${sel.max}). Use /model or /provider <name> first.`);
+              console.log(`#${chosenModel.slice(1)} is out of range (1-${sel.max}). Use /model first.`);
               continue;
             }
           } else if (chosenModel.startsWith("#")) {
-            console.log("Use /model or /provider <name> first to build the numbered live model list.");
+            console.log("Use /model first to build the numbered live model list.");
             continue;
           }
           await saveConfigPatch(raw => ({ roles: { ...(raw.roles ?? {}), [tier]: chosenModel } }));
@@ -4223,12 +4181,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
               continue;
             } else if (sel.kind === "out-of-range") {
-              console.log(`#${toSave.slice(1)} is out of range (1-${sel.max}). Use /model or /provider <name> first.`);
+              console.log(`#${toSave.slice(1)} is out of range (1-${sel.max}). Use /model first.`);
               continue;
             }
             // kind "none" → treat `toSave` as a literal model id/alias.
           } else if (toSave.startsWith("#")) {
-            console.log("Use /model or /provider <name> first to build the numbered list.");
+            console.log("Use /model first to build the numbered list.");
             continue;
           }
           // Fall back to the FRESH on-disk default (not the stale session-start snapshot) so a
@@ -4296,11 +4254,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
               continue;
             } else if (sel.kind === "out-of-range") {
-              console.log(`#${roleModelArg.slice(1)} is out of range (1-${sel.max}). Use /model or /provider <name> first.`);
+              console.log(`#${roleModelArg.slice(1)} is out of range (1-${sel.max}). Use /model first.`);
               continue;
             }
           } else if (roleModelArg.startsWith("#")) {
-            console.log("Use /model or /provider <name> first to build the numbered list.");
+            console.log("Use /model first to build the numbered list.");
             continue;
           }
           if (roleModelArg) {
@@ -4351,12 +4309,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
             continue;
           } else if (sel.kind === "out-of-range") {
-            console.log(`#${arg.slice(1)} is out of range (1-${sel.max}). Use /model or /provider <name> first.`);
+            console.log(`#${arg.slice(1)} is out of range (1-${sel.max}). Use /model first.`);
             continue;
           }
           // kind "none" → fall through and treat `arg` as a literal model id/alias.
         } else if (arg.startsWith("#")) {
-          console.log("Use /model or /provider <name> first to build the numbered list.");
+          console.log("Use /model first to build the numbered list.");
           continue;
         }
         const label = arg || (sessionModel || defaultModel);
@@ -4382,7 +4340,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           }
         }
         if (arg && liveModelsCache && resolved === label && !liveModelKnown(liveModelsCache, resolved)) {
-          console.log(`  (note: '${resolved}' is not in the live ${provider} catalog — use /model or /provider <name> to pick a valid id)`);
+          console.log(`  (note: '${resolved}' is not in the live ${provider} catalog — use /model to pick a valid id)`);
         }
         const meta = catalogMetadata(resolved);
         if (meta) console.log(`  ${formatCapabilityLine(meta)}`);

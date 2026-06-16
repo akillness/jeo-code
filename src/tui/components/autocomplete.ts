@@ -162,11 +162,13 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     case "/fast":
       return argIndex === 0 ? finish(["on", "off", "status"], "subcommand") : { completions: [], token, kind: "none" };
     case "/provider": {
+      // /provider is onboarding-only (gjc parity): login + add. Model/provider
+      // switching completes under /model, not here.
       const cloud = ["anthropic", "openai", "gemini", "antigravity"];
-      if (argIndex === 0) return finish(["login", "auth", "add", ...ctx.providers], "provider");
-      // `/provider login|auth <name>` → cloud provider names (OAuth-capable).
-      if (argIndex === 1 && (tokens[1]?.toLowerCase() === "login" || tokens[1]?.toLowerCase() === "auth")) return finish(cloud, "provider");
-      if (argIndex === 1) return finish(ctx.modelsForProvider(tokens[1] ?? ""), "model");
+      if (argIndex === 0) return finish(["login", "add", "help"], "subcommand");
+      const sub = tokens[1]?.toLowerCase();
+      if (sub === "login" || sub === "auth") return argIndex === 1 ? finish(cloud, "provider") : { completions: [], token, kind: "none" };
+      if (sub === "add") return finish(["--base-url", "--model", "--compat", "clear"], "subcommand");
       return { completions: [], token, kind: "none" };
     }
     case "/logout":

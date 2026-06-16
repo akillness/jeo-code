@@ -37,7 +37,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/goal", usage: "/goal <condition>", description: "Set a natural language stop condition for the session", group: "session" },
   { command: "/model", usage: "/model [id|#N|save|thinking <level>|subagent <role> <model|#N|thinking L>]", description: "Show/switch model; picker can apply to default or any subagent role and set thinking", group: "models" },
   { command: "/fast", usage: "/fast [on|off|status]", description: "Toggle fast thinking mode when the active model supports it", group: "models" },
-  { command: "/provider", usage: "/provider [name] [model|#N] | add <url> [model] | login [name]", description: "Credentials, switch provider, set model; `add <url>` registers an OpenAI-compatible endpoint; `login <name>` starts OAuth", group: "models" },
+  { command: "/provider", usage: "/provider [login [name] | add --base-url <url> [--model <m>]]", description: "Provider onboarding: `login [name]` starts OAuth; `add --base-url <url>` registers an OpenAI-compatible endpoint. Switch the active model/provider with /model", group: "models" },
   { command: "/login", usage: "/login [provider]", description: "OAuth login (alias of /provider login)", group: "models" },
   { command: "/logout", usage: "/logout <anthropic|openai|gemini|antigravity>", description: "Remove the stored OAuth token for a provider", group: "models" },
   { command: "/roles", usage: "/roles [tier model]", description: "Show or set model role tiers (smol/slow/plan)", group: "models" },

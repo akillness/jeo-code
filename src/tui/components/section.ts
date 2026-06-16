@@ -29,7 +29,10 @@ export interface SectionLabelOpts {
 export function sectionLabel(title: string, width: number, opts: SectionLabelOpts = {}): string {
   const unicode = opts.unicode !== false;
   const dash = unicode ? "─" : "-";
-  const head = `${dash.repeat(2)} ${title.trim()} `;
+  // A 3-dash lead-in makes the card header read as a distinct boundary (stronger than a
+  // single rule) without becoming loud.
+  const startDash = unicode ? "───" : "---";
+  const head = `${startDash} ${title.trim()} `;
   const headW = visibleWidth(head);
   const fill = Math.max(0, Math.trunc(width) - headW);
   const line = head + dash.repeat(fill);
@@ -59,12 +62,23 @@ export function stackSections(sections: Section[], opts: StackOptions): string[]
   const gap = Math.max(0, opts.gap ?? SECTION_GAP);
   const out: string[] = [];
   for (const section of sections) {
-    if (!section.lines.length) continue;
-    if (out.length) for (let i = 0; i < gap; i++) out.push("");
+    const lines = [...section.lines];
+    while (lines.length && lines[0] === "") {
+      lines.shift();
+    }
+    while (lines.length && lines[lines.length - 1] === "") {
+      lines.pop();
+    }
+    if (!lines.length) continue;
+    if (out.length) {
+      for (let i = 0; i < gap; i++) out.push("");
+    }
     if (section.title) {
       out.push(sectionLabel(section.title, opts.width, { color: opts.color, unicode: opts.unicode }));
     }
-    for (const line of section.lines) out.push(line);
+    for (const line of lines) {
+      out.push(line);
+    }
   }
   return out;
 }

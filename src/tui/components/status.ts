@@ -5,6 +5,7 @@ import { animatedGradientText, applyBgGradient, hexToRgb, visibleWidth, ColorLev
 import * as os from "node:os";
 import { formatUsage } from "./duration";
 import { formatCost } from "../../ai/pricing";
+import { applyDimensionalGradient, stageGradient, stageIndexForStep } from "./evolution";
 
 /**
  * One-row status bar pinned directly above the boxed input (gjc-layout parity):
@@ -100,7 +101,7 @@ export function renderStatusBar(d: StatusBarData): string {
   const level = d.colorLevel ?? (useColor ? ColorLevel.TrueColor : ColorLevel.None);
   const grad = d.gradient ?? { from: "#0a3d62", to: "#48dbfb" };
   const paintedLeft = useColor
-    ? applyBgGradient(left, hexToRgb(grad.from), hexToRgb(grad.to), level)
+    ? applyDimensionalGradient(left, Date.now(), grad.from, grad.to, level, true)
     : left;
   return `${paintedLeft}${" ".repeat(gap)}${right}`;
 }
@@ -151,9 +152,19 @@ export function renderJeoStatus(data: JeoStatusData): string[] {
   const elapsed = `${seconds(data.elapsedMs)}s`;
   let msg = data.message ?? "thinking through the next tool call";
   const level = data.colorLevel ?? (useColor ? ColorLevel.TrueColor : ColorLevel.None);
-  if (useColor && data.isThinking && level === ColorLevel.TrueColor && data.palette && data.palette.length > 0) {
-    const phase = data.phase ?? 0;
-    msg = animatedGradientText(msg, data.palette, phase, { colorLevel: level });
+  if (useColor && level !== ColorLevel.None && (data.isThinking !== false)) {
+    let fromHex = "#0a3d62";
+    let toHex = "#48dbfb";
+    if (data.palette && data.palette.length > 0) {
+      fromHex = data.palette[0]!;
+      toHex = data.palette[data.palette.length - 1]!;
+    } else {
+      const stageIdx = stageIndexForStep(data.step ?? 0, data.maxSteps ?? 25);
+      const grad = stageGradient(stageIdx);
+      fromHex = grad.from;
+      toHex = grad.to;
+    }
+    msg = applyDimensionalGradient(msg, Date.now(), fromHex, toHex, level, false);
   }
   const current = data.currentTool ? `forging ${data.currentTool}` : "forge idle";
   const stage = data.stage ? `${data.stage} · ` : "";
@@ -260,8 +271,19 @@ export function renderStatusBox(data: StatusBoxData): string[] {
     activity = cut + (unicode ? "…" : "...");
   }
   const plainActivityWidth = visibleWidth(activity);
-  if (useColor && data.isThinking && level === ColorLevel.TrueColor && data.palette && data.palette.length > 0) {
-    activity = animatedGradientText(activity, data.palette, data.phase ?? 0, { colorLevel: level });
+  if (useColor && level !== ColorLevel.None && (data.isThinking !== false)) {
+    let fromHex = "#0a3d62";
+    let toHex = "#48dbfb";
+    if (data.palette && data.palette.length > 0) {
+      fromHex = data.palette[0]!;
+      toHex = data.palette[data.palette.length - 1]!;
+    } else {
+      const stageIdx = stageIndexForStep(data.step ?? 0, data.maxSteps ?? 25);
+      const grad = stageGradient(stageIdx);
+      fromHex = grad.from;
+      toHex = grad.to;
+    }
+    activity = applyDimensionalGradient(activity, Date.now(), fromHex, toHex, level, false);
   }
   const escPad = esc
     ? " ".repeat(Math.max(1, cols - 1 - visibleWidth(headPlain) - plainActivityWidth - visibleWidth(esc))) + dim(esc)

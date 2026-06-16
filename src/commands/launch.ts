@@ -142,6 +142,13 @@ function fastThinkingLevelForModel(modelId: string): ThinkLevel | undefined {
   const supported = catalogMetadata(modelId)?.thinking ?? [];
   if (supported.includes("minimal")) return "minimal";
   if (supported.includes("low")) return "low";
+  // Fallback for thinking-capable models that lack an explicit catalog entry (e.g. the many
+  // antigravity `gemini-3.x` variants the CCA backend serves but the static catalog can't
+  // enumerate): they DO apply a thinking budget (gemini/antigravity thinkingConfig, anthropic
+  // extended thinking), so /fast must offer `minimal` as the fast (no-deep-thinking) level
+  // instead of reporting "unsupported".
+  const m = modelId.toLowerCase();
+  if (/gemini-(2\.5|[3-9])/.test(m) || /(^|[-/])(o\d|gpt-5)/.test(m) || /-thinking|-high$|-low$/.test(m)) return "minimal";
   return undefined;
 }
 
@@ -1311,6 +1318,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       base.onToolResult?.(tool, success, output);
     },
   });
+  /** Compose a session-persistence flush into onStep so each completed step is
+   *  written as it lands (durability across mid-turn interruption) without
+   *  disturbing the original onStep sink. */
+  const withStepPersistence = (
+    base: AgentLoopEvents,
+    persist: () => Promise<void>,
+  ): AgentLoopEvents => ({
+    ...base,
+    onStep: async (step: number) => {
+      await base.onStep?.(step);
+      await persist();
+    },
+  });
   /** The Ctrl+O detail block (shared by the prompt-time keypress handler and the
    *  mid-turn TUI binding): full last reply + full last tool output. */
   const composeDetailLines = (): string[] => {
@@ -1389,6 +1409,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // AFTER compaction (which mutates history) and consumed by the post-turn
     // persistence block below.
     let beforeLen = history.length;
+    // Incremental session persistence (durability across mid-turn interruption):
+    // persistTurnTail() flushes history messages added since the last flush — called
+    // right after the user prompt, on every onStep boundary, and once post-turn — so
+    // Ctrl+C / crash / ESC can't lose the prompt + finished steps before /resume.
+    let persistedLen = beforeLen;
+    const persistTurnTail = async (): Promise<void> => {
+      if (!sessionId || history.length <= persistedLen) return;
+      const tail = history.slice(persistedLen);
+      persistedLen = history.length;
+      try { await appendMessages(sessionId, tail, cwd); } catch { /* best-effort */ }
+    };
     let result;
     try {
       // Paint the live frame + spinner the INSTANT the turn is accepted, BEFORE the
@@ -1413,12 +1444,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         tui?.events().onNotice?.(`(compacted ${compRes.removed} older message${compRes.removed === 1 ? "" : "s"})`);
       }
       beforeLen = history.length;
+      persistedLen = beforeLen; // re-baseline after compaction mutated history
       if (images?.length && catalogMetadata(activeModel)?.images === false) {
         const warn = `! ${activeModel} does not advertise image input — sending the attachment anyway.`;
         if (tui) tui.events().onNotice?.(warn);
         else console.log(warn);
       }
       history.push(images?.length ? { role: "user", content: userInput, images } : { role: "user", content: userInput });
+      // Persist the user prompt immediately so an interrupted turn keeps it on disk.
+      await persistTurnTail(); // persist the user prompt immediately
       // Keep the submitted query in scrollback: the prompt that STARTS a turn shows
       // only as the transient HUD turn-title otherwise, which vanishes when the live
       // frame clears at turn-end — so the conversation transcript lost every user
@@ -1548,7 +1582,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
           signal: ac.signal,
           steer: drainSteer,
-          events: wrapEvents({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone }, opik),
+          events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone }, persistTurnTail), opik),
         });
         if (result.done && looksLikeSkillEcho(result.doneReason ?? "", resolvedSkills)) {
           history.push({
@@ -1603,13 +1637,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       || (result.done
         ? `(done in ${result.steps} step${result.steps === 1 ? "" : "s"} — the model returned no summary)`
         : `(reached the ${result.steps}-step limit without signaling done)`);
-    // Full-fidelity persistence: append every message the engine added this turn
-    // (user prompt + intermediate tool-call/tool-result turns), then the final reply.
+    // Persist any messages this turn produced that onStep hasn't flushed yet (the
+    // final step's tool-call/result + any retry-loop messages), then the reply.
+    // Incremental onStep flushes already wrote the prompt and completed steps, so
+    // this only covers the tail — net content is the full turn either way.
     try {
-      if (sessionId) {
-        // One batched fs append for the whole turn (was: one awaited append per message).
-        await appendMessages(sessionId, history.slice(beforeLen), cwd);
-      }
+      await persistTurnTail();
       history.push({ role: "assistant", content: reply });
       if (sessionId) await appendMessage(sessionId, { role: "assistant", content: reply }, cwd);
       if (tui) tui.finish(reply);
@@ -2299,6 +2332,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
   };
   let previewPending = false;
+  // Idle-prompt Ctrl+O detail panel: a REVERSIBLE, scrollable overlay drawn inside
+  // the footer reservation. Toggle open/closed with Ctrl+O; ↑↓/PgUp/PgDn scroll so
+  // long/CJK content is fully reachable (no "… N more" clip). null = closed.
+  let promptHistoryLines: string[] | null = null;
+  let promptHistoryScroll = 0;
+  let promptHistoryMaxScroll = 0;
+  let promptHistoryPage = 1;
 
   // Inline boxed-footer rendering with a FIXED reservation (the "@-mention typing
   // pushes the box down" fix). The footer reserves its full `footerRows` height
@@ -2449,6 +2489,44 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const args = !slash.length && budget > 0 ? formatCompletionPreview(line, completionContext(), budget) : [];
     const preview = (slash.length ? slash : args).map(l => chalk.gray(truncateAnsi(l, cols)));
     return [statusBarLine(cols), "", ...input, ...preview].slice(0, footerRows);
+  };
+  // Render the reversible Ctrl+O detail panel into the footer reservation: a status
+  // bar, a title (with scroll hint when needed), then a windowed slice of the detail
+  // with ↑/↓ counters. Recomputes the scroll bound/page size each paint so scroll
+  // keys can clamp correctly. Mirrors the mid-turn LaunchTui panel.
+  const historyPreviewLines = (detail: string[]): string[] => {
+    const cols = Math.max(24, (process.stdout.columns ?? 80) - 1);
+    const physical = detail.flatMap(line => line.split("\n")).map(line => truncateAnsi(line, cols));
+    const bodyLimit = Math.max(1, footerRows - 2); // status bar + title rows
+    const scrollable = physical.length > bodyLimit;
+    const cap = scrollable ? Math.max(1, bodyLimit - 2) : bodyLimit;
+    promptHistoryPage = cap;
+    promptHistoryMaxScroll = Math.max(0, physical.length - cap);
+    if (promptHistoryScroll > promptHistoryMaxScroll) promptHistoryScroll = promptHistoryMaxScroll;
+    const hint = scrollable ? "· ↑↓/PgUp/PgDn scroll · Ctrl+O closes" : "· Ctrl+O closes";
+    const title = `${uiAccent("history")} ${chalk.dim(hint)}`;
+    let body: string[];
+    if (!scrollable) {
+      body = physical;
+    } else {
+      const start = promptHistoryScroll;
+      const above = start;
+      const reserveTop = above > 0 ? 1 : 0;
+      let innerLimit = Math.max(1, bodyLimit - reserveTop - 1);
+      let win = physical.slice(start, start + innerLimit);
+      let below = physical.length - (start + win.length);
+      if (below === 0) {
+        innerLimit = Math.max(1, bodyLimit - reserveTop);
+        win = physical.slice(start, start + innerLimit);
+        below = physical.length - (start + win.length);
+      }
+      body = [];
+      if (above > 0) body.push(chalk.dim(`↑ ${above} more above`));
+      body.push(...win);
+      if (below > 0) body.push(chalk.dim(`↓ ${below} more below`));
+    }
+    footerCursor = { row: Math.min(1, footerRows - 1), col: 1 };
+    return [statusBarLine(cols), title, ...body].slice(0, footerRows);
   };
   const drawFooter = (lines: string[]) => {
     if (!previewArmed || footerRendered === 0) return;
@@ -2896,23 +2974,40 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         return;
       }
       if (!previewArmed || pickerActive) return;
-      // Ctrl+O: expand the last assistant response into scrollback for a full,
-      // scrollable read. The live-turn TUI path uses LaunchTui.showDetail(); this
-      // idle-prompt path prints the same content above a cleanly re-armed footer.
-      // (Cmd+O is intercepted by macOS/terminal and never reaches the app.)
+      // Ctrl+O: toggle a reversible, scrollable detail panel inside the footer
+      // (expand on the first press, FOLD on the next). ↑↓/PgUp/PgDn scroll it while
+      // open — long/CJK content is fully reachable, nothing is clipped. The live-turn
+      // path uses LaunchTui.showDetail(). (Cmd+O is intercepted by the terminal.)
       if (key?.ctrl && key.name === "o") {
+        if (promptHistoryLines) {
+          promptHistoryLines = null; // fold
+          drawFooter(previewLines(typedLine, navIdx));
+          return;
+        }
         const detail = composeDetailLines();
         if (detail.length === 0) return;
-        // Expand the last response into scrollback CLEANLY instead of cramming it
-        // into the ~10-row footer reservation (which clipped long/CJK content and
-        // could garble the box). Disarm → print full detail → re-arm + repaint is
-        // the same path the resize handler/main loop use, so the input box and the
-        // typed draft restore without corruption.
-        disarmPreview();
-        logLines(detail);
-        armPreview();
-        drawFooter(previewLines(typedLine, navIdx));
+        promptHistoryLines = detail;
+        promptHistoryScroll = 0;
+        drawFooter(historyPreviewLines(detail));
         return;
+      }
+      // While the detail panel is open, arrows / PgUp / PgDn scroll it instead of
+      // navigating slash/history; every other key (below) closes it.
+      if (promptHistoryLines && key && (key.name === "up" || key.name === "down" || key.name === "pageup" || key.name === "pagedown")) {
+        const page = key.name === "pageup" || key.name === "pagedown";
+        const dir = key.name === "up" || key.name === "pageup" ? -1 : 1;
+        const step = page ? Math.max(1, promptHistoryPage - 1) : 1;
+        const next = Math.min(promptHistoryMaxScroll, Math.max(0, promptHistoryScroll + dir * step));
+        if (next !== promptHistoryScroll) {
+          promptHistoryScroll = next;
+          drawFooter(historyPreviewLines(promptHistoryLines));
+        }
+        return;
+      }
+      if (promptHistoryLines) {
+        // Any other key dismisses the panel, then falls through to normal handling.
+        promptHistoryLines = null;
+        drawFooter(previewLines(typedLine, navIdx));
       }
       // Ctrl+V: attach a clipboard IMAGE to the next message. Terminal text paste
       // never arrives as a ctrl+v keypress (it streams as plain stdin data), so this
@@ -3016,7 +3111,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       try {
         disarmPreview();
         armPreview();
-        drawFooter(previewLines(typedLine, navIdx));
+        drawFooter(promptHistoryLines ? historyPreviewLines(promptHistoryLines) : previewLines(typedLine, navIdx));
       } catch { /* ignore resize render races */ }
     };
     process.stdout.on("resize", idleResizeHandler);
@@ -3055,6 +3150,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // window where the box is gone and keystrokes echo nowhere (the "no response
       // after the result" gap). readline's own echo stays gated while armed.
       armPreview();
+      promptHistoryLines = null; // each fresh prompt starts with the Ctrl+O panel closed
       if (prefilledLine) {
         rli.line = prefilledLine;
         rli.cursor = prefilledLine.length;

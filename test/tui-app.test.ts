@@ -236,6 +236,47 @@ test("LaunchTui auto-repair: resize listener is registered on start and removed 
     Renderer.prototype.render = realRender;
   }
 });
+
+test("LaunchTui resize coalescing: a SIGWINCH burst repaints once after the debounce", async () => {
+  const realRender = Renderer.prototype.render;
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function () {};
+  try {
+    const tui = new LaunchTui({ model: "m1", maxSteps: 25, tty: true, write: () => {} });
+    tui.start();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    // Spy on THIS instance's repaint so co-resident TUIs from other tests can't skew the count.
+    let repaints = 0;
+    const orig = (tui as unknown as { repaint: () => void }).repaint.bind(tui);
+    (tui as unknown as { repaint: () => void }).repaint = () => { repaints++; orig(); };
+    // Drag-resize fires many events in quick succession; they must collapse to ONE repaint.
+    for (let i = 0; i < 5; i++) process.stdout.emit("resize");
+    expect(repaints).toBe(0); // nothing painted synchronously — the repaint is debounced
+    await new Promise(r => setTimeout(r, 70));
+    expect(repaints).toBe(1); // exactly one coalesced repaint at the final size
+    tui.finish("done");
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});
+
+test("LaunchTui resize coalescing: finish() cancels a pending resize repaint", async () => {
+  const realRender = Renderer.prototype.render;
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function () {};
+  try {
+    const tui = new LaunchTui({ model: "m1", maxSteps: 25, tty: true, write: () => {} });
+    tui.start();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    let repaints = 0;
+    const orig = (tui as unknown as { repaint: () => void }).repaint.bind(tui);
+    (tui as unknown as { repaint: () => void }).repaint = () => { repaints++; orig(); };
+    process.stdout.emit("resize"); // schedule a debounced repaint…
+    tui.finish("done");           // …then finish before it fires
+    await new Promise(r => setTimeout(r, 70));
+    expect(repaints).toBe(0); // the pending repaint was cancelled by finish()
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});
 test("LaunchTui.usable is false under a non-TTY test process", () => {
   expect(LaunchTui.usable(false)).toBe(false); // bun test stdout is not a TTY
   expect(LaunchTui.usable(true)).toBe(false); // --no-tui always false

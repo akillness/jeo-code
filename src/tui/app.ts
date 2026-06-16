@@ -167,6 +167,13 @@ export class LaunchTui {
   private mutationGuarded = false;
   private finished = false;
   private timer: ReturnType<typeof setInterval> | undefined;
+  // Coalesce SIGWINCH bursts: a terminal drag-resize emits many resize events in
+  // quick succession. Repainting on every one flickers and races the differential
+  // baseline, so we debounce to a single repaint ~40ms after the LAST event (at the
+  // final size). lastCols/lastRows drop spurious same-size resizes some terminals emit.
+  private resizeTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastCols = -1;
+  private lastRows = -1;
   private pendingIndex: number | null = null;
   private pendingTitle: string | null = null;
   private pendingForge: ForgeSummary | null = null;
@@ -926,9 +933,20 @@ export class LaunchTui {
   }
 
   private readonly onResize = (): void => {
-    try {
-      this.repaint();
-    } catch { /* resize race — next tick repaints */ }
+    // Debounce: clear any pending repaint and schedule one after the burst settles.
+    if (this.resizeTimer) clearTimeout(this.resizeTimer);
+    this.resizeTimer = setTimeout(() => {
+      this.resizeTimer = undefined;
+      if (this.finished) return;
+      try {
+        const { cols, rows } = size();
+        // Skip spurious resize events that report the same geometry (no reflow needed).
+        if (cols === this.lastCols && rows === this.lastRows) return;
+        this.lastCols = cols;
+        this.lastRows = rows;
+        this.repaint();
+      } catch { /* resize race — next tick repaints */ }
+    }, 40);
   };
 
   /** Collapse the live region to static final output. */
@@ -938,6 +956,10 @@ export class LaunchTui {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
+    }
+    if (this.resizeTimer) {
+      clearTimeout(this.resizeTimer);
+      this.resizeTimer = undefined;
     }
     if (this.tty) {
       process.stdout.removeListener("resize", this.onResize);
@@ -998,7 +1020,7 @@ export class LaunchTui {
     // color:false keeps the plain stripMarkdown text for pipes/tests.
     const tabled = renderMarkdownTables(reply, { unicode: this.unicode });
     const renderedReply = this.theme.color
-      ? renderMarkdownAnsi(tabled, { accent: s => chalk.bold(accentPaint(this.theme)(s)) })
+      ? renderMarkdownAnsi(tabled, { accent: s => chalk.bold(accentPaint(this.theme)(s)), muted: mutedPaint(this.theme) })
       : stripMarkdown(tabled);
     const steps = this.footer.step || 0;
     const peak = this.progress.current();

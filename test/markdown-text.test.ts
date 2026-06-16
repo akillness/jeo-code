@@ -103,3 +103,35 @@ test("renderMarkdownAnsi: a heading following content gets one blank line above 
   // A leading heading never gains a blank line above it.
   expect(stripAnsi(renderMarkdownAnsi("## Top\nbody")).split("\n")[0]).toBe("Top");
 });
+
+test("renderMarkdownAnsi: ~~strikethrough~~ is struck + muted, markers removed", () => {
+  const prev = chalk.level;
+  chalk.level = 3;
+  try {
+    const stripAnsi = (s: string) => s.replace(/\u001b\[[0-9;]*m/g, "");
+    const styled = renderMarkdownAnsi("keep ~~retracted~~ here", { muted: s => `<M>${s}</M>` });
+    expect(styled).toContain("\u001b[9m"); // strikethrough SGR applied
+    expect(styled).toContain("<M>retracted</M>"); // routed through the jeo muted painter
+    expect(stripAnsi(styled).replace(/<\/?M>/g, "")).toBe("keep retracted here"); // ~~ markers gone
+  } finally {
+    chalk.level = prev;
+  }
+});
+
+test("renderMarkdownAnsi: muted painter (not raw dim) colors link URLs / blockquote / rule", () => {
+  const prev = chalk.level;
+  chalk.level = 3;
+  try {
+    const md = "[Site](https://x.com)\n\n> quoted line\n\n---";
+    const styled = renderMarkdownAnsi(md, { muted: s => `<M>${s}</M>` });
+    expect(styled).toContain("<M>(https://x.com)</M>"); // link URL uses the threaded mid-tone
+    expect(styled).toContain("<M>▎ quoted line</M>"); // blockquote gutter muted, mark kept
+    expect(styled).toContain("<M>" + "─".repeat(24) + "</M>"); // rule muted
+  } finally {
+    chalk.level = prev;
+  }
+});
+
+test("stripMarkdown removes ~~strikethrough~~ markers", () => {
+  expect(stripMarkdown("a ~~b~~ c")).toBe("a b c");
+});

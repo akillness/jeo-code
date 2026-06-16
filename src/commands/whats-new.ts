@@ -4,6 +4,7 @@ import {
   parseChangelogSections,
   releaseSections,
   renderWhatsNew,
+  RECENT_RELEASE_COUNT,
 } from "../util/whats-new";
 import { supportsUnicode } from "../tui/components/capability";
 
@@ -30,7 +31,7 @@ export async function runWhatsNewCommand(args: string[] = []): Promise<void> {
 
   const md = await loadBundledChangelog();
   const all = md ? releaseSections(parseChangelogSections(md)) : [];
-  const sections = hasAll ? all : all.slice(0, 1);
+  const sections = hasAll ? all : all.slice(0, RECENT_RELEASE_COUNT);
 
   if (hasJson) {
     console.log(JSON.stringify({ version: pkg.version, entries: sections }, null, 2));
@@ -56,7 +57,7 @@ function printUsage(): void {
   console.log("Show the release notes bundled with the installed jeo-code version.");
   console.log("");
   console.log("Options:");
-  console.log("  --all        Show notes for every released version, not just the latest");
+  console.log(`  --all        Show notes for every released version, not just the recent ${RECENT_RELEASE_COUNT}`);
   console.log("  --json       Output the notes as JSON");
   console.log("  -h, --help   Show this help message");
 }

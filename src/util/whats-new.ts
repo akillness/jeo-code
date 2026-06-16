@@ -27,6 +27,9 @@ export interface ChangelogSection {
   groups: ChangelogGroup[];
 }
 
+/** Default number of recent releases surfaced as "update news" (whats-new default, post-upgrade notice). Use --all for the full history. */
+export const RECENT_RELEASE_COUNT = 5;
+
 const HEADER = /^##\s+\[([^\]]+)\](?:\s*-\s*(\S+))?\s*$/;
 const SUBHEADER = /^###\s+(.+?)\s*$/;
 const BULLET = /^[-*]\s+(.+)$/;
@@ -266,7 +269,7 @@ export async function consumeLaunchWhatsNew(opts?: WhatsNewRenderOpts): Promise<
   const md = await loadBundledChangelog();
   await writeLastSeenVersion(current);
   if (!md) return null;
-  const sections = selectNewSections(parseChangelogSections(md), lastSeen, current);
+  const sections = selectNewSections(parseChangelogSections(md), lastSeen, current).slice(0, RECENT_RELEASE_COUNT);
   if (sections.length === 0) return null;
   return renderWhatsNew(sections, opts);
 }

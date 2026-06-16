@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.5.15] - 2026-06-16
+_"Update news" surfaces the latest 5 CHANGELOG releases instead of just one._
+
+### Changed
+- `jeo whats-new` (and the post-upgrade update notice) now default to the **5 most recent** releases instead of only the single latest entry, so the notes no longer look static/hardcoded across upgrades. `--all` still prints the full history. Mirrors gjc's "Recent Changes" pattern (latest-N + a full toggle) and the README's existing latest-5 digest. New shared constant `RECENT_RELEASE_COUNT` (in `src/util/whats-new.ts`) is the single source of truth for both the command and the launch-time notice; the launch notice is also capped to it so a large version jump no longer dumps a wall of releases.
+
 ## [0.5.14] - 2026-06-16
 _`jeo --tmux` live-verification harness — repeatable stability + behavior checks._
 

@@ -179,7 +179,7 @@ test("loadBundledChangelog reads the shipped CHANGELOG.md", async () => {
   expect(md!).toContain("# Changelog");
 });
 
-test("whats-new command --json reports the running version and latest entry", async () => {
+test("whats-new command --json reports the running version and recent releases", async () => {
   const logged: string[] = [];
   const orig = console.log;
   console.log = (...a: any[]) => { logged.push(a.join(" ")); };
@@ -192,7 +192,22 @@ test("whats-new command --json reports the running version and latest entry", as
   const parsed = JSON.parse(logged[0]!);
   expect(parsed.version).toBe(pkg.version);
   expect(Array.isArray(parsed.entries)).toBe(true);
-  expect(parsed.entries.length).toBe(1);
+  expect(parsed.entries.length).toBeGreaterThan(1);
+  expect(parsed.entries.length).toBeLessThanOrEqual(5);
+});
+
+test("whats-new --all returns the full history; default is capped to the recent few", async () => {
+  const count = async (args: string[]): Promise<number> => {
+    const logged: string[] = [];
+    const orig = console.log;
+    console.log = (...a: any[]) => { logged.push(a.join(" ")); };
+    try { await runWhatsNewCommand(args); } finally { console.log = orig; }
+    return JSON.parse(logged[0]!).entries.length as number;
+  };
+  const def = await count(["--json"]);
+  const all = await count(["--all", "--json"]);
+  expect(def).toBeLessThanOrEqual(5);
+  expect(all).toBeGreaterThanOrEqual(def);
 });
 
 test("whats-new command rejects unknown flags", async () => {

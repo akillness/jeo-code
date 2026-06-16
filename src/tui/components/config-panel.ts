@@ -46,6 +46,35 @@ export function formatProviderPanel(statuses: ProviderStatus[]): string[] {
   });
 }
 
+/** Side-effect sinks for {@link emitLoginCleanup} — injected so the orchestration
+ *  (ordering + conditionals + the confirmation string) is unit-testable without a
+ *  real terminal. The caller wires `clear` to the actual screen+scrollback escape. */
+export interface LoginCleanupIO {
+  clear: () => void;
+  write: (line: string) => void;
+}
+export interface LoginCleanupOpts {
+  isTty: boolean;
+  provider: string;
+  email?: string;
+  ready: boolean;
+  label?: string;
+  welcomeLines: string[];
+}
+/** Tidy the screen after a successful `/provider login`: on a TTY clear the screen
+ *  and re-render the welcome (drops the OAuth flow's browser/"waiting…" noise — the
+ *  same path `/clear` uses), then print ONE confirmation line; off a TTY just the
+ *  confirmation. Pure orchestration over the injected IO. */
+export function emitLoginCleanup(io: LoginCleanupIO, opts: LoginCleanupOpts): void {
+  if (opts.isTty) {
+    io.clear();
+    io.write(opts.welcomeLines.join("\n"));
+  }
+  const who = opts.email ? ` (${opts.email})` : "";
+  const status = !opts.ready && opts.label ? ` — ${opts.label}` : "";
+  io.write(`✓ Logged in to ${opts.provider}${who}${status}. Pick a model with /model.`);
+}
+
 /** Subagent roster: ` id        title — model · thinking ≤N steps  (read-only)`. */
 export function formatAgentsPanel(
   roles: readonly SubagentRole[],

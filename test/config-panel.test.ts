@@ -3,6 +3,7 @@ import {
   formatModelLine,
   formatAliasLines,
   formatProviderPanel,
+  emitLoginCleanup,
   formatAgentsPanel,
   formatAgentDetail,
   formatConfigPanel,
@@ -169,4 +170,36 @@ test("formatCanonicalCatalogTable renders GJC-style canonical rows", () => {
   expect(joined).toContain("openai/alpha-2");
   expect(joined).toContain("2");
   expect(joined).toContain("◀");
+});
+
+test("emitLoginCleanup clears + re-renders welcome then one confirmation (TTY)", () => {
+  const ops: string[] = [];
+  emitLoginCleanup(
+    { clear: () => ops.push("CLEAR"), write: l => ops.push(`W:${l}`) },
+    { isTty: true, provider: "openai", email: "me@x.com", ready: true, welcomeLines: ["WELCOME"] },
+  );
+  // Order: clear → welcome → confirmation.
+  expect(ops).toEqual([
+    "CLEAR",
+    "W:WELCOME",
+    "W:✓ Logged in to openai (me@x.com). Pick a model with /model.",
+  ]);
+});
+
+test("emitLoginCleanup skips the clear/welcome off a TTY — just the confirmation", () => {
+  const ops: string[] = [];
+  emitLoginCleanup(
+    { clear: () => ops.push("CLEAR"), write: l => ops.push(l) },
+    { isTty: false, provider: "gemini", ready: true, welcomeLines: ["WELCOME"] },
+  );
+  expect(ops).toEqual(["✓ Logged in to gemini. Pick a model with /model."]);
+});
+
+test("emitLoginCleanup notes a not-ready provider's label, omits email when absent", () => {
+  const ops: string[] = [];
+  emitLoginCleanup(
+    { clear: () => {}, write: l => ops.push(l) },
+    { isTty: false, provider: "antigravity", ready: false, label: "needs jeo auth", welcomeLines: [] },
+  );
+  expect(ops[0]).toBe("✓ Logged in to antigravity — needs jeo auth. Pick a model with /model.");
 });

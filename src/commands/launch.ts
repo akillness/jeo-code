@@ -45,6 +45,7 @@ import { SelectList, renderSelectList, type SelectItem } from "../tui/components
 import {
   formatModelLine,
   formatProviderPanel,
+  emitLoginCleanup,
   formatAgentsPanel,
   formatAgentDetail,
   formatConfigPanel,
@@ -3669,12 +3670,25 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             const after = (await describeAllProviders()).find(s => s.name === target);
             const forProvider = live.filter(r => r.provider === target);
             if (forProvider.some(r => r.ok && r.models.length > 0)) lastPickIndex = flattenModels(forProvider);
-            if (process.stdout.isTTY) {
-              disarmPreview();
-              process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
-              console.log(renderWelcome(welcomeData).join("\n"));
-            }
-            console.log(`✓ Logged in to ${target}${email ? ` (${email})` : ""}${after && !after.ready ? ` — ${after.label}` : ""}. Pick a model with /model.`);
+            // Tidy back to the initial query-input screen: the OAuth flow printed
+            // browser prompts / "waiting…" lines that clutter scrollback. emitLoginCleanup
+            // clears + re-renders the welcome (same path as /clear) then prints one
+            // confirmation; the verbose live-model dump is dropped (lastPickIndex is
+            // still seeded so /model #N works). Orchestration is unit-tested.
+            emitLoginCleanup(
+              {
+                clear: () => { disarmPreview(); process.stdout.write("\x1b[2J\x1b[3J\x1b[H"); },
+                write: line => console.log(line),
+              },
+              {
+                isTty: process.stdout.isTTY === true,
+                provider: target,
+                email,
+                ready: after?.ready ?? false,
+                label: after?.label,
+                welcomeLines: renderWelcome(welcomeData),
+              },
+            );
           } catch (err) {
             console.log(`[FAILED] ${(err as Error).message} — or set ${target.toUpperCase()}_API_KEY.`);
           }

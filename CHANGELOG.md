@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.2] - 2026-06-16
+_Interactive `/provider` picker, clearer animated status + labeled block/prose boundaries, and a transient empty-response retry._
+
+### Added
+- **Interactive `/provider` picker** (gjc-style) with a clean screen after login (#26).
+- **Clearer visual structure** — unified labeled boundaries for thinking / reasoning / output blocks and a dimensional animated status line (#29, building on the labeled-boundary work).
+- `docs/minimo/` — a plan to apply MiMo Code's memory & goal-management ideas to jeo (#28).
+
+### Fixed
+- **Retry transient empty-200 responses** (a 200 with an empty body) for stability — gjc parity (#27).
+
 ## [0.6.1] - 2026-06-16
 _Live reasoning progress (no more frozen "calling model"), thinking-level fixes for Anthropic/Antigravity, and input-box/Ctrl+O TUI fixes._
 

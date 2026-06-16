@@ -142,13 +142,12 @@ function fastThinkingLevelForModel(modelId: string): ThinkLevel | undefined {
   const supported = catalogMetadata(modelId)?.thinking ?? [];
   if (supported.includes("minimal")) return "minimal";
   if (supported.includes("low")) return "low";
-  // Fallback for thinking-capable models that lack an explicit catalog entry (e.g. the many
-  // antigravity `gemini-3.x` variants the CCA backend serves but the static catalog can't
-  // enumerate): they DO apply a thinking budget (gemini/antigravity thinkingConfig, anthropic
-  // extended thinking), so /fast must offer `minimal` as the fast (no-deep-thinking) level
-  // instead of reporting "unsupported".
-  const m = modelId.toLowerCase();
-  if (/gemini-(2\.5|[3-9])/.test(m) || /(^|[-/])(o\d|gpt-5)/.test(m) || /-thinking|-high$|-low$/.test(m)) return "minimal";
+  // Fallback for the one thinking-capable family that misses a catalog entry in practice:
+  // the dynamic antigravity `gemini-3.x` variants (gemini-3.5-flash-low/-extra-low, …) the
+  // CCA backend serves but the static catalog can't enumerate. They apply a thinking budget,
+  // so /fast offers `minimal` as the fast level instead of reporting "unsupported". (openai
+  // reasoning models and *-thinking/-high/-low antigravity ids are already catalogued.)
+  if (/gemini-(2\.5|[3-9])/.test(modelId.toLowerCase())) return "minimal";
   return undefined;
 }
 

@@ -807,3 +807,55 @@ test("LaunchTui: a light tool's ledger line stays clean — no ms suffix (durati
   expect(txt).toMatch(/Read x\.ts/);    // light-tool ledger line is present
   expect(txt).not.toMatch(/\(\d+ms\)/); // …but stays a clean single line (ms is for forge cards)
 });
+const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+
+test("Ctrl+O detail panel windows long content with ↑/↓ counters (no '… N more' clip)", () => {
+  const tui = new LaunchTui({ model: "m1", tty: true, write: () => {} }) as any;
+  tui.historyLines = Array.from({ length: 30 }, (_, i) => `line${i}`);
+  tui.historyScroll = 0;
+  const panel = (maxRows: number): string => strip(tui.renderHistoryPanel(60, maxRows).join("\n"));
+
+  // At the top: first lines + a "below" counter; the tail is NOT clipped away.
+  let p = panel(12);
+  expect(p).toContain("line0");
+  expect(p).toContain("more below");
+  expect(p).not.toContain("line29");
+  expect(p).not.toContain("more line(s)"); // old clip wording is gone
+
+  // Jump to the bottom (bounds were set by the render above) → last line reachable.
+  tui.historyScroll = tui.historyMaxScroll;
+  p = panel(12);
+  expect(p).toContain("line29");
+  expect(p).toContain("more above");
+
+  // Short content stays a plain, non-scrollable panel.
+  tui.historyLines = ["only", "a", "few"];
+  tui.historyScroll = 0;
+  const small = panel(12);
+  expect(small).toContain("only");
+  expect(small).not.toContain("scroll");
+  expect(small).not.toContain("more above");
+  expect(small).not.toContain("more below");
+});
+
+test("scrollDetail clamps to [0,max] and is a no-op when the panel is closed", () => {
+  const tui = new LaunchTui({ model: "m1", tty: true, write: () => {} }) as any;
+  tui.draw = () => {}; // isolate the scroll math from the live frame
+
+  // Closed panel → no-op.
+  tui.scrollDetail(1, false);
+  expect(tui.historyScroll).toBe(0);
+
+  // Open + establish bounds via a render, then page past both ends.
+  tui.historyLines = Array.from({ length: 30 }, (_, i) => `line${i}`);
+  tui.renderHistoryPanel(60, 12);
+  const max = tui.historyMaxScroll;
+  expect(max).toBeGreaterThan(0);
+
+  tui.scrollDetail(-1, false); // already at top
+  expect(tui.historyScroll).toBe(0);
+  for (let i = 0; i < 100; i++) tui.scrollDetail(1, true);
+  expect(tui.historyScroll).toBe(max);
+  for (let i = 0; i < 100; i++) tui.scrollDetail(-1, true);
+  expect(tui.historyScroll).toBe(0);
+});

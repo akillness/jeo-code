@@ -485,6 +485,9 @@ interface AbortHarnessOptions {
    *  Without this hook the byte would be swallowed into the buffered input queue,
    *  which is why Ctrl+O historically "did nothing" while the TUI owned stdin. */
   onDetailKey?: () => void;
+  /** Invoked when an arrow / PageUp / PageDown key arrives mid-turn — scrolls the
+   *  open Ctrl+O detail panel. dir -1 = up/back, +1 = down/forward; page = full jump. */
+  onScrollKey?: (dir: -1 | 1, page: boolean) => void;
   /** Invoked with printable keyboard input received while the live turn owns stdin. */
   onBufferedInput?: (chunk: string) => void;
   /** True while the input queue is inside a bracketed paste (mid-paste chunks
@@ -712,6 +715,14 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
       opts.onDetailKey?.();
       return;
     }
+    // Arrow / PageUp / PageDown — scroll the open Ctrl+O detail panel. Exact-match
+    // (whole chunk) like Ctrl+O so embedded sequences in pasted/streamed data don't
+    // trigger; bracketed paste already returned above. When the panel is closed the
+    // hook is a no-op, so these keys stay inert mid-turn as before.
+    if (text === "\u001b[A") { opts.onScrollKey?.(-1, false); return; }
+    if (text === "\u001b[B") { opts.onScrollKey?.(1, false); return; }
+    if (text === "\u001b[5~") { opts.onScrollKey?.(-1, true); return; }
+    if (text === "\u001b[6~") { opts.onScrollKey?.(1, true); return; }
     const escAt = text.indexOf("\u001b");
     const sigintAt = text.indexOf("\u0003");
     const controlAt =
@@ -1440,6 +1451,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (lines.length === 0) return;
           tui.showDetail(lines);
         },
+        onScrollKey: (dir, page) => tui?.scrollDetail(dir, page),
         onBufferedInput: chunk => {
           if (!tui) return;
           // gjc-style mid-turn steering: a typed Enter (outside a bracketed paste)

@@ -184,6 +184,7 @@ test("in-flight abort harness forwards printable live-turn input for the next pr
   const rawModes: boolean[] = [];
   const chunks: string[] = [];
   let noise = 0;
+  const scrolls: Array<[number, boolean]> = [];
   let resumed = false;
   const stdin = {
     isTTY: true,
@@ -203,6 +204,7 @@ test("in-flight abort harness forwards printable live-turn input for the next pr
     captureEsc: true,
     onBufferedInput: chunk => chunks.push(chunk),
     onNoise: () => { noise++; },
+    onScrollKey: (dir, page) => { scrolls.push([dir, page]); },
   });
 
   expect(rawModes).toEqual([true]);
@@ -212,12 +214,20 @@ test("in-flight abort harness forwards printable live-turn input for the next pr
   harness.handleData("작업내용 확인해줘\r");
   expect(chunks).toEqual(["작업내용 확인해줘\r"]);
 
+  // Arrow up/down + PageUp/PageDown now drive the Ctrl+O detail scroll, not noise.
   harness.handleData("\u001b[A");
-  expect(noise).toBe(1);
+  expect(scrolls).toEqual([[-1, false]]);
+  expect(noise).toBe(0);
+  harness.handleData("\u001b[B");
+  harness.handleData("\u001b[5~");
+  harness.handleData("\u001b[6~");
+  expect(scrolls).toEqual([[-1, false], [1, false], [-1, true], [1, true]]);
+  expect(noise).toBe(0);
   expect(chunks).toEqual(["작업내용 확인해줘\r"]);
 
+  // A non-scroll escape (left-arrow) still splits printable prefix → input, rest → noise.
   harness.handleData("다음\u001b[D");
-  expect(noise).toBe(2);
+  expect(noise).toBe(1);
   expect(chunks).toEqual(["작업내용 확인해줘\r", "다음"]);
 
   harness.dispose();

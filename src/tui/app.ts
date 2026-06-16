@@ -225,6 +225,12 @@ export class LaunchTui {
   // block above the heartbeat; pressing Ctrl+O again clears it and restores the
   // normal activity view. Kept as data, not scrollback text, so it can actually close.
   private historyLines: string[] | null = null;
+  // Ctrl+O detail panel scroll: a window offset so long/CJK content is fully
+  // reachable (↑↓/PgUp/PgDn) instead of clipped at "… N more". Bound + page size
+  // are recomputed each render from the visible body height.
+  private historyScroll = 0;
+  private historyMaxScroll = 0;
+  private historyPageSize = 1;
   // Kind of the last ledger entry — drives the gjc-reference vertical rhythm: a
   // blank line separates DIFFERENT ledger groups (card ↔ ✓-tool lines ↔ reasoning
   // ↔ notices), while same-kind lines (consecutive ✓ reads) stay adjacent.
@@ -543,9 +549,10 @@ export class LaunchTui {
     };
   }
 
-  /** Ctrl+O history/detail toggle, mid-turn: first press opens a live panel with
-   *  the full last reply / tool output, second press closes it and returns to the
-   *  normal activity frame. Unlike the old scrollback dump, this is reversible. */
+  /** Ctrl+O history/detail toggle, mid-turn: first press opens a SCROLLABLE live
+   *  panel with the full last reply / tool output, second press closes it and
+   *  returns to the normal activity frame. Reversible; the full content is reachable
+   *  via scrollDetail (↑↓/PgUp/PgDn) so nothing is lost to "… N more" clipping. */
   showDetail(lines: string[]): void {
     if (this.finished) return;
     if (this.historyLines) {
@@ -555,6 +562,19 @@ export class LaunchTui {
     }
     if (lines.length === 0) return;
     this.historyLines = lines;
+    this.historyScroll = 0;
+    this.draw();
+  }
+
+  /** Scroll the open Ctrl+O detail panel. dir -1 = up/back, +1 = down/forward;
+   *  `page` jumps a full visible body height. No-op when the panel is closed, so it
+   *  is safe to wire unconditionally to arrow/PgUp/PgDn keys. */
+  scrollDetail(dir: -1 | 1, page = false): void {
+    if (this.finished || !this.historyLines) return;
+    const step = page ? Math.max(1, this.historyPageSize - 1) : 1;
+    const next = Math.min(this.historyMaxScroll, Math.max(0, this.historyScroll + dir * step));
+    if (next === this.historyScroll) return;
+    this.historyScroll = next;
     this.draw();
   }
 
@@ -1085,20 +1105,42 @@ export class LaunchTui {
     const inner = Math.max(10, boxWidth - 2);
     const accent = this.theme.color ? accentPaint(this.theme) : (s: string) => s;
     const dim = this.theme.color ? chalk.dim : (s: string) => s;
-    const title = `${accent("history")} ${dim("· Ctrl+O closes")}`;
     const wrapped = this.historyLines.flatMap(line => {
       const physical = line.split("\n");
       return physical.flatMap(part => (visibleWidth(part) <= inner ? [part] : wrapTextWithAnsi(part, inner)));
     });
+    const bodyLimit = Math.max(1, maxRows - 4); // box borders (2) + title + divider
+    const scrollable = wrapped.length > bodyLimit;
+    // Window capacity at the bottom (worst case: both ↑ and ↓ indicators take a row),
+    // so the last line is always reachable by scrolling.
+    const cap = scrollable ? Math.max(1, bodyLimit - 2) : bodyLimit;
+    this.historyPageSize = cap;
+    this.historyMaxScroll = Math.max(0, wrapped.length - cap);
+    if (this.historyScroll > this.historyMaxScroll) this.historyScroll = this.historyMaxScroll;
+    const hint = scrollable ? "· ↑↓/PgUp/PgDn scroll · Ctrl+O closes" : "· Ctrl+O closes";
+    const title = `${accent("history")} ${dim(hint)}`;
     const header = [title, "DIVIDER"];
-    const bodyLimit = Math.max(0, maxRows - 2 - header.length);
-    let body = wrapped;
-    if (wrapped.length > bodyLimit) {
-      const keep = Math.max(0, bodyLimit - 1);
-      body = wrapped.slice(0, keep);
-      body.push(dim(`… ${wrapped.length - keep} more line(s)`));
+    let body: string[];
+    if (!scrollable) {
+      body = wrapped;
     } else {
-      body = wrapped.slice(0, bodyLimit);
+      // Window the content and show ↑/↓ counters instead of dropping the tail at
+      // "… N more": every line is reachable via scrollDetail (arrows / PgUp-PgDn).
+      const start = this.historyScroll;
+      const above = start;
+      const reserveTop = above > 0 ? 1 : 0;
+      let innerLimit = Math.max(1, bodyLimit - reserveTop - 1);
+      let win = wrapped.slice(start, start + innerLimit);
+      let below = wrapped.length - (start + win.length);
+      if (below === 0) {
+        innerLimit = Math.max(1, bodyLimit - reserveTop);
+        win = wrapped.slice(start, start + innerLimit);
+        below = wrapped.length - (start + win.length);
+      }
+      body = [];
+      if (above > 0) body.push(dim(`↑ ${above} more above`));
+      body.push(...win);
+      if (below > 0) body.push(dim(`↓ ${below} more below`));
     }
     return boxBlock([...header, ...body], boxWidth, {
       glyphs: this.unicode ? BOX_UNICODE : BOX_ASCII,

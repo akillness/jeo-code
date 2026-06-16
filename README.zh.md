@@ -150,11 +150,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.5.17]** (2026-06-16) — Mid-turn Ctrl+O detail panel is now scrollable — long replies are fully readable, no clipping.
 - **[0.5.16]** (2026-06-16) — `/resume` and Ctrl+O no longer corrupt the TUI — clean screen restore + scrollback expand.
 - **[0.5.15]** (2026-06-16) — `jeo update` now actually upgrades — bare command installs the latest release instead of just printing a manual command.
 - **[0.5.14]** (2026-06-16) — `jeo --tmux` live-verification harness — repeatable stability + behavior checks.
 - **[0.5.13]** (2026-06-15) — Workflow `/` commands actually run — `/deep-interview`, `/team`, `/ultragoal`, `/ralplan` dispatch by name.
-- **[0.5.12]** (2026-06-15) — Yellow status animation while a process runs, and elapsed `(Nms)` on every completed tool card.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

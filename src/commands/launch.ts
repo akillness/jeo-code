@@ -1391,7 +1391,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const runTurn = async (
     userInput: string,
     useTui: boolean,
-    images?: ImageAttachment[]
+    images?: ImageAttachment[],
+    // What to show as the user card in the live frame: undefined → the prompt
+    // itself (normal turns); null → suppress it entirely (skill runs, where the
+    // injected SKILL.md is NOT user-authored and the [skill] card already names it,
+    // gjc-style); a string → show that compact label instead of the raw input.
+    opts?: { userCard?: string | null },
   ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean; usage: string }> => {
     const turnConfig = await readGlobalConfig();
     const activeModel = sessionModel || turnConfig.defaultModel;
@@ -1456,7 +1461,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // only as the transient HUD turn-title otherwise, which vanishes when the live
       // frame clears at turn-end — so the conversation transcript lost every user
       // prompt. Flush a `user` card (same surface as a mid-turn steer) so it persists.
-      if (tui && userInput.trim()) tui.flushUserCard(userInput);
+      // Flush a `user` card (same surface as a mid-turn steer) so the prompt persists
+      // in scrollback. opts.userCard overrides it: null suppresses the card entirely
+      // (skill runs), a string shows a compact label instead of the raw input.
+      const cardText = opts?.userCard === undefined ? userInput : opts.userCard;
+      if (tui && cardText && cardText.trim()) tui.flushUserCard(cardText);
       tui?.setContextUsage(historyTokens(history), contextTokens);
 
       // Per-turn steering inbox (gjc parity): additional queries typed mid-turn land
@@ -1761,7 +1770,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         console.log(`▶ Running skill: ${inv.skill.name}${inv.intent ? ` — ${inv.intent}` : ""}`);
       }
       const task = buildSkillTask(inv.skill, inv.intent, inv.invokedAs);
-      const { reply, rendered, usage } = await runTurn(task, useOneShotTui);
+      const { reply, rendered, usage } = await runTurn(task, useOneShotTui, undefined, { userCard: null });
       if (!rendered) console.log(stripMarkdown(renderMarkdownTables(reply)) + usage);
       else if (usage) console.log(usage.trim());
     };
@@ -1869,7 +1878,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // starts — skill name, resolved SKILL.md path, and the prompt size.
     {
       const card = formatForgeBox(
-        { title: "[skill]", lines: skillInvocationCard(skill) },
+        { title: "[skill]", lines: skillInvocationCard(skill, intent) },
         { width: Math.min(100, Math.max(40, (process.stdout.columns ?? 80) - 2)), unicode: supportsUnicode(), paint: accentPaint(uiTheme), paintShadow: accentShadowPaint(uiTheme), color: uiTheme.color },
       );
       logLines(card);
@@ -1950,7 +1959,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // final reply is the skill's result.
       if (!useTui) console.log(`▶ Running skill: ${skill.name}${intent ? ` — ${intent}` : ""}`);
       const task = buildSkillTask(skill, intent, invokedAs);
-      const { reply, rendered, usage } = await runTurn(task, useTui);
+      const { reply, rendered, usage } = await runTurn(task, useTui, undefined, { userCard: null });
       if (!rendered) console.log(`jeo> ${stripMarkdown(renderMarkdownTables(reply))}${usage}`);
       else if (usage) console.log(usage.trim());
     }

@@ -214,3 +214,21 @@ test("skillInvocationCard: name + tree-connector path/prompt detail; bundled ski
   expect(card[1]).toBe("├─ path: (bundled) src/prompts/skills/team/SKILL.md");
   expect(card[2]).toBe("└─ prompt: 2 lines");
 });
+
+test("skillInvocationCard: shows the intent line (truncated) when given, instead of a user box", () => {
+  const skill = { name: "research", command: "", summary: "", whenToUse: "", details: "x\ny", sourcePath: "/s/research/SKILL.md" };
+  const card = skillInvocationCard(skill, "  find the auth bug  ");
+  expect(card).toEqual([
+    "Skill: research",
+    "├─ path: /s/research/SKILL.md",
+    "├─ intent: find the auth bug", // trimmed, before the prompt line
+    "└─ prompt: 2 lines",
+  ]);
+  // No intent → no intent row (back to 3 lines).
+  expect(skillInvocationCard(skill)).toHaveLength(3);
+  // Long intent is truncated with an ellipsis.
+  const long = skillInvocationCard(skill, "z".repeat(200));
+  const intentRow = long.find(l => l.startsWith("├─ intent:"))!;
+  expect(intentRow.length).toBeLessThanOrEqual("├─ intent: ".length + 88);
+  expect(intentRow.endsWith("…")).toBe(true);
+});

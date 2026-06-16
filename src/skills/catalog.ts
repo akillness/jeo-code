@@ -450,13 +450,20 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
 /** gjc-style skill-invocation card body (the `[skill]` block shown in the TUI
  *  when `$name`//skill runs): name, resolved SKILL.md path (or the bundled
  *  module path), and the prompt size actually injected. Pure — testable. */
-export function skillInvocationCard(skill: SkillDoc): string[] {
+export function skillInvocationCard(skill: SkillDoc, intent?: string): string[] {
   const promptLines = (skill.raw ?? skill.details ?? "").split("\n").filter(l => l.trim().length > 0).length;
   // jeo-ref tree-connector detail: the skill name leads, resolved metadata hangs
-  // off ├─/└─ connectors so the card scans like the reference's Skill panel.
+  // off ├─/└─ connectors so the card scans like the reference's Skill panel. The
+  // intent (when given) is shown here so it isn't lost — the injected SKILL.md is
+  // NOT echoed as a user box (gjc-style: compact card, not the raw doc).
+  const trimmedIntent = intent?.trim();
+  const intentLine = trimmedIntent
+    ? [`├─ intent: ${trimmedIntent.length > 88 ? `${trimmedIntent.slice(0, 87)}…` : trimmedIntent}`]
+    : [];
   return [
     `Skill: ${skill.name}`,
     `├─ path: ${skill.sourcePath ?? `(bundled) src/prompts/skills/${skill.name}/SKILL.md`}`,
+    ...intentLine,
     `└─ prompt: ${promptLines} lines`,
   ];
 }

@@ -54,21 +54,41 @@ test("update - up-to-date path", async () => {
 
   await runUpdateCommandWith([], deps);
 
-  expect(logged.some(line => line.includes("jeo-code is up-to-date"))).toBe(true);
+  expect(logged.some(line => line.includes("already up-to-date"))).toBe(true);
   expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true);
 });
 
-test("update - newer-available prints upgrade hint", async () => {
+test("update - bare command INSTALLS when newer (default action)", async () => {
+  let installedWith: string | undefined = "UNCALLED";
   const deps: UpdateDeps = {
     fetchJson: async () => ({ version: "0.2.0" }),
     localVersion: () => "0.1.0",
-    install: async () => ({ success: true })
+    install: async (version?: string) => { installedWith = version; return { success: true }; },
+    showWhatsNew: () => {},
   };
 
   await runUpdateCommandWith([], deps);
 
+  // Bare `jeo update` now performs the install (passing the resolved latest version),
+  // instead of merely printing a manual `bun install` hint.
+  expect(installedWith).toBe("0.2.0");
+  expect(logged.some(line => line.includes("Successfully installed jeo-code@0.2.0"))).toBe(true);
+  expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true);
+});
+
+test("update - --check only checks and suggests 'jeo update' (no install)", async () => {
+  let installed = false;
+  const deps: UpdateDeps = {
+    fetchJson: async () => ({ version: "0.2.0" }),
+    localVersion: () => "0.1.0",
+    install: async () => { installed = true; return { success: true }; },
+  };
+
+  await runUpdateCommandWith(["--check"], deps);
+
+  expect(installed).toBe(false);
   expect(logged.some(line => line.includes("Newer version available: 0.2.0"))).toBe(true);
-  expect(logged.some(line => line.includes("bun install -g jeo-code"))).toBe(true);
+  expect(logged.some(line => line.includes("Run 'jeo update' to install"))).toBe(true);
   expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true);
 });
 
@@ -133,7 +153,7 @@ test("update - --install skips when already current", async () => {
   await runUpdateCommandWith(["--install"], deps);
 
   expect(installCalled).toBe(false);
-  expect(logged.some(line => line.includes("Skipping installation"))).toBe(true);
+  expect(logged.some(line => line.includes("already up-to-date"))).toBe(true);
   expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true);
 });
 

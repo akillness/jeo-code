@@ -35,7 +35,7 @@ export function compareVersions(a: string, b: string): -1 | 0 | 1 {
 export interface UpdateDeps {
   fetchJson: (url: string, options?: { signal?: AbortSignal }) => Promise<any>;
   localVersion: () => string;
-  install: () => Promise<{ success: boolean; stdout?: string; stderr?: string }>;
+  install: (version?: string) => Promise<{ success: boolean; stdout?: string; stderr?: string }>;
   /** Display release notes after a successful self-update (best-effort, no-op in tests). */
   showWhatsNew?: () => void;
 }
@@ -58,8 +58,12 @@ export const defaultDeps: UpdateDeps = {
   localVersion: () => {
     return pkg.version;
   },
-  install: async () => {
-    const proc = Bun.spawnSync(["bun", "install", "-g", "jeo-code"], {
+  install: async (version?: string) => {
+    // Self-update the global install. jeo runs on Bun (see the `#!/usr/bin/env bun`
+    // shebang), so Bun is always present; `@<version>` (default `latest`) forces the
+    // newest publish even if a stale global is cached.
+    const target = `jeo-code@${version ?? "latest"}`;
+    const proc = Bun.spawnSync(["bun", "install", "-g", target], {
       stdout: "inherit",
       stderr: "inherit",
     });
@@ -83,6 +87,7 @@ export async function runUpdateCommand(args: string[] = []): Promise<void> {
 export async function runUpdateCommandWith(args: string[], deps: UpdateDeps): Promise<void> {
   const isHelp = args.includes("--help") || args.includes("-h");
   const hasInstall = args.includes("--install");
+  const hasCheck = args.includes("--check");
   const hasJson = args.includes("--json");
   const hasStrict = args.includes("--strict");
 
@@ -154,8 +159,13 @@ export async function runUpdateCommandWith(args: string[], deps: UpdateDeps): Pr
     }
   }
 
+  // Default action is INSTALL (bare `jeo update` upgrades). `--check` forces a
+  // check-only run; `--json` stays check-only too (programmatic status polling must
+  // not trigger an install) unless `--install` is given explicitly.
+  const shouldInstall = hasInstall || (!hasCheck && !hasJson);
+
   // We got the version successfully
-  if (hasInstall) {
+  if (shouldInstall) {
     if (upToDate) {
       if (hasJson) {
         console.log(JSON.stringify({
@@ -165,14 +175,14 @@ export async function runUpdateCommandWith(args: string[], deps: UpdateDeps): Pr
           installed: false
         }));
       } else {
-        console.log(`jeo-code is up-to-date (${current}). Skipping installation.`);
+        console.log(`jeo-code is already up-to-date (${current}).`);
       }
     } else {
       if (!hasJson) {
         console.log(`Installing update: ${current} -> ${latest}...`);
       }
       try {
-        const result = await deps.install();
+        const result = await deps.install(latest ?? undefined);
         if (result.success) {
           if (hasJson) {
             console.log(JSON.stringify({
@@ -236,7 +246,7 @@ export async function runUpdateCommandWith(args: string[], deps: UpdateDeps): Pr
         }));
       } else {
         console.log(`Newer version available: ${latest} (current: ${current}).`);
-        console.log("Run 'bun install -g jeo-code' to upgrade.");
+        console.log("Run 'jeo update' to install it.");
       }
     }
   }
@@ -248,8 +258,9 @@ function printUsage() {
   console.log("Check for and install updates for jeo-code.");
   console.log("");
   console.log("Options:");
-  console.log("  --check      Check for updates (default)");
-  console.log("  --install    Check and install if newer");
+  console.log("  (default)    Check and install if a newer version is available");
+  console.log("  --check      Only check; do not install");
+  console.log("  --install    Force install if newer (also used with --json)");
   console.log("  --json       Output result in JSON format");
   console.log("  --strict     Exit with code 1 on network/registry errors");
   console.log("  -h, --help   Show this help message");

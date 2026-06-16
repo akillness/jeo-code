@@ -162,11 +162,11 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.4]** (2026-06-16) — Branding, a responsive-resize fix, `/provider` realignment, and engine repeat-spin recovery.
 - **[0.6.3]** (2026-06-16) — OAuth loopback reliability fix.
 - **[0.6.2]** (2026-06-16) — Interactive `/provider` picker, clearer animated status + labeled block/prose boundaries, and a transient empty-response retry.
 - **[0.6.1]** (2026-06-16) — Live reasoning progress (no more frozen "calling model"), thinking-level fixes for Anthropic/Antigravity, and input-box/Ctrl+O TUI fixes.
 - **[0.6.0]** (2026-06-16) — TUI quality of life: durable input history (↑ recalls past queries across launches), clean `/resume` rendering, and a scrollable mid-turn Ctrl+O panel.
-- **[0.5.16]** (2026-06-16) — `/resume` and Ctrl+O no longer corrupt the TUI — clean screen restore + scrollback expand.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

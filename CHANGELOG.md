@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.4] - 2026-06-16
+_Branding, a responsive-resize fix, `/provider` realignment, and engine repeat-spin recovery._
+
+### Added
+- **Branding** — jeo-code icon set, favicon, social preview + README logo (#33).
+- **Goal verifier** — turns are checked against the stated goal before completing, so a turn can't silently report done without meeting it.
+- Dynamic resolution handling + jeo-tone text styling across the TUI.
+
+### Changed
+- **`/provider` aligned with gjc** — it's now onboarding/login only; switching the active model moves to `/model`.
+
+### Fixed
+- **Responsive resize no longer lags** — leading-edge throttle replaces the trailing debounce that never fired during a continuous drag, so the frame tracks the drag live and paints the final geometry exactly.
+- **Engine recovers from repeat-spin** instead of cold-stopping the turn.
+- Idle input box capped at 120 cols to match the live-turn box.
+
 ## [0.6.3] - 2026-06-16
 _OAuth loopback reliability fix._
 

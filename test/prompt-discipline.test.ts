@@ -50,12 +50,37 @@ test("fable5 disciplines: failure-posture in WORKING_DISCIPLINE, bounded web-quo
   expect(TOOL_PROTOCOL).toContain("paraphrase by default");
 });
 
-// Token budget: WORKING_DISCIPLINE's original intent was "<300 tokens". It was deliberately
-// enriched with the fable5 HIGH-leverage disciplines (don't-assume-disk, anti-hallucination,
-// failure-posture) and trimmed to stay lean; assert it does not balloon past a small headroom
-// over the original intent (coarse chars/4 proxy; real cl100k count is lower).
-test("token budget: WORKING_DISCIPLINE stays lean after fable5 enrichment", () => {
+// P3 — skills-first ordering. Lives in launch.ts's JEO workflow routing block (not
+// WORKING_DISCIPLINE, which is shared with skill-less read-only subagents), harmonized
+// with jeo's conservative "don't recite skills" routing per docs/plan_jeo.md §2.3.
+test("P3: launch routing carries the skills-first ordering rule", async () => {
+  const src = await Bun.file(new URL("../src/commands/launch.ts", import.meta.url)).text();
+  expect(src).toContain("read that SKILL.md first");
+  expect(src).toContain("don't pre-judge that none is needed");
+});
+
+// Token budget: WORKING_DISCIPLINE's original intent was "<300 tokens". Phase 1 expansion
+// (safety guard + file budget + mistake tone) adds ~120 tokens for a total budget of ~450.
+// This is the conservative expansion per docs/token_budget_1000_analysis.md Phase 1.
+test("token budget: WORKING_DISCIPLINE Phase 1 expansion stays within 450-token budget", () => {
   const approxTokens = (s: string) => Math.ceil(s.length / 4);
-  expect(approxTokens(WORKING_DISCIPLINE)).toBeLessThan(340);
+  expect(approxTokens(WORKING_DISCIPLINE)).toBeLessThan(480); // 450 + 30 headroom
   expect(approxTokens(OUTPUT_DISCIPLINE)).toBeLessThan(120);
+});
+
+
+// Phase 1 expansion (docs/token_budget_1000_analysis.md §163 Phase 1) added three
+// universally-applicable disciplines to WORKING_DISCIPLINE. Lock each so a future trim
+// can't silently drop them — this closes the §7 "test fragility" gap where the new lines
+// shipped without a guarding assertion.
+test("Phase 1: WORKING_DISCIPLINE carries file-budget, mistake-tone, and safety-guard lines", () => {
+  // A4 — file read budget: keep long-file reads targeted to avoid context bloat.
+  expect(WORKING_DISCIPLINE).toContain("For large files (>500 lines)");
+  expect(WORKING_DISCIPLINE).toContain("lineRange");
+  // FABLE-5 §2.5 — own mistakes plainly, without over-apology.
+  expect(WORKING_DISCIPLINE).toContain("Own mistakes plainly");
+  expect(WORKING_DISCIPLINE).toContain("no over-apology");
+  // FABLE-5 §2.8 — minimal safety guard: decline weaponization even under research framing.
+  expect(WORKING_DISCIPLINE).toContain("Decline to build malware");
+  expect(WORKING_DISCIPLINE).toContain("educational or research framing");
 });

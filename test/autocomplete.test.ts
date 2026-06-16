@@ -110,19 +110,7 @@ test("/agents and /model subagent complete role ids, models, thinking, and maxSt
   expect(complete("/model subagent executor thinking in", ctx()).completions).toEqual(["inherit"]);
 });
 
-test("/skill completes resolved skill names (bundled + user) from the context", () => {
-  // No skillNames in context → falls back to bundled skills.
-  expect(complete("/skill ", ctx()).completions.length).toBeGreaterThan(0);
-  // Context-provided names (including a user skill) are offered and prefix-filtered.
-  const withUser = ctx({ skillNames: ["deep-interview", "ralplan", "my-custom-skill"] });
-  expect(complete("/skill ", withUser).completions).toContain("my-custom-skill");
-  expect(complete("/skill my", withUser).completions).toEqual(["my-custom-skill"]);
-});
 
-test("/skill: completes GJC-style skill entrypoint names", () => {
-  const withUser = ctx({ skillNames: ["deep-interview", "spec-kit"] });
-  expect(complete("/skill:sp", withUser).completions).toEqual(["/skill:spec-kit"]);
-});
 
 test("formatCompletionPreview lists argument completions after slash commands", () => {
   const sub = formatCompletionPreview("/model subagent ", ctx()).join("\n");
@@ -190,8 +178,8 @@ test("staticCompletionContext is wired to the real registries", () => {
 test("/session completes its subcommands", () => {
   const r = complete("/session ", ctx());
   expect(r.kind).toBe("subcommand");
-  expect(r.completions).toEqual(["info", "delete"]);
-  expect(complete("/session d", ctx()).completions).toEqual(["delete"]);
+  expect(r.completions).toEqual(["list", "info", "new", "drop", "delete", "rename", "resume"]);
+  expect(complete("/session d", ctx()).completions).toEqual(["drop", "delete"]);
   // Only the first argument is completed.
   expect(complete("/session info x", ctx()).completions).toEqual([]);
 });
@@ -218,7 +206,7 @@ test("/export completes format keywords for the first two args", () => {
 
 test("staticCompletionContext includes the gjc-parity commands", () => {
   const base = staticCompletionContext();
-  for (const cmd of ["/new", "/session", "/rename", "/resume", "/retry", "/export", "/dump", "/btw", "/usage", "/context", "/tools", "/hotkeys", "/theme", "/settings", "/login"]) {
+  for (const cmd of ["/session", "/retry", "/export", "/dump", "/btw", "/usage", "/context", "/tools", "/hotkeys", "/theme", "/settings", "/login"]) {
     expect(base.slashCommands).toContain(cmd);
   }
 });

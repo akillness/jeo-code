@@ -143,48 +143,30 @@ test("skillsPromptSection includes configured skills and respects budget limits"
   expect(truncated.split("\n").length).toBeLessThanOrEqual(41);
 });
 
-test("parseSkillInvocation only matches explicit slash invocations", () => {
-  const spec = parseSkillMarkdown("spec-kit", "summary: SDD wrapper\naliases: /speckit.plan\n\nUse spec-kit.");
+test("parseSkillInvocation matches only the $name entrypoint", () => {
+  const spec = parseSkillMarkdown("spec-kit", "summary: SDD wrapper\n\nUse spec-kit.");
   const skills = [...SKILLS, spec];
-  expect(parseSkillInvocation("/speckit.plan write tasks", skills)).toMatchObject({
-    skill: expect.objectContaining({ name: "spec-kit" }),
-    intent: "write tasks",
-    invokedAs: "/speckit.plan",
-  });
-  expect(parseSkillInvocation("/skill:spec-kit write plan", skills)).toMatchObject({
+  expect(parseSkillInvocation("$spec-kit write plan", skills)).toMatchObject({
     skill: expect.objectContaining({ name: "spec-kit" }),
     intent: "write plan",
+    invokedAs: "$spec-kit",
   });
-  expect(parseSkillInvocation("Use /speckit.plan as reference, but fix the provider bug", skills)).toBeNull();
+  // Skills are invoked ONLY via `$<name>`: slash aliases and `/skill[:...]` never load one.
+  expect(parseSkillInvocation("/speckit.plan write tasks", skills)).toBeNull();
+  expect(parseSkillInvocation("/skill:spec-kit write plan", skills)).toBeNull();
+  // A mid-prompt mention never invokes (first token only).
+  expect(parseSkillInvocation("Use $spec-kit as reference, but fix the provider bug", skills)).toBeNull();
 });
 
-test("parseSkillInvocation can load an explicit skill file path but still blocks reserved meta-skill names", async () => {
+test("parseSkillInvocation no longer loads a skill from a file path ($-only entrypoint)", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-skill-path-"));
   try {
     const skillPath = path.join(dir, "reviewer.md");
-    await fs.writeFile(skillPath, "summary: Reviewer wrapper\naliases: /reviewer\n\nReview the target.");
-    const invocation = parseSkillInvocation(`/skill:${skillPath} src/app.ts`, SKILLS);
-    expect(invocation?.skill.name).toBe("reviewer");
-    expect(invocation?.intent).toBe("src/app.ts");
-
-    const reservedDir = path.join(dir, "skill");
-    await fs.mkdir(reservedDir);
-    await fs.writeFile(path.join(reservedDir, "SKILL.md"), "summary: meta skill\n\nDump local skills.");
-    expect(parseSkillInvocation(`/skill:${reservedDir} list`, SKILLS)).toBeNull();
-  } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("parseSkillInvocation: direct file path invocation (without /skill: prefix)", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-skill-direct-"));
-  try {
-    const skillPath = path.join(dir, "reviewer.md");
     await fs.writeFile(skillPath, "summary: Reviewer wrapper\n\nReview the target.");
-    const invocation = parseSkillInvocation(`${skillPath} src/app.ts`, SKILLS);
-    expect(invocation?.skill.name).toBe("reviewer");
-    expect(invocation?.intent).toBe("src/app.ts");
-    expect(invocation?.invokedAs).toBe(skillPath);
+    // Neither a bare path nor a `/skill:<path>` loads a skill anymore — both fall through
+    // to the model, closing the "pasted SKILL.md path hijacks the request" vector.
+    expect(parseSkillInvocation(`${skillPath} src/app.ts`, SKILLS)).toBeNull();
+    expect(parseSkillInvocation(`/skill:${skillPath} src/app.ts`, SKILLS)).toBeNull();
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

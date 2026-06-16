@@ -173,6 +173,15 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: "whats-new",
+    summary: "Show the release notes bundled with the installed jeo-code version.",
+    usage: "whats-new [--all] [--json]",
+    loader: async () => {
+      const m = await import("../commands/whats-new");
+      return args => m.runWhatsNewCommand(args);
+    },
+  },
+  {
     name: "ooo-seed",
     summary: "Generate an immutable ooo seed from a specification (spec-first automation).",
     usage: "ooo-seed [args]",

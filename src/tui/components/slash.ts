@@ -46,8 +46,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/diff", usage: "/diff [file]", description: "Render `git diff` with +/- coloring", group: "code" },
   { command: "/find", usage: "/find <glob>", description: "List files matching a glob", group: "code" },
   { command: "/search", usage: "/search <pat> [glob]", description: "Search the repo for a pattern", group: "code" },
-  { command: "/skill", usage: "/skill [name [intent]]", description: "List, show, or run a workflow skill", group: "skills" },
-  { command: "/skill:", usage: "/skill:<name> [intent]", description: "Run a workflow skill by GJC-style entrypoint", group: "skills" },
+
   { command: "/sessions", usage: "/sessions", description: "List saved sessions", group: "session" },
   { command: "/usage", usage: "/usage", description: "Show cumulative token usage for this session", group: "system" },
   { command: "/context", usage: "/context", description: "Show context token usage breakdown", group: "system" },

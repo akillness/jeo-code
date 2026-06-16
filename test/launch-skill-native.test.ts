@@ -103,7 +103,7 @@ afterAll(() => {
 
 
 test("launch workflow skill routing deep-interview", async () => {
-  mockQuestions = ["/skill deep-interview design a compiler", "/exit"];
+  mockQuestions = ["$deep-interview design a compiler", "/exit"];
   
   const { runLaunchCommand } = await import("../src/commands/launch");
   await runLaunchCommand(["--no-tui", "--no-session"]);
@@ -114,7 +114,7 @@ test("launch workflow skill routing deep-interview", async () => {
 });
 
 test("launch workflow skill routing ralplan", async () => {
-  mockQuestions = ["/skill ralplan", "/exit"];
+  mockQuestions = ["$ralplan", "/exit"];
   
   const { runLaunchCommand } = await import("../src/commands/launch");
   await runLaunchCommand(["--no-tui", "--no-session"]);
@@ -124,7 +124,7 @@ test("launch workflow skill routing ralplan", async () => {
 });
 
 test("launch workflow skill routing team", async () => {
-  mockQuestions = ["/skill team", "/exit"];
+  mockQuestions = ["$team", "/exit"];
   
   const { runLaunchCommand } = await import("../src/commands/launch");
   await runLaunchCommand(["--no-tui", "--no-session"]);
@@ -134,7 +134,7 @@ test("launch workflow skill routing team", async () => {
 });
 
 test("launch workflow skill routing ultragoal", async () => {
-  mockQuestions = ["/skill ultragoal", "/exit"];
+  mockQuestions = ["$ultragoal", "/exit"];
   
   const { runLaunchCommand } = await import("../src/commands/launch");
   await runLaunchCommand(["--no-tui", "--no-session"]);

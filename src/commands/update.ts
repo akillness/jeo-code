@@ -36,6 +36,8 @@ export interface UpdateDeps {
   fetchJson: (url: string, options?: { signal?: AbortSignal }) => Promise<any>;
   localVersion: () => string;
   install: () => Promise<{ success: boolean; stdout?: string; stderr?: string }>;
+  /** Display release notes after a successful self-update (best-effort, no-op in tests). */
+  showWhatsNew?: () => void;
 }
 
 export const defaultDeps: UpdateDeps = {
@@ -62,6 +64,15 @@ export const defaultDeps: UpdateDeps = {
       stderr: "inherit",
     });
     return { success: proc.success };
+  }
+  ,
+  showWhatsNew: () => {
+    try {
+      // Spawn the freshly-installed binary so it reads the NEW bundled CHANGELOG.
+      Bun.spawnSync(["jeo", "whats-new"], { stdout: "inherit", stderr: "inherit" });
+    } catch {
+      // Notes are a courtesy; a spawn failure must never fail the update.
+    }
   }
 };
 
@@ -172,6 +183,7 @@ export async function runUpdateCommandWith(args: string[], deps: UpdateDeps): Pr
             }));
           } else {
             console.log(`Successfully installed jeo-code@${latest}`);
+            deps.showWhatsNew?.();
           }
         } else {
           if (hasJson) {

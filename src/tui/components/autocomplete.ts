@@ -133,11 +133,6 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
   // Completing the command name itself (single token, still typing it).
   if (tokens.length <= 1 && !trailingSpace) {
     const token = tokens[0] ?? "/";
-    if (token.toLowerCase().startsWith("/skill:")) {
-      const prefix = token.slice("/skill:".length);
-      const names = ctx.skillNames ?? skillNames();
-      return { completions: dedupeCap(prefixHits(names.map(n => `/skill:${n}`), `/skill:${prefix}`)), token, kind: "command" };
-    }
     return { completions: dedupeCap(prefixHits(ctx.slashCommands, token)), token, kind: "command" };
   }
 
@@ -183,8 +178,7 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       if (argIndex === 2 && (tokens[2]?.toLowerCase() === "maxsteps" || tokens[2]?.toLowerCase() === "steps")) return { completions: [], token, kind: "none" };
       return { completions: [], token, kind: "none" };
     }
-    case "/skill":
-      return argIndex === 0 ? finish(ctx.skillNames ?? skillNames(), "subcommand") : { completions: [], token, kind: "none" };
+
     case "/roles": {
       const tiers = ["smol", "slow", "plan"];
       if (argIndex === 0) return finish(tiers, "role");
@@ -194,7 +188,7 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     case "/thinking":
       return argIndex === 0 ? finish(ctx.thinkingLevels, "thinking") : { completions: [], token, kind: "none" };
     case "/session":
-      return argIndex === 0 ? finish(["info", "delete"], "subcommand") : { completions: [], token, kind: "none" };
+      return argIndex === 0 ? finish(["list", "info", "new", "drop", "delete", "rename", "resume"], "subcommand") : { completions: [], token, kind: "none" };
     case "/theme":
       return argIndex === 0 ? finish(listThemes().map(t => t.name), "subcommand") : { completions: [], token, kind: "none" };
     case "/login":

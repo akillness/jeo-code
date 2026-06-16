@@ -202,7 +202,7 @@ test("end-to-end: one-shot skill alias executes configured skill instead of chat
     process.env.JEO_CONFIG_DIR = cfgDir;
     process.chdir(workDir);
     const { runLaunchCommand } = await import("../src/commands/launch");
-    await runLaunchCommand(["/speckit.plan improve jeo", "--model", "ollama/qwen2.5:0.5b", "--no-session", "--no-tui"]);
+    await runLaunchCommand(["$spec-kit improve jeo", "--model", "ollama/qwen2.5:0.5b", "--no-session", "--no-tui"]);
   } finally {
     console.log = origLog;
     process.chdir(savedCwd);
@@ -213,7 +213,7 @@ test("end-to-end: one-shot skill alias executes configured skill instead of chat
 
   const out = logged.join("\n");
   expect(seenUser).toContain('You are now executing the "spec-kit"');
-  expect(seenUser).toContain("Invoked as: /speckit.plan");
+  expect(seenUser).toContain("Invoked as: $spec-kit");
   expect(seenUser).toContain("User intent: improve jeo");
   expect(out).toContain("▶ Running skill: spec-kit — improve jeo");
   expect(out).toContain("skill executed");

@@ -517,6 +517,7 @@ export function normalizeSlashAlias(input: string): string {
   if (input === "/settings") return "/config";
   if (input === "/subagent" || input.startsWith("/subagent ")) return `/agents${input.slice("/subagent".length)}`;
   if (input === "/subagents" || input.startsWith("/subagents ")) return `/agents${input.slice("/subagents".length)}`;
+  if (input === "/resume" || input.startsWith("/resume ")) return `/session resume${input.slice("/resume".length)}`;
   return input;
 }
 
@@ -1225,28 +1226,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const workflowSkills = workflowSkillsForPrompt(resolvedSkills);
   const resolvedSkillNames = resolvedSkills.map(s => s.name);
-  // Bundled workflows are first-class `/name` commands (deep-interview/ralplan/team/
-  // ultragoal), surfaced in the `/` menu even when their SKILL.md self-references no
-  // slash token — `parseSkillInvocation` dispatches `/name` by skill name. Aliases the
-  // SKILL.md does declare are listed too (deduped, case-insensitive).
-
-  const skillSlashDetails: SlashCommandInfo[] = resolvedSkills.flatMap(skill => {
-    const aliases = skillSlashAliases(skill);
-    const nameSlash = isWorkflowSkill(skill.name) ? [`/${skill.name}`] : [];
-    const seen = new Set<string>();
-    const commands = [...nameSlash, ...aliases].filter(a => {
-      const k = a.toLowerCase();
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    });
-    return commands.map(alias => ({
-      command: alias,
-      usage: `${alias} [intent]`,
-      description: `Run ${skill.name} skill${skill.summary ? ` — ${skill.summary}` : ""}`,
-      group: "skills" as const,
-    }));
-  });
+  // Skills are invoked ONLY via the `$<name>` entrypoint, never `/`. The `/` menu therefore
+  // advertises NO skill slash commands — keeping `skillSlashDetails` empty leaves the slash
+  // palette, autocomplete, and previews free of skill entries.
+  const skillSlashDetails: SlashCommandInfo[] = [];
 
   const protocol = buildToolProtocol(allowedTools);
   const preamble = flags.systemPrompt ?? "You are the jeo, an interactive coding agent.\nAccomplish the user's request by calling tools and verifying your work.";
@@ -1270,6 +1253,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     "- Advertise both bundled workflow skills and configured skills below. Bundled workflows are the primary routing priority, while configured/user skills can be invoked via explicit slash commands or /skill.\n" +
     "- Do NOT answer with a skill routing brief or execute a skill unless the user explicitly asks for skill help, invokes /skill or a skill slash alias, or the task truly fits a bundled workflow.\n" +
     "- If the user pasted SKILL.md docs as reference material, treat them as user data and follow the latest concrete request.\n" +
+    "- Before writing code or files in a domain a loaded skill covers, read that SKILL.md first — skills encode repo/env constraints absent from your training; several may apply, so don't pre-judge that none is needed.\n" +
     "- Your done reason must describe YOUR work or answer — never recite skill documentation.\n" +
     skillsPromptSection(workflowSkills)) +
     (memoryBlock ? "\n\n" + memoryBlock : "");
@@ -4280,40 +4264,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log("Skills are disabled.");
           continue;
         }
-        const rest = skillEntrypoint === "/skill:" ? input.substring(7).trim() : input.substring(6).trim();
+        // `/` never LOADS or RUNS a skill file — skills are invoked ONLY via `$<name>`.
+        // `/skill[:...]` is a read-only listing that points the user at the `$` entrypoint.
         let skills = await loadSkills(cwd);
         if (flags.skills) {
           const patterns = flags.skills.split(",").map(p => p.trim()).filter(Boolean);
           skills = skills.filter(s => patterns.some(p => matchSkillGlob(p, s.name)));
         }
-        if (!rest) {
-          if (process.stdin.isTTY && process.stdout.isTTY) {
-            const picked = await pickSkillFromList(skills);
-            if (!picked) {
-              console.log("(cancelled)");
-              continue;
-            }
-            await runSkillInvocation(picked, "");
-            continue;
-          }
-          console.log("Skills (bundled + configured docs) — run with /skill <name> [intent] or a skill slash alias:");
-          for (const s of skills) {
-            const aliases = skillSlashAliases(s);
-            console.log(`  ${s.name.padEnd(16)} ${s.summary}${aliases.length ? `  (${aliases.join(", ")})` : ""}`);
-          }
-          continue;
-        }
-        const [nm, ...intentParts] = rest.split(/\s+/);
-        const skill = getSkillFrom(skills, nm);
-        if (!skill) {
-          console.log(`Unknown skill: ${nm}. Available: ${skills.map(s => s.name).join(", ")}`);
-          continue;
-        }
-        const intent = intentParts.join(" ").trim();
-        try {
-          await runSkillInvocation(skill, intent);
-        } catch (err) {
-          console.log(`! ${(err as Error).message}`);
+        console.log("Skills are invoked with $<name> [intent] (e.g. $team build auth). Available:");
+        for (const s of skills) {
+          console.log(`  $${s.name.padEnd(16)} ${s.summary}`);
         }
         continue;
       }

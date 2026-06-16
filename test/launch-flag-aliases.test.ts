@@ -94,6 +94,8 @@ test("normalizeSlashAlias rewrites gjc-parity command aliases (preserving args)"
   expect(normalizeSlashAlias("/subagent")).toBe("/agents");
   expect(normalizeSlashAlias("/subagent edit")).toBe("/agents edit");
   expect(normalizeSlashAlias("/subagents planner")).toBe("/agents planner");
+  expect(normalizeSlashAlias("/resume")).toBe("/session resume");
+  expect(normalizeSlashAlias("/resume 1234")).toBe("/session resume 1234");
   // non-aliases pass through untouched
   expect(normalizeSlashAlias("/model")).toBe("/model");
   expect(normalizeSlashAlias("/help")).toBe("/help");

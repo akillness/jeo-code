@@ -220,13 +220,14 @@ export function tryResolveSkillFromFilePath(filePath: string): SkillDoc | null {
 const BUILTIN_SLASH_ALIASES = new Set([
   "/help", "/clear", "/compact", "/model", "/fast", "/provider", "/logout",
   "/agents", "/config", "/roles", "/thinking",
-  "/view", "/diff", "/find", "/search", "/sessions", "/skill", "/evolve",
+  "/view", "/diff", "/find", "/search",
   "/exit", "/quit",
 ]);
 
-const RESERVED_SKILL_NAMES = new Set(
-  [...BUILTIN_SLASH_ALIASES].map(alias => alias.slice(1).toLowerCase())
-);
+const RESERVED_SKILL_NAMES = new Set([
+  ...[...BUILTIN_SLASH_ALIASES].map(alias => alias.slice(1).toLowerCase()),
+  "skill",
+]);
 
 function normalizeSlashAlias(raw: string): string | undefined {
   const m = raw.trim().match(/^\/[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*$/);
@@ -410,12 +411,33 @@ export function parseSkillMarkdown(name: string, content: string, opts?: { prefe
   };
 }
 
+const ALLOWED_SKILL_NAMES = new Set([
+  "deep-interview",
+  "deep-dive",
+  "ralplan",
+  "team",
+  "ultragoal",
+  "research",
+  "ultrawork"
+]);
+
 function isSupportedExternalSkill(doc: SkillDoc): boolean {
-  return !RESERVED_SKILL_NAMES.has(doc.name.toLowerCase());
+  const nameLower = doc.name.toLowerCase();
+  return !RESERVED_SKILL_NAMES.has(nameLower);
 }
 
 /** Bundled skills merged with user skill docs from {@link skillDirs} (user overrides by name). */
 export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[]> {
+  try {
+    const lockPath = path.join(cwd, "skills-lock.json");
+    const lockContent = await fs.readFile(lockPath, "utf-8");
+    const lockData = JSON.parse(lockContent);
+    if (lockData && lockData.skills) {
+      for (const name of Object.keys(lockData.skills)) {
+        ALLOWED_SKILL_NAMES.add(name.toLowerCase());
+      }
+    }
+  } catch {}
   const byName = new Map<string, SkillDoc>(SKILLS.map(s => [s.name.toLowerCase(), s]));
   for (const dir of skillDirs(cwd)) {
     let entries: import("node:fs").Dirent[] = [];
@@ -512,59 +534,24 @@ export interface SkillInvocation {
   intent: string;
   invokedAs?: string;
 }
-
-/** Parse only explicit skill invocations. Ambient mentions of skill names or slash
- * aliases inside a broader prompt are deliberately ignored so pasted SKILL.md files
- * cannot hijack an ordinary coding request. */
+/** Parse only an explicit `$skill` invocation. Skills are invokable ONLY via the `$`
+ * entrypoint — `/` commands and slash aliases never load a skill file, and pasted SKILL.md
+ * paths cannot hijack an ordinary coding request. Only the FIRST token counts, and only
+ * when a skill with that exact name (or unique name prefix) is loaded; `$HOME is what?` or
+ * any unknown `$word` falls through to the model as an ordinary prompt. */
 export function parseSkillInvocation(input: string, skills: SkillDoc[]): SkillInvocation | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
 
-  const explicitEntrypoint = trimmed.startsWith("/skill:")
-    ? "/skill:"
-    : (trimmed === "/skill" || trimmed.startsWith("/skill ")) ? "/skill" : "";
-  if (explicitEntrypoint) {
-    const rest = trimmed.substring(explicitEntrypoint.length).trim();
-    if (!rest) return null;
-    const [name, ...intentParts] = rest.split(/\s+/);
-    let skill = getSkillFrom(skills, name ?? "");
-    if (!skill && name) {
-      skill = tryResolveSkillFromFilePath(name) ?? undefined;
-    }
-    return skill ? { skill, intent: intentParts.join(" ").trim() } : null;
-  }
-
   const command = trimmed.split(/\s+/, 1)[0] ?? "";
-  // Codex/gjc-style exact-name entrypoint: `$team [intent]` invokes the skill
-  // named "team" directly (case-insensitive). Only the FIRST token counts, and
-  // only when a skill with that exact name is loaded — `$HOME is what?` or any
-  // unknown `$word` falls through to the model as an ordinary prompt.
   if (command.length > 1 && command.startsWith("$")) {
     const dollarSkill = getSkillFrom(skills, command.slice(1)) ?? uniquePrefixSkill(skills, command.slice(1));
     if (dollarSkill) {
       return { skill: dollarSkill, intent: trimmed.slice(command.length).trim(), invokedAs: command };
     }
   }
-  let skill = getSkillBySlash(skills, command);
-  // `/team`, `/deep-interview`, `/ultragoal`, … — a bare slash + skill NAME (or unique
-  // prefix) is the SAME entrypoint as `$name` and `/skill:name`. Only when getSkillBySlash
-  // found no alias and the token is a plain `/word` (no nested `/path` and no `.` so
-  // `/speckit.plan` aliases and `./file` paths keep their own resolution). This is what
-  // makes the bundled workflows actually run from the `/` menu, not just `/ralplan`.
-  if (!skill && command.length > 1 && command.startsWith("/") && !command.includes(".") && command.indexOf("/", 1) === -1) {
-    skill = getSkillFrom(skills, command.slice(1)) ?? uniquePrefixSkill(skills, command.slice(1));
-  }
-  if (!skill) {
-    if (command.startsWith("/") || command.startsWith(".") || command.includes("/")) {
-      const resolved = tryResolveSkillFromFilePath(command);
-      if (resolved) {
-        return { skill: resolved, intent: trimmed.slice(command.length).trim(), invokedAs: command };
-      }
-    }
-  }
-  return skill ? { skill, intent: trimmed.slice(command.length).trim(), invokedAs: command } : null;
+  return null;
 }
-
 /** Parse a LEADING run of `$skill` tokens into an ordered chain that shares the trailing
  *  text as one intent: `$ralplan $team build auth` → [ralplan, team] each with intent
  *  "build auth". This is what lets `$` invoke several skills in one line — they all run,

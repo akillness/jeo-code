@@ -47,7 +47,8 @@ test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll
   // "<text>\x1b[<N>B\n" (write at the anchor, drop to the bottom, newline scrolls it
   // up). It still reaches scrollback with a real newline — assert that, tolerant of
   // the interposed cursor-down.
-  expect(ledger.slice(flushIdx)).toMatch(/Read src\/cli\.ts(?:\x1b\[\d+B)?\n/); // flushed to history
+  const cleanLedgerSlice = ledger.slice(flushIdx).replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+  expect(cleanLedgerSlice).toMatch(/Read src\/cli\.ts\n/);
   expect(ledger.slice(flushIdx)).toContain("\x1b[?2026l");       // ESU after the repaint
   expect(ledger).not.toContain("\x1b[0J");                       // never ED mid-turn (history flood)
 

@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-06-11 | Updated: 2026-06-11 -->
+<!-- Generated: 2026-06-11 | Updated: 2026-06-14 -->
 
 # .github
 

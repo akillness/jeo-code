@@ -58,3 +58,24 @@ test("parseResponsesEvent extracts deltas, usage, and errors", () => {
   expect(parseResponsesEvent(JSON.stringify({ type: "response.created" }))).toEqual({}); // ignored
   expect(parseResponsesEvent("not json")).toEqual({}); // tolerant
 });
+
+test("parseResponsesEvent surfaces reasoning-summary deltas (live thinking)", () => {
+  // Documented Responses event.
+  expect(parseResponsesEvent(JSON.stringify({ type: "response.reasoning_summary_text.delta", delta: "let me" })))
+    .toEqual({ reasoningDelta: "let me" });
+  // Codex backend's raw reasoning variant.
+  expect(parseResponsesEvent(JSON.stringify({ type: "response.reasoning_text.delta", delta: " think" })))
+    .toEqual({ reasoningDelta: " think" });
+  // A reasoning delta is NOT mistaken for output text, and vice-versa.
+  expect(parseResponsesEvent(JSON.stringify({ type: "response.output_text.delta", delta: "answer" })))
+    .toEqual({ delta: "answer" });
+  // Non-delta reasoning events (part.added/done) are ignored, not surfaced as text.
+  expect(parseResponsesEvent(JSON.stringify({ type: "response.reasoning_summary_part.added" }))).toEqual({});
+});
+
+test("codexResponsesRequest asks for streamed reasoning summaries when an effort is set", () => {
+  const cred: Credential = { kind: "oauth", token: "t", provider: "openai" } as unknown as Credential;
+  const opts = { model: "openai/gpt-5", reasoningEffort: "medium" } as unknown as CallOptions;
+  const { body } = codexResponsesRequest([{ role: "user", content: "hi" }] as Message[], opts, cred);
+  expect(JSON.parse(body).reasoning).toEqual({ effort: "medium", summary: "auto" });
+});

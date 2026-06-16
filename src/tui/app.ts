@@ -766,6 +766,15 @@ export class LaunchTui {
       // (e.g. "rate limited (HTTP 429) — auto-retry #2 in 4s") instead of an opaque
       // ever-growing "calling model (18.4s)…".
       if (this.retryNotice) return `${this.retryNotice} (${elapsed}s)`;
+      // Reasoning is streaming → the live thought block already shows it; label the row.
+      if (this.streamingThought.trim() || this.streamingReasoning.trim()) {
+        return `reasoning (${this.footer.model}) (${elapsed}s)…`;
+      }
+      // No tokens after a few seconds: the model is almost certainly reasoning
+      // server-side (e.g. OpenAI hidden reasoning), NOT hung — say so instead of a
+      // frozen "calling model …" so a long silent wait still reads as progress.
+      const waited = this.currentStepStartedAt ? (Date.now() - this.currentStepStartedAt) / 1000 : 0;
+      if (waited >= 8) return `thinking (${this.footer.model}) — reasoning, no token stream yet (${elapsed}s)…`;
       return `calling model (${this.footer.model}) (${elapsed}s)…`;
     }
     if (running) {

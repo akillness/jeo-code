@@ -859,3 +859,34 @@ test("scrollDetail clamps to [0,max] and is a no-op when the panel is closed", (
   for (let i = 0; i < 100; i++) tui.scrollDetail(-1, true);
   expect(tui.historyScroll).toBe(0);
 });
+
+test("currentActivity is stall-aware while waiting on the model (P2)", () => {
+  const make = () => new LaunchTui({ model: "m1", tty: true, write: () => {} }) as any;
+  const act = (t: any) => t.currentActivity() as string;
+
+  // Short wait, no stream → plain calling-model label.
+  const a = make();
+  a.thinking = true;
+  a.currentStepStartedAt = Date.now() - 2000;
+  expect(act(a)).toMatch(/^calling model \(m1\)/);
+
+  // Reasoning is streaming → labeled as reasoning, not "calling model".
+  const b = make();
+  b.thinking = true;
+  b.currentStepStartedAt = Date.now() - 2000;
+  b.streamingThought = "let me think about this";
+  expect(act(b)).toMatch(/^reasoning \(m1\)/);
+
+  // Long silent wait with no token stream → say it's reasoning, not a hang.
+  const c = make();
+  c.thinking = true;
+  c.currentStepStartedAt = Date.now() - 10000;
+  expect(act(c)).toMatch(/reasoning, no token stream yet/);
+
+  // A backoff retry notice still wins (provider wait is the real activity).
+  const d = make();
+  d.thinking = true;
+  d.currentStepStartedAt = Date.now() - 10000;
+  d.retryNotice = "rate limited (HTTP 429) — auto-retry #2 in 4s";
+  expect(act(d)).toMatch(/^rate limited \(HTTP 429\)/);
+});

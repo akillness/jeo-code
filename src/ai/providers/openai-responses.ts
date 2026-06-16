@@ -14,7 +14,7 @@ import type { Credential } from "../../auth";
 import type { CallOptions, Message } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
-import { serializeToolCalls } from "../../agent/tool-schemas";
+import { serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
 
 export const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 
@@ -154,16 +154,6 @@ function accumulateResponsesToolCall(acc: Map<number, { name: string; args: stri
   }
 }
 
-/** Re-serialize accumulated Responses function calls into the engine's canonical JSON. */
-function serializeResponsesToolCalls(acc: Map<number, { name: string; args: string }>): string | null {
-  if (acc.size === 0) return null;
-  const calls = [...acc.values()].map(b => {
-    let args: Record<string, unknown> = {};
-    try { args = b.args ? JSON.parse(b.args) : {}; } catch { args = {}; }
-    return { tool: b.name, arguments: args };
-  });
-  return serializeToolCalls(calls);
-}
 
 /** Round-5 #1: no-text completions surface their cause instead of returning "". */
 function emptyCompletionError(reason: string | undefined): Error {
@@ -191,7 +181,7 @@ export async function codexResponsesCall(messages: Message[], options: CallOptio
     if (ev.error) throw new Error(`OpenAI Codex response failed: ${ev.error}`);
   }
   // Prefer a native tool call (re-serialized to canonical JSON) over any stray text.
-  const envelope = serializeResponsesToolCalls(toolAcc);
+  const envelope = serializeAccumulatedToolCalls(toolAcc);
   if (envelope) return envelope;
   if (!out) throw emptyCompletionError(incompleteReason);
   return out;
@@ -222,7 +212,7 @@ export async function* codexResponsesStream(
     if (ev.error) throw new Error(`OpenAI Codex response failed: ${ev.error}`);
   }
   // Native tool calls have no output_text deltas — yield the re-serialized envelope once.
-  const envelope = serializeResponsesToolCalls(toolAcc);
+  const envelope = serializeAccumulatedToolCalls(toolAcc);
   if (envelope) { yieldedAny = true; yield envelope; }
   if (!yieldedAny) throw emptyCompletionError(incompleteReason);
 }

@@ -3,7 +3,7 @@ import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
 import { codexResponsesCall, codexResponsesStream } from "./openai-responses";
-import { serializeToolCalls } from "../../agent/tool-schemas";
+import { serializeToolCalls, serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
 
 export function openaiRequest(messages: Message[], options: CallOptions, credential: Credential, stream: boolean): { url: string; headers: Record<string, string>; body: string } {
   const model = options.model.startsWith("openai/") ? options.model.slice(7) : options.model;
@@ -129,15 +129,8 @@ export const openaiAdapter: ProviderAdapter = {
       if (chunk.usage) options.onUsage?.({ inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens });
     }
     // Native tool calls stream as tool_calls argument fragments — re-serialize once at end.
-    if (toolAcc.size > 0) {
-      const calls = [...toolAcc.values()].map(b => {
-        let args: Record<string, unknown> = {};
-        try { args = b.args ? JSON.parse(b.args) : {}; } catch { args = {}; }
-        return { tool: b.name, arguments: args };
-      });
-      const envelope = serializeToolCalls(calls);
-      if (envelope) { yieldedAny = true; yield envelope; }
-    }
+    const envelope = serializeAccumulatedToolCalls(toolAcc);
+    if (envelope) { yieldedAny = true; yield envelope; }
     if (!yieldedAny) throw emptyCompletionError(finishReason);
   },
 };

@@ -130,3 +130,17 @@ export function serializeToolCalls(calls: { tool: string; arguments: Record<stri
 export function normalizeNativeToolName(name: string): string {
   return (name ?? "").replace(/^default_api\s*[.:]\s*/, "").trim();
 }
+
+/**
+ * Re-serialize a streamed native tool-call accumulator (name + raw-JSON-args string per
+ * output index — the shape every streaming adapter builds) into the engine's canonical
+ * JSON. Bad arg JSON degrades to `{}` rather than dropping the call. Returns null when empty.
+ */
+export function serializeAccumulatedToolCalls(acc: Map<number, { name: string; args: string }>): string | null {
+  const calls = [...acc.values()].map(b => {
+    let args: Record<string, unknown> = {};
+    try { args = b.args ? JSON.parse(b.args) : {}; } catch { args = {}; }
+    return { tool: b.name, arguments: args };
+  });
+  return serializeToolCalls(calls);
+}

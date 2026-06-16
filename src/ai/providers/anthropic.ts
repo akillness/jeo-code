@@ -3,6 +3,7 @@ import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { ProviderHttpError, parseRetryAfter, parseRetryFromBody, providerHttpError } from "./errors";
+import { serializeToolCalls, serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
@@ -198,25 +199,6 @@ function emptyCompletionError(stopReason: string | undefined): Error {
   return new Error(`Anthropic returned no content${stopReason ? ` (stop_reason=${stopReason})` : ""}${hint}.`);
 }
 
-/**
- * Re-serialize Anthropic native `tool_use` content block(s) into the engine's canonical
- * JSON string — the linchpin of the adapter-internal-serialization design: the engine,
- * anti-spin guards, and done-gate keep consuming the SAME {"tool":...}/{"tools":[...]}
- * shape they parse from the JSON-in-prose path. A batched `done` is coalesced to a single
- * done envelope (the engine rejects done-in-batch). Returns null when there is no tool_use.
- */
-function serializeAnthropicToolUse(
-  content: { type: string; name?: string; input?: unknown }[],
-): string | null {
-  const calls = content
-    .filter(c => c.type === "tool_use" && typeof c.name === "string")
-    .map(c => ({ tool: c.name as string, arguments: (c.input ?? {}) as Record<string, unknown> }));
-  if (calls.length === 0) return null;
-  const done = calls.find(c => c.tool === "done");
-  if (done) return JSON.stringify(done);
-  if (calls.length === 1) return JSON.stringify(calls[0]);
-  return JSON.stringify({ tools: calls });
-}
 export const anthropicAdapter: ProviderAdapter = {
   name: "anthropic",
   supportsNativeTools: true,
@@ -225,7 +207,11 @@ export const anthropicAdapter: ProviderAdapter = {
     const result = (await response.json()) as { content: { type: string; text?: string; name?: string; input?: unknown }[]; stop_reason?: string; usage?: AnthropicUsage };
     if (result.usage) options.onUsage?.({ inputTokens: totalInputTokens(result.usage), outputTokens: result.usage.output_tokens });
     // Prefer a native tool call (re-serialized to canonical JSON) over any stray text.
-    const toolCall = serializeAnthropicToolUse(result.content);
+    const toolCall = serializeToolCalls(
+      result.content
+        .filter(c => c.type === "tool_use" && typeof c.name === "string")
+        .map(c => ({ tool: c.name as string, arguments: (c.input ?? {}) as Record<string, unknown> })),
+    );
     if (toolCall) return toolCall;
     const text = result.content.find(c => c.type === "text")?.text ?? "";
     if (!text) throw emptyCompletionError(result.stop_reason);
@@ -240,7 +226,7 @@ export const anthropicAdapter: ProviderAdapter = {
     // Native tool_use streams as content_block_start (name) + input_json_delta fragments,
     // never as text_delta — accumulate per block index, then re-serialize to canonical
     // JSON and yield it once at the end (concatenation still equals call()).
-    const toolBlocks = new Map<number, { name: string; json: string }>();
+    const toolBlocks = new Map<number, { name: string; args: string }>();
     for await (const data of readSse(response.body)) {
       let evt: {
         type?: string;
@@ -256,10 +242,10 @@ export const anthropicAdapter: ProviderAdapter = {
         continue;
       }
       if (evt.type === "content_block_start" && evt.content_block?.type === "tool_use" && typeof evt.index === "number") {
-        toolBlocks.set(evt.index, { name: evt.content_block.name ?? "", json: "" });
+        toolBlocks.set(evt.index, { name: evt.content_block.name ?? "", args: "" });
       } else if (evt.type === "content_block_delta" && evt.delta?.type === "input_json_delta" && typeof evt.index === "number") {
         const b = toolBlocks.get(evt.index);
-        if (b) b.json += evt.delta.partial_json ?? "";
+        if (b) b.args += evt.delta.partial_json ?? "";
       } else if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta" && evt.delta.text) {
         yieldedAny = true;
         yield evt.delta.text;
@@ -273,21 +259,8 @@ export const anthropicAdapter: ProviderAdapter = {
         if (evt.usage) options.onUsage?.({ inputTokens: cachedInput, outputTokens: evt.usage.output_tokens });
       }
     }
-    if (toolBlocks.size > 0) {
-      const calls = [...toolBlocks.values()]
-        .map(b => {
-          let args: Record<string, unknown> = {};
-          try { args = b.json ? JSON.parse(b.json) : {}; } catch { args = {}; }
-          return { tool: b.name, arguments: args };
-        })
-        .filter(c => c.tool);
-      if (calls.length > 0) {
-        const done = calls.find(c => c.tool === "done");
-        const envelope = done ? JSON.stringify(done) : calls.length === 1 ? JSON.stringify(calls[0]) : JSON.stringify({ tools: calls });
-        yieldedAny = true;
-        yield envelope;
-      }
-    }
+    const envelope = serializeAccumulatedToolCalls(toolBlocks);
+    if (envelope) { yieldedAny = true; yield envelope; }
     if (!yieldedAny) throw emptyCompletionError(stopReason);
   },
 };

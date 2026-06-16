@@ -61,6 +61,15 @@ export function defaultRetryable(err: unknown): boolean {
     return true;
   }
 
+  // Transient empty 200s — a provider returned a successful response with no content.
+  // This is a known intermittent failure (load/edge races on Anthropic/Gemini/OpenAI), so
+  // retry it like an overload instead of letting one empty reply drop the turn. EXCEPTION:
+  // deterministic budget exhaustion (max_tokens / length / "output budget exhausted") re-empties
+  // on every retry — fail fast so the caller sees the raise-maxTokens/lower-thinking hint.
+  if (lowerMessage.includes("returned no content")) {
+    return !/max_tokens|max_output_tokens|finish_reason=length|done_reason=length|output budget exhausted/.test(lowerMessage);
+  }
+
   // Numeric `.status` field (structured provider errors, fetch responses).
   if (typeof err === "object" && err !== null) {
     const status = (err as any).status;

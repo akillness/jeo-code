@@ -229,6 +229,20 @@ test("defaultRetryable classification", () => {
   expect(defaultRetryable({})).toBe(false);
 });
 
+test("defaultRetryable: transient empty 200s retry, deterministic budget empties fail fast", () => {
+  // Transient empty content (no reason or a non-budget stop) is a known intermittent
+  // failure — retry it instead of dropping the turn.
+  expect(defaultRetryable(new Error("Anthropic returned no content."))).toBe(true);
+  expect(defaultRetryable(new Error("Anthropic returned no content (stop_reason=end_turn)."))).toBe(true);
+  expect(defaultRetryable(new Error("Gemini returned no content (SAFETY)."))).toBe(true);
+  expect(defaultRetryable(new Error("OpenAI returned no content."))).toBe(true);
+  // Deterministic budget exhaustion re-empties on every retry → fail fast (surface the hint).
+  expect(defaultRetryable(new Error("Anthropic returned no content (stop_reason=max_tokens) — output budget exhausted before any text; raise maxTokens or lower the thinking level."))).toBe(false);
+  expect(defaultRetryable(new Error("OpenAI returned no content (finish_reason=length) — output budget exhausted before any text; raise maxTokens or lower reasoning effort."))).toBe(false);
+  expect(defaultRetryable(new Error("OpenAI Codex returned no content (max_output_tokens) — output budget exhausted."))).toBe(false);
+  expect(defaultRetryable(new Error("Ollama returned no content (done_reason=length) — output budget exhausted before any text; raise maxTokens."))).toBe(false);
+});
+
 test("succeeds first try (fn called once, no sleep)", async () => {
   let calls = 0;
   const sleepCalls: number[] = [];

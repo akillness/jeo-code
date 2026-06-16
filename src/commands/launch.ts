@@ -3059,7 +3059,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (!previewArmed) return;
         try {
           if (key && (key.name === "return" || key.name === "enter")) {
-            drawFooter([]);
+            // Redraw the REAL box (not drawFooter([]), which erases it): this runs in a
+            // setImmediate and can fire AFTER the loop already re-armed + repainted the box
+            // for the next prompt (slash command / turn). An empty draw there wiped the fresh
+            // box and parked the cursor at the reservation top — the "input box vanishes and
+            // the caret leaves the prompt after a command" bug. Drawing previewLines keeps the
+            // box present and the caret in it whether this fires before submit or after re-arm.
+            drawFooter(previewLines(typedLine, navIdx));
             return;
           }
           // Arrow up/down: move the highlight over the slash keyword preview list.

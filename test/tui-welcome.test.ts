@@ -191,6 +191,24 @@ test("wide terminals keep the banner at its natural hero width; narrow ones shri
   expect(stripW(44)).toBeLessThan(stripW(200));
 });
 
+test("center:true centers the hero box within the terminal width", () => {
+  const cols = 120;
+  const lines = renderWelcome({ version: "1.2.3", model: "m", cols, unicode: true, color: false, center: true });
+  const top = lines[0]!;
+  const leftPad = top.length - top.trimStart().length;
+  const boxW = top.trimStart().length;
+  // Box is left-padded by half the slack so its midpoint sits at the screen midpoint.
+  expect(leftPad).toBe(Math.floor((cols - boxW) / 2));
+  expect(leftPad + boxW / 2).toBe(cols / 2);
+  // Every row shares the same leading pad (the box stays rectangular).
+  for (const line of lines) {
+    expect(line.length - line.trimStart().length).toBe(leftPad);
+  }
+  // Default (no center) stays flush-left.
+  const flush = renderWelcome({ version: "1.2.3", model: "m", cols, unicode: true, color: false });
+  expect(flush[0]!.startsWith("╭")).toBe(true);
+});
+
 test("color:false emits no ANSI", () => {
   const lines = renderWelcome({
     version: "1.2.3",

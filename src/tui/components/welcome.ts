@@ -21,6 +21,8 @@ export interface WelcomeData {
   accentShadow?: (s: string) => string;
   unicode?: boolean;       // default true
   color?: boolean;         // default true
+  /** Center the hero box horizontally within `cols` (gjc forge screen placement). */
+  center?: boolean;
 }
 
 function getVisibleWidth(s: string): number {
@@ -137,7 +139,15 @@ export function renderWelcome(d: WelcomeData): string[] {
     return leftBorder + line + rightBorder;
   });
 
-  return [topBorderLine, ...finalContentLines, bottomBorderLine];
+  const boxLines = [topBorderLine, ...finalContentLines, bottomBorderLine];
+  // Center the hero box on screen (gjc forge placement): pad every row by half the
+  // slack between the terminal width and the box width. Leading spaces only — the
+  // box borders/ANSI are untouched, so color and width math stay exact.
+  if (d.center && cols > W) {
+    const leftPad = " ".repeat(Math.floor((cols - W) / 2));
+    return boxLines.map(line => leftPad + line);
+  }
+  return boxLines;
 }
 
 /**

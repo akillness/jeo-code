@@ -159,3 +159,59 @@ export function renderInputFrame(line: string, opts: InputBoxOptions = {}): Inpu
 export function renderInputBox(line: string, opts: InputBoxOptions = {}): string[] {
   return renderInputFrame(line, opts).lines;
 }
+/** Visual (row, display-col) of every caret position 0..N of `text` wrapped at `width`,
+ *  using the SAME wrapping rule as the input box (`wrapWithCursor`). Index i is the caret
+ *  sitting BEFORE char i (N = end of text); `cursor` offsets are code points, matching how
+ *  `renderInputFrame` clamps `opts.cursor` against `Array.from(text)`. */
+export interface CaretCell {
+  row: number;
+  col: number;
+}
+export function caretCells(text: string, width: number): CaretCell[] {
+  const cells: CaretCell[] = [];
+  let curW = 0;
+  let row = 0;
+  const chars = Array.from(text.replace(/\r/g, ""));
+  for (let i = 0; i <= chars.length; i++) {
+    const ch = i < chars.length ? chars[i]! : "";
+    const w = ch === "" || ch === "\n" ? 0 : ch === "\t" ? 2 : visibleWidth(ch);
+    // Wrap BEFORE recording the caret so a caret on a wrapping char follows it down — the
+    // exact order wrapWithCursor uses, so cell rows match the rendered box rows.
+    if (w > 0 && curW + w > width && curW > 0) { row += 1; curW = 0; }
+    cells.push({ row, col: curW });
+    if (ch === "\n") { row += 1; curW = 0; continue; }
+    if (ch !== "") curW += w;
+  }
+  return cells;
+}
+
+/** New caret offset after an Up/Down move within the wrapped input box, keeping the
+ *  display column (textarea convention: snap to the nearest column ≤ the current one on the
+ *  target row). Returns null when already on the top row (Up) or bottom row (Down), so the
+ *  caller can fall through to readline's input-history recall. */
+export function verticalCursorOffset(
+  text: string,
+  cursor: number,
+  width: number,
+  dir: "up" | "down",
+): number | null {
+  const cells = caretCells(text, Math.max(1, width));
+  if (cells.length === 0) return null;
+  const pos = Math.max(0, Math.min(cursor, cells.length - 1));
+  const curRow = cells[pos]!.row;
+  const targetRow = dir === "up" ? curRow - 1 : curRow + 1;
+  const maxRow = cells[cells.length - 1]!.row;
+  if (targetRow < 0 || targetRow > maxRow) return null;
+  const curCol = cells[pos]!.col;
+  let best = -1;
+  let bestCol = -1;
+  let firstOnRow = -1;
+  for (let p = 0; p < cells.length; p++) {
+    if (cells[p]!.row !== targetRow) continue;
+    if (firstOnRow === -1) firstOnRow = p;
+    const c = cells[p]!.col;
+    // Largest column not past the current one — the standard column-preserving snap.
+    if (c <= curCol && c > bestCol) { best = p; bestCol = c; }
+  }
+  return best !== -1 ? best : firstOnRow;
+}

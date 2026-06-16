@@ -60,7 +60,8 @@ import { liveModelPicker, renderLiveModelPicker, type ModelAssignmentBadge } fro
 import { providerPicker, renderProviderPicker } from "../tui/components/provider-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff, sanitizeForTerminal } from "../tui/components/code-view";
 import { categoryBadge } from "../tui/components/category-index";
-import { renderInputFrame } from "../tui/components/input-box";
+import { renderInputFrame, verticalCursorOffset } from "../tui/components/input-box";
+
 import { renderStatusBar } from "../tui/components/status";
 import { detectColorLevel, ColorLevel, visibleWidth } from "../tui/components/color";
 import { readClipboardImage } from "../util/clipboard-image";
@@ -1003,6 +1004,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     cols: terminalSize().cols,
     unicode: supportsUnicode(),
     color: welcomeTheme.color,
+    center: true,
     accent: accentPaint(welcomeTheme),
     accentShadow: accentShadowPaint(welcomeTheme),
   };
@@ -1221,7 +1223,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let keyFilter: PassThrough | undefined;
   // Holder for the active readline so the input filter can see the current line
   // buffer (used by the empty-line backspace guard below). Set after rl is created.
-  let activeRl: { line?: string } | undefined;
+  let activeRl: { line?: string; cursor?: number } | undefined;
+
   if (multilineInput) {
     const kf = new PassThrough();
     (kf as unknown as { isTTY: boolean }).isTTY = true;
@@ -1267,6 +1270,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         // Option/Cmd+Backspace) into the canonical control bytes it DOES act on.
         const combo = matchCursorCombo(data, i);
         if (combo) { out += combo[1]; i += combo[0].length; continue; }
+        // Up/Down inside a multi-line / wrapped draft move the caret between the box's
+        // visual rows (textarea feel). Only when no slash list or history panel owns ↑/↓,
+        // and only away from the top/bottom edge — at the edge the keys fall through to
+        // readline so ↑/↓ still recalls input history.
+        if ((data.startsWith("\u001b[", i) || data.startsWith("\u001bO", i)) && (data[i + 2] === "A" || data[i + 2] === "B")) {
+          const dir = data[i + 2] === "A" ? "up" : "down";
+          const line = activeRl?.line ?? "";
+          if (line.length > 0 && navMatches.length === 0 && promptHistoryLines == null && activeRl) {
+            const winCols = Math.max(24, (process.stdout.columns ?? 80) - 1);
+            const textWidth = Math.max(1, Math.max(24, Math.min(120, winCols)) - 6);
+            const cur = typeof activeRl.cursor === "number" ? activeRl.cursor : line.length;
+            const next = verticalCursorOffset(expandSentinel(line), cur, textWidth, dir);
+            if (next != null) { activeRl.cursor = next; i += 3; continue; }
+          }
+          out += data.slice(i, i + 3); i += 3; continue;
+        }
         if (loneLfShiftEnter && data[i] === "\n") { out += SENTINEL; i += 1; continue; } // lone LF = Shift+Enter (opt-in)
         out += data[i]; i += 1;
       }

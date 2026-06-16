@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.3] - 2026-06-16
+_OAuth loopback reliability fix._
+
+### Fixed
+- **OAuth loopback redirect uses `127.0.0.1` instead of `localhost`** (RFC 8252 §7.3). `localhost` can resolve to IPv6 `::1` or be hosts-file-overridden, intermittently breaking the auth callback; the IP literal is reliable. Only the dynamic-loopback path changes — providers with a fixed redirect URI are unaffected (#30).
+
 ## [0.6.2] - 2026-06-16
 _Interactive `/provider` picker, clearer animated status + labeled block/prose boundaries, and a transient empty-response retry._
 

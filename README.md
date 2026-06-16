@@ -162,11 +162,11 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.6]** (2026-06-16) — Vertical caret movement between input-box rows, a centered welcome banner, and a leaner `parseFlags`.
 - **[0.6.5]** (2026-06-16) — macOS combo-key editing in the boxed prompt, a fresh-start screen clear at launch, a proportional welcome banner, height-aware relayout — and `launch.ts` split into focused submodules.
 - **[0.6.4]** (2026-06-16) — Branding, a responsive-resize fix, `/provider` realignment, and engine repeat-spin recovery.
 - **[0.6.3]** (2026-06-16) — OAuth loopback reliability fix.
 - **[0.6.2]** (2026-06-16) — Interactive `/provider` picker, clearer animated status + labeled block/prose boundaries, and a transient empty-response retry.
-- **[0.6.1]** (2026-06-16) — Live reasoning progress (no more frozen "calling model"), thinking-level fixes for Anthropic/Antigravity, and input-box/Ctrl+O TUI fixes.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

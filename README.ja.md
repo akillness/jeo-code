@@ -158,11 +158,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.1]** (2026-06-16) — Live reasoning progress (no more frozen "calling model"), thinking-level fixes for Anthropic/Antigravity, and input-box/Ctrl+O TUI fixes.
 - **[0.6.0]** (2026-06-16) — TUI quality of life: durable input history (↑ recalls past queries across launches), clean `/resume` rendering, and a scrollable mid-turn Ctrl+O panel.
 - **[0.5.16]** (2026-06-16) — `/resume` and Ctrl+O no longer corrupt the TUI — clean screen restore + scrollback expand.
 - **[0.5.15]** (2026-06-16) — `jeo update` now actually upgrades — bare command installs the latest release instead of just printing a manual command.
 - **[0.5.14]** (2026-06-16) — `jeo --tmux` live-verification harness — repeatable stability + behavior checks.
-- **[0.5.13]** (2026-06-15) — Workflow `/` commands actually run — `/deep-interview`, `/team`, `/ultragoal`, `/ralplan` dispatch by name.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

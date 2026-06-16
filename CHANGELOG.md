@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.1] - 2026-06-16
+_Live reasoning progress (no more frozen "calling model"), thinking-level fixes for Anthropic/Antigravity, and input-box/Ctrl+O TUI fixes._
+
+### Added
+- **Live reasoning progress.** Codex/OpenAI reasoning models now stream their thinking into the live frame (`reasoning.summary: "auto"` + `response.reasoning*.delta` events surfaced via `onReasoning`), and the status row reads `reasoning (model)…` / `thinking — reasoning, no token stream yet…` after a silent wait instead of a frozen `calling model (Ns)…`.
+
+### Fixed
+- Thinking level is now applied to the **Anthropic and Antigravity** providers (it was a silent no-op there).
+- The **input box + caret stay in place after running a command** — no more vanishing box / caret parked at the reservation top.
+- **Skill runs render a compact `[skill]` card** instead of dumping the injected `SKILL.md` into a user box.
+- **Ctrl+O fold toggle** + incremental session durability across interruption.
+
+### Changed
+- Trimmed `fastThinkingLevelForModel` fallback to the real gap (ponytail pass); added a usage guide + demo video, linked from all READMEs.
+
 ## [0.6.0] - 2026-06-16
 _TUI quality of life: durable input history (↑ recalls past queries across launches), clean `/resume` rendering, and a scrollable mid-turn Ctrl+O panel._
 

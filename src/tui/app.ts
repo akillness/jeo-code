@@ -1178,6 +1178,30 @@ export class LaunchTui {
   }
 
 
+  /** Build a live, DIMMED streaming block (the `Thinking` reasoning trace or a tool's
+   *  `Output` tail). Sized to its ACTUAL content and the terminal height — no fixed
+   *  blank-row padding. The old fixed-height region (`ROWS` constant, blank-padded at
+   *  the top) reserved a constant rectangle: a short stream left dead rows that read as
+   *  a torn "hole", and on a short terminal it stole rows the heartbeat needed. Now the
+   *  block shows only the most-recent lines, capped at ~30% of the screen height (a
+   *  ceiling guards a tall terminal), so it grows with the stream and shrinks with the
+   *  viewport. Returns [] when there is nothing to show. */
+  private renderLiveBlock(label: string, text: string, cols: number, rows: number, ceiling: number): string[] {
+    const dim = this.theme.color ? chalk.dim : (s: string) => s;
+    if (!text.trim()) return [];
+    const wrapW = Math.max(8, cols - 2);
+    const wrapped = tailForWrap(text)
+      .split("\n")
+      .flatMap(l => wrapTextWithAnsi(l, wrapW))
+      .filter(l => l.length > 0);
+    if (wrapped.length === 0) return [];
+    const cap = Math.max(3, Math.min(ceiling, Math.floor(rows * 0.3)));
+    const out: string[] = [sectionLabel(label, Math.max(8, cols), { color: this.theme.color, unicode: this.unicode })];
+    for (const l of wrapped.slice(-cap)) out.push(dim(`  ${l}`));
+    out.push("");
+    return out;
+  }
+
   /** Render the Ctrl+O panel inside the live frame. `maxRows` includes borders. */
   private renderHistoryPanel(width: number, maxRows: number): string[] {
     if (!this.historyLines || maxRows < 4) return [];
@@ -1294,42 +1318,18 @@ export class LaunchTui {
     // as a DIMMED, bounded block above the status line. It is transient — flushed
     // UN-dimmed into scrollback once the model commits to a tool/reply (onAssistant),
     // so the in-progress trace stays shaded while the final record reads in normal text.
+    // Height is sized to the content and the viewport (renderLiveBlock), not a fixed
+    // rectangle, so a short trace leaves no padded "hole" and a short terminal is spared.
     const liveThink = this.streamingThought.trim() || this.streamingReasoning.trim();
     if (isThinking && liveThink) {
-      const wrapW = Math.max(8, cols - 2);
-      const wrapped = tailForWrap(liveThink)
-        .split("\n")
-        .flatMap(l => wrapTextWithAnsi(l, wrapW))
-        .filter(l => l.length > 0);
-      // FIXED reserved height (bottom-anchored, blank-padded at top): once present the
-      // block's row count is CONSTANT, so streaming content never changes the frame
-      // height. The per-100ms height thrash that desynced the differential renderer
-      // (duplicate model bar) is gone; height now toggles only at lifecycle boundaries.
-      const ROWS = 6;
-      const shown = wrapped.slice(-ROWS);
-      tail.push(sectionLabel("Thinking", Math.max(8, cols), { color: this.theme.color, unicode: this.unicode }));
-      for (let k = 0; k < ROWS - shown.length; k++) tail.push("");
-      for (const l of shown) tail.push(dim(`  ${l}`));
-      tail.push("");
+      tail.push(...this.renderLiveBlock("Thinking", liveThink, cols, rows, 6));
     }
 
     // Live tool output (gjc-style streaming bash stdout): while a tool runs, its
     // output arrives via onToolProgress and is shown as a DIMMED, bounded tail block.
     // It is transient — cleared on result, when the formatted forge card takes over.
     if (this.runningTool && this.liveToolOutput.trim()) {
-      const wrapW = Math.max(8, cols - 2);
-      const wrapped = tailForWrap(this.liveToolOutput)
-        .split("\n")
-        .flatMap(l => wrapTextWithAnsi(l, wrapW))
-        .filter(l => l.length > 0);
-      // FIXED reserved height (see thinking block): constant rows while a tool streams,
-      // so cumulative stdout growth does not thrash the frame height.
-      const ROWS = 8;
-      const shown = wrapped.slice(-ROWS);
-      tail.push(sectionLabel("Output", Math.max(8, cols), { color: this.theme.color, unicode: this.unicode }));
-      for (let k = 0; k < ROWS - shown.length; k++) tail.push("");
-      for (const l of shown) tail.push(dim(`  ${l}`));
-      tail.push("");
+      tail.push(...this.renderLiveBlock("Output", this.liveToolOutput, cols, rows, 8));
     }
 
     // Live status field: unboxed thinking line + compact metrics row. The model's

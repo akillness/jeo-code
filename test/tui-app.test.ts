@@ -941,3 +941,35 @@ test("currentActivity is stall-aware while waiting on the model (P2)", () => {
   d.retryNotice = "rate limited (HTTP 429) — auto-retry #2 in 4s";
   expect(act(d)).toMatch(/^rate limited \(HTTP 429\)/);
 });
+
+test("renderLiveBlock: sizes to content (no padded hole) and caps by terminal height", () => {
+  const tui = new LaunchTui({ model: "m1", write: () => {} });
+  tui.start();
+  const internals = tui as unknown as {
+    renderLiveBlock: (label: string, text: string, cols: number, rows: number, ceiling: number) => string[];
+  };
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+  // Short stream on a tall terminal: just the label + its two content rows — no blank
+  // padding rows in between (the old fixed-height "hole").
+  const short = internals.renderLiveBlock("Output", "line one\nline two", 80, 50, 8);
+  expect(short.filter(l => l !== "").length).toBe(3); // label + 2 content
+  expect(strip(short[0]!)).toContain("Output");
+  expect(strip(short[1]!)).toContain("line one");
+  expect(strip(short[2]!)).toContain("line two");
+  // No interior blank rows: only the trailing separator is empty.
+  expect(short.slice(0, -1).every(l => l !== "")).toBe(true);
+
+  // Tall content is capped by the ceiling on a roomy terminal …
+  const many = Array.from({ length: 40 }, (_, i) => `row ${i}`).join("\n");
+  const capped = internals.renderLiveBlock("Output", many, 80, 50, 8);
+  expect(capped.filter(l => l !== "").length).toBe(1 + 8); // label + ceiling rows
+  expect(strip(capped[capped.length - 2]!)).toContain("row 39"); // shows the TAIL
+
+  // … and harder by a short terminal (≈30% of rows), so it never starves the heartbeat.
+  const tight = internals.renderLiveBlock("Output", many, 80, 16, 8);
+  expect(tight.filter(l => l !== "").length).toBe(1 + 4); // floor(16*0.3)=4
+
+  // Empty text yields nothing.
+  expect(internals.renderLiveBlock("Output", "   ", 80, 50, 8)).toEqual([]);
+});

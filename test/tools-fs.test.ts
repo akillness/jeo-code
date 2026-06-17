@@ -462,6 +462,35 @@ test("bashTool: a command exceeding the timeout is killed and reported", async (
   expect(res.error).toContain("timed out");
 }, 10_000);
 
+test("bashTool: a backgrounded child holding the pipe does NOT hang the call (returns shortly after the shell exits)", async () => {
+  // Repro of the reported freeze: `cmd &` leaves a grandchild clutching the stdout
+  // pipe, so the shell exits at once but the pipe never hits EOF. The drain used to
+  // block forever (or until the timeout); it must now return on the post-exit linger,
+  // WELL before the 20s timeout, with the shell's own output captured.
+  const start = Date.now();
+  const res = await bashTool("echo started; sleep 30 &", dir, 20_000);
+  const elapsedMs = Date.now() - start;
+  expect(res.success).toBe(true);
+  expect(res.output).toContain("started");
+  expect(elapsedMs).toBeLessThan(5_000); // not hung to the 20s deadline
+}, 15_000);
+
+test("bashTool: a SIGTERM-ignoring foreground command is force-killed at the deadline (bounded, never infinite)", async () => {
+  const start = Date.now();
+  const res = await bashTool("trap '' TERM; sleep 60", dir, 500);
+  const elapsedMs = Date.now() - start;
+  expect(res.success).toBe(false);
+  expect(res.error).toContain("timed out");
+  expect(elapsedMs).toBeLessThan(6_000); // timeout (0.5s) + SIGKILL grace (3s), with slack
+}, 12_000);
+
+test("bashTool: a stdin-reading command gets EOF and exits instead of blocking", async () => {
+  const start = Date.now();
+  const res = await bashTool("cat", dir, 10_000); // no input piped → immediate EOF
+  expect(res.success).toBe(true);
+  expect(Date.now() - start).toBeLessThan(3_000);
+}, 12_000);
+
 test("bashTool: a non-zero exit is surfaced as a failure", async () => {
   const res = await bashTool("exit 3", dir);
   expect(res.success).toBe(false);

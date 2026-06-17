@@ -587,6 +587,31 @@ export async function editTool(
   }
 }
 
+/** Drain a readable byte stream to a string, cancel-safe. We read via an explicit
+ *  reader (NOT `new Response(stream).text()`, whose read is uncancellable) so a caller
+ *  can cancel() to force the in-flight read to settle — essential when a SIGKILLed
+ *  process leaves a backgrounded grandchild holding the pipe's write end open, so it
+ *  never hits EOF (proven by scripts/subproc-probe.ts ABANDON mode). An optional
+ *  (caller-throttled) onChunk drives the live output view. */
+async function drainPipe(
+  r: ReadableStreamDefaultReader<Uint8Array>,
+  onChunk?: (partial: string) => void,
+): Promise<string> {
+  const dec = new TextDecoder();
+  let out = "";
+  try {
+    for (;;) {
+      const { done, value } = await r.read();
+      if (done) break;
+      out += dec.decode(value, { stream: true });
+      onChunk?.(out);
+    }
+    out += dec.decode();
+    onChunk?.(out);
+  } catch { /* cancelled reader surfaces here; return what we have */ }
+  return out;
+}
+
 export async function bashTool(
   command: string,
   cwd: string = process.cwd(),
@@ -612,6 +637,10 @@ export async function bashTool(
     // Run the command using Bun's native spawn
     const proc = Bun.spawn(["bash", "-c", command], {
       cwd: runCwd,
+      // Detach stdin (no inherited TTY): a command that reads stdin (`cat`, `read`,
+      // a REPL, an interactive prompt) then gets immediate EOF and exits instead of
+      // blocking the whole turn forever waiting for input that never comes.
+      stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
       // Inherit the parent env; merge caller-supplied (sanitized) vars on top.
@@ -621,90 +650,93 @@ export async function bashTool(
     let timedOut = false;
     let aborted = false;
     const TIMEOUT_MS = timeoutMs;
+    // Grace after the SHELL exits before we force the pipe readers closed: a finished
+    // command's buffered tail flushes far inside this window; only a backgrounded
+    // grandchild that inherited the pipe (`cmd &`, daemons, `nohup`) keeps it open
+    // past it — and that one must not stall the turn.
+    const PIPE_LINGER_MS = 500;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      // Graceful first (SIGTERM), then force-kill (SIGKILL) if it ignores it.
-      try { proc.kill(); } catch {}
-      killTimer = setTimeout(() => { try { proc.kill(9); } catch {} }, 3_000);
-    }, TIMEOUT_MS);
-    // Abort wiring: if the turn is cancelled, SIGKILL the child immediately AND cancel
-    // both pipe readers so the drain loops below unwind at once. We own the readers
-    // explicitly (rather than `for await` / `new Response`, whose hidden iterator locks
-    // we cannot cancel): cancel() resolves the in-flight read({ done:true }) immediately,
-    // unwinding each loop even when the killed child's pipe is slow to hit EOF. Cancelling
-    // stderr also prevents a hang — after kill(9) its pipe never sees EOF, so awaiting an
-    // uncancellable Response would block forever. Without all this the child is orphaned,
-    // holding two pipe FDs (proven by scripts/subproc-probe.ts ABANDON mode: +1 fd & +1
-    // child per call).
     let stdoutReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let stderrReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    // Force EOF on both pipe readers. The drain loops `await r.read()`, which NEVER
+    // returns `done` while ANY process holds the write end open — a SIGKILLed shell
+    // can leave a backgrounded grandchild clutching the FD, so killing the shell is
+    // not enough (proven by scripts/subproc-probe.ts ABANDON mode). cancel() resolves
+    // the in-flight read immediately, unwinding the drains so the call returns instead
+    // of hanging forever. Cheap to call repeatedly; harmless before the readers exist.
+    const cancelReaders = () => {
+      try { stdoutReader?.cancel(); } catch {}
+      try { stderrReader?.cancel(); } catch {}
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      // Graceful first (SIGTERM), then force-kill (SIGKILL) if it ignores it. At the
+      // SIGKILL step ALSO cut the readers: the old code killed the shell but never
+      // cancelled the readers, so an orphan-held pipe outlived the deadline and the
+      // turn hung forever (the reported freeze).
+      try { proc.kill(); } catch {}
+      killTimer = setTimeout(() => { try { proc.kill(9); } catch {} cancelReaders(); }, 3_000);
+    }, TIMEOUT_MS);
+    // Abort wiring: if the turn is cancelled, SIGKILL the child immediately AND cancel
+    // both pipe readers so the drain loops unwind at once.
     const onAbort = () => {
       aborted = true;
       try { proc.kill(9); } catch {}
-      try { stdoutReader?.cancel(); } catch {}
-      try { stderrReader?.cancel(); } catch {}
+      cancelReaders();
     };
     if (signal) {
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
     }
 
-    // Drain a pipe to a string, cancel-safe. An optional onChunk sink receives the
-    // running output (throttled by the caller) to drive the live DIMMED bash view.
-    const drainAll = async (
-      r: ReadableStreamDefaultReader<Uint8Array>,
-      onChunk?: (partial: string) => void,
-    ): Promise<string> => {
-      const dec = new TextDecoder();
-      let out = "";
-      try {
-        for (;;) {
-          if (aborted) break;
-          const { done, value } = await r.read();
-          if (done) break;
-          out += dec.decode(value, { stream: true });
-          onChunk?.(out);
-        }
-        out += dec.decode();
-        onChunk?.(out);
-      } catch { /* cancelled reader surfaces here; return what we have */ }
-      return out;
-    };
+    // Start BOTH drains concurrently so neither pipe can fill its 64KB buffer and
+    // deadlock the child (a child blocks on write() once an unread pipe fills up).
+    // cancelReaders() (abort/timeout) unwinds an in-flight read, so no aborted-flag
+    // poll is needed inside the shared drainPipe.
+    stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
     stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
-    const stderrPromise = drainAll(stderrReader).catch(() => "");
-    let stdout = "";
+    let lastEmit = 0;
+    const stdoutPromise = drainPipe(
+      stdoutReader,
+      onProgress
+        ? (partial) => {
+            // Throttle the live sink to ~80ms.
+            const now = Date.now();
+            if (now - lastEmit >= 80) { lastEmit = now; onProgress(partial); }
+          }
+        : undefined,
+    ).catch(() => "");
+    const stderrPromise = drainPipe(stderrReader).catch(() => "");
+
     try {
-      if (onProgress) {
-        // Throttle the live sink to ~80ms; drainAll owns the cancel-safe read loop.
-        let lastEmit = 0;
-        stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
-        stdout = await drainAll(stdoutReader, (partial) => {
-          const now = Date.now();
-          if (now - lastEmit >= 80) { lastEmit = now; onProgress(partial); }
-        });
-        onProgress(stdout);
-      } else if (!aborted) {
-        stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
-        stdout = await drainAll(stdoutReader);
-      }
+      // Wait for the SHELL to exit. Bounded: the timeout path SIGTERMs then SIGKILLs,
+      // so even a foreground command that blocks (e.g. on /dev/tty) cannot exceed
+      // TIMEOUT_MS (+3s grace).
       if (!aborted) await proc.exited;
-    } catch (streamErr) {
-      // A cancelled stdout reader (from onAbort) surfaces here; swallow it so we can
-      // return a clean aborted result rather than a stream-internal error.
-      if (!aborted) throw streamErr;
+      // The shell exited, but a backgrounded grandchild can keep the pipes open
+      // indefinitely; without forcing them closed the drains hang the whole turn.
+      // Give a finished command's tail a brief grace to flush, then cut the readers
+      // in the finally below — so a daemon-spawning command returns ~PIPE_LINGER_MS
+      // after the shell exits instead of stalling until the timeout.
+      if (!aborted && !timedOut) {
+        await Promise.race([
+          Promise.all([stdoutPromise, stderrPromise]),
+          new Promise<void>(resolve => setTimeout(resolve, PIPE_LINGER_MS)),
+        ]);
+      }
     } finally {
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
       if (signal) signal.removeEventListener("abort", onAbort);
-      // Belt-and-suspenders: if we are leaving for ANY reason (normal exit, stdout-loop
-      // throw, abort) and the child is somehow still alive, reap it so no orphaned
-      // process or pipe FD survives the call.
+      // Reap a still-alive child (normal exit, abort, or timeout) so no orphaned
+      // process survives, then force any pipe still held open (backgrounded
+      // grandchild) closed so the awaits below cannot hang.
       if (proc.exitCode === null && proc.signalCode === null) { try { proc.kill(9); } catch {} }
-      // Always settle the stderr reader to release its pipe FD.
-      await stderrPromise;
+      cancelReaders();
     }
+    const stdout = await stdoutPromise;
     const stderr = await stderrPromise;
+    if (onProgress) onProgress(stdout);
 
     let output = [stdout, stderr].filter(Boolean).join("\n");
     const MAX_OUTPUT = 100_000;
@@ -740,22 +772,41 @@ async function spawnTextWithTimeout(
   cwd: string,
   timeoutMs = 60_000,
 ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }> {
-  const proc = Bun.spawn(cmd, { cwd, stdout: "pipe", stderr: "pipe" });
+  // stdin detached so a command that reads stdin gets EOF instead of blocking.
+  const proc = Bun.spawn(cmd, { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   let timedOut = false;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
+  const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
+  const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
+  const cancelReaders = () => {
+    try { stdoutReader.cancel(); } catch {}
+    try { stderrReader.cancel(); } catch {}
+  };
+  const stdoutPromise = drainPipe(stdoutReader);
+  const stderrPromise = drainPipe(stderrReader);
   const timer = setTimeout(() => {
     timedOut = true;
     try { proc.kill(); } catch {}
-    killTimer = setTimeout(() => { try { proc.kill(9); } catch {} }, 3_000);
+    killTimer = setTimeout(() => { try { proc.kill(9); } catch {} cancelReaders(); }, 3_000);
   }, timeoutMs);
   try {
     await proc.exited;
+    // Brief grace for a finished command's tail to flush, then cut any pipe still held
+    // open by a backgrounded grandchild so the awaits below cannot hang the turn.
+    if (!timedOut) {
+      await Promise.race([
+        Promise.all([stdoutPromise, stderrPromise]),
+        new Promise<void>(resolve => setTimeout(resolve, 500)),
+      ]);
+    }
   } finally {
     clearTimeout(timer);
     if (killTimer) clearTimeout(killTimer);
+    if (proc.exitCode === null && proc.signalCode === null) { try { proc.kill(9); } catch {} }
+    cancelReaders();
   }
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
+  const stdout = await stdoutPromise;
+  const stderr = await stderrPromise;
   return { stdout, stderr, exitCode: proc.exitCode, timedOut };
 }
 

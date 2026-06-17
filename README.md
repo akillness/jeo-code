@@ -158,11 +158,11 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.12]** (2026-06-16) — OKF-backed memory distillation — session learnings become structured concept files.
 - **[0.6.11]** (2026-06-16) — Larger reasoning budgets, and terminal capability-response sequences kept out of the prompt.
 - **[0.6.10]** (2026-06-16) — OKF memory-format foundation and a hardened bashTool subprocess drain.
 - **[0.6.9]** (2026-06-16) — Live streaming blocks size to their content and the viewport instead of a fixed rectangle.
 - **[0.6.8]** (2026-06-16) — OAuth loopback callback host pinned to `localhost` to match provider-registered redirect URIs.
-- **[0.6.7]** (2026-06-16) — Mouse-report input corruption fixed under `jeo --tmux`, and a full-width TUI at one consistent width.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

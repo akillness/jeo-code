@@ -162,11 +162,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.8]** (2026-06-16) — OAuth loopback callback host pinned to `localhost` to match provider-registered redirect URIs.
 - **[0.6.7]** (2026-06-16) — Mouse-report input corruption fixed under `jeo --tmux`, and a full-width TUI at one consistent width.
 - **[0.6.6]** (2026-06-16) — Vertical caret movement between input-box rows, a centered welcome banner, and a leaner `parseFlags`.
 - **[0.6.5]** (2026-06-16) — macOS combo-key editing in the boxed prompt, a fresh-start screen clear at launch, a proportional welcome banner, height-aware relayout — and `launch.ts` split into focused submodules.
 - **[0.6.4]** (2026-06-16) — Branding, a responsive-resize fix, `/provider` realignment, and engine repeat-spin recovery.
-- **[0.6.3]** (2026-06-16) — OAuth loopback reliability fix.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

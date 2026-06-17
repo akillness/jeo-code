@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.8] - 2026-06-16
+_OAuth loopback callback host pinned to `localhost` to match provider-registered redirect URIs._
+
+### Fixed
+- **OAuth loopback callback uses `localhost`** (not the `127.0.0.1` IP literal). Providers register their dynamic-loopback redirect URIs against `localhost`, so the callback host must match it exactly — an IP literal can mismatch the registered URI and break the Anthropic / Google / Antigravity login flows. The default is now documented in-code so it doesn't drift again.
+
 ## [0.6.7] - 2026-06-16
 _Mouse-report input corruption fixed under `jeo --tmux`, and a full-width TUI at one consistent width._
 

@@ -46,10 +46,7 @@ test("box borders with unicode: false", () => {
 
 test("every line has equal visible width", () => {
   const cols = 80;
-  const grandWidth = 36; // DNA_CLAW_ART_GRAND width
-  const titleWidth = 3 + ` jeo v1.2.3 · JEO forge `.length;
-  const naturalInner = Math.max(grandWidth + 12, titleWidth + 2);
-  const W = Math.min(cols - 2, naturalInner + 2);
+  const W = cols - 1; // banner fills the full terminal width (last column left free)
   const lines = renderWelcome({
     version: "1.2.3",
     model: "claude-3-5-sonnet",
@@ -136,10 +133,7 @@ test("workspace / session details no longer render inside the hero box (gjc pari
 test("an overlong model pill truncates instead of breaking the border", () => {
   const model = "antigravity/gemini-3.1-pro-extremely-long-model-identifier-overflowing";
   const cols = 60;
-  const grandWidth = 36;
-  const titleWidth = 3 + ` jeo v1.2.3 · JEO forge `.length;
-  const naturalInner = Math.max(grandWidth + 12, titleWidth + 2);
-  const W = Math.min(cols - 2, naturalInner + 2);
+  const W = cols - 1; // full-width banner
   const lines = renderWelcome({
     version: "1.2.3",
     model,
@@ -178,35 +172,19 @@ test("narrow cols (<30) -> single-line fallback", () => {
   expect(lines).toEqual(["jeo v1.2.3 · claude-3-5-sonnet"]);
 });
 
-test("wide terminals keep the banner at its natural hero width; narrow ones shrink it", () => {
+test("banner fills the full terminal width on wide and narrow terminals; never wraps", () => {
   const stripW = (cols: number) =>
     stripAnsi(renderWelcome({ version: "1.2.3", model: "m", cols, unicode: true, color: false })[0]!).length;
-  // At/above the natural hero width the box does NOT stretch with the terminal —
-  // proportions are preserved instead of leaving the claw floating in whitespace.
-  expect(stripW(200)).toBe(stripW(120));
-  expect(stripW(120)).toBe(stripW(54));
-  expect(stripW(200)).toBeLessThan(100);
-  // Below the natural width it shrinks proportionally with the terminal.
-  expect(stripW(44)).toBe(42);
-  expect(stripW(44)).toBeLessThan(stripW(200));
-});
-
-test("center:true centers the hero box within the terminal width", () => {
-  const cols = 120;
-  const lines = renderWelcome({ version: "1.2.3", model: "m", cols, unicode: true, color: false, center: true });
-  const top = lines[0]!;
-  const leftPad = top.length - top.trimStart().length;
-  const boxW = top.trimStart().length;
-  // Box is left-padded by half the slack so its midpoint sits at the screen midpoint.
-  expect(leftPad).toBe(Math.floor((cols - boxW) / 2));
-  expect(leftPad + boxW / 2).toBe(cols / 2);
-  // Every row shares the same leading pad (the box stays rectangular).
-  for (const line of lines) {
-    expect(line.length - line.trimStart().length).toBe(leftPad);
-  }
-  // Default (no center) stays flush-left.
-  const flush = renderWelcome({ version: "1.2.3", model: "m", cols, unicode: true, color: false });
-  expect(flush[0]!.startsWith("╭")).toBe(true);
+  // The box spans the full width (last column left free so a full-width row never wraps),
+  // and it tracks the terminal — wide stays wide, narrow shrinks, no 100/120-col cap.
+  expect(stripW(200)).toBe(199);
+  expect(stripW(120)).toBe(119);
+  expect(stripW(80)).toBe(79);
+  expect(stripW(44)).toBe(43);
+  expect(stripW(200)).toBeGreaterThan(stripW(80));
+  // Flush-left (no centering): the box starts at column 0.
+  const lines = renderWelcome({ version: "1.2.3", model: "m", cols: 200, unicode: true, color: false });
+  for (const line of lines) expect(line.startsWith(" ")).toBe(false);
 });
 
 test("color:false emits no ANSI", () => {

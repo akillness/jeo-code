@@ -83,6 +83,44 @@ export function matchCursorCombo(data: string, i: number): readonly [string, str
   return undefined;
 }
 
+/** Byte length of a terminal MOUSE-REPORT sequence beginning at `data[i]`, else 0.
+ *  jeo never requests mouse reporting (resetMouseTracking disables it), but tmux
+ *  `mouse on` — which `jeo --tmux` sets so wheel-scroll reaches copy-mode — or a stale
+ *  pane can still deliver reports. Their payload bytes (X10 `ESC[M` + 3 raw bytes, or
+ *  SGR `ESC[<b;x;y` + `M`/`m`) would otherwise land in the prompt as typed text — the
+ *  "값 입력" corruption where clicking/scrolling sprays digits into the input box. The
+ *  filter swallows the whole sequence so it never reaches readline. `ESC[<` and `ESC[M`
+ *  are input-unambiguous (mouse-only), so an unterminated tail (split across chunks) is
+ *  consumed too rather than leaked. */
+export function matchMouseReport(data: string, i: number): number {
+  if (data.startsWith("\u001b[<", i)) {
+    let j = i + 3;
+    while (j < data.length && data[j] !== "M" && data[j] !== "m") j++;
+    return (j < data.length ? j + 1 : data.length) - i;
+  }
+  if (data.startsWith("\u001b[M", i)) {
+    return Math.min(6, data.length - i);
+  }
+  return 0;
+}
+
+/** Remove every terminal MOUSE-REPORT sequence from a plain (non-paste) input segment.
+ *  The live-turn drain (`queuePromptInputChunk`) reads RAW stdin, so a wheel/click report
+ *  buffered during a running turn would otherwise have its printable remnant (`[M`, SGR
+ *  digits) fed into the next prompt — the same "값 입력" corruption the keyFilter blocks
+ *  on the idle path. */
+export function stripMouseReports(s: string): string {
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    const m = matchMouseReport(s, i);
+    if (m > 0) { i += m; continue; }
+    out += s[i];
+    i += 1;
+  }
+  return out;
+}
+
 /** Apply combo-key rewrites across a plain (non-paste) input segment. Shares
  *  `matchCursorCombo` with the live input filter, so the filter and this exported
  *  helper can never diverge. */
@@ -169,7 +207,7 @@ export function queuePromptInputChunk(state: PromptInputQueue, chunk: string): b
       const plain = start === -1 ? rest : rest.slice(0, start);
       if (start !== -1) state.inPaste = true;
       rest = start === -1 ? "" : rest.slice(start + PASTE_START.length);
-      if (feedTypedSegment(state, plain)) accepted = true;
+      if (feedTypedSegment(state, stripMouseReports(plain))) accepted = true;
     }
   }
   return accepted;

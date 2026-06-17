@@ -21,8 +21,6 @@ export interface WelcomeData {
   accentShadow?: (s: string) => string;
   unicode?: boolean;       // default true
   color?: boolean;         // default true
-  /** Center the hero box horizontally within `cols` (gjc forge screen placement). */
-  center?: boolean;
 }
 
 function getVisibleWidth(s: string): number {
@@ -57,20 +55,15 @@ export function renderWelcome(d: WelcomeData): string[] {
     return [ `jeo v${d.version} · ${d.model}` ];
   }
 
-  // The banner hugs a NATURAL hero width so it reads as a proportional box — the
-  // grand DNA-claw framed by even margins — instead of stretching into a mostly
-  // empty rectangle on wide terminals. When the terminal is SMALLER than that
-  // initial/native width it shrinks proportionally: the box narrows and the claw
-  // steps grand→compact (below) so the art keeps its shape and never clips.
+  // The banner fills the full terminal width (gjc forge: flush with the input box and
+  // status bar below it). `cols - 1` leaves the last column free so a full-width row
+  // never wraps; the DNA-claw + pills stay centered inside the box.
   const grandWidth = Math.max(...DNA_CLAW_ART_GRAND.map(l => l.length));
   // Title rides ON the top border: `─── jeo v{version} · JEO forge ───`. Defined
-  // once here so the natural-width calc and the border render below can't drift.
+  // once here so the width calc and the border render below can't drift.
   const titleDashes = 3;
   const titleLabel = ` jeo v${d.version} · JEO forge `;
-  const titleWidth = titleDashes + titleLabel.length;
-  // grand art (36) + a 6-col margin each side, never narrower than the title.
-  const naturalInner = Math.max(grandWidth + 12, titleWidth + 2);
-  const W = Math.min(cols - 2, naturalInner + 2);
+  const W = cols - 1;
   const inner = W - 2;
 
   const BOX_UNICODE = { tl: "╭", tr: "╮", bl: "╰", br: "╯", h: "─", v: "│" };
@@ -139,15 +132,7 @@ export function renderWelcome(d: WelcomeData): string[] {
     return leftBorder + line + rightBorder;
   });
 
-  const boxLines = [topBorderLine, ...finalContentLines, bottomBorderLine];
-  // Center the hero box on screen (gjc forge placement): pad every row by half the
-  // slack between the terminal width and the box width. Leading spaces only — the
-  // box borders/ANSI are untouched, so color and width math stay exact.
-  if (d.center && cols > W) {
-    const leftPad = " ".repeat(Math.floor((cols - W) / 2));
-    return boxLines.map(line => leftPad + line);
-  }
-  return boxLines;
+  return [topBorderLine, ...finalContentLines, bottomBorderLine];
 }
 
 /**

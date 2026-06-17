@@ -325,7 +325,7 @@ export class LaunchTui {
         muted: mutedPaint(this.theme),
         accent: this.theme.color ? accentPaint(this.theme) : undefined,
         fill: cardFillPaint(this.theme),
-        width: Math.max(24, Math.min(100, size().cols)),
+        width: Math.max(24, size().cols - 1),
       });
       this.appendLedger(card.join("\n") + "\n", "card");
     }
@@ -624,7 +624,7 @@ export class LaunchTui {
     const caret = this.unicode ? "▌" : "_";
     const display = this.livePromptInput ? `${this.livePromptInput}${caret}` : "";
     return renderInputBox(display, {
-      cols: Math.max(24, Math.min(120, cols)),
+      cols: Math.max(24, cols),
       color: this.theme.color,
       unicode: this.unicode,
       accent: this.theme.color ? accentPaint(this.theme) : undefined,
@@ -639,7 +639,7 @@ export class LaunchTui {
   private renderUserCard(rawText: string, cols: number): string[] {
     const text = (rawText ?? "").trim();
     if (!text) return [];
-    const boxWidth = Math.max(24, Math.min(120, cols));
+    const boxWidth = Math.max(24, cols);
     const inner = Math.max(10, boxWidth - 2);
     const g = this.unicode ? BOX_UNICODE : BOX_ASCII;
     const uc = this.theme.userCard;
@@ -668,7 +668,7 @@ export class LaunchTui {
   flushUserCard(text: string): void {
     const t = (text ?? "").trim();
     if (!t || this.finished) return;
-    const cols = Math.max(20, size().cols);
+    const cols = Math.max(20, size().cols - 1);
     const lines = this.renderUserCard(t, cols);
     if (lines.length) this.appendLedger(lines.join("\n"), "card");
   }
@@ -1037,7 +1037,7 @@ export class LaunchTui {
       // Inline turns flushed every completed card into scrollback live; re-printing
       // the cards here would duplicate them right below themselves. A spacer row
       // keeps the card block from gluing to the stream above (jeo-ref rhythm).
-      const forge = this.renderForge(size().cols, 3);
+      const forge = this.renderForge(size().cols - 1, 3);
       if (forge.length && finalLines.length) finalLines.push("");
       finalLines.push(...forge);
     }
@@ -1118,7 +1118,7 @@ export class LaunchTui {
    *  Non-inline modes keep the card in `forgeSummaries` for the final static summary. */
   private flushForgeCard(summary: ForgeSummary, success?: boolean): void {
     if (!this.inline || this.finished) return;
-    const width = Math.max(24, Math.min(120, size().cols));
+    const width = Math.max(24, size().cols - 1);
     // gjc D2 (state-encoded border): a FAILED card gets a red border so it pops
     // out of scrollback at a glance; OK/neutral cards keep the theme accent
     // identity. The ✓/✗ title mark already encodes state, but the border tone
@@ -1148,9 +1148,9 @@ export class LaunchTui {
     dim = false,
   ): string[] {
     const floor = Math.min(24, width);
-    // Fill the available width (cap at formatForgeBox's own 120 ceiling) so an
-    // in-frame box does not leave a dead right-margin column inside the outer panel.
-    const boxWidth = Math.max(floor, Math.min(120, width));
+    // Fill the available width so an in-frame box does not leave a dead right-margin
+    // column inside the outer panel.
+    const boxWidth = Math.max(floor, width);
     const paint = this.theme.color ? accentPaint(this.theme) : (s: string) => s;
     const lines: string[] = [];
     for (const [i, summary] of this.forgeSummaries.slice(-maxEntries).entries()) {
@@ -1181,7 +1181,7 @@ export class LaunchTui {
   /** Render the Ctrl+O panel inside the live frame. `maxRows` includes borders. */
   private renderHistoryPanel(width: number, maxRows: number): string[] {
     if (!this.historyLines || maxRows < 4) return [];
-    const boxWidth = Math.max(24, Math.min(120, width));
+    const boxWidth = Math.max(24, width);
     const inner = Math.max(10, boxWidth - 2);
     const accent = this.theme.color ? accentPaint(this.theme) : (s: string) => s;
     const dim = this.theme.color ? chalk.dim : (s: string) => s;
@@ -1296,7 +1296,7 @@ export class LaunchTui {
     // so the in-progress trace stays shaded while the final record reads in normal text.
     const liveThink = this.streamingThought.trim() || this.streamingReasoning.trim();
     if (isThinking && liveThink) {
-      const wrapW = Math.max(8, Math.min(120, cols) - 2);
+      const wrapW = Math.max(8, cols - 2);
       const wrapped = tailForWrap(liveThink)
         .split("\n")
         .flatMap(l => wrapTextWithAnsi(l, wrapW))
@@ -1307,7 +1307,7 @@ export class LaunchTui {
       // (duplicate model bar) is gone; height now toggles only at lifecycle boundaries.
       const ROWS = 6;
       const shown = wrapped.slice(-ROWS);
-      tail.push(sectionLabel("Thinking", Math.max(8, Math.min(120, cols)), { color: this.theme.color, unicode: this.unicode }));
+      tail.push(sectionLabel("Thinking", Math.max(8, cols), { color: this.theme.color, unicode: this.unicode }));
       for (let k = 0; k < ROWS - shown.length; k++) tail.push("");
       for (const l of shown) tail.push(dim(`  ${l}`));
       tail.push("");
@@ -1317,7 +1317,7 @@ export class LaunchTui {
     // output arrives via onToolProgress and is shown as a DIMMED, bounded tail block.
     // It is transient — cleared on result, when the formatted forge card takes over.
     if (this.runningTool && this.liveToolOutput.trim()) {
-      const wrapW = Math.max(8, Math.min(120, cols) - 2);
+      const wrapW = Math.max(8, cols - 2);
       const wrapped = tailForWrap(this.liveToolOutput)
         .split("\n")
         .flatMap(l => wrapTextWithAnsi(l, wrapW))
@@ -1326,7 +1326,7 @@ export class LaunchTui {
       // so cumulative stdout growth does not thrash the frame height.
       const ROWS = 8;
       const shown = wrapped.slice(-ROWS);
-      tail.push(sectionLabel("Output", Math.max(8, Math.min(120, cols)), { color: this.theme.color, unicode: this.unicode }));
+      tail.push(sectionLabel("Output", Math.max(8, cols), { color: this.theme.color, unicode: this.unicode }));
       for (let k = 0; k < ROWS - shown.length; k++) tail.push("");
       for (const l of shown) tail.push(dim(`  ${l}`));
       tail.push("");
@@ -1336,7 +1336,7 @@ export class LaunchTui {
     // streamed activity is uniform across providers via streamingActivity and keeps
     // the ⟦esc⟧ cancel hint visible without trapping the message inside a border.
     if (isThinking) {
-      tail.push(...renderStatusBox(this.statusBoxData({ cols: Math.max(24, Math.min(120, cols)), elapsedMs, stepNow, phase, colorLevel, idx })));
+      tail.push(...renderStatusBox(this.statusBoxData({ cols: Math.max(24, cols), elapsedMs, stepNow, phase, colorLevel, idx })));
     }
 
 
@@ -1410,7 +1410,10 @@ export class LaunchTui {
     const { cols, rows } = size();
     const fit = this.tty; // boxed full-screen layout only on a TTY (defaults to isTTY())
     const elapsedMs = this.startedAt ? Date.now() - this.startedAt : 0;
-    const innerWidth = fit && !this.inline ? cols - 4 : cols;
+    // Inline frame fills the width but leaves the LAST column free (cols - 1) — the same
+    // wrap-safe convention as the welcome banner and idle input box, so every box lines up
+    // at one width and a full-width row never trips the terminal's last-column autowrap.
+    const innerWidth = !fit ? cols : this.inline ? cols - 1 : cols - 4;
 
     // Resolve the current (monotonic) stage for the track; announce a transition
     // once when it first advances. The header art is the DNA Claw brand symbol —
@@ -1462,7 +1465,10 @@ export class LaunchTui {
     // gjc-style inline frame: a flat stack (live card → status line → todos → hud →
     // model bar), no outer border, no mascot art — completed work lives in scrollback.
     if (fit && this.inline) {
-      const inlineFrame = this.composeInlineFrame({ cols, rows, stepNow, elapsedMs, idx, isThinking, planLines });
+      // Pass cols - 1 so every in-frame box (input, model bar, forge, status) lines up
+      // with the welcome banner, scrollback cards, and idle input box — and a full-width
+      // row never trips the terminal's last-column autowrap (the 1-line=1-row guard).
+      const inlineFrame = this.composeInlineFrame({ cols: Math.max(20, cols - 1), rows, stepNow, elapsedMs, idx, isThinking, planLines });
       // Screen-safety: every rendered line is width-clamped to `cols` so a long line
       // (e.g. the model bar with a deep cwd) cannot soft-wrap into a second physical row
       // and desync the differential renderer's 1-line=1-row accounting. Frame height stays

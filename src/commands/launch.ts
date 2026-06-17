@@ -126,6 +126,8 @@ import {
   isStandaloneBackspace,
   CURSOR_COMBO_REWRITES,
   matchCursorCombo,
+  matchMouseReport,
+  stripMouseReports,
   rewriteCursorCombos,
   queuePromptInputChunk,
   captureLivePromptInputChunk,
@@ -172,6 +174,8 @@ export {
   isStandaloneBackspace,
   CURSOR_COMBO_REWRITES,
   matchCursorCombo,
+  matchMouseReport,
+  stripMouseReports,
   rewriteCursorCombos,
   queuePromptInputChunk,
   captureLivePromptInputChunk,
@@ -1004,7 +1008,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     cols: terminalSize().cols,
     unicode: supportsUnicode(),
     color: welcomeTheme.color,
-    center: true,
     accent: accentPaint(welcomeTheme),
     accentShadow: accentShadowPaint(welcomeTheme),
   };
@@ -1261,6 +1264,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (data[i] === "\n" || data[i] === "\r") { out += SENTINEL; i += 1; continue; }
           out += data[i]; i += 1; continue;
         }
+        // Swallow MOUSE-REPORT sequences (tmux `mouse on` from --tmux, or a stale pane):
+        // their payload bytes would otherwise be typed into the prompt. Never in a paste.
+        const mouse = matchMouseReport(data, i);
+        if (mouse > 0) { i += mouse; continue; }
         let matched = false;
         for (const seq of SHIFT_ENTER_SEQS) {
           if (data.startsWith(seq, i)) { out += SENTINEL; i += seq.length; matched = true; break; }
@@ -1279,7 +1286,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           const line = activeRl?.line ?? "";
           if (line.length > 0 && navMatches.length === 0 && promptHistoryLines == null && activeRl) {
             const winCols = Math.max(24, (process.stdout.columns ?? 80) - 1);
-            const textWidth = Math.max(1, Math.max(24, Math.min(120, winCols)) - 6);
+            const textWidth = Math.max(1, Math.max(24, winCols) - 6);
             const cur = typeof activeRl.cursor === "number" ? activeRl.cursor : line.length;
             const next = verticalCursorOffset(expandSentinel(line), cur, textWidth, dir);
             if (next != null) { activeRl.cursor = next; i += 3; continue; }
@@ -1679,10 +1686,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const caret = rli.line === line && typeof rli.cursor === "number" ? rli.cursor : line.length;
     const { accent: boxAccent, shadow: boxShadow } = boxAccents(line);
     const frame = renderInputFrame(expandSentinel(line), {
-      // Cap the input box at 120 cols to match the live-turn box (renderLiveInputBox)
-      // and the user-card width, so the box doesn't visibly jump width on the
-      // idle→live transition on wide terminals. The status bar below stays full-width.
-      cols: Math.min(120, cols),
+      // Full terminal width (cols is already columns - 1, leaving the last column free
+      // so a full-width row never wraps). Matches the live-turn box, user/forge cards,
+      // and the welcome banner — all share this cols-1 width so nothing jumps on the
+      // idle↔live transition. The status bar below stays full-width too.
+      cols: cols,
       color: true,
       unicode: true,
       accent: boxAccent,
@@ -2350,6 +2358,26 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       lastIdleCols = cols;
       lastIdleRows = rows;
       try {
+        // Fresh launch / post-`/clear`: the only thing on screen above the footer is the
+        // welcome banner, which the terminal reflows into a fragmented mess on a width
+        // change (every full-width box row wraps, floating its right border onto its own
+        // line). Redraw it cleanly at the NEW width instead — full clear + reprint banner
+        // + fresh footer reservation. Scoped to history.length <= 1, so once real work has
+        // scrolled the banner into deep scrollback the caret-anchored relayout below runs.
+        if (history.length <= 1 && process.stdout.isTTY) {
+          footerRendered = 0;
+          footerParkedRow = 0;
+          lastFooterKey = "";
+          lastDrawnLines = [];
+          out.write(clearScreen());
+          out.write(renderWelcome({ ...welcomeData, cols }).join("\n") + "\n");
+          footerRows = previewRowsFor(rows);
+          if (footerRows > 1) out.write("\n".repeat(footerRows - 1) + cursorUp(footerRows - 1));
+          out.write(toColumn(1));
+          footerRendered = footerRows;
+          drawFooter(promptHistoryLines ? historyPreviewLines(promptHistoryLines) : previewLines(typedLine, navIdx));
+          return;
+        }
         // Resolution-safe relayout, anchored to the CURSOR (not the screen bottom). The
         // previous frame was painted at the OLD width; on resize the terminal reflows its
         // full-width rows AND repositions the frame — a width shrink wraps lines and floats

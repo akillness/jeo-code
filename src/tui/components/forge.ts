@@ -482,7 +482,7 @@ export function fitForgeBoxes(lines: string[], budget: number): string[] {
 export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}): string[] {
   const innerWidth = opts.width ?? 80;
   const floor = Math.min(24, innerWidth);
-  const width = Math.max(floor, Math.min(120, Math.trunc(innerWidth)));
+  const width = Math.max(floor, Math.trunc(innerWidth));
   const maxLines = Math.max(1, Math.trunc(opts.maxLines ?? 10));
   const glyphs = borderGlyphs(opts.unicode);
   const paint = opts.paint ?? chalk.gray;

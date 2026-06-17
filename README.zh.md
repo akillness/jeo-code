@@ -1,8 +1,4 @@
 <p align="center">
-  <img src="assets/icon-rounded-256.png" alt="jeo-code icon" width="128" />
-</p>
-
-<p align="center">
   <img src="assets/hero.png" alt="jeo-code 自主编码代理主视觉插图" width="100%" />
 </p>
 

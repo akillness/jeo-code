@@ -1,8 +1,4 @@
 <p align="center">
-  <img src="assets/icon-rounded-256.png" alt="jeo-code icon" width="128" />
-</p>
-
-<p align="center">
   <img src="assets/hero.png" alt="jeo-code 자율 코딩 에이전트 히어로 일러스트" width="100%" />
 </p>
 

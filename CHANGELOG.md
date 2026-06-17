@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.9] - 2026-06-16
+_Live streaming blocks size to their content and the viewport instead of a fixed rectangle._
+
+### Changed
+- **`Thinking` / tool `Output` live blocks size to their content.** The dimmed streaming trace and tool-output tail are now rendered by a single `renderLiveBlock` helper that shows only the most-recent lines, capped at ~30% of the terminal height — instead of a fixed blank-padded rectangle. A short stream no longer leaves dead "hole" rows, and a short terminal keeps the rows the heartbeat needs.
+- Dropped the rounded-icon header image from the READMEs (the hero image and title stay).
+
 ## [0.6.8] - 2026-06-16
 _OAuth loopback callback host pinned to `localhost` to match provider-registered redirect URIs._
 

@@ -17,9 +17,9 @@ export function geminiThinkingBudget(model: string, effort?: CallOptions["reason
   const floor = m.includes("pro") ? 128 : 0; // pro-class cannot fully disable thinking
   let budget: number;
   switch (effort) {
-    case "low": budget = 1024; break;
-    case "medium": budget = 4096; break;
-    case "high": budget = 8192; break;
+    case "low": budget = 4000; break;
+    case "medium": budget = 10000; break;
+    case "high": budget = 24000; break;
     case "minimal":
     default: budget = floor;
   }

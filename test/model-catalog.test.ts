@@ -20,12 +20,12 @@ test("THINK_LEVELS is the five-level gjc-parity ladder", () => {
 });
 
 test("thinkingMaxTokens covers the extended levels additively", () => {
-  expect(thinkingMaxTokens("minimal")).toBe(1000);
-  expect(thinkingMaxTokens("low")).toBe(2000);
-  expect(thinkingMaxTokens("medium")).toBe(4000);
-  expect(thinkingMaxTokens("high")).toBe(8000);
-  expect(thinkingMaxTokens("xhigh")).toBe(16000);
-  expect(thinkingMaxTokens(undefined)).toBe(4000);
+  expect(thinkingMaxTokens("minimal")).toBe(4000);
+  expect(thinkingMaxTokens("low")).toBe(8000);
+  expect(thinkingMaxTokens("medium")).toBe(16000);
+  expect(thinkingMaxTokens("high")).toBe(24000);
+  expect(thinkingMaxTokens("xhigh")).toBe(31999);
+  expect(thinkingMaxTokens(undefined)).toBe(16000);
 });
 
 test("formatTokens renders K/M compactly", () => {

@@ -57,11 +57,11 @@ test("geminiThinkingBudget: off by default on flash-class, floored on pro, omitt
 });
 
 test("geminiThinkingBudget: effort maps to budget and clamps below maxTokens", () => {
-  expect(geminiThinkingBudget("gemini-2.5-flash", "low")).toBe(1024);
-  expect(geminiThinkingBudget("gemini-2.5-flash", "medium")).toBe(4096);
-  expect(geminiThinkingBudget("gemini-2.5-flash", "high")).toBe(8192);
+  expect(geminiThinkingBudget("gemini-2.5-flash", "low")).toBe(4000);
+  expect(geminiThinkingBudget("gemini-2.5-flash", "medium")).toBe(10000);
+  expect(geminiThinkingBudget("gemini-2.5-flash", "high")).toBe(24000);
   expect(geminiThinkingBudget("gemini-2.5-flash", "minimal")).toBe(0);
-  // Clamp: medium (4096) against a 4000-token output cap leaves ~1K for text.
+  // Clamp: medium (10000) against a 4000-token output cap leaves ~1K for text.
   expect(geminiThinkingBudget("gemini-2.5-flash", "medium", 4000)).toBe(2976);
   // Tiny output budgets kill thinking entirely (the live empty-reply repro).
   expect(geminiThinkingBudget("gemini-flash-latest", "medium", 16)).toBe(0);

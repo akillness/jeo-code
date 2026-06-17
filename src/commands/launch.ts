@@ -127,6 +127,7 @@ import {
   CURSOR_COMBO_REWRITES,
   matchCursorCombo,
   matchMouseReport,
+  matchTerminalReport,
   stripMouseReports,
   rewriteCursorCombos,
   queuePromptInputChunk,
@@ -175,6 +176,7 @@ export {
   CURSOR_COMBO_REWRITES,
   matchCursorCombo,
   matchMouseReport,
+  matchTerminalReport,
   stripMouseReports,
   rewriteCursorCombos,
   queuePromptInputChunk,
@@ -1268,6 +1270,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         // their payload bytes would otherwise be typed into the prompt. Never in a paste.
         const mouse = matchMouseReport(data, i);
         if (mouse > 0) { i += mouse; continue; }
+        // Swallow TERMINAL CAPABILITY-RESPONSE sequences (DA1/DA2/XTVERSION/OSC replies):
+        // tmux probes the outer terminal on attach and its answers (`62;4;9;22c…>|xterm.js…`)
+        // can land on stdin; without this they spray into the prompt as typed text.
+        const report = matchTerminalReport(data, i);
+        if (report > 0) { i += report; continue; }
         let matched = false;
         for (const seq of SHIFT_ENTER_SEQS) {
           if (data.startsWith(seq, i)) { out += SENTINEL; i += seq.length; matched = true; break; }

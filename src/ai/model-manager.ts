@@ -68,11 +68,11 @@ export function providerModelFor(model: string): string {
 
 /** Map the configured thinking level to a default max-token budget. */
 export function thinkingMaxTokens(level?: "minimal" | "low" | "medium" | "high" | "xhigh"): number {
-  if (level === "minimal") return 1000;
-  if (level === "low") return 2000;
-  if (level === "high") return 8000;
-  if (level === "xhigh") return 16000;
-  return 4000;
+  if (level === "minimal") return 4000;
+  if (level === "low") return 8000;
+  if (level === "high") return 24000;
+  if (level === "xhigh") return 31999;
+  return 16000;
 }
 
 /** Map the thinking level to an OpenAI reasoning-effort tier. `minimal` maps to `low`

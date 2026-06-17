@@ -104,16 +104,45 @@ export function matchMouseReport(data: string, i: number): number {
   return 0;
 }
 
-/** Remove every terminal MOUSE-REPORT sequence from a plain (non-paste) input segment.
- *  The live-turn drain (`queuePromptInputChunk`) reads RAW stdin, so a wheel/click report
- *  buffered during a running turn would otherwise have its printable remnant (`[M`, SGR
- *  digits) fed into the next prompt — the same "값 입력" corruption the keyFilter blocks
- *  on the idle path. */
+/** Byte length of a terminal CAPABILITY-RESPONSE sequence beginning at `data[i]`, else 0.
+ *  These are REPLIES the terminal sends to capability queries — Primary/Secondary Device
+ *  Attributes (`ESC[?…c` / `ESC[>…c` / `ESC[=…c`), XTVERSION and other DCS replies
+ *  (`ESC P…ST`), and OSC replies like a color query (`ESC]11;rgb:…ST`). jeo never sends
+ *  these queries, but tmux probes the OUTER terminal on attach, and the outer terminal's
+ *  answers can land on stdin (the leaked `62;4;9;22c…>|xterm.js(…)` garbage in the prompt).
+ *  They are never typed input, so the whole sequence is swallowed. A reply split across
+ *  chunks (no terminator yet) consumes the tail rather than leaking it. */
+export function matchTerminalReport(data: string, i: number): number {
+  // CSI device-attribute / mode replies: ESC [ (? | > | =) … <final letter>.
+  if (data.startsWith("\u001b[?", i) || data.startsWith("\u001b[>", i) || data.startsWith("\u001b[=", i)) {
+    let j = i + 3;
+    while (j < data.length && !/[A-Za-z]/.test(data[j]!)) j++; // params: digits ; : $ → final letter
+    return (j < data.length ? j + 1 : data.length) - i;
+  }
+  // DCS (ESC P … ) or OSC (ESC ] … ) reply — terminated by ST (ESC \) or BEL.
+  if (data.startsWith("\u001bP", i) || data.startsWith("\u001b]", i)) {
+    let j = i + 2;
+    while (j < data.length) {
+      if (data[j] === "\u0007") return j + 1 - i;                       // BEL
+      if (data[j] === "\u001b" && data[j + 1] === "\\") return j + 2 - i; // ST
+      j++;
+    }
+    return data.length - i; // unterminated tail (split chunk) — consume the rest
+  }
+  return 0;
+}
+
+/** Remove every terminal MOUSE-REPORT and CAPABILITY-RESPONSE sequence from a plain
+ *  (non-paste) input segment. The live-turn drain (`queuePromptInputChunk`) reads RAW
+ *  stdin, so a wheel/click report or a tmux-probed device-attribute reply buffered during
+ *  a running turn would otherwise have its printable remnant (`[M`, SGR digits, or
+ *  `62;4;9;22c…`) fed into the next prompt — the same "값 입력" corruption the keyFilter
+ *  blocks on the idle path. */
 export function stripMouseReports(s: string): string {
   let out = "";
   let i = 0;
   while (i < s.length) {
-    const m = matchMouseReport(s, i);
+    const m = matchMouseReport(s, i) || matchTerminalReport(s, i);
     if (m > 0) { i += m; continue; }
     out += s[i];
     i += 1;

@@ -21,8 +21,8 @@ test("resolveProvider: routing is stable across model id shapes", () => {
 });
 
 test("thinkingMaxTokens: maps level → token budget (medium default)", () => {
-  expect(thinkingMaxTokens("low")).toBe(2000);
-  expect(thinkingMaxTokens("medium")).toBe(4000);
-  expect(thinkingMaxTokens("high")).toBe(8000);
-  expect(thinkingMaxTokens(undefined)).toBe(4000);
+  expect(thinkingMaxTokens("low")).toBe(8000);
+  expect(thinkingMaxTokens("medium")).toBe(16000);
+  expect(thinkingMaxTokens("high")).toBe(24000);
+  expect(thinkingMaxTokens(undefined)).toBe(16000);
 });

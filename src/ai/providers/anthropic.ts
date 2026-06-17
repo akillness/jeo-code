@@ -77,8 +77,8 @@ function anthropicSystemBlocks(
 function anthropicThinkingBudget(effort: CallOptions["reasoningEffort"], maxTokens: number): number | undefined {
   let budget: number;
   switch (effort) {
-    case "medium": budget = 4096; break;
-    case "high": budget = 10000; break;
+    case "medium": budget = 10000; break;
+    case "high": budget = 24000; break;
     default: return undefined;
   }
   return Math.min(budget, Math.max(1024, maxTokens - 1024));

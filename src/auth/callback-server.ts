@@ -11,7 +11,10 @@ import type { OAuthController, OAuthCredentials } from "./types";
 import { generateState } from "./pkce";
 
 const DEFAULT_TIMEOUT_MS = 300_000;
-const DEFAULT_HOSTNAME = "127.0.0.1";
+// Loopback callback host. `localhost` (not the 127.0.0.1 IP literal) is the intentional
+// default — providers register their redirect URIs against `localhost`, so the dynamic
+// loopback flows (Anthropic / Google / Antigravity) must match. Keep this as `localhost`.
+const DEFAULT_HOSTNAME = "localhost";
 const DEFAULT_CALLBACK_PATH = "/callback";
 
 export interface OAuthCallbackFlowOptions {

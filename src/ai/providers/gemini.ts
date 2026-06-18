@@ -13,7 +13,13 @@ import { serializeToolCalls } from "../../agent/tool-schemas";
  *  Older models (1.5/2.0) reject `thinkingConfig` entirely → undefined (omit). */
 export function geminiThinkingBudget(model: string, effort?: CallOptions["reasoningEffort"], maxTokens?: number): number | undefined {
   const m = model.toLowerCase();
-  const thinkingCapable = /gemini-(2\.5|[3-9])|flash-latest|pro-latest/.test(m);
+  // Reasoning-capable when Gemini >= 2.5 (any 2.5+ minor) or major >= 3 (digit-count
+  // agnostic so gemini-10+ never silently loses thinking the way opus-4-8 did), plus
+  // the rolling *-latest aliases. Mirrors `inferCatalogMetadata` in model-catalog.ts.
+  const ver = m.match(/gemini-(\d+)(?:\.(\d+))?/);
+  const major = ver ? Number(ver[1]) : 0;
+  const minor = ver ? Number(ver[2] ?? 0) : 0;
+  const thinkingCapable = (major >= 3 || (major === 2 && minor >= 5)) || /flash-latest|pro-latest/.test(m);
   if (!thinkingCapable) return undefined;
   const floor = m.includes("pro") ? 128 : 0; // pro-class cannot fully disable thinking
   let budget: number;

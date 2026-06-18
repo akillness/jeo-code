@@ -13,6 +13,7 @@ import type { ProviderName } from "./types";
 import { PROVIDER_NAMES } from "./provider-status";
 import { catalogByProvider, CODEX_MODELS } from "./model-catalog";
 import { extractChatgptAccountId } from "./providers/openai-responses";
+import { openaiCompatDef } from "./providers/openai-compatible-catalog";
 
 export interface ProviderModelsResult {
   provider: ProviderName;
@@ -80,6 +81,17 @@ export function discoveryRequest(
   cred: Credential | undefined,
   baseUrl?: string,
 ): { url: string; headers: Record<string, string>; method?: "GET" | "POST"; body?: string } {
+  // Catalog-driven compat providers: OpenAI `${base}/models` (Bearer) or Anthropic
+  // `${base}/v1/models` (x-api-key). Both return { data: [{ id }] }.
+  const compat = openaiCompatDef(provider);
+  if (compat) {
+    const base = (baseUrl ?? compat.baseUrl).replace(/\/$/, "");
+    const token = cred?.kind === "api_key" || cred?.kind === "oauth" ? cred.token : "";
+    if (compat.protocol === "anthropic") {
+      return { url: `${base}/v1/models`, headers: token ? { "x-api-key": token, "anthropic-version": "2023-06-01" } : {} };
+    }
+    return { url: `${base}/models`, headers: token ? { Authorization: `Bearer ${token}` } : {} };
+  }
   switch (provider) {
     case "anthropic":
       return { url: "https://api.anthropic.com/v1/models", headers: anthropicHeaders(cred!) };
@@ -135,6 +147,8 @@ export function discoveryRequest(
       return { url: "https://api.moonshot.ai/v1/models", headers: token ? { Authorization: `Bearer ${token}` } : {} };
     }
   }
+  // Unreachable: every ProviderName is a switch case or catalog-handled above.
+  throw new Error(`discoveryRequest: unhandled provider '${provider}'`);
 }
 
 /**
@@ -163,6 +177,11 @@ export function parseModelsBody(provider: ProviderName, body: unknown): string[]
     data?: { id?: string }[];
     models?: ({ name?: string; supportedGenerationMethods?: string[] } & CodexModelRow)[];
   };
+  if (openaiCompatDef(provider)) {
+    // Catalog OpenAI-compatible: { data: [{ id }] }. Prefix-qualify so the router
+    // maps the id back to this provider (the ids alone don't heuristically route).
+    return (data.data ?? []).map(m => (m.id ? `${provider}/${m.id}` : "")).filter(Boolean);
+  }
   if (provider === "ollama") {
     return (data.models ?? []).map(m => `ollama/${m.name ?? ""}`).filter(s => s !== "ollama/");
   }

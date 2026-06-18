@@ -51,7 +51,11 @@ export function fastThinkingLevelForModel(modelId: string): ThinkLevel | undefin
   const supported = catalogMetadata(modelId)?.thinking ?? [];
   if (supported.includes("minimal")) return "minimal";
   if (supported.includes("low")) return "low";
-  if (/gemini-(2\.5|[3-9])/.test(modelId.toLowerCase())) return "minimal";
+  // Digit-count agnostic (gemini-10+ / 2.6+ stay reasoning) — mirrors the gates in
+  // gemini.ts and inferCatalogMetadata. Last resort for prefixed ids (models/gemini-…)
+  // the catalog lookup above misses; catalogued ids already returned via thinking caps.
+  const g = modelId.toLowerCase().match(/gemini-(\d+)(?:\.(\d+))?/);
+  if (g && (Number(g[1]) >= 3 || (Number(g[1]) === 2 && Number(g[2] ?? 0) >= 5))) return "minimal";
   return undefined;
 }
 

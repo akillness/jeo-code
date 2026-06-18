@@ -41,6 +41,7 @@ import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLev
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
 
 import { listAliases } from "../ai/model-registry";
+import { openaiCompatDef } from "../ai/providers/openai-compatible-catalog";
 
 import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting } from "../agent/subagents";
 import { SelectList, renderSelectList, type SelectItem } from "../tui/components/select-list";
@@ -221,7 +222,12 @@ export function normalizeSlashAlias(input: string): string {
   return input;
 }
 
-const PROVIDER_DEFAULT: Record<ProviderName, string> = { anthropic: "sonnet", openai: "gpt-5.5", gemini: "flash", antigravity: "antigravity/gemini-3-pro-high", ollama: "fast", lmstudio: "lmstudio/local-model", xai: "grok-4.3", kimi: "kimi-k2-0711-preview" };
+// Per-provider starting model for `--provider <name>` / role pinning. Catalog
+// OpenAI-compatible providers supply their own default; built-ins use this map.
+const STATIC_PROVIDER_DEFAULT: Partial<Record<ProviderName, string>> = { anthropic: "sonnet", openai: "gpt-5.5", gemini: "flash", antigravity: "antigravity/gemini-3-pro-high", ollama: "fast", lmstudio: "lmstudio/local-model", xai: "grok-4.3", kimi: "kimi-k2-0711-preview" };
+function providerDefaultModel(p: ProviderName): string {
+  return openaiCompatDef(p)?.defaultModel ?? STATIC_PROVIDER_DEFAULT[p] ?? "";
+}
 
 
 export function formatResumeHint(sessionId: string): string {
@@ -265,7 +271,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const defaultModel = cfg.defaultModel;
   const initialSessionModel =
     flags.model ??
-    (flags.modelRole ? resolveRoleModel(flags.modelRole, cfg) : flags.provider ? PROVIDER_DEFAULT[flags.provider] : undefined);
+    (flags.modelRole ? resolveRoleModel(flags.modelRole, cfg) : flags.provider ? providerDefaultModel(flags.provider) : undefined);
   if (flags.provider && initialSessionModel) {
     const { provider } = await describeModel(initialSessionModel);
     if (provider !== flags.provider) {
@@ -3262,7 +3268,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             // No model given → the provider's first live model, provider-qualified.
             chosenModel = qualifyModelId(forProvider[0]!.model, want);
           } else {
-            chosenModel = PROVIDER_DEFAULT[want];
+            chosenModel = providerDefaultModel(want);
           }
           await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: chosenModel }) }));
           console.log(`${role.title} pinned to ${want} via model ${chosenModel} — saved to ~/.jeo/config.json`);

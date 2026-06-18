@@ -2,6 +2,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { parseConfig } from "./config-schema";
+import type { AuthProvider } from "../auth/storage";
+import { OPENAI_COMPAT_PROVIDERS } from "../ai/providers/openai-compatible-catalog";
 import { jeoEnv } from "../util/env";
 
 /** Persisted OAuth credential set (access + refresh + expiry) for a provider. */
@@ -26,30 +28,15 @@ export interface HookConfig {
 }
 
 export interface Config {
-  providers: {
-    anthropic?: string;
-    openai?: string;
-    gemini?: string;
-    antigravity?: string;
-    /** xAI (Grok) API key. Keyed separately from OAuth providers (xAI is API-key only). */
-    xai?: string;
-    /** Kimi (Moonshot) API key. API-key only, OpenAI-compatible. */
-    kimi?: string;
-  };
+  /** Per-provider API keys, keyed by AuthProvider (cloud keys + catalog OpenAI-compatible). */
+  providers: Partial<Record<AuthProvider, string>>;
   /**
    * OAuth credentials. `resolveCredential()` returns these before API keys so refresh
    * metadata is not lost, but provider execution/status applies the GJC parity rule:
-   * an API key is broader and wins whenever both key + OAuth exist.
+   * an API key is broader and wins whenever both key + OAuth exist. API-key-only
+   * providers never populate OAuth; the key exists for index-compatibility.
    */
-  oauth?: {
-    anthropic?: string | StoredOAuth;
-    openai?: string | StoredOAuth;
-    gemini?: string | StoredOAuth;
-    antigravity?: string | StoredOAuth;
-    /** Present for index-compatibility with AuthProvider; API-key-only providers never store OAuth. */
-    xai?: string | StoredOAuth;
-    kimi?: string | StoredOAuth;
-  };
+  oauth?: Partial<Record<AuthProvider, string | StoredOAuth>>;
   /** Base URL for the local Ollama server (keyless). */
   ollamaBaseUrl?: string;
   /** Base URL override for OpenAI-compatible providers (vLLM, llama-cpp-server, ...). */
@@ -203,6 +190,12 @@ function withEnvOverlay(cfg: Config): Config {
   if (!providers.openai && process.env.OPENAI_API_KEY) providers.openai = process.env.OPENAI_API_KEY;
   if (!providers.gemini && process.env.GEMINI_API_KEY) providers.gemini = process.env.GEMINI_API_KEY;
   if (!providers.xai && process.env.XAI_API_KEY) providers.xai = process.env.XAI_API_KEY;
+  // Catalog-driven OpenAI-compatible providers: each provider's own `apiKeyEnv`
+  // (e.g. GROQ_API_KEY, HF_TOKEN, NANO_GPT_API_KEY) fills config.providers[name].
+  for (const def of OPENAI_COMPAT_PROVIDERS) {
+    const key = def.name as AuthProvider; // every catalog name is an AuthProvider
+    if (!providers[key] && process.env[def.apiKeyEnv]) providers[key] = process.env[def.apiKeyEnv];
+  }
   return {
     ...cfg,
     providers,

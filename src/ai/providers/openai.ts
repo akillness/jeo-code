@@ -23,9 +23,11 @@ export function openaiRequest(messages: Message[], options: CallOptions, credent
       : msg.content;
     openaiMessages.push({ role: msg.role, content });
   }
-  // Reasoning models (o-series, gpt-5 family) take max_completion_tokens + reasoning_effort
+  // Reasoning models (o-series, gpt-5+ family) take max_completion_tokens + reasoning_effort
   // and reject temperature; classic chat models (gpt-4o, …) take max_tokens + temperature.
-  const isReasoning = /^o\d/.test(model) || /^gpt-5/.test(model);
+  // Digit-count agnostic (gpt-6/o10 stay reasoning) — mirrors inferCatalogMetadata.
+  const gptMajorMatch = model.match(/^gpt-(\d+)/);
+  const isReasoning = /^o\d/.test(model) || (gptMajorMatch ? Number(gptMajorMatch[1]) >= 5 : false);
   const payload: Record<string, unknown> = {
     model,
     messages: openaiMessages,

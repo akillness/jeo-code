@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.23] - 2026-06-19
+_Live reasoning/thinking streams in the TUI across every provider, three new OpenAI-compatible backends (LM Studio, xAI, Kimi) join the auth/discovery/catalog surface, and Gemini gains native function-calling._
+
+### Added
+- **Multi-provider reasoning/thinking streaming in the TUI.** Native reasoning is surfaced live (dimmed) and committed to scrollback for Anthropic (`thinking` deltas), OpenAI Codex/Responses (`reasoning*` deltas), OpenAI-compatible chat (`reasoning_content`/`reasoning`), Gemini & Antigravity (`thought` parts), and Ollama (`message.thinking`). A provider-agnostic `<think>…</think>` splitter routes inline chain-of-thought (DeepSeek-R1/Qwen-style local models) to the reasoning channel so it never pollutes the answer or the tool-call parse.
+- **Three new OpenAI-compatible providers — LM Studio (keyless local), xAI/Grok (`XAI_API_KEY`), and Kimi/Moonshot (`KIMI_API_KEY`).** All route through a shared `makeOpenAICompatibleAdapter` factory and are wired into `/provider`, `jeo auth status/login`, model discovery, and the capability catalog.
+- **Native Gemini function-calling (gjc parity).** Gemini now declares `functionDeclarations` and parses `functionCall` parts instead of the JSON-in-prose protocol — capable models stop fighting the `done` format, cutting wasted steps and stray "apology" prose from replies (verified live: a trivial reply dropped from 3 steps/14s to 1 step/2s).
+- **Mid-turn `/command` and `$skill` dispatch** with a live command/skill preview while typing.
+
+### Changed
+- **API-key providers are first-class in the auth core.** `AuthProvider` now splits into the OAuth-capable subset (`OAuthProvider`) plus API-key-only providers (xai/kimi); these resolve through the standard `resolveCredential` path (`config.providers` / `<NAME>_API_KEY`) and model discovery now sends their key (a prior gap left discovery unauthenticated). `jeo auth login <xai|kimi> --token <key>` stores the API key.
+
+### Fixed
+- **Config-schema dropped a stored `xai` key on validation** (the providers schema was missing `xai`/`kimi`); both are now persisted.
+
 ## [0.6.22] - 2026-06-18
 _Extended-thinking activation is now consistent across providers: a `low` session thinking level enables reasoning everywhere._
 

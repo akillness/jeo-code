@@ -162,7 +162,9 @@ export function anthropicRequest(
   includeTemperature: boolean,
 ): { url: string; headers: Record<string, string>; body: string } {
   return {
-    url: ANTHROPIC_URL,
+    // Anthropic-compatible providers (z.ai, MiniMax, …) accept the Messages wire
+    // format at their own host; an explicit baseUrl pins `${base}/v1/messages`.
+    url: options.baseUrl ? `${options.baseUrl.replace(/\/$/, "")}/v1/messages` : ANTHROPIC_URL,
     headers: headersFor(credential, stream),
     body: anthropicPayload(messages, options, stream, includeTemperature, credential),
   };

@@ -9,7 +9,9 @@ import { isOAuthProvider, API_KEY_ONLY_PROVIDERS, type AuthProvider, type Creden
 import { OAUTH_FLOW_REGISTRY } from "../auth/flows";
 import type { ProviderName } from "./types";
 
-export const PROVIDER_NAMES: readonly ProviderName[] = ["anthropic", "openai", "gemini", "antigravity", "ollama", "lmstudio", "xai", "kimi"];
+import { OPENAI_COMPAT_NAMES, openaiCompatDef } from "./providers/openai-compatible-catalog";
+
+export const PROVIDER_NAMES: readonly ProviderName[] = ["anthropic", "openai", "gemini", "antigravity", "ollama", "lmstudio", "xai", "kimi", ...OPENAI_COMPAT_NAMES];
 
 /** Cloud providers that authenticate via API key / OAuth. Ollama is keyless. */
 export const CLOUD_PROVIDERS: readonly AuthProvider[] = ["anthropic", "openai", "gemini", "antigravity"];
@@ -29,9 +31,12 @@ export interface ProviderStatus {
   ready: boolean;
 }
 
-/** The uppercase `<PROVIDER>_API_KEY` env var name for a cloud provider. */
+/** The env var that supplies a provider's API key. Catalog providers carry their
+ *  own (e.g. HF_TOKEN, NANO_GPT_API_KEY); built-ins use `<PROVIDER>_API_KEY`. */
 export function providerEnvVar(name: ProviderName): string | undefined {
   if (name === "ollama" || name === "lmstudio" || name === "antigravity") return undefined;
+  const def = openaiCompatDef(name);
+  if (def) return def.apiKeyEnv;
   return `${name.toUpperCase()}_API_KEY`;
 }
 

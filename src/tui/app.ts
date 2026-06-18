@@ -16,7 +16,7 @@ import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
 import { renderFooter, type FooterData } from "./components/footer";
-import { renderDnaClaw, dnaClawHeight, dnaClawFrameCount, dnaClawBeat, DNA_FLOW_PALETTE } from "./components/ascii-art";
+import { renderDnaClaw, dnaClawHeight, dnaClawFrameCount, forgeBeat, DNA_FLOW_PALETTE } from "./components/ascii-art";
 import { evolutionTrack, createStageProgress, type StageProgress, transitionMessage } from "./components/evolution";
 import type { TaskSubEvent } from "../agent/task-tool";
 import { supportsUnicode } from "./components/capability";
@@ -1193,7 +1193,7 @@ export class LaunchTui {
         color: this.theme.color,
         dim,
         // DNA-flow identity on LIVE cards only: the flowing helix gradient rides
-        // the card border and the claw beat marks the title. Flushed/final cards
+        // the card border and the prompt beat marks the title. Flushed/final cards
         // stay static. Suppressed while `dim` (in-flight shading takes precedence).
         ...(anim && !dim
           ? { flow: { palette: DNA_FLOW_PALETTE, phase: anim.phase, colorLevel: anim.colorLevel }, titleMark: anim.beat }
@@ -1338,10 +1338,10 @@ export class LaunchTui {
     const dim = this.theme.color ? chalk.dim : (s: string) => s;
     const colorLevel = detectColorLevel(process.env, isTTY());
     // One quantized animation clock for the whole frame: gradient phase cycles 20
-    // steps, the claw beat advances every 3 ticks. Quantization keeps repaints
+    // steps, the prompt beat advances every 3 ticks. Quantization keeps repaints
     // coherent (status field + forge border move together) and bounds per-tick work.
     const phase = (this.tickCount * 0.05) % 1;
-    const beat = dnaClawBeat(Math.trunc(this.tickCount / 3), this.unicode);
+    const beat = forgeBeat(Math.trunc(this.tickCount / 3), this.unicode);
 
     // Assemble the bottom-pinned tail FIRST (status line → todos → hud → model bar):
     // it is the live heartbeat and must always be visible; the in-flight card gets

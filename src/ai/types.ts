@@ -1,6 +1,6 @@
 import type { Credential } from "../auth";
 
-export type ProviderName = "anthropic" | "openai" | "gemini" | "antigravity" | "ollama" | "lmstudio" | "xai" | "kimi";
+export type ProviderName = "anthropic" | "openai" | "gemini" | "antigravity" | "ollama" | "lmstudio" | "xai" | "kimi" | "groq" | "deepseek" | "mistral" | "openrouter" | "together" | "cerebras" | "fireworks" | "nvidia" | "alibaba-coding-plan" | "huggingface" | "nanogpt" | "qwen-portal" | "synthetic" | "venice" | "zenmux" | "qianfan" | "xiaomi" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-sgp" | "minimax-code" | "minimax-code-cn" | "zai" | "minimax";
 
 /** An image attached to a (user) message — base64 payload + IANA media type. */
 export interface ImageAttachment {

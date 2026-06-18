@@ -27,7 +27,7 @@ export interface ForgeBoxOptions {
    *  `phase` per tick, so nothing is retained between frames. Below TrueColor
    *  (`colorLevel < 3`) this degrades to the static `paint`/`paintShadow`. */
   flow?: { palette: readonly string[]; phase: number; colorLevel: number };
-  /** Width-1 mark prepended to the border title (e.g. the DNA claw beat glyph). */
+  /** Width-1 mark prepended to the border title (e.g. the jeo prompt beat glyph). */
   titleMark?: string;
   /** Themed +/- painters for `language: "patch"` cards (edit diffs): applied to
    *  the FULL padded row so added/removed lines read as background-tinted

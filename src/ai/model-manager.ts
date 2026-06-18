@@ -8,6 +8,7 @@ import { expandAlias, resolveModelId, effectiveAliasesFor } from "./model-regist
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
 import { toProviderModel, CODEX_MODELS } from "./model-catalog";
 import { xaiCredential } from "./providers/xai";
+import { OPENAI_COMPAT_NAMES, isOpenAICompatProvider } from "./providers/openai-compatible-catalog";
 import { withRetry, defaultRetryable, type RetryOptions } from "../util/retry";
 import { jeoEnv } from "../util/env";
 import type { Config } from "../agent/state";
@@ -21,17 +22,27 @@ export function resolveProvider(model: string): ProviderName {
   const entry = findCatalogEntry(model);
   if (entry) return entry.provider;
   const m = (model ?? "").toLowerCase();
+  // Explicit `<provider>/` prefixes ALWAYS win over substring heuristics — a model id
+  // can legitimately contain another provider's name (e.g. `synthetic/hf:moonshotai/Kimi-K2.5`
+  // or `openrouter/openai/gpt-4o-mini`), so prefix routing is resolved first.
   if (m.startsWith("ollama/")) return "ollama";
   if (m.startsWith("lmstudio/")) return "lmstudio";
   if (m.startsWith("antigravity/")) return "antigravity";
-  if (m.startsWith("xai/") || m.includes("grok")) return "xai";
-  if (m.startsWith("kimi/") || m.includes("kimi") || m.includes("moonshot")) return "kimi";
-  // OpenAI: explicit prefix, any GPT, or a reasoning model (o1/o3/o4-mini, o1-preview…).
-  if (m.startsWith("openai/") || m.includes("gpt") || /(^|\/)o\d/.test(m)) return "openai";
-  if (m.startsWith("google/") || m.includes("gemini")) return "gemini";
+  if (m.startsWith("xai/")) return "xai";
+  if (m.startsWith("kimi/")) return "kimi";
+  for (const p of OPENAI_COMPAT_NAMES) if (m.startsWith(`${p}/`)) return p;
+  if (m.startsWith("openai/")) return "openai";
+  if (m.startsWith("google/")) return "gemini";
+  // Loose substring heuristics for BARE (unprefixed) ids only.
+  if (m.includes("grok")) return "xai";
+  if (m.includes("kimi") || m.includes("moonshot")) return "kimi";
+  if (m.includes("gpt") || /(^|\/)o\d/.test(m)) return "openai";
+  if (m.includes("gemini")) return "gemini";
   return "anthropic";
 }
-const PROVIDER_ID_PREFIX: Record<ProviderName, string> = {
+// Static routing prefixes for the built-in (non-catalog) providers. Catalog
+// OpenAI-compatible providers use `<name>/` directly (see providerIdPrefix).
+const STATIC_ID_PREFIX: Partial<Record<ProviderName, string>> = {
   anthropic: "anthropic/",
   openai: "openai/",
   gemini: "google/",
@@ -41,6 +52,9 @@ const PROVIDER_ID_PREFIX: Record<ProviderName, string> = {
   xai: "xai/",
   kimi: "kimi/",
 };
+function providerIdPrefix(provider: ProviderName): string {
+  return isOpenAICompatProvider(provider) ? `${provider}/` : (STATIC_ID_PREFIX[provider] ?? `${provider}/`);
+}
 
 /**
  * Pin-time provider qualification: when a picked live model id would route to a
@@ -52,7 +66,7 @@ const PROVIDER_ID_PREFIX: Record<ProviderName, string> = {
 export function qualifyModelId(model: string, provider: ProviderName): string {
   const id = (model ?? "").trim();
   if (!id) return id;
-  return resolveProvider(id) === provider ? id : `${PROVIDER_ID_PREFIX[provider]}${id}`;
+  return resolveProvider(id) === provider ? id : `${providerIdPrefix(provider)}${id}`;
 }
 
 /**
@@ -69,7 +83,8 @@ export function providerModelFor(model: string): string {
     model.startsWith("antigravity/") ||
     model.startsWith("lmstudio/") ||
     model.startsWith("xai/") ||
-    model.startsWith("kimi/")
+    model.startsWith("kimi/") ||
+    isOpenAICompatProvider(model.split("/")[0])
   ) {
     return model;
   }

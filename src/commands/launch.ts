@@ -683,14 +683,25 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             if (line) {
               // A mid-turn /command or $skill is NOT a query for the model — steering it
               // would send the literal "/model" / "$skill" text to the LLM. Recognize it
-              // and queue it to run as a real COMMAND when the turn finishes (the idle
-              // loop's dispatcher serves pendingStdinLines); plain queries still steer
-              // into the running turn. JEO_NO_STEER=1 disables both (legacy draft-only).
+              // and run it as a real COMMAND: queue it for the idle dispatcher and stop the
+              // turn so it runs at once (below). Plain queries still steer into the running
+              // turn. JEO_NO_STEER=1 disables both (legacy draft-only).
               queueBusyClear?.();
               tui.setLivePromptInput("");
+              tui.setLivePromptHint([]);
               if (classifyMidTurnLine(line) === "command") {
+                // Run the command IMMEDIATELY: queue it for the idle dispatcher, then abort
+                // the running turn (the same path as Esc). The loop resumes, serves the
+                // queued line, and dispatches it — so a /model picker or command output runs
+                // in the idle context with no live-renderer conflict. JEO_NO_MIDTURN_DISPATCH=1
+                // keeps it boundary-deferred (runs only when the turn finishes on its own).
                 queueBusyCommand?.(line);
-                tui.events().onNotice?.(`⌘ queued ${line} — runs when this turn finishes`);
+                if (jeoEnv("NO_MIDTURN_DISPATCH") === "1") {
+                  tui.events().onNotice?.(`⌘ queued ${line} — runs when this turn finishes`);
+                } else {
+                  tui.events().onNotice?.(`⌘ ${line} — stopping the turn to run it`);
+                  harness.controller.abort();
+                }
               } else {
                 steerInbox.push(line);
                 // Surface the steered query as a `user` card in scrollback so it reads

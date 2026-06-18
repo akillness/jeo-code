@@ -690,16 +690,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               tui.setLivePromptInput("");
               tui.setLivePromptHint([]);
               if (classifyMidTurnLine(line) === "command") {
-                // Run the command IMMEDIATELY: queue it for the idle dispatcher, then abort
-                // the running turn (the same path as Esc). The loop resumes, serves the
-                // queued line, and dispatches it — so a /model picker or command output runs
-                // in the idle context with no live-renderer conflict. JEO_NO_MIDTURN_DISPATCH=1
-                // keeps it boundary-deferred (runs only when the turn finishes on its own).
+                // Run it as a real COMMAND: queue it for immediate dispatch by the prompt
+                // loop and abort the turn (the same controller Esc uses). The abort ends a
+                // streaming turn at once and cancels any further steps; a running tool still
+                // finishes first (jeo's abort is step-level, like Esc). The queued command is
+                // then auto-dispatched — no second Enter. JEO_NO_MIDTURN_DISPATCH=1 keeps the
+                // legacy behavior (queue to prefill, no interrupt, press Enter to run).
                 queueBusyCommand?.(line);
                 if (jeoEnv("NO_MIDTURN_DISPATCH") === "1") {
-                  tui.events().onNotice?.(`⌘ queued ${line} — runs when this turn finishes`);
+                  tui.events().onNotice?.(`⌘ queued ${line} — press Enter after this turn to run`);
                 } else {
-                  tui.events().onNotice?.(`⌘ ${line} — stopping the turn to run it`);
+                  tui.events().onNotice?.(`⌘ ${line} — interrupting the turn to run it`);
                   harness.controller.abort();
                 }
               } else {
@@ -1390,6 +1391,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // only captures the line submitted while it is registered; orphan lines emit
   // 'line' instead), so queue those and serve them before prompting again.
   const pendingStdinLines: string[] = [];
+  // Commands submitted mid-turn (/… or $…) land here; the prompt loop dispatches them
+  // IMMEDIATELY on its next iteration, bypassing the "new input first" prefill contract
+  // (the user explicitly invoked them — no second Enter).
+  const pendingMidTurnCommands: string[] = [];
   const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: "", pastedLines: [], inPaste: false };
   queueBusyInput = (chunk: string) => captureLivePromptInputChunk(queuedPromptInput, chunk);
   queueBusyPasteActive = () => queuedPromptInput.inPaste;
@@ -1397,7 +1402,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     text: queuedPromptInput.partial,
   });
   queueBusyClear = () => { queuedPromptInput.partial = ""; };
-  queueBusyCommand = (line: string) => { pendingStdinLines.push(line); };
+  queueBusyCommand = (line: string) => {
+    // NO_MIDTURN_DISPATCH=1 keeps the legacy prefill path (tee up, press Enter); the
+    // default routes to the immediate-dispatch queue served at the top of the loop.
+    (jeoEnv("NO_MIDTURN_DISPATCH") === "1" ? pendingStdinLines : pendingMidTurnCommands).push(line);
+  };
   // Bracketed-paste line routing at the PROMPT: readline strips the 2004 markers
   // and replays pasted lines as synthetic keypresses, emitting paste-start /
   // paste-end around them. Lines submitted INSIDE that window are intentional
@@ -2517,7 +2526,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // Box mode: NO raw `jeo>` prompt at all — the boxed footer IS the input UI
       // (gating already suppresses readline echo, the empty prompt guarantees no
       // raw CLI input line can ever flash). Legacy prompt only without the box.
-      const rawText = await promptInput(previewEnabled ? "" : "\njeo> ");
+      const rawText = pendingMidTurnCommands.length
+        ? (disarmPreview(), pendingMidTurnCommands.shift()!)
+        : await promptInput(previewEnabled ? "" : "\njeo> ");
       if (rawText.includes("\u0003")) forceExitFromCtrlC();
       const raw = rawText.trim();
       disarmPreview();

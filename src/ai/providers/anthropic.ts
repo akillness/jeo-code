@@ -73,11 +73,13 @@ function anthropicSystemBlocks(
 }
 
 /** Anthropic extended-thinking budget by reasoning effort (kept under max_tokens). Cross-provider
- *  parity (matches Gemini's tiers): low/medium/high all enable thinking with scaling depth; only
- *  minimal/unset stay non-thinking so /fast and minimal thinking remain cheaper/faster. */
+ *  parity (matches Gemini's tiers): minimal/low/medium/high ALL enable thinking with scaling
+ *  depth — reasoning works at every thinking level (gajae parity: Minimal is a real effort).
+ *  Only an UNSET effort stays non-thinking (the explicit /fast off path). */
 function anthropicThinkingBudget(effort: CallOptions["reasoningEffort"], maxTokens: number): number | undefined {
   let budget: number;
   switch (effort) {
+    case "minimal": budget = 2000; break;
     case "low": budget = 4000; break;
     case "medium": budget = 10000; break;
     case "high": budget = 24000; break;

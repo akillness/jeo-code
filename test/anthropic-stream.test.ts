@@ -150,10 +150,11 @@ test("anthropicPayload: low effort enables extended thinking (cross-provider par
   const at = (effort: CallOptions["reasoningEffort"]) =>
     JSON.parse(anthropicPayload(messages, { model: "claude-3-5-sonnet", maxTokens: 32000, reasoningEffort: effort }, false, true, cred));
 
-  // Parity with Gemini's tiers: low/medium/high all think, only minimal/unset stay off.
+  // Parity with Gemini's tiers: minimal/low/medium/high ALL think (gajae parity:
+  // reasoning at every level) — only an UNSET effort stays off.
   expect(at("low").thinking).toEqual({ type: "enabled", budget_tokens: 4000 });
   expect(at("medium").thinking).toEqual({ type: "enabled", budget_tokens: 10000 });
   expect(at("high").thinking).toEqual({ type: "enabled", budget_tokens: 24000 });
-  expect(at("minimal").thinking).toBeUndefined();
+  expect(at("minimal").thinking).toEqual({ type: "enabled", budget_tokens: 2000 });
   expect(at(undefined).thinking).toBeUndefined();
 });

@@ -412,50 +412,52 @@ export async function animateFrames(stage: AsciiStage, opts: AnimateFramesOption
   }
   return total;
 }
-/** The compact jeo forge mark: a clean, wordless pictograph of the mascot neon
- *  crayfish. Read top→bottom — antennae arc outward (╲ ╱) flanking the asymmetric
- *  sunglasses face (◆ blue lens / ◇ pink lens on a ┃ nose-bridge); the front claws
- *  (❮ ❯) on short arms (━┫ ┣━) hugging the rounded carapace (◉◉◉); tucked legs
- *  (╲ ┃ ╱); the tail fan tipped by the blinking telson (◀▮▶). The mark is purely
- *  symbolic — NO embedded lettering (the brand wordmark lives in the welcome
- *  header, not under the emblem). Width-1 glyphs only (box drawing + geometrics)
- *  so padding/centering math stays exact. Frame 0 is the static symbol. */
+/** The compact jeo forge mark: a clean, wordless pictograph of the mascot — the
+ *  neon crayfish (가재) from assets/character.png, read for its signature feature:
+ *  the two raised pincer CLAWS (집게). Read top→bottom: the open pincer jaws
+ *  (◣◣ / ◢◢) reaching up, the claw arms (◆══╲ ╱══◆) angling into the body where
+ *  the blue ◆ knuckles meet, the head with its glowing eye/terminal cluster
+ *  (◉◉◉), then the rounded carapace/tail (╲▔▔╱). The mark is purely symbolic —
+ *  NO embedded lettering (the brand wordmark lives in the welcome header, not
+ *  under the emblem); the JEO identity is carried by the crayfish-claw silhouette
+ *  alone. Width-1 glyphs only (box drawing + geometrics) so padding/centering
+ *  math stays exact. Frame 0 is the static symbol. */
 export const FORGE_MARK_ART: string[] = [
-  "      ╲ ◆ ┃ ◇ ╱      ",
-  "     ❮━┫ ◉◉◉ ┣━❯     ",
-  "        ╲ ┃ ╱        ",
-  "         ◀▮▶         "
+  "    ◣◣     ◢◢       ",
+  "   ◆══╲   ╱══◆      ",
+  "      ╲◉◉◉╱         ",
+  "       ╲▔▔╱         "
 ];
 
 export const FORGE_MARK_ART_ASCII: string[] = [
-  "      \\ * | o /      ",
-  "     <=[ @@@ ]=>     ",
-  "        \\ | /        ",
-  "         <#>         "
+  "    //     \\\\       ",
+  "   o==\\   /==o      ",
+  "      \\ooo/         ",
+  "       \\__/         "
 ];
 
-/** Blink animation frames for the compact crayfish forge mark: the antennae,
- *  carapace and legs stay fixed while the telson cursor blinks (▮ → ▯) and the
- *  asymmetric sunglass lenses swap accent (◆ ◇ → ◇ ◆), so the crayfish "winks".
- *  Frame 0 === FORGE_MARK_ART, so a frameless render is byte-identical to the
- *  static symbol. All lines share the same width (21) and width-1 glyphs. */
+/** Claw-snap blink frames for the compact crayfish forge mark: the arms, head and
+ *  carapace stay fixed while the two pincer jaws SNAP shut (◣◣/◢◢ open → ◢◣/◢◣
+ *  closed), so the crayfish "clicks" its claws. Frame 0 === FORGE_MARK_ART, so a
+ *  frameless render is byte-identical to the static symbol. All lines share the
+ *  same width and width-1 glyphs. */
 export const FORGE_MARK_FRAMES: string[][] = [
   FORGE_MARK_ART,
   [
-    "      ╲ ◇ ┃ ◆ ╱      ",
-    "     ❮━┫ ◉◉◉ ┣━❯     ",
-    "        ╲ ┃ ╱        ",
-    "         ◀▯▶         "
+    "     ◢◣   ◢◣        ",
+    "   ◆══╲   ╱══◆      ",
+    "      ╲◉◉◉╱         ",
+    "       ╲▔▔╱         "
   ]
 ];
 
 export const FORGE_MARK_FRAMES_ASCII: string[][] = [
   FORGE_MARK_ART_ASCII,
   [
-    "      \\ o | * /      ",
-    "     <=[ @@@ ]=>     ",
-    "        \\ | /        ",
-    "         <_>         "
+    "     ><   ><        ",
+    "   o==\\   /==o      ",
+    "      \\ooo/         ",
+    "       \\__/         "
   ]
 ];
 
@@ -465,24 +467,23 @@ export function forgeMarkFrameCount(): number {
 }
 
 /** Grand hero variant for the welcome forge box (gjc-style spacious banner): the
- *  same mascot crayfish rendered large and wordless — antennae (╲ ╱) flanking the
- *  asymmetric ◆/◇ sunglasses face on a ┃ nose-bridge, the big front pincers
- *  (❮━━┫ ┣━━❯) hugging the segmented carapace (◉ ◉ ◉), tucked legs, and the broad
- *  tail fan tipped by the telson (◀──▮──▶). Purely symbolic — NO embedded
- *  lettering or caption. Width-1 glyphs only so padding/centering math stays
- *  exact. */
+ *  same mascot crayfish rendered large and wordless — the two raised pincer claws
+ *  (◣◣ / ◢◢, the 집게 feature) on wide arms (◆══╲ ╱══◆), the head with its glowing
+ *  eye/terminal cluster (◉ ◉ ◉), and the broad rounded carapace/tail (╲▔▔▔▔▔╱).
+ *  Purely symbolic — NO embedded lettering or caption. Width-1 glyphs only so
+ *  padding/centering math stays exact. */
 export const FORGE_MARK_ART_GRAND: string[] = [
-  "        ╲   ◆ ┃ ◇   ╱        ",
-  "       ❮━━┫ ◉ ◉ ◉ ┣━━❯       ",
-  "          ╲ ╲ ┃ ╱ ╱          ",
-  "           ◀──▮──▶           "
+  "      ◣◣            ◢◢        ",
+  "    ◆══╲            ╱══◆      ",
+  "        ╲  ◉ ◉ ◉  ╱           ",
+  "         ╲▔▔▔▔▔▔▔▔▔╱          "
 ];
 
 export const FORGE_MARK_ART_GRAND_ASCII: string[] = [
-  "        \\   * | o   /        ",
-  "       <==[ O O O ]==>       ",
-  "          \\ \\ | / /          ",
-  "           <--#-->           "
+  "      //            \\\\        ",
+  "    o==\\            /==o      ",
+  "        \\  o o o  /           ",
+  "         \\_________/          "
 ];
 
 

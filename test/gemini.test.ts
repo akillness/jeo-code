@@ -64,7 +64,8 @@ test("geminiThinkingBudget: effort maps to budget and clamps below maxTokens", (
   expect(geminiThinkingBudget("gemini-2.5-flash", "low")).toBe(4000);
   expect(geminiThinkingBudget("gemini-2.5-flash", "medium")).toBe(10000);
   expect(geminiThinkingBudget("gemini-2.5-flash", "high")).toBe(24000);
-  expect(geminiThinkingBudget("gemini-2.5-flash", "minimal")).toBe(0);
+  // minimal is now a genuine light tier (gajae parity: reasoning at every level), not 0.
+  expect(geminiThinkingBudget("gemini-2.5-flash", "minimal")).toBe(2000);
   // Clamp: medium (10000) against a 4000-token output cap leaves ~1K for text.
   expect(geminiThinkingBudget("gemini-2.5-flash", "medium", 4000)).toBe(2976);
   // Tiny output budgets kill thinking entirely (the live empty-reply repro).

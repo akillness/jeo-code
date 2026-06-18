@@ -10,13 +10,16 @@ const apiKey = { kind: "api_key" as const, provider: "openai" as const, token: "
 const anthropicOauth = { kind: "oauth" as const, provider: "anthropic" as const, token: "tok" };
 
 test("thinkingToReasoningEffort: maps levels to o-series-safe tiers", () => {
-  expect(thinkingToReasoningEffort("minimal")).toBe("low");
+  // minimal is a genuine (lightest) reasoning effort — reasoning works at EVERY
+  // level (gajae parity), no longer collapsed to low.
+  expect(thinkingToReasoningEffort("minimal")).toBe("minimal");
   expect(thinkingToReasoningEffort("low")).toBe("low");
   expect(thinkingToReasoningEffort("medium")).toBe("medium");
   expect(thinkingToReasoningEffort("high")).toBe("high");
   expect(thinkingToReasoningEffort("xhigh")).toBe("high");
   expect(thinkingToReasoningEffort(undefined)).toBeUndefined();
 });
+
 
 test("openaiRequest: reasoning models get reasoning_effort + max_completion_tokens, no temperature", () => {
   const msgs = [{ role: "user" as const, content: "hi" }];

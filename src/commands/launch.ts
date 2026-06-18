@@ -20,7 +20,7 @@ import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
 import { matchSlash, isSlashAttempt, suggestSlashCommands, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, tabCompleteSelection, type SlashCommandInfo } from "../tui/components/slash";
-import { staticCompletionContext, readlineCompleter, formatCompletionPreview, tokenize, type CompletionContext } from "../tui/components/autocomplete";
+import { staticCompletionContext, readlineCompleter, formatCompletionPreview, formatMidTurnHint, tokenize, type CompletionContext } from "../tui/components/autocomplete";
 import { normalizeBaseUrl } from "./setup-helpers";
 import { EVOLUTION_STAGES, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
@@ -707,7 +707,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // suppressed for the whole turn). On Enter the draft is lifted into the steering
           // inbox and surfaces as a `user` card (above). JEO_NO_LIVE_DRAFT=1 opts out.
           if (captured && jeoEnv("NO_LIVE_DRAFT") !== "1") {
-            tui.setLivePromptInput(queueBusySnapshot?.().text ?? "");
+            const draft = queueBusySnapshot?.().text ?? "";
+            tui.setLivePromptInput(draft);
+            // Mid-turn command preview: as you type a /command or $skill DURING a turn,
+            // show its matches above the input box so command input visibly reacts
+            // (idle-prompt parity). Cleared the moment the draft stops being command-shaped.
+            tui.setLivePromptHint(
+              /^\s*[/$]/.test(draft) ? formatMidTurnHint(draft.trimStart(), completionContext(), 5) : [],
+            );
           }
         },
         onAbortNotice: msg => {

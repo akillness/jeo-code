@@ -142,3 +142,18 @@ test("anthropicAdapter.stream: retries once without temperature for deprecated m
     globalThis.fetch = prevFetch;
   }
 });
+import { anthropicPayload } from "../src/ai/providers/anthropic";
+
+test("anthropicPayload: low effort enables extended thinking (cross-provider parity)", () => {
+  const messages = [{ role: "user" as const, content: "hi" }];
+  const cred = { kind: "api_key", provider: "anthropic", token: "k" } as const;
+  const at = (effort: CallOptions["reasoningEffort"]) =>
+    JSON.parse(anthropicPayload(messages, { model: "claude-3-5-sonnet", maxTokens: 32000, reasoningEffort: effort }, false, true, cred));
+
+  // Parity with Gemini's tiers: low/medium/high all think, only minimal/unset stay off.
+  expect(at("low").thinking).toEqual({ type: "enabled", budget_tokens: 4000 });
+  expect(at("medium").thinking).toEqual({ type: "enabled", budget_tokens: 10000 });
+  expect(at("high").thinking).toEqual({ type: "enabled", budget_tokens: 24000 });
+  expect(at("minimal").thinking).toBeUndefined();
+  expect(at(undefined).thinking).toBeUndefined();
+});

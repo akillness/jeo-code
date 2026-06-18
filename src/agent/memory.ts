@@ -302,60 +302,76 @@ export async function distillSessionMemory(
       await fs.mkdir(bundleDir, { recursive: true });
       const updatedConcepts: { title: string; type: string }[] = [];
 
-      for (const concept of parsedJson.concepts) {
-        if (!concept.type || !concept.title) continue;
-        // Unknown types fall back to facts/ (lenient — OKF tolerates extra types).
-        const dir = DIR_BY_TYPE[concept.type] ?? "facts";
+      for (const raw of parsedJson.concepts) {
+        // A text-only / small model (the default antigravity backend) can emit
+        // stray non-object array elements (null, strings, numbers) or non-string
+        // type/title fields. Validate each element and isolate per-concept failures:
+        // one malformed concept must NEVER throw out of the loop, because the outer
+        // catch would then discard every valid learning distilled in this run.
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+        const concept = raw as {
+          type?: unknown; title?: unknown; description?: unknown; body?: unknown;
+          tags?: unknown; confidence?: unknown; links?: unknown;
+        };
+        const type = typeof concept.type === "string" ? concept.type.trim() : "";
+        const title = typeof concept.title === "string" ? concept.title.trim() : "";
+        if (!type || !title) continue;
+        try {
+          // Unknown types fall back to facts/ (lenient — OKF tolerates extra types).
+          const dir = DIR_BY_TYPE[type] ?? "facts";
 
-        const targetDir = path.join(bundleDir, dir);
-        await fs.mkdir(targetDir, { recursive: true });
+          const targetDir = path.join(bundleDir, dir);
+          await fs.mkdir(targetDir, { recursive: true });
 
-        let slug = slugify(concept.title);
-        let relPath = `${dir}/${slug}.md`;
-        let fullPath = path.join(bundleDir, relPath);
+          let slug = slugify(title);
+          let relPath = `${dir}/${slug}.md`;
+          let fullPath = path.join(bundleDir, relPath);
 
-        let suffix = 1;
-        while (true) {
-          try {
-            const existingContent = await fs.readFile(fullPath, "utf-8");
-            const parsed = parseConcept(existingContent);
-            const existingTitle = parsed.frontmatter.title || "";
-            if (existingTitle === concept.title) {
+          let suffix = 1;
+          while (true) {
+            try {
+              const existingContent = await fs.readFile(fullPath, "utf-8");
+              const parsed = parseConcept(existingContent);
+              const existingTitle = parsed.frontmatter.title || "";
+              if (existingTitle === title) {
+                break;
+              }
+              slug = `${slugify(title)}-${suffix}`;
+              relPath = `${dir}/${slug}.md`;
+              fullPath = path.join(bundleDir, relPath);
+              suffix++;
+            } catch {
               break;
             }
-            slug = `${slugify(concept.title)}-${suffix}`;
-            relPath = `${dir}/${slug}.md`;
-            fullPath = path.join(bundleDir, relPath);
-            suffix++;
-          } catch {
-            break;
           }
+
+          let existingFm = {};
+          try {
+            const existingContent = await fs.readFile(fullPath, "utf-8");
+            existingFm = parseConcept(existingContent).frontmatter;
+          } catch {}
+
+          const frontmatter = {
+            ...existingFm,
+            type,
+            title,
+            description: typeof concept.description === "string" ? concept.description : "",
+            tags: Array.isArray(concept.tags) ? concept.tags.filter((t): t is string => typeof t === "string") : [],
+            timestamp: new Date().toISOString(),
+            confidence: typeof concept.confidence === "string" ? concept.confidence : "high",
+            last_verified: new Date().toISOString().split("T")[0],
+            links: Array.isArray(concept.links) ? concept.links.filter((l): l is string => typeof l === "string") : [],
+          };
+
+          const serialized = serializeConcept(frontmatter, typeof concept.body === "string" ? concept.body : "");
+          const tmpPath = `${fullPath}.tmp-${process.pid}`;
+          await fs.writeFile(tmpPath, serialized, "utf-8");
+          await fs.rename(tmpPath, fullPath);
+
+          updatedConcepts.push({ title, type });
+        } catch {
+          // Skip just this concept; keep distilling the rest of the batch.
         }
-
-        let existingFm = {};
-        try {
-          const existingContent = await fs.readFile(fullPath, "utf-8");
-          existingFm = parseConcept(existingContent).frontmatter;
-        } catch {}
-
-        const frontmatter = {
-          ...existingFm,
-          type: concept.type,
-          title: concept.title,
-          description: concept.description || "",
-          tags: concept.tags || [],
-          timestamp: new Date().toISOString(),
-          confidence: concept.confidence || "high",
-          last_verified: new Date().toISOString().split("T")[0],
-          links: concept.links || [],
-        };
-
-        const serialized = serializeConcept(frontmatter, concept.body || "");
-        const tmpPath = `${fullPath}.tmp-${process.pid}`;
-        await fs.writeFile(tmpPath, serialized, "utf-8");
-        await fs.rename(tmpPath, fullPath);
-
-        updatedConcepts.push({ title: concept.title, type: concept.type });
       }
 
       await rebuildIndex(bundleDir);

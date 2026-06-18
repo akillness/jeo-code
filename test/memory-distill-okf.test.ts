@@ -197,3 +197,44 @@ test("JEO_NO_MEMORY=1 disables the distillation", async () => {
 
   await fs.rm(dir, { recursive: true, force: true });
 });
+
+test("a malformed concepts array (null/string/number elements + non-string fields) still persists the valid concepts", async () => {
+  const dir = await tmp();
+  // Mimic a text-only/small model: stray non-object elements and non-string
+  // type/title fields interleaved with two valid concepts. The pre-hardening
+  // loop threw a TypeError on the first bad element, which the outer catch
+  // swallowed as "distill failed" — silently losing the WHOLE batch.
+  const messyResponse = JSON.stringify({
+    concepts: [
+      null,
+      "oops not an object",
+      42,
+      { type: "Command", title: "bun test", description: "Run tests", body: "Use `bun test`.", tags: ["test"], confidence: "high", links: [] },
+      { type: 123, title: "bad type" },                       // non-string type → skipped
+      { type: "RepoFact", title: "" },                        // empty title → skipped
+      { type: "RepoFact", title: "Bun runtime", description: 99, body: null, tags: "notarray", links: 5 }, // valid type/title, junk fields → coerced
+    ],
+  });
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => messyResponse,
+  }));
+
+  const { distillSessionMemory } = await import("../src/agent/memory");
+  const res = await distillSessionMemory(HISTORY, dir);
+  expect(res.updated).toBe(true);
+
+  const cmdFile = path.join(dir, ".jeo", "memory", "commands", "bun-test.md");
+  const factFile = path.join(dir, ".jeo", "memory", "facts", "bun-runtime.md");
+  expect(await fs.access(cmdFile).then(() => true).catch(() => false)).toBe(true);
+  expect(await fs.access(factFile).then(() => true).catch(() => false)).toBe(true);
+
+  // The junk-field concept must coerce non-string fields to safe defaults and stay conformant.
+  const factContent = await fs.readFile(factFile, "utf-8");
+  expect(factContent).toContain("title: Bun runtime");
+  expect(factContent).toContain("description:");
+  const bundleFiles = await readBundleFiles(path.join(dir, ".jeo", "memory"));
+  const report = validateBundle(bundleFiles);
+  expect(report.conformant).toBe(true);
+
+  await fs.rm(dir, { recursive: true, force: true });
+});

@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.14] - 2026-06-16
+_Memory distillation survives malformed model output, and stream-idle stalls retry instead of failing the turn._
+
+### Fixed
+- **Malformed `concepts` arrays no longer discard the whole distillation batch.** A text-only / small model can emit stray non-object array elements (`null`, strings, numbers) or non-string `type`/`title` fields. Each element is now validated and its persistence wrapped in a per-concept `try`/`catch`, so one bad concept is skipped instead of throwing out of the loop into the outer catch — which previously silently dropped every valid learning distilled in that run. Junk frontmatter fields (`description`/`tags`/`body`/`confidence`/`links`) are coerced to safe defaults so the written file stays OKF-conformant.
+- **Per-chunk stream-idle stalls now retry instead of failing the turn.** A `stream idle for <ms>ms (no chunk)` stall (provider load or long time-to-first-token) is treated as transient and retried like a timeout, while the hard overall wall-clock cap (`stream exceeded the overall deadline`) still fails fast. The idle-stall error message now explains the cause and remediation.
+
+### Added
+- **`JEO_STREAM_IDLE_MS` opt-in override.** Reasoning workloads whose "thinking" phase can legitimately emit no visible token for longer than the 120s default can raise the per-chunk idle threshold without a code change.
+
 ## [0.6.13] - 2026-06-16
 _`team` engine: concrete uncommitted-work reporting and stricter empty-run handling._
 

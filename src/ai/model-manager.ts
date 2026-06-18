@@ -356,7 +356,9 @@ const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 
 /** Per-chunk idle cap for streaming: a stream that emits NOTHING for this long is
  *  aborted, but a healthy long generation (chunks keep arriving) runs unbounded —
- *  unlike a single wall-clock cap that would kill a long-but-active stream. */
+ *  unlike a single wall-clock cap that would kill a long-but-active stream.
+ *  Opt-in override via JEO_STREAM_IDLE_MS for reasoning workloads whose "thinking"
+ *  phase can legitimately emit no visible token for longer than the default. */
 const STREAM_IDLE_TIMEOUT_MS = 120_000;
 
 /** Combine two abort signals into one. Preserves BOTH even when `AbortSignal.any`
@@ -418,7 +420,7 @@ async function nextMaybeIdle(iter: AsyncIterator<string>, idle?: StreamIdleOptio
       idle.onIdle?.();
       reject(new Error(deadlineFires
         ? `stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream aborted`
-        : `stream idle for ${idle.idleMs}ms (no chunk)`));
+        : `stream idle for ${idle.idleMs}ms (no chunk) — provider sent no token within the idle window (load or long thinking); retrying. Raise JEO_STREAM_IDLE_MS or lower the thinking level if this persists.`));
     }, waitMs);
   });
   try {
@@ -433,6 +435,15 @@ export function streamMaxMs(env?: Record<string, string | undefined>): number | 
   const raw = jeoEnv("STREAM_MAX_MS", env);
   const n = raw !== undefined ? parseInt(raw, 10) : NaN;
   return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/** Per-chunk idle cap (ms) from the environment, falling back to the built-in default.
+ *  Lets reasoning workloads whose "thinking" phase emits no visible token for a long
+ *  time raise the stall threshold via JEO_STREAM_IDLE_MS without a code change. */
+export function streamIdleMs(env?: Record<string, string | undefined>): number {
+  const raw = jeoEnv("STREAM_IDLE_MS", env);
+  const n = raw !== undefined ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : STREAM_IDLE_TIMEOUT_MS;
 }
 
 export async function* retryableStream(
@@ -475,7 +486,7 @@ export function createModelManager(): ModelManager {
         };
         const maxMs = streamMaxMs();
         yield* retryableStream(makeIter, retry, {
-          idleMs: STREAM_IDLE_TIMEOUT_MS,
+          idleMs: streamIdleMs(),
           ...(maxMs !== undefined ? { deadlineAt: Date.now() + maxMs } : {}),
           onIdle: () => attempt?.abort(),
         });

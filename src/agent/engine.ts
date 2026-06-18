@@ -28,6 +28,7 @@ async function invokeCallLlm(history: Message[], options: {
   jsonMode: boolean;
   model?: string;
   maxTokens?: number;
+  reasoningEffort?: import("../ai/types").CallOptions["reasoningEffort"];
   signal?: AbortSignal;
   onUsage?: (u: { inputTokens?: number; outputTokens?: number }) => void;
   onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
@@ -205,6 +206,11 @@ export interface AgentLoopOptions {
   model?: string;
   /** Max generation tokens per step (drives the thinking budget). */
   maxTokens?: number;
+  /** Provider reasoning depth (mapped from the live session thinking level). Threaded to
+   *  callLlm so `/thinking`, `--thinking`, and `/fast` reach the provider's actual reasoning
+   *  budget (Anthropic budget_tokens / OpenAI reasoning_effort / Gemini thinkingBudget), not
+   *  just the max-token ceiling. When unset the model-manager falls back to the global config. */
+  reasoningEffort?: import("../ai/types").CallOptions["reasoningEffort"];
   tools?: Record<string, ToolHandler>;
   signal?: AbortSignal;
   events?: AgentLoopEvents;
@@ -499,6 +505,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               tools: nativeToolSchemasFor(Object.keys(tools)),
               model: opts.model,
               maxTokens: opts.maxTokens,
+              reasoningEffort: opts.reasoningEffort,
               signal: opts.signal,
               onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
               onToken,

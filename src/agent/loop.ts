@@ -10,6 +10,11 @@ export interface ChatOptions {
   systemPrompt?: string;
   temperature?: number;
   maxTokens?: number;
+  /** Provider reasoning depth (mapped from the live session thinking level). When set it
+   *  overrides the global config-derived effort, so `/thinking` and `--thinking` reach the
+   *  provider's actual reasoning budget (Anthropic budget_tokens / OpenAI reasoning_effort /
+   *  Gemini thinkingBudget), not just the max-token ceiling. */
+  reasoningEffort?: import("../ai/types").CallOptions["reasoningEffort"];
   jsonMode?: boolean;
   signal?: AbortSignal;
   onUsage?: (usage: import("../ai/types").Usage) => void;

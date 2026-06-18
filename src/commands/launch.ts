@@ -36,7 +36,7 @@ import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch } from "../agent/state";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
-import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
+import { describeModel, describeAllProviders, thinkingMaxTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
 
@@ -786,6 +786,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           maxSteps: flags.maxSteps,
           model: sessionModel,
           maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
+          reasoningEffort: sessionThinking ? thinkingToReasoningEffort(sessionThinking) : undefined,
           signal: ac.signal,
           steer: drainSteer,
           events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone }, persistTurnTail), opik),
@@ -804,6 +805,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             budget: { maxExtensions: 0 },
             model: sessionModel,
             maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
+            reasoningEffort: sessionThinking ? thinkingToReasoningEffort(sessionThinking) : undefined,
             signal: ac.signal,
             steer: drainSteer,
             events: wrapEvents(withToolDetailCapture(tui ? tui.events() : streamEvents), opik),

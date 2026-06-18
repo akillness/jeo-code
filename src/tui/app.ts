@@ -86,10 +86,9 @@ function extractStreamingReasoning(buf: string): string {
   catch { return m[1].replace(/\\\\/g, "\\").replace(/\\n/g, " ").replace(/\\"/g, '"'); }
 }
 
-/** Uniform live-activity fallback for models that stream no `reasoning` field: derive
- *  what the model is doing from the forming JSON (`"tool":"x"` → "calling x…") or, for
- *  prose-replying models, show the reply head — so the live status field behaves identically
- *  across providers/models instead of staying silent for some of them. */
+/** Derive a HUD STATUS (never content) from the forming stream: `"tool":"x"` → "calling
+ *  x…", bare JSON/fence → "forming the next tool call…", prose reply → "writing the
+ *  reply…". The reply/reasoning TEXT itself belongs in the Thinking block, not the HUD. */
 function extractStreamingActivity(buf: string): string {
   const head = buf.length > 512 ? buf.slice(0, 512) : buf;
   const tool = head.match(/"tool"\s*:\s*"([^"]+)"/)?.[1];
@@ -97,8 +96,6 @@ function extractStreamingActivity(buf: string): string {
   const t = head.trim();
   if (!t) return "";
   if (t.startsWith("{") || t.startsWith("```")) return "forming the next tool call…";
-  // Prose (not JSON) means the model is streaming its final reply — show a STATUS, never
-  // the reply/reasoning content itself (that belongs in the Thinking block, not the HUD).
   return "writing the reply…";
 }
 

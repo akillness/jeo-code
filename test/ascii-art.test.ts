@@ -8,9 +8,9 @@ import {
   stageHeight,
   stageWidth,
   stageCaption,
-  DNA_CLAW_ART,
-  DNA_CLAW_ART_ASCII,
-  renderDnaClaw,
+  FORGE_MARK_ART,
+  FORGE_MARK_ART_ASCII,
+  renderForgeMark,
 } from "../src/tui/components/ascii-art";
 import { ColorLevel } from "../src/tui/components/color";
 
@@ -135,27 +135,27 @@ test("primordial cell: unicode:false degrades to a tofu-free ASCII fallback", ()
     expect(new Set(lines.map(l => l.length)).size).toBe(1);
   }
 });
-test("DNA_CLAW_ART: lines all width <=24 and uniform after render", () => {
-  expect(DNA_CLAW_ART.length).toBeGreaterThan(0);
-  for (const line of DNA_CLAW_ART) {
+test("FORGE_MARK_ART: lines uniform width after render", () => {
+  expect(FORGE_MARK_ART.length).toBeGreaterThan(0);
+  for (const line of FORGE_MARK_ART) {
     expect(line.length).toBeLessThanOrEqual(24);
   }
-  const rendered = renderDnaClaw({ color: false });
-  expect(rendered.length).toBe(DNA_CLAW_ART.length);
+  const rendered = renderForgeMark({ color: false });
+  expect(rendered.length).toBe(FORGE_MARK_ART.length);
   const widthSet = new Set(rendered.map(l => l.length));
   expect(widthSet.size).toBe(1);
   expect(widthSet.values().next().value).toBeLessThanOrEqual(24);
 });
 
-test("renderDnaClaw: plain (color:false) is byte-stable across phases", () => {
-  const r0 = renderDnaClaw({ color: false, phase: 0 });
-  const r1 = renderDnaClaw({ color: false, phase: 0.5 });
+test("renderForgeMark: plain (color:false) is byte-stable across phases", () => {
+  const r0 = renderForgeMark({ color: false, phase: 0 });
+  const r1 = renderForgeMark({ color: false, phase: 0.5 });
   expect(r0).toEqual(r1);
 });
 
-test("renderDnaClaw: two different phases at TrueColor produce different escape sequences", () => {
-  const r0 = renderDnaClaw({ color: true, colorLevel: ColorLevel.TrueColor, phase: 0 });
-  const r1 = renderDnaClaw({ color: true, colorLevel: ColorLevel.TrueColor, phase: 0.5 });
+test("renderForgeMark: two different phases at TrueColor produce different escape sequences", () => {
+  const r0 = renderForgeMark({ color: true, colorLevel: ColorLevel.TrueColor, phase: 0 });
+  const r1 = renderForgeMark({ color: true, colorLevel: ColorLevel.TrueColor, phase: 0.5 });
   expect(r0).not.toEqual(r1);
   for (const line of r0) {
     expect(line.includes("\x1b[")).toBe(true);
@@ -165,10 +165,10 @@ test("renderDnaClaw: two different phases at TrueColor produce different escape 
   }
 });
 
-test("renderDnaClaw: ascii fallback contains no non-ASCII chars", () => {
-  expect(DNA_CLAW_ART_ASCII.length).toBeGreaterThan(0);
+test("renderForgeMark: ascii fallback contains no non-ASCII chars", () => {
+  expect(FORGE_MARK_ART_ASCII.length).toBeGreaterThan(0);
   const nonAscii = /[^\x00-\x7f]/;
-  const rendered = renderDnaClaw({ unicode: false, color: false });
+  const rendered = renderForgeMark({ unicode: false, color: false });
   for (const line of rendered) {
     expect(nonAscii.test(line)).toBe(false);
   }

@@ -76,6 +76,17 @@ export function codexResponsesRequest(
     // frame can show the model's thinking instead of a frozen "calling model (Ns)…".
     payload.reasoning = { effort: options.reasoningEffort, summary: "auto" };
   }
+  // OAuth → the undocumented ChatGPT/Codex backend (codex headers + account-id).
+  // API key → the public OpenAI Responses API (`/v1/responses`) with a plain Bearer.
+  // Both speak the same Responses schema (the body above), so only url+headers differ.
+  if (credential.kind === "api_key") {
+    const base = (options.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
+    return {
+      url: `${base}/responses`,
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}`, accept: "text/event-stream" },
+      body: JSON.stringify(payload),
+    };
+  }
   const accountId = extractChatgptAccountId(token);
   const headers: Record<string, string> = {
     "content-type": "application/json",

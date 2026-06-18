@@ -55,6 +55,11 @@ export interface CallOptions {
   signal?: AbortSignal;
   /** Reasoning effort for reasoning models (o-series / gpt-5), mapped from thinkingLevel. */
   reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  /** How an OpenAI-compatible backend enables/streams native reasoning (gjc parity):
+   *  "openai" → `reasoning_effort`; "openrouter" → `reasoning: {effort}`; "qwen" →
+   *  `enable_thinking: true`; "zai" → `thinking: {type:"enabled"}`. Set per provider by
+   *  the openai-compatible factory; without it a model never emits reasoning to surface. */
+  reasoningFormat?: "openai" | "openrouter" | "qwen" | "zai";
   /** Notified before each auto-retry backoff wait (rate limits / transient errors).
    *  NOT forwarded to provider adapters — consumed by the manager's retry layer. */
   onRetry?: (attempt: number, err: unknown, delayMs: number) => void;

@@ -29,6 +29,12 @@ export interface ProviderStatus {
   envVar?: string;
   /** True when the provider can serve a request right now. */
   ready: boolean;
+  /** True when an OAuth credential is stored for this provider (logged in via OAuth). */
+  loggedIn?: boolean;
+  /** Account email from the stored OAuth credential, when known. */
+  oauthEmail?: string;
+  /** Epoch ms expiry of the stored OAuth access token, when known. */
+  oauthExpires?: number;
 }
 
 /** The env var that supplies a provider's API key. Catalog providers carry their
@@ -57,6 +63,13 @@ export function credentialLabel(kind: CredentialKind): string {
 function oauthAccess(stored: string | StoredOAuth | undefined): string | undefined {
   if (!stored) return undefined;
   return typeof stored === "string" ? stored : stored.access;
+}
+
+/** Login metadata (account email / expiry) from a stored OAuth record, when present. */
+function oauthLoginInfo(stored: string | StoredOAuth | undefined): { loggedIn: boolean; oauthEmail?: string; oauthExpires?: number } {
+  if (!stored) return { loggedIn: false };
+  if (typeof stored === "string") return { loggedIn: true };
+  return { loggedIn: true, oauthEmail: stored.email, oauthExpires: stored.expires };
 }
 
 function configuredCredential(provider: AuthProvider, cfg: Config): Credential {
@@ -123,6 +136,9 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
     // gemini-cli OAuth is served end-to-end via Cloud Code Assist — no API key.
     label = "OAuth (Gemini CLI / Cloud Code Assist)";
   }
+  // Login status reflects the provider's OWN stored OAuth (e.g. "logged in to antigravity"),
+  // independent of any cross-provider credential fallback used for readiness.
+  const login = oauthLoginInfo(cfg.oauth?.[ownProvider]);
   return {
     name,
     kind,
@@ -130,6 +146,9 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
     baseUrl,
     envVar: providerEnvVar(name),
     ready,
+    loggedIn: login.loggedIn,
+    oauthEmail: login.oauthEmail,
+    oauthExpires: login.oauthExpires,
   };
 }
 

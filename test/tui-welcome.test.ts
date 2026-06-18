@@ -70,7 +70,7 @@ test("every line has equal visible width", () => {
   }
 });
 
-test("hero column: brand, tagline, grand DNA Claw symbol, centered", () => {
+test("hero column: brand, tagline, grand forge mark, centered", () => {
   const lines = renderWelcome({
     version: "1.2.3",
     model: "claude-3-5-sonnet",
@@ -82,8 +82,8 @@ test("hero column: brand, tagline, grand DNA Claw symbol, centered", () => {
   const joined = lines.map(stripAnsi).join("\n");
   expect(joined).toContain("Jeo forge");
   expect(joined).toContain("evolve · act · prove");
-  // Grand symbol caption (spaced caption from the grand art block).
-  expect(joined).toContain("D N A · C L A W");
+  // Grand symbol: check for a glyph unique to the large art block.
+  expect(joined).toContain("◉ ◉ ◉");
 });
 
 test("model + provider pills present", () => {
@@ -147,17 +147,17 @@ test("an overlong model pill truncates instead of breaking the border", () => {
   }
 });
 
-test("narrow box falls back to the compact DNA Claw symbol", () => {
+test("narrow box falls back to the compact forge mark", () => {
   const lines = renderWelcome({
     version: "1.2.3",
     model: "claude-3-5-sonnet",
-    cols: 34, // inner 30 < grand art width
+    cols: 30, // inner 28 < grand art width (29)
     unicode: true,
     color: false,
   });
   const joined = lines.map(stripAnsi).join("\n");
-  expect(joined).toContain("[ DNA Claw ]");
-  expect(joined).not.toContain("D N A · C L A W");
+  expect(joined).toContain("◉◉◉"); // compact carapace (tight cluster)
+  expect(joined).not.toContain("◉ ◉ ◉"); // not the spaced grand carapace
 });
 
 test("narrow cols (<30) -> single-line fallback", () => {

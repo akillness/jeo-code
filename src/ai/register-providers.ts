@@ -34,6 +34,6 @@ providerRegistry.register("kimi", kimiAdapter);
 for (const def of OPENAI_COMPAT_PROVIDERS) {
   const adapter = def.protocol === "anthropic"
     ? makeAnthropicCompatibleAdapter({ name: def.name, baseUrl: def.baseUrl })
-    : makeOpenAICompatibleAdapter({ name: def.name, baseUrl: def.baseUrl });
+    : makeOpenAICompatibleAdapter({ name: def.name, baseUrl: def.baseUrl, thinkingFormat: def.thinkingFormat });
   providerRegistry.register(def.name, adapter);
 }

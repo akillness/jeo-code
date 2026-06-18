@@ -17,7 +17,7 @@ import { runUltragoalEngine, type UltragoalEngineOptions } from "./ultragoal";
 import { skillsPromptSection, loadSkills, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
 import { formatForgeBox } from "../tui/components/forge";
 import { interactiveOAuthLogin } from "./auth";
-import { logoutOAuth } from "../auth";
+import { logoutOAuth, OAUTH_PROVIDERS, API_KEY_ONLY_PROVIDERS, setApiKey } from "../auth";
 import type { AuthProvider } from "../auth";
 import { matchSlash, isSlashAttempt, suggestSlashCommands, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, tabCompleteSelection, type SlashCommandInfo } from "../tui/components/slash";
 import { staticCompletionContext, readlineCompleter, formatCompletionPreview, formatMidTurnHint, tokenize, type CompletionContext } from "../tui/components/autocomplete";
@@ -41,7 +41,7 @@ import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLev
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
 
 import { listAliases } from "../ai/model-registry";
-import { openaiCompatDef } from "../ai/providers/openai-compatible-catalog";
+import { openaiCompatDef, SUBSCRIPTION_PROVIDER_NAMES } from "../ai/providers/openai-compatible-catalog";
 
 import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting } from "../agent/subagents";
 import { SelectList, renderSelectList, type SelectItem } from "../tui/components/select-list";
@@ -58,7 +58,7 @@ import {
 } from "../tui/components/config-panel";
 import { liveModelPicker, renderLiveModelPicker, type ModelAssignmentBadge } from "../tui/components/live-model-picker";
 
-import { providerPicker, renderProviderPicker } from "../tui/components/provider-picker";
+import { loginPicker, renderLoginPicker, onboardingPicker, renderOnboardingPicker, apiKeyPicker, renderApiKeyPicker, subscriptionLoginPicker, type OnboardingAction } from "../tui/components/provider-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff, sanitizeForTerminal } from "../tui/components/code-view";
 import { categoryBadge } from "../tui/components/category-index";
 import { renderInputFrame, verticalCursorOffset } from "../tui/components/input-box";
@@ -214,7 +214,10 @@ export {
   currentAtLabelFn as currentAtLabel,
 };
 export function normalizeSlashAlias(input: string): string {
-  if (input === "/login" || input.startsWith("/login ")) return `/provider login${input.slice("/login".length)}`;
+  // gjc-parity: bare `/login` opens the provider onboarding selector (same as bare
+  // `/provider`); `/login <provider|args>` is the direct OAuth-login alias.
+  if (input === "/login") return "/provider";
+  if (input.startsWith("/login ")) return `/provider login${input.slice("/login".length)}`;
   if (input === "/settings") return "/config";
   if (input === "/subagent" || input.startsWith("/subagent ")) return `/agents${input.slice("/subagent".length)}`;
   if (input === "/subagents" || input.startsWith("/subagents ")) return `/agents${input.slice("/subagents".length)}`;
@@ -1093,7 +1096,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // gjc-style fresh-start clear so the banner opens atop a clean screen. TTY only,
   // never mid-turn (scrollback flood). ponytail: add an opt-out env if anyone misses their scrollback.
   if (process.stdout.isTTY) process.stdout.write(clearScreen());
-  // Launch sweep: the DNA Claw's gradient loops seamlessly (default 2 full
+  // Launch sweep: the forge mark's gradient loops seamlessly (default 2 full
   // cycles, JEO_WELCOME_ANIM_CYCLES overrides), ending on the static banner.
   // Truecolor TTYs only; JEO_NO_WELCOME_ANIM=1 opts out.
   const sweepable =
@@ -2206,13 +2209,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
 
   const pickCloudProvider = async (statuses: Awaited<ReturnType<typeof describeAllProviders>>): Promise<AuthProvider | undefined> => {
-    const cloud = new Set(["anthropic", "openai", "gemini", "antigravity"]);
-    const list = providerPicker(statuses.filter(s => cloud.has(s.name)), true);
+    const cloud = new Set<string>(OAUTH_PROVIDERS); // OAuth-login providers (anthropic/openai/gemini/antigravity)
+    const subs = new Set<string>(SUBSCRIPTION_PROVIDER_NAMES); // subscription/plan products (token-keyed)
+    const list = subscriptionLoginPicker(
+      statuses.filter(s => cloud.has(s.name)),
+      statuses.filter(s => subs.has(s.name)),
+      true,
+    );
     let chosen: ProviderName | undefined;
     await runSelectPicker(
       (cols, rows) =>
-        renderProviderPicker(list, {
-          title: "Select OAuth provider",
+        renderLoginPicker(list, {
+          title: "Login with OAuth / subscription  ↑↓ move · Enter select · Esc cancel",
           cols,
           rows: Math.max(4, Math.min(rows, 8)),
           unicode: true,
@@ -2252,8 +2260,103 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         return false;
       },
     );
-    return chosen && cloud.has(chosen) ? chosen as AuthProvider : undefined;
+    return chosen && (cloud.has(chosen) || subs.has(chosen)) ? chosen as AuthProvider : undefined;
   };
+
+  // Bare `/provider` opens gjc's interactive onboarding selector: choose between
+  // OAuth/subscription login and registering an API-compatible endpoint. Returns the
+  // picked action, or undefined when cancelled (Esc/Ctrl+C). TTY only — callers fall
+  // back to the printed usage in non-interactive mode.
+  const pickOnboardingAction = async (): Promise<OnboardingAction | undefined> => {
+    const list = onboardingPicker(true);
+    let chosen: OnboardingAction | undefined;
+    await runSelectPicker(
+      (cols, rows) =>
+        renderOnboardingPicker(list, {
+          cols,
+          rows: Math.max(4, Math.min(rows, 6)),
+          unicode: true,
+          color: true,
+        }),
+      (ch, key) => {
+        if (key?.name === "up") {
+          list.up();
+          return false;
+        }
+        if (key?.name === "down") {
+          list.down();
+          return false;
+        }
+        if (key?.name === "escape" || (key?.ctrl && key.name === "c")) {
+          return true;
+        }
+        if (key?.name === "return" || key?.name === "enter") {
+          chosen = list.selected()?.value;
+          return true;
+        }
+        if (ch && ch >= " " && !key?.ctrl && !key?.meta) {
+          list.typeChar(ch);
+        }
+        return false;
+      },
+    );
+    return chosen;
+  };
+
+  // API-key onboarding: pick one of the bundled API-key-only providers (groq, deepseek,
+  // mistral, …) to store a key for. Returns the picked provider, or undefined on cancel.
+  // TTY only — the caller prints scriptable guidance otherwise.
+  const pickApiKeyProvider = async (statuses: Awaited<ReturnType<typeof describeAllProviders>>): Promise<AuthProvider | undefined> => {
+    const subs = new Set<string>(SUBSCRIPTION_PROVIDER_NAMES); // surfaced under OAuth/subscription login instead
+    const keyed = new Set<string>(API_KEY_ONLY_PROVIDERS);
+    const list = apiKeyPicker(statuses.filter(s => keyed.has(s.name) && !subs.has(s.name)), true);
+    let chosen: ProviderName | undefined;
+    await runSelectPicker(
+      (cols, rows) =>
+        renderApiKeyPicker(list, {
+          title: "Select a provider to key  \u2191\u2193 move \u00b7 Enter select \u00b7 Esc cancel",
+          cols,
+          rows: Math.max(4, Math.min(rows, 8)),
+          unicode: true,
+          color: true,
+        }),
+      (ch, key) => {
+        if (key?.name === "up") {
+          list.up();
+          return false;
+        }
+        if (key?.name === "down") {
+          list.down();
+          return false;
+        }
+        if (key?.name === "pageup") {
+          list.page(-1, 4);
+          return false;
+        }
+        if (key?.name === "pagedown") {
+          list.page(1, 4);
+          return false;
+        }
+        if (key?.name === "backspace") {
+          list.backspace();
+          return false;
+        }
+        if (key?.name === "escape" || (key?.ctrl && key.name === "c")) {
+          return true;
+        }
+        if (key?.name === "return" || key?.name === "enter") {
+          chosen = list.selected()?.value;
+          return true;
+        }
+        if (ch && ch >= " " && !key?.ctrl && !key?.meta) {
+          list.typeChar(ch);
+        }
+        return false;
+      },
+    );
+    return chosen && keyed.has(chosen) ? chosen as AuthProvider : undefined;
+  };
+
 
   if (previewEnabled) {
     process.once("exit", () => out.write("\x1b[?25h")); // safety net: never leave the cursor hidden
@@ -3002,39 +3105,151 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       if (input.startsWith("/provider") && (input === "/provider" || input[9] === " ")) {
         const tokens = input.substring(9).trim().split(/\s+/).filter(Boolean);
-        const name = (tokens[0] ?? "").toLowerCase();
+        let name = (tokens[0] ?? "").toLowerCase();
         // gjc-parity (semantic): /provider is ONBOARDING ONLY — set up OAuth credentials
         // or an API-compatible endpoint. Switching the active provider/model lives in /model.
         const providerOnboardingUsage = (): string[] => [
           "Provider onboarding — set up credentials or an API-compatible endpoint:",
-          "  OAuth / subscription : /provider login [anthropic|openai|gemini|antigravity]   (alias: /login)",
+          "  OAuth / subscription : /provider login [anthropic|openai|gemini|antigravity|<subscription>]   (alias: /login)",
+          "                         subscriptions (token): alibaba-coding-plan, qwen-portal, xiaomi-token-plan-*, minimax-code*",
+          "  API key (cloud)      : /provider key [provider] [key]   (groq, deepseek, mistral, openrouter, …)",
           "  API-compatible       : /provider add --base-url <url> [--model <model>] [--compat openai]   (reads OPENAI_API_KEY)",
           "                         show current / clear: /provider add   ·   /provider add clear",
           "  Logout               : /logout <provider>",
+          "  Headless OAuth        : paste the redirect URL or code when the login prompt asks.",
           "Switch the active model or provider with /model.",
         ];
+        // Bare `/provider` in an interactive TTY → gjc's interactive onboarding selector
+        // (OAuth login vs API-compatible endpoint). The choice routes into the same
+        // `login`/`add` branches below; cancel falls through to the printed readiness +
+        // usage. Non-TTY / `help` keep the static panel (scriptable, unchanged).
+        if (!name && process.stdin.isTTY && process.stdout.isTTY) {
+          const action = await pickOnboardingAction();
+          if (action === "oauth-login") name = "login";
+          else if (action === "api-key") name = "key";
+          else if (action === "api-add") {
+            console.log("Add an API-compatible endpoint:");
+            console.log("  /provider add --base-url <url> [--model <model>] [--compat openai]");
+            console.log("  reads OPENAI_API_KEY · show current / clear: /provider add   ·   /provider add clear");
+            continue;
+          }
+          // action === undefined (cancelled) → fall through to the readiness panel.
+        }
+        // `/provider key [name] [key]` → store an API key for an API-key-only provider
+        // (groq/deepseek/mistral/…). Interactive: pick the provider, then paste the key.
+        if (name === "key") {
+          const keyed = new Set<string>(API_KEY_ONLY_PROVIDERS);
+          let target = tokens.slice(1).map(t => t.toLowerCase()).find(t => keyed.has(t)) as AuthProvider | undefined;
+          // A trailing token after the provider name is treated as the key itself.
+          const inlineKey = target ? tokens.slice(1).filter(t => t.toLowerCase() !== target).pop() : undefined;
+          if (!target) {
+            const statuses = await describeAllProviders();
+            if (process.stdin.isTTY && process.stdout.isTTY) {
+              target = await pickApiKeyProvider(statuses);
+            } else {
+              console.log("Set an API key for which provider?");
+              console.log(`  ${API_KEY_ONLY_PROVIDERS.filter(p => !(SUBSCRIPTION_PROVIDER_NAMES as readonly string[]).includes(p)).join(", ")}`);
+              console.log("  Subscription / plan products use /provider login (token).");
+              console.log("  Usage: /provider key <provider> <api-key>   (or set <PROVIDER>_API_KEY)");
+            }
+            if (!target) {
+              console.log("(cancelled)");
+              continue;
+            }
+          }
+          const envVar = `${target.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+          let apiKey = inlineKey;
+          if (!apiKey) {
+            apiKey = (await promptInput(`Paste ${target} API key (blank to cancel): `)).trim();
+          }
+          if (!apiKey) {
+            console.log("(cancelled — no key entered)");
+            continue;
+          }
+          await setApiKey(target, apiKey);
+          console.log(`[SUCCESS] Stored ${target} API key in ~/.jeo/config.json (also reads ${envVar}).`);
+          const live = await refreshLiveModelsCache();
+          const after = (await describeAllProviders()).find(s => s.name === target);
+          if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
+          const forProvider = live.filter(r => r.provider === target);
+          if (forProvider.some(r => r.ok && r.models.length > 0)) {
+            lastPickIndex = flattenModels(forProvider);
+            const viaCatalog = forProvider.some(r => r.fallback);
+            console.log(`  ${viaCatalog ? "catalog" : "live"} ${target} models → /model #N${viaCatalog ? "  (live list endpoint unavailable; showing known models)" : ""}`);
+            logLines(formatPickListWithCapabilities(lastPickIndex, { cap: 12 }));
+          } else {
+            const failed = forProvider.find(r => !r.ok);
+            if (failed?.error) console.log(`  live ${target} models unavailable: ${failed.error}`);
+          }
+          continue;
+        }
         // `/provider login|auth [name]` → run OAuth login from the REPL.
         if (name === "login" || name === "auth") {
           const cloud = ["anthropic", "openai", "gemini", "antigravity"] as const;
-          let target = tokens.slice(1).map(t => t.toLowerCase()).find(t => (cloud as readonly string[]).includes(t));
+          const subs = new Set<string>(SUBSCRIPTION_PROVIDER_NAMES); // token-keyed subscription/plan products
+          let target = tokens.slice(1).map(t => t.toLowerCase()).find(t => (cloud as readonly string[]).includes(t) || subs.has(t));
           if (!target) {
             const statuses = await describeAllProviders();
             if (process.stdin.isTTY && process.stdout.isTTY) {
               target = await pickCloudProvider(statuses);
             } else {
               console.log("Log in to which provider?");
+              console.log("  OAuth:");
               cloud.forEach((p, i) => {
                 const st = statuses.find(s => s.name === p);
-                console.log(`  ${i + 1}) ${p.padEnd(10)} ${st?.ready ? `✓ ${st.label}` : "· not ready"}`);
+                const badge = st?.loggedIn
+                  ? `\u2713 logged in${st.oauthEmail ? ` (${st.oauthEmail})` : ""}`
+                  : "\u00b7 not logged in";
+                console.log(`  ${i + 1}) ${p.padEnd(10)} ${badge}`);
               });
+              console.log("  Subscription / plan (token):");
+              for (const p of SUBSCRIPTION_PROVIDER_NAMES) {
+                const st = statuses.find(s => s.name === p);
+                const badge = st?.kind === "api_key" ? "\u2713 active" : "\u00b7 no token";
+                console.log(`     ${p.padEnd(22)} ${badge} (set ${st?.envVar ?? `${p.toUpperCase().replace(/-/g, "_")}_API_KEY`})`);
+              }
               const ans = (await promptInput(`Choose [1-${cloud.length}] or name (blank to cancel): `)).trim().toLowerCase();
               const byNum: Record<string, string> = Object.fromEntries(cloud.map((p, i) => [String(i + 1), p]));
-              target = byNum[ans] ?? ((cloud as readonly string[]).includes(ans) ? ans : undefined);
+              target = byNum[ans] ?? ((cloud as readonly string[]).includes(ans) || subs.has(ans) ? ans : undefined);
             }
             if (!target) {
               console.log("(cancelled)");
               continue;
             }
+          }
+          // Subscription/plan providers authenticate by token (not OAuth): prompt for the key
+          // and store it like `/provider key`, then refresh + list models.
+          if (subs.has(target)) {
+            const sub = target as AuthProvider;
+            const envVar = `${sub.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+            let token = tokens.slice(1).filter(t => t.toLowerCase() !== sub).pop();
+            if (!token) {
+              if (process.stdin.isTTY && process.stdout.isTTY) {
+                token = (await promptInput(`Paste ${sub} subscription token (blank to cancel): `)).trim();
+              } else {
+                console.log(`Set the ${sub} subscription token with: /provider login ${sub} <token>   (or set ${envVar}).`);
+              }
+            }
+            if (!token) {
+              console.log("(cancelled — no token entered)");
+              continue;
+            }
+            await setApiKey(sub, token);
+            console.log(`[SUCCESS] Stored ${sub} subscription token in ~/.jeo/config.json (also reads ${envVar}).`);
+            const live = await refreshLiveModelsCache();
+            const after = (await describeAllProviders()).find(s => s.name === sub);
+            if (after) console.log(`  status → ${after.name}: ${after.ready ? `✓ ${after.label}` : after.label}`);
+            const forProvider = live.filter(r => r.provider === sub);
+            if (forProvider.some(r => r.ok && r.models.length > 0)) {
+              lastPickIndex = flattenModels(forProvider);
+              const viaCatalog = forProvider.some(r => r.fallback);
+              console.log(`  ${viaCatalog ? "catalog" : "live"} ${sub} models → /model #N${viaCatalog ? "  (live list endpoint unavailable; showing known models)" : ""}`);
+              logLines(formatPickListWithCapabilities(lastPickIndex, { cap: 12 }));
+            } else {
+              const failed = forProvider.find(r => !r.ok);
+              if (failed?.error) console.log(`  live ${sub} models unavailable: ${failed.error}`);
+            }
+            continue;
           }
           console.log(`Starting OAuth login for ${target}…`);
           try {

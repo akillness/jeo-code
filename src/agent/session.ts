@@ -404,9 +404,16 @@ export async function exportSession(
     const role = m.role.charAt(0).toUpperCase() + m.role.slice(1);
     // Fence longer than the longest backtick run in the body (CommonMark) so message
     // content containing ``` doesn't prematurely close the code fence.
-    const longest = (m.content.match(/`+/g) ?? []).reduce((mx, r) => Math.max(mx, r.length), 0);
-    const fence = "`".repeat(Math.max(3, longest + 1));
-    lines.push(`## ${role}`, "", fence, m.content, fence, "");
+    const fenceFor = (s: string) => "`".repeat(Math.max(3, (s.match(/`+/g) ?? []).reduce((mx, r) => Math.max(mx, r.length), 0) + 1));
+    lines.push(`## ${role}`, "");
+    // Persisted thinking (gjc "think → answer"): include it in the durable export so the
+    // markdown record matches the in-app transcript and the JSON export.
+    if (m.role === "assistant" && m.reasoning?.trim()) {
+      const tf = fenceFor(m.reasoning);
+      lines.push("### Thinking", "", tf, m.reasoning, tf, "");
+    }
+    const fence = fenceFor(m.content);
+    lines.push(fence, m.content, fence, "");
   }
   return lines.join("\n");
 }

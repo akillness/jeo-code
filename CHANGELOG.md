@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.13] - 2026-06-16
+_`team` engine: concrete uncommitted-work reporting and stricter empty-run handling._
+
+### Changed
+- **`team` re-runs report concrete uncommitted work.** Instead of a speculative warning, the engine now probes the working tree with `git status --porcelain` and reports the actual uncommitted-file count, so you know whether real partial work is present before re-running on it.
+- **`--strict-mutations` fails a no-op mutating run.** A mutating role that performed no write/edit/bash is now a hard failure (`stream:error`) rather than silently passing; a bash-only run stays an advisory `stream:warn` (new tone) so a passing advisory doesn't masquerade as an error.
+
 ## [0.6.12] - 2026-06-16
 _OKF-backed memory distillation — session learnings become structured concept files._
 

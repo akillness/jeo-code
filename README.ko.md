@@ -158,11 +158,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.13]** (2026-06-16) — `team` engine: concrete uncommitted-work reporting and stricter empty-run handling.
 - **[0.6.12]** (2026-06-16) — OKF-backed memory distillation — session learnings become structured concept files.
 - **[0.6.11]** (2026-06-16) — Larger reasoning budgets, and terminal capability-response sequences kept out of the prompt.
 - **[0.6.10]** (2026-06-16) — OKF memory-format foundation and a hardened bashTool subprocess drain.
 - **[0.6.9]** (2026-06-16) — Live streaming blocks size to their content and the viewport instead of a fixed rectangle.
-- **[0.6.8]** (2026-06-16) — OAuth loopback callback host pinned to `localhost` to match provider-registered redirect URIs.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

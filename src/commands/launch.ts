@@ -20,7 +20,7 @@ import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
 import { matchSlash, isSlashAttempt, suggestSlashCommands, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, tabCompleteSelection, type SlashCommandInfo } from "../tui/components/slash";
-import { staticCompletionContext, readlineCompleter, formatCompletionPreview, tokenize, type CompletionContext } from "../tui/components/autocomplete";
+import { staticCompletionContext, readlineCompleter, formatCompletionPreview, formatMidTurnHint, tokenize, type CompletionContext } from "../tui/components/autocomplete";
 import { normalizeBaseUrl } from "./setup-helpers";
 import { EVOLUTION_STAGES, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
@@ -134,6 +134,7 @@ import {
   captureLivePromptInputChunk,
   restoreQueuedLinesToPrefill,
   createInFlightAbortHarness,
+  classifyMidTurnLine,
 } from "./launch/input";
 import {
   gatedStdout,
@@ -198,6 +199,7 @@ export {
   captureLivePromptInputChunk,
   restoreQueuedLinesToPrefill,
   createInFlightAbortHarness,
+  classifyMidTurnLine,
 
   gatedStdout,
   formatTaskSubEvent,
@@ -547,6 +549,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // Clears the live next-prompt draft — used after a mid-turn Enter is lifted into
   // the steering inbox so the consumed line does not also become the next prompt.
   let queueBusyClear: (() => void) | undefined;
+  // Routes a command-shaped (/… or $…) mid-turn draft into the idle loop's
+  // pending-line queue so it runs as a real COMMAND at the turn boundary,
+  // instead of being steered into the model as literal text.
+  let queueBusyCommand: ((line: string) => void) | undefined;
   let interactiveTurnActive = false;
 
 
@@ -675,12 +681,34 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (typedEnter) {
             const line = (queueBusySnapshot?.().text ?? "").trim();
             if (line) {
-              steerInbox.push(line);
+              // A mid-turn /command or $skill is NOT a query for the model — steering it
+              // would send the literal "/model" / "$skill" text to the LLM. Recognize it
+              // and run it as a real COMMAND: queue it for the idle dispatcher and stop the
+              // turn so it runs at once (below). Plain queries still steer into the running
+              // turn. JEO_NO_STEER=1 disables both (legacy draft-only).
               queueBusyClear?.();
               tui.setLivePromptInput("");
-              // Surface the steered query as a `user` card in scrollback so it reads
-              // as an accepted input that started work — not just a transient notice.
-              tui.flushSteerCard(line);
+              tui.setLivePromptHint([]);
+              if (classifyMidTurnLine(line) === "command") {
+                // Run it as a real COMMAND: queue it for immediate dispatch by the prompt
+                // loop and abort the turn (the same controller Esc uses). The abort ends a
+                // streaming turn at once and cancels any further steps; a running tool still
+                // finishes first (jeo's abort is step-level, like Esc). The queued command is
+                // then auto-dispatched — no second Enter. JEO_NO_MIDTURN_DISPATCH=1 keeps the
+                // legacy behavior (queue to prefill, no interrupt, press Enter to run).
+                queueBusyCommand?.(line);
+                if (jeoEnv("NO_MIDTURN_DISPATCH") === "1") {
+                  tui.events().onNotice?.(`⌘ queued ${line} — press Enter after this turn to run`);
+                } else {
+                  tui.events().onNotice?.(`⌘ ${line} — interrupting the turn to run it`);
+                  harness.controller.abort();
+                }
+              } else {
+                steerInbox.push(line);
+                // Surface the steered query as a `user` card in scrollback so it reads
+                // as an accepted input that started work — not just a transient notice.
+                tui.flushSteerCard(line);
+              }
               return;
             }
           }
@@ -691,7 +719,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // suppressed for the whole turn). On Enter the draft is lifted into the steering
           // inbox and surfaces as a `user` card (above). JEO_NO_LIVE_DRAFT=1 opts out.
           if (captured && jeoEnv("NO_LIVE_DRAFT") !== "1") {
-            tui.setLivePromptInput(queueBusySnapshot?.().text ?? "");
+            const draft = queueBusySnapshot?.().text ?? "";
+            tui.setLivePromptInput(draft);
+            // Mid-turn command preview: as you type a /command or $skill DURING a turn,
+            // show its matches above the input box so command input visibly reacts
+            // (idle-prompt parity). Cleared the moment the draft stops being command-shaped.
+            tui.setLivePromptHint(
+              /^\s*[/$]/.test(draft) ? formatMidTurnHint(draft.trimStart(), completionContext(), 5) : [],
+            );
           }
         },
         onAbortNotice: msg => {
@@ -1356,6 +1391,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // only captures the line submitted while it is registered; orphan lines emit
   // 'line' instead), so queue those and serve them before prompting again.
   const pendingStdinLines: string[] = [];
+  // Commands submitted mid-turn (/… or $…) land here; the prompt loop dispatches them
+  // IMMEDIATELY on its next iteration, bypassing the "new input first" prefill contract
+  // (the user explicitly invoked them — no second Enter).
+  const pendingMidTurnCommands: string[] = [];
   const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: "", pastedLines: [], inPaste: false };
   queueBusyInput = (chunk: string) => captureLivePromptInputChunk(queuedPromptInput, chunk);
   queueBusyPasteActive = () => queuedPromptInput.inPaste;
@@ -1363,6 +1402,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     text: queuedPromptInput.partial,
   });
   queueBusyClear = () => { queuedPromptInput.partial = ""; };
+  queueBusyCommand = (line: string) => {
+    // NO_MIDTURN_DISPATCH=1 keeps the legacy prefill path (tee up, press Enter); the
+    // default routes to the immediate-dispatch queue served at the top of the loop.
+    (jeoEnv("NO_MIDTURN_DISPATCH") === "1" ? pendingStdinLines : pendingMidTurnCommands).push(line);
+  };
   // Bracketed-paste line routing at the PROMPT: readline strips the 2004 markers
   // and replays pasted lines as synthetic keypresses, emitting paste-start /
   // paste-end around them. Lines submitted INSIDE that window are intentional
@@ -2482,7 +2526,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // Box mode: NO raw `jeo>` prompt at all — the boxed footer IS the input UI
       // (gating already suppresses readline echo, the empty prompt guarantees no
       // raw CLI input line can ever flash). Legacy prompt only without the box.
-      const rawText = await promptInput(previewEnabled ? "" : "\njeo> ");
+      const rawText = pendingMidTurnCommands.length
+        ? (disarmPreview(), pendingMidTurnCommands.shift()!)
+        : await promptInput(previewEnabled ? "" : "\njeo> ");
       if (rawText.includes("\u0003")) forceExitFromCtrlC();
       const raw = rawText.trim();
       disarmPreview();

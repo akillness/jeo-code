@@ -395,3 +395,13 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
     },
   };
 }
+
+/** Classify a mid-turn Enter draft. `/` (slash command) and `$` (skill) are jeo's
+ *  command sigils: such a line must run as a COMMAND, never be steered as literal text
+ *  into the running model. Anything else is a STEER query fed to the live turn; blank
+ *  is EMPTY (ignored). Pure + exported so the live-turn handler and tests can't drift. */
+export function classifyMidTurnLine(line: string): "command" | "steer" | "empty" {
+  const t = line.trim();
+  if (!t) return "empty";
+  return /^[/$]/.test(t) ? "command" : "steer";
+}

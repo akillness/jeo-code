@@ -628,10 +628,21 @@ export class LaunchTui {
     this.draw();
   }
 
+  private livePromptHint: string[] = [];
+  /** Mid-turn command/skill preview lines shown above the live input box, so a
+   *  /command or $skill typed WHILE a turn runs visibly reacts (idle-prompt parity). */
+  setLivePromptHint(lines: string[]): void {
+    if (this.finished) return;
+    const next = lines ?? [];
+    if (next.join("\n") === this.livePromptHint.join("\n")) return;
+    this.livePromptHint = next;
+    this.draw();
+  }
+
   private renderLiveInputBox(cols: number): string[] {
     const caret = this.unicode ? "▌" : "_";
     const display = this.livePromptInput ? `${this.livePromptInput}${caret}` : "";
-    return renderInputBox(display, {
+    const box = renderInputBox(display, {
       cols: Math.max(24, cols),
       color: this.theme.color,
       unicode: this.unicode,
@@ -640,6 +651,9 @@ export class LaunchTui {
       placeholder: "Type your next message...",
       maxBodyRows: 2,
     });
+    if (this.livePromptHint.length === 0) return box;
+    const dim = this.theme.color ? chalk.dim : (s: string) => s;
+    return [...this.livePromptHint.map(l => dim(l)), ...box];
   }
 
   /** Render a `user`-labeled query card (orange "user" header over a filled box).
@@ -888,6 +902,7 @@ export class LaunchTui {
     this.turnUsage = null;
     this.lastLedgerKind = null; // fresh turn: no leading spacer before the first ledger line
     this.livePromptInput = ""; // fresh turn: no next-prompt draft yet
+    this.livePromptHint = []; // fresh turn: no mid-turn command preview yet
     this.subagentLive = null; // fresh turn: no nested subagent in flight
     this.activityLog.length = 0; // per-turn ring: timestamps are turn-relative
     this.spinner.updateStep(0, this.footer.maxSteps);

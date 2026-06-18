@@ -15,8 +15,9 @@ import { spawn as nodeSpawn } from "node:child_process";
 import * as path from "node:path";
 import { callLlm, type Message } from "./loop";
 import { jeoEnv } from "../util/env";
-import { parseConcept, serializeConcept, slugify, isReservedFile } from "./memory-okf";
+import { parseConcept, serializeConcept, slugify, isReservedFile, conceptId } from "./memory-okf";
 import { tryExtractJsonObject } from "./json";
+import { buildConceptGraph, expandByGraph, lintConceptGraph, type GraphLintReport } from "./memory-graph";
 
 /** On-disk document cap — the distill prompt instructs the model to stay under it. */
 export const MEMORY_MAX_CHARS = 6_000;
@@ -80,6 +81,14 @@ export interface Concept {
  *  frontmatter-less files are ignored (lenient consumption). */
 export async function loadConcepts(cwd: string): Promise<Concept[]> {
   return loadConceptsFromBundle(path.join(cwd, ".jeo", "memory"));
+}
+
+/** Lint the concept bundle's cross-link graph (Sprint 04): orphan concepts,
+ *  broken links, and duplicate-title merge candidates. Advisory only — mirrors
+ *  llm-wiki's lint pass. Returns empty lists for an empty/absent bundle. */
+export async function lintMemoryBundle(cwd: string): Promise<GraphLintReport> {
+  const concepts = await loadConcepts(cwd);
+  return lintConceptGraph(concepts, buildConceptGraph(concepts));
 }
 
 async function loadConceptsFromBundle(bundleDir: string): Promise<Concept[]> {
@@ -146,14 +155,31 @@ export function searchConcepts(concepts: Concept[], query: string): { concept: C
 }
 
 /** Priority order for injection: high-confidence "core" concepts first, then by
- *  query relevance (descending), preserving input order as a stable tiebreak. */
+ *  query relevance (descending), then concepts the relevant ones LINK TO (1-hop
+ *  graph expansion — Sprint 04: a directly-hit concept pulls its neighbours in as
+ *  context ahead of unrelated noise), preserving input order as a stable tiebreak. */
 function priorityOrder(concepts: Concept[], query?: string): Concept[] {
   const tokens = tokenize(query);
+  // 1-hop graph expansion: seed from concepts the query directly hits, then mark
+  // their link-neighbours as "related" so they outrank unrelated zero-score noise.
+  const related = new Set<string>();
+  if (tokens.length > 0) {
+    const graph = buildConceptGraph(concepts);
+    const seeds = concepts.filter(c => scoreConcept(c, tokens) > 0).map(c => conceptId(c.relPath));
+    for (const id of expandByGraph(seeds, graph, 1)) related.add(id);
+  }
   return concepts
-    .map((concept, i) => ({ concept, i, core: concept.confidence === "high", score: scoreConcept(concept, tokens) }))
+    .map((concept, i) => ({
+      concept,
+      i,
+      core: concept.confidence === "high",
+      score: scoreConcept(concept, tokens),
+      related: related.has(conceptId(concept.relPath)),
+    }))
     .sort((a, b) => {
       if (a.core !== b.core) return a.core ? -1 : 1;
       if (b.score !== a.score) return b.score - a.score;
+      if (a.related !== b.related) return a.related ? -1 : 1;
       return a.i - b.i;
     })
     .map(s => s.concept);

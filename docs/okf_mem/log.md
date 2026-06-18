@@ -1,6 +1,16 @@
 # Directory Update Log
 
 ## 2026-06-17
+* **Sprint 04 완료**: 그래프 레이어 — `src/agent/memory-graph.ts`(의존성 0) 신규.
+  개념 상호 링크 그래프(`buildConceptGraph`: 노드=개념ID, 간선=본문 마크다운 링크,
+  깨진 링크는 `broken`에 보존해 관용), `resolveLinkTarget`(절대/상대/앵커·외부
+  링크 해석), `expandByGraph`(1·2-hop 확장), `lintConceptGraph`(orphan/broken/
+  중복 title), `graphifyAvailable`(PATH 탐지, 주입 가능·예외 흡수). `memory.ts`
+  통합: `priorityOrder`가 쿼리 적중 개념의 1-hop 이웃을 noise보다 우선(예산 준수),
+  `lintMemoryBundle(cwd)` export 추가. graphify 부재에도 전 기능 동작(graceful).
+  `test/memory-graph-okf.test.ts`(8 pass). `bun run typecheck` 그린, `bun test`
+  1557 pass/0 fail, `jeo --tmux` smoke OK·battery 6/6.
+  [인계](/sprint-04-graph-layer/handoff.md)에 그래프 API·연동 정책 기록 → Sprint 05 진입 가능.
 * **Sprint 03 완료**: 검색/참조 구현 — `src/agent/memory.ts`에 개념 단위
   검색(`loadConcepts`/`scoreConcept`/`searchConcepts`)과 예산 인지
   우선순위 선택 주입(`memoryPromptSection(cwd, query?)`: high-confidence core

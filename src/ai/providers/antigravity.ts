@@ -8,6 +8,18 @@ import { geminiThinkingBudget } from "./gemini";
 
 const ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
+
+/** Anthropic-style thinking budget for Claude served via CCA. gemini's budget fn
+ *  returns undefined for claude ids, which left antigravity Claude with NO thinking
+ *  requested (the opus "no reasoning" gap). Mirrors anthropic's effort→budget tiers. */
+function antigravityClaudeThinkingBudget(effort: CallOptions["reasoningEffort"]): number | undefined {
+  switch (effort) {
+    case "low": return 4000;
+    case "medium": return 10000;
+    case "high": return 24000;
+    default: return undefined;
+  }
+}
 const ENDPOINTS = [ANTIGRAVITY_DAILY_ENDPOINT, ANTIGRAVITY_SANDBOX_ENDPOINT] as const;
 
 export function getAntigravityUserAgent(): string {
@@ -129,13 +141,24 @@ export function antigravityRequest(messages: Message[], options: CallOptions, cr
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
   const generationConfig: Record<string, unknown> = {};
   if (options.temperature !== undefined) generationConfig.temperature = options.temperature;
+  const isClaude = model.toLowerCase().includes("claude");
   // Upstream Antigravity strips maxOutputTokens for non-Claude models; do the same.
-  if (model.toLowerCase().includes("claude")) generationConfig.maxOutputTokens = options.maxTokens ?? 4000;
-  // Apply the thinking level: antigravity serves Gemini models through CCA, so reuse the
-  // Gemini thinkingConfig budget (off at minimal, scaling with reasoning effort). Without
-  // this the thinking level only changed token budget, never actual reasoning depth.
-  const agThinkingBudget = geminiThinkingBudget(model, options.reasoningEffort);
-  if (agThinkingBudget !== undefined) generationConfig.thinkingConfig = { thinkingBudget: agThinkingBudget };
+  if (isClaude) generationConfig.maxOutputTokens = options.maxTokens ?? 4000;
+  // Apply the thinking level. CCA emits `thought` parts ONLY when thinkingConfig has
+  // includeThoughts set. Gemini scales via geminiThinkingBudget; Claude-via-CCA needs an
+  // Anthropic-style budget (gemini's fn returns undefined for claude) PLUS the
+  // interleaved-thinking beta header below — without both, antigravity Claude (e.g. opus)
+  // never streamed reasoning while native sonnet did.
+  const agThinkingBudget = isClaude
+    ? antigravityClaudeThinkingBudget(options.reasoningEffort)
+    : geminiThinkingBudget(model, options.reasoningEffort);
+  const claudeThinkingOn = isClaude && agThinkingBudget !== undefined;
+  if (agThinkingBudget !== undefined) {
+    generationConfig.thinkingConfig = { includeThoughts: true, thinkingBudget: agThinkingBudget };
+    // Claude (via CCA) enforces max_tokens > thinking.budget_tokens — bump the output cap
+    // above the budget (mirrors the native Anthropic provider) or CCA returns HTTP 400.
+    if (claudeThinkingOn) generationConfig.maxOutputTokens = Math.max((options.maxTokens ?? 4000), agThinkingBudget + 1024);
+  }
 
   const request: Record<string, unknown> = {
     contents: antigravityContents(messages),
@@ -165,6 +188,8 @@ export function antigravityRequest(messages: Message[], options: CallOptions, cr
       "content-type": "application/json",
       accept: "text/event-stream",
       "User-Agent": getAntigravityUserAgent(),
+      // Claude reasoning over CCA requires the Anthropic interleaved-thinking beta (gjc parity).
+      ...(claudeThinkingOn ? { "anthropic-beta": "interleaved-thinking-2025-05-14" } : {}),
     },
     body,
   };

@@ -74,7 +74,7 @@ test("geminiRequest: wires thinkingConfig for thinking models only", () => {
   const thinking = JSON.parse(
     geminiRequest(messages, { model: "gemini-flash-latest", maxTokens: 16 } as any, cred, "generateContent").body,
   );
-  expect(thinking.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+  expect(thinking.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingBudget: 0 });
   const legacy = JSON.parse(
     geminiRequest(messages, { model: "gemini-2.0-flash" } as any, cred, "generateContent").body,
   );

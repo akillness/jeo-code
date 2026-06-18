@@ -14,6 +14,8 @@ export const BUILTIN_ALIASES: ModelAliases = {
   haiku: "claude-haiku-4-5",
   gpt: "gpt-5.5",
   flash: "gemini-2.5-flash",
+  grok: "grok-4.3",
+  kimi: "kimi-k2-0711-preview",
 };
 
 // Expand an alias to a concrete model id. Unknown input passes through unchanged.

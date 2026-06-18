@@ -45,6 +45,8 @@ export const ConfigSchema = z
         openai: z.string().optional(),
         gemini: z.string().optional(),
         antigravity: z.string().optional(),
+        xai: z.string().optional(),
+        kimi: z.string().optional(),
       })
       .default({}),
     oauth: z
@@ -53,6 +55,8 @@ export const ConfigSchema = z
         openai: OAuthEntry.optional(),
         gemini: OAuthEntry.optional(),
         antigravity: OAuthEntry.optional(),
+        xai: OAuthEntry.optional(),
+        kimi: OAuthEntry.optional(),
       })
       .optional(),
     ollamaBaseUrl: z.string().optional(),

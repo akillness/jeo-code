@@ -4,6 +4,7 @@ import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
 import { codexResponsesCall, codexResponsesStream } from "./openai-responses";
 import { serializeToolCalls, serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
+import { createThinkSplitter } from "../think-tags";
 
 export function openaiRequest(messages: Message[], options: CallOptions, credential: Credential, stream: boolean): { url: string; headers: Record<string, string>; body: string } {
   const model = options.model.startsWith("openai/") ? options.model.slice(7) : options.model;
@@ -102,19 +103,30 @@ export const openaiAdapter: ProviderAdapter = {
     if (!response.body) return;
     let yieldedAny = false;
     let finishReason: string | undefined;
+    // Split inline <think>…</think> (DeepSeek-R1/Qwen-style local models) out of the
+    // visible answer and onto the reasoning channel. No-op for models that never emit it.
+    const think = createThinkSplitter(options.onReasoning);
     const toolAcc = new Map<number, { name: string; args: string }>();
     for await (const data of readSse(response.body)) {
-      let chunk: { choices?: { delta?: { content?: string; tool_calls?: { index?: number; function?: { name?: string; arguments?: string } }[] }; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+      let chunk: { choices?: { delta?: { content?: string; reasoning_content?: string; reasoning?: string; reasoning_text?: string; tool_calls?: { index?: number; function?: { name?: string; arguments?: string } }[] }; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
       try {
         chunk = JSON.parse(data);
       } catch {
         continue;
       }
-      const delta = chunk.choices?.[0]?.delta?.content;
-      if (delta) {
-        yieldedAny = true;
-        yield delta;
+      const raw = chunk.choices?.[0]?.delta?.content;
+      if (raw) {
+        const visible = think.push(raw);
+        if (visible) {
+          yieldedAny = true;
+          yield visible;
+        }
       }
+      // Structured reasoning channel (DeepSeek `reasoning_content`, OpenRouter/xAI
+      // `reasoning`): a SEPARATE field from content, so it bypasses the <think> splitter.
+      const d = chunk.choices?.[0]?.delta;
+      const reason = d?.reasoning_content ?? d?.reasoning ?? d?.reasoning_text;
+      if (reason) options.onReasoning?.(reason);
       const tcs = chunk.choices?.[0]?.delta?.tool_calls;
       if (tcs) {
         for (const tc of tcs) {
@@ -128,6 +140,8 @@ export const openaiAdapter: ProviderAdapter = {
       if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
       if (chunk.usage) options.onUsage?.({ inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens });
     }
+    const trailing = think.flush();
+    if (trailing) { yieldedAny = true; yield trailing; }
     // Native tool calls stream as tool_calls argument fragments — re-serialize once at end.
     const envelope = serializeAccumulatedToolCalls(toolAcc);
     if (envelope) { yieldedAny = true; yield envelope; }

@@ -14,6 +14,9 @@ import {
   logoutOAuth,
   refreshOAuthToken,
   snapshotProvider,
+  setApiKey,
+  isOAuthProvider,
+  API_KEY_ONLY_PROVIDERS,
   type AuthProvider,
   type OAuthController,
 } from "../auth";
@@ -29,7 +32,7 @@ export async function runAuthCommand(args: string[]): Promise<void> {
   process.exitCode = 1;
 }
 
-const CLOUD_PROVIDERS: readonly AuthProvider[] = ["anthropic", "openai", "gemini", "antigravity"]
+const CLOUD_PROVIDERS: readonly AuthProvider[] = ["anthropic", "openai", "gemini", "antigravity", "xai", "kimi"];
 /** True (and prints an error + sets exit code) when `p` is given but not a known provider. */
 function rejectInvalidProvider(p: string | undefined): boolean {
   if (p !== undefined && !(CLOUD_PROVIDERS as readonly string[]).includes(p)) {
@@ -53,7 +56,7 @@ async function runAuthStatus(): Promise<void> {
   const cfg = await readGlobalConfig();
   console.log("\n=== jeo auth status ===");
   console.log("Provider     API key   OAuth");
-  for (const p of ["anthropic", "openai", "gemini", "antigravity"] as AuthProvider[]) {
+  for (const p of ["anthropic", "openai", "gemini", "antigravity", "xai", "kimi"] as AuthProvider[]) {
     const snap = await snapshotProvider(p);
     const key = p === "antigravity" ? "—" : (snap.apiKey ? "set" : "—");
     let oauth = "—";
@@ -97,6 +100,17 @@ async function runAuthLogin(rest: string[]): Promise<void> {
   const chosen = provider ?? (await selectProvider(rl));
   if (!chosen) {
     rl.close();
+    return;
+  }
+  // API-key-only providers (xai/kimi): no OAuth flow — store/guide an API key.
+  if ((API_KEY_ONLY_PROVIDERS as readonly string[]).includes(chosen)) {
+    rl.close();
+    if (manualToken) {
+      await setApiKey(chosen, manualToken.trim());
+      console.log(`[SUCCESS] Stored ${chosen.toUpperCase()}_API_KEY in ~/.jeo/config.json.`);
+    } else {
+      console.log(`Provider '${chosen}' is API-key only (no OAuth flow). Set ${chosen.toUpperCase()}_API_KEY, or run 'jeo auth login ${chosen} --token <key>'.`);
+    }
     return;
   }
 
@@ -213,6 +227,9 @@ export async function interactiveOAuthLogin(
   prompt: OAuthPrompt,
   log: (s: string) => void = console.log,
 ): Promise<{ email?: string }> {
+  if (!isOAuthProvider(provider)) {
+    throw new Error(`Provider '${provider}' is API-key only (no OAuth flow) — set ${provider.toUpperCase()}_API_KEY or run 'jeo auth login ${provider} --token <key>'.`);
+  }
   const flow = OAUTH_FLOW_REGISTRY[provider];
   log(`\n=== OAuth login — ${flow.label} ===`);
   if (!flow.verifiedEndToEnd && flow.note) log(`Note: ${flow.note}`);

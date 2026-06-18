@@ -7,6 +7,7 @@ import {
   acquireLock,
   releaseLock,
   type AuthProvider,
+  isOAuthProvider,
   type Credential,
 } from "./storage";
 import { OAUTH_FLOW_REGISTRY } from "./flows";
@@ -24,6 +25,10 @@ export interface RefreshResult {
  * Mirrors gjc's auth-broker refresher semantics (single source of truth).
  */
 export async function refreshOAuthToken(provider: AuthProvider): Promise<RefreshResult> {
+  // API-key-only providers (xai/kimi) have no OAuth flow — nothing to refresh.
+  if (!isOAuthProvider(provider)) {
+    return { refreshed: false, reason: "no_oauth_token", credential: await resolveCredential(provider) };
+  }
   await acquireLock(provider);
   try {
     const stored = await getStoredOAuth(provider);

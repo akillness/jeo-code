@@ -219,7 +219,7 @@ export function normalizeSlashAlias(input: string): string {
   return input;
 }
 
-const PROVIDER_DEFAULT: Record<ProviderName, string> = { anthropic: "sonnet", openai: "gpt-5.5", gemini: "flash", antigravity: "antigravity/gemini-3-pro-high", ollama: "fast" };
+const PROVIDER_DEFAULT: Record<ProviderName, string> = { anthropic: "sonnet", openai: "gpt-5.5", gemini: "flash", antigravity: "antigravity/gemini-3-pro-high", ollama: "fast", lmstudio: "lmstudio/local-model", xai: "grok-4.3", kimi: "kimi-k2-0711-preview" };
 
 
 export function formatResumeHint(sessionId: string): string {

@@ -208,7 +208,7 @@ test("listProviderModels: credential-less cloud short-circuits without fetching"
 
 test("discoverModels runs all providers in parallel", async () => {
   const results = await discoverModels({ fetchImpl: okFetch({ data: [{ id: "x" }], models: [{ name: "y" }] }) });
-  expect(results.map(r => r.provider).sort()).toEqual(["anthropic", "antigravity", "gemini", "ollama", "openai"]);
+  expect(results.map(r => r.provider).sort()).toEqual(["anthropic", "antigravity", "gemini", "kimi", "lmstudio", "ollama", "openai", "xai"]);
 });
 
 test("listProviderModels: Antigravity queries the LIVE fetchAvailableModels endpoint (no hard-coded list)", async () => {

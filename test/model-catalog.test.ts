@@ -38,7 +38,7 @@ test("formatTokens renders K/M compactly", () => {
 test("catalog entries are well-formed (provider, positive limits)", () => {
   expect(MODEL_CATALOG.length).toBeGreaterThan(5);
   for (const m of MODEL_CATALOG) {
-    expect(["anthropic", "openai", "gemini", "antigravity", "ollama"]).toContain(m.provider);
+    expect(["anthropic", "openai", "gemini", "antigravity", "ollama", "lmstudio", "xai", "kimi"]).toContain(m.provider);
     expect(m.contextTokens).toBeGreaterThan(0);
     expect(m.maxOutputTokens).toBeGreaterThan(0);
     for (const lvl of m.thinking) expect(THINK_LEVELS).toContain(lvl);

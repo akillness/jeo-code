@@ -30,7 +30,7 @@ import { costForUsage } from "../ai/pricing";
 import { renderMarkdownTables } from "./components/markdown-table";
  
 import { stripMarkdown, renderMarkdownAnsi } from "./components/markdown-text";
-import { visibleWidth, wrapTextWithAnsi, truncateToWidth, sanitizeForFrame } from "./components/width";
+import { visibleWidth, wrapTextWithAnsi, truncateToWidth, sanitizeForFrame, lastValueCache } from "./components/width";
 import { categoryBadge } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, formatDuration as formatToolMs, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
@@ -265,6 +265,10 @@ export class LaunchTui {
   private cachedFrame = -1;
   private cachedArt: string[] = [];
   private cachedTrack = "";
+  // Per-label (Thinking / Output) single-slot wrap memo: the 120ms spinner tick
+  // re-renders the frame ~8×/s, but the streamed text changes only on a new delta —
+  // so the live block reuses its prior wrap instead of re-segmenting the 16KB tail.
+  private readonly liveBlockWrapCaches = new Map<string, (key: string, compute: () => string[]) => string[]>();
   // Monotonic stage progress so evolution only ever moves forward this turn.
   private readonly progress: StageProgress = createStageProgress();
   // Terminal unicode capability, detected once (drives spinner/track glyph set).
@@ -1197,10 +1201,17 @@ export class LaunchTui {
     const dim = this.theme.color ? chalk.dim : (s: string) => s;
     if (!text.trim()) return [];
     const wrapW = Math.max(8, cols - 2);
-    const wrapped = tailForWrap(text)
-      .split("\n")
-      .flatMap(l => wrapTextWithAnsi(l, wrapW))
-      .filter(l => l.length > 0);
+    // Memoize the wrap: only the spinner/clock change on most 120ms ticks, so re-wrapping
+    // this (up to 16KB) tail every frame just re-segments graphemes for no visible change.
+    // Per-label slot (Thinking / Output) keyed by wrap width + text — a real delta misses
+    // once and recomputes; an idle tick hits the cache. `rows` only gates the post-slice.
+    let cache = this.liveBlockWrapCaches.get(label);
+    if (!cache) { cache = lastValueCache<string[]>(); this.liveBlockWrapCaches.set(label, cache); }
+    const wrapped = cache(`${wrapW}\u0000${text}`, () =>
+      tailForWrap(text)
+        .split("\n")
+        .flatMap(l => wrapTextWithAnsi(l, wrapW))
+        .filter(l => l.length > 0));
     if (wrapped.length === 0) return [];
     const cap = Math.max(3, Math.min(ceiling, Math.floor(rows * 0.3)));
     const out: string[] = [sectionLabel(label, Math.max(8, cols), { color: this.theme.color, unicode: this.unicode })];

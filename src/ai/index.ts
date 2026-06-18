@@ -10,3 +10,4 @@ export { openaiAdapter } from "./providers/openai";
 export { geminiAdapter } from "./providers/gemini";
 export { antigravityAdapter } from "./providers/antigravity";
 export { ollamaAdapter } from "./providers/ollama";
+export { lmstudioAdapter } from "./providers/lmstudio";

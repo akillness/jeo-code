@@ -1,6 +1,7 @@
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readLines } from "../sse";
 import { providerHttpError } from "./errors";
+import { createThinkSplitter } from "../think-tags";
 
 /**
  * Resolve the Ollama base URL. `OLLAMA_HOST` is documented as a bare host:port
@@ -61,24 +62,35 @@ export const ollamaAdapter: ProviderAdapter = {
     if (!response.body) return;
     let yieldedAny = false;
     let doneReason: string | undefined;
+    // Route inline <think>…</think> (local reasoning models) to the reasoning channel.
+    const think = createThinkSplitter(options.onReasoning);
     for await (const line of readLines(response.body)) {
-      let chunk: { message?: { content?: string }; done?: boolean; done_reason?: string; prompt_eval_count?: number; eval_count?: number; total_duration?: number };
+      let chunk: { message?: { content?: string; thinking?: string }; done?: boolean; done_reason?: string; prompt_eval_count?: number; eval_count?: number; total_duration?: number };
       try {
         chunk = JSON.parse(line);
       } catch {
         continue;
       }
-      const delta = chunk.message?.content;
-      if (delta) {
-        yieldedAny = true;
-        yield delta;
+      const raw = chunk.message?.content;
+      if (raw) {
+        const visible = think.push(raw);
+        if (visible) {
+          yieldedAny = true;
+          yield visible;
+        }
       }
+      // Native separated thinking (Ollama `message.thinking`, present when the model
+      // runs in think mode) → reasoning channel. Inline <think> is handled above.
+      const reason = chunk.message?.thinking;
+      if (reason) options.onReasoning?.(reason);
       if (chunk.done) {
         if (chunk.done_reason) doneReason = chunk.done_reason;
         options.onUsage?.({ inputTokens: chunk.prompt_eval_count, outputTokens: chunk.eval_count, durationMs: chunk.total_duration ? Math.round(chunk.total_duration / 1e6) : undefined });
         break;
       }
     }
+    const trailing = think.flush();
+    if (trailing) { yieldedAny = true; yield trailing; }
     if (!yieldedAny) throw emptyCompletionError(doneReason);
   },
 };

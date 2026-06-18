@@ -1,5 +1,5 @@
 /** Per-provider OAuth login + refresh dispatch. */
-import type { AuthProvider } from "../storage";
+import type { AuthProvider, OAuthProvider } from "../storage";
 import type { OAuthController, OAuthCredentials } from "../types";
 import { loginAnthropic, refreshAnthropicToken } from "./anthropic";
 import { loginOpenAI, refreshOpenAIToken } from "./openai";
@@ -7,7 +7,7 @@ import { loginGoogle, refreshGoogleToken } from "./google";
 import { loginAntigravity, refreshAntigravityToken } from "./antigravity";
 
 export interface OAuthFlow {
-  readonly provider: AuthProvider;
+  readonly provider: OAuthProvider;
   readonly label: string;
   /** Run the interactive browser/PKCE login. */
   login(ctrl: OAuthController): Promise<OAuthCredentials>;
@@ -19,7 +19,7 @@ export interface OAuthFlow {
   readonly note?: string;
 }
 
-export const OAUTH_FLOW_REGISTRY: Record<AuthProvider, OAuthFlow> = {
+export const OAUTH_FLOW_REGISTRY: Record<OAuthProvider, OAuthFlow> = {
   anthropic: {
     provider: "anthropic",
     label: "Anthropic (Claude Pro/Max)",

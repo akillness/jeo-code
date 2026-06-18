@@ -68,7 +68,9 @@ function anthropicHeaders(cred: Credential): Record<string, string> {
 }
 
 function authProviderFor(provider: ProviderName): AuthProvider | undefined {
-  if (provider === "ollama") return undefined;
+  // Local providers (ollama/lmstudio) are keyless and do not resolve through the
+  // auth core. API-key providers (incl. xai/kimi) DO — so discovery sends their key.
+  if (provider === "ollama" || provider === "lmstudio") return undefined;
   return provider;
 }
 
@@ -120,6 +122,18 @@ export function discoveryRequest(
       const base = (baseUrl ?? "http://localhost:11434").replace(/\/$/, "");
       return { url: `${base}/api/tags`, headers: {} };
     }
+    case "lmstudio": {
+      const base = (baseUrl ?? "http://localhost:1234/v1").replace(/\/$/, "");
+      return { url: `${base}/models`, headers: {} };
+    }
+    case "xai": {
+      const token = cred?.kind === "api_key" ? cred.token : "";
+      return { url: "https://api.x.ai/v1/models", headers: token ? { Authorization: `Bearer ${token}` } : {} };
+    }
+    case "kimi": {
+      const token = cred?.kind === "api_key" ? cred.token : "";
+      return { url: "https://api.moonshot.ai/v1/models", headers: token ? { Authorization: `Bearer ${token}` } : {} };
+    }
   }
 }
 
@@ -151,6 +165,18 @@ export function parseModelsBody(provider: ProviderName, body: unknown): string[]
   };
   if (provider === "ollama") {
     return (data.models ?? []).map(m => `ollama/${m.name ?? ""}`).filter(s => s !== "ollama/");
+  }
+  if (provider === "lmstudio") {
+    // LM Studio is OpenAI-compatible: { data: [{ id }] }. Qualify with the routing prefix.
+    return (data.data ?? []).map(m => `lmstudio/${m.id ?? ""}`).filter(s => s !== "lmstudio/");
+  }
+  if (provider === "xai") {
+    // xAI is OpenAI-compatible: { data: [{ id }] }. Grok ids route to xai by name, so no prefix.
+    return (data.data ?? []).map(m => m.id ?? "").filter(Boolean);
+  }
+  if (provider === "kimi") {
+    // Moonshot is OpenAI-compatible: { data: [{ id }] }. kimi/moonshot ids route by name.
+    return (data.data ?? []).map(m => m.id ?? "").filter(Boolean);
   }
   if (provider === "antigravity") {
     // fetchAvailableModels keys the map by the CALLABLE model id (e.g.
@@ -252,7 +278,14 @@ export async function listProviderModels(
 
   let cred: Credential | undefined;
   let source: ProviderModelsResult["source"] = "keyless";
-  if (provider !== "ollama") {
+  if (provider === "xai") {
+    // xAI (Grok) is API-key only and not an OAuth AuthProvider: resolve its key
+    // directly from config/env instead of the AuthProvider credential store.
+    const key = (opts.config ?? (await readGlobalConfig())).providers?.xai;
+    if (!key) return { provider, models: [], ok: false, source: "none", error: "not logged in" };
+    cred = { kind: "api_key", provider: "openai", token: key };
+    source = "api_key";
+  } else if (provider !== "ollama" && provider !== "lmstudio") {
     const authProvider = authProviderFor(provider);
     const raw = await resolveCredential(authProvider!);
     cred = raw;
@@ -338,7 +371,7 @@ export async function discoverModels(
       listProviderModels(p, {
         ...opts,
         config: cfg,
-        baseUrl: p === "ollama" ? (cfg.ollamaBaseUrl ?? opts.baseUrl) : p === "openai" ? (cfg.openaiBaseUrl ?? opts.baseUrl) : opts.baseUrl,
+        baseUrl: p === "ollama" ? (cfg.ollamaBaseUrl ?? opts.baseUrl) : p === "lmstudio" ? (cfg.lmstudioBaseUrl ?? opts.baseUrl) : p === "openai" ? (cfg.openaiBaseUrl ?? opts.baseUrl) : opts.baseUrl,
       }),
     ),
   );

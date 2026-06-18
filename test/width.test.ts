@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { charWidth, visibleWidth, truncateToWidth, wrapTextWithAnsi, sanitizeForFrame } from "../src/tui/components/width";
+import { charWidth, visibleWidth, truncateToWidth, wrapTextWithAnsi, sanitizeForFrame, lastValueCache } from "../src/tui/components/width";
 
 test("charWidth: wide / narrow / zero-width classes", () => {
   expect(charWidth("a".codePointAt(0)!)).toBe(1);
@@ -83,4 +83,21 @@ test("sanitizeForFrame: an INCOMPLETE trailing escape is dropped (cannot eat the
   expect(sanitizeForFrame("y\x1b")).toBe("y");
   // Incomplete OSC tail dropped too.
   expect(sanitizeForFrame("z\x1b]0;partial")).toBe("z");
+});
+
+test("lastValueCache: recomputes only when the key changes (live-frame wrap memo)", () => {
+  const cache = lastValueCache<string[]>();
+  let calls = 0;
+  const compute = () => { calls++; return ["wrapped"]; };
+
+  const a = cache("k1", compute);
+  const b = cache("k1", compute); // same key -> cache hit, no recompute
+  expect(calls).toBe(1);
+  expect(b).toBe(a); // identical reference reused (no re-wrap allocation)
+
+  cache("k2", compute); // key changed -> recompute once
+  expect(calls).toBe(2);
+
+  cache("k1", compute); // single-slot: returning to an old key misses again
+  expect(calls).toBe(3);
 });

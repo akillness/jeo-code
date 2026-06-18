@@ -246,3 +246,24 @@ export function wrapTextWithAnsi(text: string, cols: number): string[] {
   }
   return out;
 }
+
+/**
+ * Single-slot memo for the live-frame wrap. The TUI's 120ms spinner tick re-renders
+ * the whole frame ~8×/s, but the reasoning / tool-output stream text only changes when
+ * a new delta arrives — so re-wrapping (grapheme-segmenting the up-to-16KB tail through
+ * `wrapTextWithAnsi`) on every idle tick is the hottest avoidable per-tick cost. This
+ * caches the most recent `key → value`: an unchanged frame reuses the prior wrap instead
+ * of recomputing it. One slot suffices — between two consecutive ticks the key (wrap
+ * width + text) is identical on the common path; a real change recomputes once.
+ */
+export function lastValueCache<T>(): (key: string, compute: () => T) => T {
+  let lastKey: string | undefined;
+  let lastValue: T;
+  return (key, compute) => {
+    if (key !== lastKey) {
+      lastKey = key;
+      lastValue = compute();
+    }
+    return lastValue;
+  };
+}

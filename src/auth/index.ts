@@ -6,8 +6,11 @@ export {
   setOauthCredential,
   clearOauthToken,
   setApiKey,
+  isOAuthProvider,
+  OAUTH_PROVIDERS,
+  API_KEY_ONLY_PROVIDERS,
 } from "./storage";
-export type { AuthProvider, Credential, AuthSnapshot } from "./storage";
+export type { AuthProvider, OAuthProvider, Credential, AuthSnapshot } from "./storage";
 export {
   OAUTH_FLOWS,
   openInBrowser,

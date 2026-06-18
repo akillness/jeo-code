@@ -1,6 +1,6 @@
 import type { Credential } from "../auth";
 
-export type ProviderName = "anthropic" | "openai" | "gemini" | "antigravity" | "ollama";
+export type ProviderName = "anthropic" | "openai" | "gemini" | "antigravity" | "ollama" | "lmstudio" | "xai" | "kimi";
 
 /** An image attached to a (user) message — base64 payload + IANA media type. */
 export interface ImageAttachment {

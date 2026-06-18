@@ -31,6 +31,10 @@ export interface Config {
     openai?: string;
     gemini?: string;
     antigravity?: string;
+    /** xAI (Grok) API key. Keyed separately from OAuth providers (xAI is API-key only). */
+    xai?: string;
+    /** Kimi (Moonshot) API key. API-key only, OpenAI-compatible. */
+    kimi?: string;
   };
   /**
    * OAuth credentials. `resolveCredential()` returns these before API keys so refresh
@@ -42,11 +46,16 @@ export interface Config {
     openai?: string | StoredOAuth;
     gemini?: string | StoredOAuth;
     antigravity?: string | StoredOAuth;
+    /** Present for index-compatibility with AuthProvider; API-key-only providers never store OAuth. */
+    xai?: string | StoredOAuth;
+    kimi?: string | StoredOAuth;
   };
   /** Base URL for the local Ollama server (keyless). */
   ollamaBaseUrl?: string;
-  /** Base URL override for OpenAI-compatible providers (LM Studio, vLLM, llama-cpp-server, ...). */
+  /** Base URL override for OpenAI-compatible providers (vLLM, llama-cpp-server, ...). */
   openaiBaseUrl?: string;
+  /** Base URL for the local LM Studio server (keyless, OpenAI-compatible). */
+  lmstudioBaseUrl?: string;
   defaultModel: string;
   theme?: string;
   thinkingLevel?: "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -193,6 +202,7 @@ function withEnvOverlay(cfg: Config): Config {
   if (!providers.anthropic && process.env.ANTHROPIC_API_KEY) providers.anthropic = process.env.ANTHROPIC_API_KEY;
   if (!providers.openai && process.env.OPENAI_API_KEY) providers.openai = process.env.OPENAI_API_KEY;
   if (!providers.gemini && process.env.GEMINI_API_KEY) providers.gemini = process.env.GEMINI_API_KEY;
+  if (!providers.xai && process.env.XAI_API_KEY) providers.xai = process.env.XAI_API_KEY;
   return {
     ...cfg,
     providers,
@@ -200,6 +210,7 @@ function withEnvOverlay(cfg: Config): Config {
     defaultModel: jeoEnv("DEFAULT_MODEL") || cfg.defaultModel,
     ollamaBaseUrl: cfg.ollamaBaseUrl || process.env.OLLAMA_HOST || "http://localhost:11434",
     openaiBaseUrl: cfg.openaiBaseUrl || process.env.OPENAI_BASE_URL,
+    lmstudioBaseUrl: cfg.lmstudioBaseUrl || process.env.LMSTUDIO_BASE_URL || "http://localhost:1234/v1",
     roles: {
       smol: cfg.roles?.smol || jeoEnv("SMOL_MODEL"),
       slow: cfg.roles?.slow || jeoEnv("SLOW_MODEL"),
@@ -214,6 +225,7 @@ function envDefaultConfig(): Config {
       anthropic: process.env.ANTHROPIC_API_KEY,
       openai: process.env.OPENAI_API_KEY,
       gemini: process.env.GEMINI_API_KEY,
+      xai: process.env.XAI_API_KEY,
     },
     defaultModel: jeoEnv("DEFAULT_MODEL") || DEFAULT_MODEL,
     thinkingLevel: "medium",

@@ -204,11 +204,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.24]** (2026-06-19) — `/provider` opens an interactive onboarding selector (OAuth vs API-compatible), and OpenAI-compatible backends gain per-vendor native-reasoning formats.
 - **[0.6.23]** (2026-06-19) — Live reasoning/thinking streams in the TUI across every provider, three new OpenAI-compatible backends (LM Studio, xAI, Kimi) join the auth/discovery/catalog surface, and Gemini gains native function-calling.
 - **[0.6.22]** (2026-06-18) — Extended-thinking activation is now consistent across providers: a `low` session thinking level enables reasoning everywhere.
 - **[0.6.21]** (2026-06-18) — Session thinking level now reaches the provider's actual reasoning depth, not just the token ceiling.
 - **[0.6.20]** (2026-06-18) — Launch REPL internals decomposed into testable modules: `@mention` path completion, slash-command view renderers, and slash-command handlers extracted from the monolithic `launch.ts` into dedicated files with full unit-test coverage.
-- **[0.6.19]** (2026-06-18) — Post-turn hooks run once per batch (not per edit), local hook reads are mtime-cached, tool-result formatting is parallelized, and wrapped colored text keeps its tint.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

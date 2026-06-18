@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { renderDnaClaw, DNA_CLAW_ART_GRAND } from "./ascii-art";
+import { renderForgeMark, FORGE_MARK_ART_GRAND } from "./ascii-art";
 import { truncate, isTTY } from "../terminal";
 import { detectColorLevel, ColorLevel } from "./color";
 
@@ -13,7 +13,7 @@ export interface WelcomeData {
   contextFiles?: string[]; // project context file paths (render basenames)
   recentSessions?: { name: string; timeAgo: string }[];
   cols?: number;           // default 80
-  /** Gradient phase [0..1) for the DNA Claw symbol — drives the launch sweep animation. */
+  /** Gradient phase [0..1) for the forge mark — drives the launch sweep animation. */
   phase?: number;
   /** Lit-edge painter (top border + left edge); theme accent. Default gray. */
   accent?: (s: string) => string;
@@ -42,7 +42,7 @@ function padLine(line: string, width: number, align: "left" | "center" | "right"
 /**
  * The gjc-style hero welcome box ("JEO forge"): one outer box with the version
  * embedded in the top border and a SINGLE CENTERED column inside — brand line,
- * tagline, the grand DNA Claw symbol (flowing gradient on capable terminals),
+ * tagline, the grand jeo forge mark (flowing gradient on capable terminals),
  * and the model/provider pills. Workspace details and key hints intentionally
  * live elsewhere (footer/status bar), matching the gjc forge banner.
  */
@@ -57,8 +57,8 @@ export function renderWelcome(d: WelcomeData): string[] {
 
   // The banner fills the full terminal width (gjc forge: flush with the input box and
   // status bar below it). `cols - 1` leaves the last column free so a full-width row
-  // never wraps; the DNA-claw + pills stay centered inside the box.
-  const grandWidth = Math.max(...DNA_CLAW_ART_GRAND.map(l => l.length));
+  // never wraps; the forge mark + pills stay centered inside the box.
+  const grandWidth = Math.max(...FORGE_MARK_ART_GRAND.map(l => l.length));
   // Title rides ON the top border: `─── jeo v{version} · JEO forge ───`. Defined
   // once here so the width calc and the border render below can't drift.
   const titleDashes = 3;
@@ -93,10 +93,10 @@ export function renderWelcome(d: WelcomeData): string[] {
   const bottomBorderPlain = g.bl + g.h.repeat(inner) + g.br;
   const bottomBorderLine = shadow(bottomBorderPlain);
 
-  // Grand symbol when the box is wide enough; compact DNA Claw otherwise.
+  // Grand symbol when the box is wide enough; compact forge mark otherwise.
   const colorLevel = useColor ? detectColorLevel(process.env, isTTY()) : ColorLevel.None;
   const grand = inner >= grandWidth;
-  const artLines = renderDnaClaw({
+  const artLines = renderForgeMark({
     color: useColor,
     phase: d.phase ?? 0,
     unicode,
@@ -136,7 +136,7 @@ export function renderWelcome(d: WelcomeData): string[] {
 }
 
 /**
- * Launch animation: sweep the DNA Claw's gradient through `cycles` FULL palette
+ * Launch animation: sweep the forge mark's gradient through `cycles` FULL palette
  * cycles by re-printing the welcome box in place (cursor-up rewrites, same row
  * count every frame). The loop is SEAMLESS — the phase wraps exactly at each
  * cycle boundary with a constant frame delay, so consecutive cycles join with

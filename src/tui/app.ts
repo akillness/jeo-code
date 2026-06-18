@@ -16,7 +16,7 @@ import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
 import { renderFooter, type FooterData } from "./components/footer";
-import { renderDnaClaw, dnaClawHeight, dnaClawFrameCount, forgeBeat, DNA_FLOW_PALETTE } from "./components/ascii-art";
+import { renderForgeMark, forgeMarkHeight, forgeMarkFrameCount, forgeBeat, FORGE_FLOW_PALETTE } from "./components/ascii-art";
 import { evolutionTrack, createStageProgress, type StageProgress, transitionMessage } from "./components/evolution";
 import type { TaskSubEvent } from "../agent/task-tool";
 import { supportsUnicode } from "./components/capability";
@@ -1186,11 +1186,11 @@ export class LaunchTui {
         index: i + 1,
         color: this.theme.color,
         dim,
-        // DNA-flow identity on LIVE cards only: the flowing helix gradient rides
+        // Forge-flow identity on LIVE cards only: the flowing neon gradient rides
         // the card border and the prompt beat marks the title. Flushed/final cards
         // stay static. Suppressed while `dim` (in-flight shading takes precedence).
         ...(anim && !dim
-          ? { flow: { palette: DNA_FLOW_PALETTE, phase: anim.phase, colorLevel: anim.colorLevel }, titleMark: anim.beat }
+          ? { flow: { palette: FORGE_FLOW_PALETTE, phase: anim.phase, colorLevel: anim.colorLevel }, titleMark: anim.beat }
           : {}),
       }));
     }
@@ -1443,9 +1443,9 @@ export class LaunchTui {
     const innerWidth = !fit ? cols : this.inline ? cols - 1 : cols - 4;
 
     // Resolve the current (monotonic) stage for the track; announce a transition
-    // once when it first advances. The header art is the DNA Claw brand symbol —
-    // a twist-frame helix rotation combined with the flowing gradient phase.
-    // Both are quantized (3 twist frames × 20 gradient phases), so the cache
+    // once when it first advances. The header art is the jeo forge mark — a
+    // prompt-cursor blink combined with the flowing gradient phase. Both are
+    // quantized (2 blink frames × 20 gradient phases), so the cache
     // recomputes at most once per changed tick and stays a single slot (O(1)).
     const stepNow = this.footer.step || 0;
     const idx = this.progress.observe(stepNow, this.footer.maxSteps ?? DEFAULT_MAX_STEPS);
@@ -1455,16 +1455,16 @@ export class LaunchTui {
       this.appendLedger(`${arrow} ${transitionMessage(idx)}\n`, "notice");
     }
     const showArt = fit && !this.inline && rows >= 18 && cols >= 40;
-    // One int key folds both animation axes: twist frame advances every 3 ticks,
+    // One int key folds both animation axes: blink frame advances every 3 ticks,
     // gradient phase cycles 20 quantized steps (tickCount*0.05 % 1).
-    const twist = isThinking ? Math.trunc(this.tickCount / 3) % dnaClawFrameCount() : 0;
+    const twist = isThinking ? Math.trunc(this.tickCount / 3) % forgeMarkFrameCount() : 0;
     const qPhase = isThinking ? this.tickCount % 20 : 0;
     const effFrame = twist * 100 + qPhase;
     if (showArt && (idx !== this.cachedStageIndex || cols !== this.cachedCols || effFrame !== this.cachedFrame)) {
-      // Commit the cache keys only AFTER the render succeeds: if renderDnaClaw ever
+      // Commit the cache keys only AFTER the render succeeds: if renderForgeMark ever
       // throws (resize race, bad gradient level), pre-committed keys would mark the
       // STALE art as current and freeze the header at an old frame forever.
-      const art = renderDnaClaw({
+      const art = renderForgeMark({
         cols: innerWidth,
         phase: qPhase * 0.05,
         frame: twist,
@@ -1479,7 +1479,7 @@ export class LaunchTui {
       this.cachedCols = cols;
       this.cachedFrame = effFrame;
     }
-    const artLinesCount = showArt ? dnaClawHeight() : 0;
+    const artLinesCount = showArt ? forgeMarkHeight() : 0;
     const trackCount = showArt ? 1 : 0;
     const headerHeight = artLinesCount + trackCount + (showArt ? 1 : 0);
 

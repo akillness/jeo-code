@@ -412,128 +412,90 @@ export async function animateFrames(stage: AsciiStage, opts: AnimateFramesOption
   }
   return total;
 }
-export const DNA_CLAW_ART: string[] = [
-  "  ╭╯   ◆  ◆   ╰╮  ",
-  " ╭╯   ╱╲  ╱╲   ╰╮ ",
-  " ║    ╲ ╳ ╱     ║ ",
-  " ╰╮    ╳ ╳     ╭╯ ",
-  "  ╰╮  ╱ ╳ ╲   ╭╯  ",
-  "   ╚══○   ○══╝    ",
-  "      ║   ║       ",
-  "   [ DNA Claw ]   "
+/** The compact jeo forge mark: a clean, wordless pictograph of the mascot neon
+ *  crayfish. Read top→bottom — antennae arc outward (╲ ╱) flanking the asymmetric
+ *  sunglasses face (◆ blue lens / ◇ pink lens on a ┃ nose-bridge); the front claws
+ *  (❮ ❯) on short arms (━┫ ┣━) hugging the rounded carapace (◉◉◉); tucked legs
+ *  (╲ ┃ ╱); the tail fan tipped by the blinking telson (◀▮▶). The mark is purely
+ *  symbolic — NO embedded lettering (the brand wordmark lives in the welcome
+ *  header, not under the emblem). Width-1 glyphs only (box drawing + geometrics)
+ *  so padding/centering math stays exact. Frame 0 is the static symbol. */
+export const FORGE_MARK_ART: string[] = [
+  "      ╲ ◆ ┃ ◇ ╱      ",
+  "     ❮━┫ ◉◉◉ ┣━❯     ",
+  "        ╲ ┃ ╱        ",
+  "         ◀▮▶         "
 ];
 
-export const DNA_CLAW_ART_ASCII: string[] = [
-  "  /{   *  *   }\\  ",
-  " /{   / \\ / \\  }\\ ",
-  " |    \\  X  /   | ",
-  " \\{    X X     }/ ",
-  "  \\{  / X \\   }/  ",
-  "   \\==o   o==/    ",
-  "      |   |       ",
-  "   [ DNA Claw ]   "
+export const FORGE_MARK_ART_ASCII: string[] = [
+  "      \\ * | o /      ",
+  "     <=[ @@@ ]=>     ",
+  "        \\ | /        ",
+  "         <#>         "
 ];
 
-/** Twist animation frames for the compact DNA Claw: the claw silhouette stays
- *  fixed while the inner helix lattice rotates. Frame 0 === DNA_CLAW_ART, so a
- *  frameless render is byte-identical to the static symbol. All lines are the
- *  same width (18) and every glyph is display-width 1. */
-export const DNA_CLAW_FRAMES: string[][] = [
-  DNA_CLAW_ART,
+/** Blink animation frames for the compact crayfish forge mark: the antennae,
+ *  carapace and legs stay fixed while the telson cursor blinks (▮ → ▯) and the
+ *  asymmetric sunglass lenses swap accent (◆ ◇ → ◇ ◆), so the crayfish "winks".
+ *  Frame 0 === FORGE_MARK_ART, so a frameless render is byte-identical to the
+ *  static symbol. All lines share the same width (21) and width-1 glyphs. */
+export const FORGE_MARK_FRAMES: string[][] = [
+  FORGE_MARK_ART,
   [
-    "  ╭╯   ◆  ◆   ╰╮  ",
-    " ╭╯   ╲╱  ╲╱   ╰╮ ",
-    " ║     ╳ ╳      ║ ",
-    " ╰╮   ╱ ╳ ╲    ╭╯ ",
-    "  ╰╮   ╳ ╳    ╭╯  ",
-    "   ╚══○   ○══╝    ",
-    "      ║   ║       ",
-    "   [ DNA Claw ]   "
-  ],
-  [
-    "  ╭╯   ◆  ◆   ╰╮  ",
-    " ╭╯   ╱╲  ╱╲   ╰╮ ",
-    " ║     ╳ ╳      ║ ",
-    " ╰╮   ╲ ╳ ╱    ╭╯ ",
-    "  ╰╮    ╳ ╳   ╭╯  ",
-    "   ╚══○   ○══╝    ",
-    "      ║   ║       ",
-    "   [ DNA Claw ]   "
+    "      ╲ ◇ ┃ ◆ ╱      ",
+    "     ❮━┫ ◉◉◉ ┣━❯     ",
+    "        ╲ ┃ ╱        ",
+    "         ◀▯▶         "
   ]
 ];
 
-export const DNA_CLAW_FRAMES_ASCII: string[][] = [
-  DNA_CLAW_ART_ASCII,
+export const FORGE_MARK_FRAMES_ASCII: string[][] = [
+  FORGE_MARK_ART_ASCII,
   [
-    "  /{   *  *   }\\  ",
-    " /{   \\ / \\ /  }\\ ",
-    " |     X X      | ",
-    " \\{   / X \\    }/ ",
-    "  \\{   X X    }/  ",
-    "   \\==o   o==/    ",
-    "      |   |       ",
-    "   [ DNA Claw ]   "
-  ],
-  [
-    "  /{   *  *   }\\  ",
-    " /{   / \\ / \\  }\\ ",
-    " |     X X      | ",
-    " \\{   \\ X /    }/ ",
-    "  \\{    X X   }/  ",
-    "   \\==o   o==/    ",
-    "      |   |       ",
-    "   [ DNA Claw ]   "
+    "      \\ o | * /      ",
+    "     <=[ @@@ ]=>     ",
+    "        \\ | /        ",
+    "         <_>         "
   ]
 ];
 
-/** Number of twist frames in the compact DNA Claw animation cycle. */
-export function dnaClawFrameCount(): number {
-  return DNA_CLAW_FRAMES.length;
+/** Number of blink frames in the compact forge-mark animation cycle. */
+export function forgeMarkFrameCount(): number {
+  return FORGE_MARK_FRAMES.length;
 }
 
-/** Grand hero variant for the welcome forge box (gjc-style spacious banner):
- *  a wide claw whose pincers frame a twisting DNA helix. Width-1 glyphs only
- *  (box drawing + diagonals + geometrics) so padding/centering math stays exact. */
-export const DNA_CLAW_ART_GRAND: string[] = [
-  "      ◆◆                    ◆◆      ",
-  "   ╭──╯╰──╮              ╭──╯╰──╮   ",
-  "  ╭╯      ╰╮   ╲╲  ╱╱   ╭╯      ╰╮  ",
-  " ╭╯        ║    ╲╳╳╱    ║        ╰╮ ",
-  " ║         ║     ╳╳     ║         ║ ",
-  " ║         ║    ╱╳╳╲    ║         ║ ",
-  " ╰╮        ║   ╱╱  ╲╲   ║        ╭╯ ",
-  "  ╰╮       ║   ╲╲  ╱╱   ║       ╭╯  ",
-  "   ╰──╮    ║    ╲╳╳╱    ║    ╭──╯   ",
-  "      ╰════○     ╳╳     ○════╯      ",
-  "           ║    ╱╳╳╲    ║           ",
-  "        [ D N A · C L A W ]         "
+/** Grand hero variant for the welcome forge box (gjc-style spacious banner): the
+ *  same mascot crayfish rendered large and wordless — antennae (╲ ╱) flanking the
+ *  asymmetric ◆/◇ sunglasses face on a ┃ nose-bridge, the big front pincers
+ *  (❮━━┫ ┣━━❯) hugging the segmented carapace (◉ ◉ ◉), tucked legs, and the broad
+ *  tail fan tipped by the telson (◀──▮──▶). Purely symbolic — NO embedded
+ *  lettering or caption. Width-1 glyphs only so padding/centering math stays
+ *  exact. */
+export const FORGE_MARK_ART_GRAND: string[] = [
+  "        ╲   ◆ ┃ ◇   ╱        ",
+  "       ❮━━┫ ◉ ◉ ◉ ┣━━❯       ",
+  "          ╲ ╲ ┃ ╱ ╱          ",
+  "           ◀──▮──▶           "
 ];
 
-export const DNA_CLAW_ART_GRAND_ASCII: string[] = [
-  "      **                    **      ",
-  "   /--'`--\\              /--'`--\\   ",
-  "  /'      `\\   \\\\  //   /'      `\\  ",
-  " /'        |    \\XX/    |        `\\ ",
-  " |         |     XX     |         | ",
-  " |         |    /XX\\    |         | ",
-  " \\,        |   //  \\\\   |        ,/ ",
-  "  \\,       |   \\\\  //   |       ,/  ",
-  "   \\--,    |    \\XX/    |    ,--/   ",
-  "      \\====o     XX     o====/      ",
-  "           |    /XX\\    |           ",
-  "        [ D N A . C L A W ]         "
+export const FORGE_MARK_ART_GRAND_ASCII: string[] = [
+  "        \\   * | o   /        ",
+  "       <==[ O O O ]==>       ",
+  "          \\ \\ | / /          ",
+  "           <--#-->           "
 ];
 
-// Bounded memo of fully-rendered DNA Claw frames keyed by every input that affects
+
+// Bounded memo of fully-rendered forge-mark frames keyed by every input that affects
 // output (grand/unicode/cols/color/colorLevel/phase/frame). The live HUD cycles a
-// FIXED ~60-frame set (3 twists × 20 gradient phases) at ~120ms; without this each
-// recurrence recomputed per-line animatedGradientText (ANSI gradient) from scratch.
-// The memo makes the 2nd+ cycle O(1) lookups, cutting steady-state HUD CPU. LRU-capped.
-const dnaClawMemo = new Map<string, string[]>();
-const DNA_CLAW_MEMO_CAP = 256;
-const EMPTY_DNA_FRAME: string[] = [];
+// FIXED frame set (blink × gradient phases) at ~120ms; without this each recurrence
+// recomputed per-line animatedGradientText (ANSI gradient) from scratch. The memo
+// makes the 2nd+ cycle O(1) lookups, cutting steady-state HUD CPU. LRU-capped.
+const forgeMarkMemo = new Map<string, string[]>();
+const FORGE_MARK_MEMO_CAP = 256;
+const EMPTY_FORGE_FRAME: string[] = [];
 
-export function renderDnaClaw(opts: {
+export function renderForgeMark(opts: {
   cols?: number;
   phase?: number;
   unicode?: boolean;
@@ -541,34 +503,35 @@ export function renderDnaClaw(opts: {
   colorLevel?: ColorLevel;
   /** Grand hero variant (welcome forge box); default is the compact in-turn symbol. */
   grand?: boolean;
-  /** Twist-animation frame (compact symbol only; wraps). The helix lattice rotates
-   *  while the claw silhouette stays fixed — combined with the flowing gradient
-   *  `phase` this animates the forge identity without any frame-count growth. */
+  /** Blink-animation frame (compact symbol only; wraps). The cursor blinks and the
+   *  status lamps swap while the window silhouette stays fixed — combined with the
+   *  flowing gradient `phase` this animates the forge identity without any
+   *  frame-count growth. */
   frame?: number;
 }): string[] {
   const memoKey = `${opts.grand ? "g" : "c"}|${opts.unicode !== false ? 1 : 0}|${opts.cols ?? -1}|${opts.color !== false ? 1 : 0}|${opts.colorLevel ?? ColorLevel.TrueColor}|${opts.phase ?? 0}|${opts.frame ?? 0}`;
-  const memoHit = dnaClawMemo.get(memoKey);
+  const memoHit = forgeMarkMemo.get(memoKey);
   if (memoHit) return memoHit;
   const useUnicode = opts.unicode !== false;
   let source: string[];
   if (opts.grand) {
-    source = useUnicode ? DNA_CLAW_ART_GRAND : DNA_CLAW_ART_GRAND_ASCII;
+    source = useUnicode ? FORGE_MARK_ART_GRAND : FORGE_MARK_ART_GRAND_ASCII;
   } else {
-    const frames = useUnicode ? DNA_CLAW_FRAMES : DNA_CLAW_FRAMES_ASCII;
+    const frames = useUnicode ? FORGE_MARK_FRAMES : FORGE_MARK_FRAMES_ASCII;
     const f = Math.abs(Math.trunc(opts.frame ?? 0)) % frames.length;
     source = frames[f]!;
   }
   const width = Math.max(0, ...source.map(l => l.length));
 
   if (opts.cols !== undefined && opts.cols < width) {
-    dnaClawMemo.set(memoKey, EMPTY_DNA_FRAME);
-    return EMPTY_DNA_FRAME;
+    forgeMarkMemo.set(memoKey, EMPTY_FORGE_FRAME);
+    return EMPTY_FORGE_FRAME;
   }
 
   const phase = opts.phase ?? 0;
   const useColor = opts.color !== false;
   const colorLevel = opts.colorLevel ?? ColorLevel.TrueColor;
-  const palette = DNA_FLOW_PALETTE;
+  const palette = FORGE_FLOW_PALETTE;
 
   const result = source.map((line, idx) => {
     const padded = line.length < width ? line + " ".repeat(width - line.length) : line;
@@ -578,19 +541,19 @@ export function renderDnaClaw(opts: {
     return animatedGradientText(padded, palette, phase + idx * 0.07, { colorLevel });
   });
 
-  if (dnaClawMemo.size >= DNA_CLAW_MEMO_CAP) {
-    const oldest = dnaClawMemo.keys().next().value;
-    if (oldest !== undefined) dnaClawMemo.delete(oldest);
+  if (forgeMarkMemo.size >= FORGE_MARK_MEMO_CAP) {
+    const oldest = forgeMarkMemo.keys().next().value;
+    if (oldest !== undefined) forgeMarkMemo.delete(oldest);
   }
-  dnaClawMemo.set(memoKey, result);
+  forgeMarkMemo.set(memoKey, result);
   return result;
 }
 
-/** The jeo identity palette — the mascot's synthwave neon read straight off the
- *  character: blue lens → violet gown → pink lens. Shared by the claw art and the
- *  forge-card border flow so the whole brand glows in the wizard's signature
- *  blue→violet→pink (the dual neon lenses bracketing the gown). */
-export const DNA_FLOW_PALETTE: readonly string[] = ["#48dbfb", "#8e44ad", "#f368e0"];
+/** The jeo identity palette — the mascot crayfish's synthwave neon read straight
+ *  off the character: blue antennae glow → violet carapace → pink claw tips.
+ *  Shared by the forge mark and the forge-card border flow so the whole brand
+ *  glows in the crayfish-wizard's signature blue→violet→pink shell sheen. */
+export const FORGE_FLOW_PALETTE: readonly string[] = ["#48dbfb", "#8e44ad", "#f368e0"];
 
 /** Width-1 forge title-mark glyph cycling the mascot's `jeo>` terminal prompt:
  *  a prompt caret then a blinking block cursor (filled → hollow), echoing the
@@ -601,6 +564,6 @@ export function forgeBeat(frame: number, unicode = true): string {
   return beats[Math.abs(Math.trunc(frame)) % beats.length]!;
 }
 
-export function dnaClawHeight(): number {
-  return DNA_CLAW_ART.length;
+export function forgeMarkHeight(): number {
+  return FORGE_MARK_ART.length;
 }

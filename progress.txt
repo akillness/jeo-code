@@ -1,4 +1,13 @@
 
+[2026-06-19] Pass — /login + /provider gjc-parity polish
+- Request: improve jeo's /login and /provider to behave like gjc's.
+- Found: jeo already had the alias (/login → /provider login), a live-status login picker (account · expiry), and login/add subcommands. The concrete gjc gap was (1) bare /provider only printed static usage text where gjc opens an INTERACTIVE onboarding selector (OAuth-login vs API-compatible endpoint), and (2) no headless-callback hint.
+- src/tui/components/provider-picker.ts: added pure builders buildOnboardingChoices() / onboardingPicker() / renderOnboardingPicker() + OnboardingAction type (gjc's provider-onboarding-selector parity). OAuth-login row first (common path), then API-compatible setup.
+- src/commands/launch.ts: pickOnboardingAction() closure (mirrors pickCloudProvider's runSelectPicker loop). Bare /provider in a TTY now opens the selector; "oauth-login" routes into the existing login branch, "api-add" prints the add usage, cancel/non-TTY/help fall through to the static readiness panel (scriptable path unchanged). Onboarding usage gained a "Headless OAuth: paste the redirect URL or code…" line (the interactiveOAuthLogin manual-code prompt already exists).
+- src/tui/components/slash.ts: /provider + /login descriptions updated to mention the interactive selector and headless paste.
+- Tests: test/pickers.test.ts +2 (onboarding order/hints, default selection). Focused: pickers + launch-flag-aliases + oauth + slash + autocomplete + skill-picker all green.
+- Verified: bun run typecheck 0; bun test 1630 pass / 0 fail.
+
 [2026-06-10] P2-7 + P2-10 iteration
 - P2-7: src/agent/task-tool.ts — fenceSubagentReport() wraps echoed done.reason in <<<subagent-report ... >>> DATA fence; <<< / >>> inside the report neutralized to ‹‹‹ / ›››. Test added in test/task-tool.test.ts.
 - P2-10: PlanSchema/StepSchema/normalizePlanShape/parseYaml moved from src/commands/team.ts to new src/agent/plan.ts; team.ts, ralplan.ts, test/team-schema.test.ts import the shared module. team.ts no longer imports zod.

@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.24] - 2026-06-19
+_`/provider` opens an interactive onboarding selector (OAuth vs API-compatible), and OpenAI-compatible backends gain per-vendor native-reasoning formats._
+
+### Added
+- **Interactive `/provider` onboarding selector (gjc parity).** A bare `/provider` (or `/login`) in a TTY now opens a picker — OAuth login (the common path) vs API-compatible endpoint setup — instead of printing static usage. New pure builders in `provider-picker.ts` (`buildOnboardingChoices` / `onboardingPicker` / `renderOnboardingPicker`); the scriptable/non-TTY path still falls through to the readiness panel unchanged, and a "Headless OAuth: paste the redirect URL or code" hint is shown for remote sessions.
+- **Per-vendor native-reasoning formats for OpenAI-compatible providers.** A `reasoningFormat` setting (`openai` → `reasoning_effort`, `openrouter` → `reasoning:{effort}`, `qwen` → `enable_thinking`, `zai` → `thinking:{type:"enabled"}`) lets the OpenAI-compatible factory enable streamed reasoning per backend, so OpenRouter/Qwen/Z.ai models surface thinking like the first-party providers.
+
+### Changed
+- **`/provider` and `/login` descriptions** updated to mention the interactive selector and the headless paste flow.
+- **ASCII-art / welcome rendering refactor** with refreshed tests (`ascii-art`, `pickers`, `tui-welcome`); the legacy `dna-claw-anim` animation test was retired.
+
 ## [0.6.23] - 2026-06-19
 _Live reasoning/thinking streams in the TUI across every provider, three new OpenAI-compatible backends (LM Studio, xAI, Kimi) join the auth/discovery/catalog surface, and Gemini gains native function-calling._
 

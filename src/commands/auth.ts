@@ -16,6 +16,7 @@ import {
   snapshotProvider,
   setApiKey,
   isOAuthProvider,
+  OAUTH_PROVIDERS,
   API_KEY_ONLY_PROVIDERS,
   type AuthProvider,
   type OAuthController,
@@ -32,7 +33,8 @@ export async function runAuthCommand(args: string[]): Promise<void> {
   process.exitCode = 1;
 }
 
-const CLOUD_PROVIDERS: readonly AuthProvider[] = ["anthropic", "openai", "gemini", "antigravity", "xai", "kimi"];
+// Every loginable provider: OAuth-capable ∪ API-key-only (keyless ollama/lmstudio excluded).
+const CLOUD_PROVIDERS: readonly AuthProvider[] = [...OAUTH_PROVIDERS, ...API_KEY_ONLY_PROVIDERS];
 /** True (and prints an error + sets exit code) when `p` is given but not a known provider. */
 function rejectInvalidProvider(p: string | undefined): boolean {
   if (p !== undefined && !(CLOUD_PROVIDERS as readonly string[]).includes(p)) {
@@ -56,7 +58,7 @@ async function runAuthStatus(): Promise<void> {
   const cfg = await readGlobalConfig();
   console.log("\n=== jeo auth status ===");
   console.log("Provider     API key   OAuth");
-  for (const p of ["anthropic", "openai", "gemini", "antigravity", "xai", "kimi"] as AuthProvider[]) {
+  for (const p of CLOUD_PROVIDERS) {
     const snap = await snapshotProvider(p);
     const key = p === "antigravity" ? "—" : (snap.apiKey ? "set" : "—");
     let oauth = "—";

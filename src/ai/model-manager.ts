@@ -1,12 +1,14 @@
 import { providerRegistry } from "./provider-registry";
 import { OAUTH_FLOW_REGISTRY } from "../auth/flows";
 import { readGlobalConfig } from "../agent/state";
-import { resolveCredential, type AuthProvider, type Credential } from "../auth";
+import { resolveCredential, isOAuthProvider, type AuthProvider, type Credential } from "../auth";
 import "./register-providers"; // side-effect: registers built-in adapters into providerRegistry
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId, effectiveAliasesFor } from "./model-registry";
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
 import { toProviderModel, CODEX_MODELS } from "./model-catalog";
+import { xaiCredential } from "./providers/xai";
+import { OPENAI_COMPAT_NAMES, isOpenAICompatProvider } from "./providers/openai-compatible-catalog";
 import { withRetry, defaultRetryable, type RetryOptions } from "../util/retry";
 import { jeoEnv } from "../util/env";
 import type { Config } from "../agent/state";
@@ -20,20 +22,39 @@ export function resolveProvider(model: string): ProviderName {
   const entry = findCatalogEntry(model);
   if (entry) return entry.provider;
   const m = (model ?? "").toLowerCase();
+  // Explicit `<provider>/` prefixes ALWAYS win over substring heuristics — a model id
+  // can legitimately contain another provider's name (e.g. `synthetic/hf:moonshotai/Kimi-K2.5`
+  // or `openrouter/openai/gpt-4o-mini`), so prefix routing is resolved first.
   if (m.startsWith("ollama/")) return "ollama";
+  if (m.startsWith("lmstudio/")) return "lmstudio";
   if (m.startsWith("antigravity/")) return "antigravity";
-  // OpenAI: explicit prefix, any GPT, or a reasoning model (o1/o3/o4-mini, o1-preview…).
-  if (m.startsWith("openai/") || m.includes("gpt") || /(^|\/)o\d/.test(m)) return "openai";
-  if (m.startsWith("google/") || m.includes("gemini")) return "gemini";
+  if (m.startsWith("xai/")) return "xai";
+  if (m.startsWith("kimi/")) return "kimi";
+  for (const p of OPENAI_COMPAT_NAMES) if (m.startsWith(`${p}/`)) return p;
+  if (m.startsWith("openai/")) return "openai";
+  if (m.startsWith("google/")) return "gemini";
+  // Loose substring heuristics for BARE (unprefixed) ids only.
+  if (m.includes("grok")) return "xai";
+  if (m.includes("kimi") || m.includes("moonshot")) return "kimi";
+  if (m.includes("gpt") || /(^|\/)o\d/.test(m)) return "openai";
+  if (m.includes("gemini")) return "gemini";
   return "anthropic";
 }
-const PROVIDER_ID_PREFIX: Record<ProviderName, string> = {
+// Static routing prefixes for the built-in (non-catalog) providers. Catalog
+// OpenAI-compatible providers use `<name>/` directly (see providerIdPrefix).
+const STATIC_ID_PREFIX: Partial<Record<ProviderName, string>> = {
   anthropic: "anthropic/",
   openai: "openai/",
   gemini: "google/",
   antigravity: "antigravity/",
   ollama: "ollama/",
+  lmstudio: "lmstudio/",
+  xai: "xai/",
+  kimi: "kimi/",
 };
+function providerIdPrefix(provider: ProviderName): string {
+  return isOpenAICompatProvider(provider) ? `${provider}/` : (STATIC_ID_PREFIX[provider] ?? `${provider}/`);
+}
 
 /**
  * Pin-time provider qualification: when a picked live model id would route to a
@@ -45,7 +66,7 @@ const PROVIDER_ID_PREFIX: Record<ProviderName, string> = {
 export function qualifyModelId(model: string, provider: ProviderName): string {
   const id = (model ?? "").trim();
   if (!id) return id;
-  return resolveProvider(id) === provider ? id : `${PROVIDER_ID_PREFIX[provider]}${id}`;
+  return resolveProvider(id) === provider ? id : `${providerIdPrefix(provider)}${id}`;
 }
 
 /**
@@ -59,7 +80,11 @@ export function providerModelFor(model: string): string {
     model.startsWith("openai/") ||
     model.startsWith("anthropic/") ||
     model.startsWith("google/") ||
-    model.startsWith("antigravity/")
+    model.startsWith("antigravity/") ||
+    model.startsWith("lmstudio/") ||
+    model.startsWith("xai/") ||
+    model.startsWith("kimi/") ||
+    isOpenAICompatProvider(model.split("/")[0])
   ) {
     return model;
   }
@@ -135,7 +160,7 @@ export interface ModelManager {
   resolveProvider: typeof resolveProvider;
 }
 
-const ALIAS_DEFAULTS = { fast: "ollama/qwen2.5:0.5b", local: "ollama/qwen2.5:0.5b", sonnet: "claude-sonnet-4-5", opus: "claude-opus-4-5", haiku: "claude-haiku-4-5", gpt: "gpt-5.5", flash: "gemini-2.5-flash" };
+const ALIAS_DEFAULTS = { fast: "ollama/qwen2.5:0.5b", local: "ollama/qwen2.5:0.5b", sonnet: "claude-sonnet-4-5", opus: "claude-opus-4-5", haiku: "claude-haiku-4-5", gpt: "gpt-5.5", flash: "gemini-2.5-flash", grok: "grok-4.3" };
 
 /**
  * Build retry options from a config `retry` budget (gjc parity). `requestMaxRetries`
@@ -243,7 +268,7 @@ export function effectiveCredentialForProvider(
   if (credential.kind === "oauth") {
     const apiKey = config.providers[provider];
     if (apiKey) return { kind: "api_key", provider, token: apiKey };
-    if (OAUTH_FLOW_REGISTRY[provider]?.verifiedEndToEnd === false) {
+    if (isOAuthProvider(provider) && OAUTH_FLOW_REGISTRY[provider].verifiedEndToEnd === false) {
       throw new Error(
         `Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'jeo setup') to use ${model}.`,
       );
@@ -291,7 +316,8 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
   const baseUrl =
     options.baseUrl ??
     (provider === "openai" ? config.openaiBaseUrl : undefined) ??
-    (provider === "ollama" ? config.ollamaBaseUrl : undefined);
+    (provider === "ollama" ? config.ollamaBaseUrl : undefined) ??
+    (provider === "lmstudio" ? config.lmstudioBaseUrl : undefined);
 
   const callOptions: CallOptions = {
     // Map a catalog canonical (e.g. claude-3-5-sonnet) to the exact wire id the
@@ -317,8 +343,14 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
   // generous gjc default of 100 only applies when the user configures it.
   const retry: RetryOptions = { ...resolveRetryOptions(config.retry, kind), ...(options.onRetry ? { onRetry: options.onRetry } : {}) };
 
-  if (provider === "ollama") {
+  if (provider === "ollama" || provider === "lmstudio") {
     return { adapter, callOptions, credential: { kind: "none", provider: "openai" }, retry };
+  }
+
+  if (provider === "xai") {
+    const key = config.providers?.xai;
+    if (!key) throw new Error("No credential for provider 'xai'. Set XAI_API_KEY (or providers.xai in config).");
+    return { adapter, callOptions, credential: xaiCredential(key), retry };
   }
 
   if (provider === "antigravity") {

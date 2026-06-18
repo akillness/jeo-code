@@ -5,7 +5,18 @@ import { readGlobalConfig, readRawGlobalConfig, saveConfigPatch, type StoredOAut
 import { jeoEnv } from "../util/env";
 
 
-export type AuthProvider = "anthropic" | "openai" | "gemini" | "antigravity";
+/** Providers with an interactive OAuth login + refresh flow. */
+export type OAuthProvider = "anthropic" | "openai" | "gemini" | "antigravity";
+/** Every provider jeo resolves a credential for: OAuth-capable ∪ API-key-only. */
+export type AuthProvider = OAuthProvider | "xai" | "kimi" | "groq" | "deepseek" | "mistral" | "openrouter" | "together" | "cerebras" | "fireworks" | "nvidia" | "alibaba-coding-plan" | "huggingface" | "nanogpt" | "qwen-portal" | "synthetic" | "venice" | "zenmux" | "qianfan" | "xiaomi" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-sgp" | "minimax-code" | "minimax-code-cn" | "zai" | "minimax";
+
+export const OAUTH_PROVIDERS: readonly OAuthProvider[] = ["anthropic", "openai", "gemini", "antigravity"];
+/** API-key-only providers (no OAuth flow) — resolved from config.providers / `<NAME>_API_KEY`. */
+export const API_KEY_ONLY_PROVIDERS: readonly AuthProvider[] = ["xai", "kimi", "groq", "deepseek", "mistral", "openrouter", "together", "cerebras", "fireworks", "nvidia", "alibaba-coding-plan", "huggingface", "nanogpt", "qwen-portal", "synthetic", "venice", "zenmux", "qianfan", "xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "minimax-code", "minimax-code-cn", "zai", "minimax"];
+/** Narrow an AuthProvider to the OAuth-capable subset (xai/kimi have no OAuth flow). */
+export function isOAuthProvider(p: AuthProvider): p is OAuthProvider {
+  return (OAUTH_PROVIDERS as readonly string[]).includes(p);
+}
 
 export type Credential =
   | { kind: "oauth"; provider: AuthProvider; token: string; projectId?: string }

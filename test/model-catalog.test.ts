@@ -8,6 +8,7 @@ import {
   catalogByProvider,
   catalogMetadata,
   supportsThinking,
+  inferCatalogMetadata,
   companyLabel,
 } from "../src/ai/model-catalog";
 import { thinkingMaxTokens } from "../src/ai/model-manager";
@@ -38,7 +39,7 @@ test("formatTokens renders K/M compactly", () => {
 test("catalog entries are well-formed (provider, positive limits)", () => {
   expect(MODEL_CATALOG.length).toBeGreaterThan(5);
   for (const m of MODEL_CATALOG) {
-    expect(["anthropic", "openai", "gemini", "antigravity", "ollama"]).toContain(m.provider);
+    expect(["anthropic", "openai", "gemini", "antigravity", "ollama", "lmstudio", "xai", "kimi"]).toContain(m.provider);
     expect(m.contextTokens).toBeGreaterThan(0);
     expect(m.maxOutputTokens).toBeGreaterThan(0);
     for (const lvl of m.thinking) expect(THINK_LEVELS).toContain(lvl);
@@ -103,4 +104,40 @@ test("companyLabel maps built-ins, respects overrides, and falls back with capit
   expect(companyLabel("anthropic", { company: "Custom Company" })).toBe("Custom Company");
   // Fallback with capitalization
   expect(companyLabel("someprovider")).toBe("Someprovider");
+});
+
+test("opus-4-8 is catalogued with full thinking (matches 4-5/4-6 siblings)", () => {
+  const m = catalogMetadata("claude-opus-4-8");
+  expect(m?.provider).toBe("anthropic");
+  expect(m?.thinking).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+  expect(supportsThinking("claude-opus-4-8", "high")).toBe(true);
+  // antigravity thinking variant registered alongside 4-6
+  expect(catalogMetadata("antigravity/claude-opus-4-8-thinking")?.thinking.length).toBeGreaterThan(0);
+});
+
+test("inferCatalogMetadata: uncatalogued reasoning families surface thinking like siblings", () => {
+  // Future revisions not yet in the static catalog still expose reasoning.
+  expect(inferCatalogMetadata("claude-opus-4-9")?.thinking.length).toBeGreaterThan(0);
+  expect(inferCatalogMetadata("claude-sonnet-4-7")?.provider).toBe("anthropic");
+  expect(inferCatalogMetadata("o5-pro")?.thinking).toContain("high");
+  expect(inferCatalogMetadata("gpt-5.6")?.contextTokens).toBe(400_000);
+  expect(inferCatalogMetadata("gemini-3.2-pro")?.thinking.length).toBeGreaterThan(0);
+  expect(inferCatalogMetadata("grok-5")?.thinking.length).toBeGreaterThan(0);
+  // Digit-count agnostic: multi-digit majors must NOT silently lose reasoning the way
+  // opus-4-8 did. gpt-10/o10/gemini-10 are still reasoning-capable.
+  expect(inferCatalogMetadata("gpt-10")?.thinking.length).toBeGreaterThan(0);
+  expect(inferCatalogMetadata("o10-pro")?.thinking).toContain("high");
+  expect(inferCatalogMetadata("gemini-10-pro")?.thinking.length).toBeGreaterThan(0);
+  // o-series single-digit majors below 3 are still reasoning models (o1/o2).
+  expect(inferCatalogMetadata("o1")?.thinking.length).toBeGreaterThan(0);
+});
+
+test("inferCatalogMetadata: non-reasoning + unknown ids stay conservative", () => {
+  // Pre-thinking families must NOT claim reasoning.
+  expect(inferCatalogMetadata("claude-3-5-haiku-latest")).toBeUndefined();
+  expect(inferCatalogMetadata("gemini-2.0-flash-exp")?.thinking).toEqual([]);
+  expect(inferCatalogMetadata("grok-4-fast-non-reasoning")?.thinking).toEqual([]);
+  // Genuinely unknown ids return undefined ("unknown caps"), not a fake reasoning model.
+  expect(inferCatalogMetadata("totally-unknown-model")).toBeUndefined();
+  expect(catalogMetadata("totally-unknown-model")).toBeUndefined();
 });

@@ -2,6 +2,9 @@
 node_modules/
 dist/
 
+# Image-generation scratch dir (mascot/hero iteration; never published)
+gen/
+
 # Logs
 *.log
 

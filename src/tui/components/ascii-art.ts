@@ -586,14 +586,18 @@ export function renderDnaClaw(opts: {
   return result;
 }
 
-/** The DNA Claw identity palette (emerald → cyan → violet helix flow). Shared by
- *  the claw art and the forge-card border flow so the brand gradient is uniform. */
-export const DNA_FLOW_PALETTE: readonly string[] = ["#10ac84", "#48dbfb", "#8e44ad"];
+/** The jeo identity palette — the mascot's synthwave neon read straight off the
+ *  character: blue lens → violet gown → pink lens. Shared by the claw art and the
+ *  forge-card border flow so the whole brand glows in the wizard's signature
+ *  blue→violet→pink (the dual neon lenses bracketing the gown). */
+export const DNA_FLOW_PALETTE: readonly string[] = ["#48dbfb", "#8e44ad", "#f368e0"];
 
-/** Width-1 "claw beat" glyph for an animation tick — the ◆/╳/○ motifs of the
- *  claw art cycling in place. Used as the live forge-card title mark. */
-export function dnaClawBeat(frame: number, unicode = true): string {
-  const beats = unicode ? ["◆", "╳", "○"] : ["*", "X", "o"];
+/** Width-1 forge title-mark glyph cycling the mascot's `jeo>` terminal prompt:
+ *  a prompt caret then a blinking block cursor (filled → hollow), echoing the
+ *  glowing terminal screen the character holds. Used as the live forge-card
+ *  title mark, so an in-flight card reads as a live coding-agent prompt. */
+export function forgeBeat(frame: number, unicode = true): string {
+  const beats = unicode ? ["❯", "▮", "▯"] : [">", "#", "_"];
   return beats[Math.abs(Math.trunc(frame)) % beats.length]!;
 }
 

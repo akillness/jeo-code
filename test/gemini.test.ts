@@ -54,6 +54,10 @@ test("geminiThinkingBudget: off by default on flash-class, floored on pro, omitt
   // Pre-2.5 models reject thinkingConfig → omit entirely.
   expect(geminiThinkingBudget("gemini-2.0-flash")).toBeUndefined();
   expect(geminiThinkingBudget("gemini-1.5-pro")).toBeUndefined();
+  // Digit-count agnostic: multi-digit majors must NOT silently lose thinking the way
+  // opus-4-8 did. gemini-10+ stays reasoning-capable; 2.6–2.9 minors too.
+  expect(geminiThinkingBudget("gemini-10-pro")).toBe(128);
+  expect(geminiThinkingBudget("gemini-2.7-flash")).toBe(0);
 });
 
 test("geminiThinkingBudget: effort maps to budget and clamps below maxTokens", () => {
@@ -74,7 +78,7 @@ test("geminiRequest: wires thinkingConfig for thinking models only", () => {
   const thinking = JSON.parse(
     geminiRequest(messages, { model: "gemini-flash-latest", maxTokens: 16 } as any, cred, "generateContent").body,
   );
-  expect(thinking.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+  expect(thinking.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingBudget: 0 });
   const legacy = JSON.parse(
     geminiRequest(messages, { model: "gemini-2.0-flash" } as any, cred, "generateContent").body,
   );

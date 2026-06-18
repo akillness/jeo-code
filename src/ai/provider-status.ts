@@ -5,11 +5,13 @@
  * its effective base URL, and whether it is ready to serve a request.
  */
 import { readGlobalConfig, type Config, type StoredOAuth } from "../agent/state";
-import type { AuthProvider, Credential } from "../auth";
+import { isOAuthProvider, API_KEY_ONLY_PROVIDERS, type AuthProvider, type Credential } from "../auth";
 import { OAUTH_FLOW_REGISTRY } from "../auth/flows";
 import type { ProviderName } from "./types";
 
-export const PROVIDER_NAMES: readonly ProviderName[] = ["anthropic", "openai", "gemini", "antigravity", "ollama"];
+import { OPENAI_COMPAT_NAMES, openaiCompatDef } from "./providers/openai-compatible-catalog";
+
+export const PROVIDER_NAMES: readonly ProviderName[] = ["anthropic", "openai", "gemini", "antigravity", "ollama", "lmstudio", "xai", "kimi", ...OPENAI_COMPAT_NAMES];
 
 /** Cloud providers that authenticate via API key / OAuth. Ollama is keyless. */
 export const CLOUD_PROVIDERS: readonly AuthProvider[] = ["anthropic", "openai", "gemini", "antigravity"];
@@ -29,9 +31,12 @@ export interface ProviderStatus {
   ready: boolean;
 }
 
-/** The uppercase `<PROVIDER>_API_KEY` env var name for a cloud provider. */
+/** The env var that supplies a provider's API key. Catalog providers carry their
+ *  own (e.g. HF_TOKEN, NANO_GPT_API_KEY); built-ins use `<PROVIDER>_API_KEY`. */
 export function providerEnvVar(name: ProviderName): string | undefined {
-  if (name === "ollama" || name === "antigravity") return undefined;
+  if (name === "ollama" || name === "lmstudio" || name === "antigravity") return undefined;
+  const def = openaiCompatDef(name);
+  if (def) return def.apiKeyEnv;
   return `${name.toUpperCase()}_API_KEY`;
 }
 
@@ -74,9 +79,23 @@ function effectiveCredential(provider: AuthProvider, cred: Credential, cfg: Conf
 /** Resolve the status of a single provider. */
 export async function describeProvider(name: ProviderName, config?: Config): Promise<ProviderStatus> {
   const cfg = config ?? (await readGlobalConfig());
-  if (name === "ollama") {
-    const baseUrl = cfg.ollamaBaseUrl ?? "http://localhost:11434";
+  if (name === "ollama" || name === "lmstudio") {
+    const baseUrl = name === "ollama"
+      ? (cfg.ollamaBaseUrl ?? "http://localhost:11434")
+      : (cfg.lmstudioBaseUrl ?? "http://localhost:1234/v1");
     return { name, kind: "keyless", label: credentialLabel("keyless"), baseUrl, ready: true };
+  }
+  if ((API_KEY_ONLY_PROVIDERS as readonly string[]).includes(name)) {
+    // API-key-only providers (xai/kimi): no OAuth flow — ready when their key is set.
+    const key = cfg.providers?.[name as AuthProvider];
+    const envVar = providerEnvVar(name);
+    return {
+      name,
+      kind: key ? "api_key" : "none",
+      label: key ? credentialLabel("api_key") : `none (set ${envVar})`,
+      envVar,
+      ready: !!key,
+    };
   }
   const ownProvider = name as AuthProvider;
   const ownCred = configuredCredential(ownProvider, cfg);
@@ -97,7 +116,7 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
       : hasGeminiFallback
         ? "OAuth catalog via Gemini CLI; calls need 'jeo auth login antigravity'"
         : "none (run 'jeo auth login antigravity')";
-  } else if (kind === "oauth" && OAUTH_FLOW_REGISTRY[credentialProvider]?.verifiedEndToEnd === false) {
+  } else if (kind === "oauth" && isOAuthProvider(credentialProvider) && OAUTH_FLOW_REGISTRY[credentialProvider].verifiedEndToEnd === false) {
     ready = false;
     label = "OAuth (API key needed)";
   } else if (name === "gemini" && kind === "oauth") {

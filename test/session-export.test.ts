@@ -55,3 +55,20 @@ test("exportSession: markdown fence is longer than backtick runs in the content"
   // content has a 3-backtick run → the fence must be at least 4 backticks
   expect(md).toContain("````");
 });
+
+test("exportSession: assistant reasoning is included in markdown (think → answer) and JSON", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-export-r-"));
+  const { id } = await createSession(cwd);
+  await appendMessage(cwd ? id : id, { role: "user", content: "q" }, cwd);
+  await appendMessage(id, { role: "assistant", content: "the final answer", reasoning: "my reasoning trace" }, cwd);
+  const md = await exportSession(id, "markdown", cwd);
+  expect(md).toContain("### Thinking");
+  expect(md).toContain("my reasoning trace");
+  expect(md).toContain("the final answer");
+  // thinking precedes the answer
+  expect(md.indexOf("my reasoning trace")).toBeLessThan(md.indexOf("the final answer"));
+  // JSON export carries reasoning on the message object
+  const json = JSON.parse(await exportSession(id, "json", cwd));
+  const a = json.messages.find((m: any) => m.role === "assistant");
+  expect(a.reasoning).toBe("my reasoning trace");
+});

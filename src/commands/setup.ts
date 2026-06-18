@@ -8,6 +8,7 @@ import {
   OAUTH_FLOW_REGISTRY,
   openInBrowser,
   type AuthProvider,
+  type OAuthProvider,
   type OAuthController,
 } from "../auth";
 import {
@@ -118,7 +119,7 @@ export async function runSetupCommand(): Promise<void> {
       const key = await rl.question(`${choice} API key [${current.providers[choice] ? "********" : "None"}]: `);
       if (key.trim()) next.providers[choice] = key.trim();
     } else {
-      const flow = OAUTH_FLOW_REGISTRY[choice as AuthProvider];
+      const flow = OAUTH_FLOW_REGISTRY[choice as OAuthProvider];
       if (!flow.verifiedEndToEnd && flow.note) console.log(`Note: ${flow.note}`);
       // Abort the pending "Paste redirect URL…" question once the flow settles —
       // otherwise it survives the SUCCESS/FAILED result, reprints its prompt, and
@@ -138,7 +139,7 @@ export async function runSetupCommand(): Promise<void> {
       try {
         let email: string | undefined;
         try {
-          ({ email } = await interactiveLogin(choice as AuthProvider, ctrl));
+          ({ email } = await interactiveLogin(choice as OAuthProvider, ctrl));
         } finally {
           // Must fire BEFORE the catch's API-key question below, or that
           // question queues behind the stale paste prompt.

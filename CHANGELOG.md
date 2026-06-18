@@ -6,6 +6,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.23] - 2026-06-19
+_Live reasoning/thinking streams in the TUI across every provider, three new OpenAI-compatible backends (LM Studio, xAI, Kimi) join the auth/discovery/catalog surface, and Gemini gains native function-calling._
+
+### Added
+- **Multi-provider reasoning/thinking streaming in the TUI.** Native reasoning is surfaced live (dimmed) and committed to scrollback for Anthropic (`thinking` deltas), OpenAI Codex/Responses (`reasoning*` deltas), OpenAI-compatible chat (`reasoning_content`/`reasoning`), Gemini & Antigravity (`thought` parts), and Ollama (`message.thinking`). A provider-agnostic `<think>…</think>` splitter routes inline chain-of-thought (DeepSeek-R1/Qwen-style local models) to the reasoning channel so it never pollutes the answer or the tool-call parse.
+- **Three new OpenAI-compatible providers — LM Studio (keyless local), xAI/Grok (`XAI_API_KEY`), and Kimi/Moonshot (`KIMI_API_KEY`).** All route through a shared `makeOpenAICompatibleAdapter` factory and are wired into `/provider`, `jeo auth status/login`, model discovery, and the capability catalog.
+- **Native Gemini function-calling (gjc parity).** Gemini now declares `functionDeclarations` and parses `functionCall` parts instead of the JSON-in-prose protocol — capable models stop fighting the `done` format, cutting wasted steps and stray "apology" prose from replies (verified live: a trivial reply dropped from 3 steps/14s to 1 step/2s).
+- **Mid-turn `/command` and `$skill` dispatch** with a live command/skill preview while typing.
+
+### Changed
+- **API-key providers are first-class in the auth core.** `AuthProvider` now splits into the OAuth-capable subset (`OAuthProvider`) plus API-key-only providers (xai/kimi); these resolve through the standard `resolveCredential` path (`config.providers` / `<NAME>_API_KEY`) and model discovery now sends their key (a prior gap left discovery unauthenticated). `jeo auth login <xai|kimi> --token <key>` stores the API key.
+
+### Fixed
+- **Config-schema dropped a stored `xai` key on validation** (the providers schema was missing `xai`/`kimi`); both are now persisted.
+
+## [0.6.22] - 2026-06-18
+_Extended-thinking activation is now consistent across providers: a `low` session thinking level enables reasoning everywhere._
+
+### Changed
+- **Anthropic now enables extended thinking at `low` effort, matching Gemini and OpenAI.** Previously Anthropic disabled extended thinking for `low`/`minimal`/unset effort while Gemini (`thinkingConfig.thinkingBudget`) and OpenAI (`reasoning_effort`) kept reasoning on at `low`, so the same session thinking level produced thinking on some providers but not Anthropic. `anthropicThinkingBudget` now maps `low → 4000` budget_tokens (same tier as Gemini), with `medium → 10000` and `high → 24000` unchanged; only `minimal`/unset stay non-thinking so `/fast` and minimal thinking remain cheaper/faster across all providers.
+
+### Added
+- **Anthropic `low`-effort thinking-parity test** (`test/anthropic-stream.test.ts`) asserting `anthropicPayload` emits `thinking.budget_tokens` for low/medium/high and omits it for minimal/unset.
+
+## [0.6.21] - 2026-06-18
+_Session thinking level now reaches the provider's actual reasoning depth, not just the token ceiling._
+
+### Fixed
+- **`/thinking`, `--thinking`, and `/fast` now change real provider reasoning depth.** Previously a live session thinking change only adjusted the per-step `maxTokens` budget; the provider's reasoning effort (Anthropic `thinking.budget_tokens`, OpenAI `reasoning_effort`, Gemini `thinkingConfig.thinkingBudget`) still came from the global `~/.jeo/config.json` `thinkingLevel`. `reasoningEffort` is now threaded from the session level through `AgentLoopOptions` → `ChatOptions` → the model manager, so the session setting actually controls how deeply the model reasons. When unset it still falls back to the global config.
+
+### Added
+- **`thinkingToReasoningEffort` mapping test** locking the session-level → provider-tier contract (minimal/low → low, medium → medium, high/xhigh → high, unset → undefined).
+
 ## [0.6.20] - 2026-06-18
 _Launch REPL internals decomposed into testable modules: `@mention` path completion, slash-command view renderers, and slash-command handlers extracted from the monolithic `launch.ts` into dedicated files with full unit-test coverage._
 

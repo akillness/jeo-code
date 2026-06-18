@@ -1,6 +1,6 @@
 import type { Credential } from "../auth";
 
-export type ProviderName = "anthropic" | "openai" | "gemini" | "antigravity" | "ollama";
+export type ProviderName = "anthropic" | "openai" | "gemini" | "antigravity" | "ollama" | "lmstudio" | "xai" | "kimi" | "groq" | "deepseek" | "mistral" | "openrouter" | "together" | "cerebras" | "fireworks" | "nvidia" | "alibaba-coding-plan" | "huggingface" | "nanogpt" | "qwen-portal" | "synthetic" | "venice" | "zenmux" | "qianfan" | "xiaomi" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-sgp" | "minimax-code" | "minimax-code-cn" | "zai" | "minimax";
 
 /** An image attached to a (user) message — base64 payload + IANA media type. */
 export interface ImageAttachment {
@@ -17,6 +17,11 @@ export interface Message {
    *  these alongside `content`; history bookkeeping (compaction, transcripts)
    *  keeps treating `content` as the message body. */
   images?: ImageAttachment[];
+  /** Persisted reasoning/thinking text for an assistant turn (the thought before the
+   *  answer). Survives /resume + export so the durable record shows "think → answer".
+   *  Display-only: NOT replayed to providers (anthropic/gemini thinking replay needs
+   *  the original signed block, which the streaming path does not capture). */
+  reasoning?: string;
 }
 
 export interface Usage {

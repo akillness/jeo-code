@@ -20,7 +20,7 @@ import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth } from "../auth";
 import type { AuthProvider } from "../auth";
 import { matchSlash, isSlashAttempt, suggestSlashCommands, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, tabCompleteSelection, type SlashCommandInfo } from "../tui/components/slash";
-import { staticCompletionContext, readlineCompleter, formatCompletionPreview, tokenize, type CompletionContext } from "../tui/components/autocomplete";
+import { staticCompletionContext, readlineCompleter, formatCompletionPreview, formatMidTurnHint, tokenize, type CompletionContext } from "../tui/components/autocomplete";
 import { normalizeBaseUrl } from "./setup-helpers";
 import { EVOLUTION_STAGES, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
@@ -36,11 +36,12 @@ import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch } from "../agent/state";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
-import { describeModel, describeAllProviders, thinkingMaxTokens, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
+import { describeModel, describeAllProviders, thinkingMaxTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
 
 import { listAliases } from "../ai/model-registry";
+import { openaiCompatDef } from "../ai/providers/openai-compatible-catalog";
 
 import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting } from "../agent/subagents";
 import { SelectList, renderSelectList, type SelectItem } from "../tui/components/select-list";
@@ -134,6 +135,7 @@ import {
   captureLivePromptInputChunk,
   restoreQueuedLinesToPrefill,
   createInFlightAbortHarness,
+  classifyMidTurnLine,
 } from "./launch/input";
 import {
   gatedStdout,
@@ -198,6 +200,7 @@ export {
   captureLivePromptInputChunk,
   restoreQueuedLinesToPrefill,
   createInFlightAbortHarness,
+  classifyMidTurnLine,
 
   gatedStdout,
   formatTaskSubEvent,
@@ -219,7 +222,12 @@ export function normalizeSlashAlias(input: string): string {
   return input;
 }
 
-const PROVIDER_DEFAULT: Record<ProviderName, string> = { anthropic: "sonnet", openai: "gpt-5.5", gemini: "flash", antigravity: "antigravity/gemini-3-pro-high", ollama: "fast" };
+// Per-provider starting model for `--provider <name>` / role pinning. Catalog
+// OpenAI-compatible providers supply their own default; built-ins use this map.
+const STATIC_PROVIDER_DEFAULT: Partial<Record<ProviderName, string>> = { anthropic: "sonnet", openai: "gpt-5.5", gemini: "flash", antigravity: "antigravity/gemini-3-pro-high", ollama: "fast", lmstudio: "lmstudio/local-model", xai: "grok-4.3", kimi: "kimi-k2-0711-preview" };
+function providerDefaultModel(p: ProviderName): string {
+  return openaiCompatDef(p)?.defaultModel ?? STATIC_PROVIDER_DEFAULT[p] ?? "";
+}
 
 
 export function formatResumeHint(sessionId: string): string {
@@ -263,7 +271,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const defaultModel = cfg.defaultModel;
   const initialSessionModel =
     flags.model ??
-    (flags.modelRole ? resolveRoleModel(flags.modelRole, cfg) : flags.provider ? PROVIDER_DEFAULT[flags.provider] : undefined);
+    (flags.modelRole ? resolveRoleModel(flags.modelRole, cfg) : flags.provider ? providerDefaultModel(flags.provider) : undefined);
   if (flags.provider && initialSessionModel) {
     const { provider } = await describeModel(initialSessionModel);
     if (provider !== flags.provider) {
@@ -472,6 +480,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // Full untruncated output of the most recent tool call — the clipped forge
   // card's `⟦Ctrl+O for more⟧` hint resolves here.
   let lastToolDetail: { tool: string; output: string } | null = null;
+  // Accumulated reasoning/thinking for the in-flight turn (the model's thought before its
+  // answer). Captured from the reasoning stream and persisted on the assistant message so
+  // it survives /resume + export (gjc "think → answer" record). Reset at each turn start.
+  let lastTurnReasoning = "";
   /** Wrap turn events so EVERY sink (TUI or plain stream) records the last full
    *  tool output for the Ctrl+O detail view. */
   const withToolDetailCapture = (base: ReturnType<LaunchTui["events"]>): ReturnType<LaunchTui["events"]> => ({
@@ -479,6 +491,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     onToolResult: (tool, success, output) => {
       lastToolDetail = { tool, output };
       base.onToolResult?.(tool, success, output);
+    },
+    onReasoningStream: (textSoFar: string) => {
+      // textSoFar is the cumulative thought for the current step; keep the latest
+      // non-empty value (the thought immediately preceding the turn's answer).
+      if (textSoFar.trim()) lastTurnReasoning = textSoFar;
+      base.onReasoningStream?.(textSoFar);
     },
   });
   /** Compose a session-persistence flush into onStep so each completed step is
@@ -547,6 +565,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // Clears the live next-prompt draft — used after a mid-turn Enter is lifted into
   // the steering inbox so the consumed line does not also become the next prompt.
   let queueBusyClear: (() => void) | undefined;
+  // Routes a command-shaped (/… or $…) mid-turn draft into the idle loop's
+  // pending-line queue so it runs as a real COMMAND at the turn boundary,
+  // instead of being steered into the model as literal text.
+  let queueBusyCommand: ((line: string) => void) | undefined;
   let interactiveTurnActive = false;
 
 
@@ -577,6 +599,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // AFTER compaction (which mutates history) and consumed by the post-turn
     // persistence block below.
     let beforeLen = history.length;
+    lastTurnReasoning = ""; // fresh turn: capture this turn's thinking from scratch
     // Incremental session persistence (durability across mid-turn interruption):
     // persistTurnTail() flushes history messages added since the last flush — called
     // right after the user prompt, on every onStep boundary, and once post-turn — so
@@ -675,12 +698,34 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (typedEnter) {
             const line = (queueBusySnapshot?.().text ?? "").trim();
             if (line) {
-              steerInbox.push(line);
+              // A mid-turn /command or $skill is NOT a query for the model — steering it
+              // would send the literal "/model" / "$skill" text to the LLM. Recognize it
+              // and run it as a real COMMAND: queue it for the idle dispatcher and stop the
+              // turn so it runs at once (below). Plain queries still steer into the running
+              // turn. JEO_NO_STEER=1 disables both (legacy draft-only).
               queueBusyClear?.();
               tui.setLivePromptInput("");
-              // Surface the steered query as a `user` card in scrollback so it reads
-              // as an accepted input that started work — not just a transient notice.
-              tui.flushSteerCard(line);
+              tui.setLivePromptHint([]);
+              if (classifyMidTurnLine(line) === "command") {
+                // Run it as a real COMMAND: queue it for immediate dispatch by the prompt
+                // loop and abort the turn (the same controller Esc uses). The abort ends a
+                // streaming turn at once and cancels any further steps; a running tool still
+                // finishes first (jeo's abort is step-level, like Esc). The queued command is
+                // then auto-dispatched — no second Enter. JEO_NO_MIDTURN_DISPATCH=1 keeps the
+                // legacy behavior (queue to prefill, no interrupt, press Enter to run).
+                queueBusyCommand?.(line);
+                if (jeoEnv("NO_MIDTURN_DISPATCH") === "1") {
+                  tui.events().onNotice?.(`⌘ queued ${line} — press Enter after this turn to run`);
+                } else {
+                  tui.events().onNotice?.(`⌘ ${line} — interrupting the turn to run it`);
+                  harness.controller.abort();
+                }
+              } else {
+                steerInbox.push(line);
+                // Surface the steered query as a `user` card in scrollback so it reads
+                // as an accepted input that started work — not just a transient notice.
+                tui.flushSteerCard(line);
+              }
               return;
             }
           }
@@ -691,7 +736,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // suppressed for the whole turn). On Enter the draft is lifted into the steering
           // inbox and surfaces as a `user` card (above). JEO_NO_LIVE_DRAFT=1 opts out.
           if (captured && jeoEnv("NO_LIVE_DRAFT") !== "1") {
-            tui.setLivePromptInput(queueBusySnapshot?.().text ?? "");
+            const draft = queueBusySnapshot?.().text ?? "";
+            tui.setLivePromptInput(draft);
+            // Mid-turn command preview: as you type a /command or $skill DURING a turn,
+            // show its matches above the input box so command input visibly reacts
+            // (idle-prompt parity). Cleared the moment the draft stops being command-shaped.
+            tui.setLivePromptHint(
+              /^\s*[/$]/.test(draft) ? formatMidTurnHint(draft.trimStart(), completionContext(), 5) : [],
+            );
           }
         },
         onAbortNotice: msg => {
@@ -786,6 +838,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           maxSteps: flags.maxSteps,
           model: sessionModel,
           maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
+          reasoningEffort: sessionThinking ? thinkingToReasoningEffort(sessionThinking) : undefined,
           signal: ac.signal,
           steer: drainSteer,
           events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone }, persistTurnTail), opik),
@@ -804,6 +857,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             budget: { maxExtensions: 0 },
             model: sessionModel,
             maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
+            reasoningEffort: sessionThinking ? thinkingToReasoningEffort(sessionThinking) : undefined,
             signal: ac.signal,
             steer: drainSteer,
             events: wrapEvents(withToolDetailCapture(tui ? tui.events() : streamEvents), opik),
@@ -849,8 +903,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // this only covers the tail — net content is the full turn either way.
     try {
       await persistTurnTail();
-      history.push({ role: "assistant", content: reply });
-      if (sessionId) await appendMessage(sessionId, { role: "assistant", content: reply }, cwd);
+      const assistantMsg: Message = lastTurnReasoning.trim()
+        ? { role: "assistant", content: reply, reasoning: lastTurnReasoning }
+        : { role: "assistant", content: reply };
+      history.push(assistantMsg);
+      if (sessionId) await appendMessage(sessionId, assistantMsg, cwd);
       if (tui) tui.finish(reply);
     } finally {
       if (tui) interactiveTurnActive = false;
@@ -1354,6 +1411,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // only captures the line submitted while it is registered; orphan lines emit
   // 'line' instead), so queue those and serve them before prompting again.
   const pendingStdinLines: string[] = [];
+  // Commands submitted mid-turn (/… or $…) land here; the prompt loop dispatches them
+  // IMMEDIATELY on its next iteration, bypassing the "new input first" prefill contract
+  // (the user explicitly invoked them — no second Enter).
+  const pendingMidTurnCommands: string[] = [];
   const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: "", pastedLines: [], inPaste: false };
   queueBusyInput = (chunk: string) => captureLivePromptInputChunk(queuedPromptInput, chunk);
   queueBusyPasteActive = () => queuedPromptInput.inPaste;
@@ -1361,6 +1422,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     text: queuedPromptInput.partial,
   });
   queueBusyClear = () => { queuedPromptInput.partial = ""; };
+  queueBusyCommand = (line: string) => {
+    // NO_MIDTURN_DISPATCH=1 keeps the legacy prefill path (tee up, press Enter); the
+    // default routes to the immediate-dispatch queue served at the top of the loop.
+    (jeoEnv("NO_MIDTURN_DISPATCH") === "1" ? pendingStdinLines : pendingMidTurnCommands).push(line);
+  };
   // Bracketed-paste line routing at the PROMPT: readline strips the 2004 markers
   // and replays pasted lines as synthetic keypresses, emitting paste-start /
   // paste-end around them. Lines submitted INSIDE that window are intentional
@@ -2480,7 +2546,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // Box mode: NO raw `jeo>` prompt at all — the boxed footer IS the input UI
       // (gating already suppresses readline echo, the empty prompt guarantees no
       // raw CLI input line can ever flash). Legacy prompt only without the box.
-      const rawText = await promptInput(previewEnabled ? "" : "\njeo> ");
+      const rawText = pendingMidTurnCommands.length
+        ? (disarmPreview(), pendingMidTurnCommands.shift()!)
+        : await promptInput(previewEnabled ? "" : "\njeo> ");
       if (rawText.includes("\u0003")) forceExitFromCtrlC();
       const raw = rawText.trim();
       disarmPreview();
@@ -3214,7 +3282,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             // No model given → the provider's first live model, provider-qualified.
             chosenModel = qualifyModelId(forProvider[0]!.model, want);
           } else {
-            chosenModel = PROVIDER_DEFAULT[want];
+            chosenModel = providerDefaultModel(want);
           }
           await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: chosenModel }) }));
           console.log(`${role.title} pinned to ${want} via model ${chosenModel} — saved to ~/.jeo/config.json`);

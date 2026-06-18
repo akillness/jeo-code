@@ -4,7 +4,7 @@ import {
   DNA_CLAW_FRAMES,
   DNA_CLAW_FRAMES_ASCII,
   DNA_FLOW_PALETTE,
-  dnaClawBeat,
+  forgeBeat,
   dnaClawFrameCount,
   dnaClawHeight,
   renderDnaClaw,
@@ -128,18 +128,18 @@ test("forge flow: color:false ignores flow entirely (plain pipelines stay plain)
   expect(plainFlow).toEqual(plain);
 });
 
-test("forge titleMark: claw beat rides the border title without breaking width", () => {
+test("forge titleMark: prompt beat rides the border title without breaking width", () => {
   const id = (s: string) => s;
-  const marked = formatForgeBox(flowSummary, { width: 40, unicode: false, paint: id, paintShadow: id, color: false, titleMark: dnaClawBeat(0, false) });
-  expect(stripAnsi(marked[0]!)).toContain("* bash running");
+  const marked = formatForgeBox(flowSummary, { width: 40, unicode: false, paint: id, paintShadow: id, color: false, titleMark: forgeBeat(0, false) });
+  expect(stripAnsi(marked[0]!)).toContain("> bash running");
   // Every row keeps the exact box width — the mark is absorbed by the title budget.
   for (const row of marked) expect(stripAnsi(row).length).toBe(40);
 });
 
-test("dnaClawBeat cycles width-1 claw motifs and wraps", () => {
-  const seen = new Set([dnaClawBeat(0), dnaClawBeat(1), dnaClawBeat(2)]);
+test("forgeBeat cycles width-1 jeo-prompt motifs and wraps", () => {
+  const seen = new Set([forgeBeat(0), forgeBeat(1), forgeBeat(2)]);
   expect(seen.size).toBe(3);
-  expect(dnaClawBeat(3)).toBe(dnaClawBeat(0)); // wraps
-  expect(dnaClawBeat(1, false)).toBe("X"); // ASCII fallback
+  expect(forgeBeat(3)).toBe(forgeBeat(0)); // wraps
+  expect(forgeBeat(1, false)).toBe("#"); // ASCII fallback
   for (const beat of seen) expect(beat.length).toBe(1);
 });

@@ -1,4 +1,4 @@
-import type { AuthProvider } from "./storage";
+import type { AuthProvider, OAuthProvider } from "./storage";
 import { setOauthToken, clearOauthToken, setOauthCredential } from "./storage";
 import { OAUTH_FLOW_REGISTRY } from "./flows";
 import type { OAuthController } from "./types";
@@ -10,7 +10,7 @@ export interface OauthFlowDef {
 }
 
 /** Metadata kept for help text / manual-paste fallback. */
-export const OAUTH_FLOWS: Record<AuthProvider, OauthFlowDef> = {
+export const OAUTH_FLOWS: Record<OAuthProvider, OauthFlowDef> = {
   anthropic: {
     label: "Anthropic Console (Claude)",
     authorizeUrl: "https://claude.ai/oauth/authorize",
@@ -64,7 +64,7 @@ export async function openInBrowser(url: string): Promise<void> {
  * the local callback server, wait for the code (or manual paste), exchange it,
  * and persist the full credential set (access + refresh + expiry).
  */
-export async function interactiveLogin(provider: AuthProvider, ctrl: OAuthController): Promise<{ email?: string }> {
+export async function interactiveLogin(provider: OAuthProvider, ctrl: OAuthController): Promise<{ email?: string }> {
   const flow = OAUTH_FLOW_REGISTRY[provider];
   const creds = await flow.login(ctrl);
   await setOauthCredential(provider, {

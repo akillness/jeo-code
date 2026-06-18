@@ -1,4 +1,5 @@
 import { findCatalogEntry } from "../ai/model-catalog-compat";
+import { OPENAI_COMPAT_PROVIDERS } from "../ai/providers/openai-compatible-catalog";
 import { CODEX_MODELS } from "../ai/model-catalog";
 import { z } from "zod";
 
@@ -18,6 +19,11 @@ const StoredOAuthSchema = z.object({
 });
 
 const OAuthEntry = z.union([z.string(), StoredOAuthSchema]);
+// Catalog-driven OpenAI-compatible providers contribute their own apiKey + oauth-slot
+// schema keys (incl. hyphenated names like `alibaba-coding-plan`), so config-file keys
+// are validated/kept rather than stripped. Adding a provider = one catalog row.
+const compatKeySchema = Object.fromEntries(OPENAI_COMPAT_PROVIDERS.map(p => [p.name, z.string().optional()]));
+const compatOAuthSchema = Object.fromEntries(OPENAI_COMPAT_PROVIDERS.map(p => [p.name, OAuthEntry.optional()]));
 const HookConfigSchema = z.object({
   enabled: z.boolean().optional(),
   hooks: z
@@ -45,6 +51,9 @@ export const ConfigSchema = z
         openai: z.string().optional(),
         gemini: z.string().optional(),
         antigravity: z.string().optional(),
+        xai: z.string().optional(),
+        kimi: z.string().optional(),
+        ...compatKeySchema,
       })
       .default({}),
     oauth: z
@@ -53,6 +62,9 @@ export const ConfigSchema = z
         openai: OAuthEntry.optional(),
         gemini: OAuthEntry.optional(),
         antigravity: OAuthEntry.optional(),
+        xai: OAuthEntry.optional(),
+        kimi: OAuthEntry.optional(),
+        ...compatOAuthSchema,
       })
       .optional(),
     ollamaBaseUrl: z.string().optional(),

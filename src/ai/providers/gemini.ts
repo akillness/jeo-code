@@ -3,6 +3,7 @@ import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
 import { jeoEnv } from "../../util/env";
+import { serializeToolCalls } from "../../agent/tool-schemas";
 
 /** Gemini 2.5+/latest models think by default and BILL thought tokens against
  *  `maxOutputTokens` — a small-budget call can burn its entire budget on thoughts
@@ -12,7 +13,13 @@ import { jeoEnv } from "../../util/env";
  *  Older models (1.5/2.0) reject `thinkingConfig` entirely → undefined (omit). */
 export function geminiThinkingBudget(model: string, effort?: CallOptions["reasoningEffort"], maxTokens?: number): number | undefined {
   const m = model.toLowerCase();
-  const thinkingCapable = /gemini-(2\.5|[3-9])|flash-latest|pro-latest/.test(m);
+  // Reasoning-capable when Gemini >= 2.5 (any 2.5+ minor) or major >= 3 (digit-count
+  // agnostic so gemini-10+ never silently loses thinking the way opus-4-8 did), plus
+  // the rolling *-latest aliases. Mirrors `inferCatalogMetadata` in model-catalog.ts.
+  const ver = m.match(/gemini-(\d+)(?:\.(\d+))?/);
+  const major = ver ? Number(ver[1]) : 0;
+  const minor = ver ? Number(ver[2] ?? 0) : 0;
+  const thinkingCapable = (major >= 3 || (major === 2 && minor >= 5)) || /flash-latest|pro-latest/.test(m);
   if (!thinkingCapable) return undefined;
   const floor = m.includes("pro") ? 128 : 0; // pro-class cannot fully disable thinking
   let budget: number;
@@ -63,12 +70,23 @@ export function buildGeminiPayload(messages: Message[], options: CallOptions): {
     temperature: options.temperature ?? 0.2,
     maxOutputTokens: options.maxTokens ?? 4000,
   };
-  if (options.jsonMode) generationConfig.responseMimeType = "application/json";
+  // Function-calling and responseMimeType:json are mutually exclusive in the Gemini
+  // API — when native tools are declared, the functionCall parts replace JSON-in-prose.
+  if (options.jsonMode && !options.tools?.length) generationConfig.responseMimeType = "application/json";
   const thinkingBudget = geminiThinkingBudget(geminiModel, options.reasoningEffort, options.maxTokens);
-  if (thinkingBudget !== undefined) generationConfig.thinkingConfig = { thinkingBudget };
+  // includeThoughts: required for Gemini to STREAM thought summaries (the `thought:true`
+  // parts thoughtOf() routes to onReasoning) — without it the model thinks silently.
+  if (thinkingBudget !== undefined) generationConfig.thinkingConfig = { includeThoughts: true, thinkingBudget };
 
   const payload: Record<string, unknown> = { contents, generationConfig };
   if (systemPrompt) payload.systemInstruction = { parts: [{ text: systemPrompt }] };
+  if (options.tools?.length) {
+    // NATIVE function-calling (gjc/antigravity parity): declare the toolset so the
+    // model emits functionCall parts instead of hand-formatting the JSON tool protocol
+    // (which weaker models mangle — wasted steps + apology prose leaking into replies).
+    payload.tools = [{ functionDeclarations: options.tools.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })) }];
+    payload.toolConfig = { functionCallingConfig: { mode: "AUTO" } };
+  }
   return { geminiModel, payload };
 }
 
@@ -119,7 +137,7 @@ export function geminiCliRequest(messages: Message[], options: CallOptions, acce
 }
 
 interface GeminiChunk {
-  candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] }; finishReason?: string }[];
+  candidates?: { content?: { parts?: { text?: string; thought?: boolean; functionCall?: { name?: string; args?: Record<string, unknown> } }[] }; finishReason?: string }[];
   promptFeedback?: { blockReason?: string };
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
 }
@@ -137,6 +155,18 @@ function textOf(chunk: GeminiChunk): string {
  *  summaries. Kept SEPARATE from textOf so thoughts never pollute the JSON tool call. */
 function thoughtOf(chunk: GeminiChunk): string {
   return chunk.candidates?.[0]?.content?.parts?.filter(p => p.thought).map(p => p.text ?? "").join("") ?? "";
+}
+/** Native Gemini functionCall parts → {tool, arguments} (gjc/antigravity parity). Kept
+ *  separate from textOf so the re-serialized canonical JSON envelope drives the loop. */
+function geminiFunctionCallsOf(chunk: GeminiChunk): { tool: string; arguments: Record<string, unknown> }[] {
+  const parts = chunk.candidates?.[0]?.content?.parts ?? [];
+  const out: { tool: string; arguments: Record<string, unknown> }[] = [];
+  for (const p of parts) {
+    if (p.functionCall && typeof p.functionCall.name === "string") {
+      out.push({ tool: p.functionCall.name, arguments: (p.functionCall.args ?? {}) as Record<string, unknown> });
+    }
+  }
+  return out;
 }
 
 /** When Gemini returns HTTP 200 with no text, surface the real cause (safety block /
@@ -173,6 +203,7 @@ async function* ccaTurn(messages: Message[], options: CallOptions, credential: C
   let lastUsage: GeminiChunk["usageMetadata"];
   let yieldedAny = false;
   let lastEmptyReason: string | undefined;
+  const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
   for await (const data of readSse(response.body)) {
     let chunk: CcaChunk;
     try {
@@ -192,7 +223,10 @@ async function* ccaTurn(messages: Message[], options: CallOptions, credential: C
       lastEmptyReason = blockedReason(inner) ?? lastEmptyReason;
     }
     if (inner.usageMetadata) lastUsage = inner.usageMetadata;
+    fnCalls.push(...geminiFunctionCallsOf(inner));
   }
+  const envelope = serializeToolCalls(fnCalls);
+  if (envelope) { yieldedAny = true; yield envelope; }
   if (!yieldedAny) {
     throw new Error(`Gemini (Cloud Code Assist) returned no content${lastEmptyReason ? ` (${lastEmptyReason})` : ""}.`);
   }
@@ -206,6 +240,7 @@ async function* ccaTurn(messages: Message[], options: CallOptions, credential: C
 
 export const geminiAdapter: ProviderAdapter = {
   name: "gemini",
+  supportsNativeTools: true,
   async call(messages, options, credential) {
     // OAuth (gemini-cli login) → Cloud Code Assist; no GEMINI_API_KEY required.
     if (credential.kind === "oauth") {
@@ -220,6 +255,8 @@ export const geminiAdapter: ProviderAdapter = {
     if (result.usageMetadata) {
       options.onUsage?.({ inputTokens: result.usageMetadata.promptTokenCount, outputTokens: result.usageMetadata.candidatesTokenCount });
     }
+    const envelope = serializeToolCalls(geminiFunctionCallsOf(result));
+    if (envelope) return envelope;
     const text = textOf(result);
     if (!text) {
       const reason = blockedReason(result);
@@ -240,6 +277,7 @@ export const geminiAdapter: ProviderAdapter = {
     let lastUsage: GeminiChunk["usageMetadata"];
     let yieldedAny = false;
     let lastEmptyReason: string | undefined;
+    const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
     for await (const data of readSse(response.body)) {
       let chunk: GeminiChunk;
       try {
@@ -259,7 +297,10 @@ export const geminiAdapter: ProviderAdapter = {
       // Gemini emits cumulative usageMetadata on most chunks; capture the last and
       // report ONCE after the stream so an accumulating sink can't over-count.
       if (chunk.usageMetadata) lastUsage = chunk.usageMetadata;
+      fnCalls.push(...geminiFunctionCallsOf(chunk));
     }
+    const envelope = serializeToolCalls(fnCalls);
+    if (envelope) { yieldedAny = true; yield envelope; }
     if (!yieldedAny && lastEmptyReason) {
       throw new Error(`Gemini returned no content (${lastEmptyReason}).`);
     }

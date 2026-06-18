@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { resolveProvider, thinkingMaxTokens } from "../src/ai/model-manager";
+import { resolveProvider, thinkingMaxTokens, thinkingToReasoningEffort } from "../src/ai/model-manager";
 
 test("resolveProvider: routing is stable across model id shapes", () => {
   expect(resolveProvider("ollama/qwen2.5:0.5b")).toBe("ollama");
@@ -25,4 +25,16 @@ test("thinkingMaxTokens: maps level → token budget (medium default)", () => {
   expect(thinkingMaxTokens("medium")).toBe(16000);
   expect(thinkingMaxTokens("high")).toBe(24000);
   expect(thinkingMaxTokens(undefined)).toBe(16000);
+});
+
+test("thinkingToReasoningEffort: maps session level → provider reasoning tier", () => {
+  // minimal/low collapse to the lowest tier the o-series reliably accepts.
+  expect(thinkingToReasoningEffort("minimal")).toBe("low");
+  expect(thinkingToReasoningEffort("low")).toBe("low");
+  expect(thinkingToReasoningEffort("medium")).toBe("medium");
+  // high AND xhigh both map to the deepest provider tier.
+  expect(thinkingToReasoningEffort("high")).toBe("high");
+  expect(thinkingToReasoningEffort("xhigh")).toBe("high");
+  // Unset → undefined so the caller falls back to the global config.
+  expect(thinkingToReasoningEffort(undefined)).toBeUndefined();
 });

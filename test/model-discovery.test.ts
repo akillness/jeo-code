@@ -9,6 +9,7 @@ import {
   discoverModels,
   catalogOr,
 } from "../src/ai/model-discovery";
+import { PROVIDER_NAMES } from "../src/ai/provider-status";
 
 let dir: string;
 const prevCfgDir = process.env.JEO_CONFIG_DIR;
@@ -208,7 +209,7 @@ test("listProviderModels: credential-less cloud short-circuits without fetching"
 
 test("discoverModels runs all providers in parallel", async () => {
   const results = await discoverModels({ fetchImpl: okFetch({ data: [{ id: "x" }], models: [{ name: "y" }] }) });
-  expect(results.map(r => r.provider).sort()).toEqual(["anthropic", "antigravity", "gemini", "ollama", "openai"]);
+  expect(results.map(r => r.provider).sort()).toEqual([...PROVIDER_NAMES].sort());
 });
 
 test("listProviderModels: Antigravity queries the LIVE fetchAvailableModels endpoint (no hard-coded list)", async () => {

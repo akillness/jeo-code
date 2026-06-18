@@ -11,6 +11,20 @@ test("parseFlags captures GJC-style model/provider/thinking launch flags", () =>
   expect(flags.message).toBe("fix it");
 });
 
+import { fastThinkingLevelForModel } from "../src/commands/launch/flags";
+
+test("fastThinkingLevelForModel: digit-agnostic gemini gate (multi-digit major never silently loses thinking)", () => {
+  // Catalogued reasoning ids resolve via catalog thinking caps.
+  expect(fastThinkingLevelForModel("gemini-2.5-flash")).toBe("minimal");
+  // The last-resort family gate must stay digit-count agnostic: gemini-10 (prefixed)
+  // and 2.6+ are reasoning-capable just like 2.5/3.x — the opus-4-8 bug, generalized.
+  expect(fastThinkingLevelForModel("models/gemini-10-pro")).toBe("minimal");
+  expect(fastThinkingLevelForModel("models/gemini-2.7-flash")).toBe("minimal");
+  // Pre-2.5 Gemini and non-reasoning chat models get no fast-thinking default.
+  expect(fastThinkingLevelForModel("gemini-2.0-flash")).toBeUndefined();
+  expect(fastThinkingLevelForModel("gpt-4o")).toBeUndefined();
+});
+
 test("parseFlags captures model role tiers without consuming the prompt", () => {
   const slow = parseFlags(["--slow", "investigate", "this"]);
   expect(slow.modelRole).toBe("slow");

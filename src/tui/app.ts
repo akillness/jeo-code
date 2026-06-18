@@ -16,7 +16,7 @@ import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
 import { renderFooter, type FooterData } from "./components/footer";
-import { renderDnaClaw, dnaClawHeight, dnaClawFrameCount, dnaClawBeat, DNA_FLOW_PALETTE } from "./components/ascii-art";
+import { renderDnaClaw, dnaClawHeight, dnaClawFrameCount, forgeBeat, DNA_FLOW_PALETTE } from "./components/ascii-art";
 import { evolutionTrack, createStageProgress, type StageProgress, transitionMessage } from "./components/evolution";
 import type { TaskSubEvent } from "../agent/task-tool";
 import { supportsUnicode } from "./components/capability";
@@ -30,7 +30,7 @@ import { costForUsage } from "../ai/pricing";
 import { renderMarkdownTables } from "./components/markdown-table";
  
 import { stripMarkdown, renderMarkdownAnsi } from "./components/markdown-text";
-import { visibleWidth, wrapTextWithAnsi, truncateToWidth, sanitizeForFrame } from "./components/width";
+import { visibleWidth, wrapTextWithAnsi, truncateToWidth, sanitizeForFrame, lastValueCache } from "./components/width";
 import { categoryBadge } from "./components/category-index";
 import { formatStepTimeline, stepsFromTools, formatStepHeader, formatStepTimelineCompact, formatDuration as formatToolMs, type StepState } from "./components/step-timeline";
 import { formatHintBar } from "./components/hints";
@@ -86,10 +86,9 @@ function extractStreamingReasoning(buf: string): string {
   catch { return m[1].replace(/\\\\/g, "\\").replace(/\\n/g, " ").replace(/\\"/g, '"'); }
 }
 
-/** Uniform live-activity fallback for models that stream no `reasoning` field: derive
- *  what the model is doing from the forming JSON (`"tool":"x"` → "calling x…") or, for
- *  prose-replying models, show the reply head — so the live status field behaves identically
- *  across providers/models instead of staying silent for some of them. */
+/** Derive a HUD STATUS (never content) from the forming stream: `"tool":"x"` → "calling
+ *  x…", bare JSON/fence → "forming the next tool call…", prose reply → "writing the
+ *  reply…". The reply/reasoning TEXT itself belongs in the Thinking block, not the HUD. */
 function extractStreamingActivity(buf: string): string {
   const head = buf.length > 512 ? buf.slice(0, 512) : buf;
   const tool = head.match(/"tool"\s*:\s*"([^"]+)"/)?.[1];
@@ -97,7 +96,7 @@ function extractStreamingActivity(buf: string): string {
   const t = head.trim();
   if (!t) return "";
   if (t.startsWith("{") || t.startsWith("```")) return "forming the next tool call…";
-  return t.replace(/\s+/g, " ").slice(0, 140);
+  return "writing the reply…";
 }
 
 /** Bound the input to a per-frame wrap to a fixed trailing window. The live thinking
@@ -265,6 +264,10 @@ export class LaunchTui {
   private cachedFrame = -1;
   private cachedArt: string[] = [];
   private cachedTrack = "";
+  // Per-label (Thinking / Output) single-slot wrap memo: the 120ms spinner tick
+  // re-renders the frame ~8×/s, but the streamed text changes only on a new delta —
+  // so the live block reuses its prior wrap instead of re-segmenting the 16KB tail.
+  private readonly liveBlockWrapCaches = new Map<string, (key: string, compute: () => string[]) => string[]>();
   // Monotonic stage progress so evolution only ever moves forward this turn.
   private readonly progress: StageProgress = createStageProgress();
   // Terminal unicode capability, detected once (drives spinner/track glyph set).
@@ -393,25 +396,20 @@ export class LaunchTui {
         this.draw();
       },
       onModelStream: textSoFar => {
-        // Surface the model's LIVE activity uniformly for every model/provider:
-        // the streamed `reasoning` field when the model emits one, else a derived
-        // fallback (tool being formed / reply prose head) — so no model leaves the
-        // live status field silent while it streams.
-        // Draws are THROTTLED to one per 100ms: the old per-delta draw() rendered
-        // the full frame hundreds of times per response (a real chunk of jeo's
-        // per-step latency); the 120ms timer tick covers the gaps anyway.
+        // The model's JSON-protocol `reasoning` field → the live Thinking block (alongside
+        // native reasoning). The HUD status row gets ONLY a derived STATUS — never the raw
+        // reasoning/reply text, so a JSON-streaming model shows "forming the next tool
+        // call…", not its JSON content. Draws throttled to ≤1/100ms (timer covers gaps).
         const r = extractStreamingReasoning(textSoFar);
         let changed = false;
-        if (r) {
-          changed = r !== this.streamingReasoning;
+        if (r && r !== this.streamingReasoning) {
           this.streamingReasoning = r;
-          this.streamingActivity = r;
-        } else {
-          const fallback = extractStreamingActivity(textSoFar);
-          if (fallback && fallback !== this.streamingActivity) {
-            this.streamingActivity = fallback;
-            changed = true;
-          }
+          changed = true;
+        }
+        const status = extractStreamingActivity(textSoFar);
+        if (status && status !== this.streamingActivity) {
+          this.streamingActivity = status;
+          changed = true;
         }
         if (changed && Date.now() - this.lastStreamDraw >= 100) {
           this.lastStreamDraw = Date.now();
@@ -624,10 +622,21 @@ export class LaunchTui {
     this.draw();
   }
 
+  private livePromptHint: string[] = [];
+  /** Mid-turn command/skill preview lines shown above the live input box, so a
+   *  /command or $skill typed WHILE a turn runs visibly reacts (idle-prompt parity). */
+  setLivePromptHint(lines: string[]): void {
+    if (this.finished) return;
+    const next = lines ?? [];
+    if (next.join("\n") === this.livePromptHint.join("\n")) return;
+    this.livePromptHint = next;
+    this.draw();
+  }
+
   private renderLiveInputBox(cols: number): string[] {
     const caret = this.unicode ? "▌" : "_";
     const display = this.livePromptInput ? `${this.livePromptInput}${caret}` : "";
-    return renderInputBox(display, {
+    const box = renderInputBox(display, {
       cols: Math.max(24, cols),
       color: this.theme.color,
       unicode: this.unicode,
@@ -636,6 +645,9 @@ export class LaunchTui {
       placeholder: "Type your next message...",
       maxBodyRows: 2,
     });
+    if (this.livePromptHint.length === 0) return box;
+    const dim = this.theme.color ? chalk.dim : (s: string) => s;
+    return [...this.livePromptHint.map(l => dim(l)), ...box];
   }
 
   /** Render a `user`-labeled query card (orange "user" header over a filled box).
@@ -884,6 +896,7 @@ export class LaunchTui {
     this.turnUsage = null;
     this.lastLedgerKind = null; // fresh turn: no leading spacer before the first ledger line
     this.livePromptInput = ""; // fresh turn: no next-prompt draft yet
+    this.livePromptHint = []; // fresh turn: no mid-turn command preview yet
     this.subagentLive = null; // fresh turn: no nested subagent in flight
     this.activityLog.length = 0; // per-turn ring: timestamps are turn-relative
     this.spinner.updateStep(0, this.footer.maxSteps);
@@ -1174,7 +1187,7 @@ export class LaunchTui {
         color: this.theme.color,
         dim,
         // DNA-flow identity on LIVE cards only: the flowing helix gradient rides
-        // the card border and the claw beat marks the title. Flushed/final cards
+        // the card border and the prompt beat marks the title. Flushed/final cards
         // stay static. Suppressed while `dim` (in-flight shading takes precedence).
         ...(anim && !dim
           ? { flow: { palette: DNA_FLOW_PALETTE, phase: anim.phase, colorLevel: anim.colorLevel }, titleMark: anim.beat }
@@ -1197,10 +1210,17 @@ export class LaunchTui {
     const dim = this.theme.color ? chalk.dim : (s: string) => s;
     if (!text.trim()) return [];
     const wrapW = Math.max(8, cols - 2);
-    const wrapped = tailForWrap(text)
-      .split("\n")
-      .flatMap(l => wrapTextWithAnsi(l, wrapW))
-      .filter(l => l.length > 0);
+    // Memoize the wrap: only the spinner/clock change on most 120ms ticks, so re-wrapping
+    // this (up to 16KB) tail every frame just re-segments graphemes for no visible change.
+    // Per-label slot (Thinking / Output) keyed by wrap width + text — a real delta misses
+    // once and recomputes; an idle tick hits the cache. `rows` only gates the post-slice.
+    let cache = this.liveBlockWrapCaches.get(label);
+    if (!cache) { cache = lastValueCache<string[]>(); this.liveBlockWrapCaches.set(label, cache); }
+    const wrapped = cache(`${wrapW}\u0000${text}`, () =>
+      tailForWrap(text)
+        .split("\n")
+        .flatMap(l => wrapTextWithAnsi(l, wrapW))
+        .filter(l => l.length > 0));
     if (wrapped.length === 0) return [];
     const cap = Math.max(3, Math.min(ceiling, Math.floor(rows * 0.3)));
     const out: string[] = [sectionLabel(label, Math.max(8, cols), { color: this.theme.color, unicode: this.unicode })];
@@ -1312,10 +1332,10 @@ export class LaunchTui {
     const dim = this.theme.color ? chalk.dim : (s: string) => s;
     const colorLevel = detectColorLevel(process.env, isTTY());
     // One quantized animation clock for the whole frame: gradient phase cycles 20
-    // steps, the claw beat advances every 3 ticks. Quantization keeps repaints
+    // steps, the prompt beat advances every 3 ticks. Quantization keeps repaints
     // coherent (status field + forge border move together) and bounds per-tick work.
     const phase = (this.tickCount * 0.05) % 1;
-    const beat = dnaClawBeat(Math.trunc(this.tickCount / 3), this.unicode);
+    const beat = forgeBeat(Math.trunc(this.tickCount / 3), this.unicode);
 
     // Assemble the bottom-pinned tail FIRST (status line → todos → hud → model bar):
     // it is the live heartbeat and must always be visible; the in-flight card gets

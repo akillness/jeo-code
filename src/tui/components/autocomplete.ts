@@ -50,6 +50,7 @@ export interface CompletionResult {
 
 const PREVIEW_LABEL: Record<string, string> = {
   command: "Commands",
+  skill: "Skills",
   model: "Models",
   provider: "Providers",
   role: "Subagent roles",
@@ -216,6 +217,21 @@ export function formatCompletionPreview(line: string, ctx: CompletionContext, ma
     if (lines.length >= max) lines[lines.length - 1] = `  …(+${hidden + 1} more)`;
     else lines.push(`  …(+${hidden} more)`);
   }
+  return lines;
+}
+
+/** Compact mid-turn command/skill preview. Like formatCompletionPreview but ALSO
+ *  surfaces command-name and $skill-name matches (the kinds the argument-only preview
+ *  skips), so a /command or $skill typed WHILE a turn runs visibly reacts. */
+export function formatMidTurnHint(line: string, ctx: CompletionContext, max = 5): string[] {
+  if (max <= 0) return [];
+  const result = complete(line, ctx);
+  if (result.completions.length === 0) return [];
+  const label = PREVIEW_LABEL[result.kind] ?? "Matches";
+  const shown = result.completions.slice(0, max);
+  const hidden = result.completions.length - shown.length;
+  const lines = [`${label}:`, ...shown.map(c => `  ${c}`)];
+  if (hidden > 0) lines.push(`  …(+${hidden} more)`);
   return lines;
 }
 

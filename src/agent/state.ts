@@ -2,6 +2,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { parseConfig } from "./config-schema";
+import type { AuthProvider } from "../auth/storage";
+import { OPENAI_COMPAT_PROVIDERS } from "../ai/providers/openai-compatible-catalog";
 import { jeoEnv } from "../util/env";
 
 /** Persisted OAuth credential set (access + refresh + expiry) for a provider. */
@@ -26,27 +28,21 @@ export interface HookConfig {
 }
 
 export interface Config {
-  providers: {
-    anthropic?: string;
-    openai?: string;
-    gemini?: string;
-    antigravity?: string;
-  };
+  /** Per-provider API keys, keyed by AuthProvider (cloud keys + catalog OpenAI-compatible). */
+  providers: Partial<Record<AuthProvider, string>>;
   /**
    * OAuth credentials. `resolveCredential()` returns these before API keys so refresh
    * metadata is not lost, but provider execution/status applies the GJC parity rule:
-   * an API key is broader and wins whenever both key + OAuth exist.
+   * an API key is broader and wins whenever both key + OAuth exist. API-key-only
+   * providers never populate OAuth; the key exists for index-compatibility.
    */
-  oauth?: {
-    anthropic?: string | StoredOAuth;
-    openai?: string | StoredOAuth;
-    gemini?: string | StoredOAuth;
-    antigravity?: string | StoredOAuth;
-  };
+  oauth?: Partial<Record<AuthProvider, string | StoredOAuth>>;
   /** Base URL for the local Ollama server (keyless). */
   ollamaBaseUrl?: string;
-  /** Base URL override for OpenAI-compatible providers (LM Studio, vLLM, llama-cpp-server, ...). */
+  /** Base URL override for OpenAI-compatible providers (vLLM, llama-cpp-server, ...). */
   openaiBaseUrl?: string;
+  /** Base URL for the local LM Studio server (keyless, OpenAI-compatible). */
+  lmstudioBaseUrl?: string;
   defaultModel: string;
   theme?: string;
   thinkingLevel?: "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -193,6 +189,13 @@ function withEnvOverlay(cfg: Config): Config {
   if (!providers.anthropic && process.env.ANTHROPIC_API_KEY) providers.anthropic = process.env.ANTHROPIC_API_KEY;
   if (!providers.openai && process.env.OPENAI_API_KEY) providers.openai = process.env.OPENAI_API_KEY;
   if (!providers.gemini && process.env.GEMINI_API_KEY) providers.gemini = process.env.GEMINI_API_KEY;
+  if (!providers.xai && process.env.XAI_API_KEY) providers.xai = process.env.XAI_API_KEY;
+  // Catalog-driven OpenAI-compatible providers: each provider's own `apiKeyEnv`
+  // (e.g. GROQ_API_KEY, HF_TOKEN, NANO_GPT_API_KEY) fills config.providers[name].
+  for (const def of OPENAI_COMPAT_PROVIDERS) {
+    const key = def.name as AuthProvider; // every catalog name is an AuthProvider
+    if (!providers[key] && process.env[def.apiKeyEnv]) providers[key] = process.env[def.apiKeyEnv];
+  }
   return {
     ...cfg,
     providers,
@@ -200,6 +203,7 @@ function withEnvOverlay(cfg: Config): Config {
     defaultModel: jeoEnv("DEFAULT_MODEL") || cfg.defaultModel,
     ollamaBaseUrl: cfg.ollamaBaseUrl || process.env.OLLAMA_HOST || "http://localhost:11434",
     openaiBaseUrl: cfg.openaiBaseUrl || process.env.OPENAI_BASE_URL,
+    lmstudioBaseUrl: cfg.lmstudioBaseUrl || process.env.LMSTUDIO_BASE_URL || "http://localhost:1234/v1",
     roles: {
       smol: cfg.roles?.smol || jeoEnv("SMOL_MODEL"),
       slow: cfg.roles?.slow || jeoEnv("SLOW_MODEL"),
@@ -214,6 +218,7 @@ function envDefaultConfig(): Config {
       anthropic: process.env.ANTHROPIC_API_KEY,
       openai: process.env.OPENAI_API_KEY,
       gemini: process.env.GEMINI_API_KEY,
+      xai: process.env.XAI_API_KEY,
     },
     defaultModel: jeoEnv("DEFAULT_MODEL") || DEFAULT_MODEL,
     thinkingLevel: "medium",

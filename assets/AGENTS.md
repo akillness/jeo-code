@@ -9,8 +9,12 @@ Static binary assets (images) used for project branding, documentation, and TUI/
 ## Key Files
 | File | Description |
 |------|-------------|
-| `character.png` | Mascot/character artwork used in branding and helper scripts |
-| `hero.png` | Primary hero/banner image for documentation |
+| `character.png` | Neon-lens coding-agent mascot (blue lens → violet gown → pink lens) holding a glowing terminal; the brand's synthwave identity, used in README branding and helper scripts |
+| `hero.png` | Primary hero/banner image for documentation (autonomous coding-agent scene) |
+| `icon.png` | Project icon (mascot face, 1024×1024) shown in README headers |
+| `icon-master.png` | Full-resolution source for the generated project icon |
+| `apple-touch-icon.png` | 180×180 touch icon derived from `icon.png` |
+| `favicon.ico` | Multi-size favicon (16–256px) derived from the project icon |
 
 ## Subdirectories
 *(None)*

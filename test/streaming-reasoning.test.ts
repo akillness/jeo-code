@@ -74,3 +74,45 @@ test("LaunchTui: streams native thinking live, then persists it under a jeo labe
   expect(labelIdx).toBeLessThan(flushed.indexOf("weighing two approaches"));
   tui.finish("done");
 });
+
+test("HUD shows only a STATUS while a JSON-protocol model streams; reasoning goes to the Thinking block", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  const ev = tui.events();
+  ev.onStep!(1);
+  out.length = 0;
+  // A model streaming its JSON tool call with a reasoning field.
+  ev.onModelStream!('{"reasoning":"my secret chain of thought","tool":"read","arguments":{"filePath":"x"}}');
+  const full = strip(out.join(""));
+  // HUD status row carries a derived STATUS ("calling read…"), and the raw JSON is
+  // never dumped to the frame.
+  expect(full).toMatch(/calling read|forming the next tool/);
+  expect(full).not.toContain('{"reasoning"');
+  // The reasoning is surfaced in the live Thinking block (after the "Thinking" label),
+  // not in the status row.
+  expect(full).toContain("Thinking");
+  expect(full).toContain("my secret chain of thought");
+  expect(full.indexOf("my secret chain of thought")).toBeGreaterThan(full.indexOf("Thinking"));
+  // The status text right before the esc hint is a status, not the reasoning prose.
+  const escAt = full.search(/⟦esc⟧|\[esc\]/);
+  const statusWindow = escAt > 0 ? full.slice(Math.max(0, escAt - 60), escAt) : "";
+  expect(statusWindow).not.toContain("my secret chain of thought");
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  tui.finish("done");
+});
+
+test("HUD prose stream shows 'writing the reply…' status, not the reply text", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  const ev = tui.events();
+  ev.onStep!(1);
+  out.length = 0;
+  ev.onModelStream!("Here is the long final answer prose the model is writing out");
+  const escLine = strip(out.join("")).split("\n").find(l => l.includes("⟦esc⟧") || l.includes("[esc]")) ?? "";
+  expect(escLine).toContain("writing the reply");
+  expect(escLine).not.toContain("long final answer prose");
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  tui.finish("done");
+});

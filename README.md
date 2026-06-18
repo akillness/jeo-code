@@ -2,6 +2,10 @@
   <img src="assets/hero.png" alt="jeo-code autonomous coding-agent hero illustration" width="100%" />
 </p>
 
+<p align="center">
+  <img src="assets/icon.png" alt="jeo-code icon" width="96" />
+</p>
+
 <h1 align="center">jeo-code (jeo)</h1>
 
 <p align="center">
@@ -200,11 +204,11 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.23]** (2026-06-19) — Live reasoning/thinking streams in the TUI across every provider, three new OpenAI-compatible backends (LM Studio, xAI, Kimi) join the auth/discovery/catalog surface, and Gemini gains native function-calling.
+- **[0.6.22]** (2026-06-18) — Extended-thinking activation is now consistent across providers: a `low` session thinking level enables reasoning everywhere.
+- **[0.6.21]** (2026-06-18) — Session thinking level now reaches the provider's actual reasoning depth, not just the token ceiling.
 - **[0.6.20]** (2026-06-18) — Launch REPL internals decomposed into testable modules: `@mention` path completion, slash-command view renderers, and slash-command handlers extracted from the monolithic `launch.ts` into dedicated files with full unit-test coverage.
 - **[0.6.19]** (2026-06-18) — Post-turn hooks run once per batch (not per edit), local hook reads are mtime-cached, tool-result formatting is parallelized, and wrapped colored text keeps its tint.
-- **[0.6.18]** (2026-06-17) — Memory data-flow diagram and a README "Memory flow" section documenting the actual runtime behavior.
-- **[0.6.17]** (2026-06-17) — Legacy MEMORY.md migrates losslessly into the OKF concept bundle, with a one-shot command and a rollback toggle.
-- **[0.6.16]** (2026-06-17) — OKF memory grows a concept cross-link graph: 1-hop search expansion, bundle lint, graphify-optional.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

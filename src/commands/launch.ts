@@ -480,6 +480,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // Full untruncated output of the most recent tool call — the clipped forge
   // card's `⟦Ctrl+O for more⟧` hint resolves here.
   let lastToolDetail: { tool: string; output: string } | null = null;
+  // Accumulated reasoning/thinking for the in-flight turn (the model's thought before its
+  // answer). Captured from the reasoning stream and persisted on the assistant message so
+  // it survives /resume + export (gjc "think → answer" record). Reset at each turn start.
+  let lastTurnReasoning = "";
   /** Wrap turn events so EVERY sink (TUI or plain stream) records the last full
    *  tool output for the Ctrl+O detail view. */
   const withToolDetailCapture = (base: ReturnType<LaunchTui["events"]>): ReturnType<LaunchTui["events"]> => ({
@@ -487,6 +491,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     onToolResult: (tool, success, output) => {
       lastToolDetail = { tool, output };
       base.onToolResult?.(tool, success, output);
+    },
+    onReasoningStream: (textSoFar: string) => {
+      // textSoFar is the cumulative thought for the current step; keep the latest
+      // non-empty value (the thought immediately preceding the turn's answer).
+      if (textSoFar.trim()) lastTurnReasoning = textSoFar;
+      base.onReasoningStream?.(textSoFar);
     },
   });
   /** Compose a session-persistence flush into onStep so each completed step is
@@ -589,6 +599,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // AFTER compaction (which mutates history) and consumed by the post-turn
     // persistence block below.
     let beforeLen = history.length;
+    lastTurnReasoning = ""; // fresh turn: capture this turn's thinking from scratch
     // Incremental session persistence (durability across mid-turn interruption):
     // persistTurnTail() flushes history messages added since the last flush — called
     // right after the user prompt, on every onStep boundary, and once post-turn — so
@@ -892,8 +903,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // this only covers the tail — net content is the full turn either way.
     try {
       await persistTurnTail();
-      history.push({ role: "assistant", content: reply });
-      if (sessionId) await appendMessage(sessionId, { role: "assistant", content: reply }, cwd);
+      const assistantMsg: Message = lastTurnReasoning.trim()
+        ? { role: "assistant", content: reply, reasoning: lastTurnReasoning }
+        : { role: "assistant", content: reply };
+      history.push(assistantMsg);
+      if (sessionId) await appendMessage(sessionId, assistantMsg, cwd);
       if (tui) tui.finish(reply);
     } finally {
       if (tui) interactiveTurnActive = false;

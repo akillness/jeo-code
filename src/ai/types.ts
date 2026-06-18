@@ -17,6 +17,11 @@ export interface Message {
    *  these alongside `content`; history bookkeeping (compaction, transcripts)
    *  keeps treating `content` as the message body. */
   images?: ImageAttachment[];
+  /** Persisted reasoning/thinking text for an assistant turn (the thought before the
+   *  answer). Survives /resume + export so the durable record shows "think → answer".
+   *  Display-only: NOT replayed to providers (anthropic/gemini thinking replay needs
+   *  the original signed block, which the streaming path does not capture). */
+  reasoning?: string;
 }
 
 export interface Usage {

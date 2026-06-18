@@ -127,3 +127,31 @@ test("formatTranscript keeps a prose reply that merely CONTAINS a JSON snippet",
   const out = formatTranscript(messages, { color: false, unicode: true }).map(stripAnsi).join("\n");
   expect(out).toContain("here is what that means"); // prose preserved, not dropped/misrendered
 });
+
+test("formatTranscript renders persisted reasoning above the reply (think → answer)", () => {
+  const messages: Message[] = [
+    { role: "user", content: "what is 2+2" },
+    {
+      role: "assistant",
+      content: JSON.stringify({ tool: "done", arguments: { reason: "It is 4." } }),
+      reasoning: "Adding two and two gives four.",
+    },
+  ];
+  const out = formatTranscript(messages, { color: false, unicode: true }).map(stripAnsi);
+  const text = out.join("\n");
+  expect(text).toContain("thinking");
+  expect(text).toContain("Adding two and two gives four.");
+  expect(text).toContain("It is 4.");
+  // thinking comes BEFORE the answer
+  expect(text.indexOf("Adding two and two")).toBeLessThan(text.indexOf("It is 4."));
+});
+
+test("formatTranscript: assistant turn without reasoning shows no thinking block", () => {
+  const messages: Message[] = [
+    { role: "user", content: "hi" },
+    { role: "assistant", content: JSON.stringify({ tool: "done", arguments: { reason: "hello" } }) },
+  ];
+  const text = formatTranscript(messages, { color: false, unicode: true }).map(stripAnsi).join("\n");
+  expect(text).not.toContain("thinking");
+  expect(text).toContain("hello");
+});

@@ -156,6 +156,13 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
           ? ""
           : m.content;
     if (!reason.trim()) continue;
+    // Persisted thinking (gjc "think → answer" order): show the turn's reasoning,
+    // dimmed, above the reply so the durable record carries it across /resume + export.
+    if (m.reasoning?.trim()) {
+      if (lines.length > 0 && lines[lines.length - 1] !== "") lines.push("");
+      lines.push(dim(`${unicode ? "◇" : "*"} thinking`));
+      for (const l of clipBody(m.reasoning.trim(), bodyCap)) lines.push(dim(l));
+    }
     if (lines.length > 0 && lines[lines.length - 1] !== "") {
       lines.push("");
     }

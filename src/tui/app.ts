@@ -97,7 +97,9 @@ function extractStreamingActivity(buf: string): string {
   const t = head.trim();
   if (!t) return "";
   if (t.startsWith("{") || t.startsWith("```")) return "forming the next tool call…";
-  return t.replace(/\s+/g, " ").slice(0, 140);
+  // Prose (not JSON) means the model is streaming its final reply — show a STATUS, never
+  // the reply/reasoning content itself (that belongs in the Thinking block, not the HUD).
+  return "writing the reply…";
 }
 
 /** Bound the input to a per-frame wrap to a fixed trailing window. The live thinking
@@ -397,25 +399,20 @@ export class LaunchTui {
         this.draw();
       },
       onModelStream: textSoFar => {
-        // Surface the model's LIVE activity uniformly for every model/provider:
-        // the streamed `reasoning` field when the model emits one, else a derived
-        // fallback (tool being formed / reply prose head) — so no model leaves the
-        // live status field silent while it streams.
-        // Draws are THROTTLED to one per 100ms: the old per-delta draw() rendered
-        // the full frame hundreds of times per response (a real chunk of jeo's
-        // per-step latency); the 120ms timer tick covers the gaps anyway.
+        // The model's JSON-protocol `reasoning` field → the live Thinking block (alongside
+        // native reasoning). The HUD status row gets ONLY a derived STATUS — never the raw
+        // reasoning/reply text, so a JSON-streaming model shows "forming the next tool
+        // call…", not its JSON content. Draws throttled to ≤1/100ms (timer covers gaps).
         const r = extractStreamingReasoning(textSoFar);
         let changed = false;
-        if (r) {
-          changed = r !== this.streamingReasoning;
+        if (r && r !== this.streamingReasoning) {
           this.streamingReasoning = r;
-          this.streamingActivity = r;
-        } else {
-          const fallback = extractStreamingActivity(textSoFar);
-          if (fallback && fallback !== this.streamingActivity) {
-            this.streamingActivity = fallback;
-            changed = true;
-          }
+          changed = true;
+        }
+        const status = extractStreamingActivity(textSoFar);
+        if (status && status !== this.streamingActivity) {
+          this.streamingActivity = status;
+          changed = true;
         }
         if (changed && Date.now() - this.lastStreamDraw >= 100) {
           this.lastStreamDraw = Date.now();

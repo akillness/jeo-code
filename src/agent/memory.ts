@@ -3,10 +3,12 @@
  * (plan/gjc-inheritance.md B6; gjc memories/ 2-phase consolidation 참조).
  *
  * Session end distills durable learnings (repo facts, commands that work,
- * gotchas, user preferences) into `.jeo/memory/MEMORY.md` with ONE model call,
- * merging into the existing doc. The next session injects the doc back into
- * the system prompt under a hard char cap — local-first (nullclaw/zeroclaw),
- * no remote backend, disable with JEO_NO_MEMORY=1.
+ * gotchas, user preferences) into the OKF concept bundle under `.jeo/memory/`
+ * (type-partitioned `facts/`, `commands/`, … dirs) with ONE model call, upserting
+ * each concept; a legacy single `MEMORY.md` doc is the fallback when the model
+ * returns plain text. The next session reads the bundle back (bundle-first, then
+ * MEMORY.md) and injects it into the system prompt under a hard char cap —
+ * local-first (nullclaw/zeroclaw), no remote backend, disable with JEO_NO_MEMORY=1.
  */
 import * as fs from "node:fs/promises";
 import { spawn as nodeSpawn } from "node:child_process";
@@ -47,16 +49,181 @@ export async function loadMemory(cwd: string): Promise<string> {
   }
 }
 
+/** Render a single index.md-style section: a `## header` followed by one bullet
+ *  per concept (`**title**: description`), with the concept body indented beneath. */
+function renderConceptSection(header: string, list: { title: string; description: string; body: string }[]): string {
+  const lines = [`## ${header}`];
+  for (const c of list) {
+    lines.push(`- **${c.title}**${c.description ? `: ${c.description}` : ""}`);
+    if (c.body) {
+      for (const bodyLine of c.body.split("\n")) lines.push(`  ${bodyLine}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+/** A loaded OKF concept: frontmatter fields + body + bundle-relative path. */
+export interface Concept {
+  type: string;
+  title: string;
+  description: string;
+  body: string;
+  tags: string[];
+  /** high | medium | low — distiller defaults to "high"; drives core selection. */
+  confidence: string;
+  /** Bundle-relative path, e.g. `commands/bun-test.md`. */
+  relPath: string;
+}
+
+/** Read every concept document in the bundle into structured `Concept`s. Reserved
+ *  files (index.md/log.md) and raw/ payloads are skipped; unparseable or
+ *  frontmatter-less files are ignored (lenient consumption). */
+export async function loadConcepts(cwd: string): Promise<Concept[]> {
+  return loadConceptsFromBundle(path.join(cwd, ".jeo", "memory"));
+}
+
+async function loadConceptsFromBundle(bundleDir: string): Promise<Concept[]> {
+  const files = await findMarkdownFiles(bundleDir);
+  const concepts: Concept[] = [];
+  for (const file of files) {
+    const relPath = path.relative(bundleDir, file).replace(/\\/g, "/");
+    if (isReservedFile(relPath)) continue;
+    let parsed;
+    try {
+      parsed = parseConcept(await fs.readFile(file, "utf-8"));
+    } catch {
+      continue;
+    }
+    if (!parsed.hasFrontmatter) continue;
+    const fm = parsed.frontmatter;
+    concepts.push({
+      type: (fm.type as string) || "RepoFact",
+      title: (fm.title as string) || path.basename(file, ".md"),
+      description: (fm.description as string) || "",
+      body: parsed.body.trim(),
+      tags: Array.isArray(fm.tags) ? fm.tags.filter((t): t is string => typeof t === "string") : [],
+      confidence: typeof fm.confidence === "string" ? fm.confidence : "high",
+      relPath,
+    });
+  }
+  return concepts;
+}
+
+/** Tokenize a free-text query into distinct lowercased keywords (len ≥ 3). */
+function tokenize(query?: string): string[] {
+  if (!query) return [];
+  return Array.from(new Set((query.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(t => t.length >= 3)));
+}
+
+/** Relevance score of a concept against query tokens. Field weights mirror
+ *  llm-wiki's retrieval bias (title ≫ tags ≫ type/description ≫ body). 0 = no hit. */
+export function scoreConcept(concept: Concept, tokens: string[]): number {
+  if (tokens.length === 0) return 0;
+  const title = concept.title.toLowerCase();
+  const desc = concept.description.toLowerCase();
+  const body = concept.body.toLowerCase();
+  const type = concept.type.toLowerCase();
+  const tags = concept.tags.map(t => t.toLowerCase());
+  let score = 0;
+  for (const t of tokens) {
+    if (title.includes(t)) score += 5;
+    if (tags.some(tag => tag.includes(t))) score += 3;
+    if (type.includes(t)) score += 2;
+    if (desc.includes(t)) score += 2;
+    if (body.includes(t)) score += 1;
+  }
+  return score;
+}
+
+/** Search the bundle's concepts for a query, returning the relevant ones (score > 0)
+ *  highest-score first. A type/tags/title/body keyword match all contribute. */
+export function searchConcepts(concepts: Concept[], query: string): { concept: Concept; score: number }[] {
+  const tokens = tokenize(query);
+  return concepts
+    .map(concept => ({ concept, score: scoreConcept(concept, tokens) }))
+    .filter(r => r.score > 0)
+    .sort((a, b) => b.score - a.score);
+}
+
+/** Priority order for injection: high-confidence "core" concepts first, then by
+ *  query relevance (descending), preserving input order as a stable tiebreak. */
+function priorityOrder(concepts: Concept[], query?: string): Concept[] {
+  const tokens = tokenize(query);
+  return concepts
+    .map((concept, i) => ({ concept, i, core: concept.confidence === "high", score: scoreConcept(concept, tokens) }))
+    .sort((a, b) => {
+      if (a.core !== b.core) return a.core ? -1 : 1;
+      if (b.score !== a.score) return b.score - a.score;
+      return a.i - b.i;
+    })
+    .map(s => s.concept);
+}
+
+/** Group items by their `type` into ordered `{ header, list }` sections: TYPE_LAYOUT
+ *  order first, then any unknown types under their raw type name (lenient). The one
+ *  place that encodes the section ordering — shared by render and index. */
+function groupByTypeLayout<T extends { type: string }>(items: T[]): { header: string; list: T[] }[] {
+  const byType = new Map<string, T[]>();
+  for (const it of items) {
+    const list = byType.get(it.type) ?? [];
+    list.push(it);
+    byType.set(it.type, list);
+  }
+  const sections: { header: string; list: T[] }[] = [];
+  const rendered = new Set<string>();
+  for (const { type, header } of TYPE_LAYOUT) {
+    rendered.add(type);
+    const list = byType.get(type);
+    if (list && list.length > 0) sections.push({ header, list });
+  }
+  for (const [type, list] of byType) {
+    if (rendered.has(type) || list.length === 0) continue;
+    sections.push({ header: type, list });
+  }
+  return sections;
+}
+
+/** Render a set of concepts as a compact markdown block grouped by type in
+ *  TYPE_LAYOUT order, with any unknown types appended under their raw type name. */
+function renderConcepts(concepts: Concept[]): string {
+  return groupByTypeLayout(concepts)
+    .map(({ header, list }) => renderConceptSection(header, list))
+    .join("\n\n");
+}
+
+/** Greedily select concepts (in priority order) whose grouped render stays within
+ *  `budget` chars, dropping the lowest-priority concepts first. At least the
+ *  top-priority concept is always kept (the framing/backstop cap still applies). */
+function selectWithinBudget(concepts: Concept[], query: string | undefined, budget: number): Concept[] {
+  const ordered = priorityOrder(concepts, query);
+  const selected: Concept[] = [];
+  for (const c of ordered) {
+    if (renderConcepts([...selected, c]).length <= budget) selected.push(c);
+  }
+  if (selected.length === 0 && ordered.length > 0) selected.push(ordered[0]!);
+  return selected;
+}
+
 /** System-prompt block carrying prior-session learnings; "" when empty or disabled.
+ *  Selection (Sprint 03): always-included high-confidence core + concepts most
+ *  relevant to `query` (the current task), chosen whole within MEMORY_INJECT_MAX_CHARS
+ *  (lowest-priority dropped first) — never a mid-concept string truncation. Falls
+ *  back to the legacy single MEMORY.md doc when no concept bundle exists.
  *  The memory text is MODEL-DISTILLED from session transcripts (which include tool
  *  outputs — file contents, web results), so it is injection-hardened like subagent
  *  reports: tag-breakout sequences are neutralized and the block is framed as DATA. */
-export async function memoryPromptSection(cwd: string): Promise<string> {
+export async function memoryPromptSection(cwd: string, query?: string): Promise<string> {
   if (jeoEnv("NO_MEMORY") === "1") return "";
-  let memory = await loadMemory(cwd);
+  // Prefer the OKF concept bundle (budget-selected); fall back to legacy MEMORY.md.
+  const concepts = await loadConcepts(cwd);
+  let memory = concepts.length > 0
+    ? renderConcepts(selectWithinBudget(concepts, query, MEMORY_INJECT_MAX_CHARS))
+    : await loadMemory(cwd);
   if (!memory) return "";
+  // Backstop: legacy MEMORY.md is a single blob (not concept-selectable), and a
+  // pathological single concept can exceed the budget — hard-cap either way.
   if (memory.length > MEMORY_INJECT_MAX_CHARS) {
-    memory = memory.slice(0, MEMORY_INJECT_MAX_CHARS) + "\n…(memory truncated — full doc in .jeo/memory/MEMORY.md)";
+    memory = memory.slice(0, MEMORY_INJECT_MAX_CHARS) + "\n…(memory truncated — full doc in .jeo/memory/)";
   }
   // Neutralize the fence tags so distilled content can never close the block and
   // smuggle instruction-shaped text into the bare system prompt.
@@ -120,33 +287,20 @@ async function findMarkdownFiles(dir: string): Promise<string[]> {
 }
 
 async function rebuildIndex(bundleDir: string): Promise<void> {
-  const files = await findMarkdownFiles(bundleDir);
-  const concepts: { type: string; title: string; relPath: string }[] = [];
-  for (const file of files) {
-    const relPath = path.relative(bundleDir, file);
-    if (isReservedFile(relPath)) continue;
-    try {
-      const content = await fs.readFile(file, "utf-8");
-      const parsed = parseConcept(content);
-      concepts.push({
-        type: (parsed.frontmatter.type as string) || "RepoFact",
-        title: (parsed.frontmatter.title as string) || path.basename(file, ".md"),
-        relPath,
-      });
-    } catch {
-      // ignore
-    }
-  }
+  const concepts = await loadConceptsFromBundle(bundleDir);
 
-  let body = "# Index\n\n";
-  for (const { type, header } of TYPE_LAYOUT) {
-    const list = concepts.filter(c => c.type === type);
-    if (list.length === 0) continue;
-    body += `## ${header}\n`;
+  // Progressive-disclosure index: a link per concept plus its one-line description,
+  // grouped by type (TYPE_LAYOUT order first, then any unknown types — lenient).
+  const section = (header: string, list: Concept[]): string => {
+    let out = `## ${header}\n`;
     for (const c of list) {
-      body += `- [${c.title}](/${c.relPath.replace(/\\/g, "/")})\n`;
+      out += `- [${c.title}](/${c.relPath})${c.description ? ` — ${c.description}` : ""}\n`;
     }
-    body += "\n";
+    return out + "\n";
+  };
+  let body = "# Index\n\n";
+  for (const { header, list } of groupByTypeLayout(concepts)) {
+    body += section(header, list);
   }
 
   const indexContent = serializeConcept({ okf_version: "0.1" }, body.trim());

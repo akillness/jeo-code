@@ -396,7 +396,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const protocol = buildToolProtocol(allowedTools);
   const preamble = flags.systemPrompt ?? "You are the jeo, an interactive coding agent.\nAccomplish the user's request by calling tools and verifying your work.";
   // Prior-session learnings (B6 경험 증류) — "" when absent or JEO_NO_MEMORY=1.
-  const memoryBlock = await memoryPromptSection(cwd);
+  // The one-shot task text (flags.message) seeds relevance search so the most
+  // pertinent concepts win the injection budget; interactive boots with no query
+  // (high-confidence core concepts are always prioritized regardless).
+  const memoryBlock = await memoryPromptSection(cwd, flags.message || undefined);
 
   const baseSystemPrompt =
     preamble + "\n\n" + protocol + "\n\n" +
@@ -679,7 +682,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           else console.log(msg);
         },
         onHardExit: () => {
-          if (tui) tui.finish("Cancelled.");
+          if (tui) tui.finish("Cancelled.", { ok: false });
           process.exit(130);
         },
       });
@@ -812,7 +815,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
     } catch (err) {
       if (tui) {
-        tui.finish(`! ${friendlyProviderError(err)}`);
+        tui.finish(`! ${friendlyProviderError(err)}`, { ok: false });
         interactiveTurnActive = false;
       }
       throw err;

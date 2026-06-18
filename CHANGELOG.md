@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.15] - 2026-06-17
+_Query-aware OKF memory injection with budget-priority selection, and a truthful end-of-turn Todos receipt._
+
+### Added
+- **Concept-level memory search & budget-aware injection (OKF Sprint 03).** `memoryPromptSection(cwd, query?)` now loads the OKF concept bundle and selects what to inject by priority — high-confidence core facts first, then query relevance (the one-shot task text is wired in as the query), then stable order — dropping whole lowest-priority concepts to fit `MEMORY_INJECT_MAX_CHARS` (3000) instead of truncating mid-string. New exported helpers `loadConcepts` / `scoreConcept` / `searchConcepts`. The `index.md` rebuild now emits progressive-disclosure `- [title](/relpath) — description` rows. Injection-hardening (DATA framing, fence neutralization) and the `MEMORY.md` fallback are retained.
+
+### Changed
+- **End-of-turn Todos receipt tells the truth.** A successful `finish` shows the Todos checklist fully complete so it agrees with the `done` badge (the model's last `todo` call often forgets to flip the final items, and the once-per-turn done gate can't force it); cancel/error finishes pass `ok:false` so any unfinished items stay honestly shown. The live frame is unchanged, so in-progress work still renders truthfully.
+
+
 ## [0.6.14] - 2026-06-16
 _Memory distillation survives malformed model output, and stream-idle stalls retry instead of failing the turn._
 

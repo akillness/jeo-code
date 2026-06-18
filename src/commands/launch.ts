@@ -134,6 +134,7 @@ import {
   captureLivePromptInputChunk,
   restoreQueuedLinesToPrefill,
   createInFlightAbortHarness,
+  classifyMidTurnLine,
 } from "./launch/input";
 import {
   gatedStdout,
@@ -198,6 +199,7 @@ export {
   captureLivePromptInputChunk,
   restoreQueuedLinesToPrefill,
   createInFlightAbortHarness,
+  classifyMidTurnLine,
 
   gatedStdout,
   formatTaskSubEvent,
@@ -547,6 +549,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // Clears the live next-prompt draft — used after a mid-turn Enter is lifted into
   // the steering inbox so the consumed line does not also become the next prompt.
   let queueBusyClear: (() => void) | undefined;
+  // Routes a command-shaped (/… or $…) mid-turn draft into the idle loop's
+  // pending-line queue so it runs as a real COMMAND at the turn boundary,
+  // instead of being steered into the model as literal text.
+  let queueBusyCommand: ((line: string) => void) | undefined;
   let interactiveTurnActive = false;
 
 
@@ -675,12 +681,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (typedEnter) {
             const line = (queueBusySnapshot?.().text ?? "").trim();
             if (line) {
-              steerInbox.push(line);
+              // A mid-turn /command or $skill is NOT a query for the model — steering it
+              // would send the literal "/model" / "$skill" text to the LLM. Recognize it
+              // and queue it to run as a real COMMAND when the turn finishes (the idle
+              // loop's dispatcher serves pendingStdinLines); plain queries still steer
+              // into the running turn. JEO_NO_STEER=1 disables both (legacy draft-only).
               queueBusyClear?.();
               tui.setLivePromptInput("");
-              // Surface the steered query as a `user` card in scrollback so it reads
-              // as an accepted input that started work — not just a transient notice.
-              tui.flushSteerCard(line);
+              if (classifyMidTurnLine(line) === "command") {
+                queueBusyCommand?.(line);
+                tui.events().onNotice?.(`⌘ queued ${line} — runs when this turn finishes`);
+              } else {
+                steerInbox.push(line);
+                // Surface the steered query as a `user` card in scrollback so it reads
+                // as an accepted input that started work — not just a transient notice.
+                tui.flushSteerCard(line);
+              }
               return;
             }
           }
@@ -1363,6 +1379,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     text: queuedPromptInput.partial,
   });
   queueBusyClear = () => { queuedPromptInput.partial = ""; };
+  queueBusyCommand = (line: string) => { pendingStdinLines.push(line); };
   // Bracketed-paste line routing at the PROMPT: readline strips the 2004 markers
   // and replays pasted lines as synthetic keypresses, emitting paste-start /
   // paste-end around them. Lines submitted INSIDE that window are intentional

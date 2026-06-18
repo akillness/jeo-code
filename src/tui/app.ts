@@ -359,12 +359,16 @@ export class LaunchTui {
     try { this.write(`\x1b]2;jeo: ${this.turnTitle}\x07`); } catch { /* terminal gone */ }
   }
 
-  /** Render the task plan as a status-colored checklist; empty when no plan. */
-  private renderPlan(color: boolean): string[] {
+  /** Render the task plan as a status-colored checklist; empty when no plan. When
+   *  `complete` (the success-finish receipt), every still-open item is shown done so the
+   *  checklist agrees with the `done` badge — the model's last `todo` call often forgets
+   *  to flip the final items, and the once-per-turn done gate can't force it. The LIVE
+   *  frame never passes `complete`, so in-progress work still renders truthfully. */
+  private renderPlan(color: boolean, complete = false): string[] {
     if (this.todos.length === 0) return [];
     const steps = this.todos.map(t => ({
       label: t.title,
-      state: (t.status === "done" ? "done" : t.status === "in_progress" ? "active" : "pending") as StepState,
+      state: (complete || t.status === "done" ? "done" : t.status === "in_progress" ? "active" : "pending") as StepState,
     }));
     const header = formatStepHeader(steps, { unicode: this.unicode, color, label: "Todos" });
     return [header, ...formatStepTimeline(steps, { unicode: this.unicode, color, highlightActive: true, maxRows: 8, badges: false })];
@@ -984,8 +988,11 @@ export class LaunchTui {
     return this.theme.color ? chalk.bold(accentPaint(this.theme)("jeo")) : "jeo";
   }
 
-  /** Collapse the live region to static final output. */
-  finish(reply: string): void {
+  /** Collapse the live region to static final output. `ok` (default true) marks a
+   *  SUCCESSFUL turn — its Todos receipt is shown fully complete. Cancel/error finishes
+   *  pass `ok:false` so the checklist truthfully keeps any unfinished items. */
+  finish(reply: string, opts: { ok?: boolean } = {}): void {
+    const ok = opts.ok !== false;
     this.finished = true;
     this.hudPhase = "done";
     if (this.timer) {
@@ -1014,7 +1021,7 @@ export class LaunchTui {
     const finalLines: string[] = [];
     // jeo-ref final-report order: the ANSWER leads; the Todos checklist follows it
     // (done = checked + struck through), so the plan reads as a completion receipt.
-    const planLines = this.renderPlan(this.theme.color);
+    const planLines = this.renderPlan(this.theme.color, ok);
     if (!this.inline) {
       // Inline scrollback already reads as a ✓/✗ checklist; the step timeline +
       // compact strip + flow line would just repeat it (gjc-style slim summary).

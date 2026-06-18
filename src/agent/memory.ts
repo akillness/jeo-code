@@ -3,18 +3,21 @@
  * (plan/gjc-inheritance.md B6; gjc memories/ 2-phase consolidation 참조).
  *
  * Session end distills durable learnings (repo facts, commands that work,
- * gotchas, user preferences) into `.jeo/memory/MEMORY.md` with ONE model call,
- * merging into the existing doc. The next session injects the doc back into
- * the system prompt under a hard char cap — local-first (nullclaw/zeroclaw),
- * no remote backend, disable with JEO_NO_MEMORY=1.
+ * gotchas, user preferences) into the OKF concept bundle under `.jeo/memory/`
+ * (type-partitioned `facts/`, `commands/`, … dirs) with ONE model call, upserting
+ * each concept; a legacy single `MEMORY.md` doc is the fallback when the model
+ * returns plain text. The next session reads the bundle back (bundle-first, then
+ * MEMORY.md) and injects it into the system prompt under a hard char cap —
+ * local-first (nullclaw/zeroclaw), no remote backend, disable with JEO_NO_MEMORY=1.
  */
 import * as fs from "node:fs/promises";
 import { spawn as nodeSpawn } from "node:child_process";
 import * as path from "node:path";
 import { callLlm, type Message } from "./loop";
 import { jeoEnv } from "../util/env";
-import { parseConcept, serializeConcept, slugify, isReservedFile } from "./memory-okf";
+import { parseConcept, serializeConcept, slugify, isReservedFile, conceptId } from "./memory-okf";
 import { tryExtractJsonObject } from "./json";
+import { buildConceptGraph, expandByGraph, lintConceptGraph, type GraphLintReport } from "./memory-graph";
 
 /** On-disk document cap — the distill prompt instructs the model to stay under it. */
 export const MEMORY_MAX_CHARS = 6_000;
@@ -47,16 +50,343 @@ export async function loadMemory(cwd: string): Promise<string> {
   }
 }
 
+/** A concept extracted from a legacy single-doc MEMORY.md during migration. */
+export interface MigratedConcept {
+  type: string;
+  title: string;
+  description: string;
+  body: string;
+}
+
+/** Map a legacy `## heading` to a jeo concept type. Lenient keyword match —
+ *  unknown headings default to RepoFact so nothing is dropped. */
+function headingToType(heading: string): string {
+  const h = heading.toLowerCase();
+  if (/\bcommand/.test(h)) return "Command";
+  if (/gotcha|pitfall|caveat/.test(h)) return "Gotcha";
+  if (/pref/.test(h)) return "UserPreference";
+  if (/repo|fact/.test(h)) return "RepoFact";
+  return "RepoFact";
+}
+
+/** Parse a legacy 4-heading MEMORY.md into concepts: each `## heading` sets the
+ *  type, each top-level bullet becomes a concept (`**title**: description` form
+ *  recognized, indented continuation lines become the body). Lossless: a plain
+ *  bullet keeps its whole text as the title. */
+export function parseLegacyMemory(doc: string): MigratedConcept[] {
+  const concepts: MigratedConcept[] = [];
+  let currentType = "RepoFact";
+  let cur: MigratedConcept | null = null;
+  const flush = () => {
+    if (cur) {
+      cur.body = cur.body.replace(/\n+$/, "");
+      concepts.push(cur);
+      cur = null;
+    }
+  };
+  for (const line of doc.split("\n")) {
+    const heading = line.match(/^#{1,6}\s+(.*)$/);
+    if (heading) {
+      flush();
+      currentType = headingToType(heading[1]!.trim());
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    if (bullet) {
+      flush();
+      const text = bullet[1]!.trim();
+      const bold = text.match(/^\*\*(.+?)\*\*\s*:?\s*(.*)$/);
+      cur = bold
+        ? { type: currentType, title: bold[1]!.trim(), description: bold[2]!.trim(), body: "" }
+        : { type: currentType, title: text, description: "", body: "" };
+      continue;
+    }
+    // Continuation line (typically 2-space indented) belongs to the open concept.
+    if (cur && line.trim() !== "") {
+      cur.body += (cur.body ? "\n" : "") + line.replace(/^ {2}/, "");
+    }
+  }
+  flush();
+  return concepts.filter(c => c.title);
+}
+
+/** Outcome of a one-shot legacy → OKF bundle migration. */
+export interface MigrationResult {
+  migrated: boolean;
+  conceptCount: number;
+  /** Why nothing was migrated (already a bundle / no legacy doc / nothing parsed). */
+  skipped?: string;
+  /** Where the legacy MEMORY.md was preserved for rollback, if migrated. */
+  backupPath?: string;
+}
+
+/**
+ * Migrate a legacy single-doc `.jeo/memory/MEMORY.md` into the OKF concept bundle.
+ * One-shot and IDEMPOTENT: a bundle that already holds concept docs is left
+ * untouched. On success each legacy bullet becomes a type-partitioned concept,
+ * index.md/log.md are (re)built, and the legacy doc is renamed to `MEMORY.md.bak`
+ * so the active path is the bundle while a rollback copy survives.
+ */
+export async function migrateLegacyMemory(cwd: string): Promise<MigrationResult> {
+  const bundleDir = path.join(cwd, ".jeo", "memory");
+  // Idempotent: an existing concept bundle wins — never double-migrate.
+  if ((await loadConcepts(cwd)).length > 0) {
+    return { migrated: false, conceptCount: 0, skipped: "bundle already has concepts" };
+  }
+  const doc = await loadMemory(cwd);
+  if (!doc) return { migrated: false, conceptCount: 0, skipped: "no legacy MEMORY.md to migrate" };
+  const parsed = parseLegacyMemory(doc);
+  if (parsed.length === 0) return { migrated: false, conceptCount: 0, skipped: "no concepts parsed from MEMORY.md" };
+
+  await fs.mkdir(bundleDir, { recursive: true });
+  const written: { title: string; type: string }[] = [];
+  const usedSlugs = new Set<string>();
+  for (const c of parsed) {
+    const dir = DIR_BY_TYPE[c.type] ?? "facts";
+    await fs.mkdir(path.join(bundleDir, dir), { recursive: true });
+    let slug = slugify(c.title);
+    let suffix = 1;
+    while (usedSlugs.has(`${dir}/${slug}`)) slug = `${slugify(c.title)}-${suffix++}`;
+    usedSlugs.add(`${dir}/${slug}`);
+    const frontmatter = {
+      type: c.type,
+      title: c.title,
+      description: c.description,
+      tags: [] as string[],
+      timestamp: new Date().toISOString(),
+      confidence: "high",
+      last_verified: new Date().toISOString().split("T")[0]!,
+      links: [] as string[],
+    };
+    const serialized = serializeConcept(frontmatter, c.body);
+    const fullPath = path.join(bundleDir, dir, `${slug}.md`);
+    const tmpPath = `${fullPath}.tmp-${process.pid}`;
+    await fs.writeFile(tmpPath, serialized, "utf-8");
+    await fs.rename(tmpPath, fullPath);
+    written.push({ title: c.title, type: c.type });
+  }
+  await rebuildIndex(bundleDir);
+  await updateLog(bundleDir, written);
+  // Preserve the legacy doc as a rollback backup, off the active read path.
+  const backupPath = `${memoryFilePath(cwd)}.bak`;
+  await fs.rename(memoryFilePath(cwd), backupPath).catch(() => {});
+  return { migrated: true, conceptCount: written.length, backupPath };
+}
+
+/** Render a single index.md-style section: a `## header` followed by one bullet
+ *  per concept (`**title**: description`), with the concept body indented beneath. */
+function renderConceptSection(header: string, list: { title: string; description: string; body: string }[]): string {
+  const lines = [`## ${header}`];
+  for (const c of list) {
+    lines.push(`- **${c.title}**${c.description ? `: ${c.description}` : ""}`);
+    if (c.body) {
+      for (const bodyLine of c.body.split("\n")) lines.push(`  ${bodyLine}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+/** A loaded OKF concept: frontmatter fields + body + bundle-relative path. */
+export interface Concept {
+  type: string;
+  title: string;
+  description: string;
+  body: string;
+  tags: string[];
+  /** high | medium | low — distiller defaults to "high"; drives core selection. */
+  confidence: string;
+  /** Bundle-relative path, e.g. `commands/bun-test.md`. */
+  relPath: string;
+}
+
+/** Read every concept document in the bundle into structured `Concept`s. Reserved
+ *  files (index.md/log.md) and raw/ payloads are skipped; unparseable or
+ *  frontmatter-less files are ignored (lenient consumption). */
+export async function loadConcepts(cwd: string): Promise<Concept[]> {
+  return loadConceptsFromBundle(path.join(cwd, ".jeo", "memory"));
+}
+
+/** Lint the concept bundle's cross-link graph (Sprint 04): orphan concepts,
+ *  broken links, and duplicate-title merge candidates. Advisory only — mirrors
+ *  llm-wiki's lint pass. Returns empty lists for an empty/absent bundle. */
+export async function lintMemoryBundle(cwd: string): Promise<GraphLintReport> {
+  const concepts = await loadConcepts(cwd);
+  return lintConceptGraph(concepts, buildConceptGraph(concepts));
+}
+
+async function loadConceptsFromBundle(bundleDir: string): Promise<Concept[]> {
+  const files = await findMarkdownFiles(bundleDir);
+  const concepts: Concept[] = [];
+  for (const file of files) {
+    const relPath = path.relative(bundleDir, file).replace(/\\/g, "/");
+    if (isReservedFile(relPath)) continue;
+    let parsed;
+    try {
+      parsed = parseConcept(await fs.readFile(file, "utf-8"));
+    } catch {
+      continue;
+    }
+    if (!parsed.hasFrontmatter) continue;
+    const fm = parsed.frontmatter;
+    concepts.push({
+      type: (fm.type as string) || "RepoFact",
+      title: (fm.title as string) || path.basename(file, ".md"),
+      description: (fm.description as string) || "",
+      body: parsed.body.trim(),
+      tags: Array.isArray(fm.tags) ? fm.tags.filter((t): t is string => typeof t === "string") : [],
+      confidence: typeof fm.confidence === "string" ? fm.confidence : "high",
+      relPath,
+    });
+  }
+  return concepts;
+}
+
+/** Tokenize a free-text query into distinct lowercased keywords (len ≥ 3). */
+function tokenize(query?: string): string[] {
+  if (!query) return [];
+  return Array.from(new Set((query.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(t => t.length >= 3)));
+}
+
+/** Relevance score of a concept against query tokens. Field weights mirror
+ *  llm-wiki's retrieval bias (title ≫ tags ≫ type/description ≫ body). 0 = no hit. */
+export function scoreConcept(concept: Concept, tokens: string[]): number {
+  if (tokens.length === 0) return 0;
+  const title = concept.title.toLowerCase();
+  const desc = concept.description.toLowerCase();
+  const body = concept.body.toLowerCase();
+  const type = concept.type.toLowerCase();
+  const tags = concept.tags.map(t => t.toLowerCase());
+  let score = 0;
+  for (const t of tokens) {
+    if (title.includes(t)) score += 5;
+    if (tags.some(tag => tag.includes(t))) score += 3;
+    if (type.includes(t)) score += 2;
+    if (desc.includes(t)) score += 2;
+    if (body.includes(t)) score += 1;
+  }
+  return score;
+}
+
+/** Search the bundle's concepts for a query, returning the relevant ones (score > 0)
+ *  highest-score first. A type/tags/title/body keyword match all contribute. */
+export function searchConcepts(concepts: Concept[], query: string): { concept: Concept; score: number }[] {
+  const tokens = tokenize(query);
+  return concepts
+    .map(concept => ({ concept, score: scoreConcept(concept, tokens) }))
+    .filter(r => r.score > 0)
+    .sort((a, b) => b.score - a.score);
+}
+
+/** Priority order for injection: high-confidence "core" concepts first, then by
+ *  query relevance (descending), then concepts the relevant ones LINK TO (1-hop
+ *  graph expansion — Sprint 04: a directly-hit concept pulls its neighbours in as
+ *  context ahead of unrelated noise), preserving input order as a stable tiebreak. */
+function priorityOrder(concepts: Concept[], query?: string): Concept[] {
+  const tokens = tokenize(query);
+  // 1-hop graph expansion: seed from concepts the query directly hits, then mark
+  // their link-neighbours as "related" so they outrank unrelated zero-score noise.
+  const related = new Set<string>();
+  if (tokens.length > 0) {
+    const graph = buildConceptGraph(concepts);
+    const seeds = concepts.filter(c => scoreConcept(c, tokens) > 0).map(c => conceptId(c.relPath));
+    for (const id of expandByGraph(seeds, graph, 1)) related.add(id);
+  }
+  return concepts
+    .map((concept, i) => ({
+      concept,
+      i,
+      core: concept.confidence === "high",
+      score: scoreConcept(concept, tokens),
+      related: related.has(conceptId(concept.relPath)),
+    }))
+    .sort((a, b) => {
+      if (a.core !== b.core) return a.core ? -1 : 1;
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.related !== b.related) return a.related ? -1 : 1;
+      return a.i - b.i;
+    })
+    .map(s => s.concept);
+}
+
+/** Group items by their `type` into ordered `{ header, list }` sections: TYPE_LAYOUT
+ *  order first, then any unknown types under their raw type name (lenient). The one
+ *  place that encodes the section ordering — shared by render and index. */
+function groupByTypeLayout<T extends { type: string }>(items: T[]): { header: string; list: T[] }[] {
+  const byType = new Map<string, T[]>();
+  for (const it of items) {
+    const list = byType.get(it.type) ?? [];
+    list.push(it);
+    byType.set(it.type, list);
+  }
+  const sections: { header: string; list: T[] }[] = [];
+  const rendered = new Set<string>();
+  for (const { type, header } of TYPE_LAYOUT) {
+    rendered.add(type);
+    const list = byType.get(type);
+    if (list && list.length > 0) sections.push({ header, list });
+  }
+  for (const [type, list] of byType) {
+    if (rendered.has(type) || list.length === 0) continue;
+    sections.push({ header: type, list });
+  }
+  return sections;
+}
+
+/** Render a set of concepts as a compact markdown block grouped by type in
+ *  TYPE_LAYOUT order, with any unknown types appended under their raw type name. */
+function renderConcepts(concepts: Concept[]): string {
+  return groupByTypeLayout(concepts)
+    .map(({ header, list }) => renderConceptSection(header, list))
+    .join("\n\n");
+}
+
+/** Greedily select concepts (in priority order) whose grouped render stays within
+ *  `budget` chars, dropping the lowest-priority concepts first. At least the
+ *  top-priority concept is always kept (the framing/backstop cap still applies). */
+function selectWithinBudget(concepts: Concept[], query: string | undefined, budget: number): Concept[] {
+  const ordered = priorityOrder(concepts, query);
+  const selected: Concept[] = [];
+  for (const c of ordered) {
+    if (renderConcepts([...selected, c]).length <= budget) selected.push(c);
+  }
+  if (selected.length === 0 && ordered.length > 0) selected.push(ordered[0]!);
+  return selected;
+}
+
 /** System-prompt block carrying prior-session learnings; "" when empty or disabled.
+ *  Selection (Sprint 03): always-included high-confidence core + concepts most
+ *  relevant to `query` (the current task), chosen whole within MEMORY_INJECT_MAX_CHARS
+ *  (lowest-priority dropped first) — never a mid-concept string truncation. Falls
+ *  back to the legacy single MEMORY.md doc when no concept bundle exists.
  *  The memory text is MODEL-DISTILLED from session transcripts (which include tool
  *  outputs — file contents, web results), so it is injection-hardened like subagent
  *  reports: tag-breakout sequences are neutralized and the block is framed as DATA. */
-export async function memoryPromptSection(cwd: string): Promise<string> {
+export async function memoryPromptSection(cwd: string, query?: string): Promise<string> {
   if (jeoEnv("NO_MEMORY") === "1") return "";
-  let memory = await loadMemory(cwd);
+  // Rollback toggle (Sprint 05): JEO_MEMORY_LEGACY=1 forces the legacy single-doc
+  // path, ignoring any concept bundle — reads MEMORY.md, or its migration backup.
+  if (jeoEnv("MEMORY_LEGACY") === "1") {
+    let memory = await loadMemory(cwd);
+    if (!memory) memory = (await fs.readFile(`${memoryFilePath(cwd)}.bak`, "utf-8").catch(() => "")).trim();
+    return memory ? frameMemory(memory) : "";
+  }
+  // Prefer the OKF concept bundle (budget-selected); fall back to legacy MEMORY.md.
+  const concepts = await loadConcepts(cwd);
+  let memory = concepts.length > 0
+    ? renderConcepts(selectWithinBudget(concepts, query, MEMORY_INJECT_MAX_CHARS))
+    : await loadMemory(cwd);
   if (!memory) return "";
+  return frameMemory(memory);
+}
+
+/** Wrap distilled memory text in the hardened `<project_memory>` block: hard char
+ *  cap, fence-tag neutralization, and DATA framing. Shared by the bundle path and
+ *  the legacy/rollback path so neither can bypass the injection-hardening. */
+function frameMemory(memory: string): string {
+  // Backstop: legacy MEMORY.md is a single blob (not concept-selectable), and a
+  // pathological single concept can exceed the budget — hard-cap either way.
   if (memory.length > MEMORY_INJECT_MAX_CHARS) {
-    memory = memory.slice(0, MEMORY_INJECT_MAX_CHARS) + "\n…(memory truncated — full doc in .jeo/memory/MEMORY.md)";
+    memory = memory.slice(0, MEMORY_INJECT_MAX_CHARS) + "\n…(memory truncated — full doc in .jeo/memory/)";
   }
   // Neutralize the fence tags so distilled content can never close the block and
   // smuggle instruction-shaped text into the bare system prompt.
@@ -120,33 +450,20 @@ async function findMarkdownFiles(dir: string): Promise<string[]> {
 }
 
 async function rebuildIndex(bundleDir: string): Promise<void> {
-  const files = await findMarkdownFiles(bundleDir);
-  const concepts: { type: string; title: string; relPath: string }[] = [];
-  for (const file of files) {
-    const relPath = path.relative(bundleDir, file);
-    if (isReservedFile(relPath)) continue;
-    try {
-      const content = await fs.readFile(file, "utf-8");
-      const parsed = parseConcept(content);
-      concepts.push({
-        type: (parsed.frontmatter.type as string) || "RepoFact",
-        title: (parsed.frontmatter.title as string) || path.basename(file, ".md"),
-        relPath,
-      });
-    } catch {
-      // ignore
-    }
-  }
+  const concepts = await loadConceptsFromBundle(bundleDir);
 
-  let body = "# Index\n\n";
-  for (const { type, header } of TYPE_LAYOUT) {
-    const list = concepts.filter(c => c.type === type);
-    if (list.length === 0) continue;
-    body += `## ${header}\n`;
+  // Progressive-disclosure index: a link per concept plus its one-line description,
+  // grouped by type (TYPE_LAYOUT order first, then any unknown types — lenient).
+  const section = (header: string, list: Concept[]): string => {
+    let out = `## ${header}\n`;
     for (const c of list) {
-      body += `- [${c.title}](/${c.relPath.replace(/\\/g, "/")})\n`;
+      out += `- [${c.title}](/${c.relPath})${c.description ? ` — ${c.description}` : ""}\n`;
     }
-    body += "\n";
+    return out + "\n";
+  };
+  let body = "# Index\n\n";
+  for (const { header, list } of groupByTypeLayout(concepts)) {
+    body += section(header, list);
   }
 
   const indexContent = serializeConcept({ okf_version: "0.1" }, body.trim());

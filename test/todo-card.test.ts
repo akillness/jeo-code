@@ -111,3 +111,58 @@ test("LaunchTui.setTodos flushes a Todo Write card into the ledger on change onl
     else process.env.LANG = prevLang;
   }
 });
+
+test("LaunchTui.finish: a SUCCESSFUL turn shows the Todos receipt fully complete, even if the model left items open", () => {
+  const prevTerm = process.env.TERM;
+  process.env.TERM = "xterm-256color";
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  try {
+    tui.start();
+    // Model declared a plan but (as models do) never flipped the last items to done
+    // before calling the done tool. The once-per-turn done gate can't force it.
+    tui.setTodos([
+      { title: "Read the files", status: "done" },
+      { title: "Apply the fix", status: "in_progress" },
+      { title: "Run the tests", status: "pending" },
+    ]);
+    out.length = 0;
+    tui.finish("done");
+    const final = stripAnsi(out.join(""));
+    // Receipt agrees with the `done` badge: all three counted done, no active/pending left.
+    expect(final).toContain("Todos");
+    expect(final).toContain("✓3 / 3");
+    expect(final).not.toContain("◐"); // no in-progress glyph in the completed receipt
+    expect(final).not.toContain("·1"); // no leftover pending
+  } finally {
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    if (prevTerm === undefined) delete process.env.TERM;
+    else process.env.TERM = prevTerm;
+  }
+});
+
+test("LaunchTui.finish: a CANCELLED/ERROR turn keeps unfinished Todos truthful (ok:false)", () => {
+  const prevTerm = process.env.TERM;
+  process.env.TERM = "xterm-256color";
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  try {
+    tui.start();
+    tui.setTodos([
+      { title: "Read the files", status: "done" },
+      { title: "Apply the fix", status: "in_progress" },
+      { title: "Run the tests", status: "pending" },
+    ]);
+    out.length = 0;
+    tui.finish("Cancelled.", { ok: false });
+    const final = stripAnsi(out.join(""));
+    // Honest: 1 done, 1 active, 1 pending — NOT auto-completed.
+    expect(final).toContain("✓1");
+    expect(final).toContain("◐1");
+    expect(final).toContain("·1");
+  } finally {
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    if (prevTerm === undefined) delete process.env.TERM;
+    else process.env.TERM = prevTerm;
+  }
+});

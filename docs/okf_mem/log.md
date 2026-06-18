@@ -1,6 +1,41 @@
 # Directory Update Log
 
 ## 2026-06-17
+* **Sprint 05 완료**: 마이그레이션/롤아웃 — 레거시 단일 `MEMORY.md` → OKF 개념
+  번들 무손실·멱등 변환. `src/agent/memory.ts`에 `parseLegacyMemory`(헤딩→type,
+  불릿→개념, `**title**: desc` 분해, 들여쓰기→body)·`migrateLegacyMemory`(타입별
+  서브디렉터리 기록·index/log 생성·atomic write·멱등 skip·레거시는 `.bak`으로
+  보존) 추가. `jeo memory-migrate` 서브커맨드+runner 와이어링. 폴백 통일 +
+  `JEO_MEMORY_LEGACY=1` 롤백 토글(번들 무시, `.bak` 읽기, `frameMemory` 공유
+  injection-hardening; `JEO_NO_MEMORY=1`가 최우선). `src/agent/AGENTS.md` 메모리
+  3파일 설명 갱신. `test/memory-migration-okf.test.ts`(7 pass). `bun run typecheck`
+  그린, `bun test` 1565 pass/0 fail. 라이브 `.jeo/memory` 변환 실검증 후 원복.
+  [인계](/sprint-05-migration-rollout/handoff.md)에 기본 동작·롤백·후속 기록 → OKF 전환 완료.
+* **Sprint 04 완료**: 그래프 레이어 — `src/agent/memory-graph.ts`(의존성 0) 신규.
+  개념 상호 링크 그래프(`buildConceptGraph`: 노드=개념ID, 간선=본문 마크다운 링크,
+  깨진 링크는 `broken`에 보존해 관용), `resolveLinkTarget`(절대/상대/앵커·외부
+  링크 해석), `expandByGraph`(1·2-hop 확장), `lintConceptGraph`(orphan/broken/
+  중복 title), `graphifyAvailable`(PATH 탐지, 주입 가능·예외 흡수). `memory.ts`
+  통합: `priorityOrder`가 쿼리 적중 개념의 1-hop 이웃을 noise보다 우선(예산 준수),
+  `lintMemoryBundle(cwd)` export 추가. graphify 부재에도 전 기능 동작(graceful).
+  `test/memory-graph-okf.test.ts`(8 pass). `bun run typecheck` 그린, `bun test`
+  1557 pass/0 fail, `jeo --tmux` smoke OK·battery 6/6.
+  [인계](/sprint-04-graph-layer/handoff.md)에 그래프 API·연동 정책 기록 → Sprint 05 진입 가능.
+* **Sprint 03 완료**: 검색/참조 구현 — `src/agent/memory.ts`에 개념 단위
+  검색(`loadConcepts`/`scoreConcept`/`searchConcepts`)과 예산 인지
+  우선순위 선택 주입(`memoryPromptSection(cwd, query?)`: high-confidence core
+  우선 → 쿼리 관련도 → 낮은 우선순위부터 드롭, mid-string 절단 폐지) 추가.
+  `index.md`는 `- [title](/relpath) — description` 점진적 공개 형식으로 강화.
+  `launch.ts`가 one-shot 작업 텍스트를 쿼리로 주입. `test/memory-search-okf.test.ts`
+  (8 pass) + index 설명 회귀. `bun run typecheck` 그린, `bun test` 1547 pass/0 fail,
+  `jeo --tmux` smoke OK·battery 6/6. [인계](/sprint-03-search-reference/handoff.md)에
+  검색 API·주입 정책 기록 → Sprint 04(graphify) 진입 가능.
+* **Sprint 03 리뷰(ponytail)**: 중복/죽은 코드 제거 — `loadConcepts`의
+  파일워크+파싱을 `loadConceptsFromBundle`로 단일화해 `rebuildIndex`가 재사용,
+  TYPE_LAYOUT 그룹핑을 `groupByTypeLayout`(섹션 순서 단일 출처)로 합쳐
+  `renderConcepts`/`rebuildIndex` 중복 제거, 미사용 `loadBundleMemory`(호출처 0,
+  budget-select 경로로 대체된 죽은 코드) 삭제. 동작 보존 — `bun run typecheck`
+  그린, `bun test` 1547 pass/0 fail, `jeo --tmux` smoke OK·battery 6/6.
 * **Sprint 01 완료**: 포맷 기반 구현 — `src/agent/memory-okf.ts`(프론트매터
   parse/serialize 확장키 round-trip, `conceptId`/`slugify`, OKF v0.1 적합성
   검증기) + `test/memory-okf.test.ts`(18 pass). `memory.ts` 미변경.

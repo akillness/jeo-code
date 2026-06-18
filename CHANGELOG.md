@@ -6,6 +6,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.18] - 2026-06-17
+_Memory data-flow diagram and a README "Memory flow" section documenting the actual runtime behavior._
+
+### Added
+- **Editable memory data-flow diagram (`docs/diagrams/memory-flow.drawio`).** A draw.io swimlane diagram traces the OKF memory system's actual runtime behavior end to end: the **WRITE** lane (session-exit `spawnDetachedDistill` → `distillSessionMemory` → one JSON-mode LLM call → per-concept atomic upsert into `facts/`/`commands/`/`gotchas/`/`preferences/`, with a plain-text legacy fallback, then `rebuildIndex`/`updateLog`), the **STORE** lane (the typed concept bundle, `index.md`/`log.md`, the cross-link graph, and the legacy `MEMORY.md`/`.bak`), the **READ** lane (`memoryPromptSection` → `JEO_NO_MEMORY`/`JEO_MEMORY_LEGACY` gates → `loadConcepts` → `selectWithinBudget` priority order with 1-hop graph expansion → `frameMemory` injection-hardening → `<project_memory>` injection), and the one-shot idempotent **MIGRATION** lane (`jeo memory-migrate`).
+- **README "Memory flow" section (all four languages).** A new section in `README.md` / `README.ko.md` / `README.ja.md` / `README.zh.md` explains the local-first distilled memory model and embeds a GitHub-renderable Mermaid version of the write/store/read/migration flow, links the editable `.drawio`, and documents the `JEO_NO_MEMORY` / `JEO_MEMORY_LEGACY` toggles and the migration's rollback path.
+
+## [0.6.17] - 2026-06-17
+_Legacy MEMORY.md migrates losslessly into the OKF concept bundle, with a one-shot command and a rollback toggle._
+
+### Added
+- **`jeo memory-migrate` — legacy memory → OKF bundle migration (OKF Sprint 05).** A one-shot, idempotent migration converts the legacy single-doc `.jeo/memory/MEMORY.md` into the type-partitioned OKF concept bundle: `parseLegacyMemory` maps each `## heading` to a concept type (commands/gotchas/preferences/repo-facts, unknown → RepoFact) and splits top-level bullets into concepts (`**title**: description` form recognized, indented continuation lines become the body — lossless), then `migrateLegacyMemory` writes each concept atomically under `facts/`/`commands/`/`gotchas/`/`preferences/`, (re)builds `index.md`/`log.md`, and renames the legacy doc to `MEMORY.md.bak` for rollback. Re-running is a no-op once the bundle has concepts. The bundle is the default read path; `JEO_MEMORY_LEGACY=1` is a new rollback toggle that ignores the bundle and reads the legacy doc (or its `.bak` backup) through the same injection-hardening, while `JEO_NO_MEMORY=1` still wins over everything.
+
+## [0.6.16] - 2026-06-17
+_OKF memory grows a concept cross-link graph: 1-hop search expansion, bundle lint, graphify-optional._
+
+### Added
+- **Concept cross-link graph for the memory bundle (OKF Sprint 04).** A new zero-dependency `src/agent/memory-graph.ts` treats the OKF bundle as a first-class link graph — nodes are concept IDs, edges are the markdown links a concept's body points at another concept, and broken links are tolerated (captured for lint, never thrown). It powers `buildConceptGraph` / `expandByGraph` / `resolveLinkTarget` / `lintConceptGraph` / `graphifyAvailable`. Memory injection now applies **1-hop graph expansion**: a concept the task query directly hits lifts its link-neighbours ahead of unrelated noise (still within `MEMORY_INJECT_MAX_CHARS`). New `lintMemoryBundle(cwd)` reports orphan concepts, broken links, and duplicate-title merge candidates. The optional `graphify` tool is a best-effort enrichment layer only — every feature runs fully on the built-in graph when it is absent (graceful degradation), and `graphify update` is never run against the markdown bundle.
+
+## [0.6.15] - 2026-06-17
+_Query-aware OKF memory injection with budget-priority selection, and a truthful end-of-turn Todos receipt._
+
+### Added
+- **Concept-level memory search & budget-aware injection (OKF Sprint 03).** `memoryPromptSection(cwd, query?)` now loads the OKF concept bundle and selects what to inject by priority — high-confidence core facts first, then query relevance (the one-shot task text is wired in as the query), then stable order — dropping whole lowest-priority concepts to fit `MEMORY_INJECT_MAX_CHARS` (3000) instead of truncating mid-string. New exported helpers `loadConcepts` / `scoreConcept` / `searchConcepts`. The `index.md` rebuild now emits progressive-disclosure `- [title](/relpath) — description` rows. Injection-hardening (DATA framing, fence neutralization) and the `MEMORY.md` fallback are retained.
+
+### Changed
+- **End-of-turn Todos receipt tells the truth.** A successful `finish` shows the Todos checklist fully complete so it agrees with the `done` badge (the model's last `todo` call often forgets to flip the final items, and the once-per-turn done gate can't force it); cancel/error finishes pass `ok:false` so any unfinished items stay honestly shown. The live frame is unchanged, so in-progress work still renders truthfully.
+
+
 ## [0.6.14] - 2026-06-16
 _Memory distillation survives malformed model output, and stream-idle stalls retry instead of failing the turn._
 

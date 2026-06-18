@@ -185,13 +185,32 @@ export function sanitizeForFrame(s: string): string {
   return out;
 }
 
+/** Active SGR state after applying every SGR escape in `segment` to `prior`.
+ *  Pragmatic model (matches wrap-ansi): a full reset (`\x1b[0m` / `\x1b[m`) clears
+ *  the open set; any other SGR is appended. Good enough for the fg/bg/bold coloring
+ *  a TUI box actually uses; it does not model selective resets (e.g. `\x1b[22m`). */
+function sgrStateAfter(prior: string, segment: string): string {
+  if (!segment.includes("\x1b")) return prior;
+  let state = prior;
+  const re = /\x1b\[[0-9;]*m/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(segment))) {
+    state = m[0] === "\x1b[0m" || m[0] === "\x1b[m" ? "" : state + m[0];
+  }
+  return state;
+}
+
 /**
  * Hard-wrap text to `cols` display columns, breaking long words and preserving
- * existing newlines. SGR-aware (escapes don't consume width). Returns the wrapped
- * lines. Used by markdown/table rendering where alignment must be column-correct.
+ * existing newlines. SGR-aware (escapes don't consume width) AND SGR-stateful:
+ * a color opened before a wrap point is RE-APPLIED at the start of each continuation
+ * line and CLOSED at its end, so a wrapped colored span stays colored on every row
+ * instead of losing its tint after the first line (and never bleeds into the padding
+ * or box border). Returns the wrapped lines.
  */
 export function wrapTextWithAnsi(text: string, cols: number): string[] {
   const width = Math.max(1, cols);
+  const RESET = "\x1b[0m";
   const out: string[] = [];
   for (const rawLine of text.split("\n")) {
     if (visibleWidth(rawLine) <= width) {
@@ -199,16 +218,31 @@ export function wrapTextWithAnsi(text: string, cols: number): string[] {
       continue;
     }
     let rest = rawLine;
+    let active = ""; // SGR open at the wrap boundary, carried to the next line
     while (visibleWidth(rest) > width) {
       const head = truncateToWidth(rest, width);
-      // Advance past exactly the consumed substring (head may carry a trailing reset).
-      const consumed = head.endsWith("\x1b[0m") && !rest.endsWith("\x1b[0m")
-        ? head.slice(0, -"\x1b[0m".length)
-        : head;
-      out.push(head);
+      // Advance past exactly the consumed substring. truncateToWidth may append a
+      // SYNTHETIC trailing reset (frame safety) that is NOT in `rest` — including it
+      // would over-advance and drop real chars. `rest.startsWith(head)` means the
+      // reset is genuinely part of the source; otherwise strip the synthetic one.
+      const consumed = rest.startsWith(head)
+        ? head
+        : head.endsWith(RESET) && rest.startsWith(head.slice(0, -RESET.length))
+          ? head.slice(0, -RESET.length)
+          : head;
+      let line = active + head;
+      const next = sgrStateAfter(active, consumed);
+      // Close any color still open at the line end so it cannot tint the padding/border.
+      if (next && !line.endsWith(RESET)) line += RESET;
+      out.push(line);
+      active = next;
       rest = rest.slice(consumed.length);
     }
-    if (rest.length > 0) out.push(rest);
+    if (rest.length > 0) {
+      let line = active + rest;
+      if (active && !line.endsWith(RESET)) line += RESET;
+      out.push(line);
+    }
   }
   return out;
 }

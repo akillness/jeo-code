@@ -90,7 +90,7 @@ test("engine appends hook diagnostics to the edit result block; tool stays (ok)"
   expect(toolMsg!.content).toContain("TS2345 type error"); // diagnostics surfaced to model
 });
 
-test("identical hook diagnostics across a batch are shown once, cross-referenced after", async () => {
+test("a project-wide post-turn hook runs ONCE for a multi-call batch, not per edit", async () => {
   await setHook({ event: "post-turn", match: { tool: "edit" }, run: "echo dupdiag && exit 1" });
   await mock.module("../src/agent/loop", () => ({
     callLlm: async () => JSON.stringify({
@@ -109,9 +109,10 @@ test("identical hook diagnostics across a batch are shown once, cross-referenced
     tools: { edit: async (a: any) => ({ success: true, output: `updated ${a.filePath}` }) },
   });
   const toolMsg = history.find(m => m.role === "user" && m.content.includes("Tool [edit] result"))!;
-  // Full diagnostic block (`exit 1]:`) appears exactly once; the second is a cross-ref.
+  // The hook matches both edits but runs a SINGLE time for the batch → one
+  // diagnostic block, no per-result duplication and so no cross-reference.
   expect(toolMsg.content.split("exit 1]:").length - 1).toBe(1);
-  expect(toolMsg.content).toContain("same diagnostics as above");
+  expect(toolMsg.content).not.toContain("same diagnostics as above");
 });
 
 // cycle 14a (plan/gjc-inheritance.md round 4): match.tool accepts `|`-separated

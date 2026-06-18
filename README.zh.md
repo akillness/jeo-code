@@ -200,11 +200,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.19]** (2026-06-18) — Post-turn hooks run once per batch (not per edit), local hook reads are mtime-cached, tool-result formatting is parallelized, and wrapped colored text keeps its tint.
 - **[0.6.18]** (2026-06-17) — Memory data-flow diagram and a README "Memory flow" section documenting the actual runtime behavior.
 - **[0.6.17]** (2026-06-17) — Legacy MEMORY.md migrates losslessly into the OKF concept bundle, with a one-shot command and a rollback toggle.
 - **[0.6.16]** (2026-06-17) — OKF memory grows a concept cross-link graph: 1-hop search expansion, bundle lint, graphify-optional.
 - **[0.6.15]** (2026-06-17) — Query-aware OKF memory injection with budget-priority selection, and a truthful end-of-turn Todos receipt.
-- **[0.6.14]** (2026-06-16) — Memory distillation survives malformed model output, and stream-idle stalls retry instead of failing the turn.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

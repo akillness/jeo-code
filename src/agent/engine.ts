@@ -16,7 +16,7 @@ import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, 
 import { webSearchTool, setWebSearchActiveModel } from "./web-search";
 import { friendlyProviderError, isContextOverflowError, isRefusalError } from "../util/provider-error";
 import { isRateLimitError } from "../util/retry";
-import { runPreToolHooks, runPostTurnHooks } from "./hooks";
+import { runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
 import { truncateToolOutput, formatToolResultBody } from "./tool-output";
 export { TOOL_OUTPUT_MAX, READ_OUTPUT_MAX, TOOL_SPILL_THRESHOLD, MAX_TOOL_ARTIFACTS, truncateToolOutput, spillToolResult } from "./tool-output";
 import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, hashSignature, type StepBudgetConfig } from "./step-budget";
@@ -903,46 +903,53 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     }
 
     const processAndPushResults = async (indices: number[]) => {
-      const resultBlocks: string[] = [];
-      // Per-batch dedup of post-turn hook diagnostics: a whole-project `tsc` hook
-      // matching every edit in a batch yields identical output N times — show it
-      // once, cross-reference the rest (cycle 13).
-      const seenHookFeedback = new Set<string>();
+      // Surface completion to the TUI ledger in call order.
       for (const idx of indices) {
-        const call = toolCalls[idx];
-        const res = results[idx];
+        ev.onToolResult?.(toolCalls[idx].tool, results[idx].success, results[idx].output);
+      }
+      // Format every result body in PARALLEL — independent work, and an oversized
+      // body may spill to a disk artifact; the previous per-result loop serialized
+      // both the formatting and the disk writes.
+      const bodies = await Promise.all(
+        indices.map(idx => formatToolResultBody(toolCalls[idx].tool, results[idx].output, cwd)),
+      );
+      // Run post-turn hooks ONCE for the whole batch instead of once per result: a
+      // project-wide `tsc`/lint/test hook matching every edit in the batch no longer
+      // re-executes N times sequentially (the dominant in-loop latency multiplier).
+      const { diags: hookDiags, ran: hooksRan } = await runPostTurnHooksForBatch(
+        cwd,
+        indices.map(idx => ({
+          tool: toolCalls[idx].tool,
+          args: toolCalls[idx].arguments ?? {},
+          success: results[idx].success,
+          output: results[idx].output,
+        })),
+        opts.signal,
+        ev.onNotice,
+      );
+      // F1: a red hook becomes a pending failure the done guard enforces; a later
+      // batch whose hooks complete CLEAN (ran > 0, zero diags) clears it.
+      if (hookDiags.length > 0) pendingHookFailure = hookDiags[hookDiags.length - 1].run;
+      else if (hooksRan > 0) pendingHookFailure = null;
 
-        ev.onToolResult?.(call.tool, res.success, res.output);
-
-        const resultBody = await formatToolResultBody(call.tool, res.output, cwd);
-
-        const { diags: hookDiags, ran: hooksRan } = await runPostTurnHooks(
-          cwd,
-          call.tool,
-          call.arguments ?? {},
-          res.success,
-          res.output,
-          opts.signal,
-          ev.onNotice
-        );
-        // F1: a red hook becomes a pending failure the done guard enforces; a
-        // later hook run that completes CLEAN (ran > 0, zero diags) clears it.
-        if (hookDiags.length > 0) pendingHookFailure = hookDiags[hookDiags.length - 1].run;
-        else if (hooksRan > 0) pendingHookFailure = null;
-
-        // Append non-zero-exit hook diagnostics to THIS tool's result block so the
-        // model can self-correct. The tool's own ok/fail is unchanged (guard).
-        let resultBlock = `Tool [${call.tool}] result (${res.success ? "ok" : "fail"}):\n${resultBody}`;
+      const resultBlocks: string[] = indices.map((idx, i) =>
+        `Tool [${toolCalls[idx].tool}] result (${results[idx].success ? "ok" : "fail"}):\n${bodies[i]}`,
+      );
+      // Append the batch's hook diagnostics once so the model can self-correct. Two
+      // DISTINCT hooks with identical output collapse to one full block + a cross-ref.
+      if (hookDiags.length > 0) {
+        const seenHookFeedback = new Set<string>();
+        const diagLines: string[] = [];
         for (const d of hookDiags) {
           const key = `${d.run}\u0000${d.output}`;
           if (seenHookFeedback.has(key)) {
-            resultBlock += `\n[post-turn hook "${d.run}" — exit ${d.exitCode}: same diagnostics as above]`;
+            diagLines.push(`[post-turn hook "${d.run}" — exit ${d.exitCode}: same diagnostics as above]`);
           } else {
             seenHookFeedback.add(key);
-            resultBlock += `\n[post-turn hook "${d.run}" — exit ${d.exitCode}]:\n${truncateToolOutput(d.output)}`;
+            diagLines.push(`[post-turn hook "${d.run}" — exit ${d.exitCode}]:\n${truncateToolOutput(d.output)}`);
           }
         }
-        resultBlocks.push(resultBlock);
+        resultBlocks.push(diagLines.join("\n"));
       }
 
       history.push({ role: "assistant", content: responseText });

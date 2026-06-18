@@ -275,3 +275,18 @@ test("streamMaxMs: env opt-in parsing — off by default, positive ints only", a
   expect(streamMaxMs({ JEO_STREAM_MAX_MS: "0" })).toBeUndefined();
   expect(streamMaxMs({ JEO_STREAM_MAX_MS: "nope" })).toBeUndefined();
 });
+
+test("streamIdleMs: env opt-in parsing — built-in default, positive int override only", async () => {
+  const { streamIdleMs } = await import("../src/ai/model-manager");
+  expect(streamIdleMs({})).toBe(120_000); // built-in default
+  expect(streamIdleMs({ JEO_STREAM_IDLE_MS: "300000" })).toBe(300000);
+  expect(streamIdleMs({ JEO_STREAM_IDLE_MS: "0" })).toBe(120_000); // non-positive → default
+  expect(streamIdleMs({ JEO_STREAM_IDLE_MS: "nope" })).toBe(120_000);
+});
+
+test("defaultRetryable: a per-chunk stream-idle stall is retryable, the overall deadline is not", () => {
+  // The idle watchdog's message must be classified retryable so a transient stall
+  // on the INITIAL connection auto-reconnects instead of hard-failing the turn.
+  expect(defaultRetryable(new Error("stream idle for 120000ms (no chunk) — provider sent no token"))).toBe(true);
+  expect(defaultRetryable(new Error("stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream aborted"))).toBe(false);
+});

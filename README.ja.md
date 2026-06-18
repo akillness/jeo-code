@@ -158,11 +158,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.14]** (2026-06-16) — Memory distillation survives malformed model output, and stream-idle stalls retry instead of failing the turn.
 - **[0.6.13]** (2026-06-16) — `team` engine: concrete uncommitted-work reporting and stricter empty-run handling.
 - **[0.6.12]** (2026-06-16) — OKF-backed memory distillation — session learnings become structured concept files.
 - **[0.6.11]** (2026-06-16) — Larger reasoning budgets, and terminal capability-response sequences kept out of the prompt.
 - **[0.6.10]** (2026-06-16) — OKF memory-format foundation and a hardened bashTool subprocess drain.
-- **[0.6.9]** (2026-06-16) — Live streaming blocks size to their content and the viewport instead of a fixed rectangle.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

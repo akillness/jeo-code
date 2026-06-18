@@ -56,7 +56,13 @@ export function defaultRetryable(err: unknown): boolean {
     lowerMessage.includes("timeout") ||
     lowerMessage.includes("overloaded") ||
     lowerMessage.includes("rate limit") ||
-    lowerMessage.includes("rate_limit")
+    lowerMessage.includes("rate_limit") ||
+    // A per-chunk stream-idle stall ("stream idle for <ms>ms (no chunk)") is a
+    // transient stall (provider load / long TTFT) — retry it like a timeout. The
+    // OVERALL-deadline message ("stream exceeded the overall deadline") is a hard
+    // wall-clock cap and is deliberately NOT matched here (it must fail fast).
+    lowerMessage.includes("stream idle") ||
+    lowerMessage.includes("no chunk")
   ) {
     return true;
   }

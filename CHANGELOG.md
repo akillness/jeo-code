@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.19] - 2026-06-18
+_Post-turn hooks run once per batch (not per edit), local hook reads are mtime-cached, tool-result formatting is parallelized, and wrapped colored text keeps its tint._
+
+### Changed
+- **Post-turn hooks execute ONCE per multi-call batch instead of once per result.** A project-wide checker hook (`tsc --noEmit`/lint/test) whose `match.tool` matched every edit in a batch previously re-ran N times sequentially — the dominant in-loop latency multiplier on multi-edit turns. `runPostTurnHooksForBatch` now groups the batch's calls, invokes each matching hook a single time, and runs distinct hooks concurrently. A hook matching several calls receives a back-compatible payload (`{event,tool,args,success,output}` plus a `calls[]` array of every matched call) so a payload-aware per-file hook can still iterate the changed files in one invocation; a single match keeps the exact legacy shape. The single-call `runPostTurnHooks` is retained as a thin wrapper for direct callers/tests.
+- **Tool-result bodies are formatted in parallel.** The per-result loop that serialized body formatting (and any oversized-body spill to a disk artifact) is replaced by a `Promise.all` over the batch, so independent formatting/disk writes overlap.
+
+### Performance
+- **Local `.jeo/hooks.json` is mtime/size-cached.** The per-project hook override was re-read and re-parsed (`fs.readFile` + `JSON.parse`) on every `loadHooks` call — once per pre-tool check and once per post-turn batch. It is now cached keyed by absolute path → mtime/size (bounded LRU, cap 32) and only re-read when the file actually changes, so any external write is still picked up immediately without a stale serve.
+
+### Fixed
+- **Wrapped colored text keeps its color on every continuation row.** `wrapTextWithAnsi` is now SGR-stateful: a color opened before a wrap point is re-applied at the start of each continuation line and closed at its end, so a wrapped colored span stays tinted on every row (the reported "color breaks when the line wraps") instead of losing its tint after the first line — and never bleeds into the padding or box border. Plain uncolored text is left byte-for-byte unchanged.
+
+
 ## [0.6.18] - 2026-06-17
 _Memory data-flow diagram and a README "Memory flow" section documenting the actual runtime behavior._
 

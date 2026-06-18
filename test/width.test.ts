@@ -45,6 +45,21 @@ test("wrapTextWithAnsi: hard-wraps by display width, keeps newlines", () => {
   expect(wrapTextWithAnsi("한글한글", 4)).toEqual(["한글", "한글"]);
 });
 
+test("wrapTextWithAnsi: carries the active color across wrap boundaries (no tint loss / no bleed)", () => {
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+  // Red span wider than the wrap width: EVERY continuation row must re-open red and
+  // close it, not just the first row (the reported "color breaks when the line wraps").
+  const lines = wrapTextWithAnsi("\x1b[31mabcdefgh\x1b[0m", 3);
+  expect(lines.map(strip)).toEqual(["abc", "def", "gh"]);
+  for (const l of lines) {
+    expect(l).toContain("\x1b[31m");        // red re-applied on every row
+    expect(l.endsWith("\x1b[0m")).toBe(true); // and closed so it can't tint padding/border
+    expect(visibleWidth(l)).toBeLessThanOrEqual(3);
+  }
+  // Plain (uncolored) text is untouched — no stray escapes introduced.
+  expect(wrapTextWithAnsi("abcdef", 3)).toEqual(["abc", "def"]);
+});
+
 test("sanitizeForFrame: keeps SGR color, strips control bytes and non-SGR escapes", () => {
   // SGR color is preserved.
   expect(sanitizeForFrame("\x1b[31mred\x1b[0m")).toBe("\x1b[31mred\x1b[0m");

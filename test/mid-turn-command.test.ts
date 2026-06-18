@@ -29,3 +29,9 @@ test("blank input classifies as empty", () => {
   expect(classifyMidTurnLine("   ")).toBe("empty");
   expect(classifyMidTurnLine("\n\t ")).toBe("empty");
 });
+
+test("a lone sigil (no command name) is empty — never aborts the turn", () => {
+  expect(classifyMidTurnLine("/")).toBe("empty");
+  expect(classifyMidTurnLine("$")).toBe("empty");
+  expect(classifyMidTurnLine("  /  ")).toBe("empty");
+});

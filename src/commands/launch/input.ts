@@ -403,5 +403,8 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
 export function classifyMidTurnLine(line: string): "command" | "steer" | "empty" {
   const t = line.trim();
   if (!t) return "empty";
+  // A lone sigil ("/" or "$") has no command name — ignore it instead of aborting the
+  // running turn to dispatch an empty command (a stray slash should not interrupt work).
+  if (t === "/" || t === "$") return "empty";
   return /^[/$]/.test(t) ? "command" : "steer";
 }

@@ -6,7 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.20] - 2026-06-18
+_Launch REPL internals decomposed into testable modules: `@mention` path completion, slash-command view renderers, and slash-command handlers extracted from the monolithic `launch.ts` into dedicated files with full unit-test coverage._
+
+### Changed
+- **`mentionPaths` / `currentAtLabel` extracted to `src/commands/launch/mentions.ts`.** The `@path` filesystem completion and footer label logic are now pure, `cwd`-parametric functions that can be unit-tested in isolation; `launch.ts` delegates to them via thin wrappers.
+- **Slash-command view renderers extracted to `src/commands/launch/slash-views.ts`.** `hotkeysLines` and `contextUsageLines` are now pure functions (no I/O, no hidden state) returning `string[]`; verified with snapshot-style unit tests.
+- **Slash-command handlers extracted to `src/commands/launch/slash-handlers.ts`.** `/usage`, `/tools`, `/hotkeys`, `/context` handlers are isolated behind a `SlashContext` interface, each returning a typed result — testable without spinning up the full REPL.
+
+### Added
+- **Unit tests for all extracted modules** (`test/launch-mentions.test.ts`, `test/launch-slash-views.test.ts`, `test/slash-handlers.test.ts`): 13 new tests, 79 assertions — mentionPaths directory traversal, case-insensitive filtering, unreadable-dir guard, currentAtLabel edge cases, context token tallies, singular/plural spacing, handler outputs.
+
 ## [0.6.19] - 2026-06-18
+
 _Post-turn hooks run once per batch (not per edit), local hook reads are mtime-cached, tool-result formatting is parallelized, and wrapped colored text keeps its tint._
 
 ### Changed

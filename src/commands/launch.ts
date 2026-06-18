@@ -147,6 +147,21 @@ import {
   isWorkflowSkill,
   runWorkflowEngine,
 } from "./launch/workflow";
+import {
+  mentionPaths as mentionPathsIn,
+  currentAtLabel as currentAtLabelFn,
+} from "./launch/mentions";
+import {
+  hotkeysLines,
+  contextUsageLines,
+} from "./launch/slash-views";
+import {
+  handleUsage,
+  handleTools,
+  handleHotkeys,
+  handleContext,
+  type SlashContext,
+} from "./launch/slash-handlers";
 
 export {
   type LaunchFlags,
@@ -192,6 +207,8 @@ export {
   WORKFLOW_NAMES,
   isWorkflowSkill,
   runWorkflowEngine,
+  mentionPathsIn as mentionPaths,
+  currentAtLabelFn as currentAtLabel,
 };
 export function normalizeSlashAlias(input: string): string {
   if (input === "/login" || input.startsWith("/login ")) return `/provider login${input.slice("/login".length)}`;
@@ -1158,31 +1175,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       liveModelsCache ??= r;
     })
     .catch(() => {});
-  const mentionPaths = (prefix: string): string[] => {
-    const norm = prefix.replace(/\\/g, "/");
-    const wantsDirChildren = norm.endsWith("/");
-    const dirPart = wantsDirChildren ? norm.slice(0, -1) : path.posix.dirname(norm) === "." ? "" : path.posix.dirname(norm);
-    const namePart = wantsDirChildren ? "" : path.posix.basename(norm);
-    const absDir = path.resolve(cwd, dirPart || ".");
-    let entries: fs.Dirent[] = [];
-    try {
-      entries = fs.readdirSync(absDir, { withFileTypes: true });
-    } catch {
-      return [];
-    }
-    return entries
-      .filter(entry => !entry.name.startsWith("."))
-      .filter(entry => !namePart || entry.name.toLowerCase().startsWith(namePart.toLowerCase()))
-      .sort((a, b) => {
-        if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      })
-      .slice(0, 50)
-      .map(entry => {
-        const rel = dirPart ? `${dirPart}/${entry.name}` : entry.name;
-        return entry.isDirectory() ? `${rel}/` : rel;
-      });
-  };
+  const mentionPaths = (prefix: string): string[] => mentionPathsIn(cwd, prefix);
   const completionContext = (): CompletionContext => {
     const base = staticCompletionContext();
     return {
@@ -1512,16 +1505,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // turns/command output so the full-screen turn TUI renders normally. The footer
   // is drawn at absolute rows (per-row clear → no scroll, no duplication).
   // Opt out with JEO_NO_SLASH_PREVIEW=1; auto-off on short terminals.
-  const currentAtLabel = (line: string): string | undefined => {
-    const { tokens } = tokenize(line);
-    const token = [...tokens].reverse().find(t => t.startsWith("@"));
-    if (!token) return undefined;
-    const norm = token.slice(1).replace(/\\/g, "/");
-    if (!norm) return "@ .";
-    if (norm.endsWith("/")) return `@ ${norm.slice(0, -1) || "."}`;
-    const dir = path.posix.dirname(norm);
-    return `@ ${dir === "." ? norm : dir}`;
-  };
+  const currentAtLabel = (line: string): string | undefined => currentAtLabelFn(line);
   // Boxed-input footer height — ADAPTIVE so short terminals/panes still get the single
   // boxed input instead of silently falling back to the raw `jeo>` prompt (previously
   // any terminal under 17 rows lost the box entirely and showed bare CLI input).
@@ -2893,56 +2877,31 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       // ---- gjc-parity inspection commands ------------------------------------
       if (input === "/usage") {
-        const total = sessionUsage.inputTokens + sessionUsage.outputTokens;
-        console.log("Provider token usage (this REPL):");
-        console.log(`  turns   ${sessionUsage.turns}`);
-        console.log(`  input   ${sessionUsage.inputTokens}`);
-        console.log(`  output  ${sessionUsage.outputTokens}`);
-        console.log(`  total   ${total}${total === 0 ? "  (providers report usage per turn; run a request first)" : ""}`);
+        const cfg = await readGlobalConfig();
+        const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
+        const result = handleUsage(ctx, sessionUsage);
+        if (result && "lines" in result) for (const line of result.lines) console.log(line);
         continue;
       }
       if (input === "/context") {
-        // Token estimate (~4 chars/token) over the in-memory history, by role.
-        const est = (s: string) => Math.ceil(s.length / 4);
-        const byRole: Record<string, { msgs: number; tokens: number }> = {};
-        for (const m of history) {
-          const slot = (byRole[m.role] ??= { msgs: 0, tokens: 0 });
-          slot.msgs++;
-          slot.tokens += est(m.content);
-        }
-        const total = Object.values(byRole).reduce((sum, r) => sum + r.tokens, 0);
-        const { resolved } = await describeModel(sessionModel || (await readGlobalConfig()).defaultModel);
-        const window = catalogMetadata(resolved)?.contextTokens;
-        console.log("Context usage (estimated, ~4 chars/token):");
-        for (const [role, r] of Object.entries(byRole)) {
-          console.log(`  ${role.padEnd(9)} ${String(r.msgs).padStart(3)} msg${r.msgs === 1 ? " " : "s"}  ~${r.tokens} tokens`);
-        }
-        console.log(`  ${"total".padEnd(9)} ${String(history.length).padStart(3)} msgs  ~${total} tokens${window ? `  (${Math.round((total / window) * 100)}% of ${resolved}'s ${window}-token window)` : ""}`);
-        console.log("  Free context with /compact or /clear.");
+        const cfg = await readGlobalConfig();
+        const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
+        const result = await handleContext(ctx);
+        if (result && "lines" in result) for (const line of result.lines) console.log(line);
         continue;
       }
       if (input === "/tools") {
-        console.log("Tools visible to the agent:");
-        for (const line of TOOL_PROTOCOL.split("\n")) console.log(`  ${line}`);
-        console.log(`  ${taskToolProtocolLine(await readGlobalConfig())}`);
-        console.log(`  ${TODO_TOOL_PROTOCOL_LINE}`);
-        console.log(`  ${SUBAGENT_TOOL_PROTOCOL_LINE}`);
+        const cfg = await readGlobalConfig();
+        const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
+        const result = await handleTools(ctx);
+        if (result && "lines" in result) for (const line of result.lines) console.log(line);
         continue;
       }
       if (input === "/hotkeys") {
-        console.log("Keyboard shortcuts:");
-        console.log("  Tab        complete slash commands, models, roles, @paths");
-        console.log("  ↑ / ↓      navigate the slash-command preview (Enter runs the highlighted one)");
-        console.log("  Enter      submit input / confirm picker selection");
-        console.log("  Esc        cancel an open picker");
-        console.log("  Ctrl-C     cancel the in-flight turn (press again at the prompt to exit)");
-        console.log("  Ctrl-D     exit the REPL");
-        console.log("  Ctrl-O     dump the full last response (untruncated, tables rendered) into scrollback");
-        console.log("  Ctrl-K / Ctrl-U / Ctrl-W   kill to end / start of line / previous word (emacs kill-ring)");
-        console.log("  Ctrl-Y / Alt-Y             yank / yank-pop the killed text");
-        console.log("  Ctrl-A / Ctrl-E            move to start / end of line");
-        console.log("  /          open the slash-command palette");
-        console.log("  @path      mention a file (Tab completes relative paths)");
+        const cfg = await readGlobalConfig();
+        const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
+        const result = handleHotkeys(ctx);
+        if (result && "lines" in result) for (const line of result.lines) console.log(line);
         continue;
       }
       if (input === "/theme" || input.startsWith("/theme ")) {

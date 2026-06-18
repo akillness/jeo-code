@@ -119,6 +119,48 @@ jeo ultragoal
 
 非零退出钩子的输出会附加到模型读取的工具结果中(批内去重)；钩子未通过就调用 `done` 会收到带钩子名称的回推。
 
+## 内存流程
+
+`jeo` 在 `.jeo/memory/` 下保存 **本地优先、蒸馏后的项目内存**(无远程后端,零原生依赖)。过往会话被蒸馏为 [OKF](docs/okf_mem/) 概念包,下一次会话仅把相关的、受预算约束的切片重新注入系统提示 —— 作为 DATA 而非指令加固。用 `JEO_NO_MEMORY=1` 完全禁用。
+
+📐 **可编辑图示:** [`docs/diagrams/memory-flow.drawio`](docs/diagrams/memory-flow.drawio)(在 [draw.io](https://app.diagrams.net) / 桌面应用中打开)—— 写入/存储/读取/迁移完整泳道。概览:
+
+```mermaid
+flowchart LR
+  subgraph WRITE["WRITE — session-end distill (detached, best-effort)"]
+    direction TB
+    W1["session exit / ^C^C"] --> W2["spawnDetachedDistill()<br/>payload + detached child, returns instantly"]
+    W2 --> W3["distillSessionMemory()<br/>load bundle · transcriptTail · ONE LLM call (JSON)"]
+    W3 --> WD{"concepts JSON<br/>parsed?"}
+    WD -->|yes| WY["per concept: upsert by title,<br/>atomic write into facts/ commands/<br/>gotchas/ preferences/"]
+    WD -->|no| WN["plain text →<br/>legacy MEMORY.md"]
+    WY --> WR["rebuildIndex() index.md<br/>updateLog() log.md"]
+  end
+
+  subgraph STORE[".jeo/memory/ — OKF concept bundle"]
+    direction TB
+    S1["facts/ · commands/ · gotchas/ · preferences/<br/>(YAML frontmatter + body)"]
+    S2["index.md · log.md · cross-link graph (Sprint 04)"]
+    S3["MEMORY.md (legacy fallback)<br/>MEMORY.md.bak (rollback)"]
+  end
+
+  subgraph READ["READ — memoryPromptSection(cwd, query)"]
+    direction TB
+    R1["session start (query = task text)"] --> R2{"bundle has<br/>concepts?"}
+    R2 -->|yes| R3["selectWithinBudget()<br/>core → query relevance → 1-hop graph<br/>≤ MEMORY_INJECT_MAX_CHARS (3000)"]
+    R2 -->|no| R3B["legacy loadMemory()"]
+    R3 --> R4["frameMemory()<br/>hard cap · fence-neutralize · DATA framing"]
+    R3B --> R4
+    R4 --> R5["&lt;project_memory&gt; … injected into system prompt"]
+  end
+
+  WR -->|atomic| STORE
+  WN -->|fallback| S3
+  STORE -.->|loadConcepts / loadMemory| READ
+```
+
+**迁移(`jeo memory-migrate`,一次性 · 幂等).** 把旧版单文档 `MEMORY.md` 无损转换为概念包: `## 标题 → 类型`,每个项目符号 → 一个类型化概念,缩进行 → 正文; 重建 `index.md`/`log.md`,并把原文件重命名为 `MEMORY.md.bak`。一旦概念包中已有概念,再次运行即为 no-op。**回滚:** `JEO_MEMORY_LEGACY=1` 忽略概念包,通过相同的注入加固读取 `MEMORY.md`/`.bak`(`JEO_NO_MEMORY=1` 仍优先于一切)。
+
 ## 本地模型
 
 ```bash
@@ -158,11 +200,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.18]** (2026-06-17) — Memory data-flow diagram and a README "Memory flow" section documenting the actual runtime behavior.
 - **[0.6.17]** (2026-06-17) — Legacy MEMORY.md migrates losslessly into the OKF concept bundle, with a one-shot command and a rollback toggle.
 - **[0.6.16]** (2026-06-17) — OKF memory grows a concept cross-link graph: 1-hop search expansion, bundle lint, graphify-optional.
 - **[0.6.15]** (2026-06-17) — Query-aware OKF memory injection with budget-priority selection, and a truthful end-of-turn Todos receipt.
 - **[0.6.14]** (2026-06-16) — Memory distillation survives malformed model output, and stream-idle stalls retry instead of failing the turn.
-- **[0.6.13]** (2026-06-16) — `team` engine: concrete uncommitted-work reporting and stricter empty-run handling.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

@@ -119,6 +119,48 @@ jeo ultragoal
 
 非ゼロ終了したフックの出力はモデルが読むツール結果に付加され(バッチ内で重複排除)、フックが赤のまま `done` を呼ぶとフック名付きでプッシュバックされます。
 
+## メモリフロー
+
+`jeo` は `.jeo/memory/` 配下に **ローカルファースト・蒸留されたプロジェクトメモリ** を保持します(リモートバックエンドなし、ネイティブ依存ゼロ)。過去のセッションは [OKF](docs/okf_mem/) コンセプトバンドルへ蒸留され、次のセッションは関連性の高い予算内のスライスだけをシステムプロンプトへ再注入します — 指示ではなく DATA として堅牢化されます。`JEO_NO_MEMORY=1` ですべて無効化。
+
+📐 **編集可能な図:** [`docs/diagrams/memory-flow.drawio`](docs/diagrams/memory-flow.drawio)([draw.io](https://app.diagrams.net) / デスクトップアプリで開く) — 書き込み/保存/読み込み/移行の全スイムレーン。概要:
+
+```mermaid
+flowchart LR
+  subgraph WRITE["WRITE — session-end distill (detached, best-effort)"]
+    direction TB
+    W1["session exit / ^C^C"] --> W2["spawnDetachedDistill()<br/>payload + detached child, returns instantly"]
+    W2 --> W3["distillSessionMemory()<br/>load bundle · transcriptTail · ONE LLM call (JSON)"]
+    W3 --> WD{"concepts JSON<br/>parsed?"}
+    WD -->|yes| WY["per concept: upsert by title,<br/>atomic write into facts/ commands/<br/>gotchas/ preferences/"]
+    WD -->|no| WN["plain text →<br/>legacy MEMORY.md"]
+    WY --> WR["rebuildIndex() index.md<br/>updateLog() log.md"]
+  end
+
+  subgraph STORE[".jeo/memory/ — OKF concept bundle"]
+    direction TB
+    S1["facts/ · commands/ · gotchas/ · preferences/<br/>(YAML frontmatter + body)"]
+    S2["index.md · log.md · cross-link graph (Sprint 04)"]
+    S3["MEMORY.md (legacy fallback)<br/>MEMORY.md.bak (rollback)"]
+  end
+
+  subgraph READ["READ — memoryPromptSection(cwd, query)"]
+    direction TB
+    R1["session start (query = task text)"] --> R2{"bundle has<br/>concepts?"}
+    R2 -->|yes| R3["selectWithinBudget()<br/>core → query relevance → 1-hop graph<br/>≤ MEMORY_INJECT_MAX_CHARS (3000)"]
+    R2 -->|no| R3B["legacy loadMemory()"]
+    R3 --> R4["frameMemory()<br/>hard cap · fence-neutralize · DATA framing"]
+    R3B --> R4
+    R4 --> R5["&lt;project_memory&gt; … injected into system prompt"]
+  end
+
+  WR -->|atomic| STORE
+  WN -->|fallback| S3
+  STORE -.->|loadConcepts / loadMemory| READ
+```
+
+**移行(`jeo memory-migrate`、ワンショット・冪等).** レガシーの単一ドキュメント `MEMORY.md` をロスレスでバンドルへ変換します: `## 見出し → タイプ`、各箇条書き → タイプ別コンセプト、インデント行 → 本文; `index.md`/`log.md` を再構築し、元ファイルを `MEMORY.md.bak` にリネームします。バンドルにコンセプトができた後の再実行は no-op です。**ロールバック:** `JEO_MEMORY_LEGACY=1` はバンドルを無視し、同じ注入堅牢化を通して `MEMORY.md`/`.bak` を読みます(`JEO_NO_MEMORY=1` がすべてに優先)。
+
 ## ローカルモデル
 
 ```bash
@@ -158,11 +200,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.18]** (2026-06-17) — Memory data-flow diagram and a README "Memory flow" section documenting the actual runtime behavior.
 - **[0.6.17]** (2026-06-17) — Legacy MEMORY.md migrates losslessly into the OKF concept bundle, with a one-shot command and a rollback toggle.
 - **[0.6.16]** (2026-06-17) — OKF memory grows a concept cross-link graph: 1-hop search expansion, bundle lint, graphify-optional.
 - **[0.6.15]** (2026-06-17) — Query-aware OKF memory injection with budget-priority selection, and a truthful end-of-turn Todos receipt.
 - **[0.6.14]** (2026-06-16) — Memory distillation survives malformed model output, and stream-idle stalls retry instead of failing the turn.
-- **[0.6.13]** (2026-06-16) — `team` engine: concrete uncommitted-work reporting and stricter empty-run handling.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

@@ -24,14 +24,15 @@ export function geminiThinkingBudget(model: string, effort?: CallOptions["reason
   const floor = m.includes("pro") ? 128 : 0; // pro-class cannot fully disable thinking
   let budget: number;
   switch (effort) {
+    // minimal/low/medium/high ALL enable thinking with scaling depth — reasoning works at
+    // every thinking level (gajae parity: Minimal is a real effort). Only an UNSET effort
+    // falls through to the floor (off for flash-class, the API minimum for pro-class).
+    case "minimal": budget = Math.max(floor, 2000); break;
     case "low": budget = 4000; break;
     case "medium": budget = 10000; break;
     case "high": budget = 24000; break;
-    case "minimal":
     default: budget = floor;
   }
-  // Thought tokens bill against maxOutputTokens: keep at least ~1K of the output
-  // budget for visible text, or thinking starves the reply to an empty MAX_TOKENS.
   if (typeof maxTokens === "number") budget = Math.min(budget, Math.max(floor, maxTokens - 1024));
   return budget;
 }

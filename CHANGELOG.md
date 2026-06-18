@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.25] - 2026-06-19
+## [0.6.26] - 2026-06-19
+_The forge emblem is redrawn again as the mascot crayfish, foregrounding its signature pincer claws (집게)._
+
+### Changed
+- **Forge emblem redrawn as the mascot crayfish with raised pincer claws (집게).** The compact and grand forge marks (`FORGE_MARK_ART` / `_GRAND`) now read as the neon crayfish (가재) from `assets/character.png`, foregrounding its defining feature — two raised pincer claws on angled arms (`◣◣ ◢◢` jaws over `◆══╲ ╱══◆` arms) above the glowing eye/terminal cluster (`◉◉◉`) and a rounded carapace/tail. Purely pictographic and wordless (no embedded lettering), width-1 glyphs only so the TUI's padding/centering math stays exact; the blink frames snap the claws shut so the crayfish "clicks". Cross-checked against gajae-code's image-based crab/crayfish brand and the shared blue→violet→pink neon palette. The grand variant stays wide enough (30 cols) to keep the narrow-box compact fallback reachable.
+
+_Reasoning works at every thinking level (gajae parity), and the forge emblem is redrawn as the neon-lens coding wizard._
+
+### Changed
+- **Reasoning now activates at EVERY thinking level — no level restriction (gajae parity).** Previously the lowest tier disabled reasoning entirely: `thinkingToReasoningEffort` collapsed `minimal`→`low`, and the provider budgets treated `minimal`/unset effort as OFF, so picking the lowest level (or `/fast`) silently turned thinking off. `minimal` is now a genuine lightest reasoning effort threaded end to end — Anthropic (`minimal → 2000` budget_tokens), Gemini (`minimal → 2000`, clamped under the output cap), and Antigravity-Claude (`minimal → 2000`) all enable scaling-depth thinking for `minimal`/`low`/`medium`/`high`, matching gajae-code's `[Minimal, Low, Medium, High]` effort set. Only a fully UNSET effort stays non-thinking (the explicit off path). `xhigh` still maps to the deepest `high` tier the provider APIs accept.
+- **Forge emblem redrawn as the mascot neon-lens coding wizard.** The compact and grand forge marks (`FORGE_MARK_ART` / `_GRAND`) now read as the character from `assets/character.png` — a pointed wizard hat with a twinkling star tip, the glowing asymmetric ◆/◇ neon lens eyes on a nose-bridge, and the violet gown shoulders cradling the glowing terminal screen the wizard holds (`◉◉◉`). Purely pictographic and wordless (no embedded lettering), width-1 glyphs only so the TUI's padding/centering math stays exact; the blink frames twinkle the star and wink the lenses.
+
 ## [0.6.24] - 2026-06-19
 _`/provider` opens an interactive onboarding selector (OAuth vs API-compatible), and OpenAI-compatible backends gain per-vendor native-reasoning formats._
 

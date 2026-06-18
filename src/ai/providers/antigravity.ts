@@ -9,11 +9,15 @@ import { geminiThinkingBudget } from "./gemini";
 const ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
 
+
 /** Anthropic-style thinking budget for Claude served via CCA. gemini's budget fn
  *  returns undefined for claude ids, which left antigravity Claude with NO thinking
- *  requested (the opus "no reasoning" gap). Mirrors anthropic's effort→budget tiers. */
+ *  requested (the opus "no reasoning" gap). Mirrors anthropic's effort→budget tiers —
+ *  minimal/low/medium/high ALL think (gajae parity: reasoning at every level); only an
+ *  UNSET effort stays non-thinking. */
 function antigravityClaudeThinkingBudget(effort: CallOptions["reasoningEffort"]): number | undefined {
   switch (effort) {
+    case "minimal": return 2000;
     case "low": return 4000;
     case "medium": return 10000;
     case "high": return 24000;

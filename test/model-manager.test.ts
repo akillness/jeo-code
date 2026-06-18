@@ -28,8 +28,9 @@ test("thinkingMaxTokens: maps level → token budget (medium default)", () => {
 });
 
 test("thinkingToReasoningEffort: maps session level → provider reasoning tier", () => {
-  // minimal/low collapse to the lowest tier the o-series reliably accepts.
-  expect(thinkingToReasoningEffort("minimal")).toBe("low");
+  // minimal is a GENUINE (lightest) reasoning effort — reasoning works at EVERY level
+  // (gajae parity: Minimal is a real effort), no longer collapsed to low.
+  expect(thinkingToReasoningEffort("minimal")).toBe("minimal");
   expect(thinkingToReasoningEffort("low")).toBe("low");
   expect(thinkingToReasoningEffort("medium")).toBe("medium");
   // high AND xhigh both map to the deepest provider tier.

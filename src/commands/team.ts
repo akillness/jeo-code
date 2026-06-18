@@ -11,6 +11,7 @@ import {
 import { runAgentLoop } from "../agent/engine";
 import { maybeCompact } from "../agent/compaction";
 import { catalogMetadata } from "../ai";
+import { gitDirtyCount } from "./launch/tmux";
 import { readGlobalConfig } from "../agent/state";
 import {
   defaultSubagentRole,
@@ -26,7 +27,7 @@ import type { Message } from "../agent/loop";
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { categoryBadge } from "../tui/components/category-index";
 
-export type RalphStreamKind = "step" | "complete" | "error";
+export type RalphStreamKind = "step" | "complete" | "error" | "warn";
 
 export interface RalphRenderOptions {
   color?: boolean;
@@ -55,19 +56,20 @@ export function formatRalphTodoGuide(
   return lines;
 }
 
+const STREAM_TINTS = {
+  complete: chalk.green.bold,
+  error: chalk.red.bold,
+  warn: chalk.yellow.bold,
+  step: chalk.cyan.bold,
+} satisfies Record<RalphStreamKind, (s: string) => string>;
+
 export function formatRalphStreamEvent(kind: RalphStreamKind, message: string, opts: RalphRenderOptions = {}): string {
-  const label = kind === "complete" ? "complete" : kind === "error" ? "error" : "step";
-  if (!opts.color && !opts.indexed) return `  └─ stream:${label} ${message}`;
+  // ponytail: the label is always the kind itself — no mapping table needed.
+  if (!opts.color && !opts.indexed) return `  └─ stream:${kind} ${message}`;
   const color = opts.color === true;
   const badge = `${categoryBadge("subagent", { color })} `;
-  const tint = color
-    ? kind === "complete"
-      ? chalk.green.bold
-      : kind === "error"
-        ? chalk.red.bold
-        : chalk.cyan.bold
-    : (s: string) => s;
-  return `  ${badge}${tint(`stream:${label}`)} ${message}`;
+  const tint = color ? STREAM_TINTS[kind] : (s: string) => s;
+  return `  ${badge}${tint(`stream:${kind}`)} ${message}`;
 }
 
 export interface RalphSubagentPromptContext {
@@ -163,6 +165,9 @@ export interface TeamEngineOptions {
   io?: {
     output?: (line: string) => void;
   };
+  /** When true, a mutating role that finishes WITHOUT any successful
+   *  write/edit/bash fails the task instead of merely warning (round-11). */
+  strictMutations?: boolean;
 }
 
 export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok: boolean; reason?: string }> {
@@ -301,12 +306,17 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
     }
 
     // Round-8: a previous run halted on a task — its partial edits may still be
-    // on disk. Warn loudly before re-running on top of them, then clear the marker.
+    // on disk. Round-12: instead of a speculative warning, probe the working tree
+    // with `git status --porcelain` and report the CONCRETE uncommitted count so
+    // the user knows whether real partial work is present before re-running on it.
     if (teamState.current_phase === "failed" && teamState.failed_task) {
-      log(
-        `[WARN] The previous run FAILED on "${teamState.failed_task}" and may have left partial edits on disk. ` +
-        `Review the working tree before trusting this re-run — executing the task again on top of partial work can duplicate changes.`,
-      );
+      const dirty = gitDirtyCount(cwd);
+      const treeNote = dirty === undefined
+        ? `The working tree could not be inspected (not a git repo or git unavailable) — review it manually before trusting this re-run.`
+        : dirty > 0
+          ? `git reports ${dirty} uncommitted change(s) — these may include partial edits from the halted task; review (e.g. 'git status', 'git diff') before re-running, as executing the task again on top of partial work can duplicate changes.`
+          : `git reports a clean working tree — no partial edits from the halted task remain on disk, so this re-run starts from a known state.`;
+      log(`[WARN] The previous run FAILED on "${teamState.failed_task}". ${treeNote}`);
       teamState.current_phase = "executing";
       delete teamState.failed_task;
     }
@@ -336,6 +346,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
         completed: teamState.completed_tasks ?? [],
         cwd,
         roleId: roleByIndex[activeIndex],
+        strictMutations: opts.strictMutations ?? false,
       });
 
       if (opts.signal?.aborted) {
@@ -374,14 +385,15 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
   }
 }
 
-export async function runTeamCommand(): Promise<void> {
-  const res = await runTeamEngine();
+export async function runTeamCommand(args: string[] = []): Promise<void> {
+  const strictMutations = args.includes("--strict-mutations") || args.includes("--strict");
+  const res = await runTeamEngine({ strictMutations });
   if (!res.ok) {
     process.exitCode = 1;
   }
 }
 
-async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: string; roleId?: string }): Promise<boolean> {
+async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: string; roleId?: string; strictMutations?: boolean }): Promise<boolean> {
   const config = await readGlobalConfig();
   const role = getSubagentRole(ctx.roleId, config) ?? defaultSubagentRole();
   const renderOpts: RalphRenderOptions = { color: !!process.stdout.isTTY, indexed: true };
@@ -465,7 +477,16 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
     const msg = bashRuns === 0
       ? `${role.title} completed WITHOUT any successful write/edit/bash — treat its changed-files claim as unverified.`
       : `${role.title} completed with only bash (no write/edit) — verify its changed-files claim independently.`;
-    console.log(formatRalphStreamEvent("error", msg, renderOpts));
+    // Round-11: under --strict-mutations, a mutating role that took NO action at
+    // all (no write/edit/bash) is a hard failure — an empty run must not pass as
+    // a completed task. bash-only stays advisory to avoid penalizing shell edits.
+    const hardFail = ctx.strictMutations && bashRuns === 0;
+    // Round-12: separate the tones so a passing advisory run doesn't masquerade
+    // as a stream:error — only a real hard-fail is red; an advisory note is warn.
+    console.log(formatRalphStreamEvent(hardFail ? "error" : "warn", msg, renderOpts));
+    if (hardFail) {
+      return false;
+    }
   }
   console.log(formatRalphStreamEvent("complete", `${role.title} finished task`, renderOpts));
   return true;

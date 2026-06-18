@@ -290,3 +290,144 @@ test("runTeamCommand invokes maybeCompact on subagent execution", async () => {
     mock.module("../src/agent/compaction", () => realCompaction);
   }
 });
+
+test("runTeamCommand --strict-mutations fails a mutating role that made no write/edit/bash", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    // Executor claims changed files but never actually writes/edits/bashes.
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } }),
+  }));
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "implement it", role: "executor" }]);
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand(["--strict-mutations"]);
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  expect(out).toContain("WITHOUT any successful write/edit/bash");
+  expect(out).toContain("[ERR] Failed on task:");
+  expect(out).not.toContain("[DONE] All tasks in the plan executed successfully!");
+  expect(process.exitCode).toBe(1);
+
+  const teamState = JSON.parse(await fs.readFile(path.join(tmp, ".jeo", "state", "team-state.json"), "utf-8"));
+  expect(teamState.current_phase).toBe("failed");
+  expect(teamState.failed_task).toBe("implement it");
+});
+
+test("runTeamCommand without --strict-mutations only warns on a no-op mutating role (default)", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } }),
+  }));
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "implement it", role: "executor" }]);
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand();
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  // Advisory warning still printed, but the task completes (back-compat).
+  expect(out).toContain("WITHOUT any successful write/edit/bash");
+  expect(out).toContain("[DONE] All tasks in the plan executed successfully!");
+  expect(process.exitCode).toBe(0);
+
+  const teamState = JSON.parse(await fs.readFile(path.join(tmp, ".jeo", "state", "team-state.json"), "utf-8"));
+  expect(teamState.current_phase).toBe("complete");
+  expect(teamState.completed_tasks).toEqual(["implement it"]);
+});
+
+test("runTeamCommand --strict-mutations stays advisory when the role ran bash (bash-only)", async () => {
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      // First call runs a bash command; second call signals done.
+      if (turn === 1) return JSON.stringify({ tool: "bash", arguments: { command: "echo hi" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } });
+    },
+  }));
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "implement it", role: "executor" }]);
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand(["--strict-mutations"]);
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  // bash ran but no write/edit → advisory only, not a hard failure.
+  expect(out).toContain("only bash (no write/edit)");
+  expect(out).toContain("[DONE] All tasks in the plan executed successfully!");
+  expect(process.exitCode).toBe(0);
+});
+
+test("formatRalphStreamEvent renders the warn tone distinctly from error", async () => {
+  const { formatRalphStreamEvent } = await import("../src/commands/team");
+  expect(formatRalphStreamEvent("warn", "only advisory")).toBe("  └─ stream:warn only advisory");
+  // warn is yellow, error is red — different ANSI tints when color is on.
+  const warn = formatRalphStreamEvent("warn", "x", { color: true, indexed: true });
+  const err = formatRalphStreamEvent("error", "x", { color: true, indexed: true });
+  expect(warn).toContain("stream:warn");
+  expect(err).toContain("stream:error");
+  expect(warn).not.toBe(err);
+});
+
+test("runTeamCommand default no-op advisory uses stream:warn, strict hard-fail uses stream:error", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } }),
+  }));
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "implement it", role: "executor" }]);
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand(); // default (non-strict) → advisory passes
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  // The no-op advisory is a warn (the task still completes), not a red error.
+  expect(out).toContain("stream:warn Executor completed WITHOUT any successful write/edit/bash");
+  expect(out).not.toContain("stream:error Executor completed WITHOUT");
+  expect(out).toContain("[DONE] All tasks in the plan executed successfully!");
+});
+
+test("runTeamCommand --strict-mutations hard-fail advisory is a stream:error (red), not warn", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } }),
+  }));
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "implement it", role: "executor" }]);
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand(["--strict-mutations"]);
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  // The hard-fail message is tagged stream:error (red), since the task fails.
+  expect(out).toContain("stream:error Executor completed WITHOUT any successful write/edit/bash");
+  expect(out).not.toContain("stream:warn Executor completed WITHOUT");
+  expect(process.exitCode).toBe(1);
+});
+
+test("runTeamCommand reports a CONCRETE git working-tree note when re-running after a prior failure", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } }),
+  }));
+  const { runTeamCommand } = await import("../src/commands/team");
+  await seedPlan([{ name: "implement it", role: "executor" }]);
+  // Pre-seed a failed marker so the re-run hits the prior-failure branch.
+  const statePath = path.join(tmp, ".jeo", "state", "team-state.json");
+  await fs.writeFile(statePath, JSON.stringify({
+    active: true, skill: "team", slug: "demo", current_phase: "failed", failed_task: "implement it",
+    plan_path: path.join(tmp, "plan.yaml"), completed_tasks: [], pending_tasks: ["implement it"],
+  }));
+
+  console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
+  await runTeamCommand();
+  console.log = origLog;
+
+  const out = logs.join("\n");
+  expect(out).toContain('The previous run FAILED on "implement it"');
+  // The tmp dir is not a git repo → the note states the tree could not be inspected,
+  // NOT the old speculative "may have left partial edits" wording.
+  expect(out).toContain("could not be inspected");
+  expect(out).not.toContain("may have left partial edits on disk");
+});

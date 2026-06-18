@@ -70,9 +70,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "team",
     summary: "Execute the planning blueprint (Executor subagent tools).",
+    usage: "team [--strict-mutations]",
     loader: async () => {
       const m = await import("../commands/team");
-      return async () => m.runTeamCommand();
+      return args => m.runTeamCommand(args);
     },
   },
   {

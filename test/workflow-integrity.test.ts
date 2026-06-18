@@ -196,13 +196,14 @@ test("team: a failed task persists a marker; the next run warns about partial ed
   expect(failedState?.current_phase).toBe("failed");
   expect(failedState?.failed_task).toBe("fragile task");
 
-  // Re-run with a healthy executor: the engine must WARN about partial edits,
-  // clear the marker, and complete.
+  // Re-run with a healthy executor: the engine must surface a CONCRETE
+  // working-tree note (git-probed, no longer a speculative phrase), clear the
+  // marker, and complete.
   reply = DONE;
   const lines: string[] = [];
   const second = await runTeamEngine({ cwd: dir, io: { output: l => lines.push(l) } });
   expect(second.ok).toBe(true);
-  expect(lines.some(l => l.includes("may have left partial edits"))).toBe(true);
+  expect(lines.some(l => l.includes('The previous run FAILED on "fragile task"'))).toBe(true);
   const doneState = await readWorkflowState("team", dir);
   expect(doneState?.current_phase).toBe("complete");
   expect(doneState?.failed_task).toBeUndefined();

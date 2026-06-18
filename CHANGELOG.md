@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.17] - 2026-06-17
+_Legacy MEMORY.md migrates losslessly into the OKF concept bundle, with a one-shot command and a rollback toggle._
+
+### Added
+- **`jeo memory-migrate` — legacy memory → OKF bundle migration (OKF Sprint 05).** A one-shot, idempotent migration converts the legacy single-doc `.jeo/memory/MEMORY.md` into the type-partitioned OKF concept bundle: `parseLegacyMemory` maps each `## heading` to a concept type (commands/gotchas/preferences/repo-facts, unknown → RepoFact) and splits top-level bullets into concepts (`**title**: description` form recognized, indented continuation lines become the body — lossless), then `migrateLegacyMemory` writes each concept atomically under `facts/`/`commands/`/`gotchas/`/`preferences/`, (re)builds `index.md`/`log.md`, and renames the legacy doc to `MEMORY.md.bak` for rollback. Re-running is a no-op once the bundle has concepts. The bundle is the default read path; `JEO_MEMORY_LEGACY=1` is a new rollback toggle that ignores the bundle and reads the legacy doc (or its `.bak` backup) through the same injection-hardening, while `JEO_NO_MEMORY=1` still wins over everything.
+
 ## [0.6.16] - 2026-06-17
 _OKF memory grows a concept cross-link graph: 1-hop search expansion, bundle lint, graphify-optional._
 

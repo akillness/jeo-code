@@ -158,11 +158,11 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.17]** (2026-06-17) — Legacy MEMORY.md migrates losslessly into the OKF concept bundle, with a one-shot command and a rollback toggle.
 - **[0.6.16]** (2026-06-17) — OKF memory grows a concept cross-link graph: 1-hop search expansion, bundle lint, graphify-optional.
 - **[0.6.15]** (2026-06-17) — Query-aware OKF memory injection with budget-priority selection, and a truthful end-of-turn Todos receipt.
 - **[0.6.14]** (2026-06-16) — Memory distillation survives malformed model output, and stream-idle stalls retry instead of failing the turn.
 - **[0.6.13]** (2026-06-16) — `team` engine: concrete uncommitted-work reporting and stricter empty-run handling.
-- **[0.6.12]** (2026-06-16) — OKF-backed memory distillation — session learnings become structured concept files.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

@@ -17,7 +17,9 @@ The core runtime loop, tool registry, session management, and state persistence 
 | `hooks.ts` | Brief description of purpose |
 | `json.ts` | Brief description of purpose |
 | `loop.ts` | The primary execution loop orchestrating model calls and tool execution |
-| `memory.ts` | Brief description of purpose |
+| `memory.ts` | OKF concept-bundle memory: session distill, query-aware budget injection, legacy MEMORY.md migration (`migrateLegacyMemory`) + `JEO_MEMORY_LEGACY` rollback toggle |
+| `memory-okf.ts` | OKF v0.1 format layer: frontmatter parse/serialize, concept IDs, conformance validation |
+| `memory-graph.ts` | Concept cross-link graph: build/expand (1-hop search), broken-link-tolerant lint, optional graphify detection |
 | `model-recency.ts` | Brief description of purpose |
 | `output-minimizer.ts` | Brief description of purpose |
 | `output-util.ts` | Brief description of purpose |

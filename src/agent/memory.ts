@@ -50,6 +50,129 @@ export async function loadMemory(cwd: string): Promise<string> {
   }
 }
 
+/** A concept extracted from a legacy single-doc MEMORY.md during migration. */
+export interface MigratedConcept {
+  type: string;
+  title: string;
+  description: string;
+  body: string;
+}
+
+/** Map a legacy `## heading` to a jeo concept type. Lenient keyword match —
+ *  unknown headings default to RepoFact so nothing is dropped. */
+function headingToType(heading: string): string {
+  const h = heading.toLowerCase();
+  if (/\bcommand/.test(h)) return "Command";
+  if (/gotcha|pitfall|caveat/.test(h)) return "Gotcha";
+  if (/pref/.test(h)) return "UserPreference";
+  if (/repo|fact/.test(h)) return "RepoFact";
+  return "RepoFact";
+}
+
+/** Parse a legacy 4-heading MEMORY.md into concepts: each `## heading` sets the
+ *  type, each top-level bullet becomes a concept (`**title**: description` form
+ *  recognized, indented continuation lines become the body). Lossless: a plain
+ *  bullet keeps its whole text as the title. */
+export function parseLegacyMemory(doc: string): MigratedConcept[] {
+  const concepts: MigratedConcept[] = [];
+  let currentType = "RepoFact";
+  let cur: MigratedConcept | null = null;
+  const flush = () => {
+    if (cur) {
+      cur.body = cur.body.replace(/\n+$/, "");
+      concepts.push(cur);
+      cur = null;
+    }
+  };
+  for (const line of doc.split("\n")) {
+    const heading = line.match(/^#{1,6}\s+(.*)$/);
+    if (heading) {
+      flush();
+      currentType = headingToType(heading[1]!.trim());
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    if (bullet) {
+      flush();
+      const text = bullet[1]!.trim();
+      const bold = text.match(/^\*\*(.+?)\*\*\s*:?\s*(.*)$/);
+      cur = bold
+        ? { type: currentType, title: bold[1]!.trim(), description: bold[2]!.trim(), body: "" }
+        : { type: currentType, title: text, description: "", body: "" };
+      continue;
+    }
+    // Continuation line (typically 2-space indented) belongs to the open concept.
+    if (cur && line.trim() !== "") {
+      cur.body += (cur.body ? "\n" : "") + line.replace(/^ {2}/, "");
+    }
+  }
+  flush();
+  return concepts.filter(c => c.title);
+}
+
+/** Outcome of a one-shot legacy → OKF bundle migration. */
+export interface MigrationResult {
+  migrated: boolean;
+  conceptCount: number;
+  /** Why nothing was migrated (already a bundle / no legacy doc / nothing parsed). */
+  skipped?: string;
+  /** Where the legacy MEMORY.md was preserved for rollback, if migrated. */
+  backupPath?: string;
+}
+
+/**
+ * Migrate a legacy single-doc `.jeo/memory/MEMORY.md` into the OKF concept bundle.
+ * One-shot and IDEMPOTENT: a bundle that already holds concept docs is left
+ * untouched. On success each legacy bullet becomes a type-partitioned concept,
+ * index.md/log.md are (re)built, and the legacy doc is renamed to `MEMORY.md.bak`
+ * so the active path is the bundle while a rollback copy survives.
+ */
+export async function migrateLegacyMemory(cwd: string): Promise<MigrationResult> {
+  const bundleDir = path.join(cwd, ".jeo", "memory");
+  // Idempotent: an existing concept bundle wins — never double-migrate.
+  if ((await loadConcepts(cwd)).length > 0) {
+    return { migrated: false, conceptCount: 0, skipped: "bundle already has concepts" };
+  }
+  const doc = await loadMemory(cwd);
+  if (!doc) return { migrated: false, conceptCount: 0, skipped: "no legacy MEMORY.md to migrate" };
+  const parsed = parseLegacyMemory(doc);
+  if (parsed.length === 0) return { migrated: false, conceptCount: 0, skipped: "no concepts parsed from MEMORY.md" };
+
+  await fs.mkdir(bundleDir, { recursive: true });
+  const written: { title: string; type: string }[] = [];
+  const usedSlugs = new Set<string>();
+  for (const c of parsed) {
+    const dir = DIR_BY_TYPE[c.type] ?? "facts";
+    await fs.mkdir(path.join(bundleDir, dir), { recursive: true });
+    let slug = slugify(c.title);
+    let suffix = 1;
+    while (usedSlugs.has(`${dir}/${slug}`)) slug = `${slugify(c.title)}-${suffix++}`;
+    usedSlugs.add(`${dir}/${slug}`);
+    const frontmatter = {
+      type: c.type,
+      title: c.title,
+      description: c.description,
+      tags: [] as string[],
+      timestamp: new Date().toISOString(),
+      confidence: "high",
+      last_verified: new Date().toISOString().split("T")[0]!,
+      links: [] as string[],
+    };
+    const serialized = serializeConcept(frontmatter, c.body);
+    const fullPath = path.join(bundleDir, dir, `${slug}.md`);
+    const tmpPath = `${fullPath}.tmp-${process.pid}`;
+    await fs.writeFile(tmpPath, serialized, "utf-8");
+    await fs.rename(tmpPath, fullPath);
+    written.push({ title: c.title, type: c.type });
+  }
+  await rebuildIndex(bundleDir);
+  await updateLog(bundleDir, written);
+  // Preserve the legacy doc as a rollback backup, off the active read path.
+  const backupPath = `${memoryFilePath(cwd)}.bak`;
+  await fs.rename(memoryFilePath(cwd), backupPath).catch(() => {});
+  return { migrated: true, conceptCount: written.length, backupPath };
+}
+
 /** Render a single index.md-style section: a `## header` followed by one bullet
  *  per concept (`**title**: description`), with the concept body indented beneath. */
 function renderConceptSection(header: string, list: { title: string; description: string; body: string }[]): string {
@@ -240,12 +363,26 @@ function selectWithinBudget(concepts: Concept[], query: string | undefined, budg
  *  reports: tag-breakout sequences are neutralized and the block is framed as DATA. */
 export async function memoryPromptSection(cwd: string, query?: string): Promise<string> {
   if (jeoEnv("NO_MEMORY") === "1") return "";
+  // Rollback toggle (Sprint 05): JEO_MEMORY_LEGACY=1 forces the legacy single-doc
+  // path, ignoring any concept bundle — reads MEMORY.md, or its migration backup.
+  if (jeoEnv("MEMORY_LEGACY") === "1") {
+    let memory = await loadMemory(cwd);
+    if (!memory) memory = (await fs.readFile(`${memoryFilePath(cwd)}.bak`, "utf-8").catch(() => "")).trim();
+    return memory ? frameMemory(memory) : "";
+  }
   // Prefer the OKF concept bundle (budget-selected); fall back to legacy MEMORY.md.
   const concepts = await loadConcepts(cwd);
   let memory = concepts.length > 0
     ? renderConcepts(selectWithinBudget(concepts, query, MEMORY_INJECT_MAX_CHARS))
     : await loadMemory(cwd);
   if (!memory) return "";
+  return frameMemory(memory);
+}
+
+/** Wrap distilled memory text in the hardened `<project_memory>` block: hard char
+ *  cap, fence-tag neutralization, and DATA framing. Shared by the bundle path and
+ *  the legacy/rollback path so neither can bypass the injection-hardening. */
+function frameMemory(memory: string): string {
   // Backstop: legacy MEMORY.md is a single blob (not concept-selectable), and a
   // pathological single concept can exceed the budget — hard-cap either way.
   if (memory.length > MEMORY_INJECT_MAX_CHARS) {

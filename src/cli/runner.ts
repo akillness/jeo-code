@@ -147,6 +147,15 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: "memory-migrate",
+    summary: "Migrate a legacy MEMORY.md into the OKF concept bundle (one-shot, idempotent).",
+    usage: "memory-migrate",
+    loader: async () => {
+      const m = await import("../commands/memory-migrate");
+      return args => m.runMemoryMigrateCommand(args);
+    },
+  },
+  {
     name: "state",
     summary: "Read or update workflow state receipts under .jeo/state (gjc-state parity).",
     usage: "state <deep-interview|ralplan|team|ultragoal> <read|write|clear|handoff> [--input '<json>'] [--to <skill>] [--json]",

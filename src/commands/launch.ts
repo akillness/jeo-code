@@ -250,6 +250,21 @@ export function providerPickEntries(live: ProviderModelsResult[], want: Provider
   if (catalog.length) {
     return catalog.map((m, i) => ({ index: i + 1, provider: want, model: qualifyModelId(m.providerModel, want) }));
   }
+  // Offline fallback for catalog-less (OpenAI-compatible) providers: the def's
+  // defaultModel first, then its knownModels list, so the per-role provider picker
+  // shows several pickable ids instead of one. De-duped + provider-qualified.
+  const def = openaiCompatDef(want);
+  if (def) {
+    const ids = [def.defaultModel, ...(def.knownModels ?? [])].map(m => qualifyModelId(m, want));
+    const seen = new Set<string>();
+    const entries: PickEntry[] = [];
+    for (const model of ids) {
+      if (seen.has(model)) continue;
+      seen.add(model);
+      entries.push({ index: entries.length + 1, provider: want, model });
+    }
+    if (entries.length) return entries;
+  }
   const fallback = providerDefaultModel(want);
   return fallback ? [{ index: 1, provider: want, model: qualifyModelId(fallback, want) }] : [];
 }

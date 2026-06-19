@@ -23,6 +23,12 @@ export interface OpenAICompatProviderDef {
   readonly apiKeyEnv: string;
   /** Default model id (provider-prefixed) used by `--provider <name>`. */
   readonly defaultModel: string;
+  /** Extra well-known model ids (BARE, not provider-prefixed) for the OFFLINE
+   *  pick-list fallback shown by `/agents <role> provider <name>` and `--provider`.
+   *  Live `/models` discovery supersedes this once the provider is logged in, so
+   *  keep only stable/alias-style ids here (a stale id would 404 at inference).
+   *  `defaultModel` is always surfaced first regardless of this list. */
+  readonly knownModels?: readonly string[];
   /** Wire protocol: "openai" (/chat/completions, default) or "anthropic" (/v1/messages). */
   readonly protocol?: "openai" | "anthropic";
   /** True for subscription/plan products (coding-plan, portal, token-plan, code) rather than
@@ -35,12 +41,12 @@ export interface OpenAICompatProviderDef {
 }
 
 export const OPENAI_COMPAT_PROVIDERS: readonly OpenAICompatProviderDef[] = [
-  { name: "groq", label: "Groq", baseUrl: "https://api.groq.com/openai/v1", apiKeyEnv: "GROQ_API_KEY", defaultModel: "groq/llama-3.3-70b-versatile" },
-  { name: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", apiKeyEnv: "DEEPSEEK_API_KEY", defaultModel: "deepseek/deepseek-chat" },
-  { name: "mistral", label: "Mistral", baseUrl: "https://api.mistral.ai/v1", apiKeyEnv: "MISTRAL_API_KEY", defaultModel: "mistral/mistral-large-latest" },
+  { name: "groq", label: "Groq", baseUrl: "https://api.groq.com/openai/v1", apiKeyEnv: "GROQ_API_KEY", defaultModel: "groq/llama-3.3-70b-versatile", knownModels: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"] },
+  { name: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", apiKeyEnv: "DEEPSEEK_API_KEY", defaultModel: "deepseek/deepseek-chat", knownModels: ["deepseek-chat", "deepseek-reasoner"] },
+  { name: "mistral", label: "Mistral", baseUrl: "https://api.mistral.ai/v1", apiKeyEnv: "MISTRAL_API_KEY", defaultModel: "mistral/mistral-large-latest", knownModels: ["mistral-large-latest", "mistral-small-latest", "codestral-latest", "ministral-8b-latest"] },
   { name: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", apiKeyEnv: "OPENROUTER_API_KEY", defaultModel: "openrouter/openai/gpt-4o-mini", thinkingFormat: "openrouter" },
   { name: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", apiKeyEnv: "TOGETHER_API_KEY", defaultModel: "together/meta-llama/Llama-3.3-70B-Instruct-Turbo" },
-  { name: "cerebras", label: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", apiKeyEnv: "CEREBRAS_API_KEY", defaultModel: "cerebras/llama-3.3-70b" },
+  { name: "cerebras", label: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", apiKeyEnv: "CEREBRAS_API_KEY", defaultModel: "cerebras/llama-3.3-70b", knownModels: ["llama-3.3-70b", "llama3.1-8b", "qwen-3-235b-a22b-instruct-2507"] },
   { name: "fireworks", label: "Fireworks", baseUrl: "https://api.fireworks.ai/inference/v1", apiKeyEnv: "FIREWORKS_API_KEY", defaultModel: "fireworks/accounts/fireworks/models/llama-v3p3-70b-instruct" },
   { name: "nvidia", label: "NVIDIA", baseUrl: "https://integrate.api.nvidia.com/v1", apiKeyEnv: "NVIDIA_API_KEY", defaultModel: "nvidia/meta/llama-3.3-70b-instruct" },
   // Additional gjc-parity OpenAI-compatible clouds (authoritative base URLs + env vars).

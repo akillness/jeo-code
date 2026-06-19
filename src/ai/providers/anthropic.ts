@@ -11,6 +11,12 @@ const DEPRECATED_TEMPERATURE = "`temperature` is deprecated for this model.";
 const CLAUDE_CODE_VERSION = "2.1.63";
 const CLAUDE_CODE_SYSTEM_INSTRUCTION = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 const CLAUDE_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
+/** Betas needed for API-key requests: interleaved-thinking enables thinking+tools,
+ *  prompt-caching-scope gives scoped cache breakpoints. */
+const ANTHROPIC_API_KEY_BETA = [
+  "interleaved-thinking-2025-05-14",
+  "prompt-caching-scope-2026-01-05",
+].join(",");
 const ANTHROPIC_OAUTH_BETA = [
   "claude-code-20250219",
   "oauth-2025-04-20",
@@ -99,7 +105,7 @@ type AnthropicMessage = { role: string; content: string | AnthropicContentBlock[
 export function anthropicNativizable(m: Message, model: string, thinkingEnabled: boolean): boolean {
   return thinkingEnabled
     && !!m.toolUse?.length
-    && !!m.reasoningArtifacts?.some(a => a.provider === "anthropic" && a.model === model && ((!!a.signature && !!a.text) || !!a.redacted));
+    && !!m.reasoningArtifacts?.some(a => a.provider === "anthropic" && a.model === model && (!!a.signature || !!a.redacted));
 }
 
 /** Build Anthropic wire messages, reconstructing native tool_use / tool_result / thinking
@@ -121,7 +127,7 @@ export function buildAnthropicMessages(messages: Message[], model: string, think
       const blocks: AnthropicContentBlock[] = [];
       for (const a of m.reasoningArtifacts!) {
         if (a.provider !== "anthropic" || a.model !== model) continue;
-        if (a.signature && a.text) blocks.push({ type: "thinking", thinking: a.text, signature: a.signature });
+        if (a.signature) blocks.push({ type: "thinking", thinking: a.text ?? "", signature: a.signature });
         else if (a.redacted) blocks.push({ type: "redacted_thinking", data: a.redacted });
       }
       for (const tu of m.toolUse!) blocks.push({ type: "tool_use", id: tu.id, name: tu.tool, input: tu.arguments });
@@ -454,6 +460,7 @@ function headersFor(credential: Credential, stream: boolean): Record<string, str
       "content-type": "application/json",
       "x-api-key": credential.token,
       "anthropic-version": "2023-06-01",
+      "anthropic-beta": ANTHROPIC_API_KEY_BETA,
     };
   }
   throw new Error("anthropic adapter requires a credential");

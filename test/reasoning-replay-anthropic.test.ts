@@ -84,7 +84,9 @@ test("anthropicNativizable: requires thinking enabled + toolUse + matching signe
   expect(anthropicNativizable(m, MODEL, false)).toBe(false); // thinking off
   expect(anthropicNativizable(m, "other-model", true)).toBe(false); // model mismatch
   expect(anthropicNativizable({ ...m, toolUse: [] }, MODEL, true)).toBe(false); // no toolUse
-  expect(anthropicNativizable({ ...m, reasoningArtifacts: [{ provider: "anthropic", model: MODEL, signature: "S" }] }, MODEL, true)).toBe(false); // signature without text
+  // Signature-only artifacts (opus-4-8 pattern: thinking tokens used but text encrypted)
+  // are still nativizable — the empty text + valid signature replays correctly for cross-turn continuity.
+  expect(anthropicNativizable({ ...m, reasoningArtifacts: [{ provider: "anthropic", model: MODEL, signature: "S" }] }, MODEL, true)).toBe(true);
 });
 
 // ── Replay reconstruction ────────────────────────────────────────────────────
@@ -105,6 +107,30 @@ test("buildAnthropicMessages: reconstructs thinking + tool_use, and matching too
     { type: "thinking", thinking: "think", signature: "SIG" },
     { type: "tool_use", id: "call_1_0", name: "read", input: { filePath: "x" } },
   ]);
+  expect(built[2].content).toEqual([
+    { type: "tool_result", tool_use_id: "call_1_0", content: "file body", is_error: false },
+  ]);
+});
+
+test("buildAnthropicMessages: replays signature-only thinking blocks (opus-4-8 encrypted thought)", () => {
+  const history: Message[] = [
+    { role: "user", content: "do it" },
+    {
+      role: "assistant",
+      content: '{"tool":"read","arguments":{"filePath":"x"}}',
+      toolUse: [{ id: "call_1_0", tool: "read", arguments: { filePath: "x" } }],
+      // opus-4-8 pattern: signature present, text absent (encrypted thinking)
+      reasoningArtifacts: [{ provider: "anthropic", model: MODEL, signature: "ENCRYPTED_SIG" }],
+    },
+    { role: "user", content: "Tool [read] result (ok):\nfile body", toolResults: [{ id: "call_1_0", output: "file body", isError: false }] },
+  ];
+  const built = buildAnthropicMessages(history, MODEL, true);
+  // Signature-only thinking block should be replayed with empty text + signature for continuity
+  expect(built[1].content).toEqual([
+    { type: "thinking", thinking: "", signature: "ENCRYPTED_SIG" },
+    { type: "tool_use", id: "call_1_0", name: "read", input: { filePath: "x" } },
+  ]);
+  // Tool result is also nativized since preceding assistant was nativizable
   expect(built[2].content).toEqual([
     { type: "tool_result", tool_use_id: "call_1_0", content: "file body", is_error: false },
   ]);

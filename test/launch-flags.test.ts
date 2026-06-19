@@ -11,7 +11,17 @@ test("parseFlags captures GJC-style model/provider/thinking launch flags", () =>
   expect(flags.message).toBe("fix it");
 });
 
-import { fastThinkingLevelForModel } from "../src/commands/launch/flags";
+import { fastThinkingLevelForModel, isProviderName } from "../src/commands/launch/flags";
+
+test("isProviderName accepts every registered provider, not just the OAuth few", () => {
+  // Regression: the guard used to hardcode 5 names, so `/agents <role> provider
+  // groq` (and every other OpenAI-compat provider) was rejected as invalid.
+  for (const p of ["anthropic", "openai", "gemini", "groq", "deepseek", "openrouter", "mistral", "xai", "kimi"]) {
+    expect(isProviderName(p)).toBe(true);
+  }
+  expect(isProviderName("not-a-provider")).toBe(false);
+  expect(isProviderName(undefined)).toBe(false);
+});
 
 test("fastThinkingLevelForModel: digit-agnostic gemini gate (multi-digit major never silently loses thinking)", () => {
   // Catalogued reasoning ids resolve via catalog thinking caps.

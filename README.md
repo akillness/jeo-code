@@ -200,11 +200,11 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.30]** (2026-06-19) — gjc-style intermediate-judgment guard classification extracted from the engine loop, plus a re-verification that `jeo --tmux` does not leak bun memory or slow down.
 - **[0.6.29]** (2026-06-19) — Signature-only thinking-block replay (Anthropic opus-4-7/4-8), plus a tmux mouse-flood memory guard confirming `jeo --tmux` does not leak.
 - **[0.6.28]** (2026-06-19) — Signed thinking-block replay: native reasoning is now sent BACK to providers across steps/turns, restoring multi-step reasoning continuity (gajae parity).
 - **[0.6.27]** (2026-06-19) — Ponytail pass on the reasoning-tier mapper, plus a real-tmux verification of `jeo --tmux`.
 - **[0.6.26]** (2026-06-19) — The forge emblem is redrawn again as the mascot crayfish, foregrounding its signature pincer claws (집게).
-- **[0.6.25]** (2026-06-19) — Reasoning works at every thinking level (gajae parity), and the forge emblem is redrawn as the neon-lens coding wizard.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

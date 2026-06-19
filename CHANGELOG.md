@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.30] - 2026-06-19
+_gjc-style intermediate-judgment guard classification extracted from the engine loop, plus a re-verification that `jeo --tmux` does not leak bun memory or slow down._
+
+### Changed
+- **Loop intermediate-judgment guards extracted into a classified module (`src/agent/loop-guards.ts`).** The mid-run "continue / self-correct / stop" decisions that were inlined across `engine.ts`'s `while` loop as scattered booleans and message strings are now a named `GuardState` discriminated-union taxonomy — jeo's descendant of gjc's `ultragoal-guard` `UltragoalGuardState` pattern. A single frozen `GUARD_LIMITS` object is the source of truth for every threshold (`MAX_REPEAT`, `MAX_FAILURES`, `MAX_REFUSAL_RETRIES`, `MAX_INVALID_CALLS`, `MAX_PARSE_BOUNCES`, `CYCLE_WINDOW`), and pure classifiers (`isVerificationSignal`, `repeatHint`, `nearestToolName`, `classifyDoneGate`) are now independently testable. `engine.ts` still owns all control flow (history mutation, `step++`, `continue`, `return finish(...)`) — only the JUDGMENT moved, so behavior is unchanged (net −19 lines in `engine.ts`). Removed the now-unused `src/agent/tool-registry.ts`.
+
+### Verified
+- **`jeo --tmux` has no bun memory leak and does not slow down.** An in-process probe streaming 5,000,000 SGR mouse-report escapes through `queuePromptInputChunk` (10 × 500k, `Bun.gc(true)` between batches) holds RSS flat (133.9 → 135.2 MB, slope ≈0.13 MB/round) with zero prompt-queue accumulation; a real `jeo --tmux` session flooded with 60k live mouse reports via `tmux send-keys` plateaus in RSS (129,456 → 129,472 KB). `jeo --tmux -p` end-to-end creates the profiled session, runs the turn, and tears down cleanly.
+- **Full suite green:** `bun run typecheck` clean and `bun test` 1687 pass / 0 fail across 210 files (includes the new `test/loop-guards.test.ts`, 9 tests, and the signature-only Anthropic replay test).
+
 ## [0.6.29] - 2026-06-19
 _Signature-only thinking-block replay (Anthropic opus-4-7/4-8), plus a tmux mouse-flood memory guard confirming `jeo --tmux` does not leak._
 

@@ -22,6 +22,7 @@ export { TOOL_OUTPUT_MAX, READ_OUTPUT_MAX, TOOL_SPILL_THRESHOLD, MAX_TOOL_ARTIFA
 import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, hashSignature, type StepBudgetConfig } from "./step-budget";
 import { historyTokens, trimToolResultsInPlace } from "./compaction";
 import { jeoEnv } from "../util/env";
+import { GUARD_LIMITS, isVerificationSignal, repeatHint, classifyDoneGate } from "./loop-guards";
 
 
 async function invokeCallLlm(history: Message[], options: {
@@ -378,29 +379,15 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     } catch { /* best-effort; fall through to the plain stop message */ }
     return finish({ done: false, steps: step, doneReason: `Stopped: ${stopReason}` });
   };
-  // Result-aware repeat nudge (A): tell the model WHY repeating won't help and what to
-  // try instead, tailored to the repeated tool and its last actual result.
-  const repeatHint = (tool: string, prev?: { success: boolean; output: string }): string => {
-    const out = prev?.output ?? "";
-    const empty = !prev || !prev.success || out.trim() === "" || /no match|0 match|no result|not found|no file/i.test(out);
-    if (tool === "search" || tool === "find" || tool === "ls") {
-      return empty
-        ? `That '${tool}' returned nothing useful and will again — BROADEN it (a looser pattern, a parent directory, or a different tool such as ${tool === "search" ? "find" : "search"}), or call done if this lookup isn't needed.`
-        : `That '${tool}' already returned results — open one of the hits with read, or move on; re-running it changes nothing.`;
-    }
-    if (tool === "read") return `You already read that and its content is unchanged — use what you read, or read a DIFFERENT file.`;
-    if (tool === "bash") return `That command already ran with the same output — change the command, or call done.`;
-    return `That call's result is unchanged — take a different action, or call done.`;
-  };
   // No-progress guard: weak/local models often repeat the same tool call without
   // ever emitting `done`. Two escalating corrections (B), then a consolidated stop.
-  const MAX_REPEAT = 4;
+  const MAX_REPEAT = GUARD_LIMITS.MAX_REPEAT;
   // Last executed step's per-call results — fed to repeatHint so a corrective bounce
   // can cite the repeated call's ACTUAL last outcome (A).
   let lastResults: { success: boolean; output: string; executed: boolean }[] = [];
   // Consecutive-failure guard: a model that keeps emitting *different* but failing
   // calls (bad edits, failing commands) would otherwise burn the whole step budget.
-  const MAX_FAILURES = 5;
+  const MAX_FAILURES = GUARD_LIMITS.MAX_FAILURES;
   let consecutiveFailures = 0;
   // done-verification guard (plan/gjc-inheritance.md B4, gjc ultragoal-guard 경량 계승):
   // a turn that MUTATED files but shows no verification signal gets ONE pushback on
@@ -424,16 +411,15 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // as-is, then once more with an explicit re-grounding note; only a third
   // refusal in the turn surfaces the (friendly) error. Bounded per turn so a
   // genuinely refused request can never burn billed calls in a loop.
-  const MAX_REFUSAL_RETRIES = 3;
+  const MAX_REFUSAL_RETRIES = GUARD_LIMITS.MAX_REFUSAL_RETRIES;
   let refusalRetries = 0;
-  const VERIFY_SIGNAL_RE = /\b(test|tests|tsc|typecheck|lint|build|check|spec|pytest|vitest|jest)\b/i;
   let lastSig = "";
   let repeatCount = 0;
   // Cycle guard (the A↔B ping-pong the exact-repeat guard cannot see): the recent
   // executed step signatures, as fixed-size digests. When a full window cycles
   // through ≤2 distinct calls, bounce ONCE with an explicit correction; a spin that
   // persists through the correction stops the turn.
-  const CYCLE_WINDOW = 6;
+  const CYCLE_WINDOW = GUARD_LIMITS.CYCLE_WINDOW;
   const recentStepSigs: string[] = [];
   let cycleBounceUsed = false;
   // Invalid-tool-call guard: a model that returns JSON without a usable `tool`
@@ -441,10 +427,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   let invalidToolCalls = 0;
   // A JSON reply with no usable `tool` field can't drive the loop — stop sooner than the
   // repeat-spin guard (no escalating correction helps a model that isn't producing a call).
-  const MAX_INVALID_CALLS = 3;
+  const MAX_INVALID_CALLS = GUARD_LIMITS.MAX_INVALID_CALLS;
   // Prose-bounce guard: after this many invalid-JSON corrections, salvage the
   // model's text as the final answer instead of burning the whole step budget.
-  const MAX_PARSE_BOUNCES = 2;
+  const MAX_PARSE_BOUNCES = GUARD_LIMITS.MAX_PARSE_BOUNCES;
   let parseFailures = 0;
   while (true) {
     if (turnBudgetMs > 0 && Date.now() - turnStartedAt > turnBudgetMs) {
@@ -703,19 +689,14 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     ev.onAssistant?.(responseText, toolCalls[0]);
 
     if (toolCalls.length === 1 && toolCalls[0].tool === "done") {
-      if (sawMutation && (!sawVerification || pendingHookFailure !== null) && !donePushbackUsed) {
+      // done-verification gate — jeo's descendant of gjc's ultragoal-guard completion
+      // state machine (plan/gjc-inheritance.md B4). The classifier owns the JUDGMENT
+      // (which named state, which message); the loop owns the once-pushback latch.
+      const doneGate = classifyDoneGate({ sawMutation, sawVerification, pendingHookFailure });
+      if (doneGate.block && !donePushbackUsed) {
         donePushbackUsed = true; // second done always passes — escape hatch
         pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
-        history.push({
-          role: "user",
-          content: pendingHookFailure !== null
-            ? `Your latest mutation left the post-turn hook "${pendingHookFailure}" FAILING (non-zero exit) — its diagnostics were shown in the tool result above. ` +
-              "Fix the reported problems (the hook re-runs on your next mutation), then call done. " +
-              "If the hook failure is a false positive, call done again and say why in the reason."
-            : "You modified files this turn but ran NO verification (no test/build/typecheck command succeeded). " +
-              "Run the narrowest command that proves your change works, then call done. " +
-              "If verification is genuinely not applicable (docs/config-only change), call done again and say why in the reason.",
-        });
+        history.push({ role: "user", content: doneGate.message });
         step++;
         continue;
       }
@@ -1039,7 +1020,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       if (t === "write" || t === "edit") sawMutation = true;
       else if (t === "bash") {
         const cmd = String(toolCalls[i].arguments?.command ?? "");
-        if (VERIFY_SIGNAL_RE.test(cmd) || VERIFY_SIGNAL_RE.test(results[i].output.slice(0, 2000))) sawVerification = true;
+        if (isVerificationSignal(cmd, results[i].output)) sawVerification = true;
       }
     }
     // F6 (round 4 architect, Low): judge the step by its NON-TRIVIAL calls — a

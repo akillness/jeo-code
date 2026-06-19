@@ -100,18 +100,15 @@ export function thinkingMaxTokens(level?: "minimal" | "low" | "medium" | "high" 
   return 16000;
 }
 
-/** Map the thinking level to an OpenAI reasoning-effort tier. `minimal` is preserved as a
- *  genuine (lightest) reasoning effort — NOT collapsed to `low` — so reasoning works at EVERY
- *  thinking level (gajae parity: Minimal is a real effort). Only an unset level returns undefined
- *  (reasoning off). `xhigh` maps to `high`, the deepest tier the provider APIs accept. */
+/** Map the thinking level to an OpenAI reasoning-effort tier. minimal/low/medium/high pass
+ *  through unchanged and xhigh folds to high (the deepest tier the provider APIs accept), so
+ *  reasoning works at EVERY thinking level (gajae parity: minimal is a real effort). Only an
+ *  unset level returns undefined (reasoning off — the explicit /fast path). */
 export function thinkingToReasoningEffort(
   level?: "minimal" | "low" | "medium" | "high" | "xhigh",
 ): "minimal" | "low" | "medium" | "high" | undefined {
   if (!level) return undefined;
-  if (level === "minimal") return "minimal";
-  if (level === "low") return "low";
-  if (level === "high" || level === "xhigh") return "high";
-  return "medium";
+  return level === "xhigh" ? "high" : level;
 }
 
 /** Describe a model id: alias expansion + the provider it routes to. For `/model` + diagnostics.

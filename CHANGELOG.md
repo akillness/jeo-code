@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.34] - 2026-06-20
+_Per-session model memory — each saved session now remembers the model it was last using and restores it on `/resume` — plus clearer `jeo --tmux` attach diagnostics, a tmux session-name double-dash fix, and a more robust no-leak probe gate._
+
+### Added
+- **Sessions remember their model (per-session model selection).** The session JSONL header now carries an optional `model` field: `createSession(cwd, id, model?)` pins it, `updateSessionModel(id, model)` rewrites it in place (no message loss, byte-identical no-op when unchanged), and `loadSession`/`listSessions` restore it. In `launch.ts`, every model change — the `/model` picker, a `model …` action, the OpenAI-compatible-endpoint setter, and live picker selections — is persisted into the active session via a best-effort `persistSessionModel()` (a header-rewrite failure never aborts the turn). On `/resume` (and `--resume`) the session's pinned model is restored unless the CLI explicitly pinned one (`--model`/role/provider wins), so each session can carry its own model independent of the global default. The `--resume` list and the resume picker surface the pinned model (`[provider/model]`).
+
+### Changed
+- **`jeo --tmux` reports a failed attach instead of vanishing.** A nonzero `tmux attach` exit (e.g. `open terminal failed: not a terminal` when stdout isn't a real TTY, a too-small client, or a transient server error) used to be swallowed — jeo returned 0 and left the freshly created session orphaned with no hint. The attach exit code is now surfaced and propagated to `process.exitCode`, and the message is honest about state: it advises `tmux attach -t <session>` only when the session is STILL live, and otherwise reports the session `ended before it could be attached` (so "reattach" is never misleading after an instant inner crash).
+- **tmux session names no longer produce a double dash.** `tmuxSafeNamePart` now trims a trailing dash off the truncated head before appending the disambiguating hash, so a truncation boundary landing right after a `-` yields `name-<hash>` instead of an ugly `name--<hash>`.
+- **`renameSession` shares one header-rewrite path.** Both the rename and the new model-pin go through a single internal `rewriteSessionHeader(id, mutate, cwd)` that locates the JSONL header, applies a mutator (returning `false` to skip the write when nothing changed), and rewrites the file in place — one place for the missing-file/missing-header error handling.
+
+### Verified
+- **No bun memory leak / slowdown.** `scripts/mem-probe.ts` drove 2000–4000 realistic LaunchTui turns: the post-GC heap keeps returning to a flat settled floor (~4.3 MB across turns 200→3400, net **+0.52 MB** vs baseline), with `exit`/`resize`/`SIGINT` process-listener counts stable (no accumulation). The probe's net-growth gate was hardened to measure the **settled floor** (min over the trailing half of samples) rather than the single final sample, since Bun's incremental GC leaves the per-sample heap bimodal — a final sample landing on a transient pre-collection peak was a measurement artifact, not retained memory.
+- **`jeo --tmux` live.** `tmux-verify.sh smoke` OK + `battery` **6/6 PASSED** (boot, `/help`, unknown `$skill`, `/agents`, `$ultragoal`, unresolved `/command`).
+- **Green gates.** `bun run typecheck` clean; `bun test` **1714 pass / 0 fail** (211 files), including the new per-session-model round-trip (`test/session.test.ts`) and tmux attach-failure / double-dash cases (`test/tmux.test.ts`).
+
 ## [0.6.33] - 2026-06-19
 _A redesigned `jeo` forge mark — a hollow line-board crayfish/eyeglass emblem drawn as thick rounded-corner tubes (no letters, no DNA helix) — that now renders inside compact-scaled forge cards, plus a unified verification directive that adds gjc's test-quality contract, and a fresh `jeo --tmux` no-leak re-verification._
 

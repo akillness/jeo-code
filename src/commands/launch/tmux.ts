@@ -14,7 +14,11 @@ function hashString(input: string): string {
 function tmuxSafeNamePart(input: string, max = 32): string {
   const safe = input.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "value";
   if (safe.length <= max) return safe;
-  return `${safe.slice(0, Math.max(1, max - 7))}-${hashString(input)}`;
+  // Trim a trailing dash from the truncated head so a boundary landing right
+  // after a `-` doesn't produce an ugly `name--<hash>` (double dash). The head
+  // is guaranteed non-empty and to start with an alnum (safe is trimmed).
+  const head = safe.slice(0, Math.max(1, max - 7)).replace(/-+$/, "") || safe.slice(0, 1);
+  return `${head}-${hashString(input)}`;
 }
 
 function tmuxRuntimeSuffix(flags: LaunchFlags): string {

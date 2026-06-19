@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { BOX_ASCII, BOX_UNICODE, boxBlock } from "./layout";
-import { visibleWidth } from "./width";
+import { visibleWidth, truncateToWidth } from "./width";
 
 export interface InputBoxOptions {
   cols?: number;
@@ -18,6 +18,20 @@ export interface InputBoxOptions {
   /** Shadow painter for the bottom/right "shaded" edges; defaults to a dim accent.
    *  The lit-vs-shaded two-tone contrast gives the box visible depth. */
   accentShadow?: (s: string) => string;
+  /** Paint contiguous CHARACTER ranges of the typed text (e.g. each active or
+   *  committed `/command`/`$skill` trigger token) so the user sees every
+   *  invocation recognized as it is typed — regardless of caret position or how
+   *  many appear. Offsets index `Array.from(line)` code points ([start, end)).
+   *  Accepts a single range or an array; ranges should not overlap. Ignored for
+   *  the placeholder and when `color` is false. */
+  highlight?: HighlightRange | readonly HighlightRange[];
+}
+
+/** A painted span of the input text: [start, end) code-point offsets + a painter. */
+export interface HighlightRange {
+  start: number;
+  end: number;
+  paint: (s: string) => string;
 }
 
 export interface InputFrame {
@@ -38,6 +52,7 @@ function wrapWithCursor(
   text: string,
   cursor: number,
   width: number,
+  highlights?: readonly HighlightRange[],
 ): { rows: string[]; row: number; col: number } {
   const rows: string[] = [];
   let cur = "";
@@ -67,12 +82,23 @@ function wrapWithCursor(
       continue;
     }
     if (ch !== "") {
-      cur += rendered;
+      const hl = highlights?.find(r => i >= r.start && i < r.end);
+      cur += hl ? hl.paint(rendered) : rendered;
       curW += w;
     }
   }
   rows.push(cur);
   return { rows, row, col };
+}
+
+/** Normalize the `highlight` option (single range, array, or absent) into a
+ *  non-empty range array, or undefined when there is nothing to paint. */
+function normalizeHighlights(
+  h?: HighlightRange | readonly HighlightRange[],
+): readonly HighlightRange[] | undefined {
+  if (!h) return undefined;
+  const arr = Array.isArray(h) ? h : [h as HighlightRange];
+  return arr.length ? arr : undefined;
 }
 
 /**
@@ -95,7 +121,8 @@ export function renderInputFrame(line: string, opts: InputBoxOptions = {}): Inpu
     rows = [placeholder];
     placeholderRow = true;
   } else {
-    const wrapped = wrapWithCursor(line, opts.cursor ?? line.length, textWidth);
+    const hl = useColor ? normalizeHighlights(opts.highlight) : undefined;
+    const wrapped = wrapWithCursor(line, opts.cursor ?? line.length, textWidth, hl);
     rows = wrapped.rows;
     crow = wrapped.row;
     ccol = wrapped.col;
@@ -110,10 +137,10 @@ export function renderInputFrame(line: string, opts: InputBoxOptions = {}): Inpu
     hidden = Math.min(Math.max(0, crow - maxBodyRows + 1), totalRows - maxBodyRows);
     if (crow < hidden) hidden = crow; // caret above the window → scroll up to it
     rows = rows.slice(hidden, hidden + maxBodyRows);
-    if (hidden > 0) rows[0] = `…${rows[0] ?? ""}`.slice(0, textWidth);
+    if (hidden > 0) rows[0] = truncateToWidth(`…${rows[0] ?? ""}`, textWidth);
     if (hidden + maxBodyRows < totalRows) {
       const last = rows.length - 1;
-      rows[last] = `${rows[last] ?? ""}…`.slice(0, textWidth);
+      rows[last] = truncateToWidth(`${rows[last] ?? ""}…`, textWidth);
     }
   }
   let visRow = Math.max(0, Math.min(crow - hidden, rows.length - 1));

@@ -16,14 +16,25 @@ const CLAUDE_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
 const ANTHROPIC_API_KEY_BETA = [
   "interleaved-thinking-2025-05-14",
   "prompt-caching-scope-2026-01-05",
-].join(",");
+];
 const ANTHROPIC_OAUTH_BETA = [
   "claude-code-20250219",
   "oauth-2025-04-20",
   "interleaved-thinking-2025-05-14",
   "context-management-2025-06-27",
   "prompt-caching-scope-2026-01-05",
-].join(",");
+];
+const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
+
+/** The interleaved-thinking beta drives BUDGET-based thinking+tools. Adaptive-display models
+ *  (Opus 4.7+) use adaptive thinking and DON'T need it — gjc drops it for these so the legacy
+ *  beta doesn't shadow the adaptive transport. */
+function anthropicBetaHeader(betas: string[], model: string): string {
+  const filtered = supportsAdaptiveThinkingDisplay(model)
+    ? betas.filter(b => b !== INTERLEAVED_THINKING_BETA)
+    : betas;
+  return filtered.join(",");
+}
 
 interface AnthropicSystemBlock {
   type: "text";
@@ -94,6 +105,51 @@ function anthropicThinkingBudget(effort: CallOptions["reasoningEffort"], maxToke
   return Math.min(budget, Math.max(1024, maxTokens - 1024));
 }
 
+/** Parse an Anthropic model id's family + version for thinking-transport selection.
+ *  Matches the modern `claude-<family>-<major>-<minor>[...]` naming (opus/sonnet/haiku 4.x+);
+ *  legacy ids (claude-3-5-sonnet) and non-Anthropic-compatible names return undefined. */
+function parseAnthropicVersion(model: string): { kind: "opus" | "sonnet" | "haiku"; major: number; minor: number } | undefined {
+  const m = /claude-(opus|sonnet|haiku)-(\d+)-(\d+)/.exec(model);
+  if (!m) return undefined;
+  return { kind: m[1] as "opus" | "sonnet" | "haiku", major: Number(m[2]), minor: Number(m[3]) };
+}
+
+/** Adaptive thinking `display` is supported starting with Opus 4.7. Without it, Opus 4.7/4.8
+ *  OMIT thinking content entirely (tokens billed, signature present, but zero visible thought —
+ *  the "reasoning doesn't show" bug). Older adaptive models (Opus 4.6, Sonnet 4.6+) reject the
+ *  field, so it is gated to Opus ≥ 4.7. (gjc: supportsAdaptiveThinkingDisplay) */
+function supportsAdaptiveThinkingDisplay(model: string): boolean {
+  const v = parseAnthropicVersion(model);
+  if (!v || v.kind !== "opus") return false;
+  return v.major > 4 || (v.major === 4 && v.minor >= 7);
+}
+
+/** Thinking transport for a model (gjc parity — inferThinkingControlMode):
+ *  - Anthropic ≥ 4.6 → "adaptive" (model decides depth; effort rides output_config, NO budget)
+ *  - Anthropic 4.5   → "budget-effort" (budget_tokens + output_config effort)
+ *  - otherwise       → "budget" (budget_tokens only).
+ *  The adaptive shift is the core opus-4.7/4.8 reasoning fix: those models reject the legacy
+ *  budget transport's visible-thought contract and require type:"adaptive" + display:summarized. */
+type AnthropicThinkingMode = "adaptive" | "budget-effort" | "budget";
+function anthropicThinkingMode(model: string): AnthropicThinkingMode {
+  const v = parseAnthropicVersion(model);
+  if (!v) return "budget";
+  if (v.major > 4 || (v.major === 4 && v.minor >= 6)) return "adaptive";
+  if (v.major === 4 && v.minor === 5) return "budget-effort";
+  return "budget";
+}
+
+/** Map jeo's reasoning effort to Anthropic's adaptive/output_config effort literal. jeo folds
+ *  xhigh→high upstream, so only minimal/low/medium/high arrive here. (gjc: mapEffortToAnthropicAdaptiveEffort) */
+function anthropicAdaptiveEffort(effort: NonNullable<CallOptions["reasoningEffort"]>): "low" | "medium" | "high" {
+  switch (effort) {
+    case "minimal":
+    case "low": return "low";
+    case "medium": return "medium";
+    case "high": return "high";
+  }
+}
+
 type AnthropicContentBlock = Record<string, unknown>;
 type AnthropicMessage = { role: string; content: string | AnthropicContentBlock[] };
 
@@ -160,10 +216,17 @@ export function anthropicPayload(
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
   // Image attachments + native tool/thinking-block reconstruction live in buildAnthropicMessages.
   const maxTokens = options.maxTokens ?? 4000;
-  const thinkingBudget = anthropicThinkingBudget(options.reasoningEffort, maxTokens);
+  const effort = options.reasoningEffort;
+  const thinkingEnabled = effort !== undefined;
+  // gjc parity: pick the thinking transport per model. Adaptive (Opus/Sonnet 4.6+) carries NO
+  // budget_tokens — depth rides output_config.effort. budget/budget-effort still use a budget.
+  const thinkingMode = thinkingEnabled ? anthropicThinkingMode(model) : "budget";
+  const thinkingBudget = thinkingEnabled && thinkingMode !== "adaptive"
+    ? anthropicThinkingBudget(effort, maxTokens)
+    : undefined;
   // Reconstruct native tool_use / tool_result / thinking blocks for same-model turns when
   // thinking is enabled (and not stripped by a fail-safe retry); else plain string/image.
-  const anthropicMessages = buildAnthropicMessages(messages, options.model, thinkingBudget !== undefined && !stripArtifacts);
+  const anthropicMessages = buildAnthropicMessages(messages, options.model, thinkingEnabled && !stripArtifacts);
   // Conversation prompt caching (gjc parity — the main same-model latency gap):
   // one breakpoint on the LAST message caches the entire conversation prefix, so
   // each agent-loop step only pays input processing for the new tail instead of
@@ -187,12 +250,24 @@ export function anthropicPayload(
     max_tokens: thinkingBudget !== undefined ? Math.max(maxTokens, thinkingBudget + 1024) : maxTokens,
   };
   if (credential.kind === "oauth") payload.metadata = { user_id: createClaudeCloakingUserId() };
-  if (thinkingBudget !== undefined) {
-    // Apply the thinking level: enable Claude extended thinking (the interleaved-thinking
-    // beta is already in the headers). Extended thinking forbids a custom temperature, so
-    // temperature is only set on the non-thinking path. Previously the thinking level only
-    // changed max_tokens and never reached Claude as actual reasoning depth.
-    payload.thinking = { type: "enabled", budget_tokens: thinkingBudget };
+  if (effort !== undefined) {
+    // Enable Claude extended thinking. Extended thinking forbids a custom temperature, so
+    // temperature is only set on the non-thinking path.
+    if (thinkingMode === "adaptive") {
+      // Opus/Sonnet 4.6+: the model decides how much to think. `display: "summarized"` is
+      // REQUIRED on Opus 4.7+ or thinking content is omitted from the response (the empty-thought
+      // bug); older adaptive models (4.6) reject the field, so it is gated. Effort rides
+      // output_config — there is no budget_tokens on this transport.
+      payload.thinking = supportsAdaptiveThinkingDisplay(model)
+        ? { type: "adaptive", display: "summarized" }
+        : { type: "adaptive" };
+      payload.output_config = { effort: anthropicAdaptiveEffort(effort) };
+    } else {
+      // Budget-based extended thinking. `display: "summarized"` keeps human-readable thought
+      // streaming. The 4.5 (budget-effort) transport also carries an output_config effort.
+      payload.thinking = { type: "enabled", budget_tokens: thinkingBudget, display: "summarized" };
+      if (thinkingMode === "budget-effort") payload.output_config = { effort: anthropicAdaptiveEffort(effort) };
+    }
   } else if (includeTemperature && options.temperature !== undefined) {
     payload.temperature = options.temperature;
   }
@@ -221,7 +296,7 @@ export function anthropicRequest(
     // Anthropic-compatible providers (z.ai, MiniMax, …) accept the Messages wire
     // format at their own host; an explicit baseUrl pins `${base}/v1/messages`.
     url: options.baseUrl ? `${options.baseUrl.replace(/\/$/, "")}/v1/messages` : ANTHROPIC_URL,
-    headers: headersFor(credential, stream),
+    headers: headersFor(credential, stream, stripAnthropicPrefix(options.model)),
     body: anthropicPayload(messages, options, stream, includeTemperature, credential, stripArtifacts),
   };
 }
@@ -353,8 +428,12 @@ export const anthropicAdapter: ProviderAdapter = {
         toolBlocks.set(evt.index, { name: evt.content_block.name ?? "", args: "" });
       } else if (evt.type === "content_block_start" && evt.content_block?.type === "thinking" && typeof evt.index === "number") {
         thinkBlocks.set(evt.index, { text: "" });
+        // Signal the thinking phase started so the UI shows a live "thinking" indicator
+        // even for signature-only models (opus-4-7/4-8) that stream NO thinking_delta text.
+        options.onReasoningStart?.();
       } else if (evt.type === "content_block_start" && evt.content_block?.type === "redacted_thinking" && evt.content_block.data) {
         // Redacted thinking carries opaque `data` directly (no deltas) — emit immediately.
+        options.onReasoningStart?.();
         options.onReasoningArtifact?.({ provider: "anthropic", model: options.model, redacted: evt.content_block.data });
       } else if (evt.type === "content_block_delta" && evt.delta?.type === "input_json_delta" && typeof evt.index === "number") {
         const b = toolBlocks.get(evt.index);
@@ -427,10 +506,10 @@ function mapStainlessArch(arch: string): "x64" | "arm64" | "x86" | `other::${str
   }
 }
 
-function claudeCodeOAuthHeaders(stream: boolean): Record<string, string> {
+function claudeCodeOAuthHeaders(stream: boolean, model: string): Record<string, string> {
   return {
     accept: stream ? "text/event-stream" : "application/json",
-    "anthropic-beta": ANTHROPIC_OAUTH_BETA,
+    "anthropic-beta": anthropicBetaHeader(ANTHROPIC_OAUTH_BETA, model),
     "anthropic-dangerous-direct-browser-access": "true",
     "user-agent": `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`,
     "x-app": "cli",
@@ -445,13 +524,13 @@ function claudeCodeOAuthHeaders(stream: boolean): Record<string, string> {
   };
 }
 
-function headersFor(credential: Credential, stream: boolean): Record<string, string> {
+function headersFor(credential: Credential, stream: boolean, model: string): Record<string, string> {
   if (credential.kind === "oauth") {
     return {
       "content-type": "application/json",
       authorization: `Bearer ${credential.token}`,
       "anthropic-version": "2023-06-01",
-      ...claudeCodeOAuthHeaders(stream),
+      ...claudeCodeOAuthHeaders(stream, model),
     };
   }
   if (credential.kind === "api_key") {
@@ -460,7 +539,7 @@ function headersFor(credential: Credential, stream: boolean): Record<string, str
       "content-type": "application/json",
       "x-api-key": credential.token,
       "anthropic-version": "2023-06-01",
-      "anthropic-beta": ANTHROPIC_API_KEY_BETA,
+      "anthropic-beta": anthropicBetaHeader(ANTHROPIC_API_KEY_BETA, model),
     };
   }
   throw new Error("anthropic adapter requires a credential");

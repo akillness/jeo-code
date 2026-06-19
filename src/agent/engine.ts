@@ -35,6 +35,7 @@ async function invokeCallLlm(history: Message[], options: {
   onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
   onToken?: (delta: string) => void;
   onReasoning?: (delta: string) => void;
+  onReasoningStart?: () => void;
   onReasoningArtifact?: (artifact: import("../ai/types").ReasoningArtifact) => void;
   tools?: import("../ai/types").NativeToolSchema[];
 }): Promise<string> {
@@ -196,6 +197,10 @@ export interface AgentLoopEvents {
   /** Accumulated native reasoning/thinking text so far — drives a transient dimmed
    *  "thinking" view. Only requested when a consumer (TUI) attaches. */
   onReasoningStream?(textSoFar: string): void;
+  /** Fired once when the model opens an extended-thinking block (before/without any
+   *  thinking text). Lets the TUI show a live "thinking" indicator for signature-only
+   *  reasoning models (opus-4-7/4-8) whose wait would otherwise look frozen. */
+  onReasoningStart?(): void;
   /** Each provider-native reasoning ARTIFACT as it is captured (signature / thoughtSignature /
    *  reasoning item). Lets the final-reply path (launch.ts) persist artifacts for replay. */
   onReasoningArtifactStream?(artifact: import("../ai/types").ReasoningArtifact): void;
@@ -526,6 +531,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
               onToken,
               onReasoning,
+              onReasoningStart: ev.onReasoningStart,
               onReasoningArtifact,
               // Make provider auto-retry visible: previously a rate-limited call sat in a
               // silent backoff wait, then surfaced "auto-retry was exhausted" with no trace

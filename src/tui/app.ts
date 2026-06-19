@@ -37,9 +37,17 @@ import { formatHintBar } from "./components/hints";
 import { formatDuration, formatUsage } from "./components/duration";
 import { renderHud, type JeoPhase } from "./components/hud";
 import { formatTodoWriteCard } from "./components/todo-card";
-import { renderInputBox } from "./components/input-box";
+import { renderInputBox, type HighlightRange } from "./components/input-box";
 import { jeoEnv } from "../util/env";
 import chalk from "chalk";
+
+/** Stable signature of a highlight range list — offsets plus the painted color
+ *  (probed with a sentinel char) — so equal-length but differently-colored
+ *  re-highlights (valid↔unknown at the same span) still trigger a redraw. */
+function highlightSignature(hl?: readonly HighlightRange[]): string {
+  if (!hl || hl.length === 0) return "";
+  return hl.map(r => `${r.start}:${r.end}:${r.paint("\u0000")}`).join("|");
+}
 
 export interface LaunchTuiOptions {
   model: string;
@@ -68,6 +76,9 @@ export interface AgentEventsLike {
   onUsage?(usage: { inputTokens: number; outputTokens: number }): void;
   onModelStream?(textSoFar: string): void;
   onReasoningStream?(textSoFar: string): void;
+  /** Fired once when the model opens an extended-thinking block — drives a live "thinking"
+   *  placeholder for signature-only reasoning models (opus-4-7/4-8) that stream no thought text. */
+  onReasoningStart?(): void;
   /** Per-artifact native reasoning replay records (signature / thoughtSignature / reasoning
    *  item). The TUI ignores these; launch.ts uses them to persist the final reply's artifacts. */
   onReasoningArtifactStream?(artifact: import("../ai/types").ReasoningArtifact): void;
@@ -247,6 +258,11 @@ export class LaunchTui {
    *  streams, then persisted once into scrollback as a "Thinking" block on commit so the
    *  model's reasoning stays visible above the answer (gjc "think → answer" parity). */
   private streamingThought = "";
+  /** True once the model opens an extended-thinking block this step. Signature-only
+   *  reasoning models (opus-4-7/4-8) stream NO thinking text, so without this flag the
+   *  live Thinking block never appears and the wait looks frozen. Drives a placeholder
+   *  Thinking block until real thought/answer text streams. Reset each step / on commit. */
+  private thinkingActive = false;
   /** Uniform live-activity text for the live status field (reasoning OR derived fallback). */
   private streamingActivity = "";
   /** Last stream-driven draw (ms epoch) — throttles per-delta repaints to ≤10/s. */
@@ -410,6 +426,7 @@ export class LaunchTui {
         this.retryNotice = null; // a new step starts a fresh model call
         this.streamingReasoning = ""; // fresh model response this step
         this.streamingThought = "";
+        this.thinkingActive = false;
         this.streamingActivity = "";
         this.flushedReasoning = "";
         this.flushedThought = "";
@@ -452,6 +469,14 @@ export class LaunchTui {
           this.draw();
         }
       },
+      onReasoningStart: () => {
+        // The model opened an extended-thinking block. Signature-only reasoning models
+        // (opus-4-7/4-8) stream no thinking text, so flag the thinking phase so the live
+        // Thinking block renders a placeholder instead of leaving the wait blank.
+        if (this.finished || this.thinkingActive) return;
+        this.thinkingActive = true;
+        this.draw();
+      },
       onAssistant: (_raw, invocation) => {
         this.thinking = false; // model replied; now dispatching the tool
         this.retryNotice = null; // the call got through — clear any backoff notice
@@ -484,6 +509,7 @@ export class LaunchTui {
         }
         this.streamingReasoning = "";
         this.streamingThought = "";
+        this.thinkingActive = false;
         this.streamingActivity = "";
         if (invocation && invocation.tool !== "done") {
           this.runningTool = true;
@@ -650,6 +676,18 @@ export class LaunchTui {
     this.draw();
   }
 
+  private livePromptHighlight?: readonly HighlightRange[];
+  /** Recolor every active/committed `/command`·`$skill` trigger token inside the
+   *  mid-turn live input box (idle-prompt parity). Caller supplies code-point
+   *  offsets into the draft text + a painter per token; undefined/empty clears. */
+  setLivePromptHighlight(hl?: readonly HighlightRange[]): void {
+    if (this.finished) return;
+    const next = hl && hl.length ? hl : undefined;
+    if (highlightSignature(this.livePromptHighlight) === highlightSignature(next)) return;
+    this.livePromptHighlight = next;
+    this.draw();
+  }
+
   private livePromptHint: string[] = [];
   /** Mid-turn command/skill preview lines shown above the live input box, so a
    *  /command or $skill typed WHILE a turn runs visibly reacts (idle-prompt parity). */
@@ -672,6 +710,7 @@ export class LaunchTui {
       accentShadow: this.theme.color ? accentShadowPaint(this.theme) : undefined,
       placeholder: "Type your next message...",
       maxBodyRows: 2,
+      highlight: this.livePromptHighlight,
     });
     if (this.livePromptHint.length === 0) return box;
     const dim = this.theme.color ? chalk.dim : (s: string) => s;
@@ -925,6 +964,7 @@ export class LaunchTui {
     this.lastLedgerKind = null; // fresh turn: no leading spacer before the first ledger line
     this.livePromptInput = ""; // fresh turn: no next-prompt draft yet
     this.livePromptHint = []; // fresh turn: no mid-turn command preview yet
+    this.livePromptHighlight = undefined; // fresh turn: no active trigger token
     this.subagentLive = null; // fresh turn: no nested subagent in flight
     this.activityLog.length = 0; // per-turn ring: timestamps are turn-relative
     this.spinner.updateStep(0, this.footer.maxSteps);
@@ -1382,6 +1422,13 @@ export class LaunchTui {
       const liveMs = this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined;
       const liveLabel = liveMs !== undefined ? `Thinking · ${(liveMs / 1000).toFixed(1)}s` : "Thinking";
       tail.push(...this.renderLiveBlock(liveLabel, liveThink, cols, rows, 6, "Thinking"));
+    } else if (isThinking && this.thinkingActive) {
+      // Signature-only reasoning models (opus-4-7/4-8) open a thinking block but stream no
+      // thought text — show a live placeholder so the wait reads as active thinking, not a
+      // frozen screen. Replaced the instant any real thought/answer text streams (branch above).
+      const liveMs = this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined;
+      const liveLabel = liveMs !== undefined ? `Thinking · ${(liveMs / 1000).toFixed(1)}s` : "Thinking";
+      tail.push(...this.renderLiveBlock(liveLabel, "(thinking…)", cols, rows, 6, "Thinking"));
     }
 
     // Live tool output (gjc-style streaming bash stdout): while a tool runs, its

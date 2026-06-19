@@ -65,11 +65,10 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   { canonical: "claude-sonnet-4-5", provider: "anthropic", providerModel: "claude-sonnet-4-5-20250929", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
   { canonical: "claude-opus-4-1", provider: "anthropic", providerModel: "claude-opus-4-1-20250805", contextTokens: 200_000, maxOutputTokens: 32_000, thinking: FULL, images: true },
   { canonical: "claude-opus-4-5", provider: "anthropic", providerModel: "claude-opus-4-5-20251101", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
-  // NOTE: opus-4-7 accepts extended thinking but currently returns 0 thinking tokens
-  // (model-internal, no visible thought). opus-4-8 thinks internally (tokens billed,
-  // signature present) but returns empty thinking text. Both are FULL-capable in the
-  // catalog so the budget is always sent — the nativizable path handles signature-only
-  // artifacts for cross-turn continuity.
+  // NOTE: opus 4.6+ use Anthropic ADAPTIVE thinking (type:"adaptive" + output_config.effort).
+  // opus 4.7/4.8 OMIT visible thought unless the request opts into `display: "summarized"` —
+  // anthropic.ts sets that on the adaptive transport so reasoning streams again (gjc parity).
+  // The nativizable path still replays signature-only thinking blocks for cross-turn continuity.
   { canonical: "claude-opus-4-6", provider: "anthropic", providerModel: "claude-opus-4-6", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
   { canonical: "claude-opus-4-7", provider: "anthropic", providerModel: "claude-opus-4-7", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
   { canonical: "claude-opus-4-8", provider: "anthropic", providerModel: "claude-opus-4-8", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },

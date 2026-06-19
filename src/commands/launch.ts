@@ -19,7 +19,7 @@ import { formatForgeBox } from "../tui/components/forge";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth, OAUTH_PROVIDERS, API_KEY_ONLY_PROVIDERS, setApiKey } from "../auth";
 import type { AuthProvider } from "../auth";
-import { matchSlash, isSlashAttempt, suggestSlashCommands, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, tabCompleteSelection, type SlashCommandInfo } from "../tui/components/slash";
+import { matchSlash, isSlashAttempt, suggestSlashCommands, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, allTriggerTokens, tabCompleteSelection, type SlashCommandInfo } from "../tui/components/slash";
 import { staticCompletionContext, readlineCompleter, formatCompletionPreview, formatMidTurnHint, tokenize, type CompletionContext } from "../tui/components/autocomplete";
 import { normalizeBaseUrl } from "./setup-helpers";
 import { EVOLUTION_STAGES, animateAsciiArt } from "../tui/components/ascii-art";
@@ -45,6 +45,7 @@ import { openaiCompatDef, SUBSCRIPTION_PROVIDER_NAMES } from "../ai/providers/op
 
 import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting } from "../agent/subagents";
 import { SelectList, renderSelectList, type SelectItem } from "../tui/components/select-list";
+import { SessionPicker, renderSessionPicker } from "../tui/components/session-picker";
 import {
   formatModelLine,
   formatProviderPanel,
@@ -61,7 +62,7 @@ import { liveModelPicker, renderLiveModelPicker, type ModelAssignmentBadge } fro
 import { loginPicker, renderLoginPicker, onboardingPicker, renderOnboardingPicker, apiKeyPicker, renderApiKeyPicker, subscriptionLoginPicker, type OnboardingAction } from "../tui/components/provider-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff, sanitizeForTerminal } from "../tui/components/code-view";
 import { categoryBadge } from "../tui/components/category-index";
-import { renderInputFrame, verticalCursorOffset } from "../tui/components/input-box";
+import { renderInputFrame, verticalCursorOffset, type HighlightRange } from "../tui/components/input-box";
 
 import { renderStatusBar } from "../tui/components/status";
 import { detectColorLevel, ColorLevel, visibleWidth } from "../tui/components/color";
@@ -760,6 +761,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               queueBusyClear?.();
               tui.setLivePromptInput("");
               tui.setLivePromptHint([]);
+              tui.setLivePromptHighlight(undefined);
               if (classifyMidTurnLine(line) === "command") {
                 // Run it as a real COMMAND: queue it for immediate dispatch by the prompt
                 // loop and abort the turn (the same controller Esc uses). The abort ends a
@@ -798,6 +800,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             tui.setLivePromptHint(
               /^\s*[/$]/.test(draft) ? formatMidTurnHint(draft.trimStart(), completionContext(), 5) : [],
             );
+            tui.setLivePromptHighlight(triggerHighlight(expandSentinel(draft)));
           }
         },
         onAbortNotice: msg => {
@@ -1790,6 +1793,37 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (sessionId) { const hex = SESSION_BOX_ACCENTS[sessionBoxColorIdx]!; return { accent: hexPaint(hex), shadow: hexShadowPaint(hex) }; }
     return { accent: uiAccent, shadow: uiAccentShadow };
   };
+  // Recolor the active `/command` or `$skill` trigger token INSIDE the input box so a
+  // real invocation is visibly recognized as it is typed: neon green once the token
+  // resolves to ≥1 command/skill, caution pink while it matches none (a likely typo
+  // that would be sent as plain text). Offsets are code-point indices into the SAME
+  // string the box renders, so multi-byte preceding text stays aligned with the box's
+  // Array.from() char model. Returns undefined for colorless themes / no active trigger.
+  const TRIGGER_HL_VALID = "#39ff14";
+  const TRIGGER_HL_UNKNOWN = "#ff6b81";
+  const triggerHighlight = (
+    rendered: string,
+  ): HighlightRange[] => {
+    if (!uiTheme.color) return [];
+    // Highlight EVERY `/command`·`$skill` invocation in the line at once and
+    // independent of caret position, so multiple triggers all stay lit and a
+    // token keeps its color even when the caret jumps elsewhere to edit.
+    const out: HighlightRange[] = [];
+    for (const trigger of allTriggerTokens(rendered)) {
+      const start = Array.from(rendered.slice(0, trigger.start)).length;
+      const end = start + Array.from(trigger.token).length;
+      // "Open" = the word still being typed: it reaches the end of the line with
+      // no space after it. An open token counts as valid-so-far on any match
+      // (incl. fuzzy prefix); every committed token must be an EXACT known
+      // command/skill to stay green, else it shows caution pink (likely typo).
+      const isOpen = trigger.start + trigger.token.length === rendered.length;
+      const matches = slashPreviewMatches(trigger.token, skillSlashDetails, resolvedSkills);
+      const valid = isOpen ? matches.length > 0 : matches.includes(trigger.token);
+      const hex = valid ? TRIGGER_HL_VALID : TRIGGER_HL_UNKNOWN;
+      out.push({ start, end, paint: (s: string) => chalk.hex(hex)(s) });
+    }
+    return out;
+  };
   const refreshUiTheme = (): void => {
     uiTheme = resolveTheme(process.env);
     uiAccent = accentPaint(uiTheme);
@@ -1825,7 +1859,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const rli = rl as unknown as { line?: string; cursor?: number };
     const caret = rli.line === line && typeof rli.cursor === "number" ? rli.cursor : line.length;
     const { accent: boxAccent, shadow: boxShadow } = boxAccents(line);
-    const frame = renderInputFrame(expandSentinel(line), {
+    const rendered = expandSentinel(line);
+    const frame = renderInputFrame(rendered, {
       // Full terminal width (cols is already columns - 1, leaving the last column free
       // so a full-width row never wraps). Matches the live-turn box, user/forge cards,
       // and the welcome banner — all share this cols-1 width so nothing jumps on the
@@ -1841,6 +1876,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         : undefined,
       maxBodyRows: Math.max(1, footerRows - 7),
       cursor: caret,
+      highlight: triggerHighlight(rendered),
     });
     const input = frame.lines.map(l => truncateAnsi(l, cols));
     // jeo-ref layout: a blank spacer row between the status bar (row 0) and the
@@ -2930,26 +2966,71 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (arg) { await applyResume(arg); continue; }
           // No id → only sessions with a real conversation are resumable (every launch
           // creates an empty session; those are noise).
-          const sessions = (await listSessions(cwd)).filter(s => s.messageCount > 0);
-          if (sessions.length === 0) {
+          let pool = (await listSessions(cwd)).filter(s => s.messageCount > 0);
+          if (pool.length === 0) {
             console.log("(no saved sessions with history)");
             continue;
           }
-          // Interactive arrow-key picker on a TTY: ↑↓ to move, Enter to resume, Esc cancels.
+          // Interactive gjc-style picker on a TTY: type to filter, ↑↓/PgUp/PgDn to
+          // move, Enter resumes, Del deletes (press Del twice to confirm), Esc cancels.
           if (process.stdin.isTTY && process.stdout.isTTY) {
-            const items: SelectItem<string>[] = sessions.slice(0, 50).map(s => ({
-              value: s.id,
-              label: `${s.title ? `[${s.title}] ` : ""}${(s.preview || s.id).replace(/\s+/g, " ")}`.slice(0, 76) || s.id,
-              hint: `${s.messageCount} msgs${s.id === sessionId ? " · current" : ""}`,
-            }));
-            const picked = await pickFromOptions("Resume a session  ↑↓ move · Enter resume · Esc cancel", items);
-            if (picked) await applyResume(picked);
-            else console.log("(resume cancelled)");
+            // Loop so a delete refreshes the list and re-opens the picker in place.
+            for (;;) {
+              const picker = new SessionPicker(pool);
+              let action: { kind: "resume" | "delete"; id: string } | undefined;
+              let confirmDeleteId: string | undefined;
+              await runSelectPicker(
+                (cols, rows) => renderSessionPicker(picker, {
+                  title: "Resume a session",
+                  cols,
+                  rows: Math.max(8, rows),
+                  unicode: true,
+                  color: true,
+                  confirmDeleteId,
+                }),
+                (ch, key) => {
+                  if (key?.name === "up") { confirmDeleteId = undefined; picker.up(); return false; }
+                  if (key?.name === "down") { confirmDeleteId = undefined; picker.down(); return false; }
+                  if (key?.name === "pageup") { confirmDeleteId = undefined; picker.page(-1); return false; }
+                  if (key?.name === "pagedown") { confirmDeleteId = undefined; picker.page(1); return false; }
+                  if (key?.name === "escape" || (key?.ctrl && key.name === "c")) return true;
+                  if (key?.name === "delete") {
+                    const sel = picker.selected();
+                    if (!sel) return false;
+                    if (confirmDeleteId === sel.id) { action = { kind: "delete", id: sel.id }; return true; }
+                    confirmDeleteId = sel.id;
+                    return false;
+                  }
+                  if (key?.name === "return" || key?.name === "enter") {
+                    const sel = picker.selected();
+                    if (sel) { action = { kind: "resume", id: sel.id }; return true; }
+                    return false;
+                  }
+                  confirmDeleteId = undefined;
+                  if (key?.name === "backspace") { picker.backspace(); return false; }
+                  if (ch && ch >= " " && !key?.ctrl && !key?.meta) picker.typeChar(ch);
+                  return false;
+                },
+              );
+              if (!action) { console.log("(resume cancelled)"); break; }
+              if (action.kind === "resume") { await applyResume(action.id); break; }
+              // Delete: drop the file, refresh the pool, and re-open the picker.
+              const delId = action.id;
+              try {
+                const removed = await deleteSession(delId, cwd);
+                console.log(removed ? `(deleted session ${delId})` : `(session ${delId} already gone)`);
+              } catch (err) {
+                console.log(`! delete failed: ${(err as Error).message}`);
+              }
+              if (delId === sessionId) await startFreshSession("dropped current session");
+              pool = pool.filter(s => s.id !== delId);
+              if (pool.length === 0) { console.log("(no saved sessions with history)"); break; }
+            }
             continue;
           }
           // Non-TTY fallback: static list (resume with /session resume <id>).
           console.log("Saved sessions — resume with /session resume <id>:");
-          for (const s of sessions.slice(0, 15)) {
+          for (const s of pool.slice(0, 15)) {
             const marker = s.id === sessionId ? "*" : " ";
             console.log(` ${marker}${s.id}  (${s.messageCount} msgs)  ${s.title ? `[${s.title}] ` : ""}${s.preview}`);
           }

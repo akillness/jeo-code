@@ -19,6 +19,19 @@ test("LaunchTui: shows a 'calling model' status while waiting on the model, then
   const afterAssistant = out.join("");
   expect(afterAssistant).not.toContain("calling model");
 });
+
+test("LaunchTui: onReasoningStart shows a live Thinking block for signature-only models (opus-4-8) that stream no thought text", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "claude-opus-4-8", tty: true, write: s => out.push(s) });
+  tui.start();
+  const ev = tui.events();
+  ev.onStep!(1); // waiting on the model — no thought text yet
+  out.length = 0;
+  ev.onReasoningStart!(); // model opened a thinking block but streams no thinking_delta text
+  const cleanOut = out.join("").replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+  expect(cleanOut).toContain("Thinking");
+  expect(cleanOut).toContain("(thinking…)"); // placeholder so the wait does not look frozen
+});
 test("LaunchTui: on a TTY the live turn stays in the MAIN buffer so wheel-scroll reaches earlier progress", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
@@ -781,6 +794,43 @@ test("LaunchTui: live turn keeps the normal input box visible and editable", () 
   const fresh = strip(out.join(""));
   expect(fresh).toContain("Type your next message...");
   expect(fresh).not.toContain("작업 확인");
+
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  tui.finish("ok");
+});
+
+test("LaunchTui.setLivePromptHighlight: recolors the trigger token in the mid-turn input box", () => {
+  const out: string[] = [];
+  // The highlight is only painted when the resolved theme has color; force
+  // truecolor so this assertion holds in non-TTY CI (no COLORTERM/TERM).
+  const prevForce = process.env.FORCE_COLOR;
+  process.env.FORCE_COLOR = "3";
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  if (prevForce === undefined) delete process.env.FORCE_COLOR;
+  else process.env.FORCE_COLOR = prevForce;
+  tui.start();
+
+  tui.setLivePromptInput("go /model");
+  out.length = 0;
+  const paint = (s: string) => `\x1b[38;2;57;255;20m${s}\x1b[39m`;
+  tui.setLivePromptHighlight([{ start: 3, end: 9, paint }]);
+  const painted = out.join("");
+  // The trigger token is now wrapped in the supplied SGR; the visible text is unchanged.
+  expect(painted).toContain("\x1b[38;2;57;255;20m");
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
+  expect(strip(painted)).toContain("go /model");
+
+  // Identical highlight is a no-op (no redundant repaint).
+  out.length = 0;
+  tui.setLivePromptHighlight([{ start: 3, end: 9, paint }]);
+  expect(out.join("")).toBe("");
+
+  // A fresh turn clears the highlight.
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  tui.start();
+  out.length = 0;
+  tui.setLivePromptInput("go /model");
+  expect(out.join("")).not.toContain("\x1b[38;2;57;255;20m");
 
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
   tui.finish("ok");

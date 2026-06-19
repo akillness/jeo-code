@@ -3485,7 +3485,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (modelArg?.toLowerCase() === "provider") {
           const want = (tokens[2] ?? "").toLowerCase();
           if (!isProviderName(want)) {
-            console.log(`Usage: /agents ${role.id} provider <anthropic|openai|gemini|antigravity|ollama> [model|#N]`);
+            console.log(`Usage: /agents ${role.id} provider <name> [model|#N] — e.g. anthropic, openai, gemini, groq, deepseek, openrouter (any configured provider)`);
             continue;
           }
           const st = (await describeAllProviders()).find(s => s.name === want);

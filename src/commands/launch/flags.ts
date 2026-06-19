@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type ProviderName, type ModelRole, type ThinkLevel, catalogMetadata } from "../../ai";
+import { type ProviderName, type ModelRole, type ThinkLevel, catalogMetadata, PROVIDER_NAMES } from "../../ai";
 
 export interface LaunchFlags {
   list: boolean;

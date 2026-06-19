@@ -801,7 +801,13 @@ test("LaunchTui: live turn keeps the normal input box visible and editable", () 
 
 test("LaunchTui.setLivePromptHighlight: recolors the trigger token in the mid-turn input box", () => {
   const out: string[] = [];
+  // The highlight is only painted when the resolved theme has color; force
+  // truecolor so this assertion holds in non-TTY CI (no COLORTERM/TERM).
+  const prevForce = process.env.FORCE_COLOR;
+  process.env.FORCE_COLOR = "3";
   const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  if (prevForce === undefined) delete process.env.FORCE_COLOR;
+  else process.env.FORCE_COLOR = prevForce;
   tui.start();
 
   tui.setLivePromptInput("go /model");

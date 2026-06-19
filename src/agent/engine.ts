@@ -34,10 +34,29 @@ async function invokeCallLlm(history: Message[], options: {
   onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
   onToken?: (delta: string) => void;
   onReasoning?: (delta: string) => void;
+  onReasoningArtifact?: (artifact: import("../ai/types").ReasoningArtifact) => void;
   tools?: import("../ai/types").NativeToolSchema[];
 }): Promise<string> {
   const mod = await import("./loop");
   return mod.callLlm(history, options);
+}
+
+/** Push an assistant turn, attaching the step's reasoning + native replay records when
+ *  present. Centralizes the assistant-push sites so reasoning/artifacts attach uniformly
+ *  (not just the final reply). Omits empty fields so back-compat serialization and the
+ *  identity-keyed token cache are unaffected. */
+function pushAssistantTurn(
+  history: Message[],
+  content: string,
+  reasoning: string,
+  artifacts: import("../ai/types").ReasoningArtifact[],
+  toolUse?: import("../ai/types").ToolUseRecord[],
+): void {
+  const msg: Message = { role: "assistant", content };
+  if (reasoning.trim()) msg.reasoning = reasoning;
+  if (artifacts.length) msg.reasoningArtifacts = artifacts;
+  if (toolUse && toolUse.length) msg.toolUse = toolUse;
+  history.push(msg);
 }
 export interface ToolInvocation {
   tool: string;
@@ -176,6 +195,9 @@ export interface AgentLoopEvents {
   /** Accumulated native reasoning/thinking text so far — drives a transient dimmed
    *  "thinking" view. Only requested when a consumer (TUI) attaches. */
   onReasoningStream?(textSoFar: string): void;
+  /** Each provider-native reasoning ARTIFACT as it is captured (signature / thoughtSignature /
+   *  reasoning item). Lets the final-reply path (launch.ts) persist artifacts for replay. */
+  onReasoningArtifactStream?(artifact: import("../ai/types").ReasoningArtifact): void;
   /** Step-budget change (gjc-style retry flow): the limit was extended because the
    *  turn is making progress. `limit` is the new max; `reason` is display-ready. */
   onBudget?(limit: number, reason: string): void;
@@ -345,7 +367,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         );
         const consolidated = wrapUp.trim();
         if (consolidated) {
-          history.push({ role: "assistant", content: consolidated });
+          pushAssistantTurn(history, consolidated, "", []);
           return finish({
             done: false,
             steps: step,
@@ -493,6 +515,14 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     const onReasoning = ev.onReasoningStream
       ? (delta: string) => { reasonBuf += delta; ev.onReasoningStream!(reasonBuf); }
       : undefined;
+    // Capture provider-native reasoning ARTIFACTS for replay (always — independent of any
+    // TUI display sink). Stays scoped to THIS step so a later consolidation push can't
+    // inherit a prior step's signatures.
+    const artifactBuf: import("../ai/types").ReasoningArtifact[] = [];
+    const onReasoningArtifact = (a: import("../ai/types").ReasoningArtifact) => {
+      artifactBuf.push(a);
+      ev.onReasoningArtifactStream?.(a);
+    };
     let responseText: string;
     try {
       responseText = await invokeCallLlm(history, {
@@ -510,6 +540,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
               onToken,
               onReasoning,
+              onReasoningArtifact,
               // Make provider auto-retry visible: previously a rate-limited call sat in a
               // silent backoff wait, then surfaced "auto-retry was exhausted" with no trace
               // of the retries that DID happen.
@@ -604,10 +635,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       const trimmed = responseText.trim();
       parseFailures++;
       if (trimmed && (!trimmed.includes("{") || parseFailures > MAX_PARSE_BOUNCES)) {
-        history.push({ role: "assistant", content: responseText });
+        pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
         return finish({ done: true, steps: step, doneReason: trimmed });
       }
-      history.push({ role: "assistant", content: responseText });
+      pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
       history.push({
         role: "user",
         content:
@@ -654,7 +685,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           doneReason: `Stopped: the model returned no valid tool call ${MAX_INVALID_CALLS}× (a JSON reply with no valid "tool" or "tools" field). The selected model may be too small to follow the JSON tool protocol — switch to a stronger model with /model.`,
         });
       }
-      history.push({ role: "assistant", content: responseText });
+      pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
       history.push({
         role: "user",
         content: `Your last reply had no "tool" or "tools" field. Reply with exactly one JSON object, e.g. {"tool":"find","arguments":{"globPattern":"src/**"}} or {"tools":[{"tool":"read","arguments":{"filePath":"src/main.ts"}}, ...]}.`,
@@ -674,7 +705,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     if (toolCalls.length === 1 && toolCalls[0].tool === "done") {
       if (sawMutation && (!sawVerification || pendingHookFailure !== null) && !donePushbackUsed) {
         donePushbackUsed = true; // second done always passes — escape hatch
-        history.push({ role: "assistant", content: responseText });
+        pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
         history.push({
           role: "user",
           content: pendingHookFailure !== null
@@ -696,7 +727,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         const nudge = await ev.onBeforeDone((toolCalls[0].arguments?.reason as string) ?? "");
         if (nudge) {
           beforeDoneNudgeUsed = true;
-          history.push({ role: "assistant", content: responseText });
+          pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
           history.push({ role: "user", content: nudge });
           ev.onNotice?.("done deferred once — final plan reconciliation requested");
           step++;
@@ -709,7 +740,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       if (opts.steer) {
         const pending = opts.steer().map(s => (s ?? "").trim()).filter(Boolean);
         if (pending.length) {
-          history.push({ role: "assistant", content: responseText });
+          pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
           for (const text of pending) {
             history.push({
               role: "user",
@@ -754,7 +785,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       const lastChance = repeatCount === MAX_REPEAT - 1
         ? "This is your LAST attempt: if you emit the same call again the turn will end. "
         : "";
-      history.push({ role: "assistant", content: responseText });
+      pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
       history.push({
         role: "user",
         content:
@@ -784,7 +815,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       if (!cycleBounceUsed) {
         cycleBounceUsed = true;
         recentStepSigs.length = 0; // fresh window: the correction earns a real retry
-        history.push({ role: "assistant", content: responseText });
+        pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
         history.push({
           role: "user",
           content:
@@ -944,6 +975,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       );
       // Append the batch's hook diagnostics once so the model can self-correct. Two
       // DISTINCT hooks with identical output collapse to one full block + a cross-ref.
+      let hookExtra = "";
       if (hookDiags.length > 0) {
         const seenHookFeedback = new Set<string>();
         const diagLines: string[] = [];
@@ -956,14 +988,28 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
             diagLines.push(`[post-turn hook "${d.run}" — exit ${d.exitCode}]:\n${truncateToolOutput(d.output)}`);
           }
         }
-        resultBlocks.push(diagLines.join("\n"));
+        hookExtra = diagLines.join("\n");
+        resultBlocks.push(hookExtra);
       }
 
-      history.push({ role: "assistant", content: responseText });
-      history.push({
-        role: "user",
-        content: resultBlocks.join("\n\n"),
-      });
+      // Structured native replay records: stable ids correlate the assistant tool_use
+      // turn with its tool_result user turn (the string `content` stays the source of
+      // truth for display / compaction / fallback adapters).
+      const idFor = (idx: number) => `call_${step}_${idx}`;
+      const toolUse: import("../ai/types").ToolUseRecord[] = indices.map(idx => ({
+        id: idFor(idx),
+        tool: toolCalls[idx].tool,
+        arguments: toolCalls[idx].arguments ?? {},
+      }));
+      const toolResults: import("../ai/types").ToolResultRecord[] = indices.map((idx, i) => ({
+        id: idFor(idx),
+        output: bodies[i],
+        isError: !results[idx].success,
+      }));
+      pushAssistantTurn(history, responseText, reasonBuf, artifactBuf, toolUse);
+      const resultMsg: Message = { role: "user", content: resultBlocks.join("\n\n"), toolResults };
+      if (hookExtra) resultMsg.toolResultExtra = hookExtra;
+      history.push(resultMsg);
     };
 
     if (aborted) {
@@ -1053,7 +1099,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       );
       const consolidated = wrapUp.trim();
       if (consolidated) {
-        history.push({ role: "assistant", content: consolidated });
+        pushAssistantTurn(history, consolidated, "", []);
         return finish({
           done: false,
           steps: budget.limit(),

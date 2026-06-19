@@ -250,11 +250,24 @@ export function providerPickEntries(live: ProviderModelsResult[], want: Provider
   if (catalog.length) {
     return catalog.map((m, i) => ({ index: i + 1, provider: want, model: qualifyModelId(m.providerModel, want) }));
   }
+  // Offline fallback for catalog-less (OpenAI-compatible) providers: the def's
+  // defaultModel first, then its knownModels list, so the per-role provider picker
+  // shows several pickable ids instead of one. De-duped + provider-qualified.
+  const def = openaiCompatDef(want);
+  if (def) {
+    const ids = [def.defaultModel, ...(def.knownModels ?? [])].map(m => qualifyModelId(m, want));
+    const seen = new Set<string>();
+    const entries: PickEntry[] = [];
+    for (const model of ids) {
+      if (seen.has(model)) continue;
+      seen.add(model);
+      entries.push({ index: entries.length + 1, provider: want, model });
+    }
+    if (entries.length) return entries;
+  }
   const fallback = providerDefaultModel(want);
   return fallback ? [{ index: 1, provider: want, model: qualifyModelId(fallback, want) }] : [];
 }
-
-
 
 export function formatResumeHint(sessionId: string): string {
   return `Resume with: jeo launch --resume ${sessionId}`;
@@ -510,6 +523,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // answer). Captured from the reasoning stream and persisted on the assistant message so
   // it survives /resume + export (gjc "think → answer" record). Reset at each turn start.
   let lastTurnReasoning = "";
+  // Native reasoning artifacts for the FINAL (done) step — the engine attaches intermediate
+  // steps' artifacts to their own pushed messages, but the done turn is built here. Reset on
+  // each step boundary so only the last step's artifacts ride the final reply (no duplication).
+  let lastTurnArtifacts: import("../ai/types").ReasoningArtifact[] = [];
   /** Wrap turn events so EVERY sink (TUI or plain stream) records the last full
    *  tool output for the Ctrl+O detail view. */
   const withToolDetailCapture = (base: ReturnType<LaunchTui["events"]>): ReturnType<LaunchTui["events"]> => ({
@@ -518,11 +535,21 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       lastToolDetail = { tool, output };
       base.onToolResult?.(tool, success, output);
     },
+    onStep: (step: number) => {
+      // New step: drop the prior step's final-reply artifacts so only the LAST step's ride
+      // the done reply (intermediate steps are persisted by the engine on their own turns).
+      lastTurnArtifacts = [];
+      base.onStep?.(step);
+    },
     onReasoningStream: (textSoFar: string) => {
       // textSoFar is the cumulative thought for the current step; keep the latest
       // non-empty value (the thought immediately preceding the turn's answer).
       if (textSoFar.trim()) lastTurnReasoning = textSoFar;
       base.onReasoningStream?.(textSoFar);
+    },
+    onReasoningArtifactStream: (artifact) => {
+      lastTurnArtifacts.push(artifact);
+      base.onReasoningArtifactStream?.(artifact);
     },
   });
   /** Compose a session-persistence flush into onStep so each completed step is
@@ -626,6 +653,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // persistence block below.
     let beforeLen = history.length;
     lastTurnReasoning = ""; // fresh turn: capture this turn's thinking from scratch
+    lastTurnArtifacts = [];
     // Incremental session persistence (durability across mid-turn interruption):
     // persistTurnTail() flushes history messages added since the last flush — called
     // right after the user prompt, on every onStep boundary, and once post-turn — so
@@ -929,9 +957,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // this only covers the tail — net content is the full turn either way.
     try {
       await persistTurnTail();
-      const assistantMsg: Message = lastTurnReasoning.trim()
-        ? { role: "assistant", content: reply, reasoning: lastTurnReasoning }
-        : { role: "assistant", content: reply };
+      const assistantMsg: Message = { role: "assistant", content: reply };
+      if (lastTurnReasoning.trim()) assistantMsg.reasoning = lastTurnReasoning;
+      if (lastTurnArtifacts.length) assistantMsg.reasoningArtifacts = lastTurnArtifacts;
       history.push(assistantMsg);
       if (sessionId) await appendMessage(sessionId, assistantMsg, cwd);
       if (tui) tui.finish(reply);
@@ -1616,7 +1644,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     jeoEnv("NO_SLASH_PREVIEW") !== "1";
   // Footer height reserved by the CURRENTLY armed region; disarm/draw must use the
   // same value the arm computed, even if the terminal was resized in between.
+  // `footerRows` is the MAX reservation height (the budget previewLines/historyPreview
+  // may fill). The PHYSICAL reservation (`footerRendered`) is now dynamic: compact at
+  // idle (no dropdown) so a finished/idle prompt leaves NO reserved blank rows, and
+  // grown on demand when a slash/arg preview needs more. `footerWantRows` is the height
+  // the latest previewLines/historyPreview wants; drawFooter re-pins to it in place.
   let footerRows = MAX_PREVIEW_ROWS;
+  // Compact idle reservation: status bar (1) + spacer (1) + input box (3 rows).
+  const COMPACT_FOOTER_ROWS = 5;
+  let footerWantRows = COMPACT_FOOTER_ROWS;
   const out = process.stdout;
   // Arrow-key selection over the slash preview list.
   let navMatches: string[] = []; // command names matching the typed keyword (display order)
@@ -1666,23 +1702,41 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // line painted at an older, wider geometry reflows onto extra rows after a width shrink.
   let lastDrawnLines: string[] = [];
   const padToFooter = (lines: string[]): string[] => {
-    if (lines.length >= footerRows) return lines.slice(0, footerRows);
-    return [...lines, ...new Array(footerRows - lines.length).fill("")];
+    if (lines.length >= footerRendered) return lines.slice(0, footerRendered);
+    return [...lines, ...new Array(footerRendered - lines.length).fill("")];
   };
   const armPreview = () => {
     if (!previewEnabled || previewArmed) return;
     footerRows = previewRowsFor(process.stdout.rows ?? 24);
-    // Reserve `footerRows` bottom rows: write blank newlines (the terminal scrolls
-    // ONCE here, not on every keystroke), then park the cursor at the top of the
-    // reservation. Every subsequent drawFooter call stays inside this region.
-    if (footerRows > 1) {
-      out.write("\n".repeat(footerRows - 1) + cursorUp(footerRows - 1));
+    // Reserve a COMPACT region (idle prompt height) right after the current output —
+    // not the full `footerRows` budget — so a finished/idle prompt leaves no blank rows
+    // below it. drawFooter grows the reservation in place when a dropdown needs more.
+    const initial = Math.max(1, Math.min(footerRows, COMPACT_FOOTER_ROWS));
+    if (initial > 1) {
+      out.write("\n".repeat(initial - 1) + cursorUp(initial - 1));
     }
     out.write(toColumn(1));
-    footerRendered = footerRows;
+    footerRendered = initial;
+    footerWantRows = initial;
     footerParkedRow = 0;
     previewArmed = true;
     lastFooterKey = "";
+  };
+  // Re-pin the reservation to `n` rows IN PLACE (right after the existing output, never
+  // bottom-pinned): clear the old region from its top, then reserve `n` rows there. Used
+  // by drawFooter to grow for a dropdown and shrink back to the compact idle height, so
+  // the prompt never carries a trailing/floating blank block.
+  const setFooterRows = (n: number) => {
+    n = Math.max(1, Math.min(n, footerRows));
+    if (!previewArmed || n === footerRendered) return;
+    let s = footerParkedRow > 0 ? cursorUp(footerParkedRow) : "";
+    s += toColumn(1) + clearToEnd(); // wipe old region; cursor now at its top (after output)
+    if (n > 1) s += "\n".repeat(n - 1) + cursorUp(n - 1);
+    s += toColumn(1);
+    out.write(s);
+    footerRendered = n;
+    footerParkedRow = 0;
+    lastFooterKey = ""; // force a full repaint into the resized region
   };
   // Clear the reserved region and park the cursor at its top row so subsequent
   // command output starts where the box was (and inherits the existing scrollback).
@@ -1800,7 +1854,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const slash = budget > 0 ? formatSlashPreview(line, budget, selected, skillSlashDetails, resolvedSkills) : [];
     const args = !slash.length && budget > 0 ? formatCompletionPreview(line, completionContext(), budget) : [];
     const preview = (slash.length ? slash : args).map(l => chalk.gray(truncateAnsi(l, cols)));
-    return [statusBarLine(cols), "", ...input, ...preview].slice(0, footerRows);
+    const result = [statusBarLine(cols), "", ...input, ...preview].slice(0, footerRows);
+    // Want only the input box + status bar at idle (no dropdown) → compact reservation;
+    // grow to fit the dropdown when a preview is present.
+    footerWantRows = preview.length > 0 ? result.length : Math.min(footerRows, 2 + input.length);
+    return result;
   };
   // Render the reversible Ctrl+O detail panel into the footer reservation: a status
   // bar, a title (with scroll hint when needed), then a windowed slice of the detail
@@ -1838,10 +1896,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (below > 0) body.push(chalk.dim(`↓ ${below} more below`));
     }
     footerCursor = { row: Math.min(1, footerRows - 1), col: 1 };
-    return [statusBarLine(cols), title, ...body].slice(0, footerRows);
+    const result = [statusBarLine(cols), title, ...body].slice(0, footerRows);
+    footerWantRows = result.length; // the Ctrl+O panel sizes the reservation to its content
+    return result;
   };
   const drawFooter = (lines: string[]) => {
     if (!previewArmed || footerRendered === 0) return;
+    // Re-pin the reservation to the height the latest preview/panel wants (compact at
+    // idle, grown for a dropdown) BEFORE painting, so no reserved blank trails the prompt.
+    setFooterRows(footerWantRows);
     // ALWAYS paint exactly footerRendered rows so the reservation is fully covered
     // and no row can spill past it — the bug fix that kept `@folder<more text>`
     // typing from scrolling the input box (and prior output) off the top.
@@ -2558,9 +2621,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           out.write(clearScreen());
           out.write(renderWelcome({ ...welcomeData, cols }).join("\n") + "\n");
           footerRows = previewRowsFor(rows);
-          if (footerRows > 1) out.write("\n".repeat(footerRows - 1) + cursorUp(footerRows - 1));
+          const initial = Math.max(1, Math.min(footerRows, COMPACT_FOOTER_ROWS));
+          if (initial > 1) out.write("\n".repeat(initial - 1) + cursorUp(initial - 1));
           out.write(toColumn(1));
-          footerRendered = footerRows;
+          footerRendered = initial;
+          footerWantRows = initial;
           drawFooter(promptHistoryLines ? historyPreviewLines(promptHistoryLines) : previewLines(typedLine, navIdx));
           return;
         }
@@ -2591,14 +2656,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const caretSubRow = Math.floor(Math.max(0, footerCursor.col - 1) / c);
         const hopUp = abovePhysical + caretSubRow;
         let s = (hopUp > 0 ? cursorUp(hopUp) : "") + toColumn(1) + clearToEnd();
-        // Re-pin a clean reservation to the screen bottom and repaint. ED already blanked
-        // from the frame top down to the bottom, so just position at the bottom region.
+        // Re-pin a COMPACT reservation right where the frame top was (just below the
+        // static content) — NOT bottom-pinned. ED already blanked from the frame top
+        // down, so reserve the idle height here; drawFooter grows it for a dropdown.
+        // Bottom-pinning left a tall blank gap above the bar when the content was short.
         footerRows = previewRowsFor(rows);
-        s += `\x1b[${Math.max(1, rows)};1H`;
-        if (footerRows > 1) s += cursorUp(footerRows - 1);
+        const initial = Math.max(1, Math.min(footerRows, COMPACT_FOOTER_ROWS));
+        if (initial > 1) s += "\n".repeat(initial - 1) + cursorUp(initial - 1);
         s += toColumn(1);
         out.write(s);
-        footerRendered = footerRows;
+        footerRendered = initial;
+        footerWantRows = initial;
         footerParkedRow = 0;
         lastFooterKey = "";
         drawFooter(promptHistoryLines ? historyPreviewLines(promptHistoryLines) : previewLines(typedLine, navIdx));

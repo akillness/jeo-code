@@ -412,26 +412,24 @@ export async function animateFrames(stage: AsciiStage, opts: AnimateFramesOption
   }
   return total;
 }
-/** The compact jeo forge mark: a horizontal lobster/crayfish (가재) emblem composed
- *  of SIMPLE, DISCONNECTED shapes (no connecting strokes) that together read as the
- *  mascot lying on its side, left→right: the raised pincer CLAWS (집게) as the splayed
- *  corner wedges (◤◣ left, ◥◢ right), the body carrying the JEO wordmark (J E O), and
- *  a DNA double-helix woven above and below as a row of crossing nodes (╳ = base-pair
- *  crossings). gjc-forge aesthetic: clean negative space, geometric symmetry, the
- *  blue→violet→pink flow gradient applied by renderForgeMark doing the neon glow. The
- *  lobster identity is carried by the disconnected silhouette; the JEO typography is
- *  the deliberate lettermark at the core. Width-1 glyphs only (box drawing + geometrics)
+/** The compact jeo forge mark: a symmetrical crayfish (가재) brand emblem composed
+ *  of SIMPLE, DISCONNECTED shapes (no connecting strokes) that highlight the signature
+ *  pincer CLAWS (집게) flanking the sides (◤◣ and ❮ on the left, ◥◢ and ❯ on the right),
+ *  the body carrying the JEO wordmark (J E O), and a DNA double-helix woven above and
+ *  below as a row of crossing nodes (╳ = base-pair crossings). gjc-forge aesthetic:
+ *  clean negative space, geometric symmetry, the blue→violet→pink flow gradient applied
+ *  by renderForgeMark doing the neon glow. Width-1 glyphs only (box drawing + geometrics)
  *  so padding/centering math stays exact. Frame 0 is the static symbol. */
 export const FORGE_MARK_ART: string[] = [
-  "◤    ╳ ╳ ╳ ╳    ◥",
-  "❮     J E O     ▮",
-  "◣    ╳ ╳ ╳ ╳    ◢"
+  "◤   ╳ ╳ ╳ ╳   ◥",
+  "❮    J E O    ❯",
+  "◣   ╳ ╳ ╳ ╳   ◢"
 ];
 
 export const FORGE_MARK_ART_ASCII: string[] = [
-  "/    x x x x    \\",
-  "<     J E O     |",
-  "\\    x x x x    /"
+  "/   x x x x   \\",
+  "<    J E O    >",
+  "\\   x x x x   /"
 ];
 
 /** Claw-snap blink frames for the compact lobster forge mark: the helix nodes, the
@@ -442,18 +440,18 @@ export const FORGE_MARK_ART_ASCII: string[] = [
 export const FORGE_MARK_FRAMES: string[][] = [
   FORGE_MARK_ART,
   [
-    "◢    ╳ ╳ ╳ ╳    ◣",
-    "❮     J E O     ▮",
-    "◥    ╳ ╳ ╳ ╳    ◤"
+    "◢   ╳ ╳ ╳ ╳   ◣",
+    "❮    J E O    ❯",
+    "◥   ╳ ╳ ╳ ╳   ◤"
   ]
 ];
 
 export const FORGE_MARK_FRAMES_ASCII: string[][] = [
   FORGE_MARK_ART_ASCII,
   [
-    "\\    x x x x    /",
-    "<     J E O     |",
-    "/    x x x x    \\"
+    "\\   x x x x   /",
+    "<    J E O    >",
+    "/   x x x x   \\"
   ]
 ];
 
@@ -463,26 +461,24 @@ export function forgeMarkFrameCount(): number {
 }
 
 /** Grand hero variant for the welcome forge box (gjc-style spacious banner): the same
- *  horizontal lobster emblem rendered large — the splayed pincer claws as corner wedges
- *  (◤◣ left, ◥◢ right), the JEO wordmark spaced across the body (J   E   O), and the DNA
- *  double-helix woven above and below as a wider row of crossing nodes (╳). gjc-forge
- *  aesthetic: generous negative space + geometric symmetry, with renderForgeMark's
- *  blue→violet→pink flow gradient supplying the neon glow. The JEO typography is the
- *  deliberate lettermark; the lobster reads from the disconnected silhouette. Width 29
- *  (matches the welcome compact↔grand threshold) and width-1 glyphs only so
+ *  symmetrical crayfish emblem rendered large — the splayed pincer claws as corner wedges
+ *  (◤◣ left, ◥◢ right) and heavy brackets (❮ left, ❯ right), the JEO wordmark spaced
+ *  across the body (J   E   O), and the DNA double-helix woven above and below as a wider
+ *  row of crossing nodes (╳). gjc-forge aesthetic: generous negative space + geometric
+ *  symmetry, with renderForgeMark's blue→violet→pink flow gradient supplying the neon glow.
+ *  Width 29 (matches the welcome compact↔grand threshold) and width-1 glyphs only so
  *  padding/centering math stays exact. */
 export const FORGE_MARK_ART_GRAND: string[] = [
   "◤        ╳ ╳ ╳ ╳ ╳ ╳        ◥",
-  "❮         J   E   O         ▮",
+  "❮         J   E   O         ❯",
   "◣        ╳ ╳ ╳ ╳ ╳ ╳        ◢"
 ];
 
 export const FORGE_MARK_ART_GRAND_ASCII: string[] = [
   "/        x x x x x x        \\",
-  "<         J   E   O         |",
+  "<         J   E   O         >",
   "\\        x x x x x x        /"
 ];
-
 
 // Bounded memo of fully-rendered forge-mark frames keyed by every input that affects
 // output (grand/unicode/cols/color/colorLevel/phase/frame). The live HUD cycles a

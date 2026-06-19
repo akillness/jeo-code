@@ -88,28 +88,76 @@ function anthropicThinkingBudget(effort: CallOptions["reasoningEffort"], maxToke
   return Math.min(budget, Math.max(1024, maxTokens - 1024));
 }
 
+type AnthropicContentBlock = Record<string, unknown>;
+type AnthropicMessage = { role: string; content: string | AnthropicContentBlock[] };
+
+/** True when an assistant turn can be replayed as native tool_use + thinking blocks: it has
+ *  structured toolUse AND a same-model Anthropic reasoning artifact that yields at least one
+ *  valid thinking/redacted block, AND thinking is enabled this call. Native tool_use →
+ *  tool_result is what makes Claude KEEP the prior thinking blocks (plain-text tool feedback
+ *  gets them stripped on most models), so this is the core of cross-step reasoning continuity. */
+export function anthropicNativizable(m: Message, model: string, thinkingEnabled: boolean): boolean {
+  return thinkingEnabled
+    && !!m.toolUse?.length
+    && !!m.reasoningArtifacts?.some(a => a.provider === "anthropic" && a.model === model && ((!!a.signature && !!a.text) || !!a.redacted));
+}
+
+/** Build Anthropic wire messages, reconstructing native tool_use / tool_result / thinking
+ *  blocks for matching turns. `thinkingEnabled` is false (or stripped on a fail-safe retry)
+ *  ⇒ everything falls back to the plain string/image content (current, always-valid shape). */
+export function buildAnthropicMessages(messages: Message[], model: string, thinkingEnabled: boolean): AnthropicMessage[] {
+  const nonSystem = messages.filter(m => m.role !== "system");
+  const plain = (m: Message): AnthropicMessage => ({
+    role: m.role,
+    content: m.images?.length
+      ? [
+          ...m.images.map((img): AnthropicContentBlock => ({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } })),
+          ...(m.content ? [{ type: "text", text: m.content } as AnthropicContentBlock] : []),
+        ]
+      : m.content,
+  });
+  return nonSystem.map((m, i) => {
+    if (m.role === "assistant" && anthropicNativizable(m, model, thinkingEnabled)) {
+      const blocks: AnthropicContentBlock[] = [];
+      for (const a of m.reasoningArtifacts!) {
+        if (a.provider !== "anthropic" || a.model !== model) continue;
+        if (a.signature && a.text) blocks.push({ type: "thinking", thinking: a.text, signature: a.signature });
+        else if (a.redacted) blocks.push({ type: "redacted_thinking", data: a.redacted });
+      }
+      for (const tu of m.toolUse!) blocks.push({ type: "tool_use", id: tu.id, name: tu.tool, input: tu.arguments });
+      return { role: "assistant", content: blocks };
+    }
+    // A tool-result user turn is nativized iff its preceding assistant was — so a native
+    // tool_use always has its matching native tool_result (Anthropic errors on a mismatch).
+    if (m.role === "user" && m.toolResults?.length && i > 0
+        && nonSystem[i - 1].role === "assistant"
+        && anthropicNativizable(nonSystem[i - 1], model, thinkingEnabled)) {
+      const blocks: AnthropicContentBlock[] = m.toolResults.map(tr => ({
+        type: "tool_result", tool_use_id: tr.id, content: tr.output, is_error: tr.isError,
+      }));
+      if (m.toolResultExtra) blocks.push({ type: "text", text: m.toolResultExtra });
+      return { role: "user", content: blocks };
+    }
+    return plain(m);
+  });
+}
+
 export function anthropicPayload(
   messages: Message[],
   options: CallOptions,
   stream: boolean,
   includeTemperature: boolean,
   credential: Credential = { kind: "none", provider: "anthropic" },
+  stripArtifacts = false,
 ): string {
   const model = stripAnthropicPrefix(options.model);
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
-  // Image attachments (clipboard paste) become Anthropic content blocks; plain
-  // string content is kept for text-only messages (the overwhelmingly common case).
-  type ContentBlock = Record<string, unknown>;
-  const anthropicMessages: { role: string; content: string | ContentBlock[] }[] =
-    messages.filter(m => m.role !== "system").map(m => ({
-      role: m.role,
-      content: m.images?.length
-        ? [
-            ...m.images.map((img): ContentBlock => ({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } })),
-            ...(m.content ? [{ type: "text", text: m.content } as ContentBlock] : []),
-          ]
-        : m.content,
-    }));
+  // Image attachments + native tool/thinking-block reconstruction live in buildAnthropicMessages.
+  const maxTokens = options.maxTokens ?? 4000;
+  const thinkingBudget = anthropicThinkingBudget(options.reasoningEffort, maxTokens);
+  // Reconstruct native tool_use / tool_result / thinking blocks for same-model turns when
+  // thinking is enabled (and not stripped by a fail-safe retry); else plain string/image.
+  const anthropicMessages = buildAnthropicMessages(messages, options.model, thinkingBudget !== undefined && !stripArtifacts);
   // Conversation prompt caching (gjc parity — the main same-model latency gap):
   // one breakpoint on the LAST message caches the entire conversation prefix, so
   // each agent-loop step only pays input processing for the new tail instead of
@@ -125,8 +173,7 @@ export function anthropicPayload(
       last.content[last.content.length - 1] = { ...tail, cache_control: { type: "ephemeral" } };
     }
   }
-  const maxTokens = options.maxTokens ?? 4000;
-  const thinkingBudget = anthropicThinkingBudget(options.reasoningEffort, maxTokens);
+
   const payload: Record<string, unknown> = {
     model,
     messages: anthropicMessages,
@@ -162,18 +209,26 @@ export function anthropicRequest(
   credential: Credential,
   stream: boolean,
   includeTemperature: boolean,
+  stripArtifacts = false,
 ): { url: string; headers: Record<string, string>; body: string } {
   return {
     // Anthropic-compatible providers (z.ai, MiniMax, …) accept the Messages wire
     // format at their own host; an explicit baseUrl pins `${base}/v1/messages`.
     url: options.baseUrl ? `${options.baseUrl.replace(/\/$/, "")}/v1/messages` : ANTHROPIC_URL,
     headers: headersFor(credential, stream),
-    body: anthropicPayload(messages, options, stream, includeTemperature, credential),
+    body: anthropicPayload(messages, options, stream, includeTemperature, credential, stripArtifacts),
   };
 }
 
 function isDeprecatedTemperatureError(status: number, detail: string): boolean {
   return status === 400 && detail.includes(DEPRECATED_TEMPERATURE);
+}
+
+/** A 400 that names thinking/signature/redacted means a replayed reasoning artifact was
+ *  rejected (expired signature, edited history, thinking toggled). The fail-safe retries
+ *  once with artifacts stripped (plain string history) so the turn survives. */
+function isReasoningArtifactError(status: number, detail: string): boolean {
+  return status === 400 && /thinking|signature|redacted_thinking/i.test(detail);
 }
 
 async function postAnthropic(
@@ -182,8 +237,8 @@ async function postAnthropic(
   credential: Credential,
   stream: boolean,
 ): Promise<Response> {
-  const send = (includeTemperature: boolean) => {
-    const { url, headers, body } = anthropicRequest(messages, options, credential, stream, includeTemperature);
+  const send = (includeTemperature: boolean, stripArtifacts = false) => {
+    const { url, headers, body } = anthropicRequest(messages, options, credential, stream, includeTemperature, stripArtifacts);
     return fetch(url, { method: "POST", headers, body, signal: options.signal });
   };
 
@@ -193,6 +248,12 @@ async function postAnthropic(
   const detail = await response.text().catch(() => "");
   if (isDeprecatedTemperatureError(response.status, detail)) {
     response = await send(false);
+    if (response.ok) return response;
+    throw await providerHttpError("Anthropic", response, stream ? "(stream)" : undefined);
+  }
+  // Fail-safe: a rejected replay artifact → retry once with artifacts stripped (plain history).
+  if (isReasoningArtifactError(response.status, detail)) {
+    response = await send(true, true);
     if (response.ok) return response;
     throw await providerHttpError("Anthropic", response, stream ? "(stream)" : undefined);
   }
@@ -233,8 +294,16 @@ export const anthropicAdapter: ProviderAdapter = {
   supportsNativeTools: true,
   async call(messages, options, credential) {
     const response = await postAnthropic(messages, options, credential, false);
-    const result = (await response.json()) as { content: { type: string; text?: string; name?: string; input?: unknown }[]; stop_reason?: string; usage?: AnthropicUsage };
+    const result = (await response.json()) as { content: { type: string; text?: string; name?: string; input?: unknown; thinking?: string; signature?: string; data?: string }[]; stop_reason?: string; usage?: AnthropicUsage };
     if (result.usage) options.onUsage?.({ inputTokens: totalInputTokens(result.usage), outputTokens: result.usage.output_tokens });
+    // Capture thinking/redacted blocks as replay artifacts (parity with the stream path).
+    for (const c of result.content) {
+      if (c.type === "thinking" && (c.thinking || c.signature)) {
+        options.onReasoningArtifact?.({ provider: "anthropic", model: options.model, text: c.thinking || undefined, signature: c.signature });
+      } else if (c.type === "redacted_thinking" && c.data) {
+        options.onReasoningArtifact?.({ provider: "anthropic", model: options.model, redacted: c.data });
+      }
+    }
     // Prefer a native tool call (re-serialized to canonical JSON) over any stray text.
     const toolCall = serializeToolCalls(
       result.content
@@ -256,12 +325,16 @@ export const anthropicAdapter: ProviderAdapter = {
     // never as text_delta — accumulate per block index, then re-serialize to canonical
     // JSON and yield it once at the end (concatenation still equals call()).
     const toolBlocks = new Map<number, { name: string; args: string }>();
+    // Thinking blocks stream as content_block_start(type:thinking) + thinking_delta(text)
+    // + signature_delta(signature). Accumulate per index and emit one ReasoningArtifact per
+    // block on stream end so the signed thought can be replayed (gajae continuity).
+    const thinkBlocks = new Map<number, { text: string; signature?: string }>();
     for await (const data of readSse(response.body)) {
       let evt: {
         type?: string;
         index?: number;
-        content_block?: { type?: string; name?: string };
-        delta?: { type?: string; text?: string; partial_json?: string; thinking?: string; stop_reason?: string };
+        content_block?: { type?: string; name?: string; data?: string };
+        delta?: { type?: string; text?: string; partial_json?: string; thinking?: string; signature?: string; stop_reason?: string };
         message?: { usage?: AnthropicUsage };
         usage?: { output_tokens?: number };
       };
@@ -272,6 +345,11 @@ export const anthropicAdapter: ProviderAdapter = {
       }
       if (evt.type === "content_block_start" && evt.content_block?.type === "tool_use" && typeof evt.index === "number") {
         toolBlocks.set(evt.index, { name: evt.content_block.name ?? "", args: "" });
+      } else if (evt.type === "content_block_start" && evt.content_block?.type === "thinking" && typeof evt.index === "number") {
+        thinkBlocks.set(evt.index, { text: "" });
+      } else if (evt.type === "content_block_start" && evt.content_block?.type === "redacted_thinking" && evt.content_block.data) {
+        // Redacted thinking carries opaque `data` directly (no deltas) — emit immediately.
+        options.onReasoningArtifact?.({ provider: "anthropic", model: options.model, redacted: evt.content_block.data });
       } else if (evt.type === "content_block_delta" && evt.delta?.type === "input_json_delta" && typeof evt.index === "number") {
         const b = toolBlocks.get(evt.index);
         if (b) b.args += evt.delta.partial_json ?? "";
@@ -280,6 +358,15 @@ export const anthropicAdapter: ProviderAdapter = {
         yield evt.delta.text;
       } else if (evt.type === "content_block_delta" && evt.delta?.type === "thinking_delta" && evt.delta.thinking) {
         options.onReasoning?.(evt.delta.thinking);
+        if (typeof evt.index === "number") {
+          const tb = thinkBlocks.get(evt.index) ?? { text: "" };
+          tb.text += evt.delta.thinking;
+          thinkBlocks.set(evt.index, tb);
+        }
+      } else if (evt.type === "content_block_delta" && evt.delta?.type === "signature_delta" && evt.delta.signature && typeof evt.index === "number") {
+        const tb = thinkBlocks.get(evt.index) ?? { text: "" };
+        tb.signature = (tb.signature ?? "") + evt.delta.signature;
+        thinkBlocks.set(evt.index, tb);
       } else if (evt.type === "message_start" && evt.message?.usage) {
         // Cache only — usage is reported ONCE at message_delta so an accumulating
         // sink can't double-count input (and a pre-first-chunk retry that replays
@@ -288,6 +375,12 @@ export const anthropicAdapter: ProviderAdapter = {
       } else if (evt.type === "message_delta") {
         if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason;
         if (evt.usage) options.onUsage?.({ inputTokens: cachedInput, outputTokens: evt.usage.output_tokens });
+      }
+    }
+    // Emit captured thinking blocks as replay artifacts (signed thought + signature).
+    for (const tb of thinkBlocks.values()) {
+      if (tb.text || tb.signature) {
+        options.onReasoningArtifact?.({ provider: "anthropic", model: options.model, text: tb.text || undefined, signature: tb.signature });
       }
     }
     const envelope = serializeAccumulatedToolCalls(toolBlocks);

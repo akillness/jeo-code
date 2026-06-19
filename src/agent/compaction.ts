@@ -78,7 +78,16 @@ const messageTokenCache = new WeakMap<Message, number>();
 export function estimateMessageTokens(msg: Message): number {
   const hit = messageTokenCache.get(msg);
   if (hit !== undefined) return hit;
-  const n = estimateTokens(msg.role) + estimateTokens(msg.content) + (msg.images?.length ?? 0) * IMAGE_TOKEN_ESTIMATE + 1;
+  let n = estimateTokens(msg.role) + estimateTokens(msg.content) + (msg.images?.length ?? 0) * IMAGE_TOKEN_ESTIMATE + 1;
+  // Native reasoning artifacts (signature / encrypted_content / thought text) are NOT in
+  // `content` but become REAL input tokens once an adapter replays them — count them so
+  // the context meter and compaction trigger stay honest (OpenAI encrypted blobs are KB-scale).
+  // toolUse/toolResults/toolResultExtra are already reflected in `content`, so they are not re-added.
+  for (const a of msg.reasoningArtifacts ?? []) {
+    n += estimateTokens(a.text ?? "") + estimateTokens(a.signature ?? "")
+      + estimateTokens(a.redacted ?? "") + estimateTokens(a.thoughtSignature ?? "")
+      + estimateTokens(a.encrypted ?? "");
+  }
   messageTokenCache.set(msg, n);
   return n;
 }

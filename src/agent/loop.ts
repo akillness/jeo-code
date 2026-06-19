@@ -26,6 +26,9 @@ export interface ChatOptions {
   onToken?: (delta: string) => void;
   /** Streaming sink for native reasoning/thinking deltas (drives the dimmed live view). */
   onReasoning?: (delta: string) => void;
+  /** Streaming sink for provider-native reasoning ARTIFACTS (signature / thoughtSignature /
+   *  reasoning item id+encrypted) — the replay channel, separate from onReasoning. */
+  onReasoningArtifact?: (artifact: import("../ai/types").ReasoningArtifact) => void;
   /** NATIVE tool-calling function declarations (forwarded to capable adapters). */
   tools?: import("../ai/types").NativeToolSchema[];
 }

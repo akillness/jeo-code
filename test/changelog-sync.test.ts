@@ -7,6 +7,8 @@ import {
   injectChangelogBlock,
   CHANGELOG_START,
   CHANGELOG_END,
+  CHANGELOG_START_HTML,
+  CHANGELOG_END_HTML,
   CHANGELOG_COUNT,
   README_FILES,
 } from "../scripts/sync-changelog";
@@ -70,10 +72,23 @@ test("drift guard: every README's changelog region matches the latest 5 from CHA
   const block = renderChangelogBlock(entries);
   for (const file of README_FILES) {
     const body = await fs.readFile(path.join(root, file), "utf-8");
-    const start = body.indexOf(CHANGELOG_START);
-    const end = body.indexOf(CHANGELOG_END);
+    let startMarker = CHANGELOG_START;
+    let endMarker = CHANGELOG_END;
+    let start = body.indexOf(startMarker);
+    if (start === -1) {
+      startMarker = CHANGELOG_START_HTML;
+      endMarker = CHANGELOG_END_HTML;
+      start = body.indexOf(startMarker);
+    }
+    const end = body.indexOf(endMarker);
     expect(start, `${file} missing changelog markers — run 'bun run changelog:sync'`).toBeGreaterThanOrEqual(0);
-    const region = body.slice(start, end + CHANGELOG_END.length);
-    expect(region, `${file} changelog drifted — run 'bun run changelog:sync'`).toBe(block);
+    const region = body.slice(start, end + endMarker.length);
+    let expectedBlock = block;
+    if (startMarker === CHANGELOG_START_HTML) {
+      expectedBlock = block
+        .replaceAll(CHANGELOG_START, CHANGELOG_START_HTML)
+        .replaceAll(CHANGELOG_END, CHANGELOG_END_HTML);
+    }
+    expect(region, `${file} changelog drifted — run 'bun run changelog:sync'`).toBe(expectedBlock);
   }
 });

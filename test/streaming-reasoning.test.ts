@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { clipReasoningLines, thinkingHeader, THINKING_COMMIT_MAX_LINES } from "../src/tui/app";
 import { LaunchTui } from "../src/tui/app";
 import { buildToolProtocol } from "../src/commands/launch";
 
@@ -114,5 +115,59 @@ test("HUD prose stream shows 'writing the reply…' status, not the reply text",
   expect(escLine).toContain("writing the reply");
   expect(escLine).not.toContain("long final answer prose");
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  tui.finish("done");
+});
+
+test("thinkingHeader: gjc 'thought for Ns' label with duration, omitted when unknown", () => {
+  expect(thinkingHeader(4200, true)).toBe("◇ thinking · 4.2s");
+  expect(thinkingHeader(0, true)).toBe("◇ thinking · 0.0s");
+  expect(thinkingHeader(undefined, true)).toBe("◇ thinking");
+  // ASCII fallback uses the * diamond.
+  expect(thinkingHeader(1000, false)).toBe("* thinking · 1.0s");
+});
+
+test("clipReasoningLines: collapses long traces with a (+N more lines) hint", () => {
+  const short = "one\ntwo\nthree";
+  expect(clipReasoningLines(short)).toBe(short); // under cap → verbatim
+  const long = Array.from({ length: THINKING_COMMIT_MAX_LINES + 5 }, (_, i) => `line ${i}`).join("\n");
+  const clipped = clipReasoningLines(long).split("\n");
+  expect(clipped.length).toBe(THINKING_COMMIT_MAX_LINES + 1);
+  expect(clipped[THINKING_COMMIT_MAX_LINES]).toBe("… (+5 more lines)");
+});
+
+test("LaunchTui: committed thought carries a 'thinking ·' duration header (gjc parity)", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  const ev = tui.events();
+  ev.onStep!(1);
+  ev.onReasoningStream!("weighing two approaches");
+  out.length = 0;
+  ev.onAssistant!('{"tool":"read","arguments":{}}', { tool: "read", arguments: {} });
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  const flushed = strip(out.join(""));
+  // A "thinking · Ns" header sits between the jeo label and the thought prose.
+  expect(flushed).toMatch(/thinking · \d+\.\d+s/);
+  const headerIdx = flushed.search(/thinking · \d/);
+  expect(headerIdx).toBeGreaterThanOrEqual(0);
+  expect(headerIdx).toBeLessThan(flushed.indexOf("weighing two approaches"));
+  tui.finish("done");
+});
+
+test("LaunchTui: a long committed thought is collapsed in scrollback", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  const ev = tui.events();
+  ev.onStep!(1);
+  const longThought = Array.from({ length: THINKING_COMMIT_MAX_LINES + 8 }, (_, i) => `thought row ${i}`).join("\n");
+  ev.onReasoningStream!(longThought);
+  out.length = 0;
+  ev.onAssistant!('{"tool":"read","arguments":{}}', { tool: "read", arguments: {} });
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  const flushed = strip(out.join(""));
+  expect(flushed).toContain("… (+8 more lines)");
+  // The clipped tail rows never reach scrollback.
+  expect(flushed).not.toContain(`thought row ${THINKING_COMMIT_MAX_LINES + 7}`);
   tui.finish("done");
 });

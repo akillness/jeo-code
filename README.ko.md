@@ -2,10 +2,6 @@
   <img src="assets/hero.png" alt="jeo-code 자율 코딩 에이전트 히어로 일러스트" width="100%" />
 </p>
 
-<p align="center">
-  <img src="assets/icon.png" alt="jeo-code icon" width="96" />
-</p>
-
 <h1 align="center">jeo-code (jeo)</h1>
 
 <p align="center">
@@ -204,11 +200,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.28]** (2026-06-19) — Signed thinking-block replay: native reasoning is now sent BACK to providers across steps/turns, restoring multi-step reasoning continuity (gajae parity).
 - **[0.6.27]** (2026-06-19) — Ponytail pass on the reasoning-tier mapper, plus a real-tmux verification of `jeo --tmux`.
 - **[0.6.26]** (2026-06-19) — The forge emblem is redrawn again as the mascot crayfish, foregrounding its signature pincer claws (집게).
 - **[0.6.25]** (2026-06-19) — Reasoning works at every thinking level (gajae parity), and the forge emblem is redrawn as the neon-lens coding wizard.
 - **[0.6.24]** (2026-06-19) — `/provider` opens an interactive onboarding selector (OAuth vs API-compatible), and OpenAI-compatible backends gain per-vendor native-reasoning formats.
-- **[0.6.23]** (2026-06-19) — Live reasoning/thinking streams in the TUI across every provider, three new OpenAI-compatible backends (LM Studio, xAI, Kimi) join the auth/discovery/catalog surface, and Gemini gains native function-calling.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

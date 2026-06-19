@@ -13,7 +13,7 @@
 import type { Credential } from "../../auth";
 import type { CallOptions, Message } from "../types";
 import { readSse } from "../sse";
-import { providerHttpError } from "./errors";
+import { providerHttpError, fetchWithArtifactFailSafe } from "./errors";
 import { serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
 
 export const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
@@ -35,28 +35,64 @@ export function extractChatgptAccountId(token: string): string | undefined {
   }
 }
 
+
+type ResponsesInputItem = Record<string, unknown>;
+
+/** True when an assistant turn can replay stateless reasoning: it has structured toolUse AND
+ *  a same-model OpenAI reasoning item (id + encrypted_content) captured this session. */
+export function responsesNativizable(m: Message, modelKey: string): boolean {
+  return !!m.toolUse?.length
+    && !!m.reasoningArtifacts?.some(a => a.provider === "openai" && a.model === modelKey && !!a.itemId && !!a.encrypted);
+}
+
+/** Build the Responses `input` array, reconstructing native reasoning + function_call +
+ *  function_call_output items for same-model OpenAI turns (stateless reasoning replay).
+ *  stripArtifacts (fail-safe) or a non-matching model ⇒ the plain output_text/input_text shape. */
+export function buildResponsesInput(messages: Message[], modelKey: string, stripArtifacts = false): ResponsesInputItem[] {
+  const nonSystem = messages.filter(m => m.role !== "system");
+  const items: ResponsesInputItem[] = [];
+  const plain = (m: Message): ResponsesInputItem => ({
+    role: m.role,
+    content: [
+      { type: m.role === "assistant" ? "output_text" : "input_text", text: m.content },
+      ...(m.role !== "assistant" && m.images?.length
+        ? m.images.map(img => ({ type: "input_image", image_url: `data:${img.mediaType};base64,${img.data}` }))
+        : []),
+    ],
+  });
+  nonSystem.forEach((m, i) => {
+    if (!stripArtifacts && m.role === "assistant" && responsesNativizable(m, modelKey)) {
+      for (const a of m.reasoningArtifacts!) {
+        if (a.provider === "openai" && a.model === modelKey && a.itemId && a.encrypted) {
+          items.push({ type: "reasoning", id: a.itemId, encrypted_content: a.encrypted, summary: [] });
+        }
+      }
+      for (const tu of m.toolUse!) {
+        items.push({ type: "function_call", call_id: tu.id, name: tu.tool, arguments: JSON.stringify(tu.arguments) });
+      }
+      return;
+    }
+    if (!stripArtifacts && m.role === "user" && m.toolResults?.length && i > 0
+        && nonSystem[i - 1].role === "assistant" && responsesNativizable(nonSystem[i - 1], modelKey)) {
+      for (const tr of m.toolResults) items.push({ type: "function_call_output", call_id: tr.id, output: tr.output });
+      if (m.toolResultExtra) items.push({ role: "user", content: [{ type: "input_text", text: m.toolResultExtra }] });
+      return;
+    }
+    items.push(plain(m));
+  });
+  return items;
+}
 /** Build the Codex Responses request (url + headers + body) for an OAuth credential. */
 export function codexResponsesRequest(
   messages: Message[],
   options: CallOptions,
   credential: Credential,
+  stripArtifacts = false,
 ): { url: string; headers: Record<string, string>; body: string } {
   const model = options.model.startsWith("openai/") ? options.model.slice(7) : options.model;
   const token = credential.kind === "none" ? "" : credential.token;
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
-  const input = messages
-    .filter(m => m.role !== "system")
-    .map(m => ({
-      role: m.role,
-      content: [
-        { type: m.role === "assistant" ? "output_text" : "input_text", text: m.content },
-        // Clipboard-pasted images ride along as input_image data URLs (user turns only —
-        // assistant history is always text in jeo).
-        ...(m.role !== "assistant" && m.images?.length
-          ? m.images.map(img => ({ type: "input_image", image_url: `data:${img.mediaType};base64,${img.data}` }))
-          : []),
-      ],
-    }));
+  const input = buildResponsesInput(messages, options.model, stripArtifacts);
   const payload: Record<string, unknown> = {
     model,
     instructions: systemPrompt ?? "You are a helpful coding assistant.",
@@ -81,6 +117,9 @@ export function codexResponsesRequest(
   // Both speak the same Responses schema (the body above), so only url+headers differ.
   if (credential.kind === "api_key") {
     const base = (options.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
+    // Stateless reasoning replay (public Responses API): ask for encrypted reasoning content
+    // so it can be captured and threaded back into a later `input` (store stays false).
+    payload.include = ["reasoning.encrypted_content"];
     return {
       url: `${base}/responses`,
       headers: { "content-type": "application/json", authorization: `Bearer ${token}`, accept: "text/event-stream" },
@@ -113,6 +152,8 @@ export interface ResponsesEvent {
   toolCallName?: string;
   toolCallArgsDelta?: string;
   toolCallIndex?: number;
+  /** A completed reasoning item carrying its id + encrypted_content (stateless replay capture). */
+  reasoningItem?: { id: string; encrypted: string };
 }
 
 /** Parse one Responses SSE `data:` payload into a delta / usage / error. */
@@ -120,7 +161,7 @@ export function parseResponsesEvent(data: string): ResponsesEvent {
   let o: {
     type?: string;
     delta?: unknown;
-    item?: { type?: string; name?: string };
+    item?: { type?: string; name?: string; id?: string; encrypted_content?: string };
     output_index?: number;
     response?: {
       usage?: { input_tokens?: number; output_tokens?: number };
@@ -136,6 +177,11 @@ export function parseResponsesEvent(data: string): ResponsesEvent {
   }
   if (o.type === "response.output_item.added" && o.item?.type === "function_call") {
     return { toolCallName: o.item.name, toolCallIndex: o.output_index };
+  }
+  // A completed reasoning item carries the encrypted_content we replay later (needs the
+  // request's `include: ["reasoning.encrypted_content"]`). Captured on output_item.done.
+  if (o.type === "response.output_item.done" && o.item?.type === "reasoning" && o.item.id && o.item.encrypted_content) {
+    return { reasoningItem: { id: o.item.id, encrypted: o.item.encrypted_content } };
   }
   if (o.type === "response.function_call_arguments.delta" && typeof o.delta === "string") {
     return { toolCallArgsDelta: o.delta, toolCallIndex: o.output_index };
@@ -185,10 +231,20 @@ function emptyCompletionError(reason: string | undefined): Error {
   return new Error(`OpenAI Codex returned no content${reason ? ` (${reason})` : ""}${hint}.`);
 }
 
+/** Fetch the Responses endpoint with a reasoning-artifact fail-safe (see fetchWithArtifactFailSafe). */
+function fetchResponses(messages: Message[], options: CallOptions, credential: Credential): Promise<Response> {
+  return fetchWithArtifactFailSafe(
+    strip => {
+      const { url, headers, body } = codexResponsesRequest(messages, options, credential, strip);
+      return fetch(url, { method: "POST", headers, body, signal: options.signal });
+    },
+    (status, body) => status === 400 && /reasoning|encrypted_content/i.test(body),
+  );
+}
+
 /** Non-streaming call over the Codex backend (collects the streamed output). */
 export async function codexResponsesCall(messages: Message[], options: CallOptions, credential: Credential): Promise<string> {
-  const { url, headers, body } = codexResponsesRequest(messages, options, credential);
-  const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
+  const response = await fetchResponses(messages, options, credential);
   if (!response.ok) throw await providerHttpError("OpenAI", response);
   if (!response.body) return "";
   let out = "";
@@ -198,6 +254,7 @@ export async function codexResponsesCall(messages: Message[], options: CallOptio
     const ev = parseResponsesEvent(data);
     if (ev.delta) out += ev.delta;
     if (ev.reasoningDelta) options.onReasoning?.(ev.reasoningDelta);
+    if (ev.reasoningItem) options.onReasoningArtifact?.({ provider: "openai", model: options.model, itemId: ev.reasoningItem.id, encrypted: ev.reasoningItem.encrypted });
     accumulateResponsesToolCall(toolAcc, ev);
     if (ev.usage) options.onUsage?.(ev.usage);
     if (ev.incompleteReason) incompleteReason = ev.incompleteReason;
@@ -216,8 +273,7 @@ export async function* codexResponsesStream(
   options: CallOptions,
   credential: Credential,
 ): AsyncGenerator<string> {
-  const { url, headers, body } = codexResponsesRequest(messages, options, credential);
-  const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
+  const response = await fetchResponses(messages, options, credential);
   if (!response.ok) throw await providerHttpError("OpenAI", response, "(stream)");
   if (!response.body) return;
   let yieldedAny = false;
@@ -226,6 +282,7 @@ export async function* codexResponsesStream(
   for await (const data of readSse(response.body)) {
     const ev = parseResponsesEvent(data);
     if (ev.reasoningDelta) options.onReasoning?.(ev.reasoningDelta);
+    if (ev.reasoningItem) options.onReasoningArtifact?.({ provider: "openai", model: options.model, itemId: ev.reasoningItem.id, encrypted: ev.reasoningItem.encrypted });
     if (ev.delta) {
       yieldedAny = true;
       yield ev.delta;

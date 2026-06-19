@@ -53,15 +53,25 @@ test("providerPickEntries falls back to the provider's default model when neithe
   expect(entries[0]!.index).toBe(1);
 });
 
-test("providerPickEntries surfaces the default model for an unauthenticated OpenAI-compat provider", () => {
-  // The reported bug in the field: API-key providers like groq/deepseek/openrouter
-  // have no capability-catalog rows, so before the default-model rung their role
-  // picker showed an empty list. Each must now surface its one known default id.
-  for (const want of ["groq", "deepseek", "openrouter"] as const) {
-    const entries = providerPickEntries([], want);
-    expect(catalogByProvider(want).length).toBe(0);
-    expect(entries.length).toBe(1);
-    expect(entries[0]!.provider).toBe(want);
-    expect(entries[0]!.model.startsWith(`${want}/`)).toBe(true);
-  }
+test("providerPickEntries surfaces default + knownModels for an unauthenticated OpenAI-compat provider", () => {
+  // The reported bug in the field: API-key providers like groq/deepseek have no
+  // capability-catalog rows, so before the knownModels rung their role picker
+  // showed a single-row list. Each must now surface its default id FIRST plus its
+  // curated offline ids, so `/agents <role> provider <name>` lists several picks.
+  const groq = providerPickEntries([], "groq");
+  expect(catalogByProvider("groq").length).toBe(0);
+  expect(groq.length).toBeGreaterThan(1);
+  // defaultModel is always row #1, provider-qualified, and 1-based indexed.
+  expect(groq[0]!.index).toBe(1);
+  expect(groq[0]!.model).toBe("groq/llama-3.3-70b-versatile");
+  expect(groq.every(e => e.provider === "groq")).toBe(true);
+  expect(groq.every(e => e.model.startsWith("groq/"))).toBe(true);
+  // No duplicate ids even though defaultModel also appears in knownModels.
+  expect(new Set(groq.map(e => e.model)).size).toBe(groq.length);
+
+  // A provider WITHOUT a knownModels list still surfaces exactly its one default.
+  const openrouter = providerPickEntries([], "openrouter");
+  expect(catalogByProvider("openrouter").length).toBe(0);
+  expect(openrouter.length).toBe(1);
+  expect(openrouter[0]!.model.startsWith("openrouter/")).toBe(true);
 });

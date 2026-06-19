@@ -11,6 +11,8 @@ import * as path from "node:path";
 
 export const CHANGELOG_START = "<!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->";
 export const CHANGELOG_END = "<!-- CHANGELOG:END -->";
+export const CHANGELOG_START_HTML = "&lt;!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) --&gt;";
+export const CHANGELOG_END_HTML = "&lt;!-- CHANGELOG:END --&gt;";
 export const CHANGELOG_COUNT = 5;
 
 /** READMEs that carry the mirrored changelog digest (English entries, localized heading). */
@@ -58,14 +60,32 @@ export function renderChangelogBlock(entries: ChangelogEntry[], count = CHANGELO
 
 /** Replace the marked region in a README body. Throws if the markers are missing. */
 export function injectChangelogBlock(readme: string, block: string): string {
-  const start = readme.indexOf(CHANGELOG_START);
-  const end = readme.indexOf(CHANGELOG_END);
+  let startMarker = CHANGELOG_START;
+  let endMarker = CHANGELOG_END;
+  let start = readme.indexOf(startMarker);
+  let end = readme.indexOf(endMarker);
+
+  if (start === -1 || end === -1) {
+    startMarker = CHANGELOG_START_HTML;
+    endMarker = CHANGELOG_END_HTML;
+    start = readme.indexOf(startMarker);
+    end = readme.indexOf(endMarker);
+  }
+
   if (start === -1 || end === -1 || end < start) {
     throw new Error(`changelog markers not found (expected ${CHANGELOG_START} … ${CHANGELOG_END})`);
   }
   const before = readme.slice(0, start);
-  const after = readme.slice(end + CHANGELOG_END.length);
-  return before + block + after;
+  const after = readme.slice(end + endMarker.length);
+
+  let finalBlock = block;
+  if (startMarker === CHANGELOG_START_HTML) {
+    finalBlock = block
+      .replaceAll(CHANGELOG_START, CHANGELOG_START_HTML)
+      .replaceAll(CHANGELOG_END, CHANGELOG_END_HTML);
+  }
+
+  return before + finalBlock + after;
 }
 
 async function main(): Promise<void> {

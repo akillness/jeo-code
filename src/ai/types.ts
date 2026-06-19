@@ -19,9 +19,58 @@ export interface Message {
   images?: ImageAttachment[];
   /** Persisted reasoning/thinking text for an assistant turn (the thought before the
    *  answer). Survives /resume + export so the durable record shows "think → answer".
-   *  Display-only: NOT replayed to providers (anthropic/gemini thinking replay needs
-   *  the original signed block, which the streaming path does not capture). */
+   *  Display channel; the REPLAY channel is `reasoningArtifacts`. */
   reasoning?: string;
+  /** Provider-native, opaque reasoning artifacts captured during streaming (Anthropic
+   *  thinking signature, Gemini thoughtSignature, OpenAI Responses reasoning items).
+   *  Replayed to the SAME provider+model to preserve multi-step reasoning continuity;
+   *  dropped on cross-model replay. Display-agnostic, not written to markdown export. */
+  reasoningArtifacts?: ReasoningArtifact[];
+  /** Structured native tool calls this assistant turn made (with stable ids). `content`
+   *  keeps the canonical JSON envelope for display/compaction/fallback adapters; capable
+   *  adapters replay these as native tool_use / functionCall / function_call blocks. */
+  toolUse?: ToolUseRecord[];
+  /** Structured native tool results for a tool-feedback user turn (ids match the prior
+   *  assistant's `toolUse`). Capable adapters replay these as native tool_result /
+   *  functionResponse / function_call_output blocks. */
+  toolResults?: ToolResultRecord[];
+  /** Non-tool trailing text on a tool-feedback user turn (e.g. post-turn hook
+   *  diagnostics) — replayed as a trailing text block after the native tool results. */
+  toolResultExtra?: string;
+}
+
+/** A provider-native opaque reasoning artifact. Only replayed when `provider` AND
+ *  `model` match the active call (the adapter stamps the exact wire model id). */
+export interface ReasoningArtifact {
+  provider: ProviderName;
+  model: string;
+  /** Thought text (display is covered by Message.reasoning; kept here for fidelity). */
+  text?: string;
+  /** Anthropic: thinking block signature. */
+  signature?: string;
+  /** Anthropic: redacted_thinking opaque data. */
+  redacted?: string;
+  /** Gemini: per-part thoughtSignature (binds to the matching functionCall part). */
+  thoughtSignature?: string;
+  /** OpenAI Responses: reasoning item id. */
+  itemId?: string;
+  /** OpenAI Responses: reasoning item encrypted_content. */
+  encrypted?: string;
+}
+
+/** A structured native tool call (assistant turn). `id` is a stable synthetic id the
+ *  engine assigns so tool_use ↔ tool_result correlation survives replay. */
+export interface ToolUseRecord {
+  id: string;
+  tool: string;
+  arguments: Record<string, unknown>;
+}
+
+/** A structured native tool result (user turn). `id` matches a prior `ToolUseRecord`. */
+export interface ToolResultRecord {
+  id: string;
+  output: string;
+  isError: boolean;
 }
 
 export interface Usage {
@@ -67,6 +116,10 @@ export interface CallOptions {
    *  answer text). Surfaced as a transient dimmed view; absent for models that emit no
    *  thought text. */
   onReasoning?: (delta: string) => void;
+  /** Sink for provider-native reasoning ARTIFACTS captured during streaming (signature /
+   *  thoughtSignature / reasoning item id+encrypted). Separate from `onReasoning` (display
+   *  text) because these arrive on different SSE events and are opaque replay data. */
+  onReasoningArtifact?: (artifact: ReasoningArtifact) => void;
   /** NATIVE tool-calling: function declarations the model may call. Present only on the
    *  main agent step (never the prose wrap-up). Adapters with `supportsNativeTools` send
    *  these on the wire and re-serialize the structured tool call back into the engine's

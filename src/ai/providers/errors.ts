@@ -54,6 +54,24 @@ export function parseRetryFromBody(detail: string | null | undefined): number | 
  * and any `Retry-After`. Use at every adapter's `!response.ok` site so the retry
  * layer sees a uniform, status-carrying, backoff-aware error.
  */
+/**
+ * One-shot reasoning-artifact fail-safe: send the request; if it 400s because a replayed
+ * reasoning artifact (signature / thoughtSignature / encrypted reasoning item) was rejected
+ * — expired signature, edited history, toggled thinking — retry ONCE with artifacts stripped
+ * (plain history). `send(strip)` rebuilds + fetches; `isArtifactError` matches the 400 body.
+ * ponytail: heuristic error-body string match — tighten to structured error codes if/when
+ * the providers expose them.
+ */
+export async function fetchWithArtifactFailSafe(
+  send: (stripArtifacts: boolean) => Promise<Response>,
+  isArtifactError: (status: number, body: string) => boolean,
+): Promise<Response> {
+  const res = await send(false);
+  if (res.ok) return res;
+  const body = await res.clone().text().catch(() => "");
+  return isArtifactError(res.status, body) ? send(true) : res;
+}
+
 export async function providerHttpError(provider: string, response: Response, context?: string): Promise<ProviderHttpError> {
   const detail = await response.text().catch(() => "");
   const retryAfterMs = parseRetryAfter(response.headers.get("retry-after")) ?? parseRetryFromBody(detail);

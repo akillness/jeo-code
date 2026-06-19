@@ -332,6 +332,7 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
     signal: options.signal,
     reasoningEffort: options.reasoningEffort ?? thinkingToReasoningEffort(config.thinkingLevel),
     onReasoning: options.onReasoning,
+    onReasoningArtifact: options.onReasoningArtifact,
     tools: options.tools,
   };
   // Caller-supplied retry sink rides on the config-derived retry budget so the

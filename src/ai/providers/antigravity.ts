@@ -108,6 +108,12 @@ export async function resolveAntigravityProjectId(
 
 type CcaPart = { text: string } | { inlineData: { mimeType: string; data: string } };
 
+// Reasoning-artifact replay (signed thinking / thoughtSignature / encrypted reasoning) is
+// deliberately OUT OF SCOPE for antigravity: it serves Gemini- and Claude-shaped models over
+// the CCA wire (neither the native Anthropic messages nor the public Gemini shape), so it
+// captures no artifacts and replays none — Message.toolUse/toolResults/reasoningArtifacts are
+// ignored here. The provider-keyed match guard (D3) keeps "anthropic"/"gemini" artifacts from
+// ever being re-injected by this adapter, so there is no cross-adapter leakage.
 function antigravityContents(messages: Message[]): { role: "user" | "model"; parts: CcaPart[] }[] {
   const contents: { role: "user" | "model"; parts: CcaPart[] }[] = [];
   for (const m of messages) {

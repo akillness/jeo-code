@@ -1,7 +1,7 @@
 import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
-import { providerHttpError } from "./errors";
+import { providerHttpError, fetchWithArtifactFailSafe } from "./errors";
 import { jeoEnv } from "../../util/env";
 import { serializeToolCalls } from "../../agent/tool-schemas";
 
@@ -37,35 +37,62 @@ export function geminiThinkingBudget(model: string, effort?: CallOptions["reason
   return budget;
 }
 
+
+/** True when an assistant turn can replay native functionCall + thoughtSignature: it has
+ *  structured toolUse AND a same-model Gemini thoughtSignature artifact, AND thinking is on. */
+export function geminiNativizable(m: Message, modelKey: string, thinkingEnabled: boolean): boolean {
+  return thinkingEnabled
+    && !!m.toolUse?.length
+    && !!m.reasoningArtifacts?.some(a => a.provider === "gemini" && a.model === modelKey && !!a.thoughtSignature);
+}
 /** Shared Gemini request payload (contents + generationConfig + systemInstruction)
  *  used by BOTH the public generativelanguage path (API key) and the Cloud Code
  *  Assist path (OAuth) — only the envelope/endpoint differs. */
-export function buildGeminiPayload(messages: Message[], options: CallOptions): { geminiModel: string; payload: Record<string, unknown> } {
+export function buildGeminiPayload(messages: Message[], options: CallOptions, stripArtifacts = false): { geminiModel: string; payload: Record<string, unknown> } {
   const resolvedModel = options.model.replace(/^(google|gemini)\//, "");
   let geminiModel = resolvedModel;
   if (!geminiModel || geminiModel === "claude-3-5-sonnet") geminiModel = "gemini-2.0-flash";
 
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
+  const thinkingBudget = geminiThinkingBudget(geminiModel, options.reasoningEffort, options.maxTokens);
+  const thinkingEnabled = thinkingBudget !== undefined && !stripArtifacts;
   // Gemini requires strictly ALTERNATING user/model turns. jeo histories can carry
   // consecutive same-role messages (a compaction summary prepended before a tool-result,
   // back-to-back tool results, etc.), so coalesce adjacent same-role turns into one
-  // content block — otherwise the API rejects the request mid-session.
-  const contents: { role: string; parts: ({ text: string } | { inlineData: { mimeType: string; data: string } })[] }[] = [];
-  for (const m of messages) {
-    if (m.role === "system") continue;
+  // content block — otherwise the API rejects the request mid-session. Native
+  // functionCall/functionResponse parts (with thoughtSignature) are reconstructed for
+  // same-model turns to preserve cross-step thought context; else plain text.
+  type GeminiPart = Record<string, unknown>;
+  const nonSystem = messages.filter(m => m.role !== "system");
+  const contents: { role: string; parts: GeminiPart[] }[] = [];
+  nonSystem.forEach((m, i) => {
     const role = m.role === "assistant" ? "model" : "user";
-    // Clipboard-pasted images become inlineData parts alongside the text part.
-    const parts: ({ text: string } | { inlineData: { mimeType: string; data: string } })[] = [
-      ...(m.images?.map(img => ({ inlineData: { mimeType: img.mediaType, data: img.data } })) ?? []),
-      { text: m.content },
-    ];
-    const prev = contents[contents.length - 1];
-    if (prev && prev.role === role) {
-      prev.parts.push(...parts);
+    let parts: GeminiPart[];
+    if (m.role === "assistant" && geminiNativizable(m, options.model, thinkingEnabled)) {
+      const sig = m.reasoningArtifacts!.find(a => a.provider === "gemini" && a.model === options.model && a.thoughtSignature)?.thoughtSignature;
+      parts = m.toolUse!.map((tu, idx) => {
+        const p: GeminiPart = { functionCall: { name: tu.tool, args: tu.arguments } };
+        if (idx === 0 && sig) p.thoughtSignature = sig; // bind the turn signature to the first call
+        return p;
+      });
+    } else if (m.role === "user" && m.toolResults?.length && i > 0
+        && nonSystem[i - 1].role === "assistant"
+        && geminiNativizable(nonSystem[i - 1], options.model, thinkingEnabled)) {
+      const prevToolUse = nonSystem[i - 1].toolUse ?? [];
+      parts = m.toolResults.map(tr => ({
+        functionResponse: { name: prevToolUse.find(tu => tu.id === tr.id)?.tool ?? "tool", response: { output: tr.output } },
+      }));
+      if (m.toolResultExtra) parts.push({ text: m.toolResultExtra });
     } else {
-      contents.push({ role, parts });
+      parts = [
+        ...(m.images?.map(img => ({ inlineData: { mimeType: img.mediaType, data: img.data } })) ?? []),
+        { text: m.content },
+      ];
     }
-  }
+    const prev = contents[contents.length - 1];
+    if (prev && prev.role === role) prev.parts.push(...parts);
+    else contents.push({ role, parts });
+  });
 
   const generationConfig: Record<string, unknown> = {
     temperature: options.temperature ?? 0.2,
@@ -74,7 +101,7 @@ export function buildGeminiPayload(messages: Message[], options: CallOptions): {
   // Function-calling and responseMimeType:json are mutually exclusive in the Gemini
   // API — when native tools are declared, the functionCall parts replace JSON-in-prose.
   if (options.jsonMode && !options.tools?.length) generationConfig.responseMimeType = "application/json";
-  const thinkingBudget = geminiThinkingBudget(geminiModel, options.reasoningEffort, options.maxTokens);
+
   // includeThoughts: required for Gemini to STREAM thought summaries (the `thought:true`
   // parts thoughtOf() routes to onReasoning) — without it the model thinks silently.
   if (thinkingBudget !== undefined) generationConfig.thinkingConfig = { includeThoughts: true, thinkingBudget };
@@ -91,8 +118,8 @@ export function buildGeminiPayload(messages: Message[], options: CallOptions): {
   return { geminiModel, payload };
 }
 
-export function geminiRequest(messages: Message[], options: CallOptions, credential: Credential, action: "generateContent" | "streamGenerateContent"): { url: string; headers: Record<string, string>; body: string } {
-  const { geminiModel, payload } = buildGeminiPayload(messages, options);
+export function geminiRequest(messages: Message[], options: CallOptions, credential: Credential, action: "generateContent" | "streamGenerateContent", stripArtifacts = false): { url: string; headers: Record<string, string>; body: string } {
+  const { geminiModel, payload } = buildGeminiPayload(messages, options, stripArtifacts);
   const oauth = credential.kind === "oauth" ? credential.token : undefined;
   const apiKey = credential.kind === "api_key" ? credential.token : undefined;
   let url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:${action}`;
@@ -123,8 +150,8 @@ export function getGeminiCliHeaders(modelId?: string): Record<string, string> {
  * plain `jeo auth login gemini` works without any GEMINI_API_KEY. The body
  * wraps the standard payload as `{ project, model, request }`.
  */
-export function geminiCliRequest(messages: Message[], options: CallOptions, accessToken: string, projectId: string): { url: string; headers: Record<string, string>; body: string } {
-  const { geminiModel, payload } = buildGeminiPayload(messages, options);
+export function geminiCliRequest(messages: Message[], options: CallOptions, accessToken: string, projectId: string, stripArtifacts = false): { url: string; headers: Record<string, string>; body: string } {
+  const { geminiModel, payload } = buildGeminiPayload(messages, options, stripArtifacts);
   return {
     url: `${CODE_ASSIST_ENDPOINT}/v1internal:streamGenerateContent?alt=sse`,
     headers: {
@@ -137,8 +164,22 @@ export function geminiCliRequest(messages: Message[], options: CallOptions, acce
   };
 }
 
+/** POST a Gemini request with a reasoning-artifact fail-safe (see fetchWithArtifactFailSafe). */
+function geminiFetchFailSafe(
+  make: (stripArtifacts: boolean) => { url: string; headers: Record<string, string>; body: string },
+  signal?: AbortSignal,
+): Promise<Response> {
+  return fetchWithArtifactFailSafe(
+    strip => {
+      const r = make(strip);
+      return fetch(r.url, { method: "POST", headers: r.headers, body: r.body, signal });
+    },
+    (status, body) => status === 400 && /thoughtsignature|thought_signature|functioncall|function_call|signature/i.test(body),
+  );
+}
+
 interface GeminiChunk {
-  candidates?: { content?: { parts?: { text?: string; thought?: boolean; functionCall?: { name?: string; args?: Record<string, unknown> } }[] }; finishReason?: string }[];
+  candidates?: { content?: { parts?: { text?: string; thought?: boolean; thoughtSignature?: string; functionCall?: { name?: string; args?: Record<string, unknown> } }[] }; finishReason?: string }[];
   promptFeedback?: { blockReason?: string };
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
 }
@@ -156,6 +197,19 @@ function textOf(chunk: GeminiChunk): string {
  *  summaries. Kept SEPARATE from textOf so thoughts never pollute the JSON tool call. */
 function thoughtOf(chunk: GeminiChunk): string {
   return chunk.candidates?.[0]?.content?.parts?.filter(p => p.thought).map(p => p.text ?? "").join("") ?? "";
+}
+
+/** Emit each NEW thoughtSignature seen on this chunk's parts as a replay artifact (Gemini
+ *  binds it to the functionCall part — replayed to keep cross-step thought context). `seen`
+ *  dedups across the streamed chunks of one turn. */
+function captureGeminiSignatures(chunk: GeminiChunk, options: CallOptions, seen: Set<string>): void {
+  for (const p of chunk.candidates?.[0]?.content?.parts ?? []) {
+    const sig = p.thoughtSignature;
+    if (sig && !seen.has(sig)) {
+      seen.add(sig);
+      options.onReasoningArtifact?.({ provider: "gemini", model: options.model, thoughtSignature: sig });
+    }
+  }
 }
 /** Native Gemini functionCall parts → {tool, arguments} (gjc/antigravity parity). Kept
  *  separate from textOf so the re-serialized canonical JSON envelope drives the loop. */
@@ -197,14 +251,14 @@ function blockedReason(chunk: GeminiChunk): string | undefined {
 async function* ccaTurn(messages: Message[], options: CallOptions, credential: Credential & { kind: "oauth" }): AsyncGenerator<string> {
   const { resolveAntigravityProjectId } = await import("./antigravity");
   const projectId = await resolveAntigravityProjectId(credential, { signal: options.signal });
-  const { url, headers, body } = geminiCliRequest(messages, options, credential.token, projectId);
-  const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
+  const response = await geminiFetchFailSafe(strip => geminiCliRequest(messages, options, credential.token, projectId, strip), options.signal);
   if (!response.ok) throw await providerHttpError("Gemini (Cloud Code Assist)", response);
   if (!response.body) return;
   let lastUsage: GeminiChunk["usageMetadata"];
   let yieldedAny = false;
   let lastEmptyReason: string | undefined;
   const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
+  const seenSigs = new Set<string>();
   for await (const data of readSse(response.body)) {
     let chunk: CcaChunk;
     try {
@@ -216,6 +270,7 @@ async function* ccaTurn(messages: Message[], options: CallOptions, credential: C
     if (!inner) continue;
     const thought = thoughtOf(inner);
     if (thought) options.onReasoning?.(thought);
+    captureGeminiSignatures(inner, options, seenSigs);
     const delta = textOf(inner);
     if (delta) {
       yieldedAny = true;
@@ -249,10 +304,10 @@ export const geminiAdapter: ProviderAdapter = {
       for await (const delta of ccaTurn(messages, options, credential)) out += delta;
       return out;
     }
-    const { url, headers, body } = geminiRequest(messages, options, credential, "generateContent");
-    const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
+    const response = await geminiFetchFailSafe(strip => geminiRequest(messages, options, credential, "generateContent", strip), options.signal);
     if (!response.ok) throw await providerHttpError("Gemini", response);
     const result = (await response.json()) as GeminiChunk;
+    captureGeminiSignatures(result, options, new Set());
     if (result.usageMetadata) {
       options.onUsage?.({ inputTokens: result.usageMetadata.promptTokenCount, outputTokens: result.usageMetadata.candidatesTokenCount });
     }
@@ -271,14 +326,14 @@ export const geminiAdapter: ProviderAdapter = {
       yield* ccaTurn(messages, options, credential);
       return;
     }
-    const { url, headers, body } = geminiRequest(messages, options, credential, "streamGenerateContent");
-    const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
+    const response = await geminiFetchFailSafe(strip => geminiRequest(messages, options, credential, "streamGenerateContent", strip), options.signal);
     if (!response.ok) throw await providerHttpError("Gemini", response, "(stream)");
     if (!response.body) return;
     let lastUsage: GeminiChunk["usageMetadata"];
     let yieldedAny = false;
     let lastEmptyReason: string | undefined;
     const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
+    const seenSigs = new Set<string>();
     for await (const data of readSse(response.body)) {
       let chunk: GeminiChunk;
       try {
@@ -288,6 +343,7 @@ export const geminiAdapter: ProviderAdapter = {
       }
       const thought = thoughtOf(chunk);
       if (thought) options.onReasoning?.(thought);
+      captureGeminiSignatures(chunk, options, seenSigs);
       const delta = textOf(chunk);
       if (delta) {
         yieldedAny = true;

@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.28] - 2026-06-19
+_Signed thinking-block replay: native reasoning is now sent BACK to providers across steps/turns, restoring multi-step reasoning continuity (gajae parity)._
+
+### Added
+- **Provider-native reasoning replay across all three first-party providers.** jeo now captures each provider's opaque/signed reasoning artifact during streaming and replays it on later turns to the SAME provider+model, so the model keeps its chain of thought across tool steps instead of re-deriving it. New `Message.reasoningArtifacts` plus structured `Message.toolUse` / `toolResults` (stable ids) let capable adapters reconstruct **native** tool blocks (the key to continuity — plain-text tool feedback makes Claude strip prior thinking):
+  - **Anthropic**: captures `signature_delta` + `redacted_thinking`; replays `thinking`(+signature) → `tool_use` → `tool_result` blocks (gated on same-model + thinking-enabled).
+  - **OpenAI Responses**: requests `include: ["reasoning.encrypted_content"]` (store stays false), captures reasoning item id+encrypted_content, replays native `reasoning` + `function_call` + `function_call_output` items.
+  - **Gemini**: captures per-part `thoughtSignature`, replays native `functionCall`(+thoughtSignature) / `functionResponse` parts (coalescing-safe). This was previously deferred — structured `toolUse` unblocks the functionCall binding.
+- **Fail-safe strip-and-retry.** A 400 naming a thinking/signature/encrypted/reasoning field retries the step ONCE with artifacts stripped (plain history), so an expired signature or edited history can never wedge a turn. Per provider (Anthropic/OpenAI/Gemini).
+
+### Changed
+- **Reasoning artifacts ride the session record + token accounting.** `reasoningArtifacts` round-trips through session save/load (so `/resume` preserves replay continuity) and counts toward `estimateMessageTokens` (OpenAI encrypted blobs are KB-scale) so compaction/overflow stay honest. Markdown export is unchanged (artifacts are opaque). The engine's ~11 assistant-push sites are unified behind `pushAssistantTurn`, so every step (not just the final reply) carries its reasoning + artifacts. Antigravity is explicitly out of scope (no capture/replay; the provider-keyed match guard prevents any cross-adapter leakage).
+
 ## [0.6.27] - 2026-06-19
 _Ponytail pass on the reasoning-tier mapper, plus a real-tmux verification of `jeo --tmux`._
 

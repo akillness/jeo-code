@@ -68,6 +68,9 @@ export interface AgentEventsLike {
   onUsage?(usage: { inputTokens: number; outputTokens: number }): void;
   onModelStream?(textSoFar: string): void;
   onReasoningStream?(textSoFar: string): void;
+  /** Per-artifact native reasoning replay records (signature / thoughtSignature / reasoning
+   *  item). The TUI ignores these; launch.ts uses them to persist the final reply's artifacts. */
+  onReasoningArtifactStream?(artifact: import("../ai/types").ReasoningArtifact): void;
   onBudget?(limit: number, reason: string): void;
 
 }
@@ -110,6 +113,27 @@ function extractStreamingActivity(buf: string): string {
 export const FRAME_WRAP_TAIL_CHARS = 16 * 1024;
 export function tailForWrap(text: string, maxChars = FRAME_WRAP_TAIL_CHARS): string {
   return text.length > maxChars ? text.slice(text.length - maxChars) : text;
+}
+
+/** Max lines of a committed reasoning block kept in scrollback (gjc-style collapse): a
+ *  long chain-of-thought is clipped with a "+N more" hint so it never floods the ledger. */
+export const THINKING_COMMIT_MAX_LINES = 12;
+
+/** Collapse a committed reasoning block to a line cap, appending a "… (+N more lines)"
+ *  hint when clipped (gjc collapsed-by-default parity). Returns the input verbatim when
+ *  it already fits. */
+export function clipReasoningLines(text: string, cap = THINKING_COMMIT_MAX_LINES): string {
+  const rows = text.replace(/\r/g, "").split("\n");
+  if (rows.length <= cap) return rows.join("\n");
+  return [...rows.slice(0, cap), `… (+${rows.length - cap} more lines)`].join("\n");
+}
+
+/** gjc-style "thought for Ns" header for a committed/streaming Thinking block. Omits the
+ *  duration when no step start is known (e.g. resumed/exported records). */
+export function thinkingHeader(elapsedMs: number | undefined, unicode: boolean): string {
+  const diamond = unicode ? "◇" : "*";
+  const secs = elapsedMs !== undefined && elapsedMs >= 0 ? `${(elapsedMs / 1000).toFixed(1)}s` : null;
+  return `${diamond} thinking${secs ? ` · ${secs}` : ""}`;
 }
 
 /** Status animation palette while a tool/process runs (background verification): an
@@ -444,13 +468,17 @@ export class LaunchTui {
             : (s: string) => s;
           const style = (prose: string) => prose.split("\n").map(styleThought).join("\n");
           const parts: string[] = [this.agentLabel()];
+          // gjc "thought for Ns" header: step-start → commit ≈ the model's think+gen time.
+          const elapsedMs = this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined;
+          const header = thinkingHeader(elapsedMs, this.unicode);
+          parts.push(this.theme.color ? chalk.dim(header) : header);
           if (willFlushThought) {
             this.flushedThought = this.streamingThought;
-            parts.push(style(this.streamingThought));
+            parts.push(style(clipReasoningLines(this.streamingThought)));
           }
           if (willFlushReasoning) {
             this.flushedReasoning = this.streamingReasoning;
-            parts.push(style(this.streamingReasoning));
+            parts.push(style(clipReasoningLines(this.streamingReasoning)));
           }
           this.appendLedger(`${parts.join("\n")}\n`, "reasoning");
         }
@@ -1206,7 +1234,7 @@ export class LaunchTui {
    *  block shows only the most-recent lines, capped at ~30% of the screen height (a
    *  ceiling guards a tall terminal), so it grows with the stream and shrinks with the
    *  viewport. Returns [] when there is nothing to show. */
-  private renderLiveBlock(label: string, text: string, cols: number, rows: number, ceiling: number): string[] {
+  private renderLiveBlock(label: string, text: string, cols: number, rows: number, ceiling: number, cacheKey = label): string[] {
     const dim = this.theme.color ? chalk.dim : (s: string) => s;
     if (!text.trim()) return [];
     const wrapW = Math.max(8, cols - 2);
@@ -1214,8 +1242,8 @@ export class LaunchTui {
     // this (up to 16KB) tail every frame just re-segments graphemes for no visible change.
     // Per-label slot (Thinking / Output) keyed by wrap width + text — a real delta misses
     // once and recomputes; an idle tick hits the cache. `rows` only gates the post-slice.
-    let cache = this.liveBlockWrapCaches.get(label);
-    if (!cache) { cache = lastValueCache<string[]>(); this.liveBlockWrapCaches.set(label, cache); }
+    let cache = this.liveBlockWrapCaches.get(cacheKey);
+    if (!cache) { cache = lastValueCache<string[]>(); this.liveBlockWrapCaches.set(cacheKey, cache); }
     const wrapped = cache(`${wrapW}\u0000${text}`, () =>
       tailForWrap(text)
         .split("\n")
@@ -1349,7 +1377,11 @@ export class LaunchTui {
     // rectangle, so a short trace leaves no padded "hole" and a short terminal is spared.
     const liveThink = this.streamingThought.trim() || this.streamingReasoning.trim();
     if (isThinking && liveThink) {
-      tail.push(...this.renderLiveBlock("Thinking", liveThink, cols, rows, 6));
+      // gjc-parity: the Thinking block label carries a running timer ("Thinking · Ns").
+      // Cache key stays the constant "Thinking" so the per-frame wrap memo is unaffected.
+      const liveMs = this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined;
+      const liveLabel = liveMs !== undefined ? `Thinking · ${(liveMs / 1000).toFixed(1)}s` : "Thinking";
+      tail.push(...this.renderLiveBlock(liveLabel, liveThink, cols, rows, 6, "Thinking"));
     }
 
     // Live tool output (gjc-style streaming bash stdout): while a tool runs, its

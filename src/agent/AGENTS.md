@@ -17,6 +17,7 @@ The core runtime loop, tool registry, session management, and state persistence 
 | `hooks.ts` | Brief description of purpose |
 | `json.ts` | Brief description of purpose |
 | `loop.ts` | The primary execution loop orchestrating model calls and tool execution |
+| `loop-guards.ts` | Intermediate-judgment classification (gjc ultragoal-guard parity): named `GuardState` taxonomy, `GUARD_LIMITS` thresholds, and pure classifiers (`isVerificationSignal`, `repeatHint`, `classifyDoneGate`) consumed by `engine.ts` |
 | `memory.ts` | OKF concept-bundle memory: session distill, query-aware budget injection, legacy MEMORY.md migration (`migrateLegacyMemory`) + `JEO_MEMORY_LEGACY` rollback toggle |
 | `memory-okf.ts` | OKF v0.1 format layer: frontmatter parse/serialize, concept IDs, conformance validation |
 | `memory-graph.ts` | Concept cross-link graph: build/expand (1-hop search), broken-link-tolerant lint, optional graphify detection |
@@ -35,7 +36,6 @@ The core runtime loop, tool registry, session management, and state persistence 
 | `todo-tool.ts` | Brief description of purpose |
 | `tokenizer.ts` | Brief description of purpose |
 | `tool-output.ts` | Brief description of purpose |
-| `tool-registry.ts` | Brief description of purpose |
 | `tools.ts` | Built-in tool definitions (bash, read, write, edit, etc.) |
 | `web-search.ts` | Brief description of purpose |
 

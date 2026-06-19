@@ -50,6 +50,37 @@ test("anthropicAdapter.stream: captures thinking_delta + signature_delta as a re
   }
 });
 
+test("anthropicAdapter.stream: captures signature-only thinking block (opus-4-8 encrypted thought)", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      sseStream([
+        'data: {"type":"message_start","message":{}}\n\n',
+        // opus-4-8: thinking block starts, no thinking_delta text, only signature
+        'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}\n\n',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"ENCRYPTED_SIG=="}}\n\n',
+        'data: {"type":"content_block_stop","index":0}\n\n',
+        'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ok"}}\n\n',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n',
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } }
+    )) as typeof fetch;
+  try {
+    const artifacts: ReasoningArtifact[] = [];
+    const opts: CallOptions = { model: MODEL, maxTokens: 50, onReasoningArtifact: a => artifacts.push(a) };
+    const cred = { kind: "api_key", provider: "anthropic", token: "k" } as const;
+    let text = "";
+    for await (const d of anthropicAdapter.stream!([{ role: "user", content: "hi" }], opts, cred)) text += d;
+    expect(text).toBe("ok");
+    expect(artifacts).toHaveLength(1);
+    // text is undefined (empty string → falsy → undefined), signature is preserved
+    expect(artifacts[0]).toEqual({ provider: "anthropic", model: MODEL, text: undefined, signature: "ENCRYPTED_SIG==" });
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+
 test("anthropicAdapter.stream: captures redacted_thinking immediately", async () => {
   const prevFetch = globalThis.fetch;
   globalThis.fetch = (async () =>

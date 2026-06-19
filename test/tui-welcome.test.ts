@@ -82,8 +82,8 @@ test("hero column: brand, tagline, grand forge mark, centered", () => {
   const joined = lines.map(stripAnsi).join("\n");
   expect(joined).toContain("Jeo forge");
   expect(joined).toContain("evolve · act · prove");
-  // Grand symbol: check for a glyph unique to the large art block.
-  expect(joined).toContain("◉ ◉ ◉");
+  // Grand symbol: check for the triple-spaced JEO wordmark unique to the large art block.
+  expect(joined).toContain("J   E   O");
 });
 
 test("model + provider pills present", () => {
@@ -156,8 +156,8 @@ test("narrow box falls back to the compact forge mark", () => {
     color: false,
   });
   const joined = lines.map(stripAnsi).join("\n");
-  expect(joined).toContain("◉◉◉"); // compact carapace (tight cluster)
-  expect(joined).not.toContain("◉ ◉ ◉"); // not the spaced grand carapace
+  expect(joined).toContain("J E O"); // compact lettermark (single-spaced)
+  expect(joined).not.toContain("J   E   O"); // not the grand wordmark (triple-spaced)
 });
 
 test("narrow cols (<30) -> single-line fallback", () => {

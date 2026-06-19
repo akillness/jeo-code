@@ -6,11 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
-## [Unreleased]
+## [0.6.27] - 2026-06-19
 _Ponytail pass on the reasoning-tier mapper, plus a real-tmux verification of `jeo --tmux`._
 
 ### Changed
 - **`thinkingToReasoningEffort` collapsed to its essential mapping (ponytail/YAGNI pass).** The four redundant pass-through branches (`minimal`/`low`/`medium`/`high` each returning themselves) are now a single `level === "xhigh" ? "high" : level` — behavior-identical (every level still maps to a genuine reasoning effort; only an unset level stays off), 8 fewer lines, fully covered by the existing `model-manager`/`round-b` contract tests. Reasoning continues to activate at EVERY thinking level (gajae parity).
+
+### Fixed
+- **`/agents <role> provider <name>` now lists models even when the provider isn't logged in (jeo team role config).** Live discovery only returns ids for a logged-in, reachable provider, and the catalog backfill applied only to OAuth-source providers — so pinning a team subagent role to an API-key/keyless provider that wasn't configured yet showed an EMPTY model list and silently pinned a bare default. The per-provider picker now falls back to that provider's static catalog ids (provider-qualified) and labels the source (`Live`/`Catalog … log in to list live models`). New `providerPickEntries` helper, covered by `test/provider-pick-entries.test.ts`.
 
 ### Verified
 - **`jeo --tmux` session profile confirmed against the real `tmux` binary.** The gjc-parity profile (`mouse on`, `@jeo-profile`/`@jeo-branch`/`@jeo-project` markers, `set-clipboard on`, copy-mode `mode-style`) was exercised on an isolated `-L` socket using the exact `=name:` target syntax the launch code emits — every option set and read back correctly. `test/tmux.test.ts` passes 12/0 alongside the full 1645/0 suite.

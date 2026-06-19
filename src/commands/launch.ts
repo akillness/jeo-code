@@ -36,7 +36,7 @@ import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch } from "../agent/state";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
-import { describeModel, describeAllProviders, thinkingMaxTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
+import { describeModel, describeAllProviders, thinkingMaxTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
 
@@ -231,6 +231,29 @@ const STATIC_PROVIDER_DEFAULT: Partial<Record<ProviderName, string>> = { anthrop
 function providerDefaultModel(p: ProviderName): string {
   return openaiCompatDef(p)?.defaultModel ?? STATIC_PROVIDER_DEFAULT[p] ?? "";
 }
+
+/**
+ * Pick-list entries for ONE provider, with static fallbacks so the list is never
+ * empty.
+ *
+ * Live discovery yields ids only for a logged-in, reachable provider, and
+ * `catalogOr` backfills the static catalog ONLY for OAuth sources — so an
+ * API-key/keyless provider that isn't configured yet had an empty list and was
+ * silently pinned to a bare default. Prefer live ids; else the provider's
+ * capability catalog; else its single known default model (all 24 OpenAI-compat
+ * providers carry one) so the user always sees at least one pickable id.
+ */
+export function providerPickEntries(live: ProviderModelsResult[], want: ProviderName): PickEntry[] {
+  const fromLive = flattenModels(live.filter(r => r.provider === want));
+  if (fromLive.length) return fromLive;
+  const catalog = catalogByProvider(want);
+  if (catalog.length) {
+    return catalog.map((m, i) => ({ index: i + 1, provider: want, model: qualifyModelId(m.providerModel, want) }));
+  }
+  const fallback = providerDefaultModel(want);
+  return fallback ? [{ index: 1, provider: want, model: qualifyModelId(fallback, want) }] : [];
+}
+
 
 
 export function formatResumeHint(sessionId: string): string {
@@ -3475,7 +3498,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             }
           }
           const live = await getLiveModels();
-          const forProvider = flattenModels(live.filter(r => r.provider === want));
+          const forProvider = providerPickEntries(live, want);
+          const liveForProvider = live.some(r => r.ok && r.provider === want && r.models.length > 0);
           const explicit = tokens[3];
           let chosenModel: string;
           if (explicit && forProvider.length) {
@@ -3494,7 +3518,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           } else if (explicit) {
             chosenModel = qualifyModelId(explicit, want);
           } else if (forProvider.length) {
-            // No model given → the provider's first live model, provider-qualified.
+            // No model given → the provider's first known model, provider-qualified.
             chosenModel = qualifyModelId(forProvider[0]!.model, want);
           } else {
             chosenModel = providerDefaultModel(want);
@@ -3503,7 +3527,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           console.log(`${role.title} pinned to ${want} via model ${chosenModel} — saved to ~/.jeo/config.json`);
           if (forProvider.length) {
             lastPickIndex = forProvider;
-            console.log(`Live ${want} models — refine with /agents ${role.id} #N:`);
+            const sourceNote = liveForProvider ? "Live" : "Catalog";
+            const tail = liveForProvider ? "" : " (log in to list live models)";
+            console.log(`${sourceNote} ${want} models — refine with /agents ${role.id} #N:${tail}`);
             for (const line of formatPickListWithCapabilities(lastPickIndex, { current: chosenModel, cap: 12 })) console.log(line);
           }
           continue;

@@ -39,7 +39,10 @@ function takeValue(args: string[], index: number, inlinePrefix: string): { value
 }
 
 export function isProviderName(input: string | undefined): input is ProviderName {
-  return input === "anthropic" || input === "openai" || input === "gemini" || input === "antigravity" || input === "ollama";
+  // Validate against the canonical registry, not a hand-maintained subset — the
+  // old 5-name list silently rejected every OpenAI-compat provider (groq,
+  // deepseek, openrouter, …) at `/agents <role> provider <name>`.
+  return input !== undefined && (PROVIDER_NAMES as readonly string[]).includes(input);
 }
 
 export function isThinkingLevel(input: string | undefined): input is ThinkLevel {

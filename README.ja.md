@@ -204,7 +204,7 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]** — Ponytail pass on the reasoning-tier mapper, plus a real-tmux verification of `jeo --tmux`.
+- **[0.6.27]** (2026-06-19) — Ponytail pass on the reasoning-tier mapper, plus a real-tmux verification of `jeo --tmux`.
 - **[0.6.26]** (2026-06-19) — The forge emblem is redrawn again as the mascot crayfish, foregrounding its signature pincer claws (집게).
 - **[0.6.25]** (2026-06-19) — Reasoning works at every thinking level (gajae parity), and the forge emblem is redrawn as the neon-lens coding wizard.
 - **[0.6.24]** (2026-06-19) — `/provider` opens an interactive onboarding selector (OAuth vs API-compatible), and OpenAI-compatible backends gain per-vendor native-reasoning formats.

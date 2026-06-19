@@ -24,7 +24,7 @@ import { centerBlock, padLineTo, boxBlock, BOX_ASCII, BOX_UNICODE } from "./comp
 import { SECTION_GAP, sectionLabel, stackSections } from "./components/section";
 import { resolveTheme, themeGradient, accentPaint, accentShadowPaint, diffPaint, mutedPaint, cardFillPaint } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
-import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, webSearchCardLines, type ForgeSummary } from "./components/forge";
+import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, webSearchCardLines, scaleForgeWidth, type ForgeSummary } from "./components/forge";
 import { renderStatusBar, renderStatusBox, type StatusBoxData } from "./components/status";
 import { costForUsage } from "../ai/pricing";
 import { renderMarkdownTables } from "./components/markdown-table";
@@ -1206,7 +1206,7 @@ export class LaunchTui {
    *  Non-inline modes keep the card in `forgeSummaries` for the final static summary. */
   private flushForgeCard(summary: ForgeSummary, success?: boolean): void {
     if (!this.inline || this.finished) return;
-    const width = Math.max(24, size().cols - 1);
+    const width = scaleForgeWidth(size().cols - 1);
     // gjc D2 (state-encoded border): a FAILED card gets a red border so it pops
     // out of scrollback at a glance; OK/neutral cards keep the theme accent
     // identity. The ✓/✗ title mark already encodes state, but the border tone
@@ -1235,10 +1235,9 @@ export class LaunchTui {
     anim?: { phase: number; colorLevel: ColorLevel; beat: string },
     dim = false,
   ): string[] {
-    const floor = Math.min(24, width);
-    // Fill the available width so an in-frame box does not leave a dead right-margin
-    // column inside the outer panel.
-    const boxWidth = Math.max(floor, width);
+    // Forge cards render at a reduced (÷FORGE_SCALE) compact width rather than
+    // spanning the full available column run.
+    const boxWidth = scaleForgeWidth(width);
     const paint = this.theme.color ? accentPaint(this.theme) : (s: string) => s;
     const lines: string[] = [];
     for (const [i, summary] of this.forgeSummaries.slice(-maxEntries).entries()) {

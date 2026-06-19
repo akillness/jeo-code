@@ -479,6 +479,15 @@ export function fitForgeBoxes(lines: string[], budget: number): string[] {
   return out;
 }
 
+/** Forge cards render at a reduced scale: the available width is divided by this
+ *  factor so a box reads as a compact panel instead of spanning the full terminal. */
+export const FORGE_SCALE = 1.2;
+
+/** Scale a caller's available width down to the forge card's compact render width. */
+export function scaleForgeWidth(available: number): number {
+  return Math.max(24, Math.trunc(available / FORGE_SCALE));
+}
+
 export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}): string[] {
   const innerWidth = opts.width ?? 80;
   const floor = Math.min(24, innerWidth);

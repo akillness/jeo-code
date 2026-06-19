@@ -200,11 +200,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.6.33]** (2026-06-19) — A redesigned `jeo` forge mark — a hollow line-board crayfish/eyeglass emblem drawn as thick rounded-corner tubes (no letters, no DNA helix) — that now renders inside compact-scaled forge cards, plus a unified verification directive that adds gjc's test-quality contract, and a fresh `jeo --tmux` no-leak re-verification.
 - **[0.6.32]** (2026-06-19) — Anthropic extended thinking is actually enabled now — the request finally sends a `thinking` block (adaptive for Opus/Sonnet 4.6+, budget for older), fixing reasoning on **opus-4-8** — plus a multi-token `/command`·`$skill` trigger highlight that paints every invocation and survives the trailing space, and a fresh `jeo --tmux` no-leak re-verification.
 - **[0.6.31]** (2026-06-19) — Live "Thinking" indicator for signature-only reasoning models (Anthropic opus-4-7/4-8), a live color cue when a `/command` or `$skill` trigger is recognized in the prompt, and a rich gjc-style `/resume` session picker — plus a fresh `jeo --tmux` no-leak re-verification.
 - **[0.6.30]** (2026-06-19) — gjc-style intermediate-judgment guard classification extracted from the engine loop, plus a re-verification that `jeo --tmux` does not leak bun memory or slow down.
 - **[0.6.29]** (2026-06-19) — Signature-only thinking-block replay (Anthropic opus-4-7/4-8), plus a tmux mouse-flood memory guard confirming `jeo --tmux` does not leak.
-- **[0.6.28]** (2026-06-19) — Signed thinking-block replay: native reasoning is now sent BACK to providers across steps/turns, restoring multi-step reasoning continuity (gajae parity).
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { TOOL_PROTOCOL, WORKING_DISCIPLINE, OUTPUT_DISCIPLINE, executorSystemPrompt } from "../src/agent/engine";
+import { TOOL_PROTOCOL, WORKING_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, executorSystemPrompt } from "../src/agent/engine";
 import { buildToolProtocol } from "../src/commands/launch";
 
 // P1 — tool calibration + web_search reflex. The reflex only belongs where web_search
@@ -41,6 +41,23 @@ test("P7: executorSystemPrompt done self-check replaces the bare verify directiv
   const p = executorSystemPrompt();
   expect(p).toContain("Before calling done, self-check");
   expect(p).not.toContain("Always verify (run tests / execute the program) before calling done.");
+});
+
+// Round 16 (gjc <verification> inheritance): VERIFICATION_DIRECTIVE is the single source
+// for the done self-check AND gjc's test-quality contract, woven into the executor prompt
+// and consumed by launch.ts (was duplicated verbatim in both — parallel-convention smell).
+test("round16: VERIFICATION_DIRECTIVE carries the self-check + anti-tautology test-quality clause", () => {
+  expect(VERIFICATION_DIRECTIVE).toContain("Before calling done, self-check");
+  expect(VERIFICATION_DIRECTIVE).toContain("edge values, branch conditions, invariants");
+  expect(VERIFICATION_DIRECTIVE).toContain("never assert defaults or tautologies");
+  expect(executorSystemPrompt()).toContain("never assert defaults or tautologies");
+});
+
+test("round16: launch.ts consumes the shared VERIFICATION_DIRECTIVE (not a duplicated literal)", async () => {
+  const src = await Bun.file(new URL("../src/commands/launch.ts", import.meta.url)).text();
+  expect(src).toContain("VERIFICATION_DIRECTIVE +");
+  // The old verbatim copy must be gone — a single source, not two drifting strings.
+  expect(src).not.toContain('"Before calling done, self-check: did I run the test');
 });
 
 // FABLE-5 §2.4 (mistake ownership) → WORKING_DISCIPLINE; §2.7 (bounded web quoting) → TOOL_PROTOCOL.

@@ -164,10 +164,18 @@ export const OUTPUT_DISCIPLINE = [
   "- Match reply length to the task: a one-line change gets a one-line report.",
 ].join("\n");
 
+/** gjc-inherited verification directive (plan/gjc-inheritance.md, round 16): the
+ *  done self-check PLUS gjc's `<verification>` test-quality contract — what makes a
+ *  test worth writing. Single source consumed by both executorSystemPrompt's default
+ *  and launch.ts's interactive prompt (was duplicated verbatim in both). */
+export const VERIFICATION_DIRECTIVE =
+  "Before calling done, self-check: did I run the test or command that exercises this change, are directly-affected callsites/tests/docs updated, and does my claim match real output? If any answer is no, keep working — do not call done. " +
+  "When you write tests, exercise observable behavior, edge values, branch conditions, invariants, and error handling — never assert defaults or tautologies.";
+
 export function executorSystemPrompt(
   role = "Executor Agent, a senior software developer",
   protocol: string = TOOL_PROTOCOL,
-  verificationDirective = "Before calling done, self-check: did I run the test or command that exercises this change, are directly-affected callsites/tests/docs updated, and does my claim match real output? If any answer is no, keep working — do not call done.",
+  verificationDirective = VERIFICATION_DIRECTIVE,
 ): string {
   return (
     `You are the ${role}.\n` +

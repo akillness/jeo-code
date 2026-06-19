@@ -1,4 +1,12 @@
 
+[2026-06-19] Pass — gjc update: round 16 verification-quality inheritance
+- Request: "gjc update" — advance the gjc-inheritance marathon (last: cycle 25 / round 15) by re-diffing the CURRENT gjc system prompt (newer than the v0.4.3 the doc analyzed) against jeo.
+- Finding: prompt/tool-output/workflow/planning/provider parity is exhausted. Remaining gjc deltas are heavy architecture (async/detached subagents + irc) or already adopted/rejected. The one lightweight gap: gjc's <verification> test-quality contract (jeo's directive only said "run the test", never what a GOOD test is). Also caught a parallel-convention smell — the done self-check sentence was duplicated verbatim in engine.ts (executorSystemPrompt default arg) and launch.ts (interactive prompt).
+- src/agent/engine.ts: new single export VERIFICATION_DIRECTIVE = the done self-check + gjc clause ("tests exercise observable behavior, edge values, branch conditions, invariants, error handling — never assert defaults or tautologies"); executorSystemPrompt default arg now references it.
+- src/commands/launch.ts: imports + consumes VERIFICATION_DIRECTIVE in place of the hardcoded literal (single source, no drift).
+- src/prompts/agents/executor.md: same test-quality constraint added to <constraints>.
+- test/prompt-discipline.test.ts: +2 lock tests (constant carries clause + woven into executorSystemPrompt; launch consumes the shared constant, old literal gone).
+- Verified: bun run typecheck 0; full bun test 1709 pass / 0 fail (+1 pre-existing tui-app truecolor highlight flake — reproduced identically with changes git-stashed, so unrelated to this cycle).
 [2026-06-19] Pass — /login + /provider gjc-parity polish
 - Request: improve jeo's /login and /provider to behave like gjc's.
 - Found: jeo already had the alias (/login → /provider login), a live-status login picker (account · expiry), and login/add subcommands. The concrete gjc gap was (1) bare /provider only printed static usage text where gjc opens an INTERACTIVE onboarding selector (OAuth-login vs API-compatible endpoint), and (2) no headless-callback hint.

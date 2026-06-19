@@ -138,13 +138,13 @@ test("primordial cell: unicode:false degrades to a tofu-free ASCII fallback", ()
 test("FORGE_MARK_ART: lines uniform width after render", () => {
   expect(FORGE_MARK_ART.length).toBeGreaterThan(0);
   for (const line of FORGE_MARK_ART) {
-    expect(line.length).toBeLessThanOrEqual(24);
+    expect(line.length).toBeLessThanOrEqual(27);
   }
   const rendered = renderForgeMark({ color: false });
   expect(rendered.length).toBe(FORGE_MARK_ART.length);
   const widthSet = new Set(rendered.map(l => l.length));
   expect(widthSet.size).toBe(1);
-  expect(widthSet.values().next().value).toBeLessThanOrEqual(24);
+  expect(widthSet.values().next().value).toBeLessThanOrEqual(27);
 });
 
 test("renderForgeMark: plain (color:false) is byte-stable across phases", () => {

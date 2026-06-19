@@ -412,46 +412,61 @@ export async function animateFrames(stage: AsciiStage, opts: AnimateFramesOption
   }
   return total;
 }
-/** The compact jeo forge mark: a symmetrical crayfish (가재) brand emblem composed
- *  of SIMPLE, DISCONNECTED shapes (no connecting strokes) that highlight the signature
- *  pincer CLAWS (집게) flanking the sides (◤◣ and ❮ on the left, ◥◢ and ❯ on the right),
- *  the body carrying the JEO wordmark (J E O), and a DNA double-helix woven above and
- *  below as a row of crossing nodes (╳ = base-pair crossings). gjc-forge aesthetic:
- *  clean negative space, geometric symmetry, the blue→violet→pink flow gradient applied
- *  by renderForgeMark doing the neon glow. Width-1 glyphs only (box drawing + geometrics)
- *  so padding/centering math stays exact. Frame 0 is the static symbol. */
+/** The compact jeo forge mark: a symmetrical crayfish (가재) brand emblem drawn as a
+ *  2.5×-thick LINE-BOARD (hollow outline, no fill) — the `>-<` silhouette of two pincer
+ *  CLAWS (집게) whose top arms bend (꺾임) inward toward a narrow central BRIDGE (the
+ *  eyeglass-frame / 안경태 bar). Every stroke is rendered as a thick rounded-corner tube
+ *  (╭╮╰╯ + ─│) so the shape reads as a heavy neon outline, not a filled block. No letters.
+ *  Width-1 glyphs only (box drawing) so padding/centering math stays exact, and the
+ *  blue→violet→pink flow gradient from renderForgeMark supplies the neon glow. Frame 0 is
+ *  the static symbol. */
 export const FORGE_MARK_ART: string[] = [
-  "◤   ╳ ╳ ╳ ╳   ◥",
-  "❮    J E O    ❯",
-  "◣   ╳ ╳ ╳ ╳   ◢"
+  "╭─────╮             ╭─────╮",
+  "│     │             │     │",
+  "╰─╮   │ ╭─────────╮ │   ╭─╯",
+  "  │   │ │         │ │   │  ",
+  "╭─╯ ╭─╯ ╰─────────╯ ╰─╮ ╰─╮",
+  "│   │                 │   │",
+  "╰───╯                 ╰───╯"
 ];
 
 export const FORGE_MARK_ART_ASCII: string[] = [
-  "/   x x x x   \\",
-  "<    J E O    >",
-  "\\   x x x x   /"
+  ".-----.             .-----.",
+  "|     |             |     |",
+  "'-.   | .---------. |   .-'",
+  "  |   | |         | |   |  ",
+  ".-' .-' '---------' '-. '-.",
+  "|   |                 |   |",
+  "'---'                 '---'"
 ];
 
-/** Claw-snap blink frames for the compact lobster forge mark: the helix nodes, the
- *  JEO body and the inner claw/tail glyphs stay fixed while the four splayed pincer
- *  CORNERS snap (◤◣ / ◥◢ open → ◢◥ / ◣◤ closed), so the lobster "clicks" its claws.
- *  Frame 0 === FORGE_MARK_ART, so a frameless render is byte-identical to the static
+/** Claw-snap blink frames for the compact lobster forge mark: the central bridge stays
+ *  fixed while the four pincer arms snap (open → clenched), so the lobster "clicks" its
+ *  claws. Frame 0 === FORGE_MARK_ART, so a frameless render is byte-identical to the static
  *  symbol. All lines share the same width and width-1 glyphs. */
 export const FORGE_MARK_FRAMES: string[][] = [
   FORGE_MARK_ART,
   [
-    "◢   ╳ ╳ ╳ ╳   ◣",
-    "❮    J E O    ❯",
-    "◥   ╳ ╳ ╳ ╳   ◤"
+    "╭───╮                 ╭───╮",
+    "│   │                 │   │",
+    "╰─╮ ╰─╮ ╭─────────╮ ╭─╯ ╭─╯",
+    "  │   │ │         │ │   │  ",
+    "╭─╯   │ ╰─────────╯ │   ╰─╮",
+    "│     │             │     │",
+    "╰─────╯             ╰─────╯"
   ]
 ];
 
 export const FORGE_MARK_FRAMES_ASCII: string[][] = [
   FORGE_MARK_ART_ASCII,
   [
-    "\\   x x x x   /",
-    "<    J E O    >",
-    "/   x x x x   \\"
+    ".---.                 .---.",
+    "|   |                 |   |",
+    "'-. '-. .---------. .-' .-'",
+    "  |   | |         | |   |  ",
+    ".-'   | '---------' |   '-.",
+    "|     |             |     |",
+    "'-----'             '-----'"
   ]
 ];
 
@@ -461,23 +476,34 @@ export function forgeMarkFrameCount(): number {
 }
 
 /** Grand hero variant for the welcome forge box (gjc-style spacious banner): the same
- *  symmetrical crayfish emblem rendered large — the splayed pincer claws as corner wedges
- *  (◤◣ left, ◥◢ right) and heavy brackets (❮ left, ❯ right), the JEO wordmark spaced
- *  across the body (J   E   O), and the DNA double-helix woven above and below as a wider
- *  row of crossing nodes (╳). gjc-forge aesthetic: generous negative space + geometric
- *  symmetry, with renderForgeMark's blue→violet→pink flow gradient supplying the neon glow.
- *  Width 29 (matches the welcome compact↔grand threshold) and width-1 glyphs only so
- *  padding/centering math stays exact. */
+ *  crayfish line-board emblem rendered large — the pincer claws and central eyeglass
+ *  bridge drawn as wider 3×-thick rounded outline tubes (╭╮╰╯ + ─│), no fill, no letters.
+ *  Width-1 glyphs only so padding/centering math stays exact, with renderForgeMark's
+ *  blue→violet→pink flow gradient supplying the neon glow. */
 export const FORGE_MARK_ART_GRAND: string[] = [
-  "◤        ╳ ╳ ╳ ╳ ╳ ╳        ◥",
-  "❮         J   E   O         ❯",
-  "◣        ╳ ╳ ╳ ╳ ╳ ╳        ◢"
+  "╭────────╮                    ╭────────╮",
+  "│        │                    │        │",
+  "│        │                    │        │",
+  "╰──╮     │  ╭──────────────╮  │     ╭──╯",
+  "   │     │  │              │  │     │   ",
+  "   │     │  │              │  │     │   ",
+  "╭──╯  ╭──╯  ╰──────────────╯  ╰──╮  ╰──╮",
+  "│     │                          │     │",
+  "│     │                          │     │",
+  "╰─────╯                          ╰─────╯"
 ];
 
 export const FORGE_MARK_ART_GRAND_ASCII: string[] = [
-  "/        x x x x x x        \\",
-  "<         J   E   O         >",
-  "\\        x x x x x x        /"
+  ".--------.                    .--------.",
+  "|        |                    |        |",
+  "|        |                    |        |",
+  "'--.     |  .--------------.  |     .--'",
+  "   |     |  |              |  |     |   ",
+  "   |     |  |              |  |     |   ",
+  ".--'  .--'  '--------------'  '--.  '--.",
+  "|     |                          |     |",
+  "|     |                          |     |",
+  "'-----'                          '-----'"
 ];
 
 // Bounded memo of fully-rendered forge-mark frames keyed by every input that affects

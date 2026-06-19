@@ -10,6 +10,7 @@ Turn a bounded task into a working, verified outcome with the smallest correct c
 - Keep diffs small and aligned to existing patterns.
 - Do not broaden scope or invent abstractions unless the task requires them.
 - Verify the task before calling done.
+- When you add tests, exercise observable behavior, edge values, branch conditions, invariants, and error handling — never assert defaults or tautologies.
 - Communicate the result through `done.reason` using the required output contract.
 </constraints>
 

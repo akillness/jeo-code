@@ -116,6 +116,11 @@ export interface CallOptions {
    *  answer text). Surfaced as a transient dimmed view; absent for models that emit no
    *  thought text. */
   onReasoning?: (delta: string) => void;
+  /** Fired ONCE when the model opens an extended-thinking block, before (or without) any
+   *  thinking-text deltas. Lets a UI show a live "thinking" indicator even for models
+   *  (e.g. claude-opus-4-7/4-8) that reason internally and stream NO visible thought text,
+   *  so the response wait does not look frozen. Display-only — carries no content. */
+  onReasoningStart?: () => void;
   /** Sink for provider-native reasoning ARTIFACTS captured during streaming (signature /
    *  thoughtSignature / reasoning item id+encrypted). Separate from `onReasoning` (display
    *  text) because these arrive on different SSE events and are opaque replay data. */

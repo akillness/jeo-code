@@ -64,3 +64,43 @@ test("renderInputFrame: caret wraps to continuation rows on long input", () => {
   expect(body[1]!.startsWith("|> x")).toBe(true);  // first row carries the prompt
   expect(body[2]!.startsWith("|  x")).toBe(true);  // continuation rows align under it
 });
+test("renderInputFrame: highlight paints only the trigger token's character range", () => {
+  const { renderInputFrame } = require("../src/tui/components/input-box");
+  const paint = (s: string) => `\x1b[38;2;57;255;20m${s}\x1b[39m`;
+  // "go /model" — highlight the "/model" token (chars 3..9)
+  const line = "go /model";
+  const frame = renderInputFrame(line, {
+    cols: 60, color: true, unicode: false,
+    highlight: { start: 3, end: line.length, paint },
+  });
+  const raw = frame.lines.join("\n");
+  // The trigger token is wrapped in the green SGR; the leading "go " is not.
+  expect(raw).toContain("\x1b[38;2;57;255;20m");
+  expect(stripAnsi(raw)).toContain("go /model");
+  // The painter wraps each highlighted char — "go " precedes the first paint code.
+  const idxPaint = raw.indexOf("\x1b[38;2;57;255;20m");
+  const idxGo = raw.indexOf("go ");
+  expect(idxGo).toBeGreaterThanOrEqual(0);
+  expect(idxPaint).toBeGreaterThan(idxGo);
+});
+
+test("renderInputFrame: highlight is ignored when color is disabled", () => {
+  const { renderInputFrame } = require("../src/tui/components/input-box");
+  const paint = (s: string) => `\x1b[31m${s}\x1b[39m`;
+  const frame = renderInputFrame("/model", {
+    cols: 40, color: false, unicode: false,
+    highlight: { start: 0, end: 6, paint },
+  });
+  // No SGR introduced by the highlight (color:false path skips it).
+  expect(frame.lines.join("\n")).not.toContain("\x1b[31m");
+});
+
+test("renderInputFrame: highlight does not paint the placeholder", () => {
+  const { renderInputFrame } = require("../src/tui/components/input-box");
+  const paint = (s: string) => `\x1b[31m${s}\x1b[39m`;
+  const frame = renderInputFrame("", {
+    cols: 40, color: true, unicode: false,
+    highlight: { start: 0, end: 3, paint },
+  });
+  expect(frame.lines.join("\n")).not.toContain("\x1b[31m");
+});

@@ -32,6 +32,8 @@ export interface SessionSummary {
   messageCount: number;
   preview: string;
   mtimeMs?: number;
+  /** Session file size in bytes (for the resume picker's metadata line). */
+  sizeBytes?: number;
   title?: string;
 }
 
@@ -288,6 +290,7 @@ export async function listSessions(cwd = process.cwd()): Promise<SessionSummary[
         messageCount,
         preview,
         mtimeMs: stat.mtimeMs,
+        sizeBytes: stat.size,
         title: header.title,
       });
     } catch {

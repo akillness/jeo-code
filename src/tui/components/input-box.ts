@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { BOX_ASCII, BOX_UNICODE, boxBlock } from "./layout";
-import { visibleWidth } from "./width";
+import { visibleWidth, truncateToWidth } from "./width";
 
 export interface InputBoxOptions {
   cols?: number;
@@ -18,6 +18,11 @@ export interface InputBoxOptions {
   /** Shadow painter for the bottom/right "shaded" edges; defaults to a dim accent.
    *  The lit-vs-shaded two-tone contrast gives the box visible depth. */
   accentShadow?: (s: string) => string;
+  /** Paint a contiguous CHARACTER range of the typed text (e.g. the active
+   *  `/command` or `$skill` trigger token) so the user sees the invocation is
+   *  recognized as it is typed. Offsets index `Array.from(line)` code points
+   *  ([start, end)). Ignored for the placeholder and when `color` is false. */
+  highlight?: { start: number; end: number; paint: (s: string) => string };
 }
 
 export interface InputFrame {
@@ -38,6 +43,7 @@ function wrapWithCursor(
   text: string,
   cursor: number,
   width: number,
+  highlight?: { start: number; end: number; paint: (s: string) => string },
 ): { rows: string[]; row: number; col: number } {
   const rows: string[] = [];
   let cur = "";
@@ -67,7 +73,8 @@ function wrapWithCursor(
       continue;
     }
     if (ch !== "") {
-      cur += rendered;
+      const lit = highlight && i >= highlight.start && i < highlight.end;
+      cur += lit ? highlight.paint(rendered) : rendered;
       curW += w;
     }
   }
@@ -95,7 +102,7 @@ export function renderInputFrame(line: string, opts: InputBoxOptions = {}): Inpu
     rows = [placeholder];
     placeholderRow = true;
   } else {
-    const wrapped = wrapWithCursor(line, opts.cursor ?? line.length, textWidth);
+    const wrapped = wrapWithCursor(line, opts.cursor ?? line.length, textWidth, useColor ? opts.highlight : undefined);
     rows = wrapped.rows;
     crow = wrapped.row;
     ccol = wrapped.col;
@@ -110,10 +117,10 @@ export function renderInputFrame(line: string, opts: InputBoxOptions = {}): Inpu
     hidden = Math.min(Math.max(0, crow - maxBodyRows + 1), totalRows - maxBodyRows);
     if (crow < hidden) hidden = crow; // caret above the window → scroll up to it
     rows = rows.slice(hidden, hidden + maxBodyRows);
-    if (hidden > 0) rows[0] = `…${rows[0] ?? ""}`.slice(0, textWidth);
+    if (hidden > 0) rows[0] = truncateToWidth(`…${rows[0] ?? ""}`, textWidth);
     if (hidden + maxBodyRows < totalRows) {
       const last = rows.length - 1;
-      rows[last] = `${rows[last] ?? ""}…`.slice(0, textWidth);
+      rows[last] = truncateToWidth(`${rows[last] ?? ""}…`, textWidth);
     }
   }
   let visRow = Math.max(0, Math.min(crow - hidden, rows.length - 1));

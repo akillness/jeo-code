@@ -41,6 +41,43 @@ test("anthropicAdapter.stream: yields text_delta content, ignores other events",
   }
 });
 
+test("anthropicAdapter.stream: signature-only thinking block fires onReasoningStart (opus-4-8) even with no thinking text", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      sseStream([
+        // opus-4-8 opens a thinking block and streams ONLY a signature — no thinking_delta text.
+        'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}\n\n',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig123"}}\n\n',
+        'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}\n\n',
+        'data: {"type":"message_stop"}\n\n',
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } }
+    )) as typeof fetch;
+  try {
+    let starts = 0;
+    let reasoningText = "";
+    const arts: any[] = [];
+    const opts: CallOptions = {
+      model: "claude-opus-4-8",
+      reasoningEffort: "high",
+      onReasoningStart: () => { starts++; },
+      onReasoning: d => { reasoningText += d; },
+      onReasoningArtifact: a => { arts.push(a); },
+    };
+    const cred = { kind: "api_key", provider: "anthropic", token: "k" } as const;
+    let text = "";
+    for await (const d of anthropicAdapter.stream!([{ role: "user", content: "x" }], opts, cred)) text += d;
+    expect(text).toBe("answer");
+    expect(starts).toBe(1);           // thinking phase signalled despite no thought text
+    expect(reasoningText).toBe("");   // signature-only model streams no visible thought
+    // The signed thought is still captured for cross-turn replay.
+    expect(arts).toEqual([{ provider: "anthropic", model: "claude-opus-4-8", text: undefined, signature: "sig123" }]);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
 test("anthropicAdapter.stream: reports usage ONCE at message_delta (no double-count)", async () => {
   const prevFetch = globalThis.fetch;
   globalThis.fetch = (async () =>

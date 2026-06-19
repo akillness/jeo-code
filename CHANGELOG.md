@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.31] - 2026-06-19
+_Live "Thinking" indicator for signature-only reasoning models (Anthropic opus-4-7/4-8), a live color cue when a `/command` or `$skill` trigger is recognized in the prompt, and a rich gjc-style `/resume` session picker — plus a fresh `jeo --tmux` no-leak re-verification._
+
+### Added
+- **The prompt box now recolors the `/command` / `$skill` trigger token live as you type it.** While typing an invocation, the active trigger token (anywhere on the line, mention-style via `activeTriggerToken`) is repainted inside the input box so the user can SEE the trigger was recognized: a valid, matchable invocation turns neon green (`#39ff14`), while a typo with no match turns pink (`#ff6b81`) — a visual heads-up that it will be sent as plain text. Wired through a new `InputBoxOptions.highlight` ({start,end,paint}, code-point offsets over `Array.from(line)`) into both the idle prompt (`launch.ts` `previewLines`) and the mid-turn live box (`app.ts` `setLivePromptHighlight`, reset at each new turn). Scroll ellipses now use ANSI-safe `truncateToWidth` so a painted token never gets sliced mid-escape.
+- **Rich `/resume` session picker (gjc parity).** A new `src/tui/components/session-picker.ts` renders a search/filter line, a scrolling window of multi-line entries (title + dimmed first-message preview + a `relative-time · size · N msgs` metadata line), a position indicator, and Del-to-delete / Enter-to-resume / Esc-to-cancel hints. `SessionSummary` now carries `sizeBytes` for the metadata line.
+
+### Fixed
+- **Signature-only reasoning models now show a live Thinking block while the model thinks.** Models that reason internally and stream a `signature` but NO `thinking_delta` text (claude-opus-4-7/4-8) opened a thinking block that produced zero visible deltas, so the TUI's dimmed live "Thinking" trace never appeared — the response wait read as a frozen "calling model …". The Anthropic stream adapter now fires a new display-only `onReasoningStart` signal the instant a `thinking` / `redacted_thinking` block opens, and the TUI renders a live `Thinking · Ns` block with a `(thinking…)` placeholder that is replaced the moment any real thought or answer text streams. Replay/artifact capture is unchanged.
+
+### Verified
+- **`jeo --tmux` has no bun memory leak and stays responsive.** A real `--tmux` session flooded with ~30,000 SGR mouse-report sequences via `tmux send-keys` plateaus in RSS (147 → 246 MB asymptotically: +83 / +12 / +3 / +0.2 / +0.4 MB per 6k-report round → no per-event linear growth) and stays responsive afterward (`/model` preview renders in 14 ms with the trigger highlight intact). The mouse-report swallow guard drops the reports instead of buffering/echoing them.
+- **Full suite green:** `bun run typecheck` clean and `bun test` 1703 pass / 0 fail across 211 files (includes the new `test/input-box.test.ts`, `test/tui-app.test.ts`, and `test/session-picker.test.ts` highlight/picker coverage).
+
 ## [0.6.30] - 2026-06-19
 _gjc-style intermediate-judgment guard classification extracted from the engine loop, plus a re-verification that `jeo --tmux` does not leak bun memory or slow down._
 

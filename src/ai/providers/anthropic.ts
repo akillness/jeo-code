@@ -353,8 +353,12 @@ export const anthropicAdapter: ProviderAdapter = {
         toolBlocks.set(evt.index, { name: evt.content_block.name ?? "", args: "" });
       } else if (evt.type === "content_block_start" && evt.content_block?.type === "thinking" && typeof evt.index === "number") {
         thinkBlocks.set(evt.index, { text: "" });
+        // Signal the thinking phase started so the UI shows a live "thinking" indicator
+        // even for signature-only models (opus-4-7/4-8) that stream NO thinking_delta text.
+        options.onReasoningStart?.();
       } else if (evt.type === "content_block_start" && evt.content_block?.type === "redacted_thinking" && evt.content_block.data) {
         // Redacted thinking carries opaque `data` directly (no deltas) — emit immediately.
+        options.onReasoningStart?.();
         options.onReasoningArtifact?.({ provider: "anthropic", model: options.model, redacted: evt.content_block.data });
       } else if (evt.type === "content_block_delta" && evt.delta?.type === "input_json_delta" && typeof evt.index === "number") {
         const b = toolBlocks.get(evt.index);

@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.29] - 2026-06-19
+_Signature-only thinking-block replay (Anthropic opus-4-7/4-8), plus a tmux mouse-flood memory guard confirming `jeo --tmux` does not leak._
+
+### Fixed
+- **Anthropic thinking-block replay now covers signature-only artifacts.** Newer Opus models (opus-4-7/opus-4-8) think internally — tokens billed, a valid `signature` present — but return empty thinking text. The cross-turn replay required both `signature` AND `text`, so those models' reasoning was dropped between steps. Replay now sends a signed `thinking` block whenever a `signature` (or `redacted`) is present (text defaults to `""`), restoring multi-step reasoning continuity for signature-only models. API-key requests also send the `interleaved-thinking` + `prompt-caching-scope` betas so thinking+tools and scoped caching work outside OAuth.
+
+### Added
+- **`claude-opus-4-7` catalogued** (FULL thinking, 200k ctx) and a dynamic context-window fallback for uncatalogued ids (claude 200k / gpt-5 400k / gemini-3 1M).
+- **tmux mouse-report-flood memory guard** (`test/mouse-report-filter.test.ts`): 100k SGR mouse-move reports through `queuePromptInputChunk` leave the prompt queue at zero accumulation — the regression guard for the "`jeo --tmux` slows down over time" concern.
+
+### Verified
+- **`jeo --tmux` has no bun memory leak.** The in-process lifecycle probe (`scripts/mem-probe.ts`, 3000 turns) reports a per-turn heap slope of ≈0 (returns to baseline, exit-listeners flat); a real `jeo --tmux` process plateaus in RSS under sustained mouse/resize/keystroke churn instead of climbing; and mouse reports are filtered (not buffered) with `activityLog` bounded to a 200-entry per-turn ring.
+
 ## [0.6.28] - 2026-06-19
 _Signed thinking-block replay: native reasoning is now sent BACK to providers across steps/turns, restoring multi-step reasoning continuity (gajae parity)._
 

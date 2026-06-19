@@ -41,3 +41,19 @@ test("live-turn drain (queuePromptInputChunk) never injects mouse payload bytes"
   queuePromptInputChunk(q, "hi\u001b[M !!\u001b[<0;9;4Mthere");
   expect(q.partial).toBe("hithere");
 });
+// tmux runs `jeo --tmux` with `mouse on`, so a real session can deliver a continuous
+// FLOOD of mouse-report escapes to stdin while idle. The filter must consume them with
+// zero accumulation — otherwise the prompt queue (and the bun process RSS) would grow
+// unboundedly under tmux, the slowdown this guards against.
+test("mouse-report flood leaves the prompt queue bounded (no tmux memory growth)", () => {
+  const q: PromptInputQueue = { pendingLines: [], partial: "", pastedLines: [], inPaste: false };
+  for (let i = 0; i < 100_000; i++) {
+    queuePromptInputChunk(q, `\u001b[<35;${(i % 200) + 1};${(i % 50) + 1}M`); // SGR mouse move
+  }
+  expect(q.partial).toBe("");
+  expect(q.pendingLines.length).toBe(0);
+  expect(q.pastedLines.length).toBe(0);
+  // A single real keystroke after the flood still lands cleanly.
+  queuePromptInputChunk(q, "x");
+  expect(q.partial).toBe("x");
+});

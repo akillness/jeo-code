@@ -37,6 +37,8 @@ const STD: ThinkLevel[] = ["minimal", "low", "medium", "high"];
 export const ANTIGRAVITY_MODELS = [
   "claude-opus-4-5-thinking",
   "claude-opus-4-6-thinking",
+  "claude-opus-4-7",
+  "claude-opus-4-7-thinking",
   "claude-opus-4-8",
   "claude-opus-4-8-thinking",
   "claude-sonnet-4-5",
@@ -52,6 +54,7 @@ export const ANTIGRAVITY_MODELS = [
   "gemini-3.1-pro-high",
   "gemini-3.1-pro-low",
   "gpt-oss-120b-medium",
+  "gpt-5.5",
 ] as const;
 
 /** A curated set of common public models with their documented capabilities. */
@@ -62,9 +65,13 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   { canonical: "claude-sonnet-4-5", provider: "anthropic", providerModel: "claude-sonnet-4-5-20250929", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
   { canonical: "claude-opus-4-1", provider: "anthropic", providerModel: "claude-opus-4-1-20250805", contextTokens: 200_000, maxOutputTokens: 32_000, thinking: FULL, images: true },
   { canonical: "claude-opus-4-5", provider: "anthropic", providerModel: "claude-opus-4-5-20251101", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
-  // NOTE: confirm exact dated provider ids when these ship publicly; the family
-  // heuristic in `catalogMetadata` keeps reasoning working even before that.
+  // NOTE: opus-4-7 accepts extended thinking but currently returns 0 thinking tokens
+  // (model-internal, no visible thought). opus-4-8 thinks internally (tokens billed,
+  // signature present) but returns empty thinking text. Both are FULL-capable in the
+  // catalog so the budget is always sent — the nativizable path handles signature-only
+  // artifacts for cross-turn continuity.
   { canonical: "claude-opus-4-6", provider: "anthropic", providerModel: "claude-opus-4-6", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
+  { canonical: "claude-opus-4-7", provider: "anthropic", providerModel: "claude-opus-4-7", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
   { canonical: "claude-opus-4-8", provider: "anthropic", providerModel: "claude-opus-4-8", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
   // OpenAI
   { canonical: "gpt-4o", provider: "openai", providerModel: "gpt-4o", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true },
@@ -96,9 +103,9 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
     canonical: `antigravity/${id}`,
     provider: "antigravity",
     providerModel: id,
-    contextTokens: id.includes("claude") ? 200_000 : id.includes("gemini-3") ? 1_000_000 : 1_000_000,
-    maxOutputTokens: id.includes("claude") ? 64_000 : 65_536,
-    thinking: id.includes("thinking") || id.includes("-high") || id.includes("-low") || id.includes("gemini-3") ? FULL : STD,
+    contextTokens: id.includes("claude") ? 200_000 : id.startsWith("gpt-5") ? 400_000 : id.includes("gemini-3") ? 1_000_000 : 1_000_000,
+    maxOutputTokens: id.includes("claude") ? 64_000 : id.startsWith("gpt-5") ? 128_000 : 65_536,
+    thinking: id.includes("thinking") || id.includes("-high") || id.includes("-low") || id.includes("gemini-3") || id.startsWith("gpt-5") ? FULL : STD,
     images: !id.includes("gpt-oss"),
     company: id.includes("claude") ? "Anthropic via Antigravity" : id.includes("gpt") ? "OpenAI via Antigravity" : "Google Antigravity",
   })),

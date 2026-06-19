@@ -8,6 +8,11 @@ gen/
 # Logs
 *.log
 
+# Throwaway TUI debug scratch scripts (root-level, ad-hoc; never published)
+/check-welcome-width.ts
+/inspect-chars.ts
+/print-welcome.ts
+
 # Hidden (dot) files and folders at EVERY level — runtime / tool state such as
 # .jeo, .gjc, .omc, .omx, .omu, .serena, .specify, .autoresearch, .DS_Store …
 # A pattern with no slash matches the basename at any depth, so this covers

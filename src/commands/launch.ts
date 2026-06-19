@@ -19,7 +19,7 @@ import { formatForgeBox } from "../tui/components/forge";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth, OAUTH_PROVIDERS, API_KEY_ONLY_PROVIDERS, setApiKey } from "../auth";
 import type { AuthProvider } from "../auth";
-import { matchSlash, isSlashAttempt, suggestSlashCommands, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, tabCompleteSelection, type SlashCommandInfo } from "../tui/components/slash";
+import { matchSlash, isSlashAttempt, suggestSlashCommands, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, allTriggerTokens, tabCompleteSelection, type SlashCommandInfo } from "../tui/components/slash";
 import { staticCompletionContext, readlineCompleter, formatCompletionPreview, formatMidTurnHint, tokenize, type CompletionContext } from "../tui/components/autocomplete";
 import { normalizeBaseUrl } from "./setup-helpers";
 import { EVOLUTION_STAGES, animateAsciiArt } from "../tui/components/ascii-art";
@@ -62,7 +62,7 @@ import { liveModelPicker, renderLiveModelPicker, type ModelAssignmentBadge } fro
 import { loginPicker, renderLoginPicker, onboardingPicker, renderOnboardingPicker, apiKeyPicker, renderApiKeyPicker, subscriptionLoginPicker, type OnboardingAction } from "../tui/components/provider-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff, sanitizeForTerminal } from "../tui/components/code-view";
 import { categoryBadge } from "../tui/components/category-index";
-import { renderInputFrame, verticalCursorOffset } from "../tui/components/input-box";
+import { renderInputFrame, verticalCursorOffset, type HighlightRange } from "../tui/components/input-box";
 
 import { renderStatusBar } from "../tui/components/status";
 import { detectColorLevel, ColorLevel, visibleWidth } from "../tui/components/color";
@@ -1803,15 +1803,26 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const TRIGGER_HL_UNKNOWN = "#ff6b81";
   const triggerHighlight = (
     rendered: string,
-  ): { start: number; end: number; paint: (s: string) => string } | undefined => {
-    if (!uiTheme.color) return undefined;
-    const trigger = activeTriggerToken(rendered);
-    if (!trigger) return undefined;
-    const start = Array.from(rendered.slice(0, trigger.start)).length;
-    const end = start + Array.from(trigger.token).length;
-    const valid = slashPreviewMatches(rendered, skillSlashDetails, resolvedSkills).length > 0;
-    const hex = valid ? TRIGGER_HL_VALID : TRIGGER_HL_UNKNOWN;
-    return { start, end, paint: (s: string) => chalk.hex(hex)(s) };
+  ): HighlightRange[] => {
+    if (!uiTheme.color) return [];
+    // Highlight EVERY `/command`·`$skill` invocation in the line at once and
+    // independent of caret position, so multiple triggers all stay lit and a
+    // token keeps its color even when the caret jumps elsewhere to edit.
+    const out: HighlightRange[] = [];
+    for (const trigger of allTriggerTokens(rendered)) {
+      const start = Array.from(rendered.slice(0, trigger.start)).length;
+      const end = start + Array.from(trigger.token).length;
+      // "Open" = the word still being typed: it reaches the end of the line with
+      // no space after it. An open token counts as valid-so-far on any match
+      // (incl. fuzzy prefix); every committed token must be an EXACT known
+      // command/skill to stay green, else it shows caution pink (likely typo).
+      const isOpen = trigger.start + trigger.token.length === rendered.length;
+      const matches = slashPreviewMatches(trigger.token, skillSlashDetails, resolvedSkills);
+      const valid = isOpen ? matches.length > 0 : matches.includes(trigger.token);
+      const hex = valid ? TRIGGER_HL_VALID : TRIGGER_HL_UNKNOWN;
+      out.push({ start, end, paint: (s: string) => chalk.hex(hex)(s) });
+    }
+    return out;
   };
   const refreshUiTheme = (): void => {
     uiTheme = resolveTheme(process.env);

@@ -104,3 +104,24 @@ test("renderInputFrame: highlight does not paint the placeholder", () => {
   });
   expect(frame.lines.join("\n")).not.toContain("\x1b[31m");
 });
+
+test("renderInputFrame: paints multiple highlight ranges (each token its own color)", () => {
+  const { renderInputFrame } = require("../src/tui/components/input-box");
+  const green = (s: string) => `\x1b[38;2;57;255;20m${s}\x1b[39m`;
+  const pink = (s: string) => `\x1b[38;2;255;107;129m${s}\x1b[39m`;
+  // "/model x $nope" — /model (0..6) valid green, $nope (9..14) unknown pink.
+  const line = "/model x $nope";
+  const frame = renderInputFrame(line, {
+    cols: 60, color: true, unicode: false,
+    highlight: [
+      { start: 0, end: 6, paint: green },
+      { start: 9, end: 14, paint: pink },
+    ],
+  });
+  const raw = frame.lines.join("\n");
+  expect(raw).toContain("\x1b[38;2;57;255;20m"); // green on /model
+  expect(raw).toContain("\x1b[38;2;255;107;129m"); // pink on $nope
+  expect(stripAnsi(raw)).toContain("/model x $nope");
+  // Order is preserved: the green token is painted before the pink one.
+  expect(raw.indexOf("\x1b[38;2;57;255;20m")).toBeLessThan(raw.indexOf("\x1b[38;2;255;107;129m"));
+});

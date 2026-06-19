@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.32] - 2026-06-19
+_Anthropic extended thinking is actually enabled now — the request finally sends a `thinking` block (adaptive for Opus/Sonnet 4.6+, budget for older), fixing reasoning on **opus-4-8** — plus a multi-token `/command`·`$skill` trigger highlight that paints every invocation and survives the trailing space, and a fresh `jeo --tmux` no-leak re-verification._
+
+### Fixed
+- **Anthropic extended thinking was never turned on — opus-4-8/4-7 reasoning is now actually requested.** The provider parsed and replayed thinking blocks on the *response* side and sent the `interleaved-thinking` beta, but `anthropicPayload` never put a `thinking` parameter in the *request* body, so the API treated every call as non-thinking and (for the internally-reasoning opus-4-7/4-8) returned signature-only/empty thought — reasoning effectively never activated. The request builder now selects a thinking transport per model (`anthropicThinkingMode` via `parseAnthropicVersion` on `claude-<family>-<major>-<minor>`): Anthropic **≥ 4.6 → adaptive** (`thinking: { type: "adaptive" }` with `display: "summarized"` gated to Opus **≥ 4.7** via `supportsAdaptiveThinkingDisplay`, depth riding `output_config.effort`, no `budget_tokens`); **4.5 → budget-effort** (`{ type: "enabled", budget_tokens, display: "summarized" }` + `output_config.effort`); **older → budget** (budget only). jeo's reasoning effort maps to the adaptive/effort literal via `anthropicAdaptiveEffort` (minimal/low/medium/high; xhigh folded to high upstream), `temperature` stays dropped on the thinking path, and the legacy `interleaved-thinking-2025-05-14` beta is filtered out for Opus ≥ 4.7 (`anthropicBetaHeader`) so it can't shadow the adaptive transport. Mirrors gjc's `inferThinkingControlMode` / `supportsAdaptiveThinkingDisplay` behavior.
+
+### Changed
+- **The trigger highlight now paints *every* `/command`·`$skill` token on the line and keeps it lit after the space.** New pure helpers in `slash.ts` — `allTriggerTokens(line)` (every whitespace-delimited `/`·`$` word, left-to-right, with code-point `start` offsets; paths like `src/cli` and `FOO$BAR` still excluded) and `committedTriggerToken(line)` (the leading invocation once a space follows, so the highlight no longer vanishes the instant you type a trailing space). `InputBoxOptions.highlight` accepts a multi-range `HighlightRange[]`, so a prompt mentioning several invocations lights each one (valid → neon green, no-match → pink) at once, independent of caret position.
+
+### Verified
+- **`jeo --tmux` has no bun memory leak and stays responsive.** A real `--tmux` session flooded with 200 `/command` keystrokes plus 80 SGR mouse-report sequences via `tmux send-keys` holds RSS bounded (159.8 → 161.5 MB peak → 161.4 MB settled, +1.5 MB and *decreasing* after the flood — no per-event linear growth) and the `tmux-verify.sh smoke` + `battery` (boot, `/help`, unknown `$skill`, `/agents`, `$ultragoal`, unresolved `/command`) all pass.
+- **Full suite green:** `bun run typecheck` clean and `bun test` 1708 pass / 0 fail across 211 files (includes the extended `test/anthropic-stream.test.ts` adaptive/budget request-body coverage and the `test/slash.test.ts` / `test/input-box.test.ts` multi-token highlight tests).
+
 ## [0.6.31] - 2026-06-19
 _Live "Thinking" indicator for signature-only reasoning models (Anthropic opus-4-7/4-8), a live color cue when a `/command` or `$skill` trigger is recognized in the prompt, and a rich gjc-style `/resume` session picker — plus a fresh `jeo --tmux` no-leak re-verification._
 

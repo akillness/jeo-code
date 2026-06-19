@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { matchSlash, isSlashAttempt, suggestSlashCommands, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, type SlashCommandInfo } from "../src/tui/components/slash";
+import { matchSlash, isSlashAttempt, suggestSlashCommands, SLASH_COMMANDS, SLASH_COMMAND_DETAILS, formatSlashCommandList, formatSlashPreview, slashPreviewMatches, activeTriggerToken, committedTriggerToken, allTriggerTokens, type SlashCommandInfo } from "../src/tui/components/slash";
 
 test("matchSlash: prefix matches lead, fuzzy subsequence hits trail (case-insensitive)", () => {
   expect(matchSlash("/")).toEqual(SLASH_COMMANDS);
@@ -231,6 +231,39 @@ test("activeTriggerToken: finds /cmd and $skill tokens anywhere in the line", ()
   expect(activeTriggerToken("echo FOO$BAR")).toBeUndefined();
   expect(activeTriggerToken("hello")).toBeUndefined();
   expect(activeTriggerToken("")).toBeUndefined();
+});
+
+test("committedTriggerToken: keeps the LEADING /cmd or $skill keyword after a space", () => {
+  // Once committed with a trailing space the leading keyword stays recognizable so
+  // the trigger highlight persists while arguments are typed.
+  expect(committedTriggerToken("/model gpt-4")).toEqual({ kind: "/", token: "/model", start: 0 });
+  expect(committedTriggerToken("$test the bug")).toEqual({ kind: "$", token: "$test", start: 0 });
+  expect(committedTriggerToken("/model ")).toEqual({ kind: "/", token: "/model", start: 0 });
+  expect(committedTriggerToken("  /help me")).toEqual({ kind: "/", token: "/help", start: 2 });
+  // Still being typed (no space yet) — the active-token path owns it.
+  expect(committedTriggerToken("/model")).toBeUndefined();
+  expect(committedTriggerToken("/mo")).toBeUndefined();
+  // Only the LEADING word counts; a mid-sentence finished token is not a command.
+  expect(committedTriggerToken("fix the bug /mo done")).toBeUndefined();
+  expect(committedTriggerToken("plain text here")).toBeUndefined();
+  expect(committedTriggerToken("")).toBeUndefined();
+});
+
+test("allTriggerTokens: every /command and $skill word, left-to-right, anywhere", () => {
+  // Multiple invocations on one line are all reported, in order.
+  expect(allTriggerTokens("/model x then $test y")).toEqual([
+    { kind: "/", token: "/model", start: 0 },
+    { kind: "$", token: "$test", start: 14 },
+  ]);
+  // A still-being-typed trailing token is included too (highlight follows it live).
+  expect(allTriggerTokens("fix the bug /mo")).toEqual([{ kind: "/", token: "/mo", start: 12 }]);
+  // Leading whitespace is skipped; start points at the token's first char.
+  expect(allTriggerTokens("  /help me")).toEqual([{ kind: "/", token: "/help", start: 2 }]);
+  // Glued /·$ inside a word stay excluded — paths and shell vars never light up.
+  expect(allTriggerTokens("see src/cli and echo FOO$BAR")).toEqual([]);
+  // No triggers / empty line → empty list.
+  expect(allTriggerTokens("plain text here")).toEqual([]);
+  expect(allTriggerTokens("")).toEqual([]);
 });
 
 test("formatSlashPreview: command popup opens for a /token at any position", () => {

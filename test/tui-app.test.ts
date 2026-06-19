@@ -813,7 +813,7 @@ test("LaunchTui.setLivePromptHighlight: recolors the trigger token in the mid-tu
   tui.setLivePromptInput("go /model");
   out.length = 0;
   const paint = (s: string) => `\x1b[38;2;57;255;20m${s}\x1b[39m`;
-  tui.setLivePromptHighlight({ start: 3, end: 9, paint });
+  tui.setLivePromptHighlight([{ start: 3, end: 9, paint }]);
   const painted = out.join("");
   // The trigger token is now wrapped in the supplied SGR; the visible text is unchanged.
   expect(painted).toContain("\x1b[38;2;57;255;20m");
@@ -822,7 +822,7 @@ test("LaunchTui.setLivePromptHighlight: recolors the trigger token in the mid-tu
 
   // Identical highlight is a no-op (no redundant repaint).
   out.length = 0;
-  tui.setLivePromptHighlight({ start: 3, end: 9, paint });
+  tui.setLivePromptHighlight([{ start: 3, end: 9, paint }]);
   expect(out.join("")).toBe("");
 
   // A fresh turn clears the highlight.

@@ -217,6 +217,42 @@ export function activeTriggerToken(line: string): ActiveTrigger | undefined {
 }
 
 /**
+ * The LEADING `/command` or `$skill` keyword once it has been committed with a
+ * trailing space — `"/model gpt-4"` → `/model`, `"$test the bug"` → `$test`.
+ * Unlike {@link activeTriggerToken} (which only matches the word the caret still
+ * sits on) this keeps the invoked keyword recognizable while arguments are typed,
+ * so the trigger highlight persists after the space instead of vanishing. Only
+ * the leading word counts — a command is invoked at the start of the line — and a
+ * still-being-typed keyword (no space yet) returns undefined so the active-token
+ * path owns it. Returns the same shape as {@link activeTriggerToken}.
+ */
+export function committedTriggerToken(line: string): ActiveTrigger | undefined {
+  const m = /^(\s*)([/$]\S+)\s/.exec(line);
+  if (!m) return undefined;
+  const token = m[2]!;
+  return { kind: token[0] as "/" | "$", token, start: Array.from(m[1]!).length };
+}
+
+/**
+ * EVERY `/command` or `$skill` trigger token in the line (mention-style), in
+ * left-to-right order — `"/model x then $test y"` → [`/model`, `$test`]. Each
+ * is a whitespace-delimited word whose first char is `/`·`$` (paths like
+ * `src/cli` and vars like `FOO$BAR` stay excluded, just like the single-token
+ * helpers). `start` is the token's first-character index in `line`. Used to
+ * highlight all invocations at once, independent of caret position. Pure.
+ */
+export function allTriggerTokens(line: string): ActiveTrigger[] {
+  const out: ActiveTrigger[] = [];
+  const re = /(^|\s)([/$]\S*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line))) {
+    const token = m[2]!;
+    out.push({ kind: token[0] as "/" | "$", token, start: m.index + m[1]!.length });
+  }
+  return out;
+}
+
+/**
  * Compact live preview shown beneath the input box while a `/command` or
  * `$skill` keyword is being typed — at any position in the line (mention-style,
  * gjc/Codex parity): `"do X then /mo"` previews commands, `"…then $te"`

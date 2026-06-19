@@ -37,9 +37,17 @@ import { formatHintBar } from "./components/hints";
 import { formatDuration, formatUsage } from "./components/duration";
 import { renderHud, type JeoPhase } from "./components/hud";
 import { formatTodoWriteCard } from "./components/todo-card";
-import { renderInputBox } from "./components/input-box";
+import { renderInputBox, type HighlightRange } from "./components/input-box";
 import { jeoEnv } from "../util/env";
 import chalk from "chalk";
+
+/** Stable signature of a highlight range list — offsets plus the painted color
+ *  (probed with a sentinel char) — so equal-length but differently-colored
+ *  re-highlights (valid↔unknown at the same span) still trigger a redraw. */
+function highlightSignature(hl?: readonly HighlightRange[]): string {
+  if (!hl || hl.length === 0) return "";
+  return hl.map(r => `${r.start}:${r.end}:${r.paint("\u0000")}`).join("|");
+}
 
 export interface LaunchTuiOptions {
   model: string;
@@ -668,15 +676,15 @@ export class LaunchTui {
     this.draw();
   }
 
-  private livePromptHighlight?: { start: number; end: number; paint: (s: string) => string };
-  /** Recolor the active `/command`·`$skill` trigger token inside the mid-turn live
-   *  input box (idle-prompt parity). Caller supplies code-point offsets into the
-   *  draft text + a painter; undefined clears it. */
-  setLivePromptHighlight(hl?: { start: number; end: number; paint: (s: string) => string }): void {
+  private livePromptHighlight?: readonly HighlightRange[];
+  /** Recolor every active/committed `/command`·`$skill` trigger token inside the
+   *  mid-turn live input box (idle-prompt parity). Caller supplies code-point
+   *  offsets into the draft text + a painter per token; undefined/empty clears. */
+  setLivePromptHighlight(hl?: readonly HighlightRange[]): void {
     if (this.finished) return;
-    const a = this.livePromptHighlight, b = hl;
-    if (a?.start === b?.start && a?.end === b?.end && (!a) === (!b)) return;
-    this.livePromptHighlight = hl;
+    const next = hl && hl.length ? hl : undefined;
+    if (highlightSignature(this.livePromptHighlight) === highlightSignature(next)) return;
+    this.livePromptHighlight = next;
     this.draw();
   }
 

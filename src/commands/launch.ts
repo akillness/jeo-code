@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { emitKeypressEvents } from "node:readline";
 import { PassThrough } from "node:stream";
-import { runAgentLoop, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, OUTPUT_DISCIPLINE, type AgentLoopEvents } from "../agent/engine";
+import { runAgentLoop, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, type AgentLoopEvents } from "../agent/engine";
 import { createOpikTracer, wrapEvents } from "../agent/opik-tracer";
 import { initialDynamicStepLimit } from "../agent/step-budget";
 import { memoryPromptSection, spawnDetachedDistill } from "../agent/memory";
@@ -15,7 +15,7 @@ import { runRalplanEngine, type RalplanEngineOptions } from "./ralplan";
 import { runTeamEngine, type TeamEngineOptions } from "./team";
 import { runUltragoalEngine, type UltragoalEngineOptions } from "./ultragoal";
 import { skillsPromptSection, loadSkills, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
-import { formatForgeBox } from "../tui/components/forge";
+import { formatForgeBox, scaleForgeWidth } from "../tui/components/forge";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth, OAUTH_PROVIDERS, API_KEY_ONLY_PROVIDERS, setApiKey } from "../auth";
 import type { AuthProvider } from "../auth";
@@ -470,7 +470,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     preamble + "\n\n" + protocol + "\n\n" +
     WORKING_DISCIPLINE + "\n\n" +
     OUTPUT_DISCIPLINE + "\n\n" +
-    "Before calling done, self-check: did I run the test or command that exercises this change, are directly-affected callsites/tests/docs updated, and does my claim match real output? If any answer is no, keep working — do not call done." +
+    VERIFICATION_DIRECTIVE +
     "\nWhen you have finished the user's request, or need to reply to or ask the user something, call done with {\"reason\": <your natural-language reply to the user>}. The reason text is shown to the user as your message." +
     (allowedTools.has("task") ? "\n\nDelegation: " + taskToolProtocolLine(cfg) +
     " Call task with {\"role\": <one of the advertised roles>, \"task\": <assignment>, \"context\": <optional>} to hand a focused slice to a subagent." : "") +
@@ -1194,7 +1194,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     {
       const card = formatForgeBox(
         { title: "[skill]", lines: skillInvocationCard(skill, intent) },
-        { width: Math.min(100, Math.max(40, (process.stdout.columns ?? 80) - 2)), unicode: supportsUnicode(), paint: accentPaint(uiTheme), paintShadow: accentShadowPaint(uiTheme), color: uiTheme.color },
+        { width: scaleForgeWidth(Math.min(100, Math.max(40, (process.stdout.columns ?? 80) - 2))), unicode: supportsUnicode(), paint: accentPaint(uiTheme), paintShadow: accentShadowPaint(uiTheme), color: uiTheme.color },
       );
       logLines(card);
     }

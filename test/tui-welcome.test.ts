@@ -82,8 +82,8 @@ test("hero column: brand, tagline, grand forge mark, centered", () => {
   const joined = lines.map(stripAnsi).join("\n");
   expect(joined).toContain("Jeo forge");
   expect(joined).toContain("evolve · act · prove");
-  // Grand symbol: check for the triple-spaced JEO wordmark unique to the large art block.
-  expect(joined).toContain("J   E   O");
+  // Grand symbol: the wide eyeglass-bridge bar is unique to the large line-board art block.
+  expect(joined).toContain("╭──────────────╮");
 });
 
 test("model + provider pills present", () => {
@@ -151,13 +151,13 @@ test("narrow box falls back to the compact forge mark", () => {
   const lines = renderWelcome({
     version: "1.2.3",
     model: "claude-3-5-sonnet",
-    cols: 30, // inner 28 < grand art width (29)
+    cols: 30, // inner 28 < grand art width (40), >= compact width (27)
     unicode: true,
     color: false,
   });
   const joined = lines.map(stripAnsi).join("\n");
-  expect(joined).toContain("J E O"); // compact lettermark (single-spaced)
-  expect(joined).not.toContain("J   E   O"); // not the grand wordmark (triple-spaced)
+  expect(joined).toContain("╭─────────╮"); // compact line-board bridge (9-wide)
+  expect(joined).not.toContain("╭──────────────╮"); // not the grand bridge (14-wide)
 });
 
 test("narrow cols (<30) -> single-line fallback", () => {

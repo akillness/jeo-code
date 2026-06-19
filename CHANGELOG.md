@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.33] - 2026-06-19
+_A redesigned `jeo` forge mark — a hollow line-board crayfish/eyeglass emblem drawn as thick rounded-corner tubes (no letters, no DNA helix) — that now renders inside compact-scaled forge cards, plus a unified verification directive that adds gjc's test-quality contract, and a fresh `jeo --tmux` no-leak re-verification._
+
+### Changed
+- **The forge mark is a hollow line-board emblem now.** `FORGE_MARK_ART`, its grand `FORGE_MARK_ART_GRAND` hero variant, the claw-snap blink frames (`FORGE_MARK_FRAMES`), and every ASCII fallback (`*_ASCII`) were redrawn as the `>-<` silhouette of two pincer CLAWS (집게) whose top arms bend inward toward a narrow central eyeglass-frame (안경태) BRIDGE — each stroke a thick rounded-corner tube (`╭╮╰╯` + `─│`, ASCII `.-'|`) so the shape reads as a heavy neon outline instead of a filled block. The old wordmark glyphs (`J E O`) and the `╳` DNA double-helix nodes are gone; every line stays width-1 and equal-width so the blue→violet→pink flow gradient and the padding/centering math are untouched.
+- **Forge cards render at a compact reduced width.** New `FORGE_SCALE` (1.2) + `scaleForgeWidth(available)` in `forge.ts` divide the caller's available column run down to a compact panel width (floored at 24). `app.ts` routes both the inline `flushForgeCard` and the static forge summary through it, so a card reads as a contained panel instead of stretching edge-to-edge with a dead right margin.
+- **One source for the done-time verification directive.** New `VERIFICATION_DIRECTIVE` constant in `engine.ts` replaces the string that was duplicated verbatim in `executorSystemPrompt`'s default and `launch.ts`'s interactive prompt. It folds in gjc's `<verification>` test-quality contract — written tests must exercise observable behavior, edge values, branch conditions, invariants, and error handling, never asserting defaults or tautologies — and `prompts/agents/executor.md` gains a matching constraint line.
+
+### Verified
+- **No bun memory leak / slowdown.** `scripts/mem-probe.ts` drove 2000 realistic LaunchTui turns: post-GC heap returns to baseline (per-turn slope **−480 bytes/turn**, net +3.28 MB held flat), with `exit`/`resize`/`SIGINT` process-listener counts stable (no accumulation).
+- **`jeo --tmux` live.** `scripts/tmux-verify.sh smoke` OK and `battery` **6/6 PASSED** (boot, `/help`, unknown `$skill` feedback, `/agents` roster, `$ultragoal` dispatch, unresolved `/command` report).
+- **Green gates.** `bun run typecheck` clean; `bun test` **1710 pass / 0 fail** across 211 files.
+
 ## [0.6.32] - 2026-06-19
 _Anthropic extended thinking is actually enabled now — the request finally sends a `thinking` block (adaptive for Opus/Sonnet 4.6+, budget for older), fixing reasoning on **opus-4-8** — plus a multi-token `/command`·`$skill` trigger highlight that paints every invocation and survives the trailing space, and a fresh `jeo --tmux` no-leak re-verification._
 

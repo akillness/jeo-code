@@ -412,52 +412,48 @@ export async function animateFrames(stage: AsciiStage, opts: AnimateFramesOption
   }
   return total;
 }
-/** The compact jeo forge mark: a clean, wordless pictograph of the mascot — the
- *  neon crayfish (가재) from assets/character.png, read for its signature feature:
- *  the two raised pincer CLAWS (집게). Read top→bottom: the open pincer jaws
- *  (◣◣ / ◢◢) reaching up, the claw arms (◆══╲ ╱══◆) angling into the body where
- *  the blue ◆ knuckles meet, the head with its glowing eye/terminal cluster
- *  (◉◉◉), then the rounded carapace/tail (╲▔▔╱). The mark is purely symbolic —
- *  NO embedded lettering (the brand wordmark lives in the welcome header, not
- *  under the emblem); the JEO identity is carried by the crayfish-claw silhouette
- *  alone. Width-1 glyphs only (box drawing + geometrics) so padding/centering
- *  math stays exact. Frame 0 is the static symbol. */
+/** The compact jeo forge mark: a horizontal lobster/crayfish (가재) emblem composed
+ *  of SIMPLE, DISCONNECTED shapes (no connecting strokes) that together read as the
+ *  mascot lying on its side, left→right: the raised pincer CLAWS (집게) as the splayed
+ *  corner wedges (◤◣ left, ◥◢ right), the body carrying the JEO wordmark (J E O), and
+ *  a DNA double-helix woven above and below as a row of crossing nodes (╳ = base-pair
+ *  crossings). gjc-forge aesthetic: clean negative space, geometric symmetry, the
+ *  blue→violet→pink flow gradient applied by renderForgeMark doing the neon glow. The
+ *  lobster identity is carried by the disconnected silhouette; the JEO typography is
+ *  the deliberate lettermark at the core. Width-1 glyphs only (box drawing + geometrics)
+ *  so padding/centering math stays exact. Frame 0 is the static symbol. */
 export const FORGE_MARK_ART: string[] = [
-  "    ◣◣     ◢◢       ",
-  "   ◆══╲   ╱══◆      ",
-  "      ╲◉◉◉╱         ",
-  "       ╲▔▔╱         "
+  "◤    ╳ ╳ ╳ ╳    ◥",
+  "❮     J E O     ▮",
+  "◣    ╳ ╳ ╳ ╳    ◢"
 ];
 
 export const FORGE_MARK_ART_ASCII: string[] = [
-  "    //     \\\\       ",
-  "   o==\\   /==o      ",
-  "      \\ooo/         ",
-  "       \\__/         "
+  "/    x x x x    \\",
+  "<     J E O     |",
+  "\\    x x x x    /"
 ];
 
-/** Claw-snap blink frames for the compact crayfish forge mark: the arms, head and
- *  carapace stay fixed while the two pincer jaws SNAP shut (◣◣/◢◢ open → ◢◣/◢◣
- *  closed), so the crayfish "clicks" its claws. Frame 0 === FORGE_MARK_ART, so a
- *  frameless render is byte-identical to the static symbol. All lines share the
- *  same width and width-1 glyphs. */
+/** Claw-snap blink frames for the compact lobster forge mark: the helix nodes, the
+ *  JEO body and the inner claw/tail glyphs stay fixed while the four splayed pincer
+ *  CORNERS snap (◤◣ / ◥◢ open → ◢◥ / ◣◤ closed), so the lobster "clicks" its claws.
+ *  Frame 0 === FORGE_MARK_ART, so a frameless render is byte-identical to the static
+ *  symbol. All lines share the same width and width-1 glyphs. */
 export const FORGE_MARK_FRAMES: string[][] = [
   FORGE_MARK_ART,
   [
-    "     ◢◣   ◢◣        ",
-    "   ◆══╲   ╱══◆      ",
-    "      ╲◉◉◉╱         ",
-    "       ╲▔▔╱         "
+    "◢    ╳ ╳ ╳ ╳    ◣",
+    "❮     J E O     ▮",
+    "◥    ╳ ╳ ╳ ╳    ◤"
   ]
 ];
 
 export const FORGE_MARK_FRAMES_ASCII: string[][] = [
   FORGE_MARK_ART_ASCII,
   [
-    "     ><   ><        ",
-    "   o==\\   /==o      ",
-    "      \\ooo/         ",
-    "       \\__/         "
+    "\\    x x x x    /",
+    "<     J E O     |",
+    "/    x x x x    \\"
   ]
 ];
 
@@ -466,24 +462,25 @@ export function forgeMarkFrameCount(): number {
   return FORGE_MARK_FRAMES.length;
 }
 
-/** Grand hero variant for the welcome forge box (gjc-style spacious banner): the
- *  same mascot crayfish rendered large and wordless — the two raised pincer claws
- *  (◣◣ / ◢◢, the 집게 feature) on wide arms (◆══╲ ╱══◆), the head with its glowing
- *  eye/terminal cluster (◉ ◉ ◉), and the broad rounded carapace/tail (╲▔▔▔▔▔╱).
- *  Purely symbolic — NO embedded lettering or caption. Width-1 glyphs only so
+/** Grand hero variant for the welcome forge box (gjc-style spacious banner): the same
+ *  horizontal lobster emblem rendered large — the splayed pincer claws as corner wedges
+ *  (◤◣ left, ◥◢ right), the JEO wordmark spaced across the body (J   E   O), and the DNA
+ *  double-helix woven above and below as a wider row of crossing nodes (╳). gjc-forge
+ *  aesthetic: generous negative space + geometric symmetry, with renderForgeMark's
+ *  blue→violet→pink flow gradient supplying the neon glow. The JEO typography is the
+ *  deliberate lettermark; the lobster reads from the disconnected silhouette. Width 29
+ *  (matches the welcome compact↔grand threshold) and width-1 glyphs only so
  *  padding/centering math stays exact. */
 export const FORGE_MARK_ART_GRAND: string[] = [
-  "      ◣◣            ◢◢        ",
-  "    ◆══╲            ╱══◆      ",
-  "        ╲  ◉ ◉ ◉  ╱           ",
-  "         ╲▔▔▔▔▔▔▔▔▔╱          "
+  "◤        ╳ ╳ ╳ ╳ ╳ ╳        ◥",
+  "❮         J   E   O         ▮",
+  "◣        ╳ ╳ ╳ ╳ ╳ ╳        ◢"
 ];
 
 export const FORGE_MARK_ART_GRAND_ASCII: string[] = [
-  "      //            \\\\        ",
-  "    o==\\            /==o      ",
-  "        \\  o o o  /           ",
-  "         \\_________/          "
+  "/        x x x x x x        \\",
+  "<         J   E   O         |",
+  "\\        x x x x x x        /"
 ];
 
 

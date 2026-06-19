@@ -254,8 +254,6 @@ export function providerPickEntries(live: ProviderModelsResult[], want: Provider
   return fallback ? [{ index: 1, provider: want, model: qualifyModelId(fallback, want) }] : [];
 }
 
-
-
 export function formatResumeHint(sessionId: string): string {
   return `Resume with: jeo launch --resume ${sessionId}`;
 }

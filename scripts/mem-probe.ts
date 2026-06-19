@@ -105,7 +105,16 @@ for (const s of samples) {
 const slopeMBPerTurn = den === 0 ? 0 : num / den;
 const slopeBytesPerTurn = slopeMBPerTurn * 1024 * 1024;
 const lastMB = samples[n - 1]!.heapMB;
-const netGrowthMB = lastMB - baselineMB;
+// Bun's incremental GC leaves the per-sample heap BIMODAL: a sample lands either on
+// the settled floor (a turn's churn already collected) or on a transient peak (the
+// most-recent batch's garbage not yet reclaimed when Bun.gc(true) returned). The
+// TRUE retained-memory figure is the floor — the minimum settled heap the run keeps
+// returning to. A real per-turn leak raises that floor monotonically; GC jitter only
+// raises the peaks. Gate net growth on the settled floor (min over the trailing half
+// of samples) so a final sample that happens to land on a peak can't false-positive.
+const trailing = samples.slice(Math.floor(n / 2));
+const settledFloorMB = Math.min(...trailing.map(s => s.heapMB));
+const netGrowthMB = settledFloorMB - baselineMB;
 
 const exitGrew = process.listenerCount("exit") - exitBefore;
 const resizeGrew = process.stdout.listenerCount("resize") - resizeBefore;
@@ -119,7 +128,8 @@ for (const s of samples) {
 console.log("");
 console.log(`  baseline heap (post-warmup, post-GC): ${baselineMB.toFixed(2)} MB`);
 console.log(`  final heap (post-GC):                 ${lastMB.toFixed(2)} MB`);
-console.log(`  net heap growth over run:             ${netGrowthMB >= 0 ? "+" : ""}${netGrowthMB.toFixed(2)} MB`);
+console.log(`  settled floor (min, trailing half):   ${settledFloorMB.toFixed(2)} MB`);
+console.log(`  net heap growth over run (vs floor):  ${netGrowthMB >= 0 ? "+" : ""}${netGrowthMB.toFixed(2)} MB`);
 console.log(`  per-turn heap slope:                  ${slopeBytesPerTurn >= 0 ? "+" : ""}${slopeBytesPerTurn.toFixed(0)} bytes/turn`);
 console.log(`  process listener deltas:              exit ${exitGrew >= 0 ? "+" : ""}${exitGrew}, resize ${resizeGrew >= 0 ? "+" : ""}${resizeGrew}, SIGINT ${sigintGrew >= 0 ? "+" : ""}${sigintGrew}`);
 

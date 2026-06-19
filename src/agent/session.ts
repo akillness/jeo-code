@@ -10,6 +10,9 @@ export interface SessionHeader {
   timestamp: string;
   cwd: string;
   title?: string;
+  /** Model id pinned to this session; restored on resume so each session can carry
+   *  its own model independent of the global default (per-session model selection). */
+  model?: string;
 }
 
 export interface SessionEntry {
@@ -35,6 +38,8 @@ export interface SessionSummary {
   /** Session file size in bytes (for the resume picker's metadata line). */
   sizeBytes?: number;
   title?: string;
+  /** Model id pinned to this session (header `model`), if any. */
+  model?: string;
 }
 
 export const SESSION_VERSION = 1;
@@ -53,7 +58,8 @@ export function sessionPath(id: string, cwd = process.cwd()): string {
 
 export async function createSession(
   cwd = process.cwd(),
-  id = newSessionId()
+  id = newSessionId(),
+  model?: string
 ): Promise<{ id: string; path: string }> {
   const dir = sessionsDir(cwd);
   await fs.mkdir(dir, { recursive: true });
@@ -64,6 +70,7 @@ export async function createSession(
     id,
     timestamp: new Date().toISOString(),
     cwd,
+    ...(model ? { model } : {}),
   };
 
   const file = sessionPath(id, cwd);
@@ -292,6 +299,7 @@ export async function listSessions(cwd = process.cwd()): Promise<SessionSummary[
         mtimeMs: stat.mtimeMs,
         sizeBytes: stat.size,
         title: header.title,
+        model: header.model,
       });
     } catch {
       // Tolerate malformed files (skip them)
@@ -309,10 +317,16 @@ export async function latestSessionId(cwd = process.cwd()): Promise<string | und
 }
 
 /**
- * Rename a session by updating the title in its JSONL header.
- * Throws a clear Error if the session file does not exist.
+ * Locate the session's JSONL header, apply `mutate`, and rewrite the file in place.
+ * `mutate` returns false to signal "no change needed" (skips the write). Shared by
+ * {@link renameSession} and {@link updateSessionModel}. Throws a clear Error when the
+ * session file or its header is missing.
  */
-export async function renameSession(id: string, title: string, cwd = process.cwd()): Promise<void> {
+async function rewriteSessionHeader(
+  id: string,
+  mutate: (header: SessionHeader) => boolean,
+  cwd: string,
+): Promise<void> {
   const file = sessionPath(id, cwd);
   let content: string;
   try {
@@ -347,9 +361,33 @@ export async function renameSession(id: string, title: string, cwd = process.cwd
     throw new Error(`Session header missing in session ${id}`);
   }
 
-  header.title = title;
+  if (!mutate(header)) return;
   lines[headerIndex] = JSON.stringify(header);
   await fs.writeFile(file, lines.join("\n"), "utf8");
+}
+
+/**
+ * Rename a session by updating the title in its JSONL header.
+ * Throws a clear Error if the session file does not exist.
+ */
+export async function renameSession(id: string, title: string, cwd = process.cwd()): Promise<void> {
+  await rewriteSessionHeader(id, header => {
+    header.title = title;
+    return true;
+  }, cwd);
+}
+
+/**
+ * Pin a model to a session by updating the `model` field in its JSONL header so a
+ * later `/resume` restores it. No-op (no write) when the header already names that
+ * model. Throws a clear Error if the session file does not exist.
+ */
+export async function updateSessionModel(id: string, model: string, cwd = process.cwd()): Promise<void> {
+  await rewriteSessionHeader(id, header => {
+    if (header.model === model) return false;
+    header.model = model;
+    return true;
+  }, cwd);
 }
 
 /**

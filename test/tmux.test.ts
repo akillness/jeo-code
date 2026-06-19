@@ -314,6 +314,17 @@ test("tmuxSessionName: same branch + different dirs get INDEPENDENT sessions (no
   expect(tmuxSessionName("/a/proj", "main", flags)).not.toBe(tmuxSessionName("/b/proj", "main", flags));
 });
 
+test("tmuxSessionName: truncated long basenames never produce a double dash", () => {
+  const flags = parseFlags([]);
+  // Basename whose 16-char truncation boundary lands right after a `-` used to
+  // yield `jeo-tmux--<hash>` (double dash). The head dash must be trimmed.
+  const name = tmuxSessionName("/tmp/jeo-tmux-verify.fOxasL", "verifybr", flags);
+  expect(name.startsWith("jeo-verifybr-")).toBe(true);
+  expect(name).not.toContain("--");
+  // A clean basename (no truncation) is unaffected.
+  expect(tmuxSessionName("/home/u/my-app", "main", flags)).not.toContain("--");
+});
+
 test("shouldEnableCurrentTmuxMouse: only inside a foreign tmux session, opt-out honored", () => {
   // Inside the user's own tmux (jeo created no session): enable wheel scrolling.
   expect(shouldEnableCurrentTmuxMouse({ TMUX: "/tmp/tmux-1/default,123,0" })).toBe(true);
@@ -447,3 +458,96 @@ test("tmuxLaunchCommand: source runs re-enter through the runtime; shims run dir
   expect(tmuxLaunchCommand("src/cli.ts", "/usr/local/bin/bun", "/repo")).toEqual(["/usr/local/bin/bun", "/repo/src/cli.ts"]);
   expect(tmuxLaunchCommand("/Users/me/.local/bin/jeo", "/usr/local/bin/bun", "/repo")).toEqual(["/Users/me/.local/bin/jeo"]);
 });
+
+test("tmux attach failure is surfaced with a reattach hint when the session is still live", async () => {
+  const originalWhich = Bun.which;
+  const originalSpawnSync = Bun.spawnSync;
+  const originalSpawn = Bun.spawn;
+  const originalError = console.error;
+  const originalEnv = { ...process.env };
+  const originalExitCode = process.exitCode;
+  const errors: string[] = [];
+  let hasSessionProbed = false;
+
+  try {
+    console.error = (...args: unknown[]) => { errors.push(args.join(" ")); };
+    Bun.which = (bin: string) => (bin === "tmux" ? "/usr/local/bin/tmux" : originalWhich(bin));
+    Bun.spawnSync = ((cmd: any) => {
+      const command = Array.isArray(cmd) ? cmd : [cmd];
+      if (command[0] === "git" && command[1] === "symbolic-ref") {
+        return { exitCode: 0, stdout: Buffer.from("main\n"), stderr: Buffer.from("") } as any;
+      }
+      if (command[0] === "/usr/local/bin/tmux" && command[1] === "has-session") {
+        hasSessionProbed = true;
+        return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as any; // still alive
+      }
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as any;
+    }) as any;
+    // attach-session fails (e.g. not a real terminal).
+    Bun.spawn = (() => ({ exited: Promise.resolve(1) })) as any;
+
+    delete process.env.TMUX;
+    delete process.env.JEO_TMUX_LAUNCHED;
+    process.exitCode = undefined;
+
+    await runLaunchCommand(["--tmux", "--no-session", "--no-tui", "hello"]);
+
+    const joined = errors.join("\n");
+    expect(joined).toContain("tmux attach failed (exit 1)");
+    expect(joined).toMatch(/reattach with: tmux attach -t jeo-main-/);
+    expect(hasSessionProbed).toBe(true);
+    expect(process.exitCode).toBe(1);
+  } finally {
+    Bun.which = originalWhich;
+    Bun.spawnSync = originalSpawnSync;
+    Bun.spawn = originalSpawn;
+    console.error = originalError;
+    process.env = originalEnv;
+    process.exitCode = originalExitCode;
+  }
+});
+
+test("tmux attach failure on a dead session reports the session ended (no misleading reattach)", async () => {
+  const originalWhich = Bun.which;
+  const originalSpawnSync = Bun.spawnSync;
+  const originalSpawn = Bun.spawn;
+  const originalError = console.error;
+  const originalEnv = { ...process.env };
+  const originalExitCode = process.exitCode;
+  const errors: string[] = [];
+
+  try {
+    console.error = (...args: unknown[]) => { errors.push(args.join(" ")); };
+    Bun.which = (bin: string) => (bin === "tmux" ? "/usr/local/bin/tmux" : originalWhich(bin));
+    Bun.spawnSync = ((cmd: any) => {
+      const command = Array.isArray(cmd) ? cmd : [cmd];
+      if (command[0] === "git" && command[1] === "symbolic-ref") {
+        return { exitCode: 0, stdout: Buffer.from("main\n"), stderr: Buffer.from("") } as any;
+      }
+      if (command[0] === "/usr/local/bin/tmux" && command[1] === "has-session") {
+        return { exitCode: 1, stdout: Buffer.from(""), stderr: Buffer.from("") } as any; // gone
+      }
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as any;
+    }) as any;
+    Bun.spawn = (() => ({ exited: Promise.resolve(1) })) as any;
+
+    delete process.env.TMUX;
+    delete process.env.JEO_TMUX_LAUNCHED;
+    process.exitCode = undefined;
+
+    await runLaunchCommand(["--tmux", "--no-session", "--no-tui", "hello"]);
+
+    const joined = errors.join("\n");
+    expect(joined).toMatch(/ended before it could be attached/);
+    expect(joined).not.toContain("reattach with");
+    expect(process.exitCode).toBe(1);
+  } finally {
+    Bun.which = originalWhich;
+    Bun.spawnSync = originalSpawnSync;
+    Bun.spawn = originalSpawn;
+    console.error = originalError;
+    process.env = originalEnv;
+    process.exitCode = originalExitCode;
+  }
+});
+

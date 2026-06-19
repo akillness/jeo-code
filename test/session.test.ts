@@ -13,6 +13,7 @@ import {
   sessionsDir,
   newSessionId,
   renameSession,
+  updateSessionModel,
   deleteSession
 } from "../src/agent/session";
 
@@ -253,6 +254,53 @@ test("listSessions uses lightweight parser (avoids full JSON.parse)", async () =
     // With lightweight parser, it should only parse the header, look for compaction (none), and first user message.
     // So parseCalls should be exactly 2 (or very low).
     expect(parseCalls).toBeLessThanOrEqual(5);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("per-session model: createSession persists it, loadSession + listSessions restore it", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-sess-model-"));
+  try {
+    // 1. createSession without a model leaves the header `model` undefined.
+    const idA = newSessionId();
+    await createSession(tempDir, idA);
+    const loadedA = await loadSession(idA, tempDir);
+    expect(loadedA.header.model).toBeUndefined();
+
+    // 2. createSession with a model pins it into the header and round-trips.
+    const idB = newSessionId();
+    await createSession(tempDir, idB, "anthropic/claude-sonnet-4-5");
+    const loadedB = await loadSession(idB, tempDir);
+    expect(loadedB.header.model).toBe("anthropic/claude-sonnet-4-5");
+
+    // 3. updateSessionModel rewrites the header model in place (no message loss).
+    await appendMessage(idB, { role: "user", content: "hi" }, tempDir);
+    await updateSessionModel(idB, "openai/gpt-5.5", tempDir);
+    const afterUpdate = await loadSession(idB, tempDir);
+    expect(afterUpdate.header.model).toBe("openai/gpt-5.5");
+    expect(afterUpdate.messages.length).toBe(1);
+    expect(afterUpdate.messages[0].content).toBe("hi");
+
+    // 4. updateSessionModel is a no-op when the model is unchanged (file byte-identical).
+    const before = await fs.readFile(sessionPath(idB, tempDir), "utf8");
+    await updateSessionModel(idB, "openai/gpt-5.5", tempDir);
+    const after = await fs.readFile(sessionPath(idB, tempDir), "utf8");
+    expect(after).toBe(before);
+
+    // 5. listSessions surfaces the pinned model in its summary.
+    const list = await listSessions(tempDir);
+    const summaryB = list.find(s => s.id === idB);
+    expect(summaryB?.model).toBe("openai/gpt-5.5");
+
+    // 6. updateSessionModel throws a clear error for a missing session.
+    let threw = false;
+    try {
+      await updateSessionModel("does-not-exist", "x", tempDir);
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

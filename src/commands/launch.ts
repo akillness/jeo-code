@@ -91,6 +91,7 @@ import {
   latestSessionId,
   exportSession,
   renameSession,
+  updateSessionModel,
   deleteSession,
   sessionPath,
   appendCompaction,
@@ -383,8 +384,27 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           stdout: "inherit",
           stderr: "inherit",
         });
-        await attach.exited;
+        // A nonzero attach exit (e.g. "open terminal failed: not a terminal" when
+        // stdout isn't a real TTY, a too-small client, or a transient server error)
+        // otherwise vanished: jeo returned 0 and the freshly created session was left
+        // orphaned with no hint. Surface it. Only advise reattach when the session is
+        // STILL live — if the inner jeo already exited (bad args, instant crash) the
+        // session is gone and "reattach" would be misleading.
+        const attachCode = await attach.exited;
+        if (attachCode !== 0) {
+          const alive = Bun.spawnSync([tmuxBin, "has-session", "-t", `=${sessionName}`], {
+            stdout: "ignore",
+            stderr: "ignore",
+          }).exitCode === 0;
+          console.error(
+            alive
+              ? `Error: tmux attach failed (exit ${attachCode}). The session is still running; reattach with: tmux attach -t ${sessionName}`
+              : `Error: tmux session ${sessionName} ended before it could be attached (attach exit ${attachCode}).`,
+          );
+          process.exitCode = attachCode;
+        }
         return;
+
       } else {
         console.warn("warning: tmux is not available on PATH. Launching directly...");
       }
@@ -411,7 +431,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     console.log("Saved sessions (newest first):");
     for (const s of sessions) {
-      console.log(`  ${s.id}  ${s.timestamp}  (${s.messageCount} msgs)  ${s.preview}`);
+      console.log(`  ${s.id}  ${s.timestamp}  (${s.messageCount} msgs)${s.model ? `  [${s.model}]` : ""}  ${s.preview}`);
     }
     console.log("\nResume with: jeo launch --resume <id>");
     return;
@@ -588,22 +608,36 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       const id = flags.resumeId ?? (await latestSessionId(cwd));
       if (!id) {
         console.log("No session to resume. Starting a new one.");
-        sessionId = (await createSession(cwd)).id;
+        sessionId = (await createSession(cwd, undefined, sessionModel)).id;
       } else {
         try {
-          const { messages } = await loadSession(id, cwd);
+          const { header, messages } = await loadSession(id, cwd);
           for (const m of messages) history.push(m);
           sessionId = id;
-          console.log(`Resumed session ${id} (${messages.length} messages).`);
+          // Restore the model this session was last using unless the CLI explicitly
+          // pinned one (flags.model/role/provider → initialSessionModel wins).
+          if (!initialSessionModel && header.model) sessionModel = header.model;
+          const modelNote = sessionModel ? ` · model ${sessionModel}` : "";
+          console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
         } catch (err) {
           console.log(`Could not resume ${id}: ${(err as Error).message}. Starting fresh.`);
-          sessionId = (await createSession(cwd)).id;
+          sessionId = (await createSession(cwd, undefined, sessionModel)).id;
         }
       }
     } else {
-      sessionId = (await createSession(cwd)).id;
+      sessionId = (await createSession(cwd, undefined, sessionModel)).id;
     }
   }
+
+  // Persist the active per-session model into the session header so `/resume` restores
+  // it (each session can carry its own model independent of the global default).
+  // Best-effort: a header-rewrite failure must never abort the turn.
+  const persistSessionModel = async (): Promise<void> => {
+    if (flags.noSession || !sessionId || !sessionModel) return;
+    try {
+      await updateSessionModel(sessionId, sessionModel, cwd);
+    } catch { /* best-effort */ }
+  };
 
   // `step N/M` display seed: the explicit --max-steps cap, else the dynamic budget's
   // rolling base — the engine's onBudget event keeps the denominator honest as it grows.
@@ -1007,7 +1041,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         history.length = 1;
         if (sessionId && !flags.noSession) {
           try {
-            sessionId = (await createSession(cwd)).id;
+            sessionId = (await createSession(cwd, undefined, sessionModel)).id;
           } catch { /* best-effort: in-memory clear already done */ }
         }
         console.log("(history cleared)");
@@ -2317,6 +2351,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const { resolved, provider } = await describeModel(target);
     const st = (await describeAllProviders(cfgForPick)).find(s => s.name === provider);
     sessionModel = target;
+    await persistSessionModel();
     const defaultThinking = isThinkingLevel(action) ? action : undefined;
     if (defaultThinking) {
       sessionThinking = defaultThinking;
@@ -2873,7 +2908,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const startFreshSession = async (verb: string): Promise<void> => {
           history.length = 1;
           if (!flags.noSession) {
-            sessionId = (await createSession(cwd)).id;
+            sessionId = (await createSession(cwd, undefined, sessionModel)).id;
             advanceSessionBoxColor(); // distinct input-box hue per newly opened session
             console.log(`(${verb} — new session ${sessionId})`);
           } else {
@@ -2916,10 +2951,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           const arg = tokens.slice(1).join(" ").trim();
           const applyResume = async (rid: string): Promise<void> => {
             try {
-              const { messages } = await loadSession(rid, cwd);
+              const { header, messages } = await loadSession(rid, cwd);
               history.length = 1;
               for (const m of messages) history.push(m);
               sessionId = rid;
+              // Restore the model this session was last using (per-session model).
+              if (header.model) sessionModel = header.model;
               // Seed /retry + reply marker from the last user/assistant turn.
               lastUserInput = ""; lastReply = "";
               for (let k = history.length - 1; k >= 1; k--) {
@@ -3497,6 +3534,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             const qualified = qualifyModelId(modelArg, "openai");
             sessionModel = qualified;
             await saveConfigPatch(raw => rememberModelPatch(raw, qualified));
+            await persistSessionModel();
             console.log(`OpenAI-compatible endpoint set: ${url} · default model ${qualified} — saved to ~/.jeo/config.json.`);
           } else {
             console.log(`OpenAI-compatible endpoint set: ${url} — saved to ~/.jeo/config.json.`);
@@ -4012,6 +4050,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // MRU persistence: picking a model IS saving it — the newest pick wins
           // as the global default; recents keep the rotation for every session.
           await saveConfigPatch(raw => rememberModelPatch(raw, arg));
+          await persistSessionModel();
         }
         const { resolved, provider } = await describeModel(label);
         const st = statuses.find(s => s.name === provider);

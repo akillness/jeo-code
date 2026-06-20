@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.38] - 2026-06-21
+_The OKF concept-bundle memory no longer silently drops what it learns: a legacy single-doc `MEMORY.md` (or a text-only distill fallback) can no longer shadow the concept bundle, break OKF conformance, or lose a turn's learnings — its content is folded into the concept merge and the stale blob is archived. Re-verified leak-free (`mem-probe`, 2000 turns, −570 bytes/turn slope) with a fresh `jeo --tmux` boot battery (6/6)._
+
+### Fixed
+- **A text-only distill fallback no longer loses the turn's learnings.** When the model returns no extractable JSON, `distillSessionMemory` used to write the raw text to a single-doc `MEMORY.md` blob — but `memoryPromptSection` injects that blob ONLY when the concept bundle is empty (concepts always win), so once any concept existed the fallback's learnings were recorded yet never injected. Now, if a concept bundle already exists, the dead blob is suppressed and the prior concepts are kept as the durable memory (`skipped: "distill produced no JSON; kept existing concept bundle (legacy blob suppressed)"`).
+- **A lingering legacy `MEMORY.md` can no longer break OKF conformance.** A frontmatter-less single-doc `MEMORY.md` coexisting with the concept bundle made `validateBundle` non-conformant (`error: concept document missing YAML frontmatter block`) while the loader silently skipped it — an inconsistency that left the bundle permanently invalid (`migrateLegacyMemory` only runs on the explicit `jeo memory-migrate`). Distill now feeds the legacy doc's content into the concept-merge context so its learnings are absorbed, then archives it to `MEMORY.md.bak` on a successful JSON distill — off the active read path, with rollback preserved.
+- **Concept enumeration skips non-concept blobs.** `existingConcepts` now skips any `.md` without YAML frontmatter, so a stray `MEMORY.md` can never be mis-parsed as a concept during the merge.
+
+### Changed
+- **Distill prompt enforces concept granularity.** The merge prompt now forbids a catch-all "Project Memory Bundle" mega-concept and instructs one concept per distinct fact/command/gotcha/preference, so the bundle grows as discrete, cross-linkable concepts.
+- **Per-session injection budget raised** from 3,000 to 5,000 chars (`MEMORY_INJECT_MAX_CHARS`) so a healthy multi-concept bundle is injected in full.
+
+### Verified
+- `bun run typecheck` clean; full suite `1751 pass / 0 fail` (216 files).
+- Memory/OKF suites `57 pass / 0 fail` across `memory`, `memory-okf`, `memory-distill-okf`, `memory-migration-okf`, `memory-search-okf`, `memory-graph-okf`.
+- Live bundle proof: `validateBundle` flips `false (error: MEMORY.md)` → `true (no issues)` after the legacy archive, injection block intact (3,220 chars); bundle now holds discrete facts/commands/gotchas/preferences concepts + a valid `index.md`.
+- `scripts/mem-probe.ts` (2000 turns × 40 tools) reports no long-term leak (−570 bytes/turn, exit-listeners flat at 1); `scripts/tmux-verify.sh battery` passes 6/6 on a fresh `jeo --tmux` boot.
+
+
 ## [0.6.37] - 2026-06-20
 _Two dead-end fixes: the boxed prompt's ↑/↓ now recalls input history on a soft-wrapped one-liner (only a genuine multi-line draft gets in-box caret nav), and every terminating Spec-first stage (deep-interview, ralplan, team) now surfaces a user-visible answer instead of silently stalling — re-verified leak-free (`mem-probe`) with a fresh `jeo --tmux` boot._
 

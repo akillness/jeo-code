@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { type LaunchFlags } from "./flags";
+import { tmuxCopyCommand } from "../../tui/clipboard";
 
 function hashString(input: string): string {
   let hash = 2166136261;
@@ -155,6 +156,7 @@ export function tmuxProfileCommands(
   target: string,
   env: Record<string, string | undefined>,
   meta: { branch?: string; project?: string } = {},
+  deps: { platform?: NodeJS.Platform; which?: (bin: string) => string | null } = {},
 ): TmuxProfileCommand[] {
   const t = `=${target}:`;
   const commands: TmuxProfileCommand[] = [];
@@ -191,7 +193,20 @@ export function tmuxProfileCommands(
         args: ["set-window-option", "-t", t, "mode-style", "fg=colour231,bg=colour60"],
       },
     );
+    // Pipe the copy-mode selection straight to the SYSTEM clipboard tool
+    // (pbcopy / wl-copy / xclip / xsel). With `mouse on`, a mouse drag-select
+    // releases into copy-mode and `copy-command` lands it on the OS clipboard —
+    // so a tmux drag-select copies for `cmd+v` even where the outer terminal
+    // doesn't honor OSC 52. Skipped when no clipboard tool is on PATH.
+    const copyCmd = tmuxCopyCommand(deps.platform ?? process.platform, deps.which ?? ((bin: string) => Bun.which(bin)));
+    if (copyCmd) {
+      commands.push({
+        description: "pipe copy-mode selection to the system clipboard",
+        args: ["set-option", "-t", t, "copy-command", copyCmd],
+      });
+    }
   }
+
   return commands;
 }
 

@@ -15,11 +15,14 @@ export function hotkeysLines(): string[] {
     "  Ctrl-C     cancel the in-flight turn (press again at the prompt to exit)",
     "  Ctrl-D     exit the REPL",
     "  Ctrl-O     dump the full last response (untruncated, tables rendered) into scrollback",
+    "  Ctrl-L     redraw / re-anchor the prompt (recover the input box after the screen scrolls)",
     "  Ctrl-K / Ctrl-U / Ctrl-W   kill to end / start of line / previous word (emacs kill-ring)",
     "  Ctrl-Y / Alt-Y             yank / yank-pop the killed text",
     "  Ctrl-A / Ctrl-E            move to start / end of line",
     "  /          open the slash-command palette",
     "  @path      mention a file (Tab completes relative paths)",
+    "  Ctrl-V     paste a copied image from the clipboard into the next message",
+    "  drag-drop  drop an image file onto the box to attach it (its path becomes [image #N])",
   ];
 }
 

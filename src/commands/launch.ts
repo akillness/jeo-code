@@ -67,7 +67,9 @@ import { renderInputFrame, verticalCursorOffset, type HighlightRange } from "../
 import { renderStatusBar } from "../tui/components/status";
 import { detectColorLevel, ColorLevel, visibleWidth } from "../tui/components/color";
 import { readClipboardImage } from "../util/clipboard-image";
+import { attachImagePaths } from "../util/file-attachment";
 import { formatTranscript } from "../tui/components/transcript";
+import { copyTextToClipboard } from "../tui/clipboard";
 import { loadInputHistory, appendInputHistory } from "../agent/input-history";
 import type { ImageAttachment } from "../ai/types";
 import { renderMarkdownTables } from "../tui/components/markdown-table";
@@ -96,7 +98,7 @@ import {
   sessionPath,
   appendCompaction,
 } from "../agent/session";
-import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize, resetMouseTracking, clearScreen, clearToEnd } from "../tui/terminal";
+import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize, resetMouseTracking, clearScreen, clearVisible, clearToEnd } from "../tui/terminal";
 
 import {
   type LaunchFlags,
@@ -138,6 +140,7 @@ import {
   restoreQueuedLinesToPrefill,
   createInFlightAbortHarness,
   classifyMidTurnLine,
+  decideCtrlC,
 } from "./launch/input";
 import {
   gatedStdout,
@@ -1445,6 +1448,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           out += data.slice(i, i + 3); i += 3; continue;
         }
         if (loneLfShiftEnter && data[i] === "\n") { out += SENTINEL; i += 1; continue; } // lone LF = Shift+Enter (opt-in)
+        // Ctrl+L (form feed): consumed as the prompt "redraw / re-anchor" hotkey (handled on
+        // the process.stdin 'keypress' listener), so it must never reach readline as a literal
+        // char that would otherwise insert garbage / desync the box from rl.line.
+        if (data[i] === "\u000c") { i += 1; continue; }
         out += data[i]; i += 1;
       }
       kf.write(out);
@@ -2008,13 +2015,48 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     out.write(s);
   };
 
-  // ESC at the prompt: wipe the typed text (and detach any pending clipboard
-  // images — their `[image #N]` tags live in that text) instead of leaving stale
-  // input. Ctrl+C is no longer a line editor shortcut; it hard-exits below.
+  // Ctrl-L "redraw / re-anchor" recovery. The boxed footer paints IN PLACE relative to
+  // the last parked cursor row; if the terminal scrolled for any reason the app did not
+  // drive (a stray async stdout write, a tmux pane reflow, a wheel-scroll past the margin),
+  // that anchor goes stale and subsequent repaints land on the wrong rows — the box looks
+  // frozen and typed text never appears, even though readline IS still capturing every key
+  // ("화면이 밀려서 입력이 안 보이는" 상태). This wipes the VISIBLE screen (scrollback kept),
+  // re-reserves the footer at the top, and repaints from readline's live buffer, so the box
+  // and caret snap back and whatever was already typed shows immediately.
+  const redrawPromptFooter = () => {
+    if (!previewArmed) return;
+    try {
+      const rows = process.stdout.rows ?? 24;
+      footerRendered = 0;
+      footerParkedRow = 0;
+      lastFooterKey = "";
+      lastDrawnLines = [];
+      out.write(clearVisible());
+      footerRows = previewRowsFor(rows);
+      const initial = Math.max(1, Math.min(footerRows, COMPACT_FOOTER_ROWS));
+      if (initial > 1) out.write("\n".repeat(initial - 1) + cursorUp(initial - 1));
+      out.write(toColumn(1));
+      footerRendered = initial;
+      footerWantRows = initial;
+      drawFooter(promptHistoryLines ? historyPreviewLines(promptHistoryLines) : previewLines(typedLine, navIdx));
+    } catch { /* ignore redraw races */ }
+  };
+
+  // ESC — and a FIRST Ctrl+C while the box is non-empty — wipe the typed text (and
+  // detach any pending clipboard images, whose `[image #N]` tags live in that text)
+  // instead of leaving stale input. A Ctrl+C on the already-empty box hard-exits
+  // (see handleCtrlC below).
+  /** True when the prompt box holds anything a clear/Ctrl+C would discard: typed
+   *  text, a pending clipboard image, or a queued pasted batch. Single source of the
+   *  "is there input?" predicate shared by clearTypedInput and the Ctrl+C decision. */
+  const promptHasContent = (): boolean => {
+    const line = (rl as unknown as { line?: string }).line;
+    return (line?.length ?? 0) > 0 || pendingImages.length > 0 || queuedPromptInput.pastedLines.length > 0;
+  };
   const clearTypedInput = (): boolean => {
     const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
     const hadPastedQueue = queuedPromptInput.pastedLines.length > 0;
-    if ((rli.line?.length ?? 0) === 0 && pendingImages.length === 0 && !hadPastedQueue) return false;
+    if (!promptHasContent()) return false;
     // ESC is the escape hatch for an accidental giant paste: drop the queued batch.
     if (hadPastedQueue) {
       const dropped = queuedPromptInput.pastedLines.splice(0).length;
@@ -2031,9 +2073,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (previewArmed) drawFooter(previewLines(""));
     return true;
   };
-  // Ctrl+C at the prompt is a hard terminal break (exit code 130), not a line
+  // A Ctrl+C on an EMPTY prompt is a hard terminal break (exit code 130), not a line
   // editor shortcut. `/exit` remains the graceful session-save path; ^C is the
-  // emergency "get me back to my shell now" path and must work on the first press.
+  // emergency "get me back to my shell now" path. A first Ctrl+C with text in the box
+  // CLEARS it instead (handleCtrlC); the next Ctrl+C on the now-empty box exits.
   const forceExitFromCtrlC = () => {
     try {
       disarmPreview();
@@ -2044,15 +2087,28 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     process.exit(130);
   };
-  const forceExitOnCtrlCByte = (chunk: string | Uint8Array) => {
+  // Prompt Ctrl+C: a single press clears a non-empty box; on an empty box it exits.
+  // `lastCtrlCAt` collapses the duplicate deliveries of one physical press (keypress
+  // + SIGINT + raw byte) so a single Ctrl+C can't clear AND then immediately exit.
+  let lastCtrlCAt = 0;
+  const handleCtrlC = () => {
+    const now = Date.now();
+    const action = decideCtrlC(promptHasContent(), now - lastCtrlCAt);
+    if (action === "ignore") return; // duplicate delivery of the same press
+    lastCtrlCAt = now;
+    if (action === "clear") clearTypedInput(); // had input → wipe it, stay at the prompt
+    else forceExitFromCtrlC(); // empty → hard exit (130)
+  };
+  const handleCtrlCByte = (chunk: string | Uint8Array) => {
     const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    if (text.includes("\u0003")) forceExitFromCtrlC();
+    if (text.includes("\u0003")) handleCtrlC();
   };
   // Bun/readline can deliver Ctrl+C as readline SIGINT, process SIGINT, or (tmux)
-  // a raw \u0003 byte before readline resolves the question; wire all three.
-  process.on("SIGINT", forceExitFromCtrlC);
-  process.stdin.on("data", forceExitOnCtrlCByte);
-  rl.on("SIGINT", forceExitFromCtrlC);
+  // a raw \u0003 byte before readline resolves the question; funnel all three through
+  // handleCtrlC (clear-or-exit + de-duplication) so the behavior is identical.
+  process.on("SIGINT", handleCtrlC);
+  process.stdin.on("data", handleCtrlCByte);
+  rl.on("SIGINT", handleCtrlC);
 
   const runSelectPicker = async <T>(
     render: (cols: number, rows: number) => string[],
@@ -2519,10 +2575,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     process.once("exit", () => out.write("\x1b[?25h")); // safety net: never leave the cursor hidden
     const footerKeypressHandler = (_ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
       if (key?.ctrl && key.name === "c") {
-        forceExitFromCtrlC();
+        handleCtrlC();
         return;
       }
       if (!previewArmed || pickerActive) return;
+      // Ctrl+L: redraw / re-anchor the prompt. The recovery for a footer whose in-place
+      // anchor drifted after the screen scrolled (typed text stops showing in the box).
+      if (key?.ctrl && key.name === "l") {
+        redrawPromptFooter();
+        return;
+      }
       // Ctrl+O: toggle a reversible, scrollable detail panel inside the footer
       // (expand on the first press, FOLD on the next). ↑↓/PgUp/PgDn scroll it while
       // open — long/CJK content is fully reachable, nothing is clipped. The live-turn
@@ -2592,7 +2654,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         clearTypedInput();
         return;
       }
-      // Ctrl+C hard-exits above; keep this guard for defensive ordering only.
+      // Ctrl+C is handled above (clear-or-exit); keep this guard for defensive ordering only.
       if (key?.ctrl && key.name === "c") return;
       previewPending = true;
       setImmediate(() => {
@@ -2840,6 +2902,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       pendingSelection = undefined;
       navMatches = [];
       navIdx = -1;
+      // File attachment: a dragged-and-dropped image file arrives as its path in
+      // the typed text. Read any image path(s), attach them, and swap the path for
+      // an [image #N] tag (continuing the clipboard-image numbering) — the same
+      // scheme Ctrl+V uses. Skipped for slash commands and `!` shell escapes.
+      if (input && !input.startsWith("/") && !input.startsWith("!")) {
+        const dropped = await attachImagePaths(input, pendingImages.length + 1);
+        if (dropped.images.length > 0) {
+          pendingImages.push(...dropped.images);
+          input = dropped.text;
+          console.log(chalk.dim(`(attached ${dropped.images.length} image file${dropped.images.length > 1 ? "s" : ""} from path)`));
+        }
+      }
       if (input === "/exit" || input === "/quit") break;
       if (input === "") {
         if (pendingImages.length === 0) continue;
@@ -3180,16 +3254,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         try {
           const text = await exportSession(sessionId, "markdown", cwd);
-          const clip = process.platform === "darwin" ? "pbcopy" : Bun.which("wl-copy") ? "wl-copy" : Bun.which("xclip") ? "xclip" : "";
-          if (clip && Bun.which(clip)) {
-            const proc = Bun.spawn(clip === "xclip" ? [clip, "-selection", "clipboard"] : [clip], { stdin: "pipe" });
-            proc.stdin.write(text);
-            await proc.stdin.end();
-            await proc.exited;
-            console.log(`(transcript copied to clipboard — ${text.length} chars)`);
+          // Copy via BOTH OSC 52 (reaches the outer terminal over SSH/tmux) and a
+          // local clipboard tool (pbcopy / wl-copy / xclip / xsel / clip) — the union
+          // makes `cmd+v` find the transcript regardless of where the terminal runs.
+          const copied = await copyTextToClipboard(text);
+          if (copied.osc52 || copied.local) {
+            const via = [copied.local ? "system tool" : "", copied.osc52 ? "OSC52" : ""].filter(Boolean).join(" + ");
+            console.log(`(transcript copied to clipboard via ${via} — ${text.length} chars)`);
           } else {
             console.log(text);
-            console.log("(no clipboard tool found — transcript printed above)");
+            console.log("(no clipboard path available — transcript printed above)");
           }
         } catch (err) {
           console.log(`! dump failed: ${(err as Error).message}`);
@@ -4270,8 +4344,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       disarmPreview();
       out.write("\x1b[?25h\n");
     } catch { /* best effort */ }
-    process.removeListener("SIGINT", forceExitFromCtrlC);
-    process.stdin.off("data", forceExitOnCtrlCByte);
+    process.removeListener("SIGINT", handleCtrlC);
+    process.stdin.off("data", handleCtrlCByte);
     drainPromptListeners();
     restorePromptRawMode();
     process.exit(130);
@@ -4286,8 +4360,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // gjc-parity resume pointer (logs/gjc-tui-study analysis Gap C): leave the exact
   // resume command in scrollback on exit, mirroring the --list handler's convention.
   if (sessionId && !flags.noSession) console.log(formatResumeHint(sessionId));
-  process.removeListener("SIGINT", forceExitFromCtrlC);
-  process.stdin.off("data", forceExitOnCtrlCByte);
+  process.removeListener("SIGINT", handleCtrlC);
+  process.stdin.off("data", handleCtrlCByte);
   drainPromptListeners();
   restorePromptRawMode();
   gracefulReadlineClose = true;

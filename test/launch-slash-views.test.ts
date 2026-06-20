@@ -5,11 +5,14 @@ import { hotkeysLines, contextUsageLines } from "../src/commands/launch/slash-vi
 test("hotkeysLines: stable static reference, header first and every row indented", () => {
   const out = hotkeysLines();
   expect(out[0]).toBe("Keyboard shortcuts:");
-  expect(out.length).toBe(13);
+  expect(out.length).toBe(16);
   for (const row of out.slice(1)) expect(row.startsWith("  ")).toBe(true);
   // Spot-check a couple of well-known bindings survive verbatim.
   expect(out.some(l => l.includes("Ctrl-D") && l.includes("exit the REPL"))).toBe(true);
+  expect(out.some(l => l.includes("Ctrl-L") && l.includes("redraw"))).toBe(true);
   expect(out.some(l => l.includes("@path") && l.includes("mention a file"))).toBe(true);
+  expect(out.some(l => l.includes("Ctrl-V") && l.includes("clipboard"))).toBe(true);
+  expect(out.some(l => l.includes("drag-drop") && l.includes("attach"))).toBe(true);
 });
 
 test("contextUsageLines: per-role tallies, ~4 chars/token, total + footer", () => {

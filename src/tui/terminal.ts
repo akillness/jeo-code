@@ -29,6 +29,16 @@ export function clearScreen(): string {
   return `${ESC}2J${ESC}3J${ESC}H`;
 }
 
+/** Erase the VISIBLE screen (2J) and home the cursor (H), but PRESERVE the scrollback
+ *  buffer (no 3J). This is the readline/shell "Ctrl-L redraw" clear: the on-screen
+ *  transcript is wiped and the prompt is repainted from the top, yet scrolling up still
+ *  reveals prior output. Use it to RE-ANCHOR a prompt whose in-place footer drifted after
+ *  the terminal scrolled — recovering a "typing does not show in the box" state without
+ *  destroying history (unlike `clearScreen`, which also drops scrollback). */
+export function clearVisible(): string {
+  return `${ESC}2J${ESC}H`;
+}
+
 export function hideCursor(): string {
   return `${ESC}?25l`;
 }

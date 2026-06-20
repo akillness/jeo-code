@@ -252,6 +252,49 @@ test("LaunchTui auto-repair: resize listener is registered on start and removed 
   }
 });
 
+test("LaunchTui: SIGCONT (resume after Ctrl-Z) listener is registered on a TTY and removed on finish", () => {
+  if (process.platform === "win32") return; // no SIGCONT on Windows
+  const realRender = Renderer.prototype.render;
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function () {};
+  const before = process.listenerCount("SIGCONT");
+  try {
+    const tui = new LaunchTui({ model: "m1", maxSteps: 25, tty: true, write: () => {} });
+    tui.start();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    expect(process.listenerCount("SIGCONT")).toBe(before + 1);
+    tui.finish("done");
+    expect(process.listenerCount("SIGCONT")).toBe(before);
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});
+
+test("LaunchTui: resume after suspend repaints even when geometry LOOKS unchanged (dropped SIGWINCH recovery)", () => {
+  if (process.platform === "win32") return;
+  const realRender = Renderer.prototype.render;
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function () {};
+  try {
+    const tui = new LaunchTui({ model: "m1", maxSteps: 25, tty: true, write: () => {} });
+    tui.start();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    // Prime the cached geometry to the current size so a plain resize would early-return.
+    (tui as unknown as { resizeRepaint: () => void }).resizeRepaint();
+    let repaints = 0;
+    const orig = (tui as unknown as { repaint: () => void }).repaint.bind(tui);
+    (tui as unknown as { repaint: () => void }).repaint = () => { repaints++; orig(); };
+    // A spurious resize at the same geometry is correctly skipped (no wasted repaint).
+    (tui as unknown as { resizeRepaint: () => void }).resizeRepaint();
+    expect(repaints).toBe(0);
+    // Resume invalidates the cache first, so it repaints even though cols/rows are identical —
+    // this is the dropped-SIGWINCH-during-suspend recovery that a plain resize cannot do.
+    (tui as unknown as { onResume: () => void }).onResume();
+    expect(repaints).toBe(1);
+    tui.finish("done");
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});
+
 test("LaunchTui resize: leading-edge repaints immediately (no lag) and coalesces a burst", async () => {
   const realRender = Renderer.prototype.render;
   (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function () {};

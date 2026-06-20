@@ -22,7 +22,7 @@ import { buildConceptGraph, expandByGraph, lintConceptGraph, type GraphLintRepor
 /** On-disk document cap — the distill prompt instructs the model to stay under it. */
 export const MEMORY_MAX_CHARS = 6_000;
 /** Per-session prompt injection budget. */
-export const MEMORY_INJECT_MAX_CHARS = 3_000;
+export const MEMORY_INJECT_MAX_CHARS = 5_000;
 /** Transcript slice fed to the distill call. */
 const TRANSCRIPT_MAX_CHARS = 12_000;
 /** A session shorter than this has nothing durable to learn. */
@@ -560,6 +560,7 @@ export async function distillSessionMemory(
         try {
           const content = await fs.readFile(file, "utf-8");
           const parsed = parseConcept(content);
+          if (!parsed.hasFrontmatter) continue; // skip MEMORY.md and other legacy blobs
           existingConcepts.push({
             type: parsed.frontmatter.type,
             title: parsed.frontmatter.title || "",
@@ -573,6 +574,11 @@ export async function distillSessionMemory(
         } catch {}
       }
     } catch {}
+    // A lingering single-doc MEMORY.md (legacy, or a prior text-only bootstrap
+    // fallback) is NOT a concept document — loadConcepts ignores it and it breaks
+    // OKF conformance. Feed its content into the merge context so its learnings
+    // are absorbed into concepts, then archive it on a successful JSON distill.
+    const legacyDoc = await loadMemory(cwd);
 
     const prompt: Message[] = [
       {
@@ -583,12 +589,21 @@ export async function distillSessionMemory(
           "Keep ONLY what helps future sessions in THIS repository: repo facts (structure, conventions, key files), " +
           "commands that work (build/test/run), gotchas (failures and their fixes), and user preferences. " +
           "Drop session-specific noise (one-off tasks, transient errors, conversational detail). " +
+          "CRITICAL RULES for concept granularity:\n" +
+          "  1. Create ONE concept per distinct fact/command/gotcha/preference — never combine multiple learnings into a single concept.\n" +
+          "  2. NEVER create a catch-all 'Project Memory Bundle' or similar mega-concept that lists many things. Split it.\n" +
+          "  3. Each Command concept covers exactly one command or workflow (e.g., 'bun test', NOT 'All bun commands').\n" +
+          "  4. Each Gotcha covers exactly one failure mode and its fix.\n" +
+          "  5. Each UserPreference covers exactly one observable preference.\n" +
+          "  6. RepoFact concepts describe structure/conventions — split by area (e.g., 'CLI entrypoint', 'Test setup').\n" +
+          "  7. If an existing concept is a mega-concept (lists many things), REPLACE it with properly split granular concepts.\n" +
+          "  8. Keep each concept body under 400 chars.\n\n" +
           "You must output a JSON object with a single key \"concepts\", which is an array of concept objects. " +
           "Each concept object must have the following fields:\n" +
           "  - \"type\": one of \"RepoFact\", \"Command\", \"Gotcha\", \"UserPreference\"\n" +
           "  - \"title\": a short, descriptive title (e.g., \"Bun test runner\")\n" +
           "  - \"description\": a brief one-line summary of the concept\n" +
-          "  - \"body\": the detailed markdown content/body of the concept\n" +
+          "  - \"body\": the detailed markdown content/body of the concept (≤400 chars)\n" +
           "  - \"tags\": an array of string tags (optional)\n" +
           "  - \"confidence\": one of \"high\", \"medium\", \"low\" (optional)\n" +
           "  - \"links\": an array of other concept paths/IDs this concept links to (optional)\n\n" +
@@ -598,6 +613,7 @@ export async function distillSessionMemory(
         role: "user",
         content:
           `Existing concepts:\n${JSON.stringify(existingConcepts, null, 2)}\n\n` +
+          (legacyDoc ? `Legacy single-doc memory to fold into concepts:\n${legacyDoc}\n\n` : "") +
           `Session transcript (tail):\n${transcriptTail(history)}`
       }
     ];
@@ -695,9 +711,25 @@ export async function distillSessionMemory(
       if (updatedConcepts.length > 0) {
         await updateLog(bundleDir, updatedConcepts);
       }
+      // Concepts now own the durable memory and the legacy blob (if any) was
+      // folded into the merge above. Archive a lingering MEMORY.md off the active
+      // read path so it can never break OKF conformance or shadow the bundle.
+      if (legacyDoc) {
+        await fs.rename(memoryFilePath(cwd), `${memoryFilePath(cwd)}.bak`).catch(() => {});
+      }
       await cleanupStalePendingFiles(bundleDir);
       return { updated: true };
     } else {
+      // JSON extraction failed (text-only models often wrap or drop the JSON).
+      // The single-doc MEMORY.md is a BOOTSTRAP fallback only: it is injected by
+      // memoryPromptSection ONLY when the OKF concept bundle is empty. Writing it
+      // while concepts already exist would (a) be silently ignored at injection
+      // (concepts win) — losing the learning — and (b) break OKF conformance
+      // (MEMORY.md has no frontmatter). So when a bundle exists, do NOT clobber
+      // it with a dead blob; keep the prior concepts as the durable memory.
+      if (existingConcepts.length > 0) {
+        return { updated: false, skipped: "distill produced no JSON; kept existing concept bundle (legacy blob suppressed)" };
+      }
       const doc = distilled.trim().slice(0, MEMORY_MAX_CHARS);
       if (!doc) return { updated: false, skipped: "model returned an empty document" };
       const file = memoryFilePath(cwd);

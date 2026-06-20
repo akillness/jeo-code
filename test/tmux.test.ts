@@ -551,3 +551,29 @@ test("tmux attach failure on a dead session reports the session ended (no mislea
   }
 });
 
+import { currentTmuxClipboardCommands } from "../src/commands/launch";
+
+test("currentTmuxClipboardCommands: in-session clipboard repair targets the CURRENT session (no -t/-g)", () => {
+  const which = (bin: string) => (bin === "pbcopy" ? "/usr/bin/pbcopy" : null);
+  const cmds = currentTmuxClipboardCommands({}, { platform: "darwin", which });
+  // Every command sets a session-local option for the CURRENT session — never a
+  // targeted (-t) or global (-g) write, so the user's other sessions are untouched.
+  for (const c of cmds) {
+    expect(c.args[0]).toBe("set-option");
+    expect(c.args).not.toContain("-t");
+    expect(c.args).not.toContain("-g");
+  }
+  const byDesc = Object.fromEntries(cmds.map(c => [c.description, c.args]));
+  expect(byDesc["enable tmux clipboard integration"]!.slice(-2)).toEqual(["set-clipboard", "on"]);
+  // copy-command pipes the drag-select to the resolved local clipboard tool.
+  const copy = byDesc["pipe copy-mode selection to the system clipboard"]!;
+  expect(copy.slice(-1)[0]).toContain("pbcopy");
+
+  // No clipboard tool on PATH → set-clipboard still set, but no copy-command.
+  const noTool = currentTmuxClipboardCommands({}, { platform: "linux", which: () => null });
+  expect(noTool.some(c => c.args.includes("set-clipboard"))).toBe(true);
+  expect(noTool.some(c => c.args.includes("copy-command"))).toBe(false);
+
+  // JEO_TMUX_PROFILE=0 opts out of the clipboard repair entirely.
+  expect(currentTmuxClipboardCommands({ JEO_TMUX_PROFILE: "0" }, { platform: "darwin", which })).toEqual([]);
+});

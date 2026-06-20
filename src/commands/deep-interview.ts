@@ -567,7 +567,7 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
     let ambiguity = state.current_ambiguity ?? 1.0;
     let lastParsed: SocraticResponse | undefined;
 
-    const freezeSeed = async (parsed: SocraticResponse): Promise<void> => {
+    const freezeSeed = async (parsed: SocraticResponse): Promise<boolean> => {
       const readiness = freezeReadiness(parsed);
       if (!readiness.ok) throw new Error(`Refusing to freeze seed: ${readiness.reason}.`);
 
@@ -594,7 +594,7 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
           `[ERROR] Seed round-trip self-check FAILED — the acceptance criteria would not survive ultragoal's parser ` +
           `(writer/parser drift). NOT freezing the seed. Got back: ${JSON.stringify(parsedBack)}`,
         );
-        return;
+        return false;
       }
       await fs.writeFile(seedPath, seedContent, "utf-8");
       state!.current_phase = "complete";
@@ -603,6 +603,7 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
       state!.current_ambiguity = Math.min(state!.current_ambiguity ?? threshold, threshold);
       await writeWorkflowState("deep-interview", state!, cwd);
       log(`Saved frozen requirements spec seed to: ${seedPath}`);
+      return true;
     };
 
     while (round <= 10) {
@@ -629,12 +630,20 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
         const readiness = freezeReadiness(parsed);
         if (ambiguity <= threshold && readiness.ok) {
           log(`\n[SUCCESS] Ambiguity is <= ${(threshold * 100).toFixed(0)}%! Concluding requirements gather.`);
-          await freezeSeed(parsed);
-          log("\n[Handoff Ready] Requirement is crystallized. Next, run 'jeo ralplan' to build a plan.");
-          if (opts.onProgress) {
-            opts.onProgress({ skill: "deep-interview", phase: "complete" });
+          const frozen = await freezeSeed(parsed);
+          if (frozen) {
+            log("\n[Handoff Ready] Requirement is crystallized. Next, run 'jeo ralplan' to build a plan.");
+            if (opts.onProgress) {
+              opts.onProgress({ skill: "deep-interview", phase: "complete" });
+            }
+            break;
           }
-          break;
+          // Freeze failed (e.g. round-trip self-check): do NOT emit a false
+          // "crystallized" handoff. Fall through to the normal question loop
+          // below — it already asks the follow-up, pushes history, and bumps
+          // the round — so the interview simply stays open.
+          log("\n[HOLD] Could not freeze the requirements seed — see the error above. Keeping the interview open.");
+
         }
 
         let nextQuestion = parsed.nextQuestion?.trim() || interviewLanguage.acceptanceFollowup;

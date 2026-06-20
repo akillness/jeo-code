@@ -347,6 +347,7 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
         cwd,
         roleId: roleByIndex[activeIndex],
         strictMutations: opts.strictMutations ?? false,
+        log,
       });
 
       if (opts.signal?.aborted) {
@@ -393,13 +394,14 @@ export async function runTeamCommand(args: string[] = []): Promise<void> {
   }
 }
 
-async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: string; roleId?: string; strictMutations?: boolean }): Promise<boolean> {
+async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: string; roleId?: string; strictMutations?: boolean; log: (line: string) => void }): Promise<boolean> {
+  const log = ctx.log;
   const config = await readGlobalConfig();
   const role = getSubagentRole(ctx.roleId, config) ?? defaultSubagentRole();
   const renderOpts: RalphRenderOptions = { color: !!process.stdout.isTTY, indexed: true };
   const model = resolveSubagentModel(role.id, config);
   const maxSteps = resolveSubagentMaxSteps(role.id, config);
-  console.log(`  └─ Subagent: ${role.title} · model ${model} · ≤${maxSteps} steps`);
+  log(`  └─ Subagent: ${role.title} · model ${model} · ≤${maxSteps} steps`);
 
   const contextTokens = catalogMetadata(model)?.contextTokens;
 
@@ -428,13 +430,13 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
     events: {
       onAssistant: (_raw, invocation) => {
         if (!invocation) {
-          console.log(formatRalphStreamEvent("error", "invalid tool-call json; retrying", renderOpts));
+          log(formatRalphStreamEvent("error", "invalid tool-call json; retrying", renderOpts));
         } else if (invocation.tool !== "done") {
-          console.log(formatRalphStreamEvent("step", `tool ${invocation.tool} requested`, renderOpts));
+          log(formatRalphStreamEvent("step", `tool ${invocation.tool} requested`, renderOpts));
         }
       },
       onStep: async step => {
-        console.log(formatRalphStreamEvent("step", `${role.title} thinking ${step}/${maxSteps}`, renderOpts));
+        log(formatRalphStreamEvent("step", `${role.title} thinking ${step}/${maxSteps}`, renderOpts));
         try {
           await maybeCompact(history, { model, contextTokens });
         } catch (err) {
@@ -446,27 +448,27 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
           if (tool === "write" || tool === "edit" || tool === "mkdir" || tool === "delete") fileMutations++;
           else if (tool === "bash") bashRuns++;
         }
-        console.log(formatRalphStreamEvent(ok ? "complete" : "error", `tool ${tool}`, renderOpts));
+        log(formatRalphStreamEvent(ok ? "complete" : "error", `tool ${tool}`, renderOpts));
       },
-      onNotice: msg => console.log(formatRalphStreamEvent("step", msg, renderOpts)),
+      onNotice: msg => log(formatRalphStreamEvent("step", msg, renderOpts)),
     },
   });
 
   const reason = result.doneReason?.trim() || `${role.title} did not converge within ${result.steps} steps`;
   if (!result.done) {
-    console.log(formatRalphStreamEvent("error", reason, renderOpts));
+    log(formatRalphStreamEvent("error", reason, renderOpts));
     return false;
   }
 
   const contract = validateSubagentDoneReason(role, reason);
   if (!contract.ok) {
-    console.log(formatRalphStreamEvent("error", `${role.title} report incomplete: missing ${contract.missing?.join(", ")}`, renderOpts));
+    log(formatRalphStreamEvent("error", `${role.title} report incomplete: missing ${contract.missing?.join(", ")}`, renderOpts));
     return false;
   }
 
   const gate = parseRoleGateVerdict(role.id, reason);
   if (!gate.ok) {
-    console.log(formatRalphStreamEvent("error", gate.message ?? `${role.title} blocked execution`, renderOpts));
+    log(formatRalphStreamEvent("error", gate.message ?? `${role.title} blocked execution`, renderOpts));
     return false;
   }
 
@@ -483,11 +485,17 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
     const hardFail = ctx.strictMutations && bashRuns === 0;
     // Round-12: separate the tones so a passing advisory run doesn't masquerade
     // as a stream:error — only a real hard-fail is red; an advisory note is warn.
-    console.log(formatRalphStreamEvent(hardFail ? "error" : "warn", msg, renderOpts));
+    log(formatRalphStreamEvent(hardFail ? "error" : "warn", msg, renderOpts));
     if (hardFail) {
       return false;
     }
   }
-  console.log(formatRalphStreamEvent("complete", `${role.title} finished task`, renderOpts));
+  // Surface the subagent's ACTUAL report to the user — not just a "finished"
+  // status. Previously `reason` was consumed only for validation/gating and the
+  // report content was discarded, so `team` runs produced no visible answer.
+  log(formatRalphStreamEvent("complete", `${role.title} finished task`, renderOpts));
+  log(`\n${role.title} report:`);
+  log(reason); // log() already splits multi-line strings across the io.output sink
+
   return true;
 }

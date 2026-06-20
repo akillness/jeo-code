@@ -136,6 +136,9 @@ import {
   matchTerminalReport,
   stripMouseReports,
   rewriteCursorCombos,
+  MULTILINE_SENTINEL,
+  isGenuineMultilineDraft,
+  shouldBoxVerticalNav,
   queuePromptInputChunk,
   captureLivePromptInputChunk,
   restoreQueuedLinesToPrefill,
@@ -203,6 +206,9 @@ export {
   matchTerminalReport,
   stripMouseReports,
   rewriteCursorCombos,
+  MULTILINE_SENTINEL,
+  isGenuineMultilineDraft,
+  shouldBoxVerticalNav,
   queuePromptInputChunk,
   captureLivePromptInputChunk,
   restoreQueuedLinesToPrefill,
@@ -1360,7 +1366,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // readline sees them — readline inserts it as an ordinary character (no per-line
   // submit/race), the box renders it as a real line break, and it is expanded back to
   // "\n" on submit. On for any interactive TTY; JEO_NO_MULTILINE=1 reads stdin directly.
-  const SENTINEL = "\uE000";
+  const SENTINEL = MULTILINE_SENTINEL;
   const SHIFT_ENTER_SEQS = ["\u001b[27;2;13~", "\u001b[13;2u"];
   // Multi-line input filter is ON for any interactive TTY: reliable multi-line paste
   // (fills the box, submits intact into the user card) is the default. The lone-"\n"
@@ -1438,14 +1444,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         // Option/Cmd+Backspace) into the canonical control bytes it DOES act on.
         const combo = matchCursorCombo(data, i);
         if (combo) { out += combo[1]; i += combo[0].length; continue; }
-        // Up/Down inside a multi-line / wrapped draft move the caret between the box's
-        // visual rows (textarea feel). Only when no slash list or history panel owns ↑/↓,
-        // and only away from the top/bottom edge — at the edge the keys fall through to
-        // readline so ↑/↓ still recalls input history.
+        // Up/Down inside a GENUINELY multi-line draft (explicit Shift+Enter breaks →
+        // SENTINEL) move the caret between the box's visual rows (textarea feel). A
+        // single line that merely SOFT-WRAPS is NOT treated as multi-line: ↑/↓ fall
+        // through to readline so they recall input history — the dominant REPL
+        // expectation. (Without this gate, ↑ on a wrapped one-liner jumped the caret up
+        // a visual row instead of recalling the previous prompt, so the last wrapped
+        // word appeared to "follow the caret up".) Skipped when a slash list or history
+        // panel owns ↑/↓, and at the top/bottom edge the keys still reach history.
         if ((data.startsWith("\u001b[", i) || data.startsWith("\u001bO", i)) && (data[i + 2] === "A" || data[i + 2] === "B")) {
           const dir = data[i + 2] === "A" ? "up" : "down";
           const line = activeRl?.line ?? "";
-          if (line.length > 0 && navMatches.length === 0 && promptHistoryLines == null && activeRl) {
+          if (shouldBoxVerticalNav(line, { slashMatchCount: navMatches.length, historyPanelOpen: promptHistoryLines != null }) && activeRl) {
             const winCols = Math.max(24, (process.stdout.columns ?? 80) - 1);
             const textWidth = Math.max(1, Math.max(24, winCols) - 6);
             const cur = typeof activeRl.cursor === "number" ? activeRl.cursor : line.length;
@@ -2586,6 +2596,35 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         return;
       }
       if (!previewArmed || pickerActive) return;
+      // Drag-and-drop file attach: a terminal delivers a dropped file as its PATH typed
+      // into the box, wrapped in a bracketed paste. On paste-end, swap any readable image
+      // path LIVE for the same `[image #N]` tag Ctrl+V uses, so the box shows the tag
+      // instead of a long raw filesystem path. Non-image / unreadable paths and ordinary
+      // text pastes match nothing and are a no-op. Submit-time attach (below) still covers
+      // terminals that deliver a drop WITHOUT bracketing it.
+      if (key?.name === "paste-end" && !pasteInFlight && !pasteLineFired) {
+        pasteInFlight = true;
+        // Defer one tick: the dropped bytes reach readline through the keyFilter
+        // PassThrough, so rl.line is only settled after the current stream turn.
+        setImmediate(() => {
+          void (async () => {
+            try {
+              const rli = rl as unknown as { line: string; cursor: number };
+              const before = rli.line;
+              const dropped = await attachImagePaths(before, pendingImages.length + 1);
+              if (dropped.images.length === 0 || dropped.text === before) return;
+              pendingImages.push(...dropped.images);
+              rli.line = dropped.text;
+              rli.cursor = dropped.text.length; // drop lands at the caret (line end in the common case)
+              typedLine = dropped.text;
+              if (previewArmed) drawFooter(previewLines(typedLine, navIdx));
+            } finally {
+              pasteInFlight = false;
+            }
+          })();
+        });
+        return;
+      }
       // Ctrl+L: redraw / re-anchor the prompt. The recovery for a footer whose in-place
       // anchor drifted after the screen scrolled (typed text stops showing in the box).
       if (key?.ctrl && key.name === "l") {

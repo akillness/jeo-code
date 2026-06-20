@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.37] - 2026-06-20
+_Two dead-end fixes: the boxed prompt's ↑/↓ now recalls input history on a soft-wrapped one-liner (only a genuine multi-line draft gets in-box caret nav), and every terminating Spec-first stage (deep-interview, ralplan, team) now surfaces a user-visible answer instead of silently stalling — re-verified leak-free (`mem-probe`) with a fresh `jeo --tmux` boot._
+
+### Fixed
+- **The boxed prompt's ↑/↓ recalls input history again on a soft-wrapped line.** A long single line that the box wraps to several visual rows is no longer treated as multi-line: ↑/↓ fall through to readline's history recall (the dominant REPL expectation) instead of dragging the wrapped tail up a visual row. In-box vertical caret nav (textarea feel) is now gated behind a GENUINE multi-line draft — one carrying an explicit Shift+Enter / pasted break, stored as the private-use `MULTILINE_SENTINEL` — and still yields the arrows to an open slash list or the Ctrl+O history panel. New `isGenuineMultilineDraft` / `shouldBoxVerticalNav` helpers make the gate unit-testable independent of the live readline/PTY wiring.
+- **Every terminating Spec-first workflow stage now surfaces a user-visible answer.** Three stages could previously reach a terminal state with no message explaining the outcome:
+  - **`team`** routes all subagent output through the engine `log()`/`io.output` sink (zero raw `console.log` in `executeTaskWithAgent`) and prints a `<role> report:` header followed by every line of the subagent's reason on success.
+  - **`deep-interview`** gates its `[Handoff Ready]` / `onProgress(complete)` signal on a real frozen seed: `freezeSeed` now returns `Promise<boolean>`, and a freeze failure emits `[HOLD]` and keeps the interview open instead of falsely claiming the requirement is crystallized.
+  - **`ralplan`** reports a discarded revision: an invalid `[ITERATE]` revision now logs `discarding the revision; the [ITERATE] verdict stands` instead of silently surfacing the stale verdict.
+
+### Verified
+- `scripts/mem-probe.ts` (2000 LaunchTui turns) shows a flat post-GC heap — per-turn slope **−556 bytes/turn**, returning to its settled floor — with a single `exit` listener and zero `process` SIGINT/listener accumulation; `scripts/tmux-verify.sh smoke` boots `jeo --tmux` to a clean input box + model bar (EXIT 0). `bun run typecheck` is clean and `bun test` is **1751 pass / 0 fail** across 216 files, including the new `test/box-vertical-nav.test.ts` and the no-answer-deadend targeted suite (`team-run`/`team-schema`/`team-subagent`/`deep-interview`/`deep-interview-noninteractive`/`workflow-integrity`/`approve`/`parse-role-gate-verdict` → 71 pass / 0 fail).
+
+
 ## [0.6.36] - 2026-06-20
 _When `jeo --tmux` flips the mouse on so you can drag-select, the drag now actually lands on the system clipboard — the in-session tmux profile sets `set-clipboard on` + a local `copy-command` on the CURRENT session only — plus `/help` documents the drag-to-copy and the Shift/Option-drag escape hatch, re-verified leak-free (`mem-probe`) with a fresh `jeo --tmux` boot._
 

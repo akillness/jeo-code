@@ -51,6 +51,33 @@ export function isStandaloneBackspace(chunk: string): boolean {
   return chunk.length > 0 && /^[\x7f\b]+$/.test(chunk);
 }
 
+/** Private-use sentinel the input filter substitutes for an EXPLICIT line break
+ *  (Shift+Enter / a pasted newline) before the bytes reach readline, so the draft can
+ *  carry hard newlines through readline's single-line buffer. A line that merely
+ *  SOFT-WRAPS at the box width contains NO sentinel — that distinction is the whole
+ *  point of `isGenuineMultilineDraft`. */
+export const MULTILINE_SENTINEL = "\uE000";
+
+/** True when the draft has at least one EXPLICIT line break (a sentinel) — i.e. the
+ *  user deliberately made it multi-line. A long single line that the box soft-wraps to
+ *  several visual rows is NOT multi-line and returns false. */
+export function isGenuineMultilineDraft(line: string): boolean {
+  return line.includes(MULTILINE_SENTINEL);
+}
+
+/** Whether an Up/Down keystroke should move the caret BETWEEN the box's visual rows
+ *  (textarea feel) instead of falling through to readline's input-history recall. True
+ *  only for a genuinely multi-line draft with no slash dropdown or history panel owning
+ *  the arrows. A soft-wrapped one-liner returns false, so ↑ recalls the previous prompt
+ *  rather than dragging the wrapped tail up a visual row. */
+export function shouldBoxVerticalNav(
+  line: string,
+  opts: { slashMatchCount: number; historyPanelOpen: boolean },
+): boolean {
+  return isGenuineMultilineDraft(line) && opts.slashMatchCount === 0 && !opts.historyPanelOpen;
+}
+
+
 /**
  * macOS / fixterms combo-key normalization for the boxed prompt's line editor.
  *

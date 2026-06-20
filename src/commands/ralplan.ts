@@ -257,6 +257,12 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
         cleanPlan = revised;
         await fs.writeFile(planPath, cleanPlan, "utf-8");
         gate = await runConsensusCriticGate({ cwd, seedContent, plan: cleanPlan, signal: opts.signal });
+      } else {
+        // The revision did not parse as a schema/role-valid plan, so it cannot be
+        // re-gated — the original [ITERATE] verdict stands. Report this explicitly
+        // instead of silently discarding the revision attempt (which otherwise
+        // surfaces only as the unchanged "verdict: ITERATE" failure below).
+        log(`[ralplan] The revised plan was not schema/role-valid — discarding the revision; the [ITERATE] verdict stands.`);
       }
     }
     ralplanState.plan_path = planPath;

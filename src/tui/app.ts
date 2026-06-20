@@ -1008,6 +1008,13 @@ export class LaunchTui {
     // force a full repaint instead of diffing against stale line positions.
     if (this.tty) {
       process.stdout.on("resize", this.onResize);
+      // Suspend (Ctrl-Z) → resume (fg): SIGWINCH is lost while the process is stopped,
+      // so a terminal resized mid-suspend would resume with stale geometry and a torn
+      // frame. SIGCONT fires on resume; force a re-measure + full repaint. POSIX only
+      // (Windows has no SIGCONT — registering it would throw).
+      if (process.platform !== "win32") {
+        process.on("SIGCONT", this.onResume);
+      }
     }
     // Animate the spinner + elapsed clock while the model is thinking.
     this.timer = setInterval(() => {
@@ -1063,6 +1070,17 @@ export class LaunchTui {
     } catch { /* resize race — next tick repaints */ }
   }
 
+  /** Resume from suspend (SIGCONT after Ctrl-Z). The terminal may have been resized
+   *  while the process was stopped — that SIGWINCH is dropped, so the cached geometry
+   *  is stale. Invalidate lastCols/lastRows so resizeRepaint cannot early-return on a
+   *  same-looking measurement, then re-measure and fully repaint at the current size. */
+  private readonly onResume = (): void => {
+    if (this.finished) return;
+    this.lastCols = -1;
+    this.lastRows = -1;
+    this.resizeRepaint();
+  };
+
   /** gjc-style agent identity: a bold accent `jeo` name label on its own line that leads
    *  every assistant segment — thought blocks (onAssistant) and the final reply (finish). */
   private agentLabel(): string {
@@ -1086,6 +1104,9 @@ export class LaunchTui {
     }
     if (this.tty) {
       process.stdout.removeListener("resize", this.onResize);
+      if (process.platform !== "win32") {
+        process.removeListener("SIGCONT", this.onResume);
+      }
     }
     if (this.usedAltScreen) {
       // Leave the alt screen (restores the main buffer + scrollback), then print the

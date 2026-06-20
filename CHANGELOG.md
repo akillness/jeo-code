@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.35] - 2026-06-20
+_The prompt's Ctrl+C now clears a non-empty input box on the first press and only exits on the next press of an empty box; plus app-driven system-clipboard copy (OSC 52 + local tool, tmux-aware), drag-and-drop image attachment, a Ctrl-L prompt re-anchor, and a SIGCONT resume repaint — verified leak-free (`mem-probe`) with a fresh `jeo --tmux` boot check._
+
+### Added
+- **System-clipboard COPY that survives SSH and tmux.** New `src/tui/clipboard.ts` puts text on the OS clipboard via OSC 52 (`ESC ] 52 ; c ; <base64> BEL`, wrapped in tmux DCS passthrough when inside tmux) with a local subprocess fallback (`pbcopy` / `wl-copy` / `xclip` / `xsel` / `clip`). The tmux profile (`launch/tmux.ts`) now sets `copy-command` so a `mouse on` drag-select releases the copy-mode selection straight to the system clipboard — making `cmd+v` work even where the outer terminal can't capture the drag.
+- **Drag-and-drop image attachment.** New `src/util/file-attachment.ts` recognises an image path dropped into the prompt (terminals deliver a drop as quoted/escaped text), validates it by magic bytes (not just extension), reads it, and rewrites the path token to the same `[image #N]` tag the Ctrl+V clipboard-image path uses — one consistent reference scheme for the model. Non-image / unreadable paths are left untouched.
+- **`clearVisible()` (`src/tui/terminal.ts`)** — a Ctrl-L redraw that erases the visible screen and homes the cursor (`2J` + `H`) while PRESERVING scrollback (no `3J`), used to re-anchor a prompt whose in-place footer drifted after the screen scrolled. Hotkey help (`/help`) now documents Ctrl-L, Ctrl-V, and drag-drop.
+
+### Changed
+- **Prompt Ctrl+C clears before it exits.** At the idle prompt, a first Ctrl+C with typed text (or a pending clipboard image / queued pasted batch) now WIPES the box and keeps you at the prompt; a Ctrl+C on the already-empty box hard-exits (130). A pure, unit-tested `decideCtrlC(hasInput, msSinceLastCtrlC, collapseMs?)` plus a 50 ms collapse window funnels the four delivery paths of one physical press (footer keypress, `process`/`rl` SIGINT, raw `\u0003` byte) into a single logical action, so one press can never clear AND then exit. In-turn abort, EOF, and modal-picker Ctrl+C remain hard exits.
+- **TUI repaints on resume from suspend (SIGCONT).** After `fg` brings jeo back from a Ctrl-Z / background stop, the live view now re-anchors itself instead of leaving a stale frame; the SIGCONT listener is registered only on non-Windows and removed on dispose (no listener leak).
+
+### Verified
+- `mem-probe` shows a flat post-GC heap (negative per-turn slope) with zero `process` SIGINT/listener accumulation, and `scripts/tmux-verify.sh smoke` boots `jeo --tmux` to a clean input box + model bar — full suite green (1747 tests) and `typecheck` clean.
+
+
 ## [0.6.34] - 2026-06-20
 _Per-session model memory — each saved session now remembers the model it was last using and restores it on `/resume` — plus clearer `jeo --tmux` attach diagnostics, a tmux session-name double-dash fix, and a more robust no-leak probe gate._
 

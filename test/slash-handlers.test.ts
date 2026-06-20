@@ -51,7 +51,7 @@ test("handleHotkeys: returns static reference lines", () => {
   expect(result && "lines" in result).toBe(true);
   if (result && "lines" in result) {
     expect(result.lines[0]).toBe("Keyboard shortcuts:");
-    expect(result.lines.length).toBe(13);
+    expect(result.lines.length).toBe(16);
   }
 });
 

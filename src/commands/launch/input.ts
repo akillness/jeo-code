@@ -408,3 +408,30 @@ export function classifyMidTurnLine(line: string): "command" | "steer" | "empty"
   if (t === "/" || t === "$") return "empty";
   return /^[/$]/.test(t) ? "command" : "steer";
 }
+/** Default window (ms) over which the several delivery paths of ONE physical Ctrl+C
+ *  press — readline 'keypress', the rl/process 'SIGINT' event, and the raw \u0003 stdin
+ *  byte — collapse into a single logical action. A genuine second press (the user
+ *  reacting to the just-cleared box) is far slower than this, so it is never swallowed. */
+export const CTRLC_COLLAPSE_MS = 50;
+
+export type CtrlCAction = "ignore" | "clear" | "exit";
+
+/** Decide what a Ctrl+C at the idle prompt should do, given whether the input box
+ *  currently holds anything clearable (typed text, a pending clipboard image, or a
+ *  queued pasted batch) and how long ago the previous Ctrl+C was handled:
+ *
+ *   - within `collapseMs` of the last handled press → "ignore" (duplicate delivery of
+ *     the SAME keystroke; acting on both would let one press clear AND then exit).
+ *   - input present                                  → "clear" (wipe the box, stay put).
+ *   - box already empty                              → "exit" (hard terminal break, 130).
+ *
+ *  Pure so the "first Ctrl+C clears, next Ctrl+C exits" contract is unit-testable
+ *  without a live TTY. */
+export function decideCtrlC(
+  hasInput: boolean,
+  msSinceLastCtrlC: number,
+  collapseMs: number = CTRLC_COLLAPSE_MS,
+): CtrlCAction {
+  if (msSinceLastCtrlC < collapseMs) return "ignore";
+  return hasInput ? "clear" : "exit";
+}

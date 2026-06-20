@@ -106,8 +106,8 @@ export function shellQuote(arg: string): string {
  */
 export function shouldEnableCurrentTmuxMouse(env: Record<string, string | undefined>): boolean {
   return !!env.TMUX
-    && (env.JEO_TMUX_LAUNCHED ?? env.JEO_TMUX_LAUNCHED) !== "1"
-    && (env.JEO_TMUX_MOUSE ?? env.JEO_TMUX_MOUSE) !== "0";
+    && env.JEO_TMUX_LAUNCHED !== "1"
+    && env.JEO_TMUX_MOUSE !== "0";
 }
 
 /**
@@ -160,7 +160,7 @@ export function tmuxProfileCommands(
 ): TmuxProfileCommand[] {
   const t = `=${target}:`;
   const commands: TmuxProfileCommand[] = [];
-  if ((env.JEO_TMUX_MOUSE ?? env.JEO_TMUX_MOUSE) !== "0") {
+  if (env.JEO_TMUX_MOUSE !== "0") {
     commands.push({
       description: "enable tmux mouse scrolling (wheel-up → copy-mode over real history)",
       args: ["set-option", "-t", t, "mouse", "on"],
@@ -182,7 +182,7 @@ export function tmuxProfileCommands(
       args: ["set-option", "-t", t, "@jeo-project", meta.project],
     });
   }
-  if ((env.JEO_TMUX_PROFILE ?? env.JEO_TMUX_PROFILE) !== "0") {
+  if (env.JEO_TMUX_PROFILE !== "0") {
     commands.push(
       {
         description: "enable tmux clipboard integration",
@@ -207,6 +207,40 @@ export function tmuxProfileCommands(
     }
   }
 
+  return commands;
+}
+
+/**
+ * Clipboard set-options for the CURRENT (foreign) tmux session that the in-session
+ * `jeo --tmux` path turns `mouse on` for. Enabling the mouse re-routes a plain
+ * drag into copy-mode, so without these a drag-select no longer lands anywhere:
+ *  - `set-clipboard on` lets the copy-mode selection reach the outer terminal via OSC52;
+ *  - `copy-command` pipes that selection straight to the local clipboard tool
+ *    (pbcopy / wl-copy / xclip / xsel / clip), so a drag-select copies for `cmd+v`
+ *    even where OSC52 is not honored.
+ * Applied WITHOUT `-t` (the current session only — never -g, so the user's other
+ * sessions are untouched). `JEO_TMUX_PROFILE=0` opts out; `copy-command` is skipped
+ * when no clipboard tool is on PATH. This is the in-session analogue of the
+ * clipboard block in {@link tmuxProfileCommands} for jeo-owned sessions.
+ */
+export function currentTmuxClipboardCommands(
+  env: Record<string, string | undefined>,
+  deps: { platform?: NodeJS.Platform; which?: (bin: string) => string | null } = {},
+): TmuxProfileCommand[] {
+  if (env.JEO_TMUX_PROFILE === "0") return [];
+  const commands: TmuxProfileCommand[] = [
+    {
+      description: "enable tmux clipboard integration",
+      args: ["set-option", "set-clipboard", "on"],
+    },
+  ];
+  const copyCmd = tmuxCopyCommand(deps.platform ?? process.platform, deps.which ?? ((bin: string) => Bun.which(bin)));
+  if (copyCmd) {
+    commands.push({
+      description: "pipe copy-mode selection to the system clipboard",
+      args: ["set-option", "copy-command", copyCmd],
+    });
+  }
   return commands;
 }
 

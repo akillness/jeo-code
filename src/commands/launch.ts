@@ -118,6 +118,7 @@ import {
   shouldEnableCurrentTmuxMouse,
   tmuxLaunchCommand,
   tmuxProfileCommands,
+  currentTmuxClipboardCommands,
   resolveWorktree,
   shellQuote,
   type TmuxCreateResult,
@@ -186,6 +187,7 @@ export {
   shouldEnableCurrentTmuxMouse,
   tmuxLaunchCommand,
   tmuxProfileCommands,
+  currentTmuxClipboardCommands,
   resolveWorktree,
   shellQuote,
   type TmuxCreateResult,
@@ -420,6 +422,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       const tmuxBin = Bun.which("tmux");
       if (tmuxBin) {
         try { Bun.spawnSync([tmuxBin, "set-option", "mouse", "on"]); } catch { /* best-effort */ }
+        // Enabling the mouse re-routes a drag into copy-mode; set-clipboard +
+        // copy-command make that drag-select actually land on the system clipboard.
+        for (const c of currentTmuxClipboardCommands(process.env)) {
+          try { Bun.spawnSync([tmuxBin, ...c.args]); } catch { /* best-effort */ }
+        }
       }
     }
   }

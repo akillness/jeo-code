@@ -23,6 +23,8 @@ export function hotkeysLines(): string[] {
     "  @path      mention a file (Tab completes relative paths)",
     "  Ctrl-V     paste a copied image from the clipboard into the next message",
     "  drag-drop  drop an image file onto the box to attach it (its path becomes [image #N])",
+    "  drag       select on-screen text to copy — copies on cmd/ctrl+c; under --tmux a drag auto-copies to the system clipboard",
+    "  Shift-drag force the terminal's own selection when tmux owns the mouse (iTerm/macOS: Option-drag)",
   ];
 }
 

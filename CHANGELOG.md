@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.36] - 2026-06-20
+_When `jeo --tmux` flips the mouse on so you can drag-select, the drag now actually lands on the system clipboard — the in-session tmux profile sets `set-clipboard on` + a local `copy-command` on the CURRENT session only — plus `/help` documents the drag-to-copy and the Shift/Option-drag escape hatch, re-verified leak-free (`mem-probe`) with a fresh `jeo --tmux` boot._
+
+### Fixed
+- **A `--tmux` mouse drag-select now reaches the system clipboard instead of vanishing.** Turning the mouse on (so on-screen text can be selected) re-routes a drag into tmux copy-mode, where the selection used to die inside tmux's own buffer — `cmd/ctrl+v` got nothing. The launch path now applies the same clipboard repair to the CURRENT session that `tmuxProfileCommands` applies to jeo-owned sessions: new `currentTmuxClipboardCommands(env, deps)` emits `set-option set-clipboard on` (lets the copy-mode selection escape via OSC 52) and, when a local clipboard tool is on PATH, `set-option copy-command <tool>` (pipes the drag-select straight to `pbcopy` / `wl-copy` / `xclip` / `xsel` / `clip` for terminals that don't honor OSC 52). Both are written **session-locally — never `-t` or `-g`** — so the user's other tmux sessions are untouched; `JEO_TMUX_PROFILE=0` opts out, and `copy-command` is skipped when no tool is found.
+
+### Changed
+- **`/help` documents the drag-to-copy behavior and its escape hatch.** Two hotkey rows now explain that a drag selects on-screen text (copies on `cmd/ctrl+c`, and auto-copies to the system clipboard under `--tmux`) and that **Shift-drag** (iTerm/macOS: **Option-drag**) forces the terminal's own selection when tmux owns the mouse.
+
+### Verified
+- `scripts/mem-probe.ts` (2000 LaunchTui turns) shows a flat post-GC heap — per-turn slope **−541 bytes/turn**, returning to its settled floor — with zero `process` SIGINT/listener accumulation; `scripts/tmux-verify.sh smoke` boots `jeo --tmux` to a clean input box + model bar (EXIT 0). `bun run typecheck` clean and `bun test` **1748 pass / 0 fail** across 215 files, including the new `currentTmuxClipboardCommands` session-local / no-tool / opt-out cases in `test/tmux.test.ts`.
+
+
 ## [0.6.35] - 2026-06-20
 _The prompt's Ctrl+C now clears a non-empty input box on the first press and only exits on the next press of an empty box; plus app-driven system-clipboard copy (OSC 52 + local tool, tmux-aware), drag-and-drop image attachment, a Ctrl-L prompt re-anchor, and a SIGCONT resume repaint — verified leak-free (`mem-probe`) with a fresh `jeo --tmux` boot check._
 

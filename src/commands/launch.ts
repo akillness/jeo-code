@@ -1469,14 +1469,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         // Option/Cmd+Backspace) into the canonical control bytes it DOES act on.
         const combo = matchCursorCombo(data, i);
         if (combo) { out += combo[1]; i += combo[0].length; continue; }
-        // Up/Down inside a GENUINELY multi-line draft (explicit Shift+Enter breaks →
-        // SENTINEL) move the caret between the box's visual rows (textarea feel). A
-        // single line that merely SOFT-WRAPS is NOT treated as multi-line: ↑/↓ fall
-        // through to readline so they recall input history — the dominant REPL
-        // expectation. (Without this gate, ↑ on a wrapped one-liner jumped the caret up
-        // a visual row instead of recalling the previous prompt, so the last wrapped
-        // word appeared to "follow the caret up".) Skipped when a slash list or history
-        // panel owns ↑/↓, and at the top/bottom edge the keys still reach history.
+        // Up/Down move the caret BETWEEN the box's visual rows (textarea feel) for any
+        // MULTI-ROW draft — explicit Shift+Enter breaks (→ SENTINEL) OR a long line the
+        // box soft-wraps. The decision is boundary-aware: verticalCursorOffset returns a
+        // target only when a visual row exists to move to, so ↑ on the TOP row, ↓ on the
+        // BOTTOM row, and any single-visual-row draft fall through to readline and recall
+        // input history — the dominant REPL expectation once the caret can climb no
+        // higher. Skipped when a slash list or Ctrl+O history panel owns ↑/↓.
+
         if ((data.startsWith("\u001b[", i) || data.startsWith("\u001bO", i)) && (data[i + 2] === "A" || data[i + 2] === "B")) {
           const dir = data[i + 2] === "A" ? "up" : "down";
           const line = activeRl?.line ?? "";

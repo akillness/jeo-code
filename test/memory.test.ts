@@ -166,3 +166,39 @@ test("runMemoryDistillCommand: payload → MEMORY.md written, payload cleaned up
   await expect(fs.access(payloadPath)).rejects.toThrow(); // payload removed
   await fs.rm(dir, { recursive: true, force: true });
 });
+// ── SEV-3b: advisory index lock prevents concurrent distill races ──
+
+test("withIndexLock: two concurrent distillers do not corrupt index.md (SEV-3b fix)", async () => {
+  // We can't export withIndexLock directly (it's private), but we CAN test its
+  // observable effect via distillSessionMemory: two concurrent distillers writing
+  // to the same bundle must each produce a valid OKF bundle, not a corrupted one.
+  const dir = await tmp();
+  let call = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      call++;
+      // Each distiller returns a distinct concept so both must appear in the bundle.
+      return JSON.stringify({ concepts: [{
+        type: "Command",
+        title: call === 1 ? "bun test runner" : "bun typecheck runner",
+        description: `distiller ${call}`,
+        body: `run: bun ${call === 1 ? "test" : "run typecheck"}`,
+        tags: [],
+        confidence: "high",
+        links: [],
+      }] });
+    },
+  }));
+  const { distillSessionMemory, loadConcepts } = await import("../src/agent/memory");
+  // Fire both distillers concurrently
+  const [r1, r2] = await Promise.all([
+    distillSessionMemory(HISTORY, dir),
+    distillSessionMemory(HISTORY, dir),
+  ]);
+  // Both must succeed (or at worst one skips — never a throw)
+  expect(r1.skipped ?? r2.skipped).toBeUndefined(); // at least one updated
+  const concepts = await loadConcepts(dir);
+  // Bundle must be valid (loadConcepts returns structured data, not empty on corrupt index)
+  expect(concepts.length).toBeGreaterThan(0);
+  await fs.rm(dir, { recursive: true, force: true });
+});

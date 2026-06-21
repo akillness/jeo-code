@@ -197,6 +197,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 - `jeo-code` パッケージへの Read/Write 権限を持つ **Granular Access Token**、またはクラシック **Automation** トークン
 - 「公開時の **bypass 2FA**」許可が必須 — Automation トークンは常にバイパス、granular トークンはオプションの有効化が必要
 
+## 謝辞 (Acknowledgements)
+
+[gajae-code](https://github.com/Yeachan-Heo/gajae-code) に多大な感謝を。
+
+
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->

@@ -65,16 +65,23 @@ export function isGenuineMultilineDraft(line: string): boolean {
   return line.includes(MULTILINE_SENTINEL);
 }
 
-/** Whether an Up/Down keystroke should move the caret BETWEEN the box's visual rows
- *  (textarea feel) instead of falling through to readline's input-history recall. True
- *  only for a genuinely multi-line draft with no slash dropdown or history panel owning
- *  the arrows. A soft-wrapped one-liner returns false, so ↑ recalls the previous prompt
- *  rather than dragging the wrapped tail up a visual row. */
+/** Whether an Up/Down keystroke should be CONSIDERED for moving the caret between the
+ *  box's visual rows (textarea feel) instead of going straight to readline. True for any
+ *  non-empty draft when no slash dropdown or Ctrl+O history panel owns the arrows.
+ *
+ *  This is a gate, NOT the final decision: the caller still consults
+ *  `verticalCursorOffset`, which returns a target offset only when there is a visual row
+ *  to move to. So ↑/↓ edit a MULTI-ROW draft — whether it spans rows via explicit
+ *  Shift+Enter breaks OR a long line the box soft-wraps — yet still fall through to
+ *  input-history recall at the boundaries: ↑ on the TOP visual row, ↓ on the BOTTOM row,
+ *  and any single-visual-row draft (where `verticalCursorOffset` yields null). That
+ *  boundary-aware split gives full arrow-key cursor movement for editing multi-row input
+ *  while preserving "↑ recalls the previous prompt" once the caret can climb no higher. */
 export function shouldBoxVerticalNav(
   line: string,
   opts: { slashMatchCount: number; historyPanelOpen: boolean },
 ): boolean {
-  return isGenuineMultilineDraft(line) && opts.slashMatchCount === 0 && !opts.historyPanelOpen;
+  return line.length > 0 && opts.slashMatchCount === 0 && !opts.historyPanelOpen;
 }
 
 

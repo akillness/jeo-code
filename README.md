@@ -198,6 +198,11 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 - A **Granular Access Token** with Read/Write access to the `jeo-code` package, or a classic **Automation** token
 - "**bypass 2FA** for publishing" must be allowed — Automation tokens always bypass; granular tokens need the option enabled
 
+## Acknowledgements
+
+Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the inspiration.
+
+
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->

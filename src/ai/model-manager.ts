@@ -383,9 +383,18 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
   return { adapter, callOptions, credential: credentialForCall(provider, effective, config, baseUrl), retry };
 }
 
-/** Hard cap for a single non-streaming provider request (service-readiness: a
- *  blackholed/unreachable provider must not hang the agent or `jeo team`). */
-const DEFAULT_CALL_TIMEOUT_MS = 120_000;
+/** Hard wall-clock cap for a single NON-streaming provider request (service-readiness: a
+ *  blackholed/unreachable provider must not hang the agent or `jeo team`). Unlike the
+ *  streaming idle watchdog, this path collects an opaque buffered body (`response.json()`,
+ *  or an internally-streamed collect in codexResponsesCall / antigravity.call) and exposes
+ *  no per-chunk signal — so a wall clock is the only lever and a wire heartbeat cannot help.
+ *  Raised to 300s to match STREAM_IDLE_TIMEOUT_MS: non-interactive turns (callLlm WITHOUT
+ *  onToken — compaction, ralplan, deep-interview, memory distill, goal-verify, and subagent/
+ *  autopilot engine steps) route here, and a long reasoning completion legitimately exceeds
+ *  120s; too-tight, it aborts an alive call, retries re-incur the same slow request, the
+ *  attempt budget exhausts, and the turn STOPS — the same false-failure the streaming
+ *  watchdog guards, on the path the wire heartbeat never reaches. */
+const DEFAULT_CALL_TIMEOUT_MS = 300_000;
 
 /** Per-chunk idle cap for streaming: a stream that emits NOTHING for this long is
  *  aborted, but a healthy long generation (chunks keep arriving) runs unbounded —
@@ -505,6 +514,15 @@ export function streamIdleMs(env?: Record<string, string | undefined>): number {
   return Number.isFinite(n) && n > 0 ? n : STREAM_IDLE_TIMEOUT_MS;
 }
 
+/** Hard wall-clock cap (ms) for a NON-streaming provider call, falling back to the
+ *  built-in default. Mirrors streamIdleMs so a slow non-interactive turn (callLlm without
+ *  onToken) can relax the cap via JEO_CALL_TIMEOUT_MS without a code change. */
+export function callTimeoutMs(env?: Record<string, string | undefined>): number {
+  const raw = jeoEnv("CALL_TIMEOUT_MS", env);
+  const n = raw !== undefined ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_CALL_TIMEOUT_MS;
+}
+
 export async function* retryableStream(
   makeIter: () => AsyncIterator<string>,
   retry: RetryOptions,
@@ -526,7 +544,7 @@ export function createModelManager(): ModelManager {
     resolveProvider,
     async call(messages, options = {}) {
       const { adapter, callOptions, credential, retry } = await resolveCall(options);
-      return withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, DEFAULT_CALL_TIMEOUT_MS) }, credential), retry);
+      return withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, callTimeoutMs()) }, credential), retry);
     },
     async *stream(messages, options = {}) {
       const { adapter, callOptions, credential, retry } = await resolveCall(options, "stream");
@@ -572,7 +590,7 @@ export function createModelManager(): ModelManager {
         });
       } else {
         // Fallback: providers without streaming yield the full response as one chunk.
-        yield await withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, DEFAULT_CALL_TIMEOUT_MS) }, credential), retry);
+        yield await withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, callTimeoutMs()) }, credential), retry);
       }
     },
   };

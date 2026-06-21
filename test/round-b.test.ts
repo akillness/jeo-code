@@ -333,6 +333,18 @@ test("streamIdleMs: env opt-in parsing — built-in default, positive int overri
   expect(streamIdleMs({ JEO_STREAM_IDLE_MS: "nope" })).toBe(300_000);
 });
 
+test("callTimeoutMs: non-streaming wall cap — 300s default (matches stream idle), positive int override only", async () => {
+  // Non-interactive turns (callLlm without onToken: compaction/ralplan/deep-interview/
+  // memory/goal-verify/subagent steps) route through the non-streaming call path; its hard
+  // cap must match the 300s streaming idle window so a long reasoning completion is not
+  // falsely aborted at the old 120s, and stay env-overridable for slower setups.
+  const { callTimeoutMs } = await import("../src/ai/model-manager");
+  expect(callTimeoutMs({})).toBe(300_000); // built-in default, raised 120s → 300s
+  expect(callTimeoutMs({ JEO_CALL_TIMEOUT_MS: "600000" })).toBe(600000);
+  expect(callTimeoutMs({ JEO_CALL_TIMEOUT_MS: "0" })).toBe(300_000); // non-positive → default
+  expect(callTimeoutMs({ JEO_CALL_TIMEOUT_MS: "nope" })).toBe(300_000);
+});
+
 test("defaultRetryable: a per-chunk stream-idle stall is retryable, the overall deadline is not", () => {
   // The idle watchdog's message must be classified retryable so a transient stall
   // on the INITIAL connection auto-reconnects instead of hard-failing the turn.

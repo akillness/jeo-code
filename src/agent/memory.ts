@@ -165,8 +165,10 @@ export async function migrateLegacyMemory(cwd: string): Promise<MigrationResult>
     await fs.rename(tmpPath, fullPath);
     written.push({ title: c.title, type: c.type });
   }
-  await rebuildIndex(bundleDir);
-  await updateLog(bundleDir, written);
+  await withIndexLock(bundleDir, async () => {
+    await rebuildIndex(bundleDir);
+    await updateLog(bundleDir, written);
+  });
   // Preserve the legacy doc as a rollback backup, off the active read path.
   const backupPath = `${memoryFilePath(cwd)}.bak`;
   await fs.rename(memoryFilePath(cwd), backupPath).catch(() => {});
@@ -449,6 +451,13 @@ async function findMarkdownFiles(dir: string): Promise<string[]> {
   return files;
 }
 
+/** Serialises concurrent same-process index/log writes; cross-process last-write-wins is fine (cosmetic files). */
+const _indexLocks = new Map<string, Promise<void>>();
+function withIndexLock(bundleDir: string, fn: () => Promise<void>): Promise<void> {
+  const next = (_indexLocks.get(bundleDir) ?? Promise.resolve()).then(fn, fn);
+  _indexLocks.set(bundleDir, next.catch(() => {}));
+  return next;
+}
 async function rebuildIndex(bundleDir: string): Promise<void> {
   const concepts = await loadConceptsFromBundle(bundleDir);
 
@@ -707,10 +716,12 @@ export async function distillSessionMemory(
         }
       }
 
-      await rebuildIndex(bundleDir);
-      if (updatedConcepts.length > 0) {
-        await updateLog(bundleDir, updatedConcepts);
-      }
+      await withIndexLock(bundleDir, async () => {
+        await rebuildIndex(bundleDir);
+        if (updatedConcepts.length > 0) {
+          await updateLog(bundleDir, updatedConcepts);
+        }
+      });
       // Concepts now own the durable memory and the legacy blob (if any) was
       // folded into the merge above. Archive a lingering MEMORY.md off the active
       // read path so it can never break OKF conformance or shadow the bundle.

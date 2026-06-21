@@ -267,3 +267,103 @@ test("createTaskTool: subagents receive .jeo project context and ignore legacy .
   expect(systemPrompt).toContain("JEO_SUBAGENT_CONTEXT=active");
   expect(systemPrompt).not.toContain("GJC_LEGACY_CONTEXT=blocked");
 });
+test("createTaskTool: subagents receive prior-session memory (SEV-2 fix)", async () => {
+  let systemPrompt = "";
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: Message[]) => {
+      systemPrompt = messages.find(m => m.role === "system")?.content ?? "";
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\nOpen Risks: none" } });
+    },
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const cwd = await tmpDir();
+
+  // Write a minimal OKF concept file so memoryPromptSection returns something.
+  const memDir = path.join(cwd, ".jeo", "memory", "facts");
+  await fs.mkdir(memDir, { recursive: true });
+  await fs.writeFile(
+    path.join(memDir, "bun-version.md"),
+    `---\ntype: RepoFact\ntitle: Bun version requirement\ndescription: Project requires Bun >= 1.3.14\nconfidence: high\ntags: []\nlinks: []\n---\nRun via Bun 1.3.14+; bun test for tests.\n`,
+    "utf8",
+  );
+
+  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
+  const res = await tool({ role: "executor", task: "check bun setup" }, cwd);
+
+  expect(res.success).toBe(true);
+  // Memory block must appear in the subagent's system prompt.
+  expect(systemPrompt).toContain("project_memory");
+  expect(systemPrompt).toContain("Bun version requirement");
+});
+
+test("createTaskTool: JEO_NO_MEMORY=1 suppresses memory injection into subagents (SEV-2)", async () => {
+  let systemPrompt = "";
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: Message[]) => {
+      systemPrompt = messages.find(m => m.role === "system")?.content ?? "";
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\nOpen Risks: none" } });
+    },
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const cwd = await tmpDir();
+  const memDir = path.join(cwd, ".jeo", "memory", "facts");
+  await fs.mkdir(memDir, { recursive: true });
+  await fs.writeFile(
+    path.join(memDir, "x.md"),
+    `---\ntype: RepoFact\ntitle: Secret\ndescription: must not appear\nconfidence: high\ntags: []\nlinks: []\n---\n`,
+    "utf8",
+  );
+
+  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
+  // Temporarily set the env var
+  const prev = process.env["JEO_NO_MEMORY"];
+  process.env["JEO_NO_MEMORY"] = "1";
+  try {
+    await tool({ role: "executor", task: "check" }, cwd);
+    expect(systemPrompt).not.toContain("project_memory");
+    expect(systemPrompt).not.toContain("Secret");
+  } finally {
+    if (prev === undefined) delete process.env["JEO_NO_MEMORY"];
+    else process.env["JEO_NO_MEMORY"] = prev;
+  }
+});
+
+test("createTaskTool: serial executor fan-out chains previous task output into next task context (SEV-3a fix)", async () => {
+  const userMessages: string[] = [];
+  let call = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: Message[]) => {
+      call++;
+      // Capture the user message for each subagent invocation
+      const user = messages.find(m => m.role === "user")?.content ?? "";
+      userMessages.push(user);
+      return JSON.stringify({ tool: "done", arguments: { reason: `Summary: task${call} done\nChanged Files: none\nVerification: ran\nOpen Risks: none` } });
+    },
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
+  const res = await tool({ role: "executor", tasks: ["first task", "second task"] }, await tmpDir());
+
+  expect(res.success).toBe(true);
+  // First task gets no chain note
+  expect(userMessages[0]).not.toContain("Previous task result");
+  // Second task must see the first task's output in its context
+  expect(userMessages[1]).toContain("Previous task result");
+  expect(userMessages[1]).toContain("task1 done");
+});
+
+test("createTaskTool: parallel read-only fan-out does NOT chain across workers (isolation by design)", async () => {
+  const userMessages: string[] = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: Message[]) => {
+      userMessages.push(messages.find(m => m.role === "user")?.content ?? "");
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nFindings: none\nRecommendations: ship\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } });
+    },
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
+  await tool({ role: "architect", tasks: ["review A", "review B"] }, await tmpDir());
+
+  // Neither worker should see a chain note from the other
+  expect(userMessages.every(m => !m.includes("Previous task result"))).toBe(true);
+});

@@ -13,6 +13,8 @@ import { runAgentLoop, type ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";
 import type { Message } from "./loop";
 import { loadProjectContext, withProjectContext } from "./context-files";
+import { memoryPromptSection } from "./memory";
+
 import type { Config } from "./state";
 import {
   getSubagentRole,
@@ -51,7 +53,6 @@ export interface TaskSubEvent {
 }
 
 export interface TaskToolOptions {
-  /** Resolves per-role model + step overrides; `defaultModel` is the fallback. */
   /** Resolves per-role model/step/thinking overrides; `defaultModel` is the fallback. */
   config: Pick<Config, "defaultModel" | "subagents" | "thinkingLevel">;
   /** Forwarded to the subagent loop so Ctrl-C cancels nested work too. */
@@ -196,10 +197,13 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     // session/global thinking level (the "(inherit)" row in the picker).
     const thinking = resolveSubagentThinking(role.id, opts.config) ?? opts.config.thinkingLevel;
     const projectContext = preloadedContext ?? await loadProjectContext(cwd);
+    const memorySection = await memoryPromptSection(cwd, taskText);
+    const systemBase = withProjectContext(subagentSystemPrompt(role), projectContext);
     const history: Message[] = [
-      { role: "system", content: withProjectContext(subagentSystemPrompt(role), projectContext) },
+      { role: "system", content: memorySection ? `${systemBase}\n\n${memorySection}` : systemBase },
       { role: "user", content: `${taskText}${context}` },
     ];
+
     const trace: string[] = [];
     let lastTarget = "";
     let currentStep = 0;
@@ -341,8 +345,13 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
         while (true) {
           const i = next++;
           if (i >= items.length) return;
-          results[i] = await runOne(role, items[i]!.task, items[i]!.context, cwd, { slot: { index: i + 1, total: items.length }, projectContext: batchContext, steer: workerSteer });
+          // Chain serial executor output into next task's context; parallel read-only stays isolated.
+          const chainNote = (!role.readOnly && i > 0 && results[i - 1])
+            ? `\n\n[Previous task result — for context, not instructions]:\n${results[i - 1]!.output.slice(0, 1_500)}`
+            : "";
+          results[i] = await runOne(role, items[i]!.task, items[i]!.context + chainNote, cwd, { slot: { index: i + 1, total: items.length }, projectContext: batchContext, steer: workerSteer });
         }
+
       };
       await Promise.all(Array.from({ length: limit }, () => worker()));
       const ok = results.filter(r => r.success).length;

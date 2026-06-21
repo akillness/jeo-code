@@ -434,30 +434,49 @@ export interface StreamIdleOptions {
    *  Non-interactive contexts opt in (JEO_STREAM_MAX_MS) so a slow-drip stream
    *  (one token every idleMs-ε) cannot run unbounded. */
   deadlineAt?: number;
+  /** Epoch-ms of the most recent stream ACTIVITY, including reasoning/thinking deltas
+   *  that are routed to onReasoning and never yielded as a chunk. A long "thinking"
+   *  phase that streams thought tokens keeps bumping this, so the per-chunk idle
+   *  watchdog re-arms instead of falsely aborting an actively-reasoning stream. Absent
+   *  → only a yielded chunk counts as activity (legacy behaviour). */
+  lastActivityAt?: () => number;
   onIdle?: () => void;
 }
 
-/** `iter.next()`, racing the per-chunk idle timeout AND (when set) the overall deadline. */
+/** `iter.next()`, racing a per-chunk idle watchdog AND (when set) the overall deadline.
+ *  The watchdog re-arms while reasoning activity (idle.lastActivityAt) keeps advancing,
+ *  so a model that streams thinking tokens for longer than idleMs before emitting visible
+ *  text is NOT mistaken for a stalled stream — only a genuinely silent stream aborts. */
 async function nextMaybeIdle(iter: AsyncIterator<string>, idle?: StreamIdleOptions): Promise<IteratorResult<string>> {
   if (!idle) return iter.next();
-  const remaining = idle.deadlineAt !== undefined ? idle.deadlineAt - Date.now() : Infinity;
-  if (remaining <= 0) {
-    idle.onIdle?.();
-    throw new Error(`stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream aborted`);
-  }
-  const waitMs = Math.min(idle.idleMs, remaining);
-  const deadlineFires = remaining < idle.idleMs;
+  const next = iter.next();
+  // Baseline: this wait began now; reasoning deltas during it move lastActivityAt forward.
+  const startedAt = Date.now();
+  const lastActivity = () => Math.max(startedAt, idle.lastActivityAt?.() ?? 0);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      idle.onIdle?.();
-      reject(new Error(deadlineFires
-        ? `stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream aborted`
-        : `stream idle for ${idle.idleMs}ms (no chunk) — provider sent no token within the idle window (load or long thinking); retrying. Raise JEO_STREAM_IDLE_MS or lower the thinking level if this persists.`));
-    }, waitMs);
+  const watchdog = new Promise<never>((_, reject) => {
+    const arm = () => {
+      const now = Date.now();
+      const overallRemaining = idle.deadlineAt !== undefined ? idle.deadlineAt - now : Infinity;
+      if (overallRemaining <= 0) {
+        idle.onIdle?.();
+        reject(new Error(`stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream aborted`));
+        return;
+      }
+      const idleRemaining = idle.idleMs - (now - lastActivity());
+      const wait = Math.min(idleRemaining, overallRemaining);
+      if (wait <= 0) {
+        // overallRemaining is > 0 here (pre-checked), so wait<=0 ⟺ the idle window lapsed.
+        idle.onIdle?.();
+        reject(new Error(`stream idle for ${idle.idleMs}ms (no chunk) — provider sent no token within the idle window (load or long thinking); retrying. Raise JEO_STREAM_IDLE_MS or lower the thinking level if this persists.`));
+        return;
+      }
+      timer = setTimeout(arm, wait);
+    };
+    arm();
   });
   try {
-    return await Promise.race([iter.next(), timeout]);
+    return await Promise.race([next, watchdog]);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -512,15 +531,30 @@ export function createModelManager(): ModelManager {
         // JEO_STREAM_MAX_MS opts in to an OVERALL deadline (round-14): non-interactive
         // runs can bound a slow-drip stream the per-chunk idle alone never catches.
         let attempt: AbortController | null = null;
+        // Heartbeat: reasoning/thinking deltas are routed to onReasoning and NEVER yielded
+        // as a chunk, so a model that "thinks" (streams thought tokens) for longer than the
+        // idle window would otherwise look stalled and trip a false idle-stall retry. Wrap
+        // onReasoning/onReasoningStart to stamp lastActivityAt; the idle watchdog re-arms
+        // while thinking is actively streaming and only aborts a genuinely silent stream.
+        let lastActivityAt = Date.now();
+        const bump = () => { lastActivityAt = Date.now(); };
+        const userOnReasoning = callOptions.onReasoning;
+        const userOnReasoningStart = callOptions.onReasoningStart;
+        const liveOptions: CallOptions = {
+          ...callOptions,
+          onReasoning: (delta: string) => { bump(); userOnReasoning?.(delta); },
+          onReasoningStart: () => { bump(); userOnReasoningStart?.(); },
+        };
         const makeIter = () => {
           attempt = new AbortController();
           const signal = composeAbort(callOptions.signal, attempt.signal);
-          return streamFn(messages, { ...callOptions, signal }, credential)[Symbol.asyncIterator]();
+          return streamFn(messages, { ...liveOptions, signal }, credential)[Symbol.asyncIterator]();
         };
         const maxMs = streamMaxMs();
         yield* retryableStream(makeIter, retry, {
           idleMs: streamIdleMs(),
           ...(maxMs !== undefined ? { deadlineAt: Date.now() + maxMs } : {}),
+          lastActivityAt: () => lastActivityAt,
           onIdle: () => attempt?.abort(),
         });
       } else {

@@ -92,6 +92,52 @@ test("retryableStream: per-chunk idle timeout aborts a stalled stream (long-but-
   expect(idled).toBe(true);
 });
 
+test("retryableStream: reasoning activity (lastActivityAt) keeps a silent-but-thinking stream alive", async () => {
+  // The 2nd chunk takes 80ms — far beyond idleMs:20 — but reasoning deltas keep bumping
+  // lastActivityAt every 5ms, so the watchdog re-arms instead of aborting.
+  let idled = false;
+  let lastActivityAt = Date.now();
+  const ticker = setInterval(() => { lastActivityAt = Date.now(); }, 5);
+  const makeIter = (): AsyncIterator<string> => {
+    let i = 0;
+    return {
+      next: async () => {
+        if (i++ === 0) return { value: "a", done: false };
+        if (i === 2) { await new Promise(r => setTimeout(r, 80)); return { value: "b", done: false }; }
+        return { value: undefined as any, done: true };
+      },
+    };
+  };
+  const out: string[] = [];
+  try {
+    for await (const c of retryableStream(makeIter, { retries: 1, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable }, { idleMs: 20, lastActivityAt: () => lastActivityAt, onIdle: () => { idled = true; } })) out.push(c);
+  } finally {
+    clearInterval(ticker);
+  }
+  expect(out).toEqual(["a", "b"]);
+  expect(idled).toBe(false);
+});
+
+test("retryableStream: idle watchdog still fires once reasoning activity STOPS", async () => {
+  // Activity stops 10ms in; with idleMs:20 the watchdog must abort the silent stream.
+  let idled = false;
+  const frozenActivity = Date.now();
+  const makeIter = (): AsyncIterator<string> => {
+    let i = 0;
+    return {
+      next: async () => {
+        if (i++ === 0) return { value: "a", done: false };
+        return new Promise<IteratorResult<string>>(() => {}); // hang forever
+      },
+    };
+  };
+  const out: string[] = [];
+  await expect((async () => {
+    for await (const c of retryableStream(makeIter, { retries: 1, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable }, { idleMs: 20, lastActivityAt: () => frozenActivity, onIdle: () => { idled = true; } })) out.push(c);
+  })()).rejects.toThrow("stream idle");
+  expect(idled).toBe(true);
+});
+
 test("retryableStream: idle timeout does NOT fire when chunks arrive promptly", async () => {
   const out: string[] = [];
   for await (const c of retryableStream(() => iterFromChunks(["a", "b"]), { retries: 1, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable }, { idleMs: 1000, onIdle: () => { throw new Error("should not idle"); } })) out.push(c);

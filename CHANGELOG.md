@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.39] - 2026-06-21
+_A long "thinking" phase no longer trips a false stream-idle retry: reasoning/thinking deltas now act as a stream heartbeat, so a model that streams thought tokens past the idle window before any visible text is no longer mistaken for a stalled stream and retried (which discarded the in-progress reasoning). Re-verified leak-free (`mem-probe`, 2000 turns, −525 bytes/turn slope) with a fresh `jeo --tmux` boot battery (6/6)._
+
+### Fixed
+- **A long "thinking" phase no longer trips a false `stream idle for <ms>ms (no chunk)` retry.** Reasoning/thinking deltas are routed to `onReasoning` and never yielded as a stream chunk, so a model that streams thought tokens for longer than the idle window (default 120s) before emitting visible text looked stalled and got retried — discarding the in-progress reasoning. The per-chunk idle watchdog now treats reasoning activity as a heartbeat (`lastActivityAt`) and re-arms while thinking is actively streaming; it aborts only a genuinely silent stream. The `JEO_STREAM_IDLE_MS` override still covers models that reason fully server-side and stream no thought tokens at all.
+
+### Verified
+- `bun run typecheck` clean; full suite **1752 pass / 0 fail** (216 files), including the new `retryableStream` reasoning-heartbeat tests in `test/round-b.test.ts` (a silent-but-thinking stream stays alive; the watchdog still fires once reasoning activity stops).
+- `scripts/mem-probe.ts` (2000 turns × 40 tools): no long-term leak (per-turn slope **−525 bytes/turn**, exit-listeners flat at 1, heap returns to baseline).
+- `scripts/tmux-verify.sh battery`: **6/6 PASSED** on a fresh `jeo --tmux` boot (boot, `/help`, unknown `$skill`, `/agents`, `$ultragoal`, unresolved `/command`).
+
 ## [0.6.38] - 2026-06-21
 _The OKF concept-bundle memory no longer silently drops what it learns: a legacy single-doc `MEMORY.md` (or a text-only distill fallback) can no longer shadow the concept bundle, break OKF conformance, or lose a turn's learnings — its content is folded into the concept merge and the stale blob is archived. Re-verified leak-free (`mem-probe`, 2000 turns, −570 bytes/turn slope) with a fresh `jeo --tmux` boot battery (6/6)._
 

@@ -148,40 +148,6 @@ jeo ultragoal
 
 `jeo`는 `.jeo/memory/` 아래에 **로컬 우선·증류된 프로젝트 메모리**를 둡니다(원격 백엔드 없음, 네이티브 의존성 0). 지난 세션은 [OKF](docs/okf_mem/) 개념 번들로 증류되고, 다음 세션은 관련성 높은 예산 한도 내 일부만 시스템 프롬프트로 다시 주입합니다 — 지시가 아닌 DATA로 강화 처리됩니다. `JEO_NO_MEMORY=1`로 전체 비활성화.
 
-```mermaid
-flowchart LR
-  subgraph WRITE["WRITE — session-end distill (detached, best-effort)"]
-    direction TB
-    W1["session exit / ^C^C"] --> W2["spawnDetachedDistill()<br/>payload + detached child, returns instantly"]
-    W2 --> W3["distillSessionMemory()<br/>load bundle · transcriptTail · ONE LLM call (JSON)"]
-    W3 --> WD{"concepts JSON<br/>parsed?"}
-    WD -->|yes| WY["per concept: upsert by title,<br/>atomic write into facts/ commands/<br/>gotchas/ preferences/"]
-    WD -->|no| WN["plain text →<br/>legacy MEMORY.md"]
-    WY --> WR["rebuildIndex() index.md<br/>updateLog() log.md"]
-  end
-
-  subgraph STORE[".jeo/memory/ — OKF concept bundle"]
-    direction TB
-    S1["facts/ · commands/ · gotchas/ · preferences/<br/>(YAML frontmatter + body)"]
-    S2["index.md · log.md · cross-link graph (Sprint 04)"]
-    S3["MEMORY.md (legacy fallback)<br/>MEMORY.md.bak (rollback)"]
-  end
-
-  subgraph READ["READ — memoryPromptSection(cwd, query)"]
-    direction TB
-    R1["session start (query = task text)"] --> R2{"bundle has<br/>concepts?"}
-    R2 -->|yes| R3["selectWithinBudget()<br/>core → query relevance → 1-hop graph<br/>≤ MEMORY_INJECT_MAX_CHARS (3000)"]
-    R2 -->|no| R3B["legacy loadMemory()"]
-    R3 --> R4["frameMemory()<br/>hard cap · fence-neutralize · DATA framing"]
-    R3B --> R4
-    R4 --> R5["&lt;project_memory&gt; … injected into system prompt"]
-  end
-
-  WR -->|atomic| STORE
-  WN -->|fallback| S3
-  STORE -.->|loadConcepts / loadMemory| READ
-```
-
 **마이그레이션 (`jeo memory-migrate`, 1회성 · 멱등).** 레거시 단일 문서 `MEMORY.md`를 무손실로 번들로 변환합니다: `## 헤딩 → 타입`, 각 불릿 → 타입별 개념, 들여쓴 줄 → 본문; `index.md`/`log.md`를 재생성하고 원본은 `MEMORY.md.bak`으로 이름을 바꿉니다. 번들에 개념이 생긴 뒤 재실행은 no-op입니다. **롤백:** `JEO_MEMORY_LEGACY=1`은 번들을 무시하고 동일한 주입 강화 처리로 `MEMORY.md`/`.bak`를 읽습니다(`JEO_NO_MEMORY=1`이 모든 것에 우선).
 
 ## 로컬 모델
@@ -223,7 +189,6 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 감사의 말 (Acknowledgements)
 
 [gajae-code](https://github.com/Yeachan-Heo/gajae-code)에 깊은 감사를 드립니다.
-
 
 ## 변경 이력 (Changelog)
 

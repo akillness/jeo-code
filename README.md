@@ -97,6 +97,32 @@ jeo team
 jeo ultragoal
 ```
 
+```
+  ┌──────────────────────┐
+  │   deep-interview     │  Socratic ambiguity gate · seed frozen when concrete
+  └──────────┬───────────┘
+             │ .jeo/state/<seed>.json
+             ▼
+  ┌──────────────────────┐
+  │       ralplan        │  Draft + repo-grounded critic → [OKAY] persisted
+  └──────────┬───────────┘
+             │ requires [OKAY] verdict
+             ▼
+  ┌──────────────────────┐
+  │       approve        │  Schema + roles + [OKAY] — unlocks execution
+  └──────────┬───────────┘
+             │
+             ▼
+  ┌──────────────────────┐
+  │        team          │  Serial executor · run lock · mutation audit
+  └──────────┬───────────┘
+             │ all tasks done
+             ▼
+  ┌──────────────────────┐
+  │      ultragoal       │  Honest verification — suite once, no fabrication
+  └──────────────────────┘
+```
+
 - **deep-interview** — Socratic loop with ambiguity scoring; freezes a seed only when criteria are concrete (vague-only criteria are refused) and the seed round-trips its own parser. A new idea never silently reuses a completed interview.
 - **ralplan** — drafting passes plus a **repo-grounded critic subagent gate**: the critic reads the actual repository, must return `[OKAY]`/`[ITERATE]`/`[REJECT]`, and the verdict is persisted. Invalid plans (schema, unknown roles) are never marked complete.
 - **approve** — validates the exact contract `team` executes (schema + roles) *and* requires the persisted `[OKAY]` consensus verdict.
@@ -122,42 +148,6 @@ Non-zero hook output is appended to the tool result the model reads (deduped per
 ## Memory flow
 
 `jeo` keeps a **local-first, distilled project memory** under `.jeo/memory/` (no remote backend, zero native deps). Past sessions are distilled into an [OKF](docs/okf_mem/) concept bundle, and the next session injects only the relevant, budget-bounded slice back into the system prompt — hardened as DATA, never as instructions. Disable everything with `JEO_NO_MEMORY=1`.
-
-📐 **Editable diagram:** [`docs/diagrams/memory-flow.drawio`](docs/diagrams/memory-flow.drawio) (open in [draw.io](https://app.diagrams.net) / the desktop app) — full write/store/read/migration swimlanes. Quick view:
-
-```mermaid
-flowchart LR
-  subgraph WRITE["WRITE — session-end distill (detached, best-effort)"]
-    direction TB
-    W1["session exit / ^C^C"] --> W2["spawnDetachedDistill()<br/>payload + detached child, returns instantly"]
-    W2 --> W3["distillSessionMemory()<br/>load bundle · transcriptTail · ONE LLM call (JSON)"]
-    W3 --> WD{"concepts JSON<br/>parsed?"}
-    WD -->|yes| WY["per concept: upsert by title,<br/>atomic write into facts/ commands/<br/>gotchas/ preferences/"]
-    WD -->|no| WN["plain text →<br/>legacy MEMORY.md"]
-    WY --> WR["rebuildIndex() index.md<br/>updateLog() log.md"]
-  end
-
-  subgraph STORE[".jeo/memory/ — OKF concept bundle"]
-    direction TB
-    S1["facts/ · commands/ · gotchas/ · preferences/<br/>(YAML frontmatter + body)"]
-    S2["index.md · log.md · cross-link graph (Sprint 04)"]
-    S3["MEMORY.md (legacy fallback)<br/>MEMORY.md.bak (rollback)"]
-  end
-
-  subgraph READ["READ — memoryPromptSection(cwd, query)"]
-    direction TB
-    R1["session start (query = task text)"] --> R2{"bundle has<br/>concepts?"}
-    R2 -->|yes| R3["selectWithinBudget()<br/>core → query relevance → 1-hop graph<br/>≤ MEMORY_INJECT_MAX_CHARS (3000)"]
-    R2 -->|no| R3B["legacy loadMemory()"]
-    R3 --> R4["frameMemory()<br/>hard cap · fence-neutralize · DATA framing"]
-    R3B --> R4
-    R4 --> R5["&lt;project_memory&gt; … injected into system prompt"]
-  end
-
-  WR -->|atomic| STORE
-  WN -->|fallback| S3
-  STORE -.->|loadConcepts / loadMemory| READ
-```
 
 **Migration (`jeo memory-migrate`, one-shot · idempotent).** A legacy single-doc `MEMORY.md` is converted losslessly into the bundle: `## heading → type`, each bullet → a typed concept, indented lines → body; `index.md`/`log.md` are rebuilt and the original is renamed to `MEMORY.md.bak`. Re-running is a no-op once the bundle has concepts. **Rollback:** `JEO_MEMORY_LEGACY=1` ignores the bundle and reads `MEMORY.md`/`.bak` through the same injection-hardening (`JEO_NO_MEMORY=1` still wins over everything).
 
@@ -201,7 +191,6 @@ Required npm token permissions (repository secret `NPM_TOKEN`):
 ## Acknowledgements
 
 Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the inspiration.
-
 
 ## Changelog
 

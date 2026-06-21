@@ -410,7 +410,7 @@ export const anthropicAdapter: ProviderAdapter = {
     // + signature_delta(signature). Accumulate per index and emit one ReasoningArtifact per
     // block on stream end so the signed thought can be replayed (gajae continuity).
     const thinkBlocks = new Map<number, { text: string; signature?: string }>();
-    for await (const data of readSse(response.body)) {
+    for await (const data of readSse(response.body, options.onStreamActivity)) {
       let evt: {
         type?: string;
         index?: number;

@@ -390,9 +390,16 @@ const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 /** Per-chunk idle cap for streaming: a stream that emits NOTHING for this long is
  *  aborted, but a healthy long generation (chunks keep arriving) runs unbounded —
  *  unlike a single wall-clock cap that would kill a long-but-active stream.
- *  Opt-in override via JEO_STREAM_IDLE_MS for reasoning workloads whose "thinking"
- *  phase can legitimately emit no visible token for longer than the default. */
-const STREAM_IDLE_TIMEOUT_MS = 120_000;
+ *  Set to 300s (not 120s): the wire-level heartbeat already re-arms this watchdog on
+ *  ANY bytes (keepalive/ping) from remote providers, so this cap now only bites the
+ *  GENUINELY-silent case — chiefly local backends (Ollama / llama.cpp) whose model
+ *  load + prompt-eval before the first token emits zero bytes and no keepalive, and
+ *  can easily exceed 120s on modest hardware or a large context. A too-tight cap there
+ *  aborts an alive-but-quiet generation, retries re-incur the same slow first byte, the
+ *  attempt budget exhausts, and the turn STOPS — the exact false-failure this guards.
+ *  Opt-in override via JEO_STREAM_IDLE_MS for reasoning/local workloads whose silent
+ *  phase runs longer still; Ctrl-C remains the interactive escape for a truly dead one. */
+const STREAM_IDLE_TIMEOUT_MS = 300_000;
 
 /** Combine two abort signals into one. Preserves BOTH even when `AbortSignal.any`
  *  is unavailable (manual fallback), so neither the caller's cancel nor the timeout
@@ -531,11 +538,13 @@ export function createModelManager(): ModelManager {
         // JEO_STREAM_MAX_MS opts in to an OVERALL deadline (round-14): non-interactive
         // runs can bound a slow-drip stream the per-chunk idle alone never catches.
         let attempt: AbortController | null = null;
-        // Heartbeat: reasoning/thinking deltas are routed to onReasoning and NEVER yielded
-        // as a chunk, so a model that "thinks" (streams thought tokens) for longer than the
-        // idle window would otherwise look stalled and trip a false idle-stall retry. Wrap
-        // onReasoning/onReasoningStart to stamp lastActivityAt; the idle watchdog re-arms
-        // while thinking is actively streaming and only aborts a genuinely silent stream.
+        // Heartbeat: a long server-side "thinking" phase emits no yielded chunk, so the
+        // idle watchdog would otherwise look stalled and trip a false idle-stall retry.
+        // Two heartbeat sources bump lastActivityAt: (1) reasoning/thinking deltas routed
+        // to onReasoning, and (2) onStreamActivity — the wire-level heartbeat fired on ANY
+        // bytes from the provider stream (SSE keepalive/ping comments, events that never
+        // become a chunk). The watchdog re-arms while ANY activity advances and aborts only
+        // a genuinely dead stream (zero bytes for the idle window).
         let lastActivityAt = Date.now();
         const bump = () => { lastActivityAt = Date.now(); };
         const userOnReasoning = callOptions.onReasoning;
@@ -544,6 +553,10 @@ export function createModelManager(): ModelManager {
           ...callOptions,
           onReasoning: (delta: string) => { bump(); userOnReasoning?.(delta); },
           onReasoningStart: () => { bump(); userOnReasoningStart?.(); },
+          // Wire-level heartbeat: ANY bytes from the provider stream (SSE keepalive/ping
+          // comments, events that never become a chunk) stamp activity, so the idle
+          // watchdog re-arms for a connected-but-quiet stream and aborts only a dead one.
+          onStreamActivity: bump,
         };
         const makeIter = () => {
           attempt = new AbortController();

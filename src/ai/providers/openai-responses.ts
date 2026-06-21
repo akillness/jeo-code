@@ -279,7 +279,7 @@ export async function* codexResponsesStream(
   let yieldedAny = false;
   let incompleteReason: string | undefined;
   const toolAcc = new Map<number, { name: string; args: string }>();
-  for await (const data of readSse(response.body)) {
+  for await (const data of readSse(response.body, options.onStreamActivity)) {
     const ev = parseResponsesEvent(data);
     if (ev.reasoningDelta) options.onReasoning?.(ev.reasoningDelta);
     if (ev.reasoningItem) options.onReasoningArtifact?.({ provider: "openai", model: options.model, itemId: ev.reasoningItem.id, encrypted: ev.reasoningItem.encrypted });

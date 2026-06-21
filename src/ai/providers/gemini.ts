@@ -259,7 +259,7 @@ async function* ccaTurn(messages: Message[], options: CallOptions, credential: C
   let lastEmptyReason: string | undefined;
   const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
   const seenSigs = new Set<string>();
-  for await (const data of readSse(response.body)) {
+  for await (const data of readSse(response.body, options.onStreamActivity)) {
     let chunk: CcaChunk;
     try {
       chunk = JSON.parse(data);
@@ -334,7 +334,7 @@ export const geminiAdapter: ProviderAdapter = {
     let lastEmptyReason: string | undefined;
     const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
     const seenSigs = new Set<string>();
-    for await (const data of readSse(response.body)) {
+    for await (const data of readSse(response.body, options.onStreamActivity)) {
       let chunk: GeminiChunk;
       try {
         chunk = JSON.parse(data);

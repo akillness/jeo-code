@@ -201,7 +201,7 @@ export const openaiAdapter: ProviderAdapter = {
     // visible answer and onto the reasoning channel. No-op for models that never emit it.
     const think = createThinkSplitter(options.onReasoning);
     const toolAcc = new Map<number, { name: string; args: string }>();
-    for await (const data of readSse(response.body)) {
+    for await (const data of readSse(response.body, options.onStreamActivity)) {
       let chunk: { choices?: { delta?: OpenAIDelta; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
       try {
         chunk = JSON.parse(data);

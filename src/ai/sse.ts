@@ -1,4 +1,7 @@
-export async function* readLines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+export async function* readLines(
+  stream: ReadableStream<Uint8Array>,
+  onActivity?: () => void,
+): AsyncGenerator<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
@@ -7,6 +10,13 @@ export async function* readLines(stream: ReadableStream<Uint8Array>): AsyncGener
       const { done, value } = await reader.read();
       if (done) {
         break;
+      }
+      // Wire-level heartbeat: ANY bytes from the server (including SSE keepalive/ping
+      // comments and events that never become a yielded chunk) mark the stream as alive,
+      // so the idle watchdog re-arms instead of falsely aborting a connected-but-quiet
+      // stream (e.g. a model reasoning server-side that emits only ping events).
+      if (value && value.length > 0) {
+        onActivity?.();
       }
       buffer += decoder.decode(value, { stream: true });
       const parts = buffer.split("\n");
@@ -34,8 +44,11 @@ export async function* readLines(stream: ReadableStream<Uint8Array>): AsyncGener
   }
 }
 
-export async function* readSse(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
-  for await (const line of readLines(stream)) {
+export async function* readSse(
+  stream: ReadableStream<Uint8Array>,
+  onActivity?: () => void,
+): AsyncGenerator<string> {
+  for await (const line of readLines(stream, onActivity)) {
     if (line.startsWith("data:")) {
       let data = line.slice(5);
       if (data.startsWith(" ")) {

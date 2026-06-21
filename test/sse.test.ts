@@ -60,3 +60,30 @@ test("readLines cancels the underlying stream on early return (no socket leak)",
   await gen.return(undefined as unknown as string); // early exit → finally → reader.cancel()
   expect(cancelled).toBe(true);
 });
+
+test("readLines fires onActivity for EVERY received byte chunk (wire heartbeat)", async () => {
+  // Three enqueued byte chunks, including an SSE keepalive comment that yields no line.
+  const stream = streamOf(["data: {\"x\":1}\n", ": ping\n", "data: {\"y\":2}\n"]);
+  let beats = 0;
+  const lines: string[] = [];
+  for await (const line of readLines(stream, () => { beats++; })) {
+    lines.push(line);
+  }
+  // Heartbeat counts raw byte arrivals — including the keepalive that produced a line
+  // a data-only consumer would discard — so all 3 wire reads register as activity.
+  expect(beats).toBe(3);
+  expect(lines).toEqual(['data: {"x":1}', ": ping", 'data: {"y":2}']);
+});
+
+test("readSse heartbeat fires on a keepalive comment that yields no data payload", async () => {
+  // A lone SSE comment (`: keep-alive`) is NOT a data: line — readSse yields nothing for
+  // it, but the wire heartbeat MUST still fire so the idle watchdog stays armed.
+  const stream = streamOf([": keep-alive\n"]);
+  let beats = 0;
+  const data: string[] = [];
+  for await (const d of readSse(stream, () => { beats++; })) {
+    data.push(d);
+  }
+  expect(data).toEqual([]); // no data payload surfaced
+  expect(beats).toBe(1); // but the stream proved itself alive
+});

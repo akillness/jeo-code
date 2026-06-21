@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.40] - 2026-06-21
+_Wire-level stream heartbeat: ANY bytes from the provider (SSE keepalive/ping, filtered events) now re-arm the idle watchdog — a connected-but-quiet stream can no longer trip a false `stream idle` retry. Default idle window raised to 300s so Ollama/llama.cpp model-load silence no longer exhausts retries and stops the turn._
+
+### Fixed
+- **A connected-but-quiet stream no longer trips a false `stream idle for <ms>ms (no chunk)` retry — wire-level heartbeat.** The v0.6.39 fix only counted reasoning/thinking deltas as activity, so a model that reasons server-side and streams NO thought tokens (only SSE keepalive/`ping` events, e.g. Anthropic `event: ping`, or events that never become a chunk) still looked stalled and got aborted+retried past the idle window. The SSE reader (`readLines`/`readSse`) now fires an `onStreamActivity` heartbeat on ANY bytes received from the provider — including keepalive comments and events filtered out before becoming a chunk or reasoning delta — threaded through every provider (`anthropic`, `openai`, `openai-responses`, `gemini`, `antigravity`, `ollama`). The idle watchdog re-arms while ANY wire activity advances and aborts only a genuinely dead socket (zero bytes for the idle window).
+- **The default stream-idle window is now 300s (was 120s) so a silent local backend no longer false-aborts and stops the turn.** Root cause of the recurring `stream idle … (no chunk)` halt for local/slow providers: a backend like Ollama / llama.cpp emits ZERO bytes (no keepalive) during model load + prompt-eval before the first token, which on modest hardware or a large context routinely exceeds 120s — the wire heartbeat has nothing to fire on, the watchdog aborts an alive-but-quiet generation, each retry re-incurs the same slow first byte, the attempt budget exhausts, and the turn stops. The cap now only bites a genuinely dead stream after 5 minutes; `JEO_STREAM_IDLE_MS` overrides it and Ctrl-C remains the interactive escape.
+
 ## [0.6.39] - 2026-06-21
 _A long "thinking" phase no longer trips a false stream-idle retry: reasoning/thinking deltas now act as a stream heartbeat, so a model that streams thought tokens past the idle window before any visible text is no longer mistaken for a stalled stream and retried (which discarded the in-progress reasoning). Re-verified leak-free (`mem-probe`, 2000 turns, −525 bytes/turn slope) with a fresh `jeo --tmux` boot battery (6/6)._
 

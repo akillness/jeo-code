@@ -64,7 +64,7 @@ export const ollamaAdapter: ProviderAdapter = {
     let doneReason: string | undefined;
     // Route inline <think>…</think> (local reasoning models) to the reasoning channel.
     const think = createThinkSplitter(options.onReasoning);
-    for await (const line of readLines(response.body)) {
+    for await (const line of readLines(response.body, options.onStreamActivity)) {
       let chunk: { message?: { content?: string; thinking?: string }; done?: boolean; done_reason?: string; prompt_eval_count?: number; eval_count?: number; total_duration?: number };
       try {
         chunk = JSON.parse(line);

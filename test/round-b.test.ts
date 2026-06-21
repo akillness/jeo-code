@@ -327,10 +327,10 @@ test("streamMaxMs: env opt-in parsing — off by default, positive ints only", a
 
 test("streamIdleMs: env opt-in parsing — built-in default, positive int override only", async () => {
   const { streamIdleMs } = await import("../src/ai/model-manager");
-  expect(streamIdleMs({})).toBe(120_000); // built-in default
-  expect(streamIdleMs({ JEO_STREAM_IDLE_MS: "300000" })).toBe(300000);
-  expect(streamIdleMs({ JEO_STREAM_IDLE_MS: "0" })).toBe(120_000); // non-positive → default
-  expect(streamIdleMs({ JEO_STREAM_IDLE_MS: "nope" })).toBe(120_000);
+  expect(streamIdleMs({})).toBe(300_000); // built-in default (generous: covers silent local prompt-eval)
+  expect(streamIdleMs({ JEO_STREAM_IDLE_MS: "600000" })).toBe(600000);
+  expect(streamIdleMs({ JEO_STREAM_IDLE_MS: "0" })).toBe(300_000); // non-positive → default
+  expect(streamIdleMs({ JEO_STREAM_IDLE_MS: "nope" })).toBe(300_000);
 });
 
 test("defaultRetryable: a per-chunk stream-idle stall is retryable, the overall deadline is not", () => {

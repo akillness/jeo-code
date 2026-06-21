@@ -280,7 +280,7 @@ export const antigravityAdapter: ProviderAdapter = {
     let yielded = false;
     let usage: CcaUsage | undefined;
     const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
-    for await (const data of readSse(response.body)) {
+    for await (const data of readSse(response.body, options.onStreamActivity)) {
       let chunk: CcaChunk;
       try { chunk = JSON.parse(data); } catch { continue; }
       const thought = thoughtOf(chunk);

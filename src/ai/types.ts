@@ -125,6 +125,12 @@ export interface CallOptions {
    *  thoughtSignature / reasoning item id+encrypted). Separate from `onReasoning` (display
    *  text) because these arrive on different SSE events and are opaque replay data. */
   onReasoningArtifact?: (artifact: ReasoningArtifact) => void;
+  /** Internal wire-activity heartbeat: fired on ANY bytes received from the provider
+   *  stream — including SSE keepalive/ping comments and events that never become a
+   *  yielded chunk or reasoning delta. Set by the manager's streaming path so the idle
+   *  watchdog treats a connected-but-quiet stream (e.g. a model reasoning server-side
+   *  that emits only ping events) as alive. NOT forwarded to user callbacks. */
+  onStreamActivity?: () => void;
   /** NATIVE tool-calling: function declarations the model may call. Present only on the
    *  main agent step (never the prose wrap-up). Adapters with `supportsNativeTools` send
    *  these on the wire and re-serialize the structured tool call back into the engine's

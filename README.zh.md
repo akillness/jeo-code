@@ -96,6 +96,31 @@ jeo approve <计划路径>
 jeo team
 jeo ultragoal
 ```
+```
+  ┌──────────────────────┐
+  │   deep-interview     │  Socratic ambiguity gate · seed frozen when concrete
+  └──────────┬───────────┘
+             │ .jeo/state/<seed>.json
+             ▼
+  ┌──────────────────────┐
+  │       ralplan        │  Draft + repo-grounded critic → [OKAY] persisted
+  └──────────┬───────────┘
+             │ requires [OKAY] verdict
+             ▼
+  ┌──────────────────────┐
+  │       approve        │  Schema + roles + [OKAY] — unlocks execution
+  └──────────┬───────────┘
+             │
+             ▼
+  ┌──────────────────────┐
+  │        team          │  Serial executor · run lock · mutation audit
+  └──────────┬───────────┘
+             │ all tasks done
+             ▼
+  ┌──────────────────────┐
+  │      ultragoal       │  Honest verification — suite once, no fabrication
+  └──────────────────────┘
+```
 
 - **deep-interview** — 基于歧义度评分的苏格拉底循环；只有标准足够具体才冻结种子(纯含糊标准会被拒绝)，且种子必须通过自身解析器的往返校验。新想法绝不会静默复用已完成的访谈。
 - **ralplan** — 起草阶段 + **真正读取仓库的 critic 子代理门禁**: 强制并持久化 `[OKAY]`/`[ITERATE]`/`[REJECT]` 裁决。无效计划(schema、未知角色)不会被标记为 complete。
@@ -122,8 +147,6 @@ jeo ultragoal
 ## 内存流程
 
 `jeo` 在 `.jeo/memory/` 下保存 **本地优先、蒸馏后的项目内存**(无远程后端,零原生依赖)。过往会话被蒸馏为 [OKF](docs/okf_mem/) 概念包,下一次会话仅把相关的、受预算约束的切片重新注入系统提示 —— 作为 DATA 而非指令加固。用 `JEO_NO_MEMORY=1` 完全禁用。
-
-📐 **可编辑图示:** [`docs/diagrams/memory-flow.drawio`](docs/diagrams/memory-flow.drawio)(在 [draw.io](https://app.diagrams.net) / 桌面应用中打开)—— 写入/存储/读取/迁移完整泳道。概览:
 
 ```mermaid
 flowchart LR

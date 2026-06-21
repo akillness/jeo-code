@@ -96,6 +96,31 @@ jeo approve <플랜경로>
 jeo team
 jeo ultragoal
 ```
+```
+  ┌──────────────────────┐
+  │   deep-interview     │  Socratic ambiguity gate · seed frozen when concrete
+  └──────────┬───────────┘
+             │ .jeo/state/<seed>.json
+             ▼
+  ┌──────────────────────┐
+  │       ralplan        │  Draft + repo-grounded critic → [OKAY] persisted
+  └──────────┬───────────┘
+             │ requires [OKAY] verdict
+             ▼
+  ┌──────────────────────┐
+  │       approve        │  Schema + roles + [OKAY] — unlocks execution
+  └──────────┬───────────┘
+             │
+             ▼
+  ┌──────────────────────┐
+  │        team          │  Serial executor · run lock · mutation audit
+  └──────────┬───────────┘
+             │ all tasks done
+             ▼
+  ┌──────────────────────┐
+  │      ultragoal       │  Honest verification — suite once, no fabrication
+  └──────────────────────┘
+```
 
 - **deep-interview** — 모호성 스코어링 기반 소크라테스 루프. 기준이 구체적일 때만 시드 동결(vague-only 기준은 거부), 시드는 자체 파서 라운드트립을 통과해야 합니다. 새 아이디어가 완료된 인터뷰를 조용히 재사용하지 않습니다.
 - **ralplan** — 드래프팅 패스 + **저장소를 직접 읽는 critic 서브에이전트 게이트**: `[OKAY]`/`[ITERATE]`/`[REJECT]` 평결이 강제·영속됩니다. 무효 플랜(스키마·미지 역할)은 complete로 마킹되지 않습니다.
@@ -122,8 +147,6 @@ jeo ultragoal
 ## 메모리 흐름
 
 `jeo`는 `.jeo/memory/` 아래에 **로컬 우선·증류된 프로젝트 메모리**를 둡니다(원격 백엔드 없음, 네이티브 의존성 0). 지난 세션은 [OKF](docs/okf_mem/) 개념 번들로 증류되고, 다음 세션은 관련성 높은 예산 한도 내 일부만 시스템 프롬프트로 다시 주입합니다 — 지시가 아닌 DATA로 강화 처리됩니다. `JEO_NO_MEMORY=1`로 전체 비활성화.
-
-📐 **편집 가능한 다이어그램:** [`docs/diagrams/memory-flow.drawio`](docs/diagrams/memory-flow.drawio) ([draw.io](https://app.diagrams.net) / 데스크톱 앱에서 열기) — 쓰기/저장/읽기/마이그레이션 전체 스윔레인. 요약 보기:
 
 ```mermaid
 flowchart LR

@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.6.41] - 2026-06-21
+_The non-streaming model path now inherits the v0.6.40 300s window: an unattended long-reasoning turn (compaction, ralplan, deep-interview, memory distill, goal-verify, subagent/autopilot steps) is no longer false-aborted at the old 120s wall cap. Re-verified leak-free (`mem-probe`, 2000 turns, −610 bytes/turn slope) with a fresh `jeo --tmux` boot battery (6/6)._
+
+### Fixed
+- **The non-streaming `call()` path no longer false-aborts a long completion at 120s — it now matches the 300s streaming idle window.** v0.6.40's wire heartbeat only re-armed the streaming watchdog (`manager.stream()`); the non-streaming twin `manager.call()` — taken by every `callLlm` WITHOUT an `onToken` consumer (`compaction`, `ralplan`, `deep-interview`, `memory` distill, `goal-verifier`, and subagent/autopilot engine steps) — kept a hard 120s wall cap, so the exact unattended long-reasoning turns the release meant to protect still aborted, exhausted the attempt budget, and stopped the turn. The cap is now 300s, matching `STREAM_IDLE_TIMEOUT_MS`, via a new env-overridable `callTimeoutMs()` helper (`JEO_CALL_TIMEOUT_MS`) mirroring the existing `streamIdleMs()`. A wire heartbeat can't help here — the path collects an opaque buffered body with no per-chunk signal — so a wall clock is the only correct lever; non-streaming `readSse` sites and `call()`'s buffered reads are deliberately left without an idle watchdog (it would false-abort a healthy opaque read).
+
+### Verified
+- `bun run typecheck` clean; full suite **1756 pass / 0 fail** (216 files), including the new `callTimeoutMs` default + `JEO_CALL_TIMEOUT_MS` override parsing tests in `test/round-b.test.ts`.
+- `scripts/mem-probe.ts` (2000 turns × 40 tools): no long-term leak (per-turn slope **−610 bytes/turn**, exit-listeners flat at 1, heap returns to baseline).
+- `scripts/tmux-verify.sh battery`: **6/6 PASSED** on a fresh `jeo --tmux` boot (boot, `/help`, unknown `$skill`, `/agents`, `$ultragoal`, unresolved `/command`).
+
 ## [0.6.40] - 2026-06-21
 _Wire-level stream heartbeat: ANY bytes from the provider (SSE keepalive/ping, filtered events) now re-arm the idle watchdog — a connected-but-quiet stream can no longer trip a false `stream idle` retry. Default idle window raised to 300s so Ollama/llama.cpp model-load silence no longer exhausts retries and stops the turn._
 

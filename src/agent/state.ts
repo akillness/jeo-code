@@ -95,6 +95,7 @@ export interface Config {
    * `defaultModel`. Env `JEO_SMOL_MODEL`/`JEO_SLOW_MODEL`/`JEO_PLAN_MODEL` fill gaps.
    */
   roles?: { smol?: string; slow?: string; plan?: string };
+  gitAutoCommit?: boolean;
   hooks?: HookConfig;
 }
 

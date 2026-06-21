@@ -1025,6 +1025,31 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     sessionUsage.turns++;
     const usage = result.usage ? `  (${result.usage.inputTokens} in / ${result.usage.outputTokens} out tokens)` : "";
+
+    if (turnConfig.gitAutoCommit) {
+      try {
+        const statusRes = Bun.spawnSync(["git", "status", "--porcelain"], { cwd, stdout: "pipe", stderr: "ignore" });
+        if (statusRes.exitCode === 0 && statusRes.stdout.toString().trim().length > 0) {
+          Bun.spawnSync(["git", "add", "."], { cwd });
+          const diffRes = Bun.spawnSync(["git", "diff", "--cached", "--name-status"], { cwd, stdout: "pipe", stderr: "ignore" });
+          const changedFiles = diffRes.stdout.toString().trim().split("\n").map(line => line.split("\t")[1]).filter(Boolean);
+          const fileSummary = changedFiles.length > 0 ? ` (modified: ${changedFiles.slice(0, 3).join(", ")}${changedFiles.length > 3 ? ", ..." : ""})` : "";
+          const commitMsg = `[jeo] auto-commit${fileSummary}\n\nPrompt: ${userInput.slice(0, 100)}${userInput.length > 100 ? "..." : ""}`;
+          const commitRes = Bun.spawnSync(["git", "commit", "-m", commitMsg], { cwd });
+          if (commitRes.exitCode === 0) {
+            if (tui) tui.events().onNotice?.(`(auto-committed changes to git)`);
+            else console.log(`(auto-committed changes to git)`);
+          } else {
+            if (tui) tui.events().onNotice?.(`(auto-commit failed: git commit returned non-zero)`);
+            else console.error(`(auto-commit failed: git commit returned non-zero)`);
+          }
+        }
+      } catch (e) {
+        if (tui) tui.events().onNotice?.(`(auto-commit failed: ${e instanceof Error ? e.message : String(e)})`);
+        else console.error(`(auto-commit failed: ${e instanceof Error ? e.message : String(e)})`);
+      }
+    }
+
     return { done: result.done, steps: result.steps, reply, rendered: !!tui, usage };
   };
 
@@ -3346,6 +3371,29 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           process.stdout.write("\n");
         } catch (err) {
           console.log(`\n! ${friendlyProviderError(err)}`);
+        }
+        continue;
+      }
+      if (input === "/undo") {
+        try {
+          const logRes = Bun.spawnSync(["git", "log", "-1", "--pretty=%B"], { cwd, stdout: "pipe", stderr: "ignore" });
+          if (logRes.exitCode === 0) {
+            const msg = logRes.stdout.toString().trim();
+            if (msg.startsWith("[jeo] auto-commit:")) {
+              const resetRes = Bun.spawnSync(["git", "reset", "--hard", "HEAD~1"], { cwd, stdout: "pipe", stderr: "pipe" });
+              if (resetRes.exitCode === 0) {
+                console.log("(undid the last jeo auto-commit and restored the working tree)");
+              } else {
+                console.log(`! undo failed: ${resetRes.stderr.toString().trim()}`);
+              }
+            } else {
+              console.log("! the last commit was not made by jeo (no '[jeo] auto-commit:' prefix). Use git manually to revert.");
+            }
+          } else {
+            console.log("! undo failed: could not read git log (not a git repo?)");
+          }
+        } catch (err) {
+          console.log(`! undo failed: ${(err as Error).message}`);
         }
         continue;
       }

@@ -126,6 +126,7 @@ export const ConfigSchema = z
         plan: z.string().optional(),
       })
       .optional(),
+    gitAutoCommit: z.boolean().optional(),
     hooks: HookConfigSchema.optional(),
   })
   .passthrough();

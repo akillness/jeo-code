@@ -96,6 +96,31 @@ jeo approve <计划路径>
 jeo team
 jeo ultragoal
 ```
+```
+  ┌──────────────────────┐
+  │   deep-interview     │  Socratic ambiguity gate · seed frozen when concrete
+  └──────────┬───────────┘
+             │ .jeo/state/<seed>.json
+             ▼
+  ┌──────────────────────┐
+  │       ralplan        │  Draft + repo-grounded critic → [OKAY] persisted
+  └──────────┬───────────┘
+             │ requires [OKAY] verdict
+             ▼
+  ┌──────────────────────┐
+  │       approve        │  Schema + roles + [OKAY] — unlocks execution
+  └──────────┬───────────┘
+             │
+             ▼
+  ┌──────────────────────┐
+  │        team          │  Serial executor · run lock · mutation audit
+  └──────────┬───────────┘
+             │ all tasks done
+             ▼
+  ┌──────────────────────┐
+  │      ultragoal       │  Honest verification — suite once, no fabrication
+  └──────────────────────┘
+```
 
 - **deep-interview** — 基于歧义度评分的苏格拉底循环；只有标准足够具体才冻结种子(纯含糊标准会被拒绝)，且种子必须通过自身解析器的往返校验。新想法绝不会静默复用已完成的访谈。
 - **ralplan** — 起草阶段 + **真正读取仓库的 critic 子代理门禁**: 强制并持久化 `[OKAY]`/`[ITERATE]`/`[REJECT]` 裁决。无效计划(schema、未知角色)不会被标记为 complete。
@@ -122,42 +147,6 @@ jeo ultragoal
 ## 内存流程
 
 `jeo` 在 `.jeo/memory/` 下保存 **本地优先、蒸馏后的项目内存**(无远程后端,零原生依赖)。过往会话被蒸馏为 [OKF](docs/okf_mem/) 概念包,下一次会话仅把相关的、受预算约束的切片重新注入系统提示 —— 作为 DATA 而非指令加固。用 `JEO_NO_MEMORY=1` 完全禁用。
-
-📐 **可编辑图示:** [`docs/diagrams/memory-flow.drawio`](docs/diagrams/memory-flow.drawio)(在 [draw.io](https://app.diagrams.net) / 桌面应用中打开)—— 写入/存储/读取/迁移完整泳道。概览:
-
-```mermaid
-flowchart LR
-  subgraph WRITE["WRITE — session-end distill (detached, best-effort)"]
-    direction TB
-    W1["session exit / ^C^C"] --> W2["spawnDetachedDistill()<br/>payload + detached child, returns instantly"]
-    W2 --> W3["distillSessionMemory()<br/>load bundle · transcriptTail · ONE LLM call (JSON)"]
-    W3 --> WD{"concepts JSON<br/>parsed?"}
-    WD -->|yes| WY["per concept: upsert by title,<br/>atomic write into facts/ commands/<br/>gotchas/ preferences/"]
-    WD -->|no| WN["plain text →<br/>legacy MEMORY.md"]
-    WY --> WR["rebuildIndex() index.md<br/>updateLog() log.md"]
-  end
-
-  subgraph STORE[".jeo/memory/ — OKF concept bundle"]
-    direction TB
-    S1["facts/ · commands/ · gotchas/ · preferences/<br/>(YAML frontmatter + body)"]
-    S2["index.md · log.md · cross-link graph (Sprint 04)"]
-    S3["MEMORY.md (legacy fallback)<br/>MEMORY.md.bak (rollback)"]
-  end
-
-  subgraph READ["READ — memoryPromptSection(cwd, query)"]
-    direction TB
-    R1["session start (query = task text)"] --> R2{"bundle has<br/>concepts?"}
-    R2 -->|yes| R3["selectWithinBudget()<br/>core → query relevance → 1-hop graph<br/>≤ MEMORY_INJECT_MAX_CHARS (3000)"]
-    R2 -->|no| R3B["legacy loadMemory()"]
-    R3 --> R4["frameMemory()<br/>hard cap · fence-neutralize · DATA framing"]
-    R3B --> R4
-    R4 --> R5["&lt;project_memory&gt; … injected into system prompt"]
-  end
-
-  WR -->|atomic| STORE
-  WN -->|fallback| S3
-  STORE -.->|loadConcepts / loadMemory| READ
-```
 
 **迁移(`jeo memory-migrate`,一次性 · 幂等).** 把旧版单文档 `MEMORY.md` 无损转换为概念包: `## 标题 → 类型`,每个项目符号 → 一个类型化概念,缩进行 → 正文; 重建 `index.md`/`log.md`,并把原文件重命名为 `MEMORY.md.bak`。一旦概念包中已有概念,再次运行即为 no-op。**回滚:** `JEO_MEMORY_LEGACY=1` 忽略概念包,通过相同的注入加固读取 `MEMORY.md`/`.bak`(`JEO_NO_MEMORY=1` 仍优先于一切)。
 
@@ -200,7 +189,6 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 致谢 (Acknowledgements)
 
 非常感谢 [gajae-code](https://github.com/Yeachan-Heo/gajae-code) 带来的灵感。
-
 
 ## 更新日志 (Changelog)
 

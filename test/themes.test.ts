@@ -14,6 +14,7 @@ import {
   cardFillPaint,
   DEFAULT_MUTED,
   liftHex,
+  themeFlowPalette,
 } from "../src/tui/components/themes";
 import { EVOLUTION_STAGE_COUNT } from "../src/tui/components/evolution";
 import { mkdtempSync } from "node:fs";
@@ -224,4 +225,20 @@ test("cardFillPaint: tint LIFTS userCard.fill so the panel separates from the te
   } finally {
     chalk.level = prev;
   }
+});
+test("themeFlowPalette: derives a dark→accent→bright sweep from the active theme", () => {
+  const matrix = getTheme("matrix");
+  const palette = themeFlowPalette(matrix);
+  // 3 stops: accentShadow → accent → brightest stage gradient end.
+  expect(palette).toEqual([matrix.accentShadow!, matrix.accent, matrix.gradients[matrix.gradients.length - 1]!.to]);
+  // Distinct themes yield distinct flow palettes (the flow tracks the theme).
+  expect(themeFlowPalette(getTheme("solar"))).not.toEqual(palette);
+  // Different themes never collide on the brand cyan→violet→pink default.
+  expect(palette).not.toEqual(themeFlowPalette(getTheme("cosmic")));
+});
+
+test("themeFlowPalette: colorless theme collapses to a single accent stop", () => {
+  const mono = getTheme("mono");
+  expect(mono.color).toBe(false);
+  expect(themeFlowPalette(mono)).toEqual([mono.accent]);
 });

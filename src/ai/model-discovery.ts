@@ -270,21 +270,39 @@ export function parseModelsBody(provider: ProviderName, body: unknown): string[]
 
 /**
  * When a provider is authenticated (oauth/api_key) but the live `models` endpoint
- * is unusable — e.g. ChatGPT/Codex OAuth tokens are rejected by `api.openai.com/v1/models`
- * — surface the static catalog ids so the provider's models still appear in pickers.
- * Keyless/not-logged-in results are returned unchanged.
+ * is unusable — e.g. ChatGPT/Codex OAuth tokens are rejected by `api.openai.com/v1/models`,
+ * or a provider (Tencent MaaS) simply has no `/v1/models` route — surface the static
+ * catalog ids so the provider's models still appear in pickers.
+ * Keyless/not-logged-in results, and api_key *auth rejections* (a bad key), are
+ * returned unchanged so they stay honest failures.
  */
 export function catalogOr(result: ProviderModelsResult): ProviderModelsResult {
   if (result.ok && result.models.length > 0) return result;
-  // OpenAI/Codex OAuth legitimately rejects the standard /models endpoint while
-  // the fixed Codex ids still work for calls. Other OAuth providers may fall
-  // back to their static catalog too — EXCEPT Antigravity, whose available
-  // models depend on the Cloud Code Assist agent backend and must not be faked.
-  if (result.source !== "oauth") return result;
+  // Antigravity's available models depend on the Cloud Code Assist agent backend
+  // and must never be faked from a hard-coded catalog.
   if (result.provider === "antigravity") return result;
-  const ids = result.provider === "openai" ? [...CODEX_MODELS] : catalogByProvider(result.provider).map(m => m.providerModel);
+  // OAuth: OpenAI/Codex legitimately rejects the standard /models endpoint while
+  // the fixed Codex ids still work; other OAuth providers fall back to their full
+  // static catalog too. API-key providers only fall back when the provider has NO
+  // models-list endpoint at all (HTTP 404 / not found) — never for an auth
+  // rejection, so a wrong key stays a failure instead of fabricating catalog rows.
+  const eligible = result.source === "oauth"
+    || (result.source === "api_key" && isMissingModelsEndpoint(result.error));
+  if (!eligible) return result;
+  const ids = result.provider === "openai" && result.source === "oauth"
+    ? [...CODEX_MODELS]
+    : catalogByProvider(result.provider).map(m => m.providerModel);
   if (ids.length === 0) return result;
   return { ...result, models: ids, ok: true, fallback: true };
+}
+
+/**
+ * True when a discovery error means the models-list endpoint itself is absent
+ * (HTTP 404 / "not found") rather than an auth/key or transient network problem.
+ */
+function isMissingModelsEndpoint(error: string | undefined): boolean {
+  if (!error) return false;
+  return /(^|\D)404(\D|$)/.test(error) || /not found/i.test(error);
 }
 
 /** Discover the live model list for one provider. Never throws. */

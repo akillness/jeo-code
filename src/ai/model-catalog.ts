@@ -109,9 +109,27 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
     company: id.includes("claude") ? "Anthropic via Antigravity" : id.includes("gpt") ? "OpenAI via Antigravity" : "Google Antigravity",
   })),
   // Tencent
+  // Tencent — DeepSeek
   { canonical: "deepseek-v4-pro", provider: "tencent", providerModel: "deepseek-v4-pro", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
+  { canonical: "deepseek-v4-pro-202606", provider: "tencent", providerModel: "deepseek-v4-pro-202606", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
   { canonical: "deepseek-v4-flash", provider: "tencent", providerModel: "deepseek-v4-flash", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
+  { canonical: "deepseek-v4-flash-202605", provider: "tencent", providerModel: "deepseek-v4-flash-202605", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
+  { canonical: "deepseek-v3.2", provider: "tencent", providerModel: "deepseek-v3.2", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
+  // Tencent — MiniMax
   { canonical: "minimax-m3", provider: "tencent", providerModel: "minimax-m3", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
+  { canonical: "minimax-m2.7", provider: "tencent", providerModel: "minimax-m2.7", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
+  { canonical: "minimax-m2.5", provider: "tencent", providerModel: "minimax-m2.5", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
+  // Tencent — Zhipu GLM
+  { canonical: "glm-5.2", provider: "tencent", providerModel: "glm-5.2", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
+  { canonical: "glm-5.1", provider: "tencent", providerModel: "glm-5.1", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
+  { canonical: "glm-5", provider: "tencent", providerModel: "glm-5", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
+  { canonical: "glm-5-turbo", provider: "tencent", providerModel: "glm-5-turbo", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
+  { canonical: "glm-5v-turbo", provider: "tencent", providerModel: "glm-5v-turbo", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: true, company: "Tencent" },
+  // Tencent — Moonshot Kimi
+  { canonical: "kimi-k2.6", provider: "tencent", providerModel: "kimi-k2.6", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
+  { canonical: "kimi-k2.5", provider: "tencent", providerModel: "kimi-k2.5", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
+  // Tencent — Hunyuan MT
+  { canonical: "hy-mt2-plus", provider: "tencent", providerModel: "hy-mt2-plus", contextTokens: 128_000, maxOutputTokens: 8192, thinking: STD, images: false, company: "Tencent" },
   // Ollama (local)
   { canonical: "qwen2.5", provider: "ollama", providerModel: "ollama/qwen2.5:0.5b", contextTokens: 32_768, maxOutputTokens: 8_192, thinking: [], images: false },
 ];

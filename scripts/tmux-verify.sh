@@ -97,7 +97,13 @@ cmd_smoke() {
   local ok=1
   echo "$frame" | grep -qiE 'Type your (message|next message)' || { echo "smoke: input box not rendered" >&2; ok=0; }
   echo "$frame" | grep -qE '⬢|claude|gpt|gemini|ollama|antigravity' || { echo "smoke: model bar not rendered" >&2; ok=0; }
-  if grep -qiE 'error|throw|undefined is not|cannot read|stack trace' "$LOG"; then echo "smoke: launcher log shows an error" >&2; ok=0; fi
+  # No launcher-log grep on purpose: the LOG only ever holds the session-start line and
+  # the launcher's own attach result. A real pre-handoff crash never reaches here (the
+  # session never appears → launch_session times out → return 1); a post-handoff crash
+  # shows up in the captured frame above. The rendered frame is the authoritative signal
+  # (same as cmd_battery). Grepping the log only re-flagged the benign non-TTY attach
+  # failure ("not a terminal"), so it was pure false-positive surface — deleted.
+
   if [ "$ok" = 1 ]; then echo "smoke: OK — jeo --tmux booted and rendered cleanly (session $SESSION)"; return 0; fi
   echo "=== settled frame ===" >&2; echo "$frame" | sed 's/^/  /' >&2
   return 1

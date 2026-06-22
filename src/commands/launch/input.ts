@@ -1,3 +1,5 @@
+import { verticalCursorOffset } from "../../tui/components/input-box";
+
 export interface InFlightAbortHarness {
   controller: AbortController;
   handleSigint(): void;
@@ -84,6 +86,34 @@ export function shouldBoxVerticalNav(
   opts: { slashMatchCount: number; historyPanelOpen: boolean },
 ): boolean {
   return line.length > 0 && opts.slashMatchCount === 0 && !opts.historyPanelOpen;
+}
+
+/** The action an Up/Down keystroke should take on the boxed prompt, given the draft and
+ *  caret. `expandedLine` has explicit breaks expanded to "\n" (the wrapped row model the
+ *  box renders); `rawLine` keeps the sentinels so a genuine multi-line draft is detectable.
+ *
+ *  - "move":    a visual row exists in `dir` → reposition the caret to `cursor` (textarea feel).
+ *  - "swallow": no row to move to AND the draft is a GENUINE multi-line message → keep the
+ *               keystroke INSIDE the box. Falling through to readline at the top/bottom edge
+ *               would recall input history and WIPE the multi-line draft the user is composing
+ *               (the "↓ cuts the lower text" bug) — so the boundary key is a deliberate no-op.
+ *  - "history": no row to move to on a SOFT-WRAPPED single line → fall through to readline so
+ *               ↑/↓ recall input history at the edges (the dominant one-liner REPL expectation). */
+export type BoxVerticalNavAction =
+  | { kind: "move"; cursor: number }
+  | { kind: "swallow" }
+  | { kind: "history" };
+
+export function boxVerticalNavAction(
+  expandedLine: string,
+  rawLine: string,
+  cursor: number,
+  width: number,
+  dir: "up" | "down",
+): BoxVerticalNavAction {
+  const next = verticalCursorOffset(expandedLine, cursor, width, dir);
+  if (next != null) return { kind: "move", cursor: next };
+  return isGenuineMultilineDraft(rawLine) ? { kind: "swallow" } : { kind: "history" };
 }
 
 

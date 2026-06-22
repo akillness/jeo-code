@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.3] - 2026-06-22
+_Provider catalog: the Tencent Cloud MaaS (international) `knownModels` list is broadened from a 4-id DeepSeek/MiniMax set to the full live-verified line-up across five families — DeepSeek, MiniMax, Zhipu GLM, Moonshot Kimi, and Hunyuan. Because the host exposes no `/v1/models` route, this hand-maintained list is the model picker's source of truth for the offline fallback._
+
+### Changed
+- **Expanded the Tencent Cloud MaaS catalog to the full live-verified model line-up.** `OPENAI_COMPAT_PROVIDERS` (in `src/ai/providers/openai-compatible-catalog.ts`) now lists the complete Tencent `tokenhub-intl` set across five families — DeepSeek (`deepseek-v4-pro`, `deepseek-v4-pro-202606`, `deepseek-v4-flash`, `deepseek-v4-flash-202605`, `deepseek-v3.2`), MiniMax (`minimax-m3`, `minimax-m2.7`, `minimax-m2.5`), Zhipu GLM (`glm-5.2`, `glm-5.1`, `glm-5`, `glm-5-turbo`, `glm-5v-turbo`), Moonshot Kimi (`kimi-k2.6`, `kimi-k2.5`), and Hunyuan (`hy-mt2-plus`) — all served over the Anthropic Messages wire format and each verified live (2026-06) via `/v1/messages` probes (a completion or `FREE_QUOTA_EXHAUSTED` both prove the id is recognized). Since the host has no `/v1/models` route, this list is the picker's source of truth for the offline fallback.
+
+### Verified
+- `bun run typecheck` clean; full suite **1826 pass / 0 fail** (222 files), including `test/tencent-provider.test.ts` (provider registration, id routing, reasoning catalogue, discovery endpoint).
+
+
 ## [0.7.2] - 2026-06-22
 _Workflow honesty + prompt-input testability: `ultragoal` acceptance criteria can now carry a trailing `{verify: <command>}` directive that makes a criterion **individually** provable (real PASS/FAIL instead of a blanket UNVERIFIED on a green suite), with a SUCCESS / PARTIAL / SUITE_GREEN / FAILED status taxonomy; the boxed prompt's full stdin→readline keystroke rewriter is extracted into a pure, PTY-free function so the "↓ cuts the lower text" fix and the rest of the wiring are unit-tested directly. Verified leak-free (`mem-probe`, 2000 turns, exit 0) with a fresh `jeo --tmux` boot battery (6/6)._
 

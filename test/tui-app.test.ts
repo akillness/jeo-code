@@ -340,6 +340,51 @@ test("LaunchTui resize: finish() stops repaints and cancels a pending trailing o
     Renderer.prototype.render = realRender;
   }
 });
+
+test("LaunchTui resize: live frame reflows back to full width after shrink→grow", async () => {
+  // Regression: a terminal that shrinks and then grows must paint the live frame at
+  // the RESTORED width — not stay pinned to the shrunk geometry. Drives the real
+  // renderer + draw() with a mocked terminal size and asserts the captured frame's
+  // visible width actually expands on grow (the throttle-count tests above only prove
+  // a repaint FIRED, not that it reflowed to the new size).
+  const realRender = Renderer.prototype.render;
+  let last: string[] = [];
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { last = f.slice(); };
+  const origCols = (process.stdout as unknown as { columns: number }).columns;
+  const origRows = (process.stdout as unknown as { rows: number }).rows;
+  const setSize = (c: number, r: number) => {
+    (process.stdout as unknown as { columns: number }).columns = c;
+    (process.stdout as unknown as { rows: number }).rows = r;
+  };
+  const maxWidth = (frame: string[]) => Math.max(0, ...frame.map(l => visibleWidth(l)));
+  try {
+    setSize(120, 40);
+    const tui = new LaunchTui({ model: "anthropic/claude-x", maxSteps: 25, tty: true, write: () => {} });
+    tui.start();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    tui.setTodos([{ title: "A reasonably long task title that fills the available row width here", status: "in_progress" }]);
+    (tui as unknown as { draw: () => void }).draw();
+    expect(maxWidth(last)).toBeGreaterThan(60); // wide baseline
+
+    setSize(40, 12);
+    process.stdout.emit("resize");
+    await new Promise(r => setTimeout(r, 50)); // let the trailing settle run
+    (tui as unknown as { draw: () => void }).draw();
+    expect(maxWidth(last)).toBeLessThanOrEqual(40); // clamped to the shrunk width
+
+    setSize(120, 40);
+    process.stdout.emit("resize");
+    await new Promise(r => setTimeout(r, 50));
+    (tui as unknown as { draw: () => void }).draw();
+    expect(maxWidth(last)).toBeGreaterThan(60); // recovered to the grown width
+
+    tui.finish("done");
+  } finally {
+    Renderer.prototype.render = realRender;
+    setSize(origCols, origRows);
+  }
+});
+
 test("LaunchTui.usable is false under a non-TTY test process", () => {
   expect(LaunchTui.usable(false)).toBe(false); // bun test stdout is not a TTY
   expect(LaunchTui.usable(true)).toBe(false); // --no-tui always false

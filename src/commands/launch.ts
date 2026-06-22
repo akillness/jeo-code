@@ -62,7 +62,7 @@ import { liveModelPicker, renderLiveModelPicker, type ModelAssignmentBadge } fro
 import { loginPicker, renderLoginPicker, onboardingPicker, renderOnboardingPicker, apiKeyPicker, renderApiKeyPicker, subscriptionLoginPicker, type OnboardingAction } from "../tui/components/provider-picker";
 import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff, sanitizeForTerminal } from "../tui/components/code-view";
 import { categoryBadge } from "../tui/components/category-index";
-import { renderInputFrame, verticalCursorOffset, type HighlightRange } from "../tui/components/input-box";
+import { renderInputFrame, type HighlightRange } from "../tui/components/input-box";
 
 import { renderStatusBar } from "../tui/components/status";
 import { detectColorLevel, ColorLevel, visibleWidth } from "../tui/components/color";
@@ -139,6 +139,7 @@ import {
   MULTILINE_SENTINEL,
   isGenuineMultilineDraft,
   shouldBoxVerticalNav,
+  boxVerticalNavAction,
   queuePromptInputChunk,
   captureLivePromptInputChunk,
   restoreQueuedLinesToPrefill,
@@ -209,6 +210,7 @@ export {
   MULTILINE_SENTINEL,
   isGenuineMultilineDraft,
   shouldBoxVerticalNav,
+  boxVerticalNavAction,
   queuePromptInputChunk,
   captureLivePromptInputChunk,
   restoreQueuedLinesToPrefill,
@@ -250,11 +252,11 @@ function providerDefaultModel(p: ProviderName): string {
  * empty.
  *
  * Live discovery yields ids only for a logged-in, reachable provider, and
- * `catalogOr` backfills the static catalog ONLY for OAuth sources — so an
- * API-key/keyless provider that isn't configured yet had an empty list and was
- * silently pinned to a bare default. Prefer live ids; else the provider's
- * capability catalog; else its single known default model (all 24 OpenAI-compat
- * providers carry one) so the user always sees at least one pickable id.
+ * `catalogOr` backfills the static catalog for OAuth sources and for API-key
+ * providers whose models-list endpoint is absent (HTTP 404, e.g. Tencent MaaS).
+ * A not-yet-configured provider still has an empty live list, so prefer live ids;
+ * else the provider's capability catalog; else its single known default model (all
+ * 24 OpenAI-compat providers carry one) so the user always sees at least one id.
  */
 export function providerPickEntries(live: ProviderModelsResult[], want: ProviderName): PickEntry[] {
   const fromLive = flattenModels(live.filter(r => r.provider === want));
@@ -1471,11 +1473,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (combo) { out += combo[1]; i += combo[0].length; continue; }
         // Up/Down move the caret BETWEEN the box's visual rows (textarea feel) for any
         // MULTI-ROW draft — explicit Shift+Enter breaks (→ SENTINEL) OR a long line the
-        // box soft-wraps. The decision is boundary-aware: verticalCursorOffset returns a
-        // target only when a visual row exists to move to, so ↑ on the TOP row, ↓ on the
-        // BOTTOM row, and any single-visual-row draft fall through to readline and recall
-        // input history — the dominant REPL expectation once the caret can climb no
-        // higher. Skipped when a slash list or Ctrl+O history panel owns ↑/↓.
+        // box soft-wraps. The decision is boundary-aware: an in-box visual row exists →
+        // move the caret there. With NO row to move to (↑ on the TOP row, ↓ on the BOTTOM
+        // row), a SOFT-WRAPPED one-liner falls through to readline to recall input history
+        // (the dominant REPL expectation), but a GENUINE multi-line draft SWALLOWS the key
+        // instead — falling through there would let readline's history nav WIPE the
+        // multi-line message being composed (the "↓ cuts the lower text" bug). Skipped
+        // entirely when a slash list or Ctrl+O history panel owns ↑/↓.
 
         if ((data.startsWith("\u001b[", i) || data.startsWith("\u001bO", i)) && (data[i + 2] === "A" || data[i + 2] === "B")) {
           const dir = data[i + 2] === "A" ? "up" : "down";
@@ -1484,8 +1488,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             const winCols = Math.max(24, (process.stdout.columns ?? 80) - 1);
             const textWidth = Math.max(1, Math.max(24, winCols) - 6);
             const cur = typeof activeRl.cursor === "number" ? activeRl.cursor : line.length;
-            const next = verticalCursorOffset(expandSentinel(line), cur, textWidth, dir);
-            if (next != null) { activeRl.cursor = next; i += 3; continue; }
+            const action = boxVerticalNavAction(expandSentinel(line), line, cur, textWidth, dir);
+            if (action.kind === "move") { activeRl.cursor = action.cursor; i += 3; continue; }
+            if (action.kind === "swallow") { i += 3; continue; } // keep the multi-line draft intact
           }
           out += data.slice(i, i + 3); i += 3; continue;
         }
@@ -2167,10 +2172,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       process.stdin.setRawMode(true);
     }
     process.stdin.resume();
-    const cols = Math.max(40, terminalSize().cols - 2);
-    const rows = Math.max(6, terminalSize().rows - 6);
     let rendered = 0;
     const repaint = () => {
+      // Re-measure on EVERY paint so the picker tracks live terminal resizes. The old code
+      // captured cols/rows ONCE at open, so a picker left open across a resize never reflowed
+      // and stayed pinned to its opening geometry — it never recovered after a shrink→grow.
+      const cols = Math.max(40, terminalSize().cols - 2);
+      const rows = Math.max(6, terminalSize().rows - 6);
       const lines = render(cols, rows).map(line => truncateAnsi(line, cols));
       const total = Math.max(rendered, lines.length);
       // First paint: drop down ONCE to start on a fresh row; subsequent paints:
@@ -2205,6 +2213,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       rendered = 0;
     };
     repaint();
+    // Reflow the picker on terminal resize. The terminal has already reflowed the old
+    // block's rows, so `rendered` no longer maps 1:1 to physical rows: drop the stale
+    // accounting, wipe the visible screen (scrollback kept), and repaint at the freshly
+    // measured geometry. Debounced so a drag-resize coalesces into a single clean repaint.
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+    const onPickerResize = () => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        resizeTimer = undefined;
+        try { rendered = 0; out.write(clearVisible()); repaint(); } catch { /* resize render race */ }
+      }, 16);
+    };
+    process.stdout.on("resize", onPickerResize);
     try {
       await new Promise<void>(resolve => {
         const handler = (ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
@@ -2220,6 +2241,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         process.stdin.on("keypress", handler);
       });
     } finally {
+      process.stdout.off("resize", onPickerResize);
+      if (resizeTimer) clearTimeout(resizeTimer);
       if (process.stdin.setRawMode && !wasRaw) {
         process.stdin.setRawMode(false);
       }

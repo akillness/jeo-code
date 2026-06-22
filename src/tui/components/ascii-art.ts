@@ -528,8 +528,12 @@ export function renderForgeMark(opts: {
    *  flowing gradient `phase` this animates the forge identity without any
    *  frame-count growth. */
   frame?: number;
+  /** Gradient palette for the flowing glow. Defaults to the brand `FORGE_FLOW_PALETTE`;
+   *  pass a theme-derived palette (see `themeFlowPalette`) so the mark tracks the theme. */
+  palette?: readonly string[];
 }): string[] {
-  const memoKey = `${opts.grand ? "g" : "c"}|${opts.unicode !== false ? 1 : 0}|${opts.cols ?? -1}|${opts.color !== false ? 1 : 0}|${opts.colorLevel ?? ColorLevel.TrueColor}|${opts.phase ?? 0}|${opts.frame ?? 0}`;
+  const palette = opts.palette ?? FORGE_FLOW_PALETTE;
+  const memoKey = `${opts.grand ? "g" : "c"}|${opts.unicode !== false ? 1 : 0}|${opts.cols ?? -1}|${opts.color !== false ? 1 : 0}|${opts.colorLevel ?? ColorLevel.TrueColor}|${opts.phase ?? 0}|${opts.frame ?? 0}|${palette.join(",")}`;
   const memoHit = forgeMarkMemo.get(memoKey);
   if (memoHit) return memoHit;
   const useUnicode = opts.unicode !== false;
@@ -551,7 +555,7 @@ export function renderForgeMark(opts: {
   const phase = opts.phase ?? 0;
   const useColor = opts.color !== false;
   const colorLevel = opts.colorLevel ?? ColorLevel.TrueColor;
-  const palette = FORGE_FLOW_PALETTE;
+
 
   const result = source.map((line, idx) => {
     const padded = line.length < width ? line + " ".repeat(width - line.length) : line;

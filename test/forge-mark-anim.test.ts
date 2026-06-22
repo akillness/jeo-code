@@ -143,3 +143,14 @@ test("forgeBeat cycles width-1 jeo-prompt motifs and wraps", () => {
   expect(forgeBeat(1, false)).toBe("#"); // ASCII fallback
   for (const beat of seen) expect(beat.length).toBe(1);
 });
+test("renderForgeMark: a custom palette repaints the glow and keys the memo (theme-aware flow)", () => {
+  const args = { phase: 0.1, frame: 0, cols: 80, color: true, colorLevel: ColorLevel.TrueColor } as const;
+  const brand = renderForgeMark({ ...args }); // default brand palette
+  const themed = renderForgeMark({ ...args, palette: ["#39ff14", "#0b6623", "#ccffcc"] });
+  // Same glyph geometry, different colors — only the gradient changed.
+  expect(themed.map(stripAnsi)).toEqual(brand.map(stripAnsi));
+  expect(themed.join("\n")).not.toBe(brand.join("\n"));
+  // The palette is part of the cache key: same palette → cached ref; different → recomputed.
+  expect(renderForgeMark({ ...args, palette: ["#39ff14", "#0b6623", "#ccffcc"] })).toBe(themed);
+  expect(renderForgeMark({ ...args, palette: ["#ff8c00", "#8a4500", "#fff5cc"] })).not.toBe(themed);
+});

@@ -1,6 +1,6 @@
 {
   "name": "jeo-code",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Clean, highly optimized AI coding agent using spec-first loop",
   "type": "module",
   "main": "src/cli.ts",

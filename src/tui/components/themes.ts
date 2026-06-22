@@ -285,6 +285,20 @@ export function accentShadowPaint(theme: EvolutionTheme): (s: string) => string 
   return (s: string) => chalk.dim(chalk.hex(hex)(s));
 }
 
+
+/** A 3-stop neon "flow" palette derived from the active theme, for the animated
+ *  forge-card border and the forge mark so the live flow matches the THEME instead
+ *  of a fixed brand palette. Sweeps `accentShadow` → `accent` → the brightest stage
+ *  gradient end (a dark → accent → light shimmer that reads as the theme's own glow).
+ *  Colorless themes collapse to a single accent stop — callers gate the animation on
+ *  color/TrueColor, so the value is only a harmless fallback there. */
+export function themeFlowPalette(theme: EvolutionTheme): readonly string[] {
+  if (!theme.color) return [theme.accent];
+  const bright = theme.gradients[theme.gradients.length - 1]?.to ?? theme.accent;
+  const dark = theme.accentShadow ?? theme.accent;
+  return [dark, theme.accent, bright];
+}
+
 /** Default muted foreground when a theme defines no `muted` — a readable mid-gray
  *  that holds up on dark terminals (unlike ANSI `dim`, which collapses toward the
  *  background). */

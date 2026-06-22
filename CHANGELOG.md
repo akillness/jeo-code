@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.1] - 2026-06-22
+_TUI polish + provider breadth: the live forge-card border and forge mark now flow in the **active theme's** own neon palette instead of a fixed brand gradient, the boxed prompt's Up/Down keys no longer wipe a multi-line draft at its top/bottom edge, the Tencent Cloud MaaS catalog gains the live-verified DeepSeek/MiniMax/GLM model families (with catalog backfill for providers that expose no models-list endpoint), and the `jeo --tmux` smoke check drops a false-positive launcher-log grep. Verified leak-free (`mem-probe`, 2000 turns, exit 0) with a fresh `jeo --tmux` boot battery (6/6)._
+
+### Added
+- **Theme-derived forge flow palette.** `themeFlowPalette(theme)` builds a 3-stop neon palette (`accentShadow → accent → brightest stage-gradient end`) from the active TUI theme; the animated forge-card border and the forge mark now sweep the theme's own glow instead of the fixed brand `FORGE_FLOW_PALETTE`. Colorless/`mono` themes collapse to a single accent stop (the animation is already gated on color/TrueColor).
+- **Expanded Tencent Cloud MaaS catalog.** Added live-verified model ids across DeepSeek (`deepseek-v4-pro`/`-202606`, `deepseek-v4-flash`/`-202605`, `deepseek-v3.2`), MiniMax (`minimax-m3`/`-m2.7`/`-m2.5`), and Zhipu GLM (`glm-5.2`/`5.1`/`5`). Ids were confirmed against live `/v1/messages` probes (the host exposes no `/v1/models` route).
+
+### Fixed
+- **The boxed prompt's Up/Down keys no longer wipe a multi-line draft at its edges.** A new `boxVerticalNavAction` classifier returns `move` (a visual row exists → reposition the caret), `swallow` (no row AND a genuine multi-line draft → keep the keystroke inside the box, since falling through to readline would recall input history and erase the draft — the "↓ cuts the lower text" bug), or `history` (no row on a soft-wrapped single line → fall through so ↑/↓ recall history at the edges).
+- **Model-picker no longer pins API-key providers to a bare default when the models-list endpoint is absent.** `catalogOr` now backfills the static capability catalog for OAuth sources *and* for API-key providers whose models endpoint returns HTTP 404 (e.g. Tencent MaaS), so the picker shows the full known model set instead of a single default.
+- **`scripts/tmux-verify.sh smoke` no longer false-fails on the benign non-TTY attach.** The launcher-log grep was pure false-positive surface (it re-flagged the harmless `not a terminal` attach message); a real pre-handoff crash already fails via the session-start timeout and a post-handoff crash shows in the captured frame, so the rendered frame is the authoritative signal.
+
+### Verified
+- `bun run typecheck` clean; full suite **1806 pass / 0 fail** (221 files).
+- `scripts/mem-probe.ts` (2000 turns × 40 tools): no long-term leak (exit 0; settled heap floor flat at ~4.3 MB, exit-listeners flat at 1).
+- `scripts/tmux-verify.sh battery`: **6/6 PASSED** on a fresh `jeo --tmux` boot (boot, `/help`, unknown `$skill`, `/agents`, `$ultragoal`, unresolved `/command`).
+
 ## [0.7.0] - 2026-06-22
 _Adds an opt-in, fail-closed **computer-use** capability (a `computer` tool + `jeo computer` CLI for screenshot/click/type/keypress/scroll/drag/wait/batch), hardens the spec-first workflow against silent post-consensus plan edits and PID-reuse lock starvation, makes OAuth refresh degrade cleanly when the refresh token is dead, and teaches tool-arg JSON repair to tolerate unescaped control characters. Verified leak-free (`mem-probe`, 2000 turns, −447 bytes/turn slope) with a fresh `jeo --tmux` boot battery (6/6)._
 

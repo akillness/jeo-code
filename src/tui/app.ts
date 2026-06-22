@@ -16,13 +16,13 @@ import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
 import { renderFooter, type FooterData } from "./components/footer";
-import { renderForgeMark, forgeMarkHeight, forgeMarkFrameCount, forgeBeat, FORGE_FLOW_PALETTE } from "./components/ascii-art";
+import { renderForgeMark, forgeMarkHeight, forgeMarkFrameCount, forgeBeat } from "./components/ascii-art";
 import { evolutionTrack, createStageProgress, type StageProgress, transitionMessage } from "./components/evolution";
 import type { TaskSubEvent } from "../agent/task-tool";
 import { supportsUnicode } from "./components/capability";
 import { centerBlock, padLineTo, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
 import { SECTION_GAP, sectionLabel, stackSections } from "./components/section";
-import { resolveTheme, themeGradient, accentPaint, accentShadowPaint, diffPaint, mutedPaint, cardFillPaint } from "./components/themes";
+import { resolveTheme, themeGradient, accentPaint, accentShadowPaint, diffPaint, mutedPaint, cardFillPaint, themeFlowPalette } from "./components/themes";
 import { detectColorLevel, animatedGradientText, ColorLevel } from "./components/color";
 import { formatForgeBox, summarizeForgeInvocation, summarizeForgeResult, fitForgeBoxes, webSearchCardLines, scaleForgeWidth, type ForgeSummary } from "./components/forge";
 import { renderStatusBar, renderStatusBox, type StatusBoxData } from "./components/status";
@@ -314,6 +314,9 @@ export class LaunchTui {
   private readonly unicode: boolean = supportsUnicode();
   // Active color theme (JEO_TUI_THEME), default cosmic; `mono` disables color.
   private readonly theme = resolveTheme(process.env);
+  // Neon flow palette derived from the active theme (forge-card border + forge mark
+  // animation), so the live glow tracks the theme instead of a fixed brand palette.
+  private readonly themeFlow = themeFlowPalette(this.theme);
   // Whether the live turn may use the alternate screen buffer (real TTY only).
   private readonly tty: boolean;
   // gjc-style inline rendering (default on a TTY): the live frame repaints in place in
@@ -968,7 +971,6 @@ export class LaunchTui {
     this.subagentLive = null; // fresh turn: no nested subagent in flight
     this.activityLog.length = 0; // per-turn ring: timestamps are turn-relative
     this.spinner.updateStep(0, this.footer.maxSteps);
-    // On a real TTY the live turn renders gjc-style in the MAIN buffer by default:
     // completed ledger lines are flushed into normal scrollback as they happen, so a
     // tmux / terminal mouse-wheel scroll can review earlier progress mid-turn. The
     // differential renderer reserves frame rows with real newlines, keeping the
@@ -1278,7 +1280,7 @@ export class LaunchTui {
         // the card border and the prompt beat marks the title. Flushed/final cards
         // stay static. Suppressed while `dim` (in-flight shading takes precedence).
         ...(anim && !dim
-          ? { flow: { palette: FORGE_FLOW_PALETTE, phase: anim.phase, colorLevel: anim.colorLevel }, titleMark: anim.beat }
+          ? { flow: { palette: this.themeFlow, phase: anim.phase, colorLevel: anim.colorLevel }, titleMark: anim.beat }
           : {}),
       }));
     }
@@ -1570,6 +1572,7 @@ export class LaunchTui {
         unicode: this.unicode,
         color: this.theme.color,
         colorLevel: detectColorLevel(process.env, isTTY()),
+        palette: this.themeFlow,
       });
       this.cachedArt = fit ? centerBlock(art, innerWidth) : art;
       const track = evolutionTrack(idx, { unicode: this.unicode, color: this.theme.color });

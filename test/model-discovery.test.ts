@@ -374,6 +374,31 @@ test("catalogOr: an api_key rejection does NOT fabricate catalog rows (bad key s
   expect(r.fallback).toBeUndefined();
 });
 
+test("catalogOr: api_key provider with NO models endpoint (HTTP 404) falls back to its static catalog", () => {
+  // Tencent MaaS speaks Anthropic Messages but has no /v1/models route → 404.
+  // The key is valid; the models must still surface from the static catalog.
+  const r = catalogOr({ provider: "tencent", models: [], ok: false, source: "api_key", error: "HTTP 404" });
+  expect(r.ok).toBe(true);
+  expect(r.fallback).toBe(true);
+  expect(r.models).toContain("deepseek-v4-pro");
+  expect(r.models).toContain("deepseek-v4-flash");
+  expect(r.models).toContain("minimax-m3");
+});
+
+test("catalogOr: api_key '404 page not found' body text also triggers catalog fallback", () => {
+  const r = catalogOr({ provider: "tencent", models: [], ok: false, source: "api_key", error: "HTTP 404: 404 page not found" });
+  expect(r.ok).toBe(true);
+  expect(r.fallback).toBe(true);
+});
+
+test("catalogOr: api_key provider for a catalog-less provider stays a failure even on 404", () => {
+  // No static catalog rows → nothing safe to surface → honest failure preserved.
+  const r = catalogOr({ provider: "lmstudio", models: [], ok: false, source: "api_key", error: "HTTP 404" });
+  expect(r.ok).toBe(false);
+  expect(r.models).toEqual([]);
+  expect(r.fallback).toBeUndefined();
+});
+
 // Round-15: live-verified endpoint structure fixes.
 
 test("discoveryRequest: codex URL carries client_version (400 without; old versions get [])", () => {

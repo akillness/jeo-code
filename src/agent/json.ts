@@ -51,25 +51,92 @@ export function tryExtractJsonObject<T = unknown>(
 }
 
 /**
- * Parse `s` as JSON, tolerating a single class of common model slip: a trailing
- * comma right before a closing `}` or `]`. Returns `undefined` (not null — a bare
- * `null`/`false` is a legal JSON value) when nothing parses.
+ * Parse `s` as JSON, tolerating common model slips that produce *almost*-valid
+ * JSON. Returns `undefined` (not null — a bare `null`/`false` is a legal JSON
+ * value) when nothing parses. Repairs attempted, in order:
+ *   - a trailing comma right before a closing `}` or `]`;
+ *   - raw control characters (literal newlines/tabs/etc.) inside a string value,
+ *     which JSON forbids — a frequent slip when a tool argument carries multi-line
+ *     code (e.g. an `editBlock`/`content` payload the model failed to `\n`-escape).
  */
 function tryParse<T>(s: string): T | undefined {
   try {
     return JSON.parse(s) as T;
   } catch {
-    /* fall through to a trailing-comma repair */
+    /* fall through to layered repairs */
   }
-  const repaired = stripTrailingCommas(s);
-  if (repaired !== s) {
+  // Each repair targets one well-scoped, common slip; try the cheap single
+  // repairs first, then the combination, so valid JSON is never altered.
+  const candidates: string[] = [];
+  const noTrailing = stripTrailingCommas(s);
+  if (noTrailing !== s) candidates.push(noTrailing);
+  const escaped = escapeJsonControlChars(s);
+  if (escaped !== s) {
+    candidates.push(escaped);
+    const escapedNoTrailing = stripTrailingCommas(escaped);
+    if (escapedNoTrailing !== escaped) candidates.push(escapedNoTrailing);
+  }
+  for (const candidate of candidates) {
     try {
-      return JSON.parse(repaired) as T;
+      return JSON.parse(candidate) as T;
     } catch {
-      /* unrecoverable here */
+      /* try the next repair */
     }
   }
   return undefined;
+}
+
+/**
+ * Escape raw control characters (codepoint < 0x20) that appear *inside* a JSON
+ * string literal, where the JSON grammar requires them to be escaped. Models
+ * routinely emit literal newlines inside a multi-line tool argument (code in an
+ * `editBlock`/`content` field), which makes `JSON.parse` reject the whole object.
+ * String/escape state is tracked so control bytes outside strings (insignificant
+ * whitespace between tokens) are left untouched.
+ */
+function escapeJsonControlChars(s: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]!;
+    if (inString) {
+      if (escaped) {
+        out += ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        out += ch;
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        out += ch;
+        inString = false;
+        continue;
+      }
+      const code = ch.charCodeAt(0);
+      if (code < 0x20) {
+        switch (ch) {
+          case "\n": out += "\\n"; break;
+          case "\r": out += "\\r"; break;
+          case "\t": out += "\\t"; break;
+          case "\b": out += "\\b"; break;
+          case "\f": out += "\\f"; break;
+          default: out += "\\u" + code.toString(16).padStart(4, "0"); break;
+        }
+        continue;
+      }
+      out += ch;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    }
+    out += ch;
+  }
+  return out;
 }
 
 /**

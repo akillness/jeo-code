@@ -68,19 +68,30 @@ export function isVerificationSignal(cmd: string, output = ""): boolean {
 
 /**
  * Result-aware repeat nudge: tells the model WHY repeating the call won't help and what
- * to try instead, tailored to the repeated tool and its last actual result.
+ * to try instead, tailored to the repeated tool and its last actual result. When the
+ * previous attempt FAILED, prepend a reflection directive so the model extracts the
+ * lesson and changes tool/arguments instead of retrying the same failing call unchanged.
  */
 export function repeatHint(tool: string, prev?: { success: boolean; output: string }): string {
   const out = prev?.output ?? "";
   const empty = !prev || !prev.success || out.trim() === "" || /no match|0 match|no result|not found|no file/i.test(out);
+  const failed = prev !== undefined && !prev.success;
+  const reflect = failed
+    ? "The previous attempt FAILED — don't retry it unchanged; state what its result tells you, then change the tool or its arguments. "
+    : "";
+  let base: string;
   if (tool === "search" || tool === "find" || tool === "ls") {
-    return empty
+    base = empty
       ? `That '${tool}' returned nothing useful and will again — BROADEN it (a looser pattern, a parent directory, or a different tool such as ${tool === "search" ? "find" : "search"}), or call done if this lookup isn't needed.`
       : `That '${tool}' already returned results — open one of the hits with read, or move on; re-running it changes nothing.`;
+  } else if (tool === "read") {
+    base = `You already read that and its content is unchanged — use what you read, or read a DIFFERENT file.`;
+  } else if (tool === "bash") {
+    base = `That command already ran with the same output — change the command, or call done.`;
+  } else {
+    base = `That call's result is unchanged — take a different action, or call done.`;
   }
-  if (tool === "read") return `You already read that and its content is unchanged — use what you read, or read a DIFFERENT file.`;
-  if (tool === "bash") return `That command already ran with the same output — change the command, or call done.`;
-  return `That call's result is unchanged — take a different action, or call done.`;
+  return reflect + base;
 }
 
 /** Inputs for the done-verification gate (jeo's descendant of gjc's ultragoal-guard). */

@@ -48,6 +48,19 @@ test("repeatHint tailors guidance to the repeated tool", () => {
   expect(repeatHint("edit")).toContain("take a different action");
 });
 
+test("repeatHint prepends a reflection directive when the previous attempt FAILED", () => {
+  // A failed bash retry: keep the per-tool base, but lead with the reflect-and-change directive.
+  const failed = repeatHint("bash", { success: false, output: "error: command not found" });
+  expect(failed).toContain("The previous attempt FAILED");
+  expect(failed).toContain("change the tool or its arguments");
+  expect(failed).toContain("change the command"); // base hint still present
+  // A successful repeat (results unchanged, not a failure) gets NO reflection prefix.
+  const ok = repeatHint("bash", { success: true, output: "done" });
+  expect(ok).not.toContain("The previous attempt FAILED");
+  // Missing prev (no recorded result) is not treated as a failure.
+  expect(repeatHint("edit")).not.toContain("The previous attempt FAILED");
+});
+
 test("classifyDoneGate: no mutation → accept", () => {
   const v = classifyDoneGate({ sawMutation: false, sawVerification: false, pendingHookFailure: null });
   expect(v.state).toBe("done_ok");

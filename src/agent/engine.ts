@@ -14,8 +14,9 @@ import { extractJsonObject } from "./json";
 import { nativeToolSchemasFor, normalizeNativeToolName } from "./tool-schemas";
 import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, mkdirTool, deleteTool, type ToolResult } from "./tools";
 import { webSearchTool, setWebSearchActiveModel } from "./web-search";
-import { friendlyProviderError, isContextOverflowError, isRefusalError } from "../util/provider-error";
+import { executeComputerAction } from "../commands/computer";
 import { isRateLimitError } from "../util/retry";
+import { isContextOverflowError, isRefusalError, friendlyProviderError } from "../util/provider-error";
 import { runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
 import { truncateToolOutput, formatToolResultBody } from "./tool-output";
 export { TOOL_OUTPUT_MAX, READ_OUTPUT_MAX, TOOL_SPILL_THRESHOLD, MAX_TOOL_ARTIFACTS, truncateToolOutput, spillToolResult } from "./tool-output";
@@ -79,8 +80,8 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
   mkdir: (a, cwd) => mkdirTool(a.dirPath ?? a.path ?? a.dir, cwd),
   delete: (a, cwd) => deleteTool(a.path ?? a.filePath ?? a.targetPath ?? a.dirPath, cwd, !!(a.recursive ?? a.r)),
   web_search: (a, cwd) => webSearchTool(a, cwd),
+  computer: (a) => executeComputerAction(a as any),
 };
-
 /** Tool-protocol description injected into the system prompt. */
 export const TOOL_PROTOCOL = [
   "You have these tools (call exactly ONE per step, or batch multiple independent calls):",
@@ -94,7 +95,8 @@ export const TOOL_PROTOCOL = [
   "8. mkdir  {dirPath}                   — create a directory (parents included; idempotent)",
   "9. delete {path, recursive?}          — remove a file (or directory with recursive:true)",
   "10. web_search {query, recency?, limit?} — search the web (Anthropic-native: synthesized answer + sources + citations)",
-  "11. done   {reason?}                  — call when the task is fully implemented AND verified",
+  "11. computer {action, x?, y?, text?, key?, deltaX?, deltaY?, duration?, actions?} — execute desktop automation actions (screenshot, click, double_click, move, drag, scroll, type, keypress, wait, batch)",
+  "12. done   {reason?}                  — call when the task is fully implemented AND verified",
   "",
   "Reply with STRICT JSON only — no code fences. You MAY include an optional leading",
   '"reasoning" string (one short sentence on your plan) before "tool":',
@@ -140,7 +142,8 @@ export const WORKING_DISCIPLINE = [
   "- Don't fabricate API/library surfaces from memory; check the source or --help for unfamiliar APIs.",
   "- Never ship stubs, placeholders, or TODO-only code as a delivered feature.",
   "- Never substitute the requested problem with an easier adjacent one.",
-  "- On a failed tool or test, fix the cause and continue — capture the evidence first; no apology loops, no shrinking the task to dodge it.",
+  "- On a failed tool or test, fix the cause and continue — capture the evidence first, state what the failure taught you, and change the next attempt accordingly; no apology loops, no shrinking the task to dodge it.",
+  "- Maintain a running task state (goal/constraints, confirmed evidence, failed approaches + cause, open candidates) and update it instead of re-reading the whole history each step.",
   "- Update directly affected callsites, tests, and docs — or state why they are unchanged.",
   "- Reuse existing patterns; parallel conventions are prohibited. Fix problems at their source.",
   "- Not alone in the repo: treat unexpected changes as user work; never revert or delete them.",
@@ -170,7 +173,9 @@ export const OUTPUT_DISCIPLINE = [
  *  and launch.ts's interactive prompt (was duplicated verbatim in both). */
 export const VERIFICATION_DIRECTIVE =
   "Before calling done, self-check: did I run the test or command that exercises this change, are directly-affected callsites/tests/docs updated, and does my claim match real output? If any answer is no, keep working — do not call done. " +
+  "Distinguish a passing test from a met requirement: never weaken, skip, or narrow a test to make it pass. " +
   "When you write tests, exercise observable behavior, edge values, branch conditions, invariants, and error handling — never assert defaults or tautologies.";
+
 
 export function executorSystemPrompt(
   role = "Executor Agent, a senior software developer",

@@ -136,6 +136,65 @@ test("approve command: nonexistent plan rejection, validation, and idempotency",
     const stateAfterSecondApprove = await readWorkflowState("ralplan", tempDir);
     expect(stateAfterSecondApprove?.approved).toBe(true);
 
+    // Reset exitCode
+    process.exitCode = 0;
+
+    // 6. Hash verification: refuses to approve if the plan file has been modified since consensus
+    const planPathHash = path.join(tempDir, "plan-hash.yaml");
+    const planContent = "steps:\n  - name: \"Build it\"\n    role: executor\n";
+    await fs.writeFile(planPathHash, planContent, "utf-8");
+
+    const { createHash } = await import("node:crypto");
+    const correctHash = createHash("sha256").update(planContent).digest("hex");
+
+    await writeWorkflowState(
+      "ralplan",
+      {
+        active: true,
+        current_phase: "complete",
+        skill: "ralplan",
+        plan_path: planPathHash,
+        approved: false,
+        consensus: "okay",
+        consensus_hash: correctHash,
+      },
+      tempDir
+    );
+
+    // Modify the plan file
+    await fs.writeFile(planPathHash, planContent + "  - name: \"Extra step\"\n    role: executor\n", "utf-8");
+
+    logs.length = 0;
+    console.log = (...args: any[]) => {
+      logs.push(args.join(" "));
+    };
+
+    try {
+      await runApproveCommand([planPathHash]);
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(process.exitCode).toBe(1);
+    expect(logs.join("\n")).toContain("modified since the consensus critic reviewed it");
+
+    // Restore the plan file
+    await fs.writeFile(planPathHash, planContent, "utf-8");
+    process.exitCode = 0;
+    logs.length = 0;
+    console.log = (...args: any[]) => {
+      logs.push(args.join(" "));
+    };
+
+    try {
+      await runApproveCommand([planPathHash]);
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(process.exitCode).toBe(0);
+    expect(logs.join("\n")).toContain("Plan approved successfully");
+
   } finally {
     process.cwd = originalCwd;
     process.exitCode = originalExitCode;

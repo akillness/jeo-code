@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { dispatch } from "./cli/runner";
+import { restoreTerminalState } from "./util/terminal-restore";
 import pkg from "../package.json";
 
 const APP_NAME = "jeo";
@@ -16,11 +17,26 @@ if (typeof Bun !== "undefined" && Bun.semver?.order(Bun.version, MIN_BUN_VERSION
 }
 process.title = APP_NAME;
 
+// Last-resort crash net: a background `fetch()` socket error (or any stray
+// rejection/throw) can tear the process down outside the try/catch below, AFTER
+// the REPL has put stdin in raw mode + enabled bracketed paste. Without this the
+// shell is left mute ("error printed, then input is dead"). Restore the terminal
+// SYNCHRONOUSLY, print one clean line, and exit non-zero — never a raw stack dump.
+const fatal = (err: unknown): never => {
+  restoreTerminalState();
+  const msg = (err as Error)?.message ?? String(err);
+  process.stderr.write(`error: ${msg}\n`);
+  process.exit(1);
+};
+process.on("uncaughtException", fatal);
+process.on("unhandledRejection", fatal);
+
 try {
   const code = await dispatch(process.argv.slice(2), { appName: APP_NAME, version: VERSION });
   if (code !== 0) process.exit(code);
 } catch (err) {
   // Service-readiness: never surface a raw stack trace to users; clean error + non-zero exit.
+  restoreTerminalState();
   process.stderr.write(`error: ${(err as Error)?.message ?? String(err)}\n`);
   process.exit(1);
 }

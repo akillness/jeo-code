@@ -19,7 +19,7 @@ export {
   logoutOAuth,
 } from "./oauth";
 export type { OauthFlowDef } from "./oauth";
-export { refreshOAuthToken, rotateOAuthToken } from "./refresh";
+export { refreshOAuthToken, rotateOAuthToken, classifyRefreshFailure } from "./refresh";
 export type { RefreshResult } from "./refresh";
 export { OAUTH_FLOW_REGISTRY } from "./flows";
 export type { OAuthFlow } from "./flows";

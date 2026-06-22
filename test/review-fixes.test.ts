@@ -26,6 +26,22 @@ test("extractJsonObject: still throws when no balanced group is valid JSON", () 
   expect(() => extractJsonObject("{ not json } and { also no }")).toThrow();
 });
 
+test("extractJsonObject: repairs literal newlines inside a string value (multi-line tool arg)", () => {
+  // Models routinely emit an editBlock with raw newlines instead of \n, which
+  // breaks JSON.parse and previously surfaced the whole call as broken prose.
+  const text =
+    '{"tool":"edit","arguments":{"editBlock":"≔1..2\n  const x = 1;\n\tconst y = 2;\n","filePath":"a.ts"}}';
+  const parsed = extractJsonObject<any>(text, { preferKeys: ["tool", "tools"] });
+  expect(parsed.tool).toBe("edit");
+  expect(parsed.arguments.filePath).toBe("a.ts");
+  expect(parsed.arguments.editBlock).toBe("≔1..2\n  const x = 1;\n\tconst y = 2;\n");
+});
+
+test("extractJsonObject: leaves already-escaped control sequences intact", () => {
+  const parsed = extractJsonObject<any>('{"a":"line1\\nline2\\ttab"}');
+  expect(parsed.a).toBe("line1\nline2\ttab");
+});
+
 // --- tools.ts editTool: range validation + whitespace preservation (review MEDIUM finding) ---
 
 async function tmp(): Promise<string> {

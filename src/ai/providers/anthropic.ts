@@ -416,7 +416,7 @@ export const anthropicAdapter: ProviderAdapter = {
         index?: number;
         content_block?: { type?: string; name?: string; data?: string };
         delta?: { type?: string; text?: string; partial_json?: string; thinking?: string; signature?: string; stop_reason?: string };
-        message?: { usage?: AnthropicUsage };
+        message?: { usage?: AnthropicUsage; stop_reason?: string };
         usage?: { output_tokens?: number };
       };
       try {
@@ -452,11 +452,14 @@ export const anthropicAdapter: ProviderAdapter = {
         const tb = thinkBlocks.get(evt.index) ?? { text: "" };
         tb.signature = (tb.signature ?? "") + evt.delta.signature;
         thinkBlocks.set(evt.index, tb);
-      } else if (evt.type === "message_start" && evt.message?.usage) {
-        // Cache only — usage is reported ONCE at message_delta so an accumulating
-        // sink can't double-count input (and a pre-first-chunk retry that replays
-        // message_start is harmless).
-        cachedInput = totalInputTokens(evt.message.usage);
+      } else if (evt.type === "message_start" && evt.message) {
+        if (evt.message.stop_reason) stopReason = evt.message.stop_reason;
+        if (evt.message.usage) {
+          // Cache only — usage is reported ONCE at message_delta so an accumulating
+          // sink can't double-count input (and a pre-first-chunk retry that replays
+          // message_start is harmless).
+          cachedInput = totalInputTokens(evt.message.usage);
+        }
       } else if (evt.type === "message_delta") {
         if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason;
         if (evt.usage) options.onUsage?.({ inputTokens: cachedInput, outputTokens: evt.usage.output_tokens });
@@ -465,6 +468,7 @@ export const anthropicAdapter: ProviderAdapter = {
     // Emit captured thinking blocks as replay artifacts (signed thought + signature).
     for (const tb of thinkBlocks.values()) {
       if (tb.text || tb.signature) {
+        yieldedAny = true;
         options.onReasoningArtifact?.({ provider: "anthropic", model: options.model, text: tb.text || undefined, signature: tb.signature });
       }
     }

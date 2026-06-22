@@ -503,7 +503,7 @@ test("tmux attach failure is surfaced with a reattach hint when the session is s
     Bun.spawn = originalSpawn;
     console.error = originalError;
     process.env = originalEnv;
-    process.exitCode = originalExitCode;
+    process.exitCode = originalExitCode ?? 0;
   }
 });
 
@@ -547,7 +547,7 @@ test("tmux attach failure on a dead session reports the session ended (no mislea
     Bun.spawn = originalSpawn;
     console.error = originalError;
     process.env = originalEnv;
-    process.exitCode = originalExitCode;
+    process.exitCode = originalExitCode ?? 0;
   }
 });
 

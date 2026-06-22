@@ -82,9 +82,10 @@ test("P3: launch routing carries the skills-first ordering rule", async () => {
 // WORKING_DISCIPLINE and the bullet-density + anti-stall lines to OUTPUT_DISCIPLINE.
 test("token budget: discipline blocks stay within Phase 2 budget", () => {
   const approxTokens = (s: string) => Math.ceil(s.length / 4);
-  expect(approxTokens(WORKING_DISCIPLINE)).toBeLessThan(500); // ~464 after injection guard
+  expect(approxTokens(WORKING_DISCIPLINE)).toBeLessThan(560); // ~502 after Phase 3 task-state + failure-lesson lines
   expect(approxTokens(OUTPUT_DISCIPLINE)).toBeLessThan(220); // ~186 after bullet-density + anti-stall
 });
+
 
 
 // Phase 1 expansion (docs/token_budget_1000_analysis.md §163 Phase 1) added three
@@ -115,4 +116,21 @@ test("Phase 2: prompt-injection guard + bullet-density + anti-stall disciplines"
   // FABLE-5 §76 — answer-before-asking / one-question cap (anti-stall in the autonomous loop).
   expect(OUTPUT_DISCIPLINE).toContain("Don't stall on ambiguity");
   expect(OUTPUT_DISCIPLINE).toContain("at most one clarifying question");
+});
+
+// Phase 3 (spec-stack improvement points #1, #2, #4): running task-state + failure→lesson
+// rule in WORKING_DISCIPLINE, and the test-passing-vs-requirement-met clause in
+// VERIFICATION_DIRECTIVE. Lock each so a future trim can't silently drop them.
+test("Phase 3: task-state + failure-lesson disciplines and verification requirement clause", () => {
+  // #1 — maintain a running task state instead of re-reading the whole history.
+  expect(WORKING_DISCIPLINE).toContain("Maintain a running task state");
+  expect(WORKING_DISCIPLINE).toContain("failed approaches + cause");
+  expect(WORKING_DISCIPLINE).toContain("instead of re-reading the whole history");
+  // #2 — capture the lesson from a failure and change the next attempt.
+  expect(WORKING_DISCIPLINE).toContain("state what the failure taught you");
+  expect(WORKING_DISCIPLINE).toContain("change the next attempt accordingly");
+  // #4 — distinguish a passing test from a met requirement; never weaken a test to pass.
+  expect(VERIFICATION_DIRECTIVE).toContain("Distinguish a passing test from a met requirement");
+  expect(VERIFICATION_DIRECTIVE).toContain("never weaken, skip, or narrow a test to make it pass");
+  expect(executorSystemPrompt()).toContain("never weaken, skip, or narrow a test to make it pass");
 });

@@ -128,6 +128,11 @@ export const ConfigSchema = z
       .optional(),
     gitAutoCommit: z.boolean().optional(),
     hooks: HookConfigSchema.optional(),
+    computer: z
+      .object({
+        enabled: z.boolean().optional(),
+      })
+      .optional(),
   })
   .passthrough();
 

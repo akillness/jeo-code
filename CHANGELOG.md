@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.4] - 2026-06-22
+_Per-session model isolation + REPL slash-handler testability: a running `jeo` session now pins the model it resolved at start, so a concurrent session running `/model` (which persists the global default) can no longer silently switch a different live session's model mid-run. The read-only code-inspection slashes (`/view`, `/diff`, `/find`, `/search`), the `/undo` git slash, and the `/history` view are extracted into pure, PTY-free handlers so their logic is unit-tested directly instead of buried in the REPL loop._
+
+### Fixed
+- **Per-session model selection no longer leaks between concurrent sessions.** The per-turn model now falls back to the model resolved at THIS session's start (a frozen snapshot) instead of re-reading the live global `defaultModel`. Previously a second `jeo` session running `/model` persisted the global default (`rememberModelPatch`), and the first session's next turn would silently pick up that write mid-run. Running sessions are now model-isolated — they never influence each other.
+
+### Changed
+- **Read-only code-inspection slash handlers are extracted into a pure module.** `/view`, `/diff`, `/find`, and `/search` move to `src/commands/launch/code-slash.ts` as self-contained async functions that take the raw input + cwd (and theme, for `/diff`) and return the lines to print — no closure-bound side effects. The REPL dispatch is now a thin `for (const line of await handle…) console.log(line)` adapter.
+- **The `/undo` git slash and `/history` view are extracted for direct testing.** `handleUndoSlash` (in `src/commands/launch/git-slash.ts`) keeps its guard rail — it refuses any commit lacking the `[jeo] auto-commit:` prefix and any non-git tree — verifiable against a throwaway repo. `historyViewLines` (in `src/commands/launch/slash-views.ts`) makes the `/history [N|all]` banner/separator math and turn-count parsing pure over the in-memory transcript + terminal width.
+
+### Verified
+- `bun run typecheck` clean; full suite **1848 pass / 0 fail** (225 files), including the new `test/launch-code-slash.test.ts`, `test/launch-git-slash.test.ts`, and `test/session-model-isolation.test.ts`, plus expanded `test/launch-slash-views.test.ts` (`/history`) and `test/tui-welcome.test.ts` (banner width tracks cols across a resize).
+
+
 ## [0.7.3] - 2026-06-22
 _Provider catalog: the Tencent Cloud MaaS (international) `knownModels` list is broadened from a 4-id DeepSeek/MiniMax set to the full live-verified line-up across five families — DeepSeek, MiniMax, Zhipu GLM, Moonshot Kimi, and Hunyuan. Because the host exposes no `/v1/models` route, this hand-maintained list is the model picker's source of truth for the offline fallback._
 

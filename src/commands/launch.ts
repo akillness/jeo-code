@@ -60,7 +60,8 @@ import {
 import { liveModelPicker, renderLiveModelPicker, type ModelAssignmentBadge } from "../tui/components/live-model-picker";
 
 import { loginPicker, renderLoginPicker, onboardingPicker, renderOnboardingPicker, apiKeyPicker, renderApiKeyPicker, subscriptionLoginPicker, type OnboardingAction } from "../tui/components/provider-picker";
-import { detectLanguage, languageLabel, parseLineRange, sliceLines, formatCodeBlock, formatDiff, sanitizeForTerminal } from "../tui/components/code-view";
+import { sanitizeForTerminal } from "../tui/components/code-view";
+
 import { categoryBadge } from "../tui/components/category-index";
 import { renderInputFrame, type HighlightRange } from "../tui/components/input-box";
 
@@ -78,7 +79,8 @@ import { stripMarkdown } from "../tui/components/markdown-text";
 import { summarizeForgeInvocation } from "../tui/components/forge";
 import { formatDuration, formatUsage } from "../tui/components/duration";
 
-import { findTool, searchTool, bashTool } from "../agent/tools";
+import { bashTool } from "../agent/tools";
+
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
 import { maybeCompact, historyTokens } from "../agent/compaction";
 import * as path from "node:path";
@@ -167,7 +169,9 @@ import {
 import {
   hotkeysLines,
   contextUsageLines,
+  historyViewLines,
 } from "./launch/slash-views";
+
 import {
   handleUsage,
   handleTools,
@@ -175,6 +179,15 @@ import {
   handleContext,
   type SlashContext,
 } from "./launch/slash-handlers";
+import {
+  handleViewSlash,
+  handleDiffSlash,
+  handleFindSlash,
+  handleSearchSlash,
+} from "./launch/code-slash";
+import { handleUndoSlash } from "./launch/git-slash";
+
+
 
 export {
   type LaunchFlags,
@@ -692,7 +705,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     opts?: { userCard?: string | null },
   ): Promise<{ done: boolean; steps: number; reply: string; rendered: boolean; usage: string }> => {
     const turnConfig = await readGlobalConfig();
-    const activeModel = sessionModel || turnConfig.defaultModel;
+    // Fall back to the model resolved at THIS session's start (frozen snapshot), NOT
+    // the live global default. A concurrent `jeo` session running `/model` persists the
+    // global default (rememberModelPatch), so re-reading turnConfig.defaultModel here let
+    // that write silently switch THIS running session's model mid-run. Per-session model
+    // selection must stay session-local: running sessions never influence each other.
+    const activeModel = sessionModel || defaultModel;
     const contextTokens = catalogMetadata(activeModel)?.contextTokens;
 
     // Resolve provider + dirty count up front — both are cheap and feed the live
@@ -730,7 +748,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         tui.start();
       }
       const compRes = await maybeCompact(history, {
-        model: sessionModel,
+        model: activeModel,
         contextTokens,
       });
       if (compRes.error) {
@@ -896,7 +914,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             }
 
             if (tui) tui.events().onNotice?.("[Goal Verifier] Running goal verification...");
-            const verdict = await verifyGoal(goalState.condition, history, sessionModel);
+            const verdict = await verifyGoal(goalState.condition, history, activeModel);
 
             goalState.verdicts.push({
               at: Date.now(),
@@ -938,7 +956,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const opik = createOpikTracer({
           name: userInput.trim().slice(0, 80) || "jeo turn",
           input: userInput,
-          metadata: { model: sessionModel, cwd },
+          metadata: { model: activeModel, cwd },
           tags: ["jeo", "launch"],
         });
         opik.startTurn();
@@ -946,7 +964,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           cwd,
           tools,
           maxSteps: flags.maxSteps,
-          model: sessionModel,
+          model: activeModel,
           maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
           reasoningEffort: sessionThinking ? thinkingToReasoningEffort(sessionThinking) : undefined,
           signal: ac.signal,
@@ -965,7 +983,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             tools,
             maxSteps: Math.min(6, flags.maxSteps > 0 ? flags.maxSteps : 6),
             budget: { maxExtensions: 0 },
-            model: sessionModel,
+            model: activeModel,
             maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
             reasoningEffort: sessionThinking ? thinkingToReasoningEffort(sessionThinking) : undefined,
             signal: ac.signal,
@@ -1225,6 +1243,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     accent: accentPaint(welcomeTheme),
     accentShadow: accentShadowPaint(welcomeTheme),
   };
+  // welcomeData.cols is a launch-time snapshot; re-measure on every banner re-render
+  // (/clear, /resume) so the box fits the resized terminal instead of the old width.
+  const freshWelcomeLines = (): string[] =>
+    renderWelcome({ ...welcomeData, cols: terminalSize().cols });
   // gjc-style fresh-start clear so the banner opens atop a clean screen. TTY only,
   // never mid-turn (scrollback flood). ponytail: add an opt-out env if anyone misses their scrollback.
   if (process.stdout.isTTY) process.stdout.write(clearScreen());
@@ -2999,16 +3021,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (process.stdout.isTTY) {
           disarmPreview();
           process.stdout.write(clearScreen()); // clear screen + scrollback + cursor home
-          console.log(renderWelcome(welcomeData).join("\n"));
+          console.log(freshWelcomeLines().join("\n"));
         }
         console.log("(history cleared — back to the start screen)");
         continue;
       }
       if (input === "/compact") {
-        const turnConfig = await readGlobalConfig();
-        const activeModel = sessionModel || turnConfig.defaultModel;
+        // Session-start default snapshot (not the live global default) — keeps a
+        // concurrent session's `/model` write from changing this session's context budget.
+        const activeModel = sessionModel || defaultModel;
         const contextTokens = catalogMetadata(activeModel)?.contextTokens;
-        const res = await maybeCompact(history, { model: sessionModel, force: true, contextTokens });
+        const res = await maybeCompact(history, { model: activeModel, force: true, contextTokens });
         if (res.error) {
           console.error(chalk.red(res.error));
         } else if (res.compacted && sessionId && res.replacesThrough !== undefined) {
@@ -3106,7 +3129,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               if (process.stdout.isTTY) {
                 disarmPreview();
                 process.stdout.write(clearScreen());
-                console.log(renderWelcome(welcomeData).join("\n"));
+                console.log(freshWelcomeLines().join("\n"));
               }
               const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
               logLines([
@@ -3267,13 +3290,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (input === "/history" || input.startsWith("/history ")) {
         // Re-print the worked history into scrollback (tmux-friendly review of
         // past prompts / tool steps / replies without terminal scrollback access).
-        const arg = input.slice("/history".length).trim().toLowerCase();
-        const maxTurns = arg === "all" ? undefined : Math.max(1, Number.parseInt(arg, 10) || 5);
-        const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
-        logLines([sep, `history · last ${maxTurns ?? "all"} turn(s) (/history all for everything)`, sep,
-          ...formatTranscript(history, { maxTurns, color: true, unicode: true }), sep]);
+        logLines(historyViewLines(history, input.slice("/history".length), process.stdout.columns));
         continue;
       }
+
       if (input === "/export" || input.startsWith("/export ")) {
         if (!sessionId) {
           console.log("(sessions are disabled — nothing to export)");
@@ -3335,7 +3355,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           process.stdout.write("btw> ");
           let streamed = "";
           const answer = await callLlm(side, {
-            model: sessionModel,
+            model: sessionModel || defaultModel,
             maxTokens: thinkingMaxTokens("low"),
             onToken: delta => {
               streamed += delta;
@@ -3350,28 +3370,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
       if (input === "/undo") {
-        try {
-          const logRes = Bun.spawnSync(["git", "log", "-1", "--pretty=%B"], { cwd, stdout: "pipe", stderr: "ignore" });
-          if (logRes.exitCode === 0) {
-            const msg = logRes.stdout.toString().trim();
-            if (msg.startsWith("[jeo] auto-commit:")) {
-              const resetRes = Bun.spawnSync(["git", "reset", "--hard", "HEAD~1"], { cwd, stdout: "pipe", stderr: "pipe" });
-              if (resetRes.exitCode === 0) {
-                console.log("(undid the last jeo auto-commit and restored the working tree)");
-              } else {
-                console.log(`! undo failed: ${resetRes.stderr.toString().trim()}`);
-              }
-            } else {
-              console.log("! the last commit was not made by jeo (no '[jeo] auto-commit:' prefix). Use git manually to revert.");
-            }
-          } else {
-            console.log("! undo failed: could not read git log (not a git repo?)");
-          }
-        } catch (err) {
-          console.log(`! undo failed: ${(err as Error).message}`);
-        }
+        logLines(handleUndoSlash(cwd));
+
         continue;
       }
+
       if (input === "/goal" || input.startsWith("/goal ")) {
         const arg = input.substring(5).trim();
         if (!arg) {
@@ -4227,74 +4230,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
       if (input.startsWith("/view") && (input === "/view" || input[5] === " ")) {
-        const tokens = input.substring(5).trim().split(/\s+/).filter(Boolean);
-        const file = tokens[0];
-        if (!file) {
-          console.log("Usage: /view <file> [start-end]   (e.g. /view src/cli.ts 1-40)");
-          continue;
-        }
-        let content: string;
-        try {
-          content = await fs.promises.readFile(path.resolve(cwd, file), "utf-8");
-        } catch (err) {
-          console.log(`! cannot read ${file}: ${(err as Error).message}`);
-          continue;
-        }
-        const range = tokens[1] ? parseLineRange(tokens[1]) : undefined;
-        if (tokens[1] && !range) {
-          console.log(`Invalid range '${tokens[1]}'. Use start-end | start- | start.`);
-          continue;
-        }
-        const lang = detectLanguage(file);
-        const { lines, startLine } = sliceLines(content, range ?? undefined);
-        const { cols } = await import("../tui/terminal").then(m => m.size());
-        console.log(`${categoryBadge("file")} ${chalk.bold(`${file}`)}${chalk.gray(`  (${languageLabel(lang)}, lines ${startLine}-${startLine + lines.length - 1})`)}`);
-        for (const line of formatCodeBlock(lines.join("\n"), { startLine, lang, cols: Math.max(40, cols - 1), maxLines: 200 })) {
-          console.log(line);
-        }
+        for (const line of await handleViewSlash(input, cwd)) console.log(line);
         continue;
       }
       if (input.startsWith("/diff") && (input === "/diff" || input[5] === " ")) {
-        const target = input.substring(5).trim();
-        const proc = Bun.spawnSync(["git", "diff", ...(target ? ["--", target] : [])], { cwd, stdout: "pipe", stderr: "pipe" });
-        if (proc.exitCode !== 0 && !proc.stdout.length) {
-          console.log(`! git diff failed: ${proc.stderr.toString().trim() || "not a git repo?"}`);
-          continue;
-        }
-        const text = proc.stdout.toString();
-        if (!text.trim()) {
-          console.log("(no unstaged changes)");
-          continue;
-        }
-        const { cols } = await import("../tui/terminal").then(m => m.size());
-        console.log(`${categoryBadge("diff")} git diff${target ? ` -- ${target}` : ""}`);
-        for (const line of formatDiff(text, { cols: Math.max(40, cols - 1), maxLines: 400, theme: uiTheme })) console.log(line);
+        for (const line of await handleDiffSlash(input, cwd, uiTheme)) console.log(line);
         continue;
       }
       if (input.startsWith("/find") && (input === "/find" || input[5] === " ")) {
-        const glob = input.substring(5).trim();
-        if (!glob) {
-          console.log("Usage: /find <glob>   (e.g. /find src/**/*.ts)");
-          continue;
-        }
-        console.log(`${categoryBadge("search")} find files matching '${glob}':`);
-        const res = await findTool(glob, cwd);
-        console.log(res.success ? (res.output || "(no matches)") : `! ${res.error}`);
+        for (const line of await handleFindSlash(input, cwd)) console.log(line);
         continue;
       }
       if (input.startsWith("/search") && (input === "/search" || input[7] === " ")) {
-        const tokens = input.substring(7).trim().split(/\s+/).filter(Boolean);
-        const pattern = tokens[0];
-        const glob = tokens[1] ?? "*";
-        if (!pattern) {
-          console.log("Usage: /search <pattern> [glob]   (e.g. /search resolveProvider src/**/*.ts)");
-          continue;
-        }
-        console.log(`${categoryBadge("search")} search pattern '${pattern}' in '${glob}':`);
-        const res = await searchTool(pattern, glob, cwd);
-        console.log(res.success ? (res.output || "(no matches)") : `! ${res.error}`);
+        for (const line of await handleSearchSlash(input, cwd)) console.log(line);
         continue;
       }
+
 
       const skillEntrypoint = input.startsWith("/skill:") ? "/skill:" : input.startsWith("/skill") && (input === "/skill" || input[6] === " ") ? "/skill" : "";
       if (skillEntrypoint) {

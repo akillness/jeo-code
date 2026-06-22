@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 import {
   readGlobalConfig,
   readWorkflowState,
@@ -75,8 +76,10 @@ export async function runApproveCommand(args: string[] = []): Promise<void> {
   // rubber stamp — validate the plan against the exact contract `jeo team`
   // enforces, so a schema-invalid/unknown-role plan is refused HERE instead of
   // aborting later at execution time.
+  let planContent = "";
   try {
-    const parsed = PlanSchema.safeParse(normalizePlanShape(parseYaml(await fs.readFile(resolvedInputPath, "utf-8"))));
+    planContent = await fs.readFile(resolvedInputPath, "utf-8");
+    const parsed = PlanSchema.safeParse(normalizePlanShape(parseYaml(planContent)));
     if (!parsed.success) {
       console.log(
         `[ERROR] Refusing to approve: the plan is not in the shape 'jeo team' executes (top-level 'steps:' list of { name, role? }).\n` +
@@ -112,6 +115,19 @@ export async function runApproveCommand(args: string[] = []): Promise<void> {
     );
     process.exitCode = 1;
     return;
+  }
+
+  // Round-13: verify the plan's hash matches the consensus hash to prevent silent edits
+  if (ralplanState.consensus_hash) {
+    const currentHash = createHash("sha256").update(planContent).digest("hex");
+    if (currentHash !== ralplanState.consensus_hash) {
+      console.log(
+        `[ERROR] Refusing to approve: the plan file has been modified since the consensus critic reviewed it.\n` +
+        `  Re-run 'jeo ralplan' to let the critic review the updated plan, then approve again.`
+      );
+      process.exitCode = 1;
+      return;
+    }
   }
 
   // Update ralplan-state.json to approved: true

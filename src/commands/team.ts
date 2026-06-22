@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import chalk from "chalk";
 import { PlanSchema, normalizePlanShape, parseYaml } from "../agent/plan";
 import {
@@ -219,6 +220,18 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
   } catch (err: any) {
     log(`[ERROR] Failed to read plan file: ${err.message}`);
     return { ok: false, reason: err.message };
+  }
+
+  // Round-13: verify the plan's hash matches the consensus hash to prevent silent edits after approval
+  if (planState.consensus_hash) {
+    const currentHash = createHash("sha256").update(planContent).digest("hex");
+    if (currentHash !== planState.consensus_hash) {
+      log(
+        `[ERROR] Plan file has been modified since it was reviewed by the consensus critic.\n` +
+        `  Re-run 'jeo ralplan' to let the critic review the updated plan, then approve and execute again.`
+      );
+      return { ok: false, reason: "Plan file modified since consensus review" };
+    }
   }
 
   let rawPlan: any;

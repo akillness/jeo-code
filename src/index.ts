@@ -29,3 +29,4 @@ export * from "./commands/deep-interview";
 export * from "./commands/ralplan";
 export * from "./commands/team";
 export * from "./commands/ultragoal";
+export * from "./commands/computer";

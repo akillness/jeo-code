@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 import { callLlm, type Message } from "../agent/loop";
 import {
   readWorkflowState,
@@ -268,6 +269,9 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     ralplanState.plan_path = planPath;
     ralplanState.consensus = gate.verdict;
     ralplanState.consensus_detail = gate.detail.slice(0, 600);
+    if (gate.verdict === "okay") {
+      ralplanState.consensus_hash = createHash("sha256").update(cleanPlan).digest("hex");
+    }
     if (gate.verdict !== "okay") {
       ralplanState.approved = false;
       await writeWorkflowState("ralplan", ralplanState, cwd);

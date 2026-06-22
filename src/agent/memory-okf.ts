@@ -24,7 +24,9 @@ export const JEO_TYPES = [
   "Gotcha",
   "UserPreference",
   "Reference",
+  "FailedAttempt",
 ] as const;
+
 export type JeoType = (typeof JEO_TYPES)[number];
 
 /** Reserved OKF filenames — never concept documents. */

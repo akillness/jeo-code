@@ -67,6 +67,8 @@ export const OPENAI_COMPAT_PROVIDERS: readonly OpenAICompatProviderDef[] = [
   // Anthropic-Messages-protocol providers (served via makeAnthropicCompatibleAdapter).
   { name: "zai", label: "z.ai", baseUrl: "https://api.z.ai/api/anthropic", apiKeyEnv: "ZAI_API_KEY", defaultModel: "zai/glm-5.2", protocol: "anthropic" },
   { name: "minimax", label: "MiniMax", baseUrl: "https://api.minimax.io/anthropic", apiKeyEnv: "MINIMAX_API_KEY", defaultModel: "minimax/minimax-m3", protocol: "anthropic" },
+  // Tencent Cloud MaaS (international) serves deepseek-v4 / minimax-m3 over the Anthropic Messages wire format at tokenhub-intl; `${base}/v1/messages` is pinned by the adapter.
+  { name: "tencent", label: "Tencent", baseUrl: "https://tokenhub-intl.tencentcloudmaas.com", apiKeyEnv: "TENCENT_API_KEY", defaultModel: "tencent/deepseek-v4-pro", knownModels: ["deepseek-v4-pro", "deepseek-v4-flash", "minimax-m3"], protocol: "anthropic" },
 ];
 
 const BY_NAME = new Map<string, OpenAICompatProviderDef>(OPENAI_COMPAT_PROVIDERS.map(p => [p.name, p]));

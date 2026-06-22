@@ -73,6 +73,47 @@ test("team: stale state from a previous plan restarts execution instead of no-op
   await fs.rm(dir, { recursive: true, force: true });
 });
 
+test("team: refuses to execute if the plan file has been modified since consensus (round-13)", async () => {
+  const dir = await tmpProject();
+  await mock.module("../src/agent/loop", () => ({ callLlm: async () => DONE }));
+
+  const planPath = path.join(dir, "plan-hash.yaml");
+  const planContent = "steps:\n  - name: \"Build it\"\n    role: executor\n";
+  await fs.writeFile(planPath, planContent);
+
+  const { createHash } = await import("node:crypto");
+  const correctHash = createHash("sha256").update(planContent).digest("hex");
+
+  await writeWorkflowState("ralplan", {
+    active: false,
+    current_phase: "complete",
+    skill: "ralplan",
+    slug: "plan-hash",
+    plan_path: planPath,
+    approved: true,
+    consensus: "okay",
+    consensus_hash: correctHash,
+  }, dir);
+
+  // Modify the plan file
+  await fs.writeFile(planPath, planContent + "  - name: \"Extra step\"\n    role: executor\n");
+
+  const lines: string[] = [];
+  const { runTeamEngine } = await import("../src/commands/team");
+  const res = await runTeamEngine({ cwd: dir, io: { output: l => lines.push(l) } });
+
+  expect(res.ok).toBe(false);
+  expect(lines.some(l => l.includes("modified since it was reviewed by the consensus critic"))).toBe(true);
+
+  // Restore the plan file
+  await fs.writeFile(planPath, planContent);
+  const lines2: string[] = [];
+  const res2 = await runTeamEngine({ cwd: dir, io: { output: l => lines2.push(l) } });
+
+  expect(res2.ok).toBe(true);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
 test("team: same-plan state still resumes (no spurious restart)", async () => {
   const dir = await tmpProject();
   await mock.module("../src/agent/loop", () => ({ callLlm: async () => DONE }));
@@ -180,6 +221,12 @@ test("acquireWorkflowRunLock: live holder refuses, release reopens, dead-pid loc
   await fs.writeFile(lockPath, JSON.stringify({ pid: 999_999_999, at: 0 }));
   const release3 = await acquireWorkflowRunLock("team", dir);
   await release3();
+
+  // Round-13: a lock whose pid LOOKS alive (reused) but whose heartbeat lapsed
+  // past the TTL must be taken over, not wedge the lock forever (pid-reuse).
+  await fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, at: 0 }));
+  const release4 = await acquireWorkflowRunLock("team", dir);
+  await release4();
   await fs.rm(dir, { recursive: true, force: true });
 });
 
@@ -267,6 +314,11 @@ test("ralplan: a valid plan + critic [OKAY] completes with the verdict persisted
   const state = await readWorkflowState("ralplan", dir);
   expect(state?.current_phase).toBe("complete");
   expect(state?.consensus).toBe("okay"); // round-11: verdict persisted
+  const { createHash } = await import("node:crypto");
+  const expectedHash = createHash("sha256")
+    .update('name: "ok plan"\nsteps:\n  - name: "Build it"\n    role: executor')
+    .digest("hex");
+  expect(state?.consensus_hash).toBe(expectedHash);
   await fs.rm(dir, { recursive: true, force: true });
 });
 
@@ -322,7 +374,7 @@ test("approve: refuses a plan without an [OKAY] consensus verdict (round-11)", a
   expect(state?.approved).toBe(false);
   expect(logs.join("\n")).toContain("consensus verdict");
   expect(process.exitCode).toBe(1);
-  process.exitCode = savedExit;
+  process.exitCode = savedExit ?? 0;
   await fs.rm(dir, { recursive: true, force: true });
 });
 
@@ -356,6 +408,6 @@ test("approve: refuses a plan that team would reject (unknown role / malformed)"
   expect(state?.approved).toBe(false); // gate held
   expect(logs.join("\n")).toContain("unknown subagent role");
   expect(process.exitCode).toBe(1);
-  process.exitCode = savedExit;
+  process.exitCode = savedExit ?? 0;
   await fs.rm(dir, { recursive: true, force: true });
 });

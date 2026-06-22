@@ -6,6 +6,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.0] - 2026-06-22
+_Adds an opt-in, fail-closed **computer-use** capability (a `computer` tool + `jeo computer` CLI for screenshot/click/type/keypress/scroll/drag/wait/batch), hardens the spec-first workflow against silent post-consensus plan edits and PID-reuse lock starvation, makes OAuth refresh degrade cleanly when the refresh token is dead, and teaches tool-arg JSON repair to tolerate unescaped control characters. Verified leak-free (`mem-probe`, 2000 turns, −447 bytes/turn slope) with a fresh `jeo --tmux` boot battery (6/6)._
+
+### Added
+- **Computer-use (opt-in, disabled by default).** A new `computer` agent tool and `jeo computer <action>` CLI execute desktop automation — `screenshot`, `click`, `double_click`, `move`, `drag`, `scroll`, `type`, `keypress`, `wait`, and `batch` — via native OS tools (`screencapture`/`scrot`, `cliclick`/`xdotool`). It is gated behind `computer.enabled: true` in `~/.jeo/config.json` (off unless explicitly enabled) and a **fail-closed `ComputerSupervisor`**: side-effecting actions are blocked unless a live kill switch, a fresh heartbeat, and a non-suspended state all hold; read-only `screenshot`/`wait` are allowed. A new mid-turn **`Ctrl+\` kill switch** binding lets the operator suspend automation instantly, and every action is appended to `.jeo/computer-audit.jsonl`.
+- **Tencent Cloud MaaS provider** (`tencent`, `TENCENT_API_KEY`), served over the Anthropic Messages wire format (`deepseek-v4-pro`/`-flash`, `minimax-m3`).
+
+### Fixed
+- **A plan can no longer be silently edited after the consensus critic's `[OKAY]` verdict (round-13).** `ralplan` now records a SHA-256 `consensus_hash` of the exact plan content the critic gated; `jeo approve` and `jeo team` recompute the on-disk plan's hash and refuse to proceed if it differs, directing the operator to re-run `ralplan` for a fresh review. A schema-valid post-verdict edit can no longer ride through approval/execution unreviewed.
+- **The team/ultragoal run-lock no longer starves on PID reuse (round-13).** `process.kill(pid, 0)` alone treats a recycled dead pid as "alive" forever; the holder now heartbeats the lock's `at` timestamp on an unref'd interval and a contender treats the lock as stale when the pid is dead **or** the timestamp is older than a TTL (`JEO_RUN_LOCK_TTL_MS`, default 60s).
+- **A dead OAuth refresh token now degrades cleanly instead of looping on a doomed refresh.** `refreshOAuthToken` classifies a refresh failure as *definitive* (`invalid_grant`/revoked/401-403) vs *transient* (timeout/network); a definitive failure clears the credential and falls back to an API key (or a logged-out state that prompts re-login), while a transient blip leaves the stale token untouched for the next sweep.
+- **Tool-argument JSON repair now tolerates unescaped control characters.** A model that emits a literal newline/tab inside a string value (a frequent slip when an `edit`/`write` payload carries multi-line code) previously made the whole tool call unparseable; `tryParse` now layers a control-char escaper with the existing trailing-comma repair, never altering already-valid JSON.
+- **A background crash no longer leaves the shell mute.** `src/cli.ts` installs `uncaughtException`/`unhandledRejection` handlers that synchronously restore the terminal (raw mode, bracketed paste) via a new `restoreTerminalState()` and print one clean error line instead of a raw stack dump over a broken REPL.
+- Anthropic streaming now captures `stop_reason` from `message_start`.
+
+### Changed
+- **Memory and prompts now preserve failed approaches.** OKF memory gains a `FailedAttempt` concept type (one dead-end + its cause per entry), compaction is told to retain tried-and-failed approaches and unconfirmed hypotheses, and the executor/loop prompts add a reflect-on-failure directive ("state what the failure taught you, then change the tool/arguments"), a running task-state instruction, and an explicit "a passing test is not a met requirement" guard.
+
+### Verified
+- `bun run typecheck` clean; full suite **1798 pass / 0 fail** (221 files), including the new `computer`, `computer-supervisor`, `terminal-restore`, and `tencent-provider` suites plus consensus-hash and refresh-classification coverage.
+- `scripts/mem-probe.ts` (2000 turns × 40 tools): no long-term leak (per-turn slope **−447 bytes/turn**, exit-listeners flat at 1, heap returns to baseline).
+- `scripts/tmux-verify.sh battery`: **6/6 PASSED** on a fresh `jeo --tmux` boot (boot, `/help`, unknown `$skill`, `/agents`, `$ultragoal`, unresolved `/command`).
+
 ## [0.6.41] - 2026-06-21
 _The non-streaming model path now inherits the v0.6.40 300s window: an unattended long-reasoning turn (compaction, ralplan, deep-interview, memory distill, goal-verify, subagent/autopilot steps) is no longer false-aborted at the old 120s wall cap. Re-verified leak-free (`mem-probe`, 2000 turns, −610 bytes/turn slope) with a fresh `jeo --tmux` boot battery (6/6)._
 

@@ -79,6 +79,25 @@ const SCHEMAS: Record<string, NativeToolSchema> = {
     description: "Search the web (synthesized answer + sources + citations). Optional recency, limit.",
     parameters: { type: "object", properties: { query: STRING, recency: STRING, limit: { type: "number" } }, required: ["query"] },
   },
+  computer: {
+    name: "computer",
+    description: "Execute desktop automation actions (screenshot, click, double_click, move, drag, scroll, type, keypress, wait, batch).",
+    parameters: {
+      type: "object",
+      properties: {
+        action: STRING,
+        x: { type: "number" },
+        y: { type: "number" },
+        text: STRING,
+        key: STRING,
+        deltaX: { type: "number" },
+        deltaY: { type: "number" },
+        duration: { type: "number" },
+        actions: { type: "array", items: { type: "object" } },
+      },
+      required: ["action"],
+    },
+  },
   done: {
     name: "done",
     description: "Call when the task is fully implemented AND verified. The reason is shown to the user as your message.",

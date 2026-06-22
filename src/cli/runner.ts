@@ -235,6 +235,15 @@ export const COMMANDS: readonly CommandSpec[] = [
       return args => Promise.resolve(m.runLedger(args));
     },
   },
+  {
+    name: "computer",
+    summary: "Execute desktop automation actions (screenshot, click, type, keypress, scroll, drag, wait, batch).",
+    usage: "computer <action> [args]",
+    loader: async () => {
+      const m = await import("../commands/computer");
+      return args => m.runComputerCommand(args);
+    },
+  },
 ];
 
 export function findCommand(name: string): CommandSpec | undefined {

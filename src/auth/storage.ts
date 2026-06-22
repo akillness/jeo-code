@@ -8,11 +8,13 @@ import { jeoEnv } from "../util/env";
 /** Providers with an interactive OAuth login + refresh flow. */
 export type OAuthProvider = "anthropic" | "openai" | "gemini" | "antigravity";
 /** Every provider jeo resolves a credential for: OAuth-capable ∪ API-key-only. */
-export type AuthProvider = OAuthProvider | "xai" | "kimi" | "groq" | "deepseek" | "mistral" | "openrouter" | "together" | "cerebras" | "fireworks" | "nvidia" | "alibaba-coding-plan" | "huggingface" | "nanogpt" | "qwen-portal" | "synthetic" | "venice" | "zenmux" | "qianfan" | "xiaomi" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-sgp" | "minimax-code" | "minimax-code-cn" | "zai" | "minimax";
+export type AuthProvider = OAuthProvider | "xai" | "kimi" | "groq" | "deepseek" | "mistral" | "openrouter" | "together" | "cerebras" | "fireworks" | "nvidia" | "alibaba-coding-plan" | "huggingface" | "nanogpt" | "qwen-portal" | "synthetic" | "venice" | "zenmux" | "qianfan" | "xiaomi" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-sgp" | "minimax-code" | "minimax-code-cn" | "zai" | "minimax" | "tencent";
+
 
 export const OAUTH_PROVIDERS: readonly OAuthProvider[] = ["anthropic", "openai", "gemini", "antigravity"];
 /** API-key-only providers (no OAuth flow) — resolved from config.providers / `<NAME>_API_KEY`. */
-export const API_KEY_ONLY_PROVIDERS: readonly AuthProvider[] = ["xai", "kimi", "groq", "deepseek", "mistral", "openrouter", "together", "cerebras", "fireworks", "nvidia", "alibaba-coding-plan", "huggingface", "nanogpt", "qwen-portal", "synthetic", "venice", "zenmux", "qianfan", "xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "minimax-code", "minimax-code-cn", "zai", "minimax"];
+export const API_KEY_ONLY_PROVIDERS: readonly AuthProvider[] = ["xai", "kimi", "groq", "deepseek", "mistral", "openrouter", "together", "cerebras", "fireworks", "nvidia", "alibaba-coding-plan", "huggingface", "nanogpt", "qwen-portal", "synthetic", "venice", "zenmux", "qianfan", "xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "minimax-code", "minimax-code-cn", "zai", "minimax", "tencent"];
+
 /** Narrow an AuthProvider to the OAuth-capable subset (xai/kimi have no OAuth flow). */
 export function isOAuthProvider(p: AuthProvider): p is OAuthProvider {
   return (OAUTH_PROVIDERS as readonly string[]).includes(p);
@@ -167,9 +169,13 @@ export async function resolveCredential(provider: AuthProvider): Promise<Credent
           }).catch(() => {});
         }
         const result = await refreshPromise;
-        if (result.refreshed && result.credential.kind === "oauth") {
-          return result.credential;
-        }
+        // refreshOAuthToken encodes the best credential for every outcome: the
+        // fresh token on success, the stale token on a transient blip, and an
+        // API-key/logged-out fallback after a definitive (dead refresh token)
+        // failure cleared the credential. Return it directly instead of reusing
+        // the in-memory stale token, so a dead OAuth credential degrades cleanly
+        // (to an API key or re-login) rather than looping on a doomed refresh.
+        return result.credential;
       } catch {
         // Fall through and use the (stale) access token; the provider call will surface a 401.
       }

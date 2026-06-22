@@ -202,3 +202,17 @@ test("withIndexLock: two concurrent distillers do not corrupt index.md (SEV-3b f
   expect(concepts.length).toBeGreaterThan(0);
   await fs.rm(dir, { recursive: true, force: true });
 });
+test("parseLegacyMemory routes a 'Failed Attempts' heading to the FailedAttempt type", async () => {
+  const { parseLegacyMemory } = await import("../src/agent/memory");
+  const doc = [
+    "## Repo Facts",
+    "- **Stack**: Bun + TypeScript",
+    "## Failed Attempts",
+    "- **Native fs.watch on macOS**: drops events under load — used polling instead",
+  ].join("\n");
+  const concepts = parseLegacyMemory(doc);
+  const failed = concepts.find(c => /Native fs.watch/.test(c.title));
+  expect(failed?.type).toBe("FailedAttempt");
+  // The other heading is unaffected.
+  expect(concepts.find(c => c.title === "Stack")?.type).toBe("RepoFact");
+});

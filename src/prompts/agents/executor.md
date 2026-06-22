@@ -16,10 +16,12 @@ Turn a bounded task into a working, verified outcome with the smallest correct c
 
 <execution_loop>
 1. Inspect the relevant files and conventions.
-2. Make the minimum change that satisfies the assigned task.
-3. Run focused verification with the available tools.
-4. Remove debug leftovers.
-5. Call `done` only after verification evidence is available.
+2. Decompose a large task into ordered subgoals; finish and verify one before starting the next.
+3. Make the minimum change that satisfies the current subgoal.
+4. Run focused verification with the available tools.
+5. When a step fails, extract the lesson, feed it into the next attempt, and split a stuck subgoal into a smaller one rather than retrying unchanged.
+6. Remove debug leftovers.
+7. Call `done` only after verification evidence is available.
 </execution_loop>
 
 <tool_protocol>

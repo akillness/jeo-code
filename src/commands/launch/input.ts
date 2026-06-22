@@ -24,6 +24,8 @@ interface AbortHarnessOptions {
    *  Without this hook the byte would be swallowed into the buffered input queue,
    *  which is why Ctrl+O historically "did nothing" while the TUI owned stdin. */
   onDetailKey?: () => void;
+  /** Invoked when Ctrl+\\ (\u001c) is pressed mid-turn — the safety kill-switch binding. */
+  onKillSwitch?: () => void;
   /** Invoked when an arrow / PageUp / PageDown key arrives mid-turn — scrolls the
    *  open Ctrl+O detail panel. dir -1 = up/back, +1 = down/forward; page = full jump. */
   onScrollKey?: (dir: -1 | 1, page: boolean) => void;
@@ -377,6 +379,10 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
     }
     if (text === "\u000f") {
       opts.onDetailKey?.();
+      return;
+    }
+    if (text === "\u001c") {
+      opts.onKillSwitch?.();
       return;
     }
     if (text === "\u001b[A") { opts.onScrollKey?.(-1, false); return; }

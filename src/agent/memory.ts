@@ -35,7 +35,9 @@ const TYPE_LAYOUT = [
   { type: "Command", dir: "commands", header: "Commands" },
   { type: "Gotcha", dir: "gotchas", header: "Gotchas" },
   { type: "UserPreference", dir: "preferences", header: "User Preferences" },
+  { type: "FailedAttempt", dir: "failed", header: "Failed Attempts" },
 ] as const;
+
 const DIR_BY_TYPE: Record<string, string> = Object.fromEntries(TYPE_LAYOUT.map(t => [t.type, t.dir]));
 
 export function memoryFilePath(cwd: string): string {
@@ -64,7 +66,9 @@ function headingToType(heading: string): string {
   const h = heading.toLowerCase();
   if (/\bcommand/.test(h)) return "Command";
   if (/gotcha|pitfall|caveat/.test(h)) return "Gotcha";
+  if (/failed|dead.?end|didn't work|doesn't work|avoid/.test(h)) return "FailedAttempt";
   if (/pref/.test(h)) return "UserPreference";
+
   if (/repo|fact/.test(h)) return "RepoFact";
   return "RepoFact";
 }
@@ -596,7 +600,8 @@ export async function distillSessionMemory(
           "You maintain a compact project memory bundle for a coding agent. " +
           "Extract durable learnings from the session transcript and merge them with the existing concepts. " +
           "Keep ONLY what helps future sessions in THIS repository: repo facts (structure, conventions, key files), " +
-          "commands that work (build/test/run), gotchas (failures and their fixes), and user preferences. " +
+          "commands that work (build/test/run), gotchas (failures and their fixes), user preferences, " +
+          "and approaches that were tried and FAILED (with the cause, so a future session does not repeat the dead end). " +
           "Drop session-specific noise (one-off tasks, transient errors, conversational detail). " +
           "CRITICAL RULES for concept granularity:\n" +
           "  1. Create ONE concept per distinct fact/command/gotcha/preference — never combine multiple learnings into a single concept.\n" +
@@ -604,12 +609,13 @@ export async function distillSessionMemory(
           "  3. Each Command concept covers exactly one command or workflow (e.g., 'bun test', NOT 'All bun commands').\n" +
           "  4. Each Gotcha covers exactly one failure mode and its fix.\n" +
           "  5. Each UserPreference covers exactly one observable preference.\n" +
+          "  5b. Each FailedAttempt covers exactly one approach that did not work plus the cause/symptom — phrase it so the next session avoids that dead end.\n" +
           "  6. RepoFact concepts describe structure/conventions — split by area (e.g., 'CLI entrypoint', 'Test setup').\n" +
           "  7. If an existing concept is a mega-concept (lists many things), REPLACE it with properly split granular concepts.\n" +
           "  8. Keep each concept body under 400 chars.\n\n" +
           "You must output a JSON object with a single key \"concepts\", which is an array of concept objects. " +
           "Each concept object must have the following fields:\n" +
-          "  - \"type\": one of \"RepoFact\", \"Command\", \"Gotcha\", \"UserPreference\"\n" +
+          "  - \"type\": one of \"RepoFact\", \"Command\", \"Gotcha\", \"UserPreference\", \"FailedAttempt\"\n" +
           "  - \"title\": a short, descriptive title (e.g., \"Bun test runner\")\n" +
           "  - \"description\": a brief one-line summary of the concept\n" +
           "  - \"body\": the detailed markdown content/body of the concept (≤400 chars)\n" +

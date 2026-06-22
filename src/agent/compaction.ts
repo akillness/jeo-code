@@ -368,7 +368,8 @@ export async function maybeCompact(
     : "";
 
   const systemPrompt =
-    "Summarize the following coding-agent conversation so work can continue. Capture decisions, files changed, current task state, and open TODOs. Be concise." +
+    "Summarize the following coding-agent conversation so work can continue. Capture decisions, files changed, current task state, and open TODOs. " +
+    "Also preserve approaches that were tried and FAILED (with the cause) and any unconfirmed candidates/hypotheses still to check, so the next steps do not repeat dead ends or lose open leads. Be concise." +
     touchedNote;
 
   // Degradation ladder: (1) RETRY the summary a few times with short, abort-aware

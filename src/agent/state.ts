@@ -97,6 +97,9 @@ export interface Config {
   roles?: { smol?: string; slow?: string; plan?: string };
   gitAutoCommit?: boolean;
   hooks?: HookConfig;
+  computer?: {
+    enabled?: boolean;
+  };
 }
 
 export interface WorkflowTopologyComponent {
@@ -141,6 +144,10 @@ export interface WorkflowState {
   consensus?: string;
   /** ralplan: the critic's justification (bounded excerpt) for auditability. */
   consensus_detail?: string;
+  /** ralplan: hash of the exact plan content the consensus critic gated (round-13).
+   *  `jeo approve` recomputes the on-disk plan's hash and refuses if it differs, so a
+   *  schema-valid edit made AFTER the [OKAY] verdict cannot be silently approved. */
+  consensus_hash?: string;
   approved?: boolean;
   /** ultragoal terminal outcome. */
   status?: string;
@@ -477,7 +484,20 @@ export async function clearWorkflowState(
  * team-state.json last-writer-wins — tasks executed twice, completions lost.
  * O_EXCL lockfile carrying the holder's pid; a DEAD holder's stale lock is taken
  * over once, a LIVE holder refuses with an actionable error. Returns a release fn.
+ *
+ * Round-13 hardening: `process.kill(pid, 0)` alone cannot detect PID REUSE — a
+ * dead `jeo` pid recycled by an unrelated live process would look "alive" forever
+ * and starve the lock. The holder now HEARTBEATS the lock's `at` timestamp on an
+ * unref'd interval; a contender treats a lock as stale when the pid is dead OR the
+ * timestamp is older than the TTL (a live `jeo` run keeps it fresh, a dead/hung one
+ * or a reused pid lets it expire). Override the TTL with JEO_RUN_LOCK_TTL_MS.
  */
+const RUN_LOCK_TTL_MS = (() => {
+  const raw = Number(jeoEnv("RUN_LOCK_TTL_MS"));
+  return Number.isFinite(raw) && raw > 0 ? raw : 60_000;
+})();
+const RUN_LOCK_HEARTBEAT_MS = Math.max(1_000, Math.floor(RUN_LOCK_TTL_MS / 3));
+
 export async function acquireWorkflowRunLock(
   skill: "team" | "ultragoal",
   cwd: string = process.cwd(),
@@ -485,19 +505,27 @@ export async function acquireWorkflowRunLock(
   const stateDir = path.join(getLocalJeoDir(cwd), "state");
   await fs.mkdir(stateDir, { recursive: true });
   const lockPath = path.join(stateDir, `${skill}.lock`);
-  const payload = JSON.stringify({ pid: process.pid, at: Date.now() });
+  // Single source of the lock payload: exclusive-create on acquire, plain rewrite on heartbeat.
+  const stamp = (flag?: "wx") =>
+    fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, at: Date.now() }), flag ? { flag } : {});
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      await fs.writeFile(lockPath, payload, { flag: "wx" });
+      await stamp("wx");
+      // Heartbeat: refresh `at` so a live run never looks stale; unref'd so it
+      // never keeps the process alive on its own.
+      const hb = setInterval(() => { stamp().catch(() => {}); }, RUN_LOCK_HEARTBEAT_MS);
+      hb.unref?.();
       return async () => {
+        clearInterval(hb);
         await fs.unlink(lockPath).catch(() => {});
       };
+
     } catch {
-      let holder: { pid?: number } = {};
+      let holder: { pid?: number; at?: number } = {};
       try {
-        holder = JSON.parse(await fs.readFile(lockPath, "utf-8")) as { pid?: number };
+        holder = JSON.parse(await fs.readFile(lockPath, "utf-8")) as { pid?: number; at?: number };
       } catch { /* unreadable/torn lock → treat as stale */ }
-      const alive = typeof holder.pid === "number" && holder.pid > 0 && (() => {
+      const pidAlive = typeof holder.pid === "number" && holder.pid > 0 && (() => {
         try {
           process.kill(holder.pid!, 0);
           return true;
@@ -505,12 +533,15 @@ export async function acquireWorkflowRunLock(
           return false;
         }
       })();
-      if (alive) {
+      const fresh = typeof holder.at === "number" && (Date.now() - holder.at) < RUN_LOCK_TTL_MS;
+      if (pidAlive && fresh) {
         throw new Error(
           `another 'jeo ${skill}' run (pid ${holder.pid}) holds ${lockPath} — wait for it to finish, or delete the lock file if that process is gone.`,
         );
       }
-      await fs.unlink(lockPath).catch(() => {}); // stale (dead/unreadable) → take over once
+      // stale: dead pid, unreadable lock, or a stalled/reused-pid holder whose
+      // heartbeat lapsed past the TTL → take over once.
+      await fs.unlink(lockPath).catch(() => {});
     }
   }
   throw new Error(`could not acquire ${lockPath} even after stale-lock takeover.`);

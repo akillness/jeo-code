@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import type { Message } from "../src/agent/loop";
-import { hotkeysLines, contextUsageLines } from "../src/commands/launch/slash-views";
+import { hotkeysLines, contextUsageLines, historyViewLines } from "../src/commands/launch/slash-views";
+
 
 test("hotkeysLines: stable static reference, header first and every row indented", () => {
   const out = hotkeysLines();
@@ -43,3 +44,39 @@ test("contextUsageLines: singular 'msg ' spacing for a single message and no win
   const totalRow = out.find(l => l.trim().startsWith("total"));
   expect(totalRow).not.toContain("% of"); // no window → no percentage suffix
 });
+
+function stripAnsi(s: string): string {
+  return s.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+test("historyViewLines: default 5-turn banner, separators frame the transcript", () => {
+  const history: Message[] = [
+    { role: "user", content: "hello" },
+    { role: "assistant", content: "hi there" },
+  ];
+  const out = historyViewLines(history, "", 80);
+  const sep = "─".repeat(79); // min(48, max(20, 80-1)) = 48 → wait, capped at 48
+  expect(out[0]).toBe(out[2]); // top + bottom-of-banner separators identical
+  expect(out[out.length - 1]).toBe(out[0]); // closing separator matches
+  expect(out[1]).toBe("history · last 5 turn(s) (/history all for everything)");
+  // separator honors the 48-column cap, not the raw width
+  expect(out[0]).toBe("─".repeat(48));
+  void sep;
+});
+
+test("historyViewLines: 'all' drops the turn cap and labels it 'all'", () => {
+  const out = historyViewLines([], "all", 80);
+  expect(out[1]).toBe("history · last all turn(s) (/history all for everything)");
+});
+
+test("historyViewLines: numeric arg parses the turn count; width clamps to >=20", () => {
+  const out = historyViewLines([], " 12 ", 5);
+  expect(out[1]).toBe("history · last 12 turn(s) (/history all for everything)");
+  expect(stripAnsi(out[0]).length).toBe(20); // max(20, 5-1) = 20
+});
+
+test("historyViewLines: non-numeric junk falls back to 5 turns", () => {
+  const out = historyViewLines([], "garbage", 80);
+  expect(out[1]).toContain("last 5 turn(s)");
+});
+

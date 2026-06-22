@@ -3,6 +3,8 @@
 // they can be unit-tested without driving the whole launch REPL. They hold NO
 // mutable session state — every input is passed in explicitly.
 import type { Message } from "../../agent/loop";
+import { formatTranscript } from "../../tui/components/transcript";
+
 
 /** Static keyboard-shortcut reference for `/hotkeys` (no inputs, no state). */
 export function hotkeysLines(): string[] {
@@ -51,3 +53,21 @@ export function contextUsageLines(
   lines.push("  Free context with /compact or /clear.");
   return lines;
 }
+
+/** Re-print the worked history into scrollback for `/history [N|all]`. Pure over
+ *  the in-memory transcript plus the terminal width, so the banner/separator math
+ *  and turn-count parsing are verifiable without driving the REPL.
+ *  `arg` is the raw text after `/history` (e.g. " 10", " all", ""). */
+export function historyViewLines(history: Message[], arg: string, columns: number | undefined): string[] {
+  const a = arg.trim().toLowerCase();
+  const maxTurns = a === "all" ? undefined : Math.max(1, Number.parseInt(a, 10) || 5);
+  const sep = "─".repeat(Math.min(48, Math.max(20, (columns ?? 80) - 1)));
+  return [
+    sep,
+    `history · last ${maxTurns ?? "all"} turn(s) (/history all for everything)`,
+    sep,
+    ...formatTranscript(history, { maxTurns, color: true, unicode: true }),
+    sep,
+  ];
+}
+

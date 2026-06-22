@@ -70,6 +70,30 @@ test("every line has equal visible width", () => {
   }
 });
 
+test("banner width tracks cols across a resize (re-render fits the new width, not the original)", () => {
+  const base = {
+    version: "1.2.3",
+    model: "claude-3-5-sonnet",
+    provider: "anthropic",
+    unicode: true,
+    color: false,
+    cwd: "/Users/jangyoung/project",
+    thinking: "medium" as const,
+  };
+  // Simulate: launch at 80, then the terminal is resized to 120 and the banner
+  // re-renders (the /clear & /resume path). The fresh render must fill the NEW
+  // width (cols-1), never snap back to the launch-time width.
+  for (const cols of [80, 120, 60]) {
+    const lines = renderWelcome({ ...base, cols });
+    const W = cols - 1;
+    expect(stripAnsi(lines[0]!).length).toBe(W);
+    expect(stripAnsi(lines[lines.length - 1]!).length).toBe(W);
+    // Every body row is padded to the same width — proves no row keeps an older geometry.
+    for (const line of lines) expect(stripAnsi(line).length).toBe(W);
+  }
+});
+
+
 test("hero column: brand, tagline, grand forge mark, centered", () => {
   const lines = renderWelcome({
     version: "1.2.3",

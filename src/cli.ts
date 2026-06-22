@@ -35,8 +35,5 @@ try {
   const code = await dispatch(process.argv.slice(2), { appName: APP_NAME, version: VERSION });
   if (code !== 0) process.exit(code);
 } catch (err) {
-  // Service-readiness: never surface a raw stack trace to users; clean error + non-zero exit.
-  restoreTerminalState();
-  process.stderr.write(`error: ${(err as Error)?.message ?? String(err)}\n`);
-  process.exit(1);
+  fatal(err);
 }

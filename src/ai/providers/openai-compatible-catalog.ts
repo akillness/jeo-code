@@ -67,8 +67,9 @@ export const OPENAI_COMPAT_PROVIDERS: readonly OpenAICompatProviderDef[] = [
   // Anthropic-Messages-protocol providers (served via makeAnthropicCompatibleAdapter).
   { name: "zai", label: "z.ai", baseUrl: "https://api.z.ai/api/anthropic", apiKeyEnv: "ZAI_API_KEY", defaultModel: "zai/glm-5.2", protocol: "anthropic" },
   { name: "minimax", label: "MiniMax", baseUrl: "https://api.minimax.io/anthropic", apiKeyEnv: "MINIMAX_API_KEY", defaultModel: "minimax/minimax-m3", protocol: "anthropic" },
-  // Tencent Cloud MaaS (international) serves deepseek-v4 / deepseek-v3.2 / minimax-m3 over the Anthropic Messages wire format at tokenhub-intl; `${base}/v1/messages` is pinned by the adapter. Model ids verified live (2026-06) via /v1/messages probes — the host has no /v1/models route.
-  { name: "tencent", label: "Tencent", baseUrl: "https://tokenhub-intl.tencentcloudmaas.com", apiKeyEnv: "TENCENT_API_KEY", defaultModel: "tencent/deepseek-v4-pro", knownModels: ["deepseek-v4-pro", "deepseek-v4-flash", "minimax-m3", "deepseek-v3.2"], protocol: "anthropic" },
+  // Tencent Cloud MaaS (international) serves DeepSeek / MiniMax / Zhipu GLM / Moonshot Kimi / Hunyuan models over the Anthropic Messages wire format at tokenhub-intl; `${base}/v1/messages` is pinned by the adapter. All ids below verified live (2026-06) via /v1/messages probes — each returned either a completion or FREE_QUOTA_EXHAUSTED (both prove the id is recognized); the host has no /v1/models route, so this list is the picker's source of truth for the offline fallback.
+  { name: "tencent", label: "Tencent", baseUrl: "https://tokenhub-intl.tencentcloudmaas.com", apiKeyEnv: "TENCENT_API_KEY", defaultModel: "tencent/deepseek-v4-pro", knownModels: ["deepseek-v4-pro", "deepseek-v4-pro-202606", "deepseek-v4-flash", "deepseek-v4-flash-202605", "deepseek-v3.2", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "glm-5.2", "glm-5.1", "glm-5", "glm-5-turbo", "glm-5v-turbo", "kimi-k2.6", "kimi-k2.5", "hy-mt2-plus"], protocol: "anthropic" },
+
 ];
 
 const BY_NAME = new Map<string, OpenAICompatProviderDef>(OPENAI_COMPAT_PROVIDERS.map(p => [p.name, p]));

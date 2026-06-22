@@ -50,3 +50,27 @@ export function parseSeedList(content: string, name: string): string[] {
 export function parseSeedAcceptanceCriteria(content: string): string[] {
   return parseSeedList(content, "acceptance_criteria");
 }
+/** A single acceptance criterion, optionally carrying an executable check command.
+ *  Authors make a criterion INDIVIDUALLY verifiable by appending a trailing
+ *  `{verify: <shell command>}` directive; ultragoal runs that command and records a
+ *  real PASS/FAIL instead of leaving the criterion UNVERIFIED. Criteria without a
+ *  directive stay honest-by-default (UNVERIFIED on a green suite). */
+export interface ParsedCriterion {
+  /** Human-readable criterion text with any {verify:...} directive stripped. */
+  text: string;
+  /** Optional shell command whose exit status proves this specific criterion. */
+  verify?: string;
+}
+
+const VERIFY_DIRECTIVE = /\s*\{verify:\s*([^}]+?)\s*\}\s*$/i;
+
+/** Split an optional trailing `{verify: <cmd>}` directive off a criterion string.
+ *  The directive lives INSIDE the JSON-encoded seed value, so it round-trips
+ *  unmangled through `yamlList`/`parseSeedList` like any other criterion text. */
+export function parseCriterion(raw: string): ParsedCriterion {
+  const match = raw.match(VERIFY_DIRECTIVE);
+  if (!match) return { text: raw.trim() };
+  const verify = match[1].trim();
+  const text = raw.replace(VERIFY_DIRECTIVE, "").trim();
+  return verify ? { text, verify } : { text };
+}

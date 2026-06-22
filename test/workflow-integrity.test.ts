@@ -200,6 +200,80 @@ test("ultragoal: a red suite fails the run and the criteria record says FAILED",
   await fs.rm(dir, { recursive: true, force: true });
 });
 
+// ── Per-criterion verification: {verify: <cmd>} makes a criterion individually provable ──
+
+async function seedInterviewWith(dir: string, criteria: string[]): Promise<void> {
+  const seedPath = path.join(dir, "seed.yaml");
+  await fs.writeFile(seedPath, ["acceptance_criteria:", ...criteria.map(c => `  - ${JSON.stringify(c)}`), ""].join("\n"));
+  await writeWorkflowState("deep-interview", {
+    active: false, current_phase: "complete", skill: "deep-interview", slug: "verify", seed_path: seedPath,
+  }, dir);
+}
+
+test("ultragoal: a {verify:} criterion runs its OWN command and records a real PASS → SUCCESS", async () => {
+  const dir = await tmpProject();
+  await seedInterviewWith(dir, ["Typecheck is clean {verify: bun run typecheck}"]);
+  const bashCalls: string[] = [];
+  await mock.module("../src/agent/tools", () => ({
+    ...realTools,
+    bashTool: async (cmd: string) => { bashCalls.push(cmd); return { success: true, output: "ok" }; },
+  }));
+  const { runUltragoalEngine } = await import("../src/commands/ultragoal");
+  const res = await runUltragoalEngine({ cwd: dir, io: { output: () => {} } });
+
+  expect(res.ok).toBe(true);
+  expect(bashCalls).toEqual(["bun test", "bun run typecheck"]); // global suite + the criterion's own check
+  const report = await fs.readFile(path.join(dir, ".jeo", "state", "ultragoal-report.md"), "utf-8");
+  expect(report).toContain("✅ PASSED"); // a REAL per-criterion pass, not fabricated
+  expect(report).toContain("| Typecheck is clean |"); // directive stripped from display text
+  expect(report).not.toContain("{verify:");
+  const state = await readWorkflowState("ultragoal", dir);
+  expect(state?.status).toBe("SUCCESS");
+  expect(state?.passed).toBe(1);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("ultragoal: a {verify:} criterion whose command fails FAILS the run even on a green suite", async () => {
+  const dir = await tmpProject();
+  await seedInterviewWith(dir, ["Lint passes {verify: bun run lint}"]);
+  await mock.module("../src/agent/tools", () => ({
+    ...realTools,
+    // Global suite is GREEN, but the criterion's own check is RED.
+    bashTool: async (cmd: string) => ({ success: cmd === "bun test", output: cmd }),
+  }));
+  const { runUltragoalEngine } = await import("../src/commands/ultragoal");
+  const res = await runUltragoalEngine({ cwd: dir, io: { output: () => {} } });
+
+  expect(res.ok).toBe(false); // a green suite no longer masks a failed individual criterion
+  const report = await fs.readFile(path.join(dir, ".jeo", "state", "ultragoal-report.md"), "utf-8");
+  expect(report).toContain("❌ FAILED");
+  const state = await readWorkflowState("ultragoal", dir);
+  expect(state?.status).toBe("FAILED");
+  expect(state?.suite_green).toBe(true); // suite was green; the criterion check is what failed
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("ultragoal: some verified + some unmapped on a green suite → PARTIAL", async () => {
+  const dir = await tmpProject();
+  await seedInterviewWith(dir, ["Build works {verify: bun run build}", "Looks nice"]);
+  await mock.module("../src/agent/tools", () => ({
+    ...realTools,
+    bashTool: async () => ({ success: true, output: "ok" }),
+  }));
+  const { runUltragoalEngine } = await import("../src/commands/ultragoal");
+  const res = await runUltragoalEngine({ cwd: dir, io: { output: () => {} } });
+
+  expect(res.ok).toBe(true);
+  const report = await fs.readFile(path.join(dir, ".jeo", "state", "ultragoal-report.md"), "utf-8");
+  expect(report).toContain("✅ PASSED");     // the mapped criterion
+  expect(report).toContain("⚠️ UNVERIFIED"); // the unmapped criterion
+  const state = await readWorkflowState("ultragoal", dir);
+  expect(state?.status).toBe("PARTIAL");
+  expect(state?.passed).toBe(1);
+  expect(state?.total).toBe(2);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
 // ── Round-8 (architect ref 7-Round7Workflow, MED deferrals) ──
 
 test("acquireWorkflowRunLock: live holder refuses, release reopens, dead-pid lock is taken over", async () => {

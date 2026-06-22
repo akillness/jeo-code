@@ -505,3 +505,110 @@ export function decideCtrlC(
   if (msSinceLastCtrlC < collapseMs) return "ignore";
   return hasInput ? "clear" : "exit";
 }
+
+/** Shift+Enter encodings the box rewrites to a hard-break SENTINEL: the xterm
+ *  `modifyOtherKeys` form (`CSI 27;2;13~`) and the kitty keyboard-protocol form
+ *  (`CSI 13;2u`). Shared by the live input filter and its tests so they can't drift. */
+export const SHIFT_ENTER_SEQS: readonly string[] = ["\u001b[27;2;13~", "\u001b[13;2u"];
+
+/** Minimal readline view the prompt key-filter reads (and mutates `cursor` on a
+ *  vertical-nav "move"). The live filter passes the real readline interface; tests
+ *  pass a plain object. */
+export interface PromptKeyFilterRl {
+  line: string;
+  cursor: number;
+}
+
+/** Per-keystroke context the filter needs that is NOT derivable from the bytes:
+ *  the opt-in lone-LF Shift+Enter toggle, whether a slash dropdown / Ctrl+O history
+ *  panel currently owns the arrow keys, and the terminal width (for the box's
+ *  soft-wrap row model). */
+export interface PromptKeyFilterEnv {
+  loneLfShiftEnter: boolean;
+  slashMatchCount: number;
+  historyPanelOpen: boolean;
+  /** `process.stdout.columns ?? 80` — the raw column count BEFORE the box's own insets. */
+  columns: number;
+}
+
+/** Carried across chunks: a bracketed paste can span several stdin chunks, so the
+ *  in-paste flag must survive between filter calls. */
+export interface PromptKeyFilterState {
+  inPaste: boolean;
+}
+
+export interface PromptKeyFilterResult {
+  /** Bytes to forward to readline. */
+  out: string;
+  /** True when the whole chunk was consumed and NOTHING should be written (the
+   *  empty-line standalone-Backspace guard) — distinct from an empty `out`. */
+  drop: boolean;
+}
+
+/** The stdin → readline byte rewriter for the boxed multi-line prompt, extracted as a
+ *  pure function so the full keystroke wiring — paste folding, mouse/terminal-report
+ *  swallowing, Shift+Enter → SENTINEL, combo-key normalization, and the boundary-aware
+ *  Up/Down box navigation — is testable WITHOUT a live readline/PTY. The live filter in
+ *  `launch.ts` is a thin adapter over this: feed it each chunk, forward `out` unless
+ *  `drop`, and let it mutate `rl.cursor` (textarea caret moves) and `state.inPaste`.
+ *
+ *  The "swallow" branch is the fix for the "↓ cuts the lower text" bug: at the top/bottom
+ *  visual row of a GENUINE multi-line draft the key is consumed (no bytes emitted) so it
+ *  can't reach readline's input-history recall and wipe the message being composed. */
+export function filterPromptInputChunk(
+  data: string,
+  rl: PromptKeyFilterRl | null,
+  env: PromptKeyFilterEnv,
+  state: PromptKeyFilterState,
+): PromptKeyFilterResult {
+  // Empty-line Backspace guard: a standalone Backspace with an empty buffer is a no-op
+  // that some Bun readline builds turn into a spurious `close` (hard exit) — drop it
+  // before it reaches readline. Forwarded normally inside a paste or with text present.
+  if (!state.inPaste && isStandaloneBackspace(data) && !(rl?.line ?? "")) {
+    return { out: "", drop: true };
+  }
+  let out = "";
+  let i = 0;
+  while (i < data.length) {
+    if (!state.inPaste && data.startsWith(PASTE_START, i)) { state.inPaste = true; out += PASTE_START; i += PASTE_START.length; continue; }
+    if (state.inPaste && data.startsWith(PASTE_END, i)) { state.inPaste = false; out += PASTE_END; i += PASTE_END.length; continue; }
+    if (state.inPaste) {
+      if (data.startsWith("\r\n", i)) { out += MULTILINE_SENTINEL; i += 2; continue; }
+      if (data[i] === "\n" || data[i] === "\r") { out += MULTILINE_SENTINEL; i += 1; continue; }
+      out += data[i]; i += 1; continue;
+    }
+    const mouse = matchMouseReport(data, i);
+    if (mouse > 0) { i += mouse; continue; }
+    const report = matchTerminalReport(data, i);
+    if (report > 0) { i += report; continue; }
+    let matched = false;
+    for (const seq of SHIFT_ENTER_SEQS) {
+      if (data.startsWith(seq, i)) { out += MULTILINE_SENTINEL; i += seq.length; matched = true; break; }
+    }
+    if (matched) continue;
+    const combo = matchCursorCombo(data, i);
+    if (combo) { out += combo[1]; i += combo[0].length; continue; }
+    // Up/Down between the box's visual rows (textarea feel) for any MULTI-ROW draft;
+    // at the top/bottom edge a soft-wrapped one-liner falls through to history recall,
+    // but a genuine multi-line draft swallows the key (the "↓ cuts text" fix).
+    if ((data.startsWith("\u001b[", i) || data.startsWith("\u001bO", i)) && (data[i + 2] === "A" || data[i + 2] === "B")) {
+      const dir = data[i + 2] === "A" ? "up" : "down";
+      const line = rl?.line ?? "";
+      if (shouldBoxVerticalNav(line, { slashMatchCount: env.slashMatchCount, historyPanelOpen: env.historyPanelOpen }) && rl) {
+        const winCols = Math.max(24, env.columns - 1);
+        const textWidth = Math.max(1, Math.max(24, winCols) - 6);
+        const cur = typeof rl.cursor === "number" ? rl.cursor : line.length;
+        const action = boxVerticalNavAction(line.split(MULTILINE_SENTINEL).join("\n"), line, cur, textWidth, dir);
+        if (action.kind === "move") { rl.cursor = action.cursor; i += 3; continue; }
+        if (action.kind === "swallow") { i += 3; continue; } // keep the multi-line draft intact
+      }
+      out += data.slice(i, i + 3); i += 3; continue;
+    }
+    if (env.loneLfShiftEnter && data[i] === "\n") { out += MULTILINE_SENTINEL; i += 1; continue; } // lone LF = Shift+Enter (opt-in)
+    // Ctrl+L (form feed): the prompt redraw hotkey, handled on the process.stdin keypress
+    // listener — never forward it to readline as a literal char.
+    if (data[i] === "\u000c") { i += 1; continue; }
+    out += data[i]; i += 1;
+  }
+  return { out, drop: false };
+}

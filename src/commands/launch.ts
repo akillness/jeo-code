@@ -146,6 +146,7 @@ import {
   createInFlightAbortHarness,
   classifyMidTurnLine,
   decideCtrlC,
+  filterPromptInputChunk,
 } from "./launch/input";
 import {
   gatedStdout,
@@ -1394,7 +1395,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // submit/race), the box renders it as a real line break, and it is expanded back to
   // "\n" on submit. On for any interactive TTY; JEO_NO_MULTILINE=1 reads stdin directly.
   const SENTINEL = MULTILINE_SENTINEL;
-  const SHIFT_ENTER_SEQS = ["\u001b[27;2;13~", "\u001b[13;2u"];
   // Multi-line input filter is ON for any interactive TTY: reliable multi-line paste
   // (fills the box, submits intact into the user card) is the default. The lone-"\n"
   // Shift+Enter rule stays opt-in (JEO_MULTILINE=1) — it needs ghostty's
@@ -1435,73 +1435,25 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     //     `keybind = shift+enter=text:\n`, passes tmux unchanged even with extended-keys
     //     off) and the xterm "\x1b[27;2;13~" / kitty "\x1b[13;2u" sequences. Enter ("\r")
     //     passes through and submits.
-    let kfInPaste = false;
+    // Stateful across chunks (a bracketed paste can span several). The byte-rewrite logic
+    // lives in `filterPromptInputChunk` (pure + exported) so the full keystroke wiring is
+    // testable without a live readline/PTY; this handler is the thin live adapter.
+    const kfState = { inPaste: false };
     const kfDataHandler = (chunk: Buffer) => {
       const data = chunk.toString("utf8");
-      // Empty-line Backspace guard: a standalone Backspace with nothing to delete is a
-      // no-op, but some Bun readline builds emit a spurious `close` for it — which the
-      // REPL treats as a hard exit. Drop it before it reaches readline. (Inside a paste,
-      // or with text in the buffer, backspace is forwarded normally so editing works.)
-      if (!kfInPaste && isStandaloneBackspace(data) && !(activeRl?.line ?? "")) return;
-      let out = "";
-      let i = 0;
-      while (i < data.length) {
-        if (!kfInPaste && data.startsWith(PASTE_START, i)) { kfInPaste = true; out += PASTE_START; i += PASTE_START.length; continue; }
-        if (kfInPaste && data.startsWith(PASTE_END, i)) { kfInPaste = false; out += PASTE_END; i += PASTE_END.length; continue; }
-        if (kfInPaste) {
-          if (data.startsWith("\r\n", i)) { out += SENTINEL; i += 2; continue; }
-          if (data[i] === "\n" || data[i] === "\r") { out += SENTINEL; i += 1; continue; }
-          out += data[i]; i += 1; continue;
-        }
-        // Swallow MOUSE-REPORT sequences (tmux `mouse on` from --tmux, or a stale pane):
-        // their payload bytes would otherwise be typed into the prompt. Never in a paste.
-        const mouse = matchMouseReport(data, i);
-        if (mouse > 0) { i += mouse; continue; }
-        // Swallow TERMINAL CAPABILITY-RESPONSE sequences (DA1/DA2/XTVERSION/OSC replies):
-        // tmux probes the outer terminal on attach and its answers (`62;4;9;22c…>|xterm.js…`)
-        // can land on stdin; without this they spray into the prompt as typed text.
-        const report = matchTerminalReport(data, i);
-        if (report > 0) { i += report; continue; }
-        let matched = false;
-        for (const seq of SHIFT_ENTER_SEQS) {
-          if (data.startsWith(seq, i)) { out += SENTINEL; i += seq.length; matched = true; break; }
-        }
-        if (matched) continue;
-        // Normalize macOS/fixterms combo cursor keys readline ignores (Option/Cmd+arrow,
-        // Option/Cmd+Backspace) into the canonical control bytes it DOES act on.
-        const combo = matchCursorCombo(data, i);
-        if (combo) { out += combo[1]; i += combo[0].length; continue; }
-        // Up/Down move the caret BETWEEN the box's visual rows (textarea feel) for any
-        // MULTI-ROW draft — explicit Shift+Enter breaks (→ SENTINEL) OR a long line the
-        // box soft-wraps. The decision is boundary-aware: an in-box visual row exists →
-        // move the caret there. With NO row to move to (↑ on the TOP row, ↓ on the BOTTOM
-        // row), a SOFT-WRAPPED one-liner falls through to readline to recall input history
-        // (the dominant REPL expectation), but a GENUINE multi-line draft SWALLOWS the key
-        // instead — falling through there would let readline's history nav WIPE the
-        // multi-line message being composed (the "↓ cuts the lower text" bug). Skipped
-        // entirely when a slash list or Ctrl+O history panel owns ↑/↓.
-
-        if ((data.startsWith("\u001b[", i) || data.startsWith("\u001bO", i)) && (data[i + 2] === "A" || data[i + 2] === "B")) {
-          const dir = data[i + 2] === "A" ? "up" : "down";
-          const line = activeRl?.line ?? "";
-          if (shouldBoxVerticalNav(line, { slashMatchCount: navMatches.length, historyPanelOpen: promptHistoryLines != null }) && activeRl) {
-            const winCols = Math.max(24, (process.stdout.columns ?? 80) - 1);
-            const textWidth = Math.max(1, Math.max(24, winCols) - 6);
-            const cur = typeof activeRl.cursor === "number" ? activeRl.cursor : line.length;
-            const action = boxVerticalNavAction(expandSentinel(line), line, cur, textWidth, dir);
-            if (action.kind === "move") { activeRl.cursor = action.cursor; i += 3; continue; }
-            if (action.kind === "swallow") { i += 3; continue; } // keep the multi-line draft intact
-          }
-          out += data.slice(i, i + 3); i += 3; continue;
-        }
-        if (loneLfShiftEnter && data[i] === "\n") { out += SENTINEL; i += 1; continue; } // lone LF = Shift+Enter (opt-in)
-        // Ctrl+L (form feed): consumed as the prompt "redraw / re-anchor" hotkey (handled on
-        // the process.stdin 'keypress' listener), so it must never reach readline as a literal
-        // char that would otherwise insert garbage / desync the box from rl.line.
-        if (data[i] === "\u000c") { i += 1; continue; }
-        out += data[i]; i += 1;
-      }
-      kf.write(out);
+      const result = filterPromptInputChunk(
+        data,
+        activeRl ? (activeRl as unknown as { line: string; cursor: number }) : null,
+        {
+          loneLfShiftEnter,
+          slashMatchCount: navMatches.length,
+          historyPanelOpen: promptHistoryLines != null,
+          columns: process.stdout.columns ?? 80,
+        },
+        kfState,
+      );
+      if (result.drop) return;
+      kf.write(result.out);
     };
     process.stdin.on("data", kfDataHandler);
     promptListenerCleanups.push(() => process.stdin.off("data", kfDataHandler));

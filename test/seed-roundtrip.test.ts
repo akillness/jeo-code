@@ -2,7 +2,7 @@ import { test, expect, mock, afterAll } from "bun:test";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { yamlList, parseSeedAcceptanceCriteria, parseSeedList } from "../src/agent/seed";
+import { yamlList, parseSeedAcceptanceCriteria, parseSeedList, parseCriterion } from "../src/agent/seed";
 import { writeWorkflowState } from "../src/agent/state";
 
 // Round-12 (architect ref 8-Round10Planning #5): the seed writer and ultragoal's
@@ -72,4 +72,24 @@ test("ultragoal report carries quoted criteria UNMANGLED end to end", async () =
   expect(report).toContain('Display "Done" message after save'); // exact, quotes intact
   expect(report).not.toContain("Display Done message"); // the old mangling
   await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("parseCriterion splits a trailing {verify: <cmd>} directive off the criterion text", () => {
+  expect(parseCriterion("Typecheck is clean {verify: bun run typecheck}")).toEqual({
+    text: "Typecheck is clean",
+    verify: "bun run typecheck",
+  });
+  // No directive → plain text, no verify command.
+  expect(parseCriterion("Looks nice")).toEqual({ text: "Looks nice" });
+  // Only a trailing directive is a directive; an inner brace stays as text.
+  expect(parseCriterion("Render {x} placeholder")).toEqual({ text: "Render {x} placeholder" });
+  // An empty directive is ignored (no command to run).
+  expect(parseCriterion("Builds {verify:  }")).toEqual({ text: "Builds" });
+  // The directive survives a full yamlList → parse round-trip unmangled.
+  const raw = 'Build compiles {verify: bun run build && echo "done"}';
+  const doc = `${yamlList("acceptance_criteria", [raw])}\n`;
+  expect(parseCriterion(parseSeedAcceptanceCriteria(doc)[0]!)).toEqual({
+    text: "Build compiles",
+    verify: 'bun run build && echo "done"',
+  });
 });

@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.2] - 2026-06-22
+_Workflow honesty + prompt-input testability: `ultragoal` acceptance criteria can now carry a trailing `{verify: <command>}` directive that makes a criterion **individually** provable (real PASS/FAIL instead of a blanket UNVERIFIED on a green suite), with a SUCCESS / PARTIAL / SUITE_GREEN / FAILED status taxonomy; the boxed prompt's full stdin→readline keystroke rewriter is extracted into a pure, PTY-free function so the "↓ cuts the lower text" fix and the rest of the wiring are unit-tested directly. Verified leak-free (`mem-probe`, 2000 turns, exit 0) with a fresh `jeo --tmux` boot battery (6/6)._
+
+### Added
+- **Per-criterion `{verify: <command>}` directive for `ultragoal`.** An acceptance criterion authored with a trailing `{verify: <shell command>}` is now INDIVIDUALLY verifiable — `parseCriterion` (in `src/agent/seed.ts`) splits the directive off the criterion text (round-tripping unmangled through the seed's JSON-encoded list), and `ultragoal` runs that command and records a real PASS/FAIL in the ledger. Criteria without a directive stay UNVERIFIED on a green suite (honest by default, strengthenable on demand). The overall report now uses a status taxonomy: **FAILED** (suite red OR any checked criterion failed), **SUCCESS** (every criterion individually verified and passed), **PARTIAL** (some verified, others still unverified), and **SUITE_GREEN** (green suite, nothing individually proven). The verdict (`ok`) now reflects `status !== "FAILED"` rather than the raw suite result.
+
+### Changed
+- **The boxed prompt's stdin→readline byte rewriter is extracted into a pure function.** `filterPromptInputChunk` (in `src/commands/launch/input.ts`) now holds the FULL keystroke wiring — bracketed-paste folding across chunks, mouse/terminal-report swallowing, Shift+Enter → hard-break SENTINEL, combo-key normalization, and the boundary-aware Up/Down box navigation — so it is testable WITHOUT a live readline/PTY. `launch.ts`'s live handler is now a thin adapter over it, eliminating the duplicated decision logic that previously diverged from its `boxVerticalNavAction` helper.
+
+### Fixed
+- **The "↓ cuts the lower text" multi-line draft regression is now covered by direct byte-stream tests.** A new `test/prompt-key-filter.test.ts` (16 cases) drives raw escape sequences through `filterPromptInputChunk` exactly as the live `kfDataHandler` does — asserting which bytes reach readline and how the caret/paste state mutate — the closest automated stand-in for live-terminal verification of the box-navigation fix shipped in 0.7.1.
+
+### Verified
+- `bun run typecheck` clean; full suite **1826 pass / 0 fail** (222 files).
+- `scripts/mem-probe.ts` (2000 turns × 40 tools): no long-term leak (exit 0; settled heap floor flat at ~4.3 MB, net +0.49 MB, exit-listeners flat at 1).
+- `scripts/tmux-verify.sh battery`: **6/6 PASSED** on a fresh `jeo --tmux` boot (boot, `/help`, unknown `$skill`, `/agents`, `$ultragoal`, unresolved `/command`).
+
 ## [0.7.1] - 2026-06-22
 _TUI polish + provider breadth: the live forge-card border and forge mark now flow in the **active theme's** own neon palette instead of a fixed brand gradient, the boxed prompt's Up/Down keys no longer wipe a multi-line draft at its top/bottom edge, the Tencent Cloud MaaS catalog gains the live-verified DeepSeek/MiniMax/GLM model families (with catalog backfill for providers that expose no models-list endpoint), and the `jeo --tmux` smoke check drops a false-positive launcher-log grep. Verified leak-free (`mem-probe`, 2000 turns, exit 0) with a fresh `jeo --tmux` boot battery (6/6)._
 

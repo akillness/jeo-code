@@ -126,6 +126,15 @@ export function tailForWrap(text: string, maxChars = FRAME_WRAP_TAIL_CHARS): str
   return text.length > maxChars ? text.slice(text.length - maxChars) : text;
 }
 
+/** Memoization key for a live-block wrap (Thinking / tool Output). Derived from the
+ *  TRAILING window only (see `tailForWrap`): the rendered rows depend solely on the
+ *  tail, so keying on the full streamed buffer just made every 120ms tick and every
+ *  delta copy + compare the whole growing string — O(len) per frame, i.e. O(len²) over
+ *  a long stream. Bounding the key to the ≤16KB tail keeps per-frame cost O(window). */
+export function liveBlockWrapKey(wrapW: number, text: string): string {
+  return `${wrapW}\u0000${tailForWrap(text)}`;
+}
+
 /** Max lines of a committed reasoning block kept in scrollback (gjc-style collapse): a
  *  long chain-of-thought is clipped with a "+N more" hint so it never floods the ledger. */
 export const THINKING_COMMIT_MAX_LINES = 12;
@@ -1300,14 +1309,18 @@ export class LaunchTui {
     const dim = this.theme.color ? chalk.dim : (s: string) => s;
     if (!text.trim()) return [];
     const wrapW = Math.max(8, cols - 2);
-    // Memoize the wrap: only the spinner/clock change on most 120ms ticks, so re-wrapping
-    // this (up to 16KB) tail every frame just re-segments graphemes for no visible change.
-    // Per-label slot (Thinking / Output) keyed by wrap width + text — a real delta misses
-    // once and recomputes; an idle tick hits the cache. `rows` only gates the post-slice.
+    // Memoize the wrap on the TRAILING window only. The block displays just its last few
+    // wrapped rows, so wrap cost is already capped by `tailForWrap`. The cache KEY must be
+    // bounded too: keying on the full (up-to-hundreds-of-KB) `text` made every 120ms tick
+    // and every stream delta copy + compare the whole growing buffer — O(len) per frame, so
+    // O(len²) over a long reasoning/tool stream (the streaming slowdown). Slice first, then
+    // key + wrap the ≤16KB tail: identical visible output, O(tail) per frame regardless of
+    // total size. Per-label slot (Thinking / Output) keyed by wrap width + tail.
     let cache = this.liveBlockWrapCaches.get(cacheKey);
     if (!cache) { cache = lastValueCache<string[]>(); this.liveBlockWrapCaches.set(cacheKey, cache); }
-    const wrapped = cache(`${wrapW}\u0000${text}`, () =>
-      tailForWrap(text)
+    const tail = tailForWrap(text);
+    const wrapped = cache(liveBlockWrapKey(wrapW, text), () =>
+      tail
         .split("\n")
         .flatMap(l => wrapTextWithAnsi(l, wrapW))
         .filter(l => l.length > 0));

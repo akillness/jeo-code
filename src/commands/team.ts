@@ -346,7 +346,8 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
       const currentTask = teamState.pending_tasks[0];
       log(`\n${categoryBadge("progress")} Current task: "${currentTask}"`);
       const activeIndex = activeStepIndex(tasks.length, teamState.pending_tasks);
-      for (const line of formatRalphTodoGuide(tasks, activeIndex, teamState.completed_tasks ?? [], renderOpts)) log(line);
+      // Guide printed once above; per-task lines convey progress. No per-iteration
+      // reprint — it was O(N²) lines, climbing the embedded-terminal renderer's CPU.
 
       if (opts.onProgress) {
         opts.onProgress({ skill: "team", phase: "executing", detail: `Current task: ${currentTask}` });

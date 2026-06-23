@@ -876,21 +876,37 @@ export async function spawnDetachedDistill(
 }
 
 /** CLI worker for the detached child: payload → distill → cleanup. Silent by design. */
-export async function runMemoryDistillCommand(args: string[]): Promise<void> {
-  const payloadPath = (args[0] ?? "").trim();
-  if (!payloadPath) return;
+export async function runMemoryDistillCommand(
+  args: string[],
+  // Injected for tests; the REAL detached worker must terminate ITSELF. distillSessionMemory
+  // caps the LLM call with a Promise.race timeout, but the race only REJECTS — it never aborts
+  // the underlying fetch. A stalled provider socket therefore stays open, the worker's event
+  // loop never drains, and the `jeo memory-distill` child lingers forever — one orphan per
+  // session, each pinning the full transcript in RSS. That is the observed "jeo bun" pileup
+  // (CPU/memory creeping up over time). An explicit exit closes the socket and reclaims it.
+  exit: (code: number) => void = (code) => process.exit(code),
+): Promise<void> {
   try {
-    const payloadContent = await fs.readFile(payloadPath, "utf-8");
-    const payload = JSON.parse(payloadContent) as { model?: string; messages?: Message[] };
-    const bundleDir = path.join(process.cwd(), ".jeo", "memory");
-    await saveRawPayload(bundleDir, payload);
-    if (Array.isArray(payload.messages)) {
-      await distillSessionMemory(payload.messages, process.cwd(), { model: payload.model });
+    const payloadPath = (args[0] ?? "").trim();
+    if (!payloadPath) return;
+    try {
+      const payloadContent = await fs.readFile(payloadPath, "utf-8");
+      const payload = JSON.parse(payloadContent) as { model?: string; messages?: Message[] };
+      const bundleDir = path.join(process.cwd(), ".jeo", "memory");
+      await saveRawPayload(bundleDir, payload);
+      if (Array.isArray(payload.messages)) {
+        await distillSessionMemory(payload.messages, process.cwd(), { model: payload.model });
+      }
+    } catch {
+      // best-effort — a broken payload must not leave error noise in a detached child
+    } finally {
+      await fs.unlink(payloadPath).catch(() => {});
     }
-  } catch {
-    // best-effort — a broken payload must not leave error noise in a detached child
   } finally {
-    await fs.unlink(payloadPath).catch(() => {});
+    // Guaranteed on every path (incl. the no-payload early return and a distill timeout):
+    // never leave the detached worker alive waiting on a dangling fetch.
+    exit(0);
   }
 }
+
 

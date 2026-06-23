@@ -169,7 +169,7 @@ test("raw payload is saved in raw/ and stale pending files are cleaned up", asyn
   const savedCwd = process.cwd();
   try {
     process.chdir(dir);
-    await runMemoryDistillCommand([payloadPath]);
+    await runMemoryDistillCommand([payloadPath], () => {}); // no-op exit: don't kill the test runner
   } finally {
     process.chdir(savedCwd);
   }

@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.6] - 2026-06-23
+_Release & docs plumbing: the running version's release notes now travel inside the `--compile` single binary (so `/whats-new` works offline and from a global install), the in-TUI markdown table renderer stops splitting on escaped `\|` pipes, and the release pipeline gains a cross-compiled standalone-binary matrix — macOS/Linux **plus a first-class Windows x64 `.exe`** — built on one Linux runner and auto-attached to each GitHub release._
+
+### Added
+- **Cross-target standalone-binary release matrix (incl. Windows `.exe`).** New `scripts/ci-release-build-binaries.ts` compiles `src/cli.ts` for every release target via Bun's `--compile --target bun-<triple>`; since jeo has no native addons/workers, all targets (`darwin-arm64`/`-x64`, `linux-x64`/`-arm64`, `win32-x64`) cross-compile from a single Linux runner. Driven by `bun run build:binaries` / `build:win` (new `package.json` scripts) with `--targets <ids|all>`, `RELEASE_TARGETS` env, and `--dry-run` support. A new `release-binaries` job in `.github/workflows/npm-publish.yml` builds the full matrix, uploads them as a workflow artifact, and on a `release` event runs `gh release upload <tag> dist/jeo-* --clobber` to attach them.
+
+### Changed
+- **The running version's CHANGELOG is embedded into the compiled binary.** `loadBundledChangelog` (in `src/util/whats-new.ts`) now imports `CHANGELOG.md` with `{ type: "text" }`, so the release notes ship inside the `bun build --compile` single binary — where `import.meta.dir` resolves to the bunfs virtual root and the old two-levels-up on-disk path does not exist. The on-disk read remains as a dev fallback only when the embed is empty.
+
+### Fixed
+- **The in-TUI markdown table renderer no longer breaks a cell on an escaped `\|`.** `markdown-table.ts` now distinguishes a real cell separator from a literal pipe: `hasUnescapedPipe` drives row detection, `splitCells` walks the row character-by-character (turning `\|` into a literal `|` inside the cell instead of a column break and never stripping an escaped trailing pipe), and `isDelimiterRow` reuses that same escape-aware split. A table whose cells contain `\|` now renders with the correct column count.
+
+### Verified
+- `bun run typecheck` clean; the touched suites pass — `test/markdown-table.test.ts` and `test/release-binaries.test.ts` (14 pass / 0 fail) cover escaped-pipe cell splitting/delimiter detection, the Windows `.exe` target shape, `--targets`/env/`all` resolution, the per-target compile invocation, and the workflow's build+upload of every target.
+
+
 ## [0.7.5] - 2026-06-23
 _Startup & loop latency: redundant re-reads that fired on every subagent spawn and every loop step are now memoized behind cheap `stat`-signature caches, so cold paths stay correct (edits/deletes still picked up immediately) while warm paths skip the disk and the re-parse. Targets the per-turn and per-spawn overhead that dominates perceived slowness in team/ralph/autopilot fan-outs._
 

@@ -18,6 +18,17 @@ test("runAgentLoop: pure prose reply is salvaged as the final answer", async () 
   expect(history[history.length - 1]?.role).toBe("assistant");
 });
 
+test("runAgentLoop: salvaged prose strips leaked reasoning/tool-call tags from the answer", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => "</parameter></think> ㅇㅇㅇㅇ </parameter>",
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history = [{ role: "user" as const, content: "explain" }];
+  const result = await runAgentLoop(history, { cwd: process.cwd(), maxSteps: 5, tools: {} });
+  expect(result.done).toBe(true);
+  expect(result.doneReason).toBe("ㅇㅇㅇㅇ");
+});
+
 test("runAgentLoop: malformed JSON-ish reply gets a no-apology correction, then recovers", async () => {
   const userCorrections: string[] = [];
   let turn = 0;

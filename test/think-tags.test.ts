@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { createThinkSplitter } from "../src/ai/think-tags";
+import { createThinkSplitter, stripLeakedReasoningTags } from "../src/ai/think-tags";
 
 function run(deltas: string[]): { visible: string; reasoning: string } {
   let reasoning = "";
@@ -9,6 +9,34 @@ function run(deltas: string[]): { visible: string; reasoning: string } {
   visible += s.flush();
   return { visible, reasoning };
 }
+
+test("stripLeakedReasoningTags: drops the exact API-model leak (unmatched </think> + stray </parameter>)", () => {
+  expect(stripLeakedReasoningTags("</parameter></think> ㅇㅇㅇㅇ </parameter>")).toBe("ㅇㅇㅇㅇ");
+});
+
+test("stripLeakedReasoningTags: removes a balanced <think> block", () => {
+  expect(stripLeakedReasoningTags("<think>weighing options</think>final answer")).toBe("final answer");
+});
+
+test("stripLeakedReasoningTags: implicit reasoning prefix before an unmatched </think>", () => {
+  expect(stripLeakedReasoningTags("let me reason about this</think>the answer is 42")).toBe("the answer is 42");
+});
+
+test("stripLeakedReasoningTags: strips stray parameter/tool_call scaffolding", () => {
+  expect(stripLeakedReasoningTags("<tool_call><parameter name=\"x\">hi</parameter></tool_call>")).toBe("hi");
+});
+
+test("stripLeakedReasoningTags: removes Harmony channel markers", () => {
+  expect(stripLeakedReasoningTags("<|channel|>final<|message|>done")).toBe("finaldone");
+});
+
+test("stripLeakedReasoningTags: clean text is only trimmed, never altered", () => {
+  expect(stripLeakedReasoningTags("  a normal final answer.  ")).toBe("a normal final answer.");
+});
+
+test("stripLeakedReasoningTags: keeps the LAST think-close when several appear", () => {
+  expect(stripLeakedReasoningTags("a</think>b</think>real answer")).toBe("real answer");
+});
 
 test("plain text passes through untouched (no tags, no reasoning)", () => {
   expect(run(["hello ", "world"])).toEqual({ visible: "hello world", reasoning: "" });

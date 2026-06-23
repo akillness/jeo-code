@@ -114,8 +114,11 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     const token = trailingSpace ? "" : tokens[tokens.length - 1] ?? "";
     if (token.startsWith("@")) {
       const prefix = token.slice(1);
+      // `mentionPaths` already does the matching (recursive fuzzy for a bare
+      // fragment, single-dir listing when the prefix has a slash), so the pool
+      // is returned as-is rather than re-filtered by strict prefix.
       const pool = (ctx.mentionPaths?.(prefix) ?? []).map(p => (p.startsWith("@") ? p : `@${p}`));
-      return { completions: dedupeCap(prefixHits(pool, token)), token, kind: "path" };
+      return { completions: dedupeCap(pool), token, kind: "path" };
     }
     // `$skill` mention completion at ANY position in the line (mention-style;
     // a leading `$name` is additionally the direct-invocation entrypoint).

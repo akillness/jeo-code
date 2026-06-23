@@ -4,6 +4,13 @@ import * as path from "node:path";
 import { readWorkflowStateStrict, type WorkflowState } from "./state";
 import { jeoEnv } from "../util/env";
 import { READ_OUTPUT_MAX } from "./tool-output";
+import {
+  backgroundReaper,
+  ensureBackgroundSweeper,
+  isBackgroundReapEnabled,
+  killSpec,
+  type ReapTarget,
+} from "./process-reaper";
 
 /** Read the deep-interview lock; on corrupt state fail CLOSED (treat as active lock). */
 async function readMutationLock(cwd: string): Promise<WorkflowState | null> {
@@ -634,7 +641,13 @@ export async function bashTool(
     const safeEnv = env && !Array.isArray(env)
       ? Object.fromEntries(Object.entries(env).filter(([, v]) => typeof v === "string")) as Record<string, string>
       : undefined;
-    // Run the command using Bun's native spawn
+    // Run the command using Bun's native spawn. When background reaping is on
+    // (default, POSIX), spawn the shell as its OWN process-group leader so a
+    // backgrounded grandchild (`next dev &`, a daemon) joins that group and the
+    // whole subtree is reapable via `process.kill(-pid)` without hitting jeo.
+    const reapBackground = isBackgroundReapEnabled();
+    const grouped = reapBackground && process.platform !== "win32";
+    if (grouped) ensureBackgroundSweeper();
     const proc = Bun.spawn(["bash", "-c", command], {
       cwd: runCwd,
       // Detach stdin (no inherited TTY): a command that reads stdin (`cat`, `read`,
@@ -643,9 +656,21 @@ export async function bashTool(
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
+      // Own process group ⇒ group-killable subtree (reaps backgrounded grandchildren).
+      ...(grouped ? { detached: true } : {}),
       // Inherit the parent env; merge caller-supplied (sanitized) vars on top.
       ...(safeEnv && Object.keys(safeEnv).length ? { env: { ...process.env, ...safeEnv } } : {}),
     });
+    const reapTarget: ReapTarget = { pid: proc.pid, grouped };
+    // Signal the whole process group when grouped (so a `cmd &` grandchild dies
+    // too), else fall back to the bare shell pid. `force` ⇒ SIGKILL, else SIGTERM.
+    const killTree = (force: boolean): void => {
+      const sig = force ? "SIGKILL" : "SIGTERM";
+      if (grouped) {
+        try { process.kill(killSpec(reapTarget), sig); return; } catch { /* fall through */ }
+      }
+      try { force ? proc.kill(9) : proc.kill(); } catch {}
+    };
 
     let timedOut = false;
     let aborted = false;
@@ -674,14 +699,14 @@ export async function bashTool(
       // SIGKILL step ALSO cut the readers: the old code killed the shell but never
       // cancelled the readers, so an orphan-held pipe outlived the deadline and the
       // turn hung forever (the reported freeze).
-      try { proc.kill(); } catch {}
-      killTimer = setTimeout(() => { try { proc.kill(9); } catch {} cancelReaders(); }, 3_000);
+      killTree(false);
+      killTimer = setTimeout(() => { killTree(true); cancelReaders(); }, 3_000);
     }, TIMEOUT_MS);
     // Abort wiring: if the turn is cancelled, SIGKILL the child immediately AND cancel
     // both pipe readers so the drain loops unwind at once.
     const onAbort = () => {
       aborted = true;
-      try { proc.kill(9); } catch {}
+      killTree(true);
       cancelReaders();
     };
     if (signal) {
@@ -728,10 +753,17 @@ export async function bashTool(
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
       if (signal) signal.removeEventListener("abort", onAbort);
-      // Reap a still-alive child (normal exit, abort, or timeout) so no orphaned
-      // process survives, then force any pipe still held open (backgrounded
-      // grandchild) closed so the awaits below cannot hang.
-      if (proc.exitCode === null && proc.signalCode === null) { try { proc.kill(9); } catch {} }
+      // Reap a still-alive shell (abort/timeout) AND any backgrounded grandchild it
+      // left behind. A `next dev &` / daemon survives the shell's exit by reparenting
+      // to init and would otherwise accumulate every turn (rising next-server RSS);
+      // group-SIGKILL claims the whole subtree. Register first so the periodic sweep
+      // retries if this signal raced the reparent. Skipped when KEEP_BACKGROUND=1.
+      if (proc.exitCode === null && proc.signalCode === null) {
+        killTree(true);
+      } else if (grouped && reapBackground) {
+        backgroundReaper.register(reapTarget, command);
+        backgroundReaper.reapOne(proc.pid);
+      }
       cancelReaders();
     }
     const stdout = await stdoutPromise;

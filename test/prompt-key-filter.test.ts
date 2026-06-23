@@ -1,6 +1,12 @@
 import { test, expect } from "bun:test";
 import {
   filterPromptInputChunk,
+  pasteEscapeLength,
+  stripPasteEscapes,
+  endsInPaste,
+  pasteMarkerTailLength,
+  pasteIdleDecision,
+  PASTE_MERGE_IDLE_MS,
   MULTILINE_SENTINEL,
   PASTE_START,
   PASTE_END,
@@ -128,4 +134,116 @@ test("a Backspace with text in the buffer is forwarded so editing still works", 
   const res = filterPromptInputChunk("\u007f", { line: "abc", cursor: 3 }, baseEnv(), freshState());
   expect(res.drop).toBe(false);
   expect(res.out).toBe("\u007f");
+});
+// ── Chunk-boundary paste robustness (복사 붙여넣기 깨짐 수정) ───────────────────────
+// A large paste is delivered to stdin in several reads, so the 6-byte bracketed-paste
+// markers and a CRLF can straddle a chunk boundary. Before the carry fix the partial
+// `\x1b[200~`/`\x1b[201~` bytes leaked into the input box as `00~`/`[201~` garbage and the
+// in-paste flag desynced (newlines stopped folding → the paste submitted mid-way). These
+// drive the exact split byte streams the live `kfDataHandler` would see.
+
+/** Feed an ordered list of stdin chunks through ONE shared filter state (as the live
+ *  adapter does) and concatenate everything forwarded to readline. */
+function feed(chunks: string[], state: PromptKeyFilterState, rl: { line: string; cursor: number } | null = null): string {
+  let out = "";
+  for (const c of chunks) {
+    const r = filterPromptInputChunk(c, rl, baseEnv(), state);
+    if (!r.drop) out += r.out;
+  }
+  return out;
+}
+
+test("PASTE_START split across two chunks reassembles — no `00~` garbage, no premature submit", () => {
+  const state = freshState();
+  const out = feed(["\u001b[2", "00~alpha\nbeta" + PASTE_END], state);
+  // Marker reconstructed, body newline folded to a sentinel (not a literal Enter), end clean.
+  expect(out).toBe(`${PASTE_START}alpha${MULTILINE_SENTINEL}beta${PASTE_END}`);
+  expect(state.inPaste).toBe(false);
+  expect(state.carry).toBe("");
+});
+
+test("PASTE_END split across two chunks is stripped, not leaked as `[201~`", () => {
+  const state = freshState();
+  const out = feed([PASTE_START + "data\u001b[20", "1~"], state);
+  expect(out).toBe(`${PASTE_START}data${PASTE_END}`);
+  expect(state.inPaste).toBe(false);
+});
+
+test("a CRLF split across chunks inside a paste folds to ONE sentinel (no spurious blank line)", () => {
+  const state = freshState();
+  const out = feed([PASTE_START + "abc\r", "\ndef" + PASTE_END], state);
+  expect(out).toBe(`${PASTE_START}abc${MULTILINE_SENTINEL}def${PASTE_END}`);
+});
+
+test("a trailing CR OUTSIDE a paste is NOT carried — Enter still submits immediately", () => {
+  const state = freshState();
+  const r = filterPromptInputChunk("hello\r", { line: "hello", cursor: 5 }, baseEnv(), state);
+  expect(r.out).toBe("hello\r");
+  expect(state.carry).toBe("");
+});
+
+test("ANSI color codes in pasted terminal output are stripped to plain text", () => {
+  const state = freshState();
+  const out = filterPromptInputChunk(`${PASTE_START}a\u001b[31mred\u001b[0mb${PASTE_END}`, null, baseEnv(), state).out;
+  expect(out).toBe(`${PASTE_START}aredb${PASTE_END}`);
+});
+
+test("a multi-chunk paste with markers, CRLF and ANSI all split reconstructs to one clean buffer", () => {
+  const state = freshState();
+  const out = feed(["\u001b[2", "00~one\r", "\n\u001b[32mtwo\u001b", "[0mthree" + PASTE_END], state);
+  expect(out).toBe(`${PASTE_START}one${MULTILINE_SENTINEL}twothree${PASTE_END}`);
+  expect(state.inPaste).toBe(false);
+});
+
+test("pasteMarkerTailLength holds back only proper marker prefixes", () => {
+  expect(pasteMarkerTailLength("hello\u001b[20")).toBe(4); // \x1b [ 2 0
+  expect(pasteMarkerTailLength("hello\u001b[201")).toBe(5);
+  expect(pasteMarkerTailLength("plain text")).toBe(0);
+  expect(pasteMarkerTailLength(PASTE_START)).toBe(0); // a COMPLETE marker is handled in the loop
+});
+
+test("endsInPaste replays only paste toggles", () => {
+  expect(endsInPaste(PASTE_START + "body", false)).toBe(true);
+  expect(endsInPaste(PASTE_START + "body" + PASTE_END, false)).toBe(false);
+  expect(endsInPaste("text", true)).toBe(true);
+});
+
+test("stripPasteEscapes drops CSI/OSC sequences but keeps text, tabs and newlines", () => {
+  expect(stripPasteEscapes("a\u001b[31mred\u001b[0mb")).toBe("aredb");
+  expect(stripPasteEscapes("x\u001b]0;title\u0007y")).toBe("xy");
+  expect(stripPasteEscapes("keep\tthis\nline\r")).toBe("keep\tthis\nline\r");
+  expect(stripPasteEscapes("drop\u0001bell\u0007")).toBe("dropbell");
+});
+
+test("pasteEscapeLength measures a CSI SGR sequence and returns 0 for plain text", () => {
+  expect(pasteEscapeLength("\u001b[31m", 0)).toBe(5);
+  expect(pasteEscapeLength("abc", 0)).toBe(0);
+});
+
+// ── Paste-merge idle gate (large-paste truncation fix, deferred #3) ───────────────
+// The OLD dropped-marker fallback was a single fixed 250ms timer from the FIRST pasted
+// line, so a large paste streaming in over >250ms was cut mid-paste. pasteIdleDecision
+// makes the fallback idle-based: it only fires once the stream has been quiet for the
+// threshold, so each freshly-arriving line resets the clock and the paste survives.
+test("pasteIdleDecision: fires only once the idle gap reaches the threshold", () => {
+  expect(pasteIdleDecision(0)).toEqual({ fire: false, waitMs: PASTE_MERGE_IDLE_MS });
+  expect(pasteIdleDecision(100)).toEqual({ fire: false, waitMs: PASTE_MERGE_IDLE_MS - 100 });
+  expect(pasteIdleDecision(PASTE_MERGE_IDLE_MS)).toEqual({ fire: true, waitMs: 0 });
+  expect(pasteIdleDecision(PASTE_MERGE_IDLE_MS + 999)).toEqual({ fire: true, waitMs: 0 });
+});
+
+test("pasteIdleDecision: a steadily-arriving large paste never trips the fallback early", () => {
+  // Simulate a paste that keeps delivering a line every 50ms for 2s: at each check the
+  // idle gap is small, so the gate always says 'wait' — the paste is never truncated.
+  for (let elapsed = 0; elapsed <= 2000; elapsed += 50) {
+    const sinceLastLine = 50; // a new line just landed 50ms ago
+    expect(pasteIdleDecision(sinceLastLine).fire).toBe(false);
+  }
+  // Only once the stream goes quiet past the threshold does it flush.
+  expect(pasteIdleDecision(PASTE_MERGE_IDLE_MS + 1).fire).toBe(true);
+});
+
+test("pasteIdleDecision: a custom threshold is honored", () => {
+  expect(pasteIdleDecision(400, 1000)).toEqual({ fire: false, waitMs: 600 });
+  expect(pasteIdleDecision(1000, 1000)).toEqual({ fire: true, waitMs: 0 });
 });

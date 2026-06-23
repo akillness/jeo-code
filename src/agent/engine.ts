@@ -24,6 +24,7 @@ import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, hashSigna
 import { historyTokens, trimToolResultsInPlace } from "./compaction";
 import { jeoEnv } from "../util/env";
 import { GUARD_LIMITS, isVerificationSignal, repeatHint, classifyDoneGate } from "./loop-guards";
+import { stripLeakedReasoningTags } from "../ai/think-tags";
 
 
 async function invokeCallLlm(history: Message[], options: {
@@ -644,7 +645,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       parseFailures++;
       if (trimmed && (!trimmed.includes("{") || parseFailures > MAX_PARSE_BOUNCES)) {
         pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
-        return finish({ done: true, steps: step, doneReason: trimmed });
+        // Strip leaked <think>/<parameter>/Harmony scaffolding some API-entered
+        // models emit inline so the salvaged answer doesn't surface raw tags.
+        return finish({ done: true, steps: step, doneReason: stripLeakedReasoningTags(trimmed) || trimmed });
       }
       pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
       history.push({
@@ -760,7 +763,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           continue;
         }
       }
-      return finish({ done: true, steps: step, doneReason: (toolCalls[0].arguments?.reason as string) ?? "" });
+      return finish({ done: true, steps: step, doneReason: stripLeakedReasoningTags((toolCalls[0].arguments?.reason as string) ?? "") });
     }
 
     // Anti-spin guard, checked BEFORE execution: a repeated identical step must

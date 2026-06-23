@@ -99,3 +99,58 @@ describe("ratchet streak — min goal end to end (pure)", () => {
     expect(isConverged(sinceImprove, 3)).toBe(false);
   });
 });
+
+import { foldBest } from "../src/autopilot";
+
+describe("foldBest — in-memory best folding matches a fresh log re-scan", () => {
+  test("min goal keeps the running minimum across kept steps", () => {
+    let best: number | undefined = 10;
+    best = foldBest("min", best, 8); // keep (improves)
+    expect(best).toBe(8);
+    best = foldBest("min", best, 7); // keep (improves)
+    expect(best).toBe(7);
+    // A higher (worse) measurable score never lowers the running min.
+    best = foldBest("min", best, 9);
+    expect(best).toBe(7);
+  });
+
+  test("max goal keeps the running maximum across kept steps", () => {
+    let best: number | undefined = 1;
+    best = foldBest("max", best, 4);
+    expect(best).toBe(4);
+    best = foldBest("max", best, 2); // lower score never raises the running max
+    expect(best).toBe(4);
+  });
+
+  test("gate goal tracks the last kept value, not an extremum", () => {
+    let best: number | undefined = 5;
+    best = foldBest("gate", best, 2);
+    expect(best).toBe(2); // gate ignores ordering; last kept score wins
+    best = foldBest("gate", best, 9);
+    expect(best).toBe(9);
+  });
+
+  test("a NaN score never becomes the best, for every goal", () => {
+    expect(foldBest("min", 7, NaN)).toBe(7);
+    expect(foldBest("max", 7, NaN)).toBe(7);
+    expect(foldBest("gate", 7, NaN)).toBe(7);
+    // First-ever measurable score seeds best even from undefined.
+    expect(foldBest("min", undefined, 3)).toBe(3);
+    // …but a NaN against an empty best stays empty (nothing measurable yet).
+    expect(foldBest("min", undefined, NaN)).toBeUndefined();
+  });
+
+  test("the running fold equals the score the same kept sequence would log", () => {
+    // Replays a min-goal kept sequence both ways: a manual `best = sc` on keep
+    // (what cmdLoop did via per-iteration currentBest) and the foldBest path.
+    const keptScores = [9, 7, 5];
+    let manual: number | undefined = 10;
+    let folded: number | undefined = 10;
+    for (const sc of keptScores) {
+      manual = sc; // keep => prior code set best directly to the improving score
+      folded = foldBest("min", folded, sc);
+    }
+    expect(folded).toBe(manual);
+    expect(folded).toBe(5);
+  });
+});

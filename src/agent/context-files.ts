@@ -26,12 +26,36 @@ const GUIDANCE_CONTEXT_CHARS = TOTAL_CONTEXT_CHARS - BASE_CONTEXT_CHARS;
 const MAX_AGENT_GUIDANCE_FILES = 20;
 const AGENT_GUIDANCE_EXTENSIONS = new Set([".md", ".json", ".jsonc", ".yaml", ".yml", ".toml"]);
 
+// Per-file RAW content cache: absolute path → mtimeMs:size signature + raw text.
+// loadProjectContext runs once per subagent spawn (team/ralph/autopilot); this skips
+// re-reading every unchanged AGENTS.md / guidance file. The cheap fs.stat still runs
+// each call, so an edit (new mtime/size) or deletion is caught immediately. Truncation
+// is applied per call from the raw text, so a differing budget never pollutes the cache.
+const fileContentCache = new Map<string, { sig: string; content: string }>();
+const FILE_CONTENT_CACHE_CAP = 256;
+
 async function readContextFile(filePath: string, displayPath: string, remainingChars: number): Promise<ProjectContextFile | null> {
   if (remainingChars <= 0) return null;
   try {
     const stat = await fs.stat(filePath);
     if (!stat.isFile() || stat.size <= 0) return null;
-    const content = await fs.readFile(filePath, "utf-8");
+    const sig = `${stat.mtimeMs}:${stat.size}`;
+    let content: string;
+    const cached = fileContentCache.get(filePath);
+    if (cached && cached.sig === sig) {
+      // LRU refresh so a hot file is evicted last.
+      fileContentCache.delete(filePath);
+      fileContentCache.set(filePath, cached);
+      content = cached.content;
+    } else {
+      content = await fs.readFile(filePath, "utf-8");
+      // Evict the oldest entry (Map preserves insertion order) once at capacity.
+      if (fileContentCache.size >= FILE_CONTENT_CACHE_CAP) {
+        const oldest = fileContentCache.keys().next().value;
+        if (oldest !== undefined) fileContentCache.delete(oldest);
+      }
+      fileContentCache.set(filePath, { sig, content });
+    }
     if (content.length <= 0) return null;
     const cap = Math.min(PER_CONTEXT_FILE_CHARS, remainingChars);
     const finalContent = content.length > cap ? content.slice(0, cap) + "\n…(truncated)" : content;
@@ -82,6 +106,7 @@ const EXPLICIT_GUIDANCE_FILES = [".agents/oma-config.yaml", ".agents/oma-config.
 // worktrees, /view of other trees) must not grow this Map without bound.
 const workspaceScanCache = new Map<string, WorkspaceScan>();
 const WORKSPACE_SCAN_CACHE_CAP = 32;
+
 
 function segsEqual(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
@@ -188,8 +213,12 @@ async function getWorkspaceScan(cwd: string): Promise<WorkspaceScan> {
 export function invalidateWorkspaceScan(cwd?: string): void {
   if (cwd === undefined) {
     workspaceScanCache.clear();
+    fileContentCache.clear();
     return;
   }
+  // Per-cwd: drop just the downward scan. The per-file content cache is mtime/size
+  // self-invalidating, so it needs no per-cwd eviction (a path's stale entry is
+  // replaced on the next read once its mtime/size changes).
   workspaceScanCache.delete(path.resolve(cwd));
 }
 
@@ -216,6 +245,10 @@ export async function discoverAgentGuidanceFiles(cwd = process.cwd()): Promise<A
 }
 
 
+// No assembled-result cache: the parent walk + downward scan (cached by workspaceScanCache)
+// are cheap, and readContextFile skips re-reading unchanged file CONTENTS via its mtime/size
+// cache. This keeps the result disk-truthful — a guidance/AGENTS.md edit is reflected on the
+// next spawn — while still avoiding the dominant per-spawn cost (re-reading every file).
 export async function loadProjectContext(cwd = process.cwd()): Promise<ProjectContextFile[]> {
   const result: ProjectContextFile[] = [];
   let baseChars = 0;

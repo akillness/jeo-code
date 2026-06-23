@@ -449,8 +449,13 @@ export async function writeWorkflowState(
   // repeatedly mid-workflow, and the mutation guard fails CLOSED on corrupt JSON —
   // a torn write would otherwise wedge the agent into a permanent mutation block.
   const tmpPath = `${statePath}.${Math.random().toString(36).slice(2)}.tmp`;
+  let st;
   try {
     await fs.writeFile(tmpPath, JSON.stringify(state, null, 2), "utf-8");
+    // Stat the temp file BEFORE renaming. If we stat statePath after rename,
+    // a concurrent writer could have already overwritten it, causing us to cache
+    // our state object with their file's stats (a post-write re-read race).
+    st = await fs.stat(tmpPath);
     await fs.rename(tmpPath, statePath);
   } catch (err) {
     await fs.unlink(tmpPath).catch(() => {});
@@ -458,10 +463,9 @@ export async function writeWorkflowState(
   }
   // Cache the just-written state keyed on the new file fingerprint so the next read
   // (often the mutation guard milliseconds later) is served from memory.
-  try {
-    const st = await fs.stat(statePath);
+  if (st) {
     cacheWorkflowState(statePath, st.mtimeMs, st.size, state);
-  } catch {
+  } else {
     workflowStateCache.delete(statePath);
   }
   return statePath;

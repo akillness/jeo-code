@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.5] - 2026-06-23
+_Startup & loop latency: redundant re-reads that fired on every subagent spawn and every loop step are now memoized behind cheap `stat`-signature caches, so cold paths stay correct (edits/deletes still picked up immediately) while warm paths skip the disk and the re-parse. Targets the per-turn and per-spawn overhead that dominates perceived slowness in team/ralph/autopilot fan-outs._
+
+### Changed
+- **Project-context guidance files are cached by `mtimeMs:size` signature instead of re-read every spawn.** `readContextFile` (in `src/agent/context-files.ts`) now keeps a 256-entry LRU of raw file text keyed by a stat signature. The cheap `fs.stat` still runs every call, so an edit (new mtime/size) or deletion is caught immediately; truncation is reapplied per call from the raw text, so a differing budget never pollutes the cache. `loadProjectContext` runs once per subagent spawn (team/ralph/autopilot), so this removes the bulk of repeated AGENTS.md/guidance reads.
+- **OKF memory concepts are parse-cached per file under the same stat-signature scheme.** `loadConcepts` (in `src/agent/memory.ts`) walks `.jeo/memory/` and parses every concept file; the new 256-entry cache skips the read+parse for unchanged files. The directory walk and per-file `stat` still run (new files appear, deleted files drop out), and every write path (`migrateLegacyMemory`, both `distillSessionMemory` branches) calls `invalidateConceptCache()` so a freshly written concept is never served stale.
+- **Native tool schemas are derived once per turn, not rebuilt every step.** `runAgentLoop` (in `src/agent/engine.ts`) hoists `nativeToolSchemasFor(...)` out of the step loop since the active toolset is constant for the whole turn, eliminating a per-step list rebuild/reallocation.
+- **Autopilot keeps the running `best` score in memory across iterations.** `cmdLoop` (in `src/autopilot.ts`) seeds `best` from `currentBest(s)` once and folds each kept step forward via the new exported `foldBest(goal, best, score)` helper, instead of re-reading and re-parsing the entire append-only log on every step. `foldBest` mirrors `currentBest`'s reduction exactly (NaN never becomes best; `min`/`max`/last-value semantics by goal) so the in-memory value can never diverge from a fresh log re-scan.
+
+### Verified
+- `bun run typecheck` clean; the touched suites pass — `test/context-files.test.ts`, `test/memory-distill-okf.test.ts`, and `test/autopilot-engine.test.ts` (43 pass / 0 fail) exercise cache hits, post-edit/post-delete invalidation, and `foldBest`/`currentBest` parity.
+
 ## [0.7.4] - 2026-06-22
 _Per-session model isolation + REPL slash-handler testability: a running `jeo` session now pins the model it resolved at start, so a concurrent session running `/model` (which persists the global default) can no longer silently switch a different live session's model mid-run. The read-only code-inspection slashes (`/view`, `/diff`, `/find`, `/search`), the `/undo` git slash, and the `/history` view are extracted into pure, PTY-free handlers so their logic is unit-tested directly instead of buried in the REPL loop._
 

@@ -318,3 +318,37 @@ test("memoryPromptSection injection-hardens bundle content (fence-breakout neutr
 
   await fs.rm(dir, { recursive: true, force: true });
 });
+
+test("loadConcepts keeps disk as the source of truth across add/edit/delete (mtime+size parse cache)", async () => {
+  const dir = await tmp();
+  const factsDir = path.join(dir, ".jeo", "memory", "facts");
+  await fs.mkdir(factsDir, { recursive: true });
+  const concept = (title: string, description: string) =>
+    `---\ntype: RepoFact\ntitle: ${title}\ndescription: ${description}\n---\nbody.\n`;
+
+  const { loadConcepts, invalidateConceptCache } = await import("../src/agent/memory");
+  invalidateConceptCache(); // isolate from any earlier test in this process
+
+  await fs.writeFile(path.join(factsDir, "a.md"), concept("A", "first"), "utf-8");
+  let concepts = await loadConcepts(dir);
+  expect(concepts.map(c => c.title)).toEqual(["A"]);
+  expect(concepts[0].description).toBe("first");
+
+  // Edit an existing file: a different-length description changes the stat
+  // signature, so the cached parse is invalidated and the new content is read.
+  await fs.writeFile(path.join(factsDir, "a.md"), concept("A", "a-much-longer-second-description"), "utf-8");
+  concepts = await loadConcepts(dir);
+  expect(concepts[0].description).toBe("a-much-longer-second-description");
+
+  // Add a new file: the directory walk finds it immediately (not cache-shadowed).
+  await fs.writeFile(path.join(factsDir, "b.md"), concept("B", "second fact"), "utf-8");
+  concepts = await loadConcepts(dir);
+  expect(concepts.map(c => c.title).sort()).toEqual(["A", "B"]);
+
+  // Delete a file: it drops out of the next load (walk no longer returns it).
+  await fs.rm(path.join(factsDir, "a.md"));
+  concepts = await loadConcepts(dir);
+  expect(concepts.map(c => c.title)).toEqual(["B"]);
+
+  await fs.rm(dir, { recursive: true, force: true });
+});

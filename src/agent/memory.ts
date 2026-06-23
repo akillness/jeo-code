@@ -176,6 +176,7 @@ export async function migrateLegacyMemory(cwd: string): Promise<MigrationResult>
   // Preserve the legacy doc as a rollback backup, off the active read path.
   const backupPath = `${memoryFilePath(cwd)}.bak`;
   await fs.rename(memoryFilePath(cwd), backupPath).catch(() => {});
+  invalidateConceptCache();
   return { migrated: true, conceptCount: written.length, backupPath };
 }
 
@@ -205,6 +206,25 @@ export interface Concept {
   relPath: string;
 }
 
+/** Per-file parse cache keyed by absolute path → (mtimeMs+size signature, parsed
+ *  Concept or null for a frontmatter-less/unparseable file). loadConcepts walks
+ *  `.jeo/memory/` and read+parses every concept file; team/ralph/autopilot call
+ *  memoryPromptSection (→ loadConcepts) once per subagent spawn, re-paying that
+ *  read+parse each time. The cheap directory walk + per-file stat still run (so new
+ *  files appear and deleted files drop out immediately — disk is the source of
+ *  truth), but an UNCHANGED file (same mtime+size) skips the read+parse. A changed
+ *  file's signature differs, so edits are picked up without explicit invalidation. */
+interface ParsedConceptEntry { sig: string; concept: Concept | null }
+const parsedConceptCache = new Map<string, ParsedConceptEntry>();
+const PARSED_CONCEPT_CACHE_CAP = 512;
+
+/** Drop the per-file concept parse cache so the next loadConcepts re-reads disk.
+ *  The cache is already mtime/size self-invalidating; this is a hard reset for
+ *  tests and callers that mutate files without changing their stat signature. */
+export function invalidateConceptCache(): void {
+  parsedConceptCache.clear();
+}
+
 /** Read every concept document in the bundle into structured `Concept`s. Reserved
  *  files (index.md/log.md) and raw/ payloads are skipped; unparseable or
  *  frontmatter-less files are ignored (lenient consumption). */
@@ -226,15 +246,38 @@ async function loadConceptsFromBundle(bundleDir: string): Promise<Concept[]> {
   for (const file of files) {
     const relPath = path.relative(bundleDir, file).replace(/\\/g, "/");
     if (isReservedFile(relPath)) continue;
+
+    // Skip the read+parse when the file is byte-for-byte unchanged since we last
+    // saw it (same mtime+size). A missing stat falls through to a fresh read.
+    let sig: string | null = null;
+    try {
+      const st = await fs.stat(file);
+      sig = `${st.mtimeMs}:${st.size}`;
+    } catch {
+      continue;
+    }
+    const cached = parsedConceptCache.get(file);
+    if (cached && cached.sig === sig) {
+      // LRU refresh so a hot file is evicted last.
+      parsedConceptCache.delete(file);
+      parsedConceptCache.set(file, cached);
+      if (cached.concept) concepts.push(cached.concept);
+      continue;
+    }
+
     let parsed;
     try {
       parsed = parseConcept(await fs.readFile(file, "utf-8"));
     } catch {
+      cacheParsedConcept(file, sig, null);
       continue;
     }
-    if (!parsed.hasFrontmatter) continue;
+    if (!parsed.hasFrontmatter) {
+      cacheParsedConcept(file, sig, null);
+      continue;
+    }
     const fm = parsed.frontmatter;
-    concepts.push({
+    const concept: Concept = {
       type: (fm.type as string) || "RepoFact",
       title: (fm.title as string) || path.basename(file, ".md"),
       description: (fm.description as string) || "",
@@ -242,9 +285,22 @@ async function loadConceptsFromBundle(bundleDir: string): Promise<Concept[]> {
       tags: Array.isArray(fm.tags) ? fm.tags.filter((t): t is string => typeof t === "string") : [],
       confidence: typeof fm.confidence === "string" ? fm.confidence : "high",
       relPath,
-    });
+    };
+    cacheParsedConcept(file, sig, concept);
+    concepts.push(concept);
   }
   return concepts;
+}
+
+/** Store a per-file parse result under its stat signature, evicting the oldest
+ *  entry once at capacity (Map preserves insertion order → FIFO/LRU). */
+function cacheParsedConcept(file: string, sig: string, concept: Concept | null): void {
+  parsedConceptCache.delete(file);
+  if (parsedConceptCache.size >= PARSED_CONCEPT_CACHE_CAP) {
+    const oldest = parsedConceptCache.keys().next().value;
+    if (oldest !== undefined) parsedConceptCache.delete(oldest);
+  }
+  parsedConceptCache.set(file, { sig, concept });
 }
 
 /** Tokenize a free-text query into distinct lowercased keywords (len ≥ 3). */
@@ -735,6 +791,7 @@ export async function distillSessionMemory(
         await fs.rename(memoryFilePath(cwd), `${memoryFilePath(cwd)}.bak`).catch(() => {});
       }
       await cleanupStalePendingFiles(bundleDir);
+      invalidateConceptCache();
       return { updated: true };
     } else {
       // JSON extraction failed (text-only models often wrap or drop the JSON).
@@ -754,6 +811,7 @@ export async function distillSessionMemory(
       const tmp = `${file}.tmp-${process.pid}`;
       await fs.writeFile(tmp, doc + "\n", "utf-8");
       await fs.rename(tmp, file);
+      invalidateConceptCache();
       return { updated: true };
     }
   } catch (err: any) {

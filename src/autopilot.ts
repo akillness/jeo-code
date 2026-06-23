@@ -142,6 +142,17 @@ function isImprovement(goal: Goal, score: number, best: number | undefined): boo
   return true; // gate handled via passed, not score
 }
 
+/** Fold one KEPT step's score into the running best, mirroring currentBest's
+ *  reduction so an in-memory best (loop hot path) never diverges from a fresh
+ *  log re-scan. NaN scores never become the best; gate tracks the last value. */
+export function foldBest(goal: Goal, best: number | undefined, score: number): number | undefined {
+  if (Number.isNaN(score)) return best;
+  if (best === undefined) return score;
+  if (goal === "min") return Math.min(best, score);
+  if (goal === "max") return Math.max(best, score);
+  return score;
+}
+
 /**
  * Single source of truth for the ratchet keep/revert decision. Shared by step,
  * loop, and status so they can never diverge.
@@ -246,6 +257,10 @@ function cmdLoop(flags: Record<string, string>): void {
   }
 
   let sinceImprove = 0;
+  // Keep `best` in memory across iterations instead of re-reading and re-parsing
+  // the whole append-only log on every step (currentBest scans LOG each call).
+  // Folded forward on each kept step to match a fresh currentBest() exactly.
+  let best = currentBest(s);
   for (let i = 1; i <= max; i++) {
     // mutate: runner makes exactly one change
     let runnerOk = true;
@@ -260,7 +275,6 @@ function cmdLoop(flags: Record<string, string>): void {
       return;
     }
 
-    const best = currentBest(s);
     const { score, passed, output } = runEval(s);
     const decision = decideStep(s.goal, score, passed, best);
 
@@ -274,6 +288,7 @@ function cmdLoop(flags: Record<string, string>): void {
     appendLog({ type: "step", iteration: i, change: `loop#${i}`, score, passed, decision, prevBest: best ?? null, output });
     // A keep is forward progress (min/max: provably an improvement; gate: a pass).
     // Anything else extends the no-progress streak toward convergence.
+    if (decision === "keep") best = foldBest(s.goal, best, score);
     sinceImprove = decision === "keep" ? 0 : sinceImprove + 1;
     console.log(`jeo autopilot: loop ${i}/${max} ${decision.toUpperCase()} score=${fmt(score)} (sinceImprove=${sinceImprove})`);
 

@@ -450,6 +450,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // model's text as the final answer instead of burning the whole step budget.
   const MAX_PARSE_BOUNCES = GUARD_LIMITS.MAX_PARSE_BOUNCES;
   let parseFailures = 0;
+  // The active toolset is constant for the whole turn, so derive the native tool
+  // schemas ONCE instead of rebuilding/reallocating the list on every step.
+  const turnToolSchemas = nativeToolSchemasFor(Object.keys(tools));
   while (true) {
     if (turnBudgetMs > 0 && Date.now() - turnStartedAt > turnBudgetMs) {
       stopKind = "time";
@@ -536,7 +539,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               // use these and re-serialize the structured call to canonical JSON; the
               // antigravity/ollama fallback ignores them. Only on the main step — never
               // the prose wrap-up call below.
-              tools: nativeToolSchemasFor(Object.keys(tools)),
+              tools: turnToolSchemas,
               model: opts.model,
               maxTokens: opts.maxTokens,
               reasoningEffort: opts.reasoningEffort,

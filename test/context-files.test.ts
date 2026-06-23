@@ -453,3 +453,49 @@ test("invalidateWorkspaceScan() with no argument clears all cached scans", async
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
+test("loadProjectContext reflects edited file CONTENT on the next call without explicit invalidation", async () => {
+  const tmpDir = await createTempDir();
+  try {
+    await fs.writeFile(path.join(tmpDir, "AGENTS.md"), "v1 rules", "utf-8");
+
+    invalidateWorkspaceScan(tmpDir);
+    const first = await loadProjectContext(tmpDir);
+    expect(first).toHaveLength(1);
+    expect(first[0].content).toBe("v1 rules");
+
+    // Overwrite the SAME file with new content + a different size. The per-file
+    // content cache is keyed by mtime+size, so the edit must be picked up even
+    // though the file SET (downward scan) is still cached and we never invalidate.
+    await fs.writeFile(path.join(tmpDir, "AGENTS.md"), "v2 rules are longer now", "utf-8");
+
+    const second = await loadProjectContext(tmpDir);
+    expect(second).toHaveLength(1);
+    expect(second[0].content).toBe("v2 rules are longer now");
+  } finally {
+    invalidateWorkspaceScan(tmpDir);
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadProjectContext drops a deleted context file on the next call (disk stays source of truth)", async () => {
+  const tmpDir = await createTempDir();
+  try {
+    await fs.writeFile(path.join(tmpDir, "AGENTS.md"), "keep me", "utf-8");
+    await fs.writeFile(path.join(tmpDir, "CLAUDE.md"), "delete me", "utf-8");
+
+    invalidateWorkspaceScan(tmpDir);
+    const first = await loadProjectContext(tmpDir);
+    expect(first.map(c => c.path).sort()).toEqual(["AGENTS.md", "CLAUDE.md"]);
+
+    // Remove one cwd-rooted candidate. The parent walk re-stats each candidate every
+    // call (it is not part of the frozen downward scan), so the deleted file drops out
+    // without any invalidation.
+    await fs.rm(path.join(tmpDir, "CLAUDE.md"));
+
+    const second = await loadProjectContext(tmpDir);
+    expect(second.map(c => c.path)).toEqual(["AGENTS.md"]);
+  } finally {
+    invalidateWorkspaceScan(tmpDir);
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});

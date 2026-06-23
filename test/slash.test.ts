@@ -13,10 +13,10 @@ test("matchSlash: prefix matches lead, fuzzy subsequence hits trail (case-insens
   expect(matchSlash("/expt")).toEqual(["/export"]);
 });
 
-test("isSlashAttempt: slash command format", () => {
+test("isSlashAttempt: slash without a space", () => {
   expect(isSlashAttempt("/model")).toBe(true);
   expect(isSlashAttempt("/foo")).toBe(true);
-  expect(isSlashAttempt("/model gpt-4o")).toBe(true); // has an arg but is still a slash attempt
+  expect(isSlashAttempt("/model gpt-4o")).toBe(false); // has an arg → real command, not a typo probe
   expect(isSlashAttempt("hello")).toBe(false);
 });
 test("SLASH_COMMANDS includes the config and role-model commands", () => {

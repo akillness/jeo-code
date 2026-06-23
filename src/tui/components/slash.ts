@@ -85,9 +85,9 @@ export function matchSlash(input: string, commands: string[] = SLASH_COMMANDS): 
   return [...starts, ...fuzzy];
 }
 
-/** True when `input` looks like a slash command (starts with "/" and has no space). */
+/** True when `input` looks like a slash command (starts with "/" and the first word has no other slashes). */
 export function isSlashAttempt(input: string): boolean {
-  return input.startsWith("/") && !input.slice(1).includes(" ");
+  return input.startsWith("/") && !input.split(" ")[0]!.slice(1).includes("/");
 }
 
 /** Near-miss slash commands for a true typo — edit distance ≤ 2 on the command body,

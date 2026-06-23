@@ -12,25 +12,47 @@ export interface TableRenderOptions {
   maxColWidth?: number;
 }
 
-/** A line is a table row when it has at least one unescaped `|` and trims to start/contain cells. */
+/** A line carries an *unescaped* `|` — a real cell separator, not a literal `\|`. */
+function hasUnescapedPipe(line: string): boolean {
+  return /(?:^|[^\\])\|/.test(line);
+}
+
+/** A line is a table row when it has at least one unescaped `|`. */
 function isTableRow(line: string): boolean {
-  const t = line.trim();
-  return t.includes("|") && /\|/.test(t);
+  return hasUnescapedPipe(line.trim());
+}
+
+/** Split a markdown table row into trimmed cell strings, honoring escaped `\|`. */
+function splitCells(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  // Only strip a trailing pipe that actually closes the row (not an escaped `\|`).
+  if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+  const cells: string[] = [];
+  let cur = "";
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]!;
+    if (ch === "\\" && s[i + 1] === "|") {
+      cur += "|";
+      i++;
+      continue;
+    }
+    if (ch === "|") {
+      cells.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  cells.push(cur);
+  return cells.map(c => c.trim());
 }
 
 /** A line is the GFM delimiter row, e.g. `| --- | :--: | ---: |`. */
 function isDelimiterRow(line: string): boolean {
-  const t = line.trim().replace(/^\||\|$/g, "");
-  if (!t.includes("-")) return false;
-  return t.split("|").every(cell => /^\s*:?-{1,}:?\s*$/.test(cell));
-}
-
-/** Split a markdown table row into trimmed cell strings (drop the outer pipes). */
-function splitCells(line: string): string[] {
-  let t = line.trim();
-  if (t.startsWith("|")) t = t.slice(1);
-  if (t.endsWith("|")) t = t.slice(0, -1);
-  return t.split("|").map(c => c.trim());
+  if (!isTableRow(line)) return false;
+  const cells = splitCells(line);
+  return cells.length > 0 && cells.every(cell => /^:?-{1,}:?$/.test(cell));
 }
 
 type Align = "left" | "center" | "right";

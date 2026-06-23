@@ -1,4 +1,5 @@
 import pkg from "../../package.json";
+import changelogText from "../../CHANGELOG.md" with { type: "text" };
 import { compareVersions } from "../commands/update";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -198,9 +199,12 @@ export function renderWhatsNew(sections: ChangelogSection[], opts?: WhatsNewRend
 
 /** Read the CHANGELOG.md that ships next to this package (running version's notes). */
 export async function loadBundledChangelog(): Promise<string | null> {
-  // This module lives at src/util/whats-new.ts; CHANGELOG.md sits at the package
-  // root, i.e. two levels up. Resolve against the module dir so it works from a
-  // global install path just as from the repo.
+  // CHANGELOG.md is embedded at build time via the text import above, so the
+  // running version's notes are available offline AND inside the `--compile`
+  // single binary — where `import.meta.dir` resolves to the bunfs virtual root
+  // and the on-disk path below does not exist.
+  if (changelogText && changelogText.trim().length > 0) return changelogText;
+  // Dev fallback: read from the package root two levels up if the embed is empty.
   const candidate = path.join(import.meta.dir, "..", "..", "CHANGELOG.md");
   try {
     return await readFile(candidate, "utf-8");

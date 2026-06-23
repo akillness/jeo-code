@@ -5,6 +5,7 @@ import {
   tmuxCopyCommand,
   copyTextToClipboard,
   OSC52_MAX_BASE64,
+  osc52MaxBase64,
 } from "../src/tui/clipboard";
 import { tmuxProfileCommands } from "../src/commands/launch/tmux";
 
@@ -78,7 +79,7 @@ test("copyTextToClipboard: emits OSC 52 AND pipes to the local tool", async () =
       };
     },
   });
-  expect(result).toEqual({ osc52: true, local: true });
+  expect(result).toEqual({ osc52: true, local: true, osc52SkippedTooLarge: false });
   expect(writes).toEqual([osc52Sequence("payload", { tmux: false })]);
   expect(piped).toBe("payload");
 });
@@ -105,7 +106,7 @@ test("copyTextToClipboard: a failing local tool still reports the OSC 52 success
       exited: Promise.resolve(1), // non-zero → local copy failed
     }),
   });
-  expect(result).toEqual({ osc52: true, local: false });
+  expect(result).toEqual({ osc52: true, local: false, osc52SkippedTooLarge: false });
 });
 
 test("copyTextToClipboard: no local tool → only OSC 52 fires", async () => {
@@ -115,7 +116,7 @@ test("copyTextToClipboard: no local tool → only OSC 52 fires", async () => {
     insideTmux: false,
     write: () => {},
   });
-  expect(result).toEqual({ osc52: true, local: false });
+  expect(result).toEqual({ osc52: true, local: false, osc52SkippedTooLarge: false });
 });
 
 test("tmuxProfileCommands: adds copy-command piping the selection to the system clipboard", () => {
@@ -137,4 +138,62 @@ test("tmuxProfileCommands: no clipboard tool → no copy-command (best-effort sk
 test("tmuxProfileCommands: JEO_TMUX_PROFILE=0 drops copy-command with the other extras", () => {
   const cmds = tmuxProfileCommands("jeo-x", { JEO_TMUX_PROFILE: "0" }, {}, { platform: "darwin", which: () => "/usr/bin/pbcopy" });
   expect(cmds.some(c => c.args.includes("copy-command"))).toBe(false);
+});
+
+// ── OSC 52 size-cap configurability + reporting (deferred paste-fix #4) ────────────
+test("osc52MaxBase64: JEO_OSC52_MAX overrides, <=0 disables, junk keeps the default", () => {
+  expect(osc52MaxBase64({})).toBe(OSC52_MAX_BASE64);
+  expect(osc52MaxBase64({ JEO_OSC52_MAX: "" })).toBe(OSC52_MAX_BASE64);
+  expect(osc52MaxBase64({ JEO_OSC52_MAX: "250000" })).toBe(250_000);
+  expect(osc52MaxBase64({ JEO_OSC52_MAX: "0" })).toBe(Number.POSITIVE_INFINITY);
+  expect(osc52MaxBase64({ JEO_OSC52_MAX: "-1" })).toBe(Number.POSITIVE_INFINITY);
+  expect(osc52MaxBase64({ JEO_OSC52_MAX: "not-a-number" })).toBe(OSC52_MAX_BASE64);
+});
+
+test("osc52Sequence: a raised maxBase64 lets an otherwise-oversized payload through", () => {
+  const big = "a".repeat(OSC52_MAX_BASE64); // base64 ≈ 133k, over the default cap
+  expect(osc52Sequence(big)).toBe(""); // default cap → skipped
+  expect(osc52Sequence(big, { maxBase64: Number.POSITIVE_INFINITY })).not.toBe(""); // cap lifted
+});
+
+test("copyTextToClipboard: oversized payload skips OSC 52 but flags it and still copies locally", async () => {
+  const writes: string[] = [];
+  let piped = "";
+  const big = "a".repeat(OSC52_MAX_BASE64);
+  const result = await copyTextToClipboard(big, {
+    platform: "darwin",
+    which: () => "/usr/bin/pbcopy",
+    insideTmux: false,
+    env: {}, // default cap
+    write: s => writes.push(s),
+    spawn: () => ({ stdin: { write: (s: string) => { piped += s; }, end: () => {} }, exited: Promise.resolve(0) }),
+  });
+  expect(result).toEqual({ osc52: false, local: true, osc52SkippedTooLarge: true });
+  expect(writes).toEqual([]); // nothing pushed to the terminal
+  expect(piped).toBe(big); // local tool still got the full text
+});
+
+test("copyTextToClipboard: JEO_OSC52_MAX=0 lifts the cap so OSC 52 fires for a huge payload", async () => {
+  const writes: string[] = [];
+  const big = "a".repeat(OSC52_MAX_BASE64);
+  const result = await copyTextToClipboard(big, {
+    platform: "linux",
+    which: () => null, // no local tool
+    insideTmux: false,
+    env: { JEO_OSC52_MAX: "0" },
+    write: s => writes.push(s),
+  });
+  expect(result).toEqual({ osc52: true, local: false, osc52SkippedTooLarge: false });
+  expect(writes).toEqual([osc52Sequence(big, { tmux: false, maxBase64: Number.POSITIVE_INFINITY })]);
+});
+
+test("copyTextToClipboard: oversized AND no local tool → both paths empty, size flag set", async () => {
+  const result = await copyTextToClipboard("a".repeat(OSC52_MAX_BASE64), {
+    platform: "linux",
+    which: () => null,
+    insideTmux: false,
+    env: {},
+    write: () => {},
+  });
+  expect(result).toEqual({ osc52: false, local: false, osc52SkippedTooLarge: true });
 });

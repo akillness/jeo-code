@@ -82,3 +82,33 @@ export function createThinkSplitter(onReasoning?: (delta: string) => void): Thin
 
   return { push, flush };
 }
+
+/**
+ * Strip leaked reasoning / tool-call markup from a model's FINAL visible text
+ * (a salvaged prose answer or a `done` reason). Some API-entered models emit
+ * XML/Harmony-style scaffolding — `<think>…</think>`, `<parameter>…</parameter>`,
+ * `<tool_call>`, `<|channel|>` markers — inside their plain-text reply. The
+ * streaming {@link createThinkSplitter} only removes *matched* think pairs seen
+ * mid-stream; an unmatched `</think>` (a model that begins already "inside" its
+ * reasoning) or stray parameter tags leak through into the answer. This is a
+ * whole-text cleanup, safe to run once on the final string: text with no such
+ * markup is returned trimmed-but-otherwise-unchanged.
+ */
+export function stripLeakedReasoningTags(text: string): string {
+  let s = text;
+  // 1) Drop balanced <think>…</think> blocks.
+  s = s.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "");
+  // 2) An unmatched closing </think> implies an implicit reasoning prefix the
+  //    splitter never saw an opener for: drop everything up to and including the
+  //    LAST such close tag, keeping only the answer that follows it.
+  const lastClose = s.toLowerCase().lastIndexOf("</think>");
+  if (lastClose !== -1) s = s.slice(lastClose + "</think>".length);
+  // 3) Remove stray tool-call / parameter scaffolding tags (keep their inner text).
+  s = s.replace(
+    /<\/?(?:think|tool_call|tool_response|tool_result|parameter|invoke|function|function_call|antml:[a-z_]+)\b[^>]*>/gi,
+    "",
+  );
+  // 4) Remove Harmony channel markers like <|channel|>, <|message|>, <|end|>.
+  s = s.replace(/<\|[^|>]*\|>/g, "");
+  return s.trim();
+}

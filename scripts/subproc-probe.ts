@@ -114,6 +114,41 @@ async function fixed(): Promise<void> {
 }
 
 
+/** ORPHAN: the `next-server` accumulation case. Drive the ACTUAL bashTool to
+ *  background an fd-redirected daemon (`sleep … >/dev/null 2>&1 </dev/null &`) — the
+ *  shape of `next dev > log &`. The grandchild reparents to init, so it is NOT a
+ *  direct child of THIS process; the only honest metric is "did the daemon survive
+ *  the turn". With the process-group reaper ON (default) every iteration's daemon
+ *  must be reaped; an opt-out run (KEEP_BACKGROUND=1) must preserve them — the
+ *  before/after contract that proves the fix is what closes the leak. */
+async function orphanSurvivors(label: string, keepBackground: boolean): Promise<number> {
+  const { bashTool } = await import("../src/agent/tools");
+  const prev = process.env.JEO_KEEP_BACKGROUND;
+  if (keepBackground) process.env.JEO_KEEP_BACKGROUND = "1";
+  else delete process.env.JEO_KEEP_BACKGROUND;
+  const pids: number[] = [];
+  try {
+    for (let i = 0; i < ITERS; i++) {
+      const pidfile = `/tmp/jeo-orphan-probe-${process.pid}-${i}`;
+      await bashTool(`sleep 60 >/dev/null 2>&1 </dev/null & echo $! > ${pidfile}`, process.cwd(), 10_000).catch(() => {});
+      try { pids.push(Number((await Bun.file(pidfile).text()).trim())); } catch {}
+      try { await (await import("node:fs/promises")).unlink(pidfile); } catch {}
+    }
+    await Bun.sleep(200);
+    const alive = pids.filter((pid) => { try { process.kill(pid, 0); return true; } catch { return false; } });
+    console.log(`\n[${label}]`);
+    console.log(`  backgrounded daemons: ${pids.length}   still alive after their turns: ${alive.length}`);
+    console.log(`  ${alive.length === 0 ? "✓ every orphan reaped (no next-server accumulation)" : `${keepBackground ? "✓ daemons preserved (opt-out honored)" : "✗ ORPHANS LEAKED — next-server would accumulate"}`}`);
+    // Always clean up the survivors so the probe leaves no strays.
+    for (const pid of alive) { try { process.kill(pid, 9); } catch {} }
+    return alive.length;
+  } finally {
+    if (prev === undefined) delete process.env.JEO_KEEP_BACKGROUND;
+    else process.env.JEO_KEEP_BACKGROUND = prev;
+  }
+}
+
+
 async function measure(label: string, run: () => Promise<void>): Promise<{ fdSlope: number; childMax: number; leak: boolean }> {
   // Reap any strays a previous mode (notably the ABANDON control) intentionally
   // leaked, then wait for the OS to drain them, so THIS mode measures a clean
@@ -165,6 +200,12 @@ const results = {
 // Clean up any children we abandoned so the probe doesn't leave strays.
 try { Bun.spawnSync(["pkill", "-P", String(process.pid)]); } catch {}
 
+// The `next-server` accumulation guard: default reaping must leave ZERO orphaned
+// daemons; the opt-out (KEEP_BACKGROUND=1) must preserve them (proving the reaper,
+// not chance, is what closes the leak).
+const orphanLeaked = await orphanSurvivors("ORPHAN  (bashTool reap ON — must reap every daemon)", false);
+const optOutPreserved = await orphanSurvivors("ORPHAN  (KEEP_BACKGROUND=1 — must preserve daemons)", true);
+
 // Pass criteria: the guarded paths (normal/timeout/fixed) must NOT leak, AND the
 // unguarded control (abandon) MUST leak — otherwise the probe has lost its teeth.
 const guardedLeak = results.normal.leak || results.timeout.leak || results.fixed.leak;
@@ -177,4 +218,12 @@ if (!controlHeldTeeth) {
   console.log("\nRESULT: ✗ control (ABANDON) did not leak — probe lost its teeth, cannot trust the FIXED pass.");
   process.exit(2);
 }
-console.log("\nRESULT: ✓ guarded lifecycles (normal/timeout/fixed) release everything; control leaks as expected.");
+if (orphanLeaked > 0) {
+  console.log(`\nRESULT: ✗ ${orphanLeaked} backgrounded daemon(s) survived their turn — next-server would accumulate.`);
+  process.exit(3);
+}
+if (optOutPreserved === 0) {
+  console.log("\nRESULT: ✗ KEEP_BACKGROUND=1 reaped daemons — opt-out broken, probe cannot trust the reap pass.");
+  process.exit(4);
+}
+console.log("\nRESULT: ✓ guarded lifecycles release everything, control leaks as expected, and the reaper claims every backgrounded orphan (opt-out preserves them).");

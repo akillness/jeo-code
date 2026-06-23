@@ -25,6 +25,7 @@ The core runtime loop, tool registry, session management, and state persistence 
 | `output-minimizer.ts` | Brief description of purpose |
 | `output-util.ts` | Brief description of purpose |
 | `plan.ts` | Subagent planning structures and validation |
+| `process-reaper.ts` | Background-process reaper: spawns bash in its own process group (POSIX detached) so backgrounded grandchildren (`next dev &`, daemons) are reaped by group at turn end instead of orphaning and accumulating (`JEO_KEEP_BACKGROUND=1` opts out, `JEO_REAP_INTERVAL_MS` tunes the periodic safety-net sweep) |
 | `seed.ts` | Brief description of purpose |
 | `session.ts` | Session context building, compaction, and history management |
 | `state.ts` | File-backed state and session persistence (`.jeo/state/`) |

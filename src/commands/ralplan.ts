@@ -148,9 +148,21 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
   const ARCHITECT = `You are the ARCHITECT. Review the Planner's draft for technical feasibility, correct file targets, directory structure, and any missing setup/wiring/test steps. Return an improved plan (same shape).\n` + SCHEMA_SPEC;
   const CRITIC = `You are the CRITIC. Finalize the plan: remove vague or redundant steps, make each step actionable and independently verifiable, and ensure the acceptance criteria are covered. Return the final plan (same shape).\n` + SCHEMA_SPEC;
 
+  // Drafting passes honor the SAME per-role model config the rest of jeo uses
+  // (resolveSubagentModel → config.subagents[role].model, else defaultModel).
+  // Previously every pass ran on the default/primary model, ignoring a user's
+  // configured planner/architect tiers; routing each pass to its role's model
+  // lets a cheaper/faster draft tier cut planning latency with NO default change
+  // (unset roles still resolve to defaultModel). The repo-grounded consensus gate
+  // (runConsensusCriticGate) resolves critic's model independently and is untouched.
+  const config = await readGlobalConfig();
+  const PLANNER_MODEL = resolveSubagentModel("planner", config);
+  const ARCHITECT_MODEL = resolveSubagentModel("architect", config);
+  const CRITIC_MODEL = resolveSubagentModel("critic", config);
+
   try {
-    const callRole = async (systemPrompt: string, userContent: string): Promise<string> => {
-      const raw = await callLlm([{ role: "user" as const, content: userContent }], { systemPrompt });
+    const callRole = async (systemPrompt: string, userContent: string, model?: string): Promise<string> => {
+      const raw = await callLlm([{ role: "user" as const, content: userContent }], { systemPrompt, model });
       return raw.replace(/```yaml|```/g, "").trim();
     };
     const isValidPlan = (yaml: string): boolean => {
@@ -175,7 +187,7 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     if (opts.onProgress) {
       opts.onProgress({ skill: "ralplan", phase: "planning", detail: "Planner drafting" });
     }
-    const draft = await callRole(PLANNER, `Crystallized spec (seed.yaml):\n\n${seedContent}`);
+    const draft = await callRole(PLANNER, `Crystallized spec (seed.yaml):\n\n${seedContent}`, PLANNER_MODEL);
 
     if (opts.signal?.aborted) {
       return { ok: false, reason: "aborted" };
@@ -185,7 +197,7 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     if (opts.onProgress) {
       opts.onProgress({ skill: "ralplan", phase: "planning", detail: "Architect reviewing" });
     }
-    const reviewed = await callRole(ARCHITECT, `Crystallized spec (seed.yaml):\n\n${seedContent}\n\nPlanner's draft plan:\n\n${draft}\n\nReturn the improved plan.`);
+    const reviewed = await callRole(ARCHITECT, `Crystallized spec (seed.yaml):\n\n${seedContent}\n\nPlanner's draft plan:\n\n${draft}\n\nReturn the improved plan.`, ARCHITECT_MODEL);
 
     if (opts.signal?.aborted) {
       return { ok: false, reason: "aborted" };
@@ -195,7 +207,7 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     if (opts.onProgress) {
       opts.onProgress({ skill: "ralplan", phase: "planning", detail: "Critic finalizing" });
     }
-    let cleanPlan = await callRole(CRITIC, `Crystallized spec (seed.yaml):\n\n${seedContent}\n\nArchitect's plan:\n\n${reviewed}\n\nReturn the final, critiqued plan.`);
+    let cleanPlan = await callRole(CRITIC, `Crystallized spec (seed.yaml):\n\n${seedContent}\n\nArchitect's plan:\n\n${reviewed}\n\nReturn the final, critiqued plan.`, CRITIC_MODEL);
 
     if (opts.signal?.aborted) {
       return { ok: false, reason: "aborted" };
@@ -209,7 +221,7 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     let planValid = true;
     if (!isValidPlan(cleanPlan)) {
       log("[ralplan] Final plan did not match the required shape; requesting a corrected plan…");
-      cleanPlan = await callRole(CRITIC, `Your previous output was not valid for the required schema. Fix it (roles MUST be one of executor|planner|architect|critic).\n\n${SCHEMA_SPEC}\n\nPlan to fix:\n\n${cleanPlan}`);
+      cleanPlan = await callRole(CRITIC, `Your previous output was not valid for the required schema. Fix it (roles MUST be one of executor|planner|architect|critic).\n\n${SCHEMA_SPEC}\n\nPlan to fix:\n\n${cleanPlan}`, CRITIC_MODEL);
       if (!isValidPlan(cleanPlan)) {
         const fallback = [reviewed, draft].find(isValidPlan);
         if (fallback) {
@@ -253,6 +265,7 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
         CRITIC,
         `The consensus critic returned [ITERATE] on the plan with this justification:\n\n${gate.detail}\n\n` +
         `Revise the plan to address every point.\n\n${SCHEMA_SPEC}\n\nCurrent plan:\n\n${cleanPlan}`,
+        CRITIC_MODEL,
       );
       if (isValidPlan(revised)) {
         cleanPlan = revised;

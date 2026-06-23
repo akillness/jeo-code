@@ -27,6 +27,20 @@
  *  this we skip OSC 52 and rely on the local clipboard tool instead. */
 export const OSC52_MAX_BASE64 = 100_000;
 
+/** Resolve the effective OSC 52 base64-payload cap. `JEO_OSC52_MAX` overrides the
+ *  conservative {@link OSC52_MAX_BASE64} default for terminals/tmux configured to
+ *  accept larger clipboard writes (e.g. tmux `set -g set-clipboard on` with a raised
+ *  `buffer-limit`, or a terminal without xterm's ~100KB selection limit). A value
+ *  `<= 0` disables the cap entirely (Infinity); an unparseable value keeps the
+ *  default. Pure (env injected) so it is testable without touching the host. */
+export function osc52MaxBase64(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.JEO_OSC52_MAX;
+  if (raw === undefined || raw.trim() === "") return OSC52_MAX_BASE64;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return OSC52_MAX_BASE64;
+  return n <= 0 ? Number.POSITIVE_INFINITY : n;
+}
+
 /**
  * Resolve the local system-clipboard WRITE command for a platform, or null when
  * no tool is available. Pure (the `which` probe is injected) so it is testable
@@ -69,18 +83,20 @@ export interface Osc52Options {
   tmux?: boolean;
   /** Clipboard selection: `c` = system clipboard (default), `p` = primary. */
   clipboard?: "c" | "p";
+  /** Max base64 payload to emit (default {@link OSC52_MAX_BASE64}); larger returns "". */
+  maxBase64?: number;
 }
 
 /**
  * Build the OSC 52 clipboard-SET escape for `text`, or "" when the base64 payload
- * exceeds {@link OSC52_MAX_BASE64} (caller falls back to a local tool). When
- * `tmux` is set the whole sequence is wrapped in DCS passthrough (`ESC P tmux ; …
- * ESC \`) with every inner ESC doubled, the tmux contract for forwarding an
- * escape to the terminal underneath it.
+ * exceeds the cap (default {@link OSC52_MAX_BASE64}, overridable via `maxBase64`; the
+ * caller falls back to a local tool). When `tmux` is set the whole sequence is wrapped
+ * in DCS passthrough (`ESC P tmux ; … ESC \`) with every inner ESC doubled, the tmux
+ * contract for forwarding an escape to the terminal underneath it.
  */
 export function osc52Sequence(text: string, opts: Osc52Options = {}): string {
   const b64 = Buffer.from(text, "utf8").toString("base64");
-  if (b64.length > OSC52_MAX_BASE64) return "";
+  if (b64.length > (opts.maxBase64 ?? OSC52_MAX_BASE64)) return "";
   const target = opts.clipboard ?? "c";
   const inner = `\x1b]52;${target};${b64}\x07`;
   if (!opts.tmux) return inner;
@@ -100,6 +116,8 @@ export interface CopyToClipboardDeps {
   platform?: NodeJS.Platform;
   /** True when running inside tmux (defaults to !!process.env.TMUX). */
   insideTmux?: boolean;
+  /** Environment for resolving the OSC 52 cap (`JEO_OSC52_MAX`); defaults to process.env. */
+  env?: Record<string, string | undefined>;
 }
 
 export interface CopyResult {
@@ -107,6 +125,10 @@ export interface CopyResult {
   osc52: boolean;
   /** A local clipboard subprocess accepted the text. */
   local: boolean;
+  /** OSC 52 was SKIPPED because the base64 payload exceeded the cap — the remote
+   *  (SSH/tmux) clipboard was NOT updated; only a local tool, if any, ran. Lets the
+   *  caller warn the user instead of silently dropping the remote path. */
+  osc52SkippedTooLarge: boolean;
 }
 
 /**
@@ -121,13 +143,17 @@ export async function copyTextToClipboard(text: string, deps: CopyToClipboardDep
   const insideTmux = deps.insideTmux ?? !!process.env.TMUX;
   const write = deps.write ?? ((s: string) => { try { process.stdout.write(s); } catch { /* terminal gone */ } });
   const spawn = deps.spawn ?? ((cmd, opts) => Bun.spawn(cmd, opts) as ReturnType<NonNullable<CopyToClipboardDeps["spawn"]>>);
+  const maxBase64 = osc52MaxBase64(deps.env ?? process.env);
 
-  const result: CopyResult = { osc52: false, local: false };
+  const result: CopyResult = { osc52: false, local: false, osc52SkippedTooLarge: false };
 
-  const seq = osc52Sequence(text, { tmux: insideTmux });
+  const seq = osc52Sequence(text, { tmux: insideTmux, maxBase64 });
   if (seq) {
     write(seq);
     result.osc52 = true;
+  } else {
+    // osc52Sequence only returns "" when the payload is over the cap.
+    result.osc52SkippedTooLarge = true;
   }
 
   const cmd = systemClipboardCopyCommand(platform, which);

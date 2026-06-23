@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.7] - 2026-06-23
+_Long-running-process hygiene & input robustness: backgrounded grandchildren (`next dev &`, daemons) are now reaped at the turn boundary via per-command process groups — closing the climbing `next-server` RSS leak — while the prompt gains recursive fuzzy `@path` search, ANSI-safe and idle-merged bracketed paste, a configurable OSC 52 clipboard cap, per-role ralplan model routing, and leaked-reasoning-tag stripping on salvaged answers._
+
+### Added
+- **Process-group reaper for backgrounded subprocesses (`src/agent/process-reaper.ts`).** `bashTool` now spawns each command as its own process-group leader (`Bun.spawn` `detached:true` on POSIX), so a backgrounded grandchild — `npm run dev &`, `next dev &`, a daemon, `nohup …` — joins that group and the whole subtree is reaped with a single `process.kill(-pgid)` at the turn boundary, **without ever touching jeo's own group**. This closes the leak where a reparented `next-server` survived every turn and the resident set climbed monotonically across a session. Reaping is precise (only groups jeo spawned, never a name-based `pkill`), O(1) (one group signal, no process-table scan), and deterministic (closed at the exact turn that creates it). A `unref`'d periodic sweep is a belt-and-suspenders net for turns that abort before cleanup; opt out with `JEO_KEEP_BACKGROUND=1`, tune the sweep with `JEO_REAP_INTERVAL_MS`.
+- **Recursive fuzzy `@path` mention search (`src/commands/launch/mentions.ts`).** A bare `@frag` now walks the project tree (bounded by depth/scan/result caps, skipping `node_modules`/`.git`/build/VCS dirs) and ranks hits basename-prefix → substring → subsequence, then shallowest/shortest/alphabetical; a `@dir/` prefix lists that single directory. Autocomplete returns the matcher's pool as-is instead of re-filtering by strict prefix.
+
+### Changed
+- **ralplan draft passes route to their per-role configured model.** `runRalplanEngine` now resolves `planner`/`architect`/`critic` subagent models from config and threads each through `callRole`, so the Planner/Architect/Critic drafting + revision calls use their own model; the consensus critic gate continues to resolve its model independently.
+- **OSC 52 clipboard copy exposes a configurable size cap and honest skip signal.** `copyTextToClipboard` reads `JEO_OSC52_MAX` for the base64 payload cap and returns `osc52SkippedTooLarge` when the remote (SSH/tmux) clipboard was skipped for an oversized payload, so the caller can warn instead of silently dropping the remote path; tmux DCS passthrough wrapping is documented.
+
+### Fixed
+- **Salvaged answers and `done` reasons strip leaked reasoning/tool-call markup.** `stripLeakedReasoningTags` (`src/ai/think-tags.ts`) removes `<think>…</think>` blocks, an unmatched `</think>` reasoning prefix, stray `<tool_call>`/`<parameter>`/`antml:*` scaffolding, and Harmony `<|channel|>` markers from a model's final visible text, so API-entered models that emit inline scaffolding no longer surface raw tags in the salvaged prose answer or the `done` reason.
+- **Bracketed paste is ANSI-safe and idle-merged.** Pasted ANSI-colored terminal output is stripped of escape sequences and stray C0 control bytes across every paste path (`stripPasteEscapes`/`pasteEscapeLength`) so it no longer corrupts the input box; a partial paste marker split across stdin chunks is carried (`pasteMarkerTailLength`/`endsInPaste`); and the dropped-end-marker fallback is now **idle-based** (`pasteIdleDecision`, 250ms since the last buffered line) so a large paste streaming in over >250ms is never cut mid-paste.
+
+### Verified
+- `bun run typecheck` clean; touched suites pass — `test/process-reaper.test.ts`, `test/ralplan-draft-model.test.ts`, `test/prompt-key-filter.test.ts`, `test/launch-mentions.test.ts`, `test/clipboard.test.ts`, `test/think-tags.test.ts`, `test/engine-salvage.test.ts` (90 pass / 0 fail) covering group-kill target selection, alive/grace-window reaping, recursive fuzzy mention ranking, escaped-pipe-free paste sanitizing + partial-marker carry + idle merge, the OSC 52 cap/skip signal, per-role ralplan routing, and leaked-tag stripping on salvaged output.
+
 ## [0.7.6] - 2026-06-23
 _Release & docs plumbing: the running version's release notes now travel inside the `--compile` single binary (so `/whats-new` works offline and from a global install), the in-TUI markdown table renderer stops splitting on escaped `\|` pipes, and the release pipeline gains a cross-compiled standalone-binary matrix — macOS/Linux **plus a first-class Windows x64 `.exe`** — built on one Linux runner and auto-attached to each GitHub release._
 

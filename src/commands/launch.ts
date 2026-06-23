@@ -149,6 +149,8 @@ import {
   classifyMidTurnLine,
   decideCtrlC,
   filterPromptInputChunk,
+  pasteIdleDecision,
+  PASTE_MERGE_IDLE_MS,
 } from "./launch/input";
 import {
   gatedStdout,
@@ -1556,12 +1558,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // PASTE-MERGE: a multi-line bracketed paste must arrive as ONE message, not split into
   // one command per line. Lines that fire WHILE a paste is open are buffered here instead
   // of run individually; promptInput joins them with the trailing residual on resolve.
-  // `endWaiters` wake that merge the moment the 201~ paste-end marker arrives.
-  const pasteMerge: { buf: string[]; endWaiters: Array<() => void> } = { buf: [], endWaiters: [] };
+  // `endWaiters` wake that merge the moment the 201~ paste-end marker arrives. `lastActivityAt`
+  // tracks the last buffered line so the dropped-marker fallback is IDLE-based (never cuts a
+  // large paste still streaming in — see pasteIdleDecision).
+  const pasteMerge: { buf: string[]; endWaiters: Array<() => void>; lastActivityAt: number } = { buf: [], endWaiters: [], lastActivityAt: 0 };
   let pasteLineFired = false; // the line that resolved rl.question came from inside a paste
   if (process.stdin.isTTY) {
     const pasteKeypressHandler = (_ch: string, key: { name?: string } | undefined) => {
-      if (key?.name === "paste-start") { promptPasteActive = true; pasteMerge.buf = []; }
+      if (key?.name === "paste-start") { promptPasteActive = true; pasteMerge.buf = []; pasteMerge.lastActivityAt = Date.now(); }
       else if (key?.name === "paste-end") {
         promptPasteActive = false;
         for (const w of pasteMerge.endWaiters.splice(0)) w();
@@ -1578,6 +1582,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (promptPasteActive) {
       // Inside a bracketed paste: buffer the line, never run it on its own.
       pasteMerge.buf.push(l);
+      pasteMerge.lastActivityAt = Date.now();
       pasteLineFired = true;
       return;
     }
@@ -1642,10 +1647,24 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (promptPasteActive) {
           await new Promise<void>(resolve => {
             if (!promptPasteActive) { resolve(); return; }
-            pasteMerge.endWaiters.push(resolve);
-            setTimeout(resolve, 250); // safety: never hang if the 201~ marker is dropped
+            let done = false;
+            const finish = () => { if (done) return; done = true; resolve(); };
+            // Woken immediately by the 201~ paste-end marker (endWaiters).
+            pasteMerge.endWaiters.push(finish);
+            // Fallback for a DROPPED end-marker: idle-based, so a large paste still
+            // streaming in keeps resetting the clock and is never truncated. Only a
+            // genuinely quiet stream (no new line for PASTE_MERGE_IDLE_MS) flushes.
+            const tick = () => {
+              if (done) return;
+              if (!promptPasteActive) { finish(); return; }
+              const { fire, waitMs } = pasteIdleDecision(Date.now() - pasteMerge.lastActivityAt);
+              if (fire) { finish(); return; }
+              setTimeout(tick, waitMs);
+            };
+            setTimeout(tick, PASTE_MERGE_IDLE_MS);
           });
         }
+
         const residual = (rl as unknown as { line?: string }).line ?? "";
         // Clear the residual so it does NOT prefill (and re-submit) the next prompt.
         try { rl.write(null, { ctrl: true, name: "u" }); } catch { /* best-effort */ }
@@ -3327,10 +3346,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (copied.osc52 || copied.local) {
             const via = [copied.local ? "system tool" : "", copied.osc52 ? "OSC52" : ""].filter(Boolean).join(" + ");
             console.log(`(transcript copied to clipboard via ${via} — ${text.length} chars)`);
+            // OSC52 is the only path that reaches the OUTER terminal over SSH/tmux. If it was
+            // skipped for size, a remote paste won't find the text — say so (and how to lift it).
+            if (copied.osc52SkippedTooLarge) {
+              console.log("(note: too large for the OSC52 remote-clipboard path — copied via the local tool only; over SSH/tmux this won't reach your machine. Set JEO_OSC52_MAX higher if your terminal accepts larger writes.)");
+            }
           } else {
             console.log(text);
-            console.log("(no clipboard path available — transcript printed above)");
+            console.log(copied.osc52SkippedTooLarge
+              ? "(transcript too large for OSC52 and no local clipboard tool — printed above)"
+              : "(no clipboard path available — transcript printed above)");
           }
+
         } catch (err) {
           console.log(`! dump failed: ${(err as Error).message}`);
         }

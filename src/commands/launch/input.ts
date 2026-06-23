@@ -231,6 +231,51 @@ export function rewriteCursorCombos(plain: string): string {
   return out;
 }
 
+/** Byte length of a terminal ESCAPE SEQUENCE beginning at `s[i]`, else 0 — used to STRIP
+ *  escapes embedded in PASTED text (copied colored terminal output carries `\x1b[31m`-style
+ *  SGR codes; left intact they reach readline as literal escapes that corrupt the input box,
+ *  or as leftover `[31m` garbage text). Covers CSI (`ESC [ … final-byte`), OSC/DCS/PM/APC/SOS
+ *  (`ESC ] | P | ^ | _ | X … ST|BEL`), and the two-byte `ESC <char>` form. A sequence split
+ *  across the end of the segment consumes the remaining tail. */
+export function pasteEscapeLength(s: string, i: number): number {
+  if (s[i] !== "\u001b") return 0;
+  const c = s[i + 1];
+  if (c === undefined) return 1; // lone trailing ESC
+  if (c === "[") { // CSI: params/intermediates until a final byte 0x40–0x7e
+    let j = i + 2;
+    while (j < s.length && !(s[j]! >= "\u0040" && s[j]! <= "\u007e")) j++;
+    return (j < s.length ? j + 1 : s.length) - i;
+  }
+  if (c === "]" || c === "P" || c === "^" || c === "_" || c === "X") { // OSC/DCS/PM/APC/SOS → ST or BEL
+    let j = i + 2;
+    while (j < s.length) {
+      if (s[j] === "\u0007") return j + 1 - i;                         // BEL
+      if (s[j] === "\u001b" && s[j + 1] === "\\") return j + 2 - i;    // ST
+      j++;
+    }
+    return s.length - i;
+  }
+  return 2; // two-byte ESC <char>
+}
+
+/** Remove every terminal escape sequence AND stray C0 control byte (except `\t`/`\n`/`\r`,
+ *  which carry layout meaning the caller handles) from a chunk of PASTED text, so copied
+ *  ANSI-colored output drops to its plain characters instead of corrupting the prompt.
+ *  Shared by every paste path (the idle key-filter, the live-turn drain, mid-turn capture)
+ *  so they sanitize identically. */
+export function stripPasteEscapes(s: string): string {
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    const esc = pasteEscapeLength(s, i);
+    if (esc > 0) { i += esc; continue; }
+    const ch = s[i]!;
+    if (ch === "\n" || ch === "\r" || ch === "\t" || ch >= " ") out += ch;
+    i += 1;
+  }
+  return out;
+}
+
 export interface PromptInputQueue {
   pendingLines: string[];
   partial: string;
@@ -267,12 +312,13 @@ function feedTypedSegment(state: PromptInputQueue, segment: string): boolean {
 }
 
 /** Pasted body: pure DATA — newlines split commands into pastedLines, the trailing
- *  partial stays editable, and control bytes (incl. any stray ESC from copied ANSI
- *  text) are dropped instead of being interpreted as keystrokes. */
+ *  partial stays editable, and any ANSI escape sequence from copied terminal output is
+ *  STRIPPED (via `stripPasteEscapes`) instead of being interpreted/leaked as keystrokes.
+ *  Shares the sanitizer with the idle key-filter so every paste path behaves identically. */
 function feedPasteBody(state: PromptInputQueue, body: string): boolean {
   if (!body) return false;
   let accepted = false;
-  const normalized = body.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const normalized = stripPasteEscapes(body).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   for (const ch of Array.from(normalized)) {
     if (ch === "\n") {
       state.pastedLines.push(state.partial);
@@ -335,7 +381,7 @@ function feedLivePromptSegment(state: PromptInputQueue, segment: string): boolea
 
 function feedLivePromptPasteBody(state: PromptInputQueue, body: string): boolean {
   if (!body) return false;
-  const normalized = body.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const normalized = stripPasteEscapes(body).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const flattened = normalized.split("\n").map(part => part.trim()).filter(Boolean).join(" ");
   if (!flattened) return false;
   state.partial = state.partial ? `${state.partial} ${flattened}` : flattened;
@@ -532,9 +578,46 @@ export interface PromptKeyFilterEnv {
 }
 
 /** Carried across chunks: a bracketed paste can span several stdin chunks, so the
- *  in-paste flag must survive between filter calls. */
+ *  in-paste flag must survive between filter calls. `carry` holds a trailing byte run
+ *  that MIGHT be the start of a split escape sequence — a bracketed-paste marker
+ *  (`\x1b[200~`/`\x1b[201~`) or a `\r` that could be the front of a `\r\n` — sliced off
+ *  the end of one chunk and re-prepended to the next so a marker straddling a stdin read
+ *  boundary is never half-interpreted (the "긴 텍스트 붙여넣으면 `00~`/`[201~` 쓰레기가
+ *  새거나 중간에 제출됨" corruption). Concatenation is always re-parsed, so carrying is
+ *  safe even when the tail turns out NOT to be a marker. */
 export interface PromptKeyFilterState {
   inPaste: boolean;
+  carry?: string;
+}
+
+/** Length of the longest trailing run of `data` that is a PROPER prefix of a
+ *  bracketed-paste marker (so it could be a marker split across a stdin chunk boundary).
+ *  Returns 0 when the tail cannot begin a marker. Both markers share the `\x1b[20` stem,
+ *  so e.g. a trailing `\x1b`, `\x1b[`, `\x1b[2`, `\x1b[20`, `\x1b[200`, or `\x1b[201` is
+ *  held back for the next chunk; a full marker (handled in the main loop) is not. */
+export function pasteMarkerTailLength(data: string): number {
+  const markers = [PASTE_START, PASTE_END] as const;
+  const max = Math.min(Math.max(PASTE_START.length, PASTE_END.length) - 1, data.length);
+  for (let k = max; k >= 1; k--) {
+    const tail = data.slice(data.length - k);
+    for (const m of markers) if (m.length > k && m.startsWith(tail)) return k;
+  }
+  return 0;
+}
+
+/** Whether `data` (already free of any trailing partial marker) leaves the filter INSIDE
+ *  a bracketed paste, given the entry state — by replaying only the paste toggles. Used to
+ *  decide if a trailing lone `\r` is a CRLF/CR split inside paste body (carry it) versus a
+ *  real Enter at the prompt (must NOT be carried). */
+export function endsInPaste(data: string, startInPaste: boolean): boolean {
+  let inPaste = startInPaste;
+  let i = 0;
+  while (i < data.length) {
+    if (!inPaste && data.startsWith(PASTE_START, i)) { inPaste = true; i += PASTE_START.length; continue; }
+    if (inPaste && data.startsWith(PASTE_END, i)) { inPaste = false; i += PASTE_END.length; continue; }
+    i += 1;
+  }
+  return inPaste;
 }
 
 export interface PromptKeyFilterResult {
@@ -561,6 +644,24 @@ export function filterPromptInputChunk(
   env: PromptKeyFilterEnv,
   state: PromptKeyFilterState,
 ): PromptKeyFilterResult {
+  // Re-attach any byte run carried from the previous chunk (a split paste marker or a
+  // dangling `\r`), then hold back a fresh trailing partial so a bracketed-paste marker —
+  // or a `\r\n` straddling this read boundary — is never half-interpreted. Carrying is
+  // safe: the concatenation is re-parsed next call, so a tail that turns out NOT to be a
+  // marker is simply emitted one chunk later.
+  data = (state.carry ?? "") + data;
+  state.carry = "";
+  const markerTail = pasteMarkerTailLength(data);
+  if (markerTail > 0) {
+    state.carry = data.slice(data.length - markerTail);
+    data = data.slice(0, data.length - markerTail);
+  } else if (data.endsWith("\r") && endsInPaste(data, state.inPaste)) {
+    // A lone trailing `\r` INSIDE a paste may be the front of a CRLF split across chunks —
+    // carry it so `\r\n` folds to ONE sentinel instead of two (no spurious blank line).
+    // Outside a paste a trailing `\r` is Enter (submit) and must pass through untouched.
+    state.carry = "\r";
+    data = data.slice(0, data.length - 1);
+  }
   // Empty-line Backspace guard: a standalone Backspace with an empty buffer is a no-op
   // that some Bun readline builds turn into a spurious `close` (hard exit) — drop it
   // before it reaches readline. Forwarded normally inside a paste or with text present.
@@ -575,7 +676,17 @@ export function filterPromptInputChunk(
     if (state.inPaste) {
       if (data.startsWith("\r\n", i)) { out += MULTILINE_SENTINEL; i += 2; continue; }
       if (data[i] === "\n" || data[i] === "\r") { out += MULTILINE_SENTINEL; i += 1; continue; }
-      out += data[i]; i += 1; continue;
+      // Pasted DATA: drop whole ANSI escape sequences (e.g. the `\x1b[31m` color codes in
+      // copied terminal output, which would otherwise reach readline as literal escapes —
+      // or leftover `[31m` text — and corrupt the box), then keep printable text + tabs and
+      // drop any remaining C0 control byte. Shares `pasteEscapeLength`/the same keep rule as
+      // `stripPasteEscapes` so every paste path sanitizes identically. Surrogate halves
+      // (emoji) are >= " " and pass through intact.
+      const esc = pasteEscapeLength(data, i);
+      if (esc > 0) { i += esc; continue; }
+      const ch = data[i]!;
+      if (ch === "\t" || ch >= " ") out += ch;
+      i += 1; continue;
     }
     const mouse = matchMouseReport(data, i);
     if (mouse > 0) { i += mouse; continue; }
@@ -611,4 +722,30 @@ export function filterPromptInputChunk(
     out += data[i]; i += 1;
   }
   return { out, drop: false };
+}
+
+// ── Paste-merge idle gate (large-paste truncation fix) ───────────────────────────
+/** Default idle window for the bracketed-paste merge fallback, in ms. */
+export const PASTE_MERGE_IDLE_MS = 250;
+
+/** Decide the paste-merge fallback when the `201~` end-marker may have been dropped.
+ *
+ *  A multi-line bracketed paste is buffered line-by-line and only flushed as ONE
+ *  message once paste-end arrives. Terminals occasionally drop the end-marker, so
+ *  `launch.ts` also arms an idle fallback. The OLD fallback was a single fixed
+ *  250ms timer measured from the FIRST line — a large paste streaming in over more
+ *  than 250ms tripped it mid-paste and got truncated (the rest leaked as separate
+ *  prompts). This is idle-based instead: `idleMs` is the gap since the LAST buffered
+ *  line, so a steadily-arriving paste keeps resetting the clock and is never cut;
+ *  the fallback fires only after the stream has genuinely gone quiet.
+ *
+ *  Returns `fire: true` when the idle gap has reached the threshold (flush now), else
+ *  `waitMs` = how long to wait before re-checking. Pure, so the timing policy is
+ *  unit-testable without a live readline/PTY. */
+export function pasteIdleDecision(
+  idleMs: number,
+  thresholdMs: number = PASTE_MERGE_IDLE_MS,
+): { fire: boolean; waitMs: number } {
+  if (idleMs >= thresholdMs) return { fire: true, waitMs: 0 };
+  return { fire: false, waitMs: thresholdMs - idleMs };
 }

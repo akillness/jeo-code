@@ -2650,7 +2650,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         setImmediate(() => {
           void (async () => {
             try {
-              const rli = rl as unknown as { line: string; cursor: number };
+              const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
               const before = rli.line;
               const dropped = await attachImagePaths(before, pendingImages.length + 1);
               if (dropped.images.length === 0 || dropped.text === before) return;
@@ -2658,6 +2658,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               rli.line = dropped.text;
               rli.cursor = dropped.text.length; // drop lands at the caret (line end in the common case)
               typedLine = dropped.text;
+              // Keep readline's internal screen model in step with the swapped-in tag so
+              // the caret is not offset on the next keystroke (mirrors the Ctrl+V path).
+              rli._refreshLine?.();
               if (previewArmed) drawFooter(previewLines(typedLine, navIdx));
             } finally {
               pasteInFlight = false;
@@ -2719,12 +2722,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             if (!img) return;
             pendingImages.push(img);
             const tag = `[image #${pendingImages.length}]`;
-            const rli = rl as unknown as { line: string; cursor: number };
+            const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
             const at = typeof rli.cursor === "number" ? rli.cursor : rli.line.length;
             const sep = rli.line.length > 0 && at > 0 && rli.line[at - 1] !== " " ? " " : "";
             rli.line = rli.line.slice(0, at) + sep + tag + " " + rli.line.slice(at);
             rli.cursor = at + sep.length + tag.length + 1;
             typedLine = rli.line;
+            // Sync readline's internal screen model to the injected tag (same as the
+            // slash/tab completion accept paths): without it readline's stale row/cursor
+            // model offsets the real caret several columns on the next keystroke — the
+            // "caret pushed past the tag after attaching an image" shift.
+            rli._refreshLine?.();
             if (previewArmed) drawFooter(previewLines(typedLine, navIdx));
           } finally {
             pasteInFlight = false;

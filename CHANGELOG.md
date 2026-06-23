@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.8] - 2026-06-24
+_Long-session performance & resource hygiene: the detached memory-distill worker now always terminates itself (closing the `jeo memory-distill` orphan pileup that pinned each session's transcript in RSS), the live reasoning/output block re-wraps only its trailing window (O(tail) per frame instead of O(len²) over a long stream), the team loop stops reprinting the todo guide every iteration, and the readline caret stays aligned after an image attach._
+
+### Fixed
+- **The detached memory-distill worker always terminates itself.** `runMemoryDistillCommand` now wraps its work in `try/finally` and calls an injected `exit` (defaulting to `process.exit`) on every path — success, broken payload, and missing payload. `distillSessionMemory` caps the LLM call with a `Promise.race` timeout, but the race only *rejects*; it never aborts the underlying fetch, so a stalled provider socket kept the child's event loop alive and the `jeo memory-distill` worker lingered forever — one orphan per session, each pinning the full transcript in RSS (the observed "jeo bun" CPU/memory creep). An explicit exit closes the socket and reclaims the process.
+- **The live reasoning/output block re-wraps only its trailing window.** The wrap memo in `app.ts` keyed on the full (up-to-hundreds-of-KB) buffer, so every 120 ms tick and every stream delta copied + compared the whole growing string — O(len) per frame, O(len²) over a long reasoning/tool stream (the streaming slowdown). `liveBlockWrapKey` now slices the ≤16 KB tail first, then keys + wraps that: identical visible output, O(tail) per frame regardless of total size.
+- **The team loop no longer reprints the todo guide every iteration.** `runTeamEngine` printed `formatRalphTodoGuide` once per task — O(N²) lines that climbed the embedded-terminal renderer's CPU on a long task list. The guide prints once up front; per-task progress lines carry the rest.
+- **The readline caret stays aligned after an image attach.** Both the paste and Ctrl+V image-attach paths now call readline's internal `_refreshLine()` after swapping the `[image #n]` tag in (mirroring the slash/tab-completion accept paths), so the stale row/cursor model no longer offsets the real caret several columns on the next keystroke.
+
+### Verified
+- `bun run typecheck` clean; full suite green — 1914 pass / 0 fail across 229 files — including the new `runMemoryDistillCommand` always-exits assertions (success + no-payload paths) and the `liveBlockWrapKey` bounded-key / tail-collision tests.
+
+
 ## [0.7.7] - 2026-06-23
 _Long-running-process hygiene & input robustness: backgrounded grandchildren (`next dev &`, daemons) are now reaped at the turn boundary via per-command process groups — closing the climbing `next-server` RSS leak — while the prompt gains recursive fuzzy `@path` search, ANSI-safe and idle-merged bracketed paste, a configurable OSC 52 clipboard cap, per-role ralplan model routing, and leaked-reasoning-tag stripping on salvaged answers._
 

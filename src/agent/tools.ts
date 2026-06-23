@@ -103,9 +103,13 @@ export async function assertMutationAllowed(
 export async function assertBashAllowed(
   cwd: string = process.cwd()
 ): Promise<void> {
-  // bash is never blocked by the mutation guard (resolves #951)
+  const deepInterviewState = await readMutationLock(cwd);
+  if (deepInterviewState && deepInterviewState.active && deepInterviewState.current_phase !== "complete") {
+    throw new Error(
+      "[MutationGuard] bash is blocked while a Socratic interview is active (requirements seed not frozen). Finish 'jeo deep-interview' to continue; '--auto' does not bypass the ambiguity gate."
+    );
+  }
 }
-
 
 /**
  * Parse a read line selector into sorted, merged, inclusive [start,end] ranges.

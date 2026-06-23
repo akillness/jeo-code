@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { tailForWrap, FRAME_WRAP_TAIL_CHARS } from "../src/tui/app";
+import { tailForWrap, liveBlockWrapKey, FRAME_WRAP_TAIL_CHARS } from "../src/tui/app";
 import { wrapTextWithAnsi } from "../src/tui/components/width";
 
 // Per-frame guard: the live thinking/tool-output blocks re-wrap their source string on
@@ -48,4 +48,33 @@ test("a single very long line still shows the genuine END of the content, bounde
   expect(oneHugeLine.endsWith(bounded.slice(-ROWS).join(""))).toBe(true);
   expect(bounded[bounded.length - 1]!.endsWith("END-OF-STREAM")).toBe(true);
   expect(bounded.length).toBeLessThanOrEqual(Math.ceil(FRAME_WRAP_TAIL_CHARS / cols) + 1);
+});
+
+// Regression: the live-block wrap MEMO KEY must also be bounded. It used to interpolate
+// the full streamed buffer (`${wrapW}\u0000${text}`), so every 120ms tick and every delta
+// allocated + compared a copy of the whole growing string — O(len) per frame, O(len²) over
+// a long reasoning/tool stream (the streaming slowdown). liveBlockWrapKey keys on the tail.
+test("liveBlockWrapKey stays bounded regardless of total stream length", () => {
+  const wrapW = 78;
+  const short = liveBlockWrapKey(wrapW, "hello\nworld");
+  expect(short).toBe(`${wrapW}\u0000hello\nworld`);
+
+  const huge = "x".repeat(FRAME_WRAP_TAIL_CHARS * 50); // ~800 KB stream
+  const key = liveBlockWrapKey(wrapW, huge);
+  // Key = "<wrapW>\u0000" + tail; tail is capped at FRAME_WRAP_TAIL_CHARS.
+  expect(key.length).toBeLessThanOrEqual(FRAME_WRAP_TAIL_CHARS + 16);
+  expect(key.length).toBeLessThan(huge.length); // proof it did NOT embed the whole buffer
+  expect(key).toBe(`${wrapW}\u0000${tailForWrap(huge)}`);
+});
+
+test("liveBlockWrapKey collides only when the displayed tail is identical", () => {
+  const wrapW = 40;
+  const tailA = "y".repeat(FRAME_WRAP_TAIL_CHARS);
+  // Two different full buffers that share the exact same trailing window render the same
+  // rows, so they SHOULD share a cache key (a hit avoids a redundant re-wrap).
+  expect(liveBlockWrapKey(wrapW, "AAAA" + tailA)).toBe(liveBlockWrapKey(wrapW, "BBBBBB" + tailA));
+  // A changed tail (new delta) misses, forcing exactly one recompute.
+  expect(liveBlockWrapKey(wrapW, tailA + "Z")).not.toBe(liveBlockWrapKey(wrapW, tailA));
+  // Width changes also invalidate (different wrap).
+  expect(liveBlockWrapKey(41, tailA)).not.toBe(liveBlockWrapKey(40, tailA));
 });

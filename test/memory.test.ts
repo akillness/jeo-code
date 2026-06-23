@@ -157,13 +157,38 @@ test("runMemoryDistillCommand: payload → MEMORY.md written, payload cleaned up
   const savedCwd = process.cwd();
   try {
     process.chdir(dir);
-    await runMemoryDistillCommand([payloadPath]);
+    await runMemoryDistillCommand([payloadPath], () => {}); // no-op exit: don't kill the test runner
   } finally {
     process.chdir(savedCwd);
   }
   const doc = await fs.readFile(memoryFilePath(dir), "utf-8");
   expect(doc).toContain("from worker");
   await expect(fs.access(payloadPath)).rejects.toThrow(); // payload removed
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("runMemoryDistillCommand: always exits the detached worker — success and no-payload paths", async () => {
+  const dir = await tmp();
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => "## Commands that work\n- bun test\n",
+  }));
+  const { runMemoryDistillCommand } = await import("../src/agent/memory");
+  const payloadPath = path.join(dir, "pending.json");
+  await fs.writeFile(payloadPath, JSON.stringify({ model: "m", messages: HISTORY }));
+
+  const codes: number[] = [];
+  const savedCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    // Success path: the worker must terminate after the distill completes, never
+    // linger on a dangling provider socket.
+    await runMemoryDistillCommand([payloadPath], (c) => codes.push(c));
+    // No-payload early return must ALSO exit (covered by the outer finally).
+    await runMemoryDistillCommand([], (c) => codes.push(c));
+  } finally {
+    process.chdir(savedCwd);
+  }
+  expect(codes).toEqual([0, 0]);
   await fs.rm(dir, { recursive: true, force: true });
 });
 // ── SEV-3b: advisory index lock prevents concurrent distill races ──

@@ -56,50 +56,6 @@ export function sessionPath(id: string, cwd = process.cwd()): string {
   return path.join(sessionsDir(cwd), `${id}.jsonl`);
 }
 
-export function getGitWorktrees(cwd: string): string[] {
-  try {
-    const res = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
-      cwd,
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    if (res.exitCode !== 0) return [cwd];
-    const stdout = res.stdout.toString();
-    const paths: string[] = [];
-    for (const line of stdout.split("\n")) {
-      if (line.startsWith("worktree ")) {
-        paths.push(line.slice("worktree ".length).trim());
-      }
-    }
-    return paths.length > 0 ? paths : [cwd];
-  } catch {
-    return [cwd];
-  }
-}
-
-export async function findSessionPath(
-  id: string,
-  cwd = process.cwd()
-): Promise<{ filePath: string; sessionCwd: string } | null> {
-  const localPath = sessionPath(id, cwd);
-  try {
-    await fs.stat(localPath);
-    return { filePath: localPath, sessionCwd: cwd };
-  } catch {}
-
-  const worktrees = getGitWorktrees(cwd);
-  for (const wt of worktrees) {
-    if (wt === cwd) continue;
-    const wtPath = sessionPath(id, wt);
-    try {
-      await fs.stat(wtPath);
-      return { filePath: wtPath, sessionCwd: wt };
-    } catch {}
-  }
-
-  return null;
-}
-
 export async function createSession(
   cwd = process.cwd(),
   id = newSessionId(),
@@ -177,27 +133,15 @@ export async function loadSession(
   id: string,
   cwd = process.cwd()
 ): Promise<{ header: SessionHeader; messages: Message[] }> {
-  let file = sessionPath(id, cwd);
+  const file = sessionPath(id, cwd);
   let content: string;
   try {
     content = await fs.readFile(file, "utf8");
   } catch (err: any) {
     if (err.code === "ENOENT") {
-      // Try to find the session path in other worktrees
-      const resolved = await findSessionPath(id, cwd);
-      if (resolved) {
-        file = resolved.filePath;
-        try {
-          content = await fs.readFile(file, "utf8");
-        } catch (innerErr) {
-          throw new Error(`Session ${id} not found: ${err.message}`);
-        }
-      } else {
-        throw new Error(`Session ${id} not found: ${err.message}`);
-      }
-    } else {
-      throw err;
+      throw new Error(`Session ${id} not found: ${err.message}`);
     }
+    throw err;
   }
 
   const lines = content.split("\n");
@@ -251,26 +195,21 @@ export async function loadSession(
 }
 
 export async function listSessions(cwd = process.cwd()): Promise<SessionSummary[]> {
-  const worktrees = getGitWorktrees(cwd);
-  const summaries: SessionSummary[] = [];
-  const seenIds = new Set<string>();
-
-  for (const wt of worktrees) {
-    const dir = sessionsDir(wt);
-    let files: string[];
-    try {
-      files = await fs.readdir(dir);
-    } catch (err: any) {
-      if (err.code === "ENOENT") {
-        continue;
-      }
-      if (wt === cwd) throw err;
-      continue;
+  const dir = sessionsDir(cwd);
+  let files: string[];
+  try {
+    files = await fs.readdir(dir);
+  } catch (err: any) {
+    if (err.code === "ENOENT") {
+      return [];
     }
+    throw err;
+  }
 
-    const jsonlFiles = files.filter(f => f.endsWith(".jsonl"));
+  const jsonlFiles = files.filter(f => f.endsWith(".jsonl"));
+  const summaries: SessionSummary[] = [];
 
-    for (const file of jsonlFiles) {
+  for (const file of jsonlFiles) {
     try {
       const filePath = path.join(dir, file);
       const stat = await fs.stat(filePath);
@@ -291,10 +230,9 @@ export async function listSessions(cwd = process.cwd()): Promise<SessionSummary[
         }
       }
 
-      if (!header || seenIds.has(header.id)) {
+      if (!header) {
         continue;
       }
-      seenIds.add(header.id);
 
       // 2. 마지막 compaction 마커 라인을 역순 탐색
       let lastCompaction: CompactionEntry | undefined;
@@ -367,7 +305,6 @@ export async function listSessions(cwd = process.cwd()): Promise<SessionSummary[
       // Tolerate malformed files (skip them)
       continue;
     }
-  }
   }
 
   summaries.sort((a, b) => (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0));

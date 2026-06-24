@@ -146,6 +146,28 @@ test("createTaskTool: read-only role (architect) cannot write — write tool is 
   await expect(fs.access(path.join(cwd, "x.txt"))).rejects.toThrow();
 });
 
+test("createTaskTool: an executor that writes a file reports the concrete changed-files artifact and no audit", async () => {
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      if (turn === 1) return JSON.stringify({ tool: "write", arguments: { filePath: "foo.txt", content: "hello" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: wrote foo\nChanged Files: foo.txt\nVerification: n/a\nOpen Risks: none\ndone" } });
+    },
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
+  const cwd = await tmpDir();
+  const res = await tool({ role: "executor", task: "create foo" }, cwd);
+
+  expect(res.success).toBe(true);
+  // The engine surfaced the real mutated file, so the parent gets a concrete artifact list.
+  expect(res.output).toContain("Changed files (1): foo.txt");
+  // A real write happened → the UNVERIFIED parent-audit note must NOT appear.
+  expect(res.output).not.toContain("[parent audit]");
+  expect(await fs.readFile(path.join(cwd, "foo.txt"), "utf8")).toBe("hello");
+});
+
 test("createTaskTool: empty task is rejected with a helpful error", async () => {
   const { createTaskTool } = await import("../src/agent/task-tool");
   const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });

@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+
+## [Unreleased]
+
+### Fixed
+- **A turn that actually edits files now surfaces those paths, fixing the orchestrator "Agent finished but made zero valid code changes (finalArtifacts is empty)" failure.** `runAgentLoop` records every file a turn SUCCESSFULLY writes/edits and returns it as `AgentLoopResult.mutatedFiles` (repo-relative, sorted, de-duped; omitted when nothing mutated). The `task` subagent (`src/agent/task-tool.ts`) and the `team` executor (`src/commands/team.ts`) now derive their change set from this concrete list instead of an out-of-band tool counter, append a "Changed files (N): …" note to the subagent report, and base the parent UNVERIFIED/verify-independently audit on it — so a caller (or an external orchestrator like jeo-claw) collects the run's real code artifacts rather than inferring an empty change set after real edits. `.specify/` is also un-ignored in `.gitignore` so spec/plan artifacts written there are visible to a git-based artifact collector.
+
 ## [0.7.9] - 2026-06-24
 _Local model providers actually run, and OAuth/login hygiene: Ollama requests now carry an explicit `num_ctx` so jeo's large system prompt no longer overflows Ollama's small default window (the "ollama 모델이 안 돌아간다" blocker), LM Studio reasoning models that emit the whole reply on the reasoning channel are recovered instead of dying empty, GGUF chat templates that can't render the `tools` array are retried with native tools stripped, the OAuth success tab auto-closes with a clear hint, the effective-credential picker prefers a verified OAuth login over a stray API key, and abandoned idle `jeo` tmux REPL sessions are reaped on launch._
 

@@ -44,7 +44,7 @@ export const targets: BinaryTarget[] = [
     id: "darwin-x64",
     platform: "darwin",
     arch: "x64",
-    target: "bun-darwin-x64",
+    target: "bun-darwin-x64-baseline",
     outfile: "dist/jeo-darwin-x64",
   },
   {

@@ -350,11 +350,12 @@ test("LaunchTui resize: live frame reflows back to full width after shrink→gro
   const realRender = Renderer.prototype.render;
   let last: string[] = [];
   (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { last = f.slice(); };
-  const origCols = (process.stdout as unknown as { columns: number }).columns;
-  const origRows = (process.stdout as unknown as { rows: number }).rows;
+  const origCols = process.stdout.columns;
+  const origRows = process.stdout.rows;
   const setSize = (c: number, r: number) => {
-    (process.stdout as unknown as { columns: number }).columns = c;
-    (process.stdout as unknown as { rows: number }).rows = r;
+    Object.defineProperty(process.stdout, "columns", { value: c, configurable: true });
+    Object.defineProperty(process.stdout, "rows", { value: r, configurable: true });
+    process.stdout.emit("resize");
   };
   const maxWidth = (frame: string[]) => Math.max(0, ...frame.map(l => visibleWidth(l)));
   try {

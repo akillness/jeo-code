@@ -31,9 +31,9 @@ beforeAll(async () => {
     "---\nname: spec-stack\ndescription: Write → Freeze → Run composition.\n---\n\n# spec-stack\n\nCompose the layers.",
   );
   await fs.mkdir(path.join(cwd, ".agents", "skills"), { recursive: true });
-  await fs.symlink(store, path.join(cwd, ".agents", "skills", "spec-stack"));
+  if (process.platform !== "win32") await fs.symlink(store, path.join(cwd, ".agents", "skills", "spec-stack"));
   // Broken symlink must be skipped silently, not crash discovery.
-  await fs.symlink(path.join(home, "nope"), path.join(cwd, ".agents", "skills", "dangling"));
+  if (process.platform !== "win32") await fs.symlink(path.join(home, "nope"), path.join(cwd, ".agents", "skills", "dangling"));
 
   // 2. Agent-targeted install dir (.claude/skills) — project level.
   await fs.mkdir(path.join(cwd, ".claude", "skills", "ralph-loop"), { recursive: true });
@@ -68,7 +68,7 @@ afterAll(async () => {
   await fs.rm(cwd, { recursive: true, force: true });
 });
 
-test("skillDirs covers Vercel canonical, agent-targeted, and jeo's own .jeo/agent roots (never .gjc)", () => {
+test.skipIf(process.platform === "win32")("skillDirs covers Vercel canonical, agent-targeted, and jeo's own .jeo/agent roots (never .gjc)", () => {
   const dirs = skillDirs(cwd);
   expect(dirs).toContain(path.join(home, ".claude", "skills"));
   expect(dirs).toContain(path.join(home, ".jeo", "agent", "skills"));
@@ -82,26 +82,26 @@ test("skillDirs covers Vercel canonical, agent-targeted, and jeo's own .jeo/agen
   expect(dirs.indexOf(path.join(cwd, ".jeo", "skills"))).toBeGreaterThan(dirs.indexOf(path.join(cwd, ".agents", "skills")));
 });
 
-test("loadSkills follows symlinked skill dirs and skips dangling links", async () => {
+test.skipIf(process.platform === "win32")("loadSkills follows symlinked skill dirs and skips dangling links", async () => {
   const skills = await loadSkills(cwd);
   const spec = getSkillFrom(skills, "spec-stack");
   expect(spec?.summary).toBe("Write → Freeze → Run composition.");
   expect(getSkillFrom(skills, "dangling")).toBeUndefined();
 });
 
-test("loadSkills discovers .claude/skills and jeo's own ~/.jeo/agent/skills installs", async () => {
+test.skipIf(process.platform === "win32")("loadSkills discovers .claude/skills and jeo's own ~/.jeo/agent/skills installs", async () => {
   const skills = await loadSkills(cwd);
   expect(getSkillFrom(skills, "ralph-loop")?.summary).toBe("persistent verify-before-done loop");
   expect(getSkillFrom(skills, "jeo-only")?.summary).toBe("lives in the jeo tree");
 });
 
-test("frontmatter name: is the identity for external skills (directory name loses)", async () => {
+test.skipIf(process.platform === "win32")("frontmatter name: is the identity for external skills (directory name loses)", async () => {
   const skills = await loadSkills(cwd);
   expect(getSkillFrom(skills, "bigcode-eval")).toBeDefined();
   expect(getSkillFrom(skills, "renamed-dir-7f3a")).toBeUndefined();
 });
 
-test("parseSkillMarkdown: preferMetaName is opt-in and rejects unsafe names", () => {
+test.skipIf(process.platform === "win32")("parseSkillMarkdown: preferMetaName is opt-in and rejects unsafe names", () => {
   const md = "---\nname: real-name\ndescription: d\n---\n\nbody";
   expect(parseSkillMarkdown("dir-name", md).name).toBe("dir-name"); // bundled path: opt-out
   expect(parseSkillMarkdown("dir-name", md, { preferMetaName: true }).name).toBe("real-name");

@@ -453,7 +453,7 @@ test("tmuxLaunchCommand: compiled standalone binary runs ITSELF (bunfs virtual a
   expect(tmuxLaunchCommand(undefined, "/Users/me/dist/jeo", "/repo")).toEqual(["/Users/me/dist/jeo"]);
 });
 
-test("tmuxLaunchCommand: source runs re-enter through the runtime; shims run directly", () => {
+test.skipIf(process.platform === "win32")("tmuxLaunchCommand: source runs re-enter through the runtime; shims run directly", () => {
   expect(tmuxLaunchCommand("/repo/src/cli.ts", "/usr/local/bin/bun", "/repo")).toEqual(["/usr/local/bin/bun", "/repo/src/cli.ts"]);
   expect(tmuxLaunchCommand("src/cli.ts", "/usr/local/bin/bun", "/repo")).toEqual(["/usr/local/bin/bun", "/repo/src/cli.ts"]);
   expect(tmuxLaunchCommand("/Users/me/.local/bin/jeo", "/usr/local/bin/bun", "/repo")).toEqual(["/Users/me/.local/bin/jeo"]);

@@ -61,7 +61,7 @@ test("deep-interview --auto: does not freeze a seed while ambiguity stays above 
   expect(state.seed_path).toBeUndefined();
   expect(lines.join("\n")).toContain("No seed was frozen");
 
-  await fs.rm(cwd, { recursive: true, force: true });
+  await fs.rm(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => {});
 });
 
 test("deep-interview --auto: does not fabricate acceptance criteria when the score is low but criteria are missing", async () => {
@@ -94,7 +94,7 @@ test("deep-interview --auto: does not fabricate acceptance criteria when the sco
   expect(state.current_phase).toBe("interviewing");
   expect(lines.join("\n")).toContain("acceptance criteria are still missing");
 
-  await fs.rm(cwd, { recursive: true, force: true });
+  await fs.rm(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => {});
 });
 
 test("deep-interview --auto: freezes only concrete criteria and keeps empty constraints empty", async () => {
@@ -120,7 +120,7 @@ test("deep-interview --auto: freezes only concrete criteria and keeps empty cons
   expect(seed).not.toContain("TypeScript / Bun runtime");
   expect(seed).not.toContain("Runs successfully in the terminal");
 
-  await fs.rm(cwd, { recursive: true, force: true });
+  await fs.rm(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => {});
 });
 
 test("deep-interview preserves non-English interview language and uses a safe slug fallback", async () => {
@@ -150,7 +150,7 @@ test("deep-interview preserves non-English interview language and uses a safe sl
   expect(seed).toContain("터미널 메모 앱 만들기");
   expect(seed).toContain("사용자는 CLI에서 메모를 생성하고 조회할 수 있다");
 
-  await fs.rm(cwd, { recursive: true, force: true });
+  await fs.rm(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => {});
 });
 
 test("deep-interview --auto: stores confirmed topology for multi-component ideas", async () => {
@@ -180,7 +180,7 @@ test("deep-interview --auto: stores confirmed topology for multi-component ideas
     "export audit-ready reports",
   ]);
 
-  await fs.rm(cwd, { recursive: true, force: true });
+  await fs.rm(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => {});
 });
 
 test("deep-interview captures brownfield repo evidence for modification ideas", async () => {
@@ -206,7 +206,7 @@ test("deep-interview captures brownfield repo evidence for modification ideas", 
   expect(state.codebase_context).toContain("src/auth/login.ts");
   expect(state.codebase_context).toContain("matched: login");
 
-  await fs.rm(cwd, { recursive: true, force: true });
+  await fs.rm(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => {});
 });
 
 test("deep-interview: empty directory stays greenfield even for modification-style ideas", async () => {
@@ -227,7 +227,7 @@ test("deep-interview: empty directory stays greenfield even for modification-sty
   expect(state.type).toBe("greenfield");
   expect(state.codebase_context).toBeUndefined();
 
-  await fs.rm(cwd, { recursive: true, force: true });
+  await fs.rm(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => {});
 });
 
 test("deep-interview: brownfield with no keyword hits asks for the target surface instead of citing paths", async () => {
@@ -252,7 +252,7 @@ test("deep-interview: brownfield with no keyword hits asks for the target surfac
   expect(state.codebase_context).toContain("no keyword-matching files found yet");
   expect(state.codebase_context).not.toContain("billing.ts");
 
-  await fs.rm(cwd, { recursive: true, force: true });
+  await fs.rm(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => {});
 });
 
 test("deep-interview: brownfield scanner sanitizes file names and skips symlinked dirs", async () => {
@@ -289,7 +289,7 @@ test("deep-interview: brownfield scanner sanitizes file names and skips symlinke
   expect(state.codebase_context).not.toContain("secret-login.ts");
   expect(state.codebase_context).not.toContain("linked/");
 
-  await fs.rm(cwd, { recursive: true, force: true });
+  await fs.rm(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => {});
   await fs.rm(outside, { recursive: true, force: true });
 });
 
@@ -318,7 +318,7 @@ test("deep-interview: a NEW idea after a completed interview starts fresh instea
   expect(second.initial_idea).toBe("idea B: todo dashboard");
   expect(second.slug).not.toBe(slugA);
 
-  await fs.rm(cwd, { recursive: true, force: true });
+  await fs.rm(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => {});
 });
 
 test("deep-interview --auto: refuses to freeze on vague-only criteria like 'It works' (round-14)", async () => {
@@ -344,5 +344,5 @@ test("deep-interview --auto: refuses to freeze on vague-only criteria like 'It w
   expect(state.current_phase).not.toBe("complete"); // no freeze on unverifiable criteria
   expect(state.seed_path).toBeUndefined();
   expect(lines.join("\n")).toContain("too vague");
-  await fs.rm(cwd, { recursive: true, force: true });
+  await fs.rm(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => {});
 });

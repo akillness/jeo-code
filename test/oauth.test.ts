@@ -64,7 +64,12 @@ test("OAuthCallbackFlow: browser callback delivers code, state validated, token 
   // Simulate the browser hitting the local callback with the real state.
   const res = await fetch(`${flow.capturedRedirect}?code=mycode&state=${flow.capturedState}`);
   expect(res.status).toBe(200);
-  expect(await res.text()).toContain("Login complete");
+  const body = await res.text();
+  expect(body).toContain("Login complete");
+  expect(body).toContain("Authentication succeeded");
+  // Success page auto-closes: countdown element + window.close() on a timer.
+  expect(body).toContain('id="jeo-countdown"');
+  expect(body).toContain("window.close()");
 
   const creds = await loginPromise;
   expect(creds.access).toBe("acc-mycode");
@@ -82,7 +87,10 @@ test("OAuthCallbackFlow: state mismatch is rejected (CSRF guard)", async () => {
 
   const res = await fetch(`${flow.capturedRedirect}?code=x&state=WRONG`);
   expect(res.status).toBe(400);
-  expect(await res.text()).toContain("State mismatch");
+  const failBody = await res.text();
+  expect(failBody).toContain("State mismatch");
+  // Failure page must NOT auto-close — the user needs to read the error.
+  expect(failBody).not.toContain("window.close()");
   expect(String(await caught)).toContain("State mismatch");
 });
 

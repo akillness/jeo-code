@@ -99,6 +99,9 @@ export interface CallOptions {
   jsonMode?: boolean;
   /** Per-call base URL override (OpenAI-compat / Ollama). */
   baseUrl?: string;
+  /** Ollama context window (`num_ctx`). Overrides the server's small default so jeo's
+   *  large system prompt fits; ignored by non-Ollama providers. */
+  numCtx?: number;
   /** Optional sink for provider-reported token usage. */
   onUsage?: (usage: Usage) => void;
   /** Abort in-flight provider requests (Ctrl-C / timeout / supersede). */

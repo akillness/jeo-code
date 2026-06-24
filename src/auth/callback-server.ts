@@ -27,16 +27,30 @@ export interface OAuthCallbackFlowOptions {
 
 export type CallbackResult = { code: string; state: string };
 
-const SUCCESS_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>jeo — login complete</title>
+const PAGE_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>jeo — login complete</title>
 <style>body{font-family:system-ui,sans-serif;background:#0d1117;color:#e6edf3;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
-.card{text-align:center;padding:2rem 3rem;border:1px solid #30363d;border-radius:12px;background:#161b22}
-h1{margin:0 0 .5rem;font-size:1.4rem}p{margin:0;color:#8b949e}</style></head>
-<body><div class="card"><h1>__TITLE__</h1><p>__MSG__</p></div></body></html>`;
+.card{text-align:center;padding:2rem 3rem;border:1px solid #30363d;border-radius:12px;background:#161b22;max-width:30rem}
+h1{margin:0 0 .5rem;font-size:1.4rem}p{margin:.25rem 0;color:#8b949e}.hint{margin-top:1rem;font-size:.85rem;color:#6e7681}</style></head>
+<body><div class="card"><h1>__TITLE__</h1><p>__MSG__</p>__EXTRA__</div>__SCRIPT__</body></html>`;
+
+// Seconds before the success tab attempts to auto-close. `window.close()` only
+// succeeds on tabs the script itself opened; browsers may ignore it for
+// OS-launched OAuth tabs, so the page also shows a clear "you can close" hint.
+// ponytail: upgrade path — none needed; countdown is inline, no timer lib.
+const AUTO_CLOSE_SECONDS = 3;
 
 function renderHtml(ok: boolean, msg: string): string {
-  return SUCCESS_HTML
+  const extra = ok
+    ? `<p class="hint">This window will close in <span id="jeo-countdown">${AUTO_CLOSE_SECONDS}</span>s — you can also close it manually.</p>`
+    : "";
+  const script = ok
+    ? `<script>(function(){var n=${AUTO_CLOSE_SECONDS},el=document.getElementById("jeo-countdown");var t=setInterval(function(){n-=1;if(el)el.textContent=String(Math.max(n,0));if(n<=0){clearInterval(t);window.close();}},1000);})();</script>`
+    : "";
+  return PAGE_HTML
     .replace("__TITLE__", ok ? "Login complete \u2713" : "Login failed")
-    .replace("__MSG__", msg);
+    .replace("__MSG__", msg)
+    .replace("__EXTRA__", extra)
+    .replace("__SCRIPT__", script);
 }
 
 export abstract class OAuthCallbackFlow {
@@ -121,7 +135,7 @@ export abstract class OAuthCallbackFlow {
     else if (expectedState && state !== expectedState) message = "State mismatch — possible CSRF attack";
     else {
       ok = true;
-      message = "You can close this tab and return to the terminal.";
+      message = "Authentication succeeded. Return to the terminal — jeo is ready.";
     }
 
     const resolve = this.#resolve;

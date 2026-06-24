@@ -1,5 +1,26 @@
 import { test, expect } from "bun:test";
-import { resolveProvider, thinkingMaxTokens, thinkingToReasoningEffort } from "../src/ai/model-manager";
+import { resolveProvider, thinkingMaxTokens, thinkingToReasoningEffort, effectiveCredentialForProvider } from "../src/ai/model-manager";
+import type { Credential } from "../src/auth/storage";
+
+test("effectiveCredentialForProvider: anthropic OAuth wins even when an API key is configured", () => {
+  const oauth: Credential = { kind: "oauth", provider: "anthropic", token: "oauth-tok" };
+  const eff = effectiveCredentialForProvider("anthropic", oauth, { providers: { anthropic: "sk-ant" } }, "claude-3-5-sonnet");
+  expect(eff.kind).toBe("oauth");
+});
+
+test("effectiveCredentialForProvider: gemini OAuth wins over API key (Cloud Code Assist serves it)", () => {
+  const oauth: Credential = { kind: "oauth", provider: "gemini", token: "oauth-tok" };
+  const eff = effectiveCredentialForProvider("gemini", oauth, { providers: { gemini: "AIza" } }, "gemini-2.5-flash");
+  expect(eff.kind).toBe("oauth");
+});
+
+test("effectiveCredentialForProvider: OpenAI OAuth serves Codex models but falls back to API key for others", () => {
+  const oauth: Credential = { kind: "oauth", provider: "openai", token: "oauth-tok" };
+  const codex = effectiveCredentialForProvider("openai", oauth, { providers: { openai: "sk-oai" } }, "gpt-5.5");
+  expect(codex.kind).toBe("oauth");
+  const other = effectiveCredentialForProvider("openai", oauth, { providers: { openai: "sk-oai" } }, "gpt-4o");
+  expect(other.kind).toBe("api_key");
+});
 
 test("resolveProvider: routing is stable across model id shapes", () => {
   expect(resolveProvider("ollama/qwen2.5:0.5b")).toBe("ollama");

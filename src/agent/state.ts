@@ -39,6 +39,8 @@ export interface Config {
   oauth?: Partial<Record<AuthProvider, string | StoredOAuth>>;
   /** Base URL for the local Ollama server (keyless). */
   ollamaBaseUrl?: string;
+  /** Ollama context window (`num_ctx`); overrides the server's small default. Env: OLLAMA_NUM_CTX. */
+  ollamaNumCtx?: number;
   /** Base URL override for OpenAI-compatible providers (vLLM, llama-cpp-server, ...). */
   openaiBaseUrl?: string;
   /** Base URL for the local LM Studio server (keyless, OpenAI-compatible). */

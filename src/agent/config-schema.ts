@@ -68,7 +68,9 @@ export const ConfigSchema = z
       })
       .optional(),
     ollamaBaseUrl: z.string().optional(),
+    ollamaNumCtx: z.number().int().positive().optional(),
     openaiBaseUrl: z.string().optional(),
+    lmstudioBaseUrl: z.string().optional(),
     defaultModel: z.string().min(1),
     theme: z.string().optional(),
     thinkingLevel: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),

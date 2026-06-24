@@ -4,7 +4,7 @@ import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
 import { codexResponsesCall, codexResponsesStream } from "./openai-responses";
 import { serializeToolCalls, serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
-import { createThinkSplitter } from "../think-tags";
+import { createThinkSplitter, stripLeakedReasoningTags } from "../think-tags";
 
 /** True for OpenAI reasoning models (o-series + gpt-5+ family). Digit-count agnostic
  *  (gpt-6/o10 stay reasoning). Strips the `openai/` routing prefix first. */
@@ -57,17 +57,25 @@ export function openaiRequest(messages: Message[], options: CallOptions, credent
   // and reject temperature; classic chat models (gpt-4o, …) take max_tokens + temperature.
   // Digit-count agnostic (gpt-6/o10 stay reasoning) — mirrors inferCatalogMetadata.
   const isReasoning = isOpenAIReasoningModel(model);
+  // A custom baseUrl means a local / OpenAI-compatible backend (LM Studio, llama.cpp, vLLM,
+  // Ollama's OpenAI shim, …). Local reasoning models (DeepSeek-R1, Qwen3, …) routinely burn
+  // thousands of tokens INSIDE <think> before emitting the answer, so the cloud-tuned 4000
+  // default truncates them at finish_reason=length with an EMPTY content. There's no
+  // per-token cost locally, so give them real headroom to both think and answer.
+  const isLocalEndpoint = Boolean(options.baseUrl || (process.env.OPENAI_BASE_URL && !/\bapi\.openai\.com\b/.test(process.env.OPENAI_BASE_URL)));
+  const defaultMaxTokens = isLocalEndpoint ? 16000 : 4000;
   const payload: Record<string, unknown> = {
     model,
     messages: openaiMessages,
   };
   if (isReasoning) {
-    payload.max_completion_tokens = options.maxTokens ?? 4000;
+    payload.max_completion_tokens = options.maxTokens ?? defaultMaxTokens;
     if (options.reasoningEffort) payload.reasoning_effort = options.reasoningEffort;
   } else {
     payload.temperature = options.temperature ?? 0.2;
-    payload.max_tokens = options.maxTokens ?? 4000;
+    payload.max_tokens = options.maxTokens ?? defaultMaxTokens;
   }
+
   // gjc parity — enable NATIVE reasoning per the backend's thinking format so the model
   // actually emits reasoning (otherwise OpenRouter/Qwen/z.ai stay silent and the TUI has
   // nothing to show). `reasoning_effort` (OpenAI-style) only suits o-series/gpt-5; other
@@ -100,6 +108,82 @@ function emptyCompletionError(finishReason: string | undefined): Error {
     : "";
   return new Error(`OpenAI returned no content${finishReason ? ` (finish_reason=${finishReason})` : ""}${hint}.`);
 }
+
+/** Scan `text` for the first BALANCED, syntactically valid JSON object that carries a
+ *  `tool`/`tools` key — i.e. a complete jeo tool envelope. Brace-depth aware and string/
+ *  escape safe so a `{` inside a JSON string never miscounts. Returns the raw object
+ *  substring, or "" if none is complete. Used to salvage a truncated (finish_reason=length)
+ *  reasoning stream when the model finished the actionable JSON before it ran out of budget. */
+function firstCompleteToolEnvelope(text: string): string {
+  for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (esc) { esc = false; continue; }
+      if (ch === "\\") { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === "{") depth++;
+      else if (ch === "}" && --depth === 0) {
+        const candidate = text.slice(start, i + 1);
+        try {
+          const obj = JSON.parse(candidate) as Record<string, unknown>;
+          if (obj && (typeof obj.tool === "string" || Array.isArray(obj.tools))) return candidate;
+        } catch { /* not valid JSON — keep scanning from the next `{` */ }
+        break;
+      }
+    }
+  }
+  return "";
+}
+
+/** Recover a usable answer from the reasoning channel when `content` came back empty.
+ *  Local OpenAI-compatible servers (LM Studio, llama.cpp, …) running reasoning models
+ *  frequently route the ENTIRE reply — including the `{"tool":…}` JSON tool call — into
+ *  `reasoning_content`/`reasoning` (or an inline `<think>…</think>` block) and leave
+ *  `content` empty, which would otherwise kill the turn with "OpenAI returned no content".
+ *
+ *  Strips leaked think/scaffolding markup and returns the recovered text when the turn ended
+ *  normally (no `finish_reason`, or `stop`). On a `length` finish the reasoning is truncated,
+ *  but a thinking model often COMPLETES the JSON tool envelope before it runs out of budget —
+ *  so we still salvage that complete envelope when present, and otherwise surface the
+ *  actionable budget error. `content_filter` is never recovered (the reply was blocked).
+ *  Returns "" when nothing is recoverable. */
+function recoverFromReasoning(reasoning: string, finishReason: string | undefined): string {
+  if (!reasoning) return "";
+  if (finishReason === "content_filter") return "";
+  if (finishReason === "length") return firstCompleteToolEnvelope(reasoning);
+  return stripLeakedReasoningTags(reasoning);
+}
+
+/** A 400 caused by the request's `tools` array, not by the conversation. Many local
+ *  OpenAI-compatible servers (LM Studio, llama.cpp, older vLLM) ship GGUF chat templates
+ *  with no tool-calling support; given a `tools` array they fail to render the prompt
+ *  (LM Studio: `Error rendering prompt with jinja template …`) and 400 the whole turn.
+ *  jeo ALSO states the JSON-in-prose tool protocol in every system prompt, so we can drop
+ *  native tools and let the model drive tools via canonical JSON rather than dying. Gated
+ *  on the request actually carrying tools (a 400 without tools is a real error) plus an
+ *  error body that points at the template/tools/function machinery. */
+export function isUnsupportedToolsError(requestBody: string, errorBody: string): boolean {
+  let parsed: Record<string, unknown>;
+  try { parsed = JSON.parse(requestBody); } catch { return false; }
+  if (!Array.isArray(parsed.tools) || parsed.tools.length === 0) return false;
+  return /jinja|template|tool|function[_ ]?call|does not support|not supported/i.test(errorBody);
+}
+
+/** Rebuild an OpenAI request body with native tools removed so a backend whose chat
+ *  template can't render them stops 400ing. The model still returns a parseable tool
+ *  envelope via the JSON-in-prose protocol jeo states in every system prompt. We do NOT
+ *  inject `response_format: json_object` — some LM Studio builds reject it ("must be
+ *  'json_schema' or 'text'"), and the prompt already mandates strict JSON. Every other
+ *  field (stream, stream_options, messages, …) is preserved. */
+export function stripNativeTools(requestBody: string): string {
+  const parsed = JSON.parse(requestBody) as Record<string, unknown>;
+  delete parsed.tools;
+  delete parsed.tool_choice;
+  return JSON.stringify(parsed);
+}
+
 
 /** A streamed `choices[].delta`. `reasoning` is `unknown` because OpenAI-compatible
  *  servers disagree on its shape: a plain string (OpenRouter/xAI), an object
@@ -152,16 +236,34 @@ export const openaiAdapter: ProviderAdapter = {
       } catch { /* /responses unsupported for this model/account — fall through to chat */ }
     }
     const { url, headers, body } = openaiRequest(messages, options, credential, false);
-    const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
+    let response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
+    if (response.status === 400) {
+      // Local OpenAI-compatible servers (LM Studio, llama.cpp, …) 400 when a GGUF chat
+      // template can't render the `tools` array. Drop native tools and retry once — the
+      // model drives tools via the JSON-in-prose protocol jeo always states in the prompt.
+      const errBody = await response.clone().text().catch(() => "");
+      if (isUnsupportedToolsError(body, errBody)) {
+        response = await fetch(url, { method: "POST", headers, body: stripNativeTools(body), signal: options.signal });
+      }
+    }
     if (!response.ok) throw await providerHttpError("OpenAI", response);
-    const result = (await response.json()) as { choices: { message: { content?: string; tool_calls?: { function?: { name?: string; arguments?: string } }[] }; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+
+    const result = (await response.json()) as { choices: { message: { content?: string; reasoning_content?: string; reasoning?: string; tool_calls?: { function?: { name?: string; arguments?: string } }[] }; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     if (result.usage) options.onUsage?.({ inputTokens: result.usage.prompt_tokens, outputTokens: result.usage.completion_tokens });
     // Prefer a native tool call (re-serialized to canonical JSON) over any stray text.
     const envelope = serializeToolCalls(parseOpenaiToolCalls(result.choices[0]?.message?.tool_calls));
     if (envelope) return envelope;
     const text = result.choices[0]?.message?.content ?? "";
-    if (!text) throw emptyCompletionError(result.choices[0]?.finish_reason);
-    return text;
+    if (text) return text;
+    // Recover from the reasoning channel before failing. LM Studio (and other local
+    // OpenAI-compatible servers) running reasoning models routinely emit the WHOLE reply —
+    // including the `{"tool":…}` JSON — into `reasoning_content`/`reasoning` while leaving
+    // `content` empty, which otherwise dies as a dead "returned no content" turn.
+    const finishReason = result.choices[0]?.finish_reason;
+    const msg = result.choices[0]?.message;
+    const recovered = recoverFromReasoning(msg?.reasoning_content ?? msg?.reasoning ?? "", finishReason);
+    if (recovered) return recovered;
+    throw emptyCompletionError(finishReason);
   },
   async *stream(messages, options, credential) {
     if (credential.kind === "oauth") {
@@ -191,15 +293,25 @@ export const openaiAdapter: ProviderAdapter = {
         const stripped = JSON.parse(body) as Record<string, unknown>;
         delete stripped.stream_options;
         response = await fetch(url, { method: "POST", headers, body: JSON.stringify(stripped), signal: options.signal });
+      } else if (isUnsupportedToolsError(body, errBody)) {
+        // A GGUF chat template that can't render the `tools` array (LM Studio jinja error).
+        // Drop native tools and retry once — the model drives tools via JSON-in-prose.
+        response = await fetch(url, { method: "POST", headers, body: stripNativeTools(body), signal: options.signal });
       }
     }
+
     if (!response.ok) throw await providerHttpError("OpenAI", response, "(stream)");
     if (!response.body) return;
     let yieldedAny = false;
     let finishReason: string | undefined;
+    // Mirror every reasoning delta into a local buffer so a content-less reply can be
+    // recovered from the reasoning channel at end-of-stream (see recoverFromReasoning).
+    let reasoningBuf = "";
+    const captureReasoning = (delta: string) => { reasoningBuf += delta; options.onReasoning?.(delta); };
     // Split inline <think>…</think> (DeepSeek-R1/Qwen-style local models) out of the
     // visible answer and onto the reasoning channel. No-op for models that never emit it.
-    const think = createThinkSplitter(options.onReasoning);
+    const think = createThinkSplitter(captureReasoning);
+
     const toolAcc = new Map<number, { name: string; args: string }>();
     for await (const data of readSse(response.body, options.onStreamActivity)) {
       let chunk: { choices?: { delta?: OpenAIDelta; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
@@ -220,7 +332,7 @@ export const openaiAdapter: ProviderAdapter = {
       // <think> splitter): handles string fields, an object `reasoning`, and the
       // `reasoning_details[]` array form (OpenRouter/xAI/DeepSeek variants).
       const reason = reasoningDeltaOf(chunk.choices?.[0]?.delta);
-      if (reason) options.onReasoning?.(reason);
+      if (reason) captureReasoning(reason);
       const tcs = chunk.choices?.[0]?.delta?.tool_calls;
       if (tcs) {
         for (const tc of tcs) {
@@ -239,7 +351,14 @@ export const openaiAdapter: ProviderAdapter = {
     // Native tool calls stream as tool_calls argument fragments — re-serialize once at end.
     const envelope = serializeAccumulatedToolCalls(toolAcc);
     if (envelope) { yieldedAny = true; yield envelope; }
-    if (!yieldedAny) throw emptyCompletionError(finishReason);
+    if (!yieldedAny) {
+      // Recover from the reasoning channel before failing the turn. Local reasoning models
+      // (LM Studio, llama.cpp, …) often stream the whole reply — JSON tool call included —
+      // as reasoning/<think> with an empty `content`.
+      const recovered = recoverFromReasoning(reasoningBuf, finishReason);
+      if (recovered) { yield recovered; return; }
+      throw emptyCompletionError(finishReason);
+    }
   },
 };
 

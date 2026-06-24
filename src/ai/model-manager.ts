@@ -253,11 +253,24 @@ export function resolveRetryOptions(retry: Config["retry"], kind: "request" | "s
 }
 
 /**
+ * Whether the bundled adapter can serve this provider+model over OAuth end-to-end.
+ * OpenAI OAuth (ChatGPT/Codex) only serves Codex models, so any other OpenAI model
+ * must use an API key. A provider whose OAuth backend is not verified end-to-end
+ * cannot serve any model over OAuth. Everything else (Anthropic Messages, Gemini /
+ * Antigravity Cloud Code Assist) is served end-to-end.
+ */
+function oauthServesModel(provider: AuthProvider, model: string): boolean {
+  if (provider === "openai") return CODEX_MODELS.includes(model);
+  if (isOAuthProvider(provider) && OAUTH_FLOW_REGISTRY[provider].verifiedEndToEnd === false) return false;
+  return true;
+}
+
+/**
  * Pick the credential to actually use for a provider call / live discovery.
- * An API key is the broader, documented path, so it wins whenever present.
- * Every bundled OAuth flow is now served end-to-end (Anthropic Messages,
- * OpenAI ChatGPT/Codex Responses, Gemini/Antigravity Cloud Code Assist); the
- * guard below only fires for a future flow that ships before its adapter.
+ * OAuth is the user's explicit login, so it wins whenever the bundled adapter can
+ * serve the requested model over OAuth — even when an API key is also configured
+ * (e.g. a leftover env var). Only when OAuth cannot serve the model do we fall back
+ * to the API key, and only then surface the OAuth-incompatibility error.
  */
 export function effectiveCredentialForProvider(
   provider: AuthProvider,
@@ -266,6 +279,7 @@ export function effectiveCredentialForProvider(
   model: string,
 ): Credential {
   if (credential.kind === "oauth") {
+    if (oauthServesModel(provider, model)) return credential;
     const apiKey = config.providers[provider];
     if (apiKey) return { kind: "api_key", provider, token: apiKey };
     if (isOAuthProvider(provider) && OAUTH_FLOW_REGISTRY[provider].verifiedEndToEnd === false) {
@@ -328,6 +342,7 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
     maxTokens: options.maxTokens ?? thinkingMaxTokens(config.thinkingLevel),
     jsonMode: options.jsonMode,
     baseUrl,
+    numCtx: options.numCtx ?? (provider === "ollama" ? (config as { ollamaNumCtx?: number }).ollamaNumCtx : undefined),
     onUsage: options.onUsage,
     signal: options.signal,
     reasoningEffort: options.reasoningEffort ?? thinkingToReasoningEffort(config.thinkingLevel),

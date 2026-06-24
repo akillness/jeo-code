@@ -190,8 +190,22 @@ test("describeProvider: anthropic oauth-only → ready=true", async () => {
   expect(s.ready).toBe(true);
   expect(s.label).toBe("OAuth");
 });
+test("describeProvider: anthropic oauth+key prefers OAuth over the configured API key", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: { anthropic: "sk-ant" },
+      oauth: { anthropic: "oauth-ant" },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  const s = await describeProvider("anthropic");
+  expect(s.ready).toBe(true);
+  expect(s.kind).toBe("oauth");
+  expect(s.label).toBe("OAuth");
+});
 
-test("describeProvider: gemini oauth+key reports ready API-key path instead of blocked OAuth", async () => {
+test("describeProvider: gemini oauth+key prefers the OAuth path (Cloud Code Assist serves it end-to-end)", async () => {
   await fs.writeFile(
     path.join(dir, "config.json"),
     JSON.stringify({
@@ -202,6 +216,6 @@ test("describeProvider: gemini oauth+key reports ready API-key path instead of b
   );
   const s = await describeProvider("gemini");
   expect(s.ready).toBe(true);
-  expect(s.kind).toBe("api_key");
-  expect(s.label).toBe("API key");
+  expect(s.kind).toBe("oauth");
+  expect(s.label).toBe("OAuth (Gemini CLI / Cloud Code Assist)");
 });

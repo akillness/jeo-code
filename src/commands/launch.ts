@@ -123,6 +123,7 @@ import {
   currentTmuxClipboardCommands,
   resolveWorktree,
   shellQuote,
+  reapStaleTmuxSessions,
   type TmuxCreateResult,
   type TmuxProfileCommand,
 } from "./launch/tmux";
@@ -210,6 +211,7 @@ export {
   currentTmuxClipboardCommands,
   resolveWorktree,
   shellQuote,
+  reapStaleTmuxSessions,
   type TmuxCreateResult,
   type TmuxProfileCommand,
   type InFlightAbortHarness,
@@ -402,6 +404,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         for (const profileCmd of tmuxProfileCommands(sessionName, process.env, { branch: branch || undefined, project: cwd })) {
           try { Bun.spawnSync([tmuxBin, ...profileCmd.args]); } catch { /* best-effort */ }
         }
+        // Reap orphaned jeo sessions: each detached, long-idle `jeo launch` REPL
+        // pins tens of MB forever, so over days they pile up and aggregate RSS
+        // climbs (the "jeo/bun 프로세스가 쌓여 메모리가 점점 커진다" report). Sweep the
+        // jeo-owned, unattached, long-idle ones — never the one just created.
+        // Best-effort; opt out with JEO_TMUX_REAP=0.
+        try {
+          const reaped = reapStaleTmuxSessions(tmuxBin, [sessionName]);
+          if (reaped.length > 0) {
+            console.log(
+              `Reaped ${reaped.length} idle jeo tmux session${reaped.length === 1 ? "" : "s"}: ${reaped.join(", ")}`,
+            );
+          }
+        } catch { /* best-effort */ }
         console.log(
           sessionName === sessionBase
             ? `Starting new tmux session: ${sessionName}`

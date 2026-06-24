@@ -81,11 +81,17 @@ function configuredCredential(provider: AuthProvider, cfg: Config): Credential {
   return { kind: "none", provider };
 }
 
-/** Match the real call path: API keys are broader and win whenever both key + OAuth exist. */
+/** Mirror the real call path: OAuth (the user's explicit login) wins whenever the
+ * bundled adapter serves it end-to-end. OpenAI OAuth only serves Codex models, and an
+ * OAuth backend not verified end-to-end can't serve calls, so an API key stays the
+ * working path in those cases — otherwise the stored OAuth credential is preferred. */
 function effectiveCredential(provider: AuthProvider, cred: Credential, cfg: Config): Credential {
   const key = cfg.providers?.[provider];
-  if (cred.kind === "oauth" && key) return { kind: "api_key", provider, token: key };
-  return cred;
+  if (cred.kind !== "oauth" || !key) return cred;
+  const oauthGeneral =
+    provider !== "openai" &&
+    !(isOAuthProvider(provider) && OAUTH_FLOW_REGISTRY[provider].verifiedEndToEnd === false);
+  return oauthGeneral ? cred : { kind: "api_key", provider, token: key };
 }
 
 

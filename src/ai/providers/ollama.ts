@@ -13,6 +13,26 @@ export function normalizeOllamaBaseUrl(baseUrl?: string): string {
   return (/^https?:\/\//i.test(v) ? v : `http://${v}`).replace(/\/$/, "");
 }
 
+/**
+ * Default Ollama context window when the prompt would otherwise overflow.
+ *
+ * Ollama loads every model with a SERVER default `num_ctx` (historically 2048/4096),
+ * IGNORING the model's advertised `context_length`, unless the request supplies one.
+ * jeo's system prompt + tool protocol + AGENTS context routinely exceeds that, so the
+ * request 400s with "context window" even for a model that natively supports 128k.
+ * We therefore send an explicit `num_ctx`. Precedence: per-call/config value →
+ * `OLLAMA_NUM_CTX`/`OLLAMA_CONTEXT_LENGTH` env → a sane 16384 default. Lower it on
+ * memory-constrained hosts (KV-cache is allocated for the full window).
+ */
+export const DEFAULT_OLLAMA_NUM_CTX = 16384;
+
+export function resolveOllamaNumCtx(explicit?: number): number {
+  if (typeof explicit === "number" && explicit > 0) return Math.floor(explicit);
+  const env = process.env.OLLAMA_NUM_CTX ?? process.env.OLLAMA_CONTEXT_LENGTH;
+  const parsed = env ? Number.parseInt(env, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_OLLAMA_NUM_CTX;
+}
+
 function ollamaRequest(messages: Message[], options: CallOptions, stream: boolean): { url: string; body: string } {
   const model = options.model.startsWith("ollama/") ? options.model.slice(7) : options.model;
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
@@ -28,7 +48,7 @@ function ollamaRequest(messages: Message[], options: CallOptions, stream: boolea
     model,
     messages: chatMessages,
     stream,
-    options: { temperature: options.temperature ?? 0.2, num_predict: options.maxTokens ?? 4000 },
+    options: { temperature: options.temperature ?? 0.2, num_predict: options.maxTokens ?? 4000, num_ctx: resolveOllamaNumCtx(options.numCtx) },
   };
   if (options.jsonMode) payload.format = "json";
   const base = normalizeOllamaBaseUrl(options.baseUrl);

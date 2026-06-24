@@ -2,6 +2,7 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import { type LaunchFlags } from "./flags";
 import { tmuxCopyCommand } from "../../tui/clipboard";
+import { jeoEnv } from "../../util/env";
 
 function hashString(input: string): string {
   let hash = 2166136261;
@@ -277,4 +278,138 @@ export function resolveWorktree(cwd: string, wt: string): string {
     }
   }
   return abs;
+}
+/**
+ * Ownership / idle metadata for one tmux session, parsed from `tmux list-sessions`.
+ * Backs {@link reapStaleTmuxSessions}, the sweep that closes the orphaned-session
+ * leak (detached, long-idle `jeo launch` REPLs each pin tens of MB and pile up
+ * across days — the "jeo/bun 프로세스가 쌓여 메모리가 점점 커진다" report).
+ */
+export interface TmuxSessionInfo {
+  name: string;
+  /** A client is currently attached (someone is viewing it). */
+  attached: boolean;
+  /** Last-activity time, epoch SECONDS (tmux #{session_activity}). */
+  activitySec: number;
+  /** The @jeo-profile marker is set ⇒ jeo created/owns this session. */
+  jeoOwned: boolean;
+}
+
+/** Stable, tab-separated `tmux list-sessions -F` format the reaper parses. */
+export const TMUX_REAP_LIST_FORMAT =
+  "#{session_name}\t#{session_attached}\t#{session_activity}\t#{@jeo-profile}";
+
+/** Parse {@link TMUX_REAP_LIST_FORMAT} output into structured per-session info. */
+export function parseTmuxSessionList(raw: string): TmuxSessionInfo[] {
+  const out: TmuxSessionInfo[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const [name, attached, activity, jeo] = line.split("\t");
+    if (!name) continue;
+    const activitySec = Number(activity);
+    out.push({
+      name,
+      attached: attached === "1",
+      activitySec: Number.isFinite(activitySec) ? activitySec : 0,
+      jeoOwned: jeo === "1",
+    });
+  }
+  return out;
+}
+
+/**
+ * Pure selector: which jeo-owned tmux sessions are safe to reap. A session is
+ * stale when jeo owns it (the @jeo-profile marker), NO client is attached, and it
+ * has been idle longer than `idleMs`. Sessions in `keep` (e.g. the one we are about
+ * to attach) are never selected. The interactive REPL persists its transcript to
+ * `.jeo/sessions/` and is resumable with `--resume`, so reaping an abandoned,
+ * unattached, idle REPL discards only its in-memory live view.
+ */
+export function selectReapableTmuxSessions(
+  sessions: TmuxSessionInfo[],
+  opts: { nowSec: number; idleMs: number; keep?: Iterable<string> },
+): string[] {
+  const keep = new Set(opts.keep ?? []);
+  const idleSec = opts.idleMs / 1000;
+  return sessions
+    .filter(s =>
+      s.jeoOwned &&
+      !s.attached &&
+      !keep.has(s.name) &&
+      opts.nowSec - s.activitySec >= idleSec,
+    )
+    .map(s => s.name);
+}
+
+/** Session reaping is on unless JEO_TMUX_REAP=0. */
+export function tmuxReapEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return jeoEnv("TMUX_REAP", env) !== "0";
+}
+
+/** Idle threshold before an unattached jeo session is reaped (default 6h). 0 reaps every idle one; invalid → default. */
+export function tmuxReapIdleMs(env: Record<string, string | undefined> = process.env): number {
+  const DEFAULT = 6 * 60 * 60 * 1000;
+  const raw = jeoEnv("TMUX_REAP_IDLE_MS", env);
+  if (raw == null) return DEFAULT;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT;
+}
+
+export interface TmuxReapDeps {
+  /** Raw `tmux list-sessions` output (TMUX_REAP_LIST_FORMAT), or null on failure. */
+  list?: () => string | null;
+  /** Kill one session by name. */
+  kill?: (name: string) => void;
+  /** Epoch-ms clock (injectable for tests). */
+  now?: () => number;
+  env?: Record<string, string | undefined>;
+}
+
+/**
+ * Best-effort sweep of orphaned jeo tmux sessions. Each detached, long-idle
+ * `jeo launch` REPL holds tens of MB forever, so over days dozens accumulate and
+ * aggregate RSS climbs monotonically. This reaps the jeo-owned sessions with no
+ * client attached that have outlived the idle TTL — never the freshly created
+ * session(s) in `keep`. Returns the reaped session names. Opt out: JEO_TMUX_REAP=0.
+ */
+export function reapStaleTmuxSessions(
+  tmuxBin: string,
+  keep: Iterable<string> = [],
+  deps: TmuxReapDeps = {},
+): string[] {
+  const env = deps.env ?? process.env;
+  if (!tmuxReapEnabled(env)) return [];
+  const now = deps.now ?? Date.now;
+  const list = deps.list ?? ((): string | null => {
+    try {
+      const res = Bun.spawnSync([tmuxBin, "list-sessions", "-F", TMUX_REAP_LIST_FORMAT], {
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      return res.exitCode === 0 ? res.stdout.toString() : null;
+    } catch {
+      return null;
+    }
+  });
+  const raw = list();
+  if (!raw) return [];
+  const reapable = selectReapableTmuxSessions(parseTmuxSessionList(raw), {
+    nowSec: Math.floor(now() / 1000),
+    idleMs: tmuxReapIdleMs(env),
+    keep,
+  });
+  if (reapable.length === 0) return [];
+  const kill = deps.kill ?? ((name: string): void => {
+    try {
+      Bun.spawnSync([tmuxBin, "kill-session", "-t", `=${name}`], { stdout: "ignore", stderr: "ignore" });
+    } catch {
+      /* best-effort: the session may have died on its own between list and kill */
+    }
+  });
+  const reaped: string[] = [];
+  for (const name of reapable) {
+    kill(name);
+    reaped.push(name);
+  }
+  return reaped;
 }

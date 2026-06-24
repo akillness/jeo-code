@@ -224,3 +224,129 @@ test("openai.stream: unrelated 400s still throw without a retry", async () => {
     globalThis.fetch = prevFetch;
   }
 });
+// LM Studio / local reasoning-model recovery: when `content` comes back empty but the
+// model routed its whole reply (JSON tool call included) into the reasoning channel —
+// inline <think> or a structured reasoning_content delta — recover that text instead of
+// dying with "OpenAI returned no content". A length/content_filter finish stays a hard error.
+
+test("openai.stream: empty content + JSON inside <think> recovers the tool call", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      sse([
+        'data: {"choices":[{"delta":{"content":"<think>"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"{\\"tool\\":\\"done\\",\\"arguments\\":{\\"reason\\":\\"ok\\"}}"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"</think>"},"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )) as typeof fetch;
+  try {
+    let text = "";
+    for await (const d of openaiAdapter.stream!([{ role: "user", content: "x" }], { model: "local-model", baseUrl: "http://localhost:1234/v1" }, openaiCred)) text += d;
+    expect(text).toContain('"tool":"done"');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("openai.stream: empty content + structured reasoning_content recovers it", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      sse([
+        'data: {"choices":[{"delta":{"reasoning_content":"the answer is 42"},"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )) as typeof fetch;
+  try {
+    let text = "";
+    for await (const d of openaiAdapter.stream!([{ role: "user", content: "x" }], { model: "local-model", baseUrl: "http://localhost:1234/v1" }, openaiCred)) text += d;
+    expect(text).toBe("the answer is 42");
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("openai.stream: empty content + finish_reason=length still throws (reasoning is truncated, not an answer)", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      sse([
+        'data: {"choices":[{"delta":{"reasoning_content":"thinking but cut off"},"finish_reason":"length"}]}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )) as typeof fetch;
+  try {
+    const run = async () => {
+      for await (const _ of openaiAdapter.stream!([{ role: "user", content: "x" }], { model: "local-model", baseUrl: "http://localhost:1234/v1" }, openaiCred)) { /* none */ }
+    };
+    const err = await run().catch(e => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toContain("finish_reason=length");
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("openai.stream: finish_reason=length but a COMPLETE tool envelope in reasoning is salvaged", async () => {
+  // A local thinking model that finished the actionable JSON before its token budget ran
+  // out: the trailing prose is truncated, but the `{"tool":…}` object is complete and valid,
+  // so we recover it rather than burning the turn on "no content".
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      sse([
+        'data: {"choices":[{"delta":{"reasoning_content":"Let me think. I will run the test. {\\"tool\\":\\"bash\\",\\"arguments\\":{\\"command\\":\\"bun test\\"}} then I sho"},"finish_reason":"length"}]}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )) as typeof fetch;
+  try {
+    let out = "";
+    for await (const d of openaiAdapter.stream!([{ role: "user", content: "x" }], { model: "local-model", baseUrl: "http://localhost:1234/v1" }, openaiCred)) out += d;
+    expect(out).toBe('{"tool":"bash","arguments":{"command":"bun test"}}');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("openai.stream: finish_reason=length with only an INCOMPLETE JSON fragment still throws", async () => {
+  // The JSON envelope was cut mid-object — nothing safe to salvage, so surface the
+  // actionable budget error instead of yielding a broken fragment that just bounces.
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      sse([
+        'data: {"choices":[{"delta":{"reasoning_content":"ok here goes {\\"tool\\":\\"bash\\",\\"argum"},"finish_reason":"length"}]}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )) as typeof fetch;
+  try {
+    const run = async () => {
+      for await (const _ of openaiAdapter.stream!([{ role: "user", content: "x" }], { model: "local-model", baseUrl: "http://localhost:1234/v1" }, openaiCred)) { /* none */ }
+    };
+    const err = await run().catch(e => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toContain("finish_reason=length");
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("openai.call: empty content + reasoning_content recovers the reply", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ choices: [{ message: { content: "", reasoning_content: '{"tool":"done","arguments":{"reason":"hi"}}' }, finish_reason: "stop" }] }), {
+      status: 200, headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+  try {
+    const text = await openaiAdapter.call([{ role: "user", content: "x" }], { model: "local-model", baseUrl: "http://localhost:1234/v1" }, openaiCred);
+    expect(text).toContain('"tool":"done"');
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});

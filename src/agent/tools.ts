@@ -805,7 +805,7 @@ async function spawnTextWithTimeout(
   timeoutMs = 60_000,
 ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }> {
   // stdin detached so a command that reads stdin gets EOF instead of blocking.
-  const proc = Bun.spawn(cmd, { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(cmd, { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { ...process.env, MSYS: "noglob" } });
   let timedOut = false;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader() as ReadableStreamDefaultReader<Uint8Array>;
@@ -863,7 +863,8 @@ export async function findTool(
       const prunedDirs = new Set([...IGNORED_DIRS, ...gi.dirs]);
       const fileGlobs = gi.fileGlobs.map(g => new Bun.Glob(g));
       const matches: string[] = [];
-      for await (const rel of new Bun.Glob(globPattern).scan({ cwd, onlyFiles: true })) {
+      for await (const rawRel of new Bun.Glob(globPattern).scan({ cwd, onlyFiles: true })) {
+        const rel = rawRel.replace(/\\/g, "/");
         const segs = rel.split("/");
         if (segs.some(seg => prunedDirs.has(seg))) continue;
         const base = segs[segs.length - 1] ?? rel;

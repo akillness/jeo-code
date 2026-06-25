@@ -431,8 +431,8 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
     // LLM summary failure does not halt team
   }
 
+  let fileMutations = 0; // round-8 parent audit: successful write/edit/mkdir/delete
   let bashRuns = 0;      // bash counted apart so read-only bash isn't edit evidence
-                        // (the actual write/edit set comes from result.mutatedFiles)
   const result = await runAgentLoop(history, {
     cwd: ctx.cwd,
     model,
@@ -458,7 +458,10 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
         }
       },
       onToolResult: (tool, ok) => {
-        if (ok && tool === "bash") bashRuns++;
+        if (ok) {
+          if (tool === "write" || tool === "edit" || tool === "mkdir" || tool === "delete") fileMutations++;
+          else if (tool === "bash") bashRuns++;
+        }
         log(formatRalphStreamEvent(ok ? "complete" : "error", `tool ${tool}`, renderOpts));
       },
       onNotice: msg => log(formatRalphStreamEvent("step", msg, renderOpts)),
@@ -483,15 +486,7 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
     return false;
   }
 
-  // Collect/return the run's code artifacts: the engine reports every file the
-  // subagent actually wrote/edited, so the task's change set is concrete instead of
-  // an unverifiable prose claim. An empty list ⇒ no observed file mutation.
-  const changedFiles = result.mutatedFiles ?? [];
-  if (changedFiles.length > 0) {
-    log(formatRalphStreamEvent("complete", `${role.title} changed ${changedFiles.length} file(s): ${changedFiles.join(", ")}`, renderOpts));
-  }
-
-  if (!role.readOnly && changedFiles.length === 0) {
+  if (!role.readOnly && fileMutations === 0) {
     // Round-8: a mutating role finished without a successful file mutation — the
     // task may be legitimately read-only, but its "Changed Files:" claim is
     // unverified. bash is tracked apart: an only-bash run MIGHT have mutated.

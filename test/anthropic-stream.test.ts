@@ -221,6 +221,9 @@ test("anthropicPayload: opus 4.7/4.8 use ADAPTIVE thinking with display:summariz
   expect(payload("claude-sonnet-4-6", "low").output_config).toEqual({ effort: "low" });
 
   // Sonnet 4.5: budget-effort transport (budget_tokens + output_config effort + display).
+  const sonnet45 = payload("claude-sonnet-4-5", "medium");
+  expect(sonnet45.thinking).toEqual({ type: "enabled", budget_tokens: 10000, display: "summarized" });
+  expect(sonnet45.output_config).toEqual({ effort: "medium" });
 });
 test("anthropicRequest: interleaved-thinking beta is dropped for adaptive-display models (opus 4.7+)", () => {
   const messages = [{ role: "user" as const, content: "hi" }];

@@ -207,12 +207,12 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     const trace: string[] = [];
     let lastTarget = "";
     let currentStep = 0;
-    // Round-8 (architect ref 7-Round7Workflow): track whether the subagent ran any
-    // bash so the parent can audit a "Changed Files:" claim against observed reality.
-    // The actual set of written/edited files comes from the engine result
-    // (result.mutatedFiles); bash is tracked apart because read-only bash (e.g.
-    // `bun test`) is not edit evidence, yet bash CAN mutate — so the audit can tell
-    // "no action at all" from "only bash ran".
+    // Round-8 (architect ref 7-Round7Workflow): count the subagent's SUCCESSFUL
+    // calls so the parent can audit a "Changed Files:" claim against observed
+    // reality. File-writing tools (write/edit/mkdir/delete) are tracked apart from
+    // bash: read-only bash (e.g. `bun test`) MUST NOT count as edit evidence, but
+    // bash CAN mutate, so the audit message distinguishes the two cases.
+    let fileMutations = 0;
     let bashRuns = 0;
     emit({ role: role.id, kind: "start", detail: taskText, maxSteps, model });
     const result = await runAgentLoop(history, {
@@ -236,7 +236,10 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
           }
         },
         onToolResult: (tool, success, output) => {
-          if (success && tool === "bash") bashRuns++;
+          if (success) {
+            if (tool === "write" || tool === "edit" || tool === "mkdir" || tool === "delete") fileMutations++;
+            else if (tool === "bash") bashRuns++;
+          }
           const label = lastTarget || tool;
           const summary = firstUsefulLine(output);
           const suffix = summary ? ` — ${summary}` : "";
@@ -260,24 +263,16 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     const tokNote = result.usage ? `, ${result.usage.inputTokens + result.usage.outputTokens} tok` : "";
     const header = `[${role.title} subagent] ${complete ? "completed" : "stopped"} in ${result.steps} step(s) on ${model}${tokNote}.`;
     const body = trace.length ? `\nSteps:\n${trace.join("\n")}` : "";
-    // Collect/return the run's code artifacts: the engine reports every file the
-    // subagent actually wrote/edited, so the parent (and any orchestrator above it)
-    // gets a CONCRETE change set instead of an unverifiable "Changed Files:" prose
-    // claim. Empty list ⇒ no observed file mutation.
-    const changedFiles = result.mutatedFiles ?? [];
-    const artifactNote = changedFiles.length
-      ? `\nChanged files (${changedFiles.length}): ${changedFiles.join(", ")}`
-      : "";
     // Parent-side audit: a mutating role that "completed" without a successful file
-    // mutation (write/edit) likely changed nothing — flag the claim. bash is tracked
-    // separately: it CAN mutate, so an only-bash run downgrades to "verify
-    // independently" instead of the stronger UNVERIFIED.
-    const audit = complete && !role.readOnly && changedFiles.length === 0
+    // mutation (write/edit/mkdir/delete) likely changed nothing — flag the claim.
+    // bash is tracked separately: it CAN mutate, so an only-bash run downgrades to
+    // "verify independently" instead of the stronger UNVERIFIED.
+    const audit = complete && !role.readOnly && fileMutations === 0
       ? bashRuns === 0
         ? `\n[parent audit] No successful write/edit/bash was observed in this run — treat any "Changed Files:" claims above as UNVERIFIED.`
         : `\n[parent audit] No successful write/edit was observed (only bash ran); bash may or may not have mutated files — verify any "Changed Files:" claims above independently.`
       : "";
-    return { success: complete, output: `${header}${body}${artifactNote}\n\nResult:\n${fenceSubagentReport(detail)}${audit}` };
+    return { success: complete, output: `${header}${body}\n\nResult:\n${fenceSubagentReport(detail)}${audit}` };
   };
 
   return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {

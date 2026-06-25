@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
 
+## [0.7.15] - 2026-06-25
+_Rollback release: the runtime source and test suite are restored to the **0.7.9** state. The intervening 0.7.10–0.7.14 runtime changes (quiet-mode/`-q`, `/resume` transcript rework, `mutatedFiles` plumbing, Ollama `num_ctx`, tmux REPL reaping, and related engine/provider/TUI edits) are reverted. Published as a new version because npm cannot re-issue an existing version number; `latest` now serves code identical to 0.7.9._
+
+### Changed
+- **`src/` and `test/` reverted to the v0.7.9 tree.** Every runtime and test file is byte-identical to the `v0.7.9` tag; the post-0.7.9 test `test/mutated-files-artifacts.test.ts` is removed along with the feature it covered.
+
+### Notes
+- Release tooling (`scripts/ci-release-build-binaries.ts`, keeping the `bun-darwin-x64-baseline` target for older-CPU compatibility) and documentation history (this CHANGELOG, READMEs) are intentionally **not** rolled back, since they are not part of the user-facing runtime and reverting them would regress binary compatibility or erase the record of what was shipped.
+
 ## [0.7.14] - 2026-06-25
 _Quieter, cleaner output: a new `-q`/`--quiet` flag strips launch banners and courtesy logs, `/resume` no longer dumps walls of raw escaped JSON into scrollback, and a turn that edits files now reliably surfaces those paths to orchestrators._
 

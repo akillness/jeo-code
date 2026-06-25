@@ -299,6 +299,7 @@ export function renderHelp(ctx: DispatchContext): string {
   lines.push("Options:");
   lines.push("  -v, --version    Show version.");
   lines.push("  -h, --help       Show help.");
+  lines.push("  -q, --quiet      Suppress startup banners and logs.");
   lines.push("      --model <id>             Use a session model for launch/one-shot.");
   lines.push("      --provider <name>        Start launch on a provider default (anthropic/openai/gemini/antigravity/ollama).");
   lines.push("      --smol|--slow|--plan     Start launch with the configured model role tier.");
@@ -320,7 +321,7 @@ export function renderCommandHelp(spec: CommandSpec, ctx: DispatchContext): stri
 const VALUE_FLAGS = new Set(["--worktree", "--model", "--provider", "--thinking", "--max-steps", "--append-system-prompt", "--skills", "--tools", "--system-prompt"]);
 const OPTIONAL_UUID_FLAGS = new Set(["--resume", "--continue", "-c"]);
 const VALUE_PREFIXES = ["--worktree=", "--model=", "--provider=", "--thinking=", "--max-steps=", "--append-system-prompt=", "--skills=", "--tools=", "--system-prompt="];
-const LAUNCH_ONLY_FLAGS = new Set(["--tmux", "--no-tui", "--no-session", "--list", "--smol", "--slow", "--plan", "-p", "--print", "--no-skills", "--no-tools"]);
+const LAUNCH_ONLY_FLAGS = new Set(["--tmux", "--no-tui", "--no-session", "--list", "--smol", "--slow", "--plan", "-p", "--print", "-q", "--quiet", "--no-skills", "--no-tools"]);
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function flagName(arg: string): string {

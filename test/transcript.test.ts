@@ -128,6 +128,57 @@ test("formatTranscript keeps a prose reply that merely CONTAINS a JSON snippet",
   expect(out).toContain("here is what that means"); // prose preserved, not dropped/misrendered
 });
 
+test("formatTranscript renders a PROSE-PREFIXED tool call as a ledger line, not raw JSON (/resume wall-of-data fix)", () => {
+  // gpt/qwen-style: narration sentence, THEN the JSON tool call in the SAME message.
+  const content =
+    "OKF 갭을 메우는 작업을 진행합니다. 먼저 관련 코드를 읽습니다." +
+    JSON.stringify({ tool: "read", arguments: { filePath: "src/agent/memory.ts", lineRange: "1-130" } });
+  const messages: Message[] = [
+    { role: "user", content: "이어서 진행해" },
+    { role: "assistant", content },
+    { role: "user", content: "Tool [read] result (ok):\n1ly|/**" },
+  ];
+  const out = formatTranscript(messages, { color: false, unicode: true }).map(stripAnsi).join("\n");
+  expect(out).toMatch(/✔ Read/);              // rendered as a compact ledger line
+  expect(out).not.toContain('"filePath"');    // raw JSON arguments never leak into scrollback
+  expect(out).not.toContain('{"tool"');
+  expect(out).toContain("먼저 관련 코드를 읽습니다"); // the narration is preserved (dimmed)
+});
+
+test("formatTranscript renders a REASONING-prefixed tool call as a ledger line, not raw JSON", () => {
+  // The protocol allows a leading `"reasoning"` field on the tool-call object.
+  const content = JSON.stringify({
+    reasoning: "Let's search for distill in src/cli/.",
+    tool: "search",
+    arguments: { pattern: "distill", globPattern: "src/cli/**/*.ts" },
+  });
+  const messages: Message[] = [
+    { role: "user", content: "find distill" },
+    { role: "assistant", content },
+    { role: "user", content: "Tool [search] result (ok):\nsrc/cli/runner.ts" },
+  ];
+  const out = formatTranscript(messages, { color: false, unicode: true }).map(stripAnsi).join("\n");
+  expect(out).toMatch(/✔ Search/);
+  expect(out).not.toContain('"globPattern"'); // raw arguments never leak
+  expect(out).not.toContain('"reasoning"');
+  expect(out).toContain("Let's search for distill"); // reasoning surfaced as narration
+});
+
+test("formatTranscript never dumps a malformed/truncated tool-call JSON body", () => {
+  // A bounced reply: giant reasoning blob then a TRUNCATED (unparseable) tool object.
+  const content =
+    '{"reasoning":"' + "x".repeat(400) + '","tool":"todo","arguments":{"todos":[{"title":"a","status":"pending"}]'; // missing closing braces
+  const messages: Message[] = [
+    { role: "user", content: "go" },
+    { role: "assistant", content },
+    { role: "user", content: "Your last reply was not a valid tool call (oops). Resend it." },
+  ];
+  const out = formatTranscript(messages, { color: false, unicode: true }).map(stripAnsi).join("\n");
+  expect(out).not.toContain('"todos"');   // the broken escaped JSON is suppressed
+  expect(out).not.toContain('{"reasoning"');
+  expect(out).not.toContain('"status":"pending"');
+});
+
 test("formatTranscript renders persisted reasoning above the reply (think → answer)", () => {
   const messages: Message[] = [
     { role: "user", content: "what is 2+2" },

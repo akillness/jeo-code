@@ -149,6 +149,18 @@ jeo ultragoal
 `jeo`는 `.jeo/memory/` 아래에 **로컬 우선·증류된 프로젝트 메모리**를 둡니다(원격 백엔드 없음, 네이티브 의존성 0). 지난 세션은 [OKF](docs/okf_mem/) 개념 번들로 증류되고, 다음 세션은 관련성 높은 예산 한도 내 일부만 시스템 프롬프트로 다시 주입합니다 — 지시가 아닌 DATA로 강화 처리됩니다. `JEO_NO_MEMORY=1`로 전체 비활성화.
 
 **마이그레이션 (`jeo memory-migrate`, 1회성 · 멱등).** 레거시 단일 문서 `MEMORY.md`를 무손실로 번들로 변환합니다: `## 헤딩 → 타입`, 각 불릿 → 타입별 개념, 들여쓴 줄 → 본문; `index.md`/`log.md`를 재생성하고 원본은 `MEMORY.md.bak`으로 이름을 바꿉니다. 번들에 개념이 생긴 뒤 재실행은 no-op입니다. **롤백:** `JEO_MEMORY_LEGACY=1`은 번들을 무시하고 동일한 주입 강화 처리로 `MEMORY.md`/`.bak`를 읽습니다(`JEO_NO_MEMORY=1`이 모든 것에 우선).
+## 기존 에이전트 또는 봇과 함께 작동 (Works beside your existing agent or bot)
+
+| 도구 또는 봇 | 권장 jeo 명령 | 경계 |
+| ----------- | ----------------------- | -------- |
+| Codex CLI | `jeo --tmux` 또는 `jeo` | 형제 tmux 세션 또는 인라인으로 실행됩니다. |
+| Claude Code | `jeo --tmux` 또는 `jeo` | jeo는 Claude Code 확장 프로그램이 되지 않습니다. |
+| OpenCode | `jeo` 또는 `jeo --tmux` | 현재는 외부 러너 워크플로만 지원합니다. |
+| Claw Code | `jeo --tmux` | jeo는 Claw Code에 설치되거나 대체되지 않습니다. |
+| 외부 컨트롤러 / 봇 | `jeo` (또는 사용자 정의 통합) | 외부 컨트롤러는 표준 터미널/CLI 인터페이스를 통해 jeo를 구동합니다. |
+
+`-q`/`--quiet` (또는 `JEO_QUIET=1`)를 추가하면 시작 배너, 환영 애니메이션, 릴리스 노트, 재개 힌트가 억제되어 jeo를 다른 에이전트와 나란히 실행하거나 봇으로 구동할 수 있습니다. `-p`/`--print`는 quiet를 함의합니다.
+
 
 ## 로컬 모델
 

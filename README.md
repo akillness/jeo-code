@@ -150,6 +150,18 @@ Non-zero hook output is appended to the tool result the model reads (deduped per
 `jeo` keeps a **local-first, distilled project memory** under `.jeo/memory/` (no remote backend, zero native deps). Past sessions are distilled into an [OKF](docs/okf_mem/) concept bundle, and the next session injects only the relevant, budget-bounded slice back into the system prompt — hardened as DATA, never as instructions. Disable everything with `JEO_NO_MEMORY=1`.
 
 **Migration (`jeo memory-migrate`, one-shot · idempotent).** A legacy single-doc `MEMORY.md` is converted losslessly into the bundle: `## heading → type`, each bullet → a typed concept, indented lines → body; `index.md`/`log.md` are rebuilt and the original is renamed to `MEMORY.md.bak`. Re-running is a no-op once the bundle has concepts. **Rollback:** `JEO_MEMORY_LEGACY=1` ignores the bundle and reads `MEMORY.md`/`.bak` through the same injection-hardening (`JEO_NO_MEMORY=1` still wins over everything).
+## Works beside your existing agent or bot
+
+| Tool or bot | Recommended jeo command | Boundary |
+| ----------- | ----------------------- | -------- |
+| Codex CLI | `jeo --tmux` or `jeo` | Runs in a sibling tmux session or inline. |
+| Claude Code | `jeo --tmux` or `jeo` | jeo does not become a Claude Code extension. |
+| OpenCode | `jeo` or `jeo --tmux` | External-runner workflow only. |
+| Claw Code | `jeo --tmux` | jeo does not install into or replace Claw Code. |
+| External controller / bot | `jeo` (or custom integrations) | External controllers drive jeo through standard terminal/CLI interfaces. |
+
+Add `-q`/`--quiet` (or `JEO_QUIET=1`) to suppress startup banners, welcome animation, release notes, and resume hints so jeo can run cleanly beside another agent or be driven by a bot. `-p`/`--print` implies quiet.
+
 
 ## Local models
 

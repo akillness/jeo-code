@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
 
-## [Unreleased]
+## [0.7.14] - 2026-06-25
+_Quieter, cleaner output: a new `-q`/`--quiet` flag strips launch banners and courtesy logs, `/resume` no longer dumps walls of raw escaped JSON into scrollback, and a turn that edits files now reliably surfaces those paths to orchestrators._
+
+### Added
+- **`-q`/`--quiet` suppresses startup chrome.** `jeo launch -q` (and one-shot `-p`) skips the welcome box, the "what's new" release notes, the `(plain output)` / resume-hint footers, and the background "session memory distilling" line — so piped, CI, and minimal-terminal runs get just the agent's output instead of the full interactive banner set. The flag is wired through the runner (`-q`/`--quiet` help + launch-only flag set) and `parseFlags`.
 
 ### Fixed
+- **`/resume` no longer renders a wall of raw escaped JSON.** The transcript formatter extracts an embedded tool call from anywhere in an assistant message (mirroring the engine's own `extractJsonObject`) instead of only when the content begins with `{`, and distinguishes a genuine prose-prefixed call (followed by its `Tool [x] result`) from an illustrative JSON snippet quoted inside prose. Pre-call narration is kept (dimmed) and a leading `"reasoning"` field is surfaced clipped; the raw multi-line edit/write payloads never reach scrollback.
 - **A turn that actually edits files now surfaces those paths, fixing the orchestrator "Agent finished but made zero valid code changes (finalArtifacts is empty)" failure.** `runAgentLoop` records every file a turn SUCCESSFULLY writes/edits and returns it as `AgentLoopResult.mutatedFiles` (repo-relative, sorted, de-duped; omitted when nothing mutated). The `task` subagent (`src/agent/task-tool.ts`) and the `team` executor (`src/commands/team.ts`) now derive their change set from this concrete list instead of an out-of-band tool counter, append a "Changed files (N): …" note to the subagent report, and base the parent UNVERIFIED/verify-independently audit on it — so a caller (or an external orchestrator like jeo-claw) collects the run's real code artifacts rather than inferring an empty change set after real edits. `.specify/` is also un-ignored in `.gitignore` so spec/plan artifacts written there are visible to a git-based artifact collector.
 
 ## [0.7.9] - 2026-06-24

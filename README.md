@@ -150,6 +150,18 @@ Non-zero hook output is appended to the tool result the model reads (deduped per
 `jeo` keeps a **local-first, distilled project memory** under `.jeo/memory/` (no remote backend, zero native deps). Past sessions are distilled into an [OKF](docs/okf_mem/) concept bundle, and the next session injects only the relevant, budget-bounded slice back into the system prompt — hardened as DATA, never as instructions. Disable everything with `JEO_NO_MEMORY=1`.
 
 **Migration (`jeo memory-migrate`, one-shot · idempotent).** A legacy single-doc `MEMORY.md` is converted losslessly into the bundle: `## heading → type`, each bullet → a typed concept, indented lines → body; `index.md`/`log.md` are rebuilt and the original is renamed to `MEMORY.md.bak`. Re-running is a no-op once the bundle has concepts. **Rollback:** `JEO_MEMORY_LEGACY=1` ignores the bundle and reads `MEMORY.md`/`.bak` through the same injection-hardening (`JEO_NO_MEMORY=1` still wins over everything).
+## Works beside your existing agent or bot
+
+| Tool or bot | Recommended jeo command | Boundary |
+| ----------- | ----------------------- | -------- |
+| Codex CLI | `jeo --tmux` or `jeo` | Runs in a sibling tmux session or inline. |
+| Claude Code | `jeo --tmux` or `jeo` | jeo does not become a Claude Code extension. |
+| OpenCode | `jeo` or `jeo --tmux` | External-runner workflow only. |
+| Claw Code | `jeo --tmux` | jeo does not install into or replace Claw Code. |
+| External controller / bot | `jeo` (or custom integrations) | External controllers drive jeo through standard terminal/CLI interfaces. |
+
+Add `-q`/`--quiet` (or `JEO_QUIET=1`) to suppress startup banners, welcome animation, release notes, and resume hints so jeo can run cleanly beside another agent or be driven by a bot. `-p`/`--print` implies quiet.
+
 
 ## Local models
 
@@ -195,7 +207,7 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]**
+- **[0.7.14]** (2026-06-25) — Quieter, cleaner output: a new `-q`/`--quiet` flag strips launch banners and courtesy logs, `/resume` no longer dumps walls of raw escaped JSON into scrollback, and a turn that edits files now reliably surfaces those paths to orchestrators.
 - **[0.7.9]** (2026-06-24) — Local model providers actually run, and OAuth/login hygiene: Ollama requests now carry an explicit `num_ctx` so jeo's large system prompt no longer overflows Ollama's small default window (the "ollama 모델이 안 돌아간다" blocker), LM Studio reasoning models that emit the whole reply on the reasoning channel are recovered instead of dying empty, GGUF chat templates that can't render the `tools` array are retried with native tools stripped, the OAuth success tab auto-closes with a clear hint, the effective-credential picker prefers a verified OAuth login over a stray API key, and abandoned idle `jeo` tmux REPL sessions are reaped on launch.
 - **[0.7.8]** (2026-06-24) — Long-session performance & resource hygiene: the detached memory-distill worker now always terminates itself (closing the `jeo memory-distill` orphan pileup that pinned each session's transcript in RSS), the live reasoning/output block re-wraps only its trailing window (O(tail) per frame instead of O(len²) over a long stream), the team loop stops reprinting the todo guide every iteration, and the readline caret stays aligned after an image attach.
 - **[0.7.7]** (2026-06-23) — Long-running-process hygiene & input robustness: backgrounded grandchildren (`next dev &`, daemons) are now reaped at the turn boundary via per-command process groups — closing the climbing `next-server` RSS leak — while the prompt gains recursive fuzzy `@path` search, ANSI-safe and idle-merged bracketed paste, a configurable OSC 52 clipboard cap, per-role ralplan model routing, and leaked-reasoning-tag stripping on salvaged answers.

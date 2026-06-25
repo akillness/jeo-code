@@ -45,6 +45,17 @@ test("parseFlags captures model role tiers without consuming the prompt", () => 
   expect(plan.message).toBe("draft");
 });
 
+test("parseFlags captures -q/--quiet for embedded 'works beside your agent' runs", () => {
+  // Quiet mode suppresses startup banners/logs so jeo can run beside another agent/bot.
+  expect(parseFlags([]).quiet).toBe(false);
+  expect(parseFlags(["--quiet", "do", "it"]).quiet).toBe(true);
+  expect(parseFlags(["--quiet", "do", "it"]).message).toBe("do it");
+  expect(parseFlags(["-q", "go"]).quiet).toBe(true);
+  // -q is launch-only and never consumed as prompt text.
+  expect(parseFlags(["-q", "go"]).message).toBe("go");
+});
+
+
 test("parseFlags records invalid provider/thinking values as launch errors", () => {
   const flags = parseFlags(["--provider", "bogus", "--thinking", "extreme", "hello"]);
   expect(flags.provider).toBeUndefined();

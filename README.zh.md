@@ -149,6 +149,18 @@ jeo ultragoal
 `jeo` 在 `.jeo/memory/` 下保存 **本地优先、蒸馏后的项目内存**(无远程后端,零原生依赖)。过往会话被蒸馏为 [OKF](docs/okf_mem/) 概念包,下一次会话仅把相关的、受预算约束的切片重新注入系统提示 —— 作为 DATA 而非指令加固。用 `JEO_NO_MEMORY=1` 完全禁用。
 
 **迁移(`jeo memory-migrate`,一次性 · 幂等).** 把旧版单文档 `MEMORY.md` 无损转换为概念包: `## 标题 → 类型`,每个项目符号 → 一个类型化概念,缩进行 → 正文; 重建 `index.md`/`log.md`,并把原文件重命名为 `MEMORY.md.bak`。一旦概念包中已有概念,再次运行即为 no-op。**回滚:** `JEO_MEMORY_LEGACY=1` 忽略概念包,通过相同的注入加固读取 `MEMORY.md`/`.bak`(`JEO_NO_MEMORY=1` 仍优先于一切)。
+## 与您现有的代理或机器人协同工作 (Works beside your existing agent or bot)
+
+| 工具或机器人 | 推荐的 jeo 命令 | 边界 |
+| ----------- | ----------------------- | -------- |
+| Codex CLI | `jeo --tmux` 或 `jeo` | 在同级 tmux 会话中运行或内联运行。 |
+| Claude Code | `jeo --tmux` 或 `jeo` | jeo 不会成为 Claude Code 的扩展。 |
+| OpenCode | `jeo` 或 `jeo --tmux` | 仅限外部运行器工作流。 |
+| Claw Code | `jeo --tmux` | jeo 不会安装到或替换 Claw Code。 |
+| 外部控制器 / 机器人 | `jeo` (或自定义集成) | 外部控制器通过标准终端/CLI 接口驱动 jeo。 |
+
+添加 `-q`/`--quiet`（或 `JEO_QUIET=1`）可抑制启动横幅、欢迎动画、发布说明和恢复提示，使 jeo 能够与其他代理并行运行或由机器人驱动。`-p`/`--print` 隐含 quiet。
+
 
 ## 本地模型
 
@@ -193,7 +205,7 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
-- **[Unreleased]**
+- **[0.7.14]** (2026-06-25) — Quieter, cleaner output: a new `-q`/`--quiet` flag strips launch banners and courtesy logs, `/resume` no longer dumps walls of raw escaped JSON into scrollback, and a turn that edits files now reliably surfaces those paths to orchestrators.
 - **[0.7.9]** (2026-06-24) — Local model providers actually run, and OAuth/login hygiene: Ollama requests now carry an explicit `num_ctx` so jeo's large system prompt no longer overflows Ollama's small default window (the "ollama 모델이 안 돌아간다" blocker), LM Studio reasoning models that emit the whole reply on the reasoning channel are recovered instead of dying empty, GGUF chat templates that can't render the `tools` array are retried with native tools stripped, the OAuth success tab auto-closes with a clear hint, the effective-credential picker prefers a verified OAuth login over a stray API key, and abandoned idle `jeo` tmux REPL sessions are reaped on launch.
 - **[0.7.8]** (2026-06-24) — Long-session performance & resource hygiene: the detached memory-distill worker now always terminates itself (closing the `jeo memory-distill` orphan pileup that pinned each session's transcript in RSS), the live reasoning/output block re-wraps only its trailing window (O(tail) per frame instead of O(len²) over a long stream), the team loop stops reprinting the todo guide every iteration, and the readline caret stays aligned after an image attach.
 - **[0.7.7]** (2026-06-23) — Long-running-process hygiene & input robustness: backgrounded grandchildren (`next dev &`, daemons) are now reaped at the turn boundary via per-command process groups — closing the climbing `next-server` RSS leak — while the prompt gains recursive fuzzy `@path` search, ANSI-safe and idle-merged bracketed paste, a configurable OSC 52 clipboard cap, per-role ralplan model routing, and leaked-reasoning-tag stripping on salvaged answers.

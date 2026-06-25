@@ -108,19 +108,45 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
       continue;
     }
     // assistant: a JSON tool call (compact ledger lines) or a prose/done reply.
-    // A tool-call message IS a JSON object (optionally inside a ```json fence) — so
-    // only parse when the content actually begins with `{` after stripping a leading
-    // fence. This renders fenced/decorated tool calls as cards (the "/resume shows
-    // raw JSON and breaks the TUI" bug — naive JSON.parse failed on any fence and
-    // dumped the block) while prose that merely CONTAINS tool-like JSON stays prose.
-    const stripped = m.content.trim().replace(/^```(?:json)?[ \t]*\r?\n?/i, "").trimStart();
-    const looksLikeCall = stripped.startsWith("{");
-    const parsed = looksLikeCall
-      ? tryExtractJsonObject<{ tool?: unknown; tools?: unknown; arguments?: unknown }>(
-          m.content,
-          { preferKeys: ["tool", "tools"] },
-        )
-      : null;
+    // A tool-call message is a JSON object that may be preceded by a ```json fence
+    // AND/OR by model "think-aloud" prose — gpt/qwen-style replies narrate a sentence
+    // and then append the JSON tool call in the SAME message. Extract the embedded
+    // call from anywhere in the content (mirroring the engine's own extractJsonObject)
+    // instead of gating on a leading `{`: that gate classified every prose-prefixed
+    // call as plain prose and dumped the raw object — including escaped multi-line
+    // edit/write payloads — verbatim into scrollback (the "/resume reads a wall of
+    // broken escaped data" bug). The narration is kept (dimmed); the raw JSON never is.
+    const parsed = tryExtractJsonObject<{ tool?: unknown; tools?: unknown; arguments?: unknown }>(
+      m.content,
+      { preferKeys: ["tool", "tools"] },
+    );
+    const isCall = !!parsed && (typeof parsed.tool === "string" || Array.isArray(parsed.tools));
+    // The protocol allows a leading `"reasoning"` field on a tool call; surface that
+    // narration (clipped) instead of losing it, and never re-dump it as raw JSON.
+    const reasoningText = parsed && typeof (parsed as { reasoning?: unknown }).reasoning === "string"
+      ? String((parsed as { reasoning?: unknown }).reasoning).trim()
+      : "";
+    // `looksLikeToolAttempt` flags a (possibly malformed/truncated) tool call so its
+    // raw JSON is suppressed even when parsing fails — e.g. a bounced reply the model
+    // later resent. Prose narrating a call is the text BEFORE the first `{` (the start
+    // of the parsed object): a prose-prefixed call keeps its lead-in; a JSON-first or
+    // reasoning-first call has none (its narration comes from `reasoningText`).
+    const looksLikeToolAttempt = /\{\s*"tools?"\s*:/.test(m.content);
+    const firstBrace = m.content.indexOf("{");
+    const prosePrefix = firstBrace > 0
+      ? m.content.slice(0, firstBrace).replace(/```(?:json)?[ \t]*\r?\n?/i, "").trim()
+      : "";
+
+    // A reply whose content (after an optional ```json fence) STARTS with `{` is a JSON
+    // emission, not prose — even a giant malformed reasoning blob the model couldn't close.
+    const startsWithJson = m.content.trimStart().replace(/^```(?:json)?[ \t]*\r?\n?/i, "").startsWith("{");
+    // Any JSON object/tool-call emission — fenced, prose-prefixed, reasoning-prefixed,
+    // or one we could not parse into a renderable call — must never reach scrollback as
+    // raw escaped JSON (the "/resume reads a wall of broken data" report).
+    const isJsonEmission = looksLikeToolAttempt || startsWithJson;
+    const narration = prosePrefix || reasoningText;
+
+
     const calls: { tool: string; arguments?: unknown }[] =
       parsed && typeof parsed.tool === "string"
         ? [{ tool: parsed.tool, arguments: parsed.arguments }]
@@ -130,13 +156,27 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
               .map(c => ({ tool: c.tool as string, arguments: c.arguments }))
           : [];
     const toolCalls = calls.filter(c => c.tool !== "done");
-    if (toolCalls.length > 0) {
+    // A genuine tool-call turn is FOLLOWED by its `Tool [x] result` user message and the
+    // JSON is the final token; an illustrative JSON snippet quoted inside a prose reply is
+    // not, and it carries meaningful prose AFTER the object. Use both signals so a real
+    // prose-prefixed call renders as a ledger line while a sentence that merely shows
+    // `{"tool":...}` as an example stays prose.
+    const next = messages[i + 1];
+    const hasResult = next?.role === "user" && TOOL_RESULT_RE.test(next.content);
+    const lastBrace = m.content.lastIndexOf("}");
+    const trailing = lastBrace >= 0 ? m.content.slice(lastBrace + 1).trim() : "";
+    // A reply that STARTS with `{` is never illustrative prose — it is a (possibly
+    // malformed) JSON emission whose raw body must stay out of scrollback.
+    const looksIllustrative = !startsWithJson && !hasResult && trailing.length > 12 && /[A-Za-z]/.test(trailing);
+
+    if (toolCalls.length > 0 && !looksIllustrative) {
       if (lines.length > 0 && lines[lines.length - 1] !== "") {
         lines.push("");
       }
-      // The matching `Tool [x] result (ok|fail)` user message follows; for a batch it
-      // is ONE message with several blocks. Parse verdicts in call order.
-      const next = messages[i + 1];
+      // Pre-call narration (dimmed) keeps the "why" of each step without the raw JSON.
+      if (narration) for (const l of clipBody(narration, bodyCap)) lines.push(dim(l));
+      // For a batch the result is ONE user message with several blocks; parse verdicts
+      // in call order.
       const verdicts = next?.role === "user" ? parseToolVerdicts(next.content) : [];
       toolCalls.forEach((c, ci) => {
         const v = verdicts[ci] ?? verdicts.find(x => x.tool === c.tool);
@@ -147,14 +187,22 @@ export function formatTranscript(messages: readonly Message[], opts: TranscriptO
       });
       continue;
     }
-    // No tool calls → a lone `{tool:"done", reason}` (show its reason), a JSON object
-    // that isn't a renderable call (skip — never dump raw JSON), or genuine prose.
-    const reason =
-      parsed && parsed.tool === "done"
-        ? String((parsed.arguments as { reason?: unknown } | undefined)?.reason ?? "")
-        : looksLikeCall
-          ? ""
-          : m.content;
+    // No rendered tool call → a lone `done` call (reason + narration), a malformed/raw
+    // JSON or tool-call emission (show narration only — never dump the raw object), or
+    // genuine prose (which may merely quote a JSON snippet).
+    const doneCall = calls.find(c => c.tool === "done");
+    const doneReason = doneCall
+      ? String((doneCall.arguments as { reason?: unknown } | undefined)?.reason ?? "")
+      : "";
+    const reason = doneCall
+      ? [narration, doneReason].filter(s => s.trim()).join("\n\n")
+      : isJsonEmission && !looksIllustrative
+        ? narration // JSON/tool-call emission we couldn't render — keep narration, drop raw JSON
+        : m.content;
+
+
+
+
     if (!reason.trim()) continue;
     // Persisted thinking (gjc "think → answer" order): show the turn's reasoning,
     // dimmed, above the reply so the durable record carries it across /resume + export.

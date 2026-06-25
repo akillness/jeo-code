@@ -309,6 +309,7 @@ export function formatResumeHint(sessionId: string): string {
 export async function runLaunchCommand(args: string[]): Promise<void> {
   let cwd = process.cwd();
   const flags = parseFlags(args, cwd);
+  const isQuiet = flags.quiet || flags.print || jeoEnv("QUIET") === "1";
   if (flags.errors.length) {
     for (const err of flags.errors) {
       console.error(`error: ${err}`);
@@ -322,7 +323,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (wt !== cwd) {
       process.chdir(wt);
       cwd = wt;
-      if (jeoEnv("TMUX_LAUNCHED") !== "1") console.log(`Using worktree: ${wt}`);
+      if (jeoEnv("TMUX_LAUNCHED") !== "1" && !isQuiet) console.log(`Using worktree: ${wt}`);
     }
   }
   let branch: string | undefined;
@@ -656,7 +657,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (flags.resume) {
       const id = flags.resumeId ?? (await latestSessionId(cwd));
       if (!id) {
-        console.log("No session to resume. Starting a new one.");
+        if (!isQuiet) console.log("No session to resume. Starting a new one.");
         sessionId = (await createSession(cwd, undefined, sessionModel)).id;
       } else {
         try {
@@ -667,9 +668,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // pinned one (flags.model/role/provider → initialSessionModel wins).
           if (!initialSessionModel && header.model) sessionModel = header.model;
           const modelNote = sessionModel ? ` · model ${sessionModel}` : "";
-          console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
+          if (!isQuiet) console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
         } catch (err) {
-          console.log(`Could not resume ${id}: ${(err as Error).message}. Starting fresh.`);
+          if (!isQuiet) console.log(`Could not resume ${id}: ${(err as Error).message}. Starting fresh.`);
           sessionId = (await createSession(cwd, undefined, sessionModel)).id;
         }
       }
@@ -1266,7 +1267,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     renderWelcome({ ...welcomeData, cols: terminalSize().cols });
   // gjc-style fresh-start clear so the banner opens atop a clean screen. TTY only,
   // never mid-turn (scrollback flood). ponytail: add an opt-out env if anyone misses their scrollback.
-  if (process.stdout.isTTY) process.stdout.write(clearScreen());
+  if (process.stdout.isTTY && !isQuiet) process.stdout.write(clearScreen());
   // Launch sweep: the forge mark's gradient loops seamlessly (default 2 full
   // cycles, JEO_WELCOME_ANIM_CYCLES overrides), ending on the static banner.
   // Truecolor TTYs only; JEO_NO_WELCOME_ANIM=1 opts out.
@@ -1276,8 +1277,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     detectColorLevel(process.env, true) === ColorLevel.TrueColor &&
     jeoEnv("NO_WELCOME_ANIM") !== "1";
   const sweepCycles = Math.min(10, Math.max(1, Number(jeoEnv("WELCOME_ANIM_CYCLES")) || 2));
-  if (sweepable) await playWelcomeSweep(welcomeData, { cycles: sweepCycles });
-  else console.log(renderWelcome(welcomeData).join("\n"));
+  if (!isQuiet) {
+    if (sweepable) await playWelcomeSweep(welcomeData, { cycles: sweepCycles });
+    else console.log(renderWelcome(welcomeData).join("\n"));
+  }
 
   // Surface the "New version" banner reliably: render ONCE from the on-disk cache
   // instantly (no network wait, works offline — the common path after the first
@@ -1285,7 +1288,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // bump still shows it this launch. Both must run BEFORE the prompt is armed.
   let updateBannerShown = false;
   const showUpdateBanner = (u: { current: string; latest: string; updateAvailable: boolean } | null): void => {
-    if (updateBannerShown || !u?.updateAvailable) return;
+    if (updateBannerShown || !u?.updateAvailable || isQuiet) return;
     updateBannerShown = true;
     console.log(renderUpdateBox(u.current, u.latest).join("\n"));
   };
@@ -1294,15 +1297,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // First launch after a version bump: surface the bundled release notes ONCE
   // (offline, from the new package's CHANGELOG.md) and record the seen version
   // so it never repeats. Screen-safe: prints BEFORE the prompt is armed.
-  try {
-    const whatsNew = await consumeLaunchWhatsNew({
-      cols: Math.min(100, Math.max(40, (process.stdout.columns ?? 80) - 2)),
-      unicode: supportsUnicode(),
-      color: welcomeTheme.color,
-    });
-    if (whatsNew && whatsNew.length) console.log(whatsNew.join("\n"));
-  } catch { /* release notes are a courtesy; never block launch */ }
-  if (!LaunchTui.usable(flags.noTui)) console.log("(plain output)");
+  if (!isQuiet) {
+    try {
+      const whatsNew = await consumeLaunchWhatsNew({
+        cols: Math.min(100, Math.max(40, (process.stdout.columns ?? 80) - 2)),
+        unicode: supportsUnicode(),
+        color: welcomeTheme.color,
+      });
+      if (whatsNew && whatsNew.length) console.log(whatsNew.join("\n"));
+    } catch { /* release notes are a courtesy; never block launch */ }
+  }
+  if (!LaunchTui.usable(flags.noTui) && !isQuiet) console.log("(plain output)");
 
   const useTui = LaunchTui.usable(flags.noTui);
   const runSkillInvocation = async (skill: SkillDoc, intent: string, invokedAs?: string): Promise<void> => {
@@ -4425,11 +4430,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // of blocking up to 20s on a final LLM call. The child writes MEMORY.md atomically.
   if (sessionUsage.turns > 0) {
     const spawned = await spawnDetachedDistill(history, cwd, sessionModel || defaultModel);
-    if (spawned) console.log(chalk.gray("(session memory distilling in background)"));
+    if (spawned && !isQuiet) console.log(chalk.gray("(session memory distilling in background)"));
   }
   // gjc-parity resume pointer (logs/gjc-tui-study analysis Gap C): leave the exact
   // resume command in scrollback on exit, mirroring the --list handler's convention.
-  if (sessionId && !flags.noSession) console.log(formatResumeHint(sessionId));
+  if (sessionId && !flags.noSession && !isQuiet) console.log(formatResumeHint(sessionId));
   process.removeListener("SIGINT", handleCtrlC);
   process.stdin.off("data", handleCtrlCByte);
   drainPromptListeners();

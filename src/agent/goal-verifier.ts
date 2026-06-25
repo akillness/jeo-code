@@ -33,6 +33,12 @@ Analyze the transcript carefully. Pay attention to:
 2. What actions the agent took (tool calls, file modifications, tests run).
 3. The final outcome and verification results.
 
+Verdict discipline:
+- Judge the goal exactly as written. Do NOT reframe, narrow, or reinterpret it to fit what the agent happened to build — if the goal as stated is not satisfied, that is NOT_MET, and name precisely what is missing.
+- Require positive evidence per requirement: cite the concrete command, test, or file change that shows it was satisfied. The mere absence of an observed failure is NOT proof of success.
+- Do not invent requirements beyond the stated goal. When every part of the goal as written has positive evidence, return MET — withholding MET to demand unrequested extras is itself an error.
+- Reserve IMPOSSIBLE for goals that cannot be satisfied as specified (self-contradictory, or blocked by missing credentials/services), not for goals that are merely incomplete.
+
 You must respond with a JSON object containing:
 {
   "verdict": "MET" | "NOT_MET" | "IMPOSSIBLE",

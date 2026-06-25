@@ -154,13 +154,13 @@ Non-zero hook output is appended to the tool result the model reads (deduped per
 
 | Tool or bot | Recommended jeo command | Boundary |
 | ----------- | ----------------------- | -------- |
-| Codex CLI | `jeo --tmux` or `jeo` | Runs in a sibling tmux session or inline. |
-| Claude Code | `jeo --tmux` or `jeo` | jeo does not become a Claude Code extension. |
+| Codex CLI | `jeo --tmux --worktree <name>` or `jeo` | `--worktree` names a jeo-managed sibling git worktree (basename → new branch); for an existing path, `cd` there first. |
+| Claude Code | `jeo --tmux` or `jeo --tmux --worktree <name>` | jeo does not become a Claude Code extension. |
 | OpenCode | `jeo` or `jeo --tmux` | External-runner workflow only. |
-| Claw Code | `jeo --tmux` | jeo does not install into or replace Claw Code. |
-| External controller / bot | `jeo` (or custom integrations) | External controllers drive jeo through standard terminal/CLI interfaces. |
+| Claw Code | `jeo --tmux --worktree <name>` | jeo does not install into or replace Claw Code. |
+| External controller / bot | `jeo mcp serve` (MCP stdio server) | External controllers drive jeo over the MCP tool contract, not scrollback scraping. |
 
-Add `-q`/`--quiet` (or `JEO_QUIET=1`) to suppress startup banners, welcome animation, release notes, and resume hints so jeo can run cleanly beside another agent or be driven by a bot. `-p`/`--print` implies quiet.
+`--worktree <name>` runs jeo in an isolated sibling git worktree (reused if the path exists, else created on a branch named after the basename) so risky or reviewable work never touches your main checkout. `jeo mcp serve` exposes jeo's tools to any MCP-capable controller over stdio (`jeo mcp tools` lists them). Add `-q`/`--quiet` (or `JEO_QUIET=1`) to suppress startup banners, the welcome animation, release notes, and resume hints so jeo runs cleanly beside another agent or is driven by a bot — `-p`/`--print` implies quiet.
 
 
 ## Local models
@@ -191,7 +191,32 @@ JEO_TOOL_OUTPUT_MAX=4000        # model-visible tool output cap (full output spi
 
 Retry behavior is tunable via `retry` in `~/.jeo/config.json` (`requestMaxRetries`, `streamMaxRetries`, `rateLimitRetries`, `failFastStatuses`, …). The step budget is dynamic by default — it extends while recent tool calls show novel progress and consolidates with a wrap-up when stalled; `--max-steps N` restores a bounded flow.
 
+## Skill migration and bundled skill inspection
+
+When moving a workflow into jeo, inspect the bundled defaults before installing or overwriting anything:
+
+```bash
+jeo skills list                 # bundled + user + project skills, with discovery dirs
+jeo skills read ralplan         # print one skill's full SKILL.md
+jeo skills sync --check         # report drift vs ~/.jeo/skills (non-zero exit on drift)
+```
+
+`jeo skills sync` installs the bundled workflow skills (deep-interview, deep-dive, ralplan, team, ultragoal) into `~/.jeo/skills` and **preserves existing local files by default** — a differing local copy is reported as `preserved`, never clobbered. If `--check` flags a missing or different file, compare it with `jeo skills read <name>` first; use `jeo skills sync --force` only when you intentionally want to replace local default workflow skill files. Target a different dir with a trailing path argument (or `JEO_CONFIG_DIR`), and add `--json` for the structured `SkillSyncResult`.
+
+## Development
+
+jeo is pure TypeScript on Bun with **zero native dependencies**, so the global `jeo` command can run this checkout's source directly — no build step, hot to every edit.
+
+```bash
+bun install
+bun run dev:link            # symlink `jeo` -> <repo>/src/cli.ts into ~/.local/bin
+bun run dev:doctor          # report whether global `jeo` runs this source (linked/drift/missing)
+```
+
+`dev:link` refuses to proceed if another `jeo` shadows the managed link earlier on `PATH` (override the destination with `JEO_DEV_LINK_DIR`) and runs a `--version` smoke test. `dev:doctor` exits non-zero when the resolved `jeo` is a compiled binary or an installed copy rather than this source. Run from source without linking via `bun src/cli.ts --help`. Bundled workflow skills live in source at `src/prompts/skills/<name>/SKILL.md`; verify with `bun run typecheck` and `bun test`.
+
 ## Publishing
+
 
 CI publishes via `.github/workflows/npm-publish.yml` — triggered by a published GitHub release, or manually with `workflow_dispatch` (optional dry-run). The workflow typechecks, tests, verifies the token (`npm whoami`), then runs `npm publish --provenance`.
 
@@ -207,11 +232,11 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.7.17]** (2026-06-25) — Developer workflow parity (gjc `dev:link`/`dev:doctor`, adapted for jeo's zero-native-dep Bun runtime): the global `jeo` command can be linked to run this checkout's source hot to every edit, with a drift doctor that flags when `jeo` resolves to a compiled binary or an installed copy instead. README gains "Skill migration and bundled skill inspection" + "Development" sections. Also ships OKF concept-memory search/scoring with budget-aware injection and a round of workflow-prompt hardening (anti-punt, todo-first planning, verdict discipline) that keeps every loop escape hatch intact.
 - **[0.7.16]** (2026-06-25) — Bundled skills get a safe installer: `jeo skills sync` materializes the built-in workflow skills into `~/.jeo/skills`, preserving local edits by default, with a CI-friendly `--check` drift report and a `--force` overwrite.
 - **[0.7.15]** (2026-06-25) — Rollback release: the runtime source and test suite are restored to the **0.7.9** state. The intervening 0.7.10–0.7.14 runtime changes (quiet-mode/`-q`, `/resume` transcript rework, `mutatedFiles` plumbing, Ollama `num_ctx`, tmux REPL reaping, and related engine/provider/TUI edits) are reverted. Published as a new version because npm cannot re-issue an existing version number; `latest` now serves code identical to 0.7.9.
 - **[0.7.14]** (2026-06-25) — Quieter, cleaner output: a new `-q`/`--quiet` flag strips launch banners and courtesy logs, `/resume` no longer dumps walls of raw escaped JSON into scrollback, and a turn that edits files now reliably surfaces those paths to orchestrators.
 - **[0.7.9]** (2026-06-24) — Local model providers actually run, and OAuth/login hygiene: Ollama requests now carry an explicit `num_ctx` so jeo's large system prompt no longer overflows Ollama's small default window (the "ollama 모델이 안 돌아간다" blocker), LM Studio reasoning models that emit the whole reply on the reasoning channel are recovered instead of dying empty, GGUF chat templates that can't render the `tools` array are retried with native tools stripped, the OAuth success tab auto-closes with a clear hint, the effective-credential picker prefers a verified OAuth login over a stray API key, and abandoned idle `jeo` tmux REPL sessions are reaped on launch.
-- **[0.7.8]** (2026-06-24) — Long-session performance & resource hygiene: the detached memory-distill worker now always terminates itself (closing the `jeo memory-distill` orphan pileup that pinned each session's transcript in RSS), the live reasoning/output block re-wraps only its trailing window (O(tail) per frame instead of O(len²) over a long stream), the team loop stops reprinting the todo guide every iteration, and the readline caret stays aligned after an image attach.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

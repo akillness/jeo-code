@@ -10,6 +10,7 @@ Utility, maintenance, and installation scripts for `jeo-code`. Contains standalo
 | File | Description |
 |------|-------------|
 | `deepinit.ts` | Brief description of purpose |
+| `dev-link.ts` | `dev:link`/`dev:doctor` — symlink the global `jeo` to this checkout's `src/cli.ts` (PATH-shadow guarded, `--version` smoke test) and report linked/drift/missing source resolution |
 | `evolution-schedule.sh` | Brief description of purpose |
 | `install.sh` | Global installation script for macOS/Linux |
 | `smoke-test.sh` | Basic sanity verification script |

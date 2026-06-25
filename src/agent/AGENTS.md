@@ -17,8 +17,8 @@ The core runtime loop, tool registry, session management, and state persistence 
 | `hooks.ts` | Brief description of purpose |
 | `json.ts` | Brief description of purpose |
 | `loop.ts` | The primary execution loop orchestrating model calls and tool execution |
-| `loop-guards.ts` | Intermediate-judgment classification (gjc ultragoal-guard parity): named `GuardState` taxonomy, `GUARD_LIMITS` thresholds, and pure classifiers (`isVerificationSignal`, `repeatHint`, `classifyDoneGate`) consumed by `engine.ts` |
-| `memory.ts` | OKF concept-bundle memory: session distill, query-aware budget injection, legacy MEMORY.md migration (`migrateLegacyMemory`) + `JEO_MEMORY_LEGACY` rollback toggle |
+| `loop-guards.ts` | Intermediate-judgment classification (gjc ultragoal-guard parity): named `GuardState` taxonomy, `GUARD_LIMITS` thresholds, and pure classifiers (`isVerificationSignal`, `repeatHint`, `classifyDoneGate` — incl. `done_stale_verification` for a passing test/build that predates the last edit) consumed by `engine.ts` |
+| `memory.ts` | OKF concept-bundle memory: session distill, query-aware budget injection (failure-first `priorityOrder` + pinned-invariant reserved budget), mid-loop `recordFailedAttempt` capture, shared `upsertConceptFile` writer, legacy MEMORY.md migration (`migrateLegacyMemory`) + `JEO_MEMORY_LEGACY` rollback toggle |
 | `memory-okf.ts` | OKF v0.1 format layer: frontmatter parse/serialize, concept IDs, conformance validation |
 | `memory-graph.ts` | Concept cross-link graph: build/expand (1-hop search), broken-link-tolerant lint, optional graphify detection |
 | `model-recency.ts` | Brief description of purpose |

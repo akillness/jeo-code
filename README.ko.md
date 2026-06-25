@@ -153,13 +153,13 @@ jeo ultragoal
 
 | 도구 또는 봇 | 권장 jeo 명령 | 경계 |
 | ----------- | ----------------------- | -------- |
-| Codex CLI | `jeo --tmux` 또는 `jeo` | 형제 tmux 세션 또는 인라인으로 실행됩니다. |
-| Claude Code | `jeo --tmux` 또는 `jeo` | jeo는 Claude Code 확장 프로그램이 되지 않습니다. |
+| Codex CLI | `jeo --tmux --worktree <name>` 또는 `jeo` | `--worktree`는 jeo가 관리하는 형제 git worktree를 지정합니다(basename → 새 브랜치). 기존 경로는 먼저 `cd`로 이동하세요. |
+| Claude Code | `jeo --tmux` 또는 `jeo --tmux --worktree <name>` | jeo는 Claude Code 확장 프로그램이 되지 않습니다. |
 | OpenCode | `jeo` 또는 `jeo --tmux` | 현재는 외부 러너 워크플로만 지원합니다. |
-| Claw Code | `jeo --tmux` | jeo는 Claw Code에 설치되거나 대체되지 않습니다. |
-| 외부 컨트롤러 / 봇 | `jeo` (또는 사용자 정의 통합) | 외부 컨트롤러는 표준 터미널/CLI 인터페이스를 통해 jeo를 구동합니다. |
+| Claw Code | `jeo --tmux --worktree <name>` | jeo는 Claw Code에 설치되거나 대체되지 않습니다. |
+| 외부 컨트롤러 / 봇 | `jeo mcp serve` (MCP stdio 서버) | 외부 컨트롤러는 스크롤백 스크래핑이 아니라 MCP 도구 계약을 통해 jeo를 구동합니다. |
 
-`-q`/`--quiet` (또는 `JEO_QUIET=1`)를 추가하면 시작 배너, 환영 애니메이션, 릴리스 노트, 재개 힌트가 억제되어 jeo를 다른 에이전트와 나란히 실행하거나 봇으로 구동할 수 있습니다. `-p`/`--print`는 quiet를 함의합니다.
+`--worktree <name>`는 격리된 형제 git worktree에서 jeo를 실행하므로(경로가 있으면 재사용, 없으면 basename 브랜치로 생성) 위험하거나 검토가 필요한 작업이 메인 체크아웃을 건드리지 않습니다. `jeo mcp serve`는 stdio를 통해 MCP를 지원하는 모든 컨트롤러에 jeo의 도구를 노출합니다(`jeo mcp tools`로 목록 확인). `-q`/`--quiet` (또는 `JEO_QUIET=1`)를 추가하면 시작 배너, 환영 애니메이션, 릴리스 노트, 재개 힌트가 억제되어 jeo를 다른 에이전트와 나란히 실행하거나 봇으로 구동할 수 있습니다. `-p`/`--print`는 quiet를 함의합니다.
 
 
 ## 로컬 모델
@@ -205,11 +205,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.7.17]** (2026-06-25) — Developer workflow parity (gjc `dev:link`/`dev:doctor`, adapted for jeo's zero-native-dep Bun runtime): the global `jeo` command can be linked to run this checkout's source hot to every edit, with a drift doctor that flags when `jeo` resolves to a compiled binary or an installed copy instead. README gains "Skill migration and bundled skill inspection" + "Development" sections. Also ships OKF concept-memory search/scoring with budget-aware injection and a round of workflow-prompt hardening (anti-punt, todo-first planning, verdict discipline) that keeps every loop escape hatch intact.
 - **[0.7.16]** (2026-06-25) — Bundled skills get a safe installer: `jeo skills sync` materializes the built-in workflow skills into `~/.jeo/skills`, preserving local edits by default, with a CI-friendly `--check` drift report and a `--force` overwrite.
 - **[0.7.15]** (2026-06-25) — Rollback release: the runtime source and test suite are restored to the **0.7.9** state. The intervening 0.7.10–0.7.14 runtime changes (quiet-mode/`-q`, `/resume` transcript rework, `mutatedFiles` plumbing, Ollama `num_ctx`, tmux REPL reaping, and related engine/provider/TUI edits) are reverted. Published as a new version because npm cannot re-issue an existing version number; `latest` now serves code identical to 0.7.9.
 - **[0.7.14]** (2026-06-25) — Quieter, cleaner output: a new `-q`/`--quiet` flag strips launch banners and courtesy logs, `/resume` no longer dumps walls of raw escaped JSON into scrollback, and a turn that edits files now reliably surfaces those paths to orchestrators.
 - **[0.7.9]** (2026-06-24) — Local model providers actually run, and OAuth/login hygiene: Ollama requests now carry an explicit `num_ctx` so jeo's large system prompt no longer overflows Ollama's small default window (the "ollama 모델이 안 돌아간다" blocker), LM Studio reasoning models that emit the whole reply on the reasoning channel are recovered instead of dying empty, GGUF chat templates that can't render the `tools` array are retried with native tools stripped, the OAuth success tab auto-closes with a clear hint, the effective-credential picker prefers a verified OAuth login over a stray API key, and abandoned idle `jeo` tmux REPL sessions are reaped on launch.
-- **[0.7.8]** (2026-06-24) — Long-session performance & resource hygiene: the detached memory-distill worker now always terminates itself (closing the `jeo memory-distill` orphan pileup that pinned each session's transcript in RSS), the live reasoning/output block re-wraps only its trailing window (O(tail) per frame instead of O(len²) over a long stream), the team loop stops reprinting the todo guide every iteration, and the readline caret stays aligned after an image attach.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

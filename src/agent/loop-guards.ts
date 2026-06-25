@@ -27,6 +27,7 @@ export type GuardState =
   | "context_overflow_retry" // provider reported context overflow → ONE trim + retry
   | "refusal_retry" // transient safety refusal → bounded resend ladder
   | "done_unverified" // mutated files, no verification signal → pushback on done
+  | "done_stale_verification" // verified, then mutated again → re-verify before done
   | "done_hook_failing" // post-turn hook still failing → pushback on done
   | "done_ok"; // done accepted — the turn is finished
 
@@ -100,13 +101,19 @@ export interface DoneGateInput {
   sawMutation: boolean;
   /** A test/build/typecheck/lint command succeeded this turn. */
   sawVerification: boolean;
+  /**
+   * A mutation landed AFTER the most recent successful verification — so the
+   * passing test/build no longer reflects the current tree. Optional; defaults
+   * to false, in which case the gate uses the order-insensitive `sawVerification`.
+   */
+  verificationStale?: boolean;
   /** The run-command of the most recent still-failing post-turn hook, or null. */
   pendingHookFailure: string | null;
 }
 
 /** Verdict from {@link classifyDoneGate}: whether to bounce `done`, and the message. */
 export interface DoneGateVerdict {
-  state: Extract<GuardState, "done_ok" | "done_unverified" | "done_hook_failing">;
+  state: Extract<GuardState, "done_ok" | "done_unverified" | "done_stale_verification" | "done_hook_failing">;
   /** When true, `done` should be bounced ONCE with `message` (the caller owns the once-gate). */
   block: boolean;
   /** Corrective message to push back on `done`; empty when `state === "done_ok"`. */
@@ -117,13 +124,15 @@ export interface DoneGateVerdict {
  * Classify whether a `done` should be accepted or bounced — the direct descendant of
  * gjc's `ultragoal-guard` completion gate (plan/gjc-inheritance.md B4).
  *
- * A turn that MUTATED files but has either NO verification signal or a still-failing
- * post-turn hook is blocked ONCE. The caller owns the single-pushback latch; a second
- * `done` always passes (the escape hatch for genuinely-unverifiable docs/config changes).
+ * A turn that MUTATED files is blocked ONCE when its verification is missing
+ * (no test/build signal), STALE (a passing run that predates the last edit), or
+ * a post-turn hook is still failing. The caller owns the single-pushback latch; a
+ * second `done` always passes (the escape hatch for unverifiable docs/config changes).
  */
 export function classifyDoneGate(input: DoneGateInput): DoneGateVerdict {
   const hookFailing = input.pendingHookFailure !== null;
-  const block = input.sawMutation && (!input.sawVerification || hookFailing);
+  const stale = input.sawVerification && input.verificationStale === true;
+  const block = input.sawMutation && (!input.sawVerification || stale || hookFailing);
   if (!block) return { state: "done_ok", block: false, message: "" };
   if (hookFailing) {
     return {
@@ -133,6 +142,16 @@ export function classifyDoneGate(input: DoneGateInput): DoneGateVerdict {
         `Your latest mutation left the post-turn hook "${input.pendingHookFailure}" FAILING (non-zero exit) — its diagnostics were shown in the tool result above. ` +
         "Fix the reported problems (the hook re-runs on your next mutation), then call done. " +
         "If the hook failure is a false positive, call done again and say why in the reason.",
+    };
+  }
+  if (stale) {
+    return {
+      state: "done_stale_verification",
+      block: true,
+      message:
+        "You verified earlier, but then modified files again — your last passing test/build no longer reflects the current tree. " +
+        "Re-run the narrowest verification command against the latest changes, then call done. " +
+        "If the later edits are verification-irrelevant (docs/config-only), call done again and say why in the reason.",
     };
   }
   return {

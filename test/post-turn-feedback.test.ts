@@ -203,3 +203,62 @@ test("a later clean hook run clears the pending failure — done passes first tr
   expect(history.some(m => m.role === "user" && m.content.includes("FAILING (non-zero exit)"))).toBe(false);
   await fs.unlink(flag).catch(() => {});
 });
+
+// Stale-verification gate: a passing test/build that PREDATES the last mutation is
+// no longer trustworthy. done after verify→edit gets ONE pushback to re-verify; the
+// non-stale order (edit→verify→done) passes untouched.
+
+test("done after verify-then-edit gets a stale-verification pushback", async () => {
+  await setHook({ event: "post-turn", run: "echo ok" }); // clean hook, never blocks
+  let calls = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      calls++;
+      if (calls === 1) return JSON.stringify({ tool: "bash", arguments: { command: "bun test" } }); // verify
+      if (calls === 2) return JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } }); // mutate AFTER verify
+      return JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history = [{ role: "system" as const, content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: projectDir,
+    maxSteps: 8,
+    budget: { maxExtensions: 0 },
+    tools: {
+      bash: async () => ({ success: true, output: "1 pass 0 fail" }),
+      edit: async () => ({ success: true, output: "updated a.ts" }),
+    },
+  });
+  expect(result.done).toBe(true);
+  const pushback = history.find(m => m.role === "user" && m.content.includes("no longer reflects the current tree"));
+  expect(pushback).toBeDefined();
+  expect(calls).toBe(4); // bash, edit, done(stale pushback), done(escape hatch)
+});
+
+test("done after edit-then-verify is NOT stale — passes first try", async () => {
+  await setHook({ event: "post-turn", run: "echo ok" });
+  let calls = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      calls++;
+      if (calls === 1) return JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } }); // mutate
+      if (calls === 2) return JSON.stringify({ tool: "bash", arguments: { command: "bun test" } }); // verify AFTER edit
+      return JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history = [{ role: "system" as const, content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: projectDir,
+    maxSteps: 8,
+    budget: { maxExtensions: 0 },
+    tools: {
+      edit: async () => ({ success: true, output: "updated a.ts" }),
+      bash: async () => ({ success: true, output: "1 pass 0 fail" }),
+    },
+  });
+  expect(result.done).toBe(true);
+  expect(history.some(m => m.role === "user" && m.content.includes("no longer reflects the current tree"))).toBe(false);
+  expect(calls).toBe(3); // edit, bash verify, done — no pushback
+});

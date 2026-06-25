@@ -18,6 +18,54 @@ import type { ImageAttachment } from "../ai/types";
 
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
 
+
+/**
+ * Normalize the whitespace around every `[image #N]` tag to a single space:
+ *  - one space before a tag that follows other text (none at line start),
+ *  - one space after a tag that is followed by more text,
+ *  - any run of spaces/tabs collapsed to one, and the whole string trimmed.
+ *
+ * A tag at the very end keeps NO trailing space (callers that want the caret to sit
+ * past it add exactly one). Terminals pad a dragged-and-dropped path with their own
+ * spacing and the Ctrl+V insert adds a separator, so without this the caret parks
+ * several columns past the tag — the "input point looks pushed by a few spaces" bug.
+ * Idempotent: re-normalizing already-clean text is a no-op.
+ */
+export function normalizeImageTags(text: string): string {
+  return text
+    .replace(/[ \t]*(\[image #\d+\])[ \t]*/g, (m, tag: string, off: number, s: string) =>
+      (off > 0 ? " " : "") + tag + (off + m.length < s.length ? " " : ""),
+    )
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+/** Caret offset just past the `[image #n]` tag in `text` (and its single trailing
+ *  space when present); falls back to end-of-text when the tag is absent. */
+export function caretAfterTag(text: string, n: number): number {
+  const tag = `[image #${n}]`;
+  const idx = text.indexOf(tag);
+  if (idx < 0) return text.length;
+  let end = idx + tag.length;
+  if (text[end] === " ") end += 1; // sit after the separating space, not on it
+  return end;
+}
+
+/**
+ * Insert an `[image #n]` tag at `cursor` within `line` (the Ctrl+V clipboard-image
+ * path), normalizing surrounding whitespace so the tag is flanked by exactly one
+ * space. A tag landing at end-of-line gets one trailing space so the user can keep
+ * typing; the returned caret sits right after the tag (and that space).
+ */
+export function insertImageTag(line: string, cursor: number, n: number): { text: string; cursor: number } {
+  const at = Math.max(0, Math.min(cursor, line.length));
+  const tag = `[image #${n}]`;
+  let text = normalizeImageTags(line.slice(0, at) + tag + line.slice(at));
+  const idx = text.indexOf(tag);
+  if (idx >= 0 && idx + tag.length >= text.length) text += " "; // trailing space at EOL for typing
+  return { text, cursor: caretAfterTag(text, n) };
+}
+
 /** Detect an image media type from magic bytes, or null when the bytes are not a
  *  recognised image. Used as the authoritative check (extension only gates the
  *  candidate scan; the bytes decide). */
@@ -114,6 +162,10 @@ export interface AttachResult {
   text: string;
   /** The newly-read image attachments, in source order. */
   images: ImageAttachment[];
+  /** Caret offset to park after the swap: just past the trailing space of the LAST
+   *  inserted tag (so the live box places the cursor right after the attachment,
+   *  ready for the user's prompt). Equals `text.length` when nothing was attached. */
+  cursor: number;
 }
 
 /**
@@ -131,7 +183,7 @@ export async function attachImagePaths(
   read: FileReader = defaultReader,
 ): Promise<AttachResult> {
   const tokens = findImagePathTokens(text);
-  if (tokens.length === 0) return { text, images: [] };
+  if (tokens.length === 0) return { text, images: [], cursor: text.length };
 
   const reads = await Promise.all(
     tokens.map(async (t) => {
@@ -154,5 +206,9 @@ export async function attachImagePaths(
     n += 1;
   }
   out += text.slice(cursor);
-  return { text: out, images };
+  if (images.length === 0) return { text: out, images, cursor: out.length };
+  // Collapse the spacing terminals add around a dropped path so the swapped-in tag
+  // (and the caret parked after it) is not pushed several columns to the right.
+  const normalized = normalizeImageTags(out);
+  return { text: normalized, images, cursor: caretAfterTag(normalized, n - 1) };
 }

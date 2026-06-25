@@ -497,7 +497,9 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
           `  "constraints": ["Optional list of constraints once ambiguity is <= ${threshold}"],\n` +
           `  "acceptance_criteria": ["Concrete, testable acceptance criteria required before the seed can freeze"]\n` +
           `}\n` +
-          `Ensure ambiguityScore drops dynamically as more detail is gathered. Do not report ambiguityScore <= ${threshold} unless acceptance_criteria is populated with concrete, testable checks.`
+          `Ensure ambiguityScore drops dynamically as more detail is gathered. Do not report ambiguityScore <= ${threshold} unless acceptance_criteria is populated with concrete, testable checks.\n` +
+          `Do not fill an ambiguous point with your own convenient assumption to push the score down — surface that assumption as the nextQuestion instead. Never supply unstated detail that makes the request look simpler or safer than the user actually wrote it.\n` +
+          `Conversely, when the user's answers genuinely resolve a dimension, lower the score accordingly — do not keep a dimension ambiguous just to prolong the interview. If you notice yourself quietly narrowing the user's idea to make it easier to score, that narrowing is the signal the dimension is still open: ask, don't assume.`
       },
       {
         role: "user",

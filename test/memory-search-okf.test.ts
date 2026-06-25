@@ -7,6 +7,7 @@ import {
   scoreConcept,
   searchConcepts,
   memoryPromptSection,
+  recordFailedAttempt,
   MEMORY_INJECT_MAX_CHARS,
   type Concept,
 } from "../src/agent/memory";
@@ -41,6 +42,7 @@ function concept(over: Partial<Concept> = {}): Concept {
     body: "",
     tags: [],
     confidence: "high",
+    pinned: false,
     relPath: "facts/x.md",
     ...over,
   };
@@ -161,4 +163,105 @@ test("a query-relevant low-confidence concept still beats irrelevant noise withi
   expect(section).toContain("deploy script");
 
   await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("a query-relevant FailedAttempt is surfaced ahead of equally-relevant non-failure concepts", async () => {
+  const dir = await tmp();
+  // Tight budget: only a couple of concepts fit. A relevant past failure must win a
+  // seat over ordinary relevant facts so the loop is reminded of the dead end first
+  // ("못하는 게 없도록" — failure-first retrieval). All hit the query in their title.
+  const big = "w ".repeat(1600); // ~3.2k chars each → the budget cannot hold them all
+  for (let i = 0; i < 6; i++) {
+    await writeConcept(dir, "facts", `cache-fact-${i}`, { type: "RepoFact", title: `Cache layer ${i}`, description: "how the cache works", confidence: "high" }, big);
+  }
+  await writeConcept(dir, "failed", "cache-deadend", { type: "FailedAttempt", title: "Cache invalidation via mtime", description: "drops events under load — do not retry", confidence: "high" }, "Native mtime polling missed rapid writes; used a version counter instead.");
+
+  const section = await memoryPromptSection(dir, "cache");
+  // The failure is present even though six equally-confident, query-relevant facts
+  // compete for the same budget — failure-first ranking secured its slot.
+  expect(section).toContain("Cache invalidation via mtime");
+
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("an UNRELATED FailedAttempt does not crowd out query-relevant context", async () => {
+  const dir = await tmp();
+  // The failure does not match the query, so the score>0 gate keeps it from jumping
+  // the queue ahead of the concept the task actually needs.
+  await writeConcept(dir, "failed", "unrelated-deadend", { type: "FailedAttempt", title: "Webpack tree-shaking misconfig", description: "irrelevant to this task", confidence: "high" }, "x ".repeat(1800));
+  await writeConcept(dir, "commands", "deploy", { type: "Command", title: "deploy script", description: "runs the deploy", confidence: "high" }, "bun run deploy");
+
+  const section = await memoryPromptSection(dir, "deploy");
+  expect(section).toContain("deploy script");
+
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("recordFailedAttempt writes a retrievable, medium-confidence FailedAttempt concept", async () => {
+  const dir = await tmp();
+  const res = await recordFailedAttempt(dir, {
+    title: "Stalled on: migrate the auth token refresh flow",
+    description: "A prior turn stalled on this task — change approach.",
+    body: "The agent cycled re-reading refresh.ts without progress.",
+    tags: ["auth", "token", "refresh"],
+  });
+  expect(res.recorded).toBe(true);
+
+  const concepts = await loadConcepts(dir);
+  const failed = concepts.find(c => c.type === "FailedAttempt");
+  expect(failed).toBeDefined();
+  expect(failed!.confidence).toBe("medium"); // never enters the always-injected core tier
+  // Query-relevant: a future turn on the same area hits it and (priorityOrder) surfaces it first.
+  const hits = searchConcepts(concepts, "auth token refresh");
+  expect(hits[0]?.concept.type).toBe("FailedAttempt");
+});
+
+test("recordFailedAttempt upserts the same title in place but keeps distinct titles separate", async () => {
+  const dir = await tmp();
+  await recordFailedAttempt(dir, { title: "Stalled on: build the parser", body: "first" });
+  await recordFailedAttempt(dir, { title: "Stalled on: build the parser", body: "second — updated" });
+  await recordFailedAttempt(dir, { title: "Stalled on: wire the CLI", body: "other" });
+
+  const failed = (await loadConcepts(dir)).filter(c => c.type === "FailedAttempt");
+  expect(failed.length).toBe(2); // upsert collapsed the duplicate title; the distinct one stands
+  const parser = failed.find(c => c.title === "Stalled on: build the parser");
+  expect(parser!.body).toContain("second — updated"); // upsert overwrote the body
+});
+
+test("recordFailedAttempt is a no-op under JEO_NO_MEMORY", async () => {
+  const dir = await tmp();
+  const prev = process.env.JEO_NO_MEMORY;
+  process.env.JEO_NO_MEMORY = "1";
+  try {
+    const res = await recordFailedAttempt(dir, { title: "Stalled on: anything" });
+    expect(res.recorded).toBe(false);
+    expect(await loadConcepts(dir)).toHaveLength(0);
+  } finally {
+    if (prev === undefined) delete process.env.JEO_NO_MEMORY;
+    else process.env.JEO_NO_MEMORY = prev;
+  }
+});
+
+test("a pinned invariant survives a tight budget that evicts everything else", async () => {
+  const dir = await tmp();
+  // Fill the budget with high-confidence, query-relevant noise that would otherwise
+  // win every seat. The pinned invariant is NOT query-relevant and low-confidence —
+  // without a reserved budget it would be dropped first.
+  const big = "w ".repeat(1600);
+  for (let i = 0; i < 6; i++) {
+    await writeConcept(dir, "facts", `hot-${i}`, { type: "RepoFact", title: `Cache layer ${i}`, description: "hot path", confidence: "high" }, big);
+  }
+  await writeConcept(dir, "facts", "invariant", { type: "RepoFact", title: "Build invariant", description: "always run typecheck before done", confidence: "low", pinned: "true" }, "Never emit done on a mutation turn without a green typecheck.");
+
+  const section = await memoryPromptSection(dir, "cache"); // query hits the noise, NOT the invariant
+  expect(section).toContain("Build invariant"); // reserved budget kept the pinned invariant
+});
+
+test("loadConcepts surfaces the pinned flag from frontmatter (default false)", async () => {
+  const dir = await tmp();
+  await writeConcept(dir, "facts", "pinned-one", { type: "RepoFact", title: "Pinned", description: "x", pinned: "true" }, "body");
+  await writeConcept(dir, "facts", "plain-one", { type: "RepoFact", title: "Plain", description: "y" }, "body");
+  const concepts = await loadConcepts(dir);
+  expect(concepts.find(c => c.title === "Pinned")!.pinned).toBe(true);
+  expect(concepts.find(c => c.title === "Plain")!.pinned).toBe(false);
 });

@@ -70,6 +70,13 @@ export function formatSkill(s: SkillDoc): string {
   ].filter(Boolean).join("\n");
 }
 
+/** Canonical on-disk content for a bundled skill — the exact bytes `jeo skills
+ *  --write` / `jeo skills sync` materialize into a `<name>.md` file. Prefers the
+ *  original SKILL.md text; falls back to a decorated render for skills without raw. */
+export function bundledSkillFileContent(s: SkillDoc): string {
+  return s.raw || `# ${s.name}\n\n${formatSkill(s)}\n`;
+}
+
 function compactSkillExecutionBrief(skill: SkillDoc): string {
   const aliases = skillSlashAliases(skill);
   let details = skill.details;

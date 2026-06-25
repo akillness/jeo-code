@@ -23,3 +23,5 @@ gen/
 !.gitignore
 !.github/
 !.github/**
+!.specify/
+!.specify/**

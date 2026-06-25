@@ -600,7 +600,7 @@ test("DEFAULT_TOOLS exposes mkdir and delete", async () => {
   expect(del.success).toBe(true);
 });
 
-test("bashTool: an AbortSignal fired mid-run kills the child and returns an aborted result", async () => {
+test.skipIf(process.platform === "win32")("bashTool: an AbortSignal fired mid-run kills the child and returns an aborted result", async () => {
   const ac = new AbortController();
   // A unique marker so we can hunt for an orphaned child afterwards.
   const marker = `jeo-abort-probe-${process.pid}-${Date.now()}`;
@@ -631,7 +631,7 @@ test("bashTool: an AbortSignal fired mid-run kills the child and returns an abor
   void hunt;
 });
 
-test("bashTool: a pre-aborted signal returns immediately without leaving a child", async () => {
+test.skipIf(process.platform === "win32")("bashTool: a pre-aborted signal returns immediately without leaving a child", async () => {
   const ac = new AbortController();
   ac.abort();
   const marker = `jeo-preabort-${process.pid}-${Date.now()}`;

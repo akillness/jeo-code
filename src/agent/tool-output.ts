@@ -83,7 +83,7 @@ export async function spillToolResult(tool: string, output: string, cwd: string)
   await fs.mkdir(dir, { recursive: true });
   const safeTool = tool.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 32) || "tool";
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const rel = path.join(".jeo", "artifacts", "tool-results", `${stamp}-${safeTool}.txt`);
+  const rel = `.jeo/artifacts/tool-results/${stamp}-${safeTool}.txt`;
   await fs.writeFile(path.join(cwd, rel), output, "utf-8");
   // Retention so a long session can't grow the artifact dir without bound.
   await pruneToolArtifacts(dir);

@@ -272,6 +272,11 @@ export interface AgentLoopResult {
   doneReason?: string;
   /** Summed provider token usage across the turn's steps, when reported. */
   usage?: { inputTokens: number; outputTokens: number };
+  /** Repo-relative paths of files this turn SUCCESSFULLY wrote/edited, sorted and
+   *  de-duplicated. Lets a caller (task/team subagent, external orchestrator) collect
+   *  the run's code artifacts instead of inferring an empty change set after real edits.
+   *  Omitted when the turn mutated no file. */
+  mutatedFiles?: string[];
 }
 
 
@@ -364,7 +369,14 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   let step = 1;
   const acc = { inputTokens: 0, outputTokens: 0 };
   let sawUsage = false;
-  const finish = (r: AgentLoopResult): AgentLoopResult => (sawUsage ? { ...r, usage: { ...acc } } : r);
+  // Repo-relative paths of files this turn successfully wrote/edited. Surfaced on the
+  // result so callers can collect the run's code artifacts rather than report an empty
+  // change set after real edits (the "finalArtifacts is empty" orchestrator failure).
+  const mutatedFiles = new Set<string>();
+  const finish = (r: AgentLoopResult): AgentLoopResult => {
+    const withArtifacts = mutatedFiles.size ? { ...r, mutatedFiles: [...mutatedFiles].sort() } : r;
+    return sawUsage ? { ...withArtifacts, usage: { ...acc } } : withArtifacts;
+  };
   // Salvage a spin-stop into a useful answer (C): instead of returning a bare
   // "Stopped: …" — throwing away everything found this turn — do ONE final no-tools
   // call asking the model to answer with what it already has. Mirrors the
@@ -1042,7 +1054,15 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     for (let i = 0; i < toolCalls.length; i++) {
       if (!results[i].executed || !results[i].success) continue;
       const t = toolCalls[i].tool;
-      if (t === "write" || t === "edit") sawMutation = true;
+      if (t === "write" || t === "edit") {
+        sawMutation = true;
+        // Record the actual file so the run's artifacts can be collected/returned.
+        const rawPath = toolCalls[i].arguments?.filePath ?? toolCalls[i].arguments?.path;
+        if (typeof rawPath === "string" && rawPath.trim()) {
+          const rel = path.relative(cwd, path.resolve(cwd, rawPath)) || rawPath;
+          mutatedFiles.add(rel.split(path.sep).join("/"));
+        }
+      }
       else if (t === "bash") {
         const cmd = String(toolCalls[i].arguments?.command ?? "");
         if (isVerificationSignal(cmd, results[i].output)) sawVerification = true;

@@ -533,8 +533,7 @@ export function streamIdleMs(env?: Record<string, string | undefined>): number {
  *  built-in default. Mirrors streamIdleMs so a slow non-interactive turn (callLlm without
  *  onToken) can relax the cap via JEO_CALL_TIMEOUT_MS without a code change. */
 export function callTimeoutMs(env?: Record<string, string | undefined>): number {
-  const e = env ?? process.env;
-  const raw = jeoEnv("CALL_TIMEOUT_MS", e) ?? e["ANTHROPIC_TIMEOUT"];
+  const raw = jeoEnv("CALL_TIMEOUT_MS", env);
   const n = raw !== undefined ? parseInt(raw, 10) : NaN;
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_CALL_TIMEOUT_MS;
 }

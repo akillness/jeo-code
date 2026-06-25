@@ -103,7 +103,7 @@ test("OpenAI OAuth-only + non-Codex model fails fast", async () => {
   }
 });
 
-test.skipIf(process.platform === "win32")("OpenAI OAuth-only + non-Codex model does NOT fail fast when base URL is configured", async () => {
+test("OpenAI OAuth-only + non-Codex model does NOT fail fast when base URL is configured", async () => {
   const originalConfigDir = process.env.JEO_CONFIG_DIR;
   const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
   const originalOpenAiToken = process.env.OPENAI_OAUTH_TOKEN;

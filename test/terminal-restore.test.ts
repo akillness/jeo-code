@@ -22,7 +22,7 @@ function withStdio(
 
 afterEach(() => resetTerminalRestoreLatch());
 
-test.skip("disables raw mode when stdin is a raw TTY", () => {
+test("disables raw mode when stdin is a raw TTY", () => {
   const calls: boolean[] = [];
   withStdio(
     { isTTY: true, isRaw: true, setRawMode: (r: boolean) => calls.push(r) },
@@ -32,7 +32,7 @@ test.skip("disables raw mode when stdin is a raw TTY", () => {
   expect(calls).toEqual([false]);
 });
 
-test.skip("leaves raw mode alone when stdin was never raw", () => {
+test("leaves raw mode alone when stdin was never raw", () => {
   const calls: boolean[] = [];
   withStdio(
     { isTTY: true, isRaw: false, setRawMode: (r: boolean) => calls.push(r) },
@@ -42,7 +42,7 @@ test.skip("leaves raw mode alone when stdin was never raw", () => {
   expect(calls).toEqual([]);
 });
 
-test.skip("is idempotent across a single process lifetime", () => {
+test("is idempotent across a single process lifetime", () => {
   const calls: boolean[] = [];
   withStdio(
     { isTTY: true, isRaw: true, setRawMode: (r: boolean) => calls.push(r) },
@@ -55,7 +55,7 @@ test.skip("is idempotent across a single process lifetime", () => {
   expect(calls).toEqual([false]); // second call short-circuits on the latch
 });
 
-test.skip("survives a missing setRawMode without throwing", () => {
+test("survives a missing setRawMode without throwing", () => {
   expect(() =>
     withStdio({ isTTY: true, isRaw: true }, false, () => restoreTerminalState()),
   ).not.toThrow();

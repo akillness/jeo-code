@@ -135,7 +135,7 @@ function anthropicThinkingMode(model: string): AnthropicThinkingMode {
   const v = parseAnthropicVersion(model);
   if (!v) return "budget";
   if (v.major > 4 || (v.major === 4 && v.minor >= 6)) return "adaptive";
-  
+  if (v.major === 4 && v.minor === 5) return "budget-effort";
   return "budget";
 }
 
@@ -266,7 +266,7 @@ export function anthropicPayload(
       // Budget-based extended thinking. `display: "summarized"` keeps human-readable thought
       // streaming. The 4.5 (budget-effort) transport also carries an output_config effort.
       payload.thinking = { type: "enabled", budget_tokens: thinkingBudget, display: "summarized" };
-      
+      if (thinkingMode === "budget-effort") payload.output_config = { effort: anthropicAdaptiveEffort(effort) };
     }
   } else if (includeTemperature && options.temperature !== undefined) {
     payload.temperature = options.temperature;
@@ -281,7 +281,6 @@ export function anthropicPayload(
   if (stream) payload.stream = true;
   const system = anthropicSystemBlocks(systemPrompt, model, credential, payload);
   if (system) payload.system = system;
-  console.log("PAYLOAD:", JSON.stringify(payload));
   return JSON.stringify(payload);
 }
 

@@ -20,7 +20,6 @@ export interface LaunchFlags {
   thinking?: ThinkLevel;
   errors: string[];
   print?: boolean;
-  quiet: boolean;
   appendSystemPromptRaw?: string;
   appendSystemPrompt?: string;
   noSkills: boolean;
@@ -64,7 +63,7 @@ export function fastThinkingLevelForModel(modelId: string): ThinkLevel | undefin
 }
 
 export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchFlags {
-  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 0, message: "", tmux: false, errors: [], print: false, quiet: false, noSkills: false, noTools: false };
+  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 0, message: "", tmux: false, errors: [], print: false, noSkills: false, noTools: false };
   const rest: string[] = [];
   const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (let i = 0; i < args.length; i++) {
@@ -78,8 +77,6 @@ export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchF
     } else if (a === "-p" || a === "--print") {
       flags.print = true;
       flags.noTui = true;
-    } else if (a === "-q" || a === "--quiet") {
-      flags.quiet = true;
     } else if (a === "--tmux") {
       flags.tmux = true;
     } else if (a === "--worktree") {

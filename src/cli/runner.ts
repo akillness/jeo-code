@@ -103,8 +103,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "skills",
-    summary: "List bundled workflow skills (jeo skills <name> for details).",
-    usage: "skills [name]",
+    summary: "List bundled workflow skills, or sync them into ~/.jeo/skills (jeo skills <name> for details).",
+    usage: "skills [list|read <name>|sync [--check|--force] [dir]|--write [dir]] [--json]",
     loader: async () => {
       const m = await import("../commands/skills");
       return args => m.runSkillsCommand(args);

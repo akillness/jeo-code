@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
 
+## [0.7.16] - 2026-06-25
+_Bundled skills get a safe installer: `jeo skills sync` materializes the built-in workflow skills into `~/.jeo/skills`, preserving local edits by default, with a CI-friendly `--check` drift report and a `--force` overwrite._
+
+### Added
+- **`jeo skills sync` installs and reconciles the bundled workflow skills into `~/.jeo/skills`.** New `syncBundledSkills(dir, { check, force })` (`src/commands/skills.ts`) reconciles the built-in `SKILLS` against a target dir — defaulting to `userSkillsDir()` (`~/.jeo/skills`, honoring `JEO_CONFIG_DIR`/`$HOME`, matching the highest-precedence flat dir in `skillDirs`). Missing skills are installed; a differing local copy is **preserved** by default (gjc `setup defaults` parity) unless `--force` overwrites it. `--check` is a pure drift report that writes nothing and sets a non-zero exit code on drift, so CI can gate on bundled-skill staleness. `--json` emits the structured `SkillSyncResult` (per-skill `status`/`action`, `drift`, `wrote`, `mode`). A new `bundledSkillFileContent` helper (`src/skills/catalog.ts`) defines the canonical on-disk bytes (raw `SKILL.md` when present, decorated render otherwise) shared by `sync` and the existing `--write` path. The `skills` command summary/usage (`src/cli/runner.ts`) and the list footer now advertise the subcommand.
+
+### Verified
+- `bun run typecheck` clean; full suite green — 1960 pass / 0 fail across 233 files — including the new `test/skills-sync.test.ts` (fresh install, idempotent re-run, `--check` drift report without writing, default-preserve vs `--force` overwrite, single-file reinstall, non-zero `--check` exit via `JEO_CONFIG_DIR`, and `--json` shape).
+
+
 ## [0.7.15] - 2026-06-25
 _Rollback release: the runtime source and test suite are restored to the **0.7.9** state. The intervening 0.7.10–0.7.14 runtime changes (quiet-mode/`-q`, `/resume` transcript rework, `mutatedFiles` plumbing, Ollama `num_ctx`, tmux REPL reaping, and related engine/provider/TUI edits) are reverted. Published as a new version because npm cannot re-issue an existing version number; `latest` now serves code identical to 0.7.9._
 

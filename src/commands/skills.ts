@@ -1,7 +1,109 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { SKILLS, getSkillFrom, formatSkill, loadSkills, skillDirs } from "../skills/catalog";
+import * as os from "node:os";
+import { SKILLS, getSkillFrom, formatSkill, loadSkills, skillDirs, bundledSkillFileContent } from "../skills/catalog";
 import { getLocalJeoDir } from "../agent/state";
+import { jeoEnv } from "../util/env";
+
+/** User-level bundled-skills install dir (`~/.jeo/skills`, honoring JEO_CONFIG_DIR /
+ *  $HOME overrides) — the destination `jeo skills sync` reconciles against, matching
+ *  the highest-precedence flat dir in {@link skillDirs}. */
+export function userSkillsDir(): string {
+  const userHome = process.env.HOME || os.homedir();
+  const home = jeoEnv("CONFIG_DIR") || path.join(userHome, ".jeo");
+  return path.join(home, "skills");
+}
+
+export type SkillSyncStatus = "missing" | "up-to-date" | "differs";
+export type SkillSyncAction = "installed" | "overwritten" | "preserved" | "unchanged" | "none";
+
+export interface SkillSyncEntry {
+  name: string;
+  /** State of the on-disk file BEFORE any write this run. */
+  status: SkillSyncStatus;
+  /** What sync did (or, for --check, "none"). */
+  action: SkillSyncAction;
+  path: string;
+}
+
+export interface SkillSyncResult {
+  dir: string;
+  entries: SkillSyncEntry[];
+  /** true when any bundled skill is missing or differs from its on-disk copy. */
+  drift: boolean;
+  /** Number of files actually written this run. */
+  wrote: number;
+}
+
+/** Reconcile the bundled workflow skills against `dir` (default {@link userSkillsDir}).
+ *  Default install preserves existing local files (gjc `setup defaults` parity):
+ *  missing skills are installed, differing ones preserved unless `force`. `check`
+ *  is a pure drift report — it writes nothing. Returns a structured result so the
+ *  CLI wrapper owns all console output / exit codes. */
+export async function syncBundledSkills(
+  dir: string,
+  opts: { check?: boolean; force?: boolean } = {},
+): Promise<SkillSyncResult> {
+  const entries: SkillSyncEntry[] = [];
+  let wrote = 0;
+  if (!opts.check) await fs.mkdir(dir, { recursive: true });
+  for (const s of SKILLS) {
+    const file = path.join(dir, `${s.name}.md`);
+    const want = bundledSkillFileContent(s);
+    let have: string | null = null;
+    try { have = await fs.readFile(file, "utf-8"); } catch { /* missing */ }
+    const status: SkillSyncStatus = have === null ? "missing" : have === want ? "up-to-date" : "differs";
+    let action: SkillSyncAction = "none";
+    if (!opts.check) {
+      if (status === "missing") {
+        await fs.writeFile(file, want, "utf-8");
+        action = "installed";
+        wrote++;
+      } else if (status === "differs") {
+        if (opts.force) {
+          await fs.writeFile(file, want, "utf-8");
+          action = "overwritten";
+          wrote++;
+        } else {
+          action = "preserved";
+        }
+      } else {
+        action = "unchanged";
+      }
+    }
+    entries.push({ name: s.name, status, action, path: file });
+  }
+  return { dir, entries, drift: entries.some(e => e.status !== "up-to-date"), wrote };
+}
+
+async function runSkillsSync(cleanArgs: string[], isJson: boolean, cwd: string): Promise<void> {
+  const check = cleanArgs.includes("--check");
+  const force = cleanArgs.includes("--force");
+  const dirArg = cleanArgs.slice(1).find(a => !a.startsWith("--"));
+  const dir = dirArg ? path.resolve(cwd, dirArg) : userSkillsDir();
+  const result = await syncBundledSkills(dir, { check, force });
+
+  if (isJson) {
+    console.log(JSON.stringify({ ...result, mode: check ? "check" : force ? "force" : "install" }, null, 2));
+  } else if (check) {
+    console.log(`\n=== jeo skills sync --check ===\nTarget: ${dir}\n`);
+    for (const e of result.entries) console.log(`  ${e.status.padEnd(11)} ${e.name}`);
+    console.log(
+      result.drift
+        ? `\nDrift detected. Run 'jeo skills sync' to install missing skills, or '--force' to overwrite differing local copies.`
+        : `\nAll ${result.entries.length} bundled skills are in sync.`,
+    );
+  } else {
+    console.log(`\n=== jeo skills sync ===\nTarget: ${dir}\n`);
+    for (const e of result.entries) console.log(`  ${e.action.padEnd(11)} ${e.name}`);
+    const preserved = result.entries.filter(e => e.action === "preserved").length;
+    console.log(`\nWrote ${result.wrote} file(s)${preserved ? `, preserved ${preserved} local copy(ies) (use --force to overwrite)` : ""}.`);
+  }
+
+  // --check is CI-usable: non-zero exit signals drift (gjc `setup defaults --check` parity).
+  if (check && result.drift) process.exitCode = 1;
+}
+
 
 function editDistance(a: string, b: string): number {
   const m = a.length, n = b.length;
@@ -40,9 +142,17 @@ export async function runSkillsCommand(args: string[] = []): Promise<void> {
     await fs.mkdir(dir, { recursive: true });
     for (const s of SKILLS) {
       const file = path.join(dir, `${s.name}.md`);
-      await fs.writeFile(file, s.raw || `# ${s.name}\n\n${formatSkill(s)}\n`, "utf-8");
+      await fs.writeFile(file, bundledSkillFileContent(s), "utf-8");
     }
     console.log(`Wrote ${SKILLS.length} skill docs to ${dir}`);
+    return;
+  }
+
+  // `jeo skills sync [--check|--force] [dir]` — bundled skill inspection & safe install
+  // (gjc `setup defaults --check/--force` parity): install missing bundled skills into
+  // ~/.jeo/skills, preserve existing local copies by default, and report drift.
+  if (cleanArgs[0] === "sync") {
+    await runSkillsSync(cleanArgs, isJson, cwd);
     return;
   }
 
@@ -60,6 +170,7 @@ export async function runSkillsCommand(args: string[] = []): Promise<void> {
         console.log(`  ${s.name.padEnd(16)} ${s.summary}`);
       }
       console.log("\nInvoke: /skill <name> [intent]  ·  $<name> [intent]  ·  skill-owned slash aliases (e.g. /speckit.plan)");
+      console.log("Install/inspect bundled defaults: 'jeo skills sync' (preserve local) · '--check' (drift report) · '--force' (overwrite local)");
       console.log("Discovery dirs (later wins on name clash; JEO_SKILLS_DIR adds more):");
       for (const d of skillDirs(cwd)) console.log(`  ${d}`);
       console.log("");

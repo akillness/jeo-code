@@ -202,6 +202,10 @@ export interface Concept {
   tags: string[];
   /** high | medium | low — distiller defaults to "high"; drives core selection. */
   confidence: string;
+  /** Load-bearing invariant (frontmatter `pinned: true`): selected into the injection
+   *  budget BEFORE any query/recency fill, so the cap can never evict it (philosophy
+   *  synthesis R8 / consensus #3 — pinned invariants survive on a reserved budget). */
+  pinned: boolean;
   /** Bundle-relative path, e.g. `commands/bun-test.md`. */
   relPath: string;
 }
@@ -284,6 +288,7 @@ async function loadConceptsFromBundle(bundleDir: string): Promise<Concept[]> {
       body: parsed.body.trim(),
       tags: Array.isArray(fm.tags) ? fm.tags.filter((t): t is string => typeof t === "string") : [],
       confidence: typeof fm.confidence === "string" ? fm.confidence : "high",
+      pinned: fm.pinned === true,
       relPath,
     };
     cacheParsedConcept(file, sig, concept);
@@ -339,10 +344,16 @@ export function searchConcepts(concepts: Concept[], query: string): { concept: C
     .sort((a, b) => b.score - a.score);
 }
 
-/** Priority order for injection: high-confidence "core" concepts first, then by
- *  query relevance (descending), then concepts the relevant ones LINK TO (1-hop
- *  graph expansion — Sprint 04: a directly-hit concept pulls its neighbours in as
- *  context ahead of unrelated noise), preserving input order as a stable tiebreak. */
+/** Priority order for injection. Failure-first: a query-relevant FailedAttempt is
+ *  surfaced AHEAD of everything else — resurfacing a known dead end is higher-leverage
+ *  than reinforcing what already works ("못하는 게 없도록" — close the gaps, don't just
+ *  polish strengths), and it is the mechanism by which the loop gets more precise the
+ *  more it repeats (llm-wiki: accumulated failure knowledge sharpens future runs). Then
+ *  high-confidence "core" concepts, then query relevance (descending), then concepts the
+ *  relevant ones LINK TO (1-hop graph expansion — Sprint 04: a directly-hit concept pulls
+ *  its neighbours in as context ahead of unrelated noise), preserving input order as a
+ *  stable tiebreak. The failure boost only fires when the query actually hits the concept
+ *  (score > 0), so an unrelated FailedAttempt never crowds out relevant context. */
 function priorityOrder(concepts: Concept[], query?: string): Concept[] {
   const tokens = tokenize(query);
   // 1-hop graph expansion: seed from concepts the query directly hits, then mark
@@ -354,14 +365,22 @@ function priorityOrder(concepts: Concept[], query?: string): Concept[] {
     for (const id of expandByGraph(seeds, graph, 1)) related.add(id);
   }
   return concepts
-    .map((concept, i) => ({
-      concept,
-      i,
-      core: concept.confidence === "high",
-      score: scoreConcept(concept, tokens),
-      related: related.has(conceptId(concept.relPath)),
-    }))
+    .map((concept, i) => {
+      const score = scoreConcept(concept, tokens);
+      return {
+        concept,
+        i,
+        // Query-relevant past failure → resurface first so the loop is reminded of
+        // what NOT to repeat for the current task. Gated on score > 0: a stale,
+        // unrelated dead end stays out of the way.
+        failure: concept.type === "FailedAttempt" && score > 0,
+        core: concept.confidence === "high",
+        score,
+        related: related.has(conceptId(concept.relPath)),
+      };
+    })
     .sort((a, b) => {
+      if (a.failure !== b.failure) return a.failure ? -1 : 1;
       if (a.core !== b.core) return a.core ? -1 : 1;
       if (b.score !== a.score) return b.score - a.score;
       if (a.related !== b.related) return a.related ? -1 : 1;
@@ -404,14 +423,22 @@ function renderConcepts(concepts: Concept[]): string {
 
 /** Greedily select concepts (in priority order) whose grouped render stays within
  *  `budget` chars, dropping the lowest-priority concepts first. At least the
- *  top-priority concept is always kept (the framing/backstop cap still applies). */
+ *  top-priority concept is always kept (the framing/backstop cap still applies).
+ *
+ *  Pinned (load-bearing) invariants get a RESERVED budget: they are selected FIRST,
+ *  before any query/recency fill, so a tight cap can never evict an invariant the
+ *  gates depend on (philosophy-synthesis consensus #3). The remaining budget then
+ *  holds the failure-first / core / query-relevant fill. */
 function selectWithinBudget(concepts: Concept[], query: string | undefined, budget: number): Concept[] {
-  const ordered = priorityOrder(concepts, query);
   const selected: Concept[] = [];
-  for (const c of ordered) {
-    if (renderConcepts([...selected, c]).length <= budget) selected.push(c);
-  }
-  if (selected.length === 0 && ordered.length > 0) selected.push(ordered[0]!);
+  const take = (pool: Concept[]) => {
+    for (const c of priorityOrder(pool, query)) {
+      if (renderConcepts([...selected, c]).length <= budget) selected.push(c);
+    }
+  };
+  take(concepts.filter(c => c.pinned)); // reserved budget: invariants survive the cap
+  take(concepts.filter(c => !c.pinned)); // recency/query fill in the remaining budget
+  if (selected.length === 0 && concepts.length > 0) selected.push(priorityOrder(concepts, query)[0]!);
   return selected;
 }
 
@@ -610,6 +637,55 @@ async function cleanupStalePendingFiles(dir: string): Promise<void> {
   }
 }
 
+/** Upsert ONE concept document into the bundle: resolve its file (dedup by title —
+ *  same title overwrites in place, a colliding slug gets a numeric suffix), merge
+ *  over any existing frontmatter, and atomically write it. The single source of
+ *  truth for a concept file's on-disk shape — shared by the session-exit distiller
+ *  and the deterministic recordFailedAttempt path. Does NOT touch index/log (callers
+ *  batch that). Assumes a non-empty title; unknown types fall back to facts/. */
+async function upsertConceptFile(
+  bundleDir: string,
+  c: { type: string; title: string; description?: string; body?: string; tags?: string[]; confidence?: string; links?: string[]; pinned?: boolean },
+): Promise<string> {
+  const dir = DIR_BY_TYPE[c.type] ?? "facts";
+  await fs.mkdir(path.join(bundleDir, dir), { recursive: true });
+  let slug = slugify(c.title);
+  let relPath = `${dir}/${slug}.md`;
+  let fullPath = path.join(bundleDir, relPath);
+  let suffix = 1;
+  while (true) {
+    try {
+      if ((parseConcept(await fs.readFile(fullPath, "utf-8")).frontmatter.title || "") === c.title) break;
+      slug = `${slugify(c.title)}-${suffix}`;
+      relPath = `${dir}/${slug}.md`;
+      fullPath = path.join(bundleDir, relPath);
+      suffix++;
+    } catch {
+      break;
+    }
+  }
+  let existingFm: Record<string, unknown> = {};
+  try {
+    existingFm = parseConcept(await fs.readFile(fullPath, "utf-8")).frontmatter as Record<string, unknown>;
+  } catch {}
+  const frontmatter = {
+    ...existingFm,
+    type: c.type,
+    title: c.title,
+    description: c.description ?? "",
+    tags: c.tags ?? [],
+    timestamp: new Date().toISOString(),
+    confidence: c.confidence ?? "high",
+    last_verified: new Date().toISOString().split("T")[0],
+    links: c.links ?? [],
+    ...(c.pinned ? { pinned: true } : {}),
+  };
+  const tmpPath = `${fullPath}.tmp-${process.pid}`;
+  await fs.writeFile(tmpPath, serializeConcept(frontmatter, c.body ?? ""), "utf-8");
+  await fs.rename(tmpPath, fullPath);
+  return relPath;
+}
+
 export async function distillSessionMemory(
   history: Message[],
   cwd: string,
@@ -721,57 +797,15 @@ export async function distillSessionMemory(
         const title = typeof concept.title === "string" ? concept.title.trim() : "";
         if (!type || !title) continue;
         try {
-          // Unknown types fall back to facts/ (lenient — OKF tolerates extra types).
-          const dir = DIR_BY_TYPE[type] ?? "facts";
-
-          const targetDir = path.join(bundleDir, dir);
-          await fs.mkdir(targetDir, { recursive: true });
-
-          let slug = slugify(title);
-          let relPath = `${dir}/${slug}.md`;
-          let fullPath = path.join(bundleDir, relPath);
-
-          let suffix = 1;
-          while (true) {
-            try {
-              const existingContent = await fs.readFile(fullPath, "utf-8");
-              const parsed = parseConcept(existingContent);
-              const existingTitle = parsed.frontmatter.title || "";
-              if (existingTitle === title) {
-                break;
-              }
-              slug = `${slugify(title)}-${suffix}`;
-              relPath = `${dir}/${slug}.md`;
-              fullPath = path.join(bundleDir, relPath);
-              suffix++;
-            } catch {
-              break;
-            }
-          }
-
-          let existingFm = {};
-          try {
-            const existingContent = await fs.readFile(fullPath, "utf-8");
-            existingFm = parseConcept(existingContent).frontmatter;
-          } catch {}
-
-          const frontmatter = {
-            ...existingFm,
-            type,
+          await upsertConceptFile(bundleDir, {
+            type, // unknown types fall back to facts/ inside the helper (lenient)
             title,
             description: typeof concept.description === "string" ? concept.description : "",
+            body: typeof concept.body === "string" ? concept.body : "",
             tags: Array.isArray(concept.tags) ? concept.tags.filter((t): t is string => typeof t === "string") : [],
-            timestamp: new Date().toISOString(),
             confidence: typeof concept.confidence === "string" ? concept.confidence : "high",
-            last_verified: new Date().toISOString().split("T")[0],
             links: Array.isArray(concept.links) ? concept.links.filter((l): l is string => typeof l === "string") : [],
-          };
-
-          const serialized = serializeConcept(frontmatter, typeof concept.body === "string" ? concept.body : "");
-          const tmpPath = `${fullPath}.tmp-${process.pid}`;
-          await fs.writeFile(tmpPath, serialized, "utf-8");
-          await fs.rename(tmpPath, fullPath);
-
+          });
           updatedConcepts.push({ title, type });
         } catch {
           // Skip just this concept; keep distilling the rest of the batch.
@@ -816,6 +850,46 @@ export async function distillSessionMemory(
     }
   } catch (err: any) {
     return { updated: false, skipped: `distill failed: ${err?.message ?? String(err)}` };
+  }
+}
+
+/** Mid-session, deterministic (no-LLM) capture of a dead end into the OKF bundle.
+ *  The session-exit distill only learns AFTER a session ends; a turn that stalled
+ *  (consecutive-failure / cycle / repeat guard fired) is a dead end the *next turn
+ *  of the SAME session* should already avoid. This writes ONE FailedAttempt concept
+ *  immediately so the per-turn memory injection resurfaces it (priorityOrder puts a
+ *  query-relevant FailedAttempt first), closing the loop the user described: each
+ *  iteration gets sharper by building on accumulated failure knowledge. Confidence
+ *  is "medium" (not "high") so it never enters the always-injected "core" tier — it
+ *  only surfaces when the query actually hits it, and the richer session-exit distill
+ *  later consolidates or replaces it. Best-effort: a write failure is swallowed. */
+export async function recordFailedAttempt(
+  cwd: string,
+  attempt: { title: string; description?: string; body?: string; tags?: string[] },
+): Promise<{ recorded: boolean; skipped?: string }> {
+  if (jeoEnv("NO_MEMORY") === "1") return { recorded: false, skipped: "disabled (JEO_NO_MEMORY=1)" };
+  const title = attempt.title?.trim();
+  if (!title) return { recorded: false, skipped: "empty title" };
+  try {
+    const bundleDir = path.join(cwd, ".jeo", "memory");
+    // confidence "medium" keeps it out of the always-injected core tier (priorityOrder)
+    // — it only surfaces when the query actually hits it.
+    await upsertConceptFile(bundleDir, {
+      type: "FailedAttempt",
+      title,
+      description: attempt.description ?? "",
+      body: attempt.body ?? "",
+      tags: Array.isArray(attempt.tags) ? attempt.tags.filter(t => typeof t === "string") : [],
+      confidence: "medium",
+    });
+    await withIndexLock(bundleDir, async () => {
+      await rebuildIndex(bundleDir);
+      await updateLog(bundleDir, [{ title, type: "FailedAttempt" }]);
+    });
+    invalidateConceptCache();
+    return { recorded: true };
+  } catch (err: any) {
+    return { recorded: false, skipped: `record failed: ${err?.message ?? String(err)}` };
   }
 }
 

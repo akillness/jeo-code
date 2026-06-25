@@ -125,3 +125,17 @@ test("renderInputFrame: paints multiple highlight ranges (each token its own col
   // Order is preserved: the green token is painted before the pink one.
   expect(raw.indexOf("\x1b[38;2;57;255;20m")).toBeLessThan(raw.indexOf("\x1b[38;2;255;107;129m"));
 });
+test("renderInputFrame: caret lands right after the [image #N] tag from insertImageTag (not pushed)", () => {
+  const { renderInputFrame } = require("../src/tui/components/input-box");
+  const { insertImageTag } = require("../src/util/file-attachment");
+  // Empty box + Ctrl+V image attach → "[image #1] " with the caret on col 15 (the
+  // cell right after the tag's single trailing space), NOT several columns past it.
+  const { text, cursor } = insertImageTag("", 0, 1);
+  expect(text).toBe("[image #1] ");
+  const frame = renderInputFrame(text, { cols: 60, color: false, unicode: false, cursor });
+  // Visible body shows "> [image #1]"; "> " ends at col 3, the tag occupies cols 4..13,
+  // its trailing space is col 14, so the caret sits on col 15 — exactly text length + 4.
+  expect(frame.cursorCol).toBe(4 + text.length);
+  const body = frame.lines.map(stripAnsi);
+  expect(body[1]).toContain("> [image #1]");
+});

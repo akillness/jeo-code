@@ -105,9 +105,9 @@ export const TOOL_PROTOCOL = [
   "",
   "Alternatively, you may batch up to 6 independent calls in a single turn using the following format:",
   '{ "reasoning": "<one short sentence>", "tools": [{ "tool": "<name>", "arguments": { ... } }, ...] }',
-  "Batch only independent calls; NEVER batch 'done', and NEVER put a mutating tool (write/edit/bash) after another mutating tool in one batch whose inputs depend on the earlier one.",
-  "Tool calibration: scale calls to difficulty — one for a known fact, a few for a normal task, more only when evidence is genuinely missing. Locate before you open: search/find first, then read the hit, instead of guessing paths.",
-  "web_search reflex: if the request hinges on a name, version, library, or event you do not actually recognize, search before answering instead of guessing; never claim a result's absence proves nonexistence.",
+  "Batch only independent calls; NEVER batch 'done', and NEVER put a mutating tool (write/edit/bash) after another mutating tool in one batch whose inputs depend on the earlier one. In a multi-edit batch, let the turn `reasoning` name each change — not a vague one-liner.",
+  "Tool calibration: scale calls to difficulty — one for a known fact, a few for a normal task, more only when evidence is genuinely missing. For multi-file or multi-step work, sketch a short plan (todo) before the first edit; a one-line change goes straight to the edit. Locate before you open: search/find first, then read the hit, instead of guessing paths.",
+  "web_search reflex: if the request hinges on a name, version, library, or event you do not actually recognize, search before answering instead of guessing; never claim a result's absence proves nonexistence. When sources conflict or look incomplete, run another targeted search to disambiguate rather than picking one at random.",
   "Quoting fetched/searched text: paraphrase by default — quote at most one short phrase per source, cite it, and never paste long passages.",
 ].join("\n");
 
@@ -165,6 +165,7 @@ export const OUTPUT_DISCIPLINE = [
   "- When using lists, ensure each bullet carries a complete thought; avoid fragmented or shredded reports.",
   "- Don't stall on ambiguity: make reasonable assumptions and ask at most one clarifying question if absolutely necessary.",
   "- Report only what is done or in progress; never announce future work instead of doing it.",
+  "- Give a substantive answer first; never punt with only a disclaimer, a knowledge-cutoff caveat, or an offer to search — answer with what you have, then note the caveat.",
   "- Match reply length to the task: a one-line change gets a one-line report.",
 ].join("\n");
 
@@ -272,6 +273,10 @@ export interface AgentLoopResult {
   doneReason?: string;
   /** Summed provider token usage across the turn's steps, when reported. */
   usage?: { inputTokens: number; outputTokens: number };
+  /** Set ONLY when the turn ended in a guard-detected dead end the model could not
+   *  recover from (repeated/cycled/consecutively-failing calls). Lets the caller
+   *  capture the stall into failure memory; `undefined` for done/budget/cancelled. */
+  stopClass?: "consecutive_failure" | "cycle" | "repeat";
 }
 
 
@@ -369,7 +374,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // "Stopped: …" — throwing away everything found this turn — do ONE final no-tools
   // call asking the model to answer with what it already has. Mirrors the
   // budget-exhaustion wrap-up below. Best-effort: falls back to the plain stop.
-  const consolidateStop = async (stopReason: string): Promise<AgentLoopResult> => {
+  const consolidateStop = async (stopReason: string, stopClass: AgentLoopResult["stopClass"]): Promise<AgentLoopResult> => {
     try {
       if (!opts.signal?.aborted) {
         const wrapUp = await invokeCallLlm(
@@ -391,12 +396,13 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           return finish({
             done: false,
             steps: step,
+            stopClass,
             doneReason: `${consolidated}\n\n(Stopped: ${stopReason} — consolidated answer above from what was found; continue with a follow-up request)`,
           });
         }
       }
     } catch { /* best-effort; fall through to the plain stop message */ }
-    return finish({ done: false, steps: step, doneReason: `Stopped: ${stopReason}` });
+    return finish({ done: false, steps: step, stopClass, doneReason: `Stopped: ${stopReason}` });
   };
   // No-progress guard: weak/local models often repeat the same tool call without
   // ever emitting `done`. Two escalating corrections (B), then a consolidated stop.
@@ -414,6 +420,12 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // doc/config changes where verification is genuinely not applicable).
   let sawMutation = false;
   let sawVerification = false;
+  // Monotonic ordering of mutation vs. verification events so the done gate can
+  // tell a STALE verification (passing test/build that predates the last edit)
+  // from a fresh one. A single counter captures intra-batch order too.
+  let mutVerSeq = 0;
+  let lastMutationSeq = 0;
+  let lastVerificationSeq = 0;
   let donePushbackUsed = false;
   // Caller-owned done gate (onBeforeDone) — also strictly once per turn.
   let beforeDoneNudgeUsed = false;
@@ -717,7 +729,12 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       // done-verification gate — jeo's descendant of gjc's ultragoal-guard completion
       // state machine (plan/gjc-inheritance.md B4). The classifier owns the JUDGMENT
       // (which named state, which message); the loop owns the once-pushback latch.
-      const doneGate = classifyDoneGate({ sawMutation, sawVerification, pendingHookFailure });
+      const doneGate = classifyDoneGate({
+        sawMutation,
+        sawVerification,
+        verificationStale: sawMutation && lastMutationSeq > lastVerificationSeq,
+        pendingHookFailure,
+      });
       if (doneGate.block && !donePushbackUsed) {
         donePushbackUsed = true; // second done always passes — escape hatch
         pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
@@ -805,7 +822,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     }
     if (repeatCount >= MAX_REPEAT) {
       const what = toolCalls.length === 1 ? `the same '${toolCalls[0].tool}' call` : "the same tool calls";
-      return await consolidateStop(`repeated ${what} ${MAX_REPEAT}× even after explicit corrections (the model never signaled done)`);
+      return await consolidateStop(`repeated ${what} ${MAX_REPEAT}× even after explicit corrections (the model never signaled done)`, "repeat");
     }
 
     // Cycle guard: an A↔B (or A↔B↔C-minus-one) alternation never trips the
@@ -833,7 +850,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         step++;
         continue;
       }
-      return await consolidateStop(`the model cycled through the same tool calls for ${CYCLE_WINDOW} consecutive steps even after an explicit correction (it never signaled done)`);
+      return await consolidateStop(`the model cycled through the same tool calls for ${CYCLE_WINDOW} consecutive steps even after an explicit correction (it never signaled done)`, "cycle");
     }
 
     // Helper to execute a single tool call
@@ -1037,15 +1054,20 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     }
     // done-verification guard bookkeeping: write/edit successes mark the turn as
     // mutating; a successful bash whose command/output looks like a test/build run
-    // counts as verification. A verification AFTER the last mutation is what the
-    // done guard wants, but order-insensitive tracking keeps it one-pushback simple.
+    // counts as verification. A monotonic seq records ORDER so the done gate can
+    // reject a verification that predates the last mutation (stale evidence).
     for (let i = 0; i < toolCalls.length; i++) {
       if (!results[i].executed || !results[i].success) continue;
       const t = toolCalls[i].tool;
-      if (t === "write" || t === "edit") sawMutation = true;
-      else if (t === "bash") {
+      if (t === "write" || t === "edit") {
+        sawMutation = true;
+        lastMutationSeq = ++mutVerSeq;
+      } else if (t === "bash") {
         const cmd = String(toolCalls[i].arguments?.command ?? "");
-        if (isVerificationSignal(cmd, results[i].output)) sawVerification = true;
+        if (isVerificationSignal(cmd, results[i].output)) {
+          sawVerification = true;
+          lastVerificationSeq = ++mutVerSeq;
+        }
       }
     }
     // F6 (round 4 architect, Low): judge the step by its NON-TRIVIAL calls — a
@@ -1069,6 +1091,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       return finish({
         done: false,
         steps: step,
+        stopClass: "consecutive_failure",
         doneReason: stopMsg,
       });
     }

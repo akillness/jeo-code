@@ -261,6 +261,15 @@ export function skillSlashAliases(skill: SkillDoc): string[] {
 }
 
 
+/** User-level bundled-skills install dir (`<config>/skills`, i.e. `~/.jeo/skills`
+ *  honoring JEO_CONFIG_DIR / $HOME) — the highest-precedence flat skill dir and the
+ *  destination `jeo skills sync` reconciles against. $HOME wins over os.homedir() so
+ *  tests/sandboxes that re-point HOME are honored (see {@link skillDirs}). */
+export function userSkillsDir(): string {
+  const userHome = process.env.HOME || os.homedir();
+  return path.join(jeoEnv("CONFIG_DIR") || path.join(userHome, ".jeo"), "skills");
+}
+
 /** Global + per-project skill-doc directories (user-configurable SKILL.md files).
  *  Ordered lowest → highest precedence (a later dir's skill overrides an earlier
  *  one with the same name): foreign-ecosystem roots first, jeo-native last.
@@ -283,7 +292,7 @@ export function skillDirs(cwd: string = process.cwd()): string[] {
     path.join(userHome, ".claude", "skills"),
     path.join(home, "agent", "skills"),
     path.join(userHome, ".agents", "skills"),
-    path.join(home, "skills"),
+    userSkillsDir(),
     path.join(cwd, ".claude", "skills"),
     path.join(cwd, ".agents", "skills"),
     path.join(cwd, ".jeo", "skills"),

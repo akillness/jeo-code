@@ -61,6 +61,7 @@ test("cycle guard: a ping-pong that survives the correction stops the turn", asy
   });
   expect(result.done).toBe(false);
   expect(result.doneReason).toContain("cycled through the same tool calls");
+  expect(result.stopClass).toBe("cycle"); // tagged so the caller can capture the stall into failure memory
   // Stopped by the guard, far before the 40-step budget.
   expect(result.steps).toBeLessThan(20);
 });
@@ -139,4 +140,44 @@ test("hashSignature: stable, fixed-size, distinct for distinct inputs", async ()
   expect(h1.length).toBeLessThan(20); // fixed-size digest, not the 100k payload
   expect(hashSignature(big + "!")).not.toBe(h1);
   expect(hashSignature("read:{}")).not.toBe(hashSignature("read:{} ")); // whitespace-sensitive
+});
+
+// ── stopClass tagging ───────────────────────────────────────────────────────
+// A guard-detected dead end is tagged on the result so the caller (launch.ts)
+// can capture the stall into failure memory. Distinct from budget/cancel stops.
+
+test("consecutive-failure stop tags result.stopClass = consecutive_failure", async () => {
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      // Distinct args each step (dodges repeat/cycle guards) but every call fails.
+      return JSON.stringify({ tool: "probe", arguments: { n: turn } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const result = await runAgentLoop([{ role: "system", content: "sys" }], {
+    cwd: process.cwd(),
+    maxSteps: 40,
+    budget: { maxExtensions: 0 },
+    tools: { probe: async () => ({ success: false, output: "boom" }) },
+  });
+  expect(result.done).toBe(false);
+  expect(result.stopClass).toBe("consecutive_failure");
+});
+
+test("repeat stop tags result.stopClass = repeat", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    // The exact same call forever — ignores the corrective bounce.
+    callLlm: async () => JSON.stringify({ tool: "probe", arguments: { same: 1 } }),
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const result = await runAgentLoop([{ role: "system", content: "sys" }], {
+    cwd: process.cwd(),
+    maxSteps: 40,
+    budget: { maxExtensions: 0 },
+    tools: { probe: async () => ({ success: true, output: "ok" }) },
+  });
+  expect(result.done).toBe(false);
+  expect(result.stopClass).toBe("repeat");
 });

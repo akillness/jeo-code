@@ -87,3 +87,51 @@ test("classifyDoneGate: failing post-turn hook outranks verification → block (
   expect(v.block).toBe(true);
   expect(v.message).toContain('post-turn hook "bun test" FAILING');
 });
+
+test("classifyDoneGate: verified then mutated again → block (stale verification)", () => {
+  const v = classifyDoneGate({
+    sawMutation: true,
+    sawVerification: true,
+    verificationStale: true,
+    pendingHookFailure: null,
+  });
+  expect(v.state).toBe("done_stale_verification");
+  expect(v.block).toBe(true);
+  expect(v.message).toContain("no longer reflects the current tree");
+});
+
+test("classifyDoneGate: fresh verification (not stale) → accept", () => {
+  const v = classifyDoneGate({
+    sawMutation: true,
+    sawVerification: true,
+    verificationStale: false,
+    pendingHookFailure: null,
+  });
+  expect(v.state).toBe("done_ok");
+  expect(v.block).toBe(false);
+});
+
+test("classifyDoneGate: stale flag without any verification stays unverified", () => {
+  // verificationStale is meaningless when nothing was verified; the unverified
+  // branch must still win so the message is accurate.
+  const v = classifyDoneGate({
+    sawMutation: true,
+    sawVerification: false,
+    verificationStale: true,
+    pendingHookFailure: null,
+  });
+  expect(v.state).toBe("done_unverified");
+  expect(v.block).toBe(true);
+  expect(v.message).toContain("ran NO verification");
+});
+
+test("classifyDoneGate: failing hook outranks stale verification", () => {
+  const v = classifyDoneGate({
+    sawMutation: true,
+    sawVerification: true,
+    verificationStale: true,
+    pendingHookFailure: "bun test",
+  });
+  expect(v.state).toBe("done_hook_failing");
+  expect(v.block).toBe(true);
+});

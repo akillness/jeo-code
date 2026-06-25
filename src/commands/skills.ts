@@ -1,18 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import * as os from "node:os";
-import { SKILLS, getSkillFrom, formatSkill, loadSkills, skillDirs, bundledSkillFileContent } from "../skills/catalog";
+import { SKILLS, getSkillFrom, formatSkill, loadSkills, skillDirs, bundledSkillFileContent, userSkillsDir } from "../skills/catalog";
 import { getLocalJeoDir } from "../agent/state";
-import { jeoEnv } from "../util/env";
 
-/** User-level bundled-skills install dir (`~/.jeo/skills`, honoring JEO_CONFIG_DIR /
- *  $HOME overrides) — the destination `jeo skills sync` reconciles against, matching
- *  the highest-precedence flat dir in {@link skillDirs}. */
-export function userSkillsDir(): string {
-  const userHome = process.env.HOME || os.homedir();
-  const home = jeoEnv("CONFIG_DIR") || path.join(userHome, ".jeo");
-  return path.join(home, "skills");
-}
+export { userSkillsDir };
 
 export type SkillSyncStatus = "missing" | "up-to-date" | "differs";
 export type SkillSyncAction = "installed" | "overwritten" | "preserved" | "unchanged" | "none";

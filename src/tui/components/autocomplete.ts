@@ -13,7 +13,7 @@
  * completer never blocks on the network. Static data (slash names, catalog ids,
  * provider names, role ids) is filled by `staticCompletionContext()`.
  */
-import { SLASH_COMMANDS } from "./slash";
+import { SLASH_COMMANDS, SLASH_COMMAND_DESCRIPTIONS } from "./slash";
 import { catalogIds } from "../../ai/model-catalog-compat";
 import { PROVIDER_NAMES } from "../../ai/provider-status";
 import { SUBAGENT_ROLES } from "../../agent/subagents";
@@ -84,6 +84,82 @@ function prefixHits(pool: string[], token: string): string[] {
   return pool.filter(c => c.toLowerCase().startsWith(q));
 }
 
+/**
+ * Fuzzy subsequence test (gjc parity): every char of `query` appears in
+ * `target` in order (not necessarily adjacent). Empty query matches everything.
+ */
+export function fuzzyMatch(query: string, target: string): boolean {
+  if (!query) return true;
+  let qi = 0;
+  for (let ti = 0; ti < target.length && qi < query.length; ti++) {
+    if (target[ti] === query[qi]) qi++;
+  }
+  return qi === query.length;
+}
+
+/**
+ * Score a match (gjc parity): exact=100 > startsWith=80 > includes=60 >
+ * subsequence(40 − gaps×5, min 1). Returns 0 when `query` is not a subsequence.
+ */
+export function fuzzyScore(query: string, target: string): number {
+  if (!query) return 80;
+  if (query === target) return 100;
+  if (target.startsWith(query)) return 80;
+  if (target.includes(query)) return 60;
+  let qi = 0;
+  let gaps = 0;
+  let lastMatch = -1;
+  for (let ti = 0; ti < target.length && qi < query.length; ti++) {
+    if (target[ti] === query[qi]) {
+      if (lastMatch !== -1 && ti !== lastMatch + 1) gaps++;
+      lastMatch = ti;
+      qi++;
+    }
+  }
+  if (qi < query.length) return 0;
+  return Math.max(1, 40 - gaps * 5);
+}
+
+/**
+ * Fuzzy command-name matches, ranked best-first (gjc §2.1): higher fuzzyScore
+ * first, ties broken by registration order so the list stays stable. Prefix
+ * matches always outrank looser subsequence hits, so `/mod`→`/model` is kept
+ * while `/mdl`→`/model` now also completes.
+ */
+function fuzzyHits(pool: string[], token: string): string[] {
+  const q = token.toLowerCase();
+  return pool
+    .map((c, index) => ({ c, score: fuzzyScore(q, c.toLowerCase()), index }))
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map(x => x.c);
+}
+
+/**
+ * Command-name completion with a description fallback (gjc §2.1). Name matches
+ * win outright (so `/mod`→`/model` stays precise); only when NOTHING matches the
+ * name do we fall back to substring-or-better description hits, so intent-style
+ * queries with no literal name match still resolve — e.g. `/oauth`→`/login`,
+ * `/transcript`→`/dump`. The description fallback requires ≥2 query chars and a
+ * real substring (not a loose subsequence) to avoid flooding the dropdown.
+ */
+function fuzzyCommandHits(pool: string[], token: string): string[] {
+  const nameHits = fuzzyHits(pool, token);
+  if (nameHits.length > 0) return nameHits;
+
+  const q = token.replace(/^\//, "").toLowerCase();
+  if (q.length < 2) return [];
+  return pool
+    .map((c, index) => {
+      const desc = SLASH_COMMAND_DESCRIPTIONS.get(c);
+      const hit = desc?.includes(q) ?? false;
+      return { c, score: hit ? fuzzyScore(q, desc!) * 0.5 : 0, index };
+    })
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map(x => x.c);
+}
+
 /** De-duplicate (case-insensitive, first wins), preserving order, capped. */
 function dedupeCap(items: string[], cap = MAX_COMPLETIONS): string[] {
   const seen = new Set<string>();
@@ -129,7 +205,7 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     // `/command` mention completion mid-line (the leading-token case is the
     // dedicated command branch below, which also completes arguments).
     if (token.startsWith("/")) {
-      return { completions: dedupeCap(prefixHits(ctx.slashCommands, token)), token, kind: "command" };
+      return { completions: dedupeCap(fuzzyCommandHits(ctx.slashCommands, token)), token, kind: "command" };
     }
     return { completions: [], token: line, kind: "none" };
   }
@@ -137,7 +213,7 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
   // Completing the command name itself (single token, still typing it).
   if (tokens.length <= 1 && !trailingSpace) {
     const token = tokens[0] ?? "/";
-    return { completions: dedupeCap(prefixHits(ctx.slashCommands, token)), token, kind: "command" };
+    return { completions: dedupeCap(fuzzyCommandHits(ctx.slashCommands, token)), token, kind: "command" };
   }
 
   const cmd = tokens[0]!.toLowerCase();

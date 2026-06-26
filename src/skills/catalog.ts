@@ -521,6 +521,20 @@ export function getSkillBySlash(skills: SkillDoc[], command: string): SkillDoc |
   return skills.find(s => skillSlashAliases(s).some(a => a.toLowerCase() === q));
 }
 
+/** Resolve a leading `/alias` slash command to the skill that DECLARES it, e.g.
+ *  `/obsidian-capture note text` → { skill, intent: "note text", invokedAs: "/obsidian-capture" }.
+ *  Returns null when the first token is not a declared skill slash alias. This is what lets an
+ *  installed skill add real, dispatchable `/` commands (not just routing-hint metadata): only the
+ *  FIRST token is matched, and the rest of the line becomes the intent passed to the skill. */
+export function parseSkillSlashInvocation(input: string, skills: SkillDoc[]): SkillInvocation | null {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("/")) return null;
+  const command = trimmed.split(/\s+/, 1)[0] ?? "";
+  const skill = getSkillBySlash(skills, command);
+  if (!skill) return null;
+  return { skill, intent: trimmed.slice(command.length).trim(), invokedAs: command };
+}
+
 export interface SkillInvocation {
   skill: SkillDoc;
   intent: string;

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
 
+## [0.7.18] - 2026-06-26
+_Slash-command discovery and the `/model` flow reach gajae-code parity. The slash palette/autocomplete now fuzzy-matches command names (with a description fallback for intent-style queries), resolved skills can contribute their own `/aliases` as real dispatchable commands, and `/model` runs gjc's two-menu target → reasoning flow so a picked model can be assigned to the default or any subagent role with its own thinking budget._
+
+### Added
+- **Slash completion gains gjc §2.1 fuzzy name matching with a description fallback.** `src/tui/components/autocomplete.ts` adds pure `fuzzyMatch`/`fuzzyScore` (exact 100 > startsWith 80 > includes 60 > subsequence `40 − gaps×5`, min 1) and a `fuzzyCommandHits` ranker, so `/mdl` → `/model` now completes while prefix-exact behaviour (`/mod` → `/model`) is preserved. When nothing matches a command name, both the autocomplete dropdown and `matchSlash` (`slash.ts`) fall back to a description substring match — `/oauth` → `/login`, `/clipboard` → `/dump` — gated to ≥2-char queries with a real substring hit to avoid flooding. New `SLASH_COMMAND_DESCRIPTIONS` map backs the fallback.
+- **Resolved skills can contribute `/` slash commands, not just `$<name>`.** Every slash alias a resolved skill declares (frontmatter `aliases:`/`slash:`) becomes a real, dispatchable palette command grouped under "skills" — extending the slash menu, autocomplete, and previews. `runLaunchCommand` (`src/commands/launch.ts`) wires `skillSlashAliases`/`parseSkillSlashInvocation` so both the interactive REPL (`/obsidian-capture note`) and one-shot mode (`jeo "/obsidian-capture note"`) dispatch the owning skill, with built-in slash handlers always winning and first-declarer-wins alias scoping.
+- **`buildThinkingLevelChoices` extracts the reasoning menu (gjc `#renderThinkingMenu`).** `src/tui/components/live-model-picker.ts` adds `THINKING_LEVEL_ORDER` and a pure `buildThinkingLevelChoices(current, { inheritLabel, tokenHint })` that renders `<level> — <description> (<tokens>)` with the current level flagged and an optional leading `inherit` row for role targets — fully unit-testable.
+
+### Changed
+- **`/model` runs gjc's two-menu target → reasoning flow.** After a model is picked, `applyPickedModelWithTarget` now shows `applyTargetChoices` ("Set as DEFAULT / EXECUTOR / …", which target uses the model) followed by the per-target reasoning menu. DEFAULT updates the active session model and default thinking; a subagent role writes `~/.jeo/config.json` (model + thinking, or inherit) without switching the chat model. Replaces the prior default-only assignment.
+
+### Verified
+- `bun run typecheck` clean; full suite green — 2009 pass / 0 fail across 234 files — including new `test/autocomplete.test.ts` cases (`fuzzyMatch` subsequence, `fuzzyScore` ranking, non-prefix subsequence completion, prefix-exact preservation, description-only fallback), `test/slash.test.ts` (`matchSlash` description fallback for intent queries), and `test/live-model-picker.test.ts` (`buildThinkingLevelChoices` ordering, token hints skipping minimal, `inherit` row only with a label, explicit role level outranking inherit).
+
+
 ## [0.7.17] - 2026-06-25
 _Developer workflow parity (gjc `dev:link`/`dev:doctor`, adapted for jeo's zero-native-dep Bun runtime): the global `jeo` command can be linked to run this checkout's source hot to every edit, with a drift doctor that flags when `jeo` resolves to a compiled binary or an installed copy instead. README gains "Skill migration and bundled skill inspection" + "Development" sections. Also ships OKF concept-memory search/scoring with budget-aware injection and a round of workflow-prompt hardening (anti-punt, todo-first planning, verdict discipline) that keeps every loop escape hatch intact._
 

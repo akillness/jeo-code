@@ -6,6 +6,8 @@ import {
   readlineCompleter,
   formatCompletionPreview,
   staticCompletionContext,
+  fuzzyMatch,
+  fuzzyScore,
   type CompletionContext,
 } from "../src/tui/components/autocomplete";
 const ctx = (over: Partial<CompletionContext> = {}): CompletionContext => ({
@@ -235,4 +237,60 @@ test("/command mention completes mid-line against the plugin command list", () =
   expect(dyn.completions).toEqual(["/speckit.plan"]);
   // Plain words and paths stay untouched.
   expect(complete("open src/cli.ts", ctx()).completions).toEqual([]);
+});
+test("fuzzyMatch is a case-sensitive subsequence test", () => {
+  expect(fuzzyMatch("mdl", "model")).toBe(true); // m-o-d-e-l contains m,d,l in order
+  expect(fuzzyMatch("model", "model")).toBe(true);
+  expect(fuzzyMatch("", "anything")).toBe(true);
+  expect(fuzzyMatch("lm", "model")).toBe(false); // wrong order
+  expect(fuzzyMatch("xyz", "model")).toBe(false);
+});
+
+test("fuzzyScore ranks exact > prefix > substring > subsequence", () => {
+  expect(fuzzyScore("model", "model")).toBe(100); // exact
+  expect(fuzzyScore("mod", "model")).toBe(80); // prefix
+  expect(fuzzyScore("ode", "model")).toBe(60); // substring
+  expect(fuzzyScore("mdl", "model")).toBeGreaterThan(0); // subsequence with gaps
+  expect(fuzzyScore("mdl", "model")).toBeLessThan(60);
+  expect(fuzzyScore("xyz", "model")).toBe(0); // no match
+  // tighter subsequences score higher than looser ones
+  expect(fuzzyScore("mde", "mode")).toBeGreaterThan(fuzzyScore("mdl", "model"));
+});
+
+test("slash command name completion matches non-prefix subsequences", () => {
+  // `/mdl` was previously a no-op (strict prefix); fuzzy now resolves it.
+  const r = complete("/mdl", ctx());
+  expect(r.kind).toBe("command");
+  expect(r.completions).toEqual(["/model"]);
+  // Prefix matches still rank ahead of looser subsequence hits.
+  const ranked = complete("/p", ctx({ slashCommands: ["/provider", "/help", "/export"] }));
+  expect(ranked.completions[0]).toBe("/provider"); // prefix (80) outranks /help & /export subsequence hits
+  expect(ranked.completions).toContain("/provider");
+});
+
+test("fuzzy command completion preserves prefix-exact behaviour for existing queries", () => {
+  expect(complete("/mod", ctx()).completions).toEqual(["/model"]);
+  expect(readlineCompleter("/mod", ctx())).toEqual([["/model"], "/mod"]);
+  expect(complete("/zzz", ctx()).completions).toEqual([]);
+});
+
+test("command completion falls back to descriptions only when no name matches (gjc §2.1)", () => {
+  // Build a real context whose command pool has bundled descriptions wired in.
+  const real = (): CompletionContext => ({
+    ...staticCompletionContext(),
+    liveModels: [],
+    aliases: [],
+    modelsForProvider: () => [],
+  });
+  // Intent-style queries with NO literal name match resolve via description text.
+  const oauth = complete("/oauth", real());
+  expect(oauth.kind).toBe("command");
+  expect(oauth.completions).toContain("/login"); // "...OAuth login..."
+  expect(oauth.completions).toContain("/provider"); // "...login starts OAuth..."
+  expect(complete("/clipboard", real()).completions).toEqual(["/dump"]); // only /dump mentions clipboard
+  expect(complete("/transcript", real()).completions).toContain("/export");
+  // Name matches still win outright — no description noise leaks in for /mod.
+  expect(complete("/mod", real()).completions).toEqual(["/model"]);
+  // Single-char queries never trigger the description fallback (would flood).
+  expect(complete("/qqzz", real()).completions).toEqual([]);
 });

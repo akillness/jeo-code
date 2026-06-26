@@ -14,7 +14,7 @@ import { runDeepInterviewEngine, type DeepInterviewEngineOptions } from "./deep-
 import { runRalplanEngine, type RalplanEngineOptions } from "./ralplan";
 import { runTeamEngine, type TeamEngineOptions } from "./team";
 import { runUltragoalEngine, type UltragoalEngineOptions } from "./ultragoal";
-import { skillsPromptSection, loadSkills, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
+import { skillsPromptSection, loadSkills, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, parseSkillSlashInvocation, skillSlashAliases, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
 import { formatForgeBox, scaleForgeWidth } from "../tui/components/forge";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth, OAUTH_PROVIDERS, API_KEY_ONLY_PROVIDERS, setApiKey } from "../auth";
@@ -43,7 +43,7 @@ import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../ag
 import { listAliases } from "../ai/model-registry";
 import { openaiCompatDef, SUBSCRIPTION_PROVIDER_NAMES } from "../ai/providers/openai-compatible-catalog";
 
-import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting } from "../agent/subagents";
+import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting, applyTargetChoices } from "../agent/subagents";
 import { SelectList, renderSelectList, type SelectItem } from "../tui/components/select-list";
 import { SessionPicker, renderSessionPicker } from "../tui/components/session-picker";
 import {
@@ -57,7 +57,7 @@ import {
   formatPickListWithCapabilities,
   formatCapabilityLine,
 } from "../tui/components/config-panel";
-import { liveModelPicker, renderLiveModelPicker, type ModelAssignmentBadge } from "../tui/components/live-model-picker";
+import { liveModelPicker, renderLiveModelPicker, buildThinkingLevelChoices, type ModelAssignmentBadge } from "../tui/components/live-model-picker";
 
 import { loginPicker, renderLoginPicker, onboardingPicker, renderOnboardingPicker, apiKeyPicker, renderApiKeyPicker, subscriptionLoginPicker, type OnboardingAction } from "../tui/components/provider-picker";
 import { sanitizeForTerminal } from "../tui/components/code-view";
@@ -522,10 +522,27 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const workflowSkills = workflowSkillsForPrompt(resolvedSkills);
   const resolvedSkillNames = resolvedSkills.map(s => s.name);
-  // Skills are invoked ONLY via the `$<name>` entrypoint, never `/`. The `/` menu therefore
-  // advertises NO skill slash commands — keeping `skillSlashDetails` empty leaves the slash
-  // palette, autocomplete, and previews free of skill entries.
+  // Skills can ADD `/` commands: every slash alias a resolved skill declares (frontmatter
+  // `aliases:`/`slash:`) becomes a real, dispatchable palette command grouped under "skills",
+  // so installing a skill extends the slash menu, autocomplete, and previews — not just `$<name>`.
+  // First declarer of an alias wins (aliases are owner-scoped, so cross-skill collisions are rare).
   const skillSlashDetails: SlashCommandInfo[] = [];
+  {
+    const seenAlias = new Set<string>();
+    for (const s of resolvedSkills) {
+      for (const alias of skillSlashAliases(s)) {
+        const key = alias.toLowerCase();
+        if (seenAlias.has(key)) continue;
+        seenAlias.add(key);
+        skillSlashDetails.push({
+          command: alias,
+          usage: `${alias} [intent]`,
+          description: `${s.name} skill — ${s.summary}`,
+          group: "skills",
+        });
+      }
+    }
+  }
 
   const protocol = buildToolProtocol(allowedTools);
   const preamble = flags.systemPrompt ?? "You are the jeo, an interactive coding agent.\nAccomplish the user's request by calling tools and verifying your work.";
@@ -1260,10 +1277,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       return;
     }
-    // Slash / file-path / `/skill:` entrypoints (non-`$`) still resolve to a single skill.
+    // A `$skill` invocation resolves to a single skill.
     const skillInvocation = parseSkillInvocation(messageContent, resolvedSkills);
     if (skillInvocation) {
       await runOneSkillShot(skillInvocation);
+      return;
+    }
+    // A declared skill `/alias` (e.g. `jeo "/obsidian-capture note"`) dispatches the owning skill.
+    const slashSkill = parseSkillSlashInvocation(messageContent, resolvedSkills);
+    if (slashSkill) {
+      await runOneSkillShot(slashSkill);
       return;
     }
     try {
@@ -2449,15 +2472,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     current: ThinkLevel | undefined,
     inheritLabel?: string,
   ): Promise<ThinkLevel | "inherit" | undefined> => {
-    const mark = (lvl: string): string => (current === lvl ? "current" : "");
-    const levels: { value: string; label: string; hint?: string }[] = [
-      ...(inheritLabel ? [{ value: "inherit", label: inheritLabel, hint: current === undefined ? "current" : "" }] : []),
-      { value: "minimal", label: "minimal — lightest reasoning", hint: mark("minimal") },
-      { value: "low", label: `low — light reasoning (~${Math.round(thinkingMaxTokens("low") / 1000)}k tokens)`, hint: mark("low") },
-      { value: "medium", label: `medium — moderate reasoning (~${Math.round(thinkingMaxTokens("medium") / 1000)}k tokens)`, hint: mark("medium") },
-      { value: "high", label: `high — deep reasoning (~${Math.round(thinkingMaxTokens("high") / 1000)}k tokens)`, hint: mark("high") },
-      { value: "xhigh", label: `xhigh — maximum reasoning (~${Math.round(thinkingMaxTokens("xhigh") / 1000)}k tokens)`, hint: mark("xhigh") },
-    ];
+    const levels = buildThinkingLevelChoices(current, {
+      inheritLabel,
+      tokenHint: lvl => (lvl === "minimal" ? undefined : `~${Math.round(thinkingMaxTokens(lvl as ThinkLevel) / 1000)}k tokens`),
+    });
     const picked = await pickFromOptions(title, levels);
     return picked === "inherit" || isThinkingLevel(picked) ? picked : undefined;
   };
@@ -2485,57 +2503,63 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     return leaf.replace(/^gpt/i, "GPT");
   };
 
-  const modelActionChoices = (config: Awaited<ReturnType<typeof readGlobalConfig>>): SelectItem<string>[] => {
-    const levels: ThinkLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
-    const choices: SelectItem<string>[] = [];
-    const currentDefaultThinking = sessionThinking ?? config.thinkingLevel ?? "medium";
-    const appendChildren = (children: Array<Omit<SelectItem<string>, "depth" | "branch">>) => {
-      children.forEach((child, index) => {
-        choices.push({ ...child, depth: 1, branch: index === children.length - 1 ? "last" : "mid" });
-      });
-    };
-
-    choices.push({
-      value: "heading:default",
-      label: "Set as DEFAULT (Default)",
-      hint: `${config.defaultModel} (${currentDefaultThinking}) · roles → /agents`,
-      disabled: true,
-    });
-    appendChildren([
-      { value: "default:keep", label: "Set model only", hint: `keep thinking ${currentDefaultThinking}` },
-      ...levels.map(level => ({
-        value: `default:${level}`,
-        label: `thinking ${level}`,
-        hint: level === currentDefaultThinking ? "current" : `~${Math.round(thinkingMaxTokens(level) / 1000)}k tokens`,
-      })),
-    ]);
-
-    return choices;
-  };
-
-
-
-
+  // gajae-code `/model` parity: after a model is picked, the interactive flow
+  // runs TWO menus — gjc's `#renderActionMenu` ("Set as DEFAULT / EXECUTOR / …",
+  // i.e. WHICH target uses this model) followed by its `#renderThinkingMenu`
+  // ("Reasoning for <target>", the per-target reasoning budget). DEFAULT updates
+  // the active session model; a subagent role writes ~/.jeo/config.json without
+  // switching the chat model.
   const applyPickedModelWithTarget = async (target: string): Promise<boolean> => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
     const cfgForPick = await readGlobalConfig();
-    // `/model` only assigns the DEFAULT model + (optionally) the default thinking.
-    // Per-role model and thinking are configured in /agents (and /agents edit).
-    const choice = await pickFromOptions(`Model Name: ${displayModelName(target)}\n\nAction for: ${target}`, modelActionChoices(cfgForPick)) ?? "default:keep";
-    const [, action = "keep"] = choice.split(":", 2);
-    const { resolved, provider } = await describeModel(target);
-    const st = (await describeAllProviders(cfgForPick)).find(s => s.name === provider);
-    sessionModel = target;
-    await persistSessionModel();
-    const defaultThinking = isThinkingLevel(action) ? action : undefined;
-    if (defaultThinking) {
-      sessionThinking = defaultThinking;
+    const targetId = await pickFromOptions(
+      `Model Name: ${displayModelName(target)}\n\nAction for: ${target}`,
+      applyTargetChoices(cfgForPick).map(c => ({ value: c.value, label: c.label, hint: c.hint })),
+    );
+    if (!targetId) {
+      console.log("(cancelled)");
+      return true;
     }
-    await saveConfigPatch(raw => ({
-      ...rememberModelPatch(raw, target),
-      ...(defaultThinking ? { thinkingLevel: defaultThinking } : {}),
-    }));
-    console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${defaultThinking ? ` · thinking ${defaultThinking}` : ""} — saved as default. Role models/thinking: /agents`);
+
+    if (targetId === "default") {
+      const currentDefaultThinking = (sessionThinking ?? cfgForPick.thinkingLevel ?? "medium") as ThinkLevel;
+      const level = await pickThinkingLevel(`Reasoning for default: ${target}`, currentDefaultThinking);
+      if (level === undefined) {
+        console.log("(cancelled)");
+        return true;
+      }
+      const { resolved, provider } = await describeModel(target);
+      const st = (await describeAllProviders(cfgForPick)).find(s => s.name === provider);
+      sessionModel = target;
+      await persistSessionModel();
+      const defaultThinking = isThinkingLevel(level) ? level : undefined;
+      if (defaultThinking) {
+        sessionThinking = defaultThinking;
+      }
+      await saveConfigPatch(raw => ({
+        ...rememberModelPatch(raw, target),
+        ...(defaultThinking ? { thinkingLevel: defaultThinking } : {}),
+      }));
+      console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${defaultThinking ? ` · thinking ${defaultThinking}` : ""} — saved as default.`);
+      return true;
+    }
+
+    const role = getSubagentRole(targetId, cfgForPick);
+    if (!role) return false;
+    const currentRoleThinking = resolveSubagentThinking(role.id, cfgForPick) as ThinkLevel | undefined;
+    const level = await pickThinkingLevel(
+      `Reasoning for ${role.title}: ${target}`,
+      currentRoleThinking,
+      `inherit (default ${cfgForPick.thinkingLevel ?? "medium"})`,
+    );
+    if (level === undefined) {
+      console.log("(cancelled)");
+      return true;
+    }
+    const thinking = level === "inherit" ? undefined : (isThinkingLevel(level) ? level : undefined);
+    await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: target, thinking }) }));
+    const { provider } = await describeModel(target);
+    console.log(`${role.title} model set to ${target} (${provider})${level === "inherit" ? " · thinking inherits default" : ` · thinking ${level}`} — saved to ~/.jeo/config.json.`);
     return true;
   };
 
@@ -4415,6 +4439,20 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             const shown = names.slice(0, 12).join(", ");
             const more = names.length > 12 ? ` … +${names.length - 12} more` : "";
             console.log(`No skill '$${token}'. ${names.length ? `Available: ${shown}${more}` : "No skills are loaded."}  (Type $ to autocomplete.)`);
+          }
+          continue;
+        }
+      }
+      // A declared skill slash alias (e.g. `/obsidian-capture note`) dispatches the owning skill,
+      // passing the alias as the routing signal and the rest of the line as the intent. Placed
+      // after every built-in slash handler (built-ins win) and before the unhandled-slash fallback.
+      if (!flags.noSkills && input.startsWith("/")) {
+        const slashSkill = parseSkillSlashInvocation(input, resolvedSkills);
+        if (slashSkill) {
+          try {
+            await runSkillInvocation(slashSkill.skill, slashSkill.intent, slashSkill.invokedAs);
+          } catch (err) {
+            console.log(`! ${(err as Error).message}`);
           }
           continue;
         }

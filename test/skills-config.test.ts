@@ -2,7 +2,7 @@ import { test, expect, beforeAll, afterAll } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { parseSkillMarkdown, loadSkills, getSkillFrom, getSkillBySlash, skillSlashAliases, formatSkill, SKILLS } from "../src/skills/catalog";
+import { parseSkillMarkdown, loadSkills, getSkillFrom, getSkillBySlash, parseSkillSlashInvocation, skillSlashAliases, formatSkill, SKILLS } from "../src/skills/catalog";
 
 test("parseSkillMarkdown infers summary from the first body line; strips a title", () => {
   const s = parseSkillMarkdown("notes", "# Notes Skill\nKeep a running log of decisions.\nMore detail here.");
@@ -98,6 +98,28 @@ test("loadSkills merges bundled + user skill docs; user overrides by name", asyn
   const spec = getSkillFrom(skills, "spec-kit");
   expect(spec?.summary).toBe("spec kit skill");
   expect(getSkillBySlash(skills, "/speckit.plan")?.name).toBe("spec-kit");
+});
+
+test("parseSkillSlashInvocation dispatches a declared skill slash alias with the rest as intent", () => {
+  const skill = parseSkillMarkdown(
+    "obsidian-second-brain",
+    "---\ndescription: vault second brain\naliases: /obsidian-capture /obsidian-ingest\n---\n# obsidian-second-brain\nDo vault things.",
+  );
+  const inv = parseSkillSlashInvocation("/obsidian-capture meeting notes", [skill]);
+  expect(inv?.skill.name).toBe("obsidian-second-brain");
+  expect(inv?.intent).toBe("meeting notes");
+  expect(inv?.invokedAs).toBe("/obsidian-capture");
+  // Alias-only line still resolves with an empty intent.
+  expect(parseSkillSlashInvocation("/obsidian-ingest", [skill])?.intent).toBe("");
+  // Case-insensitive on the alias token.
+  expect(parseSkillSlashInvocation("/OBSIDIAN-CAPTURE x", [skill])?.skill.name).toBe("obsidian-second-brain");
+});
+
+test("parseSkillSlashInvocation returns null for non-slash input and unknown aliases", () => {
+  const skill = parseSkillMarkdown("demo", "---\naliases: /demo-run\n---\n# demo\nbody");
+  expect(parseSkillSlashInvocation("just a normal prompt", [skill])).toBeNull();
+  expect(parseSkillSlashInvocation("$demo do it", [skill])).toBeNull();
+  expect(parseSkillSlashInvocation("/unknown-alias", [skill])).toBeNull();
 });
 
 test("loadSkills skips hidden system dirs and external skills that collide with builtin command names", async () => {

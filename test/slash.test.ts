@@ -13,6 +13,19 @@ test("matchSlash: prefix matches lead, fuzzy subsequence hits trail (case-insens
   expect(matchSlash("/expt")).toEqual(["/export"]);
 });
 
+test("matchSlash: description fallback resolves intent queries with no name match (gjc §2.1)", () => {
+  // No command name is a subsequence of "oauth", but /login & /provider describe OAuth.
+  const oauth = matchSlash("/oauth");
+  expect(oauth).toContain("/login");
+  expect(oauth).toContain("/provider");
+  // Only /dump mentions the clipboard in its description.
+  expect(matchSlash("/clipboard")).toEqual(["/dump"]);
+  // A real name match suppresses the description fallback entirely (no noise leak).
+  expect(matchSlash("/mod")).toEqual(["/model"]);
+  // Sub-2-char queries never trigger the fallback.
+  expect(matchSlash("/z")).toEqual([]);
+});
+
 test("isSlashAttempt: slash without a space", () => {
   expect(isSlashAttempt("/model")).toBe(true);
   expect(isSlashAttempt("/foo")).toBe(true);

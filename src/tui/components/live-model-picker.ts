@@ -104,7 +104,7 @@ export function liveModelPicker(entries: PickEntry[], opts: LiveModelPickerOptio
 }
 
 export function renderLiveModelPicker(list: SelectList<PickEntry>, opts: RenderSelectOptions = {}): string[] {
-  return renderSelectList(list, { title: "Select a live model", rows: 12, ...opts });
+  return renderSelectList(list, { title: "Select a live model", rows: 12, showTabs: true, ...opts });
 }
 
 /** The five reasoning levels in display order, lightest → heaviest. */

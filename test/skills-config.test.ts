@@ -2,7 +2,7 @@ import { test, expect, beforeAll, afterAll } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { parseSkillMarkdown, loadSkills, getSkillFrom, getSkillBySlash, parseSkillSlashInvocation, skillSlashAliases, formatSkill, SKILLS } from "../src/skills/catalog";
+import { parseSkillMarkdown, loadSkills, getSkillFrom, getSkillBySlash, getSkillByDollarToken, parseSkillInvocation, parseSkillChain, skillSlashAliases, formatSkill, SKILLS } from "../src/skills/catalog";
 
 test("parseSkillMarkdown infers summary from the first body line; strips a title", () => {
   const s = parseSkillMarkdown("notes", "# Notes Skill\nKeep a running log of decisions.\nMore detail here.");
@@ -100,26 +100,37 @@ test("loadSkills merges bundled + user skill docs; user overrides by name", asyn
   expect(getSkillBySlash(skills, "/speckit.plan")?.name).toBe("spec-kit");
 });
 
-test("parseSkillSlashInvocation dispatches a declared skill slash alias with the rest as intent", () => {
+test("a declared alias is $-invocable: $<alias> resolves the owning skill with the rest as intent", () => {
   const skill = parseSkillMarkdown(
     "obsidian-second-brain",
     "---\ndescription: vault second brain\naliases: /obsidian-capture /obsidian-ingest\n---\n# obsidian-second-brain\nDo vault things.",
   );
-  const inv = parseSkillSlashInvocation("/obsidian-capture meeting notes", [skill]);
+  // getSkillByDollarToken resolves a bare token by name, declared alias, then unique prefix.
+  expect(getSkillByDollarToken([skill], "obsidian-capture")?.name).toBe("obsidian-second-brain");
+  expect(getSkillByDollarToken([skill], "OBSIDIAN-INGEST")?.name).toBe("obsidian-second-brain"); // case-insensitive
+  expect(getSkillByDollarToken([skill], "obsidian-second-brain")?.name).toBe("obsidian-second-brain"); // by name
+  expect(getSkillByDollarToken([skill], "unknown-thing")).toBeUndefined();
+
+  // The `$` entrypoint dispatches via the alias; the rest of the line becomes the intent.
+  const inv = parseSkillInvocation("$obsidian-capture meeting notes", [skill]);
   expect(inv?.skill.name).toBe("obsidian-second-brain");
   expect(inv?.intent).toBe("meeting notes");
-  expect(inv?.invokedAs).toBe("/obsidian-capture");
+  expect(inv?.invokedAs).toBe("$obsidian-capture");
   // Alias-only line still resolves with an empty intent.
-  expect(parseSkillSlashInvocation("/obsidian-ingest", [skill])?.intent).toBe("");
-  // Case-insensitive on the alias token.
-  expect(parseSkillSlashInvocation("/OBSIDIAN-CAPTURE x", [skill])?.skill.name).toBe("obsidian-second-brain");
+  expect(parseSkillInvocation("$obsidian-ingest", [skill])?.intent).toBe("");
+  // A `/alias` slash command never loads a skill — skills are `$`-only.
+  expect(parseSkillInvocation("/obsidian-capture x", [skill])).toBeNull();
 });
 
-test("parseSkillSlashInvocation returns null for non-slash input and unknown aliases", () => {
-  const skill = parseSkillMarkdown("demo", "---\naliases: /demo-run\n---\n# demo\nbody");
-  expect(parseSkillSlashInvocation("just a normal prompt", [skill])).toBeNull();
-  expect(parseSkillSlashInvocation("$demo do it", [skill])).toBeNull();
-  expect(parseSkillSlashInvocation("/unknown-alias", [skill])).toBeNull();
+test("$-alias resolution works inside a $skill chain and shares the trailing intent", () => {
+  const a = parseSkillMarkdown("alpha", "---\naliases: /a-go\n---\n# alpha\nbody");
+  const b = parseSkillMarkdown("beta", "---\naliases: /b-go\n---\n# beta\nbody");
+  const chain = parseSkillChain("$a-go $b-go run it", [a, b]);
+  expect(chain?.invocations.map(i => i.skill.name)).toEqual(["alpha", "beta"]);
+  expect(chain?.invocations.every(i => i.intent === "run it")).toBe(true);
+  expect(chain?.invocations.map(i => i.invokedAs)).toEqual(["$a-go", "$b-go"]);
+  // Unknown alias tokens are collected as unresolved, not dispatched.
+  expect(parseSkillChain("$nope go", [a, b])?.unresolved).toEqual(["nope"]);
 });
 
 test("loadSkills skips hidden system dirs and external skills that collide with builtin command names", async () => {

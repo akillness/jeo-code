@@ -17,7 +17,7 @@ import { callLlm, type Message } from "./loop";
 import { jeoEnv } from "../util/env";
 import { parseConcept, serializeConcept, slugify, isReservedFile, conceptId } from "./memory-okf";
 import { tryExtractJsonObject } from "./json";
-import { buildConceptGraph, expandByGraph, lintConceptGraph, type GraphLintReport } from "./memory-graph";
+import { buildConceptGraph, expandByGraph, lintConceptGraph, type ConceptGraph, type GraphLintReport } from "./memory-graph";
 
 /** On-disk document cap — the distill prompt instructs the model to stay under it. */
 export const MEMORY_MAX_CHARS = 6_000;
@@ -314,9 +314,56 @@ function tokenize(query?: string): string[] {
   return Array.from(new Set((query.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(t => t.length >= 3)));
 }
 
+/** Corpus statistics for IDF (inverse document frequency) weighting: total concept
+ *  count `n` and per-token document frequency `df` (how many concepts' searchable
+ *  text contains the token). Built once per retrieval pass over the loaded bundle. */
+export interface CorpusStats {
+  n: number;
+  df: Map<string, number>;
+}
+
+/** Lowercased searchable text of a concept (title + tags + type + description +
+ *  body) — the field corpus over which document frequency is measured. */
+function searchableText(concept: Concept): string {
+  return [concept.title, concept.tags.join(" "), concept.type, concept.description, concept.body]
+    .join(" ")
+    .toLowerCase();
+}
+
+/** Build IDF corpus stats from the concept set: per distinct token, how many
+ *  concepts contain it. Pure and deterministic — no embeddings, no network
+ *  (memsearch's hybrid BM25 contribution adapted to jeo's local-first bundle). */
+export function buildCorpusStats(concepts: Concept[]): CorpusStats {
+  const df = new Map<string, number>();
+  for (const c of concepts) {
+    const text = searchableText(c);
+    // Distinct tokens of THIS concept (length ≥ 3, mirroring tokenize) so each
+    // concept contributes at most 1 to a token's document frequency.
+    const seen = new Set((text.match(/[a-z0-9]+/g) ?? []).filter(t => t.length >= 3));
+    for (const t of seen) df.set(t, (df.get(t) ?? 0) + 1);
+  }
+  return { n: concepts.length, df };
+}
+
+/** BM25-style non-negative IDF for a token: ln(1 + (N − df + 0.5)/(df + 0.5)).
+ *  A token that discriminates (appears in few concepts) outweighs a token that
+ *  appears everywhere — so a query's rare, specific terms steer retrieval instead
+ *  of common filler. Always > 0 for a present token (df ≥ 1), so the score > 0
+ *  presence semantics the failure-gate and filters depend on are preserved. A
+ *  token absent from the corpus only ever contributes through a field it does not
+ *  match (weight 0), so its IDF is moot; we floor df at the token's own presence. */
+function tokenIdf(token: string, stats: CorpusStats): number {
+  const df = stats.df.get(token) ?? 1;
+  return Math.log(1 + (stats.n - df + 0.5) / (df + 0.5));
+}
+
 /** Relevance score of a concept against query tokens. Field weights mirror
- *  llm-wiki's retrieval bias (title ≫ tags ≫ type/description ≫ body). 0 = no hit. */
-export function scoreConcept(concept: Concept, tokens: string[]): number {
+ *  llm-wiki's retrieval bias (title ≫ tags ≫ type/description ≫ body). When
+ *  `stats` is supplied, each token's field weight is scaled by its corpus IDF
+ *  (memsearch-style BM25 weighting) so a rare discriminating term ranks a concept
+ *  above one hit only by common tokens. Without `stats` this is the raw
+ *  field-weighted presence count (IDF = 1). 0 = no hit. */
+export function scoreConcept(concept: Concept, tokens: string[], stats?: CorpusStats): number {
   if (tokens.length === 0) return 0;
   const title = concept.title.toLowerCase();
   const desc = concept.description.toLowerCase();
@@ -325,69 +372,126 @@ export function scoreConcept(concept: Concept, tokens: string[]): number {
   const tags = concept.tags.map(t => t.toLowerCase());
   let score = 0;
   for (const t of tokens) {
-    if (title.includes(t)) score += 5;
-    if (tags.some(tag => tag.includes(t))) score += 3;
-    if (type.includes(t)) score += 2;
-    if (desc.includes(t)) score += 2;
-    if (body.includes(t)) score += 1;
+    let weight = 0;
+    if (title.includes(t)) weight += 5;
+    if (tags.some(tag => tag.includes(t))) weight += 3;
+    if (type.includes(t)) weight += 2;
+    if (desc.includes(t)) weight += 2;
+    if (body.includes(t)) weight += 1;
+    score += stats ? weight * tokenIdf(t, stats) : weight;
   }
   return score;
 }
 
 /** Search the bundle's concepts for a query, returning the relevant ones (score > 0)
- *  highest-score first. A type/tags/title/body keyword match all contribute. */
+ *  highest-score first. A type/tags/title/body keyword match all contribute, scaled
+ *  by corpus IDF so the most discriminating hits rank first. */
 export function searchConcepts(concepts: Concept[], query: string): { concept: Concept; score: number }[] {
   const tokens = tokenize(query);
+  const stats = buildCorpusStats(concepts);
   return concepts
-    .map(concept => ({ concept, score: scoreConcept(concept, tokens) }))
+    .map(concept => ({ concept, score: scoreConcept(concept, tokens, stats) }))
     .filter(r => r.score > 0)
     .sort((a, b) => b.score - a.score);
 }
+
+/** Reciprocal Rank Fusion constant (memsearch / TREC standard k=60): dampens any
+ *  single list's contribution so no one channel can dominate the fused order. */
+const RRF_K = 60;
+
+/** Fuse several ranked id-lists into one score map via Reciprocal Rank Fusion:
+ *  each list contributes 1/(k + rank) (rank 0-based) for the ids it ranks, summed
+ *  across lists. Rank-based (not score-based), so a strong lexical hit and a strong
+ *  graph-proximity hit combine on equal, scale-free footing — memsearch's hybrid
+ *  reranker (BM25 ⊕ dense) adapted to jeo's lexical ⊕ concept-graph channels. An id
+ *  ranked in no list simply gets 0. */
+export function reciprocalRankFusion(lists: string[][], k = RRF_K): Map<string, number> {
+  const fused = new Map<string, number>();
+  for (const list of lists) {
+    list.forEach((id, rank) => {
+      fused.set(id, (fused.get(id) ?? 0) + 1 / (k + rank));
+    });
+  }
+  return fused;
+}
+
+/** Rank concepts by graph proximity to the query seeds: the more distinct seeds a
+ *  concept is reachable from (itself, or a 1-hop link to/from a seed), the higher it
+ *  ranks. This is the local stand-in for memsearch's dense-vector channel — a
+ *  strongly-connected neighbour surfaces even when its OWN lexical score is weak,
+ *  the way a semantic neighbour does under dense retrieval. Only concepts reachable
+ *  from ≥1 seed are returned; input order breaks ties. Uses the public graph API
+ *  (expandByGraph) so it stays correct if the graph internals change. */
+function graphProximityOrder(concepts: Concept[], seedIds: string[], graph: ConceptGraph): string[] {
+  if (seedIds.length === 0) return [];
+  const reach = new Map<string, number>();
+  for (const seed of seedIds) {
+    for (const id of expandByGraph([seed], graph, 1)) reach.set(id, (reach.get(id) ?? 0) + 1);
+  }
+  const index = new Map(concepts.map((c, i) => [conceptId(c.relPath), i] as const));
+  return [...reach.entries()]
+    .sort((a, b) => b[1] - a[1] || (index.get(a[0]) ?? 0) - (index.get(b[0]) ?? 0))
+    .map(([id]) => id);
+}
+
 
 /** Priority order for injection. Failure-first: a query-relevant FailedAttempt is
  *  surfaced AHEAD of everything else — resurfacing a known dead end is higher-leverage
  *  than reinforcing what already works ("못하는 게 없도록" — close the gaps, don't just
  *  polish strengths), and it is the mechanism by which the loop gets more precise the
  *  more it repeats (llm-wiki: accumulated failure knowledge sharpens future runs). Then
- *  high-confidence "core" concepts, then query relevance (descending), then concepts the
- *  relevant ones LINK TO (1-hop graph expansion — Sprint 04: a directly-hit concept pulls
- *  its neighbours in as context ahead of unrelated noise), preserving input order as a
- *  stable tiebreak. The failure boost only fires when the query actually hits the concept
- *  (score > 0), so an unrelated FailedAttempt never crowds out relevant context. */
+ *  high-confidence "core" concepts, then HYBRID relevance.
+ *
+ *  Hybrid relevance (memsearch's reranker, ported): two complementary ranked channels
+ *  are fused by Reciprocal Rank Fusion instead of one raw score with a boolean boost —
+ *    (1) lexical: query-hit concepts ranked by IDF-weighted score (the "sparse"/BM25
+ *        channel), and
+ *    (2) graph proximity: concepts reachable from the query-hit seeds via 1-hop links,
+ *        ranked by how many seeds reach them (the local "dense"/semantic-neighbour
+ *        channel — Sprint 04 graph expansion, now a ranked signal, not just a flag).
+ *  Fusing by rank lets a strongly-linked neighbour with a weak lexical score still
+ *  outrank unrelated noise, and lets a concept that is BOTH a lexical hit and a graph
+ *  hub rise above a concept strong in only one channel. Input order is the stable
+ *  final tiebreak. The failure boost only fires when the query actually hits the
+ *  concept (score > 0), so an unrelated FailedAttempt never crowds out relevant
+ *  context. */
 function priorityOrder(concepts: Concept[], query?: string): Concept[] {
   const tokens = tokenize(query);
-  // 1-hop graph expansion: seed from concepts the query directly hits, then mark
-  // their link-neighbours as "related" so they outrank unrelated zero-score noise.
-  const related = new Set<string>();
-  if (tokens.length > 0) {
-    const graph = buildConceptGraph(concepts);
-    const seeds = concepts.filter(c => scoreConcept(c, tokens) > 0).map(c => conceptId(c.relPath));
-    for (const id of expandByGraph(seeds, graph, 1)) related.add(id);
+  const stats = buildCorpusStats(concepts);
+  const scored = concepts.map(c => ({ c, id: conceptId(c.relPath), score: scoreConcept(c, tokens, stats) }));
+
+  // Channel 1 — lexical ("sparse"/BM25): query-hit concepts, IDF score descending.
+  // Stable sort keeps input order on ties.
+  const lexicalOrder = scored.filter(s => s.score > 0).slice().sort((a, b) => b.score - a.score).map(s => s.id);
+
+  // Channel 2 — graph proximity ("dense"): neighbours of the query-hit seeds.
+  let graphOrder: string[] = [];
+  if (tokens.length > 0 && lexicalOrder.length > 0) {
+    graphOrder = graphProximityOrder(concepts, lexicalOrder, buildConceptGraph(concepts));
   }
-  return concepts
-    .map((concept, i) => {
-      const score = scoreConcept(concept, tokens);
-      return {
-        concept,
-        i,
-        // Query-relevant past failure → resurface first so the loop is reminded of
-        // what NOT to repeat for the current task. Gated on score > 0: a stale,
-        // unrelated dead end stays out of the way.
-        failure: concept.type === "FailedAttempt" && score > 0,
-        core: concept.confidence === "high",
-        score,
-        related: related.has(conceptId(concept.relPath)),
-      };
-    })
+
+  const fused = reciprocalRankFusion([lexicalOrder, graphOrder]);
+
+  return scored
+    .map(({ c, id, score }, i) => ({
+      concept: c,
+      i,
+      // Query-relevant past failure → resurface first so the loop is reminded of
+      // what NOT to repeat for the current task. Gated on score > 0: a stale,
+      // unrelated dead end stays out of the way.
+      failure: c.type === "FailedAttempt" && score > 0,
+      core: c.confidence === "high",
+      rrf: fused.get(id) ?? 0,
+    }))
     .sort((a, b) => {
       if (a.failure !== b.failure) return a.failure ? -1 : 1;
       if (a.core !== b.core) return a.core ? -1 : 1;
-      if (b.score !== a.score) return b.score - a.score;
-      if (a.related !== b.related) return a.related ? -1 : 1;
+      if (b.rrf !== a.rrf) return b.rrf - a.rrf;
       return a.i - b.i;
     })
     .map(s => s.concept);
 }
+
 
 /** Group items by their `type` into ordered `{ header, list }` sections: TYPE_LAYOUT
  *  order first, then any unknown types under their raw type name (lenient). The one

@@ -6,6 +6,8 @@ import {
   loadConcepts,
   scoreConcept,
   searchConcepts,
+  buildCorpusStats,
+  reciprocalRankFusion,
   memoryPromptSection,
   recordFailedAttempt,
   MEMORY_INJECT_MAX_CHARS,
@@ -264,4 +266,95 @@ test("loadConcepts surfaces the pinned flag from frontmatter (default false)", a
   const concepts = await loadConcepts(dir);
   expect(concepts.find(c => c.title === "Pinned")!.pinned).toBe(true);
   expect(concepts.find(c => c.title === "Plain")!.pinned).toBe(false);
+});
+// memsearch-inspired BM25/IDF corpus weighting (hybrid-search relevance ported to
+// jeo's local, embedding-free bundle): a query's rare discriminating term should
+// steer retrieval over a term that appears everywhere.
+
+test("buildCorpusStats counts document frequency once per concept, not per occurrence", () => {
+  const concepts = [
+    concept({ title: "redis cache", body: "redis redis redis", tags: ["redis"] }), // redis many times, ONE concept
+    concept({ title: "config panel", body: "the config", tags: [] }),
+    concept({ title: "config loader", body: "config config", tags: [] }),
+  ];
+  const stats = buildCorpusStats(concepts);
+  expect(stats.n).toBe(3);
+  expect(stats.df.get("redis")).toBe(1); // repeated within one concept → df 1
+  expect(stats.df.get("config")).toBe(2); // present in two distinct concepts → df 2
+  expect(stats.df.get("absent")).toBeUndefined();
+});
+
+test("scoreConcept scales field weight by IDF when stats are supplied, else stays the raw count", () => {
+  const target = concept({ title: "redis", body: "redis cache" });
+  const corpus = [target, ...Array.from({ length: 8 }, (_, i) => concept({ title: `note ${i}`, body: "redis" }))];
+  const stats = buildCorpusStats(corpus);
+  // Raw (no stats) is unchanged: title hit (5) + body hit (1) = 6.
+  expect(scoreConcept(target, ["redis"])).toBe(6);
+  // IDF-weighted is a positive scaling of that base — present token keeps score > 0.
+  const weighted = scoreConcept(target, ["redis"], stats);
+  expect(weighted).toBeGreaterThan(0);
+  expect(weighted).not.toBe(6); // IDF actually moved the score (df = 9 of 9 here → < 1)
+});
+
+test("a rare discriminating term outranks a common term that scores higher by raw field weight", () => {
+  // 8 filler concepts make "config" common (low IDF); "redis" appears in exactly one
+  // concept (high IDF). Raw scoring ranks the title-"config" hit above the body-"redis"
+  // hit (5 > 1); IDF weighting must flip that — the rare term steers retrieval.
+  const filler = Array.from({ length: 8 }, (_, i) =>
+    concept({ title: `config section ${i}`, relPath: `facts/filler-${i}.md` }));
+  const commonHit = concept({ title: "config panel", relPath: "facts/common.md" });   // matches "config" in title (raw 5)
+  const rareHit = concept({ title: "service", body: "redis cache", relPath: "facts/rare.md" }); // matches "redis" in body (raw 1)
+  const results = searchConcepts([...filler, commonHit, rareHit], "redis config");
+  expect(results[0]!.concept.relPath).toBe("facts/rare.md"); // rare term wins despite lower raw weight
+  expect(results.some(r => r.concept.relPath === "facts/common.md")).toBe(true); // common hit still retrieved
+});
+// --- Hybrid recall: Reciprocal Rank Fusion of lexical ⊕ graph-proximity channels
+// (memsearch's BM25⊕dense reranker, ported to jeo's local-first concept bundle).
+
+test("reciprocalRankFusion sums 1/(k+rank) across lists and ranks a doc in both channels above one only in a single channel", () => {
+  // Channel 1 ranks [both, onlyOne]; channel 2 ranks [both, other]. "both" appears at
+  // rank 0 in BOTH lists; "onlyOne" only in channel 1. Fusing the complementary
+  // channels must lift the doc both agree on — the point of hybrid recall.
+  const fused = reciprocalRankFusion([["both", "onlyOne"], ["both", "other"]]);
+  expect(fused.get("both")).toBeCloseTo(1 / 60 + 1 / 60, 10);   // rank 0 in both
+  expect(fused.get("onlyOne")).toBeCloseTo(1 / 61, 10);         // rank 1, one list
+  expect(fused.get("other")).toBeCloseTo(1 / 61, 10);           // rank 1, one list
+  expect(fused.get("both")!).toBeGreaterThan(fused.get("onlyOne")!);
+  expect(fused.get("both")!).toBeGreaterThan(fused.get("other")!);
+  // RRF is convex in rank: a rank-0/rank-2 split slightly beats rank-1/rank-1, so a
+  // single strong-channel hit is not buried by a doc that is merely mediocre in both.
+  const split = reciprocalRankFusion([["p", "q", "strong"], ["strong", "q", "p"]]);
+  expect(split.get("p")!).toBeGreaterThan(split.get("q")!); // 1/60+1/62 > 2/61
+  // An id ranked in no list contributes nothing.
+  expect(fused.get("zzz")).toBeUndefined();
+});
+
+test("reciprocalRankFusion uses a tunable k and an empty channel is a no-op", () => {
+  const fused = reciprocalRankFusion([["x"], []], 1);
+  expect(fused.get("x")).toBeCloseTo(1 / 1, 10); // k=1, rank 0
+  expect(fused.size).toBe(1); // the empty list added nothing
+});
+
+test("graph proximity lifts a hub linked from multiple query hits ahead of an unlinked equal-score concept", async () => {
+  const dir = await tmp();
+  // Two query-hit seeds ("deploy", "release") both link to a shared "rollback" hub
+  // that does NOT contain the query term. A second concept ("changelog") has the same
+  // (zero) lexical relevance but no links. The graph channel must rank the multiply-
+  // linked hub ahead of the unlinked one within the injection budget — the local
+  // analogue of a dense neighbour surfacing under hybrid search.
+  await writeConcept(dir, "commands", "deploy", { type: "Command", title: "deploy step", description: "ship it", confidence: "low" }, "Deploy. On failure see [rollback](/commands/rollback.md).");
+  await writeConcept(dir, "commands", "release", { type: "Command", title: "release step", description: "cut it", confidence: "low" }, "Release flow. Undo via [rollback](/commands/rollback.md).");
+  await writeConcept(dir, "commands", "rollback", { type: "Command", title: "undo a bad release", description: "revert", confidence: "low" }, "Steps to revert.");
+  await writeConcept(dir, "facts", "changelog", { type: "RepoFact", title: "changelog notes", description: "history", confidence: "low" }, "Release notes live here.");
+  // Budget filler so only the highest-priority concepts survive the cap.
+  const big = "w ".repeat(900);
+  for (let i = 0; i < 8; i++) {
+    await writeConcept(dir, "facts", `noise-${i}`, { type: "RepoFact", title: `Noise ${i}`, description: "filler", confidence: "low" }, big);
+  }
+  const section = await memoryPromptSection(dir, "deploy release");
+  expect(section).toContain("deploy step");
+  expect(section).toContain("release step");
+  // The hub linked from BOTH seeds rode in via graph proximity (no query keyword of its own).
+  expect(section).toContain("undo a bad release");
+  await fs.rm(dir, { recursive: true, force: true });
 });

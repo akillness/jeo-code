@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.20] - 2026-06-26
+_OKF concept-memory retrieval gains a hybrid reranker ported from memsearch. Injection priority no longer rides one raw keyword score — it fuses two complementary ranked channels by Reciprocal Rank Fusion (RRF): IDF-weighted lexical relevance (the sparse/BM25 channel, so rare discriminating terms steer recall) and concept-graph proximity (the local dense/semantic-neighbour channel, so a hub linked from multiple query hits surfaces even with no keyword of its own). All embedding-free and deterministic, layered atop the existing failure-first tier and pinned-invariant reserved budget._
+
+### Added
+- **IDF-weighted lexical scoring (`buildCorpusStats` / `tokenIdf`).** `src/agent/memory.ts` adds `CorpusStats` (corpus size + per-token document frequency) built once per retrieval pass, and BM25-style non-negative IDF `ln(1 + (N − df + 0.5)/(df + 0.5))`. `scoreConcept` now takes optional `stats` and scales each token's field weight (title ≫ tags ≫ type/description ≫ body) by its IDF, so a rare specific term outranks a concept hit only by common filler. Always > 0 for a present token, so the score-presence semantics the failure-gate and filters depend on are preserved; omitting `stats` keeps the raw field-weighted count.
+- **Reciprocal Rank Fusion (`reciprocalRankFusion`, k=60).** Fuses several ranked id-lists into one score map — each list contributes `1/(k + rank)` summed across lists, rank-based (not score-based) so a strong lexical hit and a strong graph-proximity hit combine on equal, scale-free footing, and a concept ranked in BOTH channels rises above one strong in only one. Tunable `k`; an empty channel is a no-op.
+- **Graph-proximity channel (`graphProximityOrder`).** Ranks concepts by how many distinct query-hit seeds reach them via 1-hop links (using the public `expandByGraph` API), the local stand-in for memsearch's dense-vector channel: a strongly-connected neighbour surfaces even when its own lexical score is weak. Input order breaks ties.
+
+### Changed
+- **`priorityOrder` fuses lexical ⊕ graph by RRF instead of raw score + a boolean `related` flag.** The failure-first and high-confidence "core" tiers are unchanged; below them, the prior `score`-then-`related` ordering is replaced by the fused RRF rank, with input order as the stable final tiebreak. `searchConcepts` now IDF-weights via `buildCorpusStats` too. The failure boost still only fires on an actual query hit (score > 0).
+
+### Verified
+- `bun run typecheck` clean; full suite green — 2022 pass / 0 fail across 234 files — including new `test/memory-search-okf.test.ts` cases (`buildCorpusStats` document-frequency counting, `scoreConcept` IDF scaling, a rare term outranking a higher raw-weight common term, `reciprocalRankFusion` cross-channel summation + tunable `k` + empty-channel no-op, graph proximity lifting a multiply-linked hub above an unlinked equal-score concept). `scripts/rrf-runtime-check.ts` drives the production `memoryPromptSection` against a real on-disk bundle.
+
+
 ## [0.7.19] - 2026-06-26
 _The live model picker gains gajae-code's `/model` provider tabs, and skill invocation is consolidated onto a single `$` entrypoint. The picker now shows an `ALL` tab plus one tab per provider that `tab`/`shift+tab` cycles, and skills (including their declared aliases) are invoked only via `$` — the slash palette stays builtins-only._
 

@@ -106,3 +106,43 @@ export function liveModelPicker(entries: PickEntry[], opts: LiveModelPickerOptio
 export function renderLiveModelPicker(list: SelectList<PickEntry>, opts: RenderSelectOptions = {}): string[] {
   return renderSelectList(list, { title: "Select a live model", rows: 12, ...opts });
 }
+
+/** The five reasoning levels in display order, lightest → heaviest. */
+export const THINKING_LEVEL_ORDER = ["minimal", "low", "medium", "high", "xhigh"] as const;
+
+const THINKING_LEVEL_DESCRIPTION: Record<string, string> = {
+  minimal: "lightest reasoning",
+  low: "light reasoning",
+  medium: "moderate reasoning",
+  high: "deep reasoning",
+  xhigh: "maximum reasoning",
+};
+
+export interface ThinkingLevelChoiceOptions {
+  /** Prepend an "inherit" row (role targets only, which can follow the default). */
+  inheritLabel?: string;
+  /** Per-level reasoning-budget hint, e.g. "~32k tokens". Return undefined to omit. */
+  tokenHint?: (level: string) => string | undefined;
+}
+
+/**
+ * gajae-code-parity reasoning menu (gjc's `#renderThinkingMenu`): the per-target
+ * "Reasoning for …" choices shown after a model is picked. Each level renders as
+ * `<level> — <description> (<tokens>)` with the current level flagged. Role
+ * targets gain a leading `inherit` row. Pure — fully unit-testable.
+ */
+export function buildThinkingLevelChoices(
+  current: string | undefined,
+  opts: ThinkingLevelChoiceOptions = {},
+): SelectItem<string>[] {
+  const items: SelectItem<string>[] = [];
+  if (opts.inheritLabel) {
+    items.push({ value: "inherit", label: opts.inheritLabel, hint: current === undefined ? "current" : "" });
+  }
+  for (const level of THINKING_LEVEL_ORDER) {
+    const tokens = opts.tokenHint?.(level);
+    const label = `${level} — ${THINKING_LEVEL_DESCRIPTION[level]}${tokens ? ` (${tokens})` : ""}`;
+    items.push({ value: level, label, hint: current === level ? "current" : "" });
+  }
+  return items;
+}

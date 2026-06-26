@@ -65,6 +65,11 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
 
 export const SLASH_COMMANDS = SLASH_COMMAND_DETAILS.map(c => c.command);
 
+/** Bundled command name → lowercased description (gjc §2.1 description matching). */
+export const SLASH_COMMAND_DESCRIPTIONS = new Map<string, string>(
+  SLASH_COMMAND_DETAILS.map(c => [c.command, c.description.toLowerCase()]),
+);
+
 export function mergeSlashCommandDetails(extra: readonly SlashCommandInfo[] = []): SlashCommandInfo[] {
   const byCommand = new Map<string, SlashCommandInfo>();
   for (const d of [...SLASH_COMMAND_DETAILS, ...extra]) byCommand.set(d.command, d);
@@ -73,8 +78,10 @@ export function mergeSlashCommandDetails(extra: readonly SlashCommandInfo[] = []
 
 /** Return the slash commands that match `input` (case-insensitive). Prefix matches
  *  come first; a fuzzy subsequence fallback (gjc-style, e.g. `/expt` → `/export`)
- *  follows so typos / abbreviations still surface a command. A bare `/` lists every
- *  command. Empty for non-slash input. */
+ *  follows so typos / abbreviations still surface a command. When NOTHING matches
+ *  the name, fall back to a description substring match (gjc §2.1) so intent-style
+ *  queries with no literal name match still resolve — e.g. `/oauth` → `/login`,
+ *  `/clipboard` → `/dump`. A bare `/` lists every command. Empty for non-slash input. */
 export function matchSlash(input: string, commands: string[] = SLASH_COMMANDS): string[] {
   if (!input.startsWith("/")) return [];
   const q = input.toLowerCase();
@@ -82,7 +89,12 @@ export function matchSlash(input: string, commands: string[] = SLASH_COMMANDS): 
   if (body === "") return [...commands];
   const starts = commands.filter(c => c.toLowerCase().startsWith(q));
   const fuzzy = commands.filter(c => !starts.includes(c) && subsequence(body, c.slice(1).toLowerCase()));
-  return [...starts, ...fuzzy];
+  const named = [...starts, ...fuzzy];
+  if (named.length > 0) return named;
+  // Description fallback: only when no name matches, and only for queries of ≥2
+  // chars with a real substring hit (not a loose subsequence), to avoid flooding.
+  if (body.length < 2) return [];
+  return commands.filter(c => SLASH_COMMAND_DESCRIPTIONS.get(c)?.includes(body) ?? false);
 }
 
 /** True when `input` looks like a slash command (starts with "/" and has no space). */

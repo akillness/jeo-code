@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { buildLiveModelChoices, liveModelPicker, renderLiveModelPicker, buildThinkingLevelChoices, THINKING_LEVEL_ORDER } from "../src/tui/components/live-model-picker";
 import { buildLiveModelChoices, liveModelPicker, renderLiveModelPicker } from "../src/tui/components/live-model-picker";
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -54,4 +55,41 @@ test("renderLiveModelPicker uses the generic select-list renderer with width fit
   expect(joined).toContain("Select a live model");
   expect(joined).toContain("gemini");
   expect(joined).toContain("#1 gemini/gemini-2.5-flash");
+});
+test("buildThinkingLevelChoices lists the five levels in order with the current one flagged", () => {
+  const choices = buildThinkingLevelChoices("high");
+  expect(choices.map(c => c.value)).toEqual([...THINKING_LEVEL_ORDER]);
+  expect(choices.map(c => c.value)).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+  expect(choices.find(c => c.value === "high")?.hint).toBe("current");
+  expect(choices.find(c => c.value === "low")?.hint).toBe("");
+  // gajae-code parity: "<level> — <description>" labels.
+  expect(choices.find(c => c.value === "minimal")?.label).toBe("minimal — lightest reasoning");
+  expect(choices.find(c => c.value === "xhigh")?.label).toBe("xhigh — maximum reasoning");
+});
+
+test("buildThinkingLevelChoices embeds token hints in the label, skipping minimal", () => {
+  const choices = buildThinkingLevelChoices("medium", {
+    tokenHint: lvl => (lvl === "minimal" ? undefined : `~${lvl}-tok`),
+  });
+  expect(choices.find(c => c.value === "minimal")?.label).toBe("minimal — lightest reasoning");
+  expect(choices.find(c => c.value === "low")?.label).toBe("low — light reasoning (~low-tok)");
+  expect(choices.find(c => c.value === "high")?.label).toBe("high — deep reasoning (~high-tok)");
+});
+
+test("buildThinkingLevelChoices prepends an inherit row only when an inheritLabel is given (role targets)", () => {
+  const withInherit = buildThinkingLevelChoices(undefined, { inheritLabel: "inherit (default medium)" });
+  expect(withInherit[0]?.value).toBe("inherit");
+  expect(withInherit[0]?.label).toBe("inherit (default medium)");
+  // current === undefined → the inherit row is the active one.
+  expect(withInherit[0]?.hint).toBe("current");
+  expect(withInherit.map(c => c.value)).toEqual(["inherit", "minimal", "low", "medium", "high", "xhigh"]);
+
+  const noInherit = buildThinkingLevelChoices("medium");
+  expect(noInherit.some(c => c.value === "inherit")).toBe(false);
+});
+
+test("buildThinkingLevelChoices: an explicit role level outranks inherit for the current flag", () => {
+  const choices = buildThinkingLevelChoices("low", { inheritLabel: "inherit (default medium)" });
+  expect(choices.find(c => c.value === "inherit")?.hint).toBe("");
+  expect(choices.find(c => c.value === "low")?.hint).toBe("current");
 });

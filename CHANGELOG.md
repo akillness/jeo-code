@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.19] - 2026-06-26
+_The live model picker gains gajae-code's `/model` provider tabs, and skill invocation is consolidated onto a single `$` entrypoint. The picker now shows an `ALL` tab plus one tab per provider that `tab`/`shift+tab` cycles, and skills (including their declared aliases) are invoked only via `$` — the slash palette stays builtins-only._
+
+### Added
+- **`/model` live picker gets a provider/group tab bar (gajae-code parity).** `src/tui/components/select-list.ts` adds a synthetic `ALL_TAB` first tab plus one tab per distinct item `group`, a `tabList()`/`activeTab()`/`cycleTab()` API, and tab-scoped visibility in `computeVisible()`. `renderSelectList` gains a `showTabs` option that draws the tab bar (active tab highlighted) and a `tab provider` key hint; `renderLiveModelPicker` (`live-model-picker.ts`) enables it. `runLaunchCommand` (`src/commands/launch.ts`) wires the `tab` key (with `shift+tab` to step back) into the picker key handler.
+
+### Changed
+- **Skills are invoked ONLY via the `$` entrypoint — declared aliases become `$`-invocable, never `/` commands.** This reverses 0.7.18's slash-alias dispatch: `src/skills/catalog.ts` replaces `parseSkillSlashInvocation` with `getSkillByDollarToken` (resolve by exact name → exact declared alias without its leading `/` → unique name prefix), and `parseSkillInvocation` now also matches a declared alias, so `$obsidian-capture` loads the skill that declares `/obsidian-capture`. `runLaunchCommand` drops every `/`-alias dispatch path (one-shot and REPL), leaves `skillSlashDetails` empty so the slash menu stays builtins-only, and surfaces declared-alias tokens in `$` autocomplete via `resolvedSkillTokens`.
 
 ## [0.7.18] - 2026-06-26
 _Slash-command discovery and the `/model` flow reach gajae-code parity. The slash palette/autocomplete now fuzzy-matches command names (with a description fallback for intent-style queries), resolved skills can contribute their own `/aliases` as real dispatchable commands, and `/model` runs gjc's two-menu target → reasoning flow so a picked model can be assigned to the default or any subagent role with its own thinking budget._

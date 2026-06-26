@@ -14,7 +14,7 @@ import { runDeepInterviewEngine, type DeepInterviewEngineOptions } from "./deep-
 import { runRalplanEngine, type RalplanEngineOptions } from "./ralplan";
 import { runTeamEngine, type TeamEngineOptions } from "./team";
 import { runUltragoalEngine, type UltragoalEngineOptions } from "./ultragoal";
-import { skillsPromptSection, loadSkills, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, parseSkillSlashInvocation, skillSlashAliases, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
+import { skillsPromptSection, loadSkills, buildSkillTask, workflowSkillsForPrompt, parseSkillInvocation, parseSkillChain, skillSlashAliases, looksLikeSkillEcho, skillInvocationCard, type SkillDoc, type SkillInvocation } from "../skills/catalog";
 import { formatForgeBox, scaleForgeWidth } from "../tui/components/forge";
 import { interactiveOAuthLogin } from "./auth";
 import { logoutOAuth, OAUTH_PROVIDERS, API_KEY_ONLY_PROVIDERS, setApiKey } from "../auth";
@@ -522,27 +522,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const workflowSkills = workflowSkillsForPrompt(resolvedSkills);
   const resolvedSkillNames = resolvedSkills.map(s => s.name);
-  // Skills can ADD `/` commands: every slash alias a resolved skill declares (frontmatter
-  // `aliases:`/`slash:`) becomes a real, dispatchable palette command grouped under "skills",
-  // so installing a skill extends the slash menu, autocomplete, and previews — not just `$<name>`.
-  // First declarer of an alias wins (aliases are owner-scoped, so cross-skill collisions are rare).
+  // Skills are invoked ONLY via the `$` entrypoint — never as `/` commands. A skill's declared
+  // aliases (frontmatter `aliases:`/`slash:`) are additionally `$`-invocable (`/obsidian-capture`
+  // → `$obsidian-capture`), so they extend `$` autocomplete (see resolvedSkillTokens) rather than
+  // the slash palette. The slash menu stays builtins-only, hence skillSlashDetails is empty.
   const skillSlashDetails: SlashCommandInfo[] = [];
-  {
-    const seenAlias = new Set<string>();
-    for (const s of resolvedSkills) {
-      for (const alias of skillSlashAliases(s)) {
-        const key = alias.toLowerCase();
-        if (seenAlias.has(key)) continue;
-        seenAlias.add(key);
-        skillSlashDetails.push({
-          command: alias,
-          usage: `${alias} [intent]`,
-          description: `${s.name} skill — ${s.summary}`,
-          group: "skills",
-        });
-      }
-    }
-  }
+  // Declared-alias tokens (the alias text without its leading `/`), surfaced in `$` autocomplete
+  // next to skill names so installing a skill grows the `$` menu, not the `/` menu.
+  const resolvedSkillTokens = [...new Set([
+    ...resolvedSkillNames,
+    ...resolvedSkills.flatMap(s => skillSlashAliases(s).map(a => a.replace(/^\//, ""))),
+  ])];
 
   const protocol = buildToolProtocol(allowedTools);
   const preamble = flags.systemPrompt ?? "You are the jeo, an interactive coding agent.\nAccomplish the user's request by calling tools and verifying your work.";
@@ -1277,16 +1267,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       return;
     }
-    // A `$skill` invocation resolves to a single skill.
+    // A `$skill` invocation resolves to a single skill (by name, declared alias, or unique prefix).
     const skillInvocation = parseSkillInvocation(messageContent, resolvedSkills);
     if (skillInvocation) {
       await runOneSkillShot(skillInvocation);
-      return;
-    }
-    // A declared skill `/alias` (e.g. `jeo "/obsidian-capture note"`) dispatches the owning skill.
-    const slashSkill = parseSkillSlashInvocation(messageContent, resolvedSkills);
-    if (slashSkill) {
-      await runOneSkillShot(slashSkill);
       return;
     }
     try {
@@ -1483,7 +1467,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       slashCommands: [...base.slashCommands, ...skillSlashDetails.map(d => d.command)],
       liveModels: liveModelsCache ? flattenModels(liveModelsCache).map(e => e.model) : [],
       aliases: aliasNames,
-      skillNames: resolvedSkillNames,
+      skillNames: resolvedSkillTokens,
       modelsForProvider: p => liveModelsCache?.find(r => r.provider === p)?.models ?? [],
       mentionPaths,
     };
@@ -2236,7 +2220,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const runSelectPicker = async <T>(
     render: (cols: number, rows: number) => string[],
-    onKey: (ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => boolean | undefined,
+    onKey: (ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean } | undefined) => boolean | undefined,
   ): Promise<void> => {
     pickerActive = true; // closes the readline output gate for the picker's lifetime
     disarmPreview();
@@ -2305,7 +2289,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     process.stdout.on("resize", onPickerResize);
     try {
       await new Promise<void>(resolve => {
-        const handler = (ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
+        const handler = (ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean } | undefined) => {
           const done = onKey(ch, key);
           if (done) {
             process.stdin.off("keypress", handler);
@@ -2418,6 +2402,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         if (key?.name === "pagedown") {
           list.page(1, 6);
+          return false;
+        }
+        if (key?.name === "tab") {
+          // gajae-code parity: cycle the provider tab (shift+tab steps back).
+          list.cycleTab(key.shift ? -1 : 1);
           return false;
         }
         if (key?.name === "backspace") {
@@ -4407,15 +4396,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
         continue;
       }
-      const aliasInvocation = parseSkillInvocation(input, resolvedSkills);
-      if (aliasInvocation?.invokedAs) {
-        try {
-          await runSkillInvocation(aliasInvocation.skill, aliasInvocation.intent, aliasInvocation.invokedAs);
-        } catch (err) {
-          console.log(`! ${(err as Error).message}`);
-        }
-        continue;
-      }
+
       // Unresolved `$skill` → suggest precisely, never silently send the typo to the model.
       // `$exact`/`$prefix`/chains already ran above; a leftover `$word` is a missed skill
       // attempt, EXCEPT `$UPPERCASE` env-var-style tokens (e.g. `$HOME`) which pass through.
@@ -4443,20 +4424,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           continue;
         }
       }
-      // A declared skill slash alias (e.g. `/obsidian-capture note`) dispatches the owning skill,
-      // passing the alias as the routing signal and the rest of the line as the intent. Placed
-      // after every built-in slash handler (built-ins win) and before the unhandled-slash fallback.
-      if (!flags.noSkills && input.startsWith("/")) {
-        const slashSkill = parseSkillSlashInvocation(input, resolvedSkills);
-        if (slashSkill) {
-          try {
-            await runSkillInvocation(slashSkill.skill, slashSkill.intent, slashSkill.invokedAs);
-          } catch (err) {
-            console.log(`! ${(err as Error).message}`);
-          }
-          continue;
-        }
-      }
+
       // Unhandled slash attempt → suggest, don't send the typo to the model.
       if (isSlashAttempt(input)) {
         const m = matchSlash(input, [...completionContext().slashCommands]);

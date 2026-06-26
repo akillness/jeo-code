@@ -521,18 +521,19 @@ export function getSkillBySlash(skills: SkillDoc[], command: string): SkillDoc |
   return skills.find(s => skillSlashAliases(s).some(a => a.toLowerCase() === q));
 }
 
-/** Resolve a leading `/alias` slash command to the skill that DECLARES it, e.g.
- *  `/obsidian-capture note text` → { skill, intent: "note text", invokedAs: "/obsidian-capture" }.
- *  Returns null when the first token is not a declared skill slash alias. This is what lets an
- *  installed skill add real, dispatchable `/` commands (not just routing-hint metadata): only the
- *  FIRST token is matched, and the rest of the line becomes the intent passed to the skill. */
-export function parseSkillSlashInvocation(input: string, skills: SkillDoc[]): SkillInvocation | null {
-  const trimmed = input.trim();
-  if (!trimmed.startsWith("/")) return null;
-  const command = trimmed.split(/\s+/, 1)[0] ?? "";
-  const skill = getSkillBySlash(skills, command);
-  if (!skill) return null;
-  return { skill, intent: trimmed.slice(command.length).trim(), invokedAs: command };
+/** Resolve a bare `$`-token (the text after `$`, no leading `$`) to a skill: exact name,
+ *  then exact declared alias (the alias compared without its leading `/`), then unique name
+ *  prefix. This makes declared aliases first-class `$` entrypoints — `$obsidian-capture`
+ *  resolves the skill that declares `/obsidian-capture` — so skills stay `$`-managed and a
+ *  declared `alias` becomes an invocable `$<alias>`, never a dispatchable `/` command. */
+export function getSkillByDollarToken(skills: SkillDoc[], token: string): SkillDoc | undefined {
+  const q = token.toLowerCase();
+  if (!q) return undefined;
+  const byName = skills.find(s => s.name.toLowerCase() === q);
+  if (byName) return byName;
+  const byAlias = skills.find(s => skillSlashAliases(s).some(a => a.replace(/^\//, "").toLowerCase() === q));
+  if (byAlias) return byAlias;
+  return uniquePrefixSkill(skills, token);
 }
 
 export interface SkillInvocation {
@@ -541,17 +542,17 @@ export interface SkillInvocation {
   invokedAs?: string;
 }
 /** Parse only an explicit `$skill` invocation. Skills are invokable ONLY via the `$`
- * entrypoint — `/` commands and slash aliases never load a skill file, and pasted SKILL.md
- * paths cannot hijack an ordinary coding request. Only the FIRST token counts, and only
- * when a skill with that exact name (or unique name prefix) is loaded; `$HOME is what?` or
- * any unknown `$word` falls through to the model as an ordinary prompt. */
+ * entrypoint — `/` commands never load a skill file, and pasted SKILL.md paths cannot
+ * hijack an ordinary coding request. Only the FIRST token counts, and only when a skill
+ * with that exact name, exact declared alias, or unique name prefix is loaded; `$HOME is
+ * what?` or any unknown `$word` falls through to the model as an ordinary prompt. */
 export function parseSkillInvocation(input: string, skills: SkillDoc[]): SkillInvocation | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
 
   const command = trimmed.split(/\s+/, 1)[0] ?? "";
   if (command.length > 1 && command.startsWith("$")) {
-    const dollarSkill = getSkillFrom(skills, command.slice(1)) ?? uniquePrefixSkill(skills, command.slice(1));
+    const dollarSkill = getSkillByDollarToken(skills, command.slice(1));
     if (dollarSkill) {
       return { skill: dollarSkill, intent: trimmed.slice(command.length).trim(), invokedAs: command };
     }
@@ -563,8 +564,8 @@ export function parseSkillInvocation(input: string, skills: SkillDoc[]): SkillIn
  *  "build auth". This is what lets `$` invoke several skills in one line — they all run,
  *  in order. Scanning stops at the first non-`$` token, OR a `$UPPERCASE` env-var-style
  *  token (e.g. `$HOME`), which is left in the intent so shell-style references pass through.
- *  Each `$name` resolves by exact name then unique prefix; names that resolve to nothing go
- *  into `unresolved` (so the REPL can report every typo, not just the first). Returns null
+ *  Each `$name` resolves by exact name, exact declared alias, then unique prefix; names that
+ *  resolve to nothing go into `unresolved` (so the REPL can report every typo, not just the first). Returns null
  *  only when the input opens with no parseable `$skill` token at all. */
 export function parseSkillChain(
   input: string,
@@ -581,7 +582,7 @@ export function parseSkillChain(
     if (!tok.startsWith("$") || tok.length < 2) break;
     const name = tok.slice(1);
     if (/^[A-Z_][A-Z0-9_]*$/.test(name)) break; // env-var-style → boundary; keep in intent
-    const skill = getSkillFrom(skills, name) ?? uniquePrefixSkill(skills, name);
+    const skill = getSkillByDollarToken(skills, name);
     if (skill) invocations.push({ skill, intent: "", invokedAs: tok });
     else unresolved.push(name);
   }

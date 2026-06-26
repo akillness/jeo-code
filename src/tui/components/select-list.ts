@@ -12,6 +12,9 @@ import { padLineTo } from "./layout";
 import { visibleWidth } from "./color";
 import { truncate as truncateAnsi } from "../terminal";
 
+/** Synthetic first tab that shows every item regardless of its provider/group. */
+export const ALL_TAB = "ALL";
+
 export interface SelectItem<T> {
   value: T;
   label: string;
@@ -32,6 +35,7 @@ export interface SelectItem<T> {
 export class SelectList<T> {
   private readonly items: SelectItem<T>[];
   private query = "";
+  private tabIndex = 0; // 0 = ALL; 1..N = a provider/group tab
   private cursor = 0; // index into the *visible* list
 
   constructor(items: SelectItem<T>[]) {
@@ -45,9 +49,35 @@ export class SelectList<T> {
   }
 
   private computeVisible(): SelectItem<T>[] {
+    let list = this.items;
+    const tab = this.activeTab();
+    if (tab !== ALL_TAB) list = list.filter(i => (i.group ?? "") === tab);
     const q = this.query.trim().toLowerCase();
-    if (!q) return this.items;
-    return this.items.filter(i => i.label.toLowerCase().includes(q) || (i.group ?? "").toLowerCase().includes(q));
+    if (!q) return list;
+    return list.filter(i => i.label.toLowerCase().includes(q) || (i.group ?? "").toLowerCase().includes(q));
+  }
+
+  /** Distinct provider/group tabs: "ALL" first, then each group in first-seen order. */
+  tabList(): string[] {
+    const seen: string[] = [];
+    for (const it of this.items) {
+      if (it.group && !seen.includes(it.group)) seen.push(it.group);
+    }
+    return [ALL_TAB, ...seen];
+  }
+
+  /** Active tab — "ALL" shows everything; otherwise items of one provider/group. */
+  activeTab(): string {
+    const tabs = this.tabList();
+    return tabs[Math.min(this.tabIndex, tabs.length - 1)] ?? ALL_TAB;
+  }
+
+  /** Cycle the active provider/group tab (wraps); resets the cursor to the first match. */
+  cycleTab(dir: 1 | -1): void {
+    const n = this.tabList().length;
+    if (n <= 1) return;
+    this.tabIndex = (Math.min(this.tabIndex, n - 1) + dir + n) % n;
+    this.cursor = this.firstEnabled(this.computeVisible());
   }
 
   private firstEnabled(list: SelectItem<T>[]): number {
@@ -136,6 +166,8 @@ export interface RenderSelectOptions {
   unicode?: boolean;
   /** Apply chalk color (default true). */
   color?: boolean;
+  /** Render a provider/group tab bar (gajae-code `/model` parity) and the `tab` key hint. */
+  showTabs?: boolean;
 }
 
 /**
@@ -156,6 +188,15 @@ export function renderSelectList<T>(list: SelectList<T>, opts: RenderSelectOptio
     for (const rawTitle of opts.title.split("\n")) {
       const title = rawTitle ? tint(rawTitle, chalk.bold) : "";
       out.push(cols ? clampToCols(title, cols) : title);
+    }
+  }
+
+  if (opts.showTabs) {
+    const tabs = list.tabList();
+    if (tabs.length > 1) {
+      const active = list.activeTab();
+      const bar = "  " + tabs.map(t => (t === active ? tint(`[${t}]`, chalk.cyan.bold) : tint(` ${t} `, chalk.gray))).join(" ");
+      out.push(cols ? clampToCols(bar, cols) : bar);
     }
   }
 
@@ -208,7 +249,9 @@ export function renderSelectList<T>(list: SelectList<T>, opts: RenderSelectOptio
 
   const q = list.filter();
   const filterPart = q ? `filter: ${q}` : "type to filter";
-  const keys = unicode ? "\u2191/\u2193 move \u00b7 enter select \u00b7 esc cancel" : "up/down move . enter select . esc cancel";
+  const showTab = opts.showTabs && list.tabList().length > 1;
+  const tabHint = showTab ? (unicode ? " \u00b7 tab provider" : " . tab provider") : "";
+  const keys = (unicode ? "\u2191/\u2193 move \u00b7 enter select \u00b7 esc cancel" : "up/down move . enter select . esc cancel") + tabHint;
   const footer = tint(`  ${filterPart}  \u2014  ${keys}`, chalk.gray);
   out.push(cols ? clampToCols(footer, cols) : footer);
   return out;

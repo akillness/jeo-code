@@ -106,3 +106,74 @@ test("empty list renders a (no matches) line, not a crash", () => {
   expect(lines.join("\n")).toContain("(no matches)");
   expect(list.selected()).toBeUndefined();
 });
+
+const grouped = (): SelectItem<string>[] => [
+  { value: "o1", label: "gpt-5", group: "openai" },
+  { value: "o2", label: "gpt-4", group: "openai" },
+  { value: "a1", label: "sonnet", group: "anthropic" },
+  { value: "g1", label: "gemini", group: "google" },
+];
+
+test("tabList is ALL plus each provider/group in first-seen order", () => {
+  const list = new SelectList(grouped());
+  expect(list.tabList()).toEqual(["ALL", "openai", "anthropic", "google"]);
+  expect(list.activeTab()).toBe("ALL");
+});
+
+test("group-less lists expose only the ALL tab", () => {
+  const list = new SelectList(items(["a", "b"]));
+  expect(list.tabList()).toEqual(["ALL"]);
+  list.cycleTab(1); // no-op when there is nothing to cycle
+  expect(list.activeTab()).toBe("ALL");
+});
+
+test("cycleTab scopes the visible set to one provider and wraps back to ALL", () => {
+  const list = new SelectList(grouped());
+  list.cycleTab(1);
+  expect(list.activeTab()).toBe("openai");
+  expect(list.visible().map(i => i.value)).toEqual(["o1", "o2"]);
+  list.cycleTab(1);
+  expect(list.activeTab()).toBe("anthropic");
+  expect(list.visible().map(i => i.value)).toEqual(["a1"]);
+  list.cycleTab(-1); // step back
+  expect(list.activeTab()).toBe("openai");
+  list.cycleTab(-1); // wrap to ALL
+  expect(list.activeTab()).toBe("ALL");
+  expect(list.visible().length).toBe(4);
+});
+
+test("switching provider tabs resets the cursor to that tab's first item", () => {
+  const list = new SelectList(grouped());
+  list.cycleTab(1); // openai
+  list.down(); // cursor on o2
+  expect(list.selected()!.value).toBe("o2");
+  list.cycleTab(1); // anthropic — cursor must reset
+  expect(list.selected()!.value).toBe("a1");
+});
+
+test("a provider tab and a text filter compose (filter applies within the tab)", () => {
+  const list = new SelectList(grouped());
+  list.cycleTab(1); // openai
+  list.setFilter("gpt-5");
+  expect(list.visible().map(i => i.value)).toEqual(["o1"]);
+  list.setFilter("sonnet"); // anthropic model is hidden by the openai tab
+  expect(list.isEmpty()).toBe(true);
+});
+
+test("renderSelectList showTabs draws a tab bar marking the active tab + footer hint", () => {
+  const list = new SelectList(grouped());
+  list.cycleTab(1); // openai active
+  const lines = renderSelectList(list, { rows: 6, color: false, unicode: false, showTabs: true }).map(stripAnsi);
+  const text = lines.join("\n");
+  expect(text).toContain("[openai]"); // active tab bracketed
+  expect(text).toContain("ALL");
+  expect(text).toContain("anthropic");
+  expect(text).toContain("tab provider"); // footer key hint
+});
+
+test("renderSelectList omits the tab bar when there is only the ALL tab", () => {
+  const list = new SelectList(items(["a", "b"]));
+  const text = renderSelectList(list, { color: false, unicode: false, showTabs: true }).map(stripAnsi).join("\n");
+  expect(text).not.toContain("tab provider");
+  expect(text).not.toContain("[ALL]");
+});

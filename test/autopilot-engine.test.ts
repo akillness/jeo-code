@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { decideStep, isConverged } from "../src/autopilot";
+import { bestScoreFromLog, decideStep, foldBest, isConverged } from "../src/autopilot";
 
 describe("decideStep — gate goal", () => {
   test("keeps when the eval passes, reverts when it fails", () => {
@@ -100,7 +100,6 @@ describe("ratchet streak — min goal end to end (pure)", () => {
   });
 });
 
-import { foldBest } from "../src/autopilot";
 
 describe("foldBest — in-memory best folding matches a fresh log re-scan", () => {
   test("min goal keeps the running minimum across kept steps", () => {
@@ -152,5 +151,32 @@ describe("foldBest — in-memory best folding matches a fresh log re-scan", () =
     }
     expect(folded).toBe(manual);
     expect(folded).toBe(5);
+  });
+});
+
+
+describe("bestScoreFromLog — single-pass status fold", () => {
+  test("folds baseline and kept min/max scores without reverted noise", () => {
+    const log = [
+      { type: "baseline", score: 10 },
+      { type: "step", decision: "revert", score: 1 },
+      { type: "step", decision: "keep", score: 8 },
+      { type: "step", decision: "keep", score: 6 },
+    ];
+
+    expect(bestScoreFromLog("min", log)).toBe(6);
+    expect(bestScoreFromLog("max", log)).toBe(10);
+  });
+
+  test("gate tracks the last kept measurable score and ignores NaN", () => {
+    const log = [
+      { type: "baseline", score: NaN },
+      { type: "step", decision: "keep", score: 2 },
+      { type: "step", decision: "revert", score: 9 },
+      { type: "step", decision: "keep", score: NaN },
+      { type: "step", decision: "keep", score: 4 },
+    ];
+
+    expect(bestScoreFromLog("gate", log)).toBe(4);
   });
 });

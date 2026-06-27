@@ -73,6 +73,10 @@ export const ConfigSchema = z
     lmstudioBaseUrl: z.string().optional(),
     defaultModel: z.string().min(1),
     theme: z.string().optional(),
+    /** Root path of the global llm-wiki vault, shared across every session
+     *  regardless of project/cwd. A leading `~` is expanded; env `JEO_WIKI_ROOT`
+     *  overrides. Consumed by `resolveWikiRoot` and injected into the prompt. */
+    wikiRoot: z.string().optional(),
     thinkingLevel: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
     modelAliases: z.record(z.string()).optional(),
     /** Most-recently-selected models, newest first (drives the default + pickers). */

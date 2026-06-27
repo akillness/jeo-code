@@ -61,6 +61,30 @@ test("frozen eval is immutable without --force", () => {
   expect(run(["autopilot", "init", "--task", "t2", "--eval", "bash eval.sh", "--goal", "min", "--force"]).code).toBe(0);
 });
 
+test("autopilot validates goal and positive integer flags", () => {
+  const badGoal = run(["autopilot", "init", "--task", "t", "--eval", "true", "--goal", "bogus"]);
+  expect(badGoal.code).not.toBe(0);
+  expect(badGoal.err).toContain("--goal must be min|max|gate");
+
+  for (const [flag, value] of [
+    ["timeout", "0"],
+    ["timeout", "nope"],
+    ["patience", "-1"],
+    ["patience", "1.5"],
+  ]) {
+    const r = run(["autopilot", "init", "--task", "t", "--eval", "true", `--${flag}`, value]);
+    expect(r.code).not.toBe(0);
+    expect(r.err).toContain(`--${flag} must be a positive integer`);
+  }
+
+  expect(run(["autopilot", "init", "--task", "t", "--eval", "true", "--goal", "gate"]).code).toBe(0);
+  for (const value of ["0", "-1", "2.5", "nope"]) {
+    const r = run(["autopilot", "loop", "--runner", "true", "--max", value]);
+    expect(r.code).not.toBe(0);
+    expect(r.err).toContain("--max must be a positive integer");
+  }
+});
+
 test("step reverts a regression and keeps an improvement", () => {
   writeFileSync(join(dir, "eval.sh"), 'v=$(cat .v 2>/dev/null || echo 100); echo "score: $v"\n');
   run(["autopilot", "init", "--task", "t", "--eval", "bash eval.sh", "--goal", "min"]);

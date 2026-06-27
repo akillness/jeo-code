@@ -56,6 +56,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/tools", usage: "/tools", description: "Show the tools currently visible to the agent", group: "system" },
   { command: "/hotkeys", usage: "/hotkeys", description: "Show keyboard shortcuts", group: "system" },
   { command: "/theme", usage: "/theme [name]", description: "Show or set the TUI theme (cosmic/matrix/solar/mono)", group: "system" },
+  { command: "/wiki", usage: "/wiki [path|off]", description: "Show or set the global llm-wiki vault root (shared across all sessions)", group: "system" },
   { command: "/settings", usage: "/settings", description: "Show effective runtime configuration (alias of /config)", group: "system" },
   { command: "/evolve", usage: "/evolve", description: "Simulate and view the agent's evolutionary gallery", group: "system" },
   { command: "/config", usage: "/config", description: "Show the effective runtime configuration", group: "system" },

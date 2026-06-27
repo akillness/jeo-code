@@ -22,11 +22,23 @@ export function geminiThinkingBudget(model: string, effort?: CallOptions["reason
   const thinkingCapable = (major >= 3 || (major === 2 && minor >= 5)) || /flash-latest|pro-latest/.test(m);
   if (!thinkingCapable) return undefined;
   const floor = m.includes("pro") ? 128 : 0; // pro-class cannot fully disable thinking
+  // An UNSET effort normally falls to the floor (off for flash-class). But when the model
+  // VARIANT name itself encodes a thinking depth — `-high`/`-low` (e.g. gemini-3-pro-high)
+  // or an explicit `-thinking` suffix (gemini-2.5-flash-thinking) — that selection IS the
+  // user's thinking opt-in, so it overrides the silent floor and maps to a real budget.
+  // Unmarked ids (gemini-3-flash, gemini-2.5-flash) keep the off-by-default floor (parity
+  // with the other providers + the documented thought-token burn protection).
+  const named: CallOptions["reasoningEffort"] | undefined =
+    m.includes("-high") ? "high"
+    : m.includes("-low") ? "low"
+    : m.includes("thinking") ? "medium"
+    : undefined;
+  const effectiveEffort = effort ?? named;
   let budget: number;
-  switch (effort) {
+  switch (effectiveEffort) {
     // minimal/low/medium/high ALL enable thinking with scaling depth — reasoning works at
     // every thinking level (gajae parity: Minimal is a real effort). Only an UNSET effort
-    // falls through to the floor (off for flash-class, the API minimum for pro-class).
+    // (and no in-name depth marker) falls through to the floor.
     case "minimal": budget = Math.max(floor, 2000); break;
     case "low": budget = 4000; break;
     case "medium": budget = 10000; break;
@@ -35,6 +47,16 @@ export function geminiThinkingBudget(model: string, effort?: CallOptions["reason
   }
   if (typeof maxTokens === "number") budget = Math.min(budget, Math.max(floor, maxTokens - 1024));
   return budget;
+}
+
+/** True when this turn was asked to think (a positive budget) — lets the streaming paths
+ *  fire onReasoningStart so the UI shows the thinking phase even before/without any `thought`
+ *  parts arrive (the Gemini/CCA analog of Anthropic's content_block_start thinking signal,
+ *  which is why reasoning otherwise appeared "not to run" on gemini/antigravity). */
+export function geminiThinkingActive(options: CallOptions): boolean {
+  const model = options.model.replace(/^(google|gemini)\//, "");
+  const tb = geminiThinkingBudget(model, options.reasoningEffort, options.maxTokens);
+  return tb !== undefined && tb > 0;
 }
 
 
@@ -254,6 +276,7 @@ async function* ccaTurn(messages: Message[], options: CallOptions, credential: C
   const response = await geminiFetchFailSafe(strip => geminiCliRequest(messages, options, credential.token, projectId, strip), options.signal);
   if (!response.ok) throw await providerHttpError("Gemini (Cloud Code Assist)", response);
   if (!response.body) return;
+  if (geminiThinkingActive(options)) options.onReasoningStart?.();
   let lastUsage: GeminiChunk["usageMetadata"];
   let yieldedAny = false;
   let lastEmptyReason: string | undefined;
@@ -329,6 +352,7 @@ export const geminiAdapter: ProviderAdapter = {
     const response = await geminiFetchFailSafe(strip => geminiRequest(messages, options, credential, "streamGenerateContent", strip), options.signal);
     if (!response.ok) throw await providerHttpError("Gemini", response, "(stream)");
     if (!response.body) return;
+    if (geminiThinkingActive(options)) options.onReasoningStart?.();
     let lastUsage: GeminiChunk["usageMetadata"];
     let yieldedAny = false;
     let lastEmptyReason: string | undefined;

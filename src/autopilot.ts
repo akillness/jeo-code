@@ -31,7 +31,7 @@ function getShell(): string | undefined {
   return process.env.SHELL || "/bin/bash";
 }
 
-type Goal = "min" | "max" | "gate";
+export type Goal = "min" | "max" | "gate";
 
 interface Session {
   task: string;
@@ -41,6 +41,26 @@ interface Session {
   patience: number;
   createdAt: string;
   frozen: true;
+}
+
+const GOALS: readonly Goal[] = ["min", "max", "gate"];
+
+function isGoal(value: string): value is Goal {
+  return (GOALS as readonly string[]).includes(value);
+}
+
+function parseGoal(raw: string | undefined): Goal {
+  const goal = raw ?? "min";
+  if (!isGoal(goal)) die("--goal must be min|max|gate");
+  return goal;
+}
+
+function parsePositiveIntegerFlag(flags: Record<string, string>, name: string, fallback: number): number {
+  const raw = flags[name];
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) die(`--${name} must be a positive integer`);
+  return parsed;
 }
 
 interface LogEvent {
@@ -119,20 +139,24 @@ function runEval(s: Session): { score: number; passed: boolean; output: string }
 }
 
 /** Best kept score so far, folding baseline + kept steps. undefined if none. */
-function currentBest(s: Session): number | undefined {
+export function bestScoreFromLog(
+  goal: Goal,
+  log: Iterable<{ type: unknown; decision?: unknown; score?: unknown }>,
+): number | undefined {
   let best: number | undefined;
-  for (const ev of readLog()) {
+  for (const ev of log) {
     if (ev.type === "baseline" || (ev.type === "step" && ev.decision === "keep")) {
-      const sc = ev.score as number;
+      const sc = ev.score;
       if (typeof sc === "number" && !Number.isNaN(sc)) {
-        if (best === undefined) best = sc;
-        else if (s.goal === "min") best = Math.min(best, sc);
-        else if (s.goal === "max") best = Math.max(best, sc);
-        else best = sc;
+        best = foldBest(goal, best, sc);
       }
     }
   }
   return best;
+}
+
+function currentBest(s: Session): number | undefined {
+  return bestScoreFromLog(s.goal, readLog());
 }
 
 function isImprovement(goal: Goal, score: number, best: number | undefined): boolean {
@@ -192,15 +216,14 @@ function cmdInit(flags: Record<string, string>): void {
   }
   if (!flags.task) die("init requires --task");
   if (!flags.eval) die("init requires --eval <command that prints 'score: N' or exits 0/1>");
-  const goal = (flags.goal ?? "min") as Goal;
-  if (!["min", "max", "gate"].includes(goal)) die("--goal must be min|max|gate");
+  const goal = parseGoal(flags.goal);
   fs.mkdirSync(AP_DIR, { recursive: true });
   const session: Session = {
     task: flags.task,
     evalCmd: flags.eval,
     goal,
-    timeoutSec: flags.timeout ? Number(flags.timeout) : 300,
-    patience: flags.patience ? Number(flags.patience) : 3,
+    timeoutSec: parsePositiveIntegerFlag(flags, "timeout", 300),
+    patience: parsePositiveIntegerFlag(flags, "patience", 3),
     createdAt: new Date().toISOString(),
     frozen: true,
   };
@@ -249,7 +272,7 @@ function cmdLoop(flags: Record<string, string>): void {
   const s = loadSession();
   const runner = flags.runner;
   if (!runner) die("loop requires --runner <command that makes ONE change>");
-  const max = flags.max ? Number(flags.max) : 10;
+  const max = parsePositiveIntegerFlag(flags, "max", 10);
   if (s.goal !== "gate" && !hasBaseline()) {
     const { score, passed, output } = runEval(s);
     appendLog({ type: "baseline", score, passed, output });
@@ -309,7 +332,7 @@ function cmdStatus(flags: Record<string, string>): void {
   const kept = steps.filter((e) => e.decision === "keep").length;
   const reverted = steps.filter((e) => e.decision === "revert").length;
   const baseline = log.find((e) => e.type === "baseline");
-  const best = currentBest(s);
+  const best = bestScoreFromLog(s.goal, log);
   const stop = [...log].reverse().find((e) => e.type === "stop");
 
   // convergence: steps since last keep (forward progress)

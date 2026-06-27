@@ -96,6 +96,10 @@ test("Phase 1: WORKING_DISCIPLINE carries file-budget, mistake-tone, and safety-
   // A4 — file read budget: keep long-file reads targeted to avoid context bloat.
   expect(WORKING_DISCIPLINE).toContain("For large files (>500 lines)");
   expect(WORKING_DISCIPLINE).toContain("lineRange");
+  // Read-window nudge: pull small-chunk models (e.g. Gemini) up to gpt-like ~250-line reads
+  // by steering away from tiny slices toward generous contiguous windows.
+  expect(WORKING_DISCIPLINE).toContain("generous windows (~250 lines per read)");
+  expect(WORKING_DISCIPLINE).toContain("not tiny slices");
   // FABLE-5 §2.5 — own mistakes plainly, without over-apology.
   expect(WORKING_DISCIPLINE).toContain("Own mistakes plainly");
   expect(WORKING_DISCIPLINE).toContain("no over-apology");

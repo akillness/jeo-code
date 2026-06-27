@@ -86,7 +86,7 @@ test("geminiRequest: wires thinkingConfig for thinking models only", () => {
   expect(legacy.generationConfig.thinkingConfig).toBeUndefined();
 });
 
-import { geminiCliRequest, geminiAdapter, getGeminiCliHeaders } from "../src/ai/providers/gemini";
+import { geminiCliRequest, geminiAdapter, getGeminiCliHeaders, geminiThinkingActive } from "../src/ai/providers/gemini";
 
 test("geminiCliRequest: wraps the payload in a Cloud Code Assist envelope", () => {
   const messages = [
@@ -155,6 +155,60 @@ test("geminiAdapter: api_key credential keeps using the public generativelanguag
     expect(out).toBe("ok");
     expect(calledUrl).toContain("generativelanguage.googleapis.com");
     expect(calledUrl).toContain("key=AIza-x");
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+test("geminiThinkingBudget: in-name depth marker (-high/-low/-thinking) overrides the unset floor", () => {
+  // An explicit `-thinking` variant must NOT fall to the silent flash floor of 0.
+  expect(geminiThinkingBudget("gemini-2.5-flash-thinking")).toBe(10000);
+  // `-high`/`-low` (e.g. antigravity gemini-3-pro-high/low) select depth even with no effort —
+  // the variant choice IS the thinking opt-in, so it beats the bare pro floor of 128.
+  expect(geminiThinkingBudget("gemini-3-pro-high")).toBe(24000);
+  expect(geminiThinkingBudget("gemini-3-pro-low")).toBe(4000);
+  expect(geminiThinkingBudget("gemini-3.1-pro-high")).toBe(24000);
+  // An explicit caller effort still wins over the in-name marker.
+  expect(geminiThinkingBudget("gemini-3-pro-high", "low")).toBe(4000);
+  // Unmarked thinking-capable ids keep the off-by-default floor (cross-provider parity).
+  expect(geminiThinkingBudget("gemini-3-flash")).toBe(0);
+  expect(geminiThinkingBudget("gemini-2.5-flash")).toBe(0);
+});
+
+test("geminiThinkingActive: true only when a positive budget is requested", () => {
+  // Effort set on a flash-class model → budget > 0 → active.
+  expect(geminiThinkingActive({ model: "gemini-2.5-flash", reasoningEffort: "medium" } as any)).toBe(true);
+  // No effort + unmarked flash → budget 0 → not active (so no spurious thinking indicator).
+  expect(geminiThinkingActive({ model: "gemini-2.5-flash" } as any)).toBe(false);
+  // In-name depth marker activates it even without an effort.
+  expect(geminiThinkingActive({ model: "google/gemini-3-pro-high" } as any)).toBe(true);
+  // Pre-2.5 models can't think → never active.
+  expect(geminiThinkingActive({ model: "gemini-2.0-flash", reasoningEffort: "high" } as any)).toBe(false);
+});
+
+test("geminiAdapter (OAuth/CCA): fires onReasoningStart up front only when thinking is requested", async () => {
+  const prevFetch = globalThis.fetch;
+  const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
+  globalThis.fetch = (async () =>
+    new Response(sse({ response: { candidates: [{ content: { parts: [{ text: "hi" }] } }] } }), {
+      status: 200, headers: { "content-type": "text/event-stream" },
+    })) as any;
+  const oauth = { kind: "oauth", provider: "gemini", token: "t", projectId: "p" } as any;
+  try {
+    let started = 0;
+    await geminiAdapter.call(
+      [{ role: "user", content: "hi" }],
+      { model: "gemini-2.5-flash", reasoningEffort: "medium", onReasoningStart: () => { started++; } } as any,
+      oauth,
+    );
+    expect(started).toBe(1); // thinking requested → indicator signalled even before any thought part
+
+    let startedOff = 0;
+    await geminiAdapter.call(
+      [{ role: "user", content: "hi" }],
+      { model: "gemini-2.5-flash", onReasoningStart: () => { startedOff++; } } as any,
+      oauth,
+    );
+    expect(startedOff).toBe(0); // no effort + flash floor 0 → thinking off → no signal
   } finally {
     globalThis.fetch = prevFetch;
   }

@@ -46,6 +46,10 @@ export interface Config {
   /** Base URL for the local LM Studio server (keyless, OpenAI-compatible). */
   lmstudioBaseUrl?: string;
   defaultModel: string;
+  /** Root path of the global llm-wiki vault, shared across every session regardless
+   *  of project/cwd. A leading `~` is expanded at resolve time; env `JEO_WIKI_ROOT`
+   *  overrides. Resolve with `resolveWikiRoot()`. */
+  wikiRoot?: string;
   theme?: string;
   thinkingLevel?: "minimal" | "low" | "medium" | "high" | "xhigh";
   /** Friendly model aliases, e.g. { fast: "ollama/qwen2.5:0.5b" }. Override built-ins. */
@@ -175,6 +179,29 @@ function globalConfigDir(): string {
 }
 function globalConfigPath(): string {
   return path.join(globalConfigDir(), "config.json");
+}
+
+/**
+ * Expand and absolutize a wiki-root path: a leading `~` becomes the home directory
+ * and the result is `path.resolve`d so tools/hooks never see an un-expanded `~` or a
+ * relative path. Returns undefined for blank input.
+ */
+export function normalizeWikiRoot(raw: string | undefined): string | undefined {
+  const v = (raw || "").trim();
+  if (!v) return undefined;
+  const expanded = v === "~" || v.startsWith("~/") ? path.join(os.homedir(), v.slice(1)) : v;
+  return path.resolve(expanded);
+}
+
+/**
+ * Resolve the global llm-wiki vault root. Precedence: explicit `JEO_WIKI_ROOT` env
+ * override → `config.wikiRoot` → undefined (no global wiki configured). The result is
+ * `~`-expanded and absolutized via `normalizeWikiRoot`.
+ */
+export function resolveWikiRoot(cfg: Pick<Config, "wikiRoot">): string | undefined {
+  // A blank/whitespace env var must not mask a configured root, so trim before the OR.
+  const envRoot = (jeoEnv("WIKI_ROOT") || "").trim();
+  return normalizeWikiRoot(envRoot || cfg.wikiRoot);
 }
 
 function envOAuth(): NonNullable<Config["oauth"]> {

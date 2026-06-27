@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { antigravityRequest, getAntigravityUserAgent } from "../src/ai/providers/antigravity";
+import { antigravityRequest, getAntigravityUserAgent, antigravityAdapter } from "../src/ai/providers/antigravity";
 
 const cred = { kind: "oauth" as const, provider: "gemini" as const, token: "tok", projectId: "proj-1" };
 
@@ -73,4 +73,32 @@ test("antigravityRequest: Gemini reasoning does NOT get the Claude beta header",
     cred,
   );
   expect(headers["anthropic-beta"]).toBeUndefined();
+});
+async function drainStream(model: string, reasoningEffort: string | undefined): Promise<number> {
+  const prevFetch = globalThis.fetch;
+  const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
+  globalThis.fetch = (async () =>
+    new Response(sse({ response: { candidates: [{ content: { parts: [{ text: "hi" }] } }] } }), {
+      status: 200, headers: { "content-type": "text/event-stream" },
+    })) as any;
+  let started = 0;
+  try {
+    const opts: any = { model, onReasoningStart: () => { started++; } };
+    if (reasoningEffort) opts.reasoningEffort = reasoningEffort;
+    for await (const _ of antigravityAdapter.stream([{ role: "user", content: "hi" }], opts, cred)) { /* drain */ }
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+  return started;
+}
+
+test("antigravityAdapter.stream: fires onReasoningStart up front only when thinking is requested", async () => {
+  // Effort set on a Gemini model → budget > 0 → thinking phase signalled (was silent before).
+  expect(await drainStream("antigravity/gemini-3-flash", "medium")).toBe(1);
+  // No effort + unmarked flash → budget 0 → no signal (parity with off-by-default).
+  expect(await drainStream("antigravity/gemini-3-flash", undefined)).toBe(0);
+  // In-name depth marker (-low) means thinking even with no effort → still signalled.
+  expect(await drainStream("antigravity/gemini-3-pro-low", undefined)).toBe(1);
+  // Claude without effort stays non-thinking → no signal.
+  expect(await drainStream("antigravity/claude-opus-4-6", undefined)).toBe(0);
 });

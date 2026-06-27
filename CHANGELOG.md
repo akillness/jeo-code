@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.21] - 2026-06-26
+_Global llm-wiki vault integration, Gemini/Antigravity thinking indicators, generous file-reading windows, and autopilot flag validation. Adds a shared global wiki root configuration with a /wiki slash command, fires reasoning start signals up front for Gemini/Antigravity models, adjusts the large-file reading discipline to use generous windows, and validates autopilot goal and integer flags._
+
+### Added
+- **Global llm-wiki vault root configuration (wikiRoot / JEO_WIKI_ROOT).** Adds wikiRoot to the config schema and JEO_WIKI_ROOT env override. Consumed by resolveWikiRoot and normalizeWikiRoot. Injects the wiki root path into the system prompt and exports it to subagents and hooks.
+- **/wiki [path|off] slash command.** Allows showing, setting, or clearing the global llm-wiki vault root interactively.
+- **Gemini/Antigravity thinking indicators.** Fires onReasoningStart up front when thinking is requested (budget > 0) so the UI shows the thinking phase even before/without thought parts arriving.
+- **In-name Gemini thinking depth markers.** Gemini thinking budget now overrides the unset floor when the model variant name itself encodes a thinking depth (e.g., -high, -low, -thinking).
+- **Autopilot flag validation.** Validates --goal (must be min|max|gate) and positive integer flags (--timeout, --patience, --max) in autopilot commands.
+
+### Changed
+- **Generous file-reading windows.** Updates WORKING_DISCIPLINE to read large files (>500 lines) in generous windows (~250 lines per read) instead of tiny slices to avoid context bloat.
+- **Autopilot score folding.** Refactors bestScoreFromLog to fold baseline and kept scores in a single pass.
+
+### Verified
+- bun run typecheck clean; full suite green. Added tests for wiki root resolution, /wiki slash command, Gemini thinking active/budget markers, and autopilot flag validation.
+
 ## [0.7.20] - 2026-06-26
 _OKF concept-memory retrieval gains a hybrid reranker ported from memsearch. Injection priority no longer rides one raw keyword score — it fuses two complementary ranked channels by Reciprocal Rank Fusion (RRF): IDF-weighted lexical relevance (the sparse/BM25 channel, so rare discriminating terms steer recall) and concept-graph proximity (the local dense/semantic-neighbour channel, so a hub linked from multiple query hits surfaces even with no keyword of its own). All embedding-free and deterministic, layered atop the existing failure-first tier and pinned-invariant reserved budget._
 

@@ -37,6 +37,17 @@ function antigravityModelId(model: string): string {
   return model.replace(/^antigravity\//, "");
 }
 
+/** The thinking budget actually requested for an Antigravity turn — Claude-via-CCA uses an
+ *  Anthropic-style budget, native Gemini scales via geminiThinkingBudget (which also honours
+ *  in-name depth markers like `-high`/`-low`). Centralised so the request builder and the
+ *  streaming start-signal stay in agreement. */
+function antigravityThinkingBudget(options: CallOptions): number | undefined {
+  const model = antigravityModelId(options.model);
+  return model.toLowerCase().includes("claude")
+    ? antigravityClaudeThinkingBudget(options.reasoningEffort)
+    : geminiThinkingBudget(model, options.reasoningEffort);
+}
+
 function projectIdFor(credential: Credential): string | undefined {
   if (credential.kind === "oauth" && credential.projectId) return credential.projectId;
   return process.env.GOOGLE_CLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT_ID || undefined;
@@ -159,9 +170,7 @@ export function antigravityRequest(messages: Message[], options: CallOptions, cr
   // Anthropic-style budget (gemini's fn returns undefined for claude) PLUS the
   // interleaved-thinking beta header below — without both, antigravity Claude (e.g. opus)
   // never streamed reasoning while native sonnet did.
-  const agThinkingBudget = isClaude
-    ? antigravityClaudeThinkingBudget(options.reasoningEffort)
-    : geminiThinkingBudget(model, options.reasoningEffort);
+  const agThinkingBudget = antigravityThinkingBudget(options);
   const claudeThinkingOn = isClaude && agThinkingBudget !== undefined;
   if (agThinkingBudget !== undefined) {
     generationConfig.thinkingConfig = { includeThoughts: true, thinkingBudget: agThinkingBudget };
@@ -277,6 +286,9 @@ export const antigravityAdapter: ProviderAdapter = {
   async *stream(messages, options, credential) {
     const response = await fetchAntigravity(messages, options, credential);
     if (!response.body) return;
+    // Signal the thinking phase up front (parity with anthropic's content_block_start) so the
+    // UI shows it even before/without `thought` parts — otherwise reasoning looked dead here.
+    if ((antigravityThinkingBudget(options) ?? 0) > 0) options.onReasoningStart?.();
     let yielded = false;
     let usage: CcaUsage | undefined;
     const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];

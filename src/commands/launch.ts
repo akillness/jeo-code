@@ -34,7 +34,7 @@ import pkg from "../../package.json";
 import chalk from "chalk";
 import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
-import { readGlobalConfig, saveConfigPatch } from "../agent/state";
+import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/state";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
 import { describeModel, describeAllProviders, thinkingMaxTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
@@ -189,6 +189,7 @@ import {
   handleSearchSlash,
 } from "./launch/code-slash";
 import { handleUndoSlash } from "./launch/git-slash";
+import { wikiRootPromptLine, decideWikiSlash } from "./launch/wiki-slash";
 
 
 
@@ -542,6 +543,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // (high-confidence core concepts are always prioritized regardless).
   const memoryBlock = await memoryPromptSection(cwd, flags.message || undefined);
 
+  // Global llm-wiki vault root (config `wikiRoot` / env JEO_WIKI_ROOT). When specified
+  // it is applied two ways: exported to JEO_WIKI_ROOT so hooks, subagents and the
+  // ~/.agents/rules wiki rule resolve the same path, and stated in the system prompt so
+  // every session — regardless of project/cwd — references the one shared global wiki.
+  // Global llm-wiki vault root, mutable so a mid-session `/wiki <path>` re-applies it.
+  let sessionWikiRoot = resolveWikiRoot(cfg);
+  if (sessionWikiRoot && !process.env.JEO_WIKI_ROOT) process.env.JEO_WIKI_ROOT = sessionWikiRoot;
   const baseSystemPromptNoMemory =
     preamble + "\n\n" + protocol + "\n\n" +
     WORKING_DISCIPLINE + "\n\n" +
@@ -567,7 +575,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // recomputed per turn (with that turn's query) so failure-first ranking actually
   // fires interactively and mid-session captures resurface — see refreshMemory below.
   const composeSystemPrompt = (memBlock: string): string => {
-    const base = baseSystemPromptNoMemory + (memBlock ? "\n\n" + memBlock : "");
+    const base = baseSystemPromptNoMemory + wikiRootPromptLine(sessionWikiRoot) + (memBlock ? "\n\n" + memBlock : "");
     let sp = withProjectContext(base, contextFiles);
     if (flags.appendSystemPrompt) sp += "\n" + flags.appendSystemPrompt;
     return sp;
@@ -3558,6 +3566,26 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         await saveConfigPatch(raw => ({ theme: want }));
         refreshUiTheme(); // re-resolve the keystroke-hot theme handle immediately
         console.log(`Theme set to ${want} — saved to ~/.jeo/config.json`);
+        continue;
+      }
+      if (input === "/wiki" || input.startsWith("/wiki ")) {
+        const decision = decideWikiSlash(
+          input,
+          resolveWikiRoot(await readGlobalConfig()),
+          !!jeoEnv("WIKI_ROOT"),
+        );
+        for (const line of decision.lines) console.log(line);
+        if (decision.kind === "clear") {
+          await saveConfigPatch(() => ({ wikiRoot: undefined }));
+          delete process.env.JEO_WIKI_ROOT;
+          sessionWikiRoot = undefined;
+          await refreshSessionMemory("");
+        } else if (decision.kind === "set") {
+          await saveConfigPatch(() => ({ wikiRoot: decision.persistArg }));
+          process.env.JEO_WIKI_ROOT = decision.root;
+          sessionWikiRoot = decision.root;
+          await refreshSessionMemory("");
+        }
         continue;
       }
       if (input === "/evolve") {

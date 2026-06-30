@@ -181,6 +181,25 @@ const SAKURA: EvolutionTheme = {
   userCard: { accent: "#d6336c", border: "#862e59", shadow: "#43172c", fill: "#210b16" },
 };
 
+const GRUVBOX_DARK: EvolutionTheme = {
+  name: "gruvbox-dark",
+  description: "Gruvbox dark — warm retro earth tones arcing from bark to cream (canonical Gruvbox palette).",
+  gradients: [
+    { from: "#282828", to: "#d65d0e" },
+    { from: "#d65d0e", to: "#fe8019" },
+    { from: "#fe8019", to: "#fabd2f" },
+    { from: "#fabd2f", to: "#b8bb26" },
+    { from: "#b8bb26", to: "#ebdbb2" },
+  ],
+  color: true,
+  accent: "#fabd2f",
+  accentShadow: "#79740e",
+  diff: { add: "#b8bb26", del: "#fb4934", addBg: "#1c2611", delBg: "#2a1416", hunk: "#8ec07c" },
+  userCard: { accent: "#fabd2f", border: "#79740e", shadow: "#3c3836", fill: "#282828" },
+  muted: "#a89984",
+  card: { fill: "#32302f" },
+};
+
 const MONO: EvolutionTheme = {
   name: "mono",
   description: "Colorless — plain text for NO_COLOR / minimal terminals.",
@@ -189,7 +208,7 @@ const MONO: EvolutionTheme = {
   accent: "#ffffff",
 };
 
-export const THEMES: readonly EvolutionTheme[] = [COSMIC, MATRIX, SOLAR, RED_CLAW, BLUE_CRAB, AURORA, SYNTHWAVE, SAKURA, MONO];
+export const THEMES: readonly EvolutionTheme[] = [COSMIC, MATRIX, SOLAR, RED_CLAW, BLUE_CRAB, AURORA, SYNTHWAVE, SAKURA, GRUVBOX_DARK, MONO];
 
 /** Look up a theme by name (case-insensitive); unknown names fall back to cosmic. */
 export function getTheme(name: string | undefined): EvolutionTheme {

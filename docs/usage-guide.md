@@ -136,7 +136,7 @@ jeo doctor && jeo
 - 프로젝트 상태/세션: `<project>/.jeo/`
 
 ```bash
-JEO_TUI_THEME=cosmic            # cosmic/matrix/solar/red-claw/blue-crab/mono/aurora/synthwave/sakura
+JEO_TUI_THEME=cosmic            # cosmic/matrix/solar/red-claw/blue-crab/mono/aurora/synthwave/sakura/gruvbox-dark
 JEO_STEP_BASE=24                # 동적 step 예산 기준
 JEO_STEP_HARD_CAP=600           # 절대 종료 보장
 JEO_TOOL_OUTPUT_MAX=4000        # 모델에 보이는 툴 출력 상한(전체는 아티팩트로)

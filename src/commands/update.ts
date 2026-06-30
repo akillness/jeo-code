@@ -235,18 +235,38 @@ export async function runUpdateCommandWith(args: string[], deps: UpdateDeps): Pr
             deps.showWhatsNew?.();
           }
         } else {
-          if (hasJson) {
-            console.log(JSON.stringify({
-              current,
-              latest,
-              upToDate: false,
-              installed: false,
-              error: "Installation failed"
-            }));
+          // gajae-code 0.7.8 parity (#1280): a nonzero bun/npm exit is NOT always a
+          // real failure — Bun tarball-extraction errors can exit nonzero AFTER the
+          // requested version actually landed. Before reporting failure, verify the
+          // active `jeo` on PATH: if it now reports >= latest, treat it as recovered.
+          const recovered = deps.activeVersion?.();
+          if (recovered && latest && compareVersions(recovered, latest) >= 0) {
+            if (hasJson) {
+              console.log(JSON.stringify({
+                current,
+                latest,
+                upToDate: false,
+                installed: true,
+                recovered: true
+              }));
+            } else {
+              console.log(`Successfully installed jeo-code@${latest} (package manager reported an error, but the runtime verified clean).`);
+              deps.showWhatsNew?.();
+            }
           } else {
-            console.error("Failed to install update.");
+            if (hasJson) {
+              console.log(JSON.stringify({
+                current,
+                latest,
+                upToDate: false,
+                installed: false,
+                error: "Installation failed"
+              }));
+            } else {
+              console.error("Failed to install update.");
+            }
+            process.exitCode = 1;
           }
-          process.exitCode = 1;
         }
       } catch (installErr: any) {
         const installErrMsg = installErr.message || String(installErr);

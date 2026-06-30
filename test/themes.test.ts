@@ -54,6 +54,17 @@ test("mono theme is colorless; others emit color", () => {
   expect(getTheme("matrix").color).toBe(true);
 });
 
+// gajae-code 0.7.3 parity: gruvbox-dark built-in theme, selectable via /theme.
+test("gruvbox-dark is a registered colored theme with canonical gruvbox accent", () => {
+  const t = getTheme("gruvbox-dark");
+  expect(t.name).toBe("gruvbox-dark");
+  expect(t.color).toBe(true);
+  expect(t.accent).toBe("#fabd2f"); // gruvbox bright yellow
+  expect(t.gradients.length).toBe(EVOLUTION_STAGE_COUNT);
+  expect(resolveTheme({ JEO_TUI_THEME: "gruvbox-dark" }).name).toBe("gruvbox-dark");
+  expect(listThemes().some(x => x.name === "gruvbox-dark")).toBe(true);
+});
+
 test("resolveTheme reads JEO_TUI_THEME from env or config with priorities", () => {
   // 1. Explicit env JEO_TUI_THEME is top priority
   expect(resolveTheme({ JEO_TUI_THEME: "solar" }).name).toBe("solar");
@@ -94,7 +105,7 @@ test("resolveTheme reads JEO_TUI_THEME from env or config with priorities", () =
 
 test("listThemes returns all names + descriptions including red-claw and blue-crab", () => {
   const list = listThemes();
-  expect(list.map(t => t.name).sort()).toEqual(["aurora", "blue-crab", "cosmic", "matrix", "mono", "red-claw", "sakura", "solar", "synthwave"]);
+  expect(list.map(t => t.name).sort()).toEqual(["aurora", "blue-crab", "cosmic", "gruvbox-dark", "matrix", "mono", "red-claw", "sakura", "solar", "synthwave"]);
 });
 
 test("themeGradient is clamped and returns hex pairs", () => {
@@ -104,9 +115,9 @@ test("themeGradient is clamped and returns hex pairs", () => {
   expect(themeGradient(matrix, 1).from).toMatch(/^#[0-9a-f]{6}$/i);
 });
 
-test("nine themes are registered, including the three new palettes", () => {
+test("ten themes are registered, including the gruvbox-dark palette", () => {
   const names = THEMES.map(t => t.name);
-  expect(names).toEqual(["cosmic", "matrix", "solar", "red-claw", "blue-crab", "aurora", "synthwave", "sakura", "mono"]);
+  expect(names).toEqual(["cosmic", "matrix", "solar", "red-claw", "blue-crab", "aurora", "synthwave", "sakura", "gruvbox-dark", "mono"]);
   for (const fresh of ["aurora", "synthwave", "sakura"]) {
     const t = getTheme(fresh);
     expect(t.color).toBe(true);

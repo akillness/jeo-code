@@ -29,6 +29,7 @@ import { checkForUpdate, readUpdateCache, writeUpdateCache } from "../util/updat
 import { jeoEnv } from "../util/env";
 import { renderUpdateBox } from "../tui/components/update-box";
 import { consumeLaunchWhatsNew } from "../util/whats-new";
+import { maybeBell } from "../util/notify";
 import { supportsUnicode } from "../tui/components/capability";
 import pkg from "../../package.json";
 import chalk from "chalk";
@@ -4486,6 +4487,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         } else if (usage) {
           console.log(usage.trim());
         }
+        // gajae-code 0.7.8 parity: ping the terminal bell when a turn finishes so a
+        // backgrounded session notifies the user. Off unless config.notify.bell (or
+        // JEO_NOTIFY_BELL=1) is set; never fires for a cancelled turn.
+        if (reply !== "Cancelled.") maybeBell("complete", cfg.notify, (s) => out.write(s), process.env as Record<string, string | undefined>);
       } catch (err) {
         console.log(`! ${friendlyProviderError(err)}`);
       }

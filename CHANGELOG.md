@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.22] - 2026-06-30
+_gajae-code 0.7.3–0.7.8 parity sweep: terminal-bell notifications, a gruvbox-dark TUI theme, a resilient `jeo update` runtime check, and an ultragoal artifact gate. Ports the user-facing improvements from upstream gajae-code that jeo did not yet have, re-implemented to fit jeo's config, command, theming, and skill surfaces._
+
+### Added
+- **Terminal-bell notifications (`notify.bell` / `JEO_NOTIFY_BELL`).** gajae-code 0.7.8 (#1277) parity. Emits an ASCII BEL when an agent turn finishes so a backgrounded `jeo` session pings you. Off by default; opt in with `config.notify.bell` (per-event `onComplete`/`onAsk` refine it) or force with `JEO_NOTIFY_BELL=1`/`0`. Never fires for a cancelled turn, and a dead terminal never crashes the turn.
+- **gruvbox-dark TUI theme.** New `JEO_TUI_THEME=gruvbox-dark` option alongside the existing themes.
+
+### Fixed
+- **`jeo update` no longer reports false failures from Bun tarball-extraction errors.** gajae-code 0.7.8 (#1280) parity. When the package manager exits nonzero but the active `jeo` on PATH actually reports the requested version, the update is treated as recovered (with a clear message and `recovered: true` in `--json`) instead of failing; genuine failures still exit 1.
+
+### Changed
+- **ultragoal artifact gate.** gajae-code 0.7.4 (#1163) parity. The completion report must cite concrete verification artifacts — exact commands and their observed results, plus changed-file paths tied to each acceptance criterion — and must explicitly mark any unverifiable criterion as unresolved rather than implying success.
+
 ## [0.7.21] - 2026-06-26
 _Global llm-wiki vault integration, Gemini/Antigravity thinking indicators, generous file-reading windows, and autopilot flag validation. Adds a shared global wiki root configuration with a /wiki slash command, fires reasoning start signals up front for Gemini/Antigravity models, adjusts the large-file reading discipline to use generous windows, and validates autopilot goal and integer flags._
 

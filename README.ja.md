@@ -179,7 +179,7 @@ jeo doctor && jeo
 ANTHROPIC_API_KEY=... OPENAI_API_KEY=... GEMINI_API_KEY=...
 JEO_DEFAULT_MODEL=...           # 例: ollama/qwen2.5:0.5b
 OLLAMA_HOST=http://localhost:11434
-JEO_TUI_THEME=cosmic            # cosmic/matrix/solar/red-claw/blue-crab/mono/aurora/synthwave/sakura
+JEO_TUI_THEME=cosmic            # cosmic/matrix/solar/red-claw/blue-crab/mono/aurora/synthwave/sakura/gruvbox-dark
 JEO_TUI_ALT_SCREEN=1            # レガシー alt-screen ターン(デフォルト: インラインスクロールバック)
 JEO_STEP_BASE=24                # 動的ステップ予算のローリングベース
 JEO_STEP_HARD_CAP=600           # 絶対終了保証
@@ -205,11 +205,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.7.22]** (2026-06-30) — gajae-code 0.7.3–0.7.8 parity sweep: terminal-bell notifications, a gruvbox-dark TUI theme, a resilient `jeo update` runtime check, and an ultragoal artifact gate. Ports the user-facing improvements from upstream gajae-code that jeo did not yet have, re-implemented to fit jeo's config, command, theming, and skill surfaces.
 - **[0.7.21]** (2026-06-26) — Global llm-wiki vault integration, Gemini/Antigravity thinking indicators, generous file-reading windows, and autopilot flag validation. Adds a shared global wiki root configuration with a /wiki slash command, fires reasoning start signals up front for Gemini/Antigravity models, adjusts the large-file reading discipline to use generous windows, and validates autopilot goal and integer flags.
 - **[0.7.20]** (2026-06-26) — OKF concept-memory retrieval gains a hybrid reranker ported from memsearch. Injection priority no longer rides one raw keyword score — it fuses two complementary ranked channels by Reciprocal Rank Fusion (RRF): IDF-weighted lexical relevance (the sparse/BM25 channel, so rare discriminating terms steer recall) and concept-graph proximity (the local dense/semantic-neighbour channel, so a hub linked from multiple query hits surfaces even with no keyword of its own). All embedding-free and deterministic, layered atop the existing failure-first tier and pinned-invariant reserved budget.
 - **[0.7.19]** (2026-06-26) — The live model picker gains gajae-code's `/model` provider tabs, and skill invocation is consolidated onto a single `$` entrypoint. The picker now shows an `ALL` tab plus one tab per provider that `tab`/`shift+tab` cycles, and skills (including their declared aliases) are invoked only via `$` — the slash palette stays builtins-only.
 - **[0.7.18]** (2026-06-26) — Slash-command discovery and the `/model` flow reach gajae-code parity. The slash palette/autocomplete now fuzzy-matches command names (with a description fallback for intent-style queries), resolved skills can contribute their own `/aliases` as real dispatchable commands, and `/model` runs gjc's two-menu target → reasoning flow so a picked model can be assigned to the default or any subagent role with its own thinking budget.
-- **[0.7.17]** (2026-06-25) — Developer workflow parity (gjc `dev:link`/`dev:doctor`, adapted for jeo's zero-native-dep Bun runtime): the global `jeo` command can be linked to run this checkout's source hot to every edit, with a drift doctor that flags when `jeo` resolves to a compiled binary or an installed copy instead. README gains "Skill migration and bundled skill inspection" + "Development" sections. Also ships OKF concept-memory search/scoring with budget-aware injection and a round of workflow-prompt hardening (anti-punt, todo-first planning, verdict discipline) that keeps every loop escape hatch intact.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

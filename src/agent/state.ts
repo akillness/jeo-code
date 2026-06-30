@@ -51,6 +51,13 @@ export interface Config {
    *  overrides. Resolve with `resolveWikiRoot()`. */
   wikiRoot?: string;
   theme?: string;
+  /** Terminal-bell notifications (gajae-code 0.7.8 parity). `bell` is the master
+   *  toggle; per-event flags refine it. Env `JEO_NOTIFY_BELL=1/0` force-overrides. */
+  notify?: {
+    bell?: boolean;
+    onComplete?: boolean;
+    onAsk?: boolean;
+  };
   thinkingLevel?: "minimal" | "low" | "medium" | "high" | "xhigh";
   /** Friendly model aliases, e.g. { fast: "ollama/qwen2.5:0.5b" }. Override built-ins. */
   modelAliases?: { [alias: string]: string };

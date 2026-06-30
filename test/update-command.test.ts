@@ -193,6 +193,41 @@ test("update - --install triggers when newer and fails", async () => {
   expect(process.exitCode).toBe(1);
 });
 
+// gajae-code 0.7.8 parity (#1280): a nonzero bun/npm exit is recoverable when the
+// requested version actually landed — verified by the active runtime on PATH.
+test("update - install reports failure but runtime verifies → recovered success", async () => {
+  let whatsNewShown = false;
+  const deps: UpdateDeps = {
+    fetchJson: async () => ({ version: "0.2.0" }),
+    localVersion: () => "0.1.0",
+    install: async () => ({ success: false, stderr: "bun: tarball extraction error" }),
+    activeVersion: () => "0.2.0", // the version actually landed despite the nonzero exit
+    showWhatsNew: () => { whatsNewShown = true; },
+  };
+
+  await runUpdateCommandWith(["--install"], deps);
+
+  expect(logged.some(line => line.includes("Successfully installed jeo-code@0.2.0"))).toBe(true);
+  expect(errored.some(line => line.includes("Failed to install update"))).toBe(false);
+  expect(whatsNewShown).toBe(true);
+  expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true);
+});
+
+// The recovery must NOT fire when the runtime still reports the old version.
+test("update - install fails and runtime still old → real failure (exit 1)", async () => {
+  const deps: UpdateDeps = {
+    fetchJson: async () => ({ version: "0.2.0" }),
+    localVersion: () => "0.1.0",
+    install: async () => ({ success: false }),
+    activeVersion: () => "0.1.0", // still the old binary — genuine failure
+  };
+
+  await runUpdateCommandWith(["--install"], deps);
+
+  expect(errored.some(line => line.includes("Failed to install update"))).toBe(true);
+  expect(process.exitCode).toBe(1);
+});
+
 test("update - --json shape (up-to-date)", async () => {
   const deps: UpdateDeps = {
     fetchJson: async () => ({ version: "0.1.0" }),

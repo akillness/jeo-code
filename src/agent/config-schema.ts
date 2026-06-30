@@ -73,6 +73,17 @@ export const ConfigSchema = z
     lmstudioBaseUrl: z.string().optional(),
     defaultModel: z.string().min(1),
     theme: z.string().optional(),
+    /** Terminal-bell notifications (gajae-code 0.7.8 parity): emit an ASCII BEL
+     *  (\x07) at notable interaction points so a backgrounded session pings the
+     *  user. Off by default; `bell` is the master toggle, per-event flags refine it.
+     *  Env `JEO_NOTIFY_BELL=1/0` force-overrides the master toggle. */
+    notify: z
+      .object({
+        bell: z.boolean().optional(),
+        onComplete: z.boolean().optional(),
+        onAsk: z.boolean().optional(),
+      })
+      .optional(),
     /** Root path of the global llm-wiki vault, shared across every session
      *  regardless of project/cwd. A leading `~` is expanded; env `JEO_WIKI_ROOT`
      *  overrides. Consumed by `resolveWikiRoot` and injected into the prompt. */

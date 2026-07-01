@@ -247,3 +247,27 @@ test("pasteIdleDecision: a custom threshold is honored", () => {
   expect(pasteIdleDecision(400, 1000)).toEqual({ fire: false, waitMs: 600 });
   expect(pasteIdleDecision(1000, 1000)).toEqual({ fire: true, waitMs: 0 });
 });
+test("un-bracketed multi-line paste guard: a 3-line paste with NO bracket markers folds embedded\n breaks to sentinels instead of submitting line-by-line (the '붙여넣기가 잘 안됨' bug)", () => {
+  const res = filterPromptInputChunk("first line of paste\nsecond line here\nthird and final line", null, baseEnv(), freshState());
+  expect(res.out).toBe(`first line of paste${MULTILINE_SENTINEL}second line here${MULTILINE_SENTINEL}third and final line`);
+});
+
+test("un-bracketed multi-line paste guard: CRLF line endings fold too, and a lone trailing\n Enter (nothing after it) still submits normally", () => {
+  const state = freshState();
+  const res = filterPromptInputChunk("alpha\r\nbeta\r\ngamma", null, baseEnv(), state);
+  expect(res.out).toBe(`alpha${MULTILINE_SENTINEL}beta${MULTILINE_SENTINEL}gamma`);
+  // A genuine standalone Enter (this exact chunk's ONLY byte) is unaffected.
+  const submit = filterPromptInputChunk("\r", { line: "gamma", cursor: 5 }, baseEnv(), state);
+  expect(submit.out).toBe("\r");
+});
+
+test("un-bracketed multi-line paste guard: a single typed Enter with nothing queued after it in\n the same chunk still submits (no false positive on ordinary typing)", () => {
+  const res = filterPromptInputChunk("hello\r", { line: "hello", cursor: 5 }, baseEnv(), freshState());
+  expect(res.out).toBe("hello\r");
+});
+
+test("un-bracketed multi-line paste guard: does not fire INSIDE a real bracketed paste (already\n handled by the paste-fold path, no double-processing)", () => {
+  const state = freshState();
+  const res = filterPromptInputChunk(`${PASTE_START}one\ntwo\nthree${PASTE_END}`, null, baseEnv(), state);
+  expect(res.out).toBe(`${PASTE_START}one${MULTILINE_SENTINEL}two${MULTILINE_SENTINEL}three${PASTE_END}`);
+});

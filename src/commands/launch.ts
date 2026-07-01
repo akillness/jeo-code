@@ -1902,12 +1902,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // the prompt never carries a trailing/floating blank block.
   const setFooterRows = (n: number) => {
     n = Math.max(1, Math.min(n, footerRows));
+
     if (!previewArmed || n === footerRendered) return;
+
     let s = footerParkedRow > 0 ? cursorUp(footerParkedRow) : "";
     s += toColumn(1) + clearToEnd(); // wipe old region; cursor now at its top (after output)
     if (n > 1) s += "\n".repeat(n - 1) + cursorUp(n - 1);
     s += toColumn(1);
+
     out.write(s);
+
     footerRendered = n;
     footerParkedRow = 0;
     lastFooterKey = ""; // force a full repaint into the resized region
@@ -2112,6 +2116,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // Re-pin the reservation to the height the latest preview/panel wants (compact at
     // idle, grown for a dropdown) BEFORE painting, so no reserved blank trails the prompt.
     setFooterRows(footerWantRows);
+
     // ALWAYS paint exactly footerRendered rows so the reservation is fully covered
     // and no row can spill past it — the bug fix that kept `@folder<more text>`
     // typing from scrolling the input box (and prior output) off the top.
@@ -2186,7 +2191,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const clearTypedInput = (): boolean => {
     const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
     const hadPastedQueue = queuedPromptInput.pastedLines.length > 0;
+
     if (!promptHasContent()) return false;
+
     // ESC is the escape hatch for an accidental giant paste: drop the queued batch.
     if (hadPastedQueue) {
       const dropped = queuedPromptInput.pastedLines.splice(0).length;
@@ -2732,6 +2739,20 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         handleCtrlC();
         return;
       }
+      // ESC (or a meta-mapped Cmd+C) at the prompt: wipe the typed text. Checked HERE,
+      // before the `!previewArmed || pickerActive` gate below — mirroring Ctrl+C right
+      // above, which already bypasses that gate. Without this, a transient window where
+      // `previewArmed` is momentarily false (the same class of race Ctrl+C was already
+      // immune to) silently swallowed the ESC keypress: the box stayed unaffected and
+      // `clearTypedInput()` never ran (the "esc 입력 후 안 먹힘" bug — Esc after typing
+      // intermittently did nothing). `clearTypedInput()` itself already no-ops safely
+      // when there is nothing to clear or no armed box to redraw into, so running it
+      // unconditionally here is safe even mid-picker or pre-arm.
+      if (key && ((key.name === "escape" && !key.ctrl) || (key.meta && key.name === "c"))) {
+        clearTypedInput();
+        return;
+      }
+
       if (!previewArmed || pickerActive) return;
       // Drag-and-drop file attach: a terminal delivers a dropped file as its PATH typed
       // into the box, wrapped in a bracketed paste. On paste-end, swap any readable image
@@ -2838,20 +2859,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         })();
         return;
       }
-      // ESC (or a meta-mapped Cmd+C) at the prompt: wipe the typed text. A bare
-      // ESC decodes as `escape` (meta is set for a lone ESC byte — accept both)
-      // only after readline's escape-sequence timeout, so arrow/wheel sequences
-      // never trigger this. Checked BEFORE the `previewPending` reentrancy gate
-      // (like Ctrl+C above) — a fast typist/paste can deliver several keypress
-      // events in ONE synchronous stdin read, all before the first keystroke's
-      // setImmediate fires; gating this after `previewPending` silently dropped
-      // an ESC that lands in the same burst as preceding keystrokes (the
-      // "esc 입력 후 안 먹힘" bug — Esc right after typing intermittently did nothing).
-      if (key && ((key.name === "escape" && !key.ctrl) || (key.meta && key.name === "c"))) {
-        clearTypedInput();
-        return;
-      }
       if (previewPending) return;
+
       // Ctrl+C is handled above (clear-or-exit); keep this guard for defensive ordering only.
       if (key?.ctrl && key.name === "c") return;
 

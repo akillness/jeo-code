@@ -39,6 +39,7 @@ const TYPE_LAYOUT = [
 ] as const;
 
 const DIR_BY_TYPE: Record<string, string> = Object.fromEntries(TYPE_LAYOUT.map(t => [t.type, t.dir]));
+const HEADER_BY_TYPE: Record<string, string> = Object.fromEntries(TYPE_LAYOUT.map(t => [t.type, t.header]));
 
 export function memoryFilePath(cwd: string): string {
   return path.join(cwd, ".jeo", "memory", "MEMORY.md");
@@ -180,17 +181,23 @@ export async function migrateLegacyMemory(cwd: string): Promise<MigrationResult>
   return { migrated: true, conceptCount: written.length, backupPath };
 }
 
+/** Render one concept as its bullet + indented body lines (no header) — the atomic
+ *  unit `renderConceptSection` stacks under a `## header`. Extracted so budget
+ *  selection (`selectWithinBudget`) can compute a candidate's exact contribution
+ *  without re-rendering the whole accumulated section (see there for why that
+ *  matters). */
+function renderConceptItem(c: { title: string; description: string; body: string }): string {
+  const lines = [`- **${c.title}**${c.description ? `: ${c.description}` : ""}`];
+  if (c.body) {
+    for (const bodyLine of c.body.split("\n")) lines.push(`  ${bodyLine}`);
+  }
+  return lines.join("\n");
+}
+
 /** Render a single index.md-style section: a `## header` followed by one bullet
  *  per concept (`**title**: description`), with the concept body indented beneath. */
 function renderConceptSection(header: string, list: { title: string; description: string; body: string }[]): string {
-  const lines = [`## ${header}`];
-  for (const c of list) {
-    lines.push(`- **${c.title}**${c.description ? `: ${c.description}` : ""}`);
-    if (c.body) {
-      for (const bodyLine of c.body.split("\n")) lines.push(`  ${bodyLine}`);
-    }
-  }
-  return lines.join("\n");
+  return [`## ${header}`, ...list.map(renderConceptItem)].join("\n");
 }
 
 /** A loaded OKF concept: frontmatter fields + body + bundle-relative path. */
@@ -532,12 +539,42 @@ function renderConcepts(concepts: Concept[]): string {
  *  Pinned (load-bearing) invariants get a RESERVED budget: they are selected FIRST,
  *  before any query/recency fill, so a tight cap can never evict an invariant the
  *  gates depend on (philosophy-synthesis consensus #3). The remaining budget then
- *  holds the failure-first / core / query-relevant fill. */
+ *  holds the failure-first / core / query-relevant fill.
+ *
+ *  Perf: computes each candidate's exact incremental contribution to the final
+ *  `renderConcepts` output (header + item lines, "\n" within a section, "\n\n"
+ *  between sections) instead of re-rendering the whole accumulated set per
+ *  candidate — O(n) instead of O(n²) for a bundle of n concepts. This mirrors
+ *  `renderConceptSection`/`renderConcepts`'s exact join rules; a mismatch here
+ *  would silently mis-size the budget, so `memory-search-okf.test.ts` locks an
+ *  exact hand-computed truncation boundary as a regression check. */
+
 function selectWithinBudget(concepts: Concept[], query: string | undefined, budget: number): Concept[] {
   const selected: Concept[] = [];
+  const sectionLenByType = new Map<string, number>(); // type -> rendered length of that type's section so far
+  let total = 0; // rendered length of `selected` under renderConcepts
+
   const take = (pool: Concept[]) => {
     for (const c of priorityOrder(pool, query)) {
-      if (renderConcepts([...selected, c]).length <= budget) selected.push(c);
+      const itemLen = renderConceptItem(c).length;
+      const priorSectionLen = sectionLenByType.get(c.type);
+      let newSectionLen: number;
+      let newTotal: number;
+      if (priorSectionLen === undefined) {
+        // New section: "## header" + "\n" + item — plus a "\n\n" join if a section already exists.
+        const header = HEADER_BY_TYPE[c.type] ?? c.type;
+        newSectionLen = `## ${header}`.length + 1 + itemLen;
+        newTotal = total === 0 ? newSectionLen : total + 2 + newSectionLen;
+      } else {
+        // Existing section: one more "\n" + item line.
+        newSectionLen = priorSectionLen + 1 + itemLen;
+        newTotal = total - priorSectionLen + newSectionLen;
+      }
+      if (newTotal <= budget) {
+        selected.push(c);
+        sectionLenByType.set(c.type, newSectionLen);
+        total = newTotal;
+      }
     }
   };
   take(concepts.filter(c => c.pinned)); // reserved budget: invariants survive the cap

@@ -258,6 +258,31 @@ test("a pinned invariant survives a tight budget that evicts everything else", a
   const section = await memoryPromptSection(dir, "cache"); // query hits the noise, NOT the invariant
   expect(section).toContain("Build invariant"); // reserved budget kept the pinned invariant
 });
+test("selectWithinBudget's incremental length tracking matches an exact hand-computed truncation boundary (O(n²)→O(n) refactor regression)", async () => {
+  // Perf refactor: selectWithinBudget used to re-render the WHOLE accumulated
+  // selection (renderConcepts([...selected, c])) on every candidate — O(n²) for
+  // a bundle of n concepts. It now tracks each type-section's rendered length
+  // incrementally. That incremental math must land on the EXACT same cutoff as
+  // a full render would, or the budget silently mis-sizes. This locks the exact
+  // boundary for a homogeneous fixture where the cutoff is hand-computable:
+  // 60 identical-shape RepoFact concepts (13-char header, 96-char item each)
+  // plus one reserved-budget pinned Gotcha — under the 5000-char cap, exactly
+  // 50 of the 60 RepoFacts fit (independently verified against a from-scratch
+  // hand derivation of renderConcepts' join rules, not just the implementation).
+  const dir = await tmp();
+  for (let i = 0; i < 60; i++) {
+    const title = `Fact${String(i).padStart(3, "0")}`; // fixed 7-char title → fixed item length
+    await writeConcept(dir, "facts", `fact-${i}`, { type: "RepoFact", title, confidence: "medium" }, "x".repeat(80));
+  }
+  await writeConcept(dir, "gotchas", "pinned-one", { type: "Gotcha", title: "PinnedZ", confidence: "low", pinned: "true" }, "PINNED_MARKER_UNIQUE");
+
+  const section = await memoryPromptSection(dir);
+  const factCount = (section.match(/- \*\*Fact\d\d\d\*\*/g) ?? []).length;
+  expect(factCount).toBe(50); // exact boundary — not "some truncation happened"
+  expect(section).toContain("PinnedZ"); // pinned always survives, outside the count above
+  expect(section.length).toBeLessThan(MEMORY_INJECT_MAX_CHARS + 400); // still respects the hard cap
+});
+
 
 test("loadConcepts surfaces the pinned flag from frontmatter (default false)", async () => {
   const dir = await tmp();

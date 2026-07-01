@@ -67,9 +67,12 @@ test("OAuthCallbackFlow: browser callback delivers code, state validated, token 
   const body = await res.text();
   expect(body).toContain("Login complete");
   expect(body).toContain("Authentication succeeded");
-  // Success page auto-closes: countdown element + window.close() on a timer.
+  // Success page auto-closes: countdown element + window.close() on a timer,
+  // plus a manual Close button that closes immediately regardless of the countdown.
   expect(body).toContain('id="jeo-countdown"');
+  expect(body).toContain('id="jeo-close"');
   expect(body).toContain("window.close()");
+
 
   const creds = await loginPromise;
   expect(creds.access).toBe("acc-mycode");
@@ -89,8 +92,13 @@ test("OAuthCallbackFlow: state mismatch is rejected (CSRF guard)", async () => {
   expect(res.status).toBe(400);
   const failBody = await res.text();
   expect(failBody).toContain("State mismatch");
-  // Failure page must NOT auto-close — the user needs to read the error.
-  expect(failBody).not.toContain("window.close()");
+  // Failure page now also auto-closes after the countdown (both success and
+  // failure are "final" pages that should not linger); a Close button lets
+  // the user dismiss it immediately instead of waiting out the timer.
+  expect(failBody).toContain('id="jeo-countdown"');
+  expect(failBody).toContain('id="jeo-close"');
+  expect(failBody).toContain("window.close()");
+
   expect(String(await caught)).toContain("State mismatch");
 });
 

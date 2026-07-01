@@ -17,7 +17,10 @@ Static binary assets (images) used for project branding, documentation, and TUI/
 | `favicon.ico` | Multi-size favicon (16–256px) derived from the project icon |
 
 ## Subdirectories
-*(None)*
+| Directory | Purpose |
+|-----------|---------|
+| `oauth/` | Source assets for the OAuth callback pages (`src/auth/callback-server.ts`); `jeo-wordmark.png` is the 480×480 source render, `jeo-wordmark.webp` is the optimized (~5KB) version whose base64 is inlined as a data URI in `callback-server.ts` (no static-asset serving) |
+
 
 ## For AI Agents
 
@@ -41,3 +44,9 @@ Static binary assets (images) used for project branding, documentation, and TUI/
 *(None)*
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+<!-- MANUAL: oauth/jeo-wordmark.{png,webp} was generated via the god-tibo-imagen
+     skill (gti CLI, Codex/ChatGPT image backend) as a bold-forged-monospace
+     "jeo" wordmark on the mascot's blue→violet→pink synthwave gradient, styled
+     after jeo-pi's hero-wordmark typographic treatment. Regenerate with `gti`
+     if the brand palette changes, then re-export a small webp (`cwebp -q 82`)
+     and re-inline its base64 into `JEO_WORDMARK_DATA_URI` in callback-server.ts. -->

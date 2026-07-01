@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.24] - 2026-07-02
+_OAuth callback page redesign with embedded jeo wordmark + Close button; memory budget O(n²)→O(n) incremental tracking fix._
+
+### Added
+- **OAuth callback page: jeo wordmark + Close button.** The post-login browser page now embeds the jeo synthwave wordmark as an inline WebP data URI (no static-asset pipeline required in a compiled binary), and gains an explicit `id="jeo-close"` button that calls `window.close()` immediately — the countdown timer remains as a fallback (bumped 3→5 s). Both success and failure pages now auto-close so OAuth tabs never linger.
+- **`HEADER_BY_TYPE` lookup for memory budget tracking.** Extracted from `TYPE_LAYOUT` alongside the existing `DIR_BY_TYPE`, enabling incremental section-header length computation in `selectWithinBudget` without a full re-render.
+
+### Fixed
+- **`selectWithinBudget` O(n²)→O(n) budget tracking.** Extracted `renderConceptItem` and introduced per-type accumulated section-length tracking so each candidate's budget contribution is computed incrementally (header + item delta) rather than by re-rendering the entire accumulated selection. Produces identical truncation boundaries with O(n) work instead of O(n²); locked by a new regression test (`memory-search-okf.test.ts`) that verifies the exact 50-of-60 cutoff against a hand-computed derivation.
+- **OAuth failure page now shows auto-close / Close button.** Previously the failure page intentionally suppressed `window.close()`; it now uses the same countdown + Close button as the success page so users are not stranded on an error screen.
+
+### Verified
+- `bun run typecheck` clean; full suite green — 2064 pass / 0 fail across 237 files — including the new `selectWithinBudget` incremental-budget regression test and updated OAuth callback page assertions (`id="jeo-countdown"`, `id="jeo-close"`, `window.close()` present on both success and failure pages).
+
 ## [0.7.23] - 2026-07-01
 _Anthropic 5th-generation model catalog: adds Sonnet 5, Fable 5, and Mythos 5, promotes the 4.6 generation to 1M context / 128k output, and retires the superseded 4.5/3.5/4.1 ids. Bumps the default model to Sonnet 4.6, prices the new tiers, and fixes the thinking transport for Haiku 4.5 and every 5th-gen model._
 

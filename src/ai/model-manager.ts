@@ -160,7 +160,7 @@ export interface ModelManager {
   resolveProvider: typeof resolveProvider;
 }
 
-const ALIAS_DEFAULTS = { fast: "ollama/qwen2.5:0.5b", local: "ollama/qwen2.5:0.5b", sonnet: "claude-sonnet-4-5", opus: "claude-opus-4-5", haiku: "claude-haiku-4-5", gpt: "gpt-5.5", flash: "gemini-2.5-flash", grok: "grok-4.3" };
+const ALIAS_DEFAULTS = { fast: "ollama/qwen2.5:0.5b", local: "ollama/qwen2.5:0.5b", sonnet: "claude-sonnet-4-6", opus: "claude-opus-4-6", haiku: "claude-haiku-4-5", gpt: "gpt-5.5", flash: "gemini-2.5-flash", grok: "grok-4.3" };
 
 /**
  * Build retry options from a config `retry` budget (gjc parity). `requestMaxRetries`

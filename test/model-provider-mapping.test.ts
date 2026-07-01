@@ -8,16 +8,7 @@ import { MODEL_CATALOG, findCatalogModel } from "../src/ai/model-catalog";
 import { providerModelFor, resolveProvider } from "../src/ai/model-manager";
 import { expandAlias } from "../src/ai/model-registry";
 
-test("catalog has the three new canonical entries with correct providerModel", () => {
-  const sonnet45 = findCatalogModel("claude-sonnet-4-5");
-  expect(sonnet45).toBeDefined();
-  expect(sonnet45!.providerModel).toBe("claude-sonnet-4-5-20250929");
-  expect(sonnet45!.provider).toBe("anthropic");
-  expect(sonnet45!.contextTokens).toBe(200_000);
-  expect(sonnet45!.maxOutputTokens).toBe(64_000);
-  expect(sonnet45!.thinking).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
-  expect(sonnet45!.images).toBe(true);
-
+test("catalog keeps haiku + the 4.6-generation entries and drops sub-4.6 Anthropic ids", () => {
   const haiku45 = findCatalogModel("claude-haiku-4-5");
   expect(haiku45).toBeDefined();
   expect(haiku45!.providerModel).toBe("claude-haiku-4-5-20251001");
@@ -27,19 +18,25 @@ test("catalog has the three new canonical entries with correct providerModel", (
   expect(haiku45!.thinking).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
   expect(haiku45!.images).toBe(true);
 
-  const opus45 = findCatalogModel("claude-opus-4-5");
-  expect(opus45).toBeDefined();
-  expect(opus45!.providerModel).toBe("claude-opus-4-5-20251101");
-  expect(opus45!.provider).toBe("anthropic");
-  expect(opus45!.contextTokens).toBe(200_000);
-  expect(opus45!.maxOutputTokens).toBe(64_000);
-  expect(opus45!.thinking).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
-  expect(opus45!.images).toBe(true);
+  const sonnet46 = findCatalogModel("claude-sonnet-4-6");
+  expect(sonnet46).toBeDefined();
+  expect(sonnet46!.contextTokens).toBe(1_000_000);
+  expect(sonnet46!.maxOutputTokens).toBe(128_000);
+
+  const opus46 = findCatalogModel("claude-opus-4-6");
+  expect(opus46).toBeDefined();
+  expect(opus46!.contextTokens).toBe(1_000_000);
+
+  // sub-4.6 Anthropic ids (except haiku) are no longer curated in the catalog.
+  expect(findCatalogModel("claude-3-5-sonnet")).toBeUndefined();
+  expect(findCatalogModel("claude-sonnet-4-5")).toBeUndefined();
+  expect(findCatalogModel("claude-opus-4-1")).toBeUndefined();
+  expect(findCatalogModel("claude-opus-4-5")).toBeUndefined();
 });
 
 test("providerModelFor maps correctly", () => {
-  expect(providerModelFor("claude-sonnet-4-5")).toBe("claude-sonnet-4-5-20250929");
-  expect(providerModelFor("claude-3-5-sonnet")).toBe("claude-3-5-sonnet-20241022");
+  expect(providerModelFor("claude-haiku-4-5")).toBe("claude-haiku-4-5-20251001");
+  expect(providerModelFor("claude-opus-4-6")).toBe("claude-opus-4-6");
   expect(providerModelFor("ollama/qwen2.5:0.5b")).toBe("ollama/qwen2.5:0.5b");
   expect(providerModelFor("unknown-model-id-123")).toBe("unknown-model-id-123");
 });
@@ -51,10 +48,10 @@ test("Antigravity models stay provider-qualified and route to the Antigravity ad
   expect(findCatalogModel("antigravity/gemini-3-pro-low")?.provider).toBe("antigravity");
 });
 
-test("alias sonnet resolves to claude-sonnet-4-5", () => {
-  expect(expandAlias("sonnet")).toBe("claude-sonnet-4-5");
+test("alias sonnet/opus resolve to the 4.6 generation", () => {
+  expect(expandAlias("sonnet")).toBe("claude-sonnet-4-6");
   expect(expandAlias("haiku")).toBe("claude-haiku-4-5");
-  expect(expandAlias("opus")).toBe("claude-opus-4-5");
+  expect(expandAlias("opus")).toBe("claude-opus-4-6");
 });
 
 test("OpenAI OAuth-only + non-Codex model fails fast", async () => {

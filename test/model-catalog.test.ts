@@ -48,7 +48,7 @@ test("catalog entries are well-formed (provider, positive limits)", () => {
 
 test("findCatalogModel matches canonical and provider model id", () => {
   expect(findCatalogModel("gpt-4o")?.provider).toBe("openai");
-  expect(findCatalogModel("claude-sonnet-4-5-20250929")?.canonical).toBe("claude-sonnet-4-5");
+  expect(findCatalogModel("claude-haiku-4-5-20251001")?.canonical).toBe("claude-haiku-4-5");
   expect(findCatalogModel("nope")).toBeUndefined();
 });
 
@@ -140,4 +140,26 @@ test("inferCatalogMetadata: non-reasoning + unknown ids stay conservative", () =
   // Genuinely unknown ids return undefined ("unknown caps"), not a fake reasoning model.
   expect(inferCatalogMetadata("totally-unknown-model")).toBeUndefined();
   expect(catalogMetadata("totally-unknown-model")).toBeUndefined();
+});
+test("4.6+ Anthropic models are catalogued as 1M/128k with full thinking", () => {
+  for (const id of ["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-4-6", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5"]) {
+    const m = findCatalogModel(id);
+    expect(m?.provider).toBe("anthropic");
+    expect(m?.providerModel).toBe(id); // dateless pinned snapshot — canonical == wire id
+    expect(m?.contextTokens).toBe(1_000_000);
+    expect(m?.maxOutputTokens).toBe(128_000);
+    expect(m?.thinking).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+  }
+  // The retained sub-4.6 id (haiku) keeps the older 200k/64k shape.
+  expect(findCatalogModel("claude-haiku-4-5")?.contextTokens).toBe(200_000);
+});
+
+test("inferCatalogMetadata: fable/mythos + single-digit 5th-gen ids infer Anthropic thinking", () => {
+  for (const id of ["claude-fable-6", "claude-mythos-6", "claude-sonnet-6"]) {
+    const m = inferCatalogMetadata(id);
+    expect(m?.provider).toBe("anthropic");
+    expect(m?.thinking.length).toBeGreaterThan(0);
+    expect(m?.contextTokens).toBe(1_000_000);
+    expect(m?.maxOutputTokens).toBe(128_000);
+  }
 });

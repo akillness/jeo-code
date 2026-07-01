@@ -24,7 +24,7 @@ test("isAlias distinguishes aliases from concrete ids", () => {
 test("describeAlias resolves target + catalog knownness", () => {
   const d = describeAlias("sonnet");
   expect(d.isAlias).toBe(true);
-  expect(d.target).toBe("claude-sonnet-4-5");
+  expect(d.target).toBe("claude-sonnet-4-6");
   expect(d.knownTarget).toBe(true);
   // concrete id passes through
   const c = describeAlias("gpt-4o");

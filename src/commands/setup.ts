@@ -27,7 +27,7 @@ function reportModelChoice(r: { warning?: string; suggestions: string[] }): void
 type ProviderChoice = "anthropic" | "openai" | "gemini" | "ollama" | "lmstudio" | "openai-compatible";
 
 const DEFAULT_MODELS: Record<ProviderChoice, string> = {
-  anthropic: "claude-sonnet-4-5",
+  anthropic: "claude-sonnet-4-6",
   openai: "gpt-4o",
   gemini: "gemini-2.0-flash",
   ollama: "ollama/llama3.1:8b",

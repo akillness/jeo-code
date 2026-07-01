@@ -73,7 +73,7 @@ export function geminiNativizable(m: Message, modelKey: string, thinkingEnabled:
 export function buildGeminiPayload(messages: Message[], options: CallOptions, stripArtifacts = false): { geminiModel: string; payload: Record<string, unknown> } {
   const resolvedModel = options.model.replace(/^(google|gemini)\//, "");
   let geminiModel = resolvedModel;
-  if (!geminiModel || geminiModel === "claude-3-5-sonnet") geminiModel = "gemini-2.0-flash";
+  if (!geminiModel || geminiModel.startsWith("claude-")) geminiModel = "gemini-2.0-flash";
 
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
   const thinkingBudget = geminiThinkingBudget(geminiModel, options.reasoningEffort, options.maxTokens);

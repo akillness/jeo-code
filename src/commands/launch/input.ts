@@ -1,4 +1,5 @@
-import { verticalCursorOffset } from "../../tui/components/input-box";
+import { verticalCursorOffset, rowBoundaryOffset } from "../../tui/components/input-box";
+
 
 export interface InFlightAbortHarness {
   controller: AbortController;
@@ -556,6 +557,17 @@ export function decideCtrlC(
  *  `modifyOtherKeys` form (`CSI 27;2;13~`) and the kitty keyboard-protocol form
  *  (`CSI 13;2u`). Shared by the live input filter and its tests so they can't drift. */
 export const SHIFT_ENTER_SEQS: readonly string[] = ["\u001b[27;2;13~", "\u001b[13;2u"];
+/** Sequences that should jump the caret to the START of the current VISUAL ROW: macOS
+ *  Cmd+Left (`CSI 1;9D`) and the platform-neutral Home key in both its xterm (`CSI H`)
+ *  and vt220 (`CSI 1~`) forms, plus the SS3 variant (`ESC O H`) some terminals send in
+ *  application-cursor-keys mode. Windows terminals have no Cmd-combo equivalent — bare
+ *  Home is the "적절한 윈도우 단축키" for this action, so it must get the SAME row-aware
+ *  treatment as Cmd+Left, not just readline's native (whole-buffer) binding. */
+export const ROW_HOME_SEQS: readonly string[] = ["\u001b[1;9D", "\u001b[H", "\u001b[1~", "\u001bOH"];
+/** Mirror of {@link ROW_HOME_SEQS} for the END of the current visual row: macOS
+ *  Cmd+Right (`CSI 1;9C`) and the xterm/vt220/SS3 End key forms. */
+export const ROW_END_SEQS: readonly string[] = ["\u001b[1;9C", "\u001b[F", "\u001b[4~", "\u001bOF"];
+
 
 /** Minimal readline view the prompt key-filter reads (and mutates `cursor` on a
  *  vertical-nav "move"). The live filter passes the real readline interface; tests
@@ -697,6 +709,30 @@ export function filterPromptInputChunk(
       if (data.startsWith(seq, i)) { out += MULTILINE_SENTINEL; i += seq.length; matched = true; break; }
     }
     if (matched) continue;
+    // Row-aware Home/End: macOS Cmd+Left/Right and the bare Home/End keys (the Windows/
+    // Linux equivalent — there is no Cmd-combo there) jump to the START/END of the
+    // CURRENT VISUAL ROW, not the whole buffer. Native readline binds these to
+    // beginning-of-line/end-of-line, which is only correct on a single-row draft; on a
+    // multi-row draft (Shift+Enter breaks or box soft-wrap) it overshoots past the
+    // current row. Checked BEFORE `matchCursorCombo` (which would otherwise rewrite
+    // Cmd+Left/Right to the whole-buffer Ctrl+A/E) so this always wins when `rl` can
+    // supply a cursor to compute from; without `rl` it falls through to that rewrite
+    // (or, for bare Home/End, straight to readline's native binding) as a safe degrade.
+    const rowEdge = ROW_HOME_SEQS.find(seq => data.startsWith(seq, i)) !== undefined ? "start"
+      : ROW_END_SEQS.find(seq => data.startsWith(seq, i)) !== undefined ? "end"
+      : undefined;
+    if (rowEdge && rl) {
+      const seq = (rowEdge === "start" ? ROW_HOME_SEQS : ROW_END_SEQS).find(s => data.startsWith(s, i))!;
+      const line = rl.line ?? "";
+      const winCols = Math.max(24, env.columns - 1);
+      const textWidth = Math.max(1, Math.max(24, winCols) - 6);
+      const cur = typeof rl.cursor === "number" ? rl.cursor : line.length;
+      const expanded = line.split(MULTILINE_SENTINEL).join("\n");
+      rl.cursor = rowBoundaryOffset(expanded, cur, textWidth, rowEdge);
+      i += seq.length;
+      continue;
+    }
+
     const combo = matchCursorCombo(data, i);
     if (combo) { out += combo[1]; i += combo[0].length; continue; }
     // Up/Down between the box's visual rows (textarea feel) for any MULTI-ROW draft;

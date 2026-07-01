@@ -242,3 +242,30 @@ export function verticalCursorOffset(
   }
   return best !== -1 ? best : firstOnRow;
 }
+/** Caret offset at the START or END of the VISUAL ROW containing `cursor`, using the
+ *  SAME wrapping rule as the input box (`caretCells`/`wrapWithCursor`). This is the
+ *  row-aware counterpart to Home/End (and macOS Cmd+Left/Right): on a single-row draft
+ *  it degenerates to the whole buffer's start/end (0 / length), but on a multi-row draft
+ *  (Shift+Enter hard breaks OR a long line the box soft-wraps) it stops at the CURRENT
+ *  row's boundary instead of jumping past other rows — matching the platform convention
+ *  (macOS Cmd+←/→, editors' Home/End) of "start/end of THIS line", not "start/end of the
+ *  whole document". */
+export function rowBoundaryOffset(
+  text: string,
+  cursor: number,
+  width: number,
+  edge: "start" | "end",
+): number {
+  const cells = caretCells(text, Math.max(1, width));
+  if (cells.length === 0) return 0;
+  const pos = Math.max(0, Math.min(cursor, cells.length - 1));
+  const row = cells[pos]!.row;
+  let start = pos;
+  let end = pos;
+  for (let p = 0; p < cells.length; p++) {
+    if (cells[p]!.row !== row) continue;
+    if (p < start) start = p;
+    if (p > end) end = p;
+  }
+  return edge === "start" ? start : end;
+}

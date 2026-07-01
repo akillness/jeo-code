@@ -110,9 +110,9 @@ test("saveConfigPatch on a fresh install bakes the runtime default model, not a 
   delete process.env.JEO_DEFAULT_MODEL;
   await saveConfigPatch(raw => ({ subagents: { ...(raw.subagents ?? {}), executor: { maxSteps: 12 } } }));
   const onDisk = JSON.parse(await fs.readFile(path.join(dir, "config.json"), "utf-8"));
-  expect(onDisk.defaultModel).toBe("claude-sonnet-4-5"); // matches the runtime no-file default
+  expect(onDisk.defaultModel).toBe("claude-sonnet-4-6"); // matches the runtime no-file default
   const cfg = await readGlobalConfig();
-  expect(cfg.defaultModel).toBe("claude-sonnet-4-5"); // and the effective runtime default is unchanged
+  expect(cfg.defaultModel).toBe("claude-sonnet-4-6"); // and the effective runtime default is unchanged
 });
 
 test("readGlobalConfig treats blank on-disk provider keys as env-fillable gaps", async () => {

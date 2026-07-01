@@ -12,8 +12,8 @@ import {
 import { resolveProvider } from "../src/ai/model-manager";
 
 test("findCatalogEntry is normalized + adapts to {id,provider,contextWindow,reasoning}", () => {
-  const e = findCatalogEntry("CLAUDE-SONNET-4-5")!;
-  expect(e.id).toBe("claude-sonnet-4-5");
+  const e = findCatalogEntry("CLAUDE-SONNET-4-6")!;
+  expect(e.id).toBe("claude-sonnet-4-6");
   expect(e.provider).toBe("anthropic");
   expect(e.contextWindow).toBeGreaterThan(0);
   expect(typeof e.reasoning).toBe("boolean");
@@ -36,7 +36,7 @@ test("catalogForProvider lists recommended first", () => {
 });
 
 test("recommendedModel returns a recommended id per provider", () => {
-  expect(recommendedModel("anthropic")).toBe("claude-sonnet-4-5");
+  expect(recommendedModel("anthropic")).toBe("claude-sonnet-4-6");
   expect(recommendedModel("openai")).toBe("gpt-4o");
   expect(recommendedModel("gemini")).toBe("gemini-2.0-flash");
 });
@@ -50,7 +50,7 @@ test("validateModelId reports known + provider match", () => {
 
 test("editDistance + suggestModels correct typos", () => {
   expect(editDistance("kitten", "sitting")).toBe(3);
-  expect(suggestModels("claude-sonnet-45")).toContain("claude-sonnet-4-5");
+  expect(suggestModels("claude-sonnet-46")).toContain("claude-sonnet-4-6");
   expect(suggestModels("gpt").length).toBeGreaterThan(0);
   expect(suggestModels("")).toEqual([]);
 });

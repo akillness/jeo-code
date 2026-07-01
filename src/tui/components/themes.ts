@@ -236,7 +236,7 @@ export function resetThemeConfigCache(): void {
 
 function getExplicitThemeFromConfig(env: EnvLike): string | undefined {
   const home = os.homedir ? os.homedir() : undefined;
-  const dir = env.JEO_CONFIG_DIR || env.JEO_CONFIG_DIR || (home ? path.join(home, ".jeo") : undefined);
+  const dir = env.JEO_CONFIG_DIR || (home ? path.join(home, ".jeo") : undefined);
   if (!dir) return undefined;
   if (configThemeCache && configThemeCache.dir === dir) return configThemeCache.value;
   const filePath = path.join(dir, "config.json");

@@ -9,8 +9,8 @@ export interface ModelAliases {
 export const BUILTIN_ALIASES: ModelAliases = {
   fast: "ollama/qwen2.5:0.5b",
   local: "ollama/qwen2.5:0.5b",
-  sonnet: "claude-sonnet-4-5",
-  opus: "claude-opus-4-5",
+  sonnet: "claude-sonnet-4-6",
+  opus: "claude-opus-4-6",
   haiku: "claude-haiku-4-5",
   gpt: "gpt-5.5",
   flash: "gemini-2.5-flash",

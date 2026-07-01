@@ -25,7 +25,13 @@ export interface TokenUsage {
  */
 const PRICE_TABLE: ReadonlyArray<readonly [pattern: string, price: ModelPrice]> = [
   // Anthropic Claude
+  // 4.6-generation specifics (Anthropic docs pricing) — MUST precede the generic
+  // `claude-opus`/`claude-sonnet` families so the newer, cheaper Opus tier wins.
+  ["claude-opus-4-8", { inPerM: 5, outPerM: 25 }],
+  ["claude-fable", { inPerM: 10, outPerM: 50 }],
+  ["claude-mythos", { inPerM: 10, outPerM: 50 }],
   ["claude-opus", { inPerM: 15, outPerM: 75 }],
+  ["claude-sonnet-5", { inPerM: 2, outPerM: 10 }],
   ["claude-sonnet", { inPerM: 3, outPerM: 15 }],
   ["claude-haiku", { inPerM: 0.8, outPerM: 4 }],
   ["opus", { inPerM: 15, outPerM: 75 }],

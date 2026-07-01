@@ -174,7 +174,7 @@ export interface WorkflowState {
 /** The built-in default model when neither disk config nor JEO_DEFAULT_MODEL provides one.
  *  Shared by envDefaultConfig (runtime) and readRawGlobalConfig (persistence base) so a
  *  fresh-install saveConfigPatch never bakes a DIFFERENT default than the runtime resolves. */
-const DEFAULT_MODEL = "claude-sonnet-4-5";
+const DEFAULT_MODEL = "claude-sonnet-4-6";
 
 /**
  * Resolve the global config directory at call time (not import time) so that a

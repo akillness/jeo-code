@@ -224,6 +224,13 @@ test("anthropicPayload: opus 4.7/4.8 use ADAPTIVE thinking with display:summariz
   const sonnet45 = payload("claude-sonnet-4-5", "medium");
   expect(sonnet45.thinking).toEqual({ type: "enabled", budget_tokens: 10000, display: "summarized" });
   expect(sonnet45.output_config).toEqual({ effort: "medium" });
+
+  // Haiku 4.5: plain budget transport. Unlike its sonnet/opus 4.5 siblings it REJECTS
+  // output_config.effort ("This model does not support the effort parameter"), so thinking
+  // rides budget_tokens alone with NO output_config.
+  const haiku45 = payload("claude-haiku-4-5", "medium");
+  expect(haiku45.thinking).toEqual({ type: "enabled", budget_tokens: 10000, display: "summarized" });
+  expect(haiku45.output_config).toBeUndefined();
 });
 test("anthropicRequest: interleaved-thinking beta is dropped for adaptive-display models (opus 4.7+)", () => {
   const messages = [{ role: "user" as const, content: "hi" }];
@@ -238,4 +245,31 @@ test("anthropicRequest: interleaved-thinking beta is dropped for adaptive-displa
   // Older models keep it (budget / pre-4.7 adaptive thinking still relies on the beta).
   expect(beta("claude-opus-4-6")).toContain("interleaved-thinking");
   expect(beta("claude-sonnet-4-5")).toContain("interleaved-thinking");
+});
+test("anthropicPayload: 5th-gen ids (Sonnet 5, Fable 5, Mythos 5) use adaptive thinking WITH display:summarized", () => {
+  const messages = [{ role: "user" as const, content: "hi" }];
+  const cred = { kind: "api_key", provider: "anthropic", token: "k" } as const;
+  const payload = (model: string, effort: CallOptions["reasoningEffort"]) =>
+    JSON.parse(anthropicPayload(messages, { model, maxTokens: 32000, reasoningEffort: effort }, false, true, cred));
+
+  // Single-digit `-5` ids parse to major 5 → adaptive transport (NOT the legacy budget
+  // transport a 5th-gen adaptive model rejects), and display is carried forward from Opus 4.7.
+  for (const model of ["claude-sonnet-5", "claude-fable-5", "claude-mythos-5"]) {
+    const p = payload(model, "high");
+    expect(p.thinking).toEqual({ type: "adaptive", display: "summarized" });
+    expect(p.output_config).toEqual({ effort: "high" });
+    expect(p.thinking.budget_tokens).toBeUndefined();
+    expect(p.max_tokens).toBe(32000);
+  }
+});
+
+test("anthropicRequest: 5th-gen adaptive-display ids drop the interleaved-thinking beta", () => {
+  const messages = [{ role: "user" as const, content: "hi" }];
+  const cred = { kind: "api_key", provider: "anthropic", token: "k" } as const;
+  const beta = (model: string) =>
+    anthropicRequest(messages, { model, maxTokens: 32000, reasoningEffort: "high" }, cred, false, true)
+      .headers["anthropic-beta"] ?? "";
+  expect(beta("claude-sonnet-5")).not.toContain("interleaved-thinking");
+  expect(beta("claude-fable-5")).not.toContain("interleaved-thinking");
+  expect(beta("claude-mythos-5")).not.toContain("interleaved-thinking");
 });

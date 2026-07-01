@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.23] - 2026-07-01
+_Anthropic 5th-generation model catalog: adds Sonnet 5, Fable 5, and Mythos 5, promotes the 4.6 generation to 1M context / 128k output, and retires the superseded 4.5/3.5/4.1 ids. Bumps the default model to Sonnet 4.6, prices the new tiers, and fixes the thinking transport for Haiku 4.5 and every 5th-gen model._
+
+### Added
+- **Anthropic 5th-generation models.** New catalog entries `claude-sonnet-5`, `claude-fable-5` (most capable widely-released, adaptive thinking always on), and `claude-mythos-5` (limited-availability, callable by id). `inferCatalogMetadata` now recognizes the `fable`/`mythos` families, and the Anthropic version parser accepts dateless single-major ids (e.g. `claude-sonnet-5`).
+- **1M context / 128k output for the 4.6 generation onward.** `claude-opus-4-6/4-7/4-8`, `claude-sonnet-4-6`, and all 5th-gen ids now advertise 1,000,000-token context and 128,000-token max output (Anthropic docs); dated pre-4.6 ids stay at 200k/64k.
+- **Pricing for the new tiers.** Opus 4.8 (`$5`/`$25` per M), Fable/Mythos (`$10`/`$50`), and Sonnet 5 (`$2`/`$10`), ordered ahead of the generic Opus/Sonnet families so the newer tiers win.
+
+### Fixed
+- **Haiku 4.5 thinking transport.** Haiku 4.5 supports `budget_tokens` thinking but rejects `output_config.effort` ("This model does not support the effort parameter"), so it now uses the plain budget transport instead of its sonnet/opus 4.5 siblings' budget-effort mode.
+- **Adaptive thinking display for 5th-gen models.** `display: "summarized"` is now enabled for every 5th-generation+ model (Sonnet 5, Fable 5, Mythos 5) in addition to Opus ≥ 4.7, so their reasoning streams instead of being silently omitted.
+- **Gemini path no longer inherits a `claude-` model id.** A `claude-`-prefixed model falls back to `gemini-2.0-flash` on the Gemini transport instead of forwarding an incompatible id.
+
+### Changed
+- **Default model bumped to `claude-sonnet-4-6`.** Runtime default, setup defaults, recommended-model set, and the `sonnet`/`opus` aliases now point at the 4.6 generation.
+- **Retired superseded ids.** Removed `claude-3-5-sonnet`, `claude-opus-4-1`, `claude-opus-4-5`, and `claude-sonnet-4-5` (plus their Antigravity `-thinking` variants) from the catalog.
+
+### Verified
+- `bun run typecheck` clean; full `bun test` suite green. Updated model-catalog, pricing, registry, and Anthropic-stream tests cover the new families, 1M/128k metadata, and the Haiku 4.5 transport.
+
 ## [0.7.22] - 2026-06-30
 _gajae-code 0.7.3–0.7.8 parity sweep: terminal-bell notifications, a gruvbox-dark TUI theme, a resilient `jeo update` runtime check, and an ultragoal artifact gate. Ports the user-facing improvements from upstream gajae-code that jeo did not yet have, re-implemented to fit jeo's config, command, theming, and skill surfaces._
 

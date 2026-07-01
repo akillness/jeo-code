@@ -108,34 +108,44 @@ function anthropicThinkingBudget(effort: CallOptions["reasoningEffort"], maxToke
 /** Parse an Anthropic model id's family + version for thinking-transport selection.
  *  Matches the modern `claude-<family>-<major>-<minor>[...]` naming (opus/sonnet/haiku 4.x+);
  *  legacy ids (claude-3-5-sonnet) and non-Anthropic-compatible names return undefined. */
-function parseAnthropicVersion(model: string): { kind: "opus" | "sonnet" | "haiku"; major: number; minor: number } | undefined {
-  const m = /claude-(opus|sonnet|haiku)-(\d+)-(\d+)/.exec(model);
+function parseAnthropicVersion(model: string): { kind: "opus" | "sonnet" | "haiku" | "fable" | "mythos"; major: number; minor: number } | undefined {
+  // `<major>-<minor>` (opus/sonnet/haiku 4.x) OR a single `<major>` (Sonnet 5, Fable 5,
+  // Mythos 5 — the dateless 5th-gen ids), with new families fable/mythos. Legacy ids
+  // (claude-3-5-sonnet: number before family) and non-Anthropic names return undefined.
+  const m = /claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d+))?/.exec(model);
   if (!m) return undefined;
-  return { kind: m[1] as "opus" | "sonnet" | "haiku", major: Number(m[2]), minor: Number(m[3]) };
+  return { kind: m[1] as "opus" | "sonnet" | "haiku" | "fable" | "mythos", major: Number(m[2]), minor: m[3] !== undefined ? Number(m[3]) : 0 };
 }
 
 /** Adaptive thinking `display` is supported starting with Opus 4.7. Without it, Opus 4.7/4.8
  *  OMIT thinking content entirely (tokens billed, signature present, but zero visible thought —
  *  the "reasoning doesn't show" bug). Older adaptive models (Opus 4.6, Sonnet 4.6+) reject the
- *  field, so it is gated to Opus ≥ 4.7. (gjc: supportsAdaptiveThinkingDisplay) */
+ *  field, so it is gated to Opus ≥ 4.7 and every 5th-gen+ model. (gjc: supportsAdaptiveThinkingDisplay) */
 function supportsAdaptiveThinkingDisplay(model: string): boolean {
   const v = parseAnthropicVersion(model);
-  if (!v || v.kind !== "opus") return false;
-  return v.major > 4 || (v.major === 4 && v.minor >= 7);
+  if (!v) return false;
+  // display:"summarized" was introduced at Opus 4.7 and carried forward, so every
+  // 5th-generation+ model (Sonnet 5, Fable 5, Mythos 5, …) supports it too. Only the
+  // first adaptive gen (Opus 4.6, Sonnet 4.6) rejects the field.
+  if (v.major >= 5) return true;
+  return v.kind === "opus" && v.major === 4 && v.minor >= 7;
 }
 
 /** Thinking transport for a model (gjc parity — inferThinkingControlMode):
  *  - Anthropic ≥ 4.6 → "adaptive" (model decides depth; effort rides output_config, NO budget)
- *  - Anthropic 4.5   → "budget-effort" (budget_tokens + output_config effort)
- *  - otherwise       → "budget" (budget_tokens only).
+ *  - Anthropic 4.5 sonnet/opus → "budget-effort" (budget_tokens + output_config effort)
+ *  - otherwise (incl. Haiku 4.5) → "budget" (budget_tokens only).
  *  The adaptive shift is the core opus-4.7/4.8 reasoning fix: those models reject the legacy
- *  budget transport's visible-thought contract and require type:"adaptive" + display:summarized. */
+ *  budget transport's visible-thought contract and require type:"adaptive" + display:summarized.
+ *  Haiku 4.5 supports budget_tokens thinking but REJECTS output_config.effort ("This model does
+ *  not support the effort parameter"), so it stays on the plain budget transport unlike its
+ *  sonnet/opus 4.5 siblings. */
 type AnthropicThinkingMode = "adaptive" | "budget-effort" | "budget";
 function anthropicThinkingMode(model: string): AnthropicThinkingMode {
   const v = parseAnthropicVersion(model);
   if (!v) return "budget";
   if (v.major > 4 || (v.major === 4 && v.minor >= 6)) return "adaptive";
-  if (v.major === 4 && v.minor === 5) return "budget-effort";
+  if (v.major === 4 && v.minor === 5 && v.kind !== "haiku") return "budget-effort";
   return "budget";
 }
 

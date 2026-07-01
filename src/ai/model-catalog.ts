@@ -35,14 +35,11 @@ const FULL: ThinkLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
 const STD: ThinkLevel[] = ["minimal", "low", "medium", "high"];
 
 export const ANTIGRAVITY_MODELS = [
-  "claude-opus-4-5-thinking",
   "claude-opus-4-6-thinking",
   "claude-opus-4-7",
   "claude-opus-4-7-thinking",
   "claude-opus-4-8",
   "claude-opus-4-8-thinking",
-  "claude-sonnet-4-5",
-  "claude-sonnet-4-5-thinking",
   "claude-sonnet-4-6",
   "claude-sonnet-4-6-thinking",
   "gemini-2.5-flash",
@@ -60,18 +57,23 @@ export const ANTIGRAVITY_MODELS = [
 /** A curated set of common public models with their documented capabilities. */
 export const MODEL_CATALOG: readonly CatalogModel[] = [
   // Anthropic
-  { canonical: "claude-3-5-sonnet", provider: "anthropic", providerModel: "claude-3-5-sonnet-20241022", contextTokens: 200_000, maxOutputTokens: 8192, thinking: [], images: true },
   { canonical: "claude-haiku-4-5", provider: "anthropic", providerModel: "claude-haiku-4-5-20251001", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
-  { canonical: "claude-sonnet-4-5", provider: "anthropic", providerModel: "claude-sonnet-4-5-20250929", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
-  { canonical: "claude-opus-4-1", provider: "anthropic", providerModel: "claude-opus-4-1-20250805", contextTokens: 200_000, maxOutputTokens: 32_000, thinking: FULL, images: true },
-  { canonical: "claude-opus-4-5", provider: "anthropic", providerModel: "claude-opus-4-5-20251101", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
   // NOTE: opus 4.6+ use Anthropic ADAPTIVE thinking (type:"adaptive" + output_config.effort).
   // opus 4.7/4.8 OMIT visible thought unless the request opts into `display: "summarized"` —
   // anthropic.ts sets that on the adaptive transport so reasoning streams again (gjc parity).
   // The nativizable path still replays signature-only thinking blocks for cross-turn continuity.
-  { canonical: "claude-opus-4-6", provider: "anthropic", providerModel: "claude-opus-4-6", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
-  { canonical: "claude-opus-4-7", provider: "anthropic", providerModel: "claude-opus-4-7", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
-  { canonical: "claude-opus-4-8", provider: "anthropic", providerModel: "claude-opus-4-8", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
+  // The 4.6 generation onward is 1M context / 128k sync max output (Anthropic docs:
+  // Opus 4.8 & Sonnet 5 comparison table; Opus 4.6/4.7, Sonnet 4.6 share the gen's
+  // dateless-snapshot 1M/128k + 300k batch-output beta). Dated pre-4.6 ids keep 200k/64k.
+  { canonical: "claude-opus-4-6", provider: "anthropic", providerModel: "claude-opus-4-6", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
+  { canonical: "claude-opus-4-7", provider: "anthropic", providerModel: "claude-opus-4-7", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
+  { canonical: "claude-opus-4-8", provider: "anthropic", providerModel: "claude-opus-4-8", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
+  { canonical: "claude-sonnet-4-6", provider: "anthropic", providerModel: "claude-sonnet-4-6", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
+  { canonical: "claude-sonnet-5", provider: "anthropic", providerModel: "claude-sonnet-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
+  // Fable 5 = Anthropic's most capable widely-released model (adaptive thinking always on);
+  // Mythos 5 is limited-availability (Project Glasswing) but callable by id for approved accounts.
+  { canonical: "claude-fable-5", provider: "anthropic", providerModel: "claude-fable-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
+  { canonical: "claude-mythos-5", provider: "anthropic", providerModel: "claude-mythos-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
   // OpenAI
   { canonical: "gpt-4o", provider: "openai", providerModel: "gpt-4o", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true },
   { canonical: "gpt-4o-mini", provider: "openai", providerModel: "gpt-4o-mini", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true },
@@ -200,7 +202,7 @@ export function inferCatalogMetadata(modelId: string): CatalogModel | undefined 
 
   // Anthropic Claude: opus/sonnet/haiku. Major version >= 4 ships extended
   // thinking (mirrors every catalogued claude-4-x entry); claude-3-x does not.
-  const claude = id.match(/^claude-(opus|sonnet|haiku)-(\d+)(?:[-.](\d+))?/);
+  const claude = id.match(/^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:[-.](\d+))?/);
   if (claude) {
     const major = Number(claude[2]);
     const thinking = major >= 4 ? FULL : [];
@@ -208,8 +210,8 @@ export function inferCatalogMetadata(modelId: string): CatalogModel | undefined 
       canonical: raw,
       provider: antigravity ? "antigravity" : "anthropic",
       providerModel: id,
-      contextTokens: 200_000,
-      maxOutputTokens: claude[1] === "haiku" ? 64_000 : 64_000,
+      contextTokens: major >= 5 ? 1_000_000 : 200_000,
+      maxOutputTokens: claude[1] === "haiku" ? 64_000 : major >= 5 ? 128_000 : 64_000,
       thinking,
       images: true,
       company: antigravity ? "Anthropic via Antigravity" : "Anthropic",

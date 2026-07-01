@@ -73,3 +73,14 @@ test("renderFooter renders the ?N dirty flag inside the branch segment", () => {
   expect(zero).toContain("(main)");
   expect(zero).not.toContain("?");
 });
+test("priceForModel: 4.6-gen specifics beat the generic Anthropic family", () => {
+  // Opus 4.8 is the newer, cheaper Opus tier — its specific entry must win over `claude-opus`.
+  expect(priceForModel("claude-opus-4-8")).toEqual({ inPerM: 5, outPerM: 25 });
+  // Sonnet 5 has its own $2/$10 tier (Anthropic docs) — must beat generic `claude-sonnet` ($3/$15).
+  expect(priceForModel("claude-sonnet-5")).toEqual({ inPerM: 2, outPerM: 10 });
+  // Fable 5 and Mythos 5 share the premium $10/$50 tier (Anthropic docs).
+  expect(priceForModel("claude-fable-5")).toEqual({ inPerM: 10, outPerM: 50 });
+  expect(priceForModel("claude-mythos-5")).toEqual({ inPerM: 10, outPerM: 50 });
+  // Older Opus tiers keep the generic family price.
+  expect(priceForModel("claude-opus-4-6")).toEqual({ inPerM: 15, outPerM: 75 });
+});

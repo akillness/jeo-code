@@ -43,7 +43,7 @@ test("modelHint badges reasoning / recommended / readiness", () => {
   const h = modelHint(o1, false, true);
   expect(h).toContain("reasoning");
   expect(h).toContain("no credential");
-  const sonnet = findCatalogEntry("claude-sonnet-4-5")!;
+  const sonnet = findCatalogEntry("claude-sonnet-4-6")!;
   expect(modelHint(sonnet, true, true)).toContain("recommended");
   expect(modelHint(sonnet, true, true)).toContain("ready");
 });
@@ -55,8 +55,8 @@ test("buildModelChoices lists ready providers first and groups them", () => {
   expect(["openai — OpenAI", "ollama — Ollama"]).toContain(choices[0]!.group);
   // every catalogued model id appears
   expect(choices.some(c => c.value === "gpt-4o")).toBe(true);
-  const sonnetChoice = choices.find(c => c.value === "claude-sonnet-4-5");
-  expect(sonnetChoice?.label).toBe("claude-sonnet-4-5 (Anthropic)");
+  const sonnetChoice = choices.find(c => c.value === "claude-sonnet-4-6");
+  expect(sonnetChoice?.label).toBe("claude-sonnet-4-6 (Anthropic)");
   // unready providers carry a "(no credential)" group label
   expect(choices.some(c => c.group === "anthropic — Anthropic (no credential)")).toBe(true);
 });

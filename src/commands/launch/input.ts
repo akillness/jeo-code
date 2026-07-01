@@ -751,7 +751,25 @@ export function filterPromptInputChunk(
       }
       out += data.slice(i, i + 3); i += 3; continue;
     }
+    // Un-bracketed multi-line paste guard: some terminals/multiplexers (a raw X11
+    // primary-selection middle-click paste, certain SSH clients, or a tmux binding
+    // that omits `-p`) deliver a multi-line paste as ONE stdin chunk WITHOUT the
+    // bracketed-paste markers this filter otherwise relies on (PASTE_START/PASTE_END
+    // above). Outside an active bracketed paste, readline treats every bare `\r`/`\n`
+    // as Enter — so an un-bracketed 3-line paste submitted line 1 immediately, mid-
+    // composition, and left the rest to leak in as separate prompts (the "붙여넣기가
+    // 잘 안됨" bug: works for single-line/bracketed paste, corrupts multi-line paste
+    // when the terminal doesn't negotiate DECSET 2004). A genuine Enter keypress is
+    // always the LAST byte of its chunk — raw mode delivers one keystroke per read —
+    // so a linebreak with MORE data after it in the SAME synchronous chunk can only be
+    // a paste (or a scripted multi-line feed); fold it to the sentinel instead of
+    // submitting, matching the bracketed-paste contract (review the whole block, then
+    // press Enter once to submit). A trailing linebreak (nothing after it) keeps the
+    // existing behavior below — including the opt-in lone-LF Shift+Enter rule.
+    const bareBreakLen = data.startsWith("\r\n", i) ? 2 : (data[i] === "\r" || data[i] === "\n") ? 1 : 0;
+    if (bareBreakLen > 0 && i + bareBreakLen < data.length) { out += MULTILINE_SENTINEL; i += bareBreakLen; continue; }
     if (env.loneLfShiftEnter && data[i] === "\n") { out += MULTILINE_SENTINEL; i += 1; continue; } // lone LF = Shift+Enter (opt-in)
+
     // Ctrl+L (form feed): the prompt redraw hotkey, handled on the process.stdin keypress
     // listener — never forward it to readline as a literal char.
     if (data[i] === "\u000c") { i += 1; continue; }

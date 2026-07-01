@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.26] - 2026-07-02
+_Esc/Ctrl+C reliably clears the input box (fixes a gate the earlier reorder missed), and un-bracketed multi-line pastes no longer shred into premature per-line submits._
+
+### Fixed
+- **Esc (and meta-mapped Cmd+C) at the prompt intermittently did nothing.** A prior fix reordered the Esc check ahead of the `previewPending` reentrancy gate, but missed an earlier, more totalizing `!previewArmed || pickerActive` gate that Ctrl+C already bypassed (checked first) while Esc did not — so a fresh session's very first Esc after typing could be silently swallowed. The Esc/meta+C check now runs immediately after the Ctrl+C check, before that gate, mirroring Ctrl+C's existing precedent. Verified live in a real `jeo` TUI (tmux-driven keystrokes): 10/10 fresh-session repro attempts now clear the box; previously flaky.
+- **Un-bracketed multi-line paste shredded into separate premature submits.** Terminals/paths that deliver a multi-line paste as ONE stdin chunk WITHOUT bracketed-paste markers (DECSET 2004) — e.g. a raw X11 primary-selection middle-click paste, some SSH clients, or a tmux `paste-buffer` binding without `-p` — hit `filterPromptInputChunk`'s bare `\r`/`\n` pass-through and had each embedded line submitted as its own message mid-composition instead of landing as one multi-line draft. Reproduced live: pasting `"first line\nsecond line\nthird line"` via an un-bracketed tmux paste immediately submitted line 1 to the model, leaving the rest to leak in as orphaned lines. Fixed with a guard in `src/commands/launch/input.ts`: outside an active bracketed paste, a linebreak with MORE data after it in the SAME synchronous chunk (impossible for a genuine standalone Enter keypress, which always arrives as the last byte of its read) now folds to the multi-line sentinel instead of submitting — matching the bracketed-paste contract (review the whole block, then press Enter once). A trailing linebreak with nothing after it is unaffected and still submits normally.
+
+### Verified
+- `bun run typecheck` clean; full suite green — 2077 pass / 0 fail across 239 files (4 new cases in `test/prompt-key-filter.test.ts` covering the un-bracketed paste guard, including a no-false-positive check for ordinary single-line typing).
+- Both fixes reproduced and confirmed live in a real running `jeo --no-session` TUI inside tmux (not just unit tests): the exact 3-line un-bracketed paste that previously triggered a premature submit now stays as one multi-line draft, and Esc immediately clears it.
+
 ## [0.7.25] - 2026-07-02
 _Shift+Enter now reliably distinguishable from Enter on kitty/WezTerm/iTerm2/xterm via modifyOtherKeys + kitty keyboard protocol; row-aware Home/End and Cmd+Left/Right in multi-row drafts._
 

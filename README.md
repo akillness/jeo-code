@@ -232,11 +232,11 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.7.26]** (2026-07-02) — Esc/Ctrl+C reliably clears the input box (fixes a gate the earlier reorder missed), and un-bracketed multi-line pastes no longer shred into premature per-line submits.
 - **[0.7.25]** (2026-07-02) — Shift+Enter now reliably distinguishable from Enter on kitty/WezTerm/iTerm2/xterm via modifyOtherKeys + kitty keyboard protocol; row-aware Home/End and Cmd+Left/Right in multi-row drafts.
 - **[0.7.24]** (2026-07-02) — OAuth callback page redesign with embedded jeo wordmark + Close button; memory budget O(n²)→O(n) incremental tracking fix.
 - **[0.7.23]** (2026-07-01) — Anthropic 5th-generation model catalog: adds Sonnet 5, Fable 5, and Mythos 5, promotes the 4.6 generation to 1M context / 128k output, and retires the superseded 4.5/3.5/4.1 ids. Bumps the default model to Sonnet 4.6, prices the new tiers, and fixes the thinking transport for Haiku 4.5 and every 5th-gen model.
 - **[0.7.22]** (2026-06-30) — gajae-code 0.7.3–0.7.8 parity sweep: terminal-bell notifications, a gruvbox-dark TUI theme, a resilient `jeo update` runtime check, and an ultragoal artifact gate. Ports the user-facing improvements from upstream gajae-code that jeo did not yet have, re-implemented to fit jeo's config, command, theming, and skill surfaces.
-- **[0.7.21]** (2026-06-26) — Global llm-wiki vault integration, Gemini/Antigravity thinking indicators, generous file-reading windows, and autopilot flag validation. Adds a shared global wiki root configuration with a /wiki slash command, fires reasoning start signals up front for Gemini/Antigravity models, adjusts the large-file reading discipline to use generous windows, and validates autopilot goal and integer flags.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

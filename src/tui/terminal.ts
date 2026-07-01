@@ -100,3 +100,38 @@ export function isTTY(): boolean {
 export function truncate(line: string, cols: number): string {
   return truncateToWidth(line, cols);
 }
+/** Request xterm's `modifyOtherKeys` mode 2 (`CSI > 4 ; 2 m`): the terminal starts
+ *  encoding "inert" combos — Shift+Enter among them — as a full `CSI 27;<mod>;<code>~`
+ *  sequence instead of sending a byte indistinguishable from plain Enter (or nothing at
+ *  all). Without this, jeo's Shift+Enter → newline handling (`SHIFT_ENTER_SEQS` in
+ *  `commands/launch/input.ts`) never actually fires on most terminals — the terminal
+ *  never emits a sequence to match because nothing asked it to. Terminals that don't
+ *  implement the mode (Windows Terminal's legacy conpty path, some minimal emulators)
+ *  silently ignore the unrecognized private-mode sequence — safe to send unconditionally. */
+export function enableModifyOtherKeys(): string {
+  return `${ESC}>4;2m`;
+}
+
+/** Restore `modifyOtherKeys` to its default (mode 0 — "no special encoding") on exit,
+ *  the counterpart to {@link enableModifyOtherKeys}. */
+export function disableModifyOtherKeys(): string {
+  return `${ESC}>4;0m`;
+}
+
+/** Enable the kitty keyboard protocol's "disambiguate escape codes" flag (bit 1 of
+ *  `CSI > flags u`): the modern, more widely supported (kitty, wezterm, foot, contour,
+ *  ghostty, iTerm2, and increasingly Windows Terminal) alternative delivery mechanism
+ *  for the same Shift+Enter sequence jeo already recognizes (`CSI 13;2u`,
+ *  `SHIFT_ENTER_SEQS`). Terminals without kitty-protocol support ignore the private-mode
+ *  `u`-suffixed CSI sequence — safe to send unconditionally alongside
+ *  {@link enableModifyOtherKeys} so whichever protocol the terminal supports (if either)
+ *  makes Shift+Enter distinguishable from plain Enter. */
+export function enableKittyKeyboard(): string {
+  return `${ESC}>1u`;
+}
+
+/** Reset the kitty keyboard protocol flags to 0 (disabled) on exit, the counterpart to
+ *  {@link enableKittyKeyboard}. */
+export function disableKittyKeyboard(): string {
+  return `${ESC}>0u`;
+}

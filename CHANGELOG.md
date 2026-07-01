@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.25] - 2026-07-02
+_Shift+Enter now reliably distinguishable from Enter on kitty/WezTerm/iTerm2/xterm via modifyOtherKeys + kitty keyboard protocol; row-aware Home/End and Cmd+Left/Right in multi-row drafts._
+
+### Added
+- **modifyOtherKeys + kitty keyboard protocol on launch.** `enableModifyOtherKeys()` (`CSI >4;2m`) and `enableKittyKeyboard()` (`CSI >1u`) are sent to the terminal at REPL startup so Shift+Enter is distinguishable from plain Enter on every modern terminal that supports either protocol. Terminals that support neither silently ignore both sequences. Both modes are restored to defaults (`CSI >4;0m` / `CSI >0u`) on process exit via `process.once("exit", …)`. Four new exports in `src/tui/terminal.ts`: `enableModifyOtherKeys`, `disableModifyOtherKeys`, `enableKittyKeyboard`, `disableKittyKeyboard`.
+- **Row-aware Home/End (and macOS Cmd+Left/Right) in multi-row input.** `ROW_HOME_SEQS` / `ROW_END_SEQS` sequences are now caught by `filterPromptInputChunk` _before_ the old whole-buffer `CURSOR_COMBO_REWRITES` path. `rowBoundaryOffset()` (new export in `input-box.ts`) walks the same `caretCells` grid as vertical navigation and jumps the caret to the start/end of the current **visual row**, degenerating to `0`/`length` on a single-row draft — matching macOS/editor convention of "start/end of THIS line".
+
+### Verified
+- `bun run typecheck` clean; full suite green — 2073 pass / 0 fail across 239 files — including two new test files: `test/row-boundary.test.ts` (9 cases for `rowBoundaryOffset`) and `test/row-home-end-filter.test.ts` (5 cases for filter-level row-aware Home/End).
+
 ## [0.7.24] - 2026-07-02
 _OAuth callback page redesign with embedded jeo wordmark + Close button; memory budget O(n²)→O(n) incremental tracking fix._
 

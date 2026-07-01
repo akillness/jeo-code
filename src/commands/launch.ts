@@ -101,7 +101,8 @@ import {
   sessionPath,
   appendCompaction,
 } from "../agent/session";
-import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize, resetMouseTracking, clearScreen, clearVisible, clearToEnd } from "../tui/terminal";
+import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize, resetMouseTracking, clearScreen, clearVisible, clearToEnd, enableModifyOtherKeys, disableModifyOtherKeys, enableKittyKeyboard, disableKittyKeyboard } from "../tui/terminal";
+
 
 import {
   type LaunchFlags,
@@ -1563,7 +1564,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // 'keypress' too so the footer-redraw / paste-marker / picker listeners (registered
     // on process.stdin below) still fire.
     emitKeypressEvents(process.stdin);
+    // Ask the terminal to make Shift+Enter DISTINGUISHABLE from plain Enter — without
+    // this, `SHIFT_ENTER_SEQS`/the lone-LF opt-in never see anything to match, because
+    // most terminals send NOTHING (or a byte identical to Enter) for Shift+Enter unless
+    // one of these protocols is explicitly requested. Both are safe to send unconditionally:
+    // a terminal that doesn't implement either silently ignores the unrecognized private-mode
+    // sequence. Restored on exit so a shell/editor started afterward isn't left with an
+    // unexpected keyboard-encoding mode.
+    process.stdout.write(enableModifyOtherKeys() + enableKittyKeyboard());
+    process.once("exit", () => {
+      try { process.stdout.write(disableKittyKeyboard() + disableModifyOtherKeys()); } catch { /* terminal gone */ }
+    });
   }
+
   const rl = createInterface({
     input: keyFilter ?? process.stdin,
     // Single-box input: gate readline's output while the boxed footer is armed so its own
@@ -2825,17 +2838,23 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         })();
         return;
       }
-      if (previewPending) return;
       // ESC (or a meta-mapped Cmd+C) at the prompt: wipe the typed text. A bare
       // ESC decodes as `escape` (meta is set for a lone ESC byte — accept both)
       // only after readline's escape-sequence timeout, so arrow/wheel sequences
-      // never trigger this.
+      // never trigger this. Checked BEFORE the `previewPending` reentrancy gate
+      // (like Ctrl+C above) — a fast typist/paste can deliver several keypress
+      // events in ONE synchronous stdin read, all before the first keystroke's
+      // setImmediate fires; gating this after `previewPending` silently dropped
+      // an ESC that lands in the same burst as preceding keystrokes (the
+      // "esc 입력 후 안 먹힘" bug — Esc right after typing intermittently did nothing).
       if (key && ((key.name === "escape" && !key.ctrl) || (key.meta && key.name === "c"))) {
         clearTypedInput();
         return;
       }
+      if (previewPending) return;
       // Ctrl+C is handled above (clear-or-exit); keep this guard for defensive ordering only.
       if (key?.ctrl && key.name === "c") return;
+
       previewPending = true;
       setImmediate(() => {
         previewPending = false;

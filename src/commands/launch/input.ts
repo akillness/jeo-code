@@ -349,7 +349,11 @@ export function queuePromptInputChunk(state: PromptInputQueue, chunk: string): b
       const plain = start === -1 ? rest : rest.slice(0, start);
       if (start !== -1) state.inPaste = true;
       rest = start === -1 ? "" : rest.slice(start + PASTE_START.length);
-      if (feedTypedSegment(state, stripMouseReports(plain))) accepted = true;
+      // Decode kitty/MOK re-encodings first so a typed segment behaves identically
+      // whichever keyboard protocol the terminal negotiated. (Preserved Shift+Enter
+      // forms still carry ESC, so feedTypedSegment rejects such segments — exactly
+      // what the legacy byte path did.)
+      if (feedTypedSegment(state, decodeExtendedKeys(stripMouseReports(plain)))) accepted = true;
     }
   }
   return accepted;
@@ -449,11 +453,15 @@ export function createInFlightAbortHarness(opts: AbortHarnessOptions = {}): InFl
 
   const handleData = (chunk: string | Uint8Array) => {
     if (!captureEsc || controller.signal.aborted) return;
-    const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    if (text.includes(PASTE_START) || opts.pasteActive?.()) {
-      opts.onBufferedInput?.(text);
+    const raw = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    if (raw.includes(PASTE_START) || opts.pasteActive?.()) {
+      opts.onBufferedInput?.(raw);
       return;
     }
+    // Kitty/modifyOtherKeys re-encodings → legacy bytes FIRST, so Esc (`CSI 27u`) and
+    // Ctrl+C (`CSI 99;5u` / `CSI 27;5;99~`) cancel a live turn on every terminal —
+    // previously they fell into the "noise" branch and did NOTHING mid-turn.
+    const text = decodeExtendedKeys(raw);
     if (text === "\u000f") {
       opts.onDetailKey?.();
       return;
@@ -553,10 +561,19 @@ export function decideCtrlC(
   return hasInput ? "clear" : "exit";
 }
 
-/** Shift+Enter encodings the box rewrites to a hard-break SENTINEL: the xterm
- *  `modifyOtherKeys` form (`CSI 27;2;13~`) and the kitty keyboard-protocol form
- *  (`CSI 13;2u`). Shared by the live input filter and its tests so they can't drift. */
-export const SHIFT_ENTER_SEQS: readonly string[] = ["\u001b[27;2;13~", "\u001b[13;2u"];
+/** Shift+Enter encodings the box rewrites to a hard-break SENTINEL. Covers every
+ *  encoding a real terminal produces for a modified Enter:
+ *   - xterm `modifyOtherKeys` (`CSI 27;<mod>;13~`): Shift=2, Alt=3, Ctrl=5, …
+ *   - kitty keyboard protocol (`CSI 13;<mod>u`), same modifier digits
+ *   - `ESC \r` — alt-as-meta Alt+Enter (macOS Option+Enter, Windows Terminal Alt+Enter)
+ *  Shift/Alt/Ctrl+Enter all mean "insert a line break" (no terminal distinguishes them
+ *  usefully for a prompt), so every modified-Enter form maps to the SAME sentinel.
+ *  Shared by the live input filter and its tests so they can't drift. */
+export const SHIFT_ENTER_SEQS: readonly string[] = [
+  "\u001b[27;2;13~", "\u001b[27;3;13~", "\u001b[27;5;13~", "\u001b[27;4;13~", "\u001b[27;6;13~",
+  "\u001b[13;2u", "\u001b[13;3u", "\u001b[13;5u", "\u001b[13;4u", "\u001b[13;6u",
+  "\u001b\r",
+];
 /** Sequences that should jump the caret to the START of the current VISUAL ROW: macOS
  *  Cmd+Left (`CSI 1;9D`) and the platform-neutral Home key in both its xterm (`CSI H`)
  *  and vt220 (`CSI 1~`) forms, plus the SS3 variant (`ESC O H`) some terminals send in
@@ -567,6 +584,173 @@ export const ROW_HOME_SEQS: readonly string[] = ["\u001b[1;9D", "\u001b[H", "\u0
 /** Mirror of {@link ROW_HOME_SEQS} for the END of the current visual row: macOS
  *  Cmd+Right (`CSI 1;9C`) and the xterm/vt220/SS3 End key forms. */
 export const ROW_END_SEQS: readonly string[] = ["\u001b[1;9C", "\u001b[F", "\u001b[4~", "\u001bOF"];
+/** Sequences that jump to the START of the WHOLE draft: Ctrl+Home (the Windows/Linux
+ *  document-start convention, xterm `CSI 1;5H`) and macOS Cmd+Up (`CSI 1;9A`). */
+export const DOC_HOME_SEQS: readonly string[] = ["\u001b[1;5H", "\u001b[1;9A"];
+/** Mirror of {@link DOC_HOME_SEQS} for the END of the draft: Ctrl+End / Cmd+Down. */
+export const DOC_END_SEQS: readonly string[] = ["\u001b[1;5F", "\u001b[1;9B"];
+
+/** Matches ONE extended-keyboard escape at `s[i]` — the kitty CSI-u form
+ *  (`CSI <code>;<mods>[:<event>]u`) or the xterm modifyOtherKeys form
+ *  (`CSI 27;<mods>;<code>~`) — and returns its decoded LEGACY bytes plus length.
+ *
+ *  jeo asks the terminal for BOTH protocols at the prompt (they make Shift+Enter
+ *  distinguishable), but that also re-encodes keys the rest of the REPL matches by
+ *  their classic bytes: under kitty flag 1, Esc arrives as `CSI 27u` (readline sees
+ *  an unknown sequence — the "esc가 안 먹힘" bug) and Ctrl+C as `CSI 99;5u` (no
+ *  `\u0003` byte anywhere — Ctrl+C dead); xterm modifyOtherKeys=2 re-encodes them as
+ *  `CSI 27;<m>;27~`/`CSI 27;5;99~`. This decoder maps every such form BACK to the
+ *  legacy byte(s) so readline, the SIGINT paths, and the mid-turn ESC/abort harness
+ *  keep working identically whichever protocol the terminal negotiated.
+ *
+ *  Modified-Enter forms are NOT decoded here — they are matched (earlier) against
+ *  {@link SHIFT_ENTER_SEQS} and become the hard-break sentinel; if one reaches this
+ *  decoder (a non-filter consumer), it decodes to "" (swallowed) rather than \r so a
+ *  Shift+Enter can never SUBMIT a draft. Key-RELEASE events (kitty `:3` suffix, only
+ *  sent when a flag-2 terminal leaked them) and unknown codes (F-keys, media keys)
+ *  decode to "" — swallowed, never leaked as literal text. */
+export function matchExtendedKey(s: string, i: number): { out: string; len: number } | null {
+  if (!s.startsWith("\u001b[", i)) return null;
+  const win = s.slice(i, i + 24);
+  // xterm modifyOtherKeys: CSI 27 ; <mods> ; <code> ~
+  const mok = /^\u001b\[27;(\d+);(\d+)~/.exec(win);
+  if (mok) return { out: decodeExtendedCode(Number(mok[2]), Number(mok[1])), len: mok[0].length };
+  // kitty CSI-u: CSI <code> [; <mods> [: <event>]] u
+  const u = /^\u001b\[(\d+)(?:;(\d+)(?::(\d+))?)?u/.exec(win);
+  if (!u) return null;
+  const event = u[3] ? Number(u[3]) : 1;
+  if (event === 3) return { out: "", len: u[0].length }; // key release — never input
+  return { out: decodeExtendedCode(Number(u[1]), u[2] ? Number(u[2]) : 1), len: u[0].length };
+}
+
+/** Legacy bytes for one extended-key (code, modifier) pair. Unknown codes (the kitty
+ *  functional-key range — F-keys, media keys, non-ASCII code points with modifiers)
+ *  decode to "" — the report is SWALLOWED, never leaked into the draft as literal
+ *  `[57376u`-style text. `mods` is the CSI modifier value: 1 + bitmask, where
+ *  Shift=1, Alt=2, Ctrl=4, Super=8 (so 1 = unmodified, 2 = Shift, 5 = Ctrl, …). */
+function decodeExtendedCode(code: number, mods: number): string {
+  const bits = Math.max(0, mods - 1);
+  const ctrl = (bits & 4) !== 0;
+  const alt = (bits & 2) !== 0;
+  const superMod = (bits & 8) !== 0;
+  // Esc — any modifier still means "escape" to the prompt.
+  if (code === 27) return "\u001b";
+  // Enter/Tab/Backspace/Space in their MODIFIED forms; unmodified ones arrive as
+  // legacy bytes already. Modified Enter is handled by SHIFT_ENTER_SEQS before this
+  // decoder runs in the filter; anywhere else it must not fabricate a submit → "".
+  if (code === 13) return mods <= 1 ? "\r" : "";
+  if (code === 9) {
+    if (bits === 1) return "\u001b[Z"; // Shift+Tab — readline's back-complete form
+    return "\t";
+  }
+  if (code === 127 || code === 8) {
+    if (alt) return "\u001b\u007f";  // Alt/Option+Backspace → backward-kill-word
+    if (ctrl) return "\u0017";       // Ctrl+Backspace (Windows word-delete) → Ctrl+W
+    return "\u007f";
+  }
+  if (code === 32) return ctrl ? "\u0000" : " ";
+  // Printable ASCII. Ctrl+letter → C0 control byte (Ctrl+C → \u0003); Alt+key →
+  // ESC-prefixed meta form readline understands (Alt+b/f word motion, …).
+  if (code >= 33 && code <= 126) {
+    // Cmd/Super+key has NO legacy byte encoding — swallow it rather than insert the
+    // bare letter into the draft (Cmd+C reaching the app must not type a "c";
+    // normalizeKeypress still reports it as meta+c for the clear-input binding).
+    if (superMod && !ctrl && !alt) return "";
+    const ch = String.fromCharCode(code);
+    if (ctrl && code >= 97 && code <= 122) {
+      const ctl = String.fromCharCode(code - 96);
+      return alt ? `\u001b${ctl}` : ctl;
+    }
+    if (ctrl && "@[\\]^_".includes(ch)) {
+      return String.fromCharCode(ch.charCodeAt(0) & 0x1f);
+    }
+    if (alt) return `\u001b${ch}`;
+    return ch; // Shift-only / unmodified: the terminal already applied the shift
+  }
+  return "";
+}
+
+/** Decode every extended-keyboard escape (kitty CSI-u / xterm modifyOtherKeys) in `s`
+ *  to its legacy bytes, leaving all other bytes untouched. Modified-Enter forms in
+ *  {@link SHIFT_ENTER_SEQS} are preserved verbatim (the caller decides their meaning).
+ *  Used by every RAW-stdin consumer that matches classic control bytes — the mid-turn
+ *  ESC/Ctrl+C harness and the live-turn input capture — so keys keep working when the
+ *  terminal negotiated an extended keyboard protocol. */
+export function decodeExtendedKeys(s: string): string {
+  if (!s.includes("\u001b")) return s; // fast path: plain text / large pastes
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    const breakSeq = SHIFT_ENTER_SEQS.find(seq => s.startsWith(seq, i));
+    if (breakSeq) { out += breakSeq; i += breakSeq.length; continue; }
+    const ext = matchExtendedKey(s, i);
+    if (ext) { out += ext.out; i += ext.len; continue; }
+    out += s[i];
+    i += 1;
+  }
+  return out;
+}
+
+/** True when a RAW stdin chunk contains a Ctrl+C in ANY encoding — the legacy
+ *  `\u0003` byte, kitty CSI-u (`CSI 99;5u`), or xterm modifyOtherKeys
+ *  (`CSI 27;5;99~`). The single test every "did the user press Ctrl+C?" byte
+ *  scan must use once an extended keyboard protocol may be active. */
+export function chunkHasCtrlC(chunk: string): boolean {
+  if (chunk.includes("\u0003")) return true;
+  return chunk.includes("\u001b") && decodeExtendedKeys(chunk).includes("\u0003");
+}
+
+/** The subset of readline's keypress event the prompt handlers switch on. */
+export interface NormalizedKey {
+  name?: string;
+  ctrl?: boolean;
+  meta?: boolean;
+  shift?: boolean;
+  sequence?: string;
+}
+
+/** Normalize a readline `keypress` event for the prompt's stdin listeners.
+ *
+ *  Node/Bun's keypress decoder does not know the kitty CSI-u or xterm
+ *  modifyOtherKeys encodings: Esc arrives as `{ sequence: "\u001b[27u", name:
+ *  undefined }`, Ctrl+C as `{ sequence: "\u001b[99;5u" }`, and every `key?.name`
+ *  check in the footer/picker handlers falls through — the idle-prompt half of the
+ *  "esc/ctrl+c가 안 먹힘" bug. This maps such events back to the `{ name, ctrl,
+ *  meta, shift }` shape those handlers already match on; every other event is
+ *  returned unchanged. */
+export function normalizeKeypress(key: NormalizedKey | undefined): NormalizedKey | undefined {
+  const seq = key?.sequence;
+  // Bun quirk (verified live): an unrecognized CSI emits `name: "undefined"` — the
+  // literal STRING — where Node emits `name: undefined`. Treat both as unnamed.
+  const unnamed = key?.name === undefined || key?.name === "undefined";
+  if (!key || !seq || !unnamed) return key;
+  // Parse the raw sequence directly (kitty CSI-u first, then xterm modifyOtherKeys)
+  // instead of round-tripping through the byte decoder: Cmd/Super-modified keys
+  // decode to "" (swallowed as INPUT) yet must still normalize to a named EVENT so
+  // bindings like "meta+c clears the box" can see them.
+  const u = /^\u001b\[(\d+)(?:;(\d+)(?::(\d+))?)?u$/.exec(seq);
+  const mok = u ? null : /^\u001b\[27;(\d+);(\d+)~$/.exec(seq);
+  if (!u && !mok) return key;
+  const code = u ? Number(u[1]) : Number(mok![2]);
+  const mods = u ? (u[2] ? Number(u[2]) : 1) : Number(mok![1]);
+  const event = u?.[3] ? Number(u[3]) : 1;
+  if (event === 3) return key; // key release — leave unnamed (inert)
+  const bits = Math.max(0, mods - 1);
+  const flags = {
+    ctrl: (bits & 4) !== 0,
+    meta: (bits & 2) !== 0 || (bits & 8) !== 0, // Alt or Super both read as "meta"
+    shift: (bits & 1) !== 0,
+  };
+  if (code === 27) return { ...key, ...flags, name: "escape", ctrl: false };
+  if (code === 13) return { ...key, ...flags, name: "return" };
+  if (code === 9) return { ...key, ...flags, name: "tab" };
+  if (code === 127 || code === 8) return { ...key, ...flags, name: "backspace" };
+  if (code === 32) return { ...key, ...flags, name: "space" };
+  if (code >= 33 && code <= 126) {
+    return { ...key, ...flags, name: String.fromCharCode(code).toLowerCase() };
+  }
+  return key;
+}
 
 
 /** Minimal readline view the prompt key-filter reads (and mutates `cursor` on a
@@ -600,6 +784,11 @@ export interface PromptKeyFilterEnv {
 export interface PromptKeyFilterState {
   inPaste: boolean;
   carry?: string;
+  /** The previous chunk's forwarded output ended in a bare `\r` (Enter). A `\n` at the
+   *  START of the next chunk is then the second half of a split CRLF — swallow it, or
+   *  (with the default-on lone-LF rule) it would insert a phantom break at the fresh
+   *  prompt. */
+  crTail?: boolean;
 }
 
 /** Length of the longest trailing run of `data` that is a PROPER prefix of a
@@ -674,6 +863,11 @@ export function filterPromptInputChunk(
     state.carry = "\r";
     data = data.slice(0, data.length - 1);
   }
+  // Second half of a CRLF split across chunk reads (previous chunk's output ended in
+  // `\r` = Enter): the leading `\n` here is the SAME keystroke/paste tail, not a new
+  // break — swallow it before the lone-LF rule can see it.
+  if (state.crTail && !state.inPaste && data.startsWith("\n")) data = data.slice(1);
+  state.crTail = false;
   // Empty-line Backspace guard: a standalone Backspace with an empty buffer is a no-op
   // that some Bun readline builds turn into a spurious `close` (hard exit) — drop it
   // before it reaches readline. Forwarded normally inside a paste or with text present.
@@ -732,9 +926,29 @@ export function filterPromptInputChunk(
       i += seq.length;
       continue;
     }
+    // Whole-draft jumps: Ctrl+Home/Ctrl+End (Windows/Linux document-start/end) and
+    // macOS Cmd+Up/Cmd+Down. Same consume-and-move contract as the row-edge branch.
+    const docEdge = DOC_HOME_SEQS.find(seq => data.startsWith(seq, i)) !== undefined ? "start"
+      : DOC_END_SEQS.find(seq => data.startsWith(seq, i)) !== undefined ? "end"
+      : undefined;
+    if (docEdge) {
+      const seq = (docEdge === "start" ? DOC_HOME_SEQS : DOC_END_SEQS).find(s => data.startsWith(s, i))!;
+      // Without an rl handle there is nothing to move — still CONSUME the sequence
+      // so `1;9A`-style params can never leak into the draft as literal text.
+      if (rl) rl.cursor = docEdge === "start" ? 0 : (rl.line ?? "").length;
+      i += seq.length;
+      continue;
+    }
 
     const combo = matchCursorCombo(data, i);
     if (combo) { out += combo[1]; i += combo[0].length; continue; }
+    // Extended-keyboard re-encodings (kitty CSI-u / xterm modifyOtherKeys): decode back
+    // to the legacy byte(s) so Esc (`CSI 27u`), Ctrl+C (`CSI 99;5u` / `CSI 27;5;99~`),
+    // Ctrl+V and friends keep working after jeo enables those protocols for Shift+Enter.
+    // Without this, readline receives an unknown sequence and the key is simply DEAD —
+    // the reported "esc 키 (또 ctrl+c) 입력이 안되는 문제".
+    const ext = matchExtendedKey(data, i);
+    if (ext) { out += ext.out; i += ext.len; continue; }
     // Up/Down between the box's visual rows (textarea feel) for any MULTI-ROW draft;
     // at the top/bottom edge a soft-wrapped one-liner falls through to history recall,
     // but a genuine multi-line draft swallows the key (the "↓ cuts text" fix).
@@ -768,13 +982,34 @@ export function filterPromptInputChunk(
     // existing behavior below — including the opt-in lone-LF Shift+Enter rule.
     const bareBreakLen = data.startsWith("\r\n", i) ? 2 : (data[i] === "\r" || data[i] === "\n") ? 1 : 0;
     if (bareBreakLen > 0 && i + bareBreakLen < data.length) { out += MULTILINE_SENTINEL; i += bareBreakLen; continue; }
-    if (env.loneLfShiftEnter && data[i] === "\n") { out += MULTILINE_SENTINEL; i += 1; continue; } // lone LF = Shift+Enter (opt-in)
+    // A TRAILING `\r\n` outside a paste is ONE Enter (Windows CRLF clipboard tails,
+    // terminals that transmit CRLF): forward a single `\r`. Previously the `\r`
+    // submitted and the `\n` leaked into the NEXT prompt as a phantom extra submit
+    // (or, with the lone-LF rule, a phantom break) — one of the "붙여넣기가 잘
+    // 동작안하는 경우".
+    if (data.startsWith("\r\n", i) && i + 2 === data.length) { out += "\r"; i += 2; continue; }
+    // Backslash continuation (Claude-Code convention, works on EVERY terminal even
+    // without a Shift+Enter protocol — the Windows-safe fallback): Enter on a draft
+    // ending in `\` (caret at the end) replaces the backslash with a line break
+    // instead of submitting. Emitted as backspace + sentinel so readline's buffer
+    // stays the single source of truth.
+    if (
+      data[i] === "\r" && i + 1 === data.length && i === 0 && rl &&
+      (rl.line ?? "").endsWith("\\") &&
+      (typeof rl.cursor !== "number" || rl.cursor === (rl.line ?? "").length)
+    ) {
+      out += `\u007f${MULTILINE_SENTINEL}`;
+      i += 1;
+      continue;
+    }
+    if (env.loneLfShiftEnter && data[i] === "\n") { out += MULTILINE_SENTINEL; i += 1; continue; } // lone LF = Shift+Enter (default-on; JEO_MULTILINE=0 opts out)
 
     // Ctrl+L (form feed): the prompt redraw hotkey, handled on the process.stdin keypress
     // listener — never forward it to readline as a literal char.
     if (data[i] === "\u000c") { i += 1; continue; }
     out += data[i]; i += 1;
   }
+  state.crTail = !state.inPaste && out.endsWith("\r");
   return { out, drop: false };
 }
 

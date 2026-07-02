@@ -6,7 +6,7 @@ import { hotkeysLines, contextUsageLines, historyViewLines } from "../src/comman
 test("hotkeysLines: stable static reference, header first and every row indented", () => {
   const out = hotkeysLines();
   expect(out[0]).toBe("Keyboard shortcuts:");
-  expect(out.length).toBe(18);
+  expect(out.length).toBe(21);
   for (const row of out.slice(1)) expect(row.startsWith("  ")).toBe(true);
   // Spot-check a couple of well-known bindings survive verbatim.
   expect(out.some(l => l.includes("Ctrl-D") && l.includes("exit the REPL"))).toBe(true);
@@ -16,6 +16,9 @@ test("hotkeysLines: stable static reference, header first and every row indented
   expect(out.some(l => l.includes("drag-drop") && l.includes("attach"))).toBe(true);
   expect(out.some(l => l.includes("drag") && l.includes("cmd/ctrl+c"))).toBe(true);
   expect(out.some(l => l.includes("Shift-drag") && l.includes("Option-drag"))).toBe(true);
+  expect(out.some(l => l.includes("Shift-Enter") && l.includes("line break"))).toBe(true);
+  expect(out.some(l => l.includes("Cmd-←") && l.includes("current row"))).toBe(true);
+  expect(out.some(l => l.includes("Ctrl-Home") && l.includes("whole draft"))).toBe(true);
 });
 
 test("contextUsageLines: per-role tallies, ~4 chars/token, total + footer", () => {

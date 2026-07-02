@@ -890,13 +890,25 @@ test("LaunchTui: live turn keeps the normal input box visible and editable", () 
 
 test("LaunchTui.setLivePromptHighlight: recolors the trigger token in the mid-turn input box", () => {
   const out: string[] = [];
-  // The highlight is only painted when the resolved theme has color; force
-  // truecolor so this assertion holds in non-TTY CI (no COLORTERM/TERM).
+  // The highlight is only painted when the resolved theme has color. FORCE_COLOR
+  // alone is NOT enough: detectColorLevel honors NO_COLOR FIRST (no-color.org
+  // contract), and CI/agent harnesses export NO_COLOR=1 — which silently resolved
+  // the mono theme and made this test's SGR assertion fail there. Pin a COLORED
+  // theme explicitly (JEO_TUI_THEME wins over both detectors) and clear NO_COLOR
+  // for the constructor so the resolution is deterministic on every host.
   const prevForce = process.env.FORCE_COLOR;
+  const prevNoColor = process.env.NO_COLOR;
+  const prevTheme = process.env.JEO_TUI_THEME;
   process.env.FORCE_COLOR = "3";
+  delete process.env.NO_COLOR;
+  process.env.JEO_TUI_THEME = "cosmic";
   const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
   if (prevForce === undefined) delete process.env.FORCE_COLOR;
   else process.env.FORCE_COLOR = prevForce;
+  if (prevNoColor === undefined) delete process.env.NO_COLOR;
+  else process.env.NO_COLOR = prevNoColor;
+  if (prevTheme === undefined) delete process.env.JEO_TUI_THEME;
+  else process.env.JEO_TUI_THEME = prevTheme;
   tui.start();
 
   tui.setLivePromptInput("go /model");

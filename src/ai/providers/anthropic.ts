@@ -225,7 +225,12 @@ export function anthropicPayload(
   const model = stripAnthropicPrefix(options.model);
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
   // Image attachments + native tool/thinking-block reconstruction live in buildAnthropicMessages.
-  const maxTokens = options.maxTokens ?? 4000;
+  // Non-streaming requests must finish inside Anthropic's ~10-minute HTTP window; a
+  // 64k+ budget can exceed it on a slow generation. 32k (the proven xhigh ceiling)
+  // stays safe; the stream path carries the full catalog-derived budget.
+  const NON_STREAM_MAX_TOKENS = 32_000;
+  const requestedMax = options.maxTokens ?? 4000;
+  const maxTokens = stream ? requestedMax : Math.min(requestedMax, NON_STREAM_MAX_TOKENS);
   const effort = options.reasoningEffort;
   const thinkingEnabled = effort !== undefined;
   // gjc parity: pick the thinking transport per model. Adaptive (Opus/Sonnet 4.6+) carries NO

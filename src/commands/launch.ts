@@ -37,7 +37,7 @@ import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/state";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
-import { describeModel, describeAllProviders, thinkingMaxTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
+import { describeModel, describeAllProviders, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
 
@@ -71,7 +71,7 @@ import { detectColorLevel, ColorLevel, visibleWidth } from "../tui/components/co
 import { readClipboardImage } from "../util/clipboard-image";
 import { attachImagePaths, insertImageTag } from "../util/file-attachment";
 import { formatTranscript } from "../tui/components/transcript";
-import { copyTextToClipboard } from "../tui/clipboard";
+import { copyTextToClipboard, readClipboardText } from "../tui/clipboard";
 import { loadInputHistory, appendInputHistory } from "../agent/input-history";
 import type { ImageAttachment } from "../ai/types";
 import { renderMarkdownTables } from "../tui/components/markdown-table";
@@ -141,6 +141,7 @@ import {
   matchTerminalReport,
   stripMouseReports,
   rewriteCursorCombos,
+  stripPasteEscapes,
   MULTILINE_SENTINEL,
   isGenuineMultilineDraft,
   shouldBoxVerticalNav,
@@ -154,6 +155,8 @@ import {
   filterPromptInputChunk,
   pasteIdleDecision,
   PASTE_MERGE_IDLE_MS,
+  chunkHasCtrlC,
+  normalizeKeypress,
 } from "./launch/input";
 import {
   gatedStdout,
@@ -1021,7 +1024,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           tools,
           maxSteps: flags.maxSteps,
           model: activeModel,
-          maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
+          maxTokens: resolveMaxOutputTokens(activeModel, sessionThinking),
           reasoningEffort: sessionThinking ? thinkingToReasoningEffort(sessionThinking) : undefined,
           signal: ac.signal,
           steer: drainSteer,
@@ -1040,7 +1043,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             maxSteps: Math.min(6, flags.maxSteps > 0 ? flags.maxSteps : 6),
             budget: { maxExtensions: 0 },
             model: activeModel,
-            maxTokens: sessionThinking ? thinkingMaxTokens(sessionThinking) : undefined,
+            maxTokens: resolveMaxOutputTokens(activeModel, sessionThinking),
             reasoningEffort: sessionThinking ? thinkingToReasoningEffort(sessionThinking) : undefined,
             signal: ac.signal,
             steer: drainSteer,
@@ -1499,11 +1502,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const SENTINEL = MULTILINE_SENTINEL;
   // Multi-line input filter is ON for any interactive TTY: reliable multi-line paste
   // (fills the box, submits intact into the user card) is the default. The lone-"\n"
-  // Shift+Enter rule stays opt-in (JEO_MULTILINE=1) — it needs ghostty's
-  // `keybind = shift+enter=text:\n` and could misfire on the rare terminal that sends
-  // LF for Enter. JEO_NO_MULTILINE=1 fully disables the filter (reads stdin directly).
+  // break rule is ALSO default-on (JEO_MULTILINE=0 opts out): every real terminal
+  // sends `\r` for Enter in raw mode, so a bare `\n` can only come from Ctrl+J,
+  // Ctrl+Enter (Windows Terminal / conhost), or a ghostty `shift+enter=text:\n`
+  // keybind — all of which MEAN "insert a line break". This is what makes a break
+  // key available on Windows terminals that support neither the kitty keyboard
+  // protocol nor xterm modifyOtherKeys. JEO_NO_MULTILINE=1 fully disables the
+  // filter (reads stdin directly).
   const multilineInput = !!process.stdin.isTTY && jeoEnv("NO_MULTILINE") !== "1";
-  const loneLfShiftEnter = jeoEnv("MULTILINE") === "1";
+  const loneLfShiftEnter = jeoEnv("MULTILINE") !== "0";
   const expandSentinel = (s: string): string => (multilineInput ? s.split(SENTINEL).join("\n") : s);
   // Prompt-scoped process listeners (stdin data/keypress, stdout resize). Registered
   // once per launch but previously anonymous and never removed — benign for a single
@@ -2238,7 +2245,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
   const handleCtrlCByte = (chunk: string | Uint8Array) => {
     const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    if (text.includes("\u0003")) handleCtrlC();
+    // chunkHasCtrlC also matches the kitty CSI-u (`CSI 99;5u`) and xterm
+    // modifyOtherKeys (`CSI 27;5;99~`) encodings jeo's protocol push provokes.
+    if (chunkHasCtrlC(text)) handleCtrlC();
   };
   // Bun/readline can deliver Ctrl+C as readline SIGINT, process SIGINT, or (tmux)
   // a raw \u0003 byte before readline resolves the question; funnel all three through
@@ -2318,8 +2327,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     process.stdout.on("resize", onPickerResize);
     try {
       await new Promise<void>(resolve => {
-        const handler = (ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean } | undefined) => {
-          const done = onKey(ch, key);
+        const handler = (ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean; sequence?: string } | undefined) => {
+          // Same normalization as the footer handler: kitty CSI-u Esc/Ctrl+C must
+          // close a picker exactly like their legacy encodings.
+          const done = onKey(ch, normalizeKeypress(key));
           if (done) {
             process.stdin.off("keypress", handler);
             clear();
@@ -2734,7 +2745,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   if (previewEnabled) {
     process.once("exit", () => out.write("\x1b[?25h")); // safety net: never leave the cursor hidden
-    const footerKeypressHandler = (_ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean } | undefined) => {
+    const footerKeypressHandler = (_ch: string, rawKey: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean; sequence?: string } | undefined) => {
+      // Kitty CSI-u / xterm modifyOtherKeys events arrive with `name: undefined`
+      // (Node's keypress table predates those protocols) — normalize them back to
+      // the `{ name, ctrl, meta }` shape every check below matches on. Without this
+      // Esc and Ctrl+C are DEAD at the idle prompt on kitty-protocol terminals.
+      const key = normalizeKeypress(rawKey);
       if (key?.ctrl && key.name === "c") {
         handleCtrlC();
         return;
@@ -2827,27 +2843,43 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         promptHistoryLines = null;
         drawFooter(previewLines(typedLine, navIdx));
       }
-      // Ctrl+V: attach a clipboard IMAGE to the next message. Terminal text paste
-      // never arrives as a ctrl+v keypress (it streams as plain stdin data), so this
-      // binding is image-only; when the clipboard holds no image it's a silent no-op.
+      // Ctrl+V: attach a clipboard IMAGE to the next message; when the clipboard
+      // holds no image, fall back to pasting its TEXT at the caret. Terminal-level
+      // paste (Cmd+V / Ctrl+Shift+V) still streams through stdin as before — this
+      // binding covers the terminals/users where that path doesn't fire (the
+      // "복사붙여넣기가 잘 동작안하는 경우"): previously a text-only clipboard made
+      // Ctrl+V a SILENT no-op.
       if (key?.ctrl && key.name === "v") {
         if (pasteInFlight) return;
         pasteInFlight = true;
         void (async () => {
           try {
-            const img = await readClipboardImage();
-            if (!img) return;
-            pendingImages.push(img);
             const rli = rl as unknown as { line: string; cursor: number; _refreshLine?: () => void };
-            const at = typeof rli.cursor === "number" ? rli.cursor : rli.line.length;
-            // Insert the [image #N] tag at the caret with normalized single-space
-            // padding (shared with the drag-drop path) so the caret lands right after
-            // the tag instead of being pushed several columns by stray spaces.
-            const ins = insertImageTag(rli.line, at, pendingImages.length);
-            rli.line = ins.text;
-            rli.cursor = ins.cursor;
+            const img = await readClipboardImage();
+            if (img) {
+              pendingImages.push(img);
+              const at = typeof rli.cursor === "number" ? rli.cursor : rli.line.length;
+              // Insert the [image #N] tag at the caret with normalized single-space
+              // padding (shared with the drag-drop path) so the caret lands right after
+              // the tag instead of being pushed several columns by stray spaces.
+              const ins = insertImageTag(rli.line, at, pendingImages.length);
+              rli.line = ins.text;
+              rli.cursor = ins.cursor;
+            } else {
+              const clip = await readClipboardText();
+              if (!clip) return;
+              // Same sanitation as a bracketed paste: strip ANSI escapes/C0 noise,
+              // fold line breaks to the multi-line sentinel (or spaces when the
+              // filter is off) so a multi-line clipboard cannot self-submit.
+              const cleaned = stripPasteEscapes(clip.replace(/\r\n/g, "\n").replace(/\r/g, "\n"))
+                .split("\n").join(multilineInput ? SENTINEL : " ");
+              if (!cleaned) return;
+              const at = typeof rli.cursor === "number" ? rli.cursor : rli.line.length;
+              rli.line = rli.line.slice(0, at) + cleaned + rli.line.slice(at);
+              rli.cursor = at + cleaned.length;
+            }
             typedLine = rli.line;
-            // Sync readline's internal screen model to the injected tag (same as the
+            // Sync readline's internal screen model to the injected text (same as the
             // slash/tab completion accept paths): without it readline's stale row/cursor
             // model offsets the real caret several columns on the next keystroke — the
             // "caret pushed past the tag after attaching an image" shift.

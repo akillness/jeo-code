@@ -27,7 +27,7 @@ import {
   subagentRoleIds,
   validateSubagentDoneReason,
 } from "./subagents";
-import { thinkingMaxTokens } from "../ai/model-manager";
+import { resolveMaxOutputTokens } from "../ai/model-manager";
 import type { SubagentRegistry } from "./subagent-registry";
 
 /** Lifecycle event emitted while a delegated subagent runs. */
@@ -219,7 +219,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       cwd,
       model,
       maxSteps,
-      maxTokens: thinking ? thinkingMaxTokens(thinking) : undefined,
+      maxTokens: resolveMaxOutputTokens(model, thinking),
       // Bounded delegation: a subagent's step contract stays exact — the parent
       // owns any retry/extension decision, so the gjc retry flow is disabled here.
       budget: { maxExtensions: 0 },

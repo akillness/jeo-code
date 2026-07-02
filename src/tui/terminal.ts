@@ -130,8 +130,10 @@ export function enableKittyKeyboard(): string {
   return `${ESC}>1u`;
 }
 
-/** Reset the kitty keyboard protocol flags to 0 (disabled) on exit, the counterpart to
- *  {@link enableKittyKeyboard}. */
+/** Undo {@link enableKittyKeyboard} on exit. `CSI > 1 u` PUSHES an entry onto the
+ *  terminal's keyboard-mode stack, so the counterpart is a POP (`CSI < u`) — pushing
+ *  `>0u` instead would leak our entry and leave flags-0 stacked on top of whatever
+ *  the shell/tmux had. Terminals without kitty-protocol support ignore both. */
 export function disableKittyKeyboard(): string {
-  return `${ESC}>0u`;
+  return `${ESC}<u`;
 }

@@ -63,6 +63,55 @@ export function systemClipboardCopyCommand(
 }
 
 /**
+ * Resolve the local system-clipboard READ command for a platform, or null when no
+ * tool is available — the mirror of {@link systemClipboardCopyCommand} for the
+ * Ctrl+V text-paste fallback. Pure (the `which` probe is injected) for testability.
+ *  - macOS: `pbpaste`.
+ *  - Windows: PowerShell `Get-Clipboard` (`-Raw` keeps embedded newlines intact).
+ *  - Linux/BSD: Wayland `wl-paste` first, then X11 `xclip -o`, then `xsel`.
+ */
+export function systemClipboardPasteCommand(
+  platform: NodeJS.Platform,
+  which: (bin: string) => string | null,
+): string[] | null {
+  if (platform === "darwin") return which("pbpaste") ? ["pbpaste"] : null;
+  if (platform === "win32") {
+    return ["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"];
+  }
+  if (which("wl-paste")) return ["wl-paste", "--no-newline"];
+  if (which("xclip")) return ["xclip", "-selection", "clipboard", "-o"];
+  if (which("xsel")) return ["xsel", "--clipboard", "--output"];
+  return null;
+}
+
+/**
+ * Read TEXT from the system clipboard, or null when empty / no tool / the read
+ * failed. Never throws; capped at `timeoutMs` so a hung clipboard tool (remote
+ * X11, sandboxed PowerShell) cannot freeze the prompt. Used as the Ctrl+V
+ * fallback when the clipboard holds no image — previously that combination was
+ * a SILENT no-op (one of the "복사붙여넣기가 잘 동작안하는 경우").
+ */
+export async function readClipboardText(
+  deps: { which?: (bin: string) => string | null; platform?: NodeJS.Platform } = {},
+  timeoutMs = 4000,
+): Promise<string | null> {
+  const platform = deps.platform ?? process.platform;
+  const which = deps.which ?? ((bin: string) => Bun.which(bin));
+  const cmd = systemClipboardPasteCommand(platform, which);
+  if (!cmd) return null;
+  try {
+    const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "ignore" });
+    const timer = setTimeout(() => { try { proc.kill(); } catch { /* already gone */ } }, timeoutMs);
+    const text = await new Response(proc.stdout).text();
+    clearTimeout(timer);
+    if ((await proc.exited) !== 0) return null;
+    return text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The single shell command string tmux's `copy-command` option runs to push a
  * copy-mode selection onto the system clipboard, or null when no tool exists.
  * With `copy-command` set + `mouse on`, a mouse drag-select (and right-click

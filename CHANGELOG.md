@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.30] - 2026-07-02
+_GPT/Codex OAuth calls work again, and the 30-minute turn budget now limits no-progress stalls instead of killing genuinely progressing autonomous runs._
+
+### Fixed
+- **GPT/Codex OAuth no longer sends `max_output_tokens` to the ChatGPT/Codex backend.** `0.7.28` moved the computed output cap onto the shared Responses payload, but the OAuth Codex endpoint rejects that public-API-only parameter with `HTTP 400 {"detail":"Unsupported parameter: max_output_tokens"}`. The cap is now applied only on the public `/v1/responses` API-key path; OAuth requests keep using the Codex backend shape that `jeo doctor` probes.
+- **`JEO_TURN_MAX_MS` is now a stall budget, not an absolute kill switch.** The old implementation measured 30 minutes from turn start and could terminate a long autonomous run even while it was still executing tools and making progress. The clock now resets on every executed tool step and on mid-turn steering, so it only stops no-progress loops such as refusal backoff spins, endless provider retries, or bounce loops. The existing step hard cap and repeat/cycle/failure guards still bound genuinely long runs.
+
+### Verified
+- `bun test` green — 2147 pass / 0 fail across 244 files; `bun run typecheck` clean.
+- Live GPT/Codex OAuth smoke tests through the installed `jeo` symlink: `jeo chat "Say exactly: hello" --model gpt-5.5` and `jeo chat "Reply with one word: pong" --model gpt-5.5` both returned the requested text. Added/updated regression coverage in `test/codex-responses.test.ts` and `test/cycle-and-turn-budget.test.ts`.
+
 ## [0.7.29] - 2026-07-02
 _gajae-code safety-refusal retry parity: Anthropic/OAuth content-classifier refusals no longer end the turn with a fatal "declined to answer" message after the context-reset ladder._
 

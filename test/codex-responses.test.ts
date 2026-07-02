@@ -40,11 +40,12 @@ test("parseResponsesEvent: delta + error events still parse", () => {
   expect(parseResponsesEvent(JSON.stringify({ type: "response.failed", response: { error: { message: "boom" } } })).error).toBe("boom");
 });
 
-test("codexResponsesRequest: forwards options.maxTokens as max_output_tokens (absent when unset)", () => {
+test("codexResponsesRequest: OAuth Codex backend never receives max_output_tokens (backend 400s on it)", () => {
+  // The ChatGPT/Codex backend rejects it: {"detail":"Unsupported parameter: max_output_tokens"}.
   const withBudget = JSON.parse(
     codexResponsesRequest([{ role: "user", content: "hi" }], { model: "gpt-5.5", maxTokens: 12000 } as any, oauth).body,
   );
-  expect(withBudget.max_output_tokens).toBe(12000);
+  expect(withBudget.max_output_tokens).toBeUndefined();
 
   const without = JSON.parse(
     codexResponsesRequest([{ role: "user", content: "hi" }], { model: "gpt-5.5" } as any, oauth).body,
@@ -62,7 +63,7 @@ test("codexResponsesRequest: sends a Codex-CLI-shaped User-Agent on OAuth and ap
   const apiKey = { kind: "api_key" as const, provider: "openai" as const, token: "sk-1" };
   const apiKeyReq = codexResponsesRequest([{ role: "user", content: "hi" }], { model: "gpt-5.5" } as any, apiKey);
   expect(apiKeyReq.headers["user-agent"]).toMatch(uaShape);
-  // max_output_tokens rides the shared payload — present on the api-key path too.
+  // The public /v1/responses API supports max_output_tokens — the cap applies here only.
   const apiKeyBody = JSON.parse(
     codexResponsesRequest([{ role: "user", content: "hi" }], { model: "gpt-5.5", maxTokens: 8000 } as any, apiKey).body,
   );

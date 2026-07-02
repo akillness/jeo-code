@@ -286,10 +286,12 @@ export interface AgentLoopResult {
 }
 
 
-/** Wall-clock budget for ONE agent turn (ms). JEO_TURN_MAX_MS overrides; 0 disables.
- *  Default 30 minutes: long autonomous runs stay alive, while a turn that spins in
- *  "thinking" (huge contexts, endless extensions) is guaranteed to terminate into
- *  the consolidation wrap-up instead of running for hours. */
+/** Wall-clock STALL budget for ONE agent turn (ms): the maximum time a turn may run
+ *  WITHOUT PROGRESS (no executed tool step). JEO_TURN_MAX_MS overrides; 0 disables.
+ *  Default 30 minutes: long autonomous runs that keep executing tools stay alive
+ *  indefinitely (the step budget's hard cap bounds them), while a turn that spins in
+ *  "thinking" (refusal backoff, endless provider retries) is guaranteed to terminate
+ *  into the consolidation wrap-up instead of running for hours. */
 export function turnMaxMs(env: Record<string, string | undefined> = process.env): number {
   const raw = jeoEnv("TURN_MAX_MS", env);
   if (raw !== undefined && raw !== "") {
@@ -364,12 +366,18 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   const ev = opts.events ?? {};
   const maxHistoryTokens = Math.max(10_000, opts.maxHistoryTokens ?? 80_000);
 
-  // Wall-clock turn budget — the definitive "never sits in thinking forever"
-  // guarantee. Step budgets bound the COUNT of model calls; this bounds their total
-  // TIME: a turn that crosses it stops at the next loop boundary and consolidates a
-  // wrap-up instead of spinning for hours under a generous dynamic step cap.
+  // Wall-clock STALL budget — the definitive "never sits in thinking forever"
+  // guarantee. Step budgets bound the COUNT of model calls; this bounds the time a
+  // turn may spend WITHOUT PROGRESS (no executed tool step): refusal-backoff spins,
+  // endless provider retries, and bounce loops terminate into the consolidation
+  // wrap-up, while a long-running turn that keeps executing tools stays alive —
+  // its termination is owned by the step budget's hard cap and the spin guards.
+  // Field regression this replaces: an ABSOLUTE 30m budget measured from turn start
+  // killed genuinely progressing autonomous runs mid-work.
   const turnStartedAt = Date.now();
   const turnBudgetMs = turnMaxMs();
+  // Reset on every executed tool step and on mid-turn steering.
+  let lastProgressAt = turnStartedAt;
   // "steps" | "time" — drives honest wording in the consolidation message.
   let stopKind: "steps" | "time" = "steps";
   let step = 1;
@@ -449,7 +457,8 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // ladder is exhausted the loop keeps resending with capped exponential backoff
   // instead of surfacing a terminal error (gjc parity: a refusal is retried until
   // it clears or the user cancels — Esc aborts the backoff wait via opts.signal,
-  // and the turn wall-clock budget still bounds the whole turn).
+  // and the stall budget bounds the spin: refusals execute no tools, so the
+  // no-progress clock keeps ticking and terminates the turn at JEO_TURN_MAX_MS).
   const MAX_REFUSAL_RETRIES = GUARD_LIMITS.MAX_REFUSAL_RETRIES;
   let refusalRetries = 0;
   let lastSig = "";
@@ -475,9 +484,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // schemas ONCE instead of rebuilding/reallocating the list on every step.
   const turnToolSchemas = nativeToolSchemasFor(Object.keys(tools));
   while (true) {
-    if (turnBudgetMs > 0 && Date.now() - turnStartedAt > turnBudgetMs) {
+    if (turnBudgetMs > 0 && Date.now() - lastProgressAt > turnBudgetMs) {
       stopKind = "time";
-      budgetStopReason = `turn wall-clock budget of ${Math.round(turnBudgetMs / 60_000)}m exceeded (JEO_TURN_MAX_MS) without done`;
+      budgetStopReason = `no tool progress for ${Math.round(turnBudgetMs / 60_000)}m — turn stall budget (JEO_TURN_MAX_MS) exceeded without done`;
       break;
     }
     if (step > budget.limit()) {
@@ -515,6 +524,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         consecutiveFailures = 0;
         recentStepSigs.length = 0;
         budget.noteSteer?.();
+        lastProgressAt = Date.now(); // fresh instruction = fresh progress window
       }
     }
 
@@ -618,8 +628,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       //      backoff instead of surfacing a terminal error (gjc parity: gjc's
       //      session auto-retry classifies a refusal as retryable and never ends
       //      the turn on it). Esc/cancel aborts the wait via opts.signal and the
-      //      loop-top check turns it into "Cancelled."; JEO_TURN_MAX_MS still
-      //      bounds the whole turn.
+      //      loop-top check turns it into "Cancelled."; the JEO_TURN_MAX_MS stall
+      //      budget still bounds the spin (a refusal loop executes no tools, so
+      //      the no-progress clock never resets).
       if (isRefusalError(err)) {
         refusalRetries++;
         if (refusalRetries === 1) {
@@ -1133,6 +1144,8 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     // repeated call's ACTUAL last outcome (A). A skipped/bounced step never reaches
     // here, so this always holds the last REAL execution's results.
     lastResults = results;
+    // Executed tool step = progress: the stall budget clocks time WITHOUT this.
+    if (results.some(r => r.executed)) lastProgressAt = Date.now();
     step++;
   }
 
@@ -1143,7 +1156,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   const extInfo = budget.extensionsUsed() > 0 ? ` after ${budget.extensionsUsed()} extension(s)` : "";
   const stopInfo = budgetStopReason ? `; ${budgetStopReason}` : "";
   const budgetLabel = stopKind === "time"
-    ? `turn time budget of ${Math.round(turnBudgetMs / 60_000)}m reached`
+    ? `turn time budget of ${Math.round(turnBudgetMs / 60_000)}m reached (no tool progress)`
     : `step budget of ${budget.limit()} reached`;
   try {
     if (!opts.signal?.aborted) {

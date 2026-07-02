@@ -126,13 +126,14 @@ export function codexResponsesRequest(
     // frame can show the model's thinking instead of a frozen "calling model (Ns)…".
     payload.reasoning = { effort: options.reasoningEffort, summary: "auto" };
   }
-  // Cap the response length (gjc parity): the computed per-call budget must reach the wire,
-  // otherwise the backend free-runs to its own default.
-  if (options.maxTokens) payload.max_output_tokens = options.maxTokens;
+  // Cap the response length (gjc parity) on the PUBLIC Responses API only. The ChatGPT/Codex
+  // OAuth backend 400s on this parameter ({"detail":"Unsupported parameter: max_output_tokens"}),
+  // so the cap is applied inside the api_key branch below.
   // OAuth → the undocumented ChatGPT/Codex backend (codex headers + account-id).
   // API key → the public OpenAI Responses API (`/v1/responses`) with a plain Bearer.
   // Both speak the same Responses schema (the body above), so only url+headers differ.
   if (credential.kind === "api_key") {
+    if (options.maxTokens) payload.max_output_tokens = options.maxTokens;
     const base = (options.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
     // Stateless reasoning replay (public Responses API): ask for encrypted reasoning content
     // so it can be captured and threaded back into a later `input` (store stays false).

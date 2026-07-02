@@ -88,9 +88,12 @@ test("cycle guard: genuinely progressing turns (distinct targets) are never boun
   expect(history.some(m => m.content.includes("You are cycling through the same"))).toBe(false);
 });
 
-// ── Turn wall-clock budget ─────────────────────────────────────────────────
-// Step budgets bound the COUNT of model calls; JEO_TURN_MAX_MS bounds their
-// total TIME — the definitive "thinking can never run forever" guarantee.
+// ── Turn wall-clock stall budget ───────────────────────────────────────────
+// Step budgets bound the COUNT of model calls; JEO_TURN_MAX_MS bounds the TIME a
+// turn may spend WITHOUT PROGRESS (no executed tool step) — the definitive
+// "thinking can never spin forever" guarantee. A turn that keeps executing tools
+// is NOT killed by the clock (field regression: an absolute 30m budget measured
+// from turn start terminated genuinely progressing autonomous runs mid-work).
 
 test("turnMaxMs: defaults to 30 minutes, honors JEO_TURN_MAX_MS, 0 disables", async () => {
   const { turnMaxMs } = await import("../src/agent/engine");
@@ -101,19 +104,47 @@ test("turnMaxMs: defaults to 30 minutes, honors JEO_TURN_MAX_MS, 0 disables", as
   expect(turnMaxMs({ JEO_TURN_MAX_MS: "-5" })).toBe(30 * 60 * 1000);
 });
 
-test("turn wall-clock budget: a turn that outlives JEO_TURN_MAX_MS consolidates instead of spinning", async () => {
+test("turn stall budget: a turn that keeps executing tools outlives JEO_TURN_MAX_MS", async () => {
   let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      await new Promise(r => setTimeout(r, 25)); // each step costs real wall time
+      if (turn > 6) return JSON.stringify({ tool: "done", arguments: { reason: "long run finished" } });
+      return JSON.stringify({ tool: "probe", arguments: { n: turn } }); // always novel, always executed
+    },
+  }));
+  const saved = process.env.JEO_TURN_MAX_MS;
+  process.env.JEO_TURN_MAX_MS = "60"; // total run (~175ms) far exceeds the budget …
+  try {
+    const { runAgentLoop } = await import("../src/agent/engine");
+    const result = await runAgentLoop([{ role: "system", content: "sys" }], {
+      cwd: process.cwd(),
+      maxSteps: 10_000,
+      tools: { probe: async () => ({ success: true, output: "ok" }) },
+    });
+    // … but every step executed a tool (progress), so the stall clock never fired.
+    expect(result.done).toBe(true);
+    expect(result.doneReason).toBe("long run finished");
+  } finally {
+    if (saved === undefined) delete process.env.JEO_TURN_MAX_MS; else process.env.JEO_TURN_MAX_MS = saved;
+  }
+});
+
+test("turn stall budget: a spin with NO tool progress consolidates after JEO_TURN_MAX_MS", async () => {
   await mock.module("../src/agent/loop", () => ({
     callLlm: async (_h: Message[], options: { jsonMode?: boolean } = {}) => {
       // The post-budget consolidation call is plain-prose (jsonMode false).
       if (options.jsonMode === false) return "wrap-up: work so far summarized";
-      turn++;
-      await new Promise(r => setTimeout(r, 25)); // each step costs real wall time
-      return JSON.stringify({ tool: "probe", arguments: { n: turn } }); // always novel → never step-stopped
+      // Every main-step call refuses → the refusal ladder + backoff spin: zero
+      // tool executions, so the stall clock keeps ticking from turn start.
+      throw new Error("OpenAI returned no content (finish_reason=content_filter)");
     },
   }));
-  const saved = process.env.JEO_TURN_MAX_MS;
-  process.env.JEO_TURN_MAX_MS = "60"; // 60ms budget → exceeded after ~3 steps
+  const savedMax = process.env.JEO_TURN_MAX_MS;
+  const savedBackoff = process.env.JEO_REFUSAL_BACKOFF_BASE_MS;
+  process.env.JEO_TURN_MAX_MS = "60";
+  process.env.JEO_REFUSAL_BACKOFF_BASE_MS = "1"; // keep the rung-4 backoff waits tiny
   try {
     const { runAgentLoop } = await import("../src/agent/engine");
     const result = await runAgentLoop([{ role: "system", content: "sys" }], {
@@ -124,9 +155,10 @@ test("turn wall-clock budget: a turn that outlives JEO_TURN_MAX_MS consolidates 
     expect(result.done).toBe(false);
     expect(result.doneReason).toContain("wrap-up: work so far summarized");
     expect(result.doneReason).toContain("turn time budget");
-    expect(turn).toBeLessThan(20); // stopped by TIME, nowhere near the step cap
+    expect(result.doneReason).toContain("no tool progress");
   } finally {
-    if (saved === undefined) delete process.env.JEO_TURN_MAX_MS; else process.env.JEO_TURN_MAX_MS = saved;
+    if (savedMax === undefined) delete process.env.JEO_TURN_MAX_MS; else process.env.JEO_TURN_MAX_MS = savedMax;
+    if (savedBackoff === undefined) delete process.env.JEO_REFUSAL_BACKOFF_BASE_MS; else process.env.JEO_REFUSAL_BACKOFF_BASE_MS = savedBackoff;
   }
 });
 

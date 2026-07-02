@@ -40,6 +40,7 @@ async function invokeCallLlm(history: Message[], options: {
   onReasoningStart?: () => void;
   onReasoningArtifact?: (artifact: import("../ai/types").ReasoningArtifact) => void;
   tools?: import("../ai/types").NativeToolSchema[];
+  sessionKey?: string;
 }): Promise<string> {
   const mod = await import("./loop");
   return mod.callLlm(history, options);
@@ -265,6 +266,11 @@ export interface AgentLoopOptions {
    *  so an additional query typed while the turn runs steers the live turn instead of
    *  waiting for the next prompt. Return [] when nothing is pending. */
   steer?: () => string[];
+  /** Stable per-conversation key (the session id): threaded to every model call for
+   *  provider-side prompt caching (gjc parity — Codex prompt_cache_key/session_id).
+   *  An agent loop replays nearly-identical history each step, so cache hits here cut
+   *  both latency and billed input tokens. */
+  sessionKey?: string;
 }
 
 export interface AgentLoopResult {
@@ -388,7 +394,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
                 "with what you have already found this turn, and state explicitly anything that is still uncertain.",
             },
           ],
-          { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: opts.signal },
+          { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: opts.signal, sessionKey: opts.sessionKey },
         );
         const consolidated = wrapUp.trim();
         if (consolidated) {
@@ -557,6 +563,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               maxTokens: opts.maxTokens,
               reasoningEffort: opts.reasoningEffort,
               signal: opts.signal,
+              sessionKey: opts.sessionKey,
               onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
               onToken,
               onReasoning,
@@ -1132,7 +1139,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               "the key findings/changes so far, and what remains to be done next.",
           },
         ],
-        { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: opts.signal },
+        { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: opts.signal, sessionKey: opts.sessionKey },
       );
       const consolidated = wrapUp.trim();
       if (consolidated) {

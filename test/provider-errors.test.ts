@@ -65,19 +65,22 @@ test("withRetry: equal jitter lands the wait in [0.5x, 1x] of the capped backoff
   expect(sleeps).toEqual([50]); // 100/2 + 0*(100/2)
 });
 
-test("withRetry: a Retry-After error overrides backoff (capped at 30s)", async () => {
+test("withRetry: a Retry-After error overrides backoff and is honored IN FULL (gjc parity, no 30s cap)", async () => {
   const sleeps: number[] = [];
   let calls = 0;
   await withRetry(
     async () => {
       calls++;
       if (calls === 1) throw new ProviderHttpError("OpenAI", 429, "slow down", undefined, 2000);
-      if (calls === 2) throw new ProviderHttpError("OpenAI", 429, "still", undefined, 99_000); // > cap
+      if (calls === 2) throw new ProviderHttpError("OpenAI", 429, "still", undefined, 99_000); // long server window
       return "ok";
     },
     { retries: 5, baseDelayMs: 100, random: () => 1, sleep: async ms => { sleeps.push(ms); } }
   );
-  expect(sleeps).toEqual([2000, 30000]); // honored, then capped at 30s
+  // Both server-directed delays are honored verbatim — a provider that names its own
+  // wait is authoritative (previously the second was silently compressed to 30s and
+  // retried into the still-closed window).
+  expect(sleeps).toEqual([2000, 99_000]);
 });
 
 test("parseRetryFromBody extracts Google/Gemini retry hints (header absent)", () => {

@@ -37,6 +37,11 @@ export interface RefreshResult {
   credential: Credential;
 }
 
+/** Refresh-ahead window: a token expiring within this many ms is treated as stale
+ *  and refreshed NOW, so it never dies mid-request. gjc parity: auth-storage.ts
+ *  OAUTH_REFRESH_SKEW_MS = 60_000. */
+export const OAUTH_REFRESH_SKEW_MS = 60_000;
+
 /**
  * Exchange the stored refresh token for a fresh access token via the provider's
  * real OAuth token endpoint, persist it, and return the updated credential.
@@ -56,7 +61,7 @@ export async function refreshOAuthToken(provider: AuthProvider): Promise<Refresh
       return { refreshed: false, reason, credential: await resolveCredential(provider) };
     }
 
-    if (stored.expires && stored.expires > Date.now()) {
+    if (stored.expires && stored.expires > Date.now() + OAUTH_REFRESH_SKEW_MS) {
       return {
         refreshed: true,
         reason: "already_refreshed",

@@ -1027,6 +1027,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           maxTokens: resolveMaxOutputTokens(activeModel, sessionThinking),
           reasoningEffort: sessionThinking ? thinkingToReasoningEffort(sessionThinking) : undefined,
           signal: ac.signal,
+          sessionKey: sessionId,
           steer: drainSteer,
           events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone }, persistTurnTail), opik),
         });
@@ -1046,6 +1047,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             maxTokens: resolveMaxOutputTokens(activeModel, sessionThinking),
             reasoningEffort: sessionThinking ? thinkingToReasoningEffort(sessionThinking) : undefined,
             signal: ac.signal,
+            sessionKey: sessionId,
             steer: drainSteer,
             events: wrapEvents(withToolDetailCapture(tui ? tui.events() : streamEvents), opik),
           });
@@ -2693,7 +2695,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // TTY only — the caller prints scriptable guidance otherwise.
   const pickApiKeyProvider = async (statuses: Awaited<ReturnType<typeof describeAllProviders>>): Promise<AuthProvider | undefined> => {
     const subs = new Set<string>(SUBSCRIPTION_PROVIDER_NAMES); // surfaced under OAuth/subscription login instead
-    const keyed = new Set<string>(API_KEY_ONLY_PROVIDERS);
+    // kimi is dual-credential (moonshot API key OR Kimi Code OAuth) — keep it key-settable.
+    const keyed = new Set<string>([...API_KEY_ONLY_PROVIDERS, "kimi"]);
     const list = apiKeyPicker(statuses.filter(s => keyed.has(s.name) && !subs.has(s.name)), true);
     let chosen: ProviderName | undefined;
     await runSelectPicker(
@@ -3693,7 +3696,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         // `/provider key [name] [key]` → store an API key for an API-key-only provider
         // (groq/deepseek/mistral/…). Interactive: pick the provider, then paste the key.
         if (name === "key") {
-          const keyed = new Set<string>(API_KEY_ONLY_PROVIDERS);
+          // kimi is dual-credential (moonshot API key OR Kimi Code OAuth) — keep it key-settable.
+          const keyed = new Set<string>([...API_KEY_ONLY_PROVIDERS, "kimi"]);
           let target = tokens.slice(1).map(t => t.toLowerCase()).find(t => keyed.has(t)) as AuthProvider | undefined;
           // A trailing token after the provider name is treated as the key itself.
           const inlineKey = target ? tokens.slice(1).filter(t => t.toLowerCase() !== target).pop() : undefined;

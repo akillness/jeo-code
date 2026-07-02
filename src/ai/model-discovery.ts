@@ -11,7 +11,7 @@ import { readGlobalConfig, type Config } from "../agent/state";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
 import type { ProviderName } from "./types";
 import { PROVIDER_NAMES } from "./provider-status";
-import { catalogByProvider, CODEX_MODELS } from "./model-catalog";
+import { catalogByProvider, CODEX_MODELS, KIMI_CODE_MODELS } from "./model-catalog";
 import { extractChatgptAccountId } from "./providers/openai-responses";
 import { openaiCompatDef } from "./providers/openai-compatible-catalog";
 
@@ -291,7 +291,11 @@ export function catalogOr(result: ProviderModelsResult): ProviderModelsResult {
   if (!eligible) return result;
   const ids = result.provider === "openai" && result.source === "oauth"
     ? [...CODEX_MODELS]
-    : catalogByProvider(result.provider).map(m => m.providerModel);
+    : result.provider === "kimi" && result.source === "oauth"
+      // Kimi OAuth (Kimi Code subscription) serves ONLY the Kimi Code catalog —
+      // moonshot API-platform ids would 404 against api.kimi.com/coding.
+      ? KIMI_CODE_MODELS.map(id => `kimi/${id}`)
+      : catalogByProvider(result.provider).map(m => m.providerModel);
   if (ids.length === 0) return result;
   return { ...result, models: ids, ok: true, fallback: true };
 }

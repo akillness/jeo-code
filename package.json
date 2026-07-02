@@ -1,6 +1,6 @@
 {
   "name": "jeo-code",
-  "version": "0.7.27",
+  "version": "0.7.28",
 
   "description": "Clean, highly optimized AI coding agent using spec-first loop",
   "type": "module",

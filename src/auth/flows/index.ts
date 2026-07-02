@@ -5,6 +5,7 @@ import { loginAnthropic, refreshAnthropicToken } from "./anthropic";
 import { loginOpenAI, refreshOpenAIToken } from "./openai";
 import { loginGoogle, refreshGoogleToken } from "./google";
 import { loginAntigravity, refreshAntigravityToken } from "./antigravity";
+import { loginKimi, refreshKimiToken } from "./kimi";
 
 export interface OAuthFlow {
   readonly provider: OAuthProvider;
@@ -52,9 +53,18 @@ export const OAUTH_FLOW_REGISTRY: Record<OAuthProvider, OAuthFlow> = {
     verifiedEndToEnd: true,
     note: "Antigravity desktop-app OAuth client; serves antigravity/* models (Gemini 3, Claude, GPT-OSS via Cloud Code Assist). The Google Cloud projectId is discovered automatically at login.",
   },
+  kimi: {
+    provider: "kimi",
+    label: "Kimi Code (Moonshot subscription)",
+    login: loginKimi,
+    refresh: refreshKimiToken,
+    verifiedEndToEnd: true,
+    note: "Device-code OAuth (auth.kimi.com); the token is served via the Anthropic-compatible endpoint at api.kimi.com/coding. A KIMI_API_KEY, when set and no OAuth is stored, uses the OpenAI-compatible api.moonshot.ai/v1.",
+  },
 };
 
 export { loginAnthropic, refreshAnthropicToken } from "./anthropic";
 export { loginOpenAI, refreshOpenAIToken } from "./openai";
 export { loginGoogle, refreshGoogleToken } from "./google";
 export { loginAntigravity, refreshAntigravityToken, discoverAntigravityProjectId, antigravityClientSecret } from "./antigravity";
+export { loginKimi, refreshKimiToken, getKimiCommonHeaders } from "./kimi";

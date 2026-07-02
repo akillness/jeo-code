@@ -12,8 +12,16 @@ test("isUsageLimitError: quota/usage phrasings yes, per-minute rate limit no", (
   expect(isUsageLimitError(new Error('Anthropic request failed (HTTP 429): {"error":{"message":"You have exceeded your usage limit."}}'))).toBe(true);
   expect(isUsageLimitError(new Error("usage_limit_reached"))).toBe(true);
   expect(isUsageLimitError(new Error("Quota exceeded for this billing period"))).toBe(true);
+  // gjc-parity phrasings: model/message window limits + credit exhaustion are persistent
+  // usage limits (need a model/credential switch), not per-minute 429s.
+  expect(isUsageLimitError(new Error("model_limit_reached: limit for this model reached"))).toBe(true);
+  expect(isUsageLimitError(new Error("message_limit_reached"))).toBe(true);
+  expect(isUsageLimitError(new Error("out_of_credits: no credits remaining"))).toBe(true);
   // Per-minute window — transient, must stay retryable.
   expect(isUsageLimitError(new Error("Rate limit exceeded: too many requests per minute"))).toBe(false);
+  // gjc test fixture: a GENERIC "would exceed your rate limit" 429 is NOT a usage limit —
+  // it retries (unbounded in gjc), honoring the server-directed delay.
+  expect(isUsageLimitError(new Error('429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your rate limit. Please try again later."}}'))).toBe(false);
   // Gemini RESOURCE_EXHAUSTED is deliberately NOT classified as a persistent usage limit.
   expect(isUsageLimitError(new Error("HTTP 429: RESOURCE_EXHAUSTED"))).toBe(false);
 });

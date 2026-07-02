@@ -6,7 +6,7 @@ import "./register-providers"; // side-effect: registers built-in adapters into 
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId, effectiveAliasesFor } from "./model-registry";
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
-import { toProviderModel, CODEX_MODELS, findCatalogModel } from "./model-catalog";
+import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel } from "./model-catalog";
 import { xaiCredential } from "./providers/xai";
 import { OPENAI_COMPAT_NAMES, isOpenAICompatProvider } from "./providers/openai-compatible-catalog";
 import { withRetry, defaultRetryable, type RetryOptions } from "../util/retry";
@@ -194,19 +194,18 @@ const ALIAS_DEFAULTS = { fast: "ollama/qwen2.5:0.5b", local: "ollama/qwen2.5:0.5
  * requestMaxRetries + 1. When unset, the `withRetry` defaults apply (3 attempts),
  * but rate-limit (429) errors get a more generous budget + a backoff floor so a
  * transient per-minute window can clear instead of the very first 429 instantly
- * exhausting auto-retry. A server-directed retry delay above the five-minute
- * budget is surfaced immediately with its reset hint instead of being capped and
- * retried pointlessly. Explicit config (`requestMaxRetries`/`maxDelayMs`) always
- * wins and disables the matching rate-limit default.
- * `maxDelayMs` caps per-attempt backoff when provided.
+ * exhausting auto-retry. A server-directed retry delay is honored IN FULL — no
+ * default ceiling — because a generic 429 is retried forever, not treated as fatal
+ * past some arbitrary budget (gjc parity: even a multi-hour Anthropic rate-limit
+ * window is retried, not bailed on); `rateLimitMaxServerDelayMs` remains available
+ * as an explicit opt-in for a caller that truly cannot wait that long. Explicit
+ * config (`requestMaxRetries`/`maxDelayMs`) always wins and disables the matching
+ * rate-limit default. `maxDelayMs` caps per-attempt backoff when provided.
  */
 const DEFAULT_RATE_LIMIT_RETRIES = 6; // total attempts for 429 (initial + 5 retries)
 // 429 floor when the server sends no Retry-After. Escalates per attempt inside
 // withRetry (2s → 4s → 8s → 16s → 30s ≈ 60s total), spanning a per-minute window.
 const DEFAULT_RATE_LIMIT_MIN_DELAY_MS = 2000;
-// GJC parity for server-directed 429s: retry short windows, but do not hang a CLI
-// through long subscription/account resets.
-const DEFAULT_RATE_LIMIT_MAX_SERVER_DELAY_MS = 5 * 60 * 1000;
 export function resolveRetryOptions(retry: Config["retry"], kind: "request" | "stream" = "request"): RetryOptions {
   const opts: RetryOptions = { isRetryable: defaultRetryable };
 
@@ -244,7 +243,12 @@ export function resolveRetryOptions(retry: Config["retry"], kind: "request" | "s
   // 429 backoff floor: explicit wins; else default UNLESS the user pinned maxDelayMs.
   if (typeof retry?.rateLimitMinDelayMs === "number") opts.rateLimitMinDelayMs = retry.rateLimitMinDelayMs;
   else if (typeof retry?.maxDelayMs !== "number") opts.rateLimitMinDelayMs = DEFAULT_RATE_LIMIT_MIN_DELAY_MS;
-  opts.rateLimitMaxServerDelayMs = DEFAULT_RATE_LIMIT_MAX_SERVER_DELAY_MS;
+  // No default `rateLimitMaxServerDelayMs` ceiling: gjc parity retries a generic 429
+  // forever, honoring however long the server asks (see the doc comment above). Usage
+  // limits fail fast on their own via isUsageLimitError → defaultRetryable, well before a
+  // wait is ever computed, so this is safe. An explicit config value is still honored for
+  // a caller that truly cannot wait an unbounded server-directed delay.
+  if (typeof retry?.rateLimitMaxServerDelayMs === "number") opts.rateLimitMaxServerDelayMs = retry.rateLimitMaxServerDelayMs;
 
   // Config-driven fail-fast overrides: a status in `failFastStatuses` or a message
   // matching any `failFastPattern` is forced non-retryable, layered on top of the
@@ -281,12 +285,18 @@ export function resolveRetryOptions(retry: Config["retry"], kind: "request" | "s
 /**
  * Whether the bundled adapter can serve this provider+model over OAuth end-to-end.
  * OpenAI OAuth (ChatGPT/Codex) only serves Codex models, so any other OpenAI model
- * must use an API key. A provider whose OAuth backend is not verified end-to-end
+ * must use an API key. Kimi OAuth (Kimi Code subscription) only serves the Kimi Code
+ * catalog (api.kimi.com/coding) — Moonshot API-platform ids (kimi-latest, moonshot-v1-*)
+ * need a KIMI_API_KEY. A provider whose OAuth backend is not verified end-to-end
  * cannot serve any model over OAuth. Everything else (Anthropic Messages, Gemini /
  * Antigravity Cloud Code Assist) is served end-to-end.
  */
 function oauthServesModel(provider: AuthProvider, model: string): boolean {
   if (provider === "openai") return CODEX_MODELS.includes(model);
+  if (provider === "kimi") {
+    const wire = model.startsWith("kimi/") ? model.slice(5) : model;
+    return KIMI_CODE_MODELS.includes(wire);
+  }
   if (isOAuthProvider(provider) && OAUTH_FLOW_REGISTRY[provider].verifiedEndToEnd === false) return false;
   return true;
 }
@@ -375,6 +385,7 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
     onReasoning: options.onReasoning,
     onReasoningArtifact: options.onReasoningArtifact,
     tools: options.tools,
+    sessionKey: options.sessionKey,
   };
   // Caller-supplied retry sink rides on the config-derived retry budget so the
   // engine/TUI can surface "rate limited — retrying in Ns" instead of a silent wait.
@@ -383,7 +394,12 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
   // never replays after the first emitted chunk). Both fall back to `maxRetries`,
   // and an unset stream budget keeps the conservative withRetry default — the
   // generous gjc default of 100 only applies when the user configures it.
-  const retry: RetryOptions = { ...resolveRetryOptions(config.retry, kind), ...(options.onRetry ? { onRetry: options.onRetry } : {}) };
+  // `retry.signal` is the caller's ORIGINAL signal (Ctrl-C / turn abort) — not the
+  // per-attempt fetch timeout composed below — so a long, honored server-directed
+  // retry wait (see resolveRetryOptions) can still be cancelled by the user without
+  // waiting out the full delay, while a single attempt's timeout never cuts short
+  // the NEXT attempt's backoff sleep.
+  const retry: RetryOptions = { ...resolveRetryOptions(config.retry, kind), ...(options.onRetry ? { onRetry: options.onRetry } : {}), ...(callOptions.signal ? { signal: callOptions.signal } : {}) };
 
   if (provider === "ollama" || provider === "lmstudio") {
     return { adapter, callOptions, credential: { kind: "none", provider: "openai" }, retry };
@@ -414,6 +430,11 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
   if (provider === "openai" && effective.kind === "oauth" && !isLocalOpenAi && !CODEX_MODELS.includes(model)) {
     throw new Error(
       "OpenAI OAuth 자격증명은 Codex 모델(gpt-5.5/gpt-5.4)만 지원. OPENAI_API_KEY를 설정하거나 모델을 변경하세요"
+    );
+  }
+  if (provider === "kimi" && effective.kind === "oauth" && !oauthServesModel("kimi", model)) {
+    throw new Error(
+      `Kimi OAuth (Kimi Code subscription) serves only the Kimi Code models (${KIMI_CODE_MODELS.join(", ")}). Set KIMI_API_KEY for Moonshot API models, or pick a Kimi Code model with /model.`,
     );
   }
   if (effective.kind === "none" && !isLocalOpenAi) {

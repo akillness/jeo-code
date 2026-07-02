@@ -437,6 +437,9 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
     cwd: ctx.cwd,
     model,
     maxSteps,
+    // Per-run prompt-cache key: each worker replays its own growing history every
+    // step, so a stable per-run key gets provider cache hits (gjc sub-session parity).
+    sessionKey: crypto.randomUUID(),
     // Bounded delegation: ralph/team subagents keep an exact step contract; the
     // orchestrator owns retries, so the gjc step-extension flow is disabled here.
     budget: { maxExtensions: 0 },

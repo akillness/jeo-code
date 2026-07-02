@@ -12,9 +12,14 @@ const CLAUDE_CODE_VERSION = "2.1.63";
 const CLAUDE_CODE_SYSTEM_INSTRUCTION = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 const CLAUDE_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
 /** Betas needed for API-key requests: interleaved-thinking enables thinking+tools,
- *  prompt-caching-scope gives scoped cache breakpoints. */
+ *  context-management matches gjc's default beta set (sent on ALL requests),
+ *  prompt-caching-scope gives scoped cache breakpoints.
+ *  ponytail: fine-grained-tool-streaming-2025-05-14 — gjc sends it and repairs truncated
+ *  tool-argument JSON; jeo parses accumulated tool JSON without that repair pass, so the
+ *  beta stays off until a repair step exists. */
 const ANTHROPIC_API_KEY_BETA = [
   "interleaved-thinking-2025-05-14",
+  "context-management-2025-06-27",
   "prompt-caching-scope-2026-01-05",
 ];
 const ANTHROPIC_OAUTH_BETA = [
@@ -46,8 +51,10 @@ function stripAnthropicPrefix(model: string): string {
   return model.startsWith("anthropic/") ? model.slice(10) : model;
 }
 
-function shouldUseClaudeCodeOAuthShape(model: string, credential: Credential): boolean {
-  return credential.kind === "oauth" && !model.startsWith("claude-3-5-haiku");
+function shouldUseClaudeCodeOAuthShape(model: string, credential: Credential, baseUrl?: string): boolean {
+  // Claude-Code OAuth cloaking is for api.anthropic.com only. An OAuth credential
+  // against a custom base (e.g. Kimi Code at api.kimi.com/coding) is a plain bearer.
+  return credential.kind === "oauth" && !baseUrl && !model.startsWith("claude-3-5-haiku");
 }
 
 function createClaudeCloakingUserId(): string {
@@ -68,9 +75,10 @@ function anthropicSystemBlocks(
   model: string,
   credential: Credential,
   billingPayload: Record<string, unknown>,
+  baseUrl?: string,
 ): AnthropicSystemBlock[] | undefined {
   const blocks: AnthropicSystemBlock[] = [];
-  if (shouldUseClaudeCodeOAuthShape(model, credential)) {
+  if (shouldUseClaudeCodeOAuthShape(model, credential, baseUrl)) {
     const billingSeed = systemPrompt ? { ...billingPayload, system: [systemPrompt] } : billingPayload;
     blocks.push(
       { type: "text", text: createClaudeBillingHeader(billingSeed) },
@@ -89,17 +97,19 @@ function anthropicSystemBlocks(
   return blocks;
 }
 
-/** Anthropic extended-thinking budget by reasoning effort (kept under max_tokens). Cross-provider
- *  parity (matches Gemini's tiers): minimal/low/medium/high ALL enable thinking with scaling
+/** Anthropic extended-thinking budget by reasoning effort (kept under max_tokens). Tiers match
+ *  gjc's ANTHROPIC_THINKING table: minimal/low/medium/high ALL enable thinking with scaling
  *  depth — reasoning works at every thinking level (gajae parity: Minimal is a real effort).
- *  Only an UNSET effort stays non-thinking (the explicit /fast off path). */
-function anthropicThinkingBudget(effort: CallOptions["reasoningEffort"], maxTokens: number): number | undefined {
+ *  Only an UNSET effort stays non-thinking (the explicit /fast off path). The "xhigh" row is
+ *  correct-by-table even though upstream currently folds xhigh→high before it arrives. */
+function anthropicThinkingBudget(effort: CallOptions["reasoningEffort"] | "xhigh", maxTokens: number): number | undefined {
   let budget: number;
   switch (effort) {
-    case "minimal": budget = 2000; break;
-    case "low": budget = 4000; break;
-    case "medium": budget = 10000; break;
-    case "high": budget = 24000; break;
+    case "minimal": budget = 1024; break;
+    case "low": budget = 4096; break;
+    case "medium": budget = 8192; break;
+    case "high": budget = 16384; break;
+    case "xhigh": budget = 32768; break;
     default: return undefined;
   }
   return Math.min(budget, Math.max(1024, maxTokens - 1024));
@@ -264,7 +274,7 @@ export function anthropicPayload(
     // Extended thinking requires max_tokens strictly above the thinking budget.
     max_tokens: thinkingBudget !== undefined ? Math.max(maxTokens, thinkingBudget + 1024) : maxTokens,
   };
-  if (credential.kind === "oauth") payload.metadata = { user_id: createClaudeCloakingUserId() };
+  if (shouldUseClaudeCodeOAuthShape(model, credential, options.baseUrl)) payload.metadata = { user_id: createClaudeCloakingUserId() };
   if (effort !== undefined) {
     // Enable Claude extended thinking. Extended thinking forbids a custom temperature, so
     // temperature is only set on the non-thinking path.
@@ -294,7 +304,7 @@ export function anthropicPayload(
     payload.tool_choice = { type: "auto" };
   }
   if (stream) payload.stream = true;
-  const system = anthropicSystemBlocks(systemPrompt, model, credential, payload);
+  const system = anthropicSystemBlocks(systemPrompt, model, credential, payload, options.baseUrl);
   if (system) payload.system = system;
   return JSON.stringify(payload);
 }
@@ -311,7 +321,7 @@ export function anthropicRequest(
     // Anthropic-compatible providers (z.ai, MiniMax, …) accept the Messages wire
     // format at their own host; an explicit baseUrl pins `${base}/v1/messages`.
     url: options.baseUrl ? `${options.baseUrl.replace(/\/$/, "")}/v1/messages` : ANTHROPIC_URL,
-    headers: headersFor(credential, stream, stripAnthropicPrefix(options.model)),
+    headers: { ...headersFor(credential, stream, stripAnthropicPrefix(options.model), options.baseUrl), ...options.extraHeaders },
     body: anthropicPayload(messages, options, stream, includeTemperature, credential, stripArtifacts),
   };
 }
@@ -325,6 +335,22 @@ function isDeprecatedTemperatureError(status: number, detail: string): boolean {
  *  once with artifacts stripped (plain string history) so the turn survives. */
 function isReasoningArtifactError(status: number, detail: string): boolean {
   return status === 400 && /thinking|signature|redacted_thinking/i.test(detail);
+}
+
+/** gjc parity (getSafeAnthropicHeaderEvidence): fold Anthropic's rate-limit response
+ *  headers into a 429's error detail so the retry classifier can see them. The decisive
+ *  usage-exhaustion signal (`anthropic-ratelimit-unified-overage-disabled-reason:
+ *  out_of_credits`) often arrives ONLY as a header — without this, an out-of-credits 429
+ *  reads like a generic per-minute rate limit and is retried pointlessly. */
+function anthropicRateLimitEvidence(headers: Headers): string {
+  const evidence: string[] = [];
+  for (const [name, value] of headers) {
+    const lower = name.toLowerCase();
+    if (lower === "retry-after" || lower === "retry-after-ms" || lower.startsWith("anthropic-ratelimit-")) {
+      evidence.push(`${lower}=${value}`);
+    }
+  }
+  return evidence.length > 0 ? ` Anthropic rate-limit evidence: ${evidence.sort().join(", ")}` : "";
 }
 
 async function postAnthropic(
@@ -354,10 +380,13 @@ async function postAnthropic(
     throw await providerHttpError("Anthropic", response, stream ? "(stream)" : undefined);
   }
 
+  // 429s carry their rate-limit headers in the DETAIL so isUsageLimitError /
+  // friendlyProviderError can classify on the full evidence (gjc parity).
+  const enrichedDetail = response.status === 429 ? `${detail}${anthropicRateLimitEvidence(response.headers)}` : detail;
   throw new ProviderHttpError(
     "Anthropic",
     response.status,
-    detail,
+    enrichedDetail,
     stream ? "(stream)" : undefined,
     parseRetryAfter(response.headers.get("retry-after")) ?? parseRetryFromBody(detail),
   );
@@ -543,8 +572,18 @@ function claudeCodeOAuthHeaders(stream: boolean, model: string): Record<string, 
   };
 }
 
-function headersFor(credential: Credential, stream: boolean, model: string): Record<string, string> {
+function headersFor(credential: Credential, stream: boolean, model: string, baseUrl?: string): Record<string, string> {
   if (credential.kind === "oauth") {
+    // OAuth against a NON-Anthropic base (Kimi Code, …): plain bearer, no Claude-Code
+    // cloaking headers/betas. gjc parity: buildAnthropicHeaders' generic-bearer branch.
+    if (baseUrl) {
+      return {
+        accept: stream ? "text/event-stream" : "application/json",
+        "content-type": "application/json",
+        authorization: `Bearer ${credential.token}`,
+        "anthropic-version": "2023-06-01",
+      };
+    }
     return {
       "content-type": "application/json",
       authorization: `Bearer ${credential.token}`,

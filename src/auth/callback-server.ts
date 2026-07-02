@@ -27,6 +27,19 @@ export interface OAuthCallbackFlowOptions {
 
 export type CallbackResult = { code: string; state: string };
 
+/** Thrown when the fixed callback port cannot be bound and the provider forbids a
+ *  port fallback (fixed redirect URI). Typed so callers (e.g. the OpenAI flow) can
+ *  detect the bind failure and fall back to the device-code flow instead of
+ *  string-matching the error message. */
+export class CallbackPortUnavailableError extends Error {
+  readonly port: number;
+  constructor(port: number) {
+    super(`OAuth callback port ${port} unavailable and this provider requires a fixed redirect URI.`);
+    this.name = "CallbackPortUnavailableError";
+    this.port = port;
+  }
+}
+
 // "jeo" wordmark — bold forged monospace lettering on a neon blue→violet→pink
 // gradient (the mascot's synthwave palette), generated via god-tibo-imagen and
 // matching jeo-pi's bold-wordmark typographic treatment. Embedded as a data URI
@@ -125,6 +138,7 @@ export abstract class OAuthCallbackFlow {
       Bun.serve({
         hostname: this.callbackHostname,
         port,
+        reusePort: false, // gjc parity: never share the port — a busy port must FAIL, not silently split traffic
         fetch: req => this.#handle(req, expectedState),
       });
     try {
@@ -134,9 +148,7 @@ export abstract class OAuthCallbackFlow {
       return { server, redirectUri };
     } catch {
       if (this.fixedRedirectUri) {
-        throw new Error(
-          `OAuth callback port ${this.preferredPort} unavailable and this provider requires a fixed redirect URI.`
-        );
+        throw new CallbackPortUnavailableError(this.preferredPort);
       }
       const server = serve(0);
       const redirectUri = `http://${this.callbackHostname}:${server.port}${this.callbackPath}`;
@@ -172,7 +184,7 @@ export abstract class OAuthCallbackFlow {
     });
 
     return new Response(renderHtml(ok, message), {
-      status: ok ? 200 : 400,
+      status: ok ? 200 : 500, // gjc parity: provider/CSRF failures are server-side errors (500), not 400
       headers: { "content-type": "text/html" },
     });
   }
@@ -206,7 +218,9 @@ export abstract class OAuthCallbackFlow {
               .then(input => {
                 const parsed = parseCallbackInput(input);
                 if (!parsed.code) return null;
-                if (expectedState && parsed.state !== expectedState) return null; // reject missing OR mismatched state
+                // gjc parity: a bare pasted code WITHOUT a state is accepted (the provider
+                // may strip it); only an explicitly MISMATCHED state is rejected.
+                if (expectedState && parsed.state && parsed.state !== expectedState) return null;
                 return { code: parsed.code, state: parsed.state ?? "" } as CallbackResult;
               })
               .catch(() => null),

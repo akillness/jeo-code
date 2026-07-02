@@ -8,6 +8,7 @@ import {
   summarizeForgeInvocation,
   summarizeForgeResult,
 } from "../src/tui/components";
+import { renderWelcome } from "../src/tui/components/welcome";
 import { buildRalphSubagentPrompt, formatRalphStreamEvent, formatRalphTodoGuide } from "../src/commands/team";
 import { visibleWidth } from "../src/tui/components/width";
 
@@ -53,6 +54,30 @@ test("forge cards keep CJK/emoji content inside the border (display-width wrap)"
     const box = formatForgeBox(summary, { width, unicode: true, color: false, paint: s => s });
     for (const line of box) expect(visibleWidth(line)).toBe(width);
   }
+});
+
+test("welcome forge uses right-side metadata table only on wide terminals", () => {
+  const data = {
+    version: "0.7.27",
+    model: "claude-sonnet-4-5",
+    provider: "anthropic",
+    cwd: "/Users/jangyoung/.superset/projects/jeo-code",
+    thinking: "medium",
+    sessionId: "abcdef123456",
+    contextFiles: ["AGENTS.md", "src/tui/components/welcome.ts", "package.json", "README.md"],
+    unicode: true,
+    color: false,
+  };
+
+  const wide = renderWelcome({ ...data, cols: 120 });
+  expect(wide.some(line => line.includes("workspace"))).toBe(true);
+  expect(wide.some(line => line.includes("folder"))).toBe(true);
+  expect(wide.some(line => line.includes("version"))).toBe(true);
+  for (const line of wide) expect(visibleWidth(line)).toBeLessThanOrEqual(119);
+
+  const narrow = renderWelcome({ ...data, cols: 80 });
+  expect(narrow.some(line => line.includes("workspace"))).toBe(false);
+  for (const line of narrow) expect(visibleWidth(line)).toBeLessThanOrEqual(79);
 });
 
 test("forge summaries never throw on an undefined/empty tool name (malformed model output)", () => {

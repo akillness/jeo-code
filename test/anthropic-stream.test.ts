@@ -187,12 +187,12 @@ test("anthropicPayload: low effort enables extended thinking (cross-provider par
   const at = (effort: CallOptions["reasoningEffort"]) =>
     JSON.parse(anthropicPayload(messages, { model: "claude-3-5-sonnet", maxTokens: 32000, reasoningEffort: effort }, false, true, cred));
 
-  // Parity with Gemini's tiers: minimal/low/medium/high ALL think (gajae parity:
+  // gjc ANTHROPIC_THINKING tiers: minimal/low/medium/high ALL think (gajae parity:
   // reasoning at every level) — only an UNSET effort stays off.
-  expect(at("low").thinking).toEqual({ type: "enabled", budget_tokens: 4000, display: "summarized" });
-  expect(at("medium").thinking).toEqual({ type: "enabled", budget_tokens: 10000, display: "summarized" });
-  expect(at("high").thinking).toEqual({ type: "enabled", budget_tokens: 24000, display: "summarized" });
-  expect(at("minimal").thinking).toEqual({ type: "enabled", budget_tokens: 2000, display: "summarized" });
+  expect(at("low").thinking).toEqual({ type: "enabled", budget_tokens: 4096, display: "summarized" });
+  expect(at("medium").thinking).toEqual({ type: "enabled", budget_tokens: 8192, display: "summarized" });
+  expect(at("high").thinking).toEqual({ type: "enabled", budget_tokens: 16384, display: "summarized" });
+  expect(at("minimal").thinking).toEqual({ type: "enabled", budget_tokens: 1024, display: "summarized" });
   expect(at(undefined).thinking).toBeUndefined();
 });
 
@@ -222,14 +222,14 @@ test("anthropicPayload: opus 4.7/4.8 use ADAPTIVE thinking with display:summariz
 
   // Sonnet 4.5: budget-effort transport (budget_tokens + output_config effort + display).
   const sonnet45 = payload("claude-sonnet-4-5", "medium");
-  expect(sonnet45.thinking).toEqual({ type: "enabled", budget_tokens: 10000, display: "summarized" });
+  expect(sonnet45.thinking).toEqual({ type: "enabled", budget_tokens: 8192, display: "summarized" });
   expect(sonnet45.output_config).toEqual({ effort: "medium" });
 
   // Haiku 4.5: plain budget transport. Unlike its sonnet/opus 4.5 siblings it REJECTS
   // output_config.effort ("This model does not support the effort parameter"), so thinking
   // rides budget_tokens alone with NO output_config.
   const haiku45 = payload("claude-haiku-4-5", "medium");
-  expect(haiku45.thinking).toEqual({ type: "enabled", budget_tokens: 10000, display: "summarized" });
+  expect(haiku45.thinking).toEqual({ type: "enabled", budget_tokens: 8192, display: "summarized" });
   expect(haiku45.output_config).toBeUndefined();
 });
 test("anthropicRequest: interleaved-thinking beta is dropped for adaptive-display models (opus 4.7+)", () => {
@@ -245,6 +245,16 @@ test("anthropicRequest: interleaved-thinking beta is dropped for adaptive-displa
   // Older models keep it (budget / pre-4.7 adaptive thinking still relies on the beta).
   expect(beta("claude-opus-4-6")).toContain("interleaved-thinking");
   expect(beta("claude-sonnet-4-5")).toContain("interleaved-thinking");
+});
+test("anthropicRequest: api-key beta list carries context-management (gjc default-beta parity)", () => {
+  const messages = [{ role: "user" as const, content: "hi" }];
+  const cred = { kind: "api_key", provider: "anthropic", token: "k" } as const;
+  const beta = anthropicRequest(messages, { model: "claude-sonnet-4-5", maxTokens: 32000 }, cred, false, true)
+    .headers["anthropic-beta"] ?? "";
+  expect(beta).toContain("context-management-2025-06-27");
+  expect(beta).toContain("prompt-caching-scope-2026-01-05");
+  // ponytail upgrade path (JSON repair pass) not implemented — the beta must stay off.
+  expect(beta).not.toContain("fine-grained-tool-streaming");
 });
 test("anthropicPayload: 5th-gen ids (Sonnet 5, Fable 5, Mythos 5) use adaptive thinking WITH display:summarized", () => {
   const messages = [{ role: "user" as const, content: "hi" }];

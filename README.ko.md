@@ -205,11 +205,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.7.28]** (2026-07-02) — gajae-code 0.7.9–0.7.10 OAuth + model-execution parity: generic long rate-limit windows are retried (never fatal), retry waits are abort-cancellable, Codex prompt caching via session correlation, and the Kimi Code device-flow OAuth is completed end-to-end (catalog, gating, discovery, tests).
 - **[0.7.27]** (2026-07-02) — Extended-keyboard decode layer: Esc/Ctrl+C work again on kitty-protocol terminals, Shift+Enter breaks lines on every terminal incl. Windows, row/draft-aware Cmd+←→/↑↓ + Home/End/Ctrl+Home/End, Ctrl+V text-paste fallback. Plus Anthropic 5th-gen omp-parity: catalog-derived output budgets end thinking-vs-reply starvation; refusals fail fast at the transport and the recovery ladder strips replayed thinking blocks.
 - **[0.7.26]** (2026-07-02) — Esc/Ctrl+C reliably clears the input box (fixes a gate the earlier reorder missed), and un-bracketed multi-line pastes no longer shred into premature per-line submits.
 - **[0.7.25]** (2026-07-02) — Shift+Enter now reliably distinguishable from Enter on kitty/WezTerm/iTerm2/xterm via modifyOtherKeys + kitty keyboard protocol; row-aware Home/End and Cmd+Left/Right in multi-row drafts.
 - **[0.7.24]** (2026-07-02) — OAuth callback page redesign with embedded jeo wordmark + Close button; memory budget O(n²)→O(n) incremental tracking fix.
-- **[0.7.23]** (2026-07-01) — Anthropic 5th-generation model catalog: adds Sonnet 5, Fable 5, and Mythos 5, promotes the 4.6 generation to 1M context / 128k output, and retires the superseded 4.5/3.5/4.1 ids. Bumps the default model to Sonnet 4.6, prices the new tiers, and fixes the thinking transport for Haiku 4.5 and every 5th-gen model.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

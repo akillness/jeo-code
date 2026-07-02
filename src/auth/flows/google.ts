@@ -9,7 +9,21 @@
  */
 import { OAuthCallbackFlow } from "../callback-server";
 import { discoverGoogleProjectId } from "./google-project";
+import { getGeminiCliHeaders } from "../../ai/providers/gemini";
 import type { OAuthController, OAuthCredentials } from "../types";
+
+/** Login-time Cloud Code Assist project discovery for a gemini-cli token. Sends the
+ *  gemini-cli identity headers (User-Agent + Client-Metadata) on loadCodeAssist/
+ *  onboardUser, matching gjc's google-gemini-cli discovery requests. */
+export function discoverGeminiProjectId(
+  accessToken: string,
+  opts: { onProgress?: (message: string) => void } = {},
+): Promise<string> {
+  return discoverGoogleProjectId(accessToken, {
+    extraHeaders: getGeminiCliHeaders(),
+    onProgress: opts.onProgress,
+  });
+}
 
 const decode = (s: string) => atob(s);
 const CLIENT_ID = decode(
@@ -101,7 +115,7 @@ class GoogleOAuthFlow extends OAuthCallbackFlow {
       // gjc parity: auto-discover (or provision) the Cloud Code Assist project so
       // Antigravity models work straight after login — best-effort, never fails login.
       try {
-        projectId = await discoverGoogleProjectId(data.access_token);
+        projectId = await discoverGeminiProjectId(data.access_token);
       } catch {
         projectId = undefined;
       }

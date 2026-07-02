@@ -220,6 +220,9 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       model,
       maxSteps,
       maxTokens: resolveMaxOutputTokens(model, thinking),
+      // Per-run prompt-cache key: the subagent replays its own growing history each
+      // step, so a stable per-run key gets provider cache hits (gjc sub-session parity).
+      sessionKey: crypto.randomUUID(),
       // Bounded delegation: a subagent's step contract stays exact — the parent
       // owns any retry/extension decision, so the gjc retry flow is disabled here.
       budget: { maxExtensions: 0 },

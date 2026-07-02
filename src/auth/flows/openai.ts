@@ -7,7 +7,7 @@
  * which expects a platform API key. Use this flow with a Codex-compatible
  * endpoint, or prefer an `OPENAI_API_KEY` for the bundled chat adapter.
  */
-import { OAuthCallbackFlow } from "../callback-server";
+import { CallbackPortUnavailableError, OAuthCallbackFlow } from "../callback-server";
 import { generatePKCE } from "../pkce";
 import type { OAuthController, OAuthCredentials } from "../types";
 
@@ -20,6 +20,15 @@ const SCOPE = "openid profile email offline_access";
 const TIMEOUT_MS = 15_000;
 const JWT_AUTH_CLAIM = "https://api.openai.com/auth";
 const JWT_PROFILE_CLAIM = "https://api.openai.com/profile";
+// Device-code (headless) fallback endpoints — gjc openai-codex.ts DEVICE_* parity.
+const DEVICE_USERCODE_URL = "https://auth.openai.com/api/accounts/deviceauth/usercode";
+const DEVICE_TOKEN_URL = "https://auth.openai.com/api/accounts/deviceauth/token";
+const DEVICE_REDIRECT_URI = "https://auth.openai.com/deviceauth/callback";
+const DEVICE_AUTH_URL = "https://auth.openai.com/codex/device";
+const DEVICE_POLL_INTERVAL_MS = 5_000;
+const DEVICE_POLL_SAFETY_MARGIN_MS = 3_000;
+/** Upper bound on device-code polling to avoid infinite loops on server errors. */
+const DEVICE_MAX_POLLS = 120;
 
 function decodeJwt<T = Record<string, unknown>>(token: string): T | null {
   try {
@@ -60,6 +69,11 @@ async function exchangeCodeForToken(code: string, verifier: string, redirectUri:
     throw new Error("OpenAI token response missing required fields");
   }
   const { accountId, email } = profileFromToken(data.access_token);
+  if (!accountId) {
+    // gjc parity (openai-codex.ts:139-141): a Codex token without a chatgpt_account_id
+    // claim is unusable for the request path — fail the login instead of storing it.
+    throw new Error("Failed to extract accountId from token");
+  }
   return {
     access: data.access_token,
     refresh: data.refresh_token,
@@ -93,7 +107,9 @@ class OpenAIOAuthFlow extends OAuthCallbackFlow {
       state,
       id_token_add_organizations: "true",
       codex_cli_simplified_flow: "true",
-      originator: "jeo",
+      // "codex_cli_rs" for self-consistency with jeo's request path (openai-responses.ts
+      // sends the same originator header) — deliberate divergence from gjc's "opencode" default.
+      originator: "codex_cli_rs",
     });
     return { url: `${AUTHORIZE_URL}?${params.toString()}`, instructions: "Complete login in your browser." };
   }
@@ -104,7 +120,91 @@ class OpenAIOAuthFlow extends OAuthCallbackFlow {
 }
 
 export async function loginOpenAI(ctrl: OAuthController): Promise<OAuthCredentials> {
-  return new OpenAIOAuthFlow(ctrl).login();
+  try {
+    return await new OpenAIOAuthFlow(ctrl).login();
+  } catch (err) {
+    // OpenAI requires the FIXED redirect http://localhost:1455/auth/callback, so a busy
+    // port cannot fall back to a random one. Fall back to the device-code flow instead
+    // (gjc loginOpenAICodexDevice parity) — no local callback server needed.
+    if (err instanceof CallbackPortUnavailableError) {
+      ctrl.onProgress?.(`Port ${CALLBACK_PORT} is busy — falling back to device-code login.`);
+      return loginOpenAIDevice(ctrl);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Login using OpenAI's device-code (headless) flow — no local callback server.
+ * Port of gjc's loginOpenAICodexDevice (openai-codex.ts): request a user code,
+ * surface it via the controller, poll for the authorization code (403/404 =
+ * authorization pending), then run the standard token exchange against the
+ * fixed device redirect URI.
+ */
+export async function loginOpenAIDevice(ctrl: OAuthController): Promise<OAuthCredentials> {
+  ctrl.onProgress?.("Initiating device authorization…");
+
+  const initResponse = await fetch(DEVICE_USERCODE_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ client_id: CLIENT_ID }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  if (!initResponse.ok) {
+    throw new Error(`Device authorization initiation failed: ${initResponse.status}`);
+  }
+  const initData = (await initResponse.json()) as {
+    device_auth_id?: string;
+    user_code?: string;
+    interval?: string | number;
+  };
+  if (!initData.device_auth_id || !initData.user_code) {
+    throw new Error("Device authorization response missing required fields");
+  }
+
+  const userCode = initData.user_code;
+  const pollIntervalMs =
+    (typeof initData.interval === "number"
+      ? initData.interval
+      : parseInt(String(initData.interval ?? "5"), 10) || 5) *
+      1000 +
+    DEVICE_POLL_SAFETY_MARGIN_MS;
+
+  ctrl.onAuth?.({ url: DEVICE_AUTH_URL, instructions: `Enter code: ${userCode}` });
+  ctrl.onProgress?.(`Waiting for browser authorization (code: ${userCode})…`);
+
+  for (let poll = 0; poll < DEVICE_MAX_POLLS; poll++) {
+    await Bun.sleep(poll === 0 ? Math.min(pollIntervalMs, DEVICE_POLL_INTERVAL_MS) : pollIntervalMs);
+    if (ctrl.signal?.aborted) {
+      throw new Error("Device authorization cancelled");
+    }
+
+    const pollResponse = await fetch(DEVICE_TOKEN_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_auth_id: initData.device_auth_id, user_code: userCode }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+
+    // 403/404 = authorization pending, keep polling (gjc wire parity).
+    if (pollResponse.status === 403 || pollResponse.status === 404) continue;
+    if (!pollResponse.ok) {
+      throw new Error(`Device token polling failed: ${pollResponse.status}`);
+    }
+
+    const pollData = (await pollResponse.json()) as {
+      authorization_code?: string;
+      code_verifier?: string;
+    };
+    if (!pollData.authorization_code || !pollData.code_verifier) {
+      throw new Error("Device token response missing authorization_code or code_verifier");
+    }
+
+    ctrl.onProgress?.("Exchanging authorization code for tokens…");
+    return exchangeCodeForToken(pollData.authorization_code, pollData.code_verifier, DEVICE_REDIRECT_URI);
+  }
+
+  throw new Error("Device authorization timed out — user did not complete login in time");
 }
 
 export async function refreshOpenAIToken(refreshToken: string): Promise<OAuthCredentials> {

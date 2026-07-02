@@ -11,7 +11,7 @@ import { serializeToolCalls } from "../../agent/tool-schemas";
  *  Pin an explicit budget: off unless reasoning was requested. Pro-class models
  *  cannot disable thinking (API minimum 128), so they keep a floor instead of 0.
  *  Older models (1.5/2.0) reject `thinkingConfig` entirely → undefined (omit). */
-export function geminiThinkingBudget(model: string, effort?: CallOptions["reasoningEffort"], maxTokens?: number): number | undefined {
+export function geminiThinkingBudget(model: string, effort?: CallOptions["reasoningEffort"] | "xhigh", maxTokens?: number): number | undefined {
   const m = model.toLowerCase();
   // Reasoning-capable when Gemini >= 2.5 (any 2.5+ minor) or major >= 3 (digit-count
   // agnostic so gemini-10+ never silently loses thinking the way opus-4-8 did), plus
@@ -22,41 +22,85 @@ export function geminiThinkingBudget(model: string, effort?: CallOptions["reason
   const thinkingCapable = (major >= 3 || (major === 2 && minor >= 5)) || /flash-latest|pro-latest/.test(m);
   if (!thinkingCapable) return undefined;
   const floor = m.includes("pro") ? 128 : 0; // pro-class cannot fully disable thinking
-  // An UNSET effort normally falls to the floor (off for flash-class). But when the model
-  // VARIANT name itself encodes a thinking depth — `-high`/`-low` (e.g. gemini-3-pro-high)
-  // or an explicit `-thinking` suffix (gemini-2.5-flash-thinking) — that selection IS the
-  // user's thinking opt-in, so it overrides the silent floor and maps to a real budget.
-  // Unmarked ids (gemini-3-flash, gemini-2.5-flash) keep the off-by-default floor (parity
-  // with the other providers + the documented thought-token burn protection).
-  const named: CallOptions["reasoningEffort"] | undefined =
-    m.includes("-high") ? "high"
-    : m.includes("-low") ? "low"
-    : m.includes("thinking") ? "medium"
-    : undefined;
-  const effectiveEffort = effort ?? named;
+  const effectiveEffort = effort ?? geminiNamedEffort(m);
   let budget: number;
   switch (effectiveEffort) {
     // minimal/low/medium/high ALL enable thinking with scaling depth — reasoning works at
     // every thinking level (gajae parity: Minimal is a real effort). Only an UNSET effort
     // (and no in-name depth marker) falls through to the floor.
-    case "minimal": budget = Math.max(floor, 2000); break;
-    case "low": budget = 4000; break;
-    case "medium": budget = 10000; break;
-    case "high": budget = 24000; break;
+    // Tier values mirror gjc's GOOGLE_THINKING table (stream.ts).
+    case "minimal": budget = Math.max(floor, 1024); break;
+    case "low": budget = 4096; break;
+    case "medium": budget = 8192; break;
+    case "high": budget = 16384; break;
+    case "xhigh": budget = 24575; break;
     default: budget = floor;
   }
   if (typeof maxTokens === "number") budget = Math.min(budget, Math.max(floor, maxTokens - 1024));
   return budget;
 }
 
-/** True when this turn was asked to think (a positive budget) — lets the streaming paths
- *  fire onReasoningStart so the UI shows the thinking phase even before/without any `thought`
- *  parts arrive (the Gemini/CCA analog of Anthropic's content_block_start thinking signal,
- *  which is why reasoning otherwise appeared "not to run" on gemini/antigravity). */
+/** In-name thinking depth marker. An UNSET effort normally falls to the floor (off for
+ *  flash-class). But when the model VARIANT name itself encodes a depth — `-high`/`-low`
+ *  (e.g. gemini-3-pro-high) or an explicit `-thinking` suffix (gemini-2.5-flash-thinking) —
+ *  that selection IS the user's thinking opt-in. Unmarked ids (gemini-3-flash,
+ *  gemini-2.5-flash) keep the off-by-default behavior (parity with the other providers +
+ *  the documented thought-token burn protection). Expects a lowercased id. */
+function geminiNamedEffort(m: string): CallOptions["reasoningEffort"] | undefined {
+  return m.includes("-high") ? "high"
+    : m.includes("-low") ? "low"
+    : m.includes("thinking") ? "medium"
+    : undefined;
+}
+
+/** Gemini 3.x is driven by the `thinkingLevel` ENUM, not a numeric budget (gjc
+ *  inferThinkingControlMode: gemini family with version.major === 3 → "google-level";
+ *  everything else stays on the numeric thinkingBudget). */
+export function geminiUsesThinkingLevel(model: string): boolean {
+  const ver = model.toLowerCase().match(/gemini-(\d+)(?:\.(\d+))?/);
+  return !!ver && Number(ver[1]) === 3;
+}
+
+/** Effort → Google `thinkingLevel` enum value (gjc mapEffortToGoogleThinkingLevel):
+ *  minimal→MINIMAL, low→LOW, medium→MEDIUM, high/xhigh→HIGH. */
+export function geminiThinkingLevel(effort: NonNullable<CallOptions["reasoningEffort"]> | "xhigh"): "MINIMAL" | "LOW" | "MEDIUM" | "HIGH" {
+  switch (effort) {
+    case "minimal": return "MINIMAL";
+    case "low": return "LOW";
+    case "medium": return "MEDIUM";
+    case "high":
+    case "xhigh": return "HIGH";
+  }
+}
+
+/** The `thinkingConfig` object for a Gemini request, or undefined to omit it entirely:
+ *  gemini-3.x → thinkingLevel enum (numeric budgets are NOT sent — gjc emits level XOR
+ *  budget, never both); with no effort requested (and no in-name marker) the config is
+ *  omitted so the model keeps its default (gjc parity: thinking not enabled → no config).
+ *  Other thinking-capable models → numeric thinkingBudget; pre-2.5 → undefined. */
+export type GeminiThinkingConfig =
+  | { includeThoughts: true; thinkingLevel: "MINIMAL" | "LOW" | "MEDIUM" | "HIGH" }
+  | { includeThoughts: true; thinkingBudget: number };
+
+export function geminiThinkingConfig(model: string, effort?: CallOptions["reasoningEffort"], maxTokens?: number): GeminiThinkingConfig | undefined {
+  if (geminiUsesThinkingLevel(model)) {
+    const effective = effort ?? geminiNamedEffort(model.toLowerCase());
+    if (effective === undefined) return undefined;
+    return { includeThoughts: true, thinkingLevel: geminiThinkingLevel(effective) };
+  }
+  const budget = geminiThinkingBudget(model, effort, maxTokens);
+  return budget === undefined ? undefined : { includeThoughts: true, thinkingBudget: budget };
+}
+
+/** True when this turn was asked to think (a thinkingLevel or a positive budget) — lets
+ *  the streaming paths fire onReasoningStart so the UI shows the thinking phase even
+ *  before/without any `thought` parts arrive (the Gemini/CCA analog of Anthropic's
+ *  content_block_start thinking signal, which is why reasoning otherwise appeared
+ *  "not to run" on gemini/antigravity). */
 export function geminiThinkingActive(options: CallOptions): boolean {
   const model = options.model.replace(/^(google|gemini)\//, "");
-  const tb = geminiThinkingBudget(model, options.reasoningEffort, options.maxTokens);
-  return tb !== undefined && tb > 0;
+  const cfg = geminiThinkingConfig(model, options.reasoningEffort, options.maxTokens);
+  return cfg !== undefined && ("thinkingLevel" in cfg || cfg.thinkingBudget > 0);
 }
 
 
@@ -76,8 +120,8 @@ export function buildGeminiPayload(messages: Message[], options: CallOptions, st
   if (!geminiModel || geminiModel.startsWith("claude-")) geminiModel = "gemini-2.0-flash";
 
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
-  const thinkingBudget = geminiThinkingBudget(geminiModel, options.reasoningEffort, options.maxTokens);
-  const thinkingEnabled = thinkingBudget !== undefined && !stripArtifacts;
+  const thinking = geminiThinkingConfig(geminiModel, options.reasoningEffort, options.maxTokens);
+  const thinkingEnabled = thinking !== undefined && !stripArtifacts;
   // Gemini requires strictly ALTERNATING user/model turns. jeo histories can carry
   // consecutive same-role messages (a compaction summary prepended before a tool-result,
   // back-to-back tool results, etc.), so coalesce adjacent same-role turns into one
@@ -126,7 +170,17 @@ export function buildGeminiPayload(messages: Message[], options: CallOptions, st
 
   // includeThoughts: required for Gemini to STREAM thought summaries (the `thought:true`
   // parts thoughtOf() routes to onReasoning) — without it the model thinks silently.
-  if (thinkingBudget !== undefined) generationConfig.thinkingConfig = { includeThoughts: true, thinkingBudget };
+  if (thinking !== undefined) {
+    generationConfig.thinkingConfig = thinking;
+    if ("thinkingBudget" in thinking && thinking.thinkingBudget > 0) {
+      // Additive budget (gjc stream.ts): the caller's maxTokens is the DESIRED OUTPUT;
+      // thought tokens ride ON TOP of it, capped at the model's output limit — otherwise
+      // thinking silently eats the visible-answer budget (the MAX_TOKENS empty-reply bug).
+      // ponytail: 65536 hard cap — swap in the model's catalog max-output once a cheap
+      // per-model lookup is available at this layer.
+      generationConfig.maxOutputTokens = Math.min((options.maxTokens ?? 4000) + thinking.thinkingBudget, 65536);
+    }
+  }
 
   const payload: Record<string, unknown> = { contents, generationConfig };
   if (systemPrompt) payload.systemInstruction = { parts: [{ text: systemPrompt }] };
@@ -158,7 +212,7 @@ const CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com";
 
 /** gemini-cli identification headers Cloud Code Assist expects (gjc parity). */
 export function getGeminiCliHeaders(modelId?: string): Record<string, string> {
-  const version = jeoEnv("GEMINI_CLI_VERSION") || "0.45.2";
+  const version = jeoEnv("GEMINI_CLI_VERSION") || "0.49.0";
   return {
     "User-Agent": `GeminiCLI/${version}/${modelId ?? "gemini-2.5-flash"} (${process.platform}; ${process.arch}; terminal)`,
     "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",

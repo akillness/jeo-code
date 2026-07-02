@@ -44,6 +44,15 @@ export const OAUTH_FLOWS: Record<OAuthProvider, OauthFlowDef> = {
       "Use this for antigravity/* models; Gemini CLI OAuth can be imported separately but may not satisfy Antigravity backend permissions.",
     ],
   },
+  kimi: {
+    label: "Kimi Code (Moonshot subscription)",
+    authorizeUrl: "https://auth.kimi.com",
+    instructions: [
+      "Device-code OAuth: no callback server. A browser tab opens at auth.kimi.com with the",
+      "verification URL; confirm the displayed user code there and jeo polls until approval.",
+      "Note: the minted token targets api.kimi.com/coding (Anthropic Messages format), not api.moonshot.ai.",
+    ],
+  },
 };
 
 export async function openInBrowser(url: string): Promise<void> {

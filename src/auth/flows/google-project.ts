@@ -56,6 +56,11 @@ export interface DiscoverProjectOptions {
   /** Per-request deadline; a stalled discovery fetch must NEVER hang the turn
    *  forever (round-5 #2 — this path runs BEFORE the manager's guarded call). */
   requestTimeoutMs?: number;
+  /** Antigravity semantics (gjc google-antigravity discoverProject): when the account
+   *  reports a tier but names no project, ONBOARD the default/legacy tier instead of
+   *  demanding an explicit workspace project. The gemini-cli flow keeps the strict
+   *  workspace hint (default false). */
+  alwaysOnboard?: boolean;
 }
 
 const DISCOVERY_REQUEST_TIMEOUT_MS = 30_000;
@@ -147,12 +152,13 @@ export async function discoverGoogleProjectId(
   if (data.currentTier) {
     const existing = readProjectId(data.cloudaicompanionProject) ?? envProjectId;
     if (existing) return existing;
-    throw new Error(WORKSPACE_PROJECT_HINT);
+    if (!opts.alwaysOnboard) throw new Error(WORKSPACE_PROJECT_HINT);
+    // alwaysOnboard: fall through and provision the default/legacy tier (gjc antigravity parity).
   }
 
   // Not onboarded yet: provision the default tier (free tier needs no project).
   const tierId = defaultTierId(data.allowedTiers) || TIER_FREE;
-  if (tierId !== TIER_FREE && tierId !== TIER_LEGACY && !envProjectId) {
+  if (!opts.alwaysOnboard && tierId !== TIER_FREE && tierId !== TIER_LEGACY && !envProjectId) {
     throw new Error(WORKSPACE_PROJECT_HINT);
   }
 

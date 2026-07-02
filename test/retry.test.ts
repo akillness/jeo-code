@@ -41,10 +41,12 @@ test("resolveRetryOptions maps a gjc retry budget to withRetry options", () => {
 
 test("resolveRetryOptions: rate-limit defaults engage only when not explicitly configured", () => {
   // Unset → generous 429 budget + a backoff floor so the first 429 doesn't instantly exhaust.
+  // No default rateLimitMaxServerDelayMs: gjc parity retries a generic 429 forever,
+  // honoring however long the server asks, instead of failing fast past a budget.
   const base = resolveRetryOptions(undefined);
   expect(base.rateLimitRetries).toBe(6);
   expect(base.rateLimitMinDelayMs).toBe(2000);
-  expect(base.rateLimitMaxServerDelayMs).toBe(5 * 60 * 1000);
+  expect(base.rateLimitMaxServerDelayMs).toBeUndefined();
 
   // Explicit requestMaxRetries wins: rate-limit gets no bonus beyond the budget.
   const explicit = resolveRetryOptions({ requestMaxRetries: 2 });
@@ -55,6 +57,10 @@ test("resolveRetryOptions: rate-limit defaults engage only when not explicitly c
   const capped = resolveRetryOptions({ maxDelayMs: 500 });
   expect(capped.maxDelayMs).toBe(500);
   expect(capped.rateLimitMinDelayMs).toBeUndefined();
+
+  // rateLimitMaxServerDelayMs remains an explicit opt-in ceiling when configured.
+  const optedIn = resolveRetryOptions({ rateLimitMaxServerDelayMs: 60_000 });
+  expect(optedIn.rateLimitMaxServerDelayMs).toBe(60_000);
 });
 
 test("isRateLimitError: detects 429 by status and by message", () => {
@@ -129,7 +135,7 @@ test("withRetry: a 429 Retry-After:0 is still floored, and the floor escalates p
   expect(sleeps).toEqual([2000, 4000]);
 });
 
-test("withRetry: a 429 Retry-After beyond the configured budget fails fast", async () => {
+test("withRetry: an EXPLICITLY configured rateLimitMaxServerDelayMs fails fast beyond the ceiling (opt-in)", async () => {
   const sleeps: number[] = [];
   let attempts = 0;
   await withRetry(
@@ -146,6 +152,67 @@ test("withRetry: a 429 Retry-After beyond the configured budget fails fast", asy
   ).catch(() => {});
   expect(attempts).toBe(1);
   expect(sleeps).toEqual([]);
+});
+
+test("withRetry: WITHOUT the opt-in ceiling a long server Retry-After is honored IN FULL (gjc parity)", async () => {
+  // gjc contract (agent-session-retry-cap.test.ts): a generic 429 carrying a ~3.1h
+  // retry-after-ms is retried, waiting the full server-directed delay — never failed
+  // fast, never compressed to a 30s cap.
+  const sleeps: number[] = [];
+  let attempts = 0;
+  const result = await withRetry(
+    async () => {
+      attempts++;
+      if (attempts === 1) throw { status: 429, message: "rate limit", retryAfterMs: 11_180_000 };
+      return "recovered after honoring retry-after";
+    },
+    { retries: 3, sleep: async ms => { sleeps.push(ms); } },
+  );
+  expect(result).toBe("recovered after honoring retry-after");
+  expect(attempts).toBe(2);
+  expect(sleeps).toEqual([11_180_000]); // full server delay, no 30s/5min cap
+});
+
+test("withRetry: a long honored wait is cancellable via signal (already-aborted rejects immediately)", async () => {
+  const sleeps: number[] = [];
+  const ctrl = new AbortController();
+  ctrl.abort(new Error("user cancelled"));
+  let attempts = 0;
+  await expect(
+    withRetry(
+      async () => {
+        attempts++;
+        throw { status: 429, message: "rate limit", retryAfterMs: 11_180_000 };
+      },
+      { retries: 3, signal: ctrl.signal, sleep: async ms => { sleeps.push(ms); } },
+    ),
+  ).rejects.toThrow("user cancelled");
+  expect(attempts).toBe(1); // aborted during the backoff wait — no second attempt
+  expect(sleeps).toEqual([]); // the injected sleep never ran: reject beat it
+});
+
+test("withRetry: an abort firing MID-WAIT interrupts the sleep instead of waiting it out", async () => {
+  const ctrl = new AbortController();
+  let attempts = 0;
+  const pending = withRetry(
+    async () => {
+      attempts++;
+      throw { status: 429, message: "rate limit", retryAfterMs: 11_180_000 };
+    },
+    {
+      retries: 3,
+      signal: ctrl.signal,
+      // A sleep that never resolves on its own: only the abort can end the wait.
+      sleep: () => Promise.withResolvers<void>().promise,
+    },
+  );
+  // NOTE: try/catch (not `expect(pending).rejects` armed pre-settlement — that
+  // deadlocks under bun test when the rejection arrives later via the abort).
+  ctrl.abort(new Error("mid-wait cancel"));
+  let caught: unknown;
+  try { await pending; } catch (e) { caught = e; }
+  expect((caught as Error).message).toBe("mid-wait cancel");
+  expect(attempts).toBe(1);
 });
 
 test("withRetry: the escalating 429 floor is capped at 30s and spans ~a minute over the default budget", async () => {

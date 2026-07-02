@@ -37,6 +37,9 @@ test("codexResponsesRequest targets the Codex backend with OAuth + account-id he
   expect(headers.authorization).toBe(`Bearer ${cred.token}`);
   expect(headers["chatgpt-account-id"]).toBe("acct-xyz");
   expect(headers["OpenAI-Beta"]).toBe("responses=experimental");
+  expect(headers.originator).toBe("codex_cli_rs");
+  // Codex-CLI-shaped UA (originator/version (platform release; arch)) — never Bun's default.
+  expect(headers["user-agent"]).toMatch(/^codex_cli_rs\/\d+\.\d+\.\d+\S* \(\S+ \S+; \S+\)$/);
 
   const payload = JSON.parse(body);
   expect(payload.model).toBe("gpt-5.5"); // openai/ prefix stripped

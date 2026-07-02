@@ -89,7 +89,7 @@ test("OAuthCallbackFlow: state mismatch is rejected (CSRF guard)", async () => {
   await readyPromise;
 
   const res = await fetch(`${flow.capturedRedirect}?code=x&state=WRONG`);
-  expect(res.status).toBe(400);
+  expect(res.status).toBe(500); // gjc parity: callback failures respond 500, not 400
   const failBody = await res.text();
   expect(failBody).toContain("State mismatch");
   // Failure page now also auto-closes after the countdown (both success and
@@ -390,6 +390,117 @@ test("resolveCredential: a transient refresh failure keeps the OAuth credential 
     if (prevConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
     else process.env.JEO_CONFIG_DIR = prevConfigDir;
     for (const [k, v] of clearedEnv) if (v !== undefined) process.env[k] = v;
+    await fs.rm(home, { recursive: true, force: true });
+  }
+});
+
+test("OAuthCallbackFlow: manual paste of a bare code (no state) is accepted (gjc parity)", async () => {
+  let ready: () => void;
+  const readyPromise = new Promise<void>(r => (ready = r));
+  // Provider stripped the state from the redirect; the user pastes just the code.
+  // Only an explicitly MISMATCHED state must be rejected.
+  const ctrl: OAuthController = {
+    onAuth: () => ready(),
+    onManualCodeInput: () => Promise.resolve("bare-pasted-code"),
+  };
+  const flow = new TestFlow(ctrl);
+  const creds = await flow.login();
+  await readyPromise;
+  expect(creds.access).toBe("acc-bare-pasted-code");
+  expect(flow.exchanged?.code).toBe("bare-pasted-code");
+  // No returned state → the flow falls back to the expected state for the exchange.
+  expect(flow.exchanged?.state).toBe(flow.capturedState);
+});
+
+test("OAuthCallbackFlow: manual paste with a MISMATCHED state is still rejected", async () => {
+  let ready: () => void;
+  const readyPromise = new Promise<void>(r => (ready = r));
+  let asks = 0;
+  const ctrl: OAuthController = {
+    onAuth: () => ready(),
+    onManualCodeInput: () => {
+      asks++;
+      // First paste carries a wrong state → must be rejected (loop re-asks);
+      // second paste is bare → accepted.
+      return Promise.resolve(asks === 1 ? "evil-code#WRONG-STATE" : "good-code");
+    },
+  };
+  const flow = new TestFlow(ctrl);
+  const creds = await flow.login();
+  await readyPromise;
+  expect(asks).toBeGreaterThanOrEqual(2);
+  expect(creds.access).toBe("acc-good-code");
+});
+
+test("refreshOAuthToken: refreshes ahead of expiry when the token dies within the 60s skew window", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-oauth-skew-"));
+  const prevConfigDir = process.env.JEO_CONFIG_DIR;
+  const prevFetch = globalThis.fetch;
+  process.env.JEO_CONFIG_DIR = home;
+  try {
+    // Expires in 30s — inside the 60s refresh-ahead window → must refresh NOW.
+    await fs.writeFile(
+      path.join(home, "config.json"),
+      JSON.stringify({
+        providers: {},
+        oauth: { anthropic: { access: "SOON-STALE", refresh: "R1", expires: Date.now() + 30_000 } },
+        defaultModel: "claude-3-5-sonnet",
+      }),
+      "utf-8"
+    );
+    let refreshHit = false;
+    globalThis.fetch = (async (url: any) => {
+      if (String(url) === "https://api.anthropic.com/v1/oauth/token") {
+        refreshHit = true;
+        return new Response(
+          JSON.stringify({ access_token: "AHEAD", refresh_token: "R2", expires_in: 3600 }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const { refreshOAuthToken, OAUTH_REFRESH_SKEW_MS } = await import("../src/auth/refresh");
+    expect(OAUTH_REFRESH_SKEW_MS).toBe(60_000); // gjc auth-storage.ts parity
+    const res = await refreshOAuthToken("anthropic");
+    expect(refreshHit).toBe(true);
+    expect(res.reason).toBe("refreshed");
+    expect((res.credential as any).token).toBe("AHEAD");
+  } finally {
+    globalThis.fetch = prevFetch;
+    if (prevConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = prevConfigDir;
+    await fs.rm(home, { recursive: true, force: true });
+  }
+});
+
+test("refreshOAuthToken: a token with more than 60s left is NOT refreshed", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-oauth-fresh-"));
+  const prevConfigDir = process.env.JEO_CONFIG_DIR;
+  const prevFetch = globalThis.fetch;
+  process.env.JEO_CONFIG_DIR = home;
+  try {
+    await fs.writeFile(
+      path.join(home, "config.json"),
+      JSON.stringify({
+        providers: {},
+        oauth: { anthropic: { access: "STILL-FRESH", refresh: "R1", expires: Date.now() + 120_000 } },
+        defaultModel: "claude-3-5-sonnet",
+      }),
+      "utf-8"
+    );
+    globalThis.fetch = (async (url: any) => {
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const { refreshOAuthToken } = await import("../src/auth/refresh");
+    const res = await refreshOAuthToken("anthropic");
+    expect(res.reason).toBe("already_refreshed");
+    expect((res.credential as any).token).toBe("STILL-FRESH");
+  } finally {
+    globalThis.fetch = prevFetch;
+    if (prevConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = prevConfigDir;
     await fs.rm(home, { recursive: true, force: true });
   }
 });

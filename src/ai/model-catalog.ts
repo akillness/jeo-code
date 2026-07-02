@@ -93,6 +93,14 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   { canonical: "kimi-thinking-preview", provider: "kimi", providerModel: "kimi-thinking-preview", contextTokens: 128_000, maxOutputTokens: 32_000, thinking: FULL, images: true },
   { canonical: "kimi-latest", provider: "kimi", providerModel: "kimi-latest", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true },
   { canonical: "moonshot-v1-128k", provider: "kimi", providerModel: "moonshot-v1-128k", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: false },
+  // Kimi Code (Moonshot coding subscription, device-code OAuth) — Anthropic-compatible
+  // at https://api.kimi.com/coding. Provider-qualified (`kimi/…`) to avoid canonical
+  // collisions (kimi-k2.5 also exists under tencent). gjc catalog parity: kimi-code.
+  { canonical: "kimi-for-coding", provider: "kimi", providerModel: "kimi/kimi-for-coding", contextTokens: 262_144, maxOutputTokens: 32_000, thinking: FULL, images: true, company: "Moonshot (Kimi Code)" },
+  { canonical: "kimi-k2.7-code", provider: "kimi", providerModel: "kimi/kimi-k2.7-code", contextTokens: 262_144, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Moonshot (Kimi Code)" },
+  { canonical: "kimi/kimi-k2.5", provider: "kimi", providerModel: "kimi/kimi-k2.5", contextTokens: 262_144, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Moonshot (Kimi Code)" },
+  { canonical: "kimi/kimi-k2-turbo-preview", provider: "kimi", providerModel: "kimi/kimi-k2-turbo-preview", contextTokens: 262_144, maxOutputTokens: 32_000, thinking: FULL, images: false, company: "Moonshot (Kimi Code)" },
+  { canonical: "kimi/kimi-k2", provider: "kimi", providerModel: "kimi/kimi-k2", contextTokens: 262_144, maxOutputTokens: 262_144, thinking: [], images: false, company: "Moonshot (Kimi Code)" },
   // Google
   { canonical: "gemini-1.5-pro", provider: "gemini", providerModel: "gemini-1.5-pro", contextTokens: 1_000_000, maxOutputTokens: 8_192, thinking: [], images: true },
   { canonical: "gemini-2.0-flash", provider: "gemini", providerModel: "gemini-2.0-flash", contextTokens: 1_000_000, maxOutputTokens: 8_192, thinking: [], images: true },
@@ -143,6 +151,21 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
  * of the full chat-completions catalog. Verified live against a ChatGPT account.
  */
 export const CODEX_MODELS: readonly string[] = ["gpt-5.5", "gpt-5.4"];
+
+/**
+ * Model ids the Kimi Code OAuth backend (api.kimi.com/coding, Anthropic Messages
+ * format) actually serves. The subscription endpoint rejects Moonshot API-platform
+ * ids (kimi-latest, moonshot-v1-*, kimi-thinking-preview), so a Kimi OAuth login is
+ * limited to exactly these; an API key serves the api.moonshot.ai catalog instead.
+ * gjc parity: models.json `kimi-code` provider entries (wire ids, `kimi/` stripped).
+ */
+export const KIMI_CODE_MODELS: readonly string[] = [
+  "kimi-for-coding",
+  "kimi-k2.7-code",
+  "kimi-k2.5",
+  "kimi-k2-turbo-preview",
+  "kimi-k2",
+];
 
 /** Format a token count compactly (1000 → 1K, 1_000_000 → 1M). */
 export function formatTokens(n: number): string {

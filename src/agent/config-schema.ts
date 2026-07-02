@@ -105,6 +105,7 @@ export const ConfigSchema = z
         maxDelayMs: z.number().int().min(0).optional(),
         rateLimitRetries: z.number().int().min(0).optional(),
         rateLimitMinDelayMs: z.number().int().min(0).optional(),
+        rateLimitMaxServerDelayMs: z.number().int().min(0).optional(),
       })
       .optional(),
     /**

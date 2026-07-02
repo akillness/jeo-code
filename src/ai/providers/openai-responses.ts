@@ -15,10 +15,20 @@ import type { CallOptions, Message } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError, fetchWithArtifactFailSafe } from "./errors";
 import { serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
+import os from "node:os";
+import pkg from "../../../package.json";
 
 export const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 
 export const VALID_REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high"]);
+
+const CODEX_ORIGINATOR = "codex_cli_rs";
+
+/** Codex-CLI-shaped User-Agent (gjc getCodexUserAgent parity: `originator/version (platform release; arch)`).
+ *  Sent on BOTH the OAuth and api-key paths — without it Bun's default UA leaks to the backend. */
+export function codexUserAgent(): string {
+  return `${CODEX_ORIGINATOR}/${pkg.version} (${os.platform()} ${os.release()}; ${os.arch()})`;
+}
 
 /** Extract `chatgpt_account_id` from a ChatGPT/Codex OAuth access JWT. */
 export function extractChatgptAccountId(token: string): string | undefined {
@@ -93,12 +103,16 @@ export function codexResponsesRequest(
   const token = credential.kind === "none" ? "" : credential.token;
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
   const input = buildResponsesInput(messages, options.model, stripArtifacts);
+  const promptCacheKey = normalizePromptCacheKey(options.sessionKey);
   const payload: Record<string, unknown> = {
     model,
     instructions: systemPrompt ?? "You are a helpful coding assistant.",
     input,
     stream: true, // the Codex backend only streams
     store: false,
+    // Provider-side prompt caching (gjc parity): key the cache on the stable session id
+    // so an agent loop replaying the same history each step re-reads a cached prefix.
+    ...(promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
   };
   if (options.tools?.length) {
     // Responses API function tools (flat shape). tool_choice "auto" keeps prose + `done`.
@@ -112,17 +126,21 @@ export function codexResponsesRequest(
     // frame can show the model's thinking instead of a frozen "calling model (Ns)…".
     payload.reasoning = { effort: options.reasoningEffort, summary: "auto" };
   }
+  // Cap the response length (gjc parity) on the PUBLIC Responses API only. The ChatGPT/Codex
+  // OAuth backend 400s on this parameter ({"detail":"Unsupported parameter: max_output_tokens"}),
+  // so the cap is applied inside the api_key branch below.
   // OAuth → the undocumented ChatGPT/Codex backend (codex headers + account-id).
   // API key → the public OpenAI Responses API (`/v1/responses`) with a plain Bearer.
   // Both speak the same Responses schema (the body above), so only url+headers differ.
   if (credential.kind === "api_key") {
+    if (options.maxTokens) payload.max_output_tokens = options.maxTokens;
     const base = (options.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
     // Stateless reasoning replay (public Responses API): ask for encrypted reasoning content
     // so it can be captured and threaded back into a later `input` (store stays false).
     payload.include = ["reasoning.encrypted_content"];
     return {
       url: `${base}/responses`,
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}`, accept: "text/event-stream" },
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}`, accept: "text/event-stream", "user-agent": codexUserAgent() },
       body: JSON.stringify(payload),
     };
   }
@@ -131,11 +149,28 @@ export function codexResponsesRequest(
     "content-type": "application/json",
     authorization: `Bearer ${token}`,
     "OpenAI-Beta": "responses=experimental",
-    originator: "codex_cli_rs",
+    originator: CODEX_ORIGINATOR,
+    "user-agent": codexUserAgent(),
     accept: "text/event-stream",
   };
   if (accountId) headers["chatgpt-account-id"] = accountId;
+  // Correlation headers (gjc parity): the Codex backend keys its prompt cache on the
+  // session/conversation pair; x-client-request-id aids server-side tracing.
+  if (promptCacheKey) {
+    headers.session_id = promptCacheKey;
+    headers.conversation_id = promptCacheKey;
+    headers["x-client-request-id"] = promptCacheKey;
+  }
   return { url: CODEX_RESPONSES_URL, headers, body: JSON.stringify(payload) };
+}
+
+/** gjc parity (normalizeOpenAIResponsesPromptCacheKey): well-formed unicode, ≤64 chars
+ *  verbatim, longer keys hashed to a stable compact form. */
+export function normalizePromptCacheKey(sessionKey: string | undefined): string | undefined {
+  if (!sessionKey || sessionKey.length === 0) return undefined;
+  const wellFormed = sessionKey.toWellFormed();
+  if (wellFormed.length <= 64) return wellFormed;
+  return `pc_${Bun.hash(wellFormed).toString(36)}`;
 }
 
 export interface ResponsesEvent {

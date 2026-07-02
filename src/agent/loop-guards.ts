@@ -25,7 +25,7 @@ export type GuardState =
   | "invalid_tool_stop" // MAX_INVALID_CALLS replies with no usable tool field → stop
   | "parse_salvage" // repeated non-JSON prose → salvage the text as the final answer
   | "context_overflow_retry" // provider reported context overflow → ONE trim + retry
-  | "refusal_retry" // transient safety refusal → bounded resend ladder
+  | "refusal_retry" // safety refusal → context-reset ladder, then unbounded backoff resends
   | "done_unverified" // mutated files, no verification signal → pushback on done
   | "done_stale_verification" // verified, then mutated again → re-verify before done
   | "done_hook_failing" // post-turn hook still failing → pushback on done
@@ -41,8 +41,13 @@ export const GUARD_LIMITS = Object.freeze({
   MAX_REPEAT: 4,
   /** Consecutive different-but-failing steps before the turn stops. */
   MAX_FAILURES: 5,
-  /** Safety-refusal resends per turn before surfacing the friendly error. */
+  /** Context-mutating refusal-ladder rungs (resend → reset → guidance strip) before
+   *  recovery switches to unbounded backoff resends (gjc parity: never terminal). */
   MAX_REFUSAL_RETRIES: 3,
+  /** First post-ladder refusal backoff wait (ms); doubles per attempt (gjc retry.baseDelayMs). */
+  REFUSAL_BACKOFF_BASE_MS: 2_000,
+  /** Ceiling on the post-ladder refusal backoff wait (ms). */
+  REFUSAL_BACKOFF_MAX_MS: 30_000,
   /** Replies with no usable `tool`/`tools` field before the turn stops. */
   MAX_INVALID_CALLS: 3,
   /** Consecutive non-JSON parse failures before the prose is salvaged as the answer. */

@@ -15,7 +15,7 @@ import { nativeToolSchemasFor, normalizeNativeToolName } from "./tool-schemas";
 import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, mkdirTool, deleteTool, type ToolResult } from "./tools";
 import { webSearchTool, setWebSearchActiveModel } from "./web-search";
 import { executeComputerAction } from "../commands/computer";
-import { isRateLimitError } from "../util/retry";
+import { isRateLimitError, waitAbortable } from "../util/retry";
 import { isContextOverflowError, isRefusalError, friendlyProviderError } from "../util/provider-error";
 import { runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
 import { truncateToolOutput, formatToolResultBody } from "./tool-output";
@@ -40,6 +40,7 @@ async function invokeCallLlm(history: Message[], options: {
   onReasoningStart?: () => void;
   onReasoningArtifact?: (artifact: import("../ai/types").ReasoningArtifact) => void;
   tools?: import("../ai/types").NativeToolSchema[];
+  sessionKey?: string;
 }): Promise<string> {
   const mod = await import("./loop");
   return mod.callLlm(history, options);
@@ -265,6 +266,11 @@ export interface AgentLoopOptions {
    *  so an additional query typed while the turn runs steers the live turn instead of
    *  waiting for the next prompt. Return [] when nothing is pending. */
   steer?: () => string[];
+  /** Stable per-conversation key (the session id): threaded to every model call for
+   *  provider-side prompt caching (gjc parity — Codex prompt_cache_key/session_id).
+   *  An agent loop replays nearly-identical history each step, so cache hits here cut
+   *  both latency and billed input tokens. */
+  sessionKey?: string;
 }
 
 export interface AgentLoopResult {
@@ -280,10 +286,12 @@ export interface AgentLoopResult {
 }
 
 
-/** Wall-clock budget for ONE agent turn (ms). JEO_TURN_MAX_MS overrides; 0 disables.
- *  Default 30 minutes: long autonomous runs stay alive, while a turn that spins in
- *  "thinking" (huge contexts, endless extensions) is guaranteed to terminate into
- *  the consolidation wrap-up instead of running for hours. */
+/** Wall-clock STALL budget for ONE agent turn (ms): the maximum time a turn may run
+ *  WITHOUT PROGRESS (no executed tool step). JEO_TURN_MAX_MS overrides; 0 disables.
+ *  Default 30 minutes: long autonomous runs that keep executing tools stay alive
+ *  indefinitely (the step budget's hard cap bounds them), while a turn that spins in
+ *  "thinking" (refusal backoff, endless provider retries) is guaranteed to terminate
+ *  into the consolidation wrap-up instead of running for hours. */
 export function turnMaxMs(env: Record<string, string | undefined> = process.env): number {
   const raw = jeoEnv("TURN_MAX_MS", env);
   if (raw !== undefined && raw !== "") {
@@ -358,12 +366,18 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   const ev = opts.events ?? {};
   const maxHistoryTokens = Math.max(10_000, opts.maxHistoryTokens ?? 80_000);
 
-  // Wall-clock turn budget — the definitive "never sits in thinking forever"
-  // guarantee. Step budgets bound the COUNT of model calls; this bounds their total
-  // TIME: a turn that crosses it stops at the next loop boundary and consolidates a
-  // wrap-up instead of spinning for hours under a generous dynamic step cap.
+  // Wall-clock STALL budget — the definitive "never sits in thinking forever"
+  // guarantee. Step budgets bound the COUNT of model calls; this bounds the time a
+  // turn may spend WITHOUT PROGRESS (no executed tool step): refusal-backoff spins,
+  // endless provider retries, and bounce loops terminate into the consolidation
+  // wrap-up, while a long-running turn that keeps executing tools stays alive —
+  // its termination is owned by the step budget's hard cap and the spin guards.
+  // Field regression this replaces: an ABSOLUTE 30m budget measured from turn start
+  // killed genuinely progressing autonomous runs mid-work.
   const turnStartedAt = Date.now();
   const turnBudgetMs = turnMaxMs();
+  // Reset on every executed tool step and on mid-turn steering.
+  let lastProgressAt = turnStartedAt;
   // "steps" | "time" — drives honest wording in the consolidation message.
   let stopKind: "steps" | "time" = "steps";
   let step = 1;
@@ -388,7 +402,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
                 "with what you have already found this turn, and state explicitly anything that is still uncertain.",
             },
           ],
-          { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: opts.signal },
+          { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: opts.signal, sessionKey: opts.sessionKey },
         );
         const consolidated = wrapUp.trim();
         if (consolidated) {
@@ -437,11 +451,14 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // Round-6 #4: ONE reactive recovery when the PROVIDER reports context overflow
   // (authoritative where the local estimate drifted — images, tokenizer mismatch).
   let contextOverflowRetryUsed = false;
-  // Refusal recovery budget: a safety refusal (HTTP 200, no content) on routine
-  // coding work is usually a transient false-positive. Retry the SAME step once
-  // as-is, then once more with an explicit re-grounding note; only a third
-  // refusal in the turn surfaces the (friendly) error. Bounded per turn so a
-  // genuinely refused request can never burn billed calls in a loop.
+  // Refusal recovery: a safety refusal (HTTP 200, no content) on routine coding
+  // work is usually a transient false-positive. The first rungs MUTATE the context
+  // (plain resend → context reset + re-grounding note → guidance strip); after the
+  // ladder is exhausted the loop keeps resending with capped exponential backoff
+  // instead of surfacing a terminal error (gjc parity: a refusal is retried until
+  // it clears or the user cancels — Esc aborts the backoff wait via opts.signal,
+  // and the stall budget bounds the spin: refusals execute no tools, so the
+  // no-progress clock keeps ticking and terminates the turn at JEO_TURN_MAX_MS).
   const MAX_REFUSAL_RETRIES = GUARD_LIMITS.MAX_REFUSAL_RETRIES;
   let refusalRetries = 0;
   let lastSig = "";
@@ -467,9 +484,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // schemas ONCE instead of rebuilding/reallocating the list on every step.
   const turnToolSchemas = nativeToolSchemasFor(Object.keys(tools));
   while (true) {
-    if (turnBudgetMs > 0 && Date.now() - turnStartedAt > turnBudgetMs) {
+    if (turnBudgetMs > 0 && Date.now() - lastProgressAt > turnBudgetMs) {
       stopKind = "time";
-      budgetStopReason = `turn wall-clock budget of ${Math.round(turnBudgetMs / 60_000)}m exceeded (JEO_TURN_MAX_MS) without done`;
+      budgetStopReason = `no tool progress for ${Math.round(turnBudgetMs / 60_000)}m — turn stall budget (JEO_TURN_MAX_MS) exceeded without done`;
       break;
     }
     if (step > budget.limit()) {
@@ -507,6 +524,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         consecutiveFailures = 0;
         recentStepSigs.length = 0;
         budget.noteSteer?.();
+        lastProgressAt = Date.now(); // fresh instruction = fresh progress window
       }
     }
 
@@ -557,6 +575,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               maxTokens: opts.maxTokens,
               reasoningEffort: opts.reasoningEffort,
               signal: opts.signal,
+              sessionKey: opts.sessionKey,
               onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
               onToken,
               onReasoning,
@@ -603,7 +622,16 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       //      routine). Strip that block for the rest of the turn and retry once;
       //      core instructions stay intact. Field case: `$gjc init` inside a
       //      repo whose guidance files refuse-trip the OAuth classifier.
-      if (isRefusalError(err) && refusalRetries < MAX_REFUSAL_RETRIES) {
+      //   4) unbounded backoff — the classifier verdict is TIME-sensitive (rolling
+      //      classifier state, per-request user-id rotation), so once every
+      //      context mutation is spent, keep resending with capped exponential
+      //      backoff instead of surfacing a terminal error (gjc parity: gjc's
+      //      session auto-retry classifies a refusal as retryable and never ends
+      //      the turn on it). Esc/cancel aborts the wait via opts.signal and the
+      //      loop-top check turns it into "Cancelled."; the JEO_TURN_MAX_MS stall
+      //      budget still bounds the spin (a refusal loop executes no tools, so
+      //      the no-progress clock never resets).
+      if (isRefusalError(err)) {
         refusalRetries++;
         if (refusalRetries === 1) {
           ev.onNotice?.("provider refused the last call (no content) — retrying the same step");
@@ -635,15 +663,24 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           step++;
           continue;
         }
-        const sys = history[0];
-        if (sys?.role === "system" && sys.content.includes("<project_context>")) {
-          const stripped = sys.content.replace(/\n*<project_context>[\s\S]*?<\/project_context>/, "").trimEnd();
-          history[0] = { ...sys, content: stripped }; // replace, never mutate (identity caches)
-          ev.onNotice?.("provider refused a third time — removed project-context guidance from the system prompt and retrying once more");
-          continue; // same step, reduced system prompt
+        if (refusalRetries === 3) {
+          const sys = history[0];
+          if (sys?.role === "system" && sys.content.includes("<project_context>")) {
+            const stripped = sys.content.replace(/\n*<project_context>[\s\S]*?<\/project_context>/, "").trimEnd();
+            history[0] = { ...sys, content: stripped }; // replace, never mutate (identity caches)
+            ev.onNotice?.("provider refused a third time — removed project-context guidance from the system prompt and retrying once more");
+            continue; // same step, reduced system prompt
+          }
+          // Nothing left to strip — fall through to the backoff rung below.
         }
-        // Nothing left to strip — fall through to the friendly terminal error
-        // instead of burning an identical billed call.
+        // Rung 4: every context mutation is spent. Backoff-resend forever (abortable).
+        const attempt = Math.max(1, refusalRetries - MAX_REFUSAL_RETRIES);
+        const baseRaw = Number(jeoEnv("REFUSAL_BACKOFF_BASE_MS") ?? NaN);
+        const baseMs = Number.isFinite(baseRaw) && baseRaw >= 0 ? baseRaw : GUARD_LIMITS.REFUSAL_BACKOFF_BASE_MS;
+        const delayMs = Math.min(baseMs * 2 ** (attempt - 1), GUARD_LIMITS.REFUSAL_BACKOFF_MAX_MS);
+        ev.onNotice?.(`provider refused again — auto-retry #${attempt} in ${Math.max(1, Math.round(delayMs / 1000))}s (Esc to cancel)`);
+        await waitAbortable(delayMs, opts.signal);
+        continue; // loop top surfaces "Cancelled." when the wait was aborted
       }
       const message = friendlyProviderError(err);
       // The error IS the turn's doneReason and every caller displays that — emitting a
@@ -1107,6 +1144,8 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     // repeated call's ACTUAL last outcome (A). A skipped/bounced step never reaches
     // here, so this always holds the last REAL execution's results.
     lastResults = results;
+    // Executed tool step = progress: the stall budget clocks time WITHOUT this.
+    if (results.some(r => r.executed)) lastProgressAt = Date.now();
     step++;
   }
 
@@ -1117,7 +1156,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   const extInfo = budget.extensionsUsed() > 0 ? ` after ${budget.extensionsUsed()} extension(s)` : "";
   const stopInfo = budgetStopReason ? `; ${budgetStopReason}` : "";
   const budgetLabel = stopKind === "time"
-    ? `turn time budget of ${Math.round(turnBudgetMs / 60_000)}m reached`
+    ? `turn time budget of ${Math.round(turnBudgetMs / 60_000)}m reached (no tool progress)`
     : `step budget of ${budget.limit()} reached`;
   try {
     if (!opts.signal?.aborted) {
@@ -1132,7 +1171,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               "the key findings/changes so far, and what remains to be done next.",
           },
         ],
-        { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: opts.signal },
+        { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: opts.signal, sessionKey: opts.sessionKey },
       );
       const consolidated = wrapUp.trim();
       if (consolidated) {

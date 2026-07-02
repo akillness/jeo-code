@@ -9,12 +9,13 @@ Specific OAuth flow implementations for various providers.
 ## Key Files
 | File | Description |
 |------|-------------|
-| `anthropic.ts` | Brief description of purpose |
-| `antigravity.ts` | Brief description of purpose |
-| `google-project.ts` | Brief description of purpose |
-| `google.ts` | Brief description of purpose |
-| `index.ts` | Brief description of purpose |
-| `openai.ts` | Brief description of purpose |
+| `anthropic.ts` | Anthropic (claude.ai) PKCE OAuth |
+| `antigravity.ts` | Google Antigravity OAuth (desktop-app client, dedicated project discovery) |
+| `google-project.ts` | Cloud Code Assist project discovery/onboarding shared by gemini + antigravity |
+| `google.ts` | Google Gemini CLI OAuth (authorization-code) |
+| `index.ts` | OAUTH_FLOW_REGISTRY wiring flows to providers |
+| `kimi.ts` | Kimi Code (Moonshot subscription) device-authorization OAuth — no callback server |
+| `openai.ts` | OpenAI Codex PKCE OAuth + device-code fallback when port 1455 is busy |
 
 ## Subdirectories
 *(None)*

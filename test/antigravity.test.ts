@@ -24,6 +24,8 @@ test("antigravityRequest: builds Cloud Code Assist internal request with project
   expect(payload.request.contents[0].parts[0].text).toBe("hello");
   // Upstream Antigravity removes maxOutputTokens for non-Claude models.
   expect(payload.request.generationConfig?.maxOutputTokens).toBeUndefined();
+  // gemini-3 thinking rides the thinkingLevel enum (the in-name -low marker), never a budget.
+  expect(payload.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: "LOW" });
 });
 
 test("antigravityRequest: keeps maxOutputTokens for Claude models", () => {
@@ -34,6 +36,27 @@ test("antigravityRequest: keeps maxOutputTokens for Claude models", () => {
   ).body);
   expect(payload.model).toBe("claude-sonnet-4-5");
   expect(payload.request.generationConfig.maxOutputTokens).toBe(2048);
+});
+
+test("antigravityRequest: gemini-3 + effort sends thinkingLevel with NO thinkingBudget", () => {
+  const payload = JSON.parse(antigravityRequest(
+    [{ role: "user" as const, content: "hi" }],
+    { model: "antigravity/gemini-3-pro", maxTokens: 4000, reasoningEffort: "high" } as any,
+    cred,
+  ).body);
+  expect(payload.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: "HIGH" });
+  expect(payload.request.generationConfig.thinkingConfig.thinkingBudget).toBeUndefined();
+  // Non-Claude models still get no maxOutputTokens (upstream Antigravity strips it).
+  expect(payload.request.generationConfig.maxOutputTokens).toBeUndefined();
+});
+
+test("antigravityRequest: gemini-2.5 + effort keeps the numeric budget (gjc GOOGLE_THINKING tiers)", () => {
+  const payload = JSON.parse(antigravityRequest(
+    [{ role: "user" as const, content: "hi" }],
+    { model: "antigravity/gemini-2.5-flash", reasoningEffort: "medium" } as any,
+    cred,
+  ).body);
+  expect(payload.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingBudget: 8192 });
 });
 
 test("getAntigravityUserAgent follows Antigravity platform/arch shape", () => {

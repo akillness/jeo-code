@@ -7,8 +7,14 @@ export interface RetryOptions {
   random?: () => number;   // injectable RNG for jitter (default Math.random); equal-jitter in [0.5x, 1x]
   /** Notified before each backoff wait; `delayMs` is the wait actually applied. */
   onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
+  /** Aborts an in-progress backoff wait (e.g. Ctrl-C / turn cancel). Already-aborted or
+   *  aborted-mid-wait rejects immediately instead of completing the sleep — the escape hatch
+   *  for a long, honored provider `Retry-After` (see `rateLimitMaxServerDelayMs`: those are no
+   *  longer capped by default). Does NOT cancel the in-flight `fn()` call itself; thread the
+   *  same signal into the request (e.g. `fetch`) for that. */
+  signal?: AbortSignal;
   /** Minimum backoff (ms) applied specifically to rate-limit (429) errors. The floor
-   *  ESCALATES per attempt (floor × 2^(attempt-1), capped at RETRY_AFTER_CAP_MS) because a
+   *  ESCALATES per attempt (floor × 2^(attempt-1), capped at RATE_LIMIT_FLOOR_CAP_MS) because a
    *  rate-limit window rarely clears in <1s and often needs tens of seconds — a flat
    *  sub-second retry cadence just burns the budget; default 0 (no floor) preserves
    *  generic behavior. */
@@ -17,9 +23,13 @@ export interface RetryOptions {
    *  When higher than `retries`, rate-limit errors get extra attempts so a transient
    *  per-minute window can reset; non-rate-limit errors still use `retries`. */
   rateLimitRetries?: number;
-  /** If a 429 carries a server-directed retry delay above this budget, fail fast
-   * instead of capping the wait and replaying a request the server already said
-   * cannot succeed soon. */
+  /** Opt-in ceiling on a 429's server-directed retry delay: set it and a delay beyond it fails
+   *  fast with the original error instead of sleeping. Unset (the default) honors ANY
+   *  server-directed delay in full, however long — gjc parity: a generic rate limit is retried
+   *  forever, not treated as fatal past some arbitrary budget. Usage/quota-limit errors
+   *  (`isUsageLimitError`) are unaffected either way: `defaultRetryable` already classifies
+   *  them non-retryable before this wait is ever computed. Pair with `signal` so an unbounded
+   *  wait stays user-cancellable. */
   rateLimitMaxServerDelayMs?: number;
 }
 
@@ -102,37 +112,45 @@ export function defaultRetryable(err: unknown): boolean {
   return false;
 }
 
-// Server-directed `Retry-After` is honored but capped so a CLI never hangs on a hostile header.
-const RETRY_AFTER_CAP_MS = 30_000;
-// Long account/subscription windows should be reported, not silently compressed to 30s.
+// Synthetic per-minute floor for a 429 that carries NO server `Retry-After` (see
+// `rateLimitMinDelayMs`) — caps the escalating floor so a SILENT rate limit still waits a
+// realistic window instead of ~8s. Does NOT cap a genuine server-directed Retry-After: a
+// provider that names its own wait is authoritative and is honored in full (gjc parity);
+// `rateLimitMaxServerDelayMs` is the opt-in ceiling for a caller that truly cannot wait that long.
+const RATE_LIMIT_FLOOR_CAP_MS = 30_000;
 
 // Run fn; on a retryable error, back off and retry up to `retries` attempts. Backoff is
-// exponential (baseDelay * 2^(attempt-1), capped at maxDelay) with equal jitter (the wait lands in
-// [0.5x, 1x] of that cap), unless the error carries a `retryAfterMs` (server `Retry-After`), which
-// takes precedence (capped at RETRY_AFTER_CAP_MS). A 429 with a server delay beyond
-// `rateLimitMaxServerDelayMs` is not retried because the provider has identified a
-// long account-wide window; callers can surface the reset time instead of hanging.
+// exponential (baseDelay * 2^(attempt-1), capped at maxDelay) with equal jitter (the wait lands
+// in [0.5x, 1x] of that cap). A server-directed `retryAfterMs` (Retry-After) wins over the
+// jitter and is honored IN FULL — no cap — unless `rateLimitMaxServerDelayMs` is explicitly set
+// and exceeded, in which case the original error is re-thrown immediately instead of sleeping.
+// `opts.signal` can abort an in-progress wait, so an unbounded honored delay stays cancellable.
 export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): Promise<T> {
   const retries = opts?.retries ?? 3;
   const baseDelayMs = opts?.baseDelayMs ?? 250;
   const maxDelayMs = opts?.maxDelayMs ?? 4000;
   const isRetryable = opts?.isRetryable ?? defaultRetryable;
-  const sleep = opts?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+  const sleep = opts?.sleep ?? ((ms: number) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, ms);
+    return promise;
+  });
   const random = opts?.random ?? Math.random;
   const onRetry = opts?.onRetry;
   const rateLimitMinDelayMs = opts?.rateLimitMinDelayMs ?? 0;
   const rateLimitRetries = opts?.rateLimitRetries;
   const rateLimitMaxServerDelayMs = opts?.rateLimitMaxServerDelayMs;
+  const signal = opts?.signal;
 
   let attempt = 1;
   while (true) {
     try {
       return await fn();
     } catch (err) {
-      // Rate-limit (429) errors may use a higher attempt cap so a transient
-      // per-minute window can reset before we surface the failure. If the server
-      // says the window is much longer than our retry budget, fail fast with the
-      // original error so the UI can show the real reset delay.
+      // Rate-limit (429) errors may use a higher attempt cap so a transient per-minute window
+      // can reset before we surface the failure. `rateLimitMaxServerDelayMs` is opt-in
+      // (unset by default): only when explicitly configured and the server's own wait exceeds
+      // it do we fail fast instead of sleeping through a window the caller declared too long.
       const rateLimited = isRateLimitError(err);
       const serverDelay = retryAfterOf(err);
       if (
@@ -151,15 +169,15 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
       const capped = Math.min(baseDelayMs * Math.pow(2, attempt - 1), maxDelayMs);
       // Equal jitter: half fixed + half random → [0.5x, 1x] of the capped backoff.
       const jittered = capped / 2 + random() * (capped / 2);
-      // Server `Retry-After` wins (capped); else jitter. For rate limits, apply the
-      // floor in BOTH cases so a 0/near-0 Retry-After (or sub-second jitter) doesn't
-      // burn the 429 budget back-to-back with no real pause. The floor escalates per
-      // attempt (×2 each retry, capped) so the total wait across the 429 budget spans
-      // a realistic rate-limit window (~a minute) instead of ~8s.
-      const cappedServer = serverDelay !== undefined ? Math.min(serverDelay, RETRY_AFTER_CAP_MS) : undefined;
-      const base = cappedServer !== undefined ? cappedServer : jittered;
+      // Server `Retry-After` wins, honored IN FULL (no cap — gjc parity: even a multi-hour
+      // provider-directed window is retried, never silently compressed). For rate limits,
+      // apply the floor in BOTH cases so a 0/near-0 Retry-After (or sub-second jitter) doesn't
+      // burn the 429 budget back-to-back with no real pause. The floor escalates per attempt
+      // (×2 each retry, capped at RATE_LIMIT_FLOOR_CAP_MS) so a SYNTHETIC (server-silent) wait
+      // spans a realistic rate-limit window (~a minute) instead of ~8s.
+      const base = serverDelay !== undefined ? serverDelay : jittered;
       const floor = rateLimited
-        ? Math.min(rateLimitMinDelayMs * Math.pow(2, attempt - 1), RETRY_AFTER_CAP_MS)
+        ? Math.min(rateLimitMinDelayMs * Math.pow(2, attempt - 1), RATE_LIMIT_FLOOR_CAP_MS)
         : 0;
       const delay = Math.max(base, floor);
 
@@ -167,10 +185,47 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
         onRetry(attempt, err, delay);
       }
 
-      await sleep(delay);
+      await abortableSleep(sleep, delay, signal);
       attempt++;
     }
   }
+}
+
+/** Race `sleep(ms)` against `signal`; an already-aborted or mid-wait-aborted signal rejects
+ *  immediately with its abort reason instead of completing the wait. Keeps a long, honored
+ *  server-directed retry delay (see `withRetry`) user-cancellable even though it is no longer
+ *  capped. A no-op passthrough when no signal is supplied (existing callers/tests unaffected). */
+function abortableSleep(sleep: (ms: number) => Promise<void>, ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return sleep(ms);
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("aborted"));
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const onAbort = () => reject(signal.reason ?? new Error("aborted"));
+  signal.addEventListener("abort", onAbort, { once: true });
+  sleep(ms).then(
+    value => { signal.removeEventListener("abort", onAbort); resolve(value); },
+    err => { signal.removeEventListener("abort", onAbort); reject(err); },
+  );
+  return promise;
+}
+
+/** Abortable wait for the ENGINE's post-ladder refusal backoff: resolves EARLY (never
+ *  rejects) when `signal` aborts, so the agent loop's top-of-loop cancellation check
+ *  owns the exit path. Distinct from the rejecting `abortableSleep` inside `withRetry`,
+ *  whose callers need the abort reason propagated as an error. */
+export function waitAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  if (signal?.aborted) {
+    resolve();
+    return promise;
+  }
+  const finish = () => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", finish);
+    resolve();
+  };
+  const timer = setTimeout(finish, ms);
+  signal?.addEventListener("abort", finish, { once: true });
+  return promise;
 }
 
 // Extract a non-negative `retryAfterMs` from an error, if it carries one (e.g. ProviderHttpError).
@@ -205,12 +260,14 @@ function errorMessageOf(err: unknown): string {
 
 /**
  * Persistent usage/quota-limit detection (gjc parity: `isUsageLimitError`). These are
- * subscription/window limits ("usage limit reached", "quota exceeded") that need a model
- * or credential switch — retrying within seconds is pure waste, unlike a per-minute 429.
- * Deliberately excludes the ambiguous "resource exhausted" (Gemini uses it for windows
- * that often DO clear within a retry budget).
+ * subscription/window limits ("usage limit reached", "quota exceeded", model/message
+ * window limits, credit exhaustion, Anthropic ACCOUNT-level exhaustion) that need a
+ * model or credential switch — retrying within seconds is pure waste, unlike a
+ * per-minute 429. Bare "resource exhausted" (gRPC capacity wording) stays transient;
+ * only the qualified "Resource has been exhausted (… quota/limit)" form is persistent
+ * (gjc fixture parity: rate-limit-utils.test.ts).
  */
-const USAGE_LIMIT_PATTERN = /usage.?limit|usage_limit_reached|usage_not_included|limit_reached|quota.?exceeded|exceeded your/i;
+const USAGE_LIMIT_PATTERN = /usage.?limit|usage_limit_reached|usage_not_included|limit_reached|model.?limit|message.?limit|limit for this model|quota.?exceeded|out_of_credits|request would exceed your account.?s rate limit|resource has been exhausted[^\n]*(?:quota|limit)|exceeded your/i;
 export function isUsageLimitError(err: unknown): boolean {
   return USAGE_LIMIT_PATTERN.test(errorMessageOf(err));
 }
@@ -221,8 +278,9 @@ export function isUsageLimitError(err: unknown): boolean {
  *  block reasons). Lives here (not provider-error.ts) so `defaultRetryable` can
  *  fail fast on it: a refusal is DETERMINISTIC for the same conversation content —
  *  transport-level resends of an identical payload just burn billed calls. The
- *  engine's bounded refusal ladder (resend → context reset → guidance strip) is
- *  the correct recovery layer because it MUTATES the context between attempts. */
+ *  engine's refusal ladder (resend → context reset → guidance strip, then unbounded
+ *  capped backoff — gjc parity: a refusal is never terminal) is the correct recovery
+ *  layer because it MUTATES the context between attempts. */
 export function isRefusalError(err: unknown): boolean {
   return /stop_reason=refusal|finish_reason=content_filter|\(content_filter\)|\(SAFETY\)|\(PROHIBITED_CONTENT\)|\(BLOCKLIST\)/i.test(errorMessageOf(err));
 }

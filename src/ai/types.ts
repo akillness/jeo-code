@@ -113,6 +113,12 @@ export interface CallOptions {
    *  `enable_thinking: true`; "zai" → `thinking: {type:"enabled"}`. Set per provider by
    *  the openai-compatible factory; without it a model never emits reasoning to surface. */
   reasoningFormat?: "openai" | "openrouter" | "qwen" | "zai";
+  /** Stable per-conversation key (the session id) for provider-side prompt caching.
+   *  gjc parity: the Codex/Responses backends key their prompt cache on
+   *  `prompt_cache_key` (+ `session_id`/`conversation_id` headers on the Codex
+   *  backend), so an agent loop replaying the same history each step gets cache
+   *  hits instead of full-prompt re-reads. Optional — absent for one-shot calls. */
+  sessionKey?: string;
   /** Notified before each auto-retry backoff wait (rate limits / transient errors).
    *  NOT forwarded to provider adapters — consumed by the manager's retry layer. */
   onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
@@ -140,6 +146,10 @@ export interface CallOptions {
    *  these on the wire and re-serialize the structured tool call back into the engine's
    *  canonical {"tool":...}/{"tools":[...]} string; others ignore it. */
   tools?: NativeToolSchema[];
+  /** Extra HTTP headers merged into the outgoing provider request (adapter-specific;
+   *  currently honored by the anthropic adapter). Used by Anthropic-compatible OAuth
+   *  providers — e.g. Kimi Code sends its X-Msh-* device headers on every call. */
+  extraHeaders?: Record<string, string>;
 }
 
 export interface ProviderAdapter {

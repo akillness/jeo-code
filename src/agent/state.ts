@@ -78,6 +78,11 @@ export interface Config {
     rateLimitRetries?: number;
     /** Minimum backoff (ms) for a 429 when the server sends no Retry-After. */
     rateLimitMinDelayMs?: number;
+    /** Opt-in ceiling (ms) on a 429's server-directed Retry-After: a delay beyond it fails
+     *  fast instead of sleeping. Unset (the default) honors any server-directed delay in
+     *  full, however long — a generic rate limit is retried forever, not treated as fatal
+     *  past some budget. Set this only if unbounded rate-limit waits are undesirable. */
+    rateLimitMaxServerDelayMs?: number;
     /** HTTP statuses to treat as NON-retryable even when defaultRetryable would
      *  retry them (e.g. pin 503 to fail fast instead of riding the backoff ladder). */
     failFastStatuses?: number[];
@@ -385,14 +390,88 @@ export async function readRawGlobalConfig(): Promise<Config> {
   return salvageCredentials(clean, parsed);
 }
 
+/**
+ * Global config write lock — HIGH-1 lost-update fix (gjc parity: auth-storage.ts
+ * SqliteAuthCredentialStore serializes credential writes inside SQLite). jeo keeps
+ * everything in one config.json, so EVERY read-modify-write must serialize through one
+ * lock file; otherwise two concurrent per-provider OAuth refreshes (e.g. doctor.ts
+ * Promise.all) read the same base config and the later write clobbers the earlier one's
+ * just-rotated refresh token → silent logout.
+ *
+ * Semantics mirror src/auth/storage.ts acquireLock (stale-lock detection + bounded wait
+ * + single steal at the deadline) but are implemented locally: storage.ts imports
+ * state.ts, so importing it back would create a cycle.
+ * // ponytail: extract a shared lockfile helper module if a third lockfile user appears.
+ */
+const CONFIG_LOCK_STALE_MS = 5_000;
+
+function configLockPath(): string {
+  return `${globalConfigPath()}.lock`;
+}
+
+async function acquireConfigLock(timeoutMs = CONFIG_LOCK_STALE_MS): Promise<void> {
+  const lockPath = configLockPath();
+  await fs.mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  // `timeoutMs` is the STALENESS threshold for a dead holder's lock file; the
+  // acquisition wait itself is bounded at 2× that (same policy as storage.ts).
+  const deadline = Date.now() + Math.max(timeoutMs * 2, 1_000);
+  while (true) {
+    try {
+      const handle = await fs.open(lockPath, "wx");
+      await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: Date.now() }), "utf-8");
+      await handle.close();
+      return;
+    } catch (err: any) {
+      if (err.code !== "EEXIST") throw err;
+      try {
+        const info = JSON.parse(await fs.readFile(lockPath, "utf-8"));
+        if (typeof info.createdAt === "number" && info.createdAt + timeoutMs < Date.now()) {
+          await fs.unlink(lockPath).catch(() => {});
+        }
+      } catch {
+        try {
+          const stat = await fs.stat(lockPath);
+          if (stat.mtimeMs + timeoutMs < Date.now()) {
+            await fs.unlink(lockPath).catch(() => {});
+          }
+        } catch {}
+      }
+    }
+    if (Date.now() >= deadline) {
+      // Deadline reached: the holder is dead or wedged. Steal once — the lock guards
+      // a short config read-modify-write, so waiting longer only hangs the caller.
+      await fs.unlink(lockPath).catch(() => {});
+      const handle = await fs.open(lockPath, "wx").catch(() => null);
+      if (handle) {
+        await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: Date.now(), stolen: true }), "utf-8");
+        await handle.close();
+        return;
+      }
+      throw new Error(`config lock could not be acquired within ${Math.max(timeoutMs * 2, 1_000)}ms (${lockPath})`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+}
+
+async function releaseConfigLock(): Promise<void> {
+  await fs.unlink(configLockPath()).catch(() => {});
+}
+
 /** Merge a patch onto the RAW on-disk config and persist. The `build` callback
  *  receives the raw config so partial updates (subagents/roles maps) are derived
- *  from on-disk state, never from the env-overlaid runtime config. */
+ *  from on-disk state, never from the env-overlaid runtime config. The whole
+ *  read→merge→write cycle holds the global config lock so concurrent patches
+ *  (per-provider OAuth refreshes, /model save, doctor sweeps) never lose updates. */
 export async function saveConfigPatch(build: (raw: Config) => Partial<Config>): Promise<Config> {
-  const raw = await readRawGlobalConfig();
-  const next = { ...raw, ...build(raw) };
-  await saveGlobalConfig(next);
-  return next;
+  await acquireConfigLock();
+  try {
+    const raw = await readRawGlobalConfig();
+    const next = { ...raw, ...build(raw) };
+    await saveGlobalConfig(next);
+    return next;
+  } finally {
+    await releaseConfigLock();
+  }
 }
 
 export function getLocalJeoDir(cwd: string = process.cwd()): string {

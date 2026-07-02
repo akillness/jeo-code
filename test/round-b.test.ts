@@ -283,7 +283,9 @@ test("resolveRetryOptions: defaults still engage when unset (regression guard)",
   const o = resolveRetryOptions(undefined);
   expect(o.rateLimitRetries).toBe(6);
   expect(o.rateLimitMinDelayMs).toBe(2000);
-  expect(o.rateLimitMaxServerDelayMs).toBe(5 * 60 * 1000);
+  // gjc parity: no default server-delay ceiling — a generic 429 honors however long
+  // the server asks (fail-fast stays available as explicit opt-in config only).
+  expect(o.rateLimitMaxServerDelayMs).toBeUndefined();
   expect(o.retries).toBeUndefined();
 });
 

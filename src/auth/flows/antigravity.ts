@@ -56,6 +56,9 @@ export function discoverAntigravityProjectId(
   return discoverGoogleProjectId(accessToken, {
     metadata: { ...ANTIGRAVITY_DISCOVERY_METADATA },
     extraHeaders: { "User-Agent": getAntigravityUserAgent() },
+    // gjc antigravity parity: a reported tier without a project ONBOARDS the
+    // default/legacy tier instead of throwing the workspace-project hint.
+    alwaysOnboard: true,
     onProgress: opts.onProgress,
   });
 }

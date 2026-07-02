@@ -51,7 +51,7 @@ test("handleHotkeys: returns static reference lines", () => {
   expect(result && "lines" in result).toBe(true);
   if (result && "lines" in result) {
     expect(result.lines[0]).toBe("Keyboard shortcuts:");
-    expect(result.lines.length).toBe(18);
+    expect(result.lines.length).toBe(21);
     expect(result.lines.some(l => l.includes("drag") && l.includes("cmd/ctrl+c"))).toBe(true);
     expect(result.lines.some(l => l.includes("Shift-drag"))).toBe(true);
   }

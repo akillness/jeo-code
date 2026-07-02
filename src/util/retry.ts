@@ -38,6 +38,14 @@ export function defaultRetryable(err: unknown): boolean {
   if (isUsageLimitError(err)) {
     return false;
   }
+  // Safety refusals are DETERMINISTIC for identical conversation content: the
+  // classifier trips on what's IN the context, so a transport-level resend of the
+  // same payload re-refuses every time (observed: each engine ladder rung burned
+  // 2 extra billed calls before this check). Fail fast — the engine's refusal
+  // ladder owns recovery because it mutates the context between attempts.
+  if (isRefusalError(err)) {
+    return false;
+  }
 
   let message = "";
   if (err instanceof Error) {
@@ -205,4 +213,16 @@ function errorMessageOf(err: unknown): string {
 const USAGE_LIMIT_PATTERN = /usage.?limit|usage_limit_reached|usage_not_included|limit_reached|quota.?exceeded|exceeded your/i;
 export function isUsageLimitError(err: unknown): boolean {
   return USAGE_LIMIT_PATTERN.test(errorMessageOf(err));
+}
+
+/** Provider safety-refusal signal: an HTTP-200 completion that returned NO
+ *  content because the model/provider declined (Anthropic `stop_reason=refusal`,
+ *  OpenAI `finish_reason=content_filter`, Gemini `SAFETY`/`PROHIBITED_CONTENT`
+ *  block reasons). Lives here (not provider-error.ts) so `defaultRetryable` can
+ *  fail fast on it: a refusal is DETERMINISTIC for the same conversation content —
+ *  transport-level resends of an identical payload just burn billed calls. The
+ *  engine's bounded refusal ladder (resend → context reset → guidance strip) is
+ *  the correct recovery layer because it MUTATES the context between attempts. */
+export function isRefusalError(err: unknown): boolean {
+  return /stop_reason=refusal|finish_reason=content_filter|\(content_filter\)|\(SAFETY\)|\(PROHIBITED_CONTENT\)|\(BLOCKLIST\)/i.test(errorMessageOf(err));
 }

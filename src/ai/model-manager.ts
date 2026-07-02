@@ -6,7 +6,7 @@ import "./register-providers"; // side-effect: registers built-in adapters into 
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId, effectiveAliasesFor } from "./model-registry";
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
-import { toProviderModel, CODEX_MODELS } from "./model-catalog";
+import { toProviderModel, CODEX_MODELS, findCatalogModel } from "./model-catalog";
 import { xaiCredential } from "./providers/xai";
 import { OPENAI_COMPAT_NAMES, isOpenAICompatProvider } from "./providers/openai-compatible-catalog";
 import { withRetry, defaultRetryable, type RetryOptions } from "../util/retry";
@@ -98,6 +98,32 @@ export function thinkingMaxTokens(level?: "minimal" | "low" | "medium" | "high" 
   if (level === "high") return 24000;
   if (level === "xhigh") return 31999;
   return 16000;
+}
+
+/** Default cap for the catalog-derived output budget. 64k covers every real coding
+ *  turn (large writes + deep adaptive thinking) while staying clear of the admission
+ *  429 risk that a blanket 128k `max_tokens` carries on low-tier API keys. */
+const DEFAULT_MAX_OUTPUT_CAP = 64_000;
+
+/** Output-token budget for a call (gjc/omp parity): the model's CATALOG max-output,
+ *  capped by JEO_MAX_OUTPUT_TOKENS (default 64k) — NOT the thinking-level table.
+ *
+ *  Rationale: on Anthropic adaptive-thinking models (Sonnet/Fable/Mythos 5, Opus 4.6+)
+ *  thinking tokens are spent INSIDE `max_tokens`. Deriving `max_tokens` from the
+ *  thinking level (4k–32k) makes thinking and the visible reply compete for the same
+ *  small budget, so a deep-thinking step dies with `stop_reason=max_tokens` and no
+ *  content ("output budget exhausted" dead turns). The thinking level keeps steering
+ *  DEPTH via reasoningEffort/output_config; it no longer constrains output size.
+ *  Uncatalogued models (local/live ids) keep the legacy thinking-table budget. */
+export function resolveMaxOutputTokens(
+  model?: string,
+  level?: "minimal" | "low" | "medium" | "high" | "xhigh",
+): number {
+  const meta = model ? findCatalogEntry(expandAlias(model, ALIAS_DEFAULTS)) : undefined;
+  if (!meta) return thinkingMaxTokens(level);
+  const envCap = Number(jeoEnv("MAX_OUTPUT_TOKENS"));
+  const cap = Number.isFinite(envCap) && envCap > 0 ? envCap : DEFAULT_MAX_OUTPUT_CAP;
+  return Math.min(findCatalogModel(meta.id)?.maxOutputTokens ?? cap, cap);
 }
 
 /** Map the thinking level to an OpenAI reasoning-effort tier. minimal/low/medium/high pass
@@ -339,7 +365,7 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
     model: providerModelFor(model),
     systemPrompt: options.systemPrompt,
     temperature: options.temperature ?? 0.2,
-    maxTokens: options.maxTokens ?? thinkingMaxTokens(config.thinkingLevel),
+    maxTokens: options.maxTokens ?? resolveMaxOutputTokens(model, config.thinkingLevel),
     jsonMode: options.jsonMode,
     baseUrl,
     numCtx: options.numCtx ?? (provider === "ollama" ? (config as { ollamaNumCtx?: number }).ollamaNumCtx : undefined),

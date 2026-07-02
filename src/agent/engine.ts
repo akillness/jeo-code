@@ -21,7 +21,7 @@ import { runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
 import { truncateToolOutput, formatToolResultBody } from "./tool-output";
 export { TOOL_OUTPUT_MAX, READ_OUTPUT_MAX, TOOL_SPILL_THRESHOLD, MAX_TOOL_ARTIFACTS, truncateToolOutput, spillToolResult } from "./tool-output";
 import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, hashSignature, type StepBudgetConfig } from "./step-budget";
-import { historyTokens, trimToolResultsInPlace } from "./compaction";
+import { historyTokens, trimToolResultsInPlace, stripReasoningArtifactsInPlace } from "./compaction";
 import { jeoEnv } from "../util/env";
 import { GUARD_LIMITS, isVerificationSignal, repeatHint, classifyDoneGate } from "./loop-guards";
 import { stripLeakedReasoningTags } from "../ai/think-tags";
@@ -611,9 +611,17 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         }
         if (refusalRetries === 2) {
           const res = trimToolResultsInPlace(history, { budgetTokens: 0, keepRecent: 0 });
+          // Also cut the native thinking-block replay channel: refusals judge the WHOLE
+          // resent conversation, and replayed (model-authored) thinking blocks are the
+          // trip wire tool-result eliding can't clear — with artifacts stripped the next
+          // request falls back to plain-text history (same shape as the 400 fail-safe).
+          const strippedTurns = stripReasoningArtifactsInPlace(history);
+          const parts: string[] = [];
+          if (res.trimmed > 0) parts.push(`reset ${res.trimmed} tool result(s)`);
+          if (strippedTurns > 0) parts.push(`dropped thinking replay from ${strippedTurns} turn(s)`);
           ev.onNotice?.(
-            res.trimmed > 0
-              ? `provider refused again — reset ${res.trimmed} tool result(s) from the context and retrying (refusals require a context reset)`
+            parts.length
+              ? `provider refused again — ${parts.join(" and ")} and retrying (refusals require a context reset)`
               : "provider refused again — continuing with a fresh instruction",
           );
           history.push({

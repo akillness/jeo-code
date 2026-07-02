@@ -148,6 +148,30 @@ export function trimToolResultsInPlace(
 }
 
 /**
+ * Refusal-recovery companion to `trimToolResultsInPlace`: drop provider-native
+ * reasoning artifacts (and native tool-use replay records) from ASSISTANT turns
+ * so the next request replays plain text instead of native thinking blocks.
+ *
+ * Why: Anthropic's refusal classifier judges the WHOLE resent conversation, and
+ * replayed `thinking` blocks are model-authored content — the usual trip wire
+ * that tool-result eliding cannot clear (field case: a fable-5 turn re-refused
+ * through the entire ladder because every resend replayed the flagged thinking
+ * blocks verbatim). Messages are REPLACED, never mutated (identity caches).
+ * Display fields (`reasoning`) are kept — only the wire-replay channel is cut.
+ */
+export function stripReasoningArtifactsInPlace(history: Message[]): number {
+  let stripped = 0;
+  for (let i = 0; i < history.length; i++) {
+    const m = history[i]!;
+    if (m.role !== "assistant" || (!m.reasoningArtifacts?.length && !m.toolUse?.length)) continue;
+    const { reasoningArtifacts: _artifacts, toolUse: _toolUse, ...rest } = m;
+    history[i] = rest;
+    stripped++;
+  }
+  return stripped;
+}
+
+/**
  * Accurate BPE token total for a history, summing `countTokensAccurate` per
  * message (+1 per message for role/separator overhead, mirroring
  * `estimateMessageTokens`). Use this ONLY at the compaction decision boundary

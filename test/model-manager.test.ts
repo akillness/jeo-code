@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { resolveProvider, thinkingMaxTokens, thinkingToReasoningEffort, effectiveCredentialForProvider } from "../src/ai/model-manager";
+import { resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, effectiveCredentialForProvider } from "../src/ai/model-manager";
 import type { Credential } from "../src/auth/storage";
 
 test("effectiveCredentialForProvider: anthropic OAuth wins even when an API key is configured", () => {
@@ -46,6 +46,41 @@ test("thinkingMaxTokens: maps level → token budget (medium default)", () => {
   expect(thinkingMaxTokens("medium")).toBe(16000);
   expect(thinkingMaxTokens("high")).toBe(24000);
   expect(thinkingMaxTokens(undefined)).toBe(16000);
+});
+
+test("resolveMaxOutputTokens: catalogued models use catalog max-output capped at 64k, NOT the thinking table", () => {
+  // Fable-5/Sonnet-5 catalog 128k → capped at the 64k default. The thinking level
+  // must no longer constrain output size (it steers depth via reasoningEffort).
+  expect(resolveMaxOutputTokens("claude-fable-5", "xhigh")).toBe(64000);
+  expect(resolveMaxOutputTokens("claude-sonnet-5", "minimal")).toBe(64000);
+  // Catalog max BELOW the cap passes through (haiku 4.5 = 64k exactly, gpt-4o = 16384).
+  expect(resolveMaxOutputTokens("claude-haiku-4-5", "high")).toBe(64000);
+  expect(resolveMaxOutputTokens("gpt-4o", "high")).toBe(16384);
+  // Aliases expand before lookup (sonnet → claude-sonnet-4-6, 128k → 64k cap).
+  expect(resolveMaxOutputTokens("sonnet", "medium")).toBe(64000);
+});
+
+test("resolveMaxOutputTokens: uncatalogued/absent models keep the legacy thinking-table budget", () => {
+  // ollama/qwen2.5:0.5b IS catalogued (8192 max output) — small catalog values pass through.
+  expect(resolveMaxOutputTokens("ollama/qwen2.5:0.5b", "high")).toBe(8192);
+  expect(resolveMaxOutputTokens("some-live-model", undefined)).toBe(16000);
+  expect(resolveMaxOutputTokens(undefined, "low")).toBe(8000);
+});
+
+test("resolveMaxOutputTokens: JEO_MAX_OUTPUT_TOKENS raises/lowers the cap for catalogued models", () => {
+  const prev = process.env.JEO_MAX_OUTPUT_TOKENS;
+  try {
+    process.env.JEO_MAX_OUTPUT_TOKENS = "128000";
+    expect(resolveMaxOutputTokens("claude-fable-5", "high")).toBe(128000);
+    process.env.JEO_MAX_OUTPUT_TOKENS = "8000";
+    expect(resolveMaxOutputTokens("claude-fable-5", "high")).toBe(8000);
+    // Invalid values fall back to the 64k default cap.
+    process.env.JEO_MAX_OUTPUT_TOKENS = "not-a-number";
+    expect(resolveMaxOutputTokens("claude-fable-5", "high")).toBe(64000);
+  } finally {
+    if (prev === undefined) delete process.env.JEO_MAX_OUTPUT_TOKENS;
+    else process.env.JEO_MAX_OUTPUT_TOKENS = prev;
+  }
 });
 
 test("thinkingToReasoningEffort: maps session level → provider reasoning tier", () => {

@@ -4,7 +4,10 @@
  * (carrying `.status` and a body), and the agent loop surfaces failures both as a
  * thrown error and as a `doneReason`, so this lives in a shared util used by both.
  */
-import { isUsageLimitError } from "./retry";
+import { isUsageLimitError, isRefusalError } from "./retry";
+// Re-export: engine.ts and callers import the refusal predicate from here; the
+// definition lives in retry.ts so defaultRetryable can fail fast without a cycle.
+export { isRefusalError } from "./retry";
 
 /** Provider-authoritative context-overflow signal (HTTP 400/413 family). The
  *  local token estimate can drift under the real count (images, tokenizer
@@ -16,17 +19,6 @@ export function isContextOverflowError(err: unknown): boolean {
   const pattern = /context[ _-]?length|context window|prompt is too long|input is too long|too many tokens|maximum (input|context)|exceeds.{0,30}(context|token)/i;
   if (pattern.test(msg)) return true;
   return status === 413; // payload-too-large is always an overflow signal
-}
-
-/** Provider safety-refusal signal: an HTTP-200 completion that returned NO
- *  content because the model/provider declined (Anthropic `stop_reason=refusal`,
- *  OpenAI `finish_reason=content_filter`, Gemini `SAFETY`/`PROHIBITED_CONTENT`
- *  block reasons). On routine coding work these are usually transient
- *  false-positives — the engine retries the step (bounded) instead of killing
- *  the turn with a dead "Error: … returned no content". */
-export function isRefusalError(err: unknown): boolean {
-  const msg = (err as Error)?.message ?? String(err);
-  return /stop_reason=refusal|finish_reason=content_filter|\(content_filter\)|\(SAFETY\)|\(PROHIBITED_CONTENT\)|\(BLOCKLIST\)/i.test(msg);
 }
 
 function formatDuration(ms: number): string {

@@ -273,3 +273,18 @@ test("anthropicRequest: 5th-gen adaptive-display ids drop the interleaved-thinki
   expect(beta("claude-fable-5")).not.toContain("interleaved-thinking");
   expect(beta("claude-mythos-5")).not.toContain("interleaved-thinking");
 });
+
+test("anthropicPayload: non-stream requests clamp max_tokens to 32k; stream carries the full budget", () => {
+  const messages = [{ role: "user" as const, content: "hi" }];
+  const cred = { kind: "api_key", provider: "anthropic", token: "k" } as const;
+  const p = (stream: boolean, maxTokens: number) =>
+    JSON.parse(anthropicPayload(messages, { model: "claude-fable-5", maxTokens, reasoningEffort: "high" }, stream, true, cred));
+
+  // 64k catalog-derived budget: stream passes through; non-stream clamps to the
+  // proven 32k ceiling (Anthropic's ~10-minute non-streaming HTTP window).
+  expect(p(true, 64000).max_tokens).toBe(64000);
+  expect(p(false, 64000).max_tokens).toBe(32000);
+  // Budgets at/below the ceiling are untouched on both paths.
+  expect(p(false, 24000).max_tokens).toBe(24000);
+  expect(p(true, 24000).max_tokens).toBe(24000);
+});

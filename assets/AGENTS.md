@@ -9,7 +9,8 @@ Static binary assets (images) used for project branding, documentation, and TUI/
 ## Key Files
 | File | Description |
 |------|-------------|
-| `character.png` | Neon-lens coding-agent mascot (blue lens → violet gown → pink lens) holding a glowing terminal; the brand's synthwave identity, used in README branding and helper scripts |
+| `character.png` | Static source render of the red crayfish coding-wizard mascot: cyan/red glasses, crimson shell shifting through magenta/violet/purple, and floating jeopi-inspired plush companions |
+| `character.gif` | Animated README mascot derived from the PerfectPixel-style sprite sheet; idle hover loop with pulsing glasses, antenna glow, and orbiting plush companions |
 | `hero.png` | Primary hero/banner image for documentation (autonomous coding-agent scene) |
 | `icon.png` | Project icon (mascot face, 1024×1024) shown in README headers |
 | `icon-master.png` | Full-resolution source for the generated project icon |

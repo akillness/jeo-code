@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/character.png" alt="jeo-code 吉祥物" width="320" />
+  <img src="assets/character.gif" alt="动态 jeo-code 红色小龙虾吉祥物" width="320" />
 </p>
 
 <p align="center">

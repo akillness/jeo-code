@@ -208,6 +208,26 @@ function abortableSleep(sleep: (ms: number) => Promise<void>, ms: number, signal
   return promise;
 }
 
+/** Abortable wait for the ENGINE's post-ladder refusal backoff: resolves EARLY (never
+ *  rejects) when `signal` aborts, so the agent loop's top-of-loop cancellation check
+ *  owns the exit path. Distinct from the rejecting `abortableSleep` inside `withRetry`,
+ *  whose callers need the abort reason propagated as an error. */
+export function waitAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  if (signal?.aborted) {
+    resolve();
+    return promise;
+  }
+  const finish = () => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", finish);
+    resolve();
+  };
+  const timer = setTimeout(finish, ms);
+  signal?.addEventListener("abort", finish, { once: true });
+  return promise;
+}
+
 // Extract a non-negative `retryAfterMs` from an error, if it carries one (e.g. ProviderHttpError).
 function retryAfterOf(err: unknown): number | undefined {
   if (typeof err === "object" && err !== null) {
@@ -258,8 +278,9 @@ export function isUsageLimitError(err: unknown): boolean {
  *  block reasons). Lives here (not provider-error.ts) so `defaultRetryable` can
  *  fail fast on it: a refusal is DETERMINISTIC for the same conversation content —
  *  transport-level resends of an identical payload just burn billed calls. The
- *  engine's bounded refusal ladder (resend → context reset → guidance strip) is
- *  the correct recovery layer because it MUTATES the context between attempts. */
+ *  engine's refusal ladder (resend → context reset → guidance strip, then unbounded
+ *  capped backoff — gjc parity: a refusal is never terminal) is the correct recovery
+ *  layer because it MUTATES the context between attempts. */
 export function isRefusalError(err: unknown): boolean {
   return /stop_reason=refusal|finish_reason=content_filter|\(content_filter\)|\(SAFETY\)|\(PROHIBITED_CONTENT\)|\(BLOCKLIST\)/i.test(errorMessageOf(err));
 }

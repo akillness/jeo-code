@@ -11,6 +11,8 @@ test("GUARD_LIMITS exposes the named thresholds and is frozen", () => {
   expect(GUARD_LIMITS.MAX_REPEAT).toBe(4);
   expect(GUARD_LIMITS.MAX_FAILURES).toBe(5);
   expect(GUARD_LIMITS.MAX_REFUSAL_RETRIES).toBe(3);
+  expect(GUARD_LIMITS.REFUSAL_BACKOFF_BASE_MS).toBe(2_000);
+  expect(GUARD_LIMITS.REFUSAL_BACKOFF_MAX_MS).toBe(30_000);
   expect(GUARD_LIMITS.MAX_INVALID_CALLS).toBe(3);
   expect(GUARD_LIMITS.MAX_PARSE_BOUNCES).toBe(2);
   expect(GUARD_LIMITS.CYCLE_WINDOW).toBe(6);

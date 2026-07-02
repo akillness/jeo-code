@@ -61,7 +61,7 @@ export function friendlyProviderError(err: unknown): string {
     return `${provider} rejected the request: the conversation no longer fits the model's context window. Run /compact, drop large attachments, or start a fresh session.`;
   }
   if (isRefusalError(err)) {
-    return `${provider} declined to answer (safety refusal — no content returned) even after automatic retries with a context reset. Usually a content classifier tripped on recently read file/search content: /retry once more, /compact or /new to drop the triggering context, or switch model with /model. If this persists on a Claude subscription (OAuth) login, Anthropic restricts third-party OAuth clients — set ANTHROPIC_API_KEY or use another provider.`;
+    return `${provider} declined to answer (safety refusal — no content returned). Usually a content classifier tripped on recently read file/search content: /retry, /compact or /new to drop the triggering context, or switch model with /model. If this persists on a Claude subscription (OAuth) login, Anthropic restricts third-party OAuth clients — set ANTHROPIC_API_KEY or use another provider.`;
   }
   if (status === 404) {
     return `${provider} does not recognize the requested model (HTTP 404). The id may be retired, gated, or mistyped — pick another with /model.`;

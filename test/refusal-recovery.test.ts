@@ -71,21 +71,66 @@ test("refusal ladder stage 2: reasoning artifacts + native tool-use replay are s
   expect(assistant.reasoning).toBe("displayed thought"); // display channel survives
 });
 
-test("refusal ladder: with no project-context block, a third refusal surfaces the friendly error (no extra billed call)", async () => {
-  let calls = 0;
-  await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => {
-      calls++;
-      throw refusal();
-    },
-  }));
-  const { runAgentLoop } = await import("../src/agent/engine");
-  const history: Message[] = [
-    { role: "system", content: "Core instructions only." },
-    { role: "user", content: "init" },
-  ];
-  const result = await runAgentLoop(history, { cwd: process.cwd(), maxSteps: 10, budget: { maxExtensions: 0 }, tools: {} });
-  expect(result.done).toBe(false);
-  expect(result.doneReason).toContain("declined to answer");
-  expect(calls).toBe(3); // plain resend + post-reset retry + final refusal — nothing left to strip
+test("refusal rung 4: with nothing left to strip, the loop backoff-resends instead of surfacing an error, then recovers", async () => {
+  // gjc parity: a refusal is never a terminal turn error — after the context-mutating
+  // ladder is exhausted the loop keeps resending with capped exponential backoff.
+  process.env.JEO_REFUSAL_BACKOFF_BASE_MS = "1"; // keep the test fast
+  try {
+    let calls = 0;
+    await mock.module("../src/agent/loop", () => ({
+      callLlm: async () => {
+        calls++;
+        // Refuse through the whole ladder (plain resend, context reset, no
+        // project-context to strip) AND two backoff attempts before clearing.
+        if (calls <= 5) throw refusal();
+        return JSON.stringify({ tool: "done", arguments: { reason: "recovered after backoff" } });
+      },
+    }));
+    const { runAgentLoop } = await import("../src/agent/engine");
+    const history: Message[] = [
+      { role: "system", content: "Core instructions only." },
+      { role: "user", content: "init" },
+    ];
+    const result = await runAgentLoop(history, { cwd: process.cwd(), maxSteps: 10, budget: { maxExtensions: 0 }, tools: {} });
+    expect(result.done).toBe(true);
+    expect(result.doneReason).toBe("recovered after backoff");
+    expect(calls).toBe(6); // plain resend + post-reset retry + 3 backoff resends + success
+  } finally {
+    delete process.env.JEO_REFUSAL_BACKOFF_BASE_MS;
+  }
+});
+
+test("refusal rung 4: Esc/cancel aborts the backoff wait and the turn ends as Cancelled, not as a refusal error", async () => {
+  process.env.JEO_REFUSAL_BACKOFF_BASE_MS = "60000"; // a wait the test must be able to escape
+  try {
+    let calls = 0;
+    await mock.module("../src/agent/loop", () => ({
+      callLlm: async () => {
+        calls++;
+        throw refusal();
+      },
+    }));
+    const { runAgentLoop } = await import("../src/agent/engine");
+    const controller = new AbortController();
+    const history: Message[] = [
+      { role: "system", content: "Core instructions only." },
+      { role: "user", content: "init" },
+    ];
+    const result = await runAgentLoop(history, {
+      cwd: process.cwd(),
+      maxSteps: 10,
+      budget: { maxExtensions: 0 },
+      tools: {},
+      signal: controller.signal,
+      // The backoff notice fires right before the wait — aborting there proves the
+      // wait resolves early and the loop-top cancellation check owns the exit.
+      events: { onNotice: m => { if (/auto-retry #1/.test(m)) controller.abort(); } },
+    });
+    expect(result.done).toBe(false);
+    expect(result.doneReason).toBe("Cancelled.");
+    expect(result.doneReason).not.toContain("declined to answer");
+    expect(calls).toBe(3); // ladder burned (resend + reset), backoff wait aborted before a 4th call
+  } finally {
+    delete process.env.JEO_REFUSAL_BACKOFF_BASE_MS;
+  }
 });

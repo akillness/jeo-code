@@ -15,7 +15,7 @@ import { nativeToolSchemasFor, normalizeNativeToolName } from "./tool-schemas";
 import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, mkdirTool, deleteTool, type ToolResult } from "./tools";
 import { webSearchTool, setWebSearchActiveModel } from "./web-search";
 import { executeComputerAction } from "../commands/computer";
-import { isRateLimitError } from "../util/retry";
+import { isRateLimitError, waitAbortable } from "../util/retry";
 import { isContextOverflowError, isRefusalError, friendlyProviderError } from "../util/provider-error";
 import { runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
 import { truncateToolOutput, formatToolResultBody } from "./tool-output";
@@ -443,11 +443,13 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // Round-6 #4: ONE reactive recovery when the PROVIDER reports context overflow
   // (authoritative where the local estimate drifted — images, tokenizer mismatch).
   let contextOverflowRetryUsed = false;
-  // Refusal recovery budget: a safety refusal (HTTP 200, no content) on routine
-  // coding work is usually a transient false-positive. Retry the SAME step once
-  // as-is, then once more with an explicit re-grounding note; only a third
-  // refusal in the turn surfaces the (friendly) error. Bounded per turn so a
-  // genuinely refused request can never burn billed calls in a loop.
+  // Refusal recovery: a safety refusal (HTTP 200, no content) on routine coding
+  // work is usually a transient false-positive. The first rungs MUTATE the context
+  // (plain resend → context reset + re-grounding note → guidance strip); after the
+  // ladder is exhausted the loop keeps resending with capped exponential backoff
+  // instead of surfacing a terminal error (gjc parity: a refusal is retried until
+  // it clears or the user cancels — Esc aborts the backoff wait via opts.signal,
+  // and the turn wall-clock budget still bounds the whole turn).
   const MAX_REFUSAL_RETRIES = GUARD_LIMITS.MAX_REFUSAL_RETRIES;
   let refusalRetries = 0;
   let lastSig = "";
@@ -610,7 +612,15 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       //      routine). Strip that block for the rest of the turn and retry once;
       //      core instructions stay intact. Field case: `$gjc init` inside a
       //      repo whose guidance files refuse-trip the OAuth classifier.
-      if (isRefusalError(err) && refusalRetries < MAX_REFUSAL_RETRIES) {
+      //   4) unbounded backoff — the classifier verdict is TIME-sensitive (rolling
+      //      classifier state, per-request user-id rotation), so once every
+      //      context mutation is spent, keep resending with capped exponential
+      //      backoff instead of surfacing a terminal error (gjc parity: gjc's
+      //      session auto-retry classifies a refusal as retryable and never ends
+      //      the turn on it). Esc/cancel aborts the wait via opts.signal and the
+      //      loop-top check turns it into "Cancelled."; JEO_TURN_MAX_MS still
+      //      bounds the whole turn.
+      if (isRefusalError(err)) {
         refusalRetries++;
         if (refusalRetries === 1) {
           ev.onNotice?.("provider refused the last call (no content) — retrying the same step");
@@ -642,15 +652,24 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           step++;
           continue;
         }
-        const sys = history[0];
-        if (sys?.role === "system" && sys.content.includes("<project_context>")) {
-          const stripped = sys.content.replace(/\n*<project_context>[\s\S]*?<\/project_context>/, "").trimEnd();
-          history[0] = { ...sys, content: stripped }; // replace, never mutate (identity caches)
-          ev.onNotice?.("provider refused a third time — removed project-context guidance from the system prompt and retrying once more");
-          continue; // same step, reduced system prompt
+        if (refusalRetries === 3) {
+          const sys = history[0];
+          if (sys?.role === "system" && sys.content.includes("<project_context>")) {
+            const stripped = sys.content.replace(/\n*<project_context>[\s\S]*?<\/project_context>/, "").trimEnd();
+            history[0] = { ...sys, content: stripped }; // replace, never mutate (identity caches)
+            ev.onNotice?.("provider refused a third time — removed project-context guidance from the system prompt and retrying once more");
+            continue; // same step, reduced system prompt
+          }
+          // Nothing left to strip — fall through to the backoff rung below.
         }
-        // Nothing left to strip — fall through to the friendly terminal error
-        // instead of burning an identical billed call.
+        // Rung 4: every context mutation is spent. Backoff-resend forever (abortable).
+        const attempt = Math.max(1, refusalRetries - MAX_REFUSAL_RETRIES);
+        const baseRaw = Number(jeoEnv("REFUSAL_BACKOFF_BASE_MS") ?? NaN);
+        const baseMs = Number.isFinite(baseRaw) && baseRaw >= 0 ? baseRaw : GUARD_LIMITS.REFUSAL_BACKOFF_BASE_MS;
+        const delayMs = Math.min(baseMs * 2 ** (attempt - 1), GUARD_LIMITS.REFUSAL_BACKOFF_MAX_MS);
+        ev.onNotice?.(`provider refused again — auto-retry #${attempt} in ${Math.max(1, Math.round(delayMs / 1000))}s (Esc to cancel)`);
+        await waitAbortable(delayMs, opts.signal);
+        continue; // loop top surfaces "Cancelled." when the wait was aborted
       }
       const message = friendlyProviderError(err);
       // The error IS the turn's doneReason and every caller displays that — emitting a

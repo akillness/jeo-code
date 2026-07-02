@@ -205,11 +205,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.7.29]** (2026-07-02) — gajae-code safety-refusal retry parity: Anthropic/OAuth content-classifier refusals no longer end the turn with a fatal "declined to answer" message after the context-reset ladder.
 - **[0.7.28]** (2026-07-02) — gajae-code 0.7.9–0.7.10 OAuth + model-execution parity: generic long rate-limit windows are retried (never fatal), retry waits are abort-cancellable, Codex prompt caching via session correlation, and the Kimi Code device-flow OAuth is completed end-to-end (catalog, gating, discovery, tests).
 - **[0.7.27]** (2026-07-02) — Extended-keyboard decode layer: Esc/Ctrl+C work again on kitty-protocol terminals, Shift+Enter breaks lines on every terminal incl. Windows, row/draft-aware Cmd+←→/↑↓ + Home/End/Ctrl+Home/End, Ctrl+V text-paste fallback. Plus Anthropic 5th-gen omp-parity: catalog-derived output budgets end thinking-vs-reply starvation; refusals fail fast at the transport and the recovery ladder strips replayed thinking blocks.
 - **[0.7.26]** (2026-07-02) — Esc/Ctrl+C reliably clears the input box (fixes a gate the earlier reorder missed), and un-bracketed multi-line pastes no longer shred into premature per-line submits.
 - **[0.7.25]** (2026-07-02) — Shift+Enter now reliably distinguishable from Enter on kitty/WezTerm/iTerm2/xterm via modifyOtherKeys + kitty keyboard protocol; row-aware Home/End and Cmd+Left/Right in multi-row drafts.
-- **[0.7.24]** (2026-07-02) — OAuth callback page redesign with embedded jeo wordmark + Close button; memory budget O(n²)→O(n) incremental tracking fix.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

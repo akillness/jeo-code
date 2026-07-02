@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.29] - 2026-07-02
+_gajae-code safety-refusal retry parity: Anthropic/OAuth content-classifier refusals no longer end the turn with a fatal "declined to answer" message after the context-reset ladder._
+
+### Fixed
+- **Safety refusals now keep retrying instead of surfacing a terminal provider error.** jeo already had the stronger context-mutating recovery ladder (plain resend → tool-result/thinking-replay reset → project-context guidance strip), but once those rungs were spent it still returned `Anthropic declined to answer (safety refusal — no content returned) even after automatic retries with a context reset`. gjc's session retry path treats that class as non-terminal and keeps the session alive. jeo now adds the same final rung: capped exponential backoff resends after all context mutations are spent, with an `Esc`/abort-cancellable wait and the turn wall-clock budget still bounding the whole run.
+- **The stale fallback refusal copy no longer claims automatic retries were exhausted.** The friendly provider error text is now reserved for non-engine call sites and points users at `/retry`, `/compact`, `/new`, or `/model` without implying the agent already gave up.
+
+### Verified
+- `bun run typecheck` clean; full suite green — 2146 pass / 0 fail across 244 files. Targeted coverage updated in `test/refusal-recovery.test.ts` for the new post-ladder backoff recovery and for Esc/Ctrl+C aborting a refusal backoff as `Cancelled.` instead of surfacing the refusal error.
+
 ## [0.7.28] - 2026-07-02
 _gajae-code 0.7.9–0.7.10 OAuth + model-execution parity: generic long rate-limit windows are retried (never fatal), retry waits are abort-cancellable, Codex prompt caching via session correlation, and the Kimi Code device-flow OAuth is completed end-to-end (catalog, gating, discovery, tests)._
 

@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/character.png" alt="jeo-code 캐릭터 마스코트" width="320" />
+  <img src="assets/character.gif" alt="움직이는 jeo-code 붉은 가재 마스코트" width="320" />
 </p>
 
 <p align="center">

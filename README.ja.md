@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/character.png" alt="jeo-code キャラクターマスコット" width="320" />
+  <img src="assets/character.gif" alt="動く jeo-code 赤いザリガニマスコット" width="320" />
 </p>
 
 <p align="center">

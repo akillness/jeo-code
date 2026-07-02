@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/character.png" alt="jeo-code character mascot" width="320" />
+  <img src="assets/character.gif" alt="animated jeo-code red crayfish mascot" width="320" />
 </p>
 
 <p align="center">

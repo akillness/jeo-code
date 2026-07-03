@@ -8,7 +8,7 @@ INSTALL_DIR="${JEO_INSTALL_DIR:-$HOME/.local/bin}"
 PURGE=0
 [ "$1" = "--purge" ] && PURGE=1
 
-for BIN_NAME in jeo; do
+for BIN_NAME in jeo joc; do
   if [ -L "$INSTALL_DIR/$BIN_NAME" ] || [ -f "$INSTALL_DIR/$BIN_NAME" ]; then
     rm -f "$INSTALL_DIR/$BIN_NAME"
     echo "Removed $INSTALL_DIR/$BIN_NAME"
@@ -17,7 +17,7 @@ done
 
 # Remove the bun-native link (bin + global registry entry).
 BUN_BIN="${BUN_INSTALL:-$HOME/.bun}/bin"
-for BIN_NAME in jeo; do
+for BIN_NAME in jeo joc; do
   if [ -L "$BUN_BIN/$BIN_NAME" ] || [ -f "$BUN_BIN/$BIN_NAME" ]; then
     rm -f "$BUN_BIN/$BIN_NAME"
     echo "Removed $BUN_BIN/$BIN_NAME (bun link)"

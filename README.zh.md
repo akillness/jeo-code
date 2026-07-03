@@ -55,6 +55,8 @@ bun install -g jeo-code
 jeo --version
 ```
 
+> 从重命名前的版本升级？旧 CLI 名称 `joc` 的二进制文件现在会被 `scripts/install.sh` / `scripts/uninstall.sh` 自动移除；手动移除: `rm -f ~/.local/bin/joc ~/.bun/bin/joc`。
+
 ## 快速开始
 
 ```bash

@@ -55,6 +55,8 @@ bun install -g jeo-code
 jeo --version
 ```
 
+> リネーム前のバージョンからアップグレードしますか? 旧 CLI 名だった `joc` バイナリは `scripts/install.sh` / `scripts/uninstall.sh` が自動的に削除します。手動で削除する場合: `rm -f ~/.local/bin/joc ~/.bun/bin/joc`。
+
 ## クイックスタート
 
 ```bash

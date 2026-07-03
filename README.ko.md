@@ -55,6 +55,8 @@ bun install -g jeo-code
 jeo --version
 ```
 
+> 이름 변경 이전 버전에서 업그레이드하시나요? 이전 CLI 이름이었던 `joc` 바이너리는 이제 `scripts/install.sh` / `scripts/uninstall.sh`가 자동으로 제거합니다. 수동 제거: `rm -f ~/.local/bin/joc ~/.bun/bin/joc`.
+
 ## 빠른 시작
 
 ```bash

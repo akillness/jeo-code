@@ -55,6 +55,8 @@ bun install -g jeo-code
 jeo --version
 ```
 
+> Upgrading from a pre-rename install? A stale `joc` binary (this project's old CLI name) is now auto-removed by `scripts/install.sh` / `scripts/uninstall.sh`; to remove it manually: `rm -f ~/.local/bin/joc ~/.bun/bin/joc`.
+
 ## Quick start
 
 ```bash

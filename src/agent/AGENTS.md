@@ -17,6 +17,9 @@ The core runtime loop, tool registry, session management, and state persistence 
 | `debug-session.ts` | In-process CDP (V8 Inspector Protocol) client driving a spawned `node --inspect-brk` process (gjc `debug` parity, Node.js only — not Bun, whose inspector speaks a different WebKit dialect); one active session, singleton |
 | `debug-tool.ts` | `debug` tool — launch/set_breakpoint/continue/step/evaluate/stack_trace/scopes/variables/threads/output/terminate via `debug-session.ts`; mutating (runs arbitrary code), excluded from read-only roles |
 | `lsp-rename-tool.ts` | `lsp_rename` tool — cross-file TypeScript/JavaScript rename; mutating, writes via `writeTool`, kept separate from `lsp` so read-only roles can't reach it |
+| `browser-session.ts` | Named-tab headless-Chromium session registry (gjc `browser` parity, via Playwright — already a jeo-code dependency) — one shared browser instance launched lazily, tabs reused by name across calls |
+| `browser-tab.ts` | Per-tab helpers (`observe`/`click`/`type`/`fill`/`select`/`press`/`scroll`/`goto`/`back`/`extract`/`screenshot`/`evaluate`) — `observe()` tags interactive elements with stable numeric ids instead of returning a raw DOM dump or requiring a screenshot |
+| `browser-tool.ts` | `browser` tool — open/close/run/act actions; mutating (drives a real browser, `run` executes arbitrary host JS), excluded from read-only roles |
 | `ast-edit-tool.ts` | `ast_edit` tool — structural codemod using `ast-match.ts`; mutating, writes via `writeTool` |
 | `bash-fixups.ts` | Brief description of purpose |
 | `compaction.ts` | Brief description of purpose |

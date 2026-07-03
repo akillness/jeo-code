@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.33] - 2026-07-04
+_Adds `browser` — headless Chromium automation (gjc `browser` parity) — completing the gjc tool-surface parity pass started in 0.7.32._
+
+### Added
+- **`browser` — headless Chromium automation via Playwright (gjc `browser` parity, headless-only for v1 — no existing-profile/CDP-endpoint/Electron attach, no stealth patches).** `browser-session.ts` keeps one shared browser instance alive across calls with named tabs reused ("open once, act many times"); `browser-tab.ts` provides `observe()`-first helpers (tags interactive elements with stable numeric ids instead of a raw DOM dump or a screenshot) plus `click`/`type`/`fill`/`select`/`press`/`scroll`/`goto`/`back`/`extract`/`screenshot`/`evaluate`. The `browser` tool exposes `open`/`close`/`run`/`act`: `act` runs structured steps (navigate/click/type/fill/select/press/scroll/back/wait/observe/extract/screenshot) addressed by numeric `id` (from a prior `observe`) or CSS selector; `run` executes an async-function body with `page`/`browser`/`tab`/`display`/`assert`/`wait` in scope for anything the structured verbs don't cover. Mutating (drives a real browser, `run` executes arbitrary host JS) — excluded from read-only subagent roles. `playwright` moves from `devDependencies` to `dependencies` (it was already bundled for jeo-code's own test suite, so this reuses it rather than adding a second browser-automation engine).
+
+### Verified
+- `bun run typecheck` clean; full suite green.
+- New coverage: `test/browser-tool.test.ts` (open/act round-trip against real headless Chromium — observe → type → click → extract, `run` with display/assert, screenshot-to-file, close/close-all, and error-path guards) with `test.skipIf` fallbacks for environments without the Chromium binary downloaded; `test/subagent-toolset-gating.test.ts` extended to assert `browser` is excluded from every read-only role.
+
 ## [0.7.32] - 2026-07-03
 _gjc tool-surface parity — ast_grep/ast_edit, lsp/lsp_rename, debug, irc, job, and goal tools — plus a `launch.ts` slash-command refactor and four agent-loop guardrail hardenings (destructive-bash denylist, spawn-gate justification quality check, done-verification abuse guard, and a blind unanchored line-range-edit guard)._
 

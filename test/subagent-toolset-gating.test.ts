@@ -14,6 +14,7 @@ test("read-only roles get the read-only ast_grep/lsp tools but not their mutatin
 
   expect(toolset.computer).toBeUndefined();
   expect(toolset.debug).toBeUndefined();
+  expect(toolset.browser).toBeUndefined();
   expect(toolset.write).toBeUndefined();
   expect(toolset.edit).toBeUndefined();
   expect(toolset.bash).toBeUndefined();
@@ -30,9 +31,10 @@ test("the mutating executor role gets every tool, including the mutating ones", 
   expect(typeof toolset.lsp_rename).toBe("function");
   expect(typeof toolset.computer).toBe("function");
   expect(typeof toolset.debug).toBe("function");
+  expect(typeof toolset.browser).toBe("function");
 });
 
-test("every bundled read-only role (planner/architect/critic) excludes ast_edit, lsp_rename, computer, and debug", () => {
+test("every bundled read-only role (planner/architect/critic) excludes ast_edit, lsp_rename, computer, debug, and browser", () => {
   for (const id of ["planner", "architect", "critic"]) {
     const role = getSubagentRole(id)!;
     expect(role.readOnly).toBe(true);
@@ -41,5 +43,6 @@ test("every bundled read-only role (planner/architect/critic) excludes ast_edit,
     expect(toolset.lsp_rename).toBeUndefined();
     expect(toolset.computer).toBeUndefined();
     expect(toolset.debug).toBeUndefined();
+    expect(toolset.browser).toBeUndefined();
   }
 });

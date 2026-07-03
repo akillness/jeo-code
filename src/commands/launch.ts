@@ -525,7 +525,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // pi-style: load project context (JEO.md / AGENTS.md / .jeo/context.md / CLAUDE.md) into the prompt.
   const contextFiles = await loadProjectContext(cwd);
 
-  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "todo", "subagent", "job", "irc", "goal", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug"]);
+  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "todo", "subagent", "job", "irc", "goal", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug", "browser"]);
   let allowedTools = new Set(KNOWN_TOOLS);
 
   if (flags.noTools) {

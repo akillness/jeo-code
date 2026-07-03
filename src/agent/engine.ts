@@ -21,6 +21,7 @@ import { createAstEditTool } from "./ast-edit-tool";
 import { createLspTool } from "./lsp-tool";
 import { createLspRenameTool } from "./lsp-rename-tool";
 import { createDebugTool } from "./debug-tool";
+import { createBrowserTool } from "./browser-tool";
 import { isRateLimitError, waitAbortable } from "../util/retry";
 import { isContextOverflowError, isRefusalError, friendlyProviderError } from "../util/provider-error";
 import { runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
@@ -103,6 +104,7 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
   lsp: createLspTool(),
   lsp_rename: createLspRenameTool(),
   debug: createDebugTool(),
+  browser: createBrowserTool(),
 };
 /** Tool-protocol description injected into the system prompt. */
 export const TOOL_PROTOCOL = [
@@ -123,7 +125,8 @@ export const TOOL_PROTOCOL = [
   "14. lsp {action, file, line?, symbol?} — TypeScript/JavaScript language-service queries (definition/references/hover/symbols/diagnostics); 'symbol' resolves the column on 'line' (append #N for the Nth occurrence)",
   "15. lsp_rename {file, line, symbol?, new_name, apply?} — cross-file TypeScript/JavaScript rename (apply defaults true; apply:false previews only)",
   "16. debug {action, ...} — Node.js debugging (launch/set_breakpoint/continue/step_over/step_in/step_out/pause/evaluate/stack_trace/scopes/variables/threads/output/terminate); one active session, 'launch' spawns 'node --inspect-brk' and pauses at start",
-  "17. done   {reason?}                  — call when the task is fully implemented AND verified",
+  "17. browser {action:\"open\"|\"close\"|\"run\"|\"act\", name?, url?, actions?} — headless Chromium automation (Playwright); 'act' runs structured steps (navigate/click/type/fill/select/press/scroll/back/wait/observe/extract/screenshot) addressing elements by numeric id from 'observe' or a CSS selector; 'run' executes JS with page/browser/tab/display/assert/wait in scope",
+  "18. done   {reason?}                  — call when the task is fully implemented AND verified",
   "",
   "Reply with STRICT JSON only — no code fences. You MAY include an optional leading",
   '"reasoning" string (one short sentence on your plan) before "tool":',

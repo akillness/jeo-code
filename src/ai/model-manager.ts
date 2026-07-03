@@ -521,18 +521,29 @@ export interface StreamIdleOptions {
   onIdle?: () => void;
 }
 
-/** `iter.next()`, racing a per-chunk idle watchdog AND (when set) the overall deadline.
- *  The watchdog re-arms while reasoning activity (idle.lastActivityAt) keeps advancing,
- *  so a model that streams thinking tokens for longer than idleMs before emitting visible
- *  text is NOT mistaken for a stalled stream — only a genuinely silent stream aborts. */
-async function nextMaybeIdle(iter: AsyncIterator<string>, idle?: StreamIdleOptions): Promise<IteratorResult<string>> {
-  if (!idle) return iter.next();
-  const next = iter.next();
-  // Baseline: this wait began now; reasoning deltas during it move lastActivityAt forward.
-  const startedAt = Date.now();
-  const lastActivity = () => Math.max(startedAt, idle.lastActivityAt?.() ?? 0);
+/** Handle returned by {@link idleWatchdog}: the racing promise, its cleanup, and a
+ *  `touch()` to call after each successfully received chunk. */
+export interface StreamWatchdogHandle {
+  promise: Promise<never>;
+  cleanup: () => void;
+  touch: () => void;
+}
+
+/** One watchdog per stream attempt. Reused across `iter.next()` calls so a busy
+ *  stream does not allocate a Promise+timer pair per yielded chunk.
+ *
+ *  Idle measurement fallback: when the caller has no `lastActivityAt` (the common
+ *  case — most providers never wire reasoning-progress tracking), idle time MUST be
+ *  measured against the last moment a chunk actually arrived, not against `Date.now()`
+ *  re-sampled on every internal re-arm — the latter makes `now - lastAct` collapse to
+ *  ~0 forever, so the idle timer can never fire and a genuinely stalled stream hangs
+ *  forever instead of timing out. `touch()` (called by the consumer after each
+ *  received chunk) advances this fallback baseline; `lastActivityAt`, when provided,
+ *  always takes precedence (reasoning-progress tracking is more precise). */
+function idleWatchdog(idle: StreamIdleOptions): StreamWatchdogHandle {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const watchdog = new Promise<never>((_, reject) => {
+  let lastChunkAt = Date.now();
+  const promise = new Promise<never>((_, reject) => {
     const arm = () => {
       const now = Date.now();
       const overallRemaining = idle.deadlineAt !== undefined ? idle.deadlineAt - now : Infinity;
@@ -541,10 +552,10 @@ async function nextMaybeIdle(iter: AsyncIterator<string>, idle?: StreamIdleOptio
         reject(new Error(`stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream aborted`));
         return;
       }
-      const idleRemaining = idle.idleMs - (now - lastActivity());
+      const lastAct = idle.lastActivityAt ? idle.lastActivityAt() : lastChunkAt;
+      const idleRemaining = idle.idleMs - (now - lastAct);
       const wait = Math.min(idleRemaining, overallRemaining);
       if (wait <= 0) {
-        // overallRemaining is > 0 here (pre-checked), so wait<=0 ⟺ the idle window lapsed.
         idle.onIdle?.();
         reject(new Error(`stream idle for ${idle.idleMs}ms (no chunk) — provider sent no token within the idle window (load or long thinking); retrying. Raise JEO_STREAM_IDLE_MS or lower the thinking level if this persists.`));
         return;
@@ -553,11 +564,16 @@ async function nextMaybeIdle(iter: AsyncIterator<string>, idle?: StreamIdleOptio
     };
     arm();
   });
-  try {
-    return await Promise.race([next, watchdog]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+  return { promise, cleanup: () => clearTimeout(timer), touch: () => { lastChunkAt = Date.now(); } };
+}
+
+/** `iter.next()`, racing the stream-attempt watchdog AND (when set) the overall deadline.
+ *  The watchdog re-arms while reasoning activity (idle.lastActivityAt) keeps advancing,
+ *  so a model that streams thinking tokens for longer than idleMs before emitting visible
+ *  text is NOT mistaken for a stalled stream — only a genuinely silent stream aborts. */
+async function nextMaybeIdle(iter: AsyncIterator<string>, watchdog?: Promise<never>): Promise<IteratorResult<string>> {
+  if (!watchdog) return iter.next();
+  return Promise.race([iter.next(), watchdog]);
 }
 
 /** Opt-in overall stream wall-clock from the environment; undefined = off (default). */
@@ -590,14 +606,30 @@ export async function* retryableStream(
   retry: RetryOptions,
   idle?: StreamIdleOptions,
 ): AsyncGenerator<string> {
-  const { iter, first } = await withRetry(async () => {
-    const it = makeIter();
-    const f = await nextMaybeIdle(it, idle);
-    return { iter: it, first: f };
-  }, retry);
-  if (!first.done) {
-    yield first.value;
-    for (let n = await nextMaybeIdle(iter, idle); !n.done; n = await nextMaybeIdle(iter, idle)) yield n.value;
+  let cleanupWatchdog = () => {};
+  let touchWatchdog = () => {};
+  try {
+    const { iter, first, watchdog } = await withRetry(async () => {
+      cleanupWatchdog();
+      const it = makeIter();
+      const w = idle ? idleWatchdog(idle) : undefined;
+      cleanupWatchdog = w?.cleanup ?? (() => {});
+      touchWatchdog = w?.touch ?? (() => {});
+      const f = await nextMaybeIdle(it, w?.promise);
+      if (!f.done) touchWatchdog();
+      return { iter: it, first: f, watchdog: w?.promise };
+    }, retry);
+    if (!first.done) {
+      yield first.value;
+      for (;;) {
+        const n = await nextMaybeIdle(iter, watchdog);
+        if (n.done) break;
+        touchWatchdog();
+        yield n.value;
+      }
+    }
+  } finally {
+    cleanupWatchdog();
   }
 }
 

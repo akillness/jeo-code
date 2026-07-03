@@ -5,6 +5,7 @@ export async function* readLines(
   const reader = stream.getReader();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
+  let searchFrom = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -19,19 +20,33 @@ export async function* readLines(
         onActivity?.();
       }
       buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split("\n");
-      buffer = parts.pop() ?? "";
-      for (const part of parts) {
-        const line = part.endsWith("\r") ? part.slice(0, -1) : part;
+      let idx;
+      while ((idx = buffer.indexOf("\n", searchFrom)) !== -1) {
+        const lineWithCr = buffer.slice(searchFrom, idx);
+        const line = lineWithCr.endsWith("\r") ? lineWithCr.slice(0, -1) : lineWithCr;
         if (line !== "") {
           yield line;
         }
+        searchFrom = idx + 1;
+      }
+      if (searchFrom > 0) {
+        buffer = buffer.slice(searchFrom);
+        searchFrom = 0;
       }
     }
     buffer += decoder.decode();
-    const parts = buffer.split("\n");
-    for (const part of parts) {
-      const line = part.endsWith("\r") ? part.slice(0, -1) : part;
+    let idx;
+    while ((idx = buffer.indexOf("\n", searchFrom)) !== -1) {
+      const lineWithCr = buffer.slice(searchFrom, idx);
+      const line = lineWithCr.endsWith("\r") ? lineWithCr.slice(0, -1) : lineWithCr;
+      if (line !== "") {
+        yield line;
+      }
+      searchFrom = idx + 1;
+    }
+    if (searchFrom < buffer.length) {
+      const lineWithCr = buffer.slice(searchFrom);
+      const line = lineWithCr.endsWith("\r") ? lineWithCr.slice(0, -1) : lineWithCr;
       if (line !== "") {
         yield line;
       }

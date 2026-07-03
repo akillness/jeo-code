@@ -1,3 +1,35 @@
+[2026-07-03] Pass — v0.7.31 release: deep-interview repeat-question loop guard, gajae tmux sizing parity
+- Request: fix the workflow flaw where deep-interview could repeat the same question forever; port gajae-code feature/stability/perf/OS-compat improvements; release 0.7.31 (changelog + README latest-5 digest + branch/merge + npm publish).
+- A concurrent session in this same working tree also attempted to remove the "Decline to build malware, exploits, or vulnerability-weaponization" line from WORKING_DISCIPLINE (src/agent/engine.ts) and inverted test/prompt-discipline.test.ts to lock the removal. That change was found uncommitted, reverted, and NOT shipped in 0.7.31 — it is a safety guardrail on a publicly distributed coding agent, not project style; declined regardless of framing. Both files restored to their prior (guardrail-present) state before this release.
+- Repeat-question loop guard (deep-interview): normalizeQuestion (case/whitespace/trailing punctuation) + consecutive-repeat tracking mirroring loop-guards repeat_correct/repeat_stop — first repeat gets ONE corrective bounce (model steered to a new gap, user NOT re-asked); a repeat surviving the correction stops the run with a user-visible [LOOP GUARD] message (no-answer-deadend spec constitution #1 honored). Applies to the model's own questions AND the [HOLD] acceptance-criteria followup. Socratic system prompt gains a "never re-ask an answered question" rule. --auto runs that burned 10 identical rounds now stop at 3 calls. Tests: 2 updated (10→3 call expectations) + 2 new (alternating questions never trip; reworded repeats normalize).
+- gajae-code fresh clone (0.7.10 HEAD) re-analysis: rate-limit fixes #1369/#1370 already at parity in src/util/retry.ts (0.7.28 pass); ported #1376 managed tmux launch sizing — callerTmuxTerminalSize/tmuxNewSessionSizeArgs (src/commands/launch/tmux.ts) size the detached new-session -x/-y to the caller terminal and re-assert via resize-window pre-attach, ending 80x24 mis-wrapped first frames. +2 unit tests in test/tmux.test.ts.
+- Release: CHANGELOG 0.7.31 entry covers the perf pass (rounds 1-3, prior entry below) + repeat-question guard + tmux sizing; package.json 0.7.31; changelog:sync mirrored latest 5 entries into all four READMEs.
+
+[2026-07-02] Pass — Speed & Memory Optimization (Ponytail mode: full)
+- Request: Optimize jeo-code speed and memory usage, with three rounds of iterative refactoring, review, and verification.
+- Finding: Substantial allocations, O(n²) string scans, and redundant calculations existed in the streaming pipelines, memory injection hot paths, and TUI render loop.
+- Round 1 (Streaming & Engine Source Fixes):
+  - src/agent/tools.ts: Capped `drainPipe` buffer accumulation at 104KB and emitted only a 16KB rolling tail to `onChunk` (making downstream sanitize/wrap O(L) instead of O(L²)).
+  - src/agent/engine.ts: Throttled stream emissions (`onModelStream`/`onReasoningStream`) to ~80ms to prevent rope flattens and TUI re-scans per token, with a guaranteed post-call final flush.
+  - src/agent/engine.ts: Precomputed call digests once, eliminating triple re-hashing of write arguments across repeat, cycle, and step-budget novelty checks.
+  - src/agent/compaction.ts: Simplified `estimateTokens` by removing redundant conditional branches and grouping ASCII vs non-ASCII additions.
+  - src/tui/app.ts: Sanitized only the visible 16KB tail in `onToolProgress` to avoid O(L) scans.
+- Round 2 (Memory & AI Layer Fixes):
+  - src/agent/memory.ts: Hoisted corpus stats and concept graph builds once per `selectWithinBudget` instead of rebuilding twice on subsets per turn.
+  - src/agent/memory-graph.ts: Cached `undirectedAdjacency` lazily on the `ConceptGraph` instance to avoid O(seeds × edges) reconstruction.
+  - src/agent/memory.ts: Precomputed lowercased Concept fields via a module-level `WeakMap` cache, eliminating redundant lowercasing and tag array scans per turn.
+  - src/agent/memory.ts: Bounded concept stat/read parallelism to 16-file batches in `loadConceptsFromBundle`, preserving speed without unbounded FD/RAM spikes.
+  - src/ai/model-manager.ts: Replaced per-chunk Promise + setTimeout/clearTimeout allocation with a local single sliding-deadline watchdog per stream attempt (no internal fields leaked into the exported options type).
+  - src/ai/think-tags.ts: Rewrote `partialTail` allocation-free using a simple index-based charCodeAt loop instead of `slice`.
+  - src/ai/sse.ts: Rewrote `readLines` line splitting to scan incrementally with `indexOf` instead of split on the full accumulated buffer.
+- Round 3 (TUI & Components Fixes):
+  - src/tui/components/evolution.ts: Quantized `applyDimensionalGradient` times to 225ms buckets and added a 16-slot gradient memo cache, preventing truecolor escapes from being re-rendered and printed to the terminal on 100% of idle ticks.
+  - src/tui/app.ts: Moved `tools.render` below the inline layout early-return, avoiding dead chalk rendering on the default path.
+  - src/tui/app.ts: Hoisted `detectColorLevel` once in the class initializer, avoiding EnvLike parsing 2-4× per draw.
+  - src/tui/components/width.ts: Added a plain-ASCII fast path and restructured `wrapTextWithAnsi` to avoid `visibleWidth` calls over the remaining text in the loop, bringing the common wrapping path from quadratic O(L²/cols) to linear O(L).
+  - src/tui/app.ts: Memoized the Ctrl+O history panel wrapped lines to prevent full history re-wrap on every tick.
+- Verified: targeted pass suites all green; full verification pending this entry's final run.
+
 
 [2026-06-19] Pass — gjc update: round 16 verification-quality inheritance
 - Request: "gjc update" — advance the gjc-inheritance marathon (last: cycle 25 / round 15) by re-diffing the CURRENT gjc system prompt (newer than the v0.4.3 the doc analyzed) against jeo.

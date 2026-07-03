@@ -217,9 +217,13 @@ export function wrapTextWithAnsi(text: string, cols: number): string[] {
       out.push(rawLine);
       continue;
     }
+    if (!rawLine.includes("\x1b") && !/[\t\u0300-\uffff]/.test(rawLine) && !/[\u{10000}-\u{10ffff}]/u.test(rawLine)) {
+      for (let i = 0; i < rawLine.length; i += width) out.push(rawLine.slice(i, i + width));
+      continue;
+    }
     let rest = rawLine;
     let active = ""; // SGR open at the wrap boundary, carried to the next line
-    while (visibleWidth(rest) > width) {
+    while (true) {
       const head = truncateToWidth(rest, width);
       // Advance past exactly the consumed substring. truncateToWidth may append a
       // SYNTHETIC trailing reset (frame safety) that is NOT in `rest` — including it
@@ -230,6 +234,12 @@ export function wrapTextWithAnsi(text: string, cols: number): string[] {
         : head.endsWith(RESET) && rest.startsWith(head.slice(0, -RESET.length))
           ? head.slice(0, -RESET.length)
           : head;
+      if (consumed.length === rest.length) {
+        let line = active + rest;
+        if (active && !line.endsWith(RESET)) line += RESET;
+        out.push(line);
+        break;
+      }
       let line = active + head;
       const next = sgrStateAfter(active, consumed);
       // Close any color still open at the line end so it cannot tint the padding/border.
@@ -237,11 +247,6 @@ export function wrapTextWithAnsi(text: string, cols: number): string[] {
       out.push(line);
       active = next;
       rest = rest.slice(consumed.length);
-    }
-    if (rest.length > 0) {
-      let line = active + rest;
-      if (active && !line.endsWith(RESET)) line += RESET;
-      out.push(line);
     }
   }
   return out;

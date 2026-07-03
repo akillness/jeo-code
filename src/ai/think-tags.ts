@@ -19,7 +19,16 @@ const CLOSE = "</think>";
 function partialTail(s: string, tag: string): number {
   const max = Math.min(s.length, tag.length - 1);
   for (let k = max; k > 0; k--) {
-    if (s.endsWith(tag.slice(0, k))) return k;
+    // Check if s.endsWith(tag.slice(0, k)) without allocating substrings.
+    let match = true;
+    const sStart = s.length - k;
+    for (let i = 0; i < k; i++) {
+      if (s.charCodeAt(sStart + i) !== tag.charCodeAt(i)) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return k;
   }
   return 0;
 }

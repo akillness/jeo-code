@@ -599,22 +599,50 @@ export async function editTool(
  *  can cancel() to force the in-flight read to settle — essential when a SIGKILLed
  *  process leaves a backgrounded grandchild holding the pipe's write end open, so it
  *  never hits EOF (proven by scripts/subproc-probe.ts ABANDON mode). An optional
- *  (caller-throttled) onChunk drives the live output view. */
+ *  (caller-throttled) onChunk drives the live output view.
+ *
+ *  Memory bound: `bashTool` truncates the final output to MAX_OUTPUT chars anyway, so
+ *  accumulating past the cap only risked RAM (a chatty command could hold hundreds of
+ *  MB for the whole timeout window). Once the head is full we stop growing it and keep
+ *  a small rolling TAIL purely for the live view — the persisted result (head + cut
+ *  notice) is byte-identical to the old behaviour. onChunk likewise receives a BOUNDED
+ *  string (head while small, rolling tail once capped) instead of the full cumulative
+ *  buffer, which made every downstream sanitize/wrap pass O(n²) over stream length. */
+const DRAIN_HEAD_CAP = 100_000 + 4_096; // MAX_OUTPUT + slack so the final cut still fires
+const DRAIN_LIVE_TAIL = 16 * 1024; // matches FRAME_WRAP_TAIL_CHARS — the TUI renders only this window
 async function drainPipe(
   r: ReadableStreamDefaultReader<Uint8Array>,
   onChunk?: (partial: string) => void,
 ): Promise<string> {
   const dec = new TextDecoder();
   let out = "";
+  let tail = ""; // rolling live-view window once `out` is capped
+  let capped = false;
   try {
     for (;;) {
       const { done, value } = await r.read();
       if (done) break;
-      out += dec.decode(value, { stream: true });
-      onChunk?.(out);
+      const text = dec.decode(value, { stream: true });
+      if (!capped) {
+        out += text;
+        if (out.length >= DRAIN_HEAD_CAP) {
+          capped = true;
+          tail = out.slice(-DRAIN_LIVE_TAIL);
+        }
+        onChunk?.(out);
+      } else {
+        tail = (tail + text).slice(-DRAIN_LIVE_TAIL);
+        onChunk?.(tail);
+      }
     }
-    out += dec.decode();
-    onChunk?.(out);
+    const last = dec.decode();
+    if (!capped) {
+      out += last;
+      onChunk?.(out);
+    } else if (last) {
+      tail = (tail + last).slice(-DRAIN_LIVE_TAIL);
+      onChunk?.(tail);
+    }
   } catch { /* cancelled reader surfaces here; return what we have */ }
   return out;
 }

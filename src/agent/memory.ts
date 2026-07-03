@@ -251,57 +251,58 @@ export async function lintMemoryBundle(cwd: string): Promise<GraphLintReport> {
   return lintConceptGraph(concepts, buildConceptGraph(concepts));
 }
 
+const CONCEPT_LOAD_BATCH = 16;
+
 async function loadConceptsFromBundle(bundleDir: string): Promise<Concept[]> {
   const files = await findMarkdownFiles(bundleDir);
-  const concepts: Concept[] = [];
-  for (const file of files) {
+  const loadOne = async (file: string): Promise<Concept | null> => {
     const relPath = path.relative(bundleDir, file).replace(/\\/g, "/");
-    if (isReservedFile(relPath)) continue;
+    if (isReservedFile(relPath)) return null;
 
-    // Skip the read+parse when the file is byte-for-byte unchanged since we last
-    // saw it (same mtime+size). A missing stat falls through to a fresh read.
     let sig: string | null = null;
     try {
       const st = await fs.stat(file);
       sig = `${st.mtimeMs}:${st.size}`;
     } catch {
-      continue;
+      return null;
     }
     const cached = parsedConceptCache.get(file);
     if (cached && cached.sig === sig) {
-      // LRU refresh so a hot file is evicted last.
       parsedConceptCache.delete(file);
       parsedConceptCache.set(file, cached);
-      if (cached.concept) concepts.push(cached.concept);
-      continue;
+      return cached.concept;
     }
 
-    let parsed;
     try {
-      parsed = parseConcept(await fs.readFile(file, "utf-8"));
+      const parsed = parseConcept(await fs.readFile(file, "utf-8"));
+      if (!parsed.hasFrontmatter) {
+        cacheParsedConcept(file, sig, null);
+        return null;
+      }
+      const fm = parsed.frontmatter;
+      const concept: Concept = {
+        type: (fm.type as string) || "RepoFact",
+        title: (fm.title as string) || path.basename(file, ".md"),
+        description: (fm.description as string) || "",
+        body: parsed.body.trim(),
+        tags: Array.isArray(fm.tags) ? fm.tags.filter((t): t is string => typeof t === "string") : [],
+        confidence: typeof fm.confidence === "string" ? fm.confidence : "high",
+        pinned: fm.pinned === true,
+        relPath,
+      };
+      cacheParsedConcept(file, sig, concept);
+      return concept;
     } catch {
       cacheParsedConcept(file, sig, null);
-      continue;
+      return null;
     }
-    if (!parsed.hasFrontmatter) {
-      cacheParsedConcept(file, sig, null);
-      continue;
-    }
-    const fm = parsed.frontmatter;
-    const concept: Concept = {
-      type: (fm.type as string) || "RepoFact",
-      title: (fm.title as string) || path.basename(file, ".md"),
-      description: (fm.description as string) || "",
-      body: parsed.body.trim(),
-      tags: Array.isArray(fm.tags) ? fm.tags.filter((t): t is string => typeof t === "string") : [],
-      confidence: typeof fm.confidence === "string" ? fm.confidence : "high",
-      pinned: fm.pinned === true,
-      relPath,
-    };
-    cacheParsedConcept(file, sig, concept);
-    concepts.push(concept);
+  };
+  const results: Concept[] = [];
+  for (let i = 0; i < files.length; i += CONCEPT_LOAD_BATCH) {
+    const batch = await Promise.all(files.slice(i, i + CONCEPT_LOAD_BATCH).map(loadOne));
+    for (const c of batch) if (c) results.push(c);
   }
-  return concepts;
+  return results;
 }
 
 /** Store a per-file parse result under its stat signature, evicting the oldest
@@ -329,12 +330,35 @@ export interface CorpusStats {
   df: Map<string, number>;
 }
 
+interface LowercasedConceptFields {
+  title: string;
+  description: string;
+  body: string;
+  type: string;
+  tagsText: string;
+  searchableText: string;
+}
+const lowercasedFieldsCache = new WeakMap<Concept, LowercasedConceptFields>();
+
+function getLowercasedFields(concept: Concept): LowercasedConceptFields {
+  let cached = lowercasedFieldsCache.get(concept);
+  if (!cached) {
+    const title = concept.title.toLowerCase();
+    const description = concept.description.toLowerCase();
+    const body = concept.body.toLowerCase();
+    const type = concept.type.toLowerCase();
+    const tagsText = concept.tags.map(t => t.toLowerCase()).join(" ");
+    const searchableText = [title, tagsText, type, description, body].join(" ");
+    cached = { title, description, body, type, tagsText, searchableText };
+    lowercasedFieldsCache.set(concept, cached);
+  }
+  return cached;
+}
+
 /** Lowercased searchable text of a concept (title + tags + type + description +
  *  body) — the field corpus over which document frequency is measured. */
 function searchableText(concept: Concept): string {
-  return [concept.title, concept.tags.join(" "), concept.type, concept.description, concept.body]
-    .join(" ")
-    .toLowerCase();
+  return getLowercasedFields(concept).searchableText;
 }
 
 /** Build IDF corpus stats from the concept set: per distinct token, how many
@@ -372,19 +396,15 @@ function tokenIdf(token: string, stats: CorpusStats): number {
  *  field-weighted presence count (IDF = 1). 0 = no hit. */
 export function scoreConcept(concept: Concept, tokens: string[], stats?: CorpusStats): number {
   if (tokens.length === 0) return 0;
-  const title = concept.title.toLowerCase();
-  const desc = concept.description.toLowerCase();
-  const body = concept.body.toLowerCase();
-  const type = concept.type.toLowerCase();
-  const tags = concept.tags.map(t => t.toLowerCase());
+  const fields = getLowercasedFields(concept);
   let score = 0;
   for (const t of tokens) {
     let weight = 0;
-    if (title.includes(t)) weight += 5;
-    if (tags.some(tag => tag.includes(t))) weight += 3;
-    if (type.includes(t)) weight += 2;
-    if (desc.includes(t)) weight += 2;
-    if (body.includes(t)) weight += 1;
+    if (fields.title.includes(t)) weight += 5;
+    if (fields.tagsText.includes(t)) weight += 3;
+    if (fields.type.includes(t)) weight += 2;
+    if (fields.description.includes(t)) weight += 2;
+    if (fields.body.includes(t)) weight += 1;
     score += stats ? weight * tokenIdf(t, stats) : weight;
   }
   return score;
@@ -462,10 +482,10 @@ function graphProximityOrder(concepts: Concept[], seedIds: string[], graph: Conc
  *  final tiebreak. The failure boost only fires when the query actually hits the
  *  concept (score > 0), so an unrelated FailedAttempt never crowds out relevant
  *  context. */
-function priorityOrder(concepts: Concept[], query?: string): Concept[] {
+function priorityOrder(concepts: Concept[], query?: string, stats?: CorpusStats, graph?: ConceptGraph): Concept[] {
   const tokens = tokenize(query);
-  const stats = buildCorpusStats(concepts);
-  const scored = concepts.map(c => ({ c, id: conceptId(c.relPath), score: scoreConcept(c, tokens, stats) }));
+  const localStats = stats ?? buildCorpusStats(concepts);
+  const scored = concepts.map(c => ({ c, id: conceptId(c.relPath), score: scoreConcept(c, tokens, localStats) }));
 
   // Channel 1 — lexical ("sparse"/BM25): query-hit concepts, IDF score descending.
   // Stable sort keeps input order on ties.
@@ -474,7 +494,8 @@ function priorityOrder(concepts: Concept[], query?: string): Concept[] {
   // Channel 2 — graph proximity ("dense"): neighbours of the query-hit seeds.
   let graphOrder: string[] = [];
   if (tokens.length > 0 && lexicalOrder.length > 0) {
-    graphOrder = graphProximityOrder(concepts, lexicalOrder, buildConceptGraph(concepts));
+    const localGraph = graph ?? buildConceptGraph(concepts);
+    graphOrder = graphProximityOrder(concepts, lexicalOrder, localGraph);
   }
 
   const fused = reciprocalRankFusion([lexicalOrder, graphOrder]);
@@ -483,9 +504,6 @@ function priorityOrder(concepts: Concept[], query?: string): Concept[] {
     .map(({ c, id, score }, i) => ({
       concept: c,
       i,
-      // Query-relevant past failure → resurface first so the loop is reminded of
-      // what NOT to repeat for the current task. Gated on score > 0: a stale,
-      // unrelated dead end stays out of the way.
       failure: c.type === "FailedAttempt" && score > 0,
       core: c.confidence === "high",
       rrf: fused.get(id) ?? 0,
@@ -554,8 +572,11 @@ function selectWithinBudget(concepts: Concept[], query: string | undefined, budg
   const sectionLenByType = new Map<string, number>(); // type -> rendered length of that type's section so far
   let total = 0; // rendered length of `selected` under renderConcepts
 
+  const stats = buildCorpusStats(concepts);
+  const graph = buildConceptGraph(concepts);
+
   const take = (pool: Concept[]) => {
-    for (const c of priorityOrder(pool, query)) {
+    for (const c of priorityOrder(pool, query, stats, graph)) {
       const itemLen = renderConceptItem(c).length;
       const priorSectionLen = sectionLenByType.get(c.type);
       let newSectionLen: number;
@@ -579,7 +600,7 @@ function selectWithinBudget(concepts: Concept[], query: string | undefined, budg
   };
   take(concepts.filter(c => c.pinned)); // reserved budget: invariants survive the cap
   take(concepts.filter(c => !c.pinned)); // recency/query fill in the remaining budget
-  if (selected.length === 0 && concepts.length > 0) selected.push(priorityOrder(concepts, query)[0]!);
+  if (selected.length === 0 && concepts.length > 0) selected.push(priorityOrder(concepts, query, stats, graph)[0]!);
   return selected;
 }
 

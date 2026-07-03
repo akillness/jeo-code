@@ -126,6 +126,9 @@ import {
   resolveWorktree,
   shellQuote,
   reapStaleTmuxSessions,
+  callerTmuxTerminalSize,
+  tmuxNewSessionSizeArgs,
+  type TmuxTerminalSize,
   type TmuxCreateResult,
   type TmuxProfileCommand,
 } from "./launch/tmux";
@@ -218,6 +221,9 @@ export {
   resolveWorktree,
   shellQuote,
   reapStaleTmuxSessions,
+  callerTmuxTerminalSize,
+  tmuxNewSessionSizeArgs,
+  type TmuxTerminalSize,
   type TmuxCreateResult,
   type TmuxProfileCommand,
   type InFlightAbortHarness,
@@ -390,8 +396,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const innerCmd = `exec env JEO_TMUX_LAUNCHED=1 ${[...cmd, "launch", ...innerArgs].map(shellQuote).join(" ")}`;
 
         // Create a fresh, independent session (race-safe: the create is the guard).
+        // Size the DETACHED session to the caller terminal (gjc launch-tmux parity
+        // #1376): without -x/-y tmux creates it 80x24 and the inner jeo's first
+        // frames render mis-wrapped into the pane scrollback before attach resizes.
+        const termSize = callerTmuxTerminalSize();
         const alloc = allocateTmuxSession(sessionBase, name => {
-          const created = Bun.spawnSync([tmuxBin, "new-session", "-d", "-s", name, "-c", cwd, innerCmd]);
+          const created = Bun.spawnSync([tmuxBin, "new-session", "-d", ...tmuxNewSessionSizeArgs(termSize), "-s", name, "-c", cwd, innerCmd]);
           if (created.exitCode === 0) return "ok";
           const err = created.stderr.toString().trim();
           if (/duplicate session/i.test(err)) return "taken"; // another jeo grabbed this name
@@ -428,6 +438,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             ? `Starting new tmux session: ${sessionName}`
             : `Starting new independent tmux session: ${sessionName} (another live jeo session already owns ${sessionBase}; reattach later with: tmux attach -t ${sessionName})`,
         );
+
+        // Re-assert the caller dimensions right before attach (best-effort): profile
+        // commands or a slow first frame can land while the window is still detached.
+        if (termSize) {
+          try {
+            Bun.spawnSync([tmuxBin, "resize-window", "-t", `=${sessionName}`, "-x", String(termSize.columns), "-y", String(termSize.rows)]);
+          } catch { /* best-effort — old tmux without resize-window is fine */ }
+        }
 
         const attach = Bun.spawn([tmuxBin, "attach-session", "-t", `=${sessionName}`], {
           stdin: "inherit",

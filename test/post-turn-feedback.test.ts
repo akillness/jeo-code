@@ -149,7 +149,9 @@ test("done after a red hook gets a pushback naming the hook; second done passes"
       calls++;
       if (calls === 1) return JSON.stringify({ tool: "bash", arguments: { command: "bun test ok" } });
       if (calls === 2) return JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } });
-      return JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
+      if (calls === 3) return JSON.stringify({ tool: "done", arguments: { reason: "finished" } }); // pushed back
+      if (calls === 4) return JSON.stringify({ tool: "read", arguments: { filePath: "a.ts" } }); // takes a further action
+      return JSON.stringify({ tool: "done", arguments: { reason: "finished" } }); // now passes
     },
   }));
   const { runAgentLoop } = await import("../src/agent/engine");
@@ -161,13 +163,14 @@ test("done after a red hook gets a pushback naming the hook; second done passes"
     tools: {
       bash: async () => ({ success: true, output: "1 pass 0 fail" }), // sawVerification=true
       edit: async () => ({ success: true, output: "updated a.ts" }),
+      read: async () => ({ success: true, output: "content" }),
     },
   });
   expect(result.done).toBe(true);
   const pushback = history.find(m => m.role === "user" && m.content.includes("FAILING (non-zero exit)"));
   expect(pushback).toBeDefined(); // guard fired DESPITE the earlier green bash
   expect(pushback!.content).toContain('post-turn hook "echo');
-  expect(calls).toBe(4); // bash, edit, done(pushed back), done(escape hatch)
+  expect(calls).toBe(5); // bash, edit, done(pushed back), read(action), done(escape hatch)
 });
 
 test("a later clean hook run clears the pending failure — done passes first try", async () => {
@@ -216,7 +219,9 @@ test("done after verify-then-edit gets a stale-verification pushback", async () 
       calls++;
       if (calls === 1) return JSON.stringify({ tool: "bash", arguments: { command: "bun test" } }); // verify
       if (calls === 2) return JSON.stringify({ tool: "edit", arguments: { filePath: "a.ts", editBlock: "x" } }); // mutate AFTER verify
-      return JSON.stringify({ tool: "done", arguments: { reason: "finished" } });
+      if (calls === 3) return JSON.stringify({ tool: "done", arguments: { reason: "finished" } }); // stale pushback
+      if (calls === 4) return JSON.stringify({ tool: "read", arguments: { filePath: "a.ts" } }); // takes a further action
+      return JSON.stringify({ tool: "done", arguments: { reason: "finished" } }); // now passes
     },
   }));
   const { runAgentLoop } = await import("../src/agent/engine");
@@ -228,12 +233,13 @@ test("done after verify-then-edit gets a stale-verification pushback", async () 
     tools: {
       bash: async () => ({ success: true, output: "1 pass 0 fail" }),
       edit: async () => ({ success: true, output: "updated a.ts" }),
+      read: async () => ({ success: true, output: "content" }),
     },
   });
   expect(result.done).toBe(true);
   const pushback = history.find(m => m.role === "user" && m.content.includes("no longer reflects the current tree"));
   expect(pushback).toBeDefined();
-  expect(calls).toBe(4); // bash, edit, done(stale pushback), done(escape hatch)
+  expect(calls).toBe(5); // bash, edit, done(stale pushback), read(action), done(escape hatch)
 });
 
 test("done after edit-then-verify is NOT stale — passes first try", async () => {

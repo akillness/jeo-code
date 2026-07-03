@@ -9,6 +9,10 @@ import { createTaskTool, taskToolProtocolLine, type TaskSubEvent } from "../agen
 import { createSubagentTool, SUBAGENT_TOOL_PROTOCOL_LINE } from "../agent/subagent-tool";
 import { SubagentRegistry } from "../agent/subagent-registry";
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
+import { createJobTool, JOB_TOOL_PROTOCOL_LINE } from "../agent/job-tool";
+import { JobRegistry } from "../agent/job-registry";
+import { createIrcTool, IRC_TOOL_PROTOCOL_LINE } from "../agent/irc-tool";
+import { createGoalTool, GOAL_TOOL_PROTOCOL_LINE } from "../agent/goal-tool";
 import { LaunchTui } from "../tui/app";
 import { runDeepInterviewEngine, type DeepInterviewEngineOptions } from "./deep-interview";
 import { runRalplanEngine, type RalplanEngineOptions } from "./ralplan";
@@ -46,7 +50,7 @@ import { openaiCompatDef, SUBSCRIPTION_PROVIDER_NAMES } from "../ai/providers/op
 
 import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting, applyTargetChoices } from "../agent/subagents";
 import { SelectList, renderSelectList, type SelectItem } from "../tui/components/select-list";
-import { SessionPicker, renderSessionPicker } from "../tui/components/session-picker";
+
 import {
   formatModelLine,
   formatProviderPanel,
@@ -70,7 +74,7 @@ import { renderStatusBar } from "../tui/components/status";
 import { detectColorLevel, ColorLevel, visibleWidth } from "../tui/components/color";
 import { readClipboardImage } from "../util/clipboard-image";
 import { attachImagePaths, insertImageTag } from "../util/file-attachment";
-import { formatTranscript } from "../tui/components/transcript";
+
 import { copyTextToClipboard, readClipboardText } from "../tui/clipboard";
 import { loadInputHistory, appendInputHistory } from "../agent/input-history";
 import type { ImageAttachment } from "../ai/types";
@@ -95,11 +99,9 @@ import {
   listSessions,
   latestSessionId,
   exportSession,
-  renameSession,
   updateSessionModel,
-  deleteSession,
-  sessionPath,
   appendCompaction,
+  resolveSessionRef,
 } from "../agent/session";
 import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize, resetMouseTracking, clearScreen, clearVisible, clearToEnd, enableModifyOtherKeys, disableModifyOtherKeys, enableKittyKeyboard, disableKittyKeyboard } from "../tui/terminal";
 
@@ -197,7 +199,11 @@ import {
   handleSearchSlash,
 } from "./launch/code-slash";
 import { handleUndoSlash } from "./launch/git-slash";
+import { runSessionSlash } from "./launch/session-slash";
+import { runModelSlash } from "./launch/model-slash";
+import { runAgentsSlash, runRolesSlash, runFastSlash, runThinkingSlash } from "./launch/agents-slash";
 import { wikiRootPromptLine, decideWikiSlash } from "./launch/wiki-slash";
+import { decideThemeSlash, buildConfigPanelLines, runEvolveSimulation } from "./launch/system-slash";
 
 
 
@@ -267,6 +273,12 @@ export function normalizeSlashAlias(input: string): string {
   if (input === "/subagent" || input.startsWith("/subagent ")) return `/agents${input.slice("/subagent".length)}`;
   if (input === "/subagents" || input.startsWith("/subagents ")) return `/agents${input.slice("/subagents".length)}`;
   if (input === "/resume" || input.startsWith("/resume ")) return `/session resume${input.slice("/resume".length)}`;
+  // gjc-parity: /new, /drop, /rename, /sessions are top-level palette aliases for
+  // their /session <sub> implementations (same pattern as /resume above).
+  if (input === "/new") return "/session new";
+  if (input === "/drop") return "/session drop";
+  if (input === "/rename" || input.startsWith("/rename ")) return `/session rename${input.slice("/rename".length)}`;
+  if (input === "/sessions") return "/session list";
   return input;
 }
 
@@ -513,7 +525,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // pi-style: load project context (JEO.md / AGENTS.md / .jeo/context.md / CLAUDE.md) into the prompt.
   const contextFiles = await loadProjectContext(cwd);
 
-  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "todo", "subagent"]);
+  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "todo", "subagent", "job", "irc", "goal", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug"]);
   let allowedTools = new Set(KNOWN_TOOLS);
 
   if (flags.noTools) {
@@ -584,6 +596,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     (allowedTools.has("todo") ? "\n\nPlanning: " + TODO_TOOL_PROTOCOL_LINE : "") +
     (allowedTools.has("subagent") ? "\n\nDetached subagents: " + SUBAGENT_TOOL_PROTOCOL_LINE +
     " Launch background work with task {\"detached\": true, \"role\": <role>, \"task\": <assignment>}; it returns a subagent id immediately so you can keep working and collect the result later." : "") +
+    (allowedTools.has("job") ? "\n\nBackground jobs: " + JOB_TOOL_PROTOCOL_LINE : "") +
+    (allowedTools.has("irc") ? "\n\nPeer messaging: " + IRC_TOOL_PROTOCOL_LINE : "") +
+    (allowedTools.has("goal") ? "\n\nGoal tracking: " + GOAL_TOOL_PROTOCOL_LINE : "") +
     (effectiveNoSkills ? "" :
     "\n\nJEO workflow routing:\n" +
     "- Answer the user's request DIRECTLY. Never reply with a catalog, list, or summary of skills unless the user explicitly asks what skills exist.\n" +
@@ -710,9 +725,50 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let sessionId: string | undefined;
   let compactionSeq = 0;
   if (!flags.noSession) {
-    if (flags.resume) {
-      const id = flags.resumeId ?? (await latestSessionId(cwd));
-      if (!id) {
+    if (flags.resumeInteractive) {
+      // Bare `--resume`/`-r` (no value) at cold startup (gjc-parity): the interactive
+      // session picker — added right before the REPL loop starts, below — takes over
+      // and replaces this session before the user ever sees it, but ONLY in a TTY.
+      // Start with a fresh session here as the safe default either way.
+      sessionId = (await createSession(cwd, undefined, sessionModel)).id;
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        // No TTY means no picker is possible — fall back to the same silent-latest
+        // behavior as `--continue` rather than silently doing nothing.
+        const id = await latestSessionId(cwd);
+        if (id) {
+          try {
+            const { header, messages } = await loadSession(id, cwd);
+            for (const m of messages) history.push(m);
+            sessionId = id;
+            if (!initialSessionModel && header.model) sessionModel = header.model;
+            const modelNote = sessionModel ? ` · model ${sessionModel}` : "";
+            console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
+          } catch (err) {
+            console.log(`Could not resume ${id}: ${(err as Error).message}. Starting fresh.`);
+          }
+        }
+      }
+    } else if (flags.resume) {
+      let id: string | undefined;
+      let skipResume = false;
+      if (flags.resumeId) {
+        // gjc-parity: resolve as a full id OR a short id prefix.
+        const resolved = await resolveSessionRef(flags.resumeId, cwd);
+        if (resolved.kind === "ok") {
+          id = resolved.id;
+        } else if (resolved.kind === "ambiguous") {
+          console.log(`Ambiguous session id '${flags.resumeId}' — matches: ${resolved.matches.slice(0, 5).join(", ")}${resolved.matches.length > 5 ? " …" : ""}. Use more characters or run with --resume (no value) to pick interactively.`);
+          skipResume = true;
+        } else {
+          console.log(`Session '${flags.resumeId}' not found. Starting a new one.`);
+          skipResume = true;
+        }
+      } else {
+        id = await latestSessionId(cwd);
+      }
+      if (skipResume) {
+        sessionId = (await createSession(cwd, undefined, sessionModel)).id;
+      } else if (!id) {
         console.log("No session to resume. Starting a new one.");
         sessionId = (await createSession(cwd, undefined, sessionModel)).id;
       } else {
@@ -964,6 +1020,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // #9: per-turn registry for DETACHED subagents (task{detached:true}); the
       // `subagent` tool controls them and cancelAll() in finally prevents orphans.
       const subagentRegistry = new SubagentRegistry();
+      const jobRegistry = new JobRegistry();
       try {
         // Per-turn todo snapshot: drives the done-time reconciliation gate (the
         // Todos checklist used to end a finished turn stuck at "✓0 ◐1 ·4 / 5"
@@ -1025,6 +1082,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           }),
           todo: createTodoTool({ onChange: items => { turnTodos = items; tui?.setTodos(items); } }),
           subagent: createSubagentTool(subagentRegistry),
+          job: createJobTool(jobRegistry),
+          irc: createIrcTool(subagentRegistry),
+          goal: createGoalTool(),
         };
         const tools = filterToolMap(fullTools, Array.from(allowedTools));
         // Opik observability (opt-in via JEO_OPIK): one trace per turn, spans per
@@ -1083,6 +1143,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       } finally {
         harness.dispose();
         subagentRegistry.cancelAll(); // #9: no detached run leaks past the turn
+        jobRegistry.cancelAll(); // background jobs are turn-scoped too — no orphaned processes
         // Steering typed but never drained (e.g. entered just after the final step)
         // must not be lost — fold it into the next prompt draft so it runs next.
         const leftover = steerInbox.splice(0, steerInbox.length).map(s => s.trim()).filter(Boolean);
@@ -1215,6 +1276,74 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       if (cmd === "/" || cmd === "/?" || cmd === "/help") {
         for (const line of formatSlashCommandList("/", skillSlashDetails)) console.log(line);
         console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .jeo/sessions/.");
+        return;
+      }
+      if (cmd === "/usage") {
+        const cfg = await readGlobalConfig();
+        const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
+        const result = handleUsage(ctx, sessionUsage);
+        if (result && "lines" in result) for (const line of result.lines) console.log(line);
+        return;
+      }
+      if (cmd === "/context") {
+        const cfg = await readGlobalConfig();
+        const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
+        const result = await handleContext(ctx);
+        if (result && "lines" in result) for (const line of result.lines) console.log(line);
+        return;
+      }
+      if (cmd === "/tools") {
+        const cfg = await readGlobalConfig();
+        const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
+        const result = await handleTools(ctx);
+        if (result && "lines" in result) for (const line of result.lines) console.log(line);
+        return;
+      }
+      if (cmd === "/hotkeys") {
+        const cfg = await readGlobalConfig();
+        const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
+        const result = handleHotkeys(ctx);
+        if (result && "lines" in result) for (const line of result.lines) console.log(line);
+        return;
+      }
+      if (cmd === "/theme" || cmd.startsWith("/theme ")) {
+        const decision = decideThemeSlash(cmd, listThemes(), resolveTheme().name);
+        for (const line of decision.lines) console.log(line);
+        if (decision.kind === "set") {
+          process.env.JEO_TUI_THEME = decision.themeName!;
+          await saveConfigPatch(raw => ({ theme: decision.themeName }));
+          // No refreshUiTheme() here — one-shot mode returns immediately after this
+          // block, so there is no live TUI paint state to re-resolve (and
+          // refreshUiTheme is declared later in this closure, out of scope here).
+        }
+        return;
+      }
+      if (cmd === "/wiki" || cmd.startsWith("/wiki ")) {
+        const decision = decideWikiSlash(
+          cmd,
+          resolveWikiRoot(await readGlobalConfig()),
+          !!jeoEnv("WIKI_ROOT"),
+        );
+        for (const line of decision.lines) console.log(line);
+        if (decision.kind === "clear") {
+          await saveConfigPatch(() => ({ wikiRoot: undefined }));
+          delete process.env.JEO_WIKI_ROOT;
+          sessionWikiRoot = undefined;
+          await refreshSessionMemory("");
+        } else if (decision.kind === "set") {
+          await saveConfigPatch(() => ({ wikiRoot: decision.persistArg }));
+          process.env.JEO_WIKI_ROOT = decision.root;
+          sessionWikiRoot = decision.root;
+          await refreshSessionMemory("");
+        }
+        return;
+      }
+      if (cmd === "/config" || cmd === "/settings") {
+        for (const line of await buildConfigPanelLines({ sessionModel, sessionThinking, sessionId })) console.log(line);
+        return;
+      }
+      if (cmd === "/evolve") {
+        await runEvolveSimulation(animateAsciiArt);
         return;
       }
     }
@@ -2379,14 +2508,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
   };
 
-  // Antigravity with ANY Google OAuth (own login or the gemini-cli fallback) stays
-  // SELECTABLE in pickers even when not call-ready: picking the model is how users
-  // reach the flow, and the auth layer gives actionable login guidance on the first
-  // call if the fallback token is rejected (403). Refusing selection was a dead end.
-  const selectableThoughNotReady = (st?: { name: string; kind: string }): boolean =>
-    !!st && st.name === "antigravity" && st.kind === "oauth";
-  const notReadyWarning = (st: { name: string; label: string }): string =>
-    `  ! ${st.name} is not call-ready yet (${st.label}) — run /provider login antigravity before the first turn.`;
 
 
   const MODEL_BADGE_ROLE_ORDER = ["planner", "architect", "executor", "critic"] as const;
@@ -3088,6 +3209,21 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     });
   }
 
+  // Bare `--resume`/`-r` (no value) at cold startup (gjc-parity): show the SAME
+  // interactive session picker `/session resume` (no arg) uses, in place of the
+  // fresh session created above. TTY-only — non-TTY already fell back to
+  // silent-latest resume in the startup block above.
+  if (flags.resumeInteractive && !flags.noSession && process.stdin.isTTY && process.stdout.isTTY) {
+    const pickResult = await runSessionSlash("/session resume", {
+      cwd, history, noSession: flags.noSession, sessionId, sessionModel, rl,
+      advanceSessionBoxColor, disarmPreview, clearScreen, freshWelcomeLines, logLines, runSelectPicker,
+    });
+    sessionId = pickResult.sessionId;
+    if (pickResult.sessionModel !== undefined) sessionModel = pickResult.sessionModel;
+    if (pickResult.lastUserInput !== undefined) lastUserInput = pickResult.lastUserInput;
+    if (pickResult.lastReply !== undefined) lastReply = pickResult.lastReply;
+  }
+
   while (true) {
       drainPendingTtyInput();
       // "New input first": queued FULL lines from the previous turn are folded
@@ -3227,10 +3363,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const res = await maybeCompact(history, { model: activeModel, force: true, contextTokens });
         if (res.error) {
           console.error(chalk.red(res.error));
-        } else if (res.compacted && sessionId && res.replacesThrough !== undefined) {
-          const touchedNote = res.touchedFiles?.length ? ` Files touched: ${res.touchedFiles.join(", ")}.` : "";
-          const summaryText = res.summary ?? `[Earlier conversation omitted: ${res.removed} messages — summary unavailable.${touchedNote}]`;
-          await appendCompaction(sessionId, ++compactionSeq, summaryText, res.replacesThrough, cwd);
+        } else if (res.compacted) {
+          if (sessionId && res.replacesThrough !== undefined) {
+            const touchedNote = res.touchedFiles?.length ? ` Files touched: ${res.touchedFiles.join(", ")}.` : "";
+            const summaryText = res.summary ?? `[Earlier conversation omitted: ${res.removed} messages — summary unavailable.${touchedNote}]`;
+            await appendCompaction(sessionId, ++compactionSeq, summaryText, res.replacesThrough, cwd);
+          }
           console.log(`(compacted ${res.removed} older messages${res.touchedFiles?.length ? `; kept ${res.touchedFiles.length} file refs` : ""})`);
         } else {
           console.log("(nothing to compact)");
@@ -3238,226 +3376,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
       if (input === "/session" || input.startsWith("/session ")) {
-        const tokens = input.substring(8).trim().split(/\s+/).filter(Boolean);
-        const sub = (tokens[0] ?? "").toLowerCase();
-
-        const startFreshSession = async (verb: string): Promise<void> => {
-          history.length = 1;
-          if (!flags.noSession) {
-            sessionId = (await createSession(cwd, undefined, sessionModel)).id;
-            advanceSessionBoxColor(); // distinct input-box hue per newly opened session
-            console.log(`(${verb} — new session ${sessionId})`);
-          } else {
-            sessionId = undefined;
-            console.log(`(${verb} — sessions disabled)`);
-          }
-        };
-
-        if (sub === "new") {
-          await startFreshSession("started fresh");
-          continue;
-        }
-        if (sub === "drop" || sub === "delete") {
-          if (sessionId) {
-            const removed = await deleteSession(sessionId, cwd);
-            console.log(removed ? `(deleted session ${sessionId})` : `(session ${sessionId} already gone)`);
-          }
-          await startFreshSession("dropped");
-          continue;
-        }
-        if (sub === "rename") {
-          const title = tokens.slice(1).join(" ").trim();
-          if (!title) {
-            console.log("Usage: /session rename <title>");
-            continue;
-          }
-          if (!sessionId) {
-            console.log("(sessions are disabled — nothing to rename)");
-            continue;
-          }
-          try {
-            await renameSession(sessionId, title, cwd);
-            console.log(`(session renamed to '${title}')`);
-          } catch (err) {
-            console.log(`! rename failed: ${(err as Error).message}`);
-          }
-          continue;
-        }
-        if (sub === "resume") {
-          const arg = tokens.slice(1).join(" ").trim();
-          const applyResume = async (rid: string): Promise<void> => {
-            try {
-              const { header, messages } = await loadSession(rid, cwd);
-              history.length = 1;
-              for (const m of messages) history.push(m);
-              sessionId = rid;
-              // Restore the model this session was last using (per-session model).
-              if (header.model) sessionModel = header.model;
-              // Seed /retry + reply marker from the last user/assistant turn.
-              lastUserInput = ""; lastReply = "";
-              for (let k = history.length - 1; k >= 1; k--) {
-                if (history[k]!.role === "user" && !lastUserInput) lastUserInput = String(history[k]!.content ?? "");
-                if (history[k]!.role === "assistant" && !lastReply) lastReply = String(history[k]!.content ?? "");
-                if (lastUserInput && lastReply) break;
-              }
-              // Seed readline's input history so ↑ in the prompt recalls THIS session's
-              // prior prompts (not just lines typed in the current run). readline history
-              // is newest-first; unshift in chronological order so the session's newest
-              // prompt lands at the front (first ↑). Skip injected/framed messages.
-              const rli = rl as unknown as { history?: string[] };
-              if (Array.isArray(rli.history)) {
-                const priorPrompts = history
-                  .filter(m => m.role === "user")
-                  .map(m => String(m.content ?? "").trim())
-                  .filter(c => c && !c.startsWith("Tool [") && !c.startsWith("[mid-turn steering") && !c.startsWith("[Earlier conversation summary]"));
-                for (const p of priorPrompts) {
-                  if (rli.history[0] !== p) rli.history.unshift(p);
-                }
-              }
-              // Clean restore: wipe the screen + scrollback BEFORE replaying the
-              // transcript so it can't collide with picker remnants, the prior
-              // conversation, or the live input frame — the "/resume corrupts the
-              // TUI" fix. Same proven path as /clear; re-render the welcome banner
-              // so the resumed view reads like a fresh, intact screen.
-              if (process.stdout.isTTY) {
-                disarmPreview();
-                process.stdout.write(clearScreen());
-                console.log(freshWelcomeLines().join("\n"));
-              }
-              const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
-              logLines([
-                sep,
-                `resumed session ${rid} · ${messages.length} message(s) (/history all for the full transcript)`,
-                sep,
-                ...formatTranscript(history, { maxTurns: 6, color: true, unicode: true }),
-                sep,
-              ]);
-            } catch (err) {
-              console.log(`! ${(err as Error).message}`);
-            }
-          };
-          if (arg) { await applyResume(arg); continue; }
-          // No id → only sessions with a real conversation are resumable (every launch
-          // creates an empty session; those are noise).
-          let pool = (await listSessions(cwd)).filter(s => s.messageCount > 0);
-          if (pool.length === 0) {
-            console.log("(no saved sessions with history)");
-            continue;
-          }
-          // Interactive gjc-style picker on a TTY: type to filter, ↑↓/PgUp/PgDn to
-          // move, Enter resumes, Del deletes (press Del twice to confirm), Esc cancels.
-          if (process.stdin.isTTY && process.stdout.isTTY) {
-            // Loop so a delete refreshes the list and re-opens the picker in place.
-            for (;;) {
-              const picker = new SessionPicker(pool);
-              let action: { kind: "resume" | "delete"; id: string } | undefined;
-              let confirmDeleteId: string | undefined;
-              await runSelectPicker(
-                (cols, rows) => renderSessionPicker(picker, {
-                  title: "Resume a session",
-                  cols,
-                  rows: Math.max(8, rows),
-                  unicode: true,
-                  color: true,
-                  confirmDeleteId,
-                }),
-                (ch, key) => {
-                  if (key?.name === "up") { confirmDeleteId = undefined; picker.up(); return false; }
-                  if (key?.name === "down") { confirmDeleteId = undefined; picker.down(); return false; }
-                  if (key?.name === "pageup") { confirmDeleteId = undefined; picker.page(-1); return false; }
-                  if (key?.name === "pagedown") { confirmDeleteId = undefined; picker.page(1); return false; }
-                  if (key?.name === "escape" || (key?.ctrl && key.name === "c")) return true;
-                  if (key?.name === "delete") {
-                    const sel = picker.selected();
-                    if (!sel) return false;
-                    if (confirmDeleteId === sel.id) { action = { kind: "delete", id: sel.id }; return true; }
-                    confirmDeleteId = sel.id;
-                    return false;
-                  }
-                  if (key?.name === "return" || key?.name === "enter") {
-                    const sel = picker.selected();
-                    if (sel) { action = { kind: "resume", id: sel.id }; return true; }
-                    return false;
-                  }
-                  confirmDeleteId = undefined;
-                  if (key?.name === "backspace") { picker.backspace(); return false; }
-                  if (ch && ch >= " " && !key?.ctrl && !key?.meta) picker.typeChar(ch);
-                  return false;
-                },
-              );
-              if (!action) { console.log("(resume cancelled)"); break; }
-              if (action.kind === "resume") { await applyResume(action.id); break; }
-              // Delete: drop the file, refresh the pool, and re-open the picker.
-              const delId = action.id;
-              try {
-                const removed = await deleteSession(delId, cwd);
-                console.log(removed ? `(deleted session ${delId})` : `(session ${delId} already gone)`);
-              } catch (err) {
-                console.log(`! delete failed: ${(err as Error).message}`);
-              }
-              if (delId === sessionId) await startFreshSession("dropped current session");
-              pool = pool.filter(s => s.id !== delId);
-              if (pool.length === 0) { console.log("(no saved sessions with history)"); break; }
-            }
-            continue;
-          }
-          // Non-TTY fallback: static list (resume with /session resume <id>).
-          console.log("Saved sessions — resume with /session resume <id>:");
-          for (const s of pool.slice(0, 15)) {
-            const marker = s.id === sessionId ? "*" : " ";
-            console.log(` ${marker}${s.id}  (${s.messageCount} msgs)  ${s.title ? `[${s.title}] ` : ""}${s.preview}`);
-          }
-          continue;
-        }
-        if (sub === "list") {
-          const sessions = await listSessions(cwd);
-          if (sessions.length === 0) console.log("(no saved sessions)");
-          for (const s of sessions) {
-            const marker = s.id === sessionId ? "*" : " ";
-            const title = s.title ? `[${s.title}] ` : "";
-            console.log(` ${marker}${s.id}  (${s.messageCount} msgs)  ${title}${s.preview}`);
-          }
-          continue;
-        }
-        if (sub === "info") {
-          if (!sessionId) {
-            console.log("Session: disabled (--no-session)");
-            continue;
-          }
-          const all = await listSessions(cwd);
-          const current = all.find(s => s.id === sessionId);
-          console.log("Session info:");
-          console.log(`  id        ${sessionId}`);
-          if (current?.title) console.log(`  title     ${current.title}`);
-          console.log(`  file      ${sessionPath(sessionId, cwd)}`);
-          console.log(`  started   ${current?.timestamp ?? "(this run)"}`);
-          console.log(`  messages  ${current?.messageCount ?? Math.max(0, history.length - 1)} persisted · ${history.length - 1} in context`);
-          console.log(`  workspace ${cwd}`);
-          continue;
-        }
-        if (sub && sub !== "info") {
-          console.log("Usage: /session [list|info|new|drop|rename <title>|resume [id]]");
-          continue;
-        }
-
-        // Default: list sessions AND show current session info
-        const sessions = await listSessions(cwd);
-        if (sessions.length === 0) {
-          console.log("(no saved sessions)");
-        } else {
-          console.log("Saved sessions:");
-          for (const s of sessions) {
-            const marker = s.id === sessionId ? "*" : " ";
-            const title = s.title ? `[${s.title}] ` : "";
-            console.log(` ${marker}${s.id}  (${s.messageCount} msgs)  ${title}${s.preview}`);
-          }
-        }
-        if (sessionId) {
-          const current = sessions.find(s => s.id === sessionId);
-          console.log(`\nCurrent session: ${sessionId}${current?.title ? ` [${current.title}]` : ""}`);
-        } else {
-          console.log("\nCurrent session: disabled (--no-session)");
-        }
+        const result = await runSessionSlash(input, {
+          cwd, history, noSession: flags.noSession, sessionId, sessionModel, rl,
+          advanceSessionBoxColor, disarmPreview, clearScreen, freshWelcomeLines, logLines, runSelectPicker,
+        });
+        sessionId = result.sessionId;
+        if (result.sessionModel !== undefined) sessionModel = result.sessionModel;
+        if (result.lastUserInput !== undefined) lastUserInput = result.lastUserInput;
+        if (result.lastReply !== undefined) lastReply = result.lastReply;
         continue;
       }
       if (input === "/retry") {
@@ -3632,22 +3558,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
       if (input === "/theme" || input.startsWith("/theme ")) {
-        const want = input.substring(6).trim().toLowerCase();
-        const themes = listThemes();
-        if (!want) {
-          const active = resolveTheme().name;
-          console.log("TUI themes (set with /theme <name>, persists via ~/.jeo/config.json):");
-          for (const t of themes) console.log(`  ${t.name === active ? "*" : " "} ${t.name.padEnd(10)} ${t.description}`);
-          continue;
+        const decision = decideThemeSlash(input, listThemes(), resolveTheme().name);
+        for (const line of decision.lines) console.log(line);
+        if (decision.kind === "set") {
+          process.env.JEO_TUI_THEME = decision.themeName!;
+          await saveConfigPatch(raw => ({ theme: decision.themeName }));
+          refreshUiTheme(); // re-resolve the keystroke-hot theme handle immediately
         }
-        if (!themes.some(t => t.name === want)) {
-          console.log(`Unknown theme '${want}'. Known: ${themes.map(t => t.name).join(", ")}.`);
-          continue;
-        }
-        process.env.JEO_TUI_THEME = want;
-        await saveConfigPatch(raw => ({ theme: want }));
-        refreshUiTheme(); // re-resolve the keystroke-hot theme handle immediately
-        console.log(`Theme set to ${want} — saved to ~/.jeo/config.json`);
         continue;
       }
       if (input === "/wiki" || input.startsWith("/wiki ")) {
@@ -3671,12 +3588,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
       if (input === "/evolve") {
-        console.log("=== Initiating Evolutionary Simulation ===");
-        for (const stage of EVOLUTION_STAGES) {
-          console.log(`\nStage: ${stage.name}`);
-          await animateAsciiArt(stage, { delayMs: 40 });
-        }
-        console.log("\n=== Evolved to Singularity! ===");
+        await runEvolveSimulation(animateAsciiArt);
         continue;
       }
       if (input.startsWith("/provider") && (input === "/provider" || input[9] === " ")) {
@@ -3947,508 +3859,55 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         await refreshLiveModelsCache();
         continue;
       }
-      const agentsCommand =
-        input === "/agents" || input.startsWith("/agents ") ? "/agents" :
-        undefined;
-      if (agentsCommand) {
-        const tokens = input.substring(agentsCommand.length).trim().split(/\s+/).filter(Boolean);
-        const roleArg = tokens[0];
-        const modelArg = tokens[1];
-        const cfgNow = await readGlobalConfig();
-        const subcommand = roleArg?.toLowerCase();
-        const printRoster = () => {
-          console.log("Subagent roles (used by 'jeo team'):");
-          for (const line of formatAgentsPanel(allSubagentRoles(cfgNow), r => ({
-            model: resolveSubagentModel(r.id, cfgNow),
-            maxSteps: resolveSubagentMaxSteps(r.id, cfgNow),
-            thinking: resolveSubagentThinking(r.id, cfgNow),
-          }))) console.log(line);
-          console.log("Detail: /agents <role>  ·  set model: /agents <role> <model|#N>  ·  provider: /agents <role> provider <name> [model]  ·  thinking: /agents <role> thinking <level|inherit>  ·  steps: /agents <role> maxSteps <N>  ·  picker: /agents edit");
-          console.log("Tip: primary model flow: /model → pick model → choose default or subagent role → choose thinking level");
-          console.log(`Available: ${allSubagentRoles(cfgNow).map(r => r.id).join(", ")} (declare custom roles in config.subagents)`);
-          console.log("Subcommands: edit, <role> <model|#N>, <role> thinking <level|inherit>, <role> provider <name> [model], <role> maxSteps <N>, <role> reset");
-        };
-        if (!roleArg || roleArg === "/" || roleArg === "?" || subcommand === "help") {
-          printRoster();
-          continue;
-        }
-        if (subcommand === "edit" || subcommand === "picker") {
-          printRoster();
-          // Interactive editor (TTY): role picker → action picker → live model /
-          // thinking / reset — the arrows+Enter way to CHANGE an existing setting.
-          const rolePick = await pickFromOptions(
-            "Edit a subagent role (ESC to skip)",
-            allSubagentRoles(cfgNow).map(r => ({
-              value: r.id,
-              label: `${r.id} — ${r.title}`,
-              hint: `${resolveSubagentModel(r.id, cfgNow)} · ${resolveSubagentMaxSteps(r.id, cfgNow)} steps${cfgNow.subagents?.[r.id]?.model ? "" : " (default)"}`,
-            })),
-          );
-          const editRole = rolePick ? getSubagentRole(rolePick, cfgNow) : undefined;
-          if (!editRole) continue;
-          const action = await pickFromOptions(`${editRole.title} — choose action`, [
-            { value: "model", label: "change model", hint: resolveSubagentModel(editRole.id, cfgNow) },
-            { value: "thinking", label: "change thinking", hint: resolveSubagentThinking(editRole.id, cfgNow) ?? `inherit (${cfgNow.thinkingLevel ?? "medium"})` },
-            { value: "reset", label: "reset to defaults", hint: "clears model + maxSteps + thinking override" },
-          ]);
-          if (action === "reset") {
-            await saveConfigPatch(raw => ({ subagents: clearSubagentSetting(raw, editRole.id) }));
-            console.log(`${editRole.title} settings reset to defaults → ~/.jeo/config.json`);
-          } else if (action === "model") {
-            const live = await getLiveModels();
-            const entries = flattenModels(live);
-            const picked = await pickLiveProviderModel(`${editRole.id}`, entries, resolveSubagentModel(editRole.id, cfgNow));
-            if (picked) {
-              const pinned = qualifyModelId(picked.model, picked.provider);
-              await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, editRole.id, { model: pinned }) }));
-              console.log(`Subagent '${editRole.id}' model set to ${pinned} → ~/.jeo/config.json`);
-            }
-          } else if (action === "thinking") {
-            const lvl = await pickThinkingLevel(
-              `Reasoning for ${editRole.title}`,
-              cfgNow.subagents?.[editRole.id]?.thinking,
-              `inherit — follow default (${cfgNow.thinkingLevel ?? "medium"})`,
-            );
-            if (lvl) await setRoleThinking(editRole.id, lvl);
-          }
-          continue;
-        }
-        const role = getSubagentRole(roleArg, cfgNow);
-        if (!role) {
-          console.log(`Unknown role '${roleArg}'. Known: ${allSubagentRoles(cfgNow).map(r => r.id).join(", ")}.`);
-          continue;
-        }
-        if (modelArg?.toLowerCase() === "reset") {
-          await saveConfigPatch(raw => ({ subagents: clearSubagentSetting(raw, role.id) }));
-          console.log(`${role.title} settings reset to defaults → ~/.jeo/config.json`);
-          continue;
-        }
-        if (modelArg?.toLowerCase() === "maxsteps" || modelArg?.toLowerCase() === "steps") {
-          const maxSteps = parseMaxSteps(tokens[2]);
-          if (!maxSteps) {
-            console.log(`Usage: /agents ${role.id} maxSteps <positive-number>`);
-            continue;
-          }
-          await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { maxSteps }) }));
-          console.log(`${role.title} maxSteps set to ${maxSteps} → ~/.jeo/config.json`);
-          continue;
-        }
-        if (modelArg?.toLowerCase() === "thinking" || modelArg?.toLowerCase() === "think") {
-          await setRoleThinking(role.id, tokens[2]);
-          continue;
-        }
-        if (modelArg?.toLowerCase() === "provider") {
-          const want = (tokens[2] ?? "").toLowerCase();
-          if (!isProviderName(want)) {
-            console.log(`Usage: /agents ${role.id} provider <name> [model|#N] — e.g. anthropic, openai, gemini, groq, deepseek, openrouter (any configured provider)`);
-            continue;
-          }
-          const st = (await describeAllProviders()).find(s => s.name === want);
-          if (st && !st.ready) {
-            if (selectableThoughNotReady(st)) {
-              console.log(notReadyWarning(st));
-            } else {
-              console.log(`Cannot pin ${role.title} to ${want}: not ready (${st.label}). Set ${st.envVar ?? "the provider key"} first.`);
-              continue;
-            }
-          }
-          const live = await getLiveModels();
-          const forProvider = providerPickEntries(live, want);
-          const liveForProvider = live.some(r => r.ok && r.provider === want && r.models.length > 0);
-          const explicit = tokens[3];
-          let chosenModel: string;
-          if (explicit && forProvider.length) {
-            const sel = resolveSelection(forProvider, explicit);
-            if (sel.kind === "index" || sel.kind === "match") chosenModel = qualifyModelId(sel.entry.model, want);
-            else if (sel.kind === "ambiguous") {
-              console.log(`'${explicit}' matches ${sel.matches.length} ${want} models — be more specific:`);
-              for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model}`);
-              continue;
-            } else if (sel.kind === "out-of-range") {
-              console.log(`#${explicit.slice(1)} is out of range for ${want} (1-${sel.max}).`);
-              continue;
-            } else {
-              chosenModel = qualifyModelId(explicit, want);
-            }
-          } else if (explicit) {
-            chosenModel = qualifyModelId(explicit, want);
-          } else if (forProvider.length) {
-            // No model given → the provider's first known model, provider-qualified.
-            chosenModel = qualifyModelId(forProvider[0]!.model, want);
-          } else {
-            chosenModel = providerDefaultModel(want);
-          }
-          await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: chosenModel }) }));
-          console.log(`${role.title} pinned to ${want} via model ${chosenModel} — saved to ~/.jeo/config.json`);
-          if (forProvider.length) {
-            lastPickIndex = forProvider;
-            const sourceNote = liveForProvider ? "Live" : "Catalog";
-            const tail = liveForProvider ? "" : " (log in to list live models)";
-            console.log(`${sourceNote} ${want} models — refine with /agents ${role.id} #N:${tail}`);
-            for (const line of formatPickListWithCapabilities(lastPickIndex, { current: chosenModel, cap: 12 })) console.log(line);
-          }
-          continue;
-        }
-        if (modelArg) {
-          let chosenModel = modelArg;
-          let entries = lastPickIndex;
-          if (modelArg.startsWith("#") && entries.length === 0) {
-            const live = await getLiveModels();
-            entries = flattenModels(live);
-          }
-          if (entries.length) {
-            const sel = resolveSelection(entries, modelArg);
-            if (sel.kind === "index" || sel.kind === "match") {
-              chosenModel = qualifyModelId(sel.entry.model, sel.entry.provider);
-              const bad = (await describeAllProviders()).find(s => s.name === sel.entry.provider && !s.ready);
-              if (bad) {
-                if (selectableThoughNotReady(bad)) {
-                  console.log(notReadyWarning(bad));
-                } else {
-                  console.log(`Cannot pin ${sel.entry.model}: ${sel.entry.provider} is not ready (${bad.label}). Set ${bad.envVar ?? "the provider key"} first.`);
-                  continue;
-                }
-              }
-            } else if (sel.kind === "ambiguous") {
-              console.log(`'${modelArg}' matches ${sel.matches.length} live models — be more specific:`);
-              for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
-              continue;
-            } else if (sel.kind === "out-of-range") {
-              console.log(`#${modelArg.slice(1)} is out of range (1-${sel.max}). Use /model first.`);
-              continue;
-            }
-          } else if (modelArg.startsWith("#")) {
-            console.log("Use /model first to build the numbered live model list.");
-            continue;
-          }
-          // Persist a per-role model override to ~/.jeo/config.json (consumed by 'jeo team').
-          await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: chosenModel }) }));
-          const { provider } = await describeModel(chosenModel);
-          console.log(`${role.title} model set to ${chosenModel} (${provider}) — saved to ~/.jeo/config.json`);
-          const live = await getLiveModels();
-          if (!liveModelKnown(live, chosenModel)) {
-            console.log(`  (note: '${chosenModel}' is not in any live model list — verify it is valid for ${provider})`);
-          }
-          continue;
-        }
-        for (const line of formatAgentDetail(role, {
-          model: resolveSubagentModel(role.id, cfgNow),
-          maxSteps: resolveSubagentMaxSteps(role.id, cfgNow),
-          thinking: resolveSubagentThinking(role.id, cfgNow),
-        })) console.log(line);
-        const live = await getLiveModels();
-        const agentPick = flattenModels(live);
-        if (agentPick.length) {
-          lastPickIndex = agentPick;
-          console.log(`Live models for ${role.title} — pin with /agents ${role.id} #N:`);
-          for (const line of formatPickListWithCapabilities(lastPickIndex, { current: resolveSubagentModel(role.id, cfgNow), cap: 20 })) console.log(line);
-        }
+      if (input === "/agents" || input.startsWith("/agents ")) {
+        const agentsResult = await runAgentsSlash(input, {
+          sessionModel, sessionThinking, lastPickIndex,
+          getLiveModels, pickLiveProviderModel, setRoleThinking, pickFromOptions, pickThinkingLevel,
+        });
+        if (agentsResult.sessionThinking !== undefined) sessionThinking = agentsResult.sessionThinking;
+        if (agentsResult.lastPickIndex !== undefined) lastPickIndex = agentsResult.lastPickIndex;
         continue;
       }
       if (input === "/config") {
-        const cfgNow = await readGlobalConfig();
-        const label = sessionModel || cfgNow.defaultModel;
-        const { resolved, provider } = await describeModel(label);
-        console.log("Effective runtime config:");
-        for (const line of formatConfigPanel({
-          model: label,
-          resolved,
-          provider,
-          thinkingLevel: sessionThinking ?? cfgNow.thinkingLevel ?? "medium",
-          ollamaBaseUrl: cfgNow.ollamaBaseUrl,
-          openaiBaseUrl: cfgNow.openaiBaseUrl,
-          requestMaxRetries: cfgNow.retry?.requestMaxRetries,
-          sessionId,
-        })) console.log(line);
+        for (const line of await buildConfigPanelLines({ sessionModel, sessionThinking, sessionId })) console.log(line);
         continue;
       }
       if (input.startsWith("/roles") && (input === "/roles" || input[6] === " ")) {
-        const tokens = input.substring(6).trim().split(/\s+/).filter(Boolean);
-        const cfgNow = await readGlobalConfig();
-        const TIERS = ["smol", "slow", "plan"] as const;
-        if (tokens.length >= 2 && (TIERS as readonly string[]).includes(tokens[0])) {
-          const tier = tokens[0] as (typeof TIERS)[number];
-          let chosenModel = tokens[1]!;
-          let entries = lastPickIndex;
-          if (chosenModel.startsWith("#") && entries.length === 0) {
-            const live = await getLiveModels();
-            entries = flattenModels(live);
-          }
-          if (entries.length) {
-            const sel = resolveSelection(entries, chosenModel);
-            if (sel.kind === "index" || sel.kind === "match") {
-              chosenModel = qualifyModelId(sel.entry.model, sel.entry.provider);
-              const bad = (await describeAllProviders()).find(s => s.name === sel.entry.provider && !s.ready);
-              if (bad) {
-                console.log(`Cannot set role ${tier} to ${sel.entry.model}: ${sel.entry.provider} is not ready (${bad.label}). Set ${bad.envVar ?? "the provider key"} first.`);
-                continue;
-              }
-            } else if (sel.kind === "ambiguous") {
-              console.log(`'${chosenModel}' matches ${sel.matches.length} live models — be more specific:`);
-              for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
-              continue;
-            } else if (sel.kind === "out-of-range") {
-              console.log(`#${chosenModel.slice(1)} is out of range (1-${sel.max}). Use /model first.`);
-              continue;
-            }
-          } else if (chosenModel.startsWith("#")) {
-            console.log("Use /model first to build the numbered live model list.");
-            continue;
-          }
-          await saveConfigPatch(raw => ({ roles: { ...(raw.roles ?? {}), [tier]: chosenModel } }));
-          console.log(`Role '${tier}' model set to ${chosenModel} → ~/.jeo/config.json`);
-          continue;
-        }
-        console.log("Model role tiers (fall back to the default model):");
-        for (const tier of TIERS) {
-          const { provider } = await describeModel(resolveRoleModel(tier, cfgNow));
-          console.log(`  ${tier.padEnd(5)} ${resolveRoleModel(tier, cfgNow)} (${provider})`);
-        }
-        console.log("Set a tier: /roles <smol|slow|plan> <model>");
-        const live = await getLiveModels();
-        const rolePick = flattenModels(live);
-        if (rolePick.length) {
-          lastPickIndex = rolePick;
-          console.log("Live models for role tiers — set with /roles <tier> #N:");
-          for (const line of formatPickListWithCapabilities(lastPickIndex, { cap: 15 })) console.log(line);
-        }
+        const rolesResult = await runRolesSlash(input, {
+          sessionModel, sessionThinking, lastPickIndex,
+          getLiveModels, pickLiveProviderModel, setRoleThinking, pickFromOptions, pickThinkingLevel,
+        });
+        if (rolesResult.sessionThinking !== undefined) sessionThinking = rolesResult.sessionThinking;
+        if (rolesResult.lastPickIndex !== undefined) lastPickIndex = rolesResult.lastPickIndex;
         continue;
       }
       if (input.startsWith("/fast") && (input === "/fast" || input[5] === " ")) {
-        const arg = input.substring(5).trim().toLowerCase() || "status";
-        const cfgNow = await readGlobalConfig();
-        const currentModel = sessionModel || cfgNow.defaultModel;
-        const { resolved, provider } = await describeModel(currentModel);
-        const fastLevel = fastThinkingLevelForModel(resolved);
-        const currentThinking = sessionThinking ?? cfgNow.thinkingLevel ?? "medium";
-        const status = fastLevel && currentThinking === fastLevel ? "on" : "off";
-        if (arg === "status") {
-          const support = fastLevel ? `supported (thinking ${fastLevel})` : "unsupported";
-          console.log(`Fast mode: ${status} · ${support} · ${formatModelLine({ label: currentModel, resolved, provider })} · current thinking ${currentThinking}`);
-          continue;
-        }
-        if (arg === "on") {
-          if (!fastLevel) {
-            console.log(`Fast mode is not advertised for ${formatModelLine({ label: currentModel, resolved, provider })}; pick a thinking-capable model with /model.`);
-            continue;
-          }
-          sessionThinking = fastLevel;
-          console.log(`Fast mode on: ${formatModelLine({ label: currentModel, resolved, provider })} · thinking ${fastLevel} (~${thinkingMaxTokens(fastLevel)} max tokens/step)`);
-          continue;
-        }
-        if (arg === "off") {
-          sessionThinking = cfgNow.thinkingLevel ?? "medium";
-          console.log(`Fast mode off: restored thinking ${sessionThinking} (~${thinkingMaxTokens(sessionThinking)} max tokens/step)`);
-          continue;
-        }
-        console.log("Usage: /fast [on|off|status]");
+        const fastResult = await runFastSlash(input, {
+          sessionModel, sessionThinking, lastPickIndex,
+          getLiveModels, pickLiveProviderModel, setRoleThinking, pickFromOptions, pickThinkingLevel,
+        });
+        if (fastResult.sessionThinking !== undefined) sessionThinking = fastResult.sessionThinking;
+        if (fastResult.lastPickIndex !== undefined) lastPickIndex = fastResult.lastPickIndex;
         continue;
       }
       if (input.startsWith("/thinking") && (input === "/thinking" || input[9] === " ")) {
-        const arg = input.substring(9).trim().toLowerCase();
-        if (!arg) {
-          console.log(`Thinking level: ${sessionThinking ?? "medium"} (~${thinkingMaxTokens(sessionThinking)} max tokens/step)`);
-          continue;
-        }
-        if (arg === "minimal" || arg === "low" || arg === "medium" || arg === "high" || arg === "xhigh") {
-          sessionThinking = arg;
-          console.log(`Thinking set to ${arg} (~${thinkingMaxTokens(arg)} max tokens/step)`);
-        } else {
-          console.log(`Invalid level '${arg}'. Use: minimal | low | medium | high | xhigh.`);
-        }
+        const thinkingResult = await runThinkingSlash(input, {
+          sessionModel, sessionThinking, lastPickIndex,
+          getLiveModels, pickLiveProviderModel, setRoleThinking, pickFromOptions, pickThinkingLevel,
+        });
+        if (thinkingResult.sessionThinking !== undefined) sessionThinking = thinkingResult.sessionThinking;
+        if (thinkingResult.lastPickIndex !== undefined) lastPickIndex = thinkingResult.lastPickIndex;
         continue;
       }
       if (input.startsWith("/model") && (input === "/model" || input[6] === " ")) {
-        let arg = input.substring(6).trim();
-        // `/model save [id]` → persist the (session or given) model as the config default.
-        if (arg === "save" || arg.startsWith("save ")) {
-          let toSave = arg.slice(4).trim();
-          // Resolve `#N`/fuzzy through the same pick-list logic as `/model #N`, so we never
-          // persist a literal token like "#2" as defaultModel (which then fails to route).
-          if (toSave && lastPickIndex.length) {
-            const sel = resolveSelection(lastPickIndex, toSave);
-            if (sel.kind === "index" || sel.kind === "match") toSave = qualifyModelId(sel.entry.model, sel.entry.provider);
-            else if (sel.kind === "ambiguous") {
-              console.log(`'${toSave}' matches ${sel.matches.length} models — be more specific:`);
-              for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
-              continue;
-            } else if (sel.kind === "out-of-range") {
-              console.log(`#${toSave.slice(1)} is out of range (1-${sel.max}). Use /model first.`);
-              continue;
-            }
-            // kind "none" → treat `toSave` as a literal model id/alias.
-          } else if (toSave.startsWith("#")) {
-            console.log("Use /model first to build the numbered list.");
-            continue;
-          }
-          // Fall back to the FRESH on-disk default (not the stale session-start snapshot) so a
-          // bare `/model save` after a prior `/model save <id>` never reverts the saved default.
-          const finalSave = toSave || sessionModel || (await readGlobalConfig()).defaultModel;
-          await saveConfigPatch(raw => rememberModelPatch(raw, finalSave));
-          const { resolved, provider } = await describeModel(finalSave);
-          console.log(`Default model saved: ${formatModelLine({ label: finalSave, resolved, provider })} → ~/.jeo/config.json`);
-          continue;
-        }
-        const modelThinking = /^(?:thinking|think)(?:\s+(\S+))?$/i.exec(arg);
-        if (modelThinking) {
-          const level = (modelThinking[1] ?? "").toLowerCase();
-          if (!isThinkingLevel(level)) {
-            console.log("Usage: /model thinking <minimal|low|medium|high|xhigh>");
-            continue;
-          }
-          sessionThinking = level;
-          await saveConfigPatch(() => ({ thinkingLevel: level }));
-          console.log(`Default thinking set to ${level} (~${thinkingMaxTokens(level)} max tokens/step) → ~/.jeo/config.json`);
-          continue;
-        }
-        const statuses = await describeAllProviders();
-        const disabledModelProviders = statuses.filter(s => !s.ready && !selectableThoughNotReady(s)).map(s => s.name);
-        const roleMatch = /^(subagent|role)\s+(\S+)(?:\s+(.+))?$/i.exec(arg);
-        if (roleMatch) {
-          const role = getSubagentRole(roleMatch[2] ?? "", await readGlobalConfig());
-          if (!role) {
-            console.log("Usage: /model subagent <executor|planner|architect|critic> [model|#N]");
-            continue;
-          }
-          let roleModelArg = (roleMatch[3] ?? "").trim();
-          const roleThinking = /^(?:thinking|think)(?:\s+(\S+))?$/i.exec(roleModelArg);
-          if (roleThinking) {
-            console.log(`Subagent thinking is set via /agents — try: /agents ${role.id} thinking ${roleThinking[1] ?? "<level|inherit>"}  (or /agents edit). /model only sets the default thinking.`);
-            continue;
-          }
-
-          if (!roleModelArg && process.stdin.isTTY && process.stdout.isTTY) {
-            const live = await getLiveModels();
-            lastPickIndex = flattenModels(live);
-            if (lastPickIndex.length) {
-              const currentResolved = (await describeModel(resolveSubagentModel(role.id, await readGlobalConfig()))).resolved;
-              const picked = await pickLiveProviderModel(role.id, lastPickIndex, currentResolved, disabledModelProviders);
-              if (!picked) {
-                console.log("(cancelled)");
-                continue;
-              }
-              roleModelArg = qualifyModelId(picked.model, picked.provider);
-
-            }
-          }
-          if (roleModelArg && lastPickIndex.length) {
-            const sel = resolveSelection(lastPickIndex, roleModelArg);
-            if (sel.kind === "index" || sel.kind === "match") {
-              if (disabledModelProviders.includes(sel.entry.provider)) {
-                const bad = statuses.find(s => s.name === sel.entry.provider);
-                console.log(`Cannot select ${sel.entry.model}: ${sel.entry.provider} is not ready (${bad?.label ?? "not ready"}). Set ${bad?.envVar ?? "the provider key"} first.`);
-                continue;
-              }
-              roleModelArg = qualifyModelId(sel.entry.model, sel.entry.provider);
-
-            } else if (sel.kind === "ambiguous") {
-              console.log(`'${roleModelArg}' matches ${sel.matches.length} models — be more specific:`);
-              for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
-              continue;
-            } else if (sel.kind === "out-of-range") {
-              console.log(`#${roleModelArg.slice(1)} is out of range (1-${sel.max}). Use /model first.`);
-              continue;
-            }
-          } else if (roleModelArg.startsWith("#")) {
-            console.log("Use /model first to build the numbered list.");
-            continue;
-          }
-          if (roleModelArg) {
-            await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { model: roleModelArg }) }));
-            const { provider } = await describeModel(roleModelArg);
-            console.log(`${role.title} model set to ${roleModelArg} (${provider}) — saved to ~/.jeo/config.json. Set its thinking via /agents ${role.id} thinking <level> (or /agents edit).`);
-          } else {
-            const current = resolveSubagentModel(role.id, await readGlobalConfig());
-            const { resolved, provider } = await describeModel(current);
-            console.log(`${role.title} model: ${formatModelLine({ label: current, resolved, provider })}`);
-            const live = await getLiveModels();
-            lastPickIndex = flattenModels(live);
-            if (lastPickIndex.length) {
-              console.log(`Live models for ${role.title} — set with /model subagent ${role.id} #N:`);
-              for (const line of formatPickListWithCapabilities(lastPickIndex, { current: resolved, cap: 20 })) console.log(line);
-            }
-          }
-          continue;
-        }
-        let modelPickedFromSelector = false;
-        if (!arg && process.stdin.isTTY && process.stdout.isTTY) {
-          const live = await getLiveModels();
-          lastPickIndex = flattenModels(live);
-          if (lastPickIndex.length) {
-            const currentResolved = (await describeModel(sessionModel || defaultModel)).resolved;
-            const picked = await pickLiveProviderModel("live", lastPickIndex, currentResolved, disabledModelProviders);
-            if (!picked) {
-              console.log("(cancelled)");
-              continue;
-            }
-            arg = qualifyModelId(picked.model, picked.provider);
-            modelPickedFromSelector = true;
-          }
-        }
-        // Selection from the last numbered pick list (`#N`) or a fuzzy substring.
-        if (arg && lastPickIndex.length) {
-          const sel = resolveSelection(lastPickIndex, arg);
-          if (sel.kind === "index" || sel.kind === "match") {
-            if (disabledModelProviders.includes(sel.entry.provider)) {
-              const bad = statuses.find(s => s.name === sel.entry.provider);
-              console.log(`Cannot select ${sel.entry.model}: ${sel.entry.provider} is not ready (${bad?.label ?? "not ready"}). Set ${bad?.envVar ?? "the provider key"} first.`);
-              continue;
-            }
-            arg = qualifyModelId(sel.entry.model, sel.entry.provider);
-            modelPickedFromSelector = true;
-          } else if (sel.kind === "ambiguous") {
-            console.log(`'${arg}' matches ${sel.matches.length} models — be more specific:`);
-            for (const e of sel.matches.slice(0, 12)) console.log(`  #${e.index}  ${e.model} (${e.provider})`);
-            continue;
-          } else if (sel.kind === "out-of-range") {
-            console.log(`#${arg.slice(1)} is out of range (1-${sel.max}). Use /model first.`);
-            continue;
-          }
-          // kind "none" → fall through and treat `arg` as a literal model id/alias.
-        } else if (arg.startsWith("#")) {
-          console.log("Use /model first to build the numbered list.");
-          continue;
-        }
-        const label = arg || (sessionModel || defaultModel);
-        if (arg && modelPickedFromSelector && await applyPickedModelWithTarget(arg)) {
-          continue;
-        }
-        if (arg) {
-          sessionModel = arg;
-          // MRU persistence: picking a model IS saving it — the newest pick wins
-          // as the global default; recents keep the rotation for every session.
-          await saveConfigPatch(raw => rememberModelPatch(raw, arg));
-          await persistSessionModel();
-        }
-        const { resolved, provider } = await describeModel(label);
-        const st = statuses.find(s => s.name === provider);
-        console.log(`${arg ? "Model set to" : "Current model"}: ${formatModelLine({ label, resolved, provider, ready: st?.ready })}${arg ? " — saved as default" : ""}`);
-        if (st && !st.ready) console.log(`  ! ${provider} is not ready (${st.label}) — set ${st.envVar ?? "the provider key"} or run 'jeo setup'.`);
-        // ChatGPT OAuth only serves the Codex models; warn before the turn fails if the user
-        // pins a non-Codex id with no local base URL to fall back to (gjc-parity readiness guard).
-        if (arg && provider === "openai" && st?.kind === "oauth" && !CODEX_MODELS.includes(resolved)) {
-          const hasLocalBase = !!((await readGlobalConfig()).openaiBaseUrl || process.env.OPENAI_BASE_URL);
-          if (!hasLocalBase) {
-            console.log(`  ! ChatGPT OAuth serves only Codex models (${CODEX_MODELS.join(", ")}); '${resolved}' will be rejected at runtime — pick one of those, or set OPENAI_API_KEY / OPENAI_BASE_URL.`);
-          }
-        }
-        if (arg && liveModelsCache && resolved === label && !liveModelKnown(liveModelsCache, resolved)) {
-          console.log(`  (note: '${resolved}' is not in the live ${provider} catalog — use /model to pick a valid id)`);
-        }
-        const meta = catalogMetadata(resolved);
-        if (meta) console.log(`  ${formatCapabilityLine(meta)}`);
-        if (!arg) {
-          const recents = recentModelsForDisplay(await readGlobalConfig());
-          if (recents.length > 1) {
-            console.log("Recent models (newest first):");
-            recents.slice(0, 5).forEach((m, i) => console.log(`  ${i + 1}. ${m}${i === 0 ? "  ◀ default" : ""}`));
-          }
-          const live = await getLiveModels();
-          lastPickIndex = flattenModels(live);
-          console.log("Live models (logged-in providers) — set with /model #N:");
-          for (const line of formatPickListWithCapabilities(lastPickIndex, { current: resolved, cap: 20 })) console.log(line);
-        }
-        console.log("  (model picks persist automatically — newest selection is the default everywhere)");
+        const modelResult = await runModelSlash(input, {
+          sessionModel, sessionThinking, defaultModel, lastPickIndex, liveModelsCache,
+          isTTY: !!(process.stdin.isTTY && process.stdout.isTTY),
+          getLiveModels, applyPickedModelWithTarget, persistSessionModel, pickLiveProviderModel,
+        });
+        if (modelResult.sessionModel !== undefined) sessionModel = modelResult.sessionModel;
+        if (modelResult.sessionThinking !== undefined) sessionThinking = modelResult.sessionThinking;
+        if (modelResult.lastPickIndex !== undefined) lastPickIndex = modelResult.lastPickIndex;
         continue;
       }
       if (input.startsWith("/view") && (input === "/view" || input[5] === " ")) {

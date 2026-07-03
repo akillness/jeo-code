@@ -6,6 +6,11 @@
  * `subagent` control tool. Concurrency is real (JS event loop): a detached run's
  * awaits interleave with the parent's between steps.
  *
+ * Detached runs also support live steering (peer messaging) via `steer()` /
+ * `steerDrainFor()` — a running parent (or another subagent, via the `irc` tool)
+ * can push a message into a running detached subagent's inbox; the subagent's own
+ * agent loop drains it between steps, same mechanism as ordinary task steering.
+ *
  * Lifecycle is bounded to the turn that created the registry — `cancelAll()` on
  * turn teardown guarantees no background promise leaks into the next turn.
  */
@@ -34,13 +39,17 @@ interface Entry {
   abort: AbortController;
 }
 
-/** A detached run: receives its own AbortSignal and resolves to the subagent's
- *  final ToolResult. The runner is responsible for streaming live events itself. */
-export type DetachedRunner = (signal: AbortSignal) => Promise<ToolResult>;
+/** A detached run: receives its own AbortSignal and its own registry id, and
+ *  resolves to the subagent's final ToolResult. The `id` param lets a runner
+ *  wire up its own steer drain (e.g. `registry.steerDrainFor(id)`); runners that
+ *  don't need it can ignore the 2nd param. The runner is responsible for
+ *  streaming live events itself. */
+export type DetachedRunner = (signal: AbortSignal, id: string) => Promise<ToolResult>;
 
 export class SubagentRegistry {
   private readonly entries = new Map<string, Entry>();
   private readonly seq = new Map<string, number>();
+  private readonly steerInboxes = new Map<string, string[]>();
 
   /** Register and START a detached run; returns the (running) record immediately. */
   launch(role: string, task: string, runner: DetachedRunner): SubagentRecord {
@@ -55,9 +64,10 @@ export class SubagentRegistry {
       status: "running",
       startedAt: Date.now(),
     };
+    this.steerInboxes.set(id, []);
     const promise = (async () => {
       try {
-        const res = await runner(abort.signal);
+        const res = await runner(abort.signal, id);
         // A cancel that already fired wins — don't overwrite the terminal state.
         if (record.status === "cancelled") return;
         record.status = res.success ? "completed" : "failed";
@@ -69,6 +79,7 @@ export class SubagentRegistry {
         record.result = err instanceof Error ? err.message : String(err);
       } finally {
         if (record.finishedAt === undefined) record.finishedAt = Date.now();
+        this.steerInboxes.delete(id);
       }
     })();
     this.entries.set(id, { record, promise, abort });
@@ -105,6 +116,31 @@ export class SubagentRegistry {
       await all;
     }
     return targets.map(e => e.record);
+  }
+
+  /** Push a live message into a running id's steer inbox (parent → detached subagent,
+   *  or subagent → subagent via the `irc` tool). Returns false if the id is unknown,
+   *  not running, or the (trimmed) message is empty — true once queued. */
+  steer(id: string, message: string): boolean {
+    const rec = this.get(id);
+    if (!rec || rec.status !== "running") return false;
+    const trimmed = message.trim();
+    if (!trimmed) return false;
+    const inbox = this.steerInboxes.get(id);
+    if (!inbox) return false;
+    inbox.push(trimmed);
+    return true;
+  }
+
+  /** A drain closure bound to one id — splices its inbox to empty on each call.
+   *  Wire this into a detached runner's own agent-loop `steer` option so pending
+   *  messages are picked up between the subagent's own steps. */
+  steerDrainFor(id: string): () => string[] {
+    return () => {
+      const inbox = this.steerInboxes.get(id);
+      if (!inbox || inbox.length === 0) return [];
+      return inbox.splice(0, inbox.length);
+    };
   }
 
   /** Cancel the given ids (or all running, when empty): aborts the run and marks the

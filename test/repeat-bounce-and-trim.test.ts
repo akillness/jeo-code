@@ -10,6 +10,9 @@ test("repeat bounce: a 2nd identical write is SKIPPED with a corrective prompt; 
       // Steps 1+2: the model stubbornly repeats the same write. Step 3 runs only
       // if the engine bounced a correction instead of killing the turn.
       if (llmCalls <= 2) return JSON.stringify({ tool: "write", arguments: { filePath: "a.txt", content: "x" } });
+      // Step 3: satisfy the done-verification gate (the write above mutated files)
+      // so the final `done` below passes on its first attempt.
+      if (llmCalls === 3) return JSON.stringify({ tool: "bash", arguments: { command: "bun test" } });
       const corrected = history.some(m => m.role === "user" && m.content.includes("repeated the EXACT same"));
       return JSON.stringify({ tool: "done", arguments: { reason: corrected ? "finished after correction" : "no correction seen" } });
     },
@@ -21,7 +24,10 @@ test("repeat bounce: a 2nd identical write is SKIPPED with a corrective prompt; 
     cwd: process.cwd(),
     maxSteps: 10,
     budget: { maxExtensions: 0 },
-    tools: { write: async () => { writeRuns++; return { success: true, output: "ok" }; } },
+    tools: {
+      write: async () => { writeRuns++; return { success: true, output: "ok" }; },
+      bash: async () => ({ success: true, output: "1 pass 0 fail" }),
+    },
   });
   expect(result.done).toBe(true);
   expect(result.doneReason).toBe("finished after correction");

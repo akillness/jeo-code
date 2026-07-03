@@ -15,6 +15,12 @@ import { nativeToolSchemasFor, normalizeNativeToolName } from "./tool-schemas";
 import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, mkdirTool, deleteTool, type ToolResult } from "./tools";
 import { webSearchTool, setWebSearchActiveModel } from "./web-search";
 import { executeComputerAction } from "../commands/computer";
+import { computerSupervisor } from "./computer-supervisor";
+import { createAstGrepTool } from "./ast-grep-tool";
+import { createAstEditTool } from "./ast-edit-tool";
+import { createLspTool } from "./lsp-tool";
+import { createLspRenameTool } from "./lsp-rename-tool";
+import { createDebugTool } from "./debug-tool";
 import { isRateLimitError, waitAbortable } from "../util/retry";
 import { isContextOverflowError, isRefusalError, friendlyProviderError } from "../util/provider-error";
 import { runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
@@ -82,7 +88,21 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
   mkdir: (a, cwd) => mkdirTool(a.dirPath ?? a.path ?? a.dir, cwd),
   delete: (a, cwd) => deleteTool(a.path ?? a.filePath ?? a.targetPath ?? a.dirPath, cwd, !!(a.recursive ?? a.r)),
   web_search: (a, cwd) => webSearchTool(a, cwd),
-  computer: (a) => executeComputerAction(a as any),
+  // Interactive-loop parity with the one-shot `jeo computer` CLI (see
+  // src/commands/computer.ts's runComputerCommand): arm the fail-closed
+  // supervisor and refresh its heartbeat immediately before EVERY call, so the
+  // kill-switch/heartbeat gate inside executeComputerAction passes for an
+  // actively-invoked tool call — it is never "always on" between calls.
+  computer: (a) => {
+    computerSupervisor.setKillSwitchLive(true);
+    computerSupervisor.heartbeat();
+    return executeComputerAction(a as any);
+  },
+  ast_grep: createAstGrepTool(),
+  ast_edit: createAstEditTool(),
+  lsp: createLspTool(),
+  lsp_rename: createLspRenameTool(),
+  debug: createDebugTool(),
 };
 /** Tool-protocol description injected into the system prompt. */
 export const TOOL_PROTOCOL = [
@@ -98,7 +118,12 @@ export const TOOL_PROTOCOL = [
   "9. delete {path, recursive?}          — remove a file (or directory with recursive:true)",
   "10. web_search {query, recency?, limit?} — search the web (Anthropic-native: synthesized answer + sources + citations)",
   "11. computer {action, x?, y?, text?, key?, deltaX?, deltaY?, duration?, actions?} — execute desktop automation actions (screenshot, click, double_click, move, drag, scroll, type, keypress, wait, batch)",
-  "12. done   {reason?}                  — call when the task is fully implemented AND verified",
+  "12. ast_grep {pattern, paths} — structural TypeScript/JavaScript search: $NAME captures one node (repeats must match identical code), $_ is a wildcard node, $$$NAME/$$$ capture/ignore zero-or-more sibling nodes in a list (call args, statements, class members, ...)",
+  "13. ast_edit {pattern, replacement, paths} — structural TypeScript/JavaScript rewrite; same pattern metavariables, 'replacement' substitutes $NAME/$$$NAME with captured text (empty replacement deletes matches)",
+  "14. lsp {action, file, line?, symbol?} — TypeScript/JavaScript language-service queries (definition/references/hover/symbols/diagnostics); 'symbol' resolves the column on 'line' (append #N for the Nth occurrence)",
+  "15. lsp_rename {file, line, symbol?, new_name, apply?} — cross-file TypeScript/JavaScript rename (apply defaults true; apply:false previews only)",
+  "16. debug {action, ...} — Node.js debugging (launch/set_breakpoint/continue/step_over/step_in/step_out/pause/evaluate/stack_trace/scopes/variables/threads/output/terminate); one active session, 'launch' spawns 'node --inspect-brk' and pauses at start",
+  "17. done   {reason?}                  — call when the task is fully implemented AND verified",
   "",
   "Reply with STRICT JSON only — no code fences. You MAY include an optional leading",
   '"reasoning" string (one short sentence on your plan) before "tool":',
@@ -120,9 +145,11 @@ export const READONLY_TOOL_PROTOCOL = [
   "1. read   {filePath, lineRange?}      — read a file (lineRange: \"a-b\", \"a-\", \"a\", \"a+n\", or multi \"a-b,c-d\")",
   "2. find   {globPattern}               — find files by name",
   "3. search {pattern, globPattern?, ignoreCase?} — grep for a pattern",
-  "4. ls     {dirPath}                   — list a directory's entries",
-  "5. web_search {query, recency?, limit?} — search the web (answer + sources + citations)",
-  "6. done   {reason?}                   — call when your review/analysis is complete",
+  "4. ast_grep {pattern, paths} — structural TypeScript/JavaScript search ($NAME/$_/$$$NAME metavariables — see ast_grep for full syntax)",
+  "5. lsp {action, file, line?, symbol?} — TypeScript/JavaScript definition/references/hover/symbols/diagnostics (read-only; cross-file rename is not available to this role)",
+  "6. ls     {dirPath}                   — list a directory's entries",
+  "7. web_search {query, recency?, limit?} — search the web (answer + sources + citations)",
+  "8. done   {reason?}                   — call when your review/analysis is complete",
   "",
   "Reply with STRICT JSON only — no prose, no code fences:",
   '{ "tool": "<name>", "arguments": { ... } }',
@@ -441,6 +468,13 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   let lastMutationSeq = 0;
   let lastVerificationSeq = 0;
   let donePushbackUsed = false;
+  // Abuse guard for the done-pushback escape hatch: the "second done always
+  // passes" latch below is meant for turns where verification is genuinely
+  // not applicable (docs/config-only changes) — not for a model that just
+  // resends `done` immediately with zero intervening action. Reset to false
+  // when the first pushback fires; any executed tool step (even read-only)
+  // sets it back to true, so the escape hatch requires at least one attempt.
+  let sawActionSincePushback = true;
   // Caller-owned done gate (onBeforeDone) — also strictly once per turn.
   let beforeDoneNudgeUsed = false;
   // F1 (round 4): the run-command of the most recent post-turn hook FAILURE whose
@@ -806,12 +840,32 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         verificationStale: sawMutation && lastMutationSeq > lastVerificationSeq,
         pendingHookFailure,
       });
-      if (doneGate.block && !donePushbackUsed) {
-        donePushbackUsed = true; // second done always passes — escape hatch
-        pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
-        history.push({ role: "user", content: doneGate.message });
-        step++;
-        continue;
+      if (doneGate.block) {
+        if (!donePushbackUsed) {
+          donePushbackUsed = true;
+          sawActionSincePushback = false; // require a real attempt before the 2nd done is honored
+          pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
+          history.push({ role: "user", content: doneGate.message });
+          step++;
+          continue;
+        }
+        if (!sawActionSincePushback) {
+          // Abuse guard: the model re-sent `done` immediately with zero intervening
+          // tool calls — not the intended "verification genuinely not applicable"
+          // escape hatch. Bounce once more instead of silently accepting it.
+          pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
+          history.push({
+            role: "user",
+            content:
+              `${doneGate.message}\n\nYou called 'done' again without taking any further action. ` +
+              `Either run the relevant verification (test/build/lint) or take another concrete step, ` +
+              `then call done — do not resend 'done' unchanged.`,
+          });
+          step++;
+          continue;
+        }
+        // donePushbackUsed && sawActionSincePushback: the model made at least one
+        // real attempt since the pushback — honor the escape hatch.
       }
       // Caller-owned done gate (e.g. stale-todo reconciliation): ONE bounded
       // bounce, then any later done passes — field case: a 28-step turn ended
@@ -1173,7 +1227,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     // here, so this always holds the last REAL execution's results.
     lastResults = results;
     // Executed tool step = progress: the stall budget clocks time WITHOUT this.
-    if (results.some(r => r.executed)) lastProgressAt = Date.now();
+    if (results.some(r => r.executed)) {
+      lastProgressAt = Date.now();
+      sawActionSincePushback = true; // any real step after a pushback re-enables the done escape hatch
+    }
     step++;
   }
 

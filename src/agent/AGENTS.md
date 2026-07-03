@@ -9,6 +9,15 @@ The core runtime loop, tool registry, session management, and state persistence 
 ## Key Files
 | File | Description |
 |------|-------------|
+| `ast-match.ts` | Structural AST metavariable matcher for TypeScript/JavaScript (gjc `ast_grep`/`ast_edit` parity) — `$NAME`/`$_`/`$$$NAME`/`$$$` pattern matching over the `typescript` compiler API's AST, plus replacement-template rendering |
+| `ast-file-scan.ts` | Shared file targeting (files/dirs/globs, gitignore + ignored-dir aware) for `ast_grep`/`ast_edit` |
+| `ast-grep-tool.ts` | `ast_grep` tool — read-only structural code search using `ast-match.ts` |
+| `ts-language-service.ts` | Cached in-process `ts.LanguageService` per project root (gjc `lsp` parity, TS/JS only) — tsconfig-aware root file discovery with a whole-tree fallback, live file-version tracking via stat, and position/selector resolution helpers shared by `lsp-tool.ts`/`lsp-rename-tool.ts` |
+| `lsp-tool.ts` | `lsp` tool — read-only definition/references/hover/symbols/diagnostics via `ts-language-service.ts` |
+| `debug-session.ts` | In-process CDP (V8 Inspector Protocol) client driving a spawned `node --inspect-brk` process (gjc `debug` parity, Node.js only — not Bun, whose inspector speaks a different WebKit dialect); one active session, singleton |
+| `debug-tool.ts` | `debug` tool — launch/set_breakpoint/continue/step/evaluate/stack_trace/scopes/variables/threads/output/terminate via `debug-session.ts`; mutating (runs arbitrary code), excluded from read-only roles |
+| `lsp-rename-tool.ts` | `lsp_rename` tool — cross-file TypeScript/JavaScript rename; mutating, writes via `writeTool`, kept separate from `lsp` so read-only roles can't reach it |
+| `ast-edit-tool.ts` | `ast_edit` tool — structural codemod using `ast-match.ts`; mutating, writes via `writeTool` |
 | `bash-fixups.ts` | Brief description of purpose |
 | `compaction.ts` | Brief description of purpose |
 | `config-schema.ts` | Brief description of purpose |
@@ -30,6 +39,9 @@ The core runtime loop, tool registry, session management, and state persistence 
 | `session.ts` | Session context building, compaction, and history management |
 | `state.ts` | File-backed state and session persistence (`.jeo/state/`) |
 | `step-budget.ts` | gjc-style flexible step budgeting: progress-scored extensions, hard cap, fail-fast |
+| `irc-tool.ts` | `irc` tool — parent/peer live messaging into running DETACHED subagents (list peers, send to one id or "all"); built entirely on `SubagentRegistry.steer()`, gjc `irc` parity |
+| `job-registry.ts` | In-process registry for BACKGROUND shell processes spawned via `job {action:"start"}` — real parallel OS processes (not just concurrent JS), bounded output buffer, list/tail/awaitIds/cancel, gjc `job`/async-bash parity |
+| `job-tool.ts` | `job` control tool — start/list/tail/await/cancel background shell processes tracked by `job-registry.ts` |
 | `subagent-registry.ts` | Brief description of purpose |
 | `subagent-tool.ts` | Brief description of purpose |
 | `subagents.ts` | Brief description of purpose |

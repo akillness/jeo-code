@@ -14,7 +14,8 @@ import {
   newSessionId,
   renameSession,
   updateSessionModel,
-  deleteSession
+  deleteSession,
+  resolveSessionRef
 } from "../src/agent/session";
 
 test("session lifecycle and logic with custom cwd", async () => {
@@ -301,6 +302,53 @@ test("per-session model: createSession persists it, loadSession + listSessions r
       threw = true;
     }
     expect(threw).toBe(true);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("resolveSessionRef: exact match, unique prefix, ambiguous prefix, not-found, empty string", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-sess-resolve-"));
+  try {
+    // Two sessions sharing a common prefix, one with a unique-from-the-start id.
+    const idShared1 = "abcdef00-0000-0000-0000-000000000001";
+    const idShared2 = "abcdef11-0000-0000-0000-000000000002";
+    const idUnique = "zzzzzz00-0000-0000-0000-000000000003";
+    await createSession(tempDir, idShared1);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await createSession(tempDir, idShared2);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await createSession(tempDir, idUnique);
+
+    // 1. Exact match wins immediately (fast path), even though it also happens
+    //    to be a prefix of idShared2.
+    const exact = await resolveSessionRef(idShared1, tempDir);
+    expect(exact).toEqual({ kind: "ok", id: idShared1 });
+
+    // 2. Unique prefix match.
+    const uniquePrefix = await resolveSessionRef("zzzzzz", tempDir);
+    expect(uniquePrefix).toEqual({ kind: "ok", id: idUnique });
+
+    // 3. Ambiguous prefix (2+ sessions share it).
+    const ambiguous = await resolveSessionRef("abcdef", tempDir);
+    expect(ambiguous.kind).toBe("ambiguous");
+    if (ambiguous.kind === "ambiguous") {
+      expect(ambiguous.matches.sort()).toEqual([idShared1, idShared2].sort());
+    }
+
+    // 4. No match.
+    const notFound = await resolveSessionRef("does-not-exist", tempDir);
+    expect(notFound).toEqual({ kind: "not-found" });
+
+    // 5. Empty string.
+    const empty = await resolveSessionRef("", tempDir);
+    expect(empty).toEqual({ kind: "not-found" });
+    const whitespaceOnly = await resolveSessionRef("   ", tempDir);
+    expect(whitespaceOnly).toEqual({ kind: "not-found" });
+
+    // 6. Case-insensitive prefix match.
+    const caseInsensitive = await resolveSessionRef("ZZZZZZ", tempDir);
+    expect(caseInsensitive).toEqual({ kind: "ok", id: idUnique });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

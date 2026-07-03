@@ -6,6 +6,9 @@ export interface LaunchFlags {
   list: boolean;
   resume: boolean;
   resumeId?: string;
+  /** True when `--resume`/`-r` was given with NO value at cold startup (gjc-parity):
+   *  triggers the interactive session picker instead of silently resuming latest. */
+  resumeInteractive: boolean;
   noSession: boolean;
   noTui: boolean;
   /** Explicit step cap from --max-steps; 0 = dynamic (process-driven budget that
@@ -63,9 +66,9 @@ export function fastThinkingLevelForModel(modelId: string): ThinkLevel | undefin
 }
 
 export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchFlags {
-  const flags: LaunchFlags = { list: false, resume: false, noSession: false, noTui: false, maxSteps: 0, message: "", tmux: false, errors: [], print: false, noSkills: false, noTools: false };
+  const flags: LaunchFlags = { list: false, resume: false, resumeInteractive: false, noSession: false, noTui: false, maxSteps: 0, message: "", tmux: false, errors: [], print: false, noSkills: false, noTools: false };
   const rest: string[] = [];
-  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--") {
@@ -115,22 +118,37 @@ export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchF
       i = nextIndex;
     } else if (a === "--smol" || a === "--slow" || a === "--plan") {
       flags.modelRole = a.slice(2) as ModelRole;
-    } else if (a === "--resume" || a === "--continue" || a === "-c") {
+    } else if (a === "--continue" || a === "-c") {
+      // Always silently resume the MOST RECENT session (gjc-parity: no picker for --continue/-c).
       flags.resume = true;
+      flags.resumeInteractive = false;
       const next = args[i + 1];
-      if (next && UUID_REGEX.test(next)) {
+      if (next && !next.startsWith("-")) {
         flags.resumeId = next;
         i++;
       }
-    } else if (a.startsWith("--resume=") || a.startsWith("--continue=") || a.startsWith("-c=")) {
+    } else if (a.startsWith("--continue=") || a.startsWith("-c=")) {
       flags.resume = true;
+      flags.resumeInteractive = false;
       const eqIdx = a.indexOf("=");
-      const val = a.slice(eqIdx + 1);
-      if (UUID_REGEX.test(val)) {
-        flags.resumeId = val;
+      flags.resumeId = a.slice(eqIdx + 1);
+    } else if (a === "--resume" || a === "-r") {
+      // gjc-parity: value present -> resolve as id/prefix directly; no value -> interactive picker.
+      flags.resume = true;
+      const next = args[i + 1];
+      if (next && !next.startsWith("-")) {
+        flags.resumeId = next;
+        flags.resumeInteractive = false;
+        i++;
       } else {
-        rest.push(val);
+        flags.resumeId = undefined;
+        flags.resumeInteractive = true;
       }
+    } else if (a.startsWith("--resume=")) {
+      flags.resume = true;
+      flags.resumeInteractive = false;
+      const eqIdx = a.indexOf("=");
+      flags.resumeId = a.slice(eqIdx + 1);
     } else if (a === "--append-system-prompt" || a.startsWith("--append-system-prompt=")) {
       const { value, nextIndex } = takeValue(args, i, "--append-system-prompt=");
       if (value) flags.appendSystemPromptRaw = value;

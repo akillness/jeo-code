@@ -1,11 +1,13 @@
 /**
  * `subagent` control tool (#9) — the parent's handle on DETACHED subagents launched
  * via `task {detached:true}`. Mirrors gjc's `subagent`/`job` control surface, scoped
- * to an in-process registry: list, inspect, await (optionally bounded), and cancel.
+ * to an in-process registry: list, inspect, await (optionally bounded), cancel, and
+ * steer (live peer messaging into a single running subagent).
  *
- * Out of scope here (separate subsystems, not stubbed): live peer messaging (IRC)
- * and pause/resume — a step-budget loop has no safe mid-step checkpoint to resume
- * from, so those are intentionally absent rather than faked.
+ * Out of scope here (a separate subsystem, not stubbed): pause/resume — a step-budget
+ * loop has no safe mid-step checkpoint to resume from, so that remains intentionally
+ * absent rather than faked. Live peer messaging to/among ALL running subagents (not
+ * just one target id) is the `irc` tool, built on the same registry.steer().
  */
 import type { ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";
@@ -13,9 +15,10 @@ import type { SubagentRegistry, SubagentRecord } from "./subagent-registry";
 
 /** One-line protocol description appended to the launch system prompt. */
 export const SUBAGENT_TOOL_PROTOCOL_LINE =
-  `subagent {action:"list"|"inspect"|"await"|"cancel", ids?, timeoutMs?} — control DETACHED ` +
+  `subagent {action:"list"|"inspect"|"await"|"cancel"|"steer", ids?, id?, message?, timeoutMs?} — control DETACHED ` +
   `subagents started with task{detached:true}. 'await' blocks (optionally up to timeoutMs ms) and ` +
-  `returns their reports; 'inspect' shows status + result; 'cancel' aborts them. Omit ids to target all running.`;
+  `returns their reports; 'inspect' shows status + result; 'cancel' aborts them; 'steer' sends {id, message} ` +
+  `to inject a live instruction into that ONE running subagent, picked up before its next step. Omit ids to target all running (list/inspect/await/cancel).`;
 
 function elapsed(rec: SubagentRecord): string {
   const end = rec.finishedAt ?? Date.now();
@@ -84,6 +87,23 @@ export function createSubagentTool(registry: SubagentRegistry): ToolHandler {
       return { success: true, output: `Cancelled ${recs.length} subagent(s):\n${recs.map(rowLine).join("\n")}` };
     }
 
-    return { success: false, output: "", error: `Unknown subagent action '${action}'. Use list | inspect | await | cancel.` };
+    if (action === "steer") {
+      const targetIds = Array.isArray(args.id) ? [] : args.id !== undefined ? [String(args.id)] : [];
+      const message = typeof args.message === "string" ? args.message : typeof args.text === "string" ? args.text : "";
+      if (targetIds.length !== 1) {
+        return { success: false, output: "", error: `subagent 'steer' requires exactly one target 'id' (a single string, not 'ids'). Got: ${JSON.stringify(args.id)}.` };
+      }
+      const id = targetIds[0]!;
+      if (!message.trim()) {
+        return { success: false, output: "", error: "subagent 'steer' requires a non-empty 'message' (or 'text')." };
+      }
+      const ok = registry.steer(id, message);
+      if (!ok) {
+        return { success: false, output: "", error: `Cannot steer '${id}': no running subagent with that id.` };
+      }
+      return { success: true, output: `Steered ${id}: ${message.trim()}` };
+    }
+
+    return { success: false, output: "", error: `Unknown subagent action '${action}'. Use list | inspect | await | cancel | steer.` };
   };
 }

@@ -78,6 +78,27 @@ const MAX_FANOUT = 4;
  *  parent turn. Split larger efforts into sequential task calls. */
 const MAX_SERIAL_EXECUTOR = 6;
 
+/** Minimum distinct, non-filler words a spawn-gate justification must contain.
+ *  A bare length check (`.length >= 20`) previously accepted any 20-char string
+ *  ("xxxxxxxxxxxxxxxxxxxx", "asdf asdf asdf asdf"), which defeated the intent of
+ *  the gate (force the model to actually justify the parallelism, not just pay a
+ *  cheap toll). This does not attempt real NLP — it only rejects the trivially
+ *  degenerate cases a model would use to rubber-stamp past the gate. */
+const JUSTIFICATION_MIN_DISTINCT_WORDS = 4;
+
+/** True when `text` reads as an actual justification rather than filler padding
+ *  used only to clear the ≥20-char length bar. */
+function isMeaningfulJustification(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < 20) return false;
+  // Reject strings that are one character (or one repeated short token) padded out —
+  // e.g. "xxxxxxxxxxxxxxxxxxxx" or "aaaa aaaa aaaa aaaa".
+  if (/^(.)\1*$/.test(trimmed.replace(/\s+/g, ""))) return false;
+  const words = trimmed.toLowerCase().match(/[a-z0-9']+/g) ?? [];
+  const distinct = new Set(words);
+  return distinct.size >= JUSTIFICATION_MIN_DISTINCT_WORDS;
+}
+
 /** Broadcast steering hub for a fan-out batch. Each concurrent worker registers
  *  ONCE and then sees every parent steer message exactly once (append-only log +
  *  per-worker cursor), so a mid-batch redirect reaches all running subagents
@@ -320,13 +341,13 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       // stays bounded at MAX_FANOUT (read-only) or 1 (mutating) regardless.
       if (items.length > MAX_FANOUT) {
         const justification = typeof args.justification === "string" ? args.justification.trim() : "";
-        if (justification.length < 20) {
+        if (!isMeaningfulJustification(justification)) {
           return {
             success: false,
             output: "",
             error:
               `Fan-out of ${items.length} tasks exceeds the default gate of ${MAX_FANOUT}. ` +
-              `Either reduce the batch, or resend with a "justification" string (≥20 chars) explaining why these tasks are independent and must run in one batch.`,
+              `Either reduce the batch, or resend with a "justification" string (≥20 chars, ≥${JUSTIFICATION_MIN_DISTINCT_WORDS} distinct words, not filler) explaining why these tasks are independent and must run in one batch.`,
           };
         }
       }
@@ -371,10 +392,11 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     }
     // Detached form (#9): register a background run and return immediately so the
     // parent can keep working, then list/inspect/await/cancel via the `subagent`
-    // tool. Steering is not forwarded to a detached run (no single active drainer).
+    // tool. Live peer messaging (steer/irc) DOES reach a detached run — it drains
+    // its own registry inbox (registry.steerDrainFor(id)) between its own steps.
     if (args.detached === true && opts.registry) {
-      const rec = opts.registry.launch(role.id, taskText, signal =>
-        runOne(role, taskText, ctx(args.context), cwd, { signal }),
+      const rec = opts.registry.launch(role.id, taskText, (signal, id) =>
+        runOne(role, taskText, ctx(args.context), cwd, { signal, steer: opts.registry!.steerDrainFor(id) }),
       );
       return {
         success: true,

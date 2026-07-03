@@ -50,10 +50,22 @@ test("write after external change is rejected once (clobber protection)", async 
   await fs.rm(dir, { recursive: true, force: true });
 });
 
-test("edit without a prior read is not guarded (back-compat)", async () => {
+test("edit against an existing, never-read file is rejected (read-first enforced)", async () => {
   const dir = await tmp();
   await fs.writeFile(path.join(dir, "free.ts"), "x\ny\n");
   const res = await editTool("free.ts", "≔1\nz", dir);
+  expect(res.success).toBe(false);
+  expect(res.error).toContain("no prior read this session");
+  // Reading it first clears the guard.
+  await readTool("free.ts", undefined, dir);
+  const retry = await editTool("free.ts", "≔1\nz", dir);
+  expect(retry.success).toBe(true);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("write creating a brand-new file is not guarded (nothing to have read)", async () => {
+  const dir = await tmp();
+  const res = await writeTool("brand-new.ts", "hello", dir);
   expect(res.success).toBe(true);
   await fs.rm(dir, { recursive: true, force: true });
 });
@@ -74,6 +86,7 @@ test("SEARCH mismatch re-presents current content near the anchor (one-retry rec
   const dir = await tmp();
   const body = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n");
   await fs.writeFile(path.join(dir, "s.ts"), body.replace("line 20", "function target() { real(); }"));
+  await readTool("s.ts", undefined, dir);
   const res = await editTool(
     "s.ts",
     "<<<<<<< SEARCH\nfunction target() { WRONG(); }\n=======\nfunction target() { fixed(); }\n>>>>>>>",

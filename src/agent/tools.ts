@@ -226,7 +226,7 @@ function excerptForRecovery(content: string, centerLine?: number): string {
  *  Refreshes the snapshot to CURRENT so the immediate retry (model just saw fresh content) passes. */
 async function staleReadError(absPath: string, filePath: string, verb: string): Promise<ToolResult | null> {
   const snap = lastReadSnapshots.get(absPath);
-  if (!snap) return null; // never read → no guard (back-compat; read-first is advisory)
+  if (!snap) return null; // never read → no guard here (see the narrow blind-replace guard in editTool)
   const st = await fs.stat(absPath).catch(() => null);
   if (!st || !st.isFile()) return null; // deleted/replaced-by-dir: let the op surface its own error
   if (st.mtimeMs === snap.mtimeMs && st.size === snap.size) return null;
@@ -509,6 +509,24 @@ export async function editTool(
             error: `Invalid edit range ${startLine}..${endLine}: out of bounds or reversed (file has ${lines.length} lines)`,
           };
         }
+        // Narrow blind-replace guard: a ≔A..B REPLACE with NO anchors on EITHER
+        // bound carries zero content verification (SEARCH/REPLACE self-verifies via
+        // the search text matching; an anchored ≔ self-verifies via the hash). If the
+        // agent never read this file THIS SESSION, it has nothing to base a blind
+        // line-range replace on — reject instead of silently overwriting unseen lines.
+        // (Insert/append directives above are unaffected: they don't destroy content.
+        // Checked AFTER the bounds check so an out-of-range request still reports as
+        // out-of-range rather than being masked by this guard.)
+        if (!aStart && !aEnd && !lastReadSnapshots.has(absPath)) {
+          return {
+            success: false,
+            output: "",
+            error:
+              `Edit rejected: ${filePath} — a line-range replace with no anchors and no prior read this session ` +
+              `has nothing to verify against. Read the file first, then retry (or include the hashline anchors ` +
+              `from read output, or use a <<<<<<< SEARCH block instead).`,
+          };
+        }
         const mismatch = anchorMismatch(s, aStart) ?? anchorMismatch(e, aEnd);
         if (mismatch) return mismatch;
         lines.splice(s - 1, e - s + 1, payload);
@@ -647,6 +665,47 @@ async function drainPipe(
   return out;
 }
 
+// ── Destructive-bash hard block (applies to EVERY bash call, main agent and
+// subagent alike — including the bundled `executor` role, whose bash is
+// otherwise unconstrained since `bashAllowedPrefixes` is an opt-in allowlist
+// no bundled role sets). This is a narrow denylist for unambiguously
+// catastrophic, effectively-irreversible commands, not a general policy
+// filter — everyday destructive-but-scoped commands (rm -rf node_modules,
+// git reset --hard, force-push) stay unconstrained by design. ──
+function stripLeadingSudo(tokens: string[]): string[] {
+  return tokens[0] === "sudo" ? tokens.slice(1) : tokens;
+}
+
+/** True for `rm -rf /`, `rm -fr ~`, `sudo rm -Rf /`, etc. — a recursive,
+ *  forced delete whose target normalizes to the filesystem root or the home
+ *  directory. Scoped deletes (`rm -rf ./dist`, `rm -rf /tmp/x`) are untouched. */
+function isRootOrHomeWipe(command: string): boolean {
+  for (const raw of command.split(/(?:&&|\|\||[;|])/)) {
+    const tokens = stripLeadingSudo(raw.trim().split(/\s+/).filter(Boolean));
+    if (tokens.length === 0) continue;
+    const cmd = tokens[0].replace(/^.*\//, "");
+    if (cmd !== "rm") continue;
+    const flagTokens = tokens.slice(1).filter(t => t.startsWith("-"));
+    const flags = flagTokens.join("");
+    if (!/r/i.test(flags) || !/f/i.test(flags)) continue;
+    const targets = tokens.slice(1).filter(t => !t.startsWith("-"));
+    for (const t of targets) {
+      const norm = t.replace(/\/+$/, "");
+      if (norm === "" || norm === "/" || norm === "~" || norm === "$HOME" || norm === "${HOME}") return true;
+    }
+  }
+  return false;
+}
+
+/** Returns a short human-readable reason when `command` matches a catastrophic,
+ *  effectively-irreversible pattern; null when it does not. */
+function bashDestructiveReason(command: string): string | null {
+  if (isRootOrHomeWipe(command)) return "a recursive force-delete of the filesystem root or home directory (rm -rf / or ~)";
+  if (/:\(\)\s*\{\s*:\s*\|\s*:&?\s*;?\s*\}\s*;\s*:/.test(command)) return "a fork-bomb pattern";
+  if (/\bdd\b[^\n]*\bof=\/dev\/(disk|[rs]?[hsv]d[a-z]?|nvme\w*|xvd\w*)/i.test(command)) return "a raw disk-device overwrite (dd ... of=/dev/...)";
+  if (/\bmkfs(?:\.\w+)?\s+.*\/dev\//i.test(command)) return "a filesystem format on a raw device (mkfs)";
+  return null;
+}
 export async function bashTool(
   command: string,
   cwd: string = process.cwd(),
@@ -659,6 +718,14 @@ export async function bashTool(
   if (jeoEnv("BASH_FIXUPS") === "1") {
     const fx = applyBashFixups(command);
     command = fx.command;
+  }
+  const destructive = bashDestructiveReason(command);
+  if (destructive) {
+    return {
+      success: false,
+      output: "",
+      error: `bash rejected: this command looks like ${destructive}. If this is genuinely intended, ask the user to run it manually — it is not permitted from the agent.`,
+    };
   }
   try {
     // The mutation lock is keyed on the PROJECT cwd, not the run subdir.

@@ -577,3 +577,24 @@ test("currentTmuxClipboardCommands: in-session clipboard repair targets the CURR
   // JEO_TMUX_PROFILE=0 opts out of the clipboard repair entirely.
   expect(currentTmuxClipboardCommands({ JEO_TMUX_PROFILE: "0" }, { platform: "darwin", which })).toEqual([]);
 });
+
+// gjc launch-tmux parity (#1376): a DETACHED new-session defaults to 80x24, so the
+// inner jeo's first frames render mis-wrapped until attach. The launch path sizes the
+// session to the caller terminal via -x/-y and re-asserts with resize-window pre-attach.
+test("callerTmuxTerminalSize: TTY with known dimensions → size; non-TTY or bogus dims → undefined", async () => {
+  const { callerTmuxTerminalSize } = await import("../src/commands/launch/tmux");
+  expect(callerTmuxTerminalSize({ isTTY: true, columns: 178, rows: 35 })).toEqual({ columns: 178, rows: 35 });
+  // Not a TTY → never size (matches the attach guard: attach would fail anyway).
+  expect(callerTmuxTerminalSize({ isTTY: false, columns: 178, rows: 35 })).toBeUndefined();
+  // Unknown / invalid dimensions → undefined (tmux falls back to its default).
+  expect(callerTmuxTerminalSize({ isTTY: true })).toBeUndefined();
+  expect(callerTmuxTerminalSize({ isTTY: true, columns: 0, rows: 35 })).toBeUndefined();
+  expect(callerTmuxTerminalSize({ isTTY: true, columns: 178, rows: -1 })).toBeUndefined();
+  expect(callerTmuxTerminalSize({ isTTY: true, columns: 120.5, rows: 30 })).toBeUndefined();
+});
+
+test("tmuxNewSessionSizeArgs: emits -x/-y for a known size and nothing when unknown", async () => {
+  const { tmuxNewSessionSizeArgs } = await import("../src/commands/launch/tmux");
+  expect(tmuxNewSessionSizeArgs({ columns: 178, rows: 35 })).toEqual(["-x", "178", "-y", "35"]);
+  expect(tmuxNewSessionSizeArgs(undefined)).toEqual([]);
+});

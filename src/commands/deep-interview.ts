@@ -128,6 +128,13 @@ function freezeReadiness(parsed: SocraticResponse | undefined): { ok: boolean; r
   return { ok: true };
 }
 
+/** Normalize a question for repeat detection: case-, whitespace-, and trailing-
+ *  punctuation-insensitive so the SAME question re-asked with trivial formatting
+ *  drift still registers as a repeat. */
+function normalizeQuestion(q: string): string {
+  return q.toLowerCase().replace(/\s+/g, " ").replace(/[\s?.!…。？！]+$/g, "").trim();
+}
+
 function slugify(input: string): string {
   return input
     .toLowerCase()
@@ -499,7 +506,8 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
           `}\n` +
           `Ensure ambiguityScore drops dynamically as more detail is gathered. Do not report ambiguityScore <= ${threshold} unless acceptance_criteria is populated with concrete, testable checks.\n` +
           `Do not fill an ambiguous point with your own convenient assumption to push the score down — surface that assumption as the nextQuestion instead. Never supply unstated detail that makes the request look simpler or safer than the user actually wrote it.\n` +
-          `Conversely, when the user's answers genuinely resolve a dimension, lower the score accordingly — do not keep a dimension ambiguous just to prolong the interview. If you notice yourself quietly narrowing the user's idea to make it easier to score, that narrowing is the signal the dimension is still open: ask, don't assume.`
+          `Conversely, when the user's answers genuinely resolve a dimension, lower the score accordingly — do not keep a dimension ambiguous just to prolong the interview. If you notice yourself quietly narrowing the user's idea to make it easier to score, that narrowing is the signal the dimension is still open: ask, don't assume.\n` +
+          `Never re-ask a question that was already asked and answered — every round must target a NEW gap or a different dimension.`
       },
       {
         role: "user",
@@ -568,6 +576,12 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
     let round = 1;
     let ambiguity = state.current_ambiguity ?? 1.0;
     let lastParsed: SocraticResponse | undefined;
+    // Repeat-question loop guard state (deep-interview's descendant of the agent
+    // loop's repeat_correct/repeat_stop taxonomy in src/agent/loop-guards.ts): an
+    // interviewer that re-asks the SAME question cannot converge by repetition —
+    // it just burns rounds and, in interactive mode, the user's patience.
+    let lastQuestionNorm = "";
+    let questionRepeats = 0;
 
     const freezeSeed = async (parsed: SocraticResponse): Promise<boolean> => {
       const readiness = freezeReadiness(parsed);
@@ -653,6 +667,40 @@ export async function runDeepInterviewEngine(opts: DeepInterviewEngineOptions = 
         if (ambiguity <= threshold && !readiness.ok) {
           log(`\n[HOLD] Ambiguity is below the threshold, but ${readiness.reason}. Keeping the interview open.`);
           nextQuestion = interviewLanguage.acceptanceFollowup;
+        }
+
+        // Repeat-question guard: first repeat gets ONE corrective bounce (the model
+        // is told the question was already answered and steered to a new gap, WITHOUT
+        // re-asking the user); a repeat that survives the correction stops this run
+        // instead of looping through the remaining rounds on the same question.
+        const qNorm = normalizeQuestion(nextQuestion);
+        if (qNorm && qNorm === lastQuestionNorm) {
+          questionRepeats++;
+        } else {
+          lastQuestionNorm = qNorm;
+          questionRepeats = 0;
+        }
+        if (questionRepeats === 1) {
+          log(`\n[REPEAT] The interviewer re-asked the same question — nudging it toward a new gap instead of re-asking you.`);
+          history.push({ role: "assistant", content: responseText });
+          history.push({
+            role: "user",
+            content:
+              `You already asked exactly this question and it was answered above — do not ask it again. ` +
+              `Ask a DIFFERENT question that targets the weakest unresolved dimension; or, if the prior answers genuinely resolve it, ` +
+              `lower ambiguityScore and populate goal/constraints/acceptance_criteria from what was already said. ` +
+              `Reply in the same strict JSON format.`,
+          });
+          round++;
+          continue;
+        }
+        if (questionRepeats >= 2) {
+          log(
+            `\n[LOOP GUARD] The interview is stuck re-asking the same question despite a corrective nudge — ` +
+            `stopping this run instead of looping. No progress is possible by repetition; ` +
+            `resume with 'jeo deep-interview' (adding more detail to the idea helps) to continue.`,
+          );
+          break;
         }
 
         log(`\nQuestion: ${nextQuestion}`);

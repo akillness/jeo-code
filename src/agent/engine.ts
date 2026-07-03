@@ -545,14 +545,39 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     // (a TUI). Non-interactive/test callers leave onModelStream unset → a single
     // non-streaming call(), unchanged. The accumulated text is still parsed as one JSON
     // tool call below, so streaming changes nothing about loop semantics.
+    //
+    // Emission throttle (~80ms, mirroring the bash live sink): every delta still
+    // ACCUMULATES, but re-emitting the full growing buffer per token made the handoff
+    // O(len²) over a long response — each emit flattens the rope and the TUI re-scans
+    // its head. Timer-less by design; flushStreams() below guarantees the consumers'
+    // LAST snapshot is the complete text before it is parsed/committed.
+    const STREAM_EMIT_MS = 80;
     let streamBuf = "";
+    let lastModelEmit = 0;
     const onToken = ev.onModelStream
-      ? (delta: string) => { streamBuf += delta; ev.onModelStream!(streamBuf); }
+      ? (delta: string) => {
+          streamBuf += delta;
+          const now = Date.now();
+          if (now - lastModelEmit >= STREAM_EMIT_MS) { lastModelEmit = now; ev.onModelStream!(streamBuf); }
+        }
       : undefined;
     let reasonBuf = "";
+    let lastReasonEmit = 0;
     const onReasoning = ev.onReasoningStream
-      ? (delta: string) => { reasonBuf += delta; ev.onReasoningStream!(reasonBuf); }
+      ? (delta: string) => {
+          reasonBuf += delta;
+          const now = Date.now();
+          if (now - lastReasonEmit >= STREAM_EMIT_MS) { lastReasonEmit = now; ev.onReasoningStream!(reasonBuf); }
+        }
       : undefined;
+    // The TUI commits its thought/plan blocks from the LAST received snapshot
+    // (onAssistant); emit the complete buffers once so a throttled trailing delta
+    // can never be dropped from the committed record. Re-emitting an identical
+    // snapshot is idempotent for the consumers (they diff before drawing).
+    const flushStreams = () => {
+      if (streamBuf) ev.onModelStream?.(streamBuf);
+      if (reasonBuf) ev.onReasoningStream?.(reasonBuf);
+    };
     // Capture provider-native reasoning ARTIFACTS for replay (always — independent of any
     // TUI display sink). Stays scoped to THIS step so a later consolidation push can't
     // inherit a prior step's signatures.
@@ -687,6 +712,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       // separate error event here printed the same message twice (live stream + reply).
       return finish({ done: false, steps: step, doneReason: `Error: ${message}` });
     }
+    flushStreams(); // deliver the final (possibly throttled-out) snapshot before parse/commit
     if (sawUsage) ev.onUsage?.({ ...acc });
 
     let invocation: any;
@@ -837,10 +863,12 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     //    after a SUCCESSFUL write because nothing ever told the model to stop
     //    repeating — a recovery prompt resolves that without killing the turn.
     //  - 3rd identical step (repeated through the explicit correction) → stop.
-    const callSigs = toolCalls.map(c => `${c.tool}:${JSON.stringify(c.arguments ?? {})}`);
-    // Fixed-size digest of the whole step — `write` signatures embed entire file
-    // bodies, so the repeat/cycle guards compare digests, not megabyte strings.
-    const sig = hashSignature(callSigs.join(" | "));
+    // Per-call fixed-size digests — `write` arguments embed entire file bodies, so
+    // every guard below compares/records digests, never megabyte strings. Hashing
+    // once per call here (instead of joining full sigs, hashing, then re-hashing
+    // inside budget.record) avoids re-scanning a large write body 3× per step.
+    const callSigs = toolCalls.map(c => hashSignature(`${c.tool}:${JSON.stringify(c.arguments ?? {})}`));
+    const sig = callSigs.length === 1 ? callSigs[0] : hashSignature(callSigs.join(" | "));
     if (sig === lastSig) repeatCount++;
     else {
       repeatCount = 1;

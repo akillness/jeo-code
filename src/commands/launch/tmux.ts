@@ -94,6 +94,38 @@ export function shellQuote(arg: string): string {
   return `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
+/** Caller-terminal dimensions for a detached `tmux new-session` (gjc launch-tmux parity #1376). */
+export interface TmuxTerminalSize {
+  columns: number;
+  rows: number;
+}
+
+function normalizeTmuxDimension(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * Resolve the caller terminal's size so a detached `tmux new-session` is created at
+ * the REAL terminal dimensions instead of tmux's 80x24 detached default. Without this
+ * the inner jeo renders its first frames (banner, status footer) at 80 columns, and
+ * that mis-wrapped output stays wrong in the pane scrollback even after the attach
+ * resizes the window. Returns undefined when stdout is not a TTY or either dimension
+ * is unknown/invalid — callers then omit sizing and let tmux use its default.
+ */
+export function callerTmuxTerminalSize(
+  out: { isTTY?: boolean; columns?: number; rows?: number } = process.stdout,
+): TmuxTerminalSize | undefined {
+  if (!out.isTTY) return undefined;
+  const columns = normalizeTmuxDimension(out.columns);
+  const rows = normalizeTmuxDimension(out.rows);
+  return columns !== undefined && rows !== undefined ? { columns, rows } : undefined;
+}
+
+/** `-x/-y` args for `new-session`; empty when the size is unknown. */
+export function tmuxNewSessionSizeArgs(size: TmuxTerminalSize | undefined): string[] {
+  return size ? ["-x", String(size.columns), "-y", String(size.rows)] : [];
+}
+
 
 
 

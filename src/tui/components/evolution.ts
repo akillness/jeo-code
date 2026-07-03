@@ -308,7 +308,17 @@ export function transitionMessage(index: number): string {
  * Applies a dimensional, animated gradient (foreground or background) to a string of text.
  * Driven by a phaseMs timestamp, it creates a slow, tasteful shimmer wave
  * and adds depth cues (bright core, dimmer edges).
+ *
+ * The clock is QUANTIZED to 225ms buckets (20 discrete phases over the 4.5s period,
+ * matching the forge art's quantized-clock rule): callers pass raw Date.now(), but two
+ * calls in the same bucket produce byte-identical output, so the differential renderer
+ * skips the row instead of rewriting ~2-4KB of truecolor escapes on every idle tick.
+ * A small memo returns the exact prior string for a repeated (bucket, style, text) —
+ * the common case between consecutive 120ms ticks.
  */
+const GRADIENT_BUCKET_MS = 225;
+const gradientMemo = new Map<string, string>();
+const GRADIENT_MEMO_CAP = 16;
 export function applyDimensionalGradient(
   text: string,
   timeMs: number,
@@ -320,6 +330,10 @@ export function applyDimensionalGradient(
 ): string {
   const plain = stripAnsi(text);
   if (level === ColorLevel.None || plain.length === 0) return plain;
+  const bucket = timeMs - (timeMs % GRADIENT_BUCKET_MS);
+  const memoKey = `${bucket}|${fromHex}|${toHex}|${level}|${isBg ? 1 : 0}|${fgHex}|${plain}`;
+  const hit = gradientMemo.get(memoKey);
+  if (hit !== undefined) return hit;
 
   const from = hexToRgb(fromHex);
   const to = hexToRgb(toHex);
@@ -331,8 +345,8 @@ export function applyDimensionalGradient(
     out += fgEscape(fg, level);
   }
 
-  // Slow period: 4.5 seconds for a complete wave cycle
-  const p = (timeMs / 4500) % 1;
+  // Slow period: 4.5 seconds for a complete wave cycle (quantized bucket → 20 phases)
+  const p = (bucket / 4500) % 1;
 
   for (let i = 0; i < L; i++) {
     const ch = plain[i]!;
@@ -380,5 +394,11 @@ export function applyDimensionalGradient(
     }
   }
 
-  return out + resetEscape(level);
+  const result = out + resetEscape(level);
+  if (gradientMemo.size >= GRADIENT_MEMO_CAP) {
+    const oldest = gradientMemo.keys().next().value;
+    if (oldest !== undefined) gradientMemo.delete(oldest);
+  }
+  gradientMemo.set(memoKey, result);
+  return result;
 }

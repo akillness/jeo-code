@@ -39,6 +39,8 @@ export interface ConceptGraph {
   edges: Map<string, Set<string>>;
   /** from-ID → set of link targets that have NO node (tolerated broken links). */
   broken: Map<string, Set<string>>;
+  /** ponytail: cached undirected adjacency for O(1) retrieval during graph expansion */
+  adj?: Map<string, Set<string>>;
 }
 
 /** A markdown inline link `](target)` — captures the target, not the label. */
@@ -115,7 +117,10 @@ function undirectedAdjacency(graph: ConceptGraph): Map<string, Set<string>> {
  * nodes are dropped. With `hops` 0 this is just the valid seeds.
  */
 export function expandByGraph(seedIds: Iterable<string>, graph: ConceptGraph, hops = 1): Set<string> {
-  const adj = undirectedAdjacency(graph);
+  if (!graph.adj) {
+    graph.adj = undirectedAdjacency(graph);
+  }
+  const adj = graph.adj;
   const result = new Set<string>();
   for (const id of seedIds) if (graph.nodes.has(id)) result.add(id);
   let frontier = [...result];

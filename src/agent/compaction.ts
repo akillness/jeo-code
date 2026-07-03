@@ -40,27 +40,14 @@ export const DEFAULT_MAX_TOKENS = 30_000;
 export const DEFAULT_SUMMARY_INPUT_TOKENS = 20_000;
 
 export function estimateTokens(text: string): number {
-  let tokens = 0;
+  // ASCII ≈ 4 chars/token; everything else (CJK, Hangul, emoji, …) ≈ 1.5 chars/token.
+  // A previous version listed the CJK ranges explicitly, but BOTH branches resolved
+  // to the same 1/1.5 weight — two counters keep the same result in one cheap pass.
+  let ascii = 0;
   for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if (code <= 127) {
-      tokens += 0.25;
-    } else if (
-      (code >= 0xac00 && code <= 0xd7a3) || // 한글 가~힣
-      (code >= 0x1100 && code <= 0x11ff) || // 한글 자모
-      (code >= 0x3130 && code <= 0x318f) || // 한글 호환 자모
-      (code >= 0x4e00 && code <= 0x9fff) || // CJK 통합 한자
-      (code >= 0x3400 && code <= 0x4dbf) || // CJK 통합 한자 확장 A
-      (code >= 0x3040 && code <= 0x309f) || // 히라가나
-      (code >= 0x30a0 && code <= 0x30ff) || // 가타카나
-      (code >= 0xff00 && code <= 0xffef)    // 전각 문자
-    ) {
-      tokens += 1 / 1.5;
-    } else {
-      tokens += 1 / 1.5; // Default CJK-like weight for non-ASCII
-    }
+    if (text.charCodeAt(i) <= 127) ascii++;
   }
-  return tokens;
+  return ascii * 0.25 + (text.length - ascii) / 1.5;
 }
 
 /** Rough per-image vision-token cost (provider median for a clipboard screenshot).

@@ -288,6 +288,10 @@ export class LaunchTui {
   // block above the heartbeat; pressing Ctrl+O again clears it and restores the
   // normal activity view. Kept as data, not scrollback text, so it can actually close.
   private historyLines: string[] | null = null;
+  // ponytail: cached wrapped lines for history panel to avoid O(history) re-wrap per tick
+  private cachedWrappedHistory: string[] | null = null;
+  private cachedHistoryLines: string[] | null = null;
+  private cachedHistoryWidth: number | null = null;
   // Ctrl+O detail panel scroll: a window offset so long/CJK content is fully
   // reachable (↑↓/PgUp/PgDn) instead of clipped at "… N more". Bound + page size
   // are recomputed each render from the visible body height.
@@ -323,6 +327,9 @@ export class LaunchTui {
   private readonly unicode: boolean = supportsUnicode();
   // Active color theme (JEO_TUI_THEME), default cosmic; `mono` disables color.
   private readonly theme = resolveTheme(process.env);
+  // Terminal color depth, detected once — TERM/COLORTERM/NO_COLOR are process-constant,
+  // so re-running the regex chain 2-4× per 120ms draw was pure waste.
+  private readonly colorLevel = detectColorLevel(process.env, isTTY());
   // Neon flow palette derived from the active theme (forge-card border + forge mark
   // animation), so the live glow tracks the theme instead of a fixed brand palette.
   private readonly themeFlow = themeFlowPalette(this.theme);
@@ -557,7 +564,9 @@ export class LaunchTui {
         // Sanitize raw child stdout (CR / EL / cursor-move escapes) before it enters the
         // frame — unsanitized control bytes tore the renderer's next \x1b[2K (literal "2K")
         // and hijacked the cursor, corrupting the live frame.
-        this.liveToolOutput = sanitizeForFrame(partial);
+        // Only the display WINDOW is sanitized: renderLiveBlock tails the text anyway, so
+        // scanning the full cumulative buffer per event was O(n²) over a chatty stream.
+        this.liveToolOutput = sanitizeForFrame(tailForWrap(partial));
         if (Date.now() - this.lastStreamDraw >= 100) {
           this.lastStreamDraw = Date.now();
           this.draw();
@@ -1339,10 +1348,18 @@ export class LaunchTui {
     const inner = Math.max(10, boxWidth - 2);
     const accent = this.theme.color ? accentPaint(this.theme) : (s: string) => s;
     const dim = this.theme.color ? chalk.dim : (s: string) => s;
-    const wrapped = this.historyLines.flatMap(line => {
-      const physical = line.split("\n");
-      return physical.flatMap(part => (visibleWidth(part) <= inner ? [part] : wrapTextWithAnsi(part, inner)));
-    });
+    let wrapped: string[];
+    if (this.historyLines === this.cachedHistoryLines && inner === this.cachedHistoryWidth && this.cachedWrappedHistory) {
+      wrapped = this.cachedWrappedHistory;
+    } else {
+      wrapped = this.historyLines.flatMap(line => {
+        const physical = line.split("\n");
+        return physical.flatMap(part => (visibleWidth(part) <= inner ? [part] : wrapTextWithAnsi(part, inner)));
+      });
+      this.cachedHistoryLines = this.historyLines;
+      this.cachedHistoryWidth = inner;
+      this.cachedWrappedHistory = wrapped;
+    }
     const bodyLimit = Math.max(1, maxRows - 4); // box borders (2) + title + divider
     const scrollable = wrapped.length > bodyLimit;
     // Window capacity at the bottom (worst case: both ↑ and ↓ indicators take a row),
@@ -1433,7 +1450,7 @@ export class LaunchTui {
   }): string[] {
     const { cols, rows, stepNow, elapsedMs, idx, isThinking } = args;
     const dim = this.theme.color ? chalk.dim : (s: string) => s;
-    const colorLevel = detectColorLevel(process.env, isTTY());
+    const colorLevel = this.colorLevel;
     // One quantized animation clock for the whole frame: gradient phase cycles 20
     // steps, the prompt beat advances every 3 ticks. Quantization keeps repaints
     // coherent (status field + forge border move together) and bounds per-tick work.
@@ -1541,7 +1558,7 @@ export class LaunchTui {
       cols,
       unicode: this.unicode,
       color: this.theme.color,
-      colorLevel: detectColorLevel(process.env, isTTY()),
+      colorLevel: this.colorLevel,
       gradient: themeGradient(this.theme, 2),
     });
   }
@@ -1584,7 +1601,7 @@ export class LaunchTui {
         frame: twist,
         unicode: this.unicode,
         color: this.theme.color,
-        colorLevel: detectColorLevel(process.env, isTTY()),
+        colorLevel: this.colorLevel,
         palette: this.themeFlow,
       });
       this.cachedArt = fit ? centerBlock(art, innerWidth) : art;
@@ -1597,9 +1614,6 @@ export class LaunchTui {
     const artLinesCount = showArt ? forgeMarkHeight() : 0;
     const trackCount = showArt ? 1 : 0;
     const headerHeight = artLinesCount + trackCount + (showArt ? 1 : 0);
-
-    const toolLines = this.tools.render(fit ? Math.max(3, rows - 15) : undefined, { color: this.theme.color, indexed: fit });
-    const toolListHeight = toolLines.length;
 
     const planLines = this.renderPlan(this.theme.color);
     const planHeight = planLines.length;
@@ -1619,6 +1633,12 @@ export class LaunchTui {
       return;
     }
 
+    // Tool rows are only consumed by the boxed (non-inline) layout below — computing
+    // them before the inline early-return re-painted up to 500 chalk rows per tick
+    // on the DEFAULT path that never uses them.
+    const toolLines = this.tools.render(fit ? Math.max(3, rows - 15) : undefined, { color: this.theme.color, indexed: fit });
+    const toolListHeight = toolLines.length;
+
     // Bottom-pinned status + footer.
     const bottom: string[] = [];
     const statusMsg = this.currentActivity();
@@ -1626,7 +1646,7 @@ export class LaunchTui {
     // known price — then no $ is shown). Computed once per draw, fed to status + footer.
     const costUsd = costForUsage(this.footer.model, this.turnUsage) ?? undefined;
     if (isThinking) {
-      const colorLevel = detectColorLevel(process.env, isTTY());
+      const colorLevel = this.colorLevel;
       const phase = (this.tickCount * 0.05) % 1;
       const grad = themeGradient(this.theme, idx);
       const palette = [grad.from, grad.to];

@@ -54,11 +54,15 @@ test("deep-interview --auto: does not freeze a seed while ambiguity stays above 
     console.log = origLog;
   }
 
-  expect(callCount).toBe(10);
+  // Repeat-question loop guard: round 1 asks, round 2's identical question gets ONE
+  // corrective bounce, round 3's identical question stops the run — not 10 rounds of
+  // the same question against the same canned answer.
+  expect(callCount).toBe(3);
   await expect(fs.access(path.join(cwd, ".jeo", "seeds"))).rejects.toThrow();
   const state = await readState(cwd);
   expect(state.current_phase).toBe("interviewing");
   expect(state.seed_path).toBeUndefined();
+  expect(lines.join("\n")).toContain("[LOOP GUARD]");
   expect(lines.join("\n")).toContain("No seed was frozen");
 
   await fs.rm(cwd, { recursive: true, force: true });
@@ -88,7 +92,9 @@ test("deep-interview --auto: does not fabricate acceptance criteria when the sco
     console.log = origLog;
   }
 
-  expect(callCount).toBe(10);
+  // The [HOLD] follow-up is the same question every round → the repeat guard stops
+  // the run after ask + corrective bounce + repeat (3 calls), instead of 10.
+  expect(callCount).toBe(3);
   await expect(fs.access(path.join(cwd, ".jeo", "seeds"))).rejects.toThrow();
   const state = await readState(cwd);
   expect(state.current_phase).toBe("interviewing");
@@ -344,5 +350,71 @@ test("deep-interview --auto: refuses to freeze on vague-only criteria like 'It w
   expect(state.current_phase).not.toBe("complete"); // no freeze on unverifiable criteria
   expect(state.seed_path).toBeUndefined();
   expect(lines.join("\n")).toContain("too vague");
+  await fs.rm(cwd, { recursive: true, force: true });
+});
+test("deep-interview --auto: alternating (non-repeating) questions never trip the loop guard", async () => {
+  const cwd = await tempDir();
+  const lines: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => lines.push(a.join(" "));
+  let callCount = 0;
+  mockCallLlm = async () => {
+    callCount++;
+    return JSON.stringify({
+      ambiguityScore: 0.8,
+      assessment: "Still vague",
+      nextQuestion: callCount % 2 === 0 ? "What are the constraints?" : "Who are the users?",
+    });
+  };
+  try {
+    process.chdir(cwd);
+    await runDeepInterviewCommand(["--auto", "build something vague"]);
+  } finally {
+    console.log = origLog;
+  }
+
+  // Distinct questions each round → the repeat streak resets; the full 10-round
+  // budget runs and the guard stays silent.
+  expect(callCount).toBe(10);
+  expect(lines.join("\n")).not.toContain("[LOOP GUARD]");
+  expect(lines.join("\n")).not.toContain("[REPEAT]");
+  const state = await readState(cwd);
+  expect(state.current_phase).toBe("interviewing");
+
+  await fs.rm(cwd, { recursive: true, force: true });
+});
+
+test("deep-interview --auto: trivially reworded repeats (case/punctuation/whitespace) still count as repeats", async () => {
+  const cwd = await tempDir();
+  const lines: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => lines.push(a.join(" "));
+  const variants = [
+    "What exactly should it do?",
+    "what exactly  should it do", // case + whitespace + missing punctuation
+    "What exactly should it do?!", // extra trailing punctuation
+  ];
+  let callCount = 0;
+  mockCallLlm = async () => {
+    const q = variants[Math.min(callCount, variants.length - 1)]!;
+    callCount++;
+    return JSON.stringify({
+      ambiguityScore: 0.8,
+      assessment: "Still vague",
+      nextQuestion: q,
+    });
+  };
+  try {
+    process.chdir(cwd);
+    await runDeepInterviewCommand(["--auto", "build something vague"]);
+  } finally {
+    console.log = origLog;
+  }
+
+  // Normalized comparison: ask → corrective bounce → stop, despite surface rewording.
+  expect(callCount).toBe(3);
+  expect(lines.join("\n")).toContain("[REPEAT]");
+  expect(lines.join("\n")).toContain("[LOOP GUARD]");
+
   await fs.rm(cwd, { recursive: true, force: true });
 });

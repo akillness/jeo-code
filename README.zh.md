@@ -55,6 +55,8 @@ bun install -g jeo-code
 jeo --version
 ```
 
+> 从重命名前的版本升级？旧 CLI 名称 `joc` 的二进制文件现在会被 `scripts/install.sh` / `scripts/uninstall.sh` 自动移除；手动移除: `rm -f ~/.local/bin/joc ~/.bun/bin/joc`。
+
 ## 快速开始
 
 ```bash
@@ -205,11 +207,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.7.33]** (2026-07-04) — Adds `browser` — headless Chromium automation (gjc `browser` parity) — completing the gjc tool-surface parity pass started in 0.7.32.
+- **[0.7.32]** (2026-07-03) — gjc tool-surface parity — ast_grep/ast_edit, lsp/lsp_rename, debug, irc, job, and goal tools — plus a `launch.ts` slash-command refactor and four agent-loop guardrail hardenings (destructive-bash denylist, spawn-gate justification quality check, done-verification abuse guard, and a blind unanchored line-range-edit guard).
 - **[0.7.31]** (2026-07-03) — Three-round speed & memory pass across streaming, memory retrieval, and the TUI render loop (O(n²) → O(n) in several hot paths), a deep-interview repeat-question loop guard, and gajae-code managed-tmux launch sizing parity.
 - **[0.7.30]** (2026-07-02) — GPT/Codex OAuth calls work again, and the 30-minute turn budget now limits no-progress stalls instead of killing genuinely progressing autonomous runs.
 - **[0.7.29]** (2026-07-02) — gajae-code safety-refusal retry parity: Anthropic/OAuth content-classifier refusals no longer end the turn with a fatal "declined to answer" message after the context-reset ladder.
-- **[0.7.28]** (2026-07-02) — gajae-code 0.7.9–0.7.10 OAuth + model-execution parity: generic long rate-limit windows are retried (never fatal), retry waits are abort-cancellable, Codex prompt caching via session correlation, and the Kimi Code device-flow OAuth is completed end-to-end (catalog, gating, discovery, tests).
-- **[0.7.27]** (2026-07-02) — Extended-keyboard decode layer: Esc/Ctrl+C work again on kitty-protocol terminals, Shift+Enter breaks lines on every terminal incl. Windows, row/draft-aware Cmd+←→/↑↓ + Home/End/Ctrl+Home/End, Ctrl+V text-paste fallback. Plus Anthropic 5th-gen omp-parity: catalog-derived output budgets end thinking-vs-reply starvation; refusals fail fast at the transport and the recovery ladder strips replayed thinking blocks.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

@@ -163,6 +163,7 @@ test("searchTool: invalid regex (grep exit >=2) is a real failure, not silent su
 test("editTool: ≔A..B multi-line range replacement still works after near-miss change", async () => {
   const f = path.join(dir, "range.txt");
   await fs.writeFile(f, "a\nb\nc\nd\ne\n");
+  await readTool(f, undefined, dir);
   const res = await editTool(f, "≔2..4\nNEW", dir);
   expect(res.success).toBe(true);
   expect(await fs.readFile(f, "utf-8")).toBe("a\nNEW\ne\n");

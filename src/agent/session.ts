@@ -316,6 +316,33 @@ export async function latestSessionId(cwd = process.cwd()): Promise<string | und
   return list[0]?.id;
 }
 
+/** Result of resolving a full session id or a short id prefix. */
+export type SessionRefResolution =
+  | { kind: "ok"; id: string }
+  | { kind: "ambiguous"; matches: string[] }
+  | { kind: "not-found" };
+
+/** Resolve a full session id OR a short id PREFIX (gjc-parity: `--resume <prefix>`,
+ *  `/session resume <prefix>`) to exactly one session id. Exact match wins immediately
+ *  (fast path, no directory scan) before falling back to a prefix scan of listSessions(). */
+export async function resolveSessionRef(idOrPrefix: string, cwd = process.cwd()): Promise<SessionRefResolution> {
+  const trimmed = idOrPrefix.trim();
+  if (!trimmed) return { kind: "not-found" };
+  // Fast path: exact file exists.
+  try {
+    await fs.access(sessionPath(trimmed, cwd));
+    return { kind: "ok", id: trimmed };
+  } catch {
+    // fall through to prefix scan
+  }
+  const all = await listSessions(cwd);
+  const lower = trimmed.toLowerCase();
+  const matches = all.filter(s => s.id.toLowerCase().startsWith(lower)).map(s => s.id);
+  if (matches.length === 1) return { kind: "ok", id: matches[0]! };
+  if (matches.length > 1) return { kind: "ambiguous", matches };
+  return { kind: "not-found" };
+}
+
 /**
  * Locate the session's JSONL header, apply `mutate`, and rewrite the file in place.
  * `mutate` returns false to signal "no change needed" (skips the write). Shared by

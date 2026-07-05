@@ -124,6 +124,23 @@ require_bun() {
 
 bun_bin_dir() { echo "${BUN_INSTALL:-$HOME/.bun}/bin"; }
 
+# Remove a stale `joc` bin/symlink left by a pre-rename install (jeo-code's
+# CLI was renamed joc -> jeo). Runs on every install so it can't silently
+# reappear for machines/users who installed before the rename.
+cleanup_stale_joc() {
+  BUN_BIN="$(bun_bin_dir)"
+  for STALE in "$BUN_BIN/joc" "$INSTALL_DIR/joc"; do
+    if [ -L "$STALE" ] || [ -f "$STALE" ]; then
+      if [ "$DRY_RUN" = "1" ]; then
+        echo "+ rm -f $STALE"
+      else
+        rm -f "$STALE"
+      fi
+      echo "Removed stale pre-rename joc bin: $STALE"
+    fi
+  done
+}
+
 registry_key() {
   if [ -n "$SCOPE" ]; then
     case "$SCOPE" in
@@ -275,11 +292,13 @@ install_binary() {
     ( cd "$SRC_DIR" && bun build src/cli.ts --compile --outfile "$INSTALL_DIR/jeo" >/dev/null )
     chmod +x "$INSTALL_DIR/jeo" 2>/dev/null || true
   fi
+  cleanup_stale_joc
 }
 
 # Add a symlink in INSTALL_DIR so the documented location works even when
 # Bun's global bin dir is not on PATH.
 link_compat() {
+  cleanup_stale_joc
   [ "$DRY_RUN" = "1" ] && return 0
   BUN_BIN="$(bun_bin_dir)"
   [ -e "$BUN_BIN/jeo" ] && LINKED="$BUN_BIN/jeo"

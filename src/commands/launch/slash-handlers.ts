@@ -9,6 +9,9 @@ import { TOOL_PROTOCOL } from "../../agent/engine";
 import { taskToolProtocolLine } from "../../agent/task-tool";
 import { TODO_TOOL_PROTOCOL_LINE } from "../../agent/todo-tool";
 import { SUBAGENT_TOOL_PROTOCOL_LINE } from "../../agent/subagent-tool";
+import { JOB_TOOL_PROTOCOL_LINE } from "../../agent/job-tool";
+import { IRC_TOOL_PROTOCOL_LINE } from "../../agent/irc-tool";
+import { GOAL_TOOL_PROTOCOL_LINE } from "../../agent/goal-tool";
 import { hotkeysLines, contextUsageLines } from "./slash-views";
 import { describeModel, catalogMetadata } from "../../ai";
 import { readGlobalConfig } from "../../agent/state";
@@ -46,6 +49,9 @@ export async function handleTools(ctx: SlashContext): Promise<SlashResult> {
   lines.push(`  ${taskToolProtocolLine(await readGlobalConfig())}`);
   lines.push(`  ${TODO_TOOL_PROTOCOL_LINE}`);
   lines.push(`  ${SUBAGENT_TOOL_PROTOCOL_LINE}`);
+  lines.push(`  ${JOB_TOOL_PROTOCOL_LINE}`);
+  lines.push(`  ${IRC_TOOL_PROTOCOL_LINE}`);
+  lines.push(`  ${GOAL_TOOL_PROTOCOL_LINE}`);
   return { lines };
 }
 

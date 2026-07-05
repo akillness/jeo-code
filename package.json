@@ -1,6 +1,6 @@
 {
   "name": "jeo-code",
-  "version": "0.7.31",
+  "version": "0.7.33",
 
   "description": "Clean, highly optimized AI coding agent using spec-first loop",
   "type": "module",
@@ -60,12 +60,12 @@
   "dependencies": {
     "zod": "^3.24.1",
     "chalk": "^5.3.0",
-    "js-tiktoken": "^1.0.21"
+    "js-tiktoken": "^1.0.21",
+    "typescript": "^5.6.3",
+    "playwright": "^1.61.0"
   },
   "devDependencies": {
     "@types/bun": "^1.1.14",
-    "playwright": "^1.61.0",
-    "typescript": "^5.6.3",
     "ws": "^8.21.0"
   },
   "packageManager": "pnpm@10.33.4+sha512.1c67b3b359b2d408119ba1ed289f34b8fc3c6873412bec6fd264fbdc82489e510fcbecb9ce9d22dae7f3b76269d8441046014bdca53b9979cd7a561ad631b800"

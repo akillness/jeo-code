@@ -252,7 +252,7 @@ export function bashCommandAllowed(command: string, prefixes: string[]): boolean
  */
 export function subagentToolset(role: SubagentRole): Record<string, ToolHandler> {
   if (role.readOnly) {
-    const MUTATING = new Set(["write", "edit", "bash", "mkdir", "delete"]);
+    const MUTATING = new Set(["write", "edit", "bash", "mkdir", "delete", "ast_edit", "computer", "lsp_rename", "debug", "browser"]);
     const ro: Record<string, ToolHandler> = {};
     for (const [name, handler] of Object.entries(DEFAULT_TOOLS)) {
       if (MUTATING.has(name)) continue;

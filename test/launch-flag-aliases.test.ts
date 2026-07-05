@@ -50,6 +50,79 @@ test("parseFlags: -c/--continue maps to resume without UUID or with UUID", () =>
   expect(flags6.resumeId).toBe(uuid);
 });
 
+test("parseFlags: --continue/-c always resumes latest silently, never sets resumeInteractive", () => {
+  const flags1 = parseFlags(["-c"]);
+  expect(flags1.resume).toBe(true);
+  expect(flags1.resumeInteractive).toBe(false);
+  expect(flags1.resumeId).toBeUndefined();
+
+  const flags2 = parseFlags(["--continue"]);
+  expect(flags2.resume).toBe(true);
+  expect(flags2.resumeInteractive).toBe(false);
+  expect(flags2.resumeId).toBeUndefined();
+
+  const flags3 = parseFlags(["-c", "abc123"]);
+  expect(flags3.resume).toBe(true);
+  expect(flags3.resumeInteractive).toBe(false);
+  expect(flags3.resumeId).toBe("abc123");
+
+  const flags4 = parseFlags(["--continue", "abc123"]);
+  expect(flags4.resume).toBe(true);
+  expect(flags4.resumeInteractive).toBe(false);
+  expect(flags4.resumeId).toBe("abc123");
+
+  const flags5 = parseFlags(["-c=abc123"]);
+  expect(flags5.resume).toBe(true);
+  expect(flags5.resumeInteractive).toBe(false);
+  expect(flags5.resumeId).toBe("abc123");
+
+  const flags6 = parseFlags(["--continue=abc123"]);
+  expect(flags6.resume).toBe(true);
+  expect(flags6.resumeInteractive).toBe(false);
+  expect(flags6.resumeId).toBe("abc123");
+});
+
+test("parseFlags: --resume/-r with a value resolves as an id/prefix (not UUID-restricted)", () => {
+  const flags1 = parseFlags(["--resume", "abc123"]);
+  expect(flags1.resume).toBe(true);
+  expect(flags1.resumeInteractive).toBe(false);
+  expect(flags1.resumeId).toBe("abc123");
+
+  const flags2 = parseFlags(["-r", "abc123"]);
+  expect(flags2.resume).toBe(true);
+  expect(flags2.resumeInteractive).toBe(false);
+  expect(flags2.resumeId).toBe("abc123");
+
+  const flags3 = parseFlags(["--resume=abc123"]);
+  expect(flags3.resume).toBe(true);
+  expect(flags3.resumeInteractive).toBe(false);
+  expect(flags3.resumeId).toBe("abc123");
+});
+
+test("parseFlags: bare --resume/-r (no value) sets resumeInteractive for the cold-startup picker", () => {
+  const flags1 = parseFlags(["--resume"]);
+  expect(flags1.resume).toBe(true);
+  expect(flags1.resumeInteractive).toBe(true);
+  expect(flags1.resumeId).toBeUndefined();
+
+  const flags2 = parseFlags(["-r"]);
+  expect(flags2.resume).toBe(true);
+  expect(flags2.resumeInteractive).toBe(true);
+  expect(flags2.resumeId).toBeUndefined();
+
+  // Followed by another flag (not a value) — still bare.
+  const flags3 = parseFlags(["--resume", "--no-session"]);
+  expect(flags3.resume).toBe(true);
+  expect(flags3.resumeInteractive).toBe(true);
+  expect(flags3.resumeId).toBeUndefined();
+  expect(flags3.noSession).toBe(true);
+
+  const flags4 = parseFlags(["-r", "-p", "hi"]);
+  expect(flags4.resume).toBe(true);
+  expect(flags4.resumeInteractive).toBe(true);
+  expect(flags4.resumeId).toBeUndefined();
+});
+
 test("parseFlags: --append-system-prompt literal + @file + missing file", () => {
   // 1. Literal text
   const flags1 = parseFlags(["--append-system-prompt", "hello custom system prompt"]);
@@ -104,4 +177,11 @@ test("normalizeSlashAlias rewrites gjc-parity command aliases (preserving args)"
   expect(normalizeSlashAlias("/help")).toBe("/help");
   expect(normalizeSlashAlias("hello /login")).toBe("hello /login"); // only a leading command is rewritten
   expect(normalizeSlashAlias("/settingsx")).toBe("/settingsx"); // exact-match guard
+  expect(normalizeSlashAlias("/new")).toBe("/session new");
+  expect(normalizeSlashAlias("/drop")).toBe("/session drop");
+  expect(normalizeSlashAlias("/rename")).toBe("/session rename");
+  expect(normalizeSlashAlias("/rename My Title")).toBe("/session rename My Title");
+  expect(normalizeSlashAlias("/sessions")).toBe("/session list");
+  expect(normalizeSlashAlias("/newx")).toBe("/newx");
+  expect(normalizeSlashAlias("/renamex")).toBe("/renamex");
 });

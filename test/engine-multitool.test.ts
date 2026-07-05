@@ -302,6 +302,9 @@ test("runAgentLoop: read-only-only failing steps still trip the guard; mixed ok-
           ],
         });
       }
+      // A mutation-only run trips the done-verification pushback; run a verifying
+      // bash step first so the guard this test is NOT about doesn't interfere.
+      if (turn === 9) return JSON.stringify({ tool: "bash", arguments: { command: "bun test" } });
       return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok Changed Files: x Verification: y" } });
     },
   }));
@@ -316,6 +319,7 @@ test("runAgentLoop: read-only-only failing steps still trip the guard; mixed ok-
     tools: {
       read: async () => ({ success: false, output: "not found" }),
       edit: async () => ({ success: true, output: "updated, tests pass" }),
+      bash: async () => ({ success: true, output: "2 pass\n0 fail" }),
     },
   });
 

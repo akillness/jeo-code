@@ -234,6 +234,16 @@ interface CcaChunk {
     usageMetadata?: CcaUsage;
   };
 }
+/** When Antigravity (Cloud Code Assist) returns HTTP 200 with no text, surface the
+ *  real cause (safety block / RECITATION / etc.) instead of a silent, reason-free
+ *  empty response — mirrors gemini.ts's `blockedReason` (same message wording, so
+ *  `defaultRetryable`'s "returned no content" transient-empty-200 branch and
+ *  `isRefusalError`'s `finishReason=` matcher both apply consistently). */
+function finishReasonOf(chunk: CcaChunk): string | undefined {
+  const finish = chunk.response?.candidates?.[0]?.finishReason;
+  if (finish && finish !== "STOP") return `finishReason=${finish}`;
+  return undefined;
+}
 
 function textOf(chunk: CcaChunk): string {
   return chunk.response?.candidates?.[0]?.content?.parts?.filter(p => !p.thought).map(p => p.text ?? "").join("") ?? "";
@@ -279,13 +289,16 @@ export const antigravityAdapter: ProviderAdapter = {
     if (!response.body) return "";
     let out = "";
     let usage: CcaUsage | undefined;
+    let lastEmptyReason: string | undefined;
     const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
     for await (const data of readSse(response.body)) {
       let chunk: CcaChunk;
       try { chunk = JSON.parse(data); } catch { continue; }
       const thought = thoughtOf(chunk);
       if (thought) options.onReasoning?.(thought);
-      out += textOf(chunk);
+      const delta = textOf(chunk);
+      if (delta) out += delta;
+      else lastEmptyReason = finishReasonOf(chunk) ?? lastEmptyReason;
       fnCalls.push(...functionCallsOf(chunk));
       if (chunk.response?.usageMetadata) usage = chunk.response.usageMetadata;
     }
@@ -293,7 +306,7 @@ export const antigravityAdapter: ProviderAdapter = {
     // Prefer a native tool call (re-serialized to canonical JSON) over any stray text.
     const envelope = serializeToolCalls(fnCalls);
     if (envelope) return envelope;
-    if (!out) throw new Error("Antigravity Cloud Code Assist returned an empty response.");
+    if (!out) throw new Error(`Antigravity Cloud Code Assist returned no content${lastEmptyReason ? ` (${lastEmptyReason})` : ""}.`);
     return out;
   },
   async *stream(messages, options, credential) {
@@ -304,6 +317,7 @@ export const antigravityAdapter: ProviderAdapter = {
     if (antigravityThinkingActive(options)) options.onReasoningStart?.();
     let yielded = false;
     let usage: CcaUsage | undefined;
+    let lastEmptyReason: string | undefined;
     const fnCalls: { tool: string; arguments: Record<string, unknown> }[] = [];
     for await (const data of readSse(response.body, options.onStreamActivity)) {
       let chunk: CcaChunk;
@@ -312,6 +326,7 @@ export const antigravityAdapter: ProviderAdapter = {
       if (thought) options.onReasoning?.(thought);
       const delta = textOf(chunk);
       if (delta) { yielded = true; yield delta; }
+      else lastEmptyReason = finishReasonOf(chunk) ?? lastEmptyReason;
       fnCalls.push(...functionCallsOf(chunk));
       if (chunk.response?.usageMetadata) usage = chunk.response.usageMetadata;
     }
@@ -319,6 +334,6 @@ export const antigravityAdapter: ProviderAdapter = {
     // Native tool calls have no text deltas — yield the re-serialized envelope once at end.
     const envelope = serializeToolCalls(fnCalls);
     if (envelope) { yielded = true; yield envelope; }
-    if (!yielded) throw new Error("Antigravity Cloud Code Assist returned an empty response.");
+    if (!yielded) throw new Error(`Antigravity Cloud Code Assist returned no content${lastEmptyReason ? ` (${lastEmptyReason})` : ""}.`);
   },
 };

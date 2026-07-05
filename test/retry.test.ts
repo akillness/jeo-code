@@ -316,9 +316,15 @@ test("defaultRetryable: safety refusals fail fast (deterministic for identical c
   // ("transient provider error — auto-retry #1/#2") before this fail-fast.
   expect(defaultRetryable(new Error("Anthropic returned no content (stop_reason=refusal)."))).toBe(false);
   expect(defaultRetryable(new Error("OpenAI returned no content (finish_reason=content_filter)."))).toBe(false);
-  expect(defaultRetryable(new Error("Gemini returned no content (SAFETY)."))).toBe(false);
-  expect(defaultRetryable(new Error("Gemini returned no content (PROHIBITED_CONTENT)."))).toBe(false);
-  expect(defaultRetryable(new Error("Gemini returned no content (BLOCKLIST)."))).toBe(false);
+  // Real production shape (gemini.ts's blockedReason()): always prefixed with
+  // blockReason=/finishReason=, never bare "(SAFETY)" — these fixtures used to be
+  // hand-written literals that never matched blockedReason()'s actual output.
+  expect(defaultRetryable(new Error("Gemini returned no content (finishReason=SAFETY)."))).toBe(false);
+  expect(defaultRetryable(new Error("Gemini returned no content (blockReason=SAFETY)."))).toBe(false);
+  expect(defaultRetryable(new Error("Gemini returned no content (finishReason=PROHIBITED_CONTENT)."))).toBe(false);
+  expect(defaultRetryable(new Error("Gemini returned no content (finishReason=BLOCKLIST)."))).toBe(false);
+  expect(defaultRetryable(new Error("Gemini returned no content (finishReason=RECITATION)."))).toBe(false);
+  expect(defaultRetryable(new Error("Gemini returned no content (finishReason=SPII)."))).toBe(false);
 });
 
 test("succeeds first try (fn called once, no sleep)", async () => {

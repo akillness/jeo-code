@@ -735,12 +735,32 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           }
           // Nothing left to strip — fall through to the backoff rung below.
         }
-        // Rung 4: every context mutation is spent. Backoff-resend forever (abortable).
+        // Rung 4: every context mutation is spent. A `Refusal (<category>)`-shaped
+        // error (the structural shape Anthropic uses for a classification of the
+        // REQUEST CONTENT ITSELF, e.g. reasoning_extraction) is deterministic — by
+        // this rung context is already minimized, so every further resend is
+        // identical and will re-refuse identically. Fail fast with the category-aware
+        // message instead of spinning the backoff for the full stall budget. Every
+        // OTHER refusal shape (bare stop_reason=refusal, finish_reason=content_filter,
+        // Gemini finishReason=SAFETY/etc.) genuinely can clear as a rolling classifier
+        // resets, so those still get the unbounded capped backoff below.
+        const category = /Refusal \(\w+\)/i.test((err as Error)?.message ?? String(err));
+        if (category) {
+          return finish({ done: false, steps: step, doneReason: `Error: ${friendlyProviderError(err)}` });
+        }
+        // Backoff-resend forever (abortable).
         const attempt = Math.max(1, refusalRetries - MAX_REFUSAL_RETRIES);
         const baseRaw = Number(jeoEnv("REFUSAL_BACKOFF_BASE_MS") ?? NaN);
         const baseMs = Number.isFinite(baseRaw) && baseRaw >= 0 ? baseRaw : GUARD_LIMITS.REFUSAL_BACKOFF_BASE_MS;
         const delayMs = Math.min(baseMs * 2 ** (attempt - 1), GUARD_LIMITS.REFUSAL_BACKOFF_MAX_MS);
-        ev.onNotice?.(`provider refused again — auto-retry #${attempt} in ${Math.max(1, Math.round(delayMs / 1000))}s (Esc to cancel)`);
+        // "(Esc to cancel)" only makes sense where a live interactive Esc handler
+        // exists — that's the TUI, which is exactly the consumer that attaches
+        // onModelStream (see the streaming comment above: "the engine streams
+        // solely for the TUI"). One-shot/non-interactive callers (e.g. `jeo team`)
+        // leave onModelStream unset and have no live Esc handler, only the
+        // JEO_TURN_MAX_MS stall budget — showing the hint there is misleading.
+        const escHint = ev.onModelStream ? " (Esc to cancel)" : "";
+        ev.onNotice?.(`provider refused again — auto-retry #${attempt} in ${Math.max(1, Math.round(delayMs / 1000))}s${escHint}`);
         await waitAbortable(delayMs, opts.signal);
         continue; // loop top surfaces "Cancelled." when the wait was aborted
       }

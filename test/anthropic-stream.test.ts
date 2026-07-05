@@ -298,3 +298,78 @@ test("anthropicPayload: non-stream requests clamp max_tokens to 32k; stream carr
   expect(p(false, 24000).max_tokens).toBe(24000);
   expect(p(true, 24000).max_tokens).toBe(24000);
 });
+
+test("anthropicAdapter.call: empty completion with stop_details.category folds it into the error message", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({ content: [], stop_reason: "refusal", stop_details: { category: "reasoning_extraction" } }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+  try {
+    const opts: CallOptions = { model: "claude-fable-5", maxTokens: 50 };
+    const cred = { kind: "api_key", provider: "anthropic", token: "k" } as const;
+    let caught: Error | undefined;
+    try {
+      await anthropicAdapter.call!([{ role: "user", content: "hi" }], opts, cred);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).toBeDefined();
+    expect(caught!.message).toBe("Anthropic returned no content (stop_reason=refusal, category=reasoning_extraction).");
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("anthropicAdapter.call: empty completion with NO stop_details keeps the existing plain shape", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({ content: [], stop_reason: "refusal" }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+  try {
+    const opts: CallOptions = { model: "claude-fable-5", maxTokens: 50 };
+    const cred = { kind: "api_key", provider: "anthropic", token: "k" } as const;
+    let caught: Error | undefined;
+    try {
+      await anthropicAdapter.call!([{ role: "user", content: "hi" }], opts, cred);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).toBeDefined();
+    expect(caught!.message).toBe("Anthropic returned no content (stop_reason=refusal).");
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("anthropicAdapter.stream: empty completion with stop_details.category (message_delta) folds it into the error message", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      sseStream([
+        'data: {"type":"message_start","message":{"stop_reason":null}}\n\n',
+        'data: {"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"category":"reasoning_extraction"}}}\n\n',
+        'data: {"type":"message_stop"}\n\n',
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )) as typeof fetch;
+  try {
+    const opts: CallOptions = { model: "claude-fable-5", maxTokens: 50 };
+    const cred = { kind: "api_key", provider: "anthropic", token: "k" } as const;
+    let caught: Error | undefined;
+    try {
+      for await (const _ of anthropicAdapter.stream!([{ role: "user", content: "hi" }], opts, cred)) {
+        // drain
+      }
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).toBeDefined();
+    expect(caught!.message).toBe("Anthropic returned no content (stop_reason=refusal, category=reasoning_extraction).");
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});

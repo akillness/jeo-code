@@ -144,9 +144,17 @@ test("isRefusalError recognizes the new 'Refusal (<category>)' shape (Claude Fab
 test("isRefusalError regression guard: still matches every pre-existing refusal shape", () => {
   expect(isRefusalError(new Error("Anthropic returned no content (stop_reason=refusal)."))).toBe(true);
   expect(isRefusalError(new Error("OpenAI stopped early (finish_reason=content_filter)."))).toBe(true);
-  expect(isRefusalError(new Error("Gemini blocked the response (SAFETY)."))).toBe(true);
-  expect(isRefusalError(new Error("Gemini blocked the response (PROHIBITED_CONTENT)."))).toBe(true);
-  expect(isRefusalError(new Error("Gemini blocked the response (BLOCKLIST)."))).toBe(true);
+  // Real production shape (gemini.ts's blockedReason()): the enum is always prefixed
+  // with blockReason=/finishReason=, never bare "(SAFETY)" — these fixtures used to be
+  // hand-written literals that never matched blockedReason()'s actual output, masking
+  // the fact that the bare-parenthesized regex could never match production Gemini errors.
+  expect(isRefusalError(new Error("Gemini returned no content (finishReason=SAFETY)."))).toBe(true);
+  expect(isRefusalError(new Error("Gemini returned no content (blockReason=SAFETY)."))).toBe(true);
+  expect(isRefusalError(new Error("Gemini returned no content (finishReason=PROHIBITED_CONTENT)."))).toBe(true);
+  expect(isRefusalError(new Error("Gemini returned no content (finishReason=BLOCKLIST)."))).toBe(true);
+  expect(isRefusalError(new Error("Gemini returned no content (finishReason=RECITATION)."))).toBe(true);
+  expect(isRefusalError(new Error("Gemini returned no content (finishReason=SPII)."))).toBe(true);
+  expect(isRefusalError(new Error("Gemini (Cloud Code Assist) returned no content (blockReason=PROHIBITED_CONTENT)."))).toBe(true);
 });
 
 test("isRefusalError: no false positive on an unrelated error message", () => {
@@ -164,6 +172,16 @@ test("friendlyProviderError: reasoning_extraction gets the base refusal message 
   const plainRefusal = friendlyProviderError(new Error("Anthropic returned no content (stop_reason=refusal)."));
   expect(plainRefusal).toContain("declined to answer (safety refusal — no content returned)");
   expect(plainRefusal).not.toContain("reasoning_extraction");
+
+  // Defensive: a category delivered via `category=<X>` (Finding 5 — Anthropic's
+  // stop_details.category folded into a 200-body/stream empty-completion message)
+  // gets the same category-aware clarifying note as the `Refusal (<X>)` HTTP-error shape.
+  const categoryForm = friendlyProviderError(
+    new Error("Anthropic returned no content (stop_reason=refusal, category=reasoning_extraction)."),
+  );
+  expect(categoryForm).toContain("declined to answer (safety refusal — no content returned)");
+  expect(categoryForm).toContain("reasoning_extraction");
+  expect(categoryForm).toContain("not an actual violation");
 });
 
 test("refusal ladder engages for the new reasoning_extraction category: free resend recovers on first occurrence", async () => {
@@ -184,4 +202,140 @@ test("refusal ladder engages for the new reasoning_extraction category: free res
   expect(result.done).toBe(true);
   expect(result.doneReason).toBe("recovered from reasoning_extraction refusal");
   expect(calls).toBe(2); // free resend on first occurrence + success
+});
+
+test("refusal rung 4: a category-shaped 'Refusal (<category>)' error fails fast with the friendly message instead of entering backoff", async () => {
+  // Deterministic ToS-category refusal (Anthropic's own doc: a classification of the
+  // REQUEST CONTENT ITSELF) — by rung 4 context is already minimized, so backoff-resending
+  // it forever cannot help. It should fail the turn immediately with the category-aware
+  // friendlyProviderError message instead of spinning the unbounded backoff.
+  let calls = 0;
+  const categoryRefusal = () =>
+    new Error("Refusal (reasoning_extraction): This request was blocked as it seems to violate Anthropic's Terms of Service.");
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      calls++;
+      throw categoryRefusal();
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const notices: string[] = [];
+  const history: Message[] = [
+    { role: "system", content: "Core instructions only." }, // no <project_context> — rung 3 is a no-op
+    { role: "user", content: "init" },
+  ];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 10,
+    budget: { maxExtensions: 0 },
+    tools: {},
+    events: { onNotice: m => notices.push(m) },
+  });
+  expect(result.done).toBe(false);
+  expect(result.doneReason).toContain("declined to answer (safety refusal — no content returned)");
+  expect(result.doneReason).toContain("reasoning_extraction");
+  expect(result.doneReason).toContain("not an actual violation");
+  // Rung 1 (free resend) + rung 2 (context reset) + rung 3/4 catch (fails fast, no backoff resend).
+  expect(calls).toBe(3);
+  expect(notices.some(n => /auto-retry/.test(n))).toBe(false); // never entered the backoff loop
+});
+
+test("refusal rung 4 regression guard: a plain (non-category) refusal still enters the unbounded backoff loop, not the fast-fail path", async () => {
+  process.env.JEO_REFUSAL_BACKOFF_BASE_MS = "1"; // keep the test fast
+  try {
+    let calls = 0;
+    await mock.module("../src/agent/loop", () => ({
+      callLlm: async () => {
+        calls++;
+        // Gemini's real production shape (Finding 1) — no "Refusal (<category>)" structural
+        // marker, so the rolling-classifier-clears-eventually rationale still applies.
+        if (calls <= 4) throw new Error("Gemini returned no content (finishReason=SAFETY).");
+        return JSON.stringify({ tool: "done", arguments: { reason: "recovered after backoff" } });
+      },
+    }));
+    const { runAgentLoop } = await import("../src/agent/engine");
+    const notices: string[] = [];
+    const history: Message[] = [
+      { role: "system", content: "Core instructions only." },
+      { role: "user", content: "init" },
+    ];
+    const result = await runAgentLoop(history, {
+      cwd: process.cwd(),
+      maxSteps: 10,
+      budget: { maxExtensions: 0 },
+      tools: {},
+      events: { onNotice: m => notices.push(m) },
+    });
+    expect(result.done).toBe(true);
+    expect(result.doneReason).toBe("recovered after backoff");
+    expect(calls).toBe(5); // plain resend + post-reset retry + 2 backoff resends + success
+    expect(notices.some(n => /auto-retry/.test(n))).toBe(true); // DID enter the backoff loop
+  } finally {
+    delete process.env.JEO_REFUSAL_BACKOFF_BASE_MS;
+  }
+});
+
+test("refusal rung 4: the backoff notice omits '(Esc to cancel)' for a non-interactive caller (no onModelStream attached)", async () => {
+  process.env.JEO_REFUSAL_BACKOFF_BASE_MS = "1";
+  try {
+    let calls = 0;
+    await mock.module("../src/agent/loop", () => ({
+      callLlm: async () => {
+        calls++;
+        if (calls <= 4) throw new Error("Gemini returned no content (finishReason=SAFETY).");
+        return JSON.stringify({ tool: "done", arguments: { reason: "recovered after backoff" } });
+      },
+    }));
+    const { runAgentLoop } = await import("../src/agent/engine");
+    const notices: string[] = [];
+    const history: Message[] = [
+      { role: "system", content: "Core instructions only." },
+      { role: "user", content: "init" },
+    ];
+    // No onModelStream (== non-interactive, e.g. `jeo team`) — only onNotice attached.
+    await runAgentLoop(history, {
+      cwd: process.cwd(),
+      maxSteps: 10,
+      budget: { maxExtensions: 0 },
+      tools: {},
+      events: { onNotice: m => notices.push(m) },
+    });
+    const backoffNotices = notices.filter(n => /auto-retry/.test(n));
+    expect(backoffNotices.length).toBeGreaterThan(0);
+    expect(backoffNotices.every(n => !n.includes("Esc to cancel"))).toBe(true);
+  } finally {
+    delete process.env.JEO_REFUSAL_BACKOFF_BASE_MS;
+  }
+});
+
+test("refusal rung 4: the backoff notice keeps '(Esc to cancel)' for an interactive caller (onModelStream attached)", async () => {
+  process.env.JEO_REFUSAL_BACKOFF_BASE_MS = "1";
+  try {
+    let calls = 0;
+    await mock.module("../src/agent/loop", () => ({
+      callLlm: async () => {
+        calls++;
+        if (calls <= 4) throw new Error("Gemini returned no content (finishReason=SAFETY).");
+        return JSON.stringify({ tool: "done", arguments: { reason: "recovered after backoff" } });
+      },
+    }));
+    const { runAgentLoop } = await import("../src/agent/engine");
+    const notices: string[] = [];
+    const history: Message[] = [
+      { role: "system", content: "Core instructions only." },
+      { role: "user", content: "init" },
+    ];
+    await runAgentLoop(history, {
+      cwd: process.cwd(),
+      maxSteps: 10,
+      budget: { maxExtensions: 0 },
+      tools: {},
+      events: { onNotice: m => notices.push(m), onModelStream: () => {} },
+    });
+    const backoffNotices = notices.filter(n => /auto-retry/.test(n));
+    expect(backoffNotices.length).toBeGreaterThan(0);
+    expect(backoffNotices.every(n => n.includes("Esc to cancel"))).toBe(true);
+  } finally {
+    delete process.env.JEO_REFUSAL_BACKOFF_BASE_MS;
+  }
 });

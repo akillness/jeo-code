@@ -407,12 +407,19 @@ export function totalInputTokens(u: AnthropicUsage): number {
 
 /** Round-5 #1: HTTP-200-with-no-text must surface its CAUSE (stop_reason) instead
  *  of returning "" — an empty reply just bounces in the JSON loop, burning billed
- *  calls until the step budget dies. Mirrors gemini's blockedReason contract. */
-function emptyCompletionError(stopReason: string | undefined): Error {
+ *  calls until the step budget dies. Mirrors gemini's blockedReason contract.
+ *  `category` (from `stop_details.category`, e.g. "reasoning_extraction") is
+ *  defensive: today's live refusal-category delivery is an HTTP-error message
+ *  (see providerHttpError), but if Anthropic ever ships a category via a 200
+ *  body/stream event instead, folding it in here keeps friendlyProviderError's
+ *  category-aware clarifying note working instead of silently degrading to the
+ *  generic refusal copy. Absent category keeps the existing plain shape unchanged. */
+function emptyCompletionError(stopReason: string | undefined, category?: string): Error {
   const hint = stopReason === "max_tokens"
     ? " — output budget exhausted before any text; raise maxTokens or lower the thinking level"
     : "";
-  return new Error(`Anthropic returned no content${stopReason ? ` (stop_reason=${stopReason})` : ""}${hint}.`);
+  const reason = stopReason ? (category ? `stop_reason=${stopReason}, category=${category}` : `stop_reason=${stopReason}`) : undefined;
+  return new Error(`Anthropic returned no content${reason ? ` (${reason})` : ""}${hint}.`);
 }
 
 export const anthropicAdapter: ProviderAdapter = {
@@ -420,7 +427,7 @@ export const anthropicAdapter: ProviderAdapter = {
   supportsNativeTools: true,
   async call(messages, options, credential) {
     const response = await postAnthropic(messages, options, credential, false);
-    const result = (await response.json()) as { content: { type: string; text?: string; name?: string; input?: unknown; thinking?: string; signature?: string; data?: string }[]; stop_reason?: string; usage?: AnthropicUsage };
+    const result = (await response.json()) as { content: { type: string; text?: string; name?: string; input?: unknown; thinking?: string; signature?: string; data?: string }[]; stop_reason?: string; stop_details?: { category?: string }; usage?: AnthropicUsage };
     if (result.usage) options.onUsage?.({ inputTokens: totalInputTokens(result.usage), outputTokens: result.usage.output_tokens });
     // Capture thinking/redacted blocks as replay artifacts (parity with the stream path).
     for (const c of result.content) {
@@ -438,7 +445,7 @@ export const anthropicAdapter: ProviderAdapter = {
     );
     if (toolCall) return toolCall;
     const text = result.content.find(c => c.type === "text")?.text ?? "";
-    if (!text) throw emptyCompletionError(result.stop_reason);
+    if (!text) throw emptyCompletionError(result.stop_reason, result.stop_details?.category);
     return text;
   },
   async *stream(messages, options, credential) {
@@ -447,6 +454,7 @@ export const anthropicAdapter: ProviderAdapter = {
     let cachedInput: number | undefined;
     let yieldedAny = false;
     let stopReason: string | undefined;
+    let stopCategory: string | undefined;
     // Native tool_use streams as content_block_start (name) + input_json_delta fragments,
     // never as text_delta — accumulate per block index, then re-serialize to canonical
     // JSON and yield it once at the end (concatenation still equals call()).
@@ -460,8 +468,8 @@ export const anthropicAdapter: ProviderAdapter = {
         type?: string;
         index?: number;
         content_block?: { type?: string; name?: string; data?: string };
-        delta?: { type?: string; text?: string; partial_json?: string; thinking?: string; signature?: string; stop_reason?: string };
-        message?: { usage?: AnthropicUsage; stop_reason?: string };
+        delta?: { type?: string; text?: string; partial_json?: string; thinking?: string; signature?: string; stop_reason?: string; stop_details?: { category?: string } };
+        message?: { usage?: AnthropicUsage; stop_reason?: string; stop_details?: { category?: string } };
         usage?: { output_tokens?: number };
       };
       try {
@@ -499,6 +507,7 @@ export const anthropicAdapter: ProviderAdapter = {
         thinkBlocks.set(evt.index, tb);
       } else if (evt.type === "message_start" && evt.message) {
         if (evt.message.stop_reason) stopReason = evt.message.stop_reason;
+        if (evt.message.stop_details?.category) stopCategory = evt.message.stop_details.category;
         if (evt.message.usage) {
           // Cache only — usage is reported ONCE at message_delta so an accumulating
           // sink can't double-count input (and a pre-first-chunk retry that replays
@@ -507,6 +516,7 @@ export const anthropicAdapter: ProviderAdapter = {
         }
       } else if (evt.type === "message_delta") {
         if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason;
+        if (evt.delta?.stop_details?.category) stopCategory = evt.delta.stop_details.category;
         if (evt.usage) options.onUsage?.({ inputTokens: cachedInput, outputTokens: evt.usage.output_tokens });
       }
     }
@@ -519,7 +529,7 @@ export const anthropicAdapter: ProviderAdapter = {
     }
     const envelope = serializeAccumulatedToolCalls(toolBlocks);
     if (envelope) { yieldedAny = true; yield envelope; }
-    if (!yieldedAny) throw emptyCompletionError(stopReason);
+    if (!yieldedAny) throw emptyCompletionError(stopReason, stopCategory);
   },
 };
 function mapStainlessOs(platform: string): "MacOS" | "Windows" | "Linux" | "FreeBSD" | `Other::${string}` {

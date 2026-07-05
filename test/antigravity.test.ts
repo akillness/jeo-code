@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { antigravityRequest, getAntigravityUserAgent, antigravityAdapter } from "../src/ai/providers/antigravity";
+import { isRefusalError } from "../src/util/retry";
 
 const cred = { kind: "oauth" as const, provider: "gemini" as const, token: "tok", projectId: "proj-1" };
 
@@ -124,4 +125,74 @@ test("antigravityAdapter.stream: fires onReasoningStart up front only when think
   expect(await drainStream("antigravity/gemini-3-pro-low", undefined)).toBe(1);
   // Claude without effort stays non-thinking → no signal.
   expect(await drainStream("antigravity/claude-opus-4-6", undefined)).toBe(0);
+});
+
+test("antigravityAdapter.call: empty completion with a SAFETY finishReason surfaces the reason and is detected as a refusal", async () => {
+  const prevFetch = globalThis.fetch;
+  const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
+  globalThis.fetch = (async () =>
+    new Response(sse({ response: { candidates: [{ content: { parts: [] }, finishReason: "SAFETY" }] } }), {
+      status: 200, headers: { "content-type": "text/event-stream" },
+    })) as any;
+  try {
+    let caught: Error | undefined;
+    try {
+      await antigravityAdapter.call([{ role: "user", content: "hi" }], { model: "antigravity/gemini-3-flash" } as any, cred);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).toBeDefined();
+    // "returned no content" (not "returned an empty response") so defaultRetryable's
+    // transient-empty-200 substring match still applies consistently with gemini.ts.
+    expect(caught!.message).toBe("Antigravity Cloud Code Assist returned no content (finishReason=SAFETY).");
+    expect(isRefusalError(caught!)).toBe(true);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("antigravityAdapter.stream: empty completion with a finishReason surfaces it in the thrown error", async () => {
+  const prevFetch = globalThis.fetch;
+  const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
+  globalThis.fetch = (async () =>
+    new Response(sse({ response: { candidates: [{ content: { parts: [] }, finishReason: "RECITATION" }] } }), {
+      status: 200, headers: { "content-type": "text/event-stream" },
+    })) as any;
+  try {
+    let caught: Error | undefined;
+    try {
+      for await (const _ of antigravityAdapter.stream([{ role: "user", content: "hi" }], { model: "antigravity/gemini-3-flash" } as any, cred)) {
+        // drain
+      }
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).toBeDefined();
+    expect(caught!.message).toBe("Antigravity Cloud Code Assist returned no content (finishReason=RECITATION).");
+    expect(isRefusalError(caught!)).toBe(true);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("antigravityAdapter.call: empty completion with NO finishReason keeps the reason-free message (STOP / absent)", async () => {
+  const prevFetch = globalThis.fetch;
+  const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
+  globalThis.fetch = (async () =>
+    new Response(sse({ response: { candidates: [{ content: { parts: [] }, finishReason: "STOP" }] } }), {
+      status: 200, headers: { "content-type": "text/event-stream" },
+    })) as any;
+  try {
+    let caught: Error | undefined;
+    try {
+      await antigravityAdapter.call([{ role: "user", content: "hi" }], { model: "antigravity/gemini-3-flash" } as any, cred);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).toBeDefined();
+    expect(caught!.message).toBe("Antigravity Cloud Code Assist returned no content.");
+    expect(isRefusalError(caught!)).toBe(false);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
 });

@@ -62,7 +62,7 @@ export function friendlyProviderError(err: unknown): string {
   }
   if (isRefusalError(err)) {
     const base = `${provider} declined to answer (safety refusal — no content returned). Usually a content classifier tripped on recently read file/search content: /retry, /compact or /new to drop the triggering context, or switch model with /model. If this persists on a Claude subscription (OAuth) login, Anthropic restricts third-party OAuth clients — set ANTHROPIC_API_KEY or use another provider.`;
-    const category = /Refusal \((\w+)\)/i.exec(msg)?.[1];
+    const category = /Refusal \((\w+)\)/i.exec(msg)?.[1] ?? /category=(\w+)/i.exec(msg)?.[1];
     if (category === "reasoning_extraction") {
       return `${base} (Category: reasoning_extraction — this classifier flags requests that look like probing the model's internal reasoning; jeo's own thinking-block replay across multi-step tool use is a common benign trigger, not an actual violation. /retry after a /compact usually clears it.)`;
     }

@@ -4,16 +4,19 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { readTool, editTool, writeTool } from "../src/agent/tools";
 
-// gjc-inherited file-freshness guard (plan/gjc-inheritance.md B7 + B3.5):
-// edits against content the agent has not seen are rejected ONCE with the
-// current content re-presented (recovery), and SEARCH mismatches carry an
-// excerpt so a failed edit costs one retry instead of a read round-trip.
+// gjc-inherited blind-edit guard (plan/gjc-inheritance.md B7 + B3.5):
+// a blind (no-anchor) line-range edit against content the agent has never
+// read this session is rejected once (read-first enforced), and SEARCH
+// mismatches carry an excerpt so a failed edit costs one retry instead of a
+// read round-trip. NOTE: writes/edits are NOT rejected just because the file
+// changed on disk since the last read — the agent's write always wins
+// (2026-07: stale-read clobber guard removed per explicit user direction).
 
 async function tmp(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "jeo-fresh-"));
 }
 
-test("edit after external change is rejected with current content, then retry passes", async () => {
+test("edit after external change on disk overwrites it (no clobber guard)", async () => {
   const dir = await tmp();
   const file = path.join(dir, "a.ts");
   await fs.writeFile(file, "const a = 1;\nconst b = 2;\n");
@@ -22,19 +25,13 @@ test("edit after external change is rejected with current content, then retry pa
   await new Promise(r => setTimeout(r, 5));
   await fs.writeFile(file, "const a = 100;\nconst b = 2;\n");
 
-  const rejected = await editTool("a.ts", "≔1\nconst a = 42;", dir);
-  expect(rejected.success).toBe(false);
-  expect(rejected.error).toContain("changed on disk since you last read it");
-  expect(rejected.error).toMatch(/1[a-z0-9]{2}\|const a = 100;/); // recovery: current content shown
-
-  // The rejection refreshed the snapshot — the immediate retry succeeds.
-  const retry = await editTool("a.ts", "≔1\nconst a = 42;", dir);
-  expect(retry.success).toBe(true);
+  const applied = await editTool("a.ts", "≔1\nconst a = 42;", dir);
+  expect(applied.success).toBe(true);
   expect(await fs.readFile(file, "utf-8")).toBe("const a = 42;\nconst b = 2;\n");
   await fs.rm(dir, { recursive: true, force: true });
 });
 
-test("write after external change is rejected once (clobber protection)", async () => {
+test("write after external change on disk overwrites it (no clobber guard)", async () => {
   const dir = await tmp();
   const file = path.join(dir, "w.txt");
   await fs.writeFile(file, "v1");
@@ -42,11 +39,9 @@ test("write after external change is rejected once (clobber protection)", async 
   await new Promise(r => setTimeout(r, 5));
   await fs.writeFile(file, "v2-external-longer");
 
-  const rejected = await writeTool("w.txt", "agent-version", dir);
-  expect(rejected.success).toBe(false);
-  expect(rejected.error).toContain("changed on disk");
-  const retry = await writeTool("w.txt", "agent-version", dir);
-  expect(retry.success).toBe(true);
+  const applied = await writeTool("w.txt", "agent-version", dir);
+  expect(applied.success).toBe(true);
+  expect(await fs.readFile(file, "utf-8")).toBe("agent-version");
   await fs.rm(dir, { recursive: true, force: true });
 });
 

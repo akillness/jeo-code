@@ -43,6 +43,7 @@ The core runtime loop, tool registry, session management, and state persistence 
 | `state.ts` | File-backed state and session persistence (`.jeo/state/`) |
 | `step-budget.ts` | gjc-style flexible step budgeting: progress-scored extensions, hard cap, fail-fast |
 | `irc-tool.ts` | `irc` tool — parent/peer live messaging into running DETACHED subagents (list peers, send to one id or "all"); built entirely on `SubagentRegistry.steer()`, gjc `irc` parity |
+| `approve-tool.ts` | `approve` tool — lets the agent flip a `jeo ralplan` plan's `approved` flag itself (wraps `src/commands/approve.ts`'s `approvePlan` content gate: schema shape, known roles, persisted [OKAY] consensus, hash-vs-consensus match). 2026-07: the prior human-only identity gate (only `jeo approve` run by a human could approve) was removed per explicit user direction; launch.ts-only (main interactive session), not part of `DEFAULT_TOOLS`/`subagentToolset`, same as `goal`/`irc` |
 | `job-registry.ts` | In-process registry for BACKGROUND shell processes spawned via `job {action:"start"}` — real parallel OS processes (not just concurrent JS), bounded output buffer, list/tail/awaitIds/cancel, gjc `job`/async-bash parity |
 | `job-tool.ts` | `job` control tool — start/list/tail/await/cancel background shell processes tracked by `job-registry.ts` |
 | `subagent-registry.ts` | Brief description of purpose |
@@ -52,7 +53,7 @@ The core runtime loop, tool registry, session management, and state persistence 
 | `todo-tool.ts` | Brief description of purpose |
 | `tokenizer.ts` | Brief description of purpose |
 | `tool-output.ts` | Brief description of purpose |
-| `tools.ts` | Built-in tool definitions (bash, read, write, edit, etc.) |
+| `tools.ts` | Built-in tool definitions (bash, read, write, edit, etc.). 2026-07: the disk-staleness clobber guard (rejecting a write/edit when the file changed on disk since the agent's last read) was removed per explicit user direction — writes always win now. The distinct blind-edit guard (`readThisSession`/`markRead`: a no-anchor line-range `edit` still requires having read the file THIS session at least once) is unchanged |
 | `web-search.ts` | Brief description of purpose |
 
 ## Subdirectories

@@ -189,22 +189,23 @@ function stripAnchorPrefixes(block: string): string | null {
   if (!lines.every(l => l.trim() === "" || ANCHOR_PREFIX_RE.test(l))) return null;
   return lines.map(l => l.replace(ANCHOR_PREFIX_RE, "")).join("\n");
 }
-// ── File-freshness guard (plan/gjc-inheritance.md B7, gjc edit/file-read-cache 계승) ──
-// `read` records each file's stat fingerprint; `edit`/`write` verify it before
-// mutating. A file changed by someone else (concurrent agent, user, formatter)
-// between the read and the edit is REJECTED once — with the CURRENT content
-// re-presented so the model can retry immediately (recovery, not just a guard).
-const lastReadSnapshots = new Map<string, { mtimeMs: number; size: number }>();
+// ── Blind-edit guard (plan/gjc-inheritance.md B7, gjc edit/file-read-cache 계승) ──
+// `read` records that this session has SEEN a path; a line-range `edit` with
+// no hash anchors on either bound refuses to run against a path never read
+// this session (see the narrow guard below in editTool). NOTE: this module
+// does NOT reject a write/edit just because the file changed on disk since
+// the last read — the agent's write always wins (2026-07: guardrail removed
+// per explicit user direction to stop blocking on external/concurrent edits).
+const readThisSession = new Set<string>();
 const MAX_SNAPSHOT_ENTRIES = 64;
 
-function recordReadSnapshot(absPath: string, st: { mtimeMs: number; size: number } | null): void {
-  if (!st) return;
-  if (lastReadSnapshots.size >= MAX_SNAPSHOT_ENTRIES && !lastReadSnapshots.has(absPath)) {
-    const oldest = lastReadSnapshots.keys().next().value;
-    if (oldest !== undefined) lastReadSnapshots.delete(oldest);
+function markRead(absPath: string): void {
+  if (readThisSession.size >= MAX_SNAPSHOT_ENTRIES && !readThisSession.has(absPath)) {
+    const oldest = readThisSession.values().next().value;
+    if (oldest !== undefined) readThisSession.delete(oldest);
   }
-  lastReadSnapshots.delete(absPath); // re-insert to refresh LRU order
-  lastReadSnapshots.set(absPath, { mtimeMs: st.mtimeMs, size: st.size });
+  readThisSession.delete(absPath); // re-insert to refresh LRU order
+  readThisSession.add(absPath);
 }
 
 /** Annotated excerpt of the file's CURRENT content for recovery errors (read-format `N|`). */
@@ -220,26 +221,6 @@ function excerptForRecovery(content: string, centerLine?: number): string {
   const body = lines.slice(start - 1, end).map((l, i) => `${start + i}${lineAnchor(l)}|${l}`).join("\n");
   const note = lines.length > end - start + 1 ? `\n…(showing lines ${start}-${end} of ${lines.length})` : "";
   return body + note;
-}
-
-/** Returns a recovery error when `absPath` changed since the agent last read it; null when fresh.
- *  Refreshes the snapshot to CURRENT so the immediate retry (model just saw fresh content) passes. */
-async function staleReadError(absPath: string, filePath: string, verb: string): Promise<ToolResult | null> {
-  const snap = lastReadSnapshots.get(absPath);
-  if (!snap) return null; // never read → no guard here (see the narrow blind-replace guard in editTool)
-  const st = await fs.stat(absPath).catch(() => null);
-  if (!st || !st.isFile()) return null; // deleted/replaced-by-dir: let the op surface its own error
-  if (st.mtimeMs === snap.mtimeMs && st.size === snap.size) return null;
-  const content = await fs.readFile(absPath, "utf-8").catch(() => null);
-  recordReadSnapshot(absPath, st); // the model sees the fresh content below → retry passes
-  const excerpt = content !== null ? `\nCurrent content:\n${excerptForRecovery(content)}` : "";
-  return {
-    success: false,
-    output: "",
-    error:
-      `${verb} rejected: ${filePath} changed on disk since you last read it (another agent, the user, or a formatter touched it). ` +
-      `Re-target your ${verb.toLowerCase()} against the CURRENT content below, then retry.${excerpt}`,
-  };
 }
 export async function readTool(
   filePath: string,
@@ -261,7 +242,7 @@ export async function readTool(
       return lsTool(filePath, cwd);
     }
     const content = await fs.readFile(absPath, "utf-8");
-    if (st?.isFile()) recordReadSnapshot(absPath, st); // arm the edit/write freshness guard
+    if (st?.isFile()) markRead(absPath); // arm the blind-edit read-first guard
 
     if (raw) {
       // Verbatim bytes, no "N|" line prefixes (gjc `:raw`), char-capped for context safety.
@@ -339,11 +320,9 @@ export async function writeTool(
     }
     await assertMutationAllowed(filePath, cwd);
     const absPath = path.resolve(cwd, filePath);
-    const stale = await staleReadError(absPath, filePath, "Write");
-    if (stale) return stale;
     await fs.mkdir(path.dirname(absPath), { recursive: true });
     await fs.writeFile(absPath, content, "utf-8");
-    recordReadSnapshot(absPath, await fs.stat(absPath).catch(() => null)); // own change ≠ stale
+    markRead(absPath); // own change counts as having seen the file
     return { success: true, output: `Successfully wrote ${content.length} characters to ${filePath}` };
   } catch (err: any) {
     return { success: false, output: "", error: err.message };
@@ -392,8 +371,6 @@ export async function editTool(
     }
     await assertMutationAllowed(filePath, cwd);
     const absPath = path.resolve(cwd, filePath);
-    const stale = await staleReadError(absPath, filePath, "Edit");
-    if (stale) return stale;
     let content = await fs.readFile(absPath, "utf-8");
 
     // Line-anchored edit parser. Modes (payload follows the directive's newline):
@@ -517,7 +494,7 @@ export async function editTool(
         // (Insert/append directives above are unaffected: they don't destroy content.
         // Checked AFTER the bounds check so an out-of-range request still reports as
         // out-of-range rather than being masked by this guard.)
-        if (!aStart && !aEnd && !lastReadSnapshots.has(absPath)) {
+        if (!aStart && !aEnd && !readThisSession.has(absPath)) {
           return {
             success: false,
             output: "",
@@ -605,7 +582,7 @@ export async function editTool(
     }
 
     await fs.writeFile(absPath, content, "utf-8");
-    recordReadSnapshot(absPath, await fs.stat(absPath).catch(() => null)); // own change ≠ stale
+    markRead(absPath); // own change counts as having seen the file
     return { success: true, output: `Successfully updated ${filePath}` };
   } catch (err: any) {
     return { success: false, output: "", error: err.message };
@@ -1147,7 +1124,7 @@ export async function deleteTool(
       return { success: false, output: "", error: `${targetPath} is a directory — pass recursive:true to remove it and its contents.` };
     }
     await fs.rm(abs, { recursive, force: false });
-    lastReadSnapshots.delete(abs); // a future write to this path must not be flagged stale
+    readThisSession.delete(abs); // a future edit against this path must read it again first
     return { success: true, output: `Deleted ${st.isDirectory() ? "directory" : "file"}: ${targetPath}` };
   } catch (err: any) {
     return { success: false, output: "", error: err.message };

@@ -8,11 +8,14 @@ import { memoryPromptSection, spawnDetachedDistill, recordFailedAttempt } from "
 import { createTaskTool, taskToolProtocolLine, type TaskSubEvent } from "../agent/task-tool";
 import { createSubagentTool, SUBAGENT_TOOL_PROTOCOL_LINE } from "../agent/subagent-tool";
 import { SubagentRegistry } from "../agent/subagent-registry";
+import { stopSessionNotifyEndpoint } from "../agent/notify/session-endpoint";
+
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { createJobTool, JOB_TOOL_PROTOCOL_LINE } from "../agent/job-tool";
 import { JobRegistry } from "../agent/job-registry";
 import { createIrcTool, IRC_TOOL_PROTOCOL_LINE } from "../agent/irc-tool";
 import { createGoalTool, GOAL_TOOL_PROTOCOL_LINE } from "../agent/goal-tool";
+import { createApproveTool, APPROVE_TOOL_PROTOCOL_LINE } from "../agent/approve-tool";
 import { LaunchTui } from "../tui/app";
 import { runDeepInterviewEngine, type DeepInterviewEngineOptions } from "./deep-interview";
 import { runRalplanEngine, type RalplanEngineOptions } from "./ralplan";
@@ -525,7 +528,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // pi-style: load project context (JEO.md / AGENTS.md / .jeo/context.md / CLAUDE.md) into the prompt.
   const contextFiles = await loadProjectContext(cwd);
 
-  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "todo", "subagent", "job", "irc", "goal", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug", "browser"]);
+  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "todo", "subagent", "job", "irc", "goal", "approve", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug", "browser"]);
   let allowedTools = new Set(KNOWN_TOOLS);
 
   if (flags.noTools) {
@@ -599,6 +602,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     (allowedTools.has("job") ? "\n\nBackground jobs: " + JOB_TOOL_PROTOCOL_LINE : "") +
     (allowedTools.has("irc") ? "\n\nPeer messaging: " + IRC_TOOL_PROTOCOL_LINE : "") +
     (allowedTools.has("goal") ? "\n\nGoal tracking: " + GOAL_TOOL_PROTOCOL_LINE : "") +
+    (allowedTools.has("approve") ? "\n\nPlan approval: " + APPROVE_TOOL_PROTOCOL_LINE : "") +
     (effectiveNoSkills ? "" :
     "\n\nJEO workflow routing:\n" +
     "- Answer the user's request DIRECTLY. Never reply with a catalog, list, or summary of skills unless the user explicitly asks what skills exist.\n" +
@@ -1108,6 +1112,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           job: createJobTool(jobRegistry),
           irc: createIrcTool(subagentRegistry),
           goal: createGoalTool(),
+          approve: createApproveTool(),
         };
         const tools = filterToolMap(fullTools, Array.from(allowedTools));
         // Opik observability (opt-in via JEO_OPIK): one trace per turn, spans per
@@ -1166,7 +1171,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       } finally {
         harness.dispose();
         subagentRegistry.cancelAll(); // #9: no detached run leaks past the turn
+        await stopSessionNotifyEndpoint(subagentRegistry); // tear down the Telegram remote-control endpoint, if one was started
         jobRegistry.cancelAll(); // background jobs are turn-scoped too — no orphaned processes
+
         // Steering typed but never drained (e.g. entered just after the final step)
         // must not be lost — fold it into the next prompt draft so it runs next.
         const leftover = steerInbox.splice(0, steerInbox.length).map(s => s.trim()).filter(Boolean);

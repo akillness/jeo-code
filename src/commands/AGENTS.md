@@ -9,7 +9,7 @@ Concrete implementations of `jeo` subcommands (e.g., launch, setup, team, ultrag
 ## Key Files
 | File | Description |
 |------|-------------|
-| `approve.ts` | Brief description of purpose |
+| `approve.ts` | `jeo approve <plan-path>` CLI + exported `approvePlan()` core (schema shape, known roles, persisted [OKAY] consensus, hash-vs-consensus match) — shared with the agent-facing `approve` tool (`src/agent/approve-tool.ts`) so the agent can flip a plan's `approved` flag itself; the identity restriction (human-only) was removed 2026-07 per explicit user direction, the content gate was not |
 | `auth.ts` | Brief description of purpose |
 | `chat.ts` | Brief description of purpose |
 | `deep-interview.ts` | Brief description of purpose |

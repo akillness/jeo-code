@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.36] - 2026-07-04
+_Removes two specific guardrails per explicit user direction: `jeo approve`'s human-only identity gate (the agent can now approve its own reviewed `jeo ralplan` plan) and the disk-staleness write/edit clobber guard (a write/edit no longer refuses just because the file changed on disk since the last read). Both removals were scoped narrowly after enumerating every guardrail in the codebase — the catastrophic-command hard block (`rm -rf /`, fork bombs, raw-disk `dd`/`mkfs`), the read-only subagent role tool gating, the deep-interview mutation lock, and the blind-edit (never-read-this-session) guard are all UNCHANGED._
+
+### Removed
+- **The `jeo approve` human-only identity gate.** Previously `ralplanState.approved` could only be flipped by a human running `jeo approve <plan-path>` in their own terminal — there was no way for the agent itself to approve a plan it had just drafted and had reviewed pass consensus. `src/commands/approve.ts`'s validation logic (schema shape, known subagent roles, persisted `[OKAY]` consensus verdict, hash-vs-consensus match) is extracted into an exported `approvePlan()` core — unchanged and still enforced no matter who calls it — shared by the `jeo approve` CLI (`runApproveCommand`, now a thin wrapper) and a new agent-facing `approve` tool (`src/agent/approve-tool.ts`). Wired into `launch.ts` the same way as `goal`/`irc` (main interactive session only, not part of `DEFAULT_TOOLS`/`subagentToolset`, so spawned subagents still cannot approve plans).
+- **The disk-staleness write/edit clobber guard (`src/agent/tools.ts`'s `staleReadError`).** A write/edit against a file that changed on disk since the agent's last read is no longer rejected — the agent's write always wins now, even over a concurrent formatter/user/other-agent edit. The distinct blind-edit guard is UNCHANGED: a no-anchor line-range `edit` still requires having read the file at least once this session (`readThisSession`/`markRead`, the presence-only successor to the removed staleness-comparison snapshot map).
+
+### Verified
+- `bunx tsc -p tsconfig.json --noEmit` clean.
+- New `test/approve-tool.test.ts` (explicit/defaulted planPath, missing-state error, the shared content gate still refusing an unreviewed/hash-mismatched plan through the tool, idempotent re-approval) and `test/launch-approve-wiring.test.ts` (source-text wiring check, mirrors `engine-computer-wiring.test.ts`'s pattern for module-local closures).
+- `test/edit-freshness.test.ts` updated: the two external-change scenarios now assert the write/edit SUCCEEDS and overwrites, instead of asserting rejection; the never-read-this-session and SEARCH-mismatch-recovery cases (a different guard) are untouched and still pass.
+- `test/approve.test.ts` (CLI-level, all 6 validation/idempotency branches) passes unchanged against the refactored `approvePlan()` core.
+
 ## [0.7.35] - 2026-07-04
 _`jeo team` now runs every plan step through the SAME subagent execution core as the `task`/`subagent` tools, and gains gjc-style concurrent workers: a plan can mark a contiguous run of independent steps to execute in parallel, each isolated in its own git worktree, merged back in order._
 

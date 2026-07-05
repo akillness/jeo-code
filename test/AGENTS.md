@@ -18,6 +18,7 @@ Comprehensive unit and integration test suites for the `jeo-code` project. Ensur
 | `antigravity-login.test.ts` | Brief description of purpose |
 | `antigravity.test.ts` | Brief description of purpose |
 | `approve.test.ts` | Brief description of purpose |
+| `approve-tool.test.ts` | Agent-facing `approve` tool (`createApproveTool`): explicit/defaulted planPath, missing-state error, and the shared content gate (consensus/hash) surfacing through `ToolResult` |
 | `ascii-art.test.ts` | Brief description of purpose |
 | `autocomplete.test.ts` | Brief description of purpose |
 | `autopilot-status.test.ts` | Brief description of purpose |
@@ -47,7 +48,7 @@ Comprehensive unit and integration test suites for the `jeo-code` project. Ensur
 | `dollar-skill.test.ts` | Brief description of purpose |
 | `done-verification-guard.test.ts` | Brief description of purpose |
 | `duration.test.ts` | Brief description of purpose |
-| `edit-freshness.test.ts` | Brief description of purpose |
+| `edit-freshness.test.ts` | Blind-edit guard (no-anchor line-range edit requires a same-session read first) and SEARCH-mismatch recovery excerpts; also covers that a write/edit after an EXTERNAL on-disk change now overwrites rather than rejecting (2026-07: stale-read clobber guard removed) |
 | `engine-multitool.test.ts` | Brief description of purpose |
 | `engine-salvage.test.ts` | Brief description of purpose |
 | `engine-spill.test.ts` | Brief description of purpose |
@@ -72,6 +73,7 @@ Comprehensive unit and integration test suites for the `jeo-code` project. Ensur
 | `image-attachments.test.ts` | Brief description of purpose |
 | `input-box.test.ts` | Brief description of purpose |
 | `install-script.test.ts` | Brief description of purpose |
+| `launch-approve-wiring.test.ts` | Source-text-level check that launch.ts's `KNOWN_TOOLS`/per-turn `fullTools` wire the `approve` tool (module-local closures, not exported — mirrors `engine-computer-wiring.test.ts`'s pattern) |
 | `launch-flag-aliases.test.ts` | Brief description of purpose |
 | `launch-flags.test.ts` | Brief description of purpose |
 | `launch-repl-eof.test.ts` | Brief description of purpose |

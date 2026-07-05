@@ -880,10 +880,33 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // Refresh injected OKF memory with THIS turn's query before the model call so
       // failure-first ranking fires and same-session dead ends resurface.
       await refreshSessionMemory(userInput);
-      const compRes = await maybeCompact(history, {
-        model: activeModel,
-        contextTokens,
+      // Esc-cancellable turn-boundary compaction preflight: a slow/hung summarization
+      // LLM call must not be un-cancellable just because it runs before the main
+      // per-turn abort harness (created below) exists yet. A short-lived harness scoped
+      // to just this call gives Esc/Ctrl+C the same abort path without wiring the full
+      // mid-turn steering machinery this early (which needs turn-scoped vars not
+      // constructed until after compaction/history mutation settles).
+      const compactHarness = createInFlightAbortHarness({
+        captureEsc: !!tui,
+        onAbortNotice: msg => {
+          if (tui) tui.events().onNotice?.(msg);
+          else console.log(msg);
+        },
+        onHardExit: () => {
+          if (tui) tui.finish("Cancelled.", { ok: false });
+          process.exit(130);
+        },
       });
+      let compRes: Awaited<ReturnType<typeof maybeCompact>>;
+      try {
+        compRes = await maybeCompact(history, {
+          model: activeModel,
+          contextTokens,
+          signal: compactHarness.controller.signal,
+        });
+      } finally {
+        compactHarness.dispose();
+      }
       if (compRes.error) {
         throw new Error(compRes.error);
       }

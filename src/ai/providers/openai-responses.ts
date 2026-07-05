@@ -15,6 +15,7 @@ import type { CallOptions, Message } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError, fetchWithArtifactFailSafe } from "./errors";
 import { serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
+import { sanitizeJsonStrings } from "../../util/sanitize-json";
 import os from "node:os";
 import pkg from "../../../package.json";
 
@@ -141,7 +142,7 @@ export function codexResponsesRequest(
     return {
       url: `${base}/responses`,
       headers: { "content-type": "application/json", authorization: `Bearer ${token}`, accept: "text/event-stream", "user-agent": codexUserAgent() },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(sanitizeJsonStrings(payload)),
     };
   }
   const accountId = extractChatgptAccountId(token);
@@ -161,7 +162,7 @@ export function codexResponsesRequest(
     headers.conversation_id = promptCacheKey;
     headers["x-client-request-id"] = promptCacheKey;
   }
-  return { url: CODEX_RESPONSES_URL, headers, body: JSON.stringify(payload) };
+  return { url: CODEX_RESPONSES_URL, headers, body: JSON.stringify(sanitizeJsonStrings(payload)) };
 }
 
 /** gjc parity (normalizeOpenAIResponsesPromptCacheKey): well-formed unicode, ≤64 chars

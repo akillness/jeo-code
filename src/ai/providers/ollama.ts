@@ -2,6 +2,7 @@ import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readLines } from "../sse";
 import { providerHttpError } from "./errors";
 import { createThinkSplitter } from "../think-tags";
+import { sanitizeJsonStrings } from "../../util/sanitize-json";
 
 /**
  * Resolve the Ollama base URL. `OLLAMA_HOST` is documented as a bare host:port
@@ -52,7 +53,7 @@ function ollamaRequest(messages: Message[], options: CallOptions, stream: boolea
   };
   if (options.jsonMode) payload.format = "json";
   const base = normalizeOllamaBaseUrl(options.baseUrl);
-  return { url: `${base}/api/chat`, body: JSON.stringify(payload) };
+  return { url: `${base}/api/chat`, body: JSON.stringify(sanitizeJsonStrings(payload)) };
 }
 
 /** Round-5 #1: surface done_reason when a 200 carries no text (uniform contract). */

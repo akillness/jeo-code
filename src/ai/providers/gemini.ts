@@ -4,6 +4,7 @@ import { readSse } from "../sse";
 import { providerHttpError, fetchWithArtifactFailSafe } from "./errors";
 import { jeoEnv } from "../../util/env";
 import { serializeToolCalls } from "../../agent/tool-schemas";
+import { sanitizeJsonStrings } from "../../util/sanitize-json";
 
 /** Gemini 2.5+/latest models think by default and BILL thought tokens against
  *  `maxOutputTokens` — a small-budget call can burn its entire budget on thoughts
@@ -205,7 +206,7 @@ export function geminiRequest(messages: Message[], options: CallOptions, credent
   const headers: Record<string, string> = oauth
     ? { "content-type": "application/json", authorization: `Bearer ${oauth}` }
     : { "content-type": "application/json" };
-  return { url, headers, body: JSON.stringify(payload) };
+  return { url, headers, body: JSON.stringify(sanitizeJsonStrings(payload)) };
 }
 
 const CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com";
@@ -236,7 +237,7 @@ export function geminiCliRequest(messages: Message[], options: CallOptions, acce
       accept: "text/event-stream",
       ...getGeminiCliHeaders(geminiModel),
     },
-    body: JSON.stringify({ project: projectId, model: geminiModel, request: payload }),
+    body: JSON.stringify(sanitizeJsonStrings({ project: projectId, model: geminiModel, request: payload })),
   };
 }
 

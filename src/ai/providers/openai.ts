@@ -4,6 +4,7 @@ import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
 import { codexResponsesCall, codexResponsesStream } from "./openai-responses";
 import { serializeToolCalls, serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
+import { sanitizeJsonStrings } from "../../util/sanitize-json";
 import { createThinkSplitter, stripLeakedReasoningTags } from "../think-tags";
 
 /** True for OpenAI reasoning models (o-series + gpt-5+ family). Digit-count agnostic
@@ -96,7 +97,7 @@ export function openaiRequest(messages: Message[], options: CallOptions, credent
   return {
     url: `${base}/chat/completions`,
     headers: { "content-type": "application/json", Authorization: `Bearer ${bearerFor(credential)}` },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(sanitizeJsonStrings(payload)),
   };
 }
 

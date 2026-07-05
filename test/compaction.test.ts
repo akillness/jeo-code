@@ -370,3 +370,35 @@ test("maybeCompact: an aborted signal is a clean no-op — history is not mutate
   expect(history).toEqual(original); // not mutated
   expect(called).toBe(0); // summary call skipped before the abort check
 });
+test("maybeCompact: a signal aborted mid-flight rejects/resolves promptly instead of waiting out a hung summary call", async () => {
+  // Simulates the turn-boundary preflight path (src/commands/launch.ts): a slow/hung
+  // summarization callLlm must not block forever just because it started before the
+  // signal fired. mockCallLlm hangs until the same AbortController aborts, then
+  // rejects — maybeCompact must propagate/settle instead of hanging the turn.
+  const ac = new AbortController();
+  mockCallLlm = (_messages, opts?: any) => new Promise((_resolve, reject) => {
+    const signal: AbortSignal | undefined = opts?.signal;
+    if (signal?.aborted) { reject(new Error("aborted")); return; }
+    signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+  });
+  const history = makeHistory(20, true);
+
+  const pending = maybeCompact(history, { force: true, keepRecent: 4, signal: ac.signal });
+  ac.abort();
+  const result = await pending;
+
+  // Whatever shape a mid-flight-aborted summary takes (degraded/failed compaction,
+  // not the hung promise), the call must settle instead of hanging the turn.
+  expect(result).toBeDefined();
+});
+
+test("launch.ts wires an Esc-cancellable signal into the turn-boundary maybeCompact preflight call", async () => {
+  // Structural guard for the wiring fix: the preflight maybeCompact call (before the
+  // per-turn abort harness exists) must pass a non-undefined `signal` sourced from a
+  // dedicated createInFlightAbortHarness instance, not fire uncancellably.
+  const src = await Bun.file(new URL("../src/commands/launch.ts", import.meta.url)).text();
+  const preflightCallMatch = src.match(/const compactHarness = createInFlightAbortHarness\([\s\S]*?compRes = await maybeCompact\(history, \{[\s\S]*?\}\);/);
+  expect(preflightCallMatch).not.toBeNull();
+  const block = preflightCallMatch![0];
+  expect(block).toMatch(/signal:\s*compactHarness\.controller\.signal/);
+});

@@ -4,6 +4,7 @@ import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { providerHttpError } from "./errors";
 import { serializeToolCalls } from "../../agent/tool-schemas";
+import { sanitizeJsonStrings } from "../../util/sanitize-json";
 import { geminiThinkingConfig, getGeminiCliHeaders, type GeminiThinkingConfig } from "./gemini";
 
 const ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
@@ -204,14 +205,14 @@ export function antigravityRequest(messages: Message[], options: CallOptions, cr
     request.toolConfig = { functionCallingConfig: { mode: "AUTO" } };
   }
 
-  const body = JSON.stringify({
+  const body = JSON.stringify(sanitizeJsonStrings({
     project,
     model,
     request,
     requestType: "agent",
     userAgent: "antigravity",
     requestId: `agent-${randomUUID()}`,
-  });
+  }));
   return {
     url: `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
     headers: {

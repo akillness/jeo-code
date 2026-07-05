@@ -4,6 +4,7 @@ import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
 import { ProviderHttpError, parseRetryAfter, parseRetryFromBody, providerHttpError } from "./errors";
 import { serializeToolCalls, serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
+import { sanitizeJsonStrings } from "../../util/sanitize-json";
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
@@ -306,7 +307,7 @@ export function anthropicPayload(
   if (stream) payload.stream = true;
   const system = anthropicSystemBlocks(systemPrompt, model, credential, payload, options.baseUrl);
   if (system) payload.system = system;
-  return JSON.stringify(payload);
+  return JSON.stringify(sanitizeJsonStrings(payload));
 }
 
 export function anthropicRequest(

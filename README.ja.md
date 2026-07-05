@@ -38,13 +38,15 @@
 
 ## ハイライト
 
-- **マルチプロバイダ・単一ループ** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama を均一な JSON ツールループで。入力欄から OAuth ログイン(`/provider login`)、モデル選択は即座にデフォルトとして永続化。
+- **マルチプロバイダ・単一ループ** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio に加え、OpenAI・Anthropic 互換クラウド20以上(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai など)を均一な JSON ツールループで。入力欄から OAuth ログイン(`/provider login`)、モデル選択は即座にデフォルトとして永続化。
 - **編集の完全性** — read 出力にコンテンツアンカー(`42ab|`)が付き、アンカー付き編集は現在のファイルと照合・行移動時は自動再マッピング・不一致時は最新内容と共に拒否されます。
 - **自己修正の検証ループ** — post-edit フック(tsc / eslint / テスト)を設定すると、エージェントが診断を*自ら読み*ループ内で修正します。フックが赤のままだと `done` はブロックされます。
 - **芝居なしの本物のゲート** — `ralplan` の合議はリポジトリを実際に読む critic サブエージェントで、`[OKAY]` 評決が永続化され `jeo approve` がそれを*要求*します。`ultragoal` は誠実に報告します(スイート1回実行はグローバル信号であり、基準ごとの合格を捏造しません)。
 - **クラッシュ耐久・ローカルファースト** — 全状態は `.jeo/` 配下にアトミック書き込み、プロセス間ロック、失敗タスクマーカー + 再開時の部分編集警告。
 - **動的ステップ予算** — 直近のツール呼び出しが新規の進捗を示す間は延長され、停滞すれば要約に収束。サブエージェントは厳密なステップ契約を維持。
 - **インライン TUI** — 完了した作業は実スクロールバックに流れ(ターン中も tmux ホイール可)、エージェント実行中も通常のクエリ入力欄が表示されたまま編集できます。Ctrl+O の詳細トグル、テーマ、クリップボード画像貼り付け(Ctrl+V)、CJK/絵文字対応の幅計算。
+- **ブラウザツール** — Playwright によるヘッドレス Chromium 自動化を第一級のエージェントツールとして搭載: 名前付きタブを再利用しつつ `open`/`close`/`run`/`act`、スクリーンショットより `observe` でタグ付けした要素 id を優先。`npx playwright install chromium` を一度実行する必要があります(バンドルされていません — jeo 自体はネイティブ依存ゼロのまま、ブラウザバイナリは Playwright 側の別ダウンロードです)。
+- **リモートサブエージェント可視化(Telegram)** — ボットを一度ペアリング(`jeo notify setup`)すれば、`jeo daemon start` がサブエージェントの状態遷移(開始 → 完了/失敗/キャンセル)ごとにメッセージを送り、`/subagents`、`/steer <id> <subagentId> <msg>`、`/cancel <id> <subagentId>` を受け付けます — コマンドはペアリングされたチャットのみ許可されます。
 
 ## インストール
 
@@ -163,6 +165,31 @@ jeo ultragoal
 
 `--worktree <name>` は隔離された兄弟 git worktree で jeo を実行するため（パスがあれば再利用、なければ basename ブランチで作成）、リスクのある作業やレビュー対象の作業がメインのチェックアウトに触れることはありません。`jeo mcp serve` は stdio を介して MCP 対応のあらゆるコントローラーに jeo のツールを公開します（`jeo mcp tools` で一覧表示）。`-q`/`--quiet` (または `JEO_QUIET=1`) を追加すると、起動バナー・ウェルカムアニメーション・リリースノート・再開ヒントが抑制され、jeo を別のエージェントと並べて実行したりボットから駆動したりできます。`-p`/`--print` は quiet を含みます。
 
+## リモート監視・制御(Telegram)
+
+```bash
+jeo notify setup        # BotFather ボットを一度ペアリング(getMe 検証 + chat-id ペアリング)
+jeo notify status       # マスクされたトークン、ペアリング済み chat id、デーモン状態
+jeo daemon start        # シングルトンのバックグラウンドデーモンを起動
+jeo daemon status       # 実行中かどうかを確認
+jeo daemon stop         # SIGTERM で停止
+```
+
+```
+┌─────────────────────┐        ┌─────────────────────┐         ┌─────────────────────┐
+│   interactive turn  │◄──ws──►│    notify daemon    │◄─poll──►│     Telegram bot    │
+│   SubagentRegistry  │        │     (singleton)     │         │    (paired chat)    │
+└─────────────────────┘        └─────────────────────┘         └─────────────────────┘
+```
+
+オプトインかつ遅延バインド: `notifications.enabled` が設定され、かつ detached サブエージェント(`task {detached:true}`)が実際に実行されるまで何もバインドされません。デーモンは生存中のセッションディスカバリファイルをスキャンし、セッションごとにループバック WebSocket を接続、サブエージェントの状態 *遷移*(開始 → 完了/失敗/キャンセル)時にのみメッセージを送信します — 「実行中のまま」の繰り返し通知はありません。受信した Telegram コマンドはペアリング済みチャットのみ許可され、それ以外は黙って破棄されます。
+
+| コマンド | 効果 |
+| --- | --- |
+| `/subagents` | 接続中の全セッションの実行中/最近のサブエージェント一覧 |
+| `/steer <sessionId> <subagentId> <message>` | 実行中のサブエージェントへライブメッセージを送信 |
+| `/cancel <sessionId> <subagentId>` | 実行中のサブエージェントをキャンセル |
+| `/help` | コマンドリファレンスを表示 |
 
 ## ローカルモデル
 
@@ -186,10 +213,35 @@ JEO_TUI_ALT_SCREEN=1            # レガシー alt-screen ターン(デフォル
 JEO_STEP_BASE=24                # 動的ステップ予算のローリングベース
 JEO_STEP_HARD_CAP=600           # 絶対終了保証
 JEO_STREAM_MAX_MS=300000        # オプトインの全体ストリーム期限(デフォルト off; スロードリップ遮断)
+JEO_STREAM_IDLE_MS=300000       # チャンク単位のアイドル上限(デフォルト300秒); 最初のトークン前が長い低速/ローカルバックエンドでは引き上げてください
 JEO_TOOL_OUTPUT_MAX=4000        # モデル可視のツール出力上限(全文はアーティファクトへ)
 ```
 
 リトライ動作は `~/.jeo/config.json` の `retry` で調整します(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` など)。ステップ予算はデフォルトで動的 — 新規進捗が見える間は延長され、停滞時は要約に収束します。`--max-steps N` で有限フローに戻ります。
+
+## スキル移行とバンドルスキルの確認
+
+ワークフローを jeo に移す際は、何かをインストール・上書きする前にバンドルされたデフォルトを確認してください:
+
+```bash
+jeo skills list                 # バンドル + ユーザー + プロジェクトのスキル、発見ディレクトリ付き
+jeo skills read ralplan         # 1つのスキルの完全な SKILL.md を出力
+jeo skills sync --check         # ~/.jeo/skills との差分をレポート(差分があれば非ゼロ終了)
+```
+
+`jeo skills sync` はバンドルされたワークフロースキル(deep-interview、deep-dive、ralplan、team、ultragoal)を `~/.jeo/skills` にインストールし、**デフォルトで既存のローカルファイルを保持します** — 異なるローカルコピーは上書きされず `preserved` として報告されます。`--check` が欠落または差分のあるファイルを検出したら、まず `jeo skills read <name>` で比較してください。ローカルのデフォルトワークフロースキルファイルを意図的に置き換えたい場合のみ `jeo skills sync --force` を使用してください。末尾のパス引数(または `JEO_CONFIG_DIR`)で別のディレクトリを指定でき、`--json` で構造化された `SkillSyncResult` を取得できます。
+
+## 開発
+
+jeo は Bun 上の純粋な TypeScript で **ネイティブ依存ゼロ** なので、グローバルの `jeo` コマンドはこのチェックアウトのソースを直接実行できます — ビルド不要、あらゆる編集に即座に反映されます。
+
+```bash
+bun install
+bun run dev:link            # `jeo` を <repo>/src/cli.ts へシンボリックリンク -> ~/.local/bin
+bun run dev:doctor          # グローバル `jeo` がこのソースを実行しているか報告(linked/drift/missing)
+```
+
+`dev:link` は `PATH` 上で管理対象リンクより先に別の `jeo` が存在する場合は進行を拒否し(宛先は `JEO_DEV_LINK_DIR` で上書き可能)、`--version` のスモークテストを実行します。`dev:doctor` は解決された `jeo` がこのソースではなくコンパイル済みバイナリやインストール済みコピーの場合に非ゼロで終了します。リンクせずソースから直接実行するには `bun src/cli.ts --help`。バンドルされたワークフロースキルはソース内の `src/prompts/skills/<name>/SKILL.md` にあります; `bun run typecheck` と `bun test` で検証してください。
 
 ## 公開 (Publishing)
 

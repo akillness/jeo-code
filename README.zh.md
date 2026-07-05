@@ -38,13 +38,15 @@
 
 ## 亮点
 
-- **多提供商、单一循环** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama 统一在一个 JSON 工具循环中。输入框内直接 OAuth 登录(`/provider login`)，模型选择即刻持久化为默认值。
+- **多提供商、单一循环** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio，以及 20+ 个 OpenAI、Anthropic 兼容云服务(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai 等)，统一在一个 JSON 工具循环中。输入框内直接 OAuth 登录(`/provider login`),模型选择即刻持久化为默认值。
 - **编辑完整性** — read 输出携带内容锚点(`42ab|`)；带锚点的编辑会与当前文件校验、行移动时自动重映射、不匹配时连同最新内容一起拒绝 — 绝不污染文件。
 - **自我修正的验证循环** — 配置 post-edit 钩子(tsc / eslint / 测试)，代理会*亲自读取*诊断并在循环内修复；钩子未通过时 `done` 会被阻断。
 - **没有表演的真实门禁** — `ralplan` 共识由真正读取仓库的 critic 子代理执行，`[OKAY]` 裁决被持久化且 `jeo approve` *强制要求*它；`ultragoal` 诚实报告(套件运行只是全局信号，绝不伪造逐条通过)。
 - **崩溃耐久、本地优先** — 全部状态位于 `.jeo/`，原子写入、跨进程运行锁、失败任务标记 + 恢复时的部分编辑警告。
 - **动态步数预算** — 只要近期工具调用展现新的进展就持续延长，停滞时优雅收敛为总结；子代理保持精确的步数契约。
 - **内联 TUI** — 已完成的工作流入真实滚动缓冲区(回合中也可用 tmux 滚轮)，代理运行时普通查询输入框仍保持可见并可编辑。Ctrl+O 详细信息切换、主题、剪贴板图片粘贴(Ctrl+V)、CJK/表情安全的宽度计算。
+- **浏览器工具** — 基于 Playwright 的无头 Chromium 自动化,作为一等代理工具:对命名并复用的标签页执行 `open`/`close`/`run`/`act`,优先使用 `observe` 标记的元素 id 而非截图来驱动页面。需要执行一次 `npx playwright install chromium`(未捆绑 — jeo 本身仍是零原生依赖,浏览器二进制文件是 Playwright 的独立下载项)。
+- **远程子代理可见性(Telegram)** — 配对一次机器人(`jeo notify setup`)后,`jeo daemon start` 会在子代理每次状态变化(启动 → 完成/失败/取消)时推送消息,并接受 `/subagents`、`/steer <id> <subagentId> <msg>`、`/cancel <id> <subagentId>` 回传 — 命令仅对配对的聊天授权。
 
 ## 安装
 
@@ -163,6 +165,31 @@ jeo ultragoal
 
 `--worktree <name>` 在隔离的同级 git worktree 中运行 jeo（路径存在则复用，否则以 basename 分支创建），因此有风险或需审查的工作绝不会触及您的主检出。`jeo mcp serve` 通过 stdio 向任何支持 MCP 的控制器公开 jeo 的工具（用 `jeo mcp tools` 列出）。添加 `-q`/`--quiet`（或 `JEO_QUIET=1`）可抑制启动横幅、欢迎动画、发布说明和恢复提示，使 jeo 能够与其他代理并行运行或由机器人驱动。`-p`/`--print` 隐含 quiet。
 
+## 远程监控与控制 (Telegram)
+
+```bash
+jeo notify setup        # 配对一次 BotFather 机器人(getMe 校验 + chat-id 配对)
+jeo notify status       # 已遮蔽的令牌、已配对 chat id、守护进程状态
+jeo daemon start        # 启动单例后台守护进程
+jeo daemon status       # 检查是否正在运行
+jeo daemon stop         # 发送 SIGTERM 停止
+```
+
+```
+┌─────────────────────┐        ┌─────────────────────┐         ┌─────────────────────┐
+│   interactive turn  │◄──ws──►│    notify daemon    │◄─poll──►│     Telegram bot    │
+│   SubagentRegistry  │        │     (singleton)     │         │    (paired chat)    │
+└─────────────────────┘        └─────────────────────┘         └─────────────────────┘
+```
+
+默认关闭、延迟绑定:只有设置了 `notifications.enabled` 且真正运行了一个 detached 子代理(`task {detached:true}`)才会绑定。守护进程扫描存活的会话发现文件,为每个会话建立一条回环 WebSocket,并且只在子代理状态发生*变化*时(启动 → 完成/失败/取消)推送消息 — 绝不会重复推送"仍在运行"这类状态。收到的 Telegram 命令仅对已配对的聊天授权,其余一律静默丢弃。
+
+| 命令 | 效果 |
+| --- | --- |
+| `/subagents` | 列出所有已连接会话中正在运行/最近的子代理 |
+| `/steer <sessionId> <subagentId> <message>` | 向正在运行的子代理发送实时消息 |
+| `/cancel <sessionId> <subagentId>` | 取消正在运行的子代理 |
+| `/help` | 显示命令参考 |
 
 ## 本地模型
 
@@ -186,10 +213,35 @@ JEO_TUI_ALT_SCREEN=1            # 旧版 alt-screen 回合(默认: 内联滚动�
 JEO_STEP_BASE=24                # 动态步数预算的滚动基数
 JEO_STEP_HARD_CAP=600           # 绝对终止保证
 JEO_STREAM_MAX_MS=300000        # 可选的整体流截止(默认关闭; 约束慢滴流)
+JEO_STREAM_IDLE_MS=300000       # 单次分块空闲上限(默认300秒); 首个 token 前静默较久的慢速/本地后端可调高
 JEO_TOOL_OUTPUT_MAX=4000        # 模型可见的工具输出上限(全文溢出到 artifacts)
 ```
 
 重试行为通过 `~/.jeo/config.json` 的 `retry` 调整(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` 等)。步数预算默认动态 — 只要看到新的进展就延长，停滞时收敛为总结；`--max-steps N` 恢复有界流程。
+
+## 技能迁移与内置技能检查
+
+把某个工作流迁移到 jeo 之前，先检查内置默认值，再决定是否安装或覆盖任何内容:
+
+```bash
+jeo skills list                 # 内置 + 用户 + 项目技能，附带发现目录
+jeo skills read ralplan         # 打印某个技能的完整 SKILL.md
+jeo skills sync --check         # 报告与 ~/.jeo/skills 的差异(有差异时非零退出)
+```
+
+`jeo skills sync` 会把内置的工作流技能(deep-interview、deep-dive、ralplan、team、ultragoal)安装到 `~/.jeo/skills`，并且**默认保留已有的本地文件** —— 不同的本地副本会被报告为 `preserved`，绝不会被覆盖。如果 `--check` 标记出缺失或不同的文件，先用 `jeo skills read <name>` 对比；只有在确实想替换本地默认工作流技能文件时才使用 `jeo skills sync --force`。可通过末尾路径参数(或 `JEO_CONFIG_DIR`)指定不同目录，并加上 `--json` 获取结构化的 `SkillSyncResult`。
+
+## 开发
+
+jeo 是运行在 Bun 上的纯 TypeScript，**零原生依赖**，因此全局 `jeo` 命令可以直接运行本仓库的源码 —— 无需构建步骤，每次编辑立即生效。
+
+```bash
+bun install
+bun run dev:link            # 将 `jeo` 软链接到 <repo>/src/cli.ts -> ~/.local/bin
+bun run dev:doctor          # 报告全局 `jeo` 是否运行的是本源码(linked/drift/missing)
+```
+
+如果 `PATH` 中在受管链接之前还有另一个 `jeo` 遮蔽了它，`dev:link` 会拒绝继续(可用 `JEO_DEV_LINK_DIR` 覆盖目标位置)，并运行一次 `--version` 冒烟测试。当解析出的 `jeo` 是编译后的二进制文件或已安装副本而非本源码时，`dev:doctor` 以非零状态退出。无需链接直接从源码运行: `bun src/cli.ts --help`。内置工作流技能位于源码 `src/prompts/skills/<name>/SKILL.md`；用 `bun run typecheck` 和 `bun test` 验证。
 
 ## 发布 (Publishing)
 

@@ -38,13 +38,15 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 
 ## Highlights
 
-- **Multi-provider, one loop** — Anthropic / OpenAI (+Codex) / Gemini / Antigravity / Ollama behind a uniform JSON tool loop. OAuth login from the input box (`/provider login`), every model pick persists as the new default.
+- **Multi-provider, one loop** — Anthropic / OpenAI (+Codex) / Gemini / Antigravity / Ollama / LM Studio, plus 20+ OpenAI- and Anthropic-compatible clouds (Groq, DeepSeek, Mistral, OpenRouter, xAI, Kimi, z.ai, …), all behind one uniform JSON tool loop. OAuth login from the input box (`/provider login`), every model pick persists as the new default.
 - **Edit integrity** — read output carries content anchors (`42ab|`); anchored edits are verified against the current file, re-mapped when lines shifted, and rejected with fresh content instead of corrupting.
 - **Self-correcting verification loop** — configure a post-edit hook (tsc / eslint / tests) and the agent *sees* the diagnostics and fixes them in-loop; a red hook blocks `done` until resolved.
 - **Real gates, no theater** — `ralplan` consensus is a repo-grounded critic subagent whose `[OKAY]` verdict is persisted and *required* by `jeo approve`; `ultragoal` reports honestly (a suite run is a global signal, never fabricated per-criterion passes).
 - **Crash-durable, local-first** — all state under `.jeo/` with atomic writes, cross-process run locks, failed-task markers with partial-edit warnings on resume.
 - **Dynamic step budget** — turns extend while the tool window shows novel progress and consolidate gracefully when stalled; subagents keep exact step contracts.
 - **Inline TUI** — completed work flushes into real scrollback (tmux wheel works mid-turn), the normal query input box stays visible and editable while the agent runs, Ctrl+O toggles full detail, themes, clipboard image paste (Ctrl+V), CJK/emoji-safe width math.
+- **Browser tool** — headless Chromium automation (Playwright) as a first-class agent tool: `open`/`close`/`run`/`act` on named, reused tabs, with `observe`-tagged element ids preferred over screenshots for driving pages. Requires `npx playwright install chromium` once (not bundled — jeo stays zero native deps itself, the browser binary is Playwright's separate download).
+- **Remote subagent visibility (Telegram)** — pair a bot once (`jeo notify setup`), then `jeo daemon start` pushes a message on every subagent state edge (started → done/failed/cancelled) and accepts `/subagents`, `/steer <id> <subagentId> <msg>`, `/cancel <id> <subagentId>` back — commands are authorized to the paired chat only.
 
 ## Install
 
@@ -164,6 +166,31 @@ Non-zero hook output is appended to the tool result the model reads (deduped per
 
 `--worktree <name>` runs jeo in an isolated sibling git worktree (reused if the path exists, else created on a branch named after the basename) so risky or reviewable work never touches your main checkout. `jeo mcp serve` exposes jeo's tools to any MCP-capable controller over stdio (`jeo mcp tools` lists them). Add `-q`/`--quiet` (or `JEO_QUIET=1`) to suppress startup banners, the welcome animation, release notes, and resume hints so jeo runs cleanly beside another agent or is driven by a bot — `-p`/`--print` implies quiet.
 
+## Remote monitoring & control (Telegram)
+
+```bash
+jeo notify setup        # pair a BotFather bot once (getMe verification + chat-id pairing)
+jeo notify status       # masked token, paired chat id, daemon state
+jeo daemon start        # spawn the singleton background daemon
+jeo daemon status       # check whether it's running
+jeo daemon stop         # SIGTERM it
+```
+
+```
+┌─────────────────────┐        ┌─────────────────────┐         ┌─────────────────────┐
+│   interactive turn  │◄──ws──►│    notify daemon    │◄─poll──►│     Telegram bot    │
+│   SubagentRegistry  │        │     (singleton)     │         │    (paired chat)    │
+└─────────────────────┘        └─────────────────────┘         └─────────────────────┘
+```
+
+Opt-in and lazy: nothing binds until `notifications.enabled` is set AND a detached subagent (`task {detached:true}`) actually runs. The daemon scans live session discovery files, connects a loopback WebSocket per session, and pushes a message only on a subagent state *edge* (started → completed/failed/cancelled) — never a repeated "still running" ping. Inbound Telegram commands are authorized to the paired chat only; anything else is dropped silently.
+
+| Command | Effect |
+| --- | --- |
+| `/subagents` | List running/recent subagents across every connected session |
+| `/steer <sessionId> <subagentId> <message>` | Send a live message into a running subagent |
+| `/cancel <sessionId> <subagentId>` | Cancel a running subagent |
+| `/help` | Show the command reference |
 
 ## Local models
 

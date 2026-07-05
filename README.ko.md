@@ -38,13 +38,15 @@
 
 ## 하이라이트
 
-- **멀티 프로바이더, 단일 루프** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama를 균일한 JSON 도구 루프로. 입력창에서 바로 OAuth 로그인(`/provider login`), 모델 선택은 즉시 기본값으로 영속.
+- **멀티 프로바이더, 단일 루프** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio, 그리고 OpenAI·Anthropic 호환 클라우드 20종 이상(Groq, DeepSeek, Mistral, OpenRouter, xAI, Kimi, z.ai 등)까지 균일한 JSON 도구 루프로. 입력창에서 바로 OAuth 로그인(`/provider login`), 모델 선택은 즉시 기본값으로 영속.
 - **편집 무결성** — read 출력에 콘텐츠 앵커(`42ab|`)가 붙고, 앵커 편집은 현재 파일과 대조 검증·줄 이동 시 자동 재매핑·불일치 시 최신 내용과 함께 거부 — 파일을 오염시키지 않습니다.
 - **자기수정 검증 루프** — post-edit 훅(tsc / eslint / 테스트)을 설정하면 에이전트가 진단을 *직접 읽고* 루프 안에서 수정합니다. 훅이 빨간 상태면 `done`이 차단됩니다.
 - **연극 없는 진짜 게이트** — `ralplan` 합의는 실제 저장소를 읽는 critic 서브에이전트이며 `[OKAY]` 평결이 영속되고 `jeo approve`가 이를 *요구*합니다. `ultragoal`은 정직하게 보고합니다(스위트 1회 실행은 전역 신호일 뿐, 기준별 통과를 조작하지 않음).
 - **크래시 내구·로컬 우선** — 모든 상태는 `.jeo/` 아래 원자적 쓰기, 크로스 프로세스 런 락, 실패 태스크 마커 + 재개 시 부분 편집 경고.
 - **동적 스텝 버짓** — 최근 도구 호출이 새로운 진전을 보이는 동안 연장되고, 정체되면 정리 요약으로 수렴. 서브에이전트는 정확한 스텝 계약 유지.
 - **인라인 TUI** — 완료된 작업은 실제 스크롤백으로 흘러가고(턴 중에도 tmux 휠 스크롤 가능), 에이전트가 실행 중이어도 기존 쿼리 입력창이 그대로 보이며 편집됩니다. Ctrl+O 상세 토글, 테마, 클립보드 이미지 붙여넣기(Ctrl+V), CJK/이모지 안전 폭 계산.
+- **브라우저 도구** — Playwright 기반 헤드리스 Chromium 자동화가 1급 에이전트 도구로 포함: 이름 붙은 탭을 재사용하며 `open`/`close`/`run`/`act`, 스크린샷보다 `observe`로 태깅된 요소 id를 우선 사용. `npx playwright install chromium`을 한 번 실행해야 함(번들 아님 — jeo 자체는 여전히 네이티브 의존성 0, 브라우저 바이너리는 Playwright의 별도 다운로드).
+- **원격 서브에이전트 가시성(Telegram)** — 봇을 한 번 페어링(`jeo notify setup`)하면, `jeo daemon start`가 서브에이전트 상태 전환(시작 → 완료/실패/취소)마다 메시지를 보내고 `/subagents`, `/steer <id> <subagentId> <msg>`, `/cancel <id> <subagentId>`를 되받습니다 — 명령은 페어링된 채팅에서만 허용됩니다.
 
 ## 설치
 
@@ -163,6 +165,31 @@ jeo ultragoal
 
 `--worktree <name>`는 격리된 형제 git worktree에서 jeo를 실행하므로(경로가 있으면 재사용, 없으면 basename 브랜치로 생성) 위험하거나 검토가 필요한 작업이 메인 체크아웃을 건드리지 않습니다. `jeo mcp serve`는 stdio를 통해 MCP를 지원하는 모든 컨트롤러에 jeo의 도구를 노출합니다(`jeo mcp tools`로 목록 확인). `-q`/`--quiet` (또는 `JEO_QUIET=1`)를 추가하면 시작 배너, 환영 애니메이션, 릴리스 노트, 재개 힌트가 억제되어 jeo를 다른 에이전트와 나란히 실행하거나 봇으로 구동할 수 있습니다. `-p`/`--print`는 quiet를 함의합니다.
 
+## 원격 모니터링 & 제어 (Telegram)
+
+```bash
+jeo notify setup        # BotFather 봇 한 번 페어링 (getMe 검증 + chat-id 페어링)
+jeo notify status       # 마스킹된 토큰, 페어링된 chat id, 데몬 상태
+jeo daemon start        # 싱글턴 백그라운드 데몬 실행
+jeo daemon status       # 실행 여부 확인
+jeo daemon stop         # SIGTERM으로 종료
+```
+
+```
+┌─────────────────────┐        ┌─────────────────────┐         ┌─────────────────────┐
+│   interactive turn  │◄──ws──►│    notify daemon    │◄─poll──►│     Telegram bot    │
+│   SubagentRegistry  │        │     (singleton)     │         │    (paired chat)    │
+└─────────────────────┘        └─────────────────────┘         └─────────────────────┘
+```
+
+옵트인이며 지연 바인딩됩니다: `notifications.enabled`가 설정되고 detached 서브에이전트(`task {detached:true}`)가 실제로 실행되어야만 동작합니다. 데몬은 살아있는 세션 디스커버리 파일을 스캔해 세션별로 루프백 WebSocket을 연결하고, 서브에이전트 상태 *전환* 시점(시작 → 완료/실패/취소)에만 메시지를 보냅니다 — "여전히 실행 중" 같은 반복 알림은 없습니다. 수신되는 Telegram 명령은 페어링된 채팅에서만 허용되며, 그 외는 조용히 무시됩니다.
+
+| 명령 | 동작 |
+| --- | --- |
+| `/subagents` | 연결된 모든 세션의 실행 중/최근 서브에이전트 목록 |
+| `/steer <sessionId> <subagentId> <message>` | 실행 중인 서브에이전트에 실시간 메시지 전송 |
+| `/cancel <sessionId> <subagentId>` | 실행 중인 서브에이전트 취소 |
+| `/help` | 명령 안내 표시 |
 
 ## 로컬 모델
 
@@ -186,10 +213,35 @@ JEO_TUI_ALT_SCREEN=1            # 레거시 alt-screen 턴(기본: 인라인 스
 JEO_STEP_BASE=24                # 동적 스텝 버짓의 롤링 베이스
 JEO_STEP_HARD_CAP=600           # 절대 종료 보증
 JEO_STREAM_MAX_MS=300000        # 옵트인 전체 스트림 데드라인(기본 off; 슬로우드립 차단)
+JEO_STREAM_IDLE_MS=300000       # 청크당 유휴 타임아웃(기본 300초); 첫 토큰 전 침묵이 긴 느린/로컬 백엔드는 값을 높이세요
 JEO_TOOL_OUTPUT_MAX=4000        # 모델 가시 도구 출력 캡(전체는 아티팩트로 스필)
 ```
 
 재시도 동작은 `~/.jeo/config.json`의 `retry`로 조정합니다(`requestMaxRetries`, `streamMaxRetries`, `rateLimitRetries`, `failFastStatuses`, …). 스텝 버짓은 기본 동적 — 새로운 진전이 보이는 동안 연장되고 정체 시 요약으로 수렴하며, `--max-steps N`이면 유한 플로로 복귀합니다.
+
+## 스킬 마이그레이션 및 번들 스킬 확인
+
+워크플로를 jeo로 옮기기 전에, 무언가를 설치하거나 덮어쓰기 전에 먼저 번들 기본값을 확인하세요:
+
+```bash
+jeo skills list                 # 번들 + 사용자 + 프로젝트 스킬, 디스커버리 디렉터리 포함
+jeo skills read ralplan         # 스킬 하나의 전체 SKILL.md 출력
+jeo skills sync --check         # ~/.jeo/skills 대비 drift 리포트 (drift 시 non-zero exit)
+```
+
+`jeo skills sync`는 번들 워크플로 스킬(deep-interview, deep-dive, ralplan, team, ultragoal)을 `~/.jeo/skills`에 설치하며 **기본적으로 기존 로컬 파일을 보존**합니다 — 다른 로컬 사본은 덮어쓰지 않고 `preserved`로 보고됩니다. `--check`가 누락되거나 다른 파일을 플래그하면 먼저 `jeo skills read <name>`으로 비교하세요; 로컬 기본 워크플로 스킬 파일을 의도적으로 교체하고 싶을 때만 `jeo skills sync --force`를 사용하세요. 후행 경로 인자(또는 `JEO_CONFIG_DIR`)로 다른 디렉터리를 지정할 수 있고, `--json`으로 구조화된 `SkillSyncResult`를 받을 수 있습니다.
+
+## 개발
+
+jeo는 Bun 위의 순수 TypeScript이며 **네이티브 의존성이 0**이라, 전역 `jeo` 명령이 이 체크아웃의 소스를 직접 실행할 수 있습니다 — 빌드 단계 없이, 모든 수정이 즉시 반영됩니다.
+
+```bash
+bun install
+bun run dev:link            # `jeo`를 <repo>/src/cli.ts에 심볼릭 링크 -> ~/.local/bin
+bun run dev:doctor          # 전역 `jeo`가 이 소스를 실행하는지 보고(linked/drift/missing)
+```
+
+`dev:link`는 `PATH`에서 관리되는 링크보다 먼저 오는 다른 `jeo`가 있으면 진행을 거부하고(대상은 `JEO_DEV_LINK_DIR`로 재정의), `--version` 스모크 테스트를 실행합니다. `dev:doctor`는 해석된 `jeo`가 이 소스가 아니라 컴파일된 바이너리나 설치된 사본이면 non-zero로 종료합니다. 링크 없이 소스에서 바로 실행하려면 `bun src/cli.ts --help`. 번들 워크플로 스킬은 소스의 `src/prompts/skills/<name>/SKILL.md`에 있습니다; `bun run typecheck`와 `bun test`로 검증하세요.
 
 ## 배포 (Publishing)
 

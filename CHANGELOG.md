@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.39] - 2026-07-05
+_Fixes an unrecovered Anthropic refusal on Claude Fable 5: the new `stop_details.category: "reasoning_extraction"` refusal shape wasn't recognized, so the turn died with a raw, unfriendly error instead of engaging jeo's existing context-reset refusal-recovery ladder._
+
+### Fixed
+- **Anthropic's new `Refusal (reasoning_extraction): …` refusal message (Claude Fable 5) was not recognized as a refusal.** `isRefusalError` (`src/util/retry.ts`) only matched older shapes (`stop_reason=refusal`, `finish_reason=content_filter`, `(SAFETY)`, `(PROHIBITED_CONTENT)`, `(BLOCKLIST)`); Anthropic's `stop_details.category` refusal wording falls outside all of them, so `defaultRetryable` and `engine.ts`'s refusal ladder (free resend → context-reset + strip replayed thinking → strip `<project_context>` → abortable backoff) never engaged, and `friendlyProviderError` fell through to a raw passthrough — the user saw the bare provider text and the turn died. The regex now also matches the general `Refusal (<category>):` structural prefix so any current or future `stop_details.category` value is covered, not just `reasoning_extraction`. `friendlyProviderError` additionally appends a clarifying note specifically for `reasoning_extraction`: this category's wording reads like an accusation of extracting the model's internal reasoning, which is a common false positive for jeo's own thinking-block replay across multi-step tool use, not an actual violation.
+
+### Verified
+- `bun run typecheck` clean; full suite green.
+- New coverage in `test/refusal-recovery.test.ts`: `isRefusalError` recognizes the new shape (plus a synthetic future category, proving the fix isn't overfit to one literal string) while still matching every pre-existing shape and never false-positiving on an unrelated error; `friendlyProviderError` category-aware messaging; an end-to-end refusal-ladder engagement test via `runAgentLoop` with a mocked provider throwing the new shape.
+
 ## [0.7.38] - 2026-07-05
 _Ponytail review of 0.7.37's Telegram daemon: closes a real trust-boundary gap (any Telegram user could steer/cancel subagents, not just the paired chat) and a `getUpdates`-failure hot-loop, plus bloat/style cleanup — no new surface area, no config changes._
 

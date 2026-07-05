@@ -282,5 +282,5 @@ export function isUsageLimitError(err: unknown): boolean {
  *  capped backoff — gjc parity: a refusal is never terminal) is the correct recovery
  *  layer because it MUTATES the context between attempts. */
 export function isRefusalError(err: unknown): boolean {
-  return /stop_reason=refusal|finish_reason=content_filter|\(content_filter\)|\(SAFETY\)|\(PROHIBITED_CONTENT\)|\(BLOCKLIST\)/i.test(errorMessageOf(err));
+  return /stop_reason=refusal|finish_reason=content_filter|\(content_filter\)|\(SAFETY\)|\(PROHIBITED_CONTENT\)|\(BLOCKLIST\)|Refusal \(\w+\)/i.test(errorMessageOf(err));
 }

@@ -1,4 +1,6 @@
 import { test, expect, mock } from "bun:test";
+import { isRefusalError } from "../src/util/retry";
+import { friendlyProviderError } from "../src/util/provider-error";
 import type { Message } from "../src/agent/loop";
 
 const refusal = () => new Error("Anthropic returned no content (stop_reason=refusal).");
@@ -133,4 +135,53 @@ test("refusal rung 4: Esc/cancel aborts the backoff wait and the turn ends as Ca
   } finally {
     delete process.env.JEO_REFUSAL_BACKOFF_BASE_MS;
   }
+});
+test("isRefusalError recognizes the new 'Refusal (<category>)' shape (Claude Fable 5 reasoning_extraction, and future categories)", () => {
+  expect(isRefusalError(new Error("Refusal (reasoning_extraction): This request was blocked as it seems to violate Anthropic's Terms of Service."))).toBe(true);
+  expect(isRefusalError(new Error("Refusal (some_future_category): blocked for an unrelated reason."))).toBe(true);
+});
+
+test("isRefusalError regression guard: still matches every pre-existing refusal shape", () => {
+  expect(isRefusalError(new Error("Anthropic returned no content (stop_reason=refusal)."))).toBe(true);
+  expect(isRefusalError(new Error("OpenAI stopped early (finish_reason=content_filter)."))).toBe(true);
+  expect(isRefusalError(new Error("Gemini blocked the response (SAFETY)."))).toBe(true);
+  expect(isRefusalError(new Error("Gemini blocked the response (PROHIBITED_CONTENT)."))).toBe(true);
+  expect(isRefusalError(new Error("Gemini blocked the response (BLOCKLIST)."))).toBe(true);
+});
+
+test("isRefusalError: no false positive on an unrelated error message", () => {
+  expect(isRefusalError(new Error("connect ECONNRESET 127.0.0.1:443"))).toBe(false);
+});
+
+test("friendlyProviderError: reasoning_extraction gets the base refusal message plus a clarifying note; other categories do not", () => {
+  const reasoningExtraction = friendlyProviderError(
+    new Error("Refusal (reasoning_extraction): This request was blocked as it seems to violate Anthropic's Terms of Service."),
+  );
+  expect(reasoningExtraction).toContain("declined to answer (safety refusal — no content returned)");
+  expect(reasoningExtraction).toContain("reasoning_extraction");
+  expect(reasoningExtraction).toContain("not an actual violation");
+
+  const plainRefusal = friendlyProviderError(new Error("Anthropic returned no content (stop_reason=refusal)."));
+  expect(plainRefusal).toContain("declined to answer (safety refusal — no content returned)");
+  expect(plainRefusal).not.toContain("reasoning_extraction");
+});
+
+test("refusal ladder engages for the new reasoning_extraction category: free resend recovers on first occurrence", async () => {
+  let calls = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      calls++;
+      if (calls === 1) throw new Error("Refusal (reasoning_extraction): This request was blocked as it seems to violate Anthropic's Terms of Service.");
+      return JSON.stringify({ tool: "done", arguments: { reason: "recovered from reasoning_extraction refusal" } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history: Message[] = [
+    { role: "system", content: "Core instructions only." },
+    { role: "user", content: "init" },
+  ];
+  const result = await runAgentLoop(history, { cwd: process.cwd(), maxSteps: 10, budget: { maxExtensions: 0 }, tools: {} });
+  expect(result.done).toBe(true);
+  expect(result.doneReason).toBe("recovered from reasoning_extraction refusal");
+  expect(calls).toBe(2); // free resend on first occurrence + success
 });

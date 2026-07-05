@@ -234,11 +234,11 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.7.40]** (2026-07-06) — Fixes the release CI's standalone-binary build, broken since before v0.7.31 (last release where that job actually ran and passed) — the `release-binaries` job on v0.7.38 and v0.7.39 both failed silently on every platform target, so neither release has downloadable binaries attached.
 - **[0.7.39]** (2026-07-05) — Fixes an unrecovered Anthropic refusal on Claude Fable 5: the new `stop_details.category: "reasoning_extraction"` refusal shape wasn't recognized, so the turn died with a raw, unfriendly error instead of engaging jeo's existing context-reset refusal-recovery ladder.
 - **[0.7.38]** (2026-07-05) — Ponytail review of 0.7.37's Telegram daemon: closes a real trust-boundary gap (any Telegram user could steer/cancel subagents, not just the paired chat) and a `getUpdates`-failure hot-loop, plus bloat/style cleanup — no new surface area, no config changes.
 - **[0.7.37]** (2026-07-05) — Remote subagent visibility/control over Telegram (gjc Telegram-daemon parity, scoped to jeo's subagent surface only — no forum topics, no inline keyboards, no image attachments; see CHANGELOG 0.7.34 for what jeo intentionally does not replicate from gjc's full notification stack).
 - **[0.7.36]** (2026-07-04) — Removes two specific guardrails per explicit user direction: `jeo approve`'s human-only identity gate (the agent can now approve its own reviewed `jeo ralplan` plan) and the disk-staleness write/edit clobber guard (a write/edit no longer refuses just because the file changed on disk since the last read). Both removals were scoped narrowly after enumerating every guardrail in the codebase — the catastrophic-command hard block (`rm -rf /`, fork bombs, raw-disk `dd`/`mkfs`), the read-only subagent role tool gating, the deep-interview mutation lock, and the blind-edit (never-read-this-session) guard are all UNCHANGED.
-- **[0.7.35]** (2026-07-04) — `jeo team` now runs every plan step through the SAME subagent execution core as the `task`/`subagent` tools, and gains gjc-style concurrent workers: a plan can mark a contiguous run of independent steps to execute in parallel, each isolated in its own git worktree, merged back in order.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

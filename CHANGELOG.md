@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.40] - 2026-07-06
+_Fixes the release CI's standalone-binary build, broken since before v0.7.31 (last release where that job actually ran and passed) — the `release-binaries` job on v0.7.38 and v0.7.39 both failed silently on every platform target, so neither release has downloadable binaries attached._
+
+### Fixed
+- **`bun build --compile` failed on every target with `Could not resolve: "chromium-bidi/lib/cjs/...`.** `playwright-core`'s bundled `coreBundle.js` has a lazy `require("chromium-bidi/...")` reached only by its firefox/webkit-over-BiDi bridge (`connectBidiOverCdp`) — a code path jeo never takes (`src/agent/browser-session.ts` launches `chromium` over plain CDP only). `chromium-bidi` isn't installed (not a declared dependency of `playwright-core` itself), so Bun's compile-time bundler — which statically resolves every reachable `require()` regardless of whether it's ever called — failed the whole build. `scripts/ci-release-build-binaries.ts`'s `buildCommand` now passes `--external chromium-bidi`, leaving an unresolved (and, for jeo, unreachable) `require()` in the compiled binary instead of failing the build.
+
+### Verified
+- `bun run typecheck` clean; `bun test` 2376 pass / 0 fail.
+- `bun scripts/ci-release-build-binaries.ts --targets all` builds all 5 targets clean (darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-x64.exe) from a single macOS host, matching the CI runner's cross-compile setup; the darwin-arm64 output was smoke-run (`--version`) and the linux/windows outputs verified as valid ELF/PE binaries via `file`.
+
 ## [0.7.39] - 2026-07-05
 _Fixes an unrecovered Anthropic refusal on Claude Fable 5: the new `stop_details.category: "reasoning_extraction"` refusal shape wasn't recognized, so the turn died with a raw, unfriendly error instead of engaging jeo's existing context-reset refusal-recovery ladder._
 

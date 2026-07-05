@@ -127,6 +127,15 @@ export function buildCommand(target: BinaryTarget): string[] {
     "build",
     "--compile",
     "--keep-names",
+    // playwright-core's bundled coreBundle.js has a lazy `require("chromium-bidi/...")`
+    // reached only by its firefox/webkit-over-BiDi bridge (`connectBidiOverCdp`) — a path
+    // jeo never takes (`browser-session.ts` launches `chromium` over plain CDP only).
+    // `chromium-bidi` isn't installed (not a declared dependency of playwright-core), so
+    // Bun's compile-time bundler — which statically resolves every reachable `require()`,
+    // dead code or not — fails the whole build without this. Externalizing leaves a
+    // `require()` call in the compiled binary that's simply never executed.
+    "--external",
+    "chromium-bidi",
     // Don't let a `.env` in the user's cwd bleed into the compiled binary at
     // startup: jeo runs inside arbitrary user repos, so auto-loading their
     // project `.env` would silently inject (and potentially leak) their secrets

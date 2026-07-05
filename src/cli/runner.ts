@@ -102,6 +102,25 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: "notify",
+    summary: "Configure/inspect remote subagent notifications over Telegram (gjc notify parity).",
+    usage: "notify [setup [--token <t> --chat-id <id>]|status]",
+    loader: async () => {
+      const m = await import("../commands/notify");
+      return args => m.runNotifyCommand(args);
+    },
+  },
+  {
+    name: "daemon",
+    summary: "Manage the background Telegram notification/subagent-control daemon.",
+    usage: "daemon [status|start|stop|reload]",
+    loader: async () => {
+      const m = await import("../commands/daemon");
+      return args => m.runDaemonCommand(args);
+    },
+  },
+
+  {
     name: "skills",
     summary: "List bundled workflow skills, or sync them into ~/.jeo/skills (jeo skills <name> for details).",
     usage: "skills [list|read <name>|sync [--check|--force] [dir]|--write [dir]] [--json]",
@@ -155,6 +174,16 @@ export const COMMANDS: readonly CommandSpec[] = [
       return args => m.runMemoryMigrateCommand(args);
     },
   },
+  {
+    name: "notify-daemon-run",
+    summary: "(internal) Foreground worker for the Telegram notification daemon, spawned by 'jeo daemon start'.",
+    usage: "notify-daemon-run",
+    loader: async () => {
+      const m = await import("../agent/notify/telegram-daemon");
+      return async () => m.runNotifyDaemonForeground();
+    },
+  },
+
   {
     name: "state",
     summary: "Read or update workflow state receipts under .jeo/state (gjc-state parity).",

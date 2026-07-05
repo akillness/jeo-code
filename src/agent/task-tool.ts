@@ -29,6 +29,8 @@ import {
 } from "./subagents";
 import { resolveMaxOutputTokens } from "../ai/model-manager";
 import type { SubagentRegistry } from "./subagent-registry";
+import { ensureSessionNotifyEndpoint } from "./notify/session-endpoint";
+
 
 /** Lifecycle event emitted while a delegated subagent runs. */
 export interface TaskSubEvent {
@@ -473,6 +475,10 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       const rec = opts.registry.launch(role.id, taskText, (signal, id) =>
         runOne(role, taskText, ctx(args.context), cwd, { signal, steer: opts.registry!.steerDrainFor(id) }),
       );
+      // Remote subagent visibility/control over Telegram (gjc daemon parity, see
+      // `src/agent/notify/`): best-effort, no-op unless `notifications.enabled`.
+      ensureSessionNotifyEndpoint(opts.registry, cwd);
+
       return {
         success: true,
         output:

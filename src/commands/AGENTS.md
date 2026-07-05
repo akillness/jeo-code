@@ -13,12 +13,16 @@ Concrete implementations of `jeo` subcommands (e.g., launch, setup, team, ultrag
 | `auth.ts` | Brief description of purpose |
 | `chat.ts` | Brief description of purpose |
 | `deep-interview.ts` | Brief description of purpose |
+| `daemon.ts` | `jeo daemon status\|start\|stop\|reload` — manages the background Telegram notification/subagent-control daemon (`src/agent/notify/daemon-control.ts`) |
 | `doctor.ts` | Brief description of purpose |
+
 | `evolve-core.ts` | Brief description of purpose |
 | `evolve.ts` | Brief description of purpose |
 | `export.ts` | Brief description of purpose |
 | `launch.ts` | The primary interactive/one-shot execution command |
 | `mcp.ts` | Brief description of purpose |
+| `notify.ts` | `jeo notify setup\|status` — pairs a Telegram bot (BotFather token + `getMe` verification, private-chat pairing via `getUpdates`) and reports masked settings + daemon state |
+
 | `ooo-seed.ts` | Brief description of purpose |
 | `ralplan.ts` | Brief description of purpose |
 | `resume.ts` | Brief description of purpose |

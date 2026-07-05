@@ -60,6 +60,8 @@ The core runtime loop, tool registry, session management, and state persistence 
 | Directory | Purpose |
 |-----------|---------|
 | `dev/` | Developer-specific agent tooling and spec automation (see `dev/AGENTS.md`) |
+| `notify/` | Remote subagent visibility/control over Telegram (gjc Telegram-daemon parity, scoped to subagents) — session-endpoint loopback WebSocket, the managed daemon, daemon lifecycle control, path helpers, and a minimal Telegram Bot API client |
+
 
 ## For AI Agents
 

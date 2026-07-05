@@ -101,3 +101,20 @@ test("parseConfig: accepts valid subagents config and rejects invalid provider",
     expect(r2.message).toContain("provider");
   }
 });
+test("parseConfig: accepts a notifications block (Telegram daemon parity)", () => {
+  const r = parseConfig({
+    defaultModel: "m",
+    notifications: { enabled: true, telegram: { botToken: "123:ABC", chatId: "999" } },
+  });
+  expect(r.ok).toBe(true);
+  if (r.ok) {
+    expect(r.config.notifications?.enabled).toBe(true);
+    expect(r.config.notifications?.telegram?.chatId).toBe("999");
+  }
+});
+
+test("parseConfig: rejects a non-string notifications.telegram.botToken", () => {
+  const r = parseConfig({ defaultModel: "m", notifications: { telegram: { botToken: 12345 } } });
+  expect(r.ok).toBe(false);
+  if (!r.ok) expect(r.message).toContain("notifications");
+});

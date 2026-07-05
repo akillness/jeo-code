@@ -58,6 +58,15 @@ export interface Config {
     onComplete?: boolean;
     onAsk?: boolean;
   };
+  /** Remote subagent visibility/control over Telegram (see `src/agent/notify/`). */
+  notifications?: {
+    enabled?: boolean;
+    telegram?: {
+      botToken?: string;
+      chatId?: string;
+    };
+  };
+
   thinkingLevel?: "minimal" | "low" | "medium" | "high" | "xhigh";
   /** Friendly model aliases, e.g. { fast: "ollama/qwen2.5:0.5b" }. Override built-ins. */
   modelAliases?: { [alias: string]: string };

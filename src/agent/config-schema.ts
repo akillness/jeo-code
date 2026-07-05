@@ -84,6 +84,23 @@ export const ConfigSchema = z
         onAsk: z.boolean().optional(),
       })
       .optional(),
+    /** Remote subagent visibility/control over Telegram (gjc Telegram-daemon
+     *  parity, scoped to subagents — see `src/agent/notify/`). `enabled` is the
+     *  master toggle; a session only starts publishing its loopback endpoint
+     *  when this is true, and `jeo notify-daemon-run` refuses to poll Telegram
+     *  without a stored botToken + chatId. */
+    notifications: z
+      .object({
+        enabled: z.boolean().optional(),
+        telegram: z
+          .object({
+            botToken: z.string().optional(),
+            chatId: z.string().optional(),
+          })
+          .optional(),
+      })
+      .optional(),
+
     /** Root path of the global llm-wiki vault, shared across every session
      *  regardless of project/cwd. A leading `~` is expanded; env `JEO_WIKI_ROOT`
      *  overrides. Consumed by `resolveWikiRoot` and injected into the prompt. */

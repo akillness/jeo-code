@@ -16,6 +16,13 @@ test("findCommand: known commands resolve, unknown returns undefined", () => {
   expect(findCommand("models")).toBeUndefined();
 });
 
+test("findCommand: notify/daemon are registered, plus the internal notify-daemon-run worker", () => {
+  expect(findCommand("notify")?.name).toBe("notify");
+  expect(findCommand("daemon")?.name).toBe("daemon");
+  expect(findCommand("notify-daemon-run")?.name).toBe("notify-daemon-run");
+});
+
+
 test("dispatch: --version prints and returns 0", async () => {
   const logs: string[] = [];
   const orig = console.log;

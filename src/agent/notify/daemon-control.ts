@@ -106,7 +106,9 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs: number, ste
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return true;
-    await new Promise(r => setTimeout(r, stepMs));
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, stepMs);
+    await promise;
   }
   return false;
 }

@@ -279,3 +279,31 @@ test("stop() closes every connected session's socket", () => {
   expect(fakeWs.closed).toBe(true);
   expect(daemon.sessions.size).toBe(0);
 });
+
+// ── handleUpdate (chat authorization trust boundary) ────────────────────────────
+
+function update(chatId: number, text?: string) {
+  return { update_id: 1, message: text === undefined ? undefined : { message_id: 1, date: 0, chat: { id: chatId, type: "private" }, text } };
+}
+
+test("handleUpdate dispatches a command from the paired chat", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram); // paired chatId: "999"
+  await daemon.handleUpdate(update(999, "/help"));
+  expect(telegram.sent[0]!.text).toBe(HELP_TEXT);
+});
+
+test("handleUpdate silently drops a command from any OTHER chat (no reply — replying would leak that the bot is live)", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  await daemon.handleUpdate(update(31337, "/help"));
+  await daemon.handleUpdate(update(31337, "/cancel abcd1234 executor-1"));
+  expect(telegram.sent.length).toBe(0);
+});
+
+test("handleUpdate ignores updates without message text", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  await daemon.handleUpdate(update(999));
+  expect(telegram.sent.length).toBe(0);
+});

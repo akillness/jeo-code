@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.38] - 2026-07-05
+_Ponytail review of 0.7.37's Telegram daemon: closes a real trust-boundary gap (any Telegram user could steer/cancel subagents, not just the paired chat) and a `getUpdates`-failure hot-loop, plus bloat/style cleanup — no new surface area, no config changes._
+
+### Fixed
+- **Chat authorization on inbound Telegram commands (security).** `TelegramDaemon.handleUpdate` now drops any update whose `message.chat.id` does not match the configured `notifications.telegram.chatId` — previously `handleInboundText` ran for ANY update the bot received, so `/steer`/`/cancel`/`/subagents` were reachable by any Telegram user who found the bot (bot usernames are publicly enumerable), not just the account that ran `jeo notify setup`. Unauthorized updates are dropped silently (no reply), so probing the bot doesn't confirm it's live. `pollTelegramLoop` now delegates through `handleUpdate` instead of calling `handleInboundText` directly.
+- **`pollTelegramLoop` hot-loop on a Telegram API error response.** A `getUpdates` call that resolves with `{ ok: false }` (e.g. `409 Conflict` from a second long-poll owner, `401` from a revoked token) previously looped immediately with no delay; only a thrown/network error had the existing 2s backoff. Both paths now share the same `sleep(2_000)`.
+
+### Changed
+- `formatNotifyEvent`/`formatSubagentsList` shared status→icon logic deduplicated into one `STATUS_ICON: Record<SubagentRecord["status"], string>` lookup (was two separately-maintained icon mappings, one keyed by event kind, one by an inline ternary chain keyed by status).
+- `SessionNotifyEndpoint`'s `WsData` payload type (`{ authed: true }`) removed — the value was written into every upgraded socket's `data` but never read anywhere; the server/socket types are now `Server<undefined>`/`ServerWebSocket<undefined>`, and the `fetch` handler is a lexical-`this` arrow function instead of a `const self = this` capture.
+- `parseSteerCommand`/`parseCancelCommand` return inline object types instead of the one-call-site `ParsedSteerCommand`/`ParsedCancelCommand` exported interfaces (no external caller used either name).
+- `TelegramDaemon#sendRequest` and `daemon-control.ts`'s `waitFor` now use `Promise.withResolvers()` instead of the `new Promise((resolve) => …)` executor form (repo convention).
+
+### Verified
+- `bun run typecheck` clean; `bun test` 2371 pass / 0 fail (3 new `handleUpdate` cases: paired-chat command dispatches, other-chat command is silently dropped including a `/cancel` attempt, no-text update is ignored; all pre-existing notify-daemon/session-endpoint/daemon-control suites pass unchanged against the refactor).
+
 ## [0.7.37] - 2026-07-05
 _Remote subagent visibility/control over Telegram (gjc Telegram-daemon parity, scoped to jeo's subagent surface only — no forum topics, no inline keyboards, no image attachments; see CHANGELOG 0.7.34 for what jeo intentionally does not replicate from gjc's full notification stack)._
 

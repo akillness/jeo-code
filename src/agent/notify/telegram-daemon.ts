@@ -22,8 +22,14 @@ import * as path from "node:path";
 import { readGlobalConfig } from "../state";
 import { notifySessionsDir } from "./paths";
 import { acquireDaemonLock, isPidAlive } from "./daemon-control";
-import { TelegramApi } from "./telegram-api";
+import { TelegramApi, type TelegramUpdate } from "./telegram-api";
 import type { SubagentRecord } from "../subagent-registry";
+
+function sleep(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
 
 // ── Pure helpers (unit-testable without network/ws) ────────────────────────────
 
@@ -53,7 +59,8 @@ export function diffSubagentTransitions(prev: SubagentRecord[], next: SubagentRe
   return events;
 }
 
-const NOTIFY_ICON: Record<NotifyEventKind, string> = { started: "▶", completed: "✅", failed: "❌", cancelled: "⏹" };
+/** One icon per subagent status; a "started" event renders as the running icon. */
+const STATUS_ICON: Record<SubagentRecord["status"], string> = { running: "▶", completed: "✅", failed: "❌", cancelled: "⏹" };
 
 function projectName(cwd: string): string {
   return cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd;
@@ -66,7 +73,7 @@ export function shortSessionId(sessionId: string): string {
 }
 
 export function formatNotifyEvent(shortId: string, cwd: string, ev: NotifyEvent): string {
-  const header = `${NOTIFY_ICON[ev.kind]} [${shortId}] ${projectName(cwd)} · ${ev.record.role} '${ev.record.id}' ${ev.kind}`;
+  const header = `${STATUS_ICON[ev.kind === "started" ? "running" : ev.kind]} [${shortId}] ${projectName(cwd)} · ${ev.record.role} '${ev.record.id}' ${ev.kind}`;
   if (ev.kind === "started") return `${header}\n${ev.record.task}`;
   const resultPreview = (ev.record.result ?? "").slice(0, 500);
   return resultPreview ? `${header}\n${resultPreview}` : header;
@@ -79,29 +86,19 @@ export function formatSubagentsList(sessions: Array<{ sessionId: string; cwd: st
   for (const s of withRecords) {
     lines.push(`— ${shortSessionId(s.sessionId)} (${projectName(s.cwd)})`);
     for (const r of s.records) {
-      const icon = r.status === "running" ? "▶" : r.status === "completed" ? "✅" : r.status === "failed" ? "❌" : "⏹";
-      lines.push(`  ${icon} ${r.role} '${r.id}': ${r.task}`);
+      lines.push(`  ${STATUS_ICON[r.status]} ${r.role} '${r.id}': ${r.task}`);
     }
   }
   return lines.join("\n");
 }
 
-export interface ParsedSteerCommand {
-  shortId: string;
-  subagentId: string;
-  message: string;
-}
-export function parseSteerCommand(text: string): ParsedSteerCommand | undefined {
+export function parseSteerCommand(text: string): { shortId: string; subagentId: string; message: string } | undefined {
   const m = /^\/steer\s+(\S+)\s+(\S+)\s+([\s\S]+)$/.exec(text.trim());
   if (!m) return undefined;
   return { shortId: m[1]!, subagentId: m[2]!, message: m[3]!.trim() };
 }
 
-export interface ParsedCancelCommand {
-  shortId: string;
-  subagentId: string;
-}
-export function parseCancelCommand(text: string): ParsedCancelCommand | undefined {
+export function parseCancelCommand(text: string): { shortId: string; subagentId: string } | undefined {
   const m = /^\/cancel\s+(\S+)\s+(\S+)\s*$/.exec(text.trim());
   if (!m) return undefined;
   return { shortId: m[1]!, subagentId: m[2]! };
@@ -232,23 +229,21 @@ export class TelegramDaemon {
 
   private sendRequest(conn: SessionConnection, frame: Record<string, unknown>): Promise<boolean> {
     const reqId = crypto.randomUUID();
-    const timeoutMs = this.opts.ackTimeoutMs ?? 3_000;
-    const p = new Promise<boolean>(resolve => {
-      this.pendingAcks.set(reqId, resolve);
-      setTimeout(() => {
-        if (this.pendingAcks.has(reqId)) {
-          this.pendingAcks.delete(reqId);
-          resolve(false);
-        }
-      }, timeoutMs);
-    });
+    const { promise, resolve } = Promise.withResolvers<boolean>();
+    this.pendingAcks.set(reqId, resolve);
+    setTimeout(() => {
+      if (this.pendingAcks.has(reqId)) {
+        this.pendingAcks.delete(reqId);
+        resolve(false);
+      }
+    }, this.opts.ackTimeoutMs ?? 3_000);
     try {
       conn.ws.send(JSON.stringify({ ...frame, reqId }));
     } catch {
       this.pendingAcks.delete(reqId);
-      return Promise.resolve(false);
+      resolve(false);
     }
-    return p;
+    return promise;
   }
 
   async handleInboundText(text: string): Promise<void> {
@@ -287,21 +282,35 @@ export class TelegramDaemon {
     if (trimmed.startsWith("/")) await this.notify(`Unrecognized command. ${HELP_TEXT}`);
   }
 
+  /** Trust boundary: a bot's username is publicly discoverable, so ANY Telegram
+   *  user can message it. Only the paired chat (the one that ran
+   *  `jeo notify setup`) may steer/cancel subagents; everything else is dropped
+   *  without a reply (replying would leak that the bot is live). */
+  async handleUpdate(update: TelegramUpdate): Promise<void> {
+    const msg = update.message;
+    if (!msg?.text) return;
+    if (String(msg.chat.id) !== this.opts.chatId) return;
+    await this.handleInboundText(msg.text);
+  }
+
   private async pollTelegramLoop(): Promise<void> {
     while (!this.stopped) {
       let res;
       try {
         res = await this.opts.telegram.getUpdates(this.updateOffset, 25);
       } catch {
-        await new Promise(r => setTimeout(r, 2_000));
+        await sleep(2_000);
         continue;
       }
-      if (res.ok) {
-        for (const update of res.result) {
-          this.updateOffset = update.update_id + 1;
-          const text = update.message?.text;
-          if (text) await this.handleInboundText(text);
-        }
+      if (!res.ok) {
+        // e.g. 409 Conflict (another getUpdates owner) or 401 (revoked token) —
+        // without a pause this would hot-loop against the API.
+        await sleep(2_000);
+        continue;
+      }
+      for (const update of res.result) {
+        this.updateOffset = update.update_id + 1;
+        await this.handleUpdate(update);
       }
     }
   }

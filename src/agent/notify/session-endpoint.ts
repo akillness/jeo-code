@@ -28,14 +28,10 @@ import type { SubagentRecord, SubagentRegistry } from "../subagent-registry";
 
 const SNAPSHOT_POLL_MS = 1_200;
 
-interface WsData {
-  authed: true;
-}
-
 export class SessionNotifyEndpoint {
-  private server: Server<WsData> | undefined;
+  private server: Server<undefined> | undefined;
 
-  private readonly sockets = new Set<ServerWebSocket<WsData>>();
+  private readonly sockets = new Set<ServerWebSocket<undefined>>();
   private pollTimer: ReturnType<typeof setInterval> | undefined;
   private lastSnapshotJson = "";
   readonly sessionId: string;
@@ -66,7 +62,7 @@ export class SessionNotifyEndpoint {
     }
   }
 
-  private handleMessage(ws: ServerWebSocket<WsData>, raw: string | Buffer): void {
+  private handleMessage(ws: ServerWebSocket<undefined>, raw: string | Buffer): void {
     let msg: Record<string, unknown>;
     try {
       msg = JSON.parse(String(raw));
@@ -103,29 +99,27 @@ export class SessionNotifyEndpoint {
    *  Idempotent no-op if already started. */
   async start(): Promise<void> {
     if (this.server) return;
-    const self = this;
-    this.server = Bun.serve<WsData>({
-
+    this.server = Bun.serve<undefined>({
       hostname: "127.0.0.1",
       port: 0,
-      fetch(req, server) {
+      fetch: (req, server) => {
         const url = new URL(req.url);
-        if (url.searchParams.get("token") !== self.token) {
+        if (url.searchParams.get("token") !== this.token) {
           return new Response("unauthorized", { status: 401 });
         }
-        if (server.upgrade(req, { data: { authed: true } })) return undefined;
+        if (server.upgrade(req)) return undefined;
         return new Response("upgrade failed", { status: 500 });
       },
       websocket: {
         open: ws => {
-          self.sockets.add(ws);
+          this.sockets.add(ws);
           try {
-            ws.send(JSON.stringify(self.snapshot()));
+            ws.send(JSON.stringify(this.snapshot()));
           } catch {}
         },
-        message: (ws, raw) => self.handleMessage(ws, raw),
+        message: (ws, raw) => this.handleMessage(ws, raw),
         close: ws => {
-          self.sockets.delete(ws);
+          this.sockets.delete(ws);
         },
       },
     });

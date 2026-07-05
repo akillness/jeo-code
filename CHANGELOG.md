@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.34] - 2026-07-04
+_gajae-code 0.8.0/0.8.1 parity audit: closes a real cross-provider lone-surrogate JSON bug and makes turn-boundary compaction Esc-cancellable; the rest of gjc's 0.8.x release (Telegram daemon, ACP, cmux, coordinator MCP, tool-discovery-mode, an internal paged transcript viewport) is gjc-specific architecture jeo intentionally does not replicate, or was already-equivalent (confirmed by a 4-way parallel audit: ast_grep formatting, session-picker empty-filter clamping, PageUp/PageDown)._
+
+### Fixed
+- **A lone (unpaired) UTF-16 surrogate anywhere in tool-call arguments, tool-result output, or message content could break an outgoing provider request (gjc 0.8.1 parity).** Truncating tool output by UTF-16 code units (`tool-output.ts`/`output-util.ts`) can split an emoji's surrogate pair; the orphaned half survived `JSON.stringify` as an unpaired `\ud8xx`-style escape that strict provider JSON parsers reject (e.g. Anthropic 400 "no low surrogate in string"). New `src/util/sanitize-json.ts` (`sanitizeJsonStrings`, a `WeakMap`-guarded recursive walker applying `String.prototype.toWellFormed()` to every string value and object key, ported from gajae-code's shared sanitizer) is now applied at every provider's terminal request-body `JSON.stringify` — Anthropic, Gemini (+ Gemini CLI), OpenAI, OpenAI Responses/Codex, Antigravity, and Ollama.
+- **Turn-boundary compaction could not be cancelled with Esc/Ctrl+C (gjc 0.8.0 "Escape now reliably cancels active context maintenance" parity).** `maybeCompact`'s preflight call in `runTurn` ran before the turn's main abort harness existed, so a slow/hung compaction summarization LLM call had no cancellation path. It now runs under a short-lived abort harness (disposed in a `finally` immediately after) whose signal is threaded into `maybeCompact`, without changing when or how the main per-turn harness is created.
+
+### Verified
+- `bun run typecheck` clean; full suite green.
+- New coverage: `test/sanitize-json.test.ts` (lone high/low surrogate values, a well-formed emoji pair preserved unchanged, nested-object/array-element/object-key surrogates, reference-cycle safety, and an end-to-end Anthropic request-body round-trip); `test/compaction.test.ts` extended with a mid-flight abort case and a structural guard on the `launch.ts` call site's signal wiring.
+
 ## [0.7.33] - 2026-07-04
 _Adds `browser` — headless Chromium automation (gjc `browser` parity) — completing the gjc tool-surface parity pass started in 0.7.32._
 

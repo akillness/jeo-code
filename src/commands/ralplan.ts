@@ -142,7 +142,17 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     `  - name: "<imperative task, e.g. Implement reverse() in src/reverse.ts>"\n` +
     `    role: executor   # one of: executor | planner | architect | critic\n` +
     `    target: "<primary file path>"\n` +
-    `Provide 3-8 concrete, ordered steps. Output ONLY the YAML.`;
+    `    parallel_group: "<optional short id, e.g. g1>"\n` +
+    `Provide 3-8 concrete, ordered steps. Output ONLY the YAML.\n\n` +
+    `parallel_group is OPTIONAL and OFF by default — omit it unless you are certain. ` +
+    `'jeo team' executes steps strictly in array order, EXCEPT a contiguous (adjacent, ` +
+    `no other step in between) run of steps sharing the SAME non-empty parallel_group value, ` +
+    `which it runs CONCURRENTLY in isolated git worktrees and merges back. Only mark steps ` +
+    `parallel_group when they are TRULY independent: each touches DISJOINT files with no step ` +
+    `reading or building on another's output. Never mark two steps parallel if one depends on, ` +
+    `reads, or extends a file another writes. When unsure, leave parallel_group out — a plain ` +
+    `serial step is always correct; a wrongly-parallel step risks a merge conflict that halts ` +
+    `execution.`;
 
   const PLANNER = `You are the PLANNER. From the crystallized spec, sequence the work into a logical, outcome-based progression of concrete, ordered tasks.\n` + SCHEMA_SPEC;
   const ARCHITECT = `You are the ARCHITECT. Review the Planner's draft for technical feasibility, correct file targets, directory structure, and any missing setup/wiring/test steps. Return an improved plan (same shape).\n` + SCHEMA_SPEC;

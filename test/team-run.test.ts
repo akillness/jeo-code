@@ -236,7 +236,11 @@ test("runTeamCommand halts when a planner report misses required sections", asyn
   console.log = origLog;
 
   const out = logs.join("\n");
-  expect(out).toContain("Planner report incomplete");
+  // team now reports the subagent's own contract-validation failure via the
+  // shared `runSubagentOnce` execution core (task/subagent tool parity) instead
+  // of a bespoke "report incomplete" line — the missing-marker detail is embedded
+  // in the fenced report.
+  expect(out).toContain("contract incomplete: missing Summary:");
   expect(out).toContain("[ERR] Failed on task:");
   expect(process.exitCode).toBe(1);
 });
@@ -261,35 +265,13 @@ test("runTeamCommand refuses to run when team-state.json is corrupt (no silent r
   expect(await fs.readFile(path.join(tmp, ".jeo", "state", "team-state.json"), "utf-8")).toBe("{ not json !!!");
 });
 
-test("runTeamCommand invokes maybeCompact on subagent execution", async () => {
-  const realCompaction = { ...(await import("../src/agent/compaction")) };
-
-  const compactionSpy = mock(async (history: any, opts: any) => {
-    return { compacted: false, removed: 0 };
-  });
-
-  mock.module("../src/agent/compaction", () => ({
-    ...realCompaction,
-    maybeCompact: compactionSpy,
-  }));
-
-  try {
-    const { runTeamCommand } = await import("../src/commands/team");
-    await seedPlan([{ name: "implement it", role: "executor" }]);
-
-    mock.module("../src/agent/loop", () => ({
-      callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: done\nChanged Files: x.ts\nVerification: ran\nOpen Risks: none" } }),
-    }));
-
-    console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
-    await runTeamCommand();
-    console.log = origLog;
-
-    expect(compactionSpy).toHaveBeenCalled();
-  } finally {
-    mock.module("../src/agent/compaction", () => realCompaction);
-  }
-});
+// The prior "invokes maybeCompact on subagent execution" test was removed: `jeo
+// team` now runs every plan step through the SAME shared `runSubagentOnce`
+// execution core as the `task`/`subagent` tools (src/agent/task-tool.ts), which
+// relies solely on the agent loop's own built-in context guard
+// (`trimToolResultsInPlace`/`historyTokens` in engine.ts) — the same as every
+// other subagent — instead of a second, team-only LLM-summarization compaction
+// pass. This is an intentional unification, not a regression to guard against.
 
 test("runTeamCommand --strict-mutations fails a mutating role that made no write/edit/bash", async () => {
   await mock.module("../src/agent/loop", () => ({

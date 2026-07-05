@@ -28,7 +28,7 @@ Concrete implementations of `jeo` subcommands (e.g., launch, setup, team, ultrag
 | `skills.ts` | Brief description of purpose |
 | `state.ts` | Brief description of purpose |
 | `status.ts` | Brief description of purpose |
-| `team.ts` | Multi-agent coordination command |
+| `team.ts` | `jeo team` — executes an approved ralplan plan step-by-step via the SAME `runSubagentOnce` core the `task`/`subagent` tools use; a contiguous run of steps sharing a plan `parallel_group` runs concurrently in isolated git worktrees (`runParallelGroup`), merged back in order (gjc `team` concurrency parity) |
 | `ultragoal.ts` | Brief description of purpose |
 | `update.ts` | Brief description of purpose |
 

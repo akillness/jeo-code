@@ -48,7 +48,7 @@ The core runtime loop, tool registry, session management, and state persistence 
 | `subagent-registry.ts` | Brief description of purpose |
 | `subagent-tool.ts` | Brief description of purpose |
 | `subagents.ts` | Brief description of purpose |
-| `task-tool.ts` | Brief description of purpose |
+| `task-tool.ts` | `task` tool (single/fan-out/detached delegation) — exports `runSubagentOnce`, the single subagent execution core (history/runAgentLoop/contract validation/mutation audit/fenced report) shared with `jeo team`'s executor in `src/commands/team.ts` |
 | `todo-tool.ts` | Brief description of purpose |
 | `tokenizer.ts` | Brief description of purpose |
 | `tool-output.ts` | Brief description of purpose |

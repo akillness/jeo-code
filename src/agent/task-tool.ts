@@ -191,9 +191,167 @@ export function fenceSubagentReport(detail: string): string {
  * Build a `task` ToolHandler bound to a config + (optional) abort signal. The
  * handler accepts `{ role?, task | prompt | assignment, context? }`.
  */
+export interface RunSubagentOptions {
+  /** Resolves per-role model/step/thinking overrides; `defaultModel` is the fallback. */
+  config: Pick<Config, "defaultModel" | "subagents" | "thinkingLevel">;
+  /** Forwarded to the subagent's own runAgentLoop so Ctrl-C cancels nested work too. */
+  signal?: AbortSignal;
+  /** Optional live sink (e.g. plain-stream rendering of nested progress). */
+  onEvent?: (ev: TaskSubEvent) => void;
+  /** Mid-turn steering drain — see TaskToolOptions.steer for the exact contract. */
+  steer?: () => string[];
+  /** 1-based position within a fan-out/parallel batch, for event tagging. */
+  slot?: { index: number; total: number };
+  /** Pre-loaded project context to avoid re-scanning AGENTS.md per batch item. */
+  projectContext?: Awaited<ReturnType<typeof loadProjectContext>>;
+}
+
+/** `runSubagentOnce`'s result — a superset of `ToolResult` exposing the raw
+ *  (unwrapped, unfenced) done reason and mutation-audit counters so a caller with
+ *  its OWN pass/fail policy on top (e.g. `jeo team`'s role-gate-verdict parsing and
+ *  `--strict-mutations`) doesn't have to re-derive them by parsing the formatted
+ *  report text. `task`/`subagent` tool callers only ever need `success`/`output`/
+ *  `error`, which stay structurally identical to plain `ToolResult`. */
+export interface SubagentRunResult extends ToolResult {
+  /** Raw subagent done reason, before contract validation or fencing. */
+  doneReason: string;
+  /** True when the subagent actually called `done` (vs. exhausting its step
+   *  budget or being force-stopped by an engine guard, e.g. a repeat-call loop). */
+  done: boolean;
+  /** Whether the done reason satisfied the role's required-marker contract. */
+  contractOk: boolean;
+  /** Required markers missing from the done reason, when `contractOk` is false. */
+  missingMarkers?: string[];
+  /** Successful write/edit/mkdir/delete calls observed (mutation audit evidence). */
+  fileMutations: number;
+  /** Successful bash calls observed (tracked apart — bash CAN mutate but isn't proof). */
+  bashRuns: number;
+}
+
+/**
+ * Run ONE subagent role to completion against `taskText`/`context` and format its
+ * report (fenced against prompt injection). This is the single execution core
+ * shared by the `task` tool's single/fan-out/detached paths AND `jeo team`'s plan
+ * executor (`src/commands/team.ts`) — there is exactly one way a jeo-code subagent
+ * runs, whether it was launched interactively, in a batch, detached, or as a team
+ * plan step.
+ */
+export async function runSubagentOnce(
+  role: ReturnType<typeof getSubagentRole> & {},
+  taskText: string,
+  context: string,
+  cwd: string,
+  opts: RunSubagentOptions,
+): Promise<SubagentRunResult> {
+  const { steer, slot, projectContext: preloadedContext, signal } = opts;
+  // Tag every live event with its fan-out slot so a parent monitor can tell
+  // task 1 from task 3 when several same-role subagents stream concurrently.
+  const emit = (ev: TaskSubEvent) =>
+    opts.onEvent?.(slot ? { ...ev, index: slot.index, total: slot.total } : ev);
+  const model = resolveSubagentModel(role.id, opts.config);
+  const maxSteps = resolveSubagentMaxSteps(role.id, opts.config);
+  // gjc parity: a role may pin its own reasoning budget; absent = inherit the
+  // session/global thinking level (the "(inherit)" row in the picker).
+  const thinking = resolveSubagentThinking(role.id, opts.config) ?? opts.config.thinkingLevel;
+  const projectContext = preloadedContext ?? await loadProjectContext(cwd);
+  const memorySection = await memoryPromptSection(cwd, taskText);
+  const systemBase = withProjectContext(subagentSystemPrompt(role), projectContext);
+  const history: Message[] = [
+    { role: "system", content: memorySection ? `${systemBase}\n\n${memorySection}` : systemBase },
+    { role: "user", content: `${taskText}${context}` },
+  ];
+
+  const trace: string[] = [];
+  let lastTarget = "";
+  let currentStep = 0;
+  // Round-8 (architect ref 7-Round7Workflow): count the subagent's SUCCESSFUL
+  // calls so the parent can audit a "Changed Files:" claim against observed
+  // reality. File-writing tools (write/edit/mkdir/delete) are tracked apart from
+  // bash: read-only bash (e.g. `bun test`) MUST NOT count as edit evidence, but
+  // bash CAN mutate, so the audit message distinguishes the two cases.
+  let fileMutations = 0;
+  let bashRuns = 0;
+  emit({ role: role.id, kind: "start", detail: taskText, maxSteps, model });
+  const result = await runAgentLoop(history, {
+    cwd,
+    model,
+    maxSteps,
+    maxTokens: resolveMaxOutputTokens(model, thinking),
+    // Per-run prompt-cache key: the subagent replays its own growing history each
+    // step, so a stable per-run key gets provider cache hits (gjc sub-session parity).
+    sessionKey: crypto.randomUUID(),
+    // Bounded delegation: a subagent's step contract stays exact — the parent
+    // owns any retry/extension decision, so the gjc retry flow is disabled here.
+    budget: { maxExtensions: 0 },
+    signal,
+    steer,
+    tools: subagentToolset(role),
+    events: {
+      onStep: n => { currentStep = n; },
+      onAssistant: (_raw, invocation) => {
+        if (invocation && invocation.tool && invocation.tool !== "done") {
+          lastTarget = toolTarget(invocation.tool, invocation.arguments);
+          trace.push(`  step ${currentStep}/${maxSteps}: ${lastTarget}`);
+          emit({ role: role.id, kind: "step", detail: lastTarget, step: currentStep, maxSteps, model });
+        }
+      },
+      onToolResult: (tool, success, output) => {
+        if (success) {
+          if (tool === "write" || tool === "edit" || tool === "mkdir" || tool === "delete") fileMutations++;
+          else if (tool === "bash") bashRuns++;
+        }
+        const label = lastTarget || tool;
+        const summary = firstUsefulLine(output);
+        const suffix = summary ? ` — ${summary}` : "";
+        trace.push(`  ${success ? "✓" : "✗"} ${label}${suffix}`);
+        emit({ role: role.id, kind: "tool", detail: label, success, summary, step: currentStep, maxSteps, model });
+        lastTarget = "";
+      },
+      // Retry notices (rate-limit backoff etc.) surface as live "step" beats so the
+      // parent's monitor shows WHY a subagent is pausing instead of going silent.
+      onNotice: msg => emit({ role: role.id, kind: "step", detail: msg, step: currentStep, maxSteps, model }),
+      // Mid-turn steering reached this subagent: surface it as a live beat so the
+      // parent's monitor shows the redirect instead of an unexplained behavior change.
+      onSteer: text => emit({ role: role.id, kind: "step", detail: `↳ steer: ${text}`, step: currentStep, maxSteps, model }),
+    },
+  });
+  const reason = result.doneReason?.trim() || `(subagent reached the ${result.steps}-step limit without signaling done)`;
+  const validation = validateSubagentDoneReason(role, reason);
+  const complete = result.done && validation.ok;
+  const detail = validation.ok ? reason : `${reason}\n\n[contract incomplete: missing ${validation.missing?.join(", ")}]`;
+  emit({ role: role.id, kind: "done", detail, success: complete, step: result.steps, maxSteps, model, tokens: result.usage ? { input: result.usage.inputTokens, output: result.usage.outputTokens } : undefined });
+  const tokNote = result.usage ? `, ${result.usage.inputTokens + result.usage.outputTokens} tok` : "";
+  const header = `[${role.title} subagent] ${complete ? "completed" : "stopped"} in ${result.steps} step(s) on ${model}${tokNote}.`;
+  const body = trace.length ? `\nSteps:\n${trace.join("\n")}` : "";
+  // Parent-side audit: a mutating role that "completed" without a successful file
+  // mutation (write/edit/mkdir/delete) likely changed nothing — flag the claim.
+  // bash is tracked separately: it CAN mutate, so an only-bash run downgrades to
+  // "verify independently" instead of the stronger UNVERIFIED.
+  const audit = complete && !role.readOnly && fileMutations === 0
+    ? bashRuns === 0
+      ? `\n[parent audit] No successful write/edit/bash was observed in this run — treat any "Changed Files:" claims above as UNVERIFIED.`
+      : `\n[parent audit] No successful write/edit was observed (only bash ran); bash may or may not have mutated files — verify any "Changed Files:" claims above independently.`
+    : "";
+  return {
+    success: complete,
+    output: `${header}${body}\n\nResult:\n${fenceSubagentReport(detail)}${audit}`,
+    doneReason: reason,
+    done: result.done,
+    contractOk: validation.ok,
+    missingMarkers: validation.ok ? undefined : validation.missing,
+    fileMutations,
+    bashRuns,
+  };
+}
+
+/**
+ * Build a `task` ToolHandler bound to a config + (optional) abort signal. The
+ * handler accepts `{ role?, task | prompt | assignment, context? }`.
+ */
 export function createTaskTool(opts: TaskToolOptions): ToolHandler {
-  /** Run ONE subagent to completion and format its result (the original single-task path). */
-  const runOne = async (
+  /** Run ONE subagent via the shared execution core, binding this tool instance's
+   *  config/signal/onEvent (the original single-task path). */
+  const runOne = (
     role: ReturnType<typeof getSubagentRole> & {},
     taskText: string,
     context: string,
@@ -206,98 +364,15 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
        *  is cancellable independently of the parent turn. */
       signal?: AbortSignal;
     } = {},
-  ): Promise<ToolResult> => {
-    const { steer, slot, projectContext: preloadedContext, signal: signalOverride } = extra;
-    // Tag every live event with its fan-out slot so a parent monitor can tell
-    // task 1 from task 3 when several same-role subagents stream concurrently.
-    const emit = (ev: TaskSubEvent) =>
-      opts.onEvent?.(slot ? { ...ev, index: slot.index, total: slot.total } : ev);
-    const model = resolveSubagentModel(role.id, opts.config);
-    const maxSteps = resolveSubagentMaxSteps(role.id, opts.config);
-    // gjc parity: a role may pin its own reasoning budget; absent = inherit the
-    // session/global thinking level (the "(inherit)" row in the picker).
-    const thinking = resolveSubagentThinking(role.id, opts.config) ?? opts.config.thinkingLevel;
-    const projectContext = preloadedContext ?? await loadProjectContext(cwd);
-    const memorySection = await memoryPromptSection(cwd, taskText);
-    const systemBase = withProjectContext(subagentSystemPrompt(role), projectContext);
-    const history: Message[] = [
-      { role: "system", content: memorySection ? `${systemBase}\n\n${memorySection}` : systemBase },
-      { role: "user", content: `${taskText}${context}` },
-    ];
-
-    const trace: string[] = [];
-    let lastTarget = "";
-    let currentStep = 0;
-    // Round-8 (architect ref 7-Round7Workflow): count the subagent's SUCCESSFUL
-    // calls so the parent can audit a "Changed Files:" claim against observed
-    // reality. File-writing tools (write/edit/mkdir/delete) are tracked apart from
-    // bash: read-only bash (e.g. `bun test`) MUST NOT count as edit evidence, but
-    // bash CAN mutate, so the audit message distinguishes the two cases.
-    let fileMutations = 0;
-    let bashRuns = 0;
-    emit({ role: role.id, kind: "start", detail: taskText, maxSteps, model });
-    const result = await runAgentLoop(history, {
-      cwd,
-      model,
-      maxSteps,
-      maxTokens: resolveMaxOutputTokens(model, thinking),
-      // Per-run prompt-cache key: the subagent replays its own growing history each
-      // step, so a stable per-run key gets provider cache hits (gjc sub-session parity).
-      sessionKey: crypto.randomUUID(),
-      // Bounded delegation: a subagent's step contract stays exact — the parent
-      // owns any retry/extension decision, so the gjc retry flow is disabled here.
-      budget: { maxExtensions: 0 },
-      signal: signalOverride ?? opts.signal,
-      steer,
-      tools: subagentToolset(role),
-      events: {
-        onStep: n => { currentStep = n; },
-        onAssistant: (_raw, invocation) => {
-          if (invocation && invocation.tool && invocation.tool !== "done") {
-            lastTarget = toolTarget(invocation.tool, invocation.arguments);
-            trace.push(`  step ${currentStep}/${maxSteps}: ${lastTarget}`);
-            emit({ role: role.id, kind: "step", detail: lastTarget, step: currentStep, maxSteps, model });
-          }
-        },
-        onToolResult: (tool, success, output) => {
-          if (success) {
-            if (tool === "write" || tool === "edit" || tool === "mkdir" || tool === "delete") fileMutations++;
-            else if (tool === "bash") bashRuns++;
-          }
-          const label = lastTarget || tool;
-          const summary = firstUsefulLine(output);
-          const suffix = summary ? ` — ${summary}` : "";
-          trace.push(`  ${success ? "✓" : "✗"} ${label}${suffix}`);
-          emit({ role: role.id, kind: "tool", detail: label, success, summary, step: currentStep, maxSteps, model });
-          lastTarget = "";
-        },
-        // Retry notices (rate-limit backoff etc.) surface as live "step" beats so the
-        // parent's monitor shows WHY a subagent is pausing instead of going silent.
-        onNotice: msg => emit({ role: role.id, kind: "step", detail: msg, step: currentStep, maxSteps, model }),
-        // Mid-turn steering reached this subagent: surface it as a live beat so the
-        // parent's monitor shows the redirect instead of an unexplained behavior change.
-        onSteer: text => emit({ role: role.id, kind: "step", detail: `↳ steer: ${text}`, step: currentStep, maxSteps, model }),
-      },
+  ): Promise<ToolResult> =>
+    runSubagentOnce(role, taskText, context, cwd, {
+      config: opts.config,
+      signal: extra.signal ?? opts.signal,
+      onEvent: opts.onEvent,
+      steer: extra.steer,
+      slot: extra.slot,
+      projectContext: extra.projectContext,
     });
-    const reason = result.doneReason?.trim() || `(subagent reached the ${result.steps}-step limit without signaling done)`;
-    const validation = validateSubagentDoneReason(role, reason);
-    const complete = result.done && validation.ok;
-    const detail = validation.ok ? reason : `${reason}\n\n[contract incomplete: missing ${validation.missing?.join(", ")}]`;
-    emit({ role: role.id, kind: "done", detail, success: complete, step: result.steps, maxSteps, model, tokens: result.usage ? { input: result.usage.inputTokens, output: result.usage.outputTokens } : undefined });
-    const tokNote = result.usage ? `, ${result.usage.inputTokens + result.usage.outputTokens} tok` : "";
-    const header = `[${role.title} subagent] ${complete ? "completed" : "stopped"} in ${result.steps} step(s) on ${model}${tokNote}.`;
-    const body = trace.length ? `\nSteps:\n${trace.join("\n")}` : "";
-    // Parent-side audit: a mutating role that "completed" without a successful file
-    // mutation (write/edit/mkdir/delete) likely changed nothing — flag the claim.
-    // bash is tracked separately: it CAN mutate, so an only-bash run downgrades to
-    // "verify independently" instead of the stronger UNVERIFIED.
-    const audit = complete && !role.readOnly && fileMutations === 0
-      ? bashRuns === 0
-        ? `\n[parent audit] No successful write/edit/bash was observed in this run — treat any "Changed Files:" claims above as UNVERIFIED.`
-        : `\n[parent audit] No successful write/edit was observed (only bash ran); bash may or may not have mutated files — verify any "Changed Files:" claims above independently.`
-      : "";
-    return { success: complete, output: `${header}${body}\n\nResult:\n${fenceSubagentReport(detail)}${audit}` };
-  };
 
   return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {
     const roleArg = typeof args.role === "string" ? args.role.trim() : "";

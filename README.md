@@ -234,11 +234,11 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.7.35]** (2026-07-04) — `jeo team` now runs every plan step through the SAME subagent execution core as the `task`/`subagent` tools, and gains gjc-style concurrent workers: a plan can mark a contiguous run of independent steps to execute in parallel, each isolated in its own git worktree, merged back in order.
 - **[0.7.34]** (2026-07-04) — gajae-code 0.8.0/0.8.1 parity audit: closes a real cross-provider lone-surrogate JSON bug and makes turn-boundary compaction Esc-cancellable; the rest of gjc's 0.8.x release (Telegram daemon, ACP, cmux, coordinator MCP, tool-discovery-mode, an internal paged transcript viewport) is gjc-specific architecture jeo intentionally does not replicate, or was already-equivalent (confirmed by a 4-way parallel audit: ast_grep formatting, session-picker empty-filter clamping, PageUp/PageDown).
 - **[0.7.33]** (2026-07-04) — Adds `browser` — headless Chromium automation (gjc `browser` parity) — completing the gjc tool-surface parity pass started in 0.7.32.
 - **[0.7.32]** (2026-07-03) — gjc tool-surface parity — ast_grep/ast_edit, lsp/lsp_rename, debug, irc, job, and goal tools — plus a `launch.ts` slash-command refactor and four agent-loop guardrail hardenings (destructive-bash denylist, spawn-gate justification quality check, done-verification abuse guard, and a blind unanchored line-range-edit guard).
 - **[0.7.31]** (2026-07-03) — Three-round speed & memory pass across streaming, memory retrieval, and the TUI render loop (O(n²) → O(n) in several hot paths), a deep-interview repeat-question loop guard, and gajae-code managed-tmux launch sizing parity.
-- **[0.7.30]** (2026-07-02) — GPT/Codex OAuth calls work again, and the 30-minute turn budget now limits no-progress stalls instead of killing genuinely progressing autonomous runs.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

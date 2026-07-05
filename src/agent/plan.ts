@@ -13,6 +13,11 @@ export const StepSchema = z.object({
   name: z.string(),
   /** Optional subagent role for this step (executor/planner/architect/critic). */
   role: z.string().optional(),
+  /** Optional opt-in marker for a CONTIGUOUS run of steps `jeo team` may execute
+   *  concurrently (git-worktree isolated) instead of strictly serially. Steps
+   *  sharing the same non-empty value must be mutually consecutive — validated
+   *  on `PlanSchema` below, since contiguity is a plan-wide property. */
+  parallel_group: z.string().optional(),
 }).passthrough().superRefine((step, ctx) => {
   for (const key of UNSUPPORTED_DEP_KEYS) {
     if (key in step) {
@@ -27,7 +32,28 @@ export const StepSchema = z.object({
 export const PlanSchema = z.object({
   name: z.string().optional(),
   steps: z.array(StepSchema).min(1),
-}).passthrough();
+}).passthrough().superRefine((plan, ctx) => {
+  // `parallel_group` steps must form a CONTIGUOUS run: once a group value is
+  // seen and then interrupted by a different (or absent) group, that value must
+  // never reappear later — `jeo team` dispatches a group as one concurrent batch
+  // located at a single position in the array, so a split group has no coherent
+  // execution position.
+  const closedGroups = new Set<string>();
+  let prevGroup: string | undefined;
+  for (const step of plan.steps) {
+    const group = step.parallel_group?.trim() || undefined;
+    if (group && group !== prevGroup && closedGroups.has(group)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `plan step "${step.name}" reuses parallel_group "${group}" after a non-"${group}" step interrupted it — parallel_group steps must be contiguous.`,
+      });
+    }
+    if (prevGroup !== undefined && prevGroup !== group) {
+      closedGroups.add(prevGroup);
+    }
+    prevGroup = group;
+  }
+});
 
 /**
  * Tolerate common planning-model deviations so a valid-enough plan still executes:

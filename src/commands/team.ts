@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { createHash } from "node:crypto";
 import chalk from "chalk";
 import { PlanSchema, normalizePlanShape, parseYaml } from "../agent/plan";
@@ -8,24 +9,21 @@ import {
   writeWorkflowState,
   acquireWorkflowRunLock,
   type WorkflowState,
+  type Config,
 } from "../agent/state";
-import { runAgentLoop } from "../agent/engine";
-import { maybeCompact } from "../agent/compaction";
-import { catalogMetadata } from "../ai";
-import { gitDirtyCount } from "./launch/tmux";
+import { runSubagentOnce, type SubagentRunResult } from "../agent/task-tool";
+import { SubagentRegistry } from "../agent/subagent-registry";
+import { gitDirtyCount, resolveWorktree } from "./launch/tmux";
 import { readGlobalConfig } from "../agent/state";
 import {
   defaultSubagentRole,
   getSubagentRole,
   resolveSubagentModel,
   resolveSubagentMaxSteps,
-  subagentSystemPrompt,
-  subagentToolset,
   subagentRoleIds,
-  validateSubagentDoneReason,
+  type SubagentRole,
 } from "../agent/subagents";
-import type { Message } from "../agent/loop";
-import { loadProjectContext, withProjectContext } from "../agent/context-files";
+import { loadProjectContext } from "../agent/context-files";
 import { categoryBadge } from "../tui/components/category-index";
 
 export type RalphStreamKind = "step" | "complete" | "error" | "warn";
@@ -343,11 +341,64 @@ export async function runTeamEngine(opts: TeamEngineOptions = {}): Promise<{ ok:
         return { ok: false, reason: "aborted" };
       }
 
-      const currentTask = teamState.pending_tasks[0];
-      log(`\n${categoryBadge("progress")} Current task: "${currentTask}"`);
       const activeIndex = activeStepIndex(tasks.length, teamState.pending_tasks);
       // Guide printed once above; per-task lines convey progress. No per-iteration
       // reprint — it was O(N²) lines, climbing the embedded-terminal renderer's CPU.
+
+      // Look ahead from the current position: if this step's `parallel_group`
+      // extends into one or more of the NEXT pending steps (the group's full
+      // contiguous run is, by construction, always still all-pending here —
+      // `activeIndex` is derived from how many tasks remain), dispatch the WHOLE
+      // group concurrently. A group of size 1 (no group, or a lone member) falls
+      // straight through to the existing serial path, unchanged.
+      const groupVal = parsed.data.steps[activeIndex]?.parallel_group?.trim() || undefined;
+      const groupIndices = [activeIndex];
+      if (groupVal) {
+        let i = activeIndex + 1;
+        while (i < tasks.length && (parsed.data.steps[i]?.parallel_group?.trim() || undefined) === groupVal) {
+          groupIndices.push(i);
+          i++;
+        }
+      }
+
+      if (groupIndices.length > 1) {
+        const groupSteps = groupIndices.map(i => ({ index: i, name: tasks[i]!, roleId: roleByIndex[i] }));
+        log(`\n${categoryBadge("progress")} Current parallel group "${groupVal}": ${groupSteps.map(s => `"${s.name}"`).join(", ")}`);
+        if (opts.onProgress) {
+          opts.onProgress({ skill: "team", phase: "executing", detail: `Current parallel group: ${groupSteps.map(s => s.name).join(", ")}` });
+        }
+
+        const groupResult = await runParallelGroup(groupSteps, {
+          cwd,
+          teamCfg,
+          tasks,
+          completed: teamState.completed_tasks ?? [],
+          strictMutations: opts.strictMutations ?? false,
+          log,
+          slug: planState.slug ?? teamState.slug ?? "team",
+        });
+
+        if (opts.signal?.aborted) {
+          return { ok: false, reason: "aborted" };
+        }
+
+        if (groupResult.ok) {
+          teamState.completed_tasks = [...(teamState.completed_tasks ?? []), ...groupSteps.map(s => s.name)];
+          teamState.pending_tasks = teamState.pending_tasks.slice(groupSteps.length);
+          await writeWorkflowState("team", teamState, cwd);
+          log(`${categoryBadge("done")} Completed parallel group: ${groupSteps.map(s => `"${s.name}"`).join(", ")}`);
+        } else {
+          teamState.current_phase = "failed";
+          teamState.failed_task = groupResult.failedTaskName;
+          await writeWorkflowState("team", teamState, cwd);
+          log(`${categoryBadge("error")} Failed on parallel group step: "${groupResult.failedTaskName}". Halting execution.`);
+          return { ok: false, reason: `Failed on task: "${groupResult.failedTaskName}"` };
+        }
+        continue;
+      }
+
+      const currentTask = teamState.pending_tasks[0];
+      log(`\n${categoryBadge("progress")} Current task: "${currentTask}"`);
 
       if (opts.onProgress) {
         opts.onProgress({ skill: "team", phase: "executing", detail: `Current task: ${currentTask}` });
@@ -417,89 +468,68 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
   const maxSteps = resolveSubagentMaxSteps(role.id, config);
   log(`  └─ Subagent: ${role.title} · model ${model} · ≤${maxSteps} steps`);
 
-  const contextTokens = catalogMetadata(model)?.contextTokens;
-
   const projectContext = await loadProjectContext(ctx.cwd);
-  const history: Message[] = [
-    { role: "system", content: withProjectContext(subagentSystemPrompt(role), projectContext) },
-    { role: "user", content: buildRalphSubagentPrompt(ctx) },
-  ];
 
-  try {
-    await maybeCompact(history, { model, contextTokens });
-  } catch (err) {
-    // LLM summary failure does not halt team
-  }
-
-  let fileMutations = 0; // round-8 parent audit: successful write/edit/mkdir/delete
-  let bashRuns = 0;      // bash counted apart so read-only bash isn't edit evidence
-  const result = await runAgentLoop(history, {
-    cwd: ctx.cwd,
-    model,
-    maxSteps,
-    // Per-run prompt-cache key: each worker replays its own growing history every
-    // step, so a stable per-run key gets provider cache hits (gjc sub-session parity).
-    sessionKey: crypto.randomUUID(),
-    // Bounded delegation: ralph/team subagents keep an exact step contract; the
-    // orchestrator owns retries, so the gjc step-extension flow is disabled here.
-    budget: { maxExtensions: 0 },
-    tools: subagentToolset(role),
-    events: {
-      onAssistant: (_raw, invocation) => {
-        if (!invocation) {
-          log(formatRalphStreamEvent("error", "invalid tool-call json; retrying", renderOpts));
-        } else if (invocation.tool !== "done") {
-          log(formatRalphStreamEvent("step", `tool ${invocation.tool} requested`, renderOpts));
-        }
-      },
-      onStep: async step => {
-        log(formatRalphStreamEvent("step", `${role.title} thinking ${step}/${maxSteps}`, renderOpts));
-        try {
-          await maybeCompact(history, { model, contextTokens });
-        } catch (err) {
-          // LLM summary failure does not halt team
-        }
-      },
-      onToolResult: (tool, ok) => {
-        if (ok) {
-          if (tool === "write" || tool === "edit" || tool === "mkdir" || tool === "delete") fileMutations++;
-          else if (tool === "bash") bashRuns++;
-        }
-        log(formatRalphStreamEvent(ok ? "complete" : "error", `tool ${tool}`, renderOpts));
-      },
-      onNotice: msg => log(formatRalphStreamEvent("step", msg, renderOpts)),
+  // `jeo team` now runs every step through the SAME execution core as the `task`/
+  // `subagent` tools (`runSubagentOnce`) — one way a jeo-code subagent runs,
+  // whether launched interactively, in a fan-out batch, detached, or as a team
+  // plan step. This gets team plan steps the same fenced-report protection
+  // (prompt-injection-safe) and done-reason contract validation the interactive
+  // tools already had, instead of a second hand-rolled copy of that logic.
+  const result = await runSubagentOnce(role, buildRalphSubagentPrompt(ctx), "", ctx.cwd, {
+    config,
+    projectContext,
+    onEvent: ev => {
+      if (ev.kind === "step") {
+        log(formatRalphStreamEvent("step", ev.detail ?? `${role.title} thinking ${ev.step ?? "?"}/${ev.maxSteps ?? maxSteps}`, renderOpts));
+      } else if (ev.kind === "tool") {
+        const suffix = ev.summary ? ` — ${ev.summary}` : "";
+        log(formatRalphStreamEvent(ev.success ? "complete" : "error", `tool ${ev.detail}${suffix}`, renderOpts));
+      }
     },
   });
 
-  const reason = result.doneReason?.trim() || `${role.title} did not converge within ${result.steps} steps`;
-  if (!result.done) {
-    log(formatRalphStreamEvent("error", reason, renderOpts));
+  return evaluateSubagentResult(result, role, ctx.strictMutations ?? false, log, renderOpts);
+}
+
+/**
+ * Shared pass/fail verdict for ONE subagent's `SubagentRunResult`: contract
+ * failure, role-gate rejection (architect BLOCK / critic REQUEST CHANGES), and
+ * `--strict-mutations` hard-fail. Used by BOTH the serial path
+ * (`executeTaskWithAgent`) and the parallel-group path (`runParallelGroup`) so
+ * the two never diverge on what counts as a passing step.
+ */
+function evaluateSubagentResult(
+  result: SubagentRunResult,
+  role: SubagentRole,
+  strictMutations: boolean,
+  log: (line: string) => void,
+  renderOpts: RalphRenderOptions,
+): boolean {
+  if (!result.success) {
+    log(formatRalphStreamEvent("error", result.error || result.output, renderOpts));
     return false;
   }
 
-  const contract = validateSubagentDoneReason(role, reason);
-  if (!contract.ok) {
-    log(formatRalphStreamEvent("error", `${role.title} report incomplete: missing ${contract.missing?.join(", ")}`, renderOpts));
-    return false;
-  }
-
-  const gate = parseRoleGateVerdict(role.id, reason);
+  // Role gate verdict (architect BLOCK / critic REQUEST CHANGES) is parsed from the
+  // subagent's RAW done reason, not the fenced/wrapped report text around it.
+  const gate = parseRoleGateVerdict(role.id, result.doneReason);
   if (!gate.ok) {
     log(formatRalphStreamEvent("error", gate.message ?? `${role.title} blocked execution`, renderOpts));
     return false;
   }
 
-  if (!role.readOnly && fileMutations === 0) {
-    // Round-8: a mutating role finished without a successful file mutation — the
-    // task may be legitimately read-only, but its "Changed Files:" claim is
-    // unverified. bash is tracked apart: an only-bash run MIGHT have mutated.
-    const msg = bashRuns === 0
+  // Round-8: a mutating role finished without a successful file mutation — the
+  // task may be legitimately read-only, but its "Changed Files:" claim is
+  // unverified. bash is tracked apart: an only-bash run MIGHT have mutated.
+  if (!role.readOnly && result.fileMutations === 0) {
+    const msg = result.bashRuns === 0
       ? `${role.title} completed WITHOUT any successful write/edit/bash — treat its changed-files claim as unverified.`
       : `${role.title} completed with only bash (no write/edit) — verify its changed-files claim independently.`;
     // Round-11: under --strict-mutations, a mutating role that took NO action at
     // all (no write/edit/bash) is a hard failure — an empty run must not pass as
     // a completed task. bash-only stays advisory to avoid penalizing shell edits.
-    const hardFail = ctx.strictMutations && bashRuns === 0;
+    const hardFail = strictMutations && result.bashRuns === 0;
     // Round-12: separate the tones so a passing advisory run doesn't masquerade
     // as a stream:error — only a real hard-fail is red; an advisory note is warn.
     log(formatRalphStreamEvent(hardFail ? "error" : "warn", msg, renderOpts));
@@ -507,12 +537,169 @@ async function executeTaskWithAgent(ctx: RalphSubagentPromptContext & { cwd: str
       return false;
     }
   }
-  // Surface the subagent's ACTUAL report to the user — not just a "finished"
-  // status. Previously `reason` was consumed only for validation/gating and the
-  // report content was discarded, so `team` runs produced no visible answer.
+
+  // Surface the subagent's full report (header + step trace + fenced reason +
+  // mutation audit) — not just a "finished" status.
   log(formatRalphStreamEvent("complete", `${role.title} finished task`, renderOpts));
   log(`\n${role.title} report:`);
-  log(reason); // log() already splits multi-line strings across the io.output sink
+  log(result.output); // log() already splits multi-line strings across the io.output sink
 
   return true;
+}
+
+/** One step of a dispatched parallel group, resolved to its plan position + role. */
+interface ParallelGroupStep {
+  index: number;
+  name: string;
+  roleId?: string;
+}
+
+/** Per-step worktree + branch resolved for a dispatched parallel group. */
+interface ParallelWorktree {
+  path: string;
+  branch: string;
+}
+
+function runGitSync(cwd: string, args: string[]): { ok: boolean; stdout: string; stderr: string } {
+  const res = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  return { ok: res.exitCode === 0, stdout: res.stdout.toString(), stderr: res.stderr.toString() };
+}
+
+/**
+ * Execute a CONTIGUOUS run of `parallel_group`-marked plan steps concurrently,
+ * each in its own git worktree via `resolveWorktree` + the SAME
+ * `SubagentRegistry`/`runSubagentOnce` core the serial path and the `task`/
+ * `subagent` tools use. On full success, each worker's committed branch is
+ * merged back into `cwd`'s current branch IN ARRAY ORDER; any failure or merge
+ * conflict stops processing immediately and leaves the remaining
+ * worktrees/branches in place for manual inspection — nothing is ever silently
+ * resolved or discarded.
+ */
+async function runParallelGroup(
+  group: ParallelGroupStep[],
+  ctx: {
+    cwd: string;
+    teamCfg: Config;
+    tasks: string[];
+    completed: readonly string[];
+    strictMutations: boolean;
+    log: (line: string) => void;
+    slug: string;
+  },
+): Promise<{ ok: true } | { ok: false; failedTaskName: string }> {
+  const { cwd, teamCfg, tasks, completed, strictMutations, log, slug } = ctx;
+  const renderOpts: RalphRenderOptions = { color: !!process.stdout.isTTY, indexed: true };
+
+  const registry = new SubagentRegistry();
+  const resultsByIndex = new Map<number, SubagentRunResult>();
+  const idByIndex = new Map<number, string>();
+  const roleByStepIndex = new Map<number, SubagentRole>();
+  const worktreeByIndex = new Map<number, ParallelWorktree>();
+
+  log(`\n${categoryBadge("progress")} Dispatching parallel group of ${group.length} steps concurrently: ${group.map(s => `"${s.name}"`).join(", ")}`);
+
+  for (const step of group) {
+    const worktreePath = path.join(cwd, ".jeo", "team-worktrees", `${slug}-${step.index}`);
+    const resolvedPath = resolveWorktree(cwd, worktreePath);
+    const branchRes = runGitSync(resolvedPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    const branch = branchRes.stdout.trim();
+    worktreeByIndex.set(step.index, { path: resolvedPath, branch });
+
+    const role = getSubagentRole(step.roleId, teamCfg) ?? defaultSubagentRole();
+    roleByStepIndex.set(step.index, role);
+    const model = resolveSubagentModel(role.id, teamCfg);
+    const maxSteps = resolveSubagentMaxSteps(role.id, teamCfg);
+    log(`  └─ [${step.name}] Subagent: ${role.title} · model ${model} · ≤${maxSteps} steps · worktree ${resolvedPath} (branch ${branch})`);
+
+    // Loaded PER WORKTREE (its own file tree) — never shared across concurrent workers.
+    const projectContext = await loadProjectContext(resolvedPath);
+    const promptCtx: RalphSubagentPromptContext = { task: step.name, tasks, activeIndex: step.index, completed };
+    const taskText = buildRalphSubagentPrompt(promptCtx);
+
+    const record = registry.launch(role.id, step.name, async (signal) => {
+      const result = await runSubagentOnce(role, taskText, "", resolvedPath, {
+        config: teamCfg,
+        signal,
+        projectContext,
+        onEvent: ev => {
+          if (ev.kind === "step") {
+            log(formatRalphStreamEvent("step", `[${step.name}] ${ev.detail ?? `${role.title} thinking ${ev.step ?? "?"}/${ev.maxSteps ?? maxSteps}`}`, renderOpts));
+          } else if (ev.kind === "tool") {
+            const suffix = ev.summary ? ` — ${ev.summary}` : "";
+            log(formatRalphStreamEvent(ev.success ? "complete" : "error", `[${step.name}] tool ${ev.detail}${suffix}`, renderOpts));
+          }
+        },
+      });
+      // Capture the FULL SubagentRunResult (doneReason/fileMutations/etc.) before
+      // collapsing it to the plain ToolResult shape SubagentRegistry stores.
+      resultsByIndex.set(step.index, result);
+      return { success: result.success, output: result.output, error: result.error };
+    });
+    idByIndex.set(step.index, record.id);
+  }
+
+  // No timeout — team runs can take as long as needed.
+  await registry.awaitIds([...idByIndex.values()]);
+
+  // Evaluate + commit each successful worktree, IN ARRAY ORDER (not completion
+  // order). Any failure stops the whole group immediately: no merges happen,
+  // and every worktree/branch is left exactly as it is for inspection.
+  for (const step of group) {
+    const result = resultsByIndex.get(step.index);
+    const role = roleByStepIndex.get(step.index)!;
+    const wt = worktreeByIndex.get(step.index)!;
+    if (!result) {
+      log(formatRalphStreamEvent("error", `[${step.name}] subagent produced no result`, renderOpts));
+      return { ok: false, failedTaskName: step.name };
+    }
+    const success = evaluateSubagentResult(result, role, strictMutations, log, renderOpts);
+    if (!success) {
+      log(`${categoryBadge("error")} Parallel group step "${step.name}" failed — its worktree (${wt.path}) and the OTHER group worktrees are left in place for inspection; nothing was merged.`);
+      return { ok: false, failedTaskName: step.name };
+    }
+    // An empty diff (read-only role, or a no-op) needs no commit — skip it for
+    // the merge step below without treating it as an error.
+    if (gitDirtyCount(wt.path)) {
+      const add = runGitSync(wt.path, ["add", "-A"]);
+      if (!add.ok) {
+        log(`${categoryBadge("error")} Failed to stage changes in worktree ${wt.path} for step "${step.name}": ${add.stderr.trim()}`);
+        return { ok: false, failedTaskName: step.name };
+      }
+      const commit = runGitSync(wt.path, ["commit", "-m", step.name]);
+      if (!commit.ok) {
+        log(`${categoryBadge("error")} Failed to commit changes in worktree ${wt.path} for step "${step.name}": ${commit.stderr.trim()}`);
+        return { ok: false, failedTaskName: step.name };
+      }
+    }
+  }
+
+  // All group steps succeeded — merge each worker branch back, IN ARRAY ORDER.
+  // A conflict aborts the merge immediately (never auto-resolved) and stops the
+  // rest of the group's merges.
+  for (const step of group) {
+    const wt = worktreeByIndex.get(step.index)!;
+    const merge = runGitSync(cwd, ["merge", "--no-ff", wt.branch, "-m", `merge: ${step.name}`]);
+    if (!merge.ok) {
+      runGitSync(cwd, ["merge", "--abort"]);
+      log(
+        `${categoryBadge("error")} Merge conflict merging step "${step.name}"'s branch "${wt.branch}" into the current branch — ` +
+        `the merge was aborted automatically (no changes were auto-resolved). Resolve manually: ` +
+        `cd ${wt.path} to inspect the change, then run 'git merge ${wt.branch}' yourself from ${cwd}.\n${(merge.stderr + merge.stdout).trim()}`,
+      );
+      return { ok: false, failedTaskName: step.name };
+    }
+    log(`${categoryBadge("done")} Merged step "${step.name}" (branch ${wt.branch}) into the current branch.`);
+  }
+
+  // Fully successful group — clean up worktrees best-effort (a removal failure,
+  // e.g. stray untracked files, is a warning, never a hard failure of the run).
+  for (const step of group) {
+    const wt = worktreeByIndex.get(step.index)!;
+    const removal = runGitSync(cwd, ["worktree", "remove", wt.path]);
+    if (!removal.ok) {
+      log(`[WARN] Could not remove worktree ${wt.path} for step "${step.name}": ${removal.stderr.trim()}`);
+    }
+  }
+
+  return { ok: true };
 }

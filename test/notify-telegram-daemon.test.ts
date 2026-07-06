@@ -6,6 +6,9 @@ import {
   parseSteerCommand,
   parseCancelCommand,
   shortSessionId,
+  cancelCallbackData,
+  parseCallbackData,
+  buildSubagentsKeyboard,
   HELP_TEXT,
   TelegramDaemon,
   type NotifyEvent,
@@ -102,9 +105,19 @@ test("shortSessionId strips dashes and takes the first 8 chars", () => {
 // ── TelegramDaemon (fakes for network + ws) ──────────────────────────────────────
 
 class FakeTelegramApi {
-  sent: { chatId: string | number; text: string }[] = [];
-  async sendMessage(chatId: string | number, text: string) {
-    this.sent.push({ chatId, text });
+  sent: { chatId: string | number; text: string; options?: any }[] = [];
+  photos: { chatId: string | number; photo: string; options?: any }[] = [];
+  answered: { id: string; options?: any }[] = [];
+  async sendMessage(chatId: string | number, text: string, options?: any) {
+    this.sent.push({ chatId, text, options });
+    return { ok: true };
+  }
+  async sendPhoto(chatId: string | number, photo: string, options?: any) {
+    this.photos.push({ chatId, photo, options });
+    return { ok: true };
+  }
+  async answerCallbackQuery(id: string, options?: any) {
+    this.answered.push({ id, options });
     return { ok: true };
   }
   async getMe() {
@@ -306,4 +319,152 @@ test("handleUpdate ignores updates without message text", async () => {
   const daemon = makeDaemon(telegram);
   await daemon.handleUpdate(update(999));
   expect(telegram.sent.length).toBe(0);
+});
+// ── Inline keyboards / callback data (gjc parity) ────────────────────────────────
+
+test("cancelCallbackData round-trips through parseCallbackData", () => {
+  const data = cancelCallbackData("abcd1234", "executor-1");
+  expect(data).toBe("cancel:abcd1234:executor-1");
+  expect(parseCallbackData(data)).toEqual({ action: "cancel", shortId: "abcd1234", subagentId: "executor-1" });
+});
+
+test("parseCallbackData rejects an unknown payload", () => {
+  expect(parseCallbackData("nope")).toBeUndefined();
+  expect(parseCallbackData("steer:abcd:executor-1")).toBeUndefined();
+});
+
+test("buildSubagentsKeyboard emits one cancel button per RUNNING subagent, undefined when none run", () => {
+  expect(buildSubagentsKeyboard([{ sessionId: "aaaa", records: [rec({ status: "completed" })] }])).toBeUndefined();
+  const kb = buildSubagentsKeyboard([
+    { sessionId: "abcd1234-0000", records: [rec({ id: "executor-1", status: "running" }), rec({ id: "executor-2", status: "completed" })] },
+  ]);
+  expect(kb).toBeDefined();
+  expect(kb!.inline_keyboard.length).toBe(1);
+  expect(kb!.inline_keyboard[0]![0]!.callback_data).toBe("cancel:abcd1234:executor-1");
+});
+
+test("a 'started' status edge attaches an inline Cancel button", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  const conn = { sessionId: "abcd1234-0000", cwd: "/tmp/proj", pid: 1, ws: new FakeWebSocket("x") as unknown as WebSocket, lastRecords: [] };
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "executor-1", status: "running" })] }));
+  const kb = telegram.sent[0]!.options?.replyMarkup;
+  expect(kb.inline_keyboard[0][0].callback_data).toBe("cancel:abcd1234:executor-1");
+});
+
+test("/subagents attaches a cancel keyboard for running subagents", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  const conn = { sessionId: "abcd1234-0000", cwd: "/tmp/proj", pid: 1, ws: new FakeWebSocket("x") as unknown as WebSocket, lastRecords: [rec({ status: "running" })] };
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleInboundText("/subagents");
+  expect(telegram.sent[0]!.options?.replyMarkup?.inline_keyboard[0][0].callback_data).toBe("cancel:abcd1234:executor-1");
+});
+
+test("handleCallbackQuery cancels via button: round-trips over ws, answers the tap, and notifies", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  const fakeWs = new FakeWebSocket("ws://x");
+  const sessionId = "abcd1234-0000-0000-0000-000000000000";
+  daemon.sessions.set(sessionId, { sessionId, cwd: "/tmp/proj", pid: 1, ws: fakeWs as unknown as WebSocket, lastRecords: [] });
+
+  const promise = daemon.handleCallbackQuery({
+    id: "cbq-1",
+    from: { id: 7, is_bot: false },
+    data: "cancel:abcd1234:executor-1",
+    message: { message_id: 2, chat: { id: 999, type: "supergroup" } },
+  });
+  const sentFrame = JSON.parse(fakeWs.sent.at(-1)!);
+  expect(sentFrame.type).toBe("cancel");
+  expect(sentFrame.ids).toEqual(["executor-1"]);
+  const conn = daemon.sessions.get(sessionId)!;
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "ack", reqId: sentFrame.reqId, ok: true }));
+  await promise;
+  expect(telegram.answered.at(-1)!.id).toBe("cbq-1");
+  expect(telegram.answered.at(-1)!.options?.text).toContain("Cancelled 'executor-1'");
+  expect(telegram.sent.at(-1)!.text).toContain("Cancelled 'executor-1' via button");
+});
+
+test("handleCallbackQuery from an unknown session answers with a no-match toast and sends no ws frame", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  await daemon.handleCallbackQuery({
+    id: "cbq-1",
+    from: { id: 7, is_bot: false },
+    data: "cancel:zzzzzzzz:executor-1",
+    message: { message_id: 2, chat: { id: 999, type: "supergroup" } },
+  });
+  expect(telegram.answered.at(-1)!.options?.text).toContain("No connected session matches");
+});
+
+test("handleUpdate routes a callback_query from the paired chat", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  await daemon.handleUpdate({
+    update_id: 1,
+    callback_query: { id: "cbq-1", from: { id: 7, is_bot: false }, data: "bogus", message: { message_id: 2, chat: { id: 999, type: "supergroup" } } },
+  } as any);
+  expect(telegram.answered.at(-1)!.id).toBe("cbq-1");
+});
+
+test("handleCallbackQuery from any OTHER chat is dropped (only acknowledged, no ws frame, no push)", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeDaemon(telegram);
+  const fakeWs = new FakeWebSocket("ws://x");
+  daemon.sessions.set("abcd1234-0000", { sessionId: "abcd1234-0000", cwd: "/tmp", pid: 1, ws: fakeWs as unknown as WebSocket, lastRecords: [] });
+  await daemon.handleCallbackQuery({
+    id: "cbq-1",
+    from: { id: 7, is_bot: false },
+    data: "cancel:abcd1234:executor-1",
+    message: { message_id: 2, chat: { id: 31337, type: "supergroup" } },
+  });
+  expect(fakeWs.sent.length).toBe(0);
+  expect(telegram.sent.length).toBe(0);
+});
+
+// ── Forum topics ─────────────────────────────────────────────────────────────────
+
+function makeTopicDaemon(telegram: FakeTelegramApi, topicId: number): TelegramDaemon {
+  FakeWebSocket.instances = [];
+  return new TelegramDaemon({
+    chatId: "999",
+    topicId,
+    telegram: telegram as unknown as TelegramApi,
+    WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    ackTimeoutMs: 200,
+  });
+}
+
+test("configured topicId is threaded into every outbound push", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeTopicDaemon(telegram, 55);
+  await daemon.handleInboundText("/help");
+  expect(telegram.sent[0]!.options?.messageThreadId).toBe(55);
+});
+
+test("handleUpdate drops a message from a different forum topic", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeTopicDaemon(telegram, 55);
+  await daemon.handleUpdate({ update_id: 1, message: { message_id: 1, date: 0, chat: { id: 999, type: "supergroup" }, text: "/help", message_thread_id: 77 } } as any);
+  expect(telegram.sent.length).toBe(0);
+});
+
+test("handleUpdate accepts a message from the configured forum topic", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeTopicDaemon(telegram, 55);
+  await daemon.handleUpdate({ update_id: 1, message: { message_id: 1, date: 0, chat: { id: 999, type: "supergroup" }, text: "/help", message_thread_id: 55 } } as any);
+  expect(telegram.sent[0]!.text).toBe(HELP_TEXT);
+});
+
+// ── Image attachments ──────────────────────────────────────────────────────────
+
+test("a session photo frame is relayed via sendPhoto with caption + topic", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeTopicDaemon(telegram, 55);
+  const conn = { sessionId: "abcd1234-0000", cwd: "/tmp/proj", pid: 1, ws: new FakeWebSocket("x") as unknown as WebSocket, lastRecords: [] };
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "photo", url: "https://example.com/shot.png", caption: "a screenshot" }));
+  expect(telegram.photos.length).toBe(1);
+  expect(telegram.photos[0]!.photo).toBe("https://example.com/shot.png");
+  expect(telegram.photos[0]!.options?.caption).toBe("a screenshot");
+  expect(telegram.photos[0]!.options?.messageThreadId).toBe(55);
 });

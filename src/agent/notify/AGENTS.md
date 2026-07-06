@@ -4,16 +4,16 @@
 # notify
 
 ## Purpose
-Remote subagent visibility/control over Telegram (gjc Telegram-daemon parity, deliberately scoped to jeo's subagent surface only — no forum topics, inline keyboards, or image attachments; see root `CHANGELOG.md` 0.7.34 for what jeo intentionally does not replicate from gjc's full notification stack).
+Remote subagent visibility/control over Telegram (gjc Telegram-daemon parity, scoped to jeo's subagent surface). Supports gjc's richer notification surface: forum topics (`message_thread_id`), inline keyboards (per-subagent ⏹ Cancel buttons + `callback_query` handling), and image attachments (`sendPhoto`, relayed from a session `{type:"photo"}` frame).
 
 ## Key Files
 | File | Description |
 |------|-------------|
 | `paths.ts` | Path helpers under `<jeoHome>/notifications` (daemon lock/log, per-session discovery files) |
-| `telegram-api.ts` | Minimal, injectable-`fetch` Telegram Bot API client (`getMe`/`sendMessage`/`getUpdates`) + `maskToken` |
+| `telegram-api.ts` | Minimal, injectable-`fetch` Telegram Bot API client (`getMe`/`sendMessage`/`sendPhoto`/`answerCallbackQuery`/`getUpdates`) + `maskToken`; `sendMessage`/`sendPhoto` accept `messageThreadId` (forum topics) and `replyMarkup` (inline keyboards) |
 | `session-endpoint.ts` | Per-turn, loopback-only WebSocket server exposing ONE `SubagentRegistry` (discovery file + `snapshot`/`steer`/`cancel`/`list` protocol); lazy `ensureSessionNotifyEndpoint`/`stopSessionNotifyEndpoint` wiring, no-op unless `notifications.enabled` |
 | `daemon-control.ts` | Daemon lifecycle: pid+startedAt lock singleton, `daemonInvocation` self-spawn argv (mirrors `memory.ts`'s `distillInvocation`), `startDaemon`/`stopDaemon`/`reloadDaemon`/`daemonStatus` |
-| `telegram-daemon.ts` | The managed daemon (`TelegramDaemon` class + `runNotifyDaemonForeground` CLI entrypoint): scans session discovery files, connects a WS per session, pushes Telegram messages on subagent status EDGES only, and dispatches inbound `/subagents`/`/steer`/`/cancel`/`/help` commands back over the matching session's WebSocket |
+| `telegram-daemon.ts` | The managed daemon (`TelegramDaemon` class + `runNotifyDaemonForeground` CLI entrypoint): scans session discovery files, connects a WS per session, pushes Telegram messages on subagent status EDGES only (with an inline ⏹ Cancel button), and dispatches inbound `/subagents`/`/steer`/`/cancel`/`/help` commands AND inline-button `callback_query` taps back over the matching session's WebSocket. All pushes carry the configured forum `topicId`, and inbound is topic-filtered; a session `{type:"photo"}` frame is relayed via `sendPhoto` |
 
 ## Subdirectories
 *(None)*

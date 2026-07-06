@@ -64,6 +64,8 @@ export interface Config {
     telegram?: {
       botToken?: string;
       chatId?: string;
+      /** Forum-topic thread id (message_thread_id) for daemon pushes. */
+      topicId?: number;
     };
   };
 

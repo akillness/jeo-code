@@ -1,9 +1,5 @@
 /**
- * The managed Telegram daemon (gjc `notifications/telegram-daemon.ts` parity,
- * scoped down to jeo's subagent-remote-control surface — no forum topics, no
- * inline keyboards, no image attachments; see CHANGELOG 0.7.34 for what jeo
- * intentionally does not replicate from gjc's full notification stack).
- *
+ * The managed Telegram daemon (gjc `notifications/telegram-daemon.ts` parity).
  * Runs as ONE long-lived background process (singleton, enforced by
  * `daemon-control.ts`'s lock file — Telegram allows only one `getUpdates`
  * long-poll owner per bot token). It:
@@ -12,18 +8,27 @@
  *     discovery files and connects a loopback WebSocket to each
  *     (`SessionNotifyEndpoint` on the other end);
  *   - sends a Telegram message on each subagent state EDGE (started → a
- *     terminal state), not on every poll tick;
+ *     terminal state), not on every poll tick, attaching an inline "Cancel"
+ *     keyboard button for the running subagent;
  *   - long-polls Telegram `getUpdates` and dispatches `/subagents`,
  *     `/steer <sessionId> <subagentId> <message>`, `/cancel <sessionId>
- *     <subagentId>`, `/help` back into the matching session's WebSocket.
+ *     <subagentId>`, `/help` — plus inline-keyboard button taps
+ *     (`callback_query`) — back into the matching session's WebSocket.
+ *
+ * gjc-parity surface added on top of the plain-text core: forum topics (all
+ * pushes carry the configured `message_thread_id`, inbound is topic-filtered),
+ * inline keyboards (cancel buttons + `callback_query` handling), and image
+ * attachments (a session may push a `{type:"photo"}` frame relayed via
+ * `sendPhoto`).
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { readGlobalConfig } from "../state";
 import { notifySessionsDir } from "./paths";
 import { acquireDaemonLock, isPidAlive } from "./daemon-control";
-import { TelegramApi, type TelegramUpdate } from "./telegram-api";
+import { TelegramApi, type TelegramUpdate, type TelegramCallbackQuery, type InlineKeyboardMarkup, type InlineKeyboardButton } from "./telegram-api";
 import type { SubagentRecord } from "../subagent-registry";
+
 
 function sleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -109,7 +114,47 @@ export const HELP_TEXT =
   "/subagents — list running/recent subagents across every connected session\n" +
   "/steer <sessionId> <subagentId> <message> — send a live message into a running subagent\n" +
   "/cancel <sessionId> <subagentId> — cancel a running subagent\n" +
-  "/help — show this message";
+  "/cancel <sessionId> <subagentId> — cancel a running subagent\n" +
+  "/help — show this message\n" +
+  "(running subagents also carry an inline ⏹ Cancel button — tap it instead of typing /cancel)";
+
+// ── Inline keyboards / callback data (gjc parity) ───────────────────────────────
+
+/** Encode an inline-button cancel target. Kept short to stay under Telegram's
+ *  64-byte `callback_data` cap. */
+export function cancelCallbackData(shortId: string, subagentId: string): string {
+  return `cancel:${shortId}:${subagentId}`;
+}
+
+/** Parse a `callback_data` payload produced by `cancelCallbackData`. */
+export function parseCallbackData(
+  data: string,
+): { action: "cancel"; shortId: string; subagentId: string } | undefined {
+  const m = /^cancel:([^:]+):([\s\S]+)$/.exec(data);
+  if (!m) return undefined;
+  return { action: "cancel", shortId: m[1]!, subagentId: m[2]! };
+}
+
+/** One ⏹ Cancel button (its own row) targeting a single running subagent. */
+function cancelButton(shortId: string, rec: SubagentRecord): InlineKeyboardButton {
+  return { text: `⏹ Cancel ${rec.role} '${rec.id}'`, callback_data: cancelCallbackData(shortId, rec.id) };
+}
+
+/** Inline keyboard with one ⏹ Cancel button per RUNNING subagent across every
+ *  connected session; returns undefined when nothing is running (no keyboard to
+ *  attach). */
+export function buildSubagentsKeyboard(
+  sessions: Array<{ sessionId: string; records: SubagentRecord[] }>,
+): InlineKeyboardMarkup | undefined {
+  const rows: InlineKeyboardButton[][] = [];
+  for (const s of sessions) {
+    for (const r of s.records) {
+      if (r.status === "running") rows.push([cancelButton(shortSessionId(s.sessionId), r)]);
+    }
+  }
+  return rows.length ? { inline_keyboard: rows } : undefined;
+}
+
 
 // ── Stateful daemon (network/ws — DI'd for tests) ───────────────────────────────
 
@@ -131,6 +176,9 @@ export interface TelegramDaemonOptions {
   isPidAlive?: (pid: number) => boolean;
   scanIntervalMs?: number;
   ackTimeoutMs?: number;
+  /** Forum-topic thread id (message_thread_id). When set, every push is sent
+   *  into this topic and inbound messages/taps from other topics are ignored. */
+  topicId?: number;
 }
 
 export class TelegramDaemon {
@@ -145,11 +193,33 @@ export class TelegramDaemon {
     this.WS = opts.WebSocketImpl ?? WebSocket;
   }
 
-  private async notify(text: string): Promise<void> {
+  private async notify(text: string, replyMarkup?: InlineKeyboardMarkup): Promise<void> {
     try {
-      await this.opts.telegram.sendMessage(this.opts.chatId, text);
+      await this.opts.telegram.sendMessage(this.opts.chatId, text, {
+        messageThreadId: this.opts.topicId,
+        replyMarkup,
+      });
     } catch {
       // best-effort — a failed push must never crash the daemon loop.
+    }
+  }
+
+  private async notifyPhoto(photo: string, caption?: string): Promise<void> {
+    try {
+      await this.opts.telegram.sendPhoto(this.opts.chatId, photo, {
+        messageThreadId: this.opts.topicId,
+        caption,
+      });
+    } catch {
+      // best-effort — a failed photo push must never crash the daemon loop.
+    }
+  }
+
+  private async answerCallback(id: string, text?: string): Promise<void> {
+    try {
+      await this.opts.telegram.answerCallbackQuery(id, text !== undefined ? { text } : {});
+    } catch {
+      // best-effort — acknowledging the tap is nice-to-have, not load-bearing.
     }
   }
 
@@ -205,9 +275,16 @@ export class TelegramDaemon {
       const next = msg.subagents as SubagentRecord[];
       const events = diffSubagentTransitions(conn.lastRecords, next);
       conn.lastRecords = next;
+      const shortId = shortSessionId(conn.sessionId);
       for (const ev of events) {
-        await this.notify(formatNotifyEvent(shortSessionId(conn.sessionId), conn.cwd, ev));
+        const keyboard =
+          ev.kind === "started" ? { inline_keyboard: [[cancelButton(shortId, ev.record)]] } : undefined;
+        await this.notify(formatNotifyEvent(shortId, conn.cwd, ev), keyboard);
       }
+      return;
+    }
+    if (msg.type === "photo" && typeof msg.url === "string") {
+      await this.notifyPhoto(msg.url, typeof msg.caption === "string" ? msg.caption : undefined);
       return;
     }
     if (msg.type === "ack" && typeof msg.reqId === "string") {
@@ -250,7 +327,7 @@ export class TelegramDaemon {
     const trimmed = text.trim();
     if (trimmed === "/subagents") {
       const sessions = [...this.sessions.values()].map(c => ({ sessionId: c.sessionId, cwd: c.cwd, records: c.lastRecords }));
-      await this.notify(formatSubagentsList(sessions));
+      await this.notify(formatSubagentsList(sessions), buildSubagentsKeyboard(sessions));
       return;
     }
     if (trimmed === "/help" || trimmed === "/start") {
@@ -285,12 +362,59 @@ export class TelegramDaemon {
   /** Trust boundary: a bot's username is publicly discoverable, so ANY Telegram
    *  user can message it. Only the paired chat (the one that ran
    *  `jeo notify setup`) may steer/cancel subagents; everything else is dropped
-   *  without a reply (replying would leak that the bot is live). */
+   *  without a reply (replying would leak that the bot is live). When a forum
+   *  topic is configured, messages/taps from other topics are also ignored. */
   async handleUpdate(update: TelegramUpdate): Promise<void> {
+    if (update.callback_query) {
+      await this.handleCallbackQuery(update.callback_query);
+      return;
+    }
     const msg = update.message;
     if (!msg?.text) return;
     if (String(msg.chat.id) !== this.opts.chatId) return;
+    if (
+      this.opts.topicId !== undefined &&
+      msg.message_thread_id !== undefined &&
+      msg.message_thread_id !== this.opts.topicId
+    ) {
+      return;
+    }
     await this.handleInboundText(msg.text);
+  }
+
+  /** Handle an inline-button tap. Same chat/topic trust boundary as text, and the
+   *  tap is always acknowledged (Telegram shows a spinner until `answerCallbackQuery`). */
+  async handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
+    const chatId = cb.message?.chat.id;
+    if (chatId !== undefined && String(chatId) !== this.opts.chatId) {
+      await this.answerCallback(cb.id);
+      return;
+    }
+    if (
+      this.opts.topicId !== undefined &&
+      cb.message?.message_thread_id !== undefined &&
+      cb.message.message_thread_id !== this.opts.topicId
+    ) {
+      await this.answerCallback(cb.id);
+      return;
+    }
+    const parsed = cb.data ? parseCallbackData(cb.data) : undefined;
+    if (!parsed) {
+      await this.answerCallback(cb.id);
+      return;
+    }
+    const conn = this.findSession(parsed.shortId);
+    if (!conn) {
+      await this.answerCallback(cb.id, `No connected session matches '${parsed.shortId}'.`);
+      return;
+    }
+    const ok = await this.sendRequest(conn, { type: "cancel", ids: [parsed.subagentId] });
+    await this.answerCallback(cb.id, ok ? `Cancelled '${parsed.subagentId}'.` : "Cancel failed.");
+    await this.notify(
+      ok
+        ? `⏹ Cancelled '${parsed.subagentId}' via button.`
+        : `Cancel failed — '${parsed.subagentId}' is unknown or already finished.`,
+    );
   }
 
   private async pollTelegramLoop(): Promise<void> {
@@ -346,11 +470,12 @@ export async function runNotifyDaemonForeground(): Promise<void> {
     const config = await readGlobalConfig();
     const botToken = config.notifications?.telegram?.botToken;
     const chatId = config.notifications?.telegram?.chatId;
+    const topicId = config.notifications?.telegram?.topicId;
     if (!config.notifications?.enabled || !botToken || !chatId) {
       process.stderr.write("[jeo notify-daemon] notifications not configured — run `jeo notify setup` first.\n");
       return;
     }
-    const daemon = new TelegramDaemon({ chatId, telegram: new TelegramApi(botToken) });
+    const daemon = new TelegramDaemon({ chatId, topicId, telegram: new TelegramApi(botToken) });
     let shuttingDown = false;
     const shutdown = () => {
       if (shuttingDown) return;

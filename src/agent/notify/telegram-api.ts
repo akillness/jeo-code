@@ -1,8 +1,9 @@
 /**
  * Minimal Telegram Bot HTTP API client (gjc `telegram-reference.ts`/`telegram-cli.ts`
- * parity, scoped to the three calls the jeo daemon actually needs: identity
- * verification, outbound push, and inbound long-poll). Deliberately thin — no forum
- * topics, no inline keyboards, no rate-limit pool; jeo's daemon sends plain text.
+ * parity). Scoped to the calls the jeo daemon needs — identity verification,
+ * outbound push, inbound long-poll — plus gjc's richer surface: forum topics
+ * (`message_thread_id`), inline keyboards (`reply_markup` + `answerCallbackQuery`),
+ * and image attachments (`sendPhoto`, photo given as a URL or `file_id`).
  */
 
 export interface TelegramChat {
@@ -10,6 +11,31 @@ export interface TelegramChat {
   type: string;
   title?: string;
   username?: string;
+}
+
+/** Inline keyboard primitives (gjc parity). `callback_data` is capped by Telegram
+ *  at 64 bytes; the daemon keeps its payloads short (`cancel:<shortId>:<id>`). */
+export interface InlineKeyboardButton {
+  text: string;
+  callback_data?: string;
+  url?: string;
+}
+
+export interface InlineKeyboardMarkup {
+  inline_keyboard: InlineKeyboardButton[][];
+}
+
+/** Button-press callback delivered via `getUpdates` when a user taps an inline
+ *  keyboard button. `message` carries the originating chat/topic. */
+export interface TelegramCallbackQuery {
+  id: string;
+  from: { id: number; username?: string; is_bot: boolean };
+  message?: {
+    message_id: number;
+    chat: TelegramChat;
+    message_thread_id?: number;
+  };
+  data?: string;
 }
 
 export interface TelegramUpdate {
@@ -20,7 +46,11 @@ export interface TelegramUpdate {
     chat: TelegramChat;
     text?: string;
     from?: { id: number; username?: string; is_bot: boolean };
+    /** Forum-topic thread this message belongs to (supergroups with topics on). */
+    message_thread_id?: number;
+    is_topic_message?: boolean;
   };
+  callback_query?: TelegramCallbackQuery;
 }
 
 export interface TelegramGetMeResult {
@@ -40,6 +70,24 @@ export interface TelegramGetUpdatesResult {
   description?: string;
 }
 
+/** Shared outbound options: target a forum topic and/or attach an inline keyboard. */
+export interface SendMessageOptions {
+  messageThreadId?: number;
+  replyMarkup?: InlineKeyboardMarkup;
+  disableWebPagePreview?: boolean;
+}
+
+export interface SendPhotoOptions {
+  caption?: string;
+  messageThreadId?: number;
+  replyMarkup?: InlineKeyboardMarkup;
+}
+
+export interface AnswerCallbackQueryOptions {
+  text?: string;
+  showAlert?: boolean;
+}
+
 export type FetchLike = typeof fetch;
 
 export class TelegramApi {
@@ -52,18 +100,59 @@ export class TelegramApi {
     return `https://api.telegram.org/bot${this.token}/${method}`;
   }
 
+  private async postJson<T>(method: string, body: Record<string, unknown>): Promise<T> {
+    const res = await this.fetchImpl(this.url(method), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return (await res.json()) as T;
+  }
+
   async getMe(): Promise<TelegramGetMeResult> {
     const res = await this.fetchImpl(this.url("getMe"));
     return (await res.json()) as TelegramGetMeResult;
   }
 
-  async sendMessage(chatId: string | number, text: string): Promise<TelegramSendResult> {
-    const res = await this.fetchImpl(this.url("sendMessage"), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
-    });
-    return (await res.json()) as TelegramSendResult;
+  async sendMessage(
+    chatId: string | number,
+    text: string,
+    options: SendMessageOptions = {},
+  ): Promise<TelegramSendResult> {
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      text,
+      disable_web_page_preview: options.disableWebPagePreview ?? true,
+    };
+    if (options.messageThreadId !== undefined) body.message_thread_id = options.messageThreadId;
+    if (options.replyMarkup) body.reply_markup = options.replyMarkup;
+    return this.postJson<TelegramSendResult>("sendMessage", body);
+  }
+
+  /** Send a photo. `photo` is a public URL or a Telegram `file_id` (no local
+   *  multipart upload — jeo pushes URLs/ids, matching gjc's URL-attachment path). */
+  async sendPhoto(
+    chatId: string | number,
+    photo: string,
+    options: SendPhotoOptions = {},
+  ): Promise<TelegramSendResult> {
+    const body: Record<string, unknown> = { chat_id: chatId, photo };
+    if (options.caption !== undefined) body.caption = options.caption;
+    if (options.messageThreadId !== undefined) body.message_thread_id = options.messageThreadId;
+    if (options.replyMarkup) body.reply_markup = options.replyMarkup;
+    return this.postJson<TelegramSendResult>("sendPhoto", body);
+  }
+
+  /** Acknowledge an inline-button tap (clears the client's loading spinner and
+   *  optionally shows a toast/alert). Telegram requires this within ~15s. */
+  async answerCallbackQuery(
+    callbackQueryId: string,
+    options: AnswerCallbackQueryOptions = {},
+  ): Promise<TelegramSendResult> {
+    const body: Record<string, unknown> = { callback_query_id: callbackQueryId };
+    if (options.text !== undefined) body.text = options.text;
+    if (options.showAlert !== undefined) body.show_alert = options.showAlert;
+    return this.postJson<TelegramSendResult>("answerCallbackQuery", body);
   }
 
   /** Long-poll for new updates. `offset` should be `last_update_id + 1`. */

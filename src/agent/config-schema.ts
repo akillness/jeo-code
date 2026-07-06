@@ -96,6 +96,9 @@ export const ConfigSchema = z
           .object({
             botToken: z.string().optional(),
             chatId: z.string().optional(),
+            /** Forum-topic thread id (message_thread_id) for supergroups with
+             *  topics enabled — daemon pushes go into this topic. */
+            topicId: z.number().optional(),
           })
           .optional(),
       })

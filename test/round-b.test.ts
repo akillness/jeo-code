@@ -318,13 +318,38 @@ test("retryableStream: a generous deadline does not disturb a healthy stream", a
   expect(out).toEqual(["a", "b", "c"]);
 });
 
-test("streamMaxMs: env opt-in parsing — off by default, positive ints only", async () => {
+test("streamMaxMs: env opt-in override — defaults to DEFAULT_CALL_TIMEOUT_MS (300s), 0 disables", async () => {
   const { streamMaxMs } = await import("../src/ai/model-manager");
-  expect(streamMaxMs({})).toBeUndefined(); // default OFF
+  expect(streamMaxMs({})).toBe(300_000); // default ON — parity with callTimeoutMs's 300s hard bound
   expect(streamMaxMs({ JEO_STREAM_MAX_MS: "30000" })).toBe(30000);
   expect(streamMaxMs({ JEO_STREAM_MAX_MS: "5000" })).toBe(5000); // legacy prefix
-  expect(streamMaxMs({ JEO_STREAM_MAX_MS: "0" })).toBeUndefined();
-  expect(streamMaxMs({ JEO_STREAM_MAX_MS: "nope" })).toBeUndefined();
+  expect(streamMaxMs({ JEO_STREAM_MAX_MS: "0" })).toBeUndefined(); // explicit 0 disables (mirrors JEO_TURN_MAX_MS)
+  expect(streamMaxMs({ JEO_STREAM_MAX_MS: "nope" })).toBe(300_000); // invalid → default
+});
+
+test("streamMaxMs + retryableStream: a keepalive-forever stream (never terminates, but keeps bumping activity) is aborted once the default deadline elapses", async () => {
+  const { streamMaxMs } = await import("../src/ai/model-manager");
+  const maxMs = streamMaxMs({ JEO_STREAM_MAX_MS: "30" }); // short override stands in for the 300s default
+  let lastActivityAt = Date.now();
+  const ticker = setInterval(() => { lastActivityAt = Date.now(); }, 5); // wire-level keepalive bytes, forever
+  const makeIter = (): AsyncIterator<string> => ({
+    next: () => new Promise(() => {}), // never resolves: an endless-reasoning/never-terminating stream
+  });
+  const out: string[] = [];
+  let aborted = false;
+  try {
+    await expect((async () => {
+      for await (const c of retryableStream(
+        makeIter,
+        { retries: 1, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable },
+        { idleMs: 1000, deadlineAt: Date.now() + maxMs!, lastActivityAt: () => lastActivityAt, onIdle: () => { aborted = true; } },
+      )) out.push(c);
+    })()).rejects.toThrow("overall deadline");
+  } finally {
+    clearInterval(ticker);
+  }
+  expect(out).toEqual([]);
+  expect(aborted).toBe(true);
 });
 
 test("streamIdleMs: env opt-in parsing — built-in default, positive int override only", async () => {

@@ -54,7 +54,7 @@ export interface LaunchTuiOptions {
   /** Resolved provider name for the footer (anthropic / openai / gemini / ollama). */
   provider?: string;
   sessionId?: string;
-  write?: (s: string) => void;
+  write?: (s: string) => void | boolean;
   /** Step budget for this turn; drives the footer's `step N/M` denominator. */
   maxSteps?: number;
   /** Whether to treat the output as a TTY (drives alt-screen use). Defaults to isTTY(). */
@@ -213,6 +213,13 @@ export class LaunchTui {
   private mutationGuarded = false;
   private finished = false;
   private timer: ReturnType<typeof setInterval> | undefined;
+  // Backpressure-aware live frame emission: process.stdout.write() returns false when the
+  // internal buffer is over the high-water mark (e.g. a tmux client draining slowly, or
+  // any slow consumer on the other end of stdout). Skipping scheduled frames while this is
+  // true — instead of piling up an unbounded queue of synchronous writes or blocking the
+  // event loop waiting on 'drain' — keeps the render loop responsive and non-blocking.
+  // Generic and tmux-agnostic: helps regardless of what's downstream of stdout.
+  private stdoutBackpressured = false;
   // Resize handling (gjc-style responsiveness): repaint IMMEDIATELY on the first event
   // so a deliberate resize never lags, then cap follow-ups to ~30fps so a drag-resize
   // tracks the cursor live (instead of staying stale until the drag pauses — the lag a
@@ -345,7 +352,19 @@ export class LaunchTui {
   private readonly thinkingLevel?: string;
 
   constructor(opts: LaunchTuiOptions) {
-    this.write = opts.write ?? ((s: string) => process.stdout.write(s));
+    // Backpressure-aware wrapper around the underlying writer (real stdout, or the
+    // caller-injected `write` used by tests). An explicit `false` return (Node/Bun stream
+    // convention: internal buffer over the high-water mark) arms the flag the live-frame
+    // interval checks; a real 'drain' event (asynchronous — never awaited here) clears it.
+    // A test double returning `undefined` (the existing convention throughout this file's
+    // tests) never trips the check, so non-backpressure-aware callers are unaffected.
+    const rawWrite = opts.write ?? ((s: string) => process.stdout.write(s));
+    this.write = (s: string) => {
+      if (rawWrite(s) === false && !this.stdoutBackpressured) {
+        this.stdoutBackpressured = true;
+        process.stdout.once("drain", () => { this.stdoutBackpressured = false; });
+      }
+    };
     this.tty = opts.tty ?? isTTY();
     this.inline = this.tty && jeoEnv("TUI_ALT_SCREEN") !== "1";
     // Row reservation is only needed (and only safe) for the inline main-buffer frame;
@@ -1040,6 +1059,11 @@ export class LaunchTui {
     this.timer = setInterval(() => {
       try {
         this.tickCount++;
+        // Backpressure: skip this scheduled frame entirely rather than piling up writes
+        // or blocking on 'drain' — the tick simply resumes once the writer drains (see
+        // the this.write wrapper above). The spinner/tickCount stay static for the
+        // skipped beat(s), matching the frozen frame this defers presenting.
+        if (this.stdoutBackpressured) return;
         // Self-healing resync: every ~3s drop the differential baseline so the next
         // draw rewrites EVERY line. Any screen corruption (stray child output, wheel
         // noise, terminal glitches) is repaired automatically without user action.

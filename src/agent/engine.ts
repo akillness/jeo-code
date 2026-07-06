@@ -330,6 +330,18 @@ export function turnMaxMs(env: Record<string, string | undefined> = process.env)
   }
   return 30 * 60 * 1000;
 }
+/** Minimum delay (ms) before a re-armed stall-interrupt timer may fire — guards against
+ *  a near-zero remaining budget scheduling a same-tick abort that would race the call
+ *  it is meant to protect. */
+const MIN_STALL_ARM_MS = 1_000;
+
+/** Combine the turn's external cancel signal (Esc/Ctrl-C) with an internal one. Mirrors
+ *  the composeAbort/boundedSignal pattern already used in src/ai/model-manager.ts and
+ *  src/auth/flows/google-project.ts — kept local since neither is exported. */
+function composeAbortSignal(outer: AbortSignal | undefined, inner: AbortSignal): AbortSignal {
+  if (!outer) return inner;
+  return typeof AbortSignal.any === "function" ? AbortSignal.any([outer, inner]) : inner;
+}
 
 
 /** Levenshtein distance (small inputs: tool/command names). */
@@ -408,6 +420,26 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   const turnBudgetMs = turnMaxMs();
   // Reset on every executed tool step and on mid-turn steering.
   let lastProgressAt = turnStartedAt;
+  // Real timer-based interrupt backing the passive check above: JEO_TURN_MAX_MS alone
+  // only re-evaluates at the TOP of the while loop, so it cannot fire while the loop is
+  // parked inside a single blocked model-call await (the exact "genuinely forever" hang
+  // this guards against — a stream that never resolves/rejects). Armed fresh before each
+  // model call for the REMAINING budget and disarmed as soon as that call settles, so it
+  // naturally re-arms on every lastProgressAt reset and never fires after the turn ends.
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  const armStallAbort = (): AbortSignal | undefined => {
+    if (turnBudgetMs <= 0) return opts.signal; // 0 disables the stall budget entirely
+    const ctrl = new AbortController();
+    const remaining = Math.max(MIN_STALL_ARM_MS, turnBudgetMs - (Date.now() - lastProgressAt));
+    stallTimer = setTimeout(() => {
+      ctrl.abort(new Error(`no tool progress for ${Math.round(turnBudgetMs / 60_000)}m — turn stall budget (JEO_TURN_MAX_MS) exceeded without done`));
+    }, remaining);
+    return composeAbortSignal(opts.signal, ctrl.signal);
+  };
+  const disarmStallAbort = () => {
+    if (stallTimer) clearTimeout(stallTimer);
+    stallTimer = undefined;
+  };
   // "steps" | "time" — drives honest wording in the consolidation message.
   let stopKind: "steps" | "time" = "steps";
   let step = 1;
@@ -624,6 +656,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       ev.onReasoningArtifactStream?.(a);
     };
     let responseText: string;
+    const stepSignal = armStallAbort();
     try {
       responseText = await invokeCallLlm(history, {
               jsonMode: true,
@@ -636,7 +669,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               model: opts.model,
               maxTokens: opts.maxTokens,
               reasoningEffort: opts.reasoningEffort,
-              signal: opts.signal,
+              signal: stepSignal,
               sessionKey: opts.sessionKey,
               onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
               onToken,
@@ -652,7 +685,9 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
                 ev.onNotice?.(`${what} — auto-retry #${attempt} in ${wait}s`);
               },
             });
+      disarmStallAbort(); // call settled successfully — the stall interrupt no longer applies
     } catch (err) {
+      disarmStallAbort(); // clear before classifying: a fired stall-abort must not linger past this call
       // Reactive context recovery: trim older tool results in place and retry the
       // SAME step once. The provider's overflow signal beats the local estimate;
       // a second overflow (or nothing left to trim) surfaces the friendly error.

@@ -162,6 +162,66 @@ test("turn stall budget: a spin with NO tool progress consolidates after JEO_TUR
   }
 });
 
+test("turn stall budget: a model call that NEVER resolves is force-aborted once the remaining budget elapses (real timer interrupt, not just the passive top-of-loop check)", async () => {
+  // This is the exact "genuinely forever" hang: the mocked callLlm never settles unless
+  // its signal aborts — mirroring a stream stuck in a blocked await with no wall-clock.
+  // The passive turnBudgetMs check alone could never catch this (the loop never re-
+  // iterates while parked on the await); only a real timer-driven abort can.
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: (_h: Message[], options: { signal?: AbortSignal } = {}) => new Promise((_resolve, reject) => {
+      const signal = options.signal;
+      if (!signal) return; // never resolves — would hang the test if the engine had no interrupt
+      if (signal.aborted) { reject(signal.reason ?? new Error("aborted")); return; }
+      signal.addEventListener("abort", () => reject(signal.reason ?? new Error("aborted")), { once: true });
+    }),
+  }));
+  const saved = process.env.JEO_TURN_MAX_MS;
+  process.env.JEO_TURN_MAX_MS = "50";
+  try {
+    const { runAgentLoop } = await import("../src/agent/engine");
+    const result = await runAgentLoop([{ role: "system", content: "sys" }], {
+      cwd: process.cwd(),
+      maxSteps: 10,
+      tools: { probe: async () => ({ success: true, output: "ok" }) },
+    });
+    // Force-aborted, not hung: the turn reports a clear stall outcome.
+    expect(result.done).toBe(false);
+    expect(result.doneReason).toContain("turn stall budget");
+    expect(result.doneReason).toContain("JEO_TURN_MAX_MS");
+  } finally {
+    if (saved === undefined) delete process.env.JEO_TURN_MAX_MS; else process.env.JEO_TURN_MAX_MS = saved;
+  }
+}, 5_000); // generous OUTER test timeout — must resolve well under it via the internal timer
+
+test("turn stall budget: the internal interrupt timer is re-armed across a normal multi-step turn and does NOT prematurely abort it (regression guard)", async () => {
+  // Each step takes longer than the stall budget on its own, but every step executes a
+  // tool (progress resets lastProgressAt, which re-arms the interrupt for the FULL
+  // remaining window each time) — so a legitimately long multi-step turn must survive.
+  let turn = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      turn++;
+      await new Promise(r => setTimeout(r, 30)); // longer than the 20ms stall budget alone
+      if (turn > 4) return JSON.stringify({ tool: "done", arguments: { reason: "multi-step run finished" } });
+      return JSON.stringify({ tool: "probe", arguments: { n: turn } });
+    },
+  }));
+  const saved = process.env.JEO_TURN_MAX_MS;
+  process.env.JEO_TURN_MAX_MS = "20";
+  try {
+    const { runAgentLoop } = await import("../src/agent/engine");
+    const result = await runAgentLoop([{ role: "system", content: "sys" }], {
+      cwd: process.cwd(),
+      maxSteps: 10_000,
+      tools: { probe: async () => ({ success: true, output: "ok" }) },
+    });
+    expect(result.done).toBe(true);
+    expect(result.doneReason).toBe("multi-step run finished");
+  } finally {
+    if (saved === undefined) delete process.env.JEO_TURN_MAX_MS; else process.env.JEO_TURN_MAX_MS = saved;
+  }
+});
+
 // ── Signature hashing (memory bound) ───────────────────────────────────────
 
 test("hashSignature: stable, fixed-size, distinct for distinct inputs", async () => {

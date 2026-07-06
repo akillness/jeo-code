@@ -259,11 +259,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.7.42]** (2026-07-06) — Fixes a genuine infinite hang on "thinking"/"executing" (reported under `jeo --tmux`, but the two root causes are tmux-agnostic): the interactive streaming model call had no absolute wall-clock, and the ~30-minute turn stall budget was a passive check that could never interrupt a blocked await in the first place. A third, lower-confidence but plausible tmux-specific trigger (synchronous TUI frame writes blocking on a backpressured tmux pane) gets a defensive, generic fix too.
 - **[0.7.41]** (2026-07-06) — Refusal-handling workflow audit (follow-up to 0.7.39): fixes a HIGH-severity, long-masked bug where Gemini's real refusal error shape never matched jeo's refusal detector, plus Antigravity's opaque empty-response error, plus a category-aware fail-fast for deterministic ToS-severity refusals that previously spun the full 30-minute stall budget with zero chance of success.
 - **[0.7.40]** (2026-07-06) — Fixes the release CI's standalone-binary build, broken since before v0.7.31 (last release where that job actually ran and passed) — the `release-binaries` job on v0.7.38 and v0.7.39 both failed silently on every platform target, so neither release has downloadable binaries attached.
 - **[0.7.39]** (2026-07-05) — Fixes an unrecovered Anthropic refusal on Claude Fable 5: the new `stop_details.category: "reasoning_extraction"` refusal shape wasn't recognized, so the turn died with a raw, unfriendly error instead of engaging jeo's existing context-reset refusal-recovery ladder.
 - **[0.7.38]** (2026-07-05) — Ponytail review of 0.7.37's Telegram daemon: closes a real trust-boundary gap (any Telegram user could steer/cancel subagents, not just the paired chat) and a `getUpdates`-failure hot-loop, plus bloat/style cleanup — no new surface area, no config changes.
-- **[0.7.37]** (2026-07-05) — Remote subagent visibility/control over Telegram (gjc Telegram-daemon parity, scoped to jeo's subagent surface only — no forum topics, no inline keyboards, no image attachments; see CHANGELOG 0.7.34 for what jeo intentionally does not replicate from gjc's full notification stack).
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

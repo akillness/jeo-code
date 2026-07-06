@@ -1124,3 +1124,34 @@ test("renderLiveBlock: sizes to content (no padded hole) and caps by terminal he
   // Empty text yields nothing.
   expect(internals.renderLiveBlock("Output", "   ", 80, 50, 8)).toEqual([]);
 });
+
+test("LaunchTui: the live-frame interval skips scheduled frames while write() signals backpressure (returns false), and resumes on 'drain'", async () => {
+  // Node/Bun stream convention: write() returns false when the internal buffer is over
+  // the high-water mark. A tmux client (or any slow consumer) that can't keep draining
+  // must not make the render loop pile up writes or block — it should skip beats until
+  // the writer actually drains, signaled here by emitting 'drain' on process.stdout
+  // (the same event a real backpressured Writable emits once its buffer clears).
+  let backpressured = true;
+  const out: string[] = [];
+  const tui = new LaunchTui({
+    model: "m1",
+    tty: true,
+    write: (s: string) => { out.push(s); return backpressured ? false : undefined; },
+  });
+  tui.start();
+  await new Promise(r => setTimeout(r, 10)); // let start()'s own writes land
+  out.length = 0; // isolate the periodic 120ms tick's frames from start()'s one-off writes
+  try {
+    await new Promise(r => setTimeout(r, 260)); // ~2 tick intervals while backpressured
+    // The first write attempt (already made during start(), before we cleared `out`) set
+    // the flag; every subsequent tick must be skipped outright — zero further writes.
+    expect(out.length).toBe(0);
+
+    backpressured = false;
+    process.stdout.emit("drain");
+    await new Promise(r => setTimeout(r, 260)); // several more ticks once drained
+    expect(out.length).toBeGreaterThan(0); // normal cadence resumed
+  } finally {
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  }
+});

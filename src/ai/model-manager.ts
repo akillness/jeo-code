@@ -576,11 +576,20 @@ async function nextMaybeIdle(iter: AsyncIterator<string>, watchdog?: Promise<nev
   return Promise.race([iter.next(), watchdog]);
 }
 
-/** Opt-in overall stream wall-clock from the environment; undefined = off (default). */
+/** Overall stream wall-clock from the environment. Defaults to the same hard bound as
+ *  callTimeoutMs() (DEFAULT_CALL_TIMEOUT_MS) so the streaming path has parity with the
+ *  non-streaming call()/fallback path — a stream that stays connected and keeps emitting
+ *  SOMETHING (SSE keepalives, reasoning deltas) re-arms the per-chunk idle watchdog
+ *  forever and would otherwise never resolve or reject. JEO_STREAM_MAX_MS explicitly set
+ *  to a positive number overrides the default; explicitly set to 0 disables the overall
+ *  deadline entirely (mirrors JEO_TURN_MAX_MS's own 0-disables convention) for advanced
+ *  users with genuinely long-running legitimate reasoning models. */
 export function streamMaxMs(env?: Record<string, string | undefined>): number | undefined {
   const raw = jeoEnv("STREAM_MAX_MS", env);
-  const n = raw !== undefined ? parseInt(raw, 10) : NaN;
-  return Number.isFinite(n) && n > 0 ? n : undefined;
+  if (raw === undefined || raw === "") return DEFAULT_CALL_TIMEOUT_MS;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_CALL_TIMEOUT_MS;
+  return n === 0 ? undefined : n;
 }
 
 /** Per-chunk idle cap (ms) from the environment, falling back to the built-in default.

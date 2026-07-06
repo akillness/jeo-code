@@ -6,6 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.46] - 2026-07-06
+_Registry-only correction: `npm publish` packs the working-tree filesystem, not the git commit — a concurrent, unrelated, uncommitted feature-in-progress from another session sharing this checkout (`src/agent/prompt-router.ts`, `src/commands/launch/route-slash.ts`, and edits to `config-schema.ts`/`state.ts`/`launch.ts`/`slash.ts`) was physically present on disk during the 0.7.45 `npm publish` and got bundled into that tarball even though it was never committed to git and is absent from the `0.7.45` git tag/branch. Unpublished `jeo-code@0.7.45` from the registry within minutes (npm then permanently blocks republishing that exact version number, hence the bump to 0.7.46) and republished from a verified-clean working tree (`git stash` of the foreign files, `npm pack --dry-run` confirmed their absence, then restored the stash afterward so the other session's in-progress work was never touched or lost). No functional change versus the intended 0.7.45 content — see that entry below._
+
 ## [0.7.45] - 2026-07-06
 _gjc parity: jeo's subagent `task {tasks:[...]}` fan-out batches now visibly run as PARALLEL processes the way gjc's own task tool does, instead of quietly forcing the mutating executor role to serialize. Two compounding bugs made a batch of independent subagent tasks look and behave sequential even though the read-only roles were already technically concurrent: (1) the executor role's fan-out was hard-coded to concurrency 1 regardless of batch size, and (2) the TUI's live status line tracked ONE shared string clobbered by whichever worker's event landed last — worse, ANY single worker reaching "done" cleared the whole `(sub)` marker even while its siblings were still actively running._
 

@@ -122,6 +122,17 @@ export interface Config {
    * `defaultModel`. Env `JEO_SMOL_MODEL`/`JEO_SLOW_MODEL`/`JEO_PLAN_MODEL` fill gaps.
    */
   roles?: { smol?: string; slow?: string; plan?: string };
+  /** Prompt-content-based per-turn model routing (PromptRouter) — see prompt-router.ts.
+   *  Opt-in (undefined/false = off). Never affects subagent/role-tier model resolution. */
+  routing?: {
+    enabled?: boolean;
+    confidenceThreshold?: number;
+    tiers?: {
+      trivial?: { model?: string; thinking?: "minimal" | "low" | "medium" | "high" | "xhigh" };
+      standard?: { model?: string; thinking?: "minimal" | "low" | "medium" | "high" | "xhigh" };
+      complex?: { model?: string; thinking?: "minimal" | "low" | "medium" | "high" | "xhigh" };
+    };
+  };
   gitAutoCommit?: boolean;
   hooks?: HookConfig;
   computer?: {

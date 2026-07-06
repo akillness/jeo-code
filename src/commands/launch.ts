@@ -47,6 +47,7 @@ import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recen
 import { describeModel, describeAllProviders, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
+import { routePrompt, type RouteDecision } from "../agent/prompt-router";
 
 import { listAliases } from "../ai/model-registry";
 import { openaiCompatDef, SUBSCRIPTION_PROVIDER_NAMES } from "../ai/providers/openai-compatible-catalog";
@@ -204,6 +205,7 @@ import {
 import { handleUndoSlash } from "./launch/git-slash";
 import { runSessionSlash } from "./launch/session-slash";
 import { runModelSlash } from "./launch/model-slash";
+import { runRouteSlash } from "./launch/route-slash";
 import { runAgentsSlash, runRolesSlash, runFastSlash, runThinkingSlash } from "./launch/agents-slash";
 import { wikiRootPromptLine, decideWikiSlash } from "./launch/wiki-slash";
 import { decideThemeSlash, buildConfigPanelLines, runEvolveSimulation } from "./launch/system-slash";
@@ -642,6 +644,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let sessionModel: string | undefined = initialSessionModel;
   // Session thinking-level override (`/thinking`); falls back to the config level.
   let sessionThinking: "minimal" | "low" | "medium" | "high" | "xhigh" | undefined = flags.thinking ?? cfg.thinkingLevel;
+  // PromptRouter session override: undefined = follow config.routing.enabled, true/false = /route on|off wins this session.
+  let sessionRouteOverride: boolean | undefined;
+  // Last routing decision (or the reason none applied) — /route why reads this.
+  let lastRouteDecision: RouteDecision | { note: string } | null = null;
   // Cache of live, credential-validated models per provider (refreshed by live pickers).
   let liveModelsCache: ProviderModelsResult[] | null = null;
   const getLiveModels = async (force = false): Promise<ProviderModelsResult[]> => {
@@ -844,7 +850,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // global default (rememberModelPatch), so re-reading turnConfig.defaultModel here let
     // that write silently switch THIS running session's model mid-run. Per-session model
     // selection must stay session-local: running sessions never influence each other.
-    const activeModel = sessionModel || defaultModel;
+    const routingEnabled = sessionRouteOverride ?? !!turnConfig.routing?.enabled;
+    const routed = routingEnabled && !sessionModel
+      ? await routePrompt(userInput, turnConfig, { hasImages: !!images?.length }).catch(() => null)
+      : null;
+    lastRouteDecision = routed ?? (routingEnabled && !sessionModel ? { note: "routing produced no decision (fail-open)" } : { note: "routing not active this turn" });
+    // Explicit /model always wins: `routed` is only ever computed when `!sessionModel`.
+    const activeModel = routed?.model ?? (sessionModel || defaultModel);
+    const activeThinking = routed?.thinking ?? sessionThinking;
     const contextTokens = catalogMetadata(activeModel)?.contextTokens;
 
     // Resolve provider + dirty count up front — both are cheap and feed the live
@@ -852,7 +865,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // config file. (gjc parity P1.B5: dirty count per-turn, not per-render.)
     const { provider: activeProvider } = await describeModel(activeModel, turnConfig);
     const turnDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
-    const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: initialStepLimit, cwd, branch, dirtyCount: turnDirtyCount, thinking: sessionThinking }) : null;
+    const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: initialStepLimit, cwd, branch, dirtyCount: turnDirtyCount, thinking: activeThinking }) : null;
+    if (routed?.warning) {
+      if (tui) tui.events().onNotice?.(routed.warning);
+      else console.log(routed.warning);
+    }
+    if (routed && (routed.source === "llm" || routed.tier !== "standard")) {
+      const routeNotice = `[route] ${routed.tier} → ${routed.model} (${routed.source}: ${routed.signals.join(", ") || "none"}, confidence ${routed.confidence.toFixed(2)})`;
+      if (tui) tui.events().onNotice?.(routeNotice);
+      else console.log(routeNotice);
+    }
     tui?.setTurnTitle(userInput); // gjc-parity turn title → HUD + tmux pane title (no LLM call)
     // `beforeLen` marks where this turn's appended messages start; it is re-read
     // AFTER compaction (which mutates history) and consumed by the post-turn
@@ -1134,8 +1156,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           tools,
           maxSteps: flags.maxSteps,
           model: activeModel,
-          maxTokens: resolveMaxOutputTokens(activeModel, sessionThinking),
-          reasoningEffort: sessionThinking ? thinkingToReasoningEffort(sessionThinking) : undefined,
+          maxTokens: resolveMaxOutputTokens(activeModel, activeThinking),
+          reasoningEffort: activeThinking ? thinkingToReasoningEffort(activeThinking) : undefined,
           signal: ac.signal,
           sessionKey: sessionId,
           steer: drainSteer,
@@ -1154,8 +1176,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             maxSteps: Math.min(6, flags.maxSteps > 0 ? flags.maxSteps : 6),
             budget: { maxExtensions: 0 },
             model: activeModel,
-            maxTokens: resolveMaxOutputTokens(activeModel, sessionThinking),
-            reasoningEffort: sessionThinking ? thinkingToReasoningEffort(sessionThinking) : undefined,
+            maxTokens: resolveMaxOutputTokens(activeModel, activeThinking),
+            reasoningEffort: activeThinking ? thinkingToReasoningEffort(activeThinking) : undefined,
             signal: ac.signal,
             sessionKey: sessionId,
             steer: drainSteer,
@@ -3962,6 +3984,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (modelResult.sessionModel !== undefined) sessionModel = modelResult.sessionModel;
         if (modelResult.sessionThinking !== undefined) sessionThinking = modelResult.sessionThinking;
         if (modelResult.lastPickIndex !== undefined) lastPickIndex = modelResult.lastPickIndex;
+        continue;
+      }
+      if (input.startsWith("/route") && (input === "/route" || input[6] === " ")) {
+        const cfgNow = await readGlobalConfig();
+        const routeResult = runRouteSlash(input, {
+          sessionRouteOverride,
+          routingConfigEnabled: !!cfgNow.routing?.enabled,
+          lastRouteDecision,
+        });
+        if (routeResult.sessionRouteOverride !== undefined) sessionRouteOverride = routeResult.sessionRouteOverride;
+        for (const line of routeResult.lines) console.log(line);
         continue;
       }
       if (input.startsWith("/view") && (input === "/view" || input[5] === " ")) {

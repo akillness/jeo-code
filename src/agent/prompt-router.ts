@@ -1,0 +1,273 @@
+/**
+ * PromptRouter: per-turn, prompt-content-based model routing (heuristic-first,
+ * LLM-escalation-only-when-ambiguous, always fail-open).
+ *
+ * Why heuristic-first instead of always asking a model to classify: a classifier
+ * call on every turn would burn latency+cost on the common case (most turns are
+ * unambiguously trivial or unambiguously routine). The regex heuristic below
+ * resolves the vast majority of turns with zero I/O; only genuinely ambiguous
+ * prompts (conflicting or absent signals) pay for a cheap escalation call.
+ *
+ * Why fail-open everywhere: this module runs on EVERY qualifying turn (see
+ * launch.ts's `runTurn`). A routing bug or a flaky classifier call must never
+ * be able to break a real user turn — every internal step swallows its own
+ * failures and falls back to a safe default, and the top-level export wraps
+ * everything again as a final backstop.
+ *
+ * Why no static tier→model map: `resolveTierModel` computes inline off
+ * `config.roles`/`config.routing.tiers` so a user who already configured
+ * `roles.smol`/`roles.slow` (for `--smol`/`--slow` role-tier resolution
+ * elsewhere) gets working routing with zero additional config, and an
+ * unconfigured role falls through to `defaultModel` exactly like every other
+ * role-tier consumer in this codebase (see `resolveRoleModel`).
+ */
+import { callLlm } from "./loop";
+import { resolveRoleModel } from "../ai/model-manager";
+import { catalogMetadata } from "../ai/model-catalog";
+import { tryExtractJsonObject } from "./json";
+import type { Config } from "./state";
+import type { ThinkLevel } from "../ai/model-catalog";
+
+export type PromptTier = "trivial" | "standard" | "complex";
+
+export interface HeuristicResult {
+  tier: PromptTier;
+  confidence: number; // 0..1
+  signals: string[]; // fired signal names, e.g. ["short-question","no-code-no-path"]
+}
+
+export interface RouteDecision {
+  model: string;
+  thinking?: ThinkLevel; // undefined = do not override the session/global thinking level
+  tier: PromptTier;
+  confidence: number;
+  source: "heuristic" | "llm";
+  signals: string[];
+  /** Present only on the "smol role not configured" first-occurrence case — see warnOnce below. */
+  warning?: string;
+}
+
+export interface RoutePromptOptions {
+  hasImages?: boolean;
+  signal?: AbortSignal;
+}
+
+// --- Frozen, bilingual-validated classification signals (do not re-derive). ---
+
+const RE_CAUSAL = /\b(why|how|root cause|how come)\b/i;
+const RE_CAUSAL_KR = /(왜\s|근본\s*원인|이유가|어떻게)/;
+const RE_TRIVIAL_QUESTION_WORD = /\b(what|who|when|where|which)\b/i;
+const RE_TRIVIAL_QUESTION_WORD_KR = /(뭐|뭔가요|무엇|언제|어디|누구|몇\s|인가요|있나요)/;
+const RE_CODE_FENCE = /```/;
+const RE_PATH_TOKEN = /(?:^|[\s"'`(])@?(?:\.{0,2}[\w-]*\/)+[\w-]+(?:\.[\w-]+)*\.[A-Za-z]\w{0,7}\b/g;
+const RE_DEEP_KEYWORDS_EN = /\b(design|architecture|refactor|debug|deep\s*dive|investigate|diagnose|redesign)\b/i;
+const RE_DEEP_KEYWORDS_KR = /(설계|아키텍처|리팩터|디버그|딥\s*다이브|딥다이브|진단)/;
+const RE_SENTENCE_BOUNDARY = /[.!?][ \n]|[.!?]$/g;
+
+/**
+ * Pure, synchronous, zero-I/O prompt classification. Every branch and threshold
+ * here is frozen per the PromptRouter contract (validated against a 17+-case
+ * bilingual corpus) — in particular: a causal ("why"/"how"/"왜"/"어떻게") question
+ * is NEVER treated as trivial just because it's short and question-shaped (a
+ * debugging question is the opposite of trivial), and the path-token regex is
+ * anchored so numeric fractions like "3/4.5" or "10/10" never false-positive as
+ * a file path (the trailing segment must end in a letter-led extension).
+ */
+export function classifyPromptHeuristically(prompt: string): HeuristicResult {
+  const trimmed = prompt.trim();
+  const signals: string[] = [];
+  let trivialScore = 0;
+  let complexScore = 0;
+
+  const isCausal = RE_CAUSAL.test(trimmed) || RE_CAUSAL_KR.test(trimmed);
+
+  // trivial signal 1: short AND a factual-lookup-shaped question (never for a causal question).
+  const isShort = trimmed.length < 40;
+  const looksLikeFactualQuestion =
+    !isCausal &&
+    (trimmed.includes("?") || RE_TRIVIAL_QUESTION_WORD.test(trimmed) || RE_TRIVIAL_QUESTION_WORD_KR.test(trimmed));
+  if (isShort && looksLikeFactualQuestion) {
+    trivialScore++;
+    signals.push("short-question");
+  }
+
+  // trivial signal 2: no code fence AND no file path mention.
+  const hasCodeFence = RE_CODE_FENCE.test(trimmed);
+  const pathMatches = [...trimmed.matchAll(RE_PATH_TOKEN)];
+  if (!hasCodeFence && pathMatches.length === 0) {
+    trivialScore++;
+    signals.push("no-code-no-path");
+  }
+
+  // complex signal 1: deep-work keyword.
+  if (RE_DEEP_KEYWORDS_EN.test(trimmed) || RE_DEEP_KEYWORDS_KR.test(trimmed)) {
+    complexScore++;
+    signals.push("deep-work-keyword");
+  }
+
+  // complex signal 1b: causal/debugging question.
+  if (isCausal) {
+    complexScore++;
+    signals.push("causal-question");
+  }
+
+  // complex signal 2: long or multi-sentence.
+  const questionMarkCount = (trimmed.match(/\?/g) ?? []).length;
+  const sentenceCount = (trimmed.match(RE_SENTENCE_BOUNDARY) ?? []).length;
+  if (trimmed.length >= 200 || questionMarkCount >= 2 || sentenceCount >= 3) {
+    complexScore++;
+    signals.push("long-or-multi-sentence");
+  }
+
+  // complex signal 3: multiple distinct file mentions.
+  const distinctPaths = new Set(pathMatches.map(m => m[0].trim()));
+  if (distinctPaths.size >= 2) {
+    complexScore++;
+    signals.push("multi-file");
+  }
+
+  // Tier + confidence resolution (frozen thresholds).
+  if (trivialScore > 0 && complexScore > 0) {
+    return { tier: "standard", confidence: 0.35, signals }; // conflicting signals -> let escalation decide
+  }
+  if (complexScore >= 2) return { tier: "complex", confidence: 0.85, signals };
+  if (complexScore === 1) return { tier: "complex", confidence: 0.65, signals };
+  if (trivialScore >= 2) return { tier: "trivial", confidence: 0.85, signals };
+  if (trivialScore === 1) return { tier: "trivial", confidence: 0.65, signals };
+  return { tier: "standard", confidence: 0.9, signals }; // no signals at all -> common case, high confidence
+}
+
+// --- warnOnce: module-level one-time warning surface (no existing helper for this). ---
+
+const warnedKeys = new Set<string>();
+
+/** Returns `message` the first time `key` is seen in this process, `undefined` every
+ *  time after — lets a fail-open path surface a diagnostic exactly once instead of
+ *  spamming it on every qualifying turn. */
+export function warnOnce(key: string, message: string): string | undefined {
+  if (warnedKeys.has(key)) return undefined;
+  warnedKeys.add(key);
+  return message;
+}
+
+/** Test-only: clear warned-once state between test cases (mirrors
+ *  src/tui/components/color.ts's resetAppearanceCache pattern). */
+export function resetPromptRouterWarnings(): void {
+  warnedKeys.clear();
+}
+
+// --- Tier -> model/thinking resolution (inline off config.roles/config.routing.tiers; no static map). ---
+
+function resolveTierModel(tier: PromptTier, config: Pick<Config, "defaultModel" | "roles" | "routing">): string {
+  const configured = config.routing?.tiers?.[tier]?.model;
+  if (configured) return configured;
+  if (tier === "trivial") return config.roles?.smol || config.defaultModel;
+  if (tier === "complex") return config.roles?.slow || config.defaultModel;
+  return config.defaultModel; // "standard" always falls through to defaultModel unless explicitly configured
+}
+
+function resolveTierThinking(tier: PromptTier, config: Pick<Config, "defaultModel" | "roles" | "routing">): ThinkLevel | undefined {
+  return config.routing?.tiers?.[tier]?.thinking; // undefined = no override, caller keeps session/global level
+}
+
+const VALID_TIERS: readonly PromptTier[] = ["trivial", "standard", "complex"];
+function isPromptTier(value: unknown): value is PromptTier {
+  return typeof value === "string" && (VALID_TIERS as readonly string[]).includes(value);
+}
+
+/** Hard cap on how much of the prompt is embedded in the escalation classifier call —
+ *  never send megabytes of user text to a cheap classifier model. */
+const ESCALATION_PROMPT_CHAR_CAP = 2000;
+
+function buildClassifierPrompt(prompt: string): string {
+  const capped = prompt.length > ESCALATION_PROMPT_CHAR_CAP ? prompt.slice(0, ESCALATION_PROMPT_CHAR_CAP) : prompt;
+  return (
+    `Classify the complexity of the following user request for a coding assistant into exactly one ` +
+    `tier: "trivial" (a quick factual lookup, no repo work), "standard" (routine coding/editing work), ` +
+    `or "complex" (multi-file, architectural, or root-cause debugging work). ` +
+    `Respond with ONLY a JSON object of the shape {"tier":"trivial"|"standard"|"complex"}.\n\n` +
+    `Request:\n${capped}`
+  );
+}
+
+/** Attempt LLM-based re-classification for an ambiguous heuristic result. Fail-open:
+ *  ANY failure (throw, abort/timeout, malformed JSON, invalid tier value) resolves to
+ *  `undefined` so the caller falls back to the heuristic tier silently. */
+async function escalateToLlm(prompt: string, smolModel: string, signal: AbortSignal | undefined): Promise<PromptTier | undefined> {
+  try {
+    const raw = await callLlm([{ role: "user", content: buildClassifierPrompt(prompt) }], {
+      model: smolModel,
+      jsonMode: true,
+      maxTokens: 200,
+      signal,
+    });
+    const parsed = tryExtractJsonObject<{ tier?: unknown }>(raw);
+    if (parsed && isPromptTier(parsed.tier)) return parsed.tier;
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Stable key for the one-time "escalation skipped, roles.smol unconfigured" notice. */
+const SMOL_UNCONFIGURED_WARNING_KEY = "prompt-router:smol-unconfigured";
+
+/**
+ * Route a single turn's prompt to a tier-appropriate model. Heuristic-first: only
+ * escalates to a real LLM call when the heuristic's confidence is below
+ * `config.routing?.confidenceThreshold` (default 0.6). Returns `null` (never
+ * throws) when routing should not override the caller's own already-computed
+ * model — either because of an unexpected internal failure (defensive backstop;
+ * every internal step already fails open on its own) or because the resolved
+ * tier's model lacks image support for an image-bearing turn (the caller must
+ * keep whatever multimodal-capable model it already had).
+ */
+export async function routePrompt(
+  prompt: string,
+  config: Pick<Config, "defaultModel" | "roles" | "routing">,
+  opts: RoutePromptOptions = {},
+): Promise<RouteDecision | null> {
+  try {
+    const heuristic = classifyPromptHeuristically(prompt);
+    const threshold = config.routing?.confidenceThreshold ?? 0.6;
+
+    let tier = heuristic.tier;
+    let source: "heuristic" | "llm" = "heuristic";
+    let warning: string | undefined;
+
+    if (heuristic.confidence < threshold) {
+      const smolModel = resolveRoleModel("smol", config);
+      if (smolModel === config.defaultModel) {
+        // roles.smol not configured -> "escalate to a cheap model" would actually call
+        // defaultModel (expensive) — the exact paradox the design doc identifies. Skip
+        // escalation, keep the heuristic result, and surface a one-time warning.
+        warning = warnOnce(
+          SMOL_UNCONFIGURED_WARNING_KEY,
+          "[route] confidence below threshold but roles.smol is not configured — skipping LLM escalation, using heuristic tier (set roles.smol to enable escalation)",
+        );
+      } else {
+        const escalated = await escalateToLlm(prompt, smolModel, opts.signal);
+        if (escalated) {
+          tier = escalated;
+          source = "llm";
+        }
+      }
+    }
+
+    const model = resolveTierModel(tier, config);
+    if (opts.hasImages && catalogMetadata(model)?.images === false) return null;
+
+    const decision: RouteDecision = {
+      model,
+      thinking: resolveTierThinking(tier, config),
+      tier,
+      confidence: heuristic.confidence,
+      source,
+      signals: heuristic.signals,
+    };
+    if (warning) decision.warning = warning;
+    return decision;
+  } catch {
+    return null;
+  }
+}

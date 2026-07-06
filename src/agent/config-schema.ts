@@ -161,6 +161,24 @@ export const ConfigSchema = z
         plan: z.string().optional(),
       })
       .optional(),
+    /** Prompt-content-based per-turn model routing (PromptRouter). Opt-in — off unless
+     *  `enabled: true`. Applies ONLY to the main interactive turn loop (never to
+     *  subagents/`task`, which keep their own `subagents.*`/role-tier resolution
+     *  untouched), and ONLY when the user has not manually pinned a session model
+     *  via `/model` (explicit user choice always wins). */
+    routing: z
+      .object({
+        enabled: z.boolean().optional(),
+        confidenceThreshold: z.number().min(0).max(1).optional(),
+        tiers: z
+          .object({
+            trivial: z.object({ model: z.string().optional(), thinking: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional() }).optional(),
+            standard: z.object({ model: z.string().optional(), thinking: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional() }).optional(),
+            complex: z.object({ model: z.string().optional(), thinking: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional() }).optional(),
+          })
+          .optional(),
+      })
+      .optional(),
     gitAutoCommit: z.boolean().optional(),
     hooks: HookConfigSchema.optional(),
     computer: z

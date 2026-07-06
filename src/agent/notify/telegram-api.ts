@@ -49,6 +49,14 @@ export interface TelegramUpdate {
     /** Forum-topic thread this message belongs to (supergroups with topics on). */
     message_thread_id?: number;
     is_topic_message?: boolean;
+    /** One entry per generated size (largest last); the daemon downloads the
+     *  largest for inbound relay. Absent unless the message attached a photo. */
+    photo?: { file_id: string; width: number; height: number }[];
+    /** A non-photo file attachment (image sent "as file", or any document). */
+    document?: { file_id: string; file_name?: string; mime_type?: string };
+    /** Caption text on a photo/document message (Telegram never sets `text`
+     *  alongside media — the caption is the media message's own text field). */
+    caption?: string;
   };
   callback_query?: TelegramCallbackQuery;
 }
@@ -75,6 +83,8 @@ export interface SendMessageOptions {
   messageThreadId?: number;
   replyMarkup?: InlineKeyboardMarkup;
   disableWebPagePreview?: boolean;
+  /** `"HTML"` to enable Telegram's bounded HTML tag subset (see `telegram-html.ts`). */
+  parseMode?: "HTML";
 }
 
 export interface SendPhotoOptions {
@@ -126,6 +136,7 @@ export class TelegramApi {
     };
     if (options.messageThreadId !== undefined) body.message_thread_id = options.messageThreadId;
     if (options.replyMarkup) body.reply_markup = options.replyMarkup;
+    if (options.parseMode) body.parse_mode = options.parseMode;
     return this.postJson<TelegramSendResult>("sendMessage", body);
   }
 
@@ -161,6 +172,66 @@ export class TelegramApi {
     if (offset !== undefined) params.set("offset", String(offset));
     const res = await this.fetchImpl(`${this.url("getUpdates")}?${params.toString()}`);
     return (await res.json()) as TelegramGetUpdatesResult;
+  }
+
+  /** Create a forum topic in a chat with Threaded Mode enabled (gjc per-session topic parity). */
+  async createForumTopic(chatId: string | number, name: string): Promise<{ ok: boolean; result?: { message_thread_id: number } }> {
+    return this.postJson<{ ok: boolean; result?: { message_thread_id: number } }>("createForumTopic", {
+      chat_id: chatId,
+      name,
+    });
+  }
+
+  /** Rename an existing forum topic, e.g. once a session's real title is known (gjc identity-rename parity). */
+  async editForumTopic(chatId: string | number, messageThreadId: number, name: string): Promise<TelegramSendResult> {
+    return this.postJson<TelegramSendResult>("editForumTopic", {
+      chat_id: chatId,
+      message_thread_id: messageThreadId,
+      name,
+    });
+  }
+
+  /** Resolve a `file_id` to a short-lived `file_path` for use with {@link downloadFile}. */
+  async getFile(fileId: string): Promise<{ ok: boolean; result?: { file_path?: string } }> {
+    return this.postJson<{ ok: boolean; result?: { file_path?: string } }>("getFile", { file_id: fileId });
+  }
+
+  /**
+   * Download a file resolved via {@link getFile}. `filePath` is untrusted
+   * remote metadata from a Bot API response, not something jeo controls —
+   * reject any `..`, leading `/`, or `\` segment before building the URL
+   * (guards against path-traversal/SSRF via a malicious `file_path`) and
+   * percent-encode each path segment. Best-effort: returns `undefined` on
+   * rejection, fetch failure, or a non-ok response instead of throwing,
+   * since this is new network I/O every caller must treat as fallible
+   * (gjc `downloadTelegramFile` parity, minus the retry logic gjc layers on
+   * top at the daemon level).
+   */
+  async downloadFile(filePath: string): Promise<Uint8Array | undefined> {
+    if (filePath.includes("..") || filePath.startsWith("/") || filePath.includes("\\")) return undefined;
+    const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
+    const url = `https://api.telegram.org/file/bot${this.token}/${encodedPath}`;
+    try {
+      const res = await this.fetchImpl(url);
+      if (!res.ok) return undefined;
+      return new Uint8Array(await res.arrayBuffer());
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Look up a chat's type; callers gate per-session topic creation on `result.type === "private"` (gjc `pairedChatIsPrivate` fail-closed parity). */
+  async getChat(chatId: string | number): Promise<{ ok: boolean; result?: { type?: string } }> {
+    return this.postJson<{ ok: boolean; result?: { type?: string } }>("getChat", { chat_id: chatId });
+  }
+
+  /** Attach an emoji reaction to a message (gjc queued/consumed delivery double-check parity). */
+  async setMessageReaction(chatId: string | number, messageId: number, emoji: string): Promise<TelegramSendResult> {
+    return this.postJson<TelegramSendResult>("setMessageReaction", {
+      chat_id: chatId,
+      message_id: messageId,
+      reaction: [{ type: "emoji", emoji }],
+    });
   }
 }
 

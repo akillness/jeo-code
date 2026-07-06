@@ -8,7 +8,8 @@ import { memoryPromptSection, spawnDetachedDistill, recordFailedAttempt } from "
 import { createTaskTool, taskToolProtocolLine, type TaskSubEvent } from "../agent/task-tool";
 import { createSubagentTool, SUBAGENT_TOOL_PROTOCOL_LINE } from "../agent/subagent-tool";
 import { SubagentRegistry } from "../agent/subagent-registry";
-import { stopSessionNotifyEndpoint } from "../agent/notify/session-endpoint";
+import { stopSessionNotifyEndpoint, startSessionNotifyEndpoint, type SessionNotifyEndpoint } from "../agent/notify/session-endpoint";
+import { parseInThreadConfigCommand } from "../agent/notify/config-commands";
 
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { createJobTool, JOB_TOOL_PROTOCOL_LINE } from "../agent/job-tool";
@@ -289,6 +290,10 @@ export function normalizeSlashAlias(input: string): string {
 
 // Per-provider starting model for `--provider <name>` / role pinning. Catalog
 // OpenAI-compatible providers supply their own default; built-ins use this map.
+// Sentinel returned by an aborted `rl.question()` (remote-inject or stdin-close
+// won the race first) — a unique object identity so it can never collide with
+// real user input, however unlikely a matching string would be.
+const REMOTE_ABORT_SENTINEL = Symbol("remote-abort");
 const STATIC_PROVIDER_DEFAULT: Partial<Record<ProviderName, string>> = { anthropic: "sonnet", openai: "gpt-5.5", gemini: "flash", antigravity: "antigravity/gemini-3-pro-high", ollama: "fast", lmstudio: "lmstudio/local-model", xai: "grok-4.3", kimi: "kimi-k2-0711-preview" };
 function providerDefaultModel(p: ProviderName): string {
   return openaiCompatDef(p)?.defaultModel ?? STATIC_PROVIDER_DEFAULT[p] ?? "";
@@ -801,6 +806,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
   }
 
+  // Remote subagent visibility/control AND main-session mirroring over Telegram
+  // (gjc per-session-thread parity, see `src/agent/notify/`): best-effort, a
+  // cheap no-op unless `notifications.enabled`. Created ONCE for the whole REPL
+  // lifetime (not per-turn) so a Telegram forum topic, once created, persists
+  // across turns AND across `--resume` (keyed by jeo's real `sessionId`, not a
+  // random one — see `SessionNotifyEndpoint`'s header doc).
+  const sessionNotifyEndpoint = await startSessionNotifyEndpoint(cwd, sessionId);
+  if (sessionNotifyEndpoint) {
+    sessionNotifyEndpoint.sendIdentity({ repo: cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd, branch, cwd });
+  }
+
   // Persist the active per-session model into the session header so `/resume` restores
   // it (each session can carry its own model independent of the global default).
   // Best-effort: a header-rewrite failure must never abort the turn.
@@ -830,6 +846,23 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // instead of being steered into the model as literal text.
   let queueBusyCommand: ((line: string) => void) | undefined;
   let interactiveTurnActive = false;
+  // Set by `promptInput` while a question is in flight; cleared in its
+  // `finally`. `handleRemoteUserMessage` calls this to inject a Telegram
+  // free-text reply as the next submitted line WITHOUT waiting for a local
+  // Enter — returns `false` (caller then falls back to queuing) if no
+  // question is currently pending or wiring already fired.
+  let pendingRemoteInject: ((text: string) => boolean) | undefined;
+  // Set at the start of each `runTurn` to THIS turn's steerInbox/flushSteerCard;
+  // cleared at turn end. `handleRemoteUserMessage` steers the running turn
+  // through this when set, mirroring the local mid-turn-Enter path exactly
+  // (same steerInbox, same scrollback card) instead of a parallel mechanism.
+  let currentTurnSteer: { push: (line: string) => void; flushCard: (line: string) => void } | undefined;
+  // Session-local notify settings (gjc `/verbose`/`/lean`/`/redact` in-thread
+  // command parity): mutable for the REPL's lifetime, defaulted from config,
+  // never persisted — a config_command from Telegram changes THIS session
+  // only, exactly like gjc's own session-local semantics.
+  let notifyVerbosity: "lean" | "verbose" = cfg.notifications?.verbosity ?? "lean";
+  let notifyRedact = cfg.notifications?.redact ?? false;
 
 
   // Run one conversational turn: compact, persist user msg, run the loop, persist + return the reply.
@@ -1074,6 +1107,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // `subagent` tool controls them and cancelAll() in finally prevents orphans.
       const subagentRegistry = new SubagentRegistry();
       const jobRegistry = new JobRegistry();
+      sessionNotifyEndpoint?.attachRegistry(subagentRegistry);
+      currentTurnSteer = { push: line => steerInbox.push(line), flushCard: line => tui?.flushSteerCard(line) };
+      if (sessionNotifyEndpoint && !notifyRedact) {
+        const preview = userInput.length > 200 ? `${userInput.slice(0, 200)}…` : userInput;
+        sessionNotifyEndpoint.sendContextUpdate("turn_start", preview, { model: activeModel });
+      } else if (sessionNotifyEndpoint) {
+        sessionNotifyEndpoint.sendContextUpdate("turn_start", "[redacted]", { model: activeModel });
+      }
       try {
         // Per-turn todo snapshot: drives the done-time reconciliation gate (the
         // Todos checklist used to end a finished turn stuck at "✓0 ◐1 ·4 / 5"
@@ -1129,6 +1170,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             signal: ac.signal,
             steer: drainSteer,
             registry: subagentRegistry,
+            sessionEndpoint: sessionNotifyEndpoint,
             onEvent: useTui
               ? (e => tui?.onSubagentEvent(e))
               : (e => logTaskSubEvent(e)),
@@ -1197,7 +1239,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       } finally {
         harness.dispose();
         subagentRegistry.cancelAll(); // #9: no detached run leaks past the turn
-        await stopSessionNotifyEndpoint(subagentRegistry); // tear down the Telegram remote-control endpoint, if one was started
+        sessionNotifyEndpoint?.detachRegistry(); // this turn's registry is gone — subagent frames stop applying to it
+        currentTurnSteer = undefined; // a remote message after this point queues instead of steering a dead turn
+        await stopSessionNotifyEndpoint(subagentRegistry); // tear down the FALLBACK lazy endpoint, if one was started (no-op when sessionNotifyEndpoint owns the registry)
         jobRegistry.cancelAll(); // background jobs are turn-scoped too — no orphaned processes
 
         // Steering typed but never drained (e.g. entered just after the final step)
@@ -1221,6 +1265,21 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       || (result.done
         ? `(done in ${result.steps} step${result.steps === 1 ? "" : "s"} — the model returned no summary)`
         : `(reached the ${result.steps}-step limit without signaling done)`);
+    if (sessionNotifyEndpoint) {
+      const usageStr = result.usage ? formatUsage(result.usage) : undefined;
+      if (notifyRedact) {
+        sessionNotifyEndpoint.sendContextUpdate("turn_end", "[redacted]", { model: activeModel, usage: usageStr });
+        sessionNotifyEndpoint.sendTurnStream("[redacted]");
+      } else {
+        const preview = reply.length > 200 ? `${reply.slice(0, 200)}…` : reply;
+        sessionNotifyEndpoint.sendContextUpdate("turn_end", preview, { model: activeModel, usage: usageStr });
+        // `notifyVerbosity` currently gates ONLY whether tool/step detail would be
+        // mirrored (a future extension point) — the finalized reply text itself is
+        // always sent in full at both verbosity levels, matching gjc's own
+        // lean-vs-verbose semantics (lean omits tool noise, never the answer).
+        sessionNotifyEndpoint.sendTurnStream(reply);
+      }
+    }
     // Persist any messages this turn produced that onStep hasn't flushed yet (the
     // final step's tool-call/result + any retry-loop messages), then the reply.
     // Incremental onStep flushes already wrote the prompt and completed steps, so
@@ -1931,16 +1990,44 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     promptActive = true;
     pasteLineFired = false;
+    // Remote (Telegram) free-text injection while idle at THIS prompt: a fresh
+    // AbortController per call lets `handleRemoteUserMessage` cancel the
+    // in-flight `rl.question()` cleanly (verified empirically: AbortSignal
+    // rejects with AbortError, no zombie resolution stealing the NEXT prompt's
+    // keystroke — unlike an abandoned, never-aborted `rl.question()` promise).
+    // Injection is gated on `rl.line === ""` by the caller (never hijacks a
+    // user actively typing) — `pendingRemoteInject` (module-scope-ish, set here
+    // and cleared in `finally`) is what a remote message actually calls: it
+    // aborts the stale question AND resolves this race with the injected text
+    // in one atomic step, so there is exactly one winner and no zombie.
+    const questionAbort = new AbortController();
+    let remoteInjectResolve: ((text: string) => void) | undefined;
+    pendingRemoteInject = (text: string) => {
+      if (!remoteInjectResolve) return false; // already fired or the race already settled
+      questionAbort.abort();
+      remoteInjectResolve(text);
+      remoteInjectResolve = undefined;
+      return true;
+    };
     try {
-      const value = await Promise.race([
-        rl.question(prompt),
+      const value = await Promise.race<string | typeof REMOTE_ABORT_SENTINEL>([
+        rl.question(prompt, { signal: questionAbort.signal }).catch(err => {
+          if (err instanceof Error && err.name === "AbortError") return REMOTE_ABORT_SENTINEL;
+          throw err;
+        }),
         new Promise<string>(resolve => {
           notifyStdinClosed = () => {
             if (hardExitOnLoopEnd || process.stdin.isTTY || process.stdout.isTTY) forceExitFromCtrlC();
             resolve(pendingStdinLines.shift() ?? "/exit");
           };
         }),
+        new Promise<string>(resolve => {
+          remoteInjectResolve = resolve;
+        }),
       ]);
+      // The aborted `rl.question()` lost the race (a remote message or stdin-close
+      // won it first) — its sentinel must never be treated as real submitted input.
+      if (value === REMOTE_ABORT_SENTINEL) return promptInput(prompt);
       // PASTE-MERGE: if the resolving line came from inside a bracketed paste, the rest of
       // the paste (buffered in pasteMerge.buf) plus the trailing residual still in the line
       // buffer belong to the SAME message. Wait for paste-end, then join them with newlines
@@ -1981,6 +2068,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     } finally {
       promptActive = false;
       notifyStdinClosed = undefined;
+      pendingRemoteInject = undefined;
     }
   };
 
@@ -2434,6 +2522,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     } catch {
       // Best-effort terminal restore; process exit is the contract.
     }
+    // Fire-and-forget — see the identical rationale at the main hard-exit path.
+    void sessionNotifyEndpoint?.stop();
     process.exit(130);
   };
   // Prompt Ctrl+C: a single press clears a non-empty box; on an empty box it exits.
@@ -3278,6 +3368,47 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (pickResult.sessionModel !== undefined) sessionModel = pickResult.sessionModel;
     if (pickResult.lastUserInput !== undefined) lastUserInput = pickResult.lastUserInput;
     if (pickResult.lastReply !== undefined) lastReply = pickResult.lastReply;
+  }
+
+  // Remote (Telegram) free-text reply / config command routing — wired here,
+  // right before the REPL loop starts, since it needs `pendingImages`,
+  // `rl`/`promptInput`'s `pendingRemoteInject`, and `pendingStdinLines`, all
+  // established by now. See the Tier 2 contract's "Session-side routing".
+  if (sessionNotifyEndpoint) {
+    sessionNotifyEndpoint.onUserMessage = (msg): void => {
+      void (async () => {
+        // Resolve any attached photo/document paths (already downloaded to
+        // local temp files by the daemon) into real ImageAttachments via the
+        // SAME path `attachImagePaths` uses for local drag-drop — one image
+        // ingestion mechanism, not a parallel one. Bare paths never contain
+        // whitespace here (daemon-generated temp names), so simple whitespace
+        // joining is a safe token boundary for the path-token scanner.
+        const withPaths = msg.imagePaths?.length ? `${msg.text} ${msg.imagePaths.join(" ")}`.trim() : msg.text;
+        const attached = await attachImagePaths(withPaths, pendingImages.length + 1);
+        const cleanedText = attached.images.length ? attached.text : msg.text;
+        if (attached.images.length) pendingImages.push(...attached.images);
+
+        if (interactiveTurnActive && currentTurnSteer) {
+          // Busy: steer the running turn exactly like a local mid-turn Enter.
+          currentTurnSteer.push(cleanedText);
+          currentTurnSteer.flushCard(cleanedText);
+          return;
+        }
+        // Idle: never hijack text the user is actively typing locally — only
+        // abort+inject when the readline buffer is confirmed empty (verified
+        // empirically: aborting mid-partial-type corrupts the buffer).
+        const rli = rl as unknown as { line?: string };
+        if (rli.line === "" && pendingRemoteInject?.(cleanedText)) return;
+        // No question pending, or the user is mid-type: queue for the NEXT
+        // prompt cycle instead (same queue `pendingMidTurnCommands`/paste-merge
+        // already feed — consumed at the top of the next `promptInput` call).
+        pendingStdinLines.push(cleanedText);
+      })();
+    };
+    sessionNotifyEndpoint.onConfigCommand = (cmd): void => {
+      if (cmd.verbosity !== undefined) notifyVerbosity = cmd.verbosity;
+      if (cmd.redact !== undefined) notifyRedact = cmd.redact;
+    };
   }
 
   while (true) {
@@ -4129,6 +4260,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       disarmPreview();
       out.write("\x1b[?25h\n");
     } catch { /* best effort */ }
+    // Fire-and-forget: process.exit() below does not wait for this, but the OS
+    // tears down the socket on process death regardless, and a leaked discovery
+    // file is self-healing (the daemon's scanSessions() reaps dead-pid entries
+    // on its next 3s poll — see notify-telegram-daemon.test.ts).
+    void sessionNotifyEndpoint?.stop();
     process.removeListener("SIGINT", handleCtrlC);
     process.stdin.off("data", handleCtrlCByte);
     drainPromptListeners();
@@ -4145,6 +4281,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // gjc-parity resume pointer (logs/gjc-tui-study analysis Gap C): leave the exact
   // resume command in scrollback on exit, mirroring the --list handler's convention.
   if (sessionId && !flags.noSession) console.log(formatResumeHint(sessionId));
+  await sessionNotifyEndpoint?.stop();
   process.removeListener("SIGINT", handleCtrlC);
   process.stdin.off("data", handleCtrlCByte);
   drainPromptListeners();

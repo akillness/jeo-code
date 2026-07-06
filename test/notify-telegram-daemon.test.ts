@@ -11,6 +11,7 @@ import {
   buildSubagentsKeyboard,
   HELP_TEXT,
   TelegramDaemon,
+  type TelegramDaemonOptions,
   type NotifyEvent,
 } from "../src/agent/notify/telegram-daemon";
 import type { SubagentRecord } from "../src/agent/subagent-registry";
@@ -108,6 +109,16 @@ class FakeTelegramApi {
   sent: { chatId: string | number; text: string; options?: any }[] = [];
   photos: { chatId: string | number; photo: string; options?: any }[] = [];
   answered: { id: string; options?: any }[] = [];
+  topicsCreated: { chatId: string | number; name: string }[] = [];
+  topicsEdited: { chatId: string | number; messageThreadId: number; name: string }[] = [];
+  filesFetched: string[] = [];
+  filesDownloaded: string[] = [];
+  chatsChecked: (string | number)[] = [];
+  reactions: { chatId: string | number; messageId: number; emoji: string }[] = [];
+  private nextTopicId = 1000;
+  /** Overridable per-test to simulate a failed topic creation (Threaded Mode off). */
+  createForumTopicImpl: (chatId: string | number, name: string) => Promise<{ ok: boolean; result?: { message_thread_id: number } }> =
+    async () => ({ ok: true, result: { message_thread_id: this.nextTopicId++ } });
   async sendMessage(chatId: string | number, text: string, options?: any) {
     this.sent.push({ chatId, text, options });
     return { ok: true };
@@ -125,6 +136,33 @@ class FakeTelegramApi {
   }
   async getUpdates() {
     return { ok: true, result: [] };
+  }
+  async createForumTopic(chatId: string | number, name: string): Promise<{ ok: boolean; result?: { message_thread_id: number } }> {
+    this.topicsCreated.push({ chatId, name });
+    return this.createForumTopicImpl(chatId, name);
+  }
+  async editForumTopic(chatId: string | number, messageThreadId: number, name: string): Promise<{ ok: boolean }> {
+    this.topicsEdited.push({ chatId, messageThreadId, name });
+    return { ok: true };
+  }
+  async getFile(fileId: string): Promise<{ ok: boolean; result?: { file_path?: string } }> {
+    this.filesFetched.push(fileId);
+    return { ok: true, result: { file_path: `photos/${fileId}.jpg` } };
+  }
+  async downloadFile(filePath: string): Promise<Uint8Array | undefined> {
+    this.filesDownloaded.push(filePath);
+    return new Uint8Array([1, 2, 3]);
+  }
+  /** Overridable per-test to simulate a paired chat that is NOT private (e.g. a group). */
+  getChatImpl: (chatId: string | number) => Promise<{ ok: boolean; result?: { type?: string } }> =
+    async () => ({ ok: true, result: { type: "private" } });
+  async getChat(chatId: string | number): Promise<{ ok: boolean; result?: { type?: string } }> {
+    this.chatsChecked.push(chatId);
+    return this.getChatImpl(chatId);
+  }
+  async setMessageReaction(chatId: string | number, messageId: number, emoji: string): Promise<{ ok: boolean }> {
+    this.reactions.push({ chatId, messageId, emoji });
+    return { ok: true };
   }
 }
 
@@ -484,4 +522,245 @@ test("a session photo frame is relayed via sendPhoto with caption, topic, and re
   expect(telegram.photos[0]!.options?.caption).toBe("a screenshot");
   expect(telegram.photos[0]!.options?.messageThreadId).toBe(55);
   expect(telegram.photos[0]!.options?.replyMarkup).toEqual(replyMarkup);
+});
+
+// ── Per-session dynamic topics (Tier 2) ──────────────────────────────────────────
+
+function makePerSessionDaemon(telegram: FakeTelegramApi, overrides: Partial<TelegramDaemonOptions> = {}): TelegramDaemon {
+  FakeWebSocket.instances = [];
+  return new TelegramDaemon({
+    chatId: "999",
+    telegram: telegram as unknown as TelegramApi,
+    WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    ackTimeoutMs: 200,
+    perSessionTopics: true,
+    saveTopicState: async () => {},
+    loadTopicState: async () => ({ topics: {} }),
+    ...overrides,
+  });
+}
+
+function sessionConn(sessionId = "abcd1234-0000-0000-0000-000000000000", cwd = "/tmp/proj") {
+  return { sessionId, cwd, pid: 1, ws: new FakeWebSocket("x") as unknown as WebSocket, lastRecords: [] as SubagentRecord[] };
+}
+
+test("perSessionTopics: a NEW status edge from a session calls createForumTopic with a provisional name containing its short id, not a flat sendMessage with a preset topicId", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  expect(telegram.topicsCreated.length).toBe(1);
+  expect(telegram.topicsCreated[0]!.chatId).toBe("999");
+  expect(telegram.topicsCreated[0]!.name).toBe(`session ${shortSessionId(conn.sessionId)}`);
+  expect(telegram.sent.length).toBe(1);
+  expect(telegram.sent[0]!.options?.messageThreadId).toBe(1000);
+});
+
+test("perSessionTopics: a SECOND frame from the SAME session reuses the cached topic (createForumTopic not called again)", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "executor-1", status: "running" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "executor-1", status: "completed", result: "done" })] }));
+  expect(telegram.topicsCreated.length).toBe(1);
+  expect(telegram.sent.length).toBe(2);
+  expect(telegram.sent[1]!.options?.messageThreadId).toBe(1000);
+});
+
+test("identity_header renames an already-created topic via editForumTopic ONCE, deduped on a repeated identical header", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  expect(telegram.topicsCreated.length).toBe(1);
+
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "identity_header", sessionId: conn.sessionId, repo: "my-repo", branch: "main", cwd: "/tmp/x" }));
+  expect(telegram.topicsEdited.length).toBe(1);
+  expect(telegram.topicsEdited[0]!.messageThreadId).toBe(1000);
+  expect(telegram.topicsEdited[0]!.name).toBe("my-repo@main");
+
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "identity_header", sessionId: conn.sessionId, repo: "my-repo", branch: "main", cwd: "/tmp/x" }));
+  expect(telegram.topicsEdited.length).toBe(1);
+});
+
+test("context_update frame sends a message reflecting phase/summary/model", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "context_update", sessionId: conn.sessionId, phase: "turn_start", summary: "do a thing", model: "claude" }));
+  expect(telegram.sent.length).toBe(1);
+  expect(telegram.sent[0]!.text).toBe("▶ Turn started (claude)\ndo a thing");
+});
+
+test("turn_stream frame sends HTML-converted text with parse_mode HTML (markdownToTelegramHtml pipe-through)", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "turn_stream", sessionId: conn.sessionId, text: "**bold** reply" }));
+  expect(telegram.sent.length).toBe(1);
+  expect(telegram.sent[0]!.options?.parseMode).toBe("HTML");
+  expect(telegram.sent[0]!.text).toBe("<b>bold</b> reply");
+});
+
+test("inbound message to a session's OWN topic (per-session-topics mode) sends a user_message frame over that session's ws", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  expect(telegram.topicsCreated.length).toBe(1);
+
+  await daemon.handleUpdate({
+    update_id: 1,
+    message: { message_id: 5, date: 0, chat: { id: 999, type: "private" }, text: "hello session", message_thread_id: 1000 },
+  });
+  const ws = conn.ws as unknown as FakeWebSocket;
+  const frame = JSON.parse(ws.sent.at(-1)!);
+  expect(frame).toEqual({ type: "user_message", sessionId: conn.sessionId, text: "hello session" });
+});
+
+test("in-thread config command ('/verbose') routes as a config_command frame instead of user_message, and does not react", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+
+  await daemon.handleUpdate({
+    update_id: 1,
+    message: { message_id: 6, date: 0, chat: { id: 999, type: "private" }, text: "/verbose", message_thread_id: 1000 },
+  });
+  const ws = conn.ws as unknown as FakeWebSocket;
+  const frame = JSON.parse(ws.sent.at(-1)!);
+  expect(frame).toEqual({ type: "config_command", sessionId: conn.sessionId, verbosity: "verbose" });
+  expect(telegram.reactions.length).toBe(0);
+});
+
+test("a photo attachment in a session's topic is downloaded (getFile+downloadFile) and relayed as user_message with imagePaths via an injected writeTempFile", async () => {
+  const telegram = new FakeTelegramApi();
+  const written: { bytes: Uint8Array; suggestedName: string }[] = [];
+  const daemon = makePerSessionDaemon(telegram, {
+    writeTempFile: async (bytes, suggestedName) => {
+      written.push({ bytes, suggestedName });
+      return `/tmp/fake/${suggestedName}`;
+    },
+  });
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+
+  await daemon.handleUpdate({
+    update_id: 1,
+    message: {
+      message_id: 7,
+      date: 0,
+      chat: { id: 999, type: "private" },
+      message_thread_id: 1000,
+      photo: [
+        { file_id: "small-1", width: 90, height: 90 },
+        { file_id: "big-1", width: 800, height: 800 },
+      ],
+    },
+  });
+
+  expect(telegram.filesFetched).toEqual(["big-1"]);
+  expect(telegram.filesDownloaded).toEqual(["photos/big-1.jpg"]);
+  expect(written.length).toBe(1);
+  expect(written[0]!.suggestedName).toBe("photo-big-1.jpg");
+  const ws = conn.ws as unknown as FakeWebSocket;
+  const frame = JSON.parse(ws.sent.at(-1)!);
+  expect(frame.type).toBe("user_message");
+  expect(frame.sessionId).toBe(conn.sessionId);
+  expect(frame.text).toBe("");
+  expect(frame.imagePaths).toEqual(["/tmp/fake/photo-big-1.jpg"]);
+});
+
+test("an image document attachment (sent 'as file') in a session's topic is also downloaded and relayed as user_message with imagePaths", async () => {
+  const telegram = new FakeTelegramApi();
+  const written: { bytes: Uint8Array; suggestedName: string }[] = [];
+  const daemon = makePerSessionDaemon(telegram, {
+    writeTempFile: async (bytes, suggestedName) => {
+      written.push({ bytes, suggestedName });
+      return `/tmp/fake/${suggestedName}`;
+    },
+  });
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+
+  await daemon.handleUpdate({
+    update_id: 1,
+    message: {
+      message_id: 8,
+      date: 0,
+      chat: { id: 999, type: "private" },
+      message_thread_id: 1000,
+      caption: "a diagram",
+      document: { file_id: "doc-1", file_name: "diagram.png", mime_type: "image/png" },
+    },
+  });
+
+  expect(telegram.filesFetched).toEqual(["doc-1"]);
+  expect(telegram.filesDownloaded).toEqual(["photos/doc-1.jpg"]);
+  expect(written[0]!.suggestedName).toBe("diagram.png");
+  const ws = conn.ws as unknown as FakeWebSocket;
+  const frame = JSON.parse(ws.sent.at(-1)!);
+  expect(frame.type).toBe("user_message");
+  expect(frame.text).toBe("a diagram");
+  expect(frame.imagePaths).toEqual(["/tmp/fake/diagram.png"]);
+});
+
+test("a plain-text inbound message that routes as user_message gets a 👀 reaction (setMessageReaction) confirming delivery", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+
+  await daemon.handleUpdate({
+    update_id: 1,
+    message: { message_id: 9, date: 0, chat: { id: 999, type: "private" }, text: "hello again", message_thread_id: 1000 },
+  });
+  expect(telegram.reactions.length).toBe(1);
+  expect(telegram.reactions[0]).toEqual({ chatId: "999", messageId: 9, emoji: "👀" });
+});
+
+test("fail-closed: createForumTopic rejecting falls back to the flat/no topicId for that session's subsequent sends, without retrying createForumTopic on every frame", async () => {
+  const telegram = new FakeTelegramApi();
+  telegram.createForumTopicImpl = async () => {
+    throw new Error("Threaded Mode off");
+  };
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "e1", status: "running" })] }));
+  expect(telegram.topicsCreated.length).toBe(1);
+  expect(telegram.sent.length).toBe(1);
+  expect(telegram.sent[0]!.options?.messageThreadId).toBeUndefined();
+
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "e1", status: "completed", result: "done" })] }));
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "e2", status: "running" })] }));
+
+  expect(telegram.topicsCreated.length).toBe(1);
+  expect(telegram.sent.length).toBe(3);
+  expect(telegram.sent.every(s => s.options?.messageThreadId === undefined)).toBe(true);
+});
+
+test("fail-closed privacy gate: a non-private paired chat (group) blocks per-session topic creation, falls back to the flat path, and getChat is checked only ONCE (cached across sessions)", async () => {
+  const telegram = new FakeTelegramApi();
+  telegram.getChatImpl = async () => ({ ok: true, result: { type: "group" } });
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "e1", status: "running" })] }));
+  expect(telegram.topicsCreated.length).toBe(0);
+  expect(telegram.sent.length).toBe(1);
+  expect(telegram.sent[0]!.options?.messageThreadId).toBeUndefined();
+  expect(telegram.chatsChecked.length).toBe(1);
+
+  const conn2 = sessionConn("11112222-0000-0000-0000-000000000000");
+  await daemon.handleSessionMessage(conn2, JSON.stringify({ type: "snapshot", subagents: [rec({ id: "e2", status: "running" })] }));
+  expect(telegram.topicsCreated.length).toBe(0);
+  expect(telegram.sent.length).toBe(2);
+  expect(telegram.chatsChecked.length).toBe(1);
 });

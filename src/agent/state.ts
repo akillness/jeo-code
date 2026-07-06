@@ -61,11 +61,18 @@ export interface Config {
   /** Remote subagent visibility/control over Telegram (see `src/agent/notify/`). */
   notifications?: {
     enabled?: boolean;
+    /** Session-local default; see `config-schema.ts` for the mutability contract. */
+    verbosity?: "lean" | "verbose";
+    /** Session-local default; see `config-schema.ts` for the mutability contract. */
+    redact?: boolean;
     telegram?: {
       botToken?: string;
       chatId?: string;
       /** Forum-topic thread id (message_thread_id) for daemon pushes. */
       topicId?: number;
+      /** Auto-create/manage one forum topic per interactive session instead of
+       *  the flat/global `topicId` above. See `TopicRegistry`. */
+      perSessionTopics?: boolean;
     };
   };
 

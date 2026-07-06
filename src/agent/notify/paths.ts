@@ -30,6 +30,13 @@ export function notifySessionEndpointPath(sessionId: string): string {
   return path.join(notifySessionsDir(), `${sessionId}.json`);
 }
 
+/** Persisted per-session forum-topic map (`sessionId -> {topicId, name, createdAt}`),
+ *  survives daemon restarts (gjc `telegram-topics.json` parity). Only written/read
+ *  when `notifications.telegram.perSessionTopics` is enabled. */
+export function notifyTopicsPath(): string {
+  return path.join(notifyDir(), "telegram-topics.json");
+}
+
 /** Singleton lock for the daemon process (Telegram allows only one `getUpdates`
  *  long-poll owner per bot token — gjc's rationale for a daemon lock/state file). */
 export function notifyDaemonLockPath(): string {

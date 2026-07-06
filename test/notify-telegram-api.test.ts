@@ -123,3 +123,142 @@ test("maskToken shows only the first 4 chars + length", () => {
 test("maskToken on empty string returns empty string", () => {
   expect(maskToken("")).toBe("");
 });
+
+// ── Tier 2: forum topics, file download, chat lookup, reactions, HTML parse mode ──
+
+function fakeBytesFetch(bytes: Uint8Array, options?: { ok?: boolean; throws?: boolean }): { calls: string[]; fetch: typeof fetch } {
+  const calls: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const url = String(input);
+    calls.push(url);
+    if (options?.throws) throw new Error("network down");
+    return new Response(bytes, { status: options?.ok === false ? 500 : 200 });
+  }) as typeof fetch;
+  return { calls, fetch: fetchImpl };
+}
+
+test("createForumTopic POSTs chat_id + name to /createForumTopic", async () => {
+  const { calls, fetch } = fakeFetch({ createForumTopic: { ok: true, result: { message_thread_id: 42 } } });
+  const api = new TelegramApi("TOKEN123", fetch);
+  const res = await api.createForumTopic("999", "session abcd1234");
+  expect(res.ok).toBe(true);
+  expect(res.result?.message_thread_id).toBe(42);
+  expect(calls[0]!.url).toBe("https://api.telegram.org/botTOKEN123/createForumTopic");
+  const body = JSON.parse(String(calls[0]!.init?.body));
+  expect(body.chat_id).toBe("999");
+  expect(body.name).toBe("session abcd1234");
+});
+
+test("editForumTopic POSTs chat_id + message_thread_id + name to /editForumTopic", async () => {
+  const { calls, fetch } = fakeFetch({ editForumTopic: { ok: true } });
+  const api = new TelegramApi("TOKEN123", fetch);
+  await api.editForumTopic("999", 42, "my-repo@main");
+  expect(calls[0]!.url).toBe("https://api.telegram.org/botTOKEN123/editForumTopic");
+  const body = JSON.parse(String(calls[0]!.init?.body));
+  expect(body.chat_id).toBe("999");
+  expect(body.message_thread_id).toBe(42);
+  expect(body.name).toBe("my-repo@main");
+});
+
+test("getFile POSTs file_id to /getFile and returns the resolved file_path", async () => {
+  const { calls, fetch } = fakeFetch({ getFile: { ok: true, result: { file_path: "photos/file_1.jpg" } } });
+  const api = new TelegramApi("TOKEN123", fetch);
+  const res = await api.getFile("file-id-1");
+  expect(res.result?.file_path).toBe("photos/file_1.jpg");
+  expect(calls[0]!.url).toBe("https://api.telegram.org/botTOKEN123/getFile");
+  const body = JSON.parse(String(calls[0]!.init?.body));
+  expect(body.file_id).toBe("file-id-1");
+});
+
+test("getChat POSTs chat_id to /getChat and returns the chat type", async () => {
+  const { calls, fetch } = fakeFetch({ getChat: { ok: true, result: { type: "private" } } });
+  const api = new TelegramApi("TOKEN123", fetch);
+  const res = await api.getChat("999");
+  expect(res.result?.type).toBe("private");
+  expect(calls[0]!.url).toBe("https://api.telegram.org/botTOKEN123/getChat");
+  const body = JSON.parse(String(calls[0]!.init?.body));
+  expect(body.chat_id).toBe("999");
+});
+
+test("setMessageReaction POSTs chat_id + message_id + an emoji reaction to /setMessageReaction", async () => {
+  const { calls, fetch } = fakeFetch({ setMessageReaction: { ok: true } });
+  const api = new TelegramApi("TOKEN123", fetch);
+  await api.setMessageReaction("999", 7, "👀");
+  expect(calls[0]!.url).toBe("https://api.telegram.org/botTOKEN123/setMessageReaction");
+  const body = JSON.parse(String(calls[0]!.init?.body));
+  expect(body.chat_id).toBe("999");
+  expect(body.message_id).toBe(7);
+  expect(body.reaction).toEqual([{ type: "emoji", emoji: "👀" }]);
+});
+
+test("sendMessage includes parse_mode HTML in the body when parseMode is set", async () => {
+  const { calls, fetch } = fakeFetch({ sendMessage: { ok: true } });
+  const api = new TelegramApi("TOKEN123", fetch);
+  await api.sendMessage("999", "<b>hi</b>", { parseMode: "HTML" });
+  const body = JSON.parse(String(calls[0]!.init?.body));
+  expect(body.parse_mode).toBe("HTML");
+});
+
+test("sendMessage omits parse_mode entirely (no key, not undefined-valued) when not set", async () => {
+  const { calls, fetch } = fakeFetch({ sendMessage: { ok: true } });
+  const api = new TelegramApi("TOKEN123", fetch);
+  await api.sendMessage("999", "hi");
+  const body = JSON.parse(String(calls[0]!.init?.body));
+  expect("parse_mode" in body).toBe(false);
+});
+
+test("downloadFile fetches from the FILE api base path (distinct from the bot API base path) and returns bytes", async () => {
+  const bytes = new Uint8Array([1, 2, 3, 4]);
+  const { calls, fetch } = fakeBytesFetch(bytes);
+  const api = new TelegramApi("TOKEN123", fetch);
+  const result = await api.downloadFile("photos/file_1.jpg");
+  expect(result).toBeInstanceOf(Uint8Array);
+  expect(Array.from(result!)).toEqual([1, 2, 3, 4]);
+  expect(calls[0]).toBe("https://api.telegram.org/file/botTOKEN123/photos/file_1.jpg");
+  expect(calls[0]).not.toBe("https://api.telegram.org/botTOKEN123/photos/file_1.jpg");
+});
+
+test("downloadFile rejects a path-traversal filePath WITHOUT ever calling fetch", async () => {
+  const { calls, fetch } = fakeBytesFetch(new Uint8Array());
+  const api = new TelegramApi("TOKEN123", fetch);
+  const result = await api.downloadFile("../../etc/passwd");
+  expect(result).toBeUndefined();
+  expect(calls.length).toBe(0);
+});
+
+test("downloadFile rejects a leading-slash filePath WITHOUT ever calling fetch", async () => {
+  const { calls, fetch } = fakeBytesFetch(new Uint8Array());
+  const api = new TelegramApi("TOKEN123", fetch);
+  const result = await api.downloadFile("/etc/passwd");
+  expect(result).toBeUndefined();
+  expect(calls.length).toBe(0);
+});
+
+test("downloadFile rejects a filePath containing a backslash WITHOUT ever calling fetch", async () => {
+  const { calls, fetch } = fakeBytesFetch(new Uint8Array());
+  const api = new TelegramApi("TOKEN123", fetch);
+  const result = await api.downloadFile("photos\\file.jpg");
+  expect(result).toBeUndefined();
+  expect(calls.length).toBe(0);
+});
+
+test("downloadFile percent-encodes a special character within a path segment in the actual fetched URL", async () => {
+  const { calls, fetch } = fakeBytesFetch(new Uint8Array([9]));
+  const api = new TelegramApi("TOKEN123", fetch);
+  await api.downloadFile("photos/file #1 name.jpg");
+  expect(calls[0]).toBe(`https://api.telegram.org/file/botTOKEN123/photos/${encodeURIComponent("file #1 name.jpg")}`);
+});
+
+test("downloadFile returns undefined (not a throw) when fetch itself throws", async () => {
+  const { fetch } = fakeBytesFetch(new Uint8Array(), { throws: true });
+  const api = new TelegramApi("TOKEN123", fetch);
+  const result = await api.downloadFile("photos/file.jpg");
+  expect(result).toBeUndefined();
+});
+
+test("downloadFile returns undefined (not a throw) on a non-ok response", async () => {
+  const { fetch } = fakeBytesFetch(new Uint8Array(), { ok: false });
+  const api = new TelegramApi("TOKEN123", fetch);
+  const result = await api.downloadFile("photos/file.jpg");
+  expect(result).toBeUndefined();
+});

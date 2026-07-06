@@ -29,7 +29,7 @@ import {
 } from "./subagents";
 import { resolveMaxOutputTokens } from "../ai/model-manager";
 import type { SubagentRegistry } from "./subagent-registry";
-import { ensureSessionNotifyEndpoint } from "./notify/session-endpoint";
+import { ensureSessionNotifyEndpoint, type SessionNotifyEndpoint } from "./notify/session-endpoint";
 
 
 /** Lifecycle event emitted while a delegated subagent runs. */
@@ -70,6 +70,10 @@ export interface TaskToolOptions {
   /** When present, a `task` call with `detached: true` registers a background run
    *  here and returns immediately; the parent controls it via the `subagent` tool. */
   registry?: SubagentRegistry;
+  /** The interactive session's own `SessionNotifyEndpoint`, when running inside
+   *  one — a detached launch attaches `registry` to THIS instead of starting a
+   *  second, competing endpoint (see `ensureSessionNotifyEndpoint`). */
+  sessionEndpoint?: SessionNotifyEndpoint;
 }
 
 /** Max concurrent subagents in a fan-out batch (both read-only AND the mutating
@@ -485,7 +489,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       );
       // Remote subagent visibility/control over Telegram (gjc daemon parity, see
       // `src/agent/notify/`): best-effort, no-op unless `notifications.enabled`.
-      ensureSessionNotifyEndpoint(opts.registry, cwd);
+      ensureSessionNotifyEndpoint(opts.registry, cwd, opts.sessionEndpoint);
 
       return {
         success: true,

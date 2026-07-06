@@ -17,16 +17,30 @@
  *
  * gjc-parity surface added on top of the plain-text core: forum topics (all
  * pushes carry the configured `message_thread_id`, inbound is topic-filtered),
- * inline keyboards (cancel buttons + `callback_query` handling), and image
+ * inline keyboards (cancel buttons + `callback_query` handling), image
  * attachments (a session may push a `{type:"photo"}` frame relayed via
- * `sendPhoto`).
+ * `sendPhoto`), a shared `RateLimitPool` (burst/steady-rate protection across
+ * every session sharing this one bot token), and — when
+ * `notifications.telegram.perSessionTopics` is enabled — a dynamic,
+ * PER-SESSION forum topic (via `TopicRegistry`) that mirrors that session's
+ * OWN activity (`identity_header`/`context_update`/`turn_stream` frames) and
+ * accepts free-text replies (routed back as `user_message`) and
+ * `/verbose`/`/lean`/`/redact` config commands, ALL scoped to that one
+ * session's topic. The flat/global `topicId` behavior below is UNCHANGED when
+ * `perSessionTopics` is off (or unset) — zero regression risk for existing
+ * setups.
  */
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { readGlobalConfig } from "../state";
-import { notifySessionsDir } from "./paths";
+import { notifySessionsDir, notifyTopicsPath } from "./paths";
 import { acquireDaemonLock, isPidAlive } from "./daemon-control";
 import { TelegramApi, type TelegramUpdate, type TelegramCallbackQuery, type InlineKeyboardMarkup, type InlineKeyboardButton } from "./telegram-api";
+import { TopicRegistry, type TopicRegistryState } from "./topic-registry";
+import { RateLimitPool } from "./rate-limit-pool";
+import { parseInThreadConfigCommand } from "./config-commands";
+import { markdownToTelegramHtml, splitTelegramHtml } from "./telegram-html";
 import type { SubagentRecord } from "../subagent-registry";
 
 
@@ -116,7 +130,10 @@ export const HELP_TEXT =
   "/cancel <sessionId> <subagentId> — cancel a running subagent\n" +
   "/cancel <sessionId> <subagentId> — cancel a running subagent\n" +
   "/help — show this message\n" +
-  "(running subagents also carry an inline ⏹ Cancel button — tap it instead of typing /cancel)";
+  "(running subagents also carry an inline ⏹ Cancel button — tap it instead of typing /cancel)\n\n" +
+  "Inside a session's OWN topic (when per-session topics are enabled): reply with any " +
+  "text to steer that session directly, or use /verbose, /lean, /verbosity lean|verbose, " +
+  "/redact on|off to adjust how that session mirrors its activity here.";
 
 // ── Inline keyboards / callback data (gjc parity) ───────────────────────────────
 
@@ -164,6 +181,14 @@ interface SessionConnection {
   pid: number;
   ws: WebSocket;
   lastRecords: SubagentRecord[];
+  /** Latest identity, once an `identity_header` frame arrives — used to name/
+   *  rename the session's forum topic. `undefined` until then (topic still
+   *  gets created eagerly with a provisional short-id name, gjc parity). */
+  identity?: { repo: string; branch?: string; cwd: string };
+  /** True once this session's per-session topic creation has been attempted
+   *  and failed (e.g. Threaded Mode off) — stops a retry storm; falls back to
+   *  no per-session mirroring for the rest of this connection's lifetime. */
+  topicFailed?: boolean;
 }
 
 export interface TelegramDaemonOptions {
@@ -177,9 +202,29 @@ export interface TelegramDaemonOptions {
   scanIntervalMs?: number;
   ackTimeoutMs?: number;
   /** Forum-topic thread id (message_thread_id). When set, every push is sent
-   *  into this topic and inbound messages/taps from other topics are ignored. */
+   *  into this topic and inbound messages/taps from other topics are ignored.
+   *  Ignored for a session with its OWN per-session topic when
+   *  `perSessionTopics` is true. */
   topicId?: number;
+  /** Auto-create/manage one forum topic PER SESSION instead of the single flat
+   *  `topicId` above (see the file header doc). Off by default. */
+  perSessionTopics?: boolean;
+  /** Injectable persistence for the per-session topic map — defaults to
+   *  reading/writing `notifyTopicsPath()` via `fs`. */
+  loadTopicState?: () => Promise<TopicRegistryState>;
+  saveTopicState?: (state: TopicRegistryState) => Promise<void>;
+  /** Injectable clock for `RateLimitPool` determinism in tests. */
+  now?: () => number;
+  /** Injectable temp-file writer for downloaded inbound attachments — defaults
+   *  to a real `os.tmpdir()` write. Returns the written file's absolute path. */
+  writeTempFile?: (bytes: Uint8Array, suggestedName: string) => Promise<string>;
 }
+
+/** Outbound payload the shared `RateLimitPool` schedules; `flushPool` maps each
+ *  variant onto the matching Bot API call. */
+type OutboundPayload =
+  | { kind: "text"; chatId: string; text: string; topicId?: number; replyMarkup?: InlineKeyboardMarkup; html?: boolean }
+  | { kind: "photo"; chatId: string; photo: string; topicId?: number; caption?: string; replyMarkup?: InlineKeyboardMarkup };
 
 export class TelegramDaemon {
   private readonly WS: typeof WebSocket;
@@ -188,32 +233,43 @@ export class TelegramDaemon {
   private updateOffset: number | undefined;
   private stopped = false;
   private scanTimer: ReturnType<typeof setInterval> | undefined;
+  private poolTimer: ReturnType<typeof setInterval> | undefined;
+  /** `undefined` when `perSessionTopics` is off — the flat/global `topicId`
+   *  path never touches this. */
+  private readonly topics: TopicRegistry | undefined;
+  private readonly pool: RateLimitPool<OutboundPayload>;
 
   constructor(private readonly opts: TelegramDaemonOptions) {
     this.WS = opts.WebSocketImpl ?? WebSocket;
+    this.topics = opts.perSessionTopics ? new TopicRegistry() : undefined;
+    this.pool = new RateLimitPool<OutboundPayload>({ now: opts.now });
   }
 
-  private async notify(text: string, replyMarkup?: InlineKeyboardMarkup): Promise<void> {
-    try {
-      await this.opts.telegram.sendMessage(this.opts.chatId, text, {
-        messageThreadId: this.opts.topicId,
-        replyMarkup,
-      });
-    } catch {
-      // best-effort — a failed push must never crash the daemon loop.
-    }
+  private async notify(
+    text: string,
+    replyMarkup?: InlineKeyboardMarkup,
+    opts?: { topicId?: number; sessionId?: string; html?: boolean },
+  ): Promise<void> {
+    this.pool.submit({
+      sessionId: opts?.sessionId ?? "__global__",
+      lane: "finalized",
+      payload: { kind: "text", chatId: this.opts.chatId, text, topicId: opts?.topicId ?? this.opts.topicId, replyMarkup, html: opts?.html },
+    });
+    await this.flushPool();
   }
 
-  private async notifyPhoto(photo: string, caption?: string, replyMarkup?: InlineKeyboardMarkup): Promise<void> {
-    try {
-      await this.opts.telegram.sendPhoto(this.opts.chatId, photo, {
-        messageThreadId: this.opts.topicId,
-        caption,
-        replyMarkup,
-      });
-    } catch {
-      // best-effort — a failed photo push must never crash the daemon loop.
-    }
+  private async notifyPhoto(
+    photo: string,
+    caption?: string,
+    replyMarkup?: InlineKeyboardMarkup,
+    opts?: { topicId?: number; sessionId?: string },
+  ): Promise<void> {
+    this.pool.submit({
+      sessionId: opts?.sessionId ?? "__global__",
+      lane: "finalized",
+      payload: { kind: "photo", chatId: this.opts.chatId, photo, topicId: opts?.topicId ?? this.opts.topicId, caption, replyMarkup },
+    });
+    await this.flushPool();
   }
 
   private async answerCallback(id: string, text?: string): Promise<void> {
@@ -221,6 +277,39 @@ export class TelegramDaemon {
       await this.opts.telegram.answerCallbackQuery(id, text !== undefined ? { text } : {});
     } catch {
       // best-effort — acknowledging the tap is nice-to-have, not load-bearing.
+    }
+  }
+
+  /** Grant queued pool items tokens and actually dispatch them via the Bot API.
+   *  Called after every `submit()` (drains whatever tokens are free RIGHT NOW —
+   *  the common case, near-synchronous like the pre-pool behavior) AND by a
+   *  250ms timer (catches anything that queued because the burst capacity was
+   *  briefly exhausted — e.g. a large fan-out's subagents all finishing near-
+   *  simultaneously). `splitTelegramHtml` is applied to EVERY text send (not
+   *  just HTML ones — it degrades to plain char-boundary splitting when no
+   *  tags are present), so nothing this daemon sends can exceed Telegram's
+   *  4096-char hard limit regardless of source. */
+  private async flushPool(): Promise<void> {
+    const granted = this.pool.drain();
+    for (const item of granted) {
+      const p = item.payload;
+      try {
+        if (p.kind === "text") {
+          const chunks = splitTelegramHtml(p.text);
+          for (let i = 0; i < chunks.length; i++) {
+            await this.opts.telegram.sendMessage(p.chatId, chunks[i]!, {
+              messageThreadId: p.topicId,
+              // A reply keyboard belongs on the LAST fragment a split reply ends on.
+              replyMarkup: i === chunks.length - 1 ? p.replyMarkup : undefined,
+              parseMode: p.html ? "HTML" : undefined,
+            });
+          }
+        } else {
+          await this.opts.telegram.sendPhoto(p.chatId, p.photo, { messageThreadId: p.topicId, caption: p.caption, replyMarkup: p.replyMarkup });
+        }
+      } catch {
+        // best-effort — a failed push must never crash the daemon loop.
+      }
     }
   }
 
@@ -265,6 +354,97 @@ export class TelegramDaemon {
     });
   }
 
+  /** Resolve the topic to push INTO for `conn`: its own per-session topic
+   *  (created on first use, cached thereafter) when `perSessionTopics` is on
+   *  and creation hasn't already failed for this connection; the flat/global
+   *  `topicId` otherwise (unchanged pre-Tier-2 behavior). Never throws — a
+   *  creation failure (e.g. Threaded Mode off in @BotFather) is remembered on
+   *  `conn.topicFailed` so it is not retried every single frame. */
+  private async resolveTopicId(conn: SessionConnection): Promise<number | undefined> {
+    if (!this.opts.perSessionTopics || !this.topics || conn.topicFailed) return this.opts.topicId;
+    // Fail-closed privacy gate (contract requirement): per-session topics carry
+    // that session's OWN activity mirroring + accept free-text steering — both
+    // are only safe in a confirmed 1:1 private DM. A group/channel `chatId`
+    // (e.g. misconfigured `jeo notify setup`) must NEVER get per-session
+    // topics/routing; it silently falls back to the flat/global `topicId`
+    // instead (still fully functional for subagent-status pushes, just without
+    // the per-session surface). Checked once per daemon lifetime and cached —
+    // chat type cannot change without re-running `jeo notify setup` anyway.
+    if (!(await this.pairedChatIsPrivate())) return this.opts.topicId;
+    const provisional = conn.identity
+      ? `${conn.identity.repo}${conn.identity.branch ? `@${conn.identity.branch}` : ""}`
+      : `session ${shortSessionId(conn.sessionId)}`;
+    try {
+      const record = await this.topics.getOrCreateTopic(
+        conn.sessionId,
+        async () => {
+          const res = await this.opts.telegram.createForumTopic(this.opts.chatId, provisional);
+          const tid = res.result?.message_thread_id;
+          if (tid === undefined) throw new Error("createForumTopic: no message_thread_id");
+          return tid;
+        },
+        undefined,
+        provisional,
+      );
+      void this.persistTopics();
+      return record.topicId;
+    } catch {
+      conn.topicFailed = true;
+      return this.opts.topicId;
+    }
+  }
+
+  /** Cached (undefined = not yet checked) result of `getChat`'s `type ===
+   *  "private"` — a `getChat` failure fails CLOSED (treated as not-private,
+   *  never retried, matching `resolveTopicId`'s own no-retry-storm posture). */
+  private pairedChatPrivate: boolean | undefined;
+  private async pairedChatIsPrivate(): Promise<boolean> {
+    if (this.pairedChatPrivate !== undefined) return this.pairedChatPrivate;
+    try {
+      const res = await this.opts.telegram.getChat(this.opts.chatId);
+      this.pairedChatPrivate = res.result?.type === "private";
+    } catch {
+      this.pairedChatPrivate = false;
+    }
+    return this.pairedChatPrivate;
+  }
+
+  private async persistTopics(): Promise<void> {
+    if (!this.topics) return;
+    const save = this.opts.saveTopicState ?? defaultSaveTopicState;
+    try {
+      await save(this.topics.serialize());
+    } catch {
+      // best-effort — a failed persist just re-creates topics after a restart.
+    }
+  }
+
+  /** Download a Telegram-hosted file into a local temp file for relay into a
+   *  session's `[image #N]` attachment pipeline (`attachImagePaths`, see
+   *  `src/util/file-attachment.ts`). Returns `undefined` on any failure — the
+   *  message still delivers as text-only rather than being dropped entirely. */
+  private async downloadAttachment(fileId: string, suggestedName: string): Promise<string | undefined> {
+    try {
+      const got = await this.opts.telegram.getFile(fileId);
+      const filePath = got.result?.file_path;
+      if (!filePath) return undefined;
+      const bytes = await this.opts.telegram.downloadFile(filePath);
+      if (!bytes) return undefined;
+      const write = this.opts.writeTempFile ?? defaultWriteTempFile;
+      return await write(bytes, suggestedName);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async reactToMessage(messageId: number, emoji: string): Promise<void> {
+    try {
+      await this.opts.telegram.setMessageReaction(this.opts.chatId, messageId, emoji);
+    } catch {
+      // best-effort — a visible delivery confirmation, not load-bearing.
+    }
+  }
+
   async handleSessionMessage(conn: SessionConnection, raw: string): Promise<void> {
     let msg: Record<string, unknown>;
     try {
@@ -277,10 +457,13 @@ export class TelegramDaemon {
       const events = diffSubagentTransitions(conn.lastRecords, next);
       conn.lastRecords = next;
       const shortId = shortSessionId(conn.sessionId);
-      for (const ev of events) {
-        const keyboard =
-          ev.kind === "started" ? { inline_keyboard: [[cancelButton(shortId, ev.record)]] } : undefined;
-        await this.notify(formatNotifyEvent(shortId, conn.cwd, ev), keyboard);
+      if (events.length > 0) {
+        const topicId = await this.resolveTopicId(conn);
+        for (const ev of events) {
+          const keyboard =
+            ev.kind === "started" ? { inline_keyboard: [[cancelButton(shortId, ev.record)]] } : undefined;
+          await this.notify(formatNotifyEvent(shortId, conn.cwd, ev), keyboard, { topicId, sessionId: conn.sessionId });
+        }
       }
       return;
     }
@@ -291,10 +474,12 @@ export class TelegramDaemon {
         "inline_keyboard" in (msg.replyMarkup as object)
           ? (msg.replyMarkup as InlineKeyboardMarkup)
           : undefined;
+      const topicId = await this.resolveTopicId(conn);
       await this.notifyPhoto(
         msg.url,
         typeof msg.caption === "string" ? msg.caption : undefined,
         replyMarkup,
+        { topicId, sessionId: conn.sessionId },
       );
       return;
     }
@@ -304,6 +489,49 @@ export class TelegramDaemon {
         resolve(Boolean(msg.ok));
         this.pendingAcks.delete(msg.reqId);
       }
+      return;
+    }
+    // ── Tier 2: main-session mirroring frames (only meaningful/acted-on when
+    //    `perSessionTopics` is enabled — `resolveTopicId` degrades to the
+    //    flat/global topicId otherwise, so these still deliver, just without
+    //    per-session grouping). ──────────────────────────────────────────────
+    if (msg.type === "identity_header") {
+      conn.identity = {
+        repo: typeof msg.repo === "string" && msg.repo ? msg.repo : projectName(conn.cwd),
+        branch: typeof msg.branch === "string" ? msg.branch : undefined,
+        cwd: typeof msg.cwd === "string" ? msg.cwd : conn.cwd,
+      };
+      const topicId = await this.resolveTopicId(conn);
+      if (topicId !== undefined && this.topics) {
+        const name = `${conn.identity.repo}${conn.identity.branch ? `@${conn.identity.branch}` : ""}`;
+        // `getOrCreateTopic` only names a topic on FIRST creation — a later,
+        // more-informative identity (the provisional short-id name gets
+        // superseded once the real repo/branch is known) needs an explicit
+        // rename, applied only when the name actually changed (dedup).
+        if (this.topics.applyName(conn.sessionId, name)) {
+          try {
+            await this.opts.telegram.editForumTopic(this.opts.chatId, topicId, name);
+            void this.persistTopics();
+          } catch {
+            // best-effort — a failed rename just leaves the provisional name.
+          }
+        }
+      }
+      return;
+    }
+    if (msg.type === "context_update" && typeof msg.phase === "string" && typeof msg.summary === "string") {
+      const topicId = await this.resolveTopicId(conn);
+      const icon = msg.phase === "turn_start" ? "▶" : "■";
+      const label = msg.phase === "turn_start" ? "Turn started" : "Turn finished";
+      const modelSuffix = typeof msg.model === "string" && msg.model ? ` (${msg.model})` : "";
+      const usageLine = typeof msg.usage === "string" && msg.usage ? `\n${msg.usage}` : "";
+      await this.notify(`${icon} ${label}${modelSuffix}\n${msg.summary}${usageLine}`, undefined, { topicId, sessionId: conn.sessionId });
+      return;
+    }
+    if (msg.type === "turn_stream" && typeof msg.text === "string") {
+      const topicId = await this.resolveTopicId(conn);
+      await this.notify(markdownToTelegramHtml(msg.text), undefined, { topicId, sessionId: conn.sessionId, html: true });
+      return;
     }
   }
 
@@ -370,19 +598,66 @@ export class TelegramDaemon {
     if (trimmed.startsWith("/")) await this.notify(`Unrecognized command. ${HELP_TEXT}`);
   }
 
+  /** Inbound routed to a KNOWN session's OWN forum topic (per-session-topics
+   *  mode only — `handleUpdate` is the only caller, and only once
+   *  `this.topics.sessionForTopic(...)` has already confirmed ownership).
+   *  A config command (`/verbose`, `/lean`, `/redact on|off`) is applied to
+   *  THAT session only; anything else (including a media-only message with no
+   *  caption) is forwarded as free-text steering, with any attached photo/
+   *  image-document downloaded first. A 👀 reaction confirms the daemon
+   *  actually routed the message (simplified single-stage delivery
+   *  confirmation — gjc's own two-stage queued→consumed reaction protocol
+   *  requires a round-trip ack frame this version does not add). */
+  private async handleSessionTopicInbound(sessionId: string, msg: NonNullable<TelegramUpdate["message"]>): Promise<void> {
+    const conn = this.sessions.get(sessionId);
+    if (!conn) return; // the owning session has disconnected; the topic record just lingers
+    const text = msg.text ?? msg.caption ?? "";
+    const hasMedia = !!(msg.photo?.length || msg.document);
+    const cfg = !hasMedia ? parseInThreadConfigCommand(text) : undefined;
+    if (cfg) {
+      conn.ws.send(JSON.stringify({ type: "config_command", sessionId, ...cfg }));
+      return;
+    }
+    const imagePaths: string[] = [];
+    if (msg.photo?.length) {
+      const largest = msg.photo[msg.photo.length - 1]!;
+      const p = await this.downloadAttachment(largest.file_id, `photo-${largest.file_id}.jpg`);
+      if (p) imagePaths.push(p);
+    } else if (msg.document && (msg.document.mime_type ?? "").startsWith("image/")) {
+      const p = await this.downloadAttachment(msg.document.file_id, msg.document.file_name ?? `document-${msg.document.file_id}`);
+      if (p) imagePaths.push(p);
+    }
+    if (!text && imagePaths.length === 0) return; // a non-image document with no caption — nothing usable to forward
+    conn.ws.send(JSON.stringify({ type: "user_message", sessionId, text, imagePaths: imagePaths.length ? imagePaths : undefined }));
+    await this.reactToMessage(msg.message_id, "👀");
+  }
+
   /** Trust boundary: a bot's username is publicly discoverable, so ANY Telegram
    *  user can message it. Only the paired chat (the one that ran
-   *  `jeo notify setup`) may steer/cancel subagents; everything else is dropped
-   *  without a reply (replying would leak that the bot is live). When a forum
-   *  topic is configured, messages/taps from other topics are also ignored. */
+   *  `jeo notify setup`) may steer/cancel subagents or steer a session;
+   *  everything else is dropped without a reply (replying would leak that the
+   *  bot is live). A message in a KNOWN session's own topic (per-session-
+   *  topics mode) routes directly to that session — bypassing the flat
+   *  `topicId` gate, which still governs everything else (global commands in
+   *  the General topic or the configured flat topic; other topics ignored). */
   async handleUpdate(update: TelegramUpdate): Promise<void> {
     if (update.callback_query) {
       await this.handleCallbackQuery(update.callback_query);
       return;
     }
     const msg = update.message;
-    if (!msg?.text) return;
+    if (!msg) return;
     if (String(msg.chat.id) !== this.opts.chatId) return;
+
+    const ownerSessionId = this.topics && msg.message_thread_id !== undefined
+      ? this.topics.sessionForTopic(msg.message_thread_id)
+      : undefined;
+    if (ownerSessionId) {
+      await this.handleSessionTopicInbound(ownerSessionId, msg);
+      return;
+    }
+
+    if (!msg.text) return;
     if (
       this.opts.topicId !== undefined &&
       msg.message_thread_id !== undefined &&
@@ -393,18 +668,25 @@ export class TelegramDaemon {
     await this.handleInboundText(msg.text);
   }
 
-  /** Handle an inline-button tap. Same chat/topic trust boundary as text, and the
-   *  tap is always acknowledged (Telegram shows a spinner until `answerCallbackQuery`). */
+  /** Handle an inline-button tap. Same chat trust boundary as text; the topic
+   *  gate additionally allows a tap from within any KNOWN session's own topic
+   *  (its cancel buttons target that session's own subagents — legitimate
+   *  regardless of the flat `topicId`), not just the configured flat topic.
+   *  The tap is always acknowledged (Telegram shows a spinner until
+   *  `answerCallbackQuery`). */
   async handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
     const chatId = cb.message?.chat.id;
     if (chatId !== undefined && String(chatId) !== this.opts.chatId) {
       await this.answerCallback(cb.id);
       return;
     }
+    const threadId = cb.message?.message_thread_id;
+    const inKnownSessionTopic = !!this.topics && threadId !== undefined && this.topics.sessionForTopic(threadId) !== undefined;
     if (
       this.opts.topicId !== undefined &&
-      cb.message?.message_thread_id !== undefined &&
-      cb.message.message_thread_id !== this.opts.topicId
+      threadId !== undefined &&
+      threadId !== this.opts.topicId &&
+      !inKnownSessionTopic
     ) {
       await this.answerCallback(cb.id);
       return;
@@ -452,20 +734,70 @@ export class TelegramDaemon {
 
   /** Blocks (long-poll loop) until `stop()` is called. */
   async start(): Promise<void> {
+    if (this.topics) {
+      const load = this.opts.loadTopicState ?? defaultLoadTopicState;
+      try {
+        this.topics.load(await load());
+      } catch {
+        // best-effort — a missing/corrupt topic-state file just starts empty
+        // (every session's first frame re-creates its topic from scratch).
+      }
+    }
     await this.scanSessions();
     this.scanTimer = setInterval(() => void this.scanSessions(), this.opts.scanIntervalMs ?? 3_000);
+    // Catches anything left queued after a submit-time drain because the
+    // burst capacity was briefly exhausted (rare at jeo's realistic message
+    // volume, but a large simultaneous fan-out can hit it) — without this,
+    // a queued-but-never-retried item would silently never send.
+    this.poolTimer = setInterval(() => void this.flushPool(), 250);
     await this.pollTelegramLoop();
   }
 
   stop(): void {
     this.stopped = true;
-    if (this.scanTimer) clearInterval(this.scanTimer);
+    clearInterval(this.scanTimer);
+    clearInterval(this.poolTimer);
     for (const conn of this.sessions.values()) {
       try {
         conn.ws.close();
       } catch {}
     }
     this.sessions.clear();
+  }
+}
+
+/** Default inbound-attachment temp-file writer: a private (0700-parent,
+ *  default-mode) file under the OS temp dir, named to survive filesystem
+ *  weirdness (sanitized, length-capped) while staying traceable to its
+ *  Telegram origin for debugging. */
+async function defaultWriteTempFile(bytes: Uint8Array, suggestedName: string): Promise<string> {
+  const safe = (suggestedName.replace(/[^\w.-]+/g, "_").slice(-128) || "file");
+  const target = path.join(os.tmpdir(), `jeo-telegram-${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${safe}`);
+  await fs.writeFile(target, bytes);
+  return target;
+}
+
+async function defaultLoadTopicState(): Promise<TopicRegistryState> {
+  try {
+    const raw = await fs.readFile(notifyTopicsPath(), "utf-8");
+    return JSON.parse(raw) as TopicRegistryState;
+  } catch {
+    return { topics: {} };
+  }
+}
+
+/** Atomic temp+rename write (same convention as `state.ts`'s config/workflow
+ *  persistence) — a torn write must never corrupt the topic map. */
+async function defaultSaveTopicState(state: TopicRegistryState): Promise<void> {
+  const target = notifyTopicsPath();
+  await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+  const tmp = `${target}.${Math.random().toString(36).slice(2)}.tmp`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(state, null, 2), { encoding: "utf-8", mode: 0o600 });
+    await fs.rename(tmp, target);
+  } catch (err) {
+    await fs.unlink(tmp).catch(() => {});
+    throw err;
   }
 }
 
@@ -482,11 +814,12 @@ export async function runNotifyDaemonForeground(): Promise<void> {
     const botToken = config.notifications?.telegram?.botToken;
     const chatId = config.notifications?.telegram?.chatId;
     const topicId = config.notifications?.telegram?.topicId;
+    const perSessionTopics = config.notifications?.telegram?.perSessionTopics;
     if (!config.notifications?.enabled || !botToken || !chatId) {
       process.stderr.write("[jeo notify-daemon] notifications not configured — run `jeo notify setup` first.\n");
       return;
     }
-    const daemon = new TelegramDaemon({ chatId, topicId, telegram: new TelegramApi(botToken) });
+    const daemon = new TelegramDaemon({ chatId, topicId, perSessionTopics, telegram: new TelegramApi(botToken) });
     let shuttingDown = false;
     const shutdown = () => {
       if (shuttingDown) return;

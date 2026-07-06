@@ -92,13 +92,27 @@ export const ConfigSchema = z
     notifications: z
       .object({
         enabled: z.boolean().optional(),
+        /** Session-local default notification verbosity; a running session's
+         *  in-memory value (mutable via a `/verbosity` config_command from
+         *  Telegram) starts from this and reverts here on restart. */
+        verbosity: z.enum(["lean", "verbose"]).optional(),
+        /** Session-local default redaction of mirrored turn/context text sent
+         *  to Telegram; same session-local-only mutability as `verbosity`. */
+        redact: z.boolean().optional(),
         telegram: z
           .object({
             botToken: z.string().optional(),
             chatId: z.string().optional(),
             /** Forum-topic thread id (message_thread_id) for supergroups with
-             *  topics enabled — daemon pushes go into this topic. */
+             *  topics enabled — daemon pushes go into this topic. Ignored for a
+             *  session-owned topic when `perSessionTopics` is true. */
             topicId: z.number().optional(),
+            /** Auto-create and manage ONE forum topic per interactive session
+             *  (gjc per-session-thread parity), instead of the single flat/global
+             *  `topicId` above. Requires the paired chat to be a supergroup with
+             *  Topics enabled AND private (fail-closed — see `TopicRegistry`).
+             *  Off by default; existing flat-topic/no-topic setups are unaffected. */
+            perSessionTopics: z.boolean().optional(),
           })
           .optional(),
       })

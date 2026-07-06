@@ -295,6 +295,18 @@ test("defaultRetryable classification", () => {
   expect(defaultRetryable(undefined)).toBe(false);
   expect(defaultRetryable({})).toBe(false);
 });
+test("defaultRetryable: Bun/undici mid-stream socket drop is treated as a transient network fault", () => {
+  // Bun's fetch/undici throws this exact message when a live TCP/TLS connection dies
+  // mid-request or mid-stream (field case: OpenAI Codex OAuth SSE through chatgpt.com's
+  // backend, ~20-30min into a long streamed turn — an infra connection-duration cap,
+  // not a genuinely broken network). A fresh request succeeds, so it must retry like
+  // any other transient network fault instead of killing the turn outright.
+  expect(defaultRetryable(new Error("The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()"))).toBe(true);
+  // Node/undici equivalents for the same underlying condition.
+  expect(defaultRetryable(new Error("socket hang up"))).toBe(true);
+  expect(defaultRetryable(new Error("other side closed"))).toBe(true);
+  expect(defaultRetryable(new Error("UND_ERR_SOCKET: other side closed"))).toBe(true);
+});
 
 test("defaultRetryable: transient empty 200s retry, deterministic budget empties fail fast", () => {
   // Transient empty content (no reason or a non-budget stop) is a known intermittent

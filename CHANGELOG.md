@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.44] - 2026-07-06
+_Root-caused a real production hang reported from `jeo`'s OpenAI Codex OAuth subagent path: after roughly 20-30 minutes of active streamed traffic, `chatgpt.com`'s backend severs the live SSE connection mid-response (an infra connection-duration cap, not a broken network) and Bun's fetch/undici surfaces it as `Error: The socket connection was closed unexpectedly …`. `retryableStream` (model-manager.ts) only auto-retries losing the FIRST streamed chunk — once any chunk had reached the caller it deliberately stopped retrying (a full re-call would replay already-emitted content) — so this class of drop propagated straight out of the engine as a raw, unretried turn-ending error every time, even though nothing had been committed to history yet and a plain resend is exactly as safe as a fresh call._
+
+### Added
+- **Engine-level transient-network recovery ladder** (`src/agent/engine.ts`) — a mid-stream socket drop (`isTransientStreamDropError`, `src/util/retry.ts`: Bun/undici `"socket connection was closed"`/`ConnectionClosed`, Node's `"socket hang up"`/`"other side closed"`/`UND_ERR_SOCKET`) now resends the SAME step with capped exponential backoff (`GUARD_LIMITS.MAX_TRANSIENT_NETWORK_RETRIES` = 5, base 1s doubling to a 15s ceiling, `JEO_TRANSIENT_NETWORK_BACKOFF_BASE_MS` override) instead of ending the turn — visible via `onNotice` (`"connection dropped mid-response (…) — auto-retry #N in Ns"`), Esc/Ctrl-C cancellable mid-wait, and a real terminal error still surfaces once the bounded budget is exhausted (a persistent outage is not spun on forever). Deliberately narrower than `defaultRetryable`: a rate-limit/5xx/timeout error already ran the FULL model-manager `withRetry` budget before reaching the engine, so this ladder only matches the socket-death signature that layer structurally cannot retry.
+- `defaultRetryable` (`src/util/retry.ts`) now also classifies the same socket-drop message shapes as a transient network fault, so a drop BEFORE the first streamed chunk (still inside model-manager's own retry budget) is retried there too.
+
+### Verified
+- `bun run typecheck` clean; `bun test` 2429 pass / 0 fail.
+- New `test/transient-network-recovery.test.ts`: mid-stream socket drop resends and recovers; the bounded retry budget exhausts to a terminal error (not an infinite spin); Esc/Ctrl-C cancels the backoff wait; a deterministic safety refusal is still routed to the refusal ladder, never this one.
+- `test/retry.test.ts`: `defaultRetryable` now accepts the Bun `"socket connection was closed…"` message and the Node `"socket hang up"`/`"other side closed"`/`UND_ERR_SOCKET` equivalents.
+
 ## [0.7.43] - 2026-07-06
 _TUI inline image DISPLAY (gjc TUI-image parity): jeo could already ATTACH an image to a turn (clipboard paste, drag-drop, `@path`) but never rendered it back — the transcript only ever showed a `⧉ N image(s) attached` count. On a terminal that speaks the kitty graphics protocol (kitty/ghostty/wezterm) or iTerm2's OSC 1337 inline-image protocol, a submitted image now renders as an actual picture directly under the `user` card; every other terminal (Terminal.app, plain xterm, CI/non-TTY) keeps today's text-only behavior unchanged. No native/binary dependency added — Sixel was deliberately left out because producing a sixel stream from arbitrary PNG/JPEG bytes needs a pixel quantizer jeo doesn't have; both implemented protocols decode compressed image bytes themselves._
 

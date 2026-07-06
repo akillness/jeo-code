@@ -80,7 +80,18 @@ export function defaultRetryable(err: unknown): boolean {
     // OVERALL-deadline message ("stream exceeded the overall deadline") is a hard
     // wall-clock cap and is deliberately NOT matched here (it must fail fast).
     lowerMessage.includes("stream idle") ||
-    lowerMessage.includes("no chunk")
+    lowerMessage.includes("no chunk") ||
+    // A live TCP/TLS socket dying mid-request/mid-stream — Bun's fetch/undici
+    // ("The socket connection was closed unexpectedly …", the ConnectionClosed
+    // class) and Node's equivalent ("socket hang up", "other side closed",
+    // UND_ERR_SOCKET). Field case: OpenAI Codex OAuth SSE streams through
+    // chatgpt.com's backend die mid-stream after ~20-30min of active traffic
+    // (an infra-side connection-duration cap, not an idle timeout) — the
+    // request itself is fine, a fresh connection succeeds.
+    lowerMessage.includes("socket connection was closed") ||
+    lowerMessage.includes("socket hang up") ||
+    lowerMessage.includes("other side closed") ||
+    lowerMessage.includes("und_err_socket")
   ) {
     return true;
   }
@@ -283,4 +294,21 @@ export function isUsageLimitError(err: unknown): boolean {
  *  layer because it MUTATES the context between attempts. */
 export function isRefusalError(err: unknown): boolean {
   return /stop_reason=refusal|finish_reason=content_filter|\(content_filter\)|(?:block|finish)Reason=(?:SAFETY|PROHIBITED_CONTENT|BLOCKLIST|RECITATION|SPII)|Refusal \(\w+\)/i.test(errorMessageOf(err));
+}
+/** True for a live TCP/TLS socket dying mid-request/mid-stream — Bun's fetch/undici
+ *  ("The socket connection was closed unexpectedly …", the ConnectionClosed class)
+ *  and Node's equivalent ("socket hang up", "other side closed", UND_ERR_SOCKET).
+ *  DELIBERATELY NARROWER than `defaultRetryable`: a rate-limit/5xx/timeout error has
+ *  already been through the model-manager's own `withRetry` budget (with visible
+ *  `onRetry` notices) by the time it reaches the engine, so re-retrying it there would
+ *  silently double the retry budget. A mid-stream socket drop is structurally
+ *  DIFFERENT — `retryableStream` (model-manager.ts) only auto-retries losing the FIRST
+ *  chunk; once any chunk has streamed it deliberately stops (a full re-call would
+ *  replay already-emitted content), so this class NEVER gets a model-manager retry at
+ *  all and needs its own engine-level recovery (see `transientNetworkRetries`). Field
+ *  case: OpenAI Codex OAuth SSE through chatgpt.com's backend dies mid-stream after
+ *  ~20-30min of active traffic (an infra connection-duration cap, not a broken network —
+ *  a fresh request succeeds). */
+export function isTransientStreamDropError(err: unknown): boolean {
+  return /socket connection was closed|socket hang up|other side closed|und_err_socket/i.test(errorMessageOf(err));
 }

@@ -22,7 +22,7 @@ import { createLspTool } from "./lsp-tool";
 import { createLspRenameTool } from "./lsp-rename-tool";
 import { createDebugTool } from "./debug-tool";
 import { createBrowserTool } from "./browser-tool";
-import { isRateLimitError, waitAbortable } from "../util/retry";
+import { isRateLimitError, isTransientStreamDropError, waitAbortable } from "../util/retry";
 import { isContextOverflowError, isRefusalError, friendlyProviderError } from "../util/provider-error";
 import { runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
 import { truncateToolOutput, formatToolResultBody } from "./tool-output";
@@ -530,6 +530,14 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // no-progress clock keeps ticking and terminates the turn at JEO_TURN_MAX_MS).
   const MAX_REFUSAL_RETRIES = GUARD_LIMITS.MAX_REFUSAL_RETRIES;
   let refusalRetries = 0;
+  // Transient-network ladder (mid-stream Bun/undici socket-closed, ECONNRESET, 5xx, …):
+  // `retryableStream` (model-manager.ts) only auto-retries losing the FIRST chunk — once
+  // any chunk has streamed to the caller it deliberately stops retrying (a full re-call
+  // would replay already-emitted content). A drop AFTER the first chunk therefore used to
+  // propagate straight out of invokeCallLlm and end the turn with a raw "Error: …", even
+  // though nothing was committed to `history` (the failed step never pushed) — a plain
+  // resend is exactly as safe as the refusal ladder's rung-1 free resend below.
+  let transientNetworkRetries = 0;
   let lastSig = "";
   let repeatCount = 0;
   // Cycle guard (the A↔B ping-pong the exact-repeat guard cannot see): the recent
@@ -798,6 +806,27 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         ev.onNotice?.(`provider refused again — auto-retry #${attempt} in ${Math.max(1, Math.round(delayMs / 1000))}s${escHint}`);
         await waitAbortable(delayMs, opts.signal);
         continue; // loop top surfaces "Cancelled." when the wait was aborted
+      }
+      // Mid-stream transient-network drop (see `transientNetworkRetries` above): bounded
+      // resend with capped exponential backoff. Deliberately narrower than a general
+      // `defaultRetryable` check — a rate-limit/5xx/timeout error already ran the FULL
+      // model-manager `withRetry` budget (visible as its own "auto-retry #N" notices)
+      // before reaching here, so re-retrying it in this ladder too would silently double
+      // that budget. `isTransientStreamDropError` matches only the mid-stream socket-death
+      // class that `retryableStream` structurally cannot retry once a chunk has streamed.
+      if (isTransientStreamDropError(err)) {
+        transientNetworkRetries++;
+        if (transientNetworkRetries <= GUARD_LIMITS.MAX_TRANSIENT_NETWORK_RETRIES) {
+          const baseRaw = Number(jeoEnv("TRANSIENT_NETWORK_BACKOFF_BASE_MS") ?? NaN);
+          const baseMs = Number.isFinite(baseRaw) && baseRaw >= 0 ? baseRaw : GUARD_LIMITS.TRANSIENT_NETWORK_BACKOFF_BASE_MS;
+          const delayMs = Math.min(baseMs * 2 ** (transientNetworkRetries - 1), GUARD_LIMITS.TRANSIENT_NETWORK_BACKOFF_MAX_MS);
+          const escHint = ev.onModelStream ? " (Esc to cancel)" : "";
+          ev.onNotice?.(
+            `connection dropped mid-response (${friendlyProviderError(err)}) — auto-retry #${transientNetworkRetries} in ${Math.max(1, Math.round(delayMs / 1000))}s${escHint}`,
+          );
+          await waitAbortable(delayMs, opts.signal);
+          continue; // loop top surfaces "Cancelled." when the wait was aborted
+        }
       }
       const message = friendlyProviderError(err);
       // The error IS the turn's doneReason and every caller displays that — emitting a

@@ -54,6 +54,16 @@ export const GUARD_LIMITS = Object.freeze({
   MAX_PARSE_BOUNCES: 2,
   /** Recent-signature window scanned for an A↔B (≤2 distinct calls) cycle. */
   CYCLE_WINDOW: 6,
+  /** Mid-stream transient-network drops (Bun/undici socket-closed, ECONNRESET, stream
+   *  idle, 5xx, …) tolerated per turn before surfacing a terminal error. Distinct from
+   *  the refusal ladder: these are infra/transport faults, not content-classifier trips,
+   *  so a bounded retry (not unbounded backoff) is correct — a persistent failure past
+   *  this many attempts is a real outage worth surfacing, not spinning on forever. */
+  MAX_TRANSIENT_NETWORK_RETRIES: 5,
+  /** First transient-network retry wait (ms); doubles per attempt. */
+  TRANSIENT_NETWORK_BACKOFF_BASE_MS: 1_000,
+  /** Ceiling on the transient-network retry wait (ms). */
+  TRANSIENT_NETWORK_BACKOFF_MAX_MS: 15_000,
 });
 
 /**

@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.48] - 2026-07-06
+_gjc Telegram-daemon parity, phase 2 (follow-up to 0.7.37/0.7.38's baseline subagent-visibility daemon, which deliberately scoped OUT forum topics, inline keyboards, and image attachments — see that entry): the daemon now speaks gjc's richer notification surface instead of the plain-text-only baseline._
+
+### Added
+- **Forum-topic routing** (`topicId` in `notifications.telegram` config, `config-schema.ts`/`state.ts`) — every daemon push carries the configured `message_thread_id` so a supergroup with Topics enabled routes jeo's notifications into one dedicated topic instead of the general channel; inbound `/subagents`/`/steer`/`/cancel`/`/help` commands are topic-filtered to match.
+- **Inline-keyboard Cancel buttons + callback taps** (`src/agent/notify/telegram-api.ts`: `answerCallbackQuery`, `replyMarkup` on `sendMessage`/`sendPhoto`; `src/agent/notify/telegram-daemon.ts`) — a subagent's `started` push and `/subagents` listing now attach a per-subagent inline ⏹ Cancel button; tapping it round-trips through the same cancel path as the existing `/cancel <sessionId> <subagentId>` text command, then acknowledges the tap via `answerCallbackQuery` so Telegram clears its loading spinner. `TelegramUpdate` extended with `callback_query`/`message_thread_id`.
+- **Image attachments** (`TelegramApi.sendPhoto`, `TelegramDaemon#notifyPhoto`) — a session `{type:"photo"}` frame is now relayed to Telegram via `sendPhoto` (caption + topic + inline-keyboard `replyMarkup` all supported), closing the last gap from 0.7.37's "no image attachments" scope note.
+
+### Verified
+- `bun run typecheck` clean; `bun test` 2498 pass / 0 fail.
+- `test/notify-telegram-api.test.ts` (+56 lines): `sendPhoto`/`answerCallbackQuery` request shape, `messageThreadId`/`replyMarkup` forwarding.
+- `test/notify-telegram-daemon.test.ts` (+184 lines across two commits): topic-scoped push/inbound-filter round-trip, inline Cancel button attached to a `started` push and to `/subagents` output, a `callback_query` tap correctly cancels the matching subagent and acknowledges, and a session photo frame relayed via `sendPhoto` with caption + topic + `replyMarkup`.
+
 ## [0.7.47] - 2026-07-06
 _PromptRouter (gjc-inspired, jeo-native design — NOT a port of katanemo/plano, whose always-on proxy-orchestrator architecture doesn't fit an interactive CLI's per-turn latency budget): jeo already had static, role-based model mapping (`resolveSubagentModel`/`resolveRoleModel`) but zero logic that varied the model by what THIS turn's prompt actually asks for. Adds an opt-in (default OFF), heuristic-first, fail-open per-turn router: a bilingual regex classifier scores a prompt into trivial/standard/complex, escalating to one cheap LLM call ONLY when the heuristic is genuinely ambiguous (confidence below a configurable threshold — most turns never escalate), and an explicit `/model` pin always wins over routing. No new plumbing: reuses `resolveRoleModel`, `callLlm`, `jsonMode`, `catalogMetadata`, `tryExtractJsonObject`, and the existing `onNotice` transparency pattern._
 

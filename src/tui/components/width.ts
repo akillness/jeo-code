@@ -9,6 +9,7 @@
  * color escapes verbatim (never counting them) so colored/CJK lines truncate and
  * wrap without tearing an escape or miscounting a wide glyph.
  */
+import { isImageEscapeLine } from "../terminal-image";
 
 const TAB_STOP = 8;
 // Sticky SGR matcher: scan a heavily color-escaped line in O(n) without slicing.
@@ -96,6 +97,14 @@ export function visibleWidth(s: string): number {
 export function truncateToWidth(s: string, cols: number): string {
   const limit = Math.max(0, cols);
   if (limit === 0) return "";
+  // An inline terminal-image escape (Kitty APC / iTerm2 OSC 1337, see
+  // `../terminal-image.ts#isImageEscapeLine`) is not text: its "width" by a naive
+  // column count is the base64 payload length (thousands of columns), and slicing
+  // into the payload corrupts the image or leaves an unterminated escape that
+  // hangs the terminal waiting for its `ESC \\`/BEL terminator. The image was
+  // already fit to the caller's column budget when the sequence was BUILT, so the
+  // correct "truncation" here is always a no-op.
+  if (isImageEscapeLine(s)) return s;
   // Fast path: no escapes, no wide chars, no tabs → plain slice by length.
   if (!s.includes("\x1b") && !/[\t\u0300-\uffff]/.test(s) && !/[\u{10000}-\u{10ffff}]/u.test(s)) {
     return s.length <= limit ? s : s.slice(0, limit);

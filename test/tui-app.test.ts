@@ -983,6 +983,75 @@ test("LaunchTui.flushUserCard: the turn-starting prompt persists as a user box i
   tui.finish("ok");
 });
 
+test("LaunchTui.flushUserCard: an attached image renders inline via the kitty graphics protocol on a supporting terminal", () => {
+  const out: string[] = [];
+  const prevProtocol = process.env.JEO_IMAGE_PROTOCOL;
+  process.env.JEO_IMAGE_PROTOCOL = "kitty";
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+
+  const png = new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,7,128,0,0,4,56,8,6,0,0,0,0,0,0,0]);
+  const image = { mediaType: "image/png", data: Buffer.from(png).toString("base64") };
+
+  out.length = 0;
+  tui.flushUserCard("check this screenshot", [image]);
+  const raw = out.join("");
+  // The user card still renders as text …
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
+  expect(strip(raw)).toContain("check this screenshot");
+  // … and the image now renders as a REAL kitty graphics escape, not just a
+  // "N image(s) attached" text count (gjc TUI-image parity — the actual feature
+  // under test).
+  expect(raw).toContain("\x1b_Ga=T,f=100,q=2,");
+
+  if (prevProtocol === undefined) delete process.env.JEO_IMAGE_PROTOCOL;
+  else process.env.JEO_IMAGE_PROTOCOL = prevProtocol;
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  tui.finish("ok");
+});
+
+test("LaunchTui.flushUserCard: an attached image on a non-image-capable terminal shows only the text card (no escape leak)", () => {
+  const out: string[] = [];
+  const prevProtocol = process.env.JEO_IMAGE_PROTOCOL;
+  process.env.JEO_IMAGE_PROTOCOL = "none";
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+
+  const png = new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,7,128,0,0,4,56,8,6,0,0,0,0,0,0,0]);
+  const image = { mediaType: "image/png", data: Buffer.from(png).toString("base64") };
+
+  out.length = 0;
+  tui.flushUserCard("check this screenshot", [image]);
+  const raw = out.join("");
+  expect(raw).not.toContain("\x1b_G");
+  expect(raw).not.toContain("\x1b]1337;File=");
+
+  if (prevProtocol === undefined) delete process.env.JEO_IMAGE_PROTOCOL;
+  else process.env.JEO_IMAGE_PROTOCOL = prevProtocol;
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+  tui.finish("ok");
+});
+
+test("LaunchTui.flushUserCard: images are ignored (no-op) when the frame is already finished", () => {
+  const out: string[] = [];
+  const prevProtocol = process.env.JEO_IMAGE_PROTOCOL;
+  process.env.JEO_IMAGE_PROTOCOL = "kitty";
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  tui.finish("ok");
+
+  const png = new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,7,128,0,0,4,56,8,6,0,0,0,0,0,0,0]);
+  const image = { mediaType: "image/png", data: Buffer.from(png).toString("base64") };
+
+  out.length = 0;
+  tui.flushUserCard("late prompt", [image]);
+  expect(out.join("")).toBe("");
+
+  if (prevProtocol === undefined) delete process.env.JEO_IMAGE_PROTOCOL;
+  else process.env.JEO_IMAGE_PROTOCOL = prevProtocol;
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+});
+
 test("LaunchTui: completed tool card shows elapsed (Nms) timing detail", async () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });

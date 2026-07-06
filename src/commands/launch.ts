@@ -938,7 +938,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // in scrollback. opts.userCard overrides it: null suppresses the card entirely
       // (skill runs), a string shows a compact label instead of the raw input.
       const cardText = opts?.userCard === undefined ? userInput : opts.userCard;
-      if (tui && cardText && cardText.trim()) tui.flushUserCard(cardText);
+      // Images render alongside the card only for the real prompt (undefined
+      // userCard) — a skill run's compact/suppressed card never carried the
+      // user's own attachments in the first place (buildSkillTask calls above
+      // never pass `images`), so there is nothing to show either way.
+      if (tui && cardText && cardText.trim()) tui.flushUserCard(cardText, opts?.userCard === undefined ? images : undefined);
       tui?.setContextUsage(historyTokens(history), contextTokens);
 
       // Per-turn steering inbox (gjc parity): additional queries typed mid-turn land

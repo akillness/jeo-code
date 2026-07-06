@@ -468,3 +468,20 @@ test("a session photo frame is relayed via sendPhoto with caption + topic", asyn
   expect(telegram.photos[0]!.options?.caption).toBe("a screenshot");
   expect(telegram.photos[0]!.options?.messageThreadId).toBe(55);
 });
+test("a session photo frame is relayed via sendPhoto with caption, topic, and replyMarkup", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makeTopicDaemon(telegram, 55);
+  const conn = { sessionId: "abcd1234-0000", cwd: "/tmp/proj", pid: 1, ws: new FakeWebSocket("x") as unknown as WebSocket, lastRecords: [] };
+  const replyMarkup = { inline_keyboard: [[{ text: "click", callback_data: "data" }]] };
+  await daemon.handleSessionMessage(conn, JSON.stringify({
+      type: "photo",
+      url: "https://example.com/shot.png",
+      caption: "a screenshot",
+      replyMarkup
+  }));
+  expect(telegram.photos.length).toBe(1);
+  expect(telegram.photos[0]!.photo).toBe("https://example.com/shot.png");
+  expect(telegram.photos[0]!.options?.caption).toBe("a screenshot");
+  expect(telegram.photos[0]!.options?.messageThreadId).toBe(55);
+  expect(telegram.photos[0]!.options?.replyMarkup).toEqual(replyMarkup);
+});

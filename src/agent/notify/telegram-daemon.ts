@@ -204,11 +204,12 @@ export class TelegramDaemon {
     }
   }
 
-  private async notifyPhoto(photo: string, caption?: string): Promise<void> {
+  private async notifyPhoto(photo: string, caption?: string, replyMarkup?: InlineKeyboardMarkup): Promise<void> {
     try {
       await this.opts.telegram.sendPhoto(this.opts.chatId, photo, {
         messageThreadId: this.opts.topicId,
         caption,
+        replyMarkup,
       });
     } catch {
       // best-effort — a failed photo push must never crash the daemon loop.
@@ -284,7 +285,17 @@ export class TelegramDaemon {
       return;
     }
     if (msg.type === "photo" && typeof msg.url === "string") {
-      await this.notifyPhoto(msg.url, typeof msg.caption === "string" ? msg.caption : undefined);
+      const replyMarkup =
+        msg.replyMarkup &&
+        typeof msg.replyMarkup === "object" &&
+        "inline_keyboard" in (msg.replyMarkup as object)
+          ? (msg.replyMarkup as InlineKeyboardMarkup)
+          : undefined;
+      await this.notifyPhoto(
+        msg.url,
+        typeof msg.caption === "string" ? msg.caption : undefined,
+        replyMarkup,
+      );
       return;
     }
     if (msg.type === "ack" && typeof msg.reqId === "string") {

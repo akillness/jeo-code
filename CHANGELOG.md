@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.45] - 2026-07-06
+_gjc parity: jeo's subagent `task {tasks:[...]}` fan-out batches now visibly run as PARALLEL processes the way gjc's own task tool does, instead of quietly forcing the mutating executor role to serialize. Two compounding bugs made a batch of independent subagent tasks look and behave sequential even though the read-only roles were already technically concurrent: (1) the executor role's fan-out was hard-coded to concurrency 1 regardless of batch size, and (2) the TUI's live status line tracked ONE shared string clobbered by whichever worker's event landed last — worse, ANY single worker reaching "done" cleared the whole `(sub)` marker even while its siblings were still actively running._
+
+### Added
+- **Concurrent executor fan-out** (`src/agent/task-tool.ts`) — a `task {role:"executor", tasks:[...]}` batch now runs with the same bounded concurrency as the read-only roles (`MAX_FANOUT` = 4), matching gjc's own default of parallelizing independent tasks. Removed the now-unsafe cross-task "chain previous output into next task's context" behavior, which assumed strict serial ordering (task i-1 always done before task i starts) that concurrent execution no longer guarantees; a task that genuinely depends on another's output now belongs in a sequential follow-up `task` call. `taskToolProtocolLine` documents the resulting expectation: scope each concurrent executor task to disjoint files, since jeo has no in-batch peer-coordination channel yet (overlapping scopes should run sequentially instead).
+- **Per-slot concurrent subagent live-activity tracking** (`src/tui/app.ts`) — the single shared `subagentLive` string is replaced by `subagentLiveSlots` (a `Map` keyed on the event's fan-out `index`). The live status row now shows the most-recently-active slot plus a `(+N more running)` count so a parallel batch visibly reads as parallel, and — the more important fix — one worker reaching "done" now clears ONLY that worker's slot instead of nuking the `(sub)` marker for the whole still-running batch.
+
+### Verified
+- `bun run typecheck` clean; `bun test` 2479 pass / 0 fail.
+- `test/task-tool.test.ts`: rewrote the two tests that pinned the old forced-serial/chaining behavior — an overlapping-sleep probe now proves the executor batch's calls genuinely overlap in wall-clock time (`maxConcurrent > 1`), and a follow-up test confirms no chain note leaks between concurrent executor tasks.
+- `test/subagent-live-activity.test.ts`: two new tests pin the per-slot fix — concurrent slots render with a running count, and one slot finishing early does not clear the marker while a sibling slot is still active.
+
 ## [0.7.44] - 2026-07-06
 _Root-caused a real production hang reported from `jeo`'s OpenAI Codex OAuth subagent path: after roughly 20-30 minutes of active streamed traffic, `chatgpt.com`'s backend severs the live SSE connection mid-response (an infra connection-duration cap, not a broken network) and Bun's fetch/undici surfaces it as `Error: The socket connection was closed unexpectedly …`. `retryableStream` (model-manager.ts) only auto-retries losing the FIRST streamed chunk — once any chunk had reached the caller it deliberately stopped retrying (a full re-call would replay already-emitted content) — so this class of drop propagated straight out of the engine as a raw, unretried turn-ending error every time, even though nothing had been committed to history yet and a plain resend is exactly as safe as a fresh call._
 

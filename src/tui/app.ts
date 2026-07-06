@@ -249,12 +249,20 @@ export class LaunchTui {
   private workflowStatus: { skill: string; phase: string; detail?: string } | null = null;
   // Cumulative token usage for the live turn (engine onUsage event).
   private turnUsage: { inputTokens: number; outputTokens: number } | null = null;
-  // True while a delegated subagent turn is in flight — drives the `(sub)` status marker.
+  // True while at least one delegated subagent SLOT is in flight — drives the `(sub)`
+  // status marker. Derived from `subagentLiveSlots.size` (see below) rather than a
+  // plain boolean so a fan-out batch where ONE worker finishes early no longer
+  // clears the marker while its siblings are still visibly running.
   private subagentActive = false;
-  // Latest nested subagent activity (role + glyph + detail) — surfaced LIVE in the
-  // status row while a `task` runs, so a delegated turn never reads as an opaque
-  // "calling model" stall (the perceived-hang usability gap). Cleared on done.
-  private subagentLive: string | null = null;
+  // Latest nested subagent activity, PER CONCURRENT SLOT (fan-out `task` batches — both
+  // the executor and read-only roles — now run several workers at once; a single
+  // shared string clobbered on every event made concurrent subagents look sequential
+  // and, worse, cleared the whole `(sub)` marker the instant ANY one worker finished).
+  // Keyed by the event's fan-out `index` (1-based); a single/detached run with no
+  // index shares the fixed key 0. `subagentLiveOrder` tracks touch order so the
+  // status row can show the MOST RECENTLY active slot plus a "+N more" count.
+  private readonly subagentLiveSlots = new Map<number, string>();
+  private readonly subagentLiveOrder: number[] = [];
   // Bounded activity-history ring: one plain-text entry per ledger append, with a
   // turn-relative timestamp. Powers Ctrl+O's "recent activity" tail so the detail
   // view ALWAYS answers "what has been happening", even before the first reply.
@@ -936,8 +944,17 @@ export class LaunchTui {
     }
     // A delegated subagent's LATEST nested event beats the parent's static
     // "Task: <role> …" card title — a long task otherwise reads as a stall even
-    // though the subagent is actively reading/editing/running underneath.
-    if (this.subagentActive && this.subagentLive) return this.subagentLive;
+    // though the subagent is actively reading/editing/running underneath. When a
+    // fan-out batch has MULTIPLE concurrent slots live, append a "+N more running"
+    // count so a parallel batch visibly reads as parallel instead of looking like
+    // one subagent whose label keeps randomly changing.
+    if (this.subagentActive && this.subagentLiveSlots.size > 0) {
+      const mostRecent = this.subagentLiveOrder[this.subagentLiveOrder.length - 1];
+      const line = (mostRecent !== undefined ? this.subagentLiveSlots.get(mostRecent) : undefined)
+        ?? this.subagentLiveSlots.values().next().value!;
+      const extra = this.subagentLiveSlots.size - 1;
+      return extra > 0 ? `${line} (+${extra} more running)` : line;
+    }
     // Waiting on the model and no tool is mid-flight → make the pause legible.
     if (this.thinking && !running) {
       const elapsed = this.currentStepStartedAt ? ((Date.now() - this.currentStepStartedAt) / 1000).toFixed(1) : "0.0";
@@ -993,30 +1010,47 @@ export class LaunchTui {
     const last = this.unicode ? "└─" : "`-";
     const detail = (e.detail ?? "").split("\n").find(l => l.trim().length > 0)?.trim().slice(0, 140) ?? "";
     const summary = e.summary ? ` — ${e.summary}` : "";
+    // Fan-out slot key: the event's 1-based `index` when present (concurrent batch
+    // worker), else the fixed key 0 (single-task/detached run — matches the prior
+    // single-string behavior for the non-batch case).
+    const slot = e.index ?? 0;
+    const touchSlot = (line: string) => {
+      this.subagentLiveSlots.set(slot, line);
+      const at = this.subagentLiveOrder.indexOf(slot);
+      if (at !== -1) this.subagentLiveOrder.splice(at, 1);
+      this.subagentLiveOrder.push(slot);
+      this.subagentActive = true;
+    };
     // No `step N/M` marker on nested lines — step counters carry no meaning
     // under the dynamic budget (user feedback). A tree branch keeps subagent
     // activity readable in scrollback and visually separate from parent tools.
     switch (e.kind) {
       case "start":
-        this.subagentActive = true;
-        this.subagentLive = `${roleLabel} ${this.unicode ? "▸" : ">"} ${detail || "starting"}`;
+        touchSlot(`${roleLabel} ${this.unicode ? "▸" : ">"} ${detail || "starting"}`);
         this.appendLedger(`${badge} ${this.unicode ? "▸" : ">"} ${roleLabel} · ${detail}\n`, "subagent");
         break;
       case "step":
-        this.subagentLive = `${roleLabel} ${this.unicode ? "·" : "-"} ${detail || "working"}`;
+        touchSlot(`${roleLabel} ${this.unicode ? "·" : "-"} ${detail || "working"}`);
         this.appendLedger(`  ${badge} ${branch} ${roleLabel} · ${detail || "working"}\n`, "subagent");
         break;
       case "tool":
-        this.subagentLive = `${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}`;
+        touchSlot(`${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}`);
         this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`, "subagent");
         break;
       case "error":
-        this.subagentLive = `${roleLabel} ${bad} ${detail || "error"}`;
+        touchSlot(`${roleLabel} ${bad} ${detail || "error"}`);
         this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${bad} ${detail || "error"}\n`, "subagent");
         break;
       case "done":
-        this.subagentActive = false;
-        this.subagentLive = null;
+        // Clear ONLY this slot — a fan-out batch where one worker finishes early
+        // must keep showing its still-running siblings, not drop the `(sub)`
+        // marker for the whole batch (the bug this per-slot map fixes).
+        this.subagentLiveSlots.delete(slot);
+        {
+          const at = this.subagentLiveOrder.indexOf(slot);
+          if (at !== -1) this.subagentLiveOrder.splice(at, 1);
+        }
+        this.subagentActive = this.subagentLiveSlots.size > 0;
         this.appendLedger(`${badge} ${last} ${roleLabel} done${e.tokens ? ` (${e.tokens.input + e.tokens.output} tok)` : ""}${e.success === false ? " (incomplete)" : ""}: ${detail}\n`, "subagent");
         break;
     }
@@ -1030,7 +1064,7 @@ export class LaunchTui {
     this.livePromptInput = ""; // fresh turn: no next-prompt draft yet
     this.livePromptHint = []; // fresh turn: no mid-turn command preview yet
     this.livePromptHighlight = undefined; // fresh turn: no active trigger token
-    this.subagentLive = null; // fresh turn: no nested subagent in flight
+    this.subagentLiveSlots.clear(); this.subagentLiveOrder.length = 0; this.subagentActive = false; // fresh turn: no nested subagent in flight
     this.activityLog.length = 0; // per-turn ring: timestamps are turn-relative
     this.spinner.updateStep(0, this.footer.maxSteps);
     // completed ledger lines are flushed into normal scrollback as they happen, so a

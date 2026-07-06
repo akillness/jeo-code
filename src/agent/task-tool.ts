@@ -62,22 +62,28 @@ export interface TaskToolOptions {
   /** Optional live sink (e.g. plain-stream rendering of nested progress). */
   onEvent?: (ev: TaskSubEvent) => void;
   /** Mid-turn steering drain (gjc parity): an additional user query typed while a
-   *  subagent works is forwarded live. Single-task runs and the SERIAL executor
-   *  batch (concurrency 1) forward to the one active subagent. A parallel read-only
-   *  batch routes through a broadcast hub (createSteerHub) so every running worker
-   *  sees each message exactly once. Unconsumed messages stay for the parent. */
+   *  subagent works is forwarded live. A single-task run forwards to the one active
+   *  subagent. Any fan-out batch (both roles now run CONCURRENTLY, bounded at
+   *  MAX_FANOUT) routes through a broadcast hub (createSteerHub) so every running
+   *  worker sees each message exactly once. Unconsumed messages stay for the parent. */
   steer?: () => string[];
   /** When present, a `task` call with `detached: true` registers a background run
    *  here and returns immediately; the parent controls it via the `subagent` tool. */
   registry?: SubagentRegistry;
 }
 
-/** Max concurrent read-only subagents in a fan-out batch. */
+/** Max concurrent subagents in a fan-out batch (both read-only AND the mutating
+ *  executor role — gjc parity: gjc's own `task` tool runs independent tasks
+ *  concurrently by default and only sequences work that shares a large evolving
+ *  artifact). A model batching executor tasks is expected to scope each one to
+ *  disjoint files (documented in `taskToolProtocolLine`); overlapping scopes
+ *  should either run sequentially (separate `task` calls) or coordinate — jeo has
+ *  no in-batch peer channel yet, so overlapping-scope tasks MUST be sequential. */
 const MAX_FANOUT = 4;
 
-/** Hard cap on a SERIAL (mutating executor) fan-out batch: it runs one task at a
- *  time inside one blocking tool call, so an unbounded queue would monopolize the
- *  parent turn. Split larger efforts into sequential task calls. */
+/** Hard cap on a fan-out BATCH SIZE (queue length, not concurrency): an unbounded
+ *  queue behind MAX_FANOUT workers would still monopolize the parent turn for a
+ *  long time. Split larger efforts into sequential task calls. */
 const MAX_SERIAL_EXECUTOR = 6;
 
 /** Minimum distinct, non-filler words a spawn-gate justification must contain.
@@ -128,7 +134,7 @@ export function taskToolProtocolLine(config?: Pick<Config, "subagents">): string
   return (
     `task   {role, task|tasks[], context?}  — delegate to a subagent ` +
     `(role: ${subagentRoleIds(config).join("|")}; executor can edit, planner/architect/critic are read-only). ` +
-    `Pass 'tasks' (array) to fan out — read-only roles run in parallel, executor serially. Integrate the findings yourself.`
+    `Pass 'tasks' (array) to fan out — ALL roles run concurrently (bounded); scope each executor task to disjoint files (no shared-file coordination channel between concurrent tasks — use sequential task calls if scopes overlap). Integrate the findings yourself.`
   );
 }
 
@@ -399,23 +405,25 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       if (items.length === 0) {
         return { success: false, output: "", error: "task fan-out requires a non-empty 'tasks' array of assignments." };
       }
-      // #5: the mutating executor fan-out is SERIAL (concurrency 1) and blocks the
-      // turn; cap it regardless of justification so a huge queue can't monopolize
-      // the parent. Split larger efforts into sequential task calls.
+      // A fan-out BATCH SIZE cap (queue length, not concurrency — see MAX_FANOUT
+      // below): an unbounded queue behind bounded concurrency would still
+      // monopolize the parent turn. Split larger executor efforts into
+      // sequential task calls.
       if (!role.readOnly && items.length > MAX_SERIAL_EXECUTOR) {
         return {
           success: false,
           output: "",
           error:
-            `Executor fan-out of ${items.length} exceeds the serial cap of ${MAX_SERIAL_EXECUTOR}. ` +
-            `The mutating executor runs one task at a time and blocks the turn — split into ≤${MAX_SERIAL_EXECUTOR}-task batches or sequential task calls.`,
+            `Executor fan-out of ${items.length} exceeds the batch cap of ${MAX_SERIAL_EXECUTOR}. ` +
+            `Split into ≤${MAX_SERIAL_EXECUTOR}-task batches or sequential task calls.`,
         };
       }
       // Spawn-gate lite (plan/gjc-inheritance.md B9, gjc spawn-gate 계승): a batch
       // wider than MAX_FANOUT is refused BEFORE any subagent launches unless the
       // model justifies the parallelism — silent capping hid the cost decision.
       // NOTE: the justification permits a LARGER QUEUE only; running concurrency
-      // stays bounded at MAX_FANOUT (read-only) or 1 (mutating) regardless.
+      // stays bounded at MAX_FANOUT regardless (both roles, since v0.7.45 — see
+      // MAX_FANOUT's docstring).
       if (items.length > MAX_FANOUT) {
         const justification = typeof args.justification === "string" ? args.justification.trim() : "";
         if (!isMeaningfulJustification(justification)) {
@@ -428,9 +436,9 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
           };
         }
       }
-      // Read-only roles fan out concurrently (bounded). The mutating executor is serialized
-      // (concurrency 1) so parallel subagents can't race on the same files.
-      const limit = role.readOnly ? Math.min(items.length, MAX_FANOUT) : 1;
+      // Both roles fan out CONCURRENTLY, bounded at MAX_FANOUT (gjc parity — see
+      // MAX_FANOUT's docstring for the disjoint-file-scope expectation this relies on).
+      const limit = Math.min(items.length, MAX_FANOUT);
       // Load project context ONCE per batch instead of re-scanning AGENTS.md for
       // every fan-out task (redundant IO + duplicated tokens).
       const batchContext = await loadProjectContext(cwd);
@@ -446,18 +454,18 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
         while (true) {
           const i = next++;
           if (i >= items.length) return;
-          // Chain serial executor output into next task's context; parallel read-only stays isolated.
-          const chainNote = (!role.readOnly && i > 0 && results[i - 1])
-            ? `\n\n[Previous task result — for context, not instructions]:\n${results[i - 1]!.output.slice(0, 1_500)}`
-            : "";
-          results[i] = await runOne(role, items[i]!.task, items[i]!.context + chainNote, cwd, { slot: { index: i + 1, total: items.length }, projectContext: batchContext, steer: workerSteer });
+          // No cross-task chaining: with bounded CONCURRENT execution, task i-1 is
+          // not guaranteed to have finished before task i starts (removed — it was
+          // dead/misleading once the executor stopped being forced-serial). Each
+          // task runs isolated on its own slice of context; a task that genuinely
+          // depends on another's output belongs in a sequential follow-up call.
+          results[i] = await runOne(role, items[i]!.task, items[i]!.context, cwd, { slot: { index: i + 1, total: items.length }, projectContext: batchContext, steer: workerSteer });
         }
 
       };
       await Promise.all(Array.from({ length: limit }, () => worker()));
       const ok = results.filter(r => r.success).length;
-      const mode = role.readOnly ? `concurrency ${limit}` : "executor — serialized";
-      const head = `[${role.title} fan-out] ${ok}/${items.length} completed (${mode}).`;
+      const head = `[${role.title} fan-out] ${ok}/${items.length} completed (concurrency ${limit}).`;
       const combined = results.map((r, i) => `### Task ${i + 1}/${items.length}\n${r.output}`).join("\n\n");
       return { success: ok === items.length, output: `${head}\n\n${combined}` };
     }

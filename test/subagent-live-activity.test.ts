@@ -53,6 +53,50 @@ test("subagent done clears the live activity back to the parent view", () => {
   }
 });
 
+// ── Concurrent fan-out lanes (per-slot tracking) ────────────────────────────
+// A `task {tasks:[...]}` fan-out batch (both executor and read-only roles) runs
+// several subagents CONCURRENTLY. The live status line used to be one string
+// clobbered by whichever worker's event landed last, and — worse — ANY one
+// worker reaching "done" cleared the `(sub)` marker for the WHOLE batch even
+// while siblings were still visibly running. These tests pin the per-slot fix.
+
+test("concurrent fan-out: status shows the most recently active slot plus a running count", () => {
+  const { tui, internals } = makeTui();
+  try {
+    tui.onSubagentEvent({ kind: "start", role: "executor", index: 1, total: 3, detail: "task A" });
+    tui.onSubagentEvent({ kind: "start", role: "executor", index: 2, total: 3, detail: "task B" });
+    tui.onSubagentEvent({ kind: "start", role: "executor", index: 3, total: 3, detail: "task C" });
+    const live = strip(internals.currentActivity());
+    // The most recently touched slot (3) is shown, with the other two counted.
+    expect(live).toContain("EXECUTOR[3/3]");
+    expect(live).toContain("task C");
+    expect(live).toContain("+2 more running");
+  } finally {
+    clearInterval(internals.timer);
+    tui.finish("done");
+  }
+});
+
+test("concurrent fan-out: one worker finishing does NOT clear the (sub) marker while siblings still run", () => {
+  const { tui, internals } = makeTui();
+  try {
+    tui.onSubagentEvent({ kind: "start", role: "executor", index: 1, total: 2, detail: "task A" });
+    tui.onSubagentEvent({ kind: "start", role: "executor", index: 2, total: 2, detail: "task B" });
+    // Slot 1 finishes first — its sibling (slot 2) is still running.
+    tui.onSubagentEvent({ kind: "done", role: "executor", index: 1, total: 2, detail: "task A done", success: true });
+    const live = strip(internals.currentActivity());
+    expect(live).toContain("EXECUTOR[2/2]");
+    expect(live).toContain("task B");
+    expect(live).not.toContain("+1 more running"); // only slot 2 remains — no "+N more"
+    // Slot 2 now finishes too — the whole batch is done, marker clears.
+    tui.onSubagentEvent({ kind: "done", role: "executor", index: 2, total: 2, detail: "task B done", success: true });
+    expect(strip(internals.currentActivity())).not.toContain("EXECUTOR");
+  } finally {
+    clearInterval(internals.timer);
+    tui.finish("done");
+  }
+});
+
 // ── Activity-history ring (Ctrl+O tail) ────────────────────────────────────
 
 test("recentActivity records ledger events with turn-relative timestamps, ANSI-stripped", () => {

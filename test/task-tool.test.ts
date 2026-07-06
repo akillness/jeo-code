@@ -214,14 +214,29 @@ test("createTaskTool: read-only fan-out runs all tasks and combines results", as
   expect(res.output).toContain("### Task 3/3");
 });
 
-test("createTaskTool: executor fan-out is serialized for mutation safety", async () => {
+test("createTaskTool: executor fan-out runs CONCURRENTLY, bounded like the read-only roles (gjc parity)", async () => {
+  // jeo previously force-serialized the mutating executor's `tasks` batch (concurrency
+  // 1) even though gjc's own task tool parallelizes independent executor work by
+  // default — a batch of disjoint-file executor tasks used to visibly run one at a
+  // time. It must now run with the same bounded concurrency as read-only roles.
+  let concurrent = 0;
+  let maxConcurrent = 0;
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\nOpen Risks: none" } }),
+    callLlm: async () => {
+      concurrent++;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await new Promise(r => setTimeout(r, 10));
+      concurrent--;
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\nOpen Risks: none" } });
+    },
   }));
   const { createTaskTool } = await import("../src/agent/task-tool");
   const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
-  const res = await tool({ role: "executor", tasks: ["t1", "t2"] }, await tmpDir());
-  expect(res.output).toContain("executor — serialized");
+  const res = await tool({ role: "executor", tasks: ["t1", "t2", "t3"] }, await tmpDir());
+  expect(res.output).toContain("[Executor fan-out] 3/3 completed (concurrency 3)");
+  // The overlapping-sleep probe proves the three subagent calls actually ran at the
+  // same time, not merely that the label says "concurrency 3".
+  expect(maxConcurrent).toBeGreaterThan(1);
 });
 
 test("createTaskTool: empty tasks array is a soft error", async () => {
@@ -328,13 +343,18 @@ test("createTaskTool: JEO_NO_MEMORY=1 suppresses memory injection into subagents
   }
 });
 
-test("createTaskTool: serial executor fan-out chains previous task output into next task context (SEV-3a fix)", async () => {
+test("createTaskTool: executor fan-out does NOT chain across workers, same as read-only (concurrency broke the old chain assumption)", async () => {
+  // The old SEV-3a chain-note behavior assumed the executor batch was strictly
+  // serial (task i-1 always finished before task i started), so it was safe to
+  // splice task i-1's output into task i's context. Now that both roles run with
+  // bounded CONCURRENCY, that ordering is no longer guaranteed — chaining was
+  // removed rather than left silently unreliable. A task that genuinely depends
+  // on another's output belongs in a sequential follow-up `task` call.
   const userMessages: string[] = [];
   let call = 0;
   await mock.module("../src/agent/loop", () => ({
     callLlm: async (messages: Message[]) => {
       call++;
-      // Capture the user message for each subagent invocation
       const user = messages.find(m => m.role === "user")?.content ?? "";
       userMessages.push(user);
       return JSON.stringify({ tool: "done", arguments: { reason: `Summary: task${call} done\nChanged Files: none\nVerification: ran\nOpen Risks: none` } });
@@ -345,11 +365,7 @@ test("createTaskTool: serial executor fan-out chains previous task output into n
   const res = await tool({ role: "executor", tasks: ["first task", "second task"] }, await tmpDir());
 
   expect(res.success).toBe(true);
-  // First task gets no chain note
-  expect(userMessages[0]).not.toContain("Previous task result");
-  // Second task must see the first task's output in its context
-  expect(userMessages[1]).toContain("Previous task result");
-  expect(userMessages[1]).toContain("task1 done");
+  expect(userMessages.every(m => !m.includes("Previous task result"))).toBe(true);
 });
 
 test("createTaskTool: parallel read-only fan-out does NOT chain across workers (isolation by design)", async () => {

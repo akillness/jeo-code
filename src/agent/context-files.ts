@@ -264,6 +264,25 @@ export async function loadProjectContext(cwd = process.cwd()): Promise<ProjectCo
   const home = process.env.HOME ? path.resolve(process.env.HOME) : null;
   const collectedItems: ContextItem[] = [];
 
+  // 0. User-global context files (~/.jeo/agent/AGENTS.md) — lowest precedence.
+  // Native user files come first in the result so project files later take precedence.
+  // Only jeo's own user config applies; foreign-provider user files are excluded (e.g.
+  // ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md stay out — only ~/.jeo/* is loaded).
+  if (home) {
+    const userAgentFile = path.join(home, ".jeo", "agent", "AGENTS.md");
+    try {
+      const stat = await fs.stat(userAgentFile);
+      if (stat.isFile() && stat.size > 0) {
+        const file = await readContextFile(userAgentFile, "~/.jeo/agent/AGENTS.md", BASE_CONTEXT_CHARS - baseChars);
+        if (file) {
+          result.push(file);
+          baseChars += file.content.length;
+        }
+      }
+    } catch {
+      // User-global file not found or unreadable; silently skip.
+    }
+  }
   // 1. CWD 및 부모 walk
   let curr = resolvedCwd;
   let distance = 0;

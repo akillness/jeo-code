@@ -15,6 +15,28 @@ import * as path from "node:path";
 // here since launch.ts must resolve `../agent/engine` to the mocked module).
 const realReadline = { ...(await import("node:readline/promises")) };
 const realEngine = { ...(await import("../src/agent/engine")) };
+const realApp = { ...(await import("../src/tui/app")) };
+
+// Captures the `routedTier` field passed into EVERY `LaunchTui` construction across
+// a real multi-turn session — the only way to prove the status-bar exposure (added
+// v0.7.52, `StatusBarData.routedTier`) actually tracks PromptRouter's per-turn decision
+// as it changes turn-to-turn, rather than trusting the isolated single-construction
+// unit tests in test/tui-app.test.ts (which never exercise launch.ts's real `runTurn`
+// wiring) or the `--no-tui` tests above (which never construct a `LaunchTui` at all).
+// `write`/`tty` are forced so the real renderer/spinner never touch the real terminal;
+// `tui.finish()` (called by the real `runTurn` on every completed turn) still clears
+// its own interval timer normally — same as production.
+let capturedRoutedTiers: (string | undefined)[] = [];
+mock.module("../src/tui/app", () => ({
+  ...realApp,
+  LaunchTui: class extends realApp.LaunchTui {
+    constructor(opts: ConstructorParameters<typeof realApp.LaunchTui>[0]) {
+      capturedRoutedTiers.push(opts.routedTier);
+      super({ ...opts, write: () => {}, tty: true });
+    }
+  },
+}));
+
 
 let mockQuestions: string[] = [];
 let mockIndex = 0;
@@ -46,8 +68,10 @@ beforeEach(() => {
   mockQuestions = [];
   mockIndex = 0;
   capturedCalls = [];
+  capturedRoutedTiers = [];
   resetPromptRouterWarnings();
 });
+
 
 afterEach(() => {
   process.stdin.isTTY = originalIsTTY as boolean;
@@ -56,7 +80,9 @@ afterEach(() => {
 afterAll(() => {
   mock.module("node:readline/promises", () => realReadline);
   mock.module("../src/agent/engine", () => realEngine);
+  mock.module("../src/tui/app", () => realApp);
 });
+
 
 // Runs one launch turn against a temp config dir, returns every runAgentLoop
 // invocation's captured (model, maxTokens, reasoningEffort).
@@ -210,6 +236,106 @@ async function runTurnsInOneSession(
     await fs.rm(workDir, { recursive: true, force: true });
   }
 }
+// Same as `runTurnsInOneSession`, but forces `process.stdout.isTTY = true` and does NOT
+// pass `--no-tui` — `LaunchTui.usable(noTui)` is `isTTY() && !noTui`, so this is the ONLY
+// way to actually exercise `useTui = true` in `runLaunchCommand` and get `runTurn` to
+// construct a real (mocked-write) `LaunchTui` per turn, which is what `capturedRoutedTiers`
+// (populated by the `../src/tui/app` mock above) observes.
+async function runTurnsInOneSessionWithTui(
+  config: Record<string, unknown>,
+  prompts: string[],
+): Promise<{ model?: string; sessionKey?: string }[]> {
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-prompt-routing-tui-cfg-"));
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-prompt-routing-tui-work-"));
+  const savedCfg = process.env.JEO_CONFIG_DIR;
+  const savedCwd = process.cwd();
+  const savedLog = console.log;
+  const savedStdoutIsTTY = process.stdout.isTTY;
+  const savedStdoutWrite = process.stdout.write;
+  console.log = () => {};
+  try {
+    // Real `useTui = true` also engages the REPL's own boxed-input-prompt renderer
+    // (a separate direct-stdout path from `LaunchTui`, which only owns the per-turn
+    // model bar/frame) — override `process.stdout.write` to cut most of the raw ANSI
+    // escapes that path would otherwise dump into the runner's own terminal/log. Some
+    // setup writes still slip through a reference captured before this override runs;
+    // harmless either way (never asserted on), just cosmetic test-output noise.
+
+    (process.stdout as unknown as { write: typeof process.stdout.write }).write = (() => true) as typeof process.stdout.write;
+    (process.stdout as unknown as { isTTY: boolean }).isTTY = true;
+
+    (process.stdout as unknown as { isTTY: boolean }).isTTY = true;
+    process.env.JEO_CONFIG_DIR = cfgDir;
+    await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify(config));
+    process.chdir(workDir);
+    mockQuestions = [...prompts, "/exit"];
+
+    const { runLaunchCommand } = await import("../src/commands/launch");
+    await runLaunchCommand([]); // no --no-tui: real session AND real (mocked-write) TUI per turn
+
+    return capturedCalls;
+  } finally {
+    console.log = savedLog;
+    (process.stdout as unknown as { write: typeof process.stdout.write }).write = savedStdoutWrite;
+    (process.stdout as unknown as { isTTY: boolean | undefined }).isTTY = savedStdoutIsTTY;
+
+    process.chdir(savedCwd);
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = savedCfg;
+    await fs.rm(cfgDir, { recursive: true, force: true });
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
+}
+
+// --- TUI model exposure (design doc v0.7.52: a persistent ⚡tier marker in the status
+// bar, unconditional whenever routing actually chose THIS turn's model) — proves the
+// exposure actually tracks PromptRouter's decision turn-to-turn in the REAL runTurn/
+// LaunchTui wiring, not just an isolated single-construction render test. ---
+
+test("TUI exposure: routedTier is surfaced per-turn and tracks the routed tier as it changes turn-to-turn", async () => {
+  const calls = await runTurnsInOneSessionWithTui(
+    {
+      providers: { anthropic: "test-anthropic-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "claude-haiku-4-5", slow: "claude-opus-4-6" },
+      routing: { enabled: true },
+    },
+    [
+      "what is this?", // trivial, 0.85 confidence -> roles.smol
+      "Can you investigate and diagnose the root cause across src/agent/loop.ts and src/agent/engine.ts?", // complex, 0.85 confidence -> roles.slow
+    ],
+  );
+  expect(calls.length).toBe(2);
+  expect(calls[0].model).toBe("claude-haiku-4-5");
+  expect(calls[1].model).toBe("claude-opus-4-6");
+  // Two real LaunchTui constructions (one per turn) — the exposed tier changed
+  // from turn 1 to turn 2, tracking the actual routed decision each time.
+  expect(capturedRoutedTiers).toEqual(["trivial", "complex"]);
+});
+
+test("TUI exposure: routedTier clears (is omitted) the instant a later turn stops routing — no stale marker leaks across turns", async () => {
+  const calls = await runTurnsInOneSessionWithTui(
+    {
+      providers: { anthropic: "test-anthropic-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "claude-haiku-4-5", slow: "claude-opus-4-6" },
+      routing: { enabled: true },
+    },
+    [
+      "Can you investigate and diagnose the root cause across src/agent/loop.ts and src/agent/engine.ts?", // complex -> roles.slow, marker "complex"
+      "/route off", // session-local override: routing stops engaging from here on
+      "what is this?", // same trivial content that routed to "trivial" earlier in the other test — now must NOT route
+    ],
+  );
+  // "/route off" is a slash command handled inline (no runTurn/LaunchTui call) — only
+  // the 2 real prompts reach the model layer and construct a LaunchTui.
+  expect(calls.length).toBe(2);
+  expect(calls[0].model).toBe("claude-opus-4-6");
+  expect(calls[1].model).toBe("claude-sonnet-4-6"); // routing off -> defaultModel, unrouted
+  expect(capturedRoutedTiers).toEqual(["complex", undefined]);
+});
+
+
 
 test("sessionKey: two turns routed to the SAME model within one session produce the SAME derived key (cache reuse preserved)", async () => {
   const calls = await runTurnsInOneSession(
@@ -238,12 +364,12 @@ test("sessionKey: two turns routed to DIFFERENT models within one session produc
     },
     [
       "what is this?", // trivial, 0.85 confidence -> roles.smol
-      "Can you investigate and diagnose the root cause across src/agent/loop.ts and src/agent/engine.ts?", // complex, 0.85 confidence -> roles.slow unset -> defaultModel
+      "Can you investigate and diagnose the root cause across src/agent/loop.ts and src/agent/engine.ts?", // complex, 0.85 confidence -> roles.slow unset -> auto-selects strongest anthropic-credentialed model
     ],
   );
   expect(calls.length).toBe(2);
   expect(calls[0].model).toBe("claude-haiku-4-5");
-  expect(calls[1].model).toBe("claude-sonnet-4-6");
+  expect(calls[1].model).toBe("claude-fable-5");
   expect(calls[0].sessionKey).toBeDefined();
   expect(calls[1].sessionKey).toBeDefined();
   expect(calls[0].sessionKey).not.toBe(calls[1].sessionKey);

@@ -1,6 +1,7 @@
 import { readGlobalConfig } from "../agent/state";
 import { resolveCredential, snapshotProvider, type AuthProvider, type Credential } from "../auth";
-import { resolveProvider } from "../ai";
+import { resolveProvider, describeProvider } from "../ai";
+
 import { effectiveCredentialForProvider } from "../ai/model-manager";
 import { resolveModelId } from "../ai/model-registry";
 import { meter } from "../tui/components/meter";
@@ -179,9 +180,37 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   // turn.
   const routingEnabled = !!config.routing?.enabled;
   const smolConfigured = !!config.roles?.smol;
-  const routingNote = routingEnabled && !smolConfigured
-    ? "routing is enabled but roles.smol is unset — LLM escalation for ambiguous prompts will never fire; heuristic-only tier resolution applies every turn. Set roles.smol to enable escalation."
-    : undefined;
+  const routingNotes: string[] = [];
+  if (routingEnabled && !smolConfigured) {
+    routingNotes.push(
+      "routing is enabled but roles.smol is unset — LLM escalation for ambiguous prompts will never fire; heuristic-only tier resolution applies every turn. Set roles.smol to enable escalation.",
+    );
+  }
+  // Proactive credential-readiness check for every model routing could actually pick —
+  // mirrors launch.ts's runTurn per-turn veto gate (v0.7.51) but surfaced at onboarding/
+  // doctor time instead of only reactively on a session's first qualifying turn. Catches
+  // `roles.smol`/`roles.slow`/`routing.tiers.*.model` pointed at a provider the user never
+  // logged into (or whose credential was since removed). `standard` only checked when
+  // explicitly configured — its unconfigured fallback is `defaultModel`, already covered
+  // by the provider-connectivity probes above.
+  if (routingEnabled) {
+    const tierCandidates: { tier: string; model: string | undefined }[] = [
+      { tier: "trivial", model: config.routing?.tiers?.trivial?.model || config.roles?.smol },
+      { tier: "standard", model: config.routing?.tiers?.standard?.model },
+      { tier: "complex", model: config.routing?.tiers?.complex?.model || config.roles?.slow },
+    ];
+    for (const { tier, model } of tierCandidates) {
+      if (!model) continue;
+      const provider = resolveProvider(model);
+      const status = await describeProvider(provider, config);
+      if (!status.ready) {
+        routingNotes.push(
+          `routing.tiers.${tier} resolves to '${model}' (${provider}) which has no usable credential — run 'jeo auth login ${provider}' or reconfigure that tier/role for a provider you're logged into.`,
+        );
+      }
+    }
+  }
+
 
   // --- Gather (probes run concurrently → ~1× the slowest timeout, not N×) ---
   const probes: { name: string; credKind: string; result: ProbeResult }[] = [];
@@ -248,7 +277,8 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
       })),
       oauth: oauthHealth,
       ready,
-      ...(routingEnabled ? { routing: { enabled: true, smolConfigured, ...(routingNote ? { note: routingNote } : {}) } } : {}),
+      ...(routingEnabled ? { routing: { enabled: true, smolConfigured, ...(routingNotes.length ? { notes: routingNotes } : {}) } } : {}),
+
     };
     console.log(JSON.stringify(report, null, 2));
     if (strict && !ready) process.exit(1);
@@ -292,11 +322,12 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   }
   // Routing diagnostic: informational only — never affects ready/strict exit logic.
   if (routingEnabled) {
-    if (routingNote) {
-      console.log(`${chalk.yellow("[routing]")} ${routingNote}`);
+    if (routingNotes.length) {
+      for (const note of routingNotes) console.log(`${chalk.yellow("[routing]")} ${note}`);
     } else {
       console.log(`${chalk.green("[routing]")} enabled, roles.smol configured — LLM escalation available on ambiguous prompts.`);
     }
+
     console.log("");
   }
 

@@ -135,14 +135,14 @@ test("runDoctorCommand --json: routing enabled + roles.smol unset -> note presen
   expect(report.routing).toEqual({
     enabled: true,
     smolConfigured: false,
-    note: expect.stringContaining("roles.smol is unset"),
+    notes: [expect.stringContaining("roles.smol is unset")],
   });
-  expect(report.routing.note).toContain("LLM escalation");
+  expect(report.routing.notes[0]).toContain("LLM escalation");
 });
 
-test("runDoctorCommand --json: routing enabled + roles.smol set -> no note, smolConfigured true", async () => {
+test("runDoctorCommand --json: routing enabled + roles.smol set with a usable credential -> no notes", async () => {
   await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
-    providers: {},
+    providers: { openai: "sk-test-key" },
     defaultModel: "gpt-4o",
     routing: { enabled: true },
     roles: { smol: "gpt-4o-mini" },
@@ -161,8 +161,63 @@ test("runDoctorCommand --json: routing enabled + roles.smol set -> no note, smol
 
   const report = JSON.parse(lines.join("\n"));
   expect(report.routing).toEqual({ enabled: true, smolConfigured: true });
-  expect(report.routing.note).toBeUndefined();
+  expect(report.routing.notes).toBeUndefined();
 });
+
+test("runDoctorCommand --json: routing enabled + roles.smol set to an uncredentialed provider -> credential-readiness note", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
+    providers: {},
+    defaultModel: "claude-3-5-sonnet",
+    routing: { enabled: true },
+    roles: { smol: "gpt-4o-mini" }, // openai — no credential configured anywhere
+  }));
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => lines.push(a.join(" "));
+  try {
+    const { runDoctorCommand } = await import("../src/commands/doctor");
+    await runDoctorCommand(["--json"]);
+  } finally {
+    console.log = orig;
+  }
+
+  const report = JSON.parse(lines.join("\n"));
+  expect(report.routing.smolConfigured).toBe(true);
+  expect(report.routing.notes).toHaveLength(1);
+  expect(report.routing.notes[0]).toContain("routing.tiers.trivial");
+  expect(report.routing.notes[0]).toContain("gpt-4o-mini");
+  expect(report.routing.notes[0]).toContain("openai");
+  expect(report.routing.notes[0]).toContain("no usable credential");
+});
+
+test("runDoctorCommand --json: routing.tiers.complex set to an uncredentialed provider -> tagged as complex, not trivial", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
+    providers: { openai: "sk-test-key" },
+    defaultModel: "claude-3-5-sonnet",
+    routing: { enabled: true, tiers: { complex: { model: "gemini-2.0-flash" } } },
+    roles: { smol: "gpt-4o-mini" },
+    // gemini has no credential configured -> complex tier should be flagged, trivial (openai) should not
+  }));
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => lines.push(a.join(" "));
+  try {
+    const { runDoctorCommand } = await import("../src/commands/doctor");
+    await runDoctorCommand(["--json"]);
+  } finally {
+    console.log = orig;
+  }
+
+  const report = JSON.parse(lines.join("\n"));
+  expect(report.routing.notes).toHaveLength(1);
+  expect(report.routing.notes[0]).toContain("routing.tiers.complex");
+  expect(report.routing.notes[0]).toContain("gemini-2.0-flash");
+});
+
 
 test("runDoctorCommand (human output): routing on + roles.smol unset prints a yellow [routing] note; ready/strict logic unaffected", async () => {
   await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({

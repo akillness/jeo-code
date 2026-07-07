@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.53] - 2026-07-06
+_Verified PromptRouter end-to-end (63 pre-existing tests re-run, all passing; a live `jeo doctor --json`/human-output smoke test confirms real wiring, not just mocks) and closed the one genuine remaining gap: the v0.7.51 per-turn credential-readiness veto protected a running session reactively, but nothing caught a misconfigured `roles.smol`/`roles.slow`/`routing.tiers.*.model` proactively at setup time._
+
+### Added
+- **`jeo doctor` proactive routing-credential diagnostic** (`src/commands/doctor.ts`) — for every tier PromptRouter could actually route to (`routing.tiers.trivial.model` or `roles.smol`, `routing.tiers.standard.model` when explicitly set, `routing.tiers.complex.model` or `roles.slow`), doctor now resolves the model's provider and checks credential readiness with the SAME `describeProvider` call `launch.ts`'s runtime gate uses — surfacing "routing.tiers.\<tier\> resolves to '\<model\>' (\<provider\>) which has no usable credential" at `jeo doctor` time instead of only reactively mid-session on the first qualifying turn. `standard` is only checked when explicitly configured, since its unconfigured fallback is `defaultModel`, already covered by the existing provider-connectivity probes.
+
+### Changed
+- **`jeo doctor --json`'s `routing` block: singular `note` → `notes` array** — the prior shape could only ever represent the one "roles.smol unconfigured" case; the new `notes: string[]` (omitted when empty, same as before) represents zero, one, or several simultaneous routing diagnostics (e.g. `roles.smol` set to an uncredentialed provider AND `routing.tiers.complex` also uncredentialed) without collapsing them into one string. Purely additive to `jeo doctor`'s informational output — never affects the `ready`/`--strict` exit code, matching the existing routing-diagnostic contract.
+
 ## [0.7.52] - 2026-07-06
 _Two TUI visibility asks answered directly ("어느 모델이 라우팅됐는지 상시 표시" — persistently show which model routing picked, and "각 서브에이전트의 사고 과정도 보이게" — surface each subagent's own thinking) plus a Ponytail-mode minimal-code audit pass across six files that found one genuine correctness bug and five instances of dead/unreachable code._
 

@@ -4,8 +4,10 @@ import {
   warnOnce,
   resetPromptRouterWarnings,
   deriveCacheSessionKey,
+  resolveTierModel,
   type RouteDecision,
 } from "../src/agent/prompt-router";
+import { resolveSubagentModel } from "../src/agent/subagents";
 import type { Config } from "../src/agent/state";
 
 // `routePrompt` calls the real `callLlm` (src/agent/loop) for LLM escalation. Tests that
@@ -503,4 +505,82 @@ test("resolveTierModel auto-select: OAuth-stored credential (not just providers 
   });
   const decision = (await routePrompt("what is this?", config)) as RouteDecision;
   expect(decision.model).toBe("gemini-2.0-flash"); // only gemini credentialed (via OAuth) -> cheapest gemini model
+});
+
+test("resolveTierModel: resolves standard and complex tiers using new config roles (medium, high, xhigh)", () => {
+  const config = credentialedConfig({
+    defaultModel: "claude-sonnet-4-6",
+    roles: {
+      smol: "model-smol",
+      medium: "model-medium",
+      high: "model-high",
+      xhigh: "model-xhigh",
+      slow: "model-slow",
+      plan: "model-plan"
+    }
+  });
+
+  expect(resolveTierModel("trivial", config)).toBe("model-smol");
+  expect(resolveTierModel("standard", config)).toBe("model-medium");
+  expect(resolveTierModel("complex", config)).toBe("model-xhigh");
+});
+
+test("resolveTierModel: standard tier falls back to high role, then defaultModel", () => {
+  const config1 = credentialedConfig({
+    defaultModel: "claude-sonnet-4-6",
+    roles: {
+      high: "model-high"
+    }
+  });
+  expect(resolveTierModel("standard", config1)).toBe("model-high");
+
+  const config2 = credentialedConfig({
+    defaultModel: "claude-sonnet-4-6",
+    roles: {}
+  });
+  expect(resolveTierModel("standard", config2)).toBe("claude-sonnet-4-6");
+});
+
+test("resolveSubagentModel: resolves executor using new config roles (xhigh, slow)", () => {
+  const config1 = credentialedConfig({
+    defaultModel: "claude-sonnet-4-6",
+    roles: { xhigh: "model-xhigh", slow: "model-slow" }
+  });
+  expect(resolveSubagentModel("executor", config1)).toBe("model-xhigh");
+
+  const config2 = credentialedConfig({
+    defaultModel: "claude-sonnet-4-6",
+    roles: { slow: "model-slow" }
+  });
+  expect(resolveSubagentModel("executor", config2)).toBe("model-slow");
+});
+
+test("resolveSubagentModel: resolves architect using new config roles (xhigh)", () => {
+  const config = credentialedConfig({
+    defaultModel: "claude-sonnet-4-6",
+    roles: { xhigh: "model-xhigh" }
+  });
+  expect(resolveSubagentModel("architect", config)).toBe("model-xhigh");
+});
+
+test("resolveSubagentModel: resolves planner using new config roles (high)", () => {
+  const config = credentialedConfig({
+    defaultModel: "claude-sonnet-4-6",
+    roles: { high: "model-high" }
+  });
+  expect(resolveSubagentModel("planner", config)).toBe("model-high");
+});
+
+test("resolveSubagentModel: resolves critic using new config roles (medium, smol)", () => {
+  const config1 = credentialedConfig({
+    defaultModel: "claude-sonnet-4-6",
+    roles: { medium: "model-medium", smol: "model-smol" }
+  });
+  expect(resolveSubagentModel("critic", config1)).toBe("model-medium");
+
+  const config2 = credentialedConfig({
+    defaultModel: "claude-sonnet-4-6",
+    roles: { smol: "model-smol" }
+  });
+  expect(resolveSubagentModel("critic", config2)).toBe("model-smol");
 });

@@ -146,10 +146,23 @@ export async function describeModel(
   return { input, resolved, provider: resolveProvider(resolved) };
 }
 
-export type ModelRole = "smol" | "slow" | "plan";
+export type ModelRole = "smol" | "medium" | "high" | "xhigh" | "slow" | "plan";
 
-/** Resolve a model role tier (smol/slow/plan) → configured tier model, else defaultModel. */
-export function resolveRoleModel(role: ModelRole, config: { defaultModel: string; roles?: { smol?: string; slow?: string; plan?: string } }): string {
+/** Resolve a model role tier (smol/medium/high/xhigh/slow/plan) → configured tier model, else defaultModel. */
+export function resolveRoleModel(
+  role: ModelRole,
+  config: {
+    defaultModel: string;
+    roles?: {
+      smol?: string;
+      medium?: string;
+      high?: string;
+      xhigh?: string;
+      slow?: string;
+      plan?: string;
+    };
+  },
+): string {
   return config.roles?.[role] || config.defaultModel;
 }
 

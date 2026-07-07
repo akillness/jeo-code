@@ -62,6 +62,12 @@ export interface RouteDecision {
 export interface RoutePromptOptions {
   hasImages?: boolean;
   signal?: AbortSignal;
+  /** Threads through to `selectFromPool` for session-stable cross-provider pool
+   *  selection — the same session always lands on the same pool member (keeps
+   *  provider-side prompt caching warm turn-to-turn), while different sessions
+   *  spread across the pool. Omitted (e.g. a one-shot `jeo chat` call) ->
+   *  deterministic index 0. */
+  sessionId?: string;
 }
 
 // --- Frozen, bilingual-validated classification signals (do not re-derive). ---
@@ -294,11 +300,15 @@ function cheapestCredentialed(config: RoutingConfig): string | null {
  *  Tiebreak: canonical id (deterministic; also happens to prefer widely-
  *  available ids like `claude-fable-5` alphabetically ahead of limited-
  *  availability siblings such as `claude-mythos-5`). */
-function strongestCredentialed(config: RoutingConfig): string | null {
+export function strongestCredentialed(
+  config: RoutingConfig,
+  filter?: (m: CatalogModel) => boolean
+): string | null {
   let best: CatalogModel | null = null;
   for (const m of MODEL_CATALOG) {
     // "ANY stored credential" is enough (see cheapestCredentialed's comment above).
     if (!isCloudProvider(m.provider) || !(config.providers?.[m.provider] || config.oauth?.[m.provider])) continue;
+    if (filter && !filter(m)) continue;
     if (!best) { best = m; continue; }
     const xhighM = m.thinking.includes("xhigh") ? 1 : 0;
     const xhighBest = best.thinking.includes("xhigh") ? 1 : 0;
@@ -315,12 +325,22 @@ function strongestCredentialed(config: RoutingConfig): string | null {
 /** Exported for `jeo doctor`'s routing-preview diagnostic (same resolution the real
  *  `routePrompt` uses — no duplicated logic between "what WILL routing pick" and
  *  "what does doctor SHOW the user routing will pick"). */
-export function resolveTierModel(tier: PromptTier, config: RoutingConfig): string {
+export function resolveTierModel(tier: PromptTier, config: RoutingConfig, sessionId?: string): string {
   const configured = config.routing?.tiers?.[tier]?.model;
   if (configured) return configured;
-  if (tier === "trivial") return config.roles?.smol || cheapestCredentialed(config) || config.defaultModel;
-  if (tier === "complex") return config.roles?.slow || strongestCredentialed(config) || config.defaultModel;
-  return config.defaultModel; // "standard" always falls through to defaultModel unless explicitly configured
+  if (tier === "trivial") {
+    if (config.roles?.smol) return config.roles.smol;
+    const pool = tierModelPool("trivial", config);
+    return (pool.length ? selectFromPool(pool, sessionId) : null) || cheapestCredentialed(config) || config.defaultModel;
+  }
+  if (tier === "standard") return config.roles?.medium || config.roles?.high || config.defaultModel;
+  if (tier === "complex") {
+    if (config.roles?.xhigh) return config.roles.xhigh;
+    if (config.roles?.slow) return config.roles.slow;
+    const pool = tierModelPool("complex", config);
+    return (pool.length ? selectFromPool(pool, sessionId) : null) || strongestCredentialed(config) || config.defaultModel;
+  }
+  return config.defaultModel;
 }
 
 function resolveTierThinking(tier: PromptTier, config: RoutingConfig): ThinkLevel | undefined {
@@ -411,7 +431,7 @@ export async function routePrompt(
       }
     }
 
-    const model = resolveTierModel(tier, config);
+    const model = resolveTierModel(tier, config, opts.sessionId);
     if (opts.hasImages && catalogMetadata(model)?.images === false) return null;
 
     const decision: RouteDecision = {

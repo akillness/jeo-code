@@ -130,7 +130,14 @@ export interface Config {
    * Model role tiers (gjc `--smol`/`--slow`/`--plan` parity). Each falls back to
    * `defaultModel`. Env `JEO_SMOL_MODEL`/`JEO_SLOW_MODEL`/`JEO_PLAN_MODEL` fill gaps.
    */
-  roles?: { smol?: string; slow?: string; plan?: string };
+  roles?: {
+    smol?: string;
+    medium?: string;
+    high?: string;
+    xhigh?: string;
+    slow?: string;
+    plan?: string;
+  };
   /** Prompt-content-based per-turn model routing (PromptRouter) — see prompt-router.ts.
    *  Opt-in (undefined/false = off). Never affects subagent/role-tier model resolution. */
   routing?: {
@@ -284,6 +291,9 @@ function withEnvOverlay(cfg: Config): Config {
     lmstudioBaseUrl: cfg.lmstudioBaseUrl || process.env.LMSTUDIO_BASE_URL || "http://localhost:1234/v1",
     roles: {
       smol: cfg.roles?.smol || jeoEnv("SMOL_MODEL"),
+      medium: cfg.roles?.medium || jeoEnv("MEDIUM_MODEL"),
+      high: cfg.roles?.high || jeoEnv("HIGH_MODEL"),
+      xhigh: cfg.roles?.xhigh || jeoEnv("XHIGH_MODEL"),
       slow: cfg.roles?.slow || jeoEnv("SLOW_MODEL"),
       plan: cfg.roles?.plan || jeoEnv("PLAN_MODEL"),
     },

@@ -186,6 +186,9 @@ export const ConfigSchema = z
     roles: z
       .object({
         smol: z.string().optional(),
+        medium: z.string().optional(),
+        high: z.string().optional(),
+        xhigh: z.string().optional(),
         slow: z.string().optional(),
         plan: z.string().optional(),
       })
@@ -319,6 +322,15 @@ export function parseConfig(raw: unknown): { ok: true; config: ValidatedConfig }
     if (config.roles) {
       if (config.roles.smol) {
         config.roles.smol = normalizeModelId(config.roles.smol, aliases);
+      }
+      if (config.roles.medium) {
+        config.roles.medium = normalizeModelId(config.roles.medium, aliases);
+      }
+      if (config.roles.high) {
+        config.roles.high = normalizeModelId(config.roles.high, aliases);
+      }
+      if (config.roles.xhigh) {
+        config.roles.xhigh = normalizeModelId(config.roles.xhigh, aliases);
       }
       if (config.roles.slow) {
         config.roles.slow = normalizeModelId(config.roles.slow, aliases);

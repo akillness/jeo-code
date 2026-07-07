@@ -885,7 +885,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // selection must stay session-local: running sessions never influence each other.
     const routingEnabled = sessionRouteOverride ?? !!turnConfig.routing?.enabled;
     let routed = routingEnabled && !sessionModel
-      ? await routePrompt(userInput, turnConfig, { hasImages: !!images?.length }).catch(() => null)
+      ? await routePrompt(userInput, turnConfig, { hasImages: !!images?.length, sessionId }).catch(() => null)
       : null;
     // Fail-open credential gate: `routePrompt` only resolves a tier's model from
     // config (routing.tiers/roles.smol/roles.slow/defaultModel) — it deliberately

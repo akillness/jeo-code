@@ -62,10 +62,12 @@ test("discoveryRequest: anthropic api-key uses x-api-key + version", () => {
   expect(headers["anthropic-version"]).toBe("2023-06-01");
 });
 
-test("discoveryRequest: anthropic oauth uses bearer + beta", () => {
+test("discoveryRequest: anthropic oauth uses bearer (no beta for models endpoint)", () => {
   const { headers } = discoveryRequest("anthropic", { kind: "oauth", provider: "anthropic", token: "t" });
   expect(headers.authorization).toBe("Bearer t");
-  expect(headers["anthropic-beta"]).toBe("oauth-2025-04-20");
+  expect(headers["anthropic-version"]).toBe("2023-06-01");
+  // The oauth-2025-04-20 beta is for the messages endpoint, not the models endpoint
+  expect(headers["anthropic-beta"]).toBeUndefined();
 });
 
 test("discoveryRequest: gemini oauth omits ?key=, api-key appends it", () => {

@@ -58,13 +58,15 @@ h1.ok{color:#22d3ee}h1.fail{color:#f472b6}
 p{margin:.25rem 0;color:#8b8b96;font-size:.92rem}
 button{margin-top:1.5rem;padding:.55rem 1.6rem;border-radius:999px;border:1px solid #2a2a35;background:transparent;color:#e7e7ec;font:inherit;font-size:.88rem;cursor:pointer}
 button:hover{background:#1b1c27}
-.hint{margin-top:.9rem;font-size:.78rem;color:#5f5f6b}</style></head>
+.hint{margin-top:.9rem;font-size:.78rem;color:#5f5f6b}
+.closed{display:none}</style></head>
 <body><div class="card">
 <img class="wordmark" alt="jeo" src="${JEO_WORDMARK_DATA_URI}">
 <h1 class="__STATUS__">__TITLE__</h1>
 <p>__MSG__</p>
 <button id="jeo-close" type="button">Close</button>
 <p class="hint">Closing automatically in <span id="jeo-countdown">__SECONDS__</span>s…</p>
+<p class="hint closed" id="jeo-closed-msg">Window closed. You can close this tab.</p>
 </div>
 <script>__SCRIPT__</script>
 </body></html>`;
@@ -78,8 +80,16 @@ const AUTO_CLOSE_SECONDS = 5;
 
 function renderHtml(ok: boolean, msg: string): string {
   const script = `(function(){
-    var n=${AUTO_CLOSE_SECONDS},el=document.getElementById("jeo-countdown"),btn=document.getElementById("jeo-close"),t;
-    function closeNow(){clearInterval(t);window.close();}
+    var n=${AUTO_CLOSE_SECONDS},el=document.getElementById("jeo-countdown"),btn=document.getElementById("jeo-close"),closedMsg=document.getElementById("jeo-closed-msg"),t;
+    function closeNow(){
+      clearInterval(t);
+      var closed=window.close();
+      if(!closed){
+        btn.style.display="none";
+        el.parentElement.style.display="none";
+        closedMsg.classList.remove("closed");
+      }
+    }
     t=setInterval(function(){n-=1;if(el)el.textContent=String(Math.max(n,0));if(n<=0)closeNow();},1000);
     if(btn)btn.addEventListener("click",closeNow);
   })();`;

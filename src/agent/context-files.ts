@@ -268,10 +268,15 @@ export async function loadProjectContext(cwd = process.cwd()): Promise<ProjectCo
   // Native user files come first in the result so project files later take precedence.
   // Only jeo's own user config applies; foreign-provider user files are excluded (e.g.
   // ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md stay out — only ~/.jeo/* is loaded).
+  //
+  // This is optional: if the user file doesn't exist or is unreadable, we silently skip.
+  // Symlinks are followed (fs.stat resolves them), so ~/.jeo/agent/AGENTS.md can be a link.
   if (home) {
     const userAgentFile = path.join(home, ".jeo", "agent", "AGENTS.md");
     try {
       const stat = await fs.stat(userAgentFile);
+      // Check: must be a regular file (not directory) and non-empty.
+      // fs.stat follows symlinks, so this works transparently with linked files.
       if (stat.isFile() && stat.size > 0) {
         const file = await readContextFile(userAgentFile, "~/.jeo/agent/AGENTS.md", BASE_CONTEXT_CHARS - baseChars);
         if (file) {
@@ -280,7 +285,8 @@ export async function loadProjectContext(cwd = process.cwd()): Promise<ProjectCo
         }
       }
     } catch {
-      // User-global file not found or unreadable; silently skip.
+      // User-global file not found, unreadable, or permission denied; silently continue.
+      // User config is optional; its absence is not an error condition.
     }
   }
   // 1. CWD 및 부모 walk

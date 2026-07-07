@@ -11,6 +11,7 @@
  */
 import { DEFAULT_TOOLS, TOOL_PROTOCOL, READONLY_TOOL_PROTOCOL, WORKING_DISCIPLINE, type ToolHandler } from "./engine";
 import type { Config } from "./state";
+import { strongestCredentialed } from "./prompt-router";
 import architectPrompt from "../prompts/agents/architect.md" with { type: "text" };
 import criticPrompt from "../prompts/agents/critic.md" with { type: "text" };
 import executorPrompt from "../prompts/agents/executor.md" with { type: "text" };
@@ -158,9 +159,39 @@ export function defaultSubagentRole(): SubagentRole {
 export type SubagentConfig = NonNullable<Config["subagents"]>;
 
 /** Per-role model override → falls back to the global default model. */
-export function resolveSubagentModel(roleId: string, config: Pick<Config, "defaultModel" | "subagents">): string {
-  const entry = config.subagents?.[normalizeRoleId(roleId)];
-  return entry?.model || config.defaultModel;
+export function resolveSubagentModel(
+  roleId: string,
+  config: {
+    defaultModel: string;
+    subagents?: Config["subagents"];
+    roles?: Config["roles"];
+    providers?: Config["providers"];
+    oauth?: Config["oauth"];
+  },
+): string {
+  const normalized = normalizeRoleId(roleId);
+  const entry = config.subagents?.[normalized];
+  if (entry?.model) return entry.model;
+
+  if (normalized === "executor") {
+    return config.roles?.xhigh || config.roles?.slow || strongestCredentialed(config) || config.defaultModel;
+  }
+  if (normalized === "architect") {
+    return config.roles?.xhigh || strongestCredentialed(config, m => m.thinking.includes("xhigh") || m.thinking.includes("high")) || config.defaultModel;
+  }
+  if (normalized === "planner") {
+    return config.roles?.high || strongestCredentialed(config) || config.defaultModel;
+  }
+  if (normalized === "critic") {
+    return (
+      config.roles?.medium ||
+      config.roles?.smol ||
+      strongestCredentialed(config, m => m.canonical === "o3-mini") ||
+      strongestCredentialed(config, m => m.canonical === "gemini-2.5-flash") ||
+      config.defaultModel
+    );
+  }
+  return config.defaultModel;
 }
 
 /** Per-role step budget → config override, else the role default, else 15. */

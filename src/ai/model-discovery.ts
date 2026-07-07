@@ -60,7 +60,11 @@ const ANTIGRAVITY_MODEL_DENYLIST = new Set([
 
 function anthropicHeaders(cred: Credential): Record<string, string> {
   if (cred.kind === "oauth") {
-    return { authorization: `Bearer ${cred.token}`, "anthropic-version": "2023-06-01", "anthropic-beta": "oauth-2025-04-20" };
+    // NOTE: The oauth-2025-04-20 beta is for the messages endpoint, not the models endpoint.
+    // The models endpoint does not support this beta, so we omit it here to avoid
+    // potential 400/403 errors. The fallback to catalog ensures Anthropic models
+    // are always available even if the live endpoint fails.
+    return { authorization: `Bearer ${cred.token}`, "anthropic-version": "2023-06-01" };
   }
   if (cred.kind === "api_key") {
     return { "x-api-key": cred.token, "anthropic-version": "2023-06-01" };

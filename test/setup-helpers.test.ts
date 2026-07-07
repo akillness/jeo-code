@@ -19,8 +19,8 @@ test("normalizeBaseUrl defaults, adds scheme, strips trailing slash", () => {
 });
 
 test("chooseDefaultModel: blank → provider's recommended", () => {
-  expect(chooseDefaultModel("", "openai").model).toBe("gpt-4o");
-  expect(chooseDefaultModel("   ", "anthropic").model).toBe("claude-sonnet-4-6");
+  expect(chooseDefaultModel("", "openai").model).toBe("gpt-5.5");
+  expect(chooseDefaultModel("   ", "anthropic").model).toBe("claude-sonnet-5");
 });
 
 test("chooseDefaultModel: known id accepted; provider mismatch warns", () => {
@@ -42,7 +42,7 @@ test("chooseDefaultModel: unknown id accepted with suggestions", () => {
 test("recommendedModelsFor returns annotated id lines", () => {
   const lines = recommendedModelsFor("anthropic", 3);
   expect(lines.length).toBeLessThanOrEqual(3);
-  expect(lines[0]).toContain("claude-sonnet-4-6");
+  expect(lines[0]).toContain("claude-sonnet-5");
   expect(lines[0]).toContain("—"); // note separator
 });
 

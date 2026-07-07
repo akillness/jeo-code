@@ -79,7 +79,7 @@ test("resolveTierModel: high tier falls through to defaultModel when the ONLY cr
   // complex's catalog-wide strongest pick (gpt-5.4).
   const config = credentialedConfig({ providers: { openai: "k2" }, routing: { enabled: true } });
   expect(resolveTierModel("high", config)).toBe(config.defaultModel);
-  expect(resolveTierModel("complex", config)).toBe("gpt-5.4"); // sanity: complex is unaffected
+  expect(resolveTierModel("complex", config)).toBe("gpt-5.5"); // sanity: complex is unaffected (gpt-5.5 is OpenAI's newest catalogued model, correctly wins the recency tiebreak over gpt-5.4)
 });
 
 // --- routing.crossProviderPool: opt-in, purely additive, session-stable ---

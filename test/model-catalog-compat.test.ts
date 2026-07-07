@@ -36,9 +36,9 @@ test("catalogForProvider lists recommended first", () => {
 });
 
 test("recommendedModel returns a recommended id per provider", () => {
-  expect(recommendedModel("anthropic")).toBe("claude-sonnet-4-6");
-  expect(recommendedModel("openai")).toBe("gpt-4o");
-  expect(recommendedModel("gemini")).toBe("gemini-2.0-flash");
+  expect(recommendedModel("anthropic")).toBe("claude-sonnet-5");
+  expect(recommendedModel("openai")).toBe("gpt-5.5");
+  expect(recommendedModel("gemini")).toBe("gemini-3-flash");
 });
 
 test("validateModelId reports known + provider match", () => {

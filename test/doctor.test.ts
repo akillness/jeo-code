@@ -173,7 +173,7 @@ test("runDoctorCommand --json: routing enabled + roles.smol set with a usable cr
       { tier: "trivial", model: "gpt-4o-mini", provider: "openai", source: "configured" },
       { tier: "standard", model: "gpt-4o", provider: "openai", source: "defaultModel" },
       { tier: "high", model: "gpt-4o", provider: "openai", source: "defaultModel" },
-      { tier: "complex", model: "gpt-5.4", provider: "openai", source: "auto-selected: strongest credentialed" },
+      { tier: "complex", model: "gpt-5.5", provider: "openai", source: "auto-selected: strongest credentialed" },
     ],
   });
   expect(report.routing.notes).toBeUndefined();

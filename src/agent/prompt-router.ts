@@ -233,6 +233,21 @@ function sizeClassFor(canonical: string): "small" | "mid" | "large" | null {
 
 const TIER_TO_SIZE_CLASS: Record<PromptTier, "small" | "mid" | "large"> = { trivial: "small", standard: "mid", high: "mid", complex: "large" };
 
+/** Compares `releaseDate` ("YYYY-MM", lexicographically sortable). `>0` when `a`
+ *  is NEWER than `b`. A missing date sorts as OLDEST on that side — an
+ *  unconfirmed date can never silently outrank a verified-newer model. Shared
+ *  recency tiebreak for `compareStrengthAscending`/`cheapestCredentialed`/
+ *  `strongestCredentialed`, replacing the arbitrary alphabetical canonical-id
+ *  tiebreak those used before (which, on a full capability tie, picked the
+ *  OLDEST id alphabetically — e.g. `claude-opus-4-6` beating `claude-opus-4-8`
+ *  as "strongest" purely because "4-6" < "4-8" as a string). */
+function compareRecency(a: CatalogModel, b: CatalogModel): number {
+  if (a.releaseDate === b.releaseDate) return 0;
+  if (!a.releaseDate) return -1;
+  if (!b.releaseDate) return 1;
+  return a.releaseDate < b.releaseDate ? -1 : 1;
+}
+
 /** Multi-key strength comparator (ascending: weakest first) — same ranking signals
  *  as `strongestCredentialed`'s single-winner tiebreak, reused here to bucket
  *  UNCLASSIFIED (no size-suffix) models into a tercile fallback. */
@@ -242,6 +257,8 @@ function compareStrengthAscending(a: CatalogModel, b: CatalogModel): number {
   if (xhighA !== xhighB) return xhighA - xhighB;
   if (a.maxOutputTokens !== b.maxOutputTokens) return a.maxOutputTokens - b.maxOutputTokens;
   if (a.contextTokens !== b.contextTokens) return a.contextTokens - b.contextTokens;
+  const recency = compareRecency(a, b);
+  if (recency !== 0) return recency;
   return a.canonical < b.canonical ? -1 : a.canonical > b.canonical ? 1 : 0;
 }
 
@@ -297,8 +314,10 @@ export function selectFromPool(pool: readonly string[], sessionId: string | unde
 /** Cheapest cloud model jeo has a credential for, computed LIVE off
  *  `MODEL_CATALOG`/`priceForModel` — picks up new/repriced catalog entries
  *  automatically, never a hand-maintained id. `null` when no credentialed
- *  model has a known price (caller falls back to `defaultModel`). Tiebreak:
- *  canonical id (deterministic across otherwise-equal candidates). */
+ *  model has a known price (caller falls back to `defaultModel`). Tiebreak on
+ *  an exact cost tie: NEWER `releaseDate` wins (a same-priced newer model is
+ *  likely a refined successor), then canonical id (deterministic fallback
+ *  when recency also ties or is unconfirmed on both sides). */
 export function cheapestCredentialed(config: RoutingConfig): string | null {
   let best: CatalogModel | null = null;
   let bestCost = Infinity;
@@ -312,9 +331,12 @@ export function cheapestCredentialed(config: RoutingConfig): string | null {
     const price = priceForModel(m.canonical);
     if (!price) continue;
     const cost = price.inPerM + price.outPerM;
-    if (cost < bestCost || (cost === bestCost && best && m.canonical < best.canonical)) {
+    if (cost < bestCost) {
       best = m;
       bestCost = cost;
+    } else if (cost === bestCost && best) {
+      const recency = compareRecency(m, best);
+      if (recency > 0 || (recency === 0 && m.canonical < best.canonical)) best = m;
     }
   }
   return best?.canonical ?? null;
@@ -322,13 +344,16 @@ export function cheapestCredentialed(config: RoutingConfig): string | null {
 
 /** Most capable cloud model jeo has a credential for, computed LIVE off
  *  `MODEL_CATALOG` — ranks by full (xhigh) thinking support first, then max
- *  output tokens, then context window, so a newly catalogued frontier model
- *  is picked up automatically without a hand-maintained id. `null` when no
- *  credentialed model qualifies (caller falls back to `defaultModel`).
- *  Tiebreak: canonical id (deterministic). Excludes `limitedAvailability`
- *  models (e.g. `claude-mythos-5`) — a provider credential doesn't imply
- *  access to a specific invite-only model; explicit `/model`/`routing.tiers`
- *  can still target one by id for approved accounts. */
+ *  output tokens, then context window, then NEWER `releaseDate` (a same-specs
+ *  model with a later release date is presumptively a refined successor — e.g.
+ *  `claude-opus-4-8` over `claude-opus-4-6`, which the OLD alphabetical
+ *  canonical-id tiebreak got backwards, since `"4-6" < "4-8"` picked the
+ *  OLDEST opus as "strongest"), then canonical id (final deterministic
+ *  fallback). `null` when no credentialed model qualifies (caller falls back
+ *  to `defaultModel`). Excludes `limitedAvailability` models (e.g.
+ *  `claude-mythos-5`) — a provider credential doesn't imply access to a
+ *  specific invite-only model; explicit `/model`/`routing.tiers` can still
+ *  target one by id for approved accounts. */
 export function strongestCredentialed(
   config: RoutingConfig,
   filter?: (m: CatalogModel) => boolean
@@ -344,6 +369,8 @@ export function strongestCredentialed(
     if (xhighM !== xhighBest) { if (xhighM > xhighBest) best = m; continue; }
     if (m.maxOutputTokens !== best.maxOutputTokens) { if (m.maxOutputTokens > best.maxOutputTokens) best = m; continue; }
     if (m.contextTokens !== best.contextTokens) { if (m.contextTokens > best.contextTokens) best = m; continue; }
+    const recency = compareRecency(m, best);
+    if (recency !== 0) { if (recency > 0) best = m; continue; }
     if (m.canonical < best.canonical) best = m;
   }
   return best?.canonical ?? null;

@@ -19,10 +19,18 @@ export interface ModelCatalogEntry {
   recommended?: boolean;
   note?: string;
   company?: string;
+  /** Public release date, `"YYYY-MM"` — see `CatalogModel.releaseDate`. Drives
+   *  `catalogForProvider`'s newest-first secondary sort. */
+  releaseDate?: string;
 }
 
-/** Canonical ids that should be surfaced as a provider's recommended default. */
-const RECOMMENDED = new Set(["claude-sonnet-4-6", "gpt-4o", "gemini-2.0-flash", "antigravity/gemini-3-pro-low", "qwen2.5"]);
+/** Canonical ids surfaced as a provider's recommended default — the current
+ *  (2026-07 deep-research verified) general-availability flagship per provider,
+ *  NOT necessarily the single most expensive/most-capable model (e.g. Anthropic's
+ *  actual top tier, claude-fable-5, is pricier than the "recommended" sonnet-5 —
+ *  recommended means "solid everyday default", not "strongest"). Re-verify and
+ *  update whenever a provider ships a new default-tier release. */
+const RECOMMENDED: Record<string, true> = { "claude-sonnet-5": true, "gpt-5.5": true, "gemini-3-flash": true, "antigravity/gpt-5.5": true, "qwen2.5": true };
 
 export function normalizeModelId(id: string): string {
   return (id ?? "").trim().toLowerCase();
@@ -35,9 +43,10 @@ function adapt(m: CatalogModel): ModelCatalogEntry {
     provider: m.provider,
     contextWindow: m.contextTokens,
     reasoning,
-    recommended: RECOMMENDED.has(m.canonical),
+    recommended: !!RECOMMENDED[m.canonical],
     note: `${formatTokens(m.contextTokens)} ctx${reasoning ? ", reasoning" : ""}`,
     company: m.company,
+    releaseDate: m.releaseDate,
   };
 }
 
@@ -50,12 +59,19 @@ export function findCatalogEntry(id: string): ModelCatalogEntry | undefined {
   return hit ? adapt(hit) : undefined;
 }
 
-/** Entries for a provider, recommended first then by id. */
+/** Entries for a provider, recommended first, then NEWEST-FIRST by `releaseDate`
+ *  (undated entries sort last, tiebroken by id) — this is the actual list order
+ *  `/model`'s live picker and `jeo setup`'s recommendation prompt show a user. */
 export function catalogForProvider(provider: ProviderName): ModelCatalogEntry[] {
   return catalogByProvider(provider)
     .map(adapt)
     .sort((a, b) => {
       if (!!b.recommended !== !!a.recommended) return b.recommended ? 1 : -1;
+      if (a.releaseDate !== b.releaseDate) {
+        if (!a.releaseDate) return 1;
+        if (!b.releaseDate) return -1;
+        return b.releaseDate.localeCompare(a.releaseDate);
+      }
       return a.id.localeCompare(b.id);
     });
 }

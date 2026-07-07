@@ -36,35 +36,59 @@ export interface CatalogModel {
    *  selection) excludes these; explicit `/model` or `routing.tiers.*.model`
    *  can still target them by id for approved accounts. */
   limitedAvailability?: boolean;
+  /** Public release date, `"YYYY-MM"` (lexicographically sortable) — deep-research
+   *  sourced from each provider's own announcement. Drives newest-first catalog
+   *  ordering and recency-based tiebreaks in prompt-router.ts's ranking functions
+   *  (`compareStrengthAscending`, `cheapestCredentialed`, `strongestCredentialed`)
+   *  so a genuinely newer same-tier model wins a tie instead of an arbitrary
+   *  alphabetical pick. Omitted (undefined) for ids with no confirmed public
+   *  date — these sort AFTER every dated entry within their block, never before,
+   *  so an unconfirmed date can never silently outrank a verified-newer model. */
+  releaseDate?: string;
 }
 
 const FULL: ThinkLevel[] = ["low", "medium", "high", "xhigh"];
 const STD: ThinkLevel[] = ["low", "medium", "high"];
 
+// [canonical model id, release YYYY-MM] tuples, deep-research sourced (Anthropic/
+// OpenAI/Google base-model announcement dates — antigravity is a hosting layer over
+// the SAME underlying models, not a separate release). Newest-first per family below;
+// -thinking/-high/-low suffixes are reasoning-effort variants of the SAME release.
 export const ANTIGRAVITY_MODELS = [
-  "claude-opus-4-6-thinking",
-  "claude-opus-4-7",
-  "claude-opus-4-7-thinking",
-  "claude-opus-4-8",
-  "claude-opus-4-8-thinking",
-  "claude-sonnet-4-6",
-  "claude-sonnet-4-6-thinking",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-thinking",
-  "gemini-2.5-pro",
-  "gemini-3-flash",
-  "gemini-3-pro-high",
-  "gemini-3-pro-low",
-  "gemini-3.1-pro-high",
-  "gemini-3.1-pro-low",
-  "gpt-oss-120b-medium",
-  "gpt-5.5",
+  ["gpt-5.5", "2026-04"],
+  ["gemini-3.1-pro-high", "2026-02"],
+  ["gemini-3.1-pro-low", "2026-02"],
+  ["claude-opus-4-8", "2026-05"],
+  ["claude-opus-4-8-thinking", "2026-05"],
+  ["claude-opus-4-7", "2026-04"],
+  ["claude-opus-4-7-thinking", "2026-04"],
+  ["claude-sonnet-4-6", "2026-02"],
+  ["claude-sonnet-4-6-thinking", "2026-02"],
+  ["claude-opus-4-6-thinking", "2026-02"],
+  ["gemini-3-flash", "2025-12"],
+  ["gemini-3-pro-high", "2025-11"],
+  ["gemini-3-pro-low", "2025-11"],
+  ["gpt-oss-120b-medium", "2025-08"],
+  ["gemini-2.5-flash", "2025-06"],
+  ["gemini-2.5-flash-thinking", "2025-06"],
+  ["gemini-2.5-pro", "2025-03"],
 ] as const;
 
-/** A curated set of common public models with their documented capabilities. */
+/** A curated set of common public models with their documented capabilities.
+ *  Ordered NEWEST-FIRST within each provider block per `releaseDate`
+ *  (deep-research sourced from each provider's own announcement — see the
+ *  v0.7.58 CHANGELOG entry for the full per-model source list). Purely for
+ *  human readability / "what's current" at a glance — routing correctness
+ *  does not depend on array order: `prompt-router.ts`'s ranking functions
+ *  (`cheapestCredentialed`/`strongestCredentialed`/`compareStrengthAscending`)
+ *  now tiebreak on `releaseDate` directly rather than relying on position. */
 export const MODEL_CATALOG: readonly CatalogModel[] = [
-  // Anthropic
-  { canonical: "claude-haiku-4-5", provider: "anthropic", providerModel: "claude-haiku-4-5-20251001", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
+  // Anthropic (newest first: sonnet-5 > fable-5 > opus-4-8 > opus-4-7 > sonnet-4-6 > opus-4-6 > haiku-4-5)
+  { canonical: "claude-sonnet-5", provider: "anthropic", providerModel: "claude-sonnet-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-06" },
+  // Fable 5 = Anthropic's most capable widely-released model (adaptive thinking always on);
+  // Mythos 5 is limited-availability (Project Glasswing) but callable by id for approved accounts.
+  { canonical: "claude-fable-5", provider: "anthropic", providerModel: "claude-fable-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-06" },
+  { canonical: "claude-mythos-5", provider: "anthropic", providerModel: "claude-mythos-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, limitedAvailability: true, releaseDate: "2026-06" },
   // NOTE: opus 4.6+ use Anthropic ADAPTIVE thinking (type:"adaptive" + output_config.effort).
   // opus 4.7/4.8 OMIT visible thought unless the request opts into `display: "summarized"` —
   // anthropic.ts sets that on the adaptive transport so reasoning streams again (gjc parity).
@@ -72,50 +96,54 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   // The 4.6 generation onward is 1M context / 128k sync max output (Anthropic docs:
   // Opus 4.8 & Sonnet 5 comparison table; Opus 4.6/4.7, Sonnet 4.6 share the gen's
   // dateless-snapshot 1M/128k + 300k batch-output beta). Dated pre-4.6 ids keep 200k/64k.
-  { canonical: "claude-opus-4-6", provider: "anthropic", providerModel: "claude-opus-4-6", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
-  { canonical: "claude-opus-4-7", provider: "anthropic", providerModel: "claude-opus-4-7", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
-  { canonical: "claude-opus-4-8", provider: "anthropic", providerModel: "claude-opus-4-8", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
-  { canonical: "claude-sonnet-4-6", provider: "anthropic", providerModel: "claude-sonnet-4-6", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
-  { canonical: "claude-sonnet-5", provider: "anthropic", providerModel: "claude-sonnet-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
-  // Fable 5 = Anthropic's most capable widely-released model (adaptive thinking always on);
-  // Mythos 5 is limited-availability (Project Glasswing) but callable by id for approved accounts.
-  { canonical: "claude-fable-5", provider: "anthropic", providerModel: "claude-fable-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
-  { canonical: "claude-mythos-5", provider: "anthropic", providerModel: "claude-mythos-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, limitedAvailability: true },
-  // OpenAI
-  { canonical: "gpt-4o", provider: "openai", providerModel: "gpt-4o", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true },
-  { canonical: "gpt-4o-mini", provider: "openai", providerModel: "gpt-4o-mini", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true },
-  { canonical: "gpt-4.1", provider: "openai", providerModel: "gpt-4.1", contextTokens: 1_000_000, maxOutputTokens: 32_768, thinking: [], images: true },
-  { canonical: "o3", provider: "openai", providerModel: "o3", contextTokens: 200_000, maxOutputTokens: 100_000, thinking: STD, images: true },
-  { canonical: "o3-mini", provider: "openai", providerModel: "o3-mini", contextTokens: 200_000, maxOutputTokens: 100_000, thinking: STD, images: false },
-  { canonical: "o4-mini", provider: "openai", providerModel: "o4-mini", contextTokens: 200_000, maxOutputTokens: 100_000, thinking: STD, images: true },
-  { canonical: "gpt-5.5", provider: "openai", providerModel: "gpt-5.5", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
-  { canonical: "gpt-5.4", provider: "openai", providerModel: "gpt-5.4", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
-  // xAI (Grok) — OpenAI-compatible at https://api.x.ai/v1 (XAI_API_KEY)
-  { canonical: "grok-4.3", provider: "xai", providerModel: "grok-4.3", contextTokens: 256_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
-  { canonical: "grok-4-fast-reasoning", provider: "xai", providerModel: "grok-4-fast-reasoning", contextTokens: 2_000_000, maxOutputTokens: 64_000, thinking: FULL, images: true },
-  { canonical: "grok-4-fast-non-reasoning", provider: "xai", providerModel: "grok-4-fast-non-reasoning", contextTokens: 2_000_000, maxOutputTokens: 64_000, thinking: [], images: true },
-  { canonical: "grok-code-fast-1", provider: "xai", providerModel: "grok-code-fast-1", contextTokens: 256_000, maxOutputTokens: 64_000, thinking: FULL, images: false },
-  // Kimi (Moonshot) — OpenAI-compatible at https://api.moonshot.ai/v1 (KIMI_API_KEY)
-  { canonical: "kimi-k2-0711-preview", provider: "kimi", providerModel: "kimi-k2-0711-preview", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: false },
-  { canonical: "kimi-thinking-preview", provider: "kimi", providerModel: "kimi-thinking-preview", contextTokens: 128_000, maxOutputTokens: 32_000, thinking: FULL, images: true },
-  { canonical: "kimi-latest", provider: "kimi", providerModel: "kimi-latest", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true },
-  { canonical: "moonshot-v1-128k", provider: "kimi", providerModel: "moonshot-v1-128k", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: false },
+  { canonical: "claude-opus-4-8", provider: "anthropic", providerModel: "claude-opus-4-8", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-05" },
+  { canonical: "claude-opus-4-7", provider: "anthropic", providerModel: "claude-opus-4-7", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-04" },
+  { canonical: "claude-sonnet-4-6", provider: "anthropic", providerModel: "claude-sonnet-4-6", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-02" },
+  { canonical: "claude-opus-4-6", provider: "anthropic", providerModel: "claude-opus-4-6", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-02" },
+  { canonical: "claude-haiku-4-5", provider: "anthropic", providerModel: "claude-haiku-4-5-20251001", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true, releaseDate: "2025-10" },
+  // OpenAI (newest first: gpt-5.5 > gpt-5.4 > o4-mini/o3/gpt-4.1 > o3-mini > gpt-4o-mini > gpt-4o)
+  { canonical: "gpt-5.5", provider: "openai", providerModel: "gpt-5.5", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-04" },
+  { canonical: "gpt-5.4", provider: "openai", providerModel: "gpt-5.4", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-03" },
+  { canonical: "o4-mini", provider: "openai", providerModel: "o4-mini", contextTokens: 200_000, maxOutputTokens: 100_000, thinking: STD, images: true, releaseDate: "2025-04" },
+  { canonical: "o3", provider: "openai", providerModel: "o3", contextTokens: 200_000, maxOutputTokens: 100_000, thinking: STD, images: true, releaseDate: "2025-04" },
+  { canonical: "gpt-4.1", provider: "openai", providerModel: "gpt-4.1", contextTokens: 1_000_000, maxOutputTokens: 32_768, thinking: [], images: true, releaseDate: "2025-04" },
+  { canonical: "o3-mini", provider: "openai", providerModel: "o3-mini", contextTokens: 200_000, maxOutputTokens: 100_000, thinking: STD, images: false, releaseDate: "2025-01" },
+  { canonical: "gpt-4o-mini", provider: "openai", providerModel: "gpt-4o-mini", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true, releaseDate: "2024-07" },
+  { canonical: "gpt-4o", provider: "openai", providerModel: "gpt-4o", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true, releaseDate: "2024-05" },
+  // xAI (Grok) — OpenAI-compatible at https://api.x.ai/v1 (XAI_API_KEY). Newest first.
+  { canonical: "grok-4.3", provider: "xai", providerModel: "grok-4.3", contextTokens: 256_000, maxOutputTokens: 64_000, thinking: FULL, images: true, releaseDate: "2026-04" },
+  { canonical: "grok-4-fast-reasoning", provider: "xai", providerModel: "grok-4-fast-reasoning", contextTokens: 2_000_000, maxOutputTokens: 64_000, thinking: FULL, images: true, releaseDate: "2025-09" },
+  { canonical: "grok-4-fast-non-reasoning", provider: "xai", providerModel: "grok-4-fast-non-reasoning", contextTokens: 2_000_000, maxOutputTokens: 64_000, thinking: [], images: true, releaseDate: "2025-09" },
+  { canonical: "grok-code-fast-1", provider: "xai", providerModel: "grok-code-fast-1", contextTokens: 256_000, maxOutputTokens: 64_000, thinking: FULL, images: false, releaseDate: "2025-08" },
+  // Kimi (Moonshot) — OpenAI-compatible at https://api.moonshot.ai/v1 (KIMI_API_KEY). Newest first.
+  { canonical: "kimi-k2-0711-preview", provider: "kimi", providerModel: "kimi-k2-0711-preview", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: false, releaseDate: "2025-07" },
+  { canonical: "kimi-thinking-preview", provider: "kimi", providerModel: "kimi-thinking-preview", contextTokens: 128_000, maxOutputTokens: 32_000, thinking: FULL, images: true, releaseDate: "2025-05" },
+  { canonical: "kimi-latest", provider: "kimi", providerModel: "kimi-latest", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true, releaseDate: "2025-02" },
+  { canonical: "moonshot-v1-128k", provider: "kimi", providerModel: "moonshot-v1-128k", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: false, releaseDate: "2024-01" },
   // Kimi Code (Moonshot coding subscription, device-code OAuth) — Anthropic-compatible
   // at https://api.kimi.com/coding. Provider-qualified (`kimi/…`) to avoid canonical
   // collisions (kimi-k2.5 also exists under tencent). gjc catalog parity: kimi-code.
-  { canonical: "kimi-for-coding", provider: "kimi", providerModel: "kimi/kimi-for-coding", contextTokens: 262_144, maxOutputTokens: 32_000, thinking: FULL, images: true, company: "Moonshot (Kimi Code)" },
-  { canonical: "kimi-k2.7-code", provider: "kimi", providerModel: "kimi/kimi-k2.7-code", contextTokens: 262_144, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Moonshot (Kimi Code)" },
-  { canonical: "kimi/kimi-k2.5", provider: "kimi", providerModel: "kimi/kimi-k2.5", contextTokens: 262_144, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Moonshot (Kimi Code)" },
-  { canonical: "kimi/kimi-k2-turbo-preview", provider: "kimi", providerModel: "kimi/kimi-k2-turbo-preview", contextTokens: 262_144, maxOutputTokens: 32_000, thinking: FULL, images: false, company: "Moonshot (Kimi Code)" },
-  { canonical: "kimi/kimi-k2", provider: "kimi", providerModel: "kimi/kimi-k2", contextTokens: 262_144, maxOutputTokens: 262_144, thinking: [], images: false, company: "Moonshot (Kimi Code)" },
-  // Google
-  { canonical: "gemini-1.5-pro", provider: "gemini", providerModel: "gemini-1.5-pro", contextTokens: 1_000_000, maxOutputTokens: 8_192, thinking: [], images: true },
-  { canonical: "gemini-2.0-flash", provider: "gemini", providerModel: "gemini-2.0-flash", contextTokens: 1_000_000, maxOutputTokens: 8_192, thinking: [], images: true },
-  { canonical: "gemini-2.5-flash", provider: "gemini", providerModel: "gemini-2.5-flash", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true },
-  { canonical: "gemini-2.5-pro", provider: "gemini", providerModel: "gemini-2.5-pro", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true },
+  // Newest first.
+  { canonical: "kimi-k2.7-code", provider: "kimi", providerModel: "kimi/kimi-k2.7-code", contextTokens: 262_144, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Moonshot (Kimi Code)", releaseDate: "2026-06" },
+  { canonical: "kimi-for-coding", provider: "kimi", providerModel: "kimi/kimi-for-coding", contextTokens: 262_144, maxOutputTokens: 32_000, thinking: FULL, images: true, company: "Moonshot (Kimi Code)", releaseDate: "2026-01" }, // [INFERENCE] alias-registration date approximated from Kimi CLI's 2026-01 launch — no primary-source changelog entry found
+  { canonical: "kimi/kimi-k2.5", provider: "kimi", providerModel: "kimi/kimi-k2.5", contextTokens: 262_144, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Moonshot (Kimi Code)", releaseDate: "2026-01" },
+  { canonical: "kimi/kimi-k2-turbo-preview", provider: "kimi", providerModel: "kimi/kimi-k2-turbo-preview", contextTokens: 262_144, maxOutputTokens: 32_000, thinking: FULL, images: false, company: "Moonshot (Kimi Code)", releaseDate: "2025-08" },
+  { canonical: "kimi/kimi-k2", provider: "kimi", providerModel: "kimi/kimi-k2", contextTokens: 262_144, maxOutputTokens: 262_144, thinking: [], images: false, company: "Moonshot (Kimi Code)", releaseDate: "2025-07" },
+  // Google (newest first: gemini-3.1-pro > gemini-3-* > gemini-2.5-* > gemini-2.0-flash > gemini-1.5-pro)
+  { canonical: "gemini-3.1-pro-high", provider: "gemini", providerModel: "gemini-3.1-pro-high", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, releaseDate: "2026-02" },
+  { canonical: "gemini-3.1-pro-low", provider: "gemini", providerModel: "gemini-3.1-pro-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, releaseDate: "2026-02" },
+  { canonical: "gemini-3-flash", provider: "gemini", providerModel: "gemini-3-flash", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, releaseDate: "2025-12" },
+  { canonical: "gemini-3-pro-high", provider: "gemini", providerModel: "gemini-3-pro-high", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, releaseDate: "2025-11" },
+  { canonical: "gemini-3-pro-low", provider: "gemini", providerModel: "gemini-3-pro-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, releaseDate: "2025-11" },
+  { canonical: "gemini-2.5-flash", provider: "gemini", providerModel: "gemini-2.5-flash", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, releaseDate: "2025-06" },
+  { canonical: "gemini-2.5-pro", provider: "gemini", providerModel: "gemini-2.5-pro", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, releaseDate: "2025-03" },
+  { canonical: "gemini-2.0-flash", provider: "gemini", providerModel: "gemini-2.0-flash", contextTokens: 1_000_000, maxOutputTokens: 8_192, thinking: [], images: true, releaseDate: "2025-02" },
+  { canonical: "gemini-1.5-pro", provider: "gemini", providerModel: "gemini-1.5-pro", contextTokens: 1_000_000, maxOutputTokens: 8_192, thinking: [], images: true, releaseDate: "2024-02" },
   // Google Antigravity / Gemini CLI (Cloud Code Assist) — provider-qualified to avoid
-  // collisions with public Gemini, Anthropic, and OpenAI/Codex ids.
-  ...ANTIGRAVITY_MODELS.map((id): CatalogModel => ({
+  // collisions with public Gemini, Anthropic, and OpenAI/Codex ids. A hosting layer
+  // over the SAME underlying models researched above, not a separate release —
+  // releaseDate comes from the [id, date] tuple, not re-derived.
+  ...ANTIGRAVITY_MODELS.map(([id, releaseDate]): CatalogModel => ({
     canonical: `antigravity/${id}`,
     provider: "antigravity",
     providerModel: id,
@@ -124,31 +152,30 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
     thinking: id.includes("thinking") || id.includes("-high") || id.includes("-low") || id.includes("gemini-3") || id.startsWith("gpt-5") ? FULL : STD,
     images: !id.includes("gpt-oss"),
     company: id.includes("claude") ? "Anthropic via Antigravity" : id.includes("gpt") ? "OpenAI via Antigravity" : "Google Antigravity",
+    releaseDate,
   })),
-  // Tencent
-  // Tencent — DeepSeek
-  { canonical: "deepseek-v4-pro", provider: "tencent", providerModel: "deepseek-v4-pro", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
-  { canonical: "deepseek-v4-pro-202606", provider: "tencent", providerModel: "deepseek-v4-pro-202606", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
-  { canonical: "deepseek-v4-flash", provider: "tencent", providerModel: "deepseek-v4-flash", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
-  { canonical: "deepseek-v4-flash-202605", provider: "tencent", providerModel: "deepseek-v4-flash-202605", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
-  { canonical: "deepseek-v3.2", provider: "tencent", providerModel: "deepseek-v3.2", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
-  // Tencent — MiniMax
-  { canonical: "minimax-m3", provider: "tencent", providerModel: "minimax-m3", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
-  { canonical: "minimax-m2.7", provider: "tencent", providerModel: "minimax-m2.7", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
-  { canonical: "minimax-m2.5", provider: "tencent", providerModel: "minimax-m2.5", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
-  // Tencent — Zhipu GLM
-  { canonical: "glm-5.2", provider: "tencent", providerModel: "glm-5.2", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
-  { canonical: "glm-5.1", provider: "tencent", providerModel: "glm-5.1", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
-  { canonical: "glm-5", provider: "tencent", providerModel: "glm-5", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
-  { canonical: "glm-5-turbo", provider: "tencent", providerModel: "glm-5-turbo", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
-  { canonical: "glm-5v-turbo", provider: "tencent", providerModel: "glm-5v-turbo", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: true, company: "Tencent" },
-  // Tencent — Moonshot Kimi
-  { canonical: "kimi-k2.6", provider: "tencent", providerModel: "kimi-k2.6", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
-  { canonical: "kimi-k2.5", provider: "tencent", providerModel: "kimi-k2.5", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent" },
-  // Tencent — Hunyuan MT
-  { canonical: "hy-mt2-plus", provider: "tencent", providerModel: "hy-mt2-plus", contextTokens: 128_000, maxOutputTokens: 8192, thinking: STD, images: false, company: "Tencent" },
+  // Tencent — hosts the same underlying models under its own cloud brand; dates
+  // below are the ORIGINAL developer's release (DeepSeek/MiniMax/Zhipu/Moonshot),
+  // not Tencent's hosting-catalog appearance date, except where the id itself pins
+  // a Tencent-specific snapshot (the two `-2026XX` suffixed DeepSeek ids). Newest first overall.
+  { canonical: "glm-5.2", provider: "tencent", providerModel: "glm-5.2", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-06" },
+  { canonical: "hy-mt2-plus", provider: "tencent", providerModel: "hy-mt2-plus", contextTokens: 128_000, maxOutputTokens: 8192, thinking: STD, images: false, company: "Tencent", releaseDate: "2026-06" },
+  { canonical: "deepseek-v4-pro-202606", provider: "tencent", providerModel: "deepseek-v4-pro-202606", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-06" },
+  { canonical: "minimax-m3", provider: "tencent", providerModel: "minimax-m3", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-06" },
+  { canonical: "deepseek-v4-flash-202605", provider: "tencent", providerModel: "deepseek-v4-flash-202605", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-05" },
+  { canonical: "glm-5v-turbo", provider: "tencent", providerModel: "glm-5v-turbo", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: true, company: "Tencent", releaseDate: "2026-04" },
+  { canonical: "deepseek-v4-pro", provider: "tencent", providerModel: "deepseek-v4-pro", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-04" },
+  { canonical: "deepseek-v4-flash", provider: "tencent", providerModel: "deepseek-v4-flash", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-04" },
+  { canonical: "kimi-k2.6", provider: "tencent", providerModel: "kimi-k2.6", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-04" },
+  { canonical: "minimax-m2.7", provider: "tencent", providerModel: "minimax-m2.7", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-03" },
+  { canonical: "glm-5.1", provider: "tencent", providerModel: "glm-5.1", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-03" },
+  { canonical: "glm-5-turbo", provider: "tencent", providerModel: "glm-5-turbo", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-03" },
+  { canonical: "minimax-m2.5", provider: "tencent", providerModel: "minimax-m2.5", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-02" },
+  { canonical: "glm-5", provider: "tencent", providerModel: "glm-5", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-02" },
+  { canonical: "kimi-k2.5", provider: "tencent", providerModel: "kimi-k2.5", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2026-01" },
+  { canonical: "deepseek-v3.2", provider: "tencent", providerModel: "deepseek-v3.2", contextTokens: 128_000, maxOutputTokens: 8192, thinking: FULL, images: false, company: "Tencent", releaseDate: "2025-12" },
   // Ollama (local)
-  { canonical: "qwen2.5", provider: "ollama", providerModel: "ollama/qwen2.5:0.5b", contextTokens: 32_768, maxOutputTokens: 8_192, thinking: [], images: false },
+  { canonical: "qwen2.5", provider: "ollama", providerModel: "ollama/qwen2.5:0.5b", contextTokens: 32_768, maxOutputTokens: 8_192, thinking: [], images: false, releaseDate: "2024-09" },
 ];
 
 /**

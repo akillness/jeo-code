@@ -458,7 +458,7 @@ test("resolveTierModel auto-select constrains candidates to ONLY credentialed pr
     config,
   )) as RouteDecision;
   expect(trivial.model).toBe("gpt-4o-mini"); // cheapest OpenAI-catalogued model
-  expect(complex.model).toBe("gpt-5.4"); // strongest OpenAI-catalogued model
+  expect(complex.model).toBe("gpt-5.5"); // strongest OpenAI-catalogued model (recency tiebreak: 2026-04 beats gpt-5.4's 2026-03)
   expect(trivial.model).not.toContain("claude");
   expect(trivial.model).not.toContain("gemini");
   expect(complex.model).not.toContain("claude");

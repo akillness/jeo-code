@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.58] - 2026-07-07
+_Applied the previous entry's `routing.crossProviderPool` to the real live session config, then deep-researched every catalogued model's actual public release date (2026-07 sourced, per-provider parallel research with citations) to answer "모델 설정은 2026년도 기준으로 딥서치해서 모델리스트 최신순으로 정렬" — while researching, found and fixed a genuine ranking bug this surfaced: `strongestCredentialed`'s tiebreak on a full capability tie (identical thinking/output/context) fell through to a raw alphabetical canonical-id compare, which silently picked the OLDEST model in a same-spec family (`claude-opus-4-6` over `claude-opus-4-7`/`4-8`, purely because `"4-6" < "4-8"` as a string) — confirmed reproducible before the fix, confirmed corrected after._
+
+### Added
+- **`CatalogModel.releaseDate`** (`"YYYY-MM"`) on every catalog entry — deep-research sourced from each provider's own announcement (Anthropic/OpenAI/Google/xAI/Moonshot direct web_search per family; Tencent-hosted rebrands (DeepSeek/MiniMax/Zhipu GLM/Hunyuan) traced to the ORIGINAL developer's release, not Tencent's hosting-catalog appearance date). `gpt-5.4-mini` was never added to the catalog — confirmed absent both before and after this pass, per explicit request.
+
+### Changed
+- **`MODEL_CATALOG` reordered newest-first within every provider block** for human readability (routing correctness never depended on array order — the ranking functions below now sort/tiebreak explicitly).
+- **Recency tiebreak replaces the arbitrary alphabetical one** in `cheapestCredentialed`/`strongestCredentialed`/`compareStrengthAscending` (`src/agent/prompt-router.ts`) — on an exact capability/cost tie, the NEWER `releaseDate` now wins (a missing date always sorts as oldest, so an unconfirmed date can never silently outrank a verified-newer model). Fixes the confirmed opus-4-6/4-7/4-8 bug above.
+- **`catalogForProvider`'s secondary sort** (`src/ai/model-catalog-compat.ts`) now orders by `releaseDate` (newest first) instead of alphabetical id — this is the actual list order `/model`'s live picker and `jeo setup` show a user, so "정렬" now reaches the real user-facing surface, not just the raw catalog array.
+- **`RECOMMENDED` provider defaults refreshed** to the current (2026-07) general-availability flagship per provider: `claude-sonnet-5` (was `claude-sonnet-4-6`), `gpt-5.5` (was `gpt-4o`), `gemini-3-flash` (was `gemini-2.0-flash`), `antigravity/gpt-5.5` (was `antigravity/gemini-3-pro-low`).
+
+### Verified
+- `bun run typecheck` clean; full suite 2710/2710 pass across 281 files (1 pre-existing unrelated flaky test — `session.test.ts`'s global-`JSON.parse`-mock count assertion, confirmed passing in isolation and on rerun — not a regression from this change).
+- Live-executed the exact reported bug before AND after the fix: `strongestCredentialed(anthropicOnlyConfig, m => m.canonical.startsWith("claude-opus"))` returned `claude-opus-4-6` (oldest) before, `claude-opus-4-8` (newest, correct) after.
+- Re-applied `routing.crossProviderPool: true` to the live user config (a concurrent interactive session had reset it via an unrelated `/model` command mid-turn) and reconfirmed via `jeo doctor`: all 4 tiers correctly resolve through the cross-provider pool across anthropic/gemini/antigravity.
+
 ## [0.7.57] - 2026-07-07
 _"동급모델간 크로스 프로바이더 라우팅이 동작하게 개선" — v0.7.56's tier auto-select was single-winner by design (always the one cheapest/strongest model), so a user with `roles.smol` pinned (or simply multiple credentialed providers) never saw actual distribution across equivalent-class models. Deep-research-informed redesign: production LLM routers (LiteLLM, Bifrost/VoidLLM) model this as a named "model group" spanning provider deployments with a distribution strategy, not a single deterministic pick — jeo now supports both, opt-in._
 

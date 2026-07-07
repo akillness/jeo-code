@@ -135,6 +135,11 @@ test("runDoctorCommand --json: routing enabled + roles.smol unset -> note presen
   expect(report.routing).toEqual({
     enabled: true,
     smolConfigured: false,
+    preview: [
+      { tier: "trivial", model: "gpt-4o", provider: "openai", source: "defaultModel" },
+      { tier: "standard", model: "gpt-4o", provider: "openai", source: "defaultModel" },
+      { tier: "complex", model: "gpt-4o", provider: "openai", source: "defaultModel" },
+    ],
     notes: [expect.stringContaining("roles.smol is unset")],
   });
   expect(report.routing.notes[0]).toContain("LLM escalation");
@@ -160,7 +165,15 @@ test("runDoctorCommand --json: routing enabled + roles.smol set with a usable cr
   }
 
   const report = JSON.parse(lines.join("\n"));
-  expect(report.routing).toEqual({ enabled: true, smolConfigured: true });
+  expect(report.routing).toEqual({
+    enabled: true,
+    smolConfigured: true,
+    preview: [
+      { tier: "trivial", model: "gpt-4o-mini", provider: "openai", source: "configured" },
+      { tier: "standard", model: "gpt-4o", provider: "openai", source: "defaultModel" },
+      { tier: "complex", model: "gpt-5.4", provider: "openai", source: "auto-selected: strongest credentialed" },
+    ],
+  });
   expect(report.routing.notes).toBeUndefined();
 });
 
@@ -264,4 +277,61 @@ test("runDoctorCommand (human output): routing off prints no [routing] block at 
   }
 
   expect(lines.join("\n")).not.toContain("[routing]");
+});
+
+test("runDoctorCommand --json: routing preview auto-selects DIFFERENT providers per tier when multiple providers are credentialed (cross-provider split, v0.7.56)", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
+    providers: { anthropic: "sk-ant-test", openai: "sk-openai-test", gemini: "sk-gemini-test" },
+    defaultModel: "claude-sonnet-4-6",
+    routing: { enabled: true },
+    // No roles.smol/roles.slow, no routing.tiers — every tier's model comes from auto-select.
+  }));
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => lines.push(a.join(" "));
+  try {
+    const { runDoctorCommand } = await import("../src/commands/doctor");
+    await runDoctorCommand(["--json"]);
+  } finally {
+    console.log = orig;
+  }
+
+  const report = JSON.parse(lines.join("\n"));
+  const byTier = Object.fromEntries(report.routing.preview.map((p: { tier: string }) => [p.tier, p]));
+  expect(byTier.trivial).toEqual({ tier: "trivial", model: "gemini-2.0-flash", provider: "gemini", source: "auto-selected: cheapest credentialed" });
+  expect(byTier.standard).toEqual({ tier: "standard", model: "claude-sonnet-4-6", provider: "anthropic", source: "defaultModel" });
+  expect(byTier.complex).toEqual({ tier: "complex", model: "claude-fable-5", provider: "anthropic", source: "auto-selected: strongest credentialed" });
+  // The actual point of this feature: trivial and complex land on DIFFERENT providers
+  // than each other (and standard), proving the split is real, not a same-provider no-op.
+  expect(byTier.trivial.provider).not.toBe(byTier.complex.provider);
+});
+
+test("runDoctorCommand (human output): routing preview prints tier -> model (provider) [source] lines for all 3 tiers", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
+    providers: { anthropic: "sk-ant-test", gemini: "sk-gemini-test" },
+    defaultModel: "claude-sonnet-4-6",
+    routing: { enabled: true },
+  }));
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => lines.push(a.join(" "));
+  try {
+    const { runDoctorCommand } = await import("../src/commands/doctor");
+    await runDoctorCommand([]);
+  } finally {
+    console.log = orig;
+  }
+
+  const output = lines.join("\n");
+  expect(output).toContain("Routing preview");
+  expect(output).toContain("trivial");
+  expect(output).toContain("gemini-2.0-flash");
+  expect(output).toContain("complex");
+  expect(output).toContain("claude-fable-5");
+  expect(output).toContain("auto-selected: cheapest credentialed");
+  expect(output).toContain("auto-selected: strongest credentialed");
 });

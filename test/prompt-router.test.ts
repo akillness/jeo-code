@@ -401,3 +401,106 @@ test("deriveCacheSessionKey: embeds both sessionId and model verbatim (no hashin
   const key = deriveCacheSessionKey("sess-abc", "gpt-5.5");
   expect(key).toBe("sess-abc:gpt-5.5");
 });
+
+// --- Cross-provider auto-select (long-term fix for catalog drift: trivial/complex
+// tiers pick the cheapest/strongest CREDENTIALED model LIVE off MODEL_CATALOG when
+// unconfigured, instead of collapsing to defaultModel — see prompt-router.ts's
+// cheapestCredentialed/strongestCredentialed). ---
+
+function credentialedConfig(overrides: Partial<Config> = {}): Config {
+  return {
+    providers: {},
+    defaultModel: "claude-sonnet-4-6",
+    ...overrides,
+  } as Config;
+}
+
+test("resolveTierModel (via routePrompt) auto-select: trivial tier picks the CHEAPEST credentialed model across multiple providers, not defaultModel", async () => {
+  const { routePrompt } = await import("../src/agent/prompt-router");
+  const config = credentialedConfig({
+    providers: { anthropic: "k1", openai: "k2", gemini: "k3" },
+    routing: { enabled: true },
+  });
+  const decision = (await routePrompt("what is this?", config)) as RouteDecision;
+  expect(decision).not.toBeNull();
+  expect(decision.tier).toBe("trivial");
+  // gemini-2.0-flash: $0.1/$0.4 per 1M — cheapest of anthropic+openai+gemini's catalogued models.
+  expect(decision.model).toBe("gemini-2.0-flash");
+});
+
+test("resolveTierModel (via routePrompt) auto-select: complex tier picks the STRONGEST credentialed model across multiple providers, not defaultModel", async () => {
+  const { routePrompt } = await import("../src/agent/prompt-router");
+  const config = credentialedConfig({
+    providers: { anthropic: "k1", openai: "k2", gemini: "k3" },
+    routing: { enabled: true },
+  });
+  const decision = (await routePrompt(
+    "Can you investigate and diagnose the root cause across src/agent/loop.ts and src/agent/engine.ts?",
+    config,
+  )) as RouteDecision;
+  expect(decision).not.toBeNull();
+  expect(decision.tier).toBe("complex");
+  // claude-fable-5: xhigh thinking + 128k output + 1M context — strongest catalogued
+  // credentialed model (matches current external agentic-benchmark leadership).
+  expect(decision.model).toBe("claude-fable-5");
+});
+
+test("resolveTierModel auto-select constrains candidates to ONLY credentialed providers (single-provider config never cross-selects an uncredentialed provider's model)", async () => {
+  const { routePrompt } = await import("../src/agent/prompt-router");
+  const config = credentialedConfig({ providers: { openai: "k2" }, routing: { enabled: true } });
+  const trivial = (await routePrompt("what is this?", config)) as RouteDecision;
+  const complex = (await routePrompt(
+    "Can you investigate and diagnose the root cause across src/agent/loop.ts and src/agent/engine.ts?",
+    config,
+  )) as RouteDecision;
+  expect(trivial.model).toBe("gpt-4o-mini"); // cheapest OpenAI-catalogued model
+  expect(complex.model).toBe("gpt-5.4"); // strongest OpenAI-catalogued model
+  expect(trivial.model).not.toContain("claude");
+  expect(trivial.model).not.toContain("gemini");
+  expect(complex.model).not.toContain("claude");
+  expect(complex.model).not.toContain("gemini");
+});
+
+test("resolveTierModel auto-select: explicit routing.tiers.*.model still wins over auto-select (user override never bypassed)", async () => {
+  const { routePrompt } = await import("../src/agent/prompt-router");
+  const config = credentialedConfig({
+    providers: { anthropic: "k1", openai: "k2", gemini: "k3" },
+    routing: { enabled: true, tiers: { trivial: { model: "gpt-4o" } } },
+  });
+  const decision = (await routePrompt("what is this?", config)) as RouteDecision;
+  expect(decision.model).toBe("gpt-4o"); // explicit config, NOT the auto-selected gemini-2.0-flash
+});
+
+test("resolveTierModel auto-select: legacy roles.smol/roles.slow still win over auto-select (backward compat with pre-existing role-tier setups)", async () => {
+  const { routePrompt } = await import("../src/agent/prompt-router");
+  const config = credentialedConfig({
+    providers: { anthropic: "k1", openai: "k2", gemini: "k3" },
+    roles: { smol: "claude-haiku-4-5" },
+    routing: { enabled: true },
+  });
+  const decision = (await routePrompt("what is this?", config)) as RouteDecision;
+  expect(decision.model).toBe("claude-haiku-4-5"); // roles.smol, NOT the auto-selected gemini-2.0-flash
+});
+
+test("resolveTierModel auto-select: ZERO stored credentials falls back to defaultModel (safe no-op, matches checklist #5's documented contract)", async () => {
+  const { routePrompt } = await import("../src/agent/prompt-router");
+  const config = credentialedConfig({ providers: {}, routing: { enabled: true } }); // no credentials at all
+  const trivial = (await routePrompt("what is this?", config)) as RouteDecision;
+  const complex = (await routePrompt(
+    "Can you investigate and diagnose the root cause across src/agent/loop.ts and src/agent/engine.ts?",
+    config,
+  )) as RouteDecision;
+  expect(trivial.model).toBe(config.defaultModel);
+  expect(complex.model).toBe(config.defaultModel);
+});
+
+test("resolveTierModel auto-select: OAuth-stored credential (not just providers API key) also counts as credentialed", async () => {
+  const { routePrompt } = await import("../src/agent/prompt-router");
+  const config = credentialedConfig({
+    providers: {},
+    oauth: { gemini: { access: "tok", refresh: "r", expires: Date.now() + 100000 } },
+    routing: { enabled: true },
+  });
+  const decision = (await routePrompt("what is this?", config)) as RouteDecision;
+  expect(decision.model).toBe("gemini-2.0-flash"); // only gemini credentialed (via OAuth) -> cheapest gemini model
+});

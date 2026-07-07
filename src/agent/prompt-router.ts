@@ -14,19 +14,31 @@
  * failures and falls back to a safe default, and the top-level export wraps
  * everything again as a final backstop.
  *
- * Why no static tier→model map: `resolveTierModel` computes inline off
+ * Why no STATIC tier→model map: `resolveTierModel` computes inline off
  * `config.roles`/`config.routing.tiers` so a user who already configured
  * `roles.smol`/`roles.slow` (for `--smol`/`--slow` role-tier resolution
- * elsewhere) gets working routing with zero additional config, and an
- * unconfigured role falls through to `defaultModel` exactly like every other
- * role-tier consumer in this codebase (see `resolveRoleModel`).
+ * elsewhere) gets working routing with zero additional config. An unconfigured
+ * trivial/complex tier does NOT simply collapse to `defaultModel` (that would
+ * defeat cross-provider routing for every user who hasn't hand-tuned
+ * `routing.tiers`) — it auto-selects the cheapest (trivial) / most capable
+ * (complex) model jeo has a stored credential for, computed LIVE off
+ * `MODEL_CATALOG`/`pricing.ts` on every call. This is the "long-term" fix for
+ * catalog drift: when jeo ships a new/cheaper/stronger model, auto-select
+ * picks it up on the next call automatically — no user config edit, no
+ * hand-maintained tier→model table to go stale. "standard" is the one
+ * exception: it always falls through to `defaultModel` unless explicitly
+ * configured, since routine day-to-day work should stay on the user's
+ * deliberately chosen default rather than being silently reassigned.
  */
 import { callLlm } from "./loop";
 import { resolveRoleModel } from "../ai/model-manager";
-import { catalogMetadata } from "../ai/model-catalog";
+import { catalogMetadata, MODEL_CATALOG, type CatalogModel } from "../ai/model-catalog";
+import { priceForModel } from "../ai/pricing";
 import { tryExtractJsonObject } from "./json";
 import type { Config } from "./state";
 import type { ThinkLevel } from "../ai/model-catalog";
+import type { ProviderName } from "../ai/types";
+import type { AuthProvider } from "../auth";
 
 export type PromptTier = "trivial" | "standard" | "complex";
 
@@ -156,17 +168,87 @@ export function resetPromptRouterWarnings(): void {
   warnedKeys.clear();
 }
 
+/** `resolveTierModel`'s config requirement: `providers`/`oauth` are OPTIONAL (not
+ *  just a `Pick`) so callers/tests that never touch credentials (e.g. this file's
+ *  own tests, which only exercise heuristic/escalation logic) keep compiling
+ *  unchanged — omitting the keys entirely still satisfies this type, and
+ *  `config.providers?.[p]` / `config.oauth?.[p]` are safe on the resulting
+ *  `undefined`. Production callers (`readGlobalConfig()`'s real `Config`) always
+ *  provide both. */
+export type RoutingConfig = Pick<Config, "defaultModel" | "roles" | "routing"> &
+  Partial<Pick<Config, "providers" | "oauth">>;
+
+/** Cloud providers eligible for cross-provider auto-select (excludes local
+ *  ollama/lmstudio, which are never a sensible "route to the cheapest/strongest"
+ *  target — a local model's cost/capability isn't comparable to a hosted one). */
+function isCloudProvider(p: ProviderName): p is AuthProvider {
+  return p !== "ollama" && p !== "lmstudio";
+}
+
+/** Cheapest cloud model jeo has a credential for, computed LIVE off
+ *  `MODEL_CATALOG`/`priceForModel` — picks up new/repriced catalog entries
+ *  automatically, never a hand-maintained id. `null` when no credentialed
+ *  model has a known price (caller falls back to `defaultModel`). Tiebreak:
+ *  canonical id (deterministic across otherwise-equal candidates). */
+function cheapestCredentialed(config: RoutingConfig): string | null {
+  let best: CatalogModel | null = null;
+  let bestCost = Infinity;
+  for (const m of MODEL_CATALOG) {
+    // "ANY stored credential" (API key OR OAuth) is enough here — auto-select only
+    // needs "can this provider serve a request at all", not WHICH credential kind
+    // wins (unlike provider-status.ts's `configuredCredential` precedence). The
+    // real veto gate in launch.ts's `runTurn` re-verifies full readiness (including
+    // live OAuth expiry) before a turn actually uses the model.
+    if (!isCloudProvider(m.provider) || !(config.providers?.[m.provider] || config.oauth?.[m.provider])) continue;
+    const price = priceForModel(m.canonical);
+    if (!price) continue;
+    const cost = price.inPerM + price.outPerM;
+    if (cost < bestCost || (cost === bestCost && best && m.canonical < best.canonical)) {
+      best = m;
+      bestCost = cost;
+    }
+  }
+  return best?.canonical ?? null;
+}
+
+/** Most capable cloud model jeo has a credential for, computed LIVE off
+ *  `MODEL_CATALOG` — ranks by full (xhigh) thinking support first, then max
+ *  output tokens, then context window, so a newly catalogued frontier model
+ *  is picked up automatically without a hand-maintained id. `null` when no
+ *  credentialed model qualifies (caller falls back to `defaultModel`).
+ *  Tiebreak: canonical id (deterministic; also happens to prefer widely-
+ *  available ids like `claude-fable-5` alphabetically ahead of limited-
+ *  availability siblings such as `claude-mythos-5`). */
+function strongestCredentialed(config: RoutingConfig): string | null {
+  let best: CatalogModel | null = null;
+  for (const m of MODEL_CATALOG) {
+    // "ANY stored credential" is enough (see cheapestCredentialed's comment above).
+    if (!isCloudProvider(m.provider) || !(config.providers?.[m.provider] || config.oauth?.[m.provider])) continue;
+    if (!best) { best = m; continue; }
+    const xhighM = m.thinking.includes("xhigh") ? 1 : 0;
+    const xhighBest = best.thinking.includes("xhigh") ? 1 : 0;
+    if (xhighM !== xhighBest) { if (xhighM > xhighBest) best = m; continue; }
+    if (m.maxOutputTokens !== best.maxOutputTokens) { if (m.maxOutputTokens > best.maxOutputTokens) best = m; continue; }
+    if (m.contextTokens !== best.contextTokens) { if (m.contextTokens > best.contextTokens) best = m; continue; }
+    if (m.canonical < best.canonical) best = m;
+  }
+  return best?.canonical ?? null;
+}
+
 // --- Tier -> model/thinking resolution (inline off config.roles/config.routing.tiers; no static map). ---
 
-function resolveTierModel(tier: PromptTier, config: Pick<Config, "defaultModel" | "roles" | "routing">): string {
+/** Exported for `jeo doctor`'s routing-preview diagnostic (same resolution the real
+ *  `routePrompt` uses — no duplicated logic between "what WILL routing pick" and
+ *  "what does doctor SHOW the user routing will pick"). */
+export function resolveTierModel(tier: PromptTier, config: RoutingConfig): string {
   const configured = config.routing?.tiers?.[tier]?.model;
   if (configured) return configured;
-  if (tier === "trivial") return config.roles?.smol || config.defaultModel;
-  if (tier === "complex") return config.roles?.slow || config.defaultModel;
+  if (tier === "trivial") return config.roles?.smol || cheapestCredentialed(config) || config.defaultModel;
+  if (tier === "complex") return config.roles?.slow || strongestCredentialed(config) || config.defaultModel;
   return config.defaultModel; // "standard" always falls through to defaultModel unless explicitly configured
 }
 
-function resolveTierThinking(tier: PromptTier, config: Pick<Config, "defaultModel" | "roles" | "routing">): ThinkLevel | undefined {
+function resolveTierThinking(tier: PromptTier, config: RoutingConfig): ThinkLevel | undefined {
   return config.routing?.tiers?.[tier]?.thinking; // undefined = no override, caller keeps session/global level
 }
 
@@ -224,7 +306,7 @@ const SMOL_UNCONFIGURED_WARNING_KEY = "prompt-router:smol-unconfigured";
  */
 export async function routePrompt(
   prompt: string,
-  config: Pick<Config, "defaultModel" | "roles" | "routing">,
+  config: RoutingConfig,
   opts: RoutePromptOptions = {},
 ): Promise<RouteDecision | null> {
   try {

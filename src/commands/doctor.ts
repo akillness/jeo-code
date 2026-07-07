@@ -8,6 +8,7 @@ import { meter } from "../tui/components/meter";
 import { size } from "../tui/terminal";
 import chalk from "chalk";
 import { extractChatgptAccountId, CODEX_RESPONSES_URL } from "../ai/providers/openai-responses";
+import { resolveTierModel } from "../agent/prompt-router";
 
 interface ProbeResult {
   status: "ok" | "fail" | "skipped";
@@ -211,6 +212,23 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
     }
   }
 
+  // Routing PREVIEW (long-term visibility for cross-provider auto-select, v0.7.56):
+  // for each tier, show what resolveTierModel() ACTUALLY resolves to right now —
+  // explicitly configured, legacy role-tier, auto-selected (cheapest/strongest
+  // credentialed, computed live off MODEL_CATALOG), or the defaultModel fallback
+  // (no credentialed alternative, or "standard" which never auto-selects). Purely
+  // informational — never affects ready/--strict, same contract as routingNotes.
+  const routingPreview: { tier: string; model: string; provider: string; source: string }[] = [];
+  if (routingEnabled) {
+    for (const tier of ["trivial", "standard", "complex"] as const) {
+      const explicit = config.routing?.tiers?.[tier]?.model || (tier === "trivial" ? config.roles?.smol : tier === "complex" ? config.roles?.slow : undefined);
+      const model = resolveTierModel(tier, config);
+      const provider = resolveProvider(model);
+      const source = explicit ? "configured" : model === config.defaultModel ? "defaultModel" : tier === "trivial" ? "auto-selected: cheapest credentialed" : "auto-selected: strongest credentialed";
+      routingPreview.push({ tier, model, provider, source });
+    }
+  }
+
 
   // --- Gather (probes run concurrently → ~1× the slowest timeout, not N×) ---
   const probes: { name: string; credKind: string; result: ProbeResult }[] = [];
@@ -277,7 +295,7 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
       })),
       oauth: oauthHealth,
       ready,
-      ...(routingEnabled ? { routing: { enabled: true, smolConfigured, ...(routingNotes.length ? { notes: routingNotes } : {}) } } : {}),
+      ...(routingEnabled ? { routing: { enabled: true, smolConfigured, preview: routingPreview, ...(routingNotes.length ? { notes: routingNotes } : {}) } } : {}),
 
     };
     console.log(JSON.stringify(report, null, 2));
@@ -326,6 +344,10 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
       for (const note of routingNotes) console.log(`${chalk.yellow("[routing]")} ${note}`);
     } else {
       console.log(`${chalk.green("[routing]")} enabled, roles.smol configured — LLM escalation available on ambiguous prompts.`);
+    }
+    console.log("Routing preview (what each tier resolves to right now):");
+    for (const p of routingPreview) {
+      console.log(`  ${p.tier.padEnd(9)} → ${p.model} (${p.provider}) ${chalk.dim(`[${p.source}]`)}`);
     }
 
     console.log("");

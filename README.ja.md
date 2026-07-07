@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/character.gif" alt="動く jeo-code 赤いザリガニマスコット" width="320" />
+  <img src="assets/character.gif" alt="最も安価なプロバイダーへプロンプトを賢くルーティングし、コインを稼ぐ動く jeo-code 赤いザリガニマスコット" width="320" />
 </p>
 
 <p align="center">
@@ -259,11 +259,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.8.0]** (2026-07-08) — Root-caused a genuine reliability bug in the routing veto gate ("라우트가 동작후 api 키인증오류가나오는데 근본적인 원인 개선해"), then regenerated the animated README mascot to visualize the smart cross-provider routing this release cycle has been building: prompt routing that finds the cheapest usable path, with a "money saver" visual motif.
 - **[0.7.58]** (2026-07-07) — Applied the previous entry's `routing.crossProviderPool` to the real live session config, then deep-researched every catalogued model's actual public release date (2026-07 sourced, per-provider parallel research with citations) to answer "모델 설정은 2026년도 기준으로 딥서치해서 모델리스트 최신순으로 정렬" — while researching, found and fixed a genuine ranking bug this surfaced: `strongestCredentialed`'s tiebreak on a full capability tie (identical thinking/output/context) fell through to a raw alphabetical canonical-id compare, which silently picked the OLDEST model in a same-spec family (`claude-opus-4-6` over `claude-opus-4-7`/`4-8`, purely because `"4-6" < "4-8"` as a string) — confirmed reproducible before the fix, confirmed corrected after.
 - **[0.7.57]** (2026-07-07) — "동급모델간 크로스 프로바이더 라우팅이 동작하게 개선" — v0.7.56's tier auto-select was single-winner by design (always the one cheapest/strongest model), so a user with `roles.smol` pinned (or simply multiple credentialed providers) never saw actual distribution across equivalent-class models. Deep-research-informed redesign: production LLM routers (LiteLLM, Bifrost/VoidLLM) model this as a named "model group" spanning provider deployments with a distribution strategy, not a single deterministic pick — jeo now supports both, opt-in.
 - **[0.7.56]** (2026-07-07) — "서로다른 프로바이더로 급에 따라 나눠서 설정하도록 개선" — PromptRouter's `trivial`/`complex` tiers previously collapsed to `defaultModel` whenever `roles.smol`/`roles.slow`/`routing.tiers.*` were left unconfigured (the documented "safe no-op absent configuration" contract), which meant a user with multiple providers credentialed never actually got cross-provider routing without hand-picking a model per tier. Also the long-term ask: routing must stay correct as jeo's model catalog evolves, never a hand-maintained tier→model table that goes stale.
 - **[0.7.55]** (2026-07-07) — Cross-provider routing (PromptRouter, v0.7.47+) already named the routed tier in the status bar (v0.7.52), but nothing surfaced WHICH model/provider actually produced a turn's reasoning in the Thinking-block surfaces — a gap noticed while manually verifying the v0.7.52 status-bar work end-to-end.
-- **[0.7.54]** (2026-07-06) — Root-cause fix for a live-reported GPT-5.5 (Codex/ChatGPT OAuth backend) failure: "Error: stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream aborted". Deep-dive traced this to a REGRESSION in v0.7.42 — a separate, correct fix for a genuinely-different bug (a connected-but-never-terminating stream) silently flipped `streamMaxMs()`'s default from opt-in-off to an ALWAYS-ON 300s overall wall-clock cap, which then killed any HIGH/XHIGH-reasoning-effort completion (GPT-5.5/o3-class) whose ACTIVELY-emitting generation legitimately ran past 5 minutes — OpenAI's own guidance states xhigh trades latency for depth by design. The non-streaming `call()` path (used by every subagent, compaction, and goal-verify call, since none wire `onModelStream`) carried the IDENTICAL bug with zero idle/activity tracking at all, exposed under a different, unhelpful raw `DOMException: The operation timed out.` message instead.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

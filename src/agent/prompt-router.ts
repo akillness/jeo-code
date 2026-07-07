@@ -185,6 +185,81 @@ function isCloudProvider(p: ProviderName): p is AuthProvider {
   return p !== "ollama" && p !== "lmstudio";
 }
 
+/** Size class jeo infers for a catalog model, used to group EQUIVALENT models
+ *  across DIFFERENT providers for pool-based routing (see `tierModelPool`) — the
+ *  cross-provider counterpart to `cheapestCredentialed`/`strongestCredentialed`'s
+ *  single-winner selection. Matches PROVIDER-DECLARED size-tier suffixes
+ *  (Anthropic's haiku/sonnet/opus, Google's flash/pro, OpenAI's mini) against
+ *  hyphen/dot-delimited SEGMENTS of the canonical id — NOT a raw substring match,
+ *  which would false-positive on "gemini" containing "mini" as a substring.
+ *  `null` for ids with no size-tier suffix at all (gpt-5.5, o3, grok-4.3, kimi-*,
+ *  glm-*, deepseek-*, minimax-* — providers whose naming doesn't encode size);
+ *  `tierModelPool` falls those back to a strength-tercile split instead. */
+function sizeClassFor(canonical: string): "small" | "mid" | "large" | null {
+  const id = canonical.toLowerCase();
+  const bare = id.includes("/") ? id.slice(id.indexOf("/") + 1) : id;
+  const segments = bare.split(/[-.]/);
+  if (segments.includes("haiku") || segments.includes("flash") || segments.includes("mini") || segments.includes("nano")) return "small";
+  if (segments.includes("opus") || segments.includes("ultra") || segments.includes("fable") || segments.includes("mythos")) return "large";
+  if (segments.includes("sonnet") || segments.includes("pro")) return "mid";
+  return null;
+}
+
+const TIER_TO_SIZE_CLASS: Record<PromptTier, "small" | "mid" | "large"> = { trivial: "small", standard: "mid", complex: "large" };
+
+/** Multi-key strength comparator (ascending: weakest first) — same ranking signals
+ *  as `strongestCredentialed`'s single-winner tiebreak, reused here to bucket
+ *  UNCLASSIFIED (no size-suffix) models into a tercile fallback. */
+function compareStrengthAscending(a: CatalogModel, b: CatalogModel): number {
+  const xhighA = a.thinking.includes("xhigh") ? 1 : 0;
+  const xhighB = b.thinking.includes("xhigh") ? 1 : 0;
+  if (xhighA !== xhighB) return xhighA - xhighB;
+  if (a.maxOutputTokens !== b.maxOutputTokens) return a.maxOutputTokens - b.maxOutputTokens;
+  if (a.contextTokens !== b.contextTokens) return a.contextTokens - b.contextTokens;
+  return a.canonical < b.canonical ? -1 : a.canonical > b.canonical ? 1 : 0;
+}
+
+/** Cross-provider EQUIVALENCE pool for `tier` — every credentialed cloud model
+ *  jeo classifies as the same size class (trivial→small, standard→mid,
+ *  complex→large), computed LIVE off `MODEL_CATALOG` so it stays correct as the
+ *  catalog evolves. Models with no size-tier-suffix (gpt-5.5, o3, grok-4.3,
+ *  kimi-*, glm-*, …) fall back to a strength-tercile bucket instead of being
+ *  silently excluded from every pool. Returns `[]` when zero credentialed
+ *  models qualify (caller falls back to `defaultModel`). Sorted by canonical id
+ *  for deterministic pool ordering (required by `selectFromPool`'s index math). */
+export function tierModelPool(tier: PromptTier, config: RoutingConfig): string[] {
+  const targetClass = TIER_TO_SIZE_CLASS[tier];
+  const credentialed = MODEL_CATALOG.filter(m => isCloudProvider(m.provider) && (config.providers?.[m.provider] || config.oauth?.[m.provider]));
+
+  const suffixPool = credentialed.filter(m => sizeClassFor(m.canonical) === targetClass);
+
+  const unclassified = credentialed.filter(m => sizeClassFor(m.canonical) === null).sort(compareStrengthAscending);
+  const third = Math.ceil(unclassified.length / 3);
+  const tercileByTier: Record<PromptTier, CatalogModel[]> = {
+    trivial: unclassified.slice(0, third),
+    standard: unclassified.slice(third, third * 2),
+    complex: unclassified.slice(third * 2),
+  };
+
+  const pool = [...suffixPool, ...tercileByTier[tier]];
+  return pool.map(m => m.canonical).sort();
+}
+
+/** Deterministic, SESSION-STABLE pick from `pool` — the same `sessionId` always
+ *  resolves to the same index within one pool (so a session's provider-side
+ *  prompt cache stays warm turn-to-turn, per this file's `deriveCacheSessionKey`
+ *  cache-correlation contract), while DIFFERENT sessions spread across the pool's
+ *  providers (the actual cross-provider distribution this feature exists for).
+ *  No `sessionId` (e.g. a one-shot `jeo chat` call) deterministically picks index
+ *  0 (the pool is canonical-id-sorted, so this is still stable, just unvaried). */
+export function selectFromPool(pool: readonly string[], sessionId: string | undefined): string {
+  if (pool.length === 0) throw new Error("selectFromPool: empty pool");
+  if (pool.length === 1 || !sessionId) return pool[0];
+  let h = 0x811c9dc5 | 0;
+  for (let i = 0; i < sessionId.length; i++) h = Math.imul(h ^ sessionId.charCodeAt(i), 0x01000193);
+  return pool[(h >>> 0) % pool.length];
+}
+
 /** Cheapest cloud model jeo has a credential for, computed LIVE off
  *  `MODEL_CATALOG`/`priceForModel` — picks up new/repriced catalog entries
  *  automatically, never a hand-maintained id. `null` when no credentialed

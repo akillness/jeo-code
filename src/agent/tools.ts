@@ -1153,43 +1153,73 @@ export async function bisectTool(
     if (!run || !run.trim()) {
       return { success: false, output: "", error: 'bisect requires "run" (a shell command to test)' };
     }
+    if (maxSteps <= 0) {
+      return { success: false, output: "", error: 'maxSteps must be > 0' };
+    }
+    if (stepTimeoutMs <= 0) {
+      return { success: false, output: "", error: 'stepTimeoutMs must be > 0' };
+    }
 
-    // Helper to run a command and capture output
-    const runCmd = async (args: string[]): Promise<{ code: number; out: string; err: string }> => {
-      const proc = Bun.spawn(args, {
-        cwd,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      let out = "";
-      let err = "";
-      
-      const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
-      const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
-      
+    // Helper to run a command with timeout support and resilient error handling
+    const runCmd = async (args: string[], timeoutMs?: number): Promise<{ code: number; out: string; err: string }> => {
+      const timeout = timeoutMs || stepTimeoutMs;
+      let timeoutOccurred = false;
+      const timeoutHandle = setTimeout(() => {
+        timeoutOccurred = true;
+      }, timeout);
+
       try {
-        while (true) {
-          const { done, value } = await stdoutReader.read();
-          if (done) break;
-          out += new TextDecoder().decode(value);
+        const proc = Bun.spawn(args, {
+          cwd,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        
+        let out = "";
+        let err = "";
+        
+        const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+        const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
+        
+        // Read stdout with resilience: stream errors don't fail the entire call.
+        // If a reader encounters an error, we continue with partial output, as
+        // git bisect can still function with partial stdout/stderr.
+        try {
+          while (!timeoutOccurred) {
+            const { done, value } = await stdoutReader.read();
+            if (done) break;
+            out += new TextDecoder().decode(value);
+          }
+        } catch (e) {
+          // Stream read error; continue with partial output.
+          // This is acceptable because git bisect may still be usable.
         }
-      } catch {}
-      
-      try {
-        while (true) {
-          const { done, value } = await stderrReader.read();
-          if (done) break;
-          err += new TextDecoder().decode(value);
+        
+        // Read stderr with resilience: same strategy as stdout.
+        try {
+          while (!timeoutOccurred) {
+            const { done, value } = await stderrReader.read();
+            if (done) break;
+            err += new TextDecoder().decode(value);
+          }
+        } catch (e) {
+          // Stream read error; continue with partial output.
         }
-      } catch {}
-      
-      const code = await proc.exited;
-      return { code: code || 0, out, err };
+        
+        if (timeoutOccurred) {
+          return { code: 124, out, err: `Command timeout after ${timeout}ms` };
+        }
+        
+        const code = await proc.exited;
+        return { code: typeof code === 'number' ? code : 0, out, err };
+      } finally {
+        clearTimeout(timeoutHandle);
+      }
     };
 
-    // Validate commits exist
-    const goodRes = await runCmd(["git", "rev-parse", good]);
-    const badRes = await runCmd(["git", "rev-parse", bad]);
+    // Validate commits exist (quick validation with shorter timeout)
+    const goodRes = await runCmd(["git", "rev-parse", good], 10000);
+    const badRes = await runCmd(["git", "rev-parse", bad], 10000);
 
     if (goodRes.code !== 0) {
       return { success: false, output: "", error: `Invalid or non-existent commit: ${good}` };
@@ -1201,22 +1231,23 @@ export async function bisectTool(
     const goodSha = goodRes.out.trim();
     const badSha = badRes.out.trim();
 
-    // Start bisect
-    const initRes = await runCmd(["sh", "-c", `git bisect start "${badSha}" "${goodSha}"`]);
+    // Start bisect session
+    const initRes = await runCmd(["sh", "-c", `git bisect start "${badSha}" "${goodSha}"`], 10000);
     if (initRes.code !== 0) {
       return { success: false, output: "", error: `Failed to start bisect: ${initRes.err || initRes.out}` };
     }
 
-    // Run bisect with the predicate command
-    // Escape the run command for shell
-    const escapedRun = run.replace(/'/g, "'\\''");
+    // Run bisect with the predicate command.
+    // Shell escaping: single quotes in sh -c context need special care.
+    // 'text' -> '\''text'\'' (end quote, escaped quote, start quote, content, end quote, escaped quote, start quote)
+    const escapedRun = run.replace(/'/g, "'\''");
     const runCmd2 = invert
       ? `git bisect run sh -c '${escapedRun} && exit 1 || exit 0'`
       : `git bisect run sh -c '${escapedRun}'`;
 
     const runRes = await runCmd(["sh", "-c", runCmd2]);
 
-    // Parse result: look for "XXXX is the first bad commit"
+    // Parse result: look for "XXXX is the first bad/good commit"
     const badCommitMatch = runRes.out.match(/^([0-9a-f]{7,40}) is the first (bad|good) commit$/m);
     let culprit: string | null = null;
     let concluded = false;
@@ -1228,10 +1259,15 @@ export async function bisectTool(
       concluded = false;
     }
 
-    // Cleanup: reset bisect
-    await runCmd(["git", "bisect", "reset"]);
-    // Also reset working tree if dirty
-    await runCmd(["git", "reset", "--hard"]);
+    // Cleanup: always attempt to reset bisect and working tree (best-effort).
+    // Errors here are non-critical; if reset fails, the user can manually run
+    // 'git bisect reset' to recover. We don't throw on cleanup errors.
+    try {
+      await runCmd(["git", "bisect", "reset"], 10000);
+    } catch {}
+    try {
+      await runCmd(["git", "reset", "--hard"], 10000);
+    } catch {}
 
     if (!concluded) {
       return {
@@ -1242,8 +1278,8 @@ export async function bisectTool(
     }
 
     if (culprit) {
-      // Get commit details
-      const detailsRes = await runCmd(["git", "show", "-s", "--format=%aN|%ai|%s", culprit]);
+      // Get commit details (use shorter timeout for metadata lookup)
+      const detailsRes = await runCmd(["git", "show", "-s", "--format=%aN|%ai|%s", culprit], 10000);
       const [author, date, subject] = detailsRes.out.trim().split("|");
       const message = [
         invert ? `First fixing commit: ${culprit}` : `First bad commit: ${culprit}`,
@@ -1262,3 +1298,4 @@ export async function bisectTool(
     return { success: false, output: "", error: err.message || String(err) };
   }
 }
+

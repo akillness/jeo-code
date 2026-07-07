@@ -767,6 +767,45 @@ test("LaunchTui: native reasoning stream drives the dimmed thinking state and pe
   expect(txt).toContain("weighing two approaches");
 });
 
+test("LaunchTui: persisted commit Thinking header names the routed model+provider (cross-provider routing visibility)", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "gemini-2.5-pro", provider: "gemini", routedTier: "standard", write: s => out.push(s) });
+  tui.start();
+  const ev = tui.events();
+  ev.onStep!(1);
+  ev.onReasoningStream!("weighing two approaches to the cap");
+  ev.onAssistant!("{}", { tool: "read", arguments: { filePath: "x.ts" } });
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => logged.push(a.join(" "));
+  try { tui.finish("done"); } finally { console.log = origLog; }
+  const txt = logged.join("\n").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  // The committed scrollback header names which model+provider actually produced
+  // this turn's reasoning, not just a bare "thinking" label with no routing context.
+  expect(txt).toMatch(/thinking[^\n]*gemini-2\.5-pro \(gemini\)/);
+});
+
+test("LaunchTui: live streaming Thinking block label names the routed model+provider mid-turn", () => {
+  const realRender = Renderer.prototype.render;
+  let frame: string[] = [];
+  Renderer.prototype.render = function (f: string[]) { frame = f; };
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  try {
+    const tui = new LaunchTui({ model: "claude-haiku-4-5", provider: "anthropic", routedTier: "trivial", tty: true, write: () => {} });
+    tui.start();
+    const ev = tui.events();
+    ev.onStep!(1);
+    ev.onReasoningStream!("checking the cheapest tier first");
+    const txt = frame.map(strip).join("\n");
+    // The LIVE (uncommitted) Thinking block must show the same model+provider
+    // routing context as the persisted header, before the turn even completes.
+    expect(txt).toMatch(/[Tt]hinking[^\n]*claude-haiku-4-5 \(anthropic\)/);
+    tui.finish("done");
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});
+
 test("LaunchTui: onToolResult flushes a gjc-style glyph-led ledger line for the target", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });

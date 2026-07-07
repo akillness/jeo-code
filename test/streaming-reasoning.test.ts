@@ -126,6 +126,15 @@ test("thinkingHeader: gjc 'thought for Ns' label with duration, omitted when unk
   expect(thinkingHeader(1000, false)).toBe("* thinking · 1.0s");
 });
 
+test("thinkingHeader: optional modelLabel names the routed model/provider (cross-provider routing visibility)", () => {
+  expect(thinkingHeader(4200, true, "gemini-2.5-pro (gemini)")).toBe("◇ thinking · gemini-2.5-pro (gemini) · 4.2s");
+  expect(thinkingHeader(undefined, true, "gpt-4o-mini (openai)")).toBe("◇ thinking · gpt-4o-mini (openai)");
+  // ASCII fallback + modelLabel together.
+  expect(thinkingHeader(1000, false, "claude-opus-4-8 (anthropic)")).toBe("* thinking · claude-opus-4-8 (anthropic) · 1.0s");
+  // Omitted modelLabel is IDENTICAL to the legacy 2-arg call (backward compat).
+  expect(thinkingHeader(4200, true)).toBe(thinkingHeader(4200, true, undefined));
+});
+
 test("clipReasoningLines: collapses long traces with a (+N more lines) hint", () => {
   const short = "one\ntwo\nthree";
   expect(clipReasoningLines(short)).toBe(short); // under cap → verbatim
@@ -146,9 +155,9 @@ test("LaunchTui: committed thought carries a 'thinking ·' duration header (gjc 
   ev.onAssistant!('{"tool":"read","arguments":{}}', { tool: "read", arguments: {} });
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
   const flushed = strip(out.join(""));
-  // A "thinking · Ns" header sits between the jeo label and the thought prose.
-  expect(flushed).toMatch(/thinking · \d+\.\d+s/);
-  const headerIdx = flushed.search(/thinking · \d/);
+  // A "thinking · {model} · Ns" header sits between the jeo label and the thought prose.
+  expect(flushed).toMatch(/thinking · m1 · \d+\.\d+s/);
+  const headerIdx = flushed.search(/thinking · m1 · \d/);
   expect(headerIdx).toBeGreaterThanOrEqual(0);
   expect(headerIdx).toBeLessThan(flushed.indexOf("weighing two approaches"));
   tui.finish("done");

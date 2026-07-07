@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.55] - 2026-07-07
+_Cross-provider routing (PromptRouter, v0.7.47+) already named the routed tier in the status bar (v0.7.52), but nothing surfaced WHICH model/provider actually produced a turn's reasoning in the Thinking-block surfaces — a gap noticed while manually verifying the v0.7.52 status-bar work end-to-end._
+
+### Added
+- **`modelProviderLabel()` helper** (`src/tui/app.ts`) — DRY "model (provider)" formatting shared with the existing `renderModelBar`/status-bar convention, now threaded through all three Thinking-related surfaces: the live `currentActivity()` status line ("reasoning (…)"/"calling model (…)"), the live streaming Thinking block header, and the live placeholder Thinking block (signature-only reasoning models like opus-4-8 that stream no thought text).
+- **`thinkingHeader()` optional 3rd param** (`modelLabel?: string`) for the persisted (scrollback-committed) Thinking header — fully backward-compatible; existing 2-arg call sites are unchanged and produce byte-identical output.
+
+### Verified
+- `bun run typecheck` clean; full suite 2675/2675 pass across 280 files (+3 new tests: `thinkingHeader` 3-arg unit test, a real `LaunchTui` persisted-header integration test, and a live-frame streaming-block test).
+- End-to-end proof with a real `LaunchTui` instance (not just the pure function) across a cross-provider two-turn session: turn 1 (claude-haiku-4-5/anthropic) and turn 2 (gemini-2.5-pro/gemini) each show their own correct model+provider in both the live and persisted Thinking headers, confirming the label updates turn-to-turn rather than being fixed at session start.
+- A pre-existing test asserting the OLD bare `"thinking · Ns"` format (`streaming-reasoning.test.ts`) was updated to the new model-labeled format — an intentional format change, not a loosened assertion.
+
 ## [0.7.54] - 2026-07-06
 _Root-cause fix for a live-reported GPT-5.5 (Codex/ChatGPT OAuth backend) failure: "Error: stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream aborted". Deep-dive traced this to a REGRESSION in v0.7.42 — a separate, correct fix for a genuinely-different bug (a connected-but-never-terminating stream) silently flipped `streamMaxMs()`'s default from opt-in-off to an ALWAYS-ON 300s overall wall-clock cap, which then killed any HIGH/XHIGH-reasoning-effort completion (GPT-5.5/o3-class) whose ACTIVELY-emitting generation legitimately ran past 5 minutes — OpenAI's own guidance states xhigh trades latency for depth by design. The non-streaming `call()` path (used by every subagent, compaction, and goal-verify call, since none wire `onModelStream`) carried the IDENTICAL bug with zero idle/activity tracking at all, exposed under a different, unhelpful raw `DOMException: The operation timed out.` message instead._
 

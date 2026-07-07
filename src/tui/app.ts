@@ -158,11 +158,17 @@ export function clipReasoningLines(text: string, cap = THINKING_COMMIT_MAX_LINES
 }
 
 /** gjc-style "thought for Ns" header for a committed/streaming Thinking block. Omits the
- *  duration when no step start is known (e.g. resumed/exported records). */
-export function thinkingHeader(elapsedMs: number | undefined, unicode: boolean): string {
+ *  duration when no step start is known (e.g. resumed/exported records). The optional
+ *  `modelLabel` (e.g. "gpt-4o-mini (openai)", built by `modelProviderLabel()`) names
+ *  which routed model actually produced this committed thought — a cross-provider
+ *  routed turn's scrollback record otherwise gives no way to tell, after the fact,
+ *  which provider reasoned about which step. Omitted entirely when absent (e.g. the
+ *  2-arg legacy call, or a resumed/exported record with no model context). */
+export function thinkingHeader(elapsedMs: number | undefined, unicode: boolean, modelLabel?: string): string {
   const diamond = unicode ? "◇" : "*";
   const secs = elapsedMs !== undefined && elapsedMs >= 0 ? `${(elapsedMs / 1000).toFixed(1)}s` : null;
-  return `${diamond} thinking${secs ? ` · ${secs}` : ""}`;
+  const model = modelLabel ? ` · ${modelLabel}` : "";
+  return `${diamond} thinking${model}${secs ? ` · ${secs}` : ""}`;
 }
 
 /** Status animation palette while a tool/process runs (background verification): an
@@ -553,8 +559,10 @@ export class LaunchTui {
           const style = (prose: string) => prose.split("\n").map(styleThought).join("\n");
           const parts: string[] = [this.agentLabel()];
           // gjc "thought for Ns" header: step-start → commit ≈ the model's think+gen time.
+          // Names the routed model/provider so a cross-provider routed turn's scrollback
+          // record stays legible after the fact, not just live in the model bar.
           const elapsedMs = this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined;
-          const header = thinkingHeader(elapsedMs, this.unicode);
+          const header = thinkingHeader(elapsedMs, this.unicode, this.modelProviderLabel());
           parts.push(this.theme.color ? chalk.dim(header) : header);
           if (willFlushThought) {
             this.flushedThought = this.streamingThought;
@@ -943,6 +951,15 @@ export class LaunchTui {
    * Replaces the per-tick cycling status text so the line shows genuine content (thinking
    * about a real file/step) instead of churning decorative messages every 120ms.
    */
+  /** `model (provider)` — the same convention `renderModelBar` uses for the persistent
+   *  status bar, reused here so the live/persisted "thinking" surfaces name which
+   *  routed model+provider is actually reasoning right now (not just the bare model id,
+   *  which alone doesn't distinguish e.g. a `gpt-4o-mini` served via openai vs. a
+   *  same-named alias on an OpenAI-compatible provider). */
+  private modelProviderLabel(): string {
+    return `${this.footer.model}${this.footer.provider ? ` (${this.footer.provider})` : ""}`;
+  }
+
   private currentActivity(): string {
     const running = this.tools.currentTool();
     // An in-flight tool's real target beats the workflow phase banner (gjc-style:
@@ -974,14 +991,14 @@ export class LaunchTui {
       if (this.retryNotice) return `${this.retryNotice} (${elapsed}s)`;
       // Reasoning is streaming → the live thought block already shows it; label the row.
       if (this.streamingThought.trim() || this.streamingReasoning.trim()) {
-        return `reasoning (${this.footer.model}) (${elapsed}s)…`;
+        return `reasoning (${this.modelProviderLabel()}) (${elapsed}s)…`;
       }
       // No tokens after a few seconds: the model is almost certainly reasoning
       // server-side (e.g. OpenAI hidden reasoning), NOT hung — say so instead of a
       // frozen "calling model …" so a long silent wait still reads as progress.
       const waited = this.currentStepStartedAt ? (Date.now() - this.currentStepStartedAt) / 1000 : 0;
-      if (waited >= 8) return `thinking (${this.footer.model}) — reasoning, no token stream yet (${elapsed}s)…`;
-      return `calling model (${this.footer.model}) (${elapsed}s)…`;
+      if (waited >= 8) return `thinking (${this.modelProviderLabel()}) — reasoning, no token stream yet (${elapsed}s)…`;
+      return `calling model (${this.modelProviderLabel()}) (${elapsed}s)…`;
     }
     if (running) {
       const last = this.forgeSummaries[this.forgeSummaries.length - 1];
@@ -1567,17 +1584,20 @@ export class LaunchTui {
     // rectangle, so a short trace leaves no padded "hole" and a short terminal is spared.
     const liveThink = this.streamingThought.trim() || this.streamingReasoning.trim();
     if (isThinking && liveThink) {
-      // gjc-parity: the Thinking block label carries a running timer ("Thinking · Ns").
-      // Cache key stays the constant "Thinking" so the per-frame wrap memo is unaffected.
+      // gjc-parity: the Thinking block label carries the routed model/provider and a
+      // running timer ("Thinking · gpt-4o-mini (openai) · Ns") — names which model is
+      // actually reasoning right now, so a cross-provider routed turn is legible mid-turn,
+      // not just after the fact in the status bar. Cache key stays the constant "Thinking"
+      // so the per-frame wrap memo is unaffected by the model/provider text.
       const liveMs = this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined;
-      const liveLabel = liveMs !== undefined ? `Thinking · ${(liveMs / 1000).toFixed(1)}s` : "Thinking";
+      const liveLabel = `Thinking · ${this.modelProviderLabel()}${liveMs !== undefined ? ` · ${(liveMs / 1000).toFixed(1)}s` : ""}`;
       tail.push(...this.renderLiveBlock(liveLabel, liveThink, cols, rows, 6, "Thinking"));
     } else if (isThinking && this.thinkingActive) {
       // Signature-only reasoning models (opus-4-7/4-8) open a thinking block but stream no
       // thought text — show a live placeholder so the wait reads as active thinking, not a
       // frozen screen. Replaced the instant any real thought/answer text streams (branch above).
       const liveMs = this.currentStepStartedAt ? Date.now() - this.currentStepStartedAt : undefined;
-      const liveLabel = liveMs !== undefined ? `Thinking · ${(liveMs / 1000).toFixed(1)}s` : "Thinking";
+      const liveLabel = `Thinking · ${this.modelProviderLabel()}${liveMs !== undefined ? ` · ${(liveMs / 1000).toFixed(1)}s` : ""}`;
       tail.push(...this.renderLiveBlock(liveLabel, "(thinking…)", cols, rows, 6, "Thinking"));
     }
 
@@ -1645,7 +1665,7 @@ export class LaunchTui {
         ? Math.round((this.footer.contextUsedTokens / this.footer.contextMaxTokens) * 100)
         : undefined;
     return renderStatusBar({
-      model: `${this.footer.model}${this.footer.provider ? ` (${this.footer.provider})` : ""}`,
+      model: this.modelProviderLabel(),
       thinking: this.thinkingLevel,
       routedTier: this.routedTier,
       branch: this.footer.branch,

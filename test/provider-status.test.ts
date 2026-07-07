@@ -114,7 +114,7 @@ test("describeProvider: openai oauth path hides local base URL because Codex bac
   expect(s.baseUrl).toBeUndefined();
 });
 
-test("describeProvider: gemini oauth-only → READY via Cloud Code Assist (no API key needed)", async () => {
+test("describeProvider: gemini oauth-only → NOT READY (API key needed)", async () => {
   await fs.writeFile(
     path.join(dir, "config.json"),
     JSON.stringify({
@@ -124,12 +124,12 @@ test("describeProvider: gemini oauth-only → READY via Cloud Code Assist (no AP
     }),
   );
   const s = await describeProvider("gemini");
-  expect(s.ready).toBe(true);
+  expect(s.ready).toBe(false);
   expect(s.kind).toBe("oauth");
-  expect(s.label).toContain("Cloud Code Assist");
+  expect(s.label).toContain("GEMINI_API_KEY");
 });
 
-test("describeProvider: antigravity shows Gemini OAuth as catalog-only, not call-ready", async () => {
+test("describeProvider: antigravity shows Gemini OAuth as ready via fallback", async () => {
   await fs.writeFile(
     path.join(dir, "config.json"),
     JSON.stringify({
@@ -139,10 +139,9 @@ test("describeProvider: antigravity shows Gemini OAuth as catalog-only, not call
     }),
   );
   const s = await describeProvider("antigravity");
-  expect(s.ready).toBe(false);
+  expect(s.ready).toBe(true);
   expect(s.kind).toBe("oauth");
-  expect(s.label).toContain("catalog via Gemini CLI");
-  expect(s.label).toContain("jeo auth login antigravity");
+  expect(s.label).toContain("gemini login fallback");
   expect(s.envVar).toBeUndefined();
 });
 
@@ -160,6 +159,78 @@ test("describeProvider: antigravity own OAuth is call-ready", async () => {
   expect(s.kind).toBe("oauth");
   expect(s.label).toContain("Antigravity Cloud Code Assist");
   expect(s.envVar).toBeUndefined();
+});
+
+test("describeProvider: antigravity OAuth expired with a refresh token still self-heals to ready=true", async () => {
+  // Auto-refresh happens on the real call path (resolveCredential) — describeProvider
+  // must not preemptively veto a token that resolveCredential can still recover.
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: {},
+      oauth: { antigravity: { access: "stale-token", refresh: "valid-refresh", expires: Date.now() - 60_000, projectId: "proj-1" } },
+      defaultModel: "antigravity/gemini-3-pro-low",
+    }),
+  );
+  const s = await describeProvider("antigravity");
+  expect(s.ready).toBe(true);
+  expect(s.label).toContain("Antigravity Cloud Code Assist");
+});
+
+test("describeProvider: antigravity OAuth expired with NO refresh token reports ready=false (regression: veto gate used to let this through, routing then hit a raw 401)", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: {},
+      oauth: { antigravity: { access: "stale-token", expires: Date.now() - 60_000 } },
+      defaultModel: "antigravity/gemini-3-pro-low",
+    }),
+  );
+  const s = await describeProvider("antigravity");
+  expect(s.ready).toBe(false);
+  expect(s.label).toContain("expired");
+  expect(s.label).toContain("jeo auth login antigravity");
+});
+
+test("describeProvider: anthropic OAuth expired with NO refresh token reports ready=false with an actionable label", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: {},
+      oauth: { anthropic: { access: "stale-token", expires: Date.now() - 60_000 } },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  const s = await describeProvider("anthropic");
+  expect(s.ready).toBe(false);
+  expect(s.label).toContain("expired");
+  expect(s.label).toContain("jeo auth login anthropic");
+});
+
+test("describeProvider: legacy string-only OAuth token (no tracked expiry) is never flagged dead", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: {},
+      oauth: { anthropic: "legacy-plain-token" },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  const s = await describeProvider("anthropic");
+  expect(s.ready).toBe(true);
+});
+
+test("describeProvider: OAuth object with no expires field tracked is never flagged dead", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: {},
+      oauth: { anthropic: { access: "token-no-expiry-tracked" } },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  const s = await describeProvider("anthropic");
+  expect(s.ready).toBe(true);
 });
 
 test("describeProvider: openai oauth+key reports the effective API-key path", async () => {
@@ -205,7 +276,7 @@ test("describeProvider: anthropic oauth+key prefers OAuth over the configured AP
   expect(s.label).toBe("OAuth");
 });
 
-test("describeProvider: gemini oauth+key prefers the OAuth path (Cloud Code Assist serves it end-to-end)", async () => {
+test("describeProvider: gemini oauth+key prefers the API-key path (OAuth alone cannot serve gemini/* models)", async () => {
   await fs.writeFile(
     path.join(dir, "config.json"),
     JSON.stringify({
@@ -216,6 +287,6 @@ test("describeProvider: gemini oauth+key prefers the OAuth path (Cloud Code Assi
   );
   const s = await describeProvider("gemini");
   expect(s.ready).toBe(true);
-  expect(s.kind).toBe("oauth");
-  expect(s.label).toBe("OAuth (Gemini CLI / Cloud Code Assist)");
+  expect(s.kind).toBe("api_key");
+  expect(s.label).toBe("API key");
 });

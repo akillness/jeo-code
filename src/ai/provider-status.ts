@@ -72,6 +72,21 @@ function oauthLoginInfo(stored: string | StoredOAuth | undefined): { loggedIn: b
   return { loggedIn: true, oauthEmail: stored.email, oauthExpires: stored.expires };
 }
 
+/** True when a stored OAuth entry is DEFINITIVELY unusable right now: its access
+ *  token is past expiry AND it has no refresh token to recover with. This is the
+ *  gap `ready` used to miss — checking only "is a credential object present",
+ *  never whether it's actually alive — so a session could route to a provider
+ *  whose OAuth died (refresh token revoked/missing) and only discover that via a
+ *  raw 401 from the real API call, after routing had already committed to it.
+ *  An expired token WITH a refresh token is NOT flagged dead: `resolveCredential`
+ *  (the real call path) auto-refreshes those before use, so a live refresh token
+ *  self-heals without ever reaching this check. Legacy string-only stored tokens
+ *  (no tracked expiry) are never flagged dead either — there's nothing to check. */
+function oauthEntryDead(stored: string | StoredOAuth | undefined): boolean {
+  if (!stored || typeof stored === "string") return false;
+  return !!stored.expires && stored.expires <= Date.now() && !stored.refresh;
+}
+
 function configuredCredential(provider: AuthProvider, cfg: Config): Credential {
   const stored = cfg.oauth?.[provider];
   const oauth = oauthAccess(stored);
@@ -118,29 +133,39 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
   }
   const ownProvider = name as AuthProvider;
   const ownCred = configuredCredential(ownProvider, cfg);
-  // Antigravity prefers its own login but accepts a gemini-cli OAuth fallback.
+  // Antigravity prefers its own login but accepts a gemini OAuth fallback (the
+  // DEFAULT OAuth-served path for Gemini models now that plain gemini/* requires
+  // an API key).
   const cred = name === "antigravity" && ownCred.kind === "none" ? configuredCredential("gemini", cfg) : ownCred;
   const credentialProvider: AuthProvider = name === "antigravity" && ownCred.kind === "none" ? "gemini" : ownProvider;
   const effective = name === "antigravity" ? cred : effectiveCredential(credentialProvider, cred, cfg);
   const kind: CredentialKind = effective.kind === "api_key" ? "api_key" : effective.kind === "oauth" ? "oauth" : "none";
   const baseUrl = name === "openai" && kind !== "oauth" ? cfg.openaiBaseUrl : undefined;
-  let ready = kind !== "none" || (name === "openai" && !!cfg.openaiBaseUrl);
+  let ready = kind === "api_key" || (kind === "oauth" && !oauthEntryDead(cfg.oauth?.[credentialProvider])) || (name === "openai" && !!cfg.openaiBaseUrl);
   let label = ready && kind === "none" ? "keyless (local base URL)" : credentialLabel(kind);
   if (name === "antigravity") {
-    const hasOwnOAuth = ownCred.kind === "oauth";
-    const hasGeminiFallback = !hasOwnOAuth && configuredCredential("gemini", cfg).kind === "oauth";
-    ready = hasOwnOAuth;
+    const hasOwnOAuth = ownCred.kind === "oauth" && !oauthEntryDead(cfg.oauth?.antigravity);
+    const hasGeminiFallback = !hasOwnOAuth && configuredCredential("gemini", cfg).kind === "oauth" && !oauthEntryDead(cfg.oauth?.gemini);
+    const ownDead = ownCred.kind === "oauth" && !hasOwnOAuth;
+    ready = hasOwnOAuth || hasGeminiFallback;
     label = hasOwnOAuth
       ? "OAuth (Antigravity Cloud Code Assist)"
       : hasGeminiFallback
-        ? "OAuth catalog via Gemini CLI; calls need 'jeo auth login antigravity'"
-        : "none (run 'jeo auth login antigravity')";
+        ? "OAuth (Cloud Code Assist via gemini login fallback)"
+        : ownDead
+          ? "OAuth expired, no refresh token — run 'jeo auth login antigravity' to re-authenticate"
+          : "none (run 'jeo auth login antigravity')";
+  } else if (name === "gemini" && kind === "oauth") {
+    // OAuth alone no longer serves google/gemini-* (the gemini-cli/Cloud Code Assist
+    // masquerade was removed) — GEMINI_API_KEY is required. The SAME models remain
+    // OAuth-only reachable via antigravity/*.
+    ready = false;
+    label = "OAuth catalog only; set GEMINI_API_KEY, or use antigravity/* models (Cloud Code Assist)";
   } else if (kind === "oauth" && isOAuthProvider(credentialProvider) && OAUTH_FLOW_REGISTRY[credentialProvider].verifiedEndToEnd === false) {
     ready = false;
     label = "OAuth (API key needed)";
-  } else if (name === "gemini" && kind === "oauth") {
-    // gemini-cli OAuth is served end-to-end via Cloud Code Assist — no API key.
-    label = "OAuth (Gemini CLI / Cloud Code Assist)";
+  } else if (kind === "oauth" && oauthEntryDead(cfg.oauth?.[credentialProvider])) {
+    label = `OAuth expired, no refresh token — run 'jeo auth login ${credentialProvider}' to re-authenticate`;
   }
   // Login status reflects the provider's OWN stored OAuth (e.g. "logged in to antigravity"),
   // independent of any cross-provider credential fallback used for readiness.

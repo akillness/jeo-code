@@ -99,14 +99,13 @@ function anthropicSystemBlocks(
 }
 
 /** Anthropic extended-thinking budget by reasoning effort (kept under max_tokens). Tiers match
- *  gjc's ANTHROPIC_THINKING table: minimal/low/medium/high ALL enable thinking with scaling
- *  depth — reasoning works at every thinking level (gajae parity: Minimal is a real effort).
+ *  gjc's ANTHROPIC_THINKING table: low/medium/high ALL enable thinking with scaling
+ *  depth — reasoning works at every thinking level (gajae parity).
  *  Only an UNSET effort stays non-thinking (the explicit /fast off path). The "xhigh" row is
  *  correct-by-table even though upstream currently folds xhigh→high before it arrives. */
 function anthropicThinkingBudget(effort: CallOptions["reasoningEffort"] | "xhigh", maxTokens: number): number | undefined {
   let budget: number;
   switch (effort) {
-    case "minimal": budget = 1024; break;
     case "low": budget = 4096; break;
     case "medium": budget = 8192; break;
     case "high": budget = 16384; break;
@@ -161,10 +160,9 @@ function anthropicThinkingMode(model: string): AnthropicThinkingMode {
 }
 
 /** Map jeo's reasoning effort to Anthropic's adaptive/output_config effort literal. jeo folds
- *  xhigh→high upstream, so only minimal/low/medium/high arrive here. (gjc: mapEffortToAnthropicAdaptiveEffort) */
+ *  xhigh→high upstream, so only low/medium/high arrive here. (gjc: mapEffortToAnthropicAdaptiveEffort) */
 function anthropicAdaptiveEffort(effort: NonNullable<CallOptions["reasoningEffort"]>): "low" | "medium" | "high" {
   switch (effort) {
-    case "minimal":
     case "low": return "low";
     case "medium": return "medium";
     case "high": return "high";

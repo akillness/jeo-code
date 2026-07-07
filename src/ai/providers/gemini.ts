@@ -26,11 +26,10 @@ export function geminiThinkingBudget(model: string, effort?: CallOptions["reason
   const effectiveEffort = effort ?? geminiNamedEffort(m);
   let budget: number;
   switch (effectiveEffort) {
-    // minimal/low/medium/high ALL enable thinking with scaling depth — reasoning works at
-    // every thinking level (gajae parity: Minimal is a real effort). Only an UNSET effort
+    // low/medium/high ALL enable thinking with scaling depth — reasoning works at
+    // every thinking level (gajae parity). Only an UNSET effort
     // (and no in-name depth marker) falls through to the floor.
     // Tier values mirror gjc's GOOGLE_THINKING table (stream.ts).
-    case "minimal": budget = Math.max(floor, 1024); break;
     case "low": budget = 4096; break;
     case "medium": budget = 8192; break;
     case "high": budget = 16384; break;
@@ -63,10 +62,9 @@ export function geminiUsesThinkingLevel(model: string): boolean {
 }
 
 /** Effort → Google `thinkingLevel` enum value (gjc mapEffortToGoogleThinkingLevel):
- *  minimal→MINIMAL, low→LOW, medium→MEDIUM, high/xhigh→HIGH. */
-export function geminiThinkingLevel(effort: NonNullable<CallOptions["reasoningEffort"]> | "xhigh"): "MINIMAL" | "LOW" | "MEDIUM" | "HIGH" {
+ *  low→LOW, medium→MEDIUM, high/xhigh→HIGH. */
+export function geminiThinkingLevel(effort: NonNullable<CallOptions["reasoningEffort"]> | "xhigh"): "LOW" | "MEDIUM" | "HIGH" {
   switch (effort) {
-    case "minimal": return "MINIMAL";
     case "low": return "LOW";
     case "medium": return "MEDIUM";
     case "high":
@@ -80,7 +78,7 @@ export function geminiThinkingLevel(effort: NonNullable<CallOptions["reasoningEf
  *  omitted so the model keeps its default (gjc parity: thinking not enabled → no config).
  *  Other thinking-capable models → numeric thinkingBudget; pre-2.5 → undefined. */
 export type GeminiThinkingConfig =
-  | { includeThoughts: true; thinkingLevel: "MINIMAL" | "LOW" | "MEDIUM" | "HIGH" }
+  | { includeThoughts: true; thinkingLevel: "LOW" | "MEDIUM" | "HIGH" }
   | { includeThoughts: true; thinkingBudget: number };
 
 export function geminiThinkingConfig(model: string, effort?: CallOptions["reasoningEffort"], maxTokens?: number): GeminiThinkingConfig | undefined {

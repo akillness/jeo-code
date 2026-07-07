@@ -478,12 +478,12 @@ export async function runThinkingSlash(input: string, ctx: AgentsSlashCtx): Prom
     console.log(`Thinking level: ${sessionThinking ?? "medium"} (~${thinkingMaxTokens(sessionThinking)} max tokens/step)`);
     return result();
   }
-  if (arg === "minimal" || arg === "low" || arg === "medium" || arg === "high" || arg === "xhigh") {
+  if (arg === "low" || arg === "medium" || arg === "high" || arg === "xhigh") {
     sessionThinking = arg;
     sessionThinkingChanged = true;
     console.log(`Thinking set to ${arg} (~${thinkingMaxTokens(arg)} max tokens/step)`);
   } else {
-    console.log(`Invalid level '${arg}'. Use: minimal | low | medium | high | xhigh.`);
+    console.log(`Invalid level '${arg}'. Use: low | medium | high | xhigh.`);
   }
   return result();
 }

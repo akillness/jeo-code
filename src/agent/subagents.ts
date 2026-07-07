@@ -298,7 +298,7 @@ export function parseMaxSteps(input: string | undefined): number | undefined {
  * maxSteps). Pure — does not mutate `config`. Unknown roles are rejected by the
  * caller via `getSubagentRole`; this helper trusts the id it is given.
  */
-export type ThinkLevelValue = "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ThinkLevelValue = "low" | "medium" | "high" | "xhigh";
 
 /** Per-role reasoning level → explicit role override, else undefined (= INHERIT
  *  the global thinkingLevel at call time — gjc's "(inherit)" semantics). */

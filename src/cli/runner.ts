@@ -331,7 +331,7 @@ export function renderHelp(ctx: DispatchContext): string {
   lines.push("      --model <id>             Use a session model for launch/one-shot.");
   lines.push("      --provider <name>        Start launch on a provider default (anthropic/openai/gemini/antigravity/ollama).");
   lines.push("      --smol|--slow|--plan     Start launch with the configured model role tier.");
-  lines.push("      --thinking <level>       Set thinking budget (minimal/low/medium/high/xhigh).");
+  lines.push("      --thinking <level>       Set thinking budget (low/medium/high/xhigh).");
   lines.push("");
   return lines.join("\n");
 }

@@ -136,9 +136,9 @@ test("/fast toggles the session thinking level for fast-capable models", async (
     const { runLaunchCommand } = await import("../src/commands/launch");
     await runLaunchCommand(["--no-tui", "--no-session"]);
     const out = logged.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-    expect(out).toContain("Fast mode: off · supported (thinking minimal)");
+    expect(out).toContain("Fast mode: off · supported (thinking low)");
     expect(out).toContain("Fast mode on:");
-    expect(out).toContain("Thinking level: minimal");
+    expect(out).toContain("Thinking level: low");
     expect(out).toContain("Fast mode off: restored thinking high");
     expect(out).toContain("Thinking level: high");
   } finally {

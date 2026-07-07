@@ -15,7 +15,7 @@ test("catalog keeps haiku + the 4.6-generation entries and drops sub-4.6 Anthrop
   expect(haiku45!.provider).toBe("anthropic");
   expect(haiku45!.contextTokens).toBe(200_000);
   expect(haiku45!.maxOutputTokens).toBe(64_000);
-  expect(haiku45!.thinking).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+  expect(haiku45!.thinking).toEqual(["low", "medium", "high", "xhigh"]);
   expect(haiku45!.images).toBe(true);
 
   const sonnet46 = findCatalogModel("claude-sonnet-4-6");

@@ -65,8 +65,6 @@ test("geminiThinkingBudget: effort maps to budget (gjc GOOGLE_THINKING tiers) an
   expect(geminiThinkingBudget("gemini-2.5-flash", "medium")).toBe(8192);
   expect(geminiThinkingBudget("gemini-2.5-flash", "high")).toBe(16384);
   expect(geminiThinkingBudget("gemini-2.5-flash", "xhigh")).toBe(24575);
-  // minimal is a genuine light tier (gajae parity: reasoning at every level), not 0.
-  expect(geminiThinkingBudget("gemini-2.5-flash", "minimal")).toBe(1024);
   // Clamp: medium (8192) against a 4000-token output cap leaves ~1K for text.
   expect(geminiThinkingBudget("gemini-2.5-flash", "medium", 4000)).toBe(2976);
   // Tiny output budgets kill thinking entirely (the live empty-reply repro).
@@ -81,8 +79,6 @@ test("geminiThinkingConfig: gemini-3.x carries the thinkingLevel enum, never a n
   expect(geminiUsesThinkingLevel("gemini-2.5-flash")).toBe(false);
   expect(geminiUsesThinkingLevel("gemini-10-pro")).toBe(false); // major 10 ≠ 3 → budget mode
 
-  // gjc mapEffortToGoogleThinkingLevel: minimal→MINIMAL, low→LOW, medium→MEDIUM, high→HIGH.
-  expect(geminiThinkingConfig("gemini-3-pro", "minimal")).toEqual({ includeThoughts: true, thinkingLevel: "MINIMAL" });
   expect(geminiThinkingConfig("gemini-3-flash", "low")).toEqual({ includeThoughts: true, thinkingLevel: "LOW" });
   expect(geminiThinkingConfig("gemini-3.1-pro", "medium")).toEqual({ includeThoughts: true, thinkingLevel: "MEDIUM" });
   expect(geminiThinkingConfig("gemini-3-pro", "high")).toEqual({ includeThoughts: true, thinkingLevel: "HIGH" });

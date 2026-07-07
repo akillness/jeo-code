@@ -92,8 +92,7 @@ export function providerModelFor(model: string): string {
 }
 
 /** Map the configured thinking level to a default max-token budget. */
-export function thinkingMaxTokens(level?: "minimal" | "low" | "medium" | "high" | "xhigh"): number {
-  if (level === "minimal") return 4000;
+export function thinkingMaxTokens(level?: "low" | "medium" | "high" | "xhigh"): number {
   if (level === "low") return 8000;
   if (level === "high") return 24000;
   if (level === "xhigh") return 31999;
@@ -117,7 +116,7 @@ const DEFAULT_MAX_OUTPUT_CAP = 64_000;
  *  Uncatalogued models (local/live ids) keep the legacy thinking-table budget. */
 export function resolveMaxOutputTokens(
   model?: string,
-  level?: "minimal" | "low" | "medium" | "high" | "xhigh",
+  level?: "low" | "medium" | "high" | "xhigh",
 ): number {
   const meta = model ? findCatalogEntry(expandAlias(model, ALIAS_DEFAULTS)) : undefined;
   if (!meta) return thinkingMaxTokens(level);
@@ -126,13 +125,13 @@ export function resolveMaxOutputTokens(
   return Math.min(findCatalogModel(meta.id)?.maxOutputTokens ?? cap, cap);
 }
 
-/** Map the thinking level to an OpenAI reasoning-effort tier. minimal/low/medium/high pass
+/** Map the thinking level to an OpenAI reasoning-effort tier. low/medium/high pass
  *  through unchanged and xhigh folds to high (the deepest tier the provider APIs accept), so
- *  reasoning works at EVERY thinking level (gajae parity: minimal is a real effort). Only an
- *  unset level returns undefined (reasoning off — the explicit /fast path). */
+ *  reasoning works at EVERY thinking level (gajae parity). Only an unset level returns
+ *  undefined (reasoning off — the explicit /fast path). */
 export function thinkingToReasoningEffort(
-  level?: "minimal" | "low" | "medium" | "high" | "xhigh",
-): "minimal" | "low" | "medium" | "high" | undefined {
+  level?: "low" | "medium" | "high" | "xhigh",
+): "low" | "medium" | "high" | undefined {
   if (!level) return undefined;
   return level === "xhigh" ? "high" : level;
 }
@@ -450,13 +449,18 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
  *  streaming idle watchdog, this path collects an opaque buffered body (`response.json()`,
  *  or an internally-streamed collect in codexResponsesCall / antigravity.call) and exposes
  *  no per-chunk signal — so a wall clock is the only lever and a wire heartbeat cannot help.
- *  Raised to 300s to match STREAM_IDLE_TIMEOUT_MS: non-interactive turns (callLlm WITHOUT
- *  onToken — compaction, ralplan, deep-interview, memory distill, goal-verify, and subagent/
- *  autopilot engine steps) route here, and a long reasoning completion legitimately exceeds
- *  120s; too-tight, it aborts an alive call, retries re-incur the same slow request, the
- *  attempt budget exhausts, and the turn STOPS — the same false-failure the streaming
- *  watchdog guards, on the path the wire heartbeat never reaches. */
-const DEFAULT_CALL_TIMEOUT_MS = 300_000;
+ *  Raised 120s → 300s → 30min across two rounds of the SAME false-failure: non-interactive
+ *  turns (callLlm WITHOUT onToken — compaction, ralplan, deep-interview, memory distill,
+ *  goal-verify, and subagent/autopilot engine steps) route here, and a HIGH/XHIGH reasoning
+ *  effort completion (GPT-5.5/o3-class) legitimately exceeds 300s — OpenAI's own guidance is
+ *  that xhigh trades latency for depth deliberately. Too-tight, it aborts an alive call, the
+ *  attempt budget exhausts, and the turn STOPS — exactly the false-failure the streaming
+ *  watchdog guards, on the path the wire heartbeat never reaches. 30min matches both
+ *  `turnMaxMs()`'s own vetted stall-budget default AND the OBSERVED ~20-30min infra-side
+ *  connection-duration cap on OpenAI's Codex/ChatGPT backend (see socket-closed handling
+ *  above) — genuinely dead connections still fail fast via TCP/TLS errors well before this;
+ *  this wall clock exists only for the "server accepted the request and went silent" case. */
+const DEFAULT_CALL_TIMEOUT_MS = 30 * 60_000;
 
 /** Per-chunk idle cap for streaming: a stream that emits NOTHING for this long is
  *  aborted, but a healthy long generation (chunks keep arriving) runs unbounded —
@@ -564,13 +568,17 @@ async function nextMaybeIdle(iter: AsyncIterator<string>, watchdog?: Promise<nev
 }
 
 /** Overall stream wall-clock from the environment. Defaults to the same hard bound as
- *  callTimeoutMs() (DEFAULT_CALL_TIMEOUT_MS) so the streaming path has parity with the
- *  non-streaming call()/fallback path — a stream that stays connected and keeps emitting
- *  SOMETHING (SSE keepalives, reasoning deltas) re-arms the per-chunk idle watchdog
- *  forever and would otherwise never resolve or reject. JEO_STREAM_MAX_MS explicitly set
- *  to a positive number overrides the default; explicitly set to 0 disables the overall
- *  deadline entirely (mirrors JEO_TURN_MAX_MS's own 0-disables convention) for advanced
- *  users with genuinely long-running legitimate reasoning models. */
+ *  callTimeoutMs() (DEFAULT_CALL_TIMEOUT_MS, 30min) so the streaming path has parity with
+ *  the non-streaming call()/fallback path — a stream that stays connected and keeps
+ *  emitting SOMETHING (SSE keepalives, reasoning deltas) re-arms the per-chunk idle
+ *  watchdog forever and would otherwise never resolve or reject. Bug fix: this previously
+ *  defaulted to 300s (DEFAULT_CALL_TIMEOUT_MS's OLD value, before it too was raised) —
+ *  that false-failed any HIGH/XHIGH-reasoning-effort model (GPT-5.5/o3-class) whose
+ *  ACTIVELY-emitting completion legitimately ran past 5 minutes, killing a healthy
+ *  generation with "stream exceeded the overall deadline" despite continuous activity.
+ *  JEO_STREAM_MAX_MS explicitly set to a positive number overrides the default; explicitly
+ *  set to 0 disables the overall deadline entirely (mirrors JEO_TURN_MAX_MS's own
+ *  0-disables convention) for advanced users with genuinely long-running reasoning models. */
 export function streamMaxMs(env?: Record<string, string | undefined>): number | undefined {
   const raw = jeoEnv("STREAM_MAX_MS", env);
   if (raw === undefined || raw === "") return DEFAULT_CALL_TIMEOUT_MS;

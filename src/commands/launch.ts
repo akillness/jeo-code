@@ -648,7 +648,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
   let sessionModel: string | undefined = initialSessionModel;
   // Session thinking-level override (`/thinking`); falls back to the config level.
-  let sessionThinking: "minimal" | "low" | "medium" | "high" | "xhigh" | undefined = flags.thinking ?? cfg.thinkingLevel;
+  let sessionThinking: "low" | "medium" | "high" | "xhigh" | undefined = flags.thinking ?? cfg.thinkingLevel;
   // PromptRouter session override: undefined = follow config.routing.enabled, true/false = /route on|off wins this session.
   let sessionRouteOverride: boolean | undefined;
   // Last routing decision (or the reason none applied) — /route why reads this.
@@ -2832,7 +2832,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   ): Promise<ThinkLevel | "inherit" | undefined> => {
     const levels = buildThinkingLevelChoices(current, {
       inheritLabel,
-      tokenHint: lvl => (lvl === "minimal" ? undefined : `~${Math.round(thinkingMaxTokens(lvl as ThinkLevel) / 1000)}k tokens`),
+      tokenHint: lvl => `~${Math.round(thinkingMaxTokens(lvl as ThinkLevel) / 1000)}k tokens`,
     });
     const picked = await pickFromOptions(title, levels);
     return picked === "inherit" || isThinkingLevel(picked) ? picked : undefined;
@@ -2849,7 +2849,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       return true;
     }
     if (!isThinkingLevel(level)) {
-      console.log(`Usage: /model subagent ${role.id} thinking <inherit|minimal|low|medium|high|xhigh>`);
+      console.log(`Usage: /model subagent ${role.id} thinking <inherit|low|medium|high|xhigh>`);
       return true;
     }
     await saveConfigPatch(raw => ({ subagents: withSubagentSetting(raw, role.id, { thinking: level }) }));

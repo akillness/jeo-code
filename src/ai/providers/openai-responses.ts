@@ -21,7 +21,7 @@ import pkg from "../../../package.json";
 
 export const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 
-export const VALID_REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high"]);
+export const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
 
 const CODEX_ORIGINATOR = "codex_cli_rs";
 

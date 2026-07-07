@@ -52,7 +52,7 @@ test("resolveMaxOutputTokens: catalogued models use catalog max-output capped at
   // Fable-5/Sonnet-5 catalog 128k → capped at the 64k default. The thinking level
   // must no longer constrain output size (it steers depth via reasoningEffort).
   expect(resolveMaxOutputTokens("claude-fable-5", "xhigh")).toBe(64000);
-  expect(resolveMaxOutputTokens("claude-sonnet-5", "minimal")).toBe(64000);
+  expect(resolveMaxOutputTokens("claude-sonnet-5", "low")).toBe(64000);
   // Catalog max BELOW the cap passes through (haiku 4.5 = 64k exactly, gpt-4o = 16384).
   expect(resolveMaxOutputTokens("claude-haiku-4-5", "high")).toBe(64000);
   expect(resolveMaxOutputTokens("gpt-4o", "high")).toBe(16384);
@@ -84,9 +84,6 @@ test("resolveMaxOutputTokens: JEO_MAX_OUTPUT_TOKENS raises/lowers the cap for ca
 });
 
 test("thinkingToReasoningEffort: maps session level → provider reasoning tier", () => {
-  // minimal is a GENUINE (lightest) reasoning effort — reasoning works at EVERY level
-  // (gajae parity: Minimal is a real effort), no longer collapsed to low.
-  expect(thinkingToReasoningEffort("minimal")).toBe("minimal");
   expect(thinkingToReasoningEffort("low")).toBe("low");
   expect(thinkingToReasoningEffort("medium")).toBe("medium");
   // high AND xhigh both map to the deepest provider tier.

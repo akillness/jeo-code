@@ -79,8 +79,8 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 | `/model` · `/provider` | Pick model/provider; `/model` shows default/role badges, Ralph-style nested Set-as-role thinking choices, and the OpenAI Codex role preset in one flow |
 | `/provider login <name>` · `/logout` | OAuth login/logout from the input box |
 | `/agents [role]` · `/subagent` | Per-role (executor/planner/architect/critic) model · thinking · step config |
-| `/thinking [level]` | Show/set default reasoning budget (minimal…xhigh) |
-| `/fast [on|off|status]` | Toggle fast thinking mode when the active model advertises minimal/low reasoning |
+| `/thinking [level]` | Show/set default reasoning budget (low…xhigh) |
+| `/fast [on|off|status]` | Toggle fast thinking mode when the active model advertises low reasoning |
 | `/skill` · `$<skill> [intent]` | List/run workflow skills (`$team "task"` style) |
 | `/view` · `/diff` · `/find` · `/search` | Code view, git diff, file/pattern search |
 | `/new` · `/resume` · `/sessions` | Session management |
@@ -214,8 +214,10 @@ JEO_TUI_THEME=cosmic            # cosmic/matrix/solar/red-claw/blue-crab/mono/au
 JEO_TUI_ALT_SCREEN=1            # legacy alt-screen turn (default: inline scrollback)
 JEO_STEP_BASE=24                # dynamic step budget: rolling base
 JEO_STEP_HARD_CAP=600           # absolute termination guarantee
-JEO_STREAM_MAX_MS=300000        # opt-in overall stream deadline (default off; bounds slow-drip streams)
+JEO_STREAM_MAX_MS=1800000       # overall stream deadline (default 30min; bounds slow-drip streams, not active ones); 0 disables
 JEO_STREAM_IDLE_MS=300000       # per-chunk idle cap (default 300s); raise for slow/local backends silent before first token
+JEO_CALL_TIMEOUT_MS=1800000     # non-streaming call wall cap (default 30min; compaction/subagents/goal-verify)
+JEO_TURN_MAX_MS=1800000         # turn stall budget: max time WITHOUT tool progress (default 30min); 0 disables
 JEO_TOOL_OUTPUT_MAX=4000        # model-visible tool output cap (full output spills to artifacts)
 ```
 
@@ -262,11 +264,11 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.7.54]** (2026-07-06) — Root-cause fix for a live-reported GPT-5.5 (Codex/ChatGPT OAuth backend) failure: "Error: stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream aborted". Deep-dive traced this to a REGRESSION in v0.7.42 — a separate, correct fix for a genuinely-different bug (a connected-but-never-terminating stream) silently flipped `streamMaxMs()`'s default from opt-in-off to an ALWAYS-ON 300s overall wall-clock cap, which then killed any HIGH/XHIGH-reasoning-effort completion (GPT-5.5/o3-class) whose ACTIVELY-emitting generation legitimately ran past 5 minutes — OpenAI's own guidance states xhigh trades latency for depth by design. The non-streaming `call()` path (used by every subagent, compaction, and goal-verify call, since none wire `onModelStream`) carried the IDENTICAL bug with zero idle/activity tracking at all, exposed under a different, unhelpful raw `DOMException: The operation timed out.` message instead.
 - **[0.7.53]** (2026-07-06) — Verified PromptRouter end-to-end (63 pre-existing tests re-run, all passing; a live `jeo doctor --json`/human-output smoke test confirms real wiring, not just mocks) and closed the one genuine remaining gap: the v0.7.51 per-turn credential-readiness veto protected a running session reactively, but nothing caught a misconfigured `roles.smol`/`roles.slow`/`routing.tiers.*.model` proactively at setup time.
 - **[0.7.52]** (2026-07-06) — Two TUI visibility asks answered directly ("어느 모델이 라우팅됐는지 상시 표시" — persistently show which model routing picked, and "각 서브에이전트의 사고 과정도 보이게" — surface each subagent's own thinking) plus a Ponytail-mode minimal-code audit pass across six files that found one genuine correctness bug and five instances of dead/unreachable code.
 - **[0.7.51]** (2026-07-06) — Closes a real correctness gap the user directly identified by asking "does routing only ever pick from models the user can actually use?" — the honest answer at v0.7.50 was no: `routePrompt` resolves a tier's model purely from config (`routing.tiers`/`roles.smol`/`roles.slow`/`defaultModel`) and never checks whether that model's provider has a usable credential. A user could configure `roles.smol`/`roles.slow` to a provider they never logged into (or whose OAuth token expired since setup), and routing would silently turn a WORKING session into a FAILING turn — `resolveCall` throwing `"No credential for provider …"` — the instant it engaged, even though the turn would have succeeded unrouted. Routing is opt-in specifically so it can never make things worse than routing being off; this closes that hole.
 - **[0.7.50]** (2026-07-06) — Design-doc audit of v0.7.47's PromptRouter, dispatched as two parallel subagents (independent re-verification + gap implementation) against the original Korean-language design report. The core proposal was confirmed shipped correctly (heuristic classifier, escalation, `/model`-always-wins, tool-selection isolation — all independently re-derived from git history and grep evidence, not just re-read from the doc). Two gaps the design doc itself had flagged as open questions (§7 risks #2 and #4) were real and are fixed here; a third finding (an internal contradiction in the design doc's own §3.2 vs §3.4 text on image-attachment gating — the SHIPPED code was already correct, only the doc's prose disagreed with itself) required no code change.
-- **[0.7.49]** (2026-07-06) — gjc Telegram-daemon parity, Tier 2 (follow-up to 0.7.37/0.7.38/0.7.48's subagent-visibility-only daemon): adds a dynamic, PER-SESSION forum topic that mirrors that session's OWN activity — not just its subagents — and lets a Telegram reply steer it directly. Opt-in via `notifications.telegram.perSessionTopics`; the flat/global `topicId` path from 0.7.48 is UNCHANGED when it's off, so existing setups see zero regression.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

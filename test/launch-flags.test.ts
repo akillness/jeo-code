@@ -25,11 +25,11 @@ test("isProviderName accepts every registered provider, not just the OAuth few",
 
 test("fastThinkingLevelForModel: digit-agnostic gemini gate (multi-digit major never silently loses thinking)", () => {
   // Catalogued reasoning ids resolve via catalog thinking caps.
-  expect(fastThinkingLevelForModel("gemini-2.5-flash")).toBe("minimal");
+  expect(fastThinkingLevelForModel("gemini-2.5-flash")).toBe("low");
   // The last-resort family gate must stay digit-count agnostic: gemini-10 (prefixed)
   // and 2.6+ are reasoning-capable just like 2.5/3.x — the opus-4-8 bug, generalized.
-  expect(fastThinkingLevelForModel("models/gemini-10-pro")).toBe("minimal");
-  expect(fastThinkingLevelForModel("models/gemini-2.7-flash")).toBe("minimal");
+  expect(fastThinkingLevelForModel("models/gemini-10-pro")).toBe("low");
+  expect(fastThinkingLevelForModel("models/gemini-2.7-flash")).toBe("low");
   // Pre-2.5 Gemini and non-reasoning chat models get no fast-thinking default.
   expect(fastThinkingLevelForModel("gemini-2.0-flash")).toBeUndefined();
   expect(fastThinkingLevelForModel("gpt-4o")).toBeUndefined();
@@ -51,7 +51,7 @@ test("parseFlags records invalid provider/thinking values as launch errors", () 
   expect(flags.thinking).toBeUndefined();
   expect(flags.errors).toEqual([
     "--provider must be one of: anthropic, openai, gemini, ollama",
-    "--thinking must be one of: minimal, low, medium, high, xhigh",
+    "--thinking must be one of: low, medium, high, xhigh",
   ]);
   expect(flags.message).toBe("hello");
 });

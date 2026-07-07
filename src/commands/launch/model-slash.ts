@@ -124,7 +124,7 @@ export async function runModelSlash(input: string, ctx: ModelSlashCtx): Promise<
   if (modelThinking) {
     const level = (modelThinking[1] ?? "").toLowerCase();
     if (!isThinkingLevel(level)) {
-      console.log("Usage: /model thinking <minimal|low|medium|high|xhigh>");
+      console.log("Usage: /model thinking <low|medium|high|xhigh>");
       return result();
     }
     sessionThinking = level;

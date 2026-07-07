@@ -122,7 +122,7 @@ export const ConfigSchema = z
      *  regardless of project/cwd. A leading `~` is expanded; env `JEO_WIKI_ROOT`
      *  overrides. Consumed by `resolveWikiRoot` and injected into the prompt. */
     wikiRoot: z.string().optional(),
-    thinkingLevel: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
+    thinkingLevel: z.enum(["low", "medium", "high", "xhigh"]).optional(),
     modelAliases: z.record(z.string()).optional(),
     /** Most-recently-selected models, newest first (drives the default + pickers). */
     recentModels: z.array(z.string()).optional(),
@@ -167,7 +167,7 @@ export const ConfigSchema = z
           provider: z.enum(["anthropic", "openai", "gemini", "antigravity", "ollama"]).optional(),
           maxSteps: z.number().int().min(1).optional(),
           /** Per-role reasoning budget; absent = inherit the global thinkingLevel. */
-          thinking: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
+          thinking: z.enum(["low", "medium", "high", "xhigh"]).optional(),
           // ─── Custom-role declaration (SYSTEM-driven registry) ───
           // An entry under a NON-bundled id that sets any of these becomes a
           // first-class subagent role at runtime — no code change required.
@@ -201,9 +201,9 @@ export const ConfigSchema = z
         confidenceThreshold: z.number().min(0).max(1).optional(),
         tiers: z
           .object({
-            trivial: z.object({ model: z.string().optional(), thinking: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional() }).optional(),
-            standard: z.object({ model: z.string().optional(), thinking: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional() }).optional(),
-            complex: z.object({ model: z.string().optional(), thinking: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional() }).optional(),
+            trivial: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh"]).optional() }).optional(),
+            standard: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh"]).optional() }).optional(),
+            complex: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh"]).optional() }).optional(),
           })
           .optional(),
       })
@@ -262,8 +262,52 @@ function normalizeModelId(id: string | undefined, aliases: Record<string, string
   return trimmed;
 }
 
+/** Migrate the retired "minimal" thinking level to "low" on every field that could carry
+ *  it, BEFORE schema validation. Without this, a config.json persisted while "minimal"
+ *  was still valid (thinkingLevel, any subagents.*.thinking, any routing.tiers.*.thinking)
+ *  would fail the tightened enum and readGlobalConfig's schema-invalid path resets the
+ *  ENTIRE config to defaults (modelAliases/subagents/routing/retry/hooks/notifications
+ *  all silently lost, not just the one bad field) — see state.ts's salvageCredentials doc
+ *  comment for why only oauth/providers survive that path. Mutates a shallow-cloned
+ *  object only where needed; non-object/malformed input passes through untouched so the
+ *  schema's own validation still reports the real error. */
+function migrateMinimalThinking(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const cfg = raw as Record<string, unknown>;
+  let changed = false;
+  const out: Record<string, unknown> = { ...cfg };
+  if (out.thinkingLevel === "minimal") { out.thinkingLevel = "low"; changed = true; }
+  if (out.subagents && typeof out.subagents === "object") {
+    const subs = out.subagents as Record<string, unknown>;
+    const nextSubs: Record<string, unknown> = { ...subs };
+    for (const [roleId, role] of Object.entries(subs)) {
+      if (role && typeof role === "object" && (role as Record<string, unknown>).thinking === "minimal") {
+        nextSubs[roleId] = { ...(role as Record<string, unknown>), thinking: "low" };
+        changed = true;
+      }
+    }
+    if (changed) out.subagents = nextSubs;
+  }
+  if (out.routing && typeof out.routing === "object") {
+    const routing = out.routing as Record<string, unknown>;
+    if (routing.tiers && typeof routing.tiers === "object") {
+      const tiers = routing.tiers as Record<string, unknown>;
+      const nextTiers: Record<string, unknown> = { ...tiers };
+      let tiersChanged = false;
+      for (const [tierId, tier] of Object.entries(tiers)) {
+        if (tier && typeof tier === "object" && (tier as Record<string, unknown>).thinking === "minimal") {
+          nextTiers[tierId] = { ...(tier as Record<string, unknown>), thinking: "low" };
+          tiersChanged = true;
+        }
+      }
+      if (tiersChanged) { out.routing = { ...routing, tiers: nextTiers }; changed = true; }
+    }
+  }
+  return changed ? out : raw;
+}
+
 export function parseConfig(raw: unknown): { ok: true; config: ValidatedConfig } | { ok: false; message: string } {
-  const result = ConfigSchema.safeParse(raw);
+  const result = ConfigSchema.safeParse(migrateMinimalThinking(raw));
   if (result.success) {
     const config = result.data;
     const aliases = config.modelAliases || {};

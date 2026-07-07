@@ -6,7 +6,7 @@
  *  - `/model gpt`      → live (logged-in) model ids + aliases + catalog ids
  *  - `/provider an`    → provider names; second arg → that provider's live models
  *  - `/agents exec`    → subagent role ids; second arg → live model ids
- *  - `/thinking h`     → minimal/low/medium/high/xhigh
+ *  - `/thinking h`     → low/medium/high/xhigh
  *
  * Pure + synchronous: the dynamic data (live models from the OAuth-authenticated
  * accounts, alias snapshot) is passed in via `CompletionContext`, so the readline
@@ -59,7 +59,7 @@ const PREVIEW_LABEL: Record<string, string> = {
   path: "Paths",
 };
 const MAX_COMPLETIONS = 50;
-const THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh"];
+const THINKING_LEVELS = ["low", "medium", "high", "xhigh"];
 
 /** Static half of a completion context (no network/config needed). */
 export function staticCompletionContext(): Omit<CompletionContext, "liveModels" | "aliases" | "modelsForProvider"> {

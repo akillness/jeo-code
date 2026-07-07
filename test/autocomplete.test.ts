@@ -17,7 +17,7 @@ const ctx = (over: Partial<CompletionContext> = {}): CompletionContext => ({
   catalogModels: ["claude-3-5-sonnet", "gpt-4o", "gemini-2.0-flash"],
   providers: ["anthropic", "openai", "gemini", "ollama"],
   roleIds: ["executor", "planner", "architect", "critic"],
-  thinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
+  thinkingLevels: ["low", "medium", "high", "xhigh"],
   modelsForProvider: p => (p === "openai" ? ["gpt-4o-live", "gpt-4o-mini-live"] : []),
   mentionPaths: prefix => (prefix === "" ? ["src/", "README.md"] : prefix === "src/" ? ["src/commands/", "src/tui/"] : prefix === "src/c" ? ["src/commands/"] : []),
   ...over,
@@ -150,8 +150,8 @@ test("/roles completes tier then live/catalog models", () => {
   expect(m.completions).toContain("gpt-4o-live");
 });
 
-test("/thinking completes the five levels", () => {
-  expect(complete("/thinking ", ctx()).completions).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+test("/thinking completes the four levels", () => {
+  expect(complete("/thinking ", ctx()).completions).toEqual(["low", "medium", "high", "xhigh"]);
   expect(complete("/thinking h", ctx()).completions).toEqual(["high"]);
 });
 
@@ -175,7 +175,7 @@ test("staticCompletionContext is wired to the real registries", () => {
   expect(s.providers).toContain("anthropic");
   expect(s.roleIds).toContain("executor");
   expect(s.catalogModels).toContain("gpt-4o");
-  expect(s.thinkingLevels).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+  expect(s.thinkingLevels).toEqual(["low", "medium", "high", "xhigh"]);
 });
 
 test("/session completes its subcommands", () => {

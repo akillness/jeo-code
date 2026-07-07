@@ -107,11 +107,10 @@ export function renderLiveModelPicker(list: SelectList<PickEntry>, opts: RenderS
   return renderSelectList(list, { title: "Select a live model", rows: 12, showTabs: true, ...opts });
 }
 
-/** The five reasoning levels in display order, lightest → heaviest. */
-export const THINKING_LEVEL_ORDER = ["minimal", "low", "medium", "high", "xhigh"] as const;
+/** The four reasoning levels in display order, lightest → heaviest. */
+export const THINKING_LEVEL_ORDER = ["low", "medium", "high", "xhigh"] as const;
 
 const THINKING_LEVEL_DESCRIPTION: Record<string, string> = {
-  minimal: "lightest reasoning",
   low: "light reasoning",
   medium: "moderate reasoning",
   high: "deep reasoning",

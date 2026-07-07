@@ -10,9 +10,6 @@ const apiKey = { kind: "api_key" as const, provider: "openai" as const, token: "
 const anthropicOauth = { kind: "oauth" as const, provider: "anthropic" as const, token: "tok" };
 
 test("thinkingToReasoningEffort: maps levels to o-series-safe tiers", () => {
-  // minimal is a genuine (lightest) reasoning effort — reasoning works at EVERY
-  // level (gajae parity), no longer collapsed to low.
-  expect(thinkingToReasoningEffort("minimal")).toBe("minimal");
   expect(thinkingToReasoningEffort("low")).toBe("low");
   expect(thinkingToReasoningEffort("medium")).toBe("medium");
   expect(thinkingToReasoningEffort("high")).toBe("high");
@@ -318,18 +315,56 @@ test("retryableStream: a generous deadline does not disturb a healthy stream", a
   expect(out).toEqual(["a", "b", "c"]);
 });
 
-test("streamMaxMs: env opt-in override — defaults to DEFAULT_CALL_TIMEOUT_MS (300s), 0 disables", async () => {
+test("retryableStream: an ACTIVELY-emitting reasoning stream that runs past the OLD 300s threshold is NOT aborted (GPT-5.5/o3 xhigh regression)", async () => {
+  // Reproduces the reported bug at compressed scale: a stream emitting continuously
+  // (reasoning deltas, gjc-style) for LONGER than the old 300s hard deadline used to
+  // die with "stream exceeded the overall deadline" even though it was actively
+  // producing tokens the whole time. Scale factor here: 60ms deadline stands in for
+  // 30min, so 15ms (stands in for the old ~7.5min blown-past-300s point) proves a
+  // reasoning-heavy completion survives well past where it used to be killed.
+  const deadlineMs = 60; // stands in for the production 30min default
+  const oldThresholdMs = 15; // stands in for well past the OLD 300s default
+  let elapsed = 0;
+  const makeIter = (): AsyncIterator<string> => ({
+    next: () => {
+      const { promise, resolve } = Promise.withResolvers<IteratorResult<string>>();
+      setTimeout(() => {
+        elapsed += 2;
+        resolve(elapsed >= oldThresholdMs ? { value: "done", done: false } : { value: "tok", done: false });
+      }, 2);
+      return promise;
+    },
+  });
+  const out: string[] = [];
+  const deadlineAt = Date.now() + deadlineMs;
+  for await (const c of retryableStream(
+    makeIter,
+    { retries: 1, baseDelayMs: 1, sleep: async () => {}, isRetryable: defaultRetryable },
+    { idleMs: 1000, deadlineAt, lastActivityAt: () => Date.now() },
+  )) {
+    out.push(c);
+    if (c === "done") break; // simulate the stream terminating normally past the old threshold
+  }
+  expect(out[out.length - 1]).toBe("done"); // reached completion, was NEVER force-aborted
+  expect(Date.now()).toBeLessThan(deadlineAt); // proves it finished before hitting even the NEW deadline
+});
+
+test("streamMaxMs: env opt-in override — defaults to DEFAULT_CALL_TIMEOUT_MS (30min), 0 disables", async () => {
+  // Bug fix (GPT-5.5/o3-class regression): this previously defaulted to 300s, which
+  // false-failed any HIGH/XHIGH-reasoning-effort model whose ACTIVELY-emitting completion
+  // legitimately ran past 5 minutes ("stream exceeded the overall deadline" despite
+  // continuous activity). 30min matches turnMaxMs()'s own vetted stall-budget default.
   const { streamMaxMs } = await import("../src/ai/model-manager");
-  expect(streamMaxMs({})).toBe(300_000); // default ON — parity with callTimeoutMs's 300s hard bound
+  expect(streamMaxMs({})).toBe(30 * 60_000); // default ON — parity with callTimeoutMs's 30min hard bound
   expect(streamMaxMs({ JEO_STREAM_MAX_MS: "30000" })).toBe(30000);
   expect(streamMaxMs({ JEO_STREAM_MAX_MS: "5000" })).toBe(5000); // legacy prefix
   expect(streamMaxMs({ JEO_STREAM_MAX_MS: "0" })).toBeUndefined(); // explicit 0 disables (mirrors JEO_TURN_MAX_MS)
-  expect(streamMaxMs({ JEO_STREAM_MAX_MS: "nope" })).toBe(300_000); // invalid → default
+  expect(streamMaxMs({ JEO_STREAM_MAX_MS: "nope" })).toBe(30 * 60_000); // invalid → default
 });
 
 test("streamMaxMs + retryableStream: a keepalive-forever stream (never terminates, but keeps bumping activity) is aborted once the default deadline elapses", async () => {
   const { streamMaxMs } = await import("../src/ai/model-manager");
-  const maxMs = streamMaxMs({ JEO_STREAM_MAX_MS: "30" }); // short override stands in for the 300s default
+  const maxMs = streamMaxMs({ JEO_STREAM_MAX_MS: "30" }); // short override stands in for the 30min default
   let lastActivityAt = Date.now();
   const ticker = setInterval(() => { lastActivityAt = Date.now(); }, 5); // wire-level keepalive bytes, forever
   const makeIter = (): AsyncIterator<string> => ({
@@ -360,16 +395,19 @@ test("streamIdleMs: env opt-in parsing — built-in default, positive int overri
   expect(streamIdleMs({ JEO_STREAM_IDLE_MS: "nope" })).toBe(300_000);
 });
 
-test("callTimeoutMs: non-streaming wall cap — 300s default (matches stream idle), positive int override only", async () => {
+test("callTimeoutMs: non-streaming wall cap — 30min default (matches turnMaxMs), positive int override only", async () => {
   // Non-interactive turns (callLlm without onToken: compaction/ralplan/deep-interview/
   // memory/goal-verify/subagent steps) route through the non-streaming call path; its hard
-  // cap must match the 300s streaming idle window so a long reasoning completion is not
-  // falsely aborted at the old 120s, and stay env-overridable for slower setups.
+  // cap must accommodate a HIGH/XHIGH-reasoning-effort completion (GPT-5.5/o3-class) that
+  // legitimately exceeds 300s — the OLD 300s default (itself raised once already from 120s
+  // for the same false-failure pattern) still false-aborted an alive call on these models.
+  // 30min matches turnMaxMs()'s own vetted default AND the observed ~20-30min infra-side
+  // connection-duration cap on OpenAI's Codex/ChatGPT backend.
   const { callTimeoutMs } = await import("../src/ai/model-manager");
-  expect(callTimeoutMs({})).toBe(300_000); // built-in default, raised 120s → 300s
+  expect(callTimeoutMs({})).toBe(30 * 60_000); // built-in default, raised 120s → 300s → 30min
   expect(callTimeoutMs({ JEO_CALL_TIMEOUT_MS: "600000" })).toBe(600000);
-  expect(callTimeoutMs({ JEO_CALL_TIMEOUT_MS: "0" })).toBe(300_000); // non-positive → default
-  expect(callTimeoutMs({ JEO_CALL_TIMEOUT_MS: "nope" })).toBe(300_000);
+  expect(callTimeoutMs({ JEO_CALL_TIMEOUT_MS: "0" })).toBe(30 * 60_000); // non-positive → default
+  expect(callTimeoutMs({ JEO_CALL_TIMEOUT_MS: "nope" })).toBe(30 * 60_000);
 });
 
 test("defaultRetryable: a per-chunk stream-idle stall is retryable, the overall deadline is not", () => {

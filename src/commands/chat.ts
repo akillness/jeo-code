@@ -46,8 +46,8 @@ export async function runChatCommand(args: string[] = []): Promise<void> {
   let any = false;
   let usage: { inputTokens?: number; outputTokens?: number; durationMs?: number } | undefined;
   try {
-    const effort = (thinking === "xhigh" ? "high" : thinking) as "minimal" | "low" | "medium" | "high" | undefined;
-    const maxTokens = explicitMaxTokens ?? (thinking ? thinkingMaxTokens(thinking as "minimal" | "low" | "medium" | "high" | "xhigh") : undefined);
+    const effort = (thinking === "xhigh" ? "high" : thinking) as "low" | "medium" | "high" | undefined;
+    const maxTokens = explicitMaxTokens ?? (thinking ? thinkingMaxTokens(thinking as "low" | "medium" | "high" | "xhigh") : undefined);
     for await (const chunk of manager.stream([{ role: "user", content: message }], { model, maxTokens, reasoningEffort: effort, onUsage: u => { usage = u; } })) {
       process.stdout.write(chunk);
       any = true;

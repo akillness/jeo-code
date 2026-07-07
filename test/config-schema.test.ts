@@ -28,6 +28,62 @@ test("parseConfig: rejects wrong types with a located message", () => {
   if (!r2.ok) expect(r2.message).toContain("thinkingLevel");
 });
 
+test("parseConfig: retired 'minimal' thinkingLevel migrates to 'low' instead of failing validation (backward compat)", () => {
+  // Regression: a config.json persisted while "minimal" was still a valid tier must
+  // NOT hard-fail once the enum is tightened — readGlobalConfig's schema-invalid path
+  // resets the ENTIRE config to defaults (see state.ts's salvageCredentials doc
+  // comment), so this migration is load-bearing for every pre-existing user config.
+  const r = parseConfig({ defaultModel: "m", thinkingLevel: "minimal", modelAliases: { fast: "x" } });
+  expect(r.ok).toBe(true);
+  if (r.ok) {
+    expect(r.config.thinkingLevel).toBe("low");
+    // Sibling fields survive the migration untouched.
+    expect(r.config.modelAliases).toEqual({ fast: "x" });
+  }
+});
+
+test("parseConfig: 'minimal' subagent-role thinking overrides migrate to 'low'", () => {
+  const r = parseConfig({
+    defaultModel: "m",
+    subagents: {
+      executor: { thinking: "minimal", model: "gpt-4o" },
+      planner: { thinking: "high" },
+    },
+  });
+  expect(r.ok).toBe(true);
+  if (r.ok) {
+    expect(r.config.subagents?.executor?.thinking).toBe("low");
+    expect(r.config.subagents?.executor?.model).toBe("gpt-4o"); // untouched
+    expect(r.config.subagents?.planner?.thinking).toBe("high"); // untouched (not "minimal")
+  }
+});
+
+test("parseConfig: 'minimal' routing-tier thinking overrides migrate to 'low'", () => {
+  const r = parseConfig({
+    defaultModel: "m",
+    routing: {
+      enabled: true,
+      tiers: {
+        trivial: { thinking: "minimal", model: "gpt-4o-mini" },
+        complex: { thinking: "xhigh" },
+      },
+    },
+  });
+  expect(r.ok).toBe(true);
+  if (r.ok) {
+    expect(r.config.routing?.tiers?.trivial?.thinking).toBe("low");
+    expect(r.config.routing?.tiers?.trivial?.model).toBe("gpt-4o-mini"); // untouched
+    expect(r.config.routing?.tiers?.complex?.thinking).toBe("xhigh"); // untouched
+  }
+});
+
+test("parseConfig: a genuinely invalid thinking level (not the retired 'minimal') still fails validation", () => {
+  // Confirms the migration is an exact-match rewrite, not an over-broad pass-through
+  // that would silently swallow real typos/garbage.
+  const r = parseConfig({ defaultModel: "m", thinkingLevel: "minimal-plus" });
+  expect(r.ok).toBe(false);
+});
+
 test("parseConfig: accepts a retry budget block (gjc parity)", () => {
   const r = parseConfig({
     defaultModel: "m",
@@ -86,6 +142,31 @@ test("readGlobalConfig: loads a valid on-disk config", async () => {
   process.env.JEO_CONFIG_DIR = dir;
   const cfg = await readGlobalConfig();
   expect(cfg.defaultModel).toBe("claude-3-5-haiku");
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("readGlobalConfig: a pre-existing on-disk config with the retired 'minimal' thinkingLevel does NOT get reset to defaults (real user-impact regression guard)", async () => {
+  // Proves the fix end-to-end through the ACTUAL disk-read path, not just parseConfig
+  // in isolation: before the migration existed, this exact scenario hit the
+  // schema-invalid branch in readGlobalConfig, which wipes modelAliases/subagents/
+  // routing/retry/hooks/notifications back to defaults (only oauth/providers survive
+  // via salvageCredentials) — a real user with a "minimal" config would have silently
+  // lost every one of those settings the instant this release shipped.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-cfg-"));
+  await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({
+    defaultModel: "claude-3-5-haiku",
+    thinkingLevel: "minimal",
+    modelAliases: { fast: "ollama/qwen2.5:0.5b" },
+    subagents: { executor: { thinking: "minimal" } },
+  }));
+  process.env.JEO_CONFIG_DIR = dir;
+  const cfg = await readGlobalConfig();
+  // The old value migrated — config was NOT treated as schema-invalid.
+  expect(cfg.thinkingLevel).toBe("low");
+  expect(cfg.subagents?.executor?.thinking).toBe("low");
+  // Every OTHER field survived intact (the actual regression this guards against).
+  expect(cfg.defaultModel).toBe("claude-3-5-haiku");
+  expect(cfg.modelAliases).toEqual({ fast: "ollama/qwen2.5:0.5b" });
   await fs.rm(dir, { recursive: true, force: true });
 });
 

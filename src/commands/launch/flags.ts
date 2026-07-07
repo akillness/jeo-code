@@ -49,19 +49,18 @@ export function isProviderName(input: string | undefined): input is ProviderName
 }
 
 export function isThinkingLevel(input: string | undefined): input is ThinkLevel {
-  return input === "minimal" || input === "low" || input === "medium" || input === "high" || input === "xhigh";
+  return input === "low" || input === "medium" || input === "high" || input === "xhigh";
 }
 
 
 export function fastThinkingLevelForModel(modelId: string): ThinkLevel | undefined {
   const supported = catalogMetadata(modelId)?.thinking ?? [];
-  if (supported.includes("minimal")) return "minimal";
   if (supported.includes("low")) return "low";
   // Digit-count agnostic (gemini-10+ / 2.6+ stay reasoning) — mirrors the gates in
   // gemini.ts and inferCatalogMetadata. Last resort for prefixed ids (models/gemini-…)
   // the catalog lookup above misses; catalogued ids already returned via thinking caps.
   const g = modelId.toLowerCase().match(/gemini-(\d+)(?:\.(\d+))?/);
-  if (g && (Number(g[1]) >= 3 || (Number(g[1]) === 2 && Number(g[2] ?? 0) >= 5))) return "minimal";
+  if (g && (Number(g[1]) >= 3 || (Number(g[1]) === 2 && Number(g[2] ?? 0) >= 5))) return "low";
   return undefined;
 }
 
@@ -114,7 +113,7 @@ export function parseFlags(args: string[], cwd: string = process.cwd()): LaunchF
       const { value, nextIndex } = takeValue(args, i, "--thinking=");
       const normalized = value?.toLowerCase();
       if (isThinkingLevel(normalized)) flags.thinking = normalized;
-      else flags.errors.push("--thinking must be one of: minimal, low, medium, high, xhigh");
+      else flags.errors.push("--thinking must be one of: low, medium, high, xhigh");
       i = nextIndex;
     } else if (a === "--smol" || a === "--slow" || a === "--plan") {
       flags.modelRole = a.slice(2) as ModelRole;

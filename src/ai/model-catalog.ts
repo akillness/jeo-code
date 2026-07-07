@@ -9,9 +9,9 @@
 import type { ProviderName } from "./types";
 import { openaiCompatDef } from "./providers/openai-compatible-catalog";
 
-export type ThinkLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ThinkLevel = "low" | "medium" | "high" | "xhigh";
 
-export const THINK_LEVELS: readonly ThinkLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
+export const THINK_LEVELS: readonly ThinkLevel[] = ["low", "medium", "high", "xhigh"];
 
 export interface CatalogModel {
   /** jeo-facing canonical id (what a user types). */
@@ -31,8 +31,8 @@ export interface CatalogModel {
   company?: string;
 }
 
-const FULL: ThinkLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
-const STD: ThinkLevel[] = ["minimal", "low", "medium", "high"];
+const FULL: ThinkLevel[] = ["low", "medium", "high", "xhigh"];
+const STD: ThinkLevel[] = ["low", "medium", "high"];
 
 export const ANTIGRAVITY_MODELS = [
   "claude-opus-4-6-thinking",

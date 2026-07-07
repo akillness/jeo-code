@@ -16,12 +16,11 @@ import { formatCatalogTable, formatCapabilityLine } from "../src/tui/components/
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
-test("THINK_LEVELS is the five-level gjc-parity ladder", () => {
-  expect(THINK_LEVELS).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+test("THINK_LEVELS is the four-level gjc-parity ladder", () => {
+  expect(THINK_LEVELS).toEqual(["low", "medium", "high", "xhigh"]);
 });
 
 test("thinkingMaxTokens covers the extended levels additively", () => {
-  expect(thinkingMaxTokens("minimal")).toBe(4000);
   expect(thinkingMaxTokens("low")).toBe(8000);
   expect(thinkingMaxTokens("medium")).toBe(16000);
   expect(thinkingMaxTokens("high")).toBe(24000);
@@ -109,7 +108,7 @@ test("companyLabel maps built-ins, respects overrides, and falls back with capit
 test("opus-4-8 is catalogued with full thinking (matches 4-5/4-6 siblings)", () => {
   const m = catalogMetadata("claude-opus-4-8");
   expect(m?.provider).toBe("anthropic");
-  expect(m?.thinking).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+  expect(m?.thinking).toEqual(["low", "medium", "high", "xhigh"]);
   expect(supportsThinking("claude-opus-4-8", "high")).toBe(true);
   // antigravity thinking variant registered alongside 4-6
   expect(catalogMetadata("antigravity/claude-opus-4-8-thinking")?.thinking.length).toBeGreaterThan(0);
@@ -148,7 +147,7 @@ test("4.6+ Anthropic models are catalogued as 1M/128k with full thinking", () =>
     expect(m?.providerModel).toBe(id); // dateless pinned snapshot — canonical == wire id
     expect(m?.contextTokens).toBe(1_000_000);
     expect(m?.maxOutputTokens).toBe(128_000);
-    expect(m?.thinking).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+    expect(m?.thinking).toEqual(["low", "medium", "high", "xhigh"]);
   }
   // The retained sub-4.6 id (haiku) keeps the older 200k/64k shape.
   expect(findCatalogModel("claude-haiku-4-5")?.contextTokens).toBe(200_000);

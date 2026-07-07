@@ -54,3 +54,32 @@ operative root: too tight for the realistic silent-first-byte worst case.
 - The watchdog cannot distinguish "dead socket" from "alive but silent" without
   protocol-level liveness the providers do not give during prompt-eval; a generous,
   overridable idle cap is the correct pragmatic resolution.
+
+## Follow-up regression (v0.7.42 → v0.7.53): the "not other options" call reversed itself
+§"Why not other options" above (this doc's original conclusion) explicitly rejected an
+overall wall-clock cap as deliberately opt-in-only. v0.7.42 (a LATER, separate fix for a
+different bug — a connected-but-never-terminating stream hanging "thinking" forever)
+reversed that decision without updating this doc: `streamMaxMs()` was changed to default
+to an ALWAYS-ON 300s overall deadline (`DEFAULT_CALL_TIMEOUT_MS`) instead of opt-in-off.
+
+That 300s blanket cap then broke exactly the case this doc's original fix was protecting:
+a GPT-5.5/o3-class model at HIGH/XHIGH reasoning effort streams continuously (wire
+heartbeat correctly keeps the PER-CHUNK idle watchdog satisfied) but legitimately runs
+longer than 5 minutes end-to-end — OpenAI's own documentation states xhigh trades latency
+for depth deliberately. The overall deadline killed a healthy, actively-emitting stream
+with `"stream exceeded the overall deadline (JEO_STREAM_MAX_MS) — slow-drip stream
+aborted"`, reported live under Codex/ChatGPT OAuth (`codexResponsesStream`) with GPT-5.5.
+
+**Resolution:** rather than re-reverting to opt-in-off (which would reopen a real gap for
+direct non-turn-wrapped callers like `jeo chat`, since `JEO_TURN_MAX_MS`'s turn-level
+stall-budget backstop — itself timer-armed as of v0.7.42 — only wraps `runAgentLoop`
+steps), `DEFAULT_CALL_TIMEOUT_MS` was raised 300s → 30min, shared by both `streamMaxMs()`
+and `callTimeoutMs()`. This matches `turnMaxMs()`'s own already-vetted 30min stall-budget
+default and the OBSERVED ~20-30min infra-side connection-duration cap on OpenAI's
+Codex/ChatGPT backend (a real boundary already handled elsewhere as a retryable
+mid-stream socket close) — so 30min is a real, evidenced ceiling, not an arbitrary pick.
+The non-streaming `call()` path's IDENTICAL bug (zero idle/activity tracking at all,
+affecting subagents/compaction/goal-verify which never wire `onModelStream`) is fixed by
+the same constant change. `friendlyProviderError` also gained explicit guidance for both
+the bare `TimeoutError` DOMException and the overall-deadline message, naming the exact
+env var to raise instead of surfacing an opaque timeout string.

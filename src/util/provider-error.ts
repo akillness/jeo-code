@@ -57,6 +57,12 @@ export function friendlyProviderError(err: unknown): string {
   if (status === 401 || status === 403 || /\b40[13]\b/.test(msg)) {
     return `${provider} rejected the credential (HTTP ${status ?? "401/403"}). Run 'jeo auth status', re-login with /provider login <name>, and for Antigravity prefer '/provider login antigravity' (gemini login only works when the Cloud Code Assist backend authorizes that token).`;
   }
+  if ((err as { name?: string })?.name === "TimeoutError" || /the operation timed out/i.test(msg)) {
+    return `${provider} did not complete the request within the call timeout (default 30min). This is expected for a HIGH/XHIGH-reasoning-effort completion that legitimately runs long on a hard problem — raise JEO_CALL_TIMEOUT_MS (ms) if this recurs, or lower the thinking level with /model.`;
+  }
+  if (/exceeded the overall deadline \(JEO_STREAM_MAX_MS\)/i.test(msg)) {
+    return `${provider}'s stream hit the overall deadline (default 30min; JEO_STREAM_MAX_MS) despite staying active. Raise JEO_STREAM_MAX_MS (ms), set it to 0 to disable the overall cap, or lower the thinking level with /model.`;
+  }
   if (isContextOverflowError(err)) {
     return `${provider} rejected the request: the conversation no longer fits the model's context window. Run /compact, drop large attachments, or start a fresh session.`;
   }

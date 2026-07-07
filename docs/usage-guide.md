@@ -78,7 +78,7 @@ JEO_DEFAULT_MODEL=...            # 예: ollama/qwen2.5:0.5b
 | --- | --- |
 | `/model` · `/provider` | 모델/Provider 선택, 역할별 배지 표시 |
 | `/agents [role]` · `/subagent` | 역할별(executor/planner/architect/critic) 모델·thinking·step 설정 |
-| `/thinking [level]` · `/fast` | 기본 추론 예산(minimal…xhigh) · 빠른 사고 토글 |
+| `/thinking [level]` · `/fast` | 기본 추론 예산(low…xhigh) · 빠른 사고 토글 |
 | `/view` · `/diff` · `/find` · `/search` | 코드 보기 · git diff · 파일/패턴 검색 |
 | `/new` · `/resume` · `/sessions` | 세션 관리 (`/resume`는 화살표 피커로 복원) |
 | `/history [n\|all]` · `/export` | 작업 히스토리 재출력 · 트랜스크립트 내보내기 |

@@ -107,7 +107,7 @@ export interface CallOptions {
   /** Abort in-flight provider requests (Ctrl-C / timeout / supersede). */
   signal?: AbortSignal;
   /** Reasoning effort for reasoning models (o-series / gpt-5), mapped from thinkingLevel. */
-  reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  reasoningEffort?: "low" | "medium" | "high";
   /** How an OpenAI-compatible backend enables/streams native reasoning (gjc parity):
    *  "openai" → `reasoning_effort`; "openrouter" → `reasoning: {effort}`; "qwen" →
    *  `enable_thinking: true`; "zai" → `thinking: {type:"enabled"}`. Set per provider by

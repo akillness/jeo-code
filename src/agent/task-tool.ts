@@ -35,7 +35,11 @@ import { ensureSessionNotifyEndpoint, type SessionNotifyEndpoint } from "./notif
 /** Lifecycle event emitted while a delegated subagent runs. */
 export interface TaskSubEvent {
   role: string;
-  kind: "start" | "step" | "tool" | "done" | "error";
+  /** `"thinking"` streams the subagent's live reasoning/thought text (native
+   *  extended-thinking models) — a transient live-preview beat, not persisted to
+   *  the ledger (mirrors the main turn's dimmed "Thinking" block, scoped per
+   *  subagent slot instead of a single shared region). */
+  kind: "start" | "step" | "tool" | "done" | "error" | "thinking";
   detail?: string;
   success?: boolean;
   /** Current nested subagent step, when known. */
@@ -141,9 +145,6 @@ export function taskToolProtocolLine(config?: Pick<Config, "subagents">): string
     `Pass 'tasks' (array) to fan out — ALL roles run concurrently (bounded); scope each executor task to disjoint files (no shared-file coordination channel between concurrent tasks — use sequential task calls if scopes overlap). Integrate the findings yourself.`
   );
 }
-
-/** @deprecated static snapshot (bundled roles only) — prefer taskToolProtocolLine(config). */
-export const TASK_TOOL_PROTOCOL_LINE = taskToolProtocolLine();
 
 /**
  * A concise, gjc-style label for a subagent's tool call — the actual TARGET (file / command /
@@ -300,6 +301,17 @@ export async function runSubagentOnce(
     tools: subagentToolset(role),
     events: {
       onStep: n => { currentStep = n; },
+      // Live reasoning preview (native extended-thinking models only — the JSON-protocol
+      // "reasoning" field the main turn also extracts from onModelStream is intentionally
+      // NOT wired here: a subagent's forming tool-call JSON is rarely useful mid-stream and
+      // doubling the stream sinks would double emit() calls for the same underlying delta).
+      // Tail-sliced + whitespace-collapsed to a compact one-line preview — the ledger never
+      // records this (see the `kind` doc comment); it only drives the live per-slot status.
+      onReasoningStream: textSoFar => {
+        const tail = textSoFar.length > 200 ? textSoFar.slice(textSoFar.length - 200) : textSoFar;
+        const preview = tail.replace(/\s+/g, " ").trim();
+        if (preview) emit({ role: role.id, kind: "thinking", detail: preview, step: currentStep, maxSteps, model });
+      },
       onAssistant: (_raw, invocation) => {
         if (invocation && invocation.tool && invocation.tool !== "done") {
           lastTarget = toolTarget(invocation.tool, invocation.arguments);

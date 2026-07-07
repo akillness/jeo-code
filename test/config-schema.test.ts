@@ -37,6 +37,25 @@ test("parseConfig: accepts a retry budget block (gjc parity)", () => {
   if (r.ok) expect(r.config.retry?.requestMaxRetries).toBe(4);
 });
 
+test("parseConfig: retry.failFastStatuses/failFastPatterns survive validation (regression — were silently stripped by the nested retry z.object lacking .passthrough())", () => {
+  const r = parseConfig({
+    defaultModel: "m",
+    retry: { requestMaxRetries: 3, failFastStatuses: [503, 529], failFastPatterns: ["overloaded", "capacity"] },
+  });
+  expect(r.ok).toBe(true);
+  if (r.ok) {
+    expect(r.config.retry?.failFastStatuses).toEqual([503, 529]);
+    expect(r.config.retry?.failFastPatterns).toEqual(["overloaded", "capacity"]);
+    // Sibling fields on the same nested object are unaffected by the fix.
+    expect(r.config.retry?.requestMaxRetries).toBe(3);
+  }
+});
+
+test("parseConfig: rejects a non-integer entry in retry.failFastStatuses", () => {
+  const r = parseConfig({ defaultModel: "m", retry: { failFastStatuses: [503.5] } });
+  expect(r.ok).toBe(false);
+});
+
 test("parseConfig: rejects a negative retry budget", () => {
   const r = parseConfig({ defaultModel: "m", retry: { requestMaxRetries: -1 } });
   expect(r.ok).toBe(false);

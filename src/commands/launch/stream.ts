@@ -53,11 +53,18 @@ export function formatTaskSubEvent(e: TaskSubEvent): string {
   if (e.kind === "step") return `  ${badge} ${chalk.cyan(`├─ ${roleLabel}`)} · ${detail || "working"}`;
   if (e.kind === "tool") return `  ${badge} ${e.success === false ? chalk.red("├─") : chalk.green("├─")} ${roleLabel} ${e.success === false ? chalk.red("✗") : chalk.green("✓")} ${detail || "tool"}${summary}`;
   if (e.kind === "error") return `  ${badge} ${chalk.red("├─")} ${roleLabel} ${chalk.red("✗")} ${detail || "error"}`;
+  // "thinking" is a live-only TUI preview (never persisted to the ledger — see
+  // TaskSubEvent.kind's doc comment) and has no place in an append-only, non-TTY
+  // log stream: a reasoning delta stream would otherwise fall through to the
+  // "done" branch below and print a bogus "ROLE done: <reasoning text>" line for
+  // every emitted preview. Empty string signals the caller to skip the line.
+  if (e.kind === "thinking") return "";
   return `${badge} ${e.success === false ? chalk.red("└─") : chalk.green("└─")} ${roleLabel} done${tokTag}${e.success === false ? " (incomplete)" : ""}${detail ? `: ${detail}` : ""}`;
 }
 
 export function logTaskSubEvent(e: TaskSubEvent, log: (line: string) => void = (s: string) => console.log(s)): void {
-  log(formatTaskSubEvent(e));
+  const line = formatTaskSubEvent(e);
+  if (line) log(line);
 }
 
 export function createStreamEvents(

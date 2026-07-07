@@ -75,6 +75,54 @@ test("createTaskTool: echoed subagent report is fenced as DATA and cannot break 
   expect(inner).not.toContain(">>>");
 });
 
+test("createTaskTool: subagent's native reasoning stream surfaces as live 'thinking' events, never persisted to the ledger", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_history: unknown, options: { onReasoning?: (delta: string) => void }) => {
+      // Simulate a provider streaming reasoning deltas before the final tool-call JSON.
+      options.onReasoning?.("weighing two approaches to the ");
+      options.onReasoning?.("weighing two approaches to the cap logic");
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\ndone" } });
+    },
+  }));
+
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const events: { role: string; kind: string; detail?: string }[] = [];
+  const tool = createTaskTool({
+    config: { defaultModel: "ollama/fast", subagents: {} },
+    onEvent: e => events.push({ role: e.role, kind: e.kind, detail: e.detail }),
+  });
+
+  const res = await tool({ role: "executor", task: "fix the cap logic" }, await tmpDir());
+
+  expect(res.success).toBe(true);
+  const thinkingEvents = events.filter(e => e.kind === "thinking");
+  expect(thinkingEvents.length).toBeGreaterThan(0);
+  expect(thinkingEvents.every(e => e.role === "executor")).toBe(true);
+  // Preview text is whitespace-collapsed and carries real reasoning content.
+  expect(thinkingEvents.some(e => e.detail?.includes("weighing two approaches"))).toBe(true);
+
+  // The subagent's own report body (what the parent sees as the task tool's
+  // result) must NEVER contain the streamed thinking preview — "thinking" events
+  // are a live-only TUI signal, not part of the persisted output/report.
+  expect(res.output).not.toContain("weighing two approaches");
+});
+
+test("createTaskTool: a subagent with NO reasoning stream (plain callLlm mock) emits zero 'thinking' events", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\ndone" } }),
+  }));
+
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const events: { kind: string }[] = [];
+  const tool = createTaskTool({
+    config: { defaultModel: "ollama/fast", subagents: {} },
+    onEvent: e => events.push({ kind: e.kind }),
+  });
+
+  await tool({ role: "executor", task: "do work" }, await tmpDir());
+  expect(events.some(e => e.kind === "thinking")).toBe(false);
+});
+
 test("createTaskTool: subagent tool events carry the concrete target (file/command), not just the name", async () => {
   let turn = 0;
   await mock.module("../src/agent/loop", () => ({

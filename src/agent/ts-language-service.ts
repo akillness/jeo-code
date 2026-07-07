@@ -108,13 +108,6 @@ export async function languageServiceFor(cwd: string, absPath: string): Promise<
   return cached.service;
 }
 
-/** Drop a cached language service (tests / long-running sessions that need a
- *  clean project graph after large structural changes). */
-export function resetLanguageServiceCache(cwd?: string): void {
-  if (cwd) serviceCache.delete(cwd);
-  else serviceCache.clear();
-}
-
 export interface SymbolSelector { text: string; occurrence: number }
 
 /** Parse a loose `"name"` or `"name#N"` selector (1-indexed occurrence, default 1). */

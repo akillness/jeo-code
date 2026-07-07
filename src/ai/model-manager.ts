@@ -472,25 +472,12 @@ const DEFAULT_CALL_TIMEOUT_MS = 300_000;
  *  phase runs longer still; Ctrl-C remains the interactive escape for a truly dead one. */
 const STREAM_IDLE_TIMEOUT_MS = 300_000;
 
-/** Combine two abort signals into one. Preserves BOTH even when `AbortSignal.any`
- *  is unavailable (manual fallback), so neither the caller's cancel nor the timeout
- *  is silently dropped. */
+/** Combine two abort signals into one — neither the caller's cancel nor the timeout
+ *  is ever silently dropped. `AbortSignal.any` is native on every Bun this CLI runs on
+ *  (shipped in Bun 1.1.13; `src/cli.ts` hard-enforces `engines.bun: ">=1.3.14"` at
+ *  process start, so a manual polyfill fallback would be permanently unreachable). */
 function composeAbort(a: AbortSignal | undefined, b: AbortSignal): AbortSignal {
-  if (!a) return b;
-  if (typeof AbortSignal.any === "function") return AbortSignal.any([a, b]);
-  if (a.aborted || b.aborted) return AbortSignal.abort();
-  const ctrl = new AbortController();
-  // Memory hygiene: `a` is typically the TURN-long abort signal — a once-listener
-  // per model call would otherwise accumulate on it for the whole turn. Detach
-  // BOTH listeners as soon as either side fires.
-  const onAbort = () => {
-    a.removeEventListener("abort", onAbort);
-    b.removeEventListener("abort", onAbort);
-    ctrl.abort();
-  };
-  a.addEventListener("abort", onAbort, { once: true });
-  b.addEventListener("abort", onAbort, { once: true });
-  return ctrl.signal;
+  return a ? AbortSignal.any([a, b]) : b;
 }
 
 /** Compose the caller's signal (if any) with a fresh per-attempt timeout. */

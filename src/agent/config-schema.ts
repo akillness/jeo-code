@@ -140,6 +140,18 @@ export const ConfigSchema = z
         rateLimitRetries: z.number().int().min(0).optional(),
         rateLimitMinDelayMs: z.number().int().min(0).optional(),
         rateLimitMaxServerDelayMs: z.number().int().min(0).optional(),
+        /** HTTP statuses to treat as NON-retryable even when defaultRetryable would
+         *  retry them (e.g. pin 503 to fail fast instead of riding the backoff ladder).
+         *  Bug fix: this field (and failFastPatterns below) existed on Config.retry in
+         *  state.ts and was actively read by model-manager.ts, but was never declared
+         *  on THIS nested z.object — since only the OUTER ConfigSchema calls
+         *  `.passthrough()`, Zod's default strip-unknown-keys behavior silently dropped
+         *  both fields on every config read/write that round-tripped through this
+         *  schema, even though the user's config.json faithfully stored them on disk. */
+        failFastStatuses: z.array(z.number().int()).optional(),
+        /** Case-insensitive substrings; an error whose message matches any of these
+         *  fails fast (non-retryable) even when the chosen predicate would retry it. */
+        failFastPatterns: z.array(z.string()).optional(),
       })
       .optional(),
     /**

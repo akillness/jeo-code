@@ -652,6 +652,44 @@ test("LaunchTui (inline): status line and model bar are never cut off when conte
   }
 });
 
+test("LaunchTui (inline): routedTier renders the ⚡ marker in the persistent model bar", () => {
+  const realRender = Renderer.prototype.render;
+  let frame: string[] = [];
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  try {
+    const tui = new LaunchTui({ model: "claude-haiku-4-5", provider: "anthropic", routedTier: "trivial", tty: true, write: () => {} });
+    tui.start();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    (tui as unknown as { draw: () => void }).draw();
+    const txt = frame.map(strip);
+    const modelBar = txt[txt.length - 1] ?? "";
+    expect(modelBar).toContain("claude-haiku-4-5");
+    expect(modelBar).toMatch(/[⚡~]trivial/); // unicode ⚡ or ASCII ~ depending on terminal capability
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});
+
+test("LaunchTui (inline): no routedTier marker when routing didn't engage this turn", () => {
+  const realRender = Renderer.prototype.render;
+  let frame: string[] = [];
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  try {
+    const tui = new LaunchTui({ model: "claude-sonnet-5", tty: true, write: () => {} }); // no routedTier
+    tui.start();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    (tui as unknown as { draw: () => void }).draw();
+    const txt = frame.map(strip);
+    const modelBar = txt[txt.length - 1] ?? "";
+    expect(modelBar).toContain("claude-sonnet-5");
+    expect(modelBar).not.toMatch(/[⚡~](trivial|standard|complex)/);
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});
+
 test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result in the stream", () => {
   const out: string[] = [];
   const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
@@ -675,6 +713,34 @@ test("LaunchTui: onSubagentEvent surfaces delegated subagent progress + result i
   expect(txt).toContain("read src/agent/engine.ts");
   expect(txt).toContain("1|const ok = true;");
   expect(txt).toMatch(/(└─|`-) EXECUTOR done: completed in 4 steps: guard added/); // result summary
+});
+
+test("LaunchTui.onSubagentEvent: a 'thinking' event drives the live per-slot preview but is NEVER persisted to the ledger", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", write: s => out.push(s) });
+  tui.start();
+  tui.onSubagentEvent({ role: "executor", kind: "start", detail: "Refactor the cache layer" });
+  tui.onSubagentEvent({ role: "executor", kind: "thinking", detail: "weighing an LRU vs a plain Map for the cache" });
+  // Live per-slot preview reflects the thinking beat (drives the status row via
+  // currentActivity() regardless of TTY/inline mode — checked directly here).
+  const internals = tui as unknown as { subagentLiveSlots: Map<number, string> };
+  const live = internals.subagentLiveSlots.get(0) ?? "";
+  expect(live).toContain("weighing an LRU vs a plain Map");
+  clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+
+  const logged: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => logged.push(a.join(" "));
+  try { tui.finish("done"); } finally { console.log = origLog; }
+  const finalTxt = logged.join("\n");
+  // The final scrollback record (ledger) must NOT contain the thinking preview —
+  // only "start"/"step"/"tool"/"error"/"done" persist, per the kind's doc comment.
+  // (The live status row DID transiently show it via draw() while the turn was
+  // running — that's the whole point of the feature; it's the FINAL collapsed
+  // record after finish() that must never carry it, since it was never appended
+  // to the ledger/stream region at all.)
+  expect(finalTxt).not.toContain("weighing an LRU vs a plain Map");
+  expect(finalTxt).toContain("Refactor the cache layer"); // the "start" event DID persist
 });
 
 test("LaunchTui: native reasoning stream drives the dimmed thinking state and persists as a Thinking block on commit", () => {

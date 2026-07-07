@@ -24,6 +24,29 @@ test("status bar: fills exactly cols with identity left and ctx stats right", ()
   expect(line.trimEnd().endsWith("13%/1M")).toBe(true);
 });
 
+test("status bar: routedTier renders the ⚡ marker right after the model, before thinking", () => {
+  const line = renderStatusBar({ ...base, thinking: "high", routedTier: "trivial" });
+  expect(line).toContain("⬢ gpt-5.5 ⚡trivial · ◔ high");
+});
+
+test("status bar: routedTier omitted entirely when routing didn't engage this turn", () => {
+  const line = renderStatusBar({ ...base, thinking: "high" });
+  expect(line).not.toContain("⚡");
+});
+
+test("status bar: routedTier ASCII fallback uses ~ instead of ⚡", () => {
+  const line = renderStatusBar({ ...base, unicode: false, routedTier: "complex" });
+  expect(line).toContain("* gpt-5.5 ~complex");
+  expect(line).not.toContain("⚡");
+});
+
+test("status bar: each tier value renders verbatim (trivial/standard/complex)", () => {
+  for (const tier of ["trivial", "standard", "complex"] as const) {
+    const line = renderStatusBar({ ...base, routedTier: tier });
+    expect(line).toContain(`⚡${tier}`);
+  }
+});
+
 test("status bar: omits absent pieces and still fits", () => {
   const line = renderStatusBar({ ...base, cols: 40 });
   expect(visibleWidth(line)).toBeLessThanOrEqual(40);

@@ -17,6 +17,14 @@ export interface StatusBarData {
   model: string;
   /** Thinking level label ("high", …); omitted when unset. */
   thinking?: string;
+  /** PromptRouter's resolved tier ("trivial"/"standard"/"complex") when THIS turn's
+   *  model was chosen by routing rather than the session/default model directly —
+   *  omitted when routing didn't engage this turn (pinned model, routing off, or
+   *  the credential-readiness gate fell back). Renders as a persistent `⚡tier`
+   *  marker so the routed model stays visible without depending on the transient
+   *  `[route] …` console notice, which intentionally stays silent for routine
+   *  unescalated `standard`-tier turns. */
+  routedTier?: "trivial" | "standard" | "complex";
   branch?: string;
   /** Uncommitted-change count for the `?N` dirty flag; omit/0 = clean. */
   dirtyCount?: number;
@@ -81,6 +89,7 @@ export function renderStatusBar(d: StatusBarData): string {
   // Left identity segment (plain text; painted as one bg block at the end).
   const bits: string[] = [];
   let modelBit = `${unicode ? "⬢" : "*"} ${d.model}`;
+  if (d.routedTier) modelBit += ` ${unicode ? "⚡" : "~"}${d.routedTier}`;
   if (d.thinking) modelBit += ` · ${unicode ? "◔" : "@"} ${d.thinking}`;
   bits.push(modelBit);
   if (d.branch) {

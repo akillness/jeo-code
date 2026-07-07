@@ -337,7 +337,7 @@ export function wrapEvents(events: AgentLoopEvents | undefined, tracer: OpikTrac
     onStep(step: number) {
       currentStep = step;
       stepStartedAt = Date.now();
-      try { base.onStep?.(step); } finally { /* tracer has no per-onStep write */ }
+      base.onStep?.(step);
     },
     onAssistant(raw: string, invocation: ToolInvocation | null) {
       base.onAssistant?.(raw, invocation);

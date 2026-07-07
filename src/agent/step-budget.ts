@@ -41,8 +41,7 @@ export interface ExtensionDecision {
 type EnvLike = Record<string, string | undefined>;
 
 function envNum(env: EnvLike, key: string, dflt: number, min: number, max: number): number {
-  // `key` is the legacy JEO_* name; the JEO_* spelling is preferred when both are set.
-  const raw = env[key.replace(/^JEO_/, "JEO_")] ?? env[key];
+  const raw = env[key];
   if (raw === undefined || raw === "") return dflt;
   const n = Number(raw);
   if (!Number.isFinite(n)) return dflt;
@@ -82,7 +81,7 @@ export function resolveStepBudgetConfig(
 
 /** True when `key` carries a non-empty value in `env`. */
 function envSet(env: EnvLike, key: string): boolean {
-  const raw = env[key.replace(/^JEO_/, "JEO_")] ?? env[key];
+  const raw = env[key];
   return raw !== undefined && raw !== "";
 }
 

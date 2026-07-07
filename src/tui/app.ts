@@ -68,6 +68,12 @@ export interface LaunchTuiOptions {
   dirtyCount?: number;
   /** Thinking-level label ("high", …) for the gjc-style model status bar. */
   thinking?: string;
+  /** PromptRouter's resolved tier when routing chose THIS turn's `model` (undefined
+   *  when routing didn't engage — pinned model, routing off, or the credential
+   *  gate fell back). Renders a persistent `⚡tier` marker in the status bar so the
+   *  routed model stays visible without depending on the transient `[route]`
+   *  console notice. See `StatusBarData.routedTier` in components/status.ts. */
+  routedTier?: "trivial" | "standard" | "complex";
 }
 
 export interface AgentEventsLike {
@@ -361,6 +367,9 @@ export class LaunchTui {
   private readonly inline: boolean;
   // Thinking-level label for the gjc-style model status bar.
   private readonly thinkingLevel?: string;
+  // PromptRouter's resolved tier when routing chose this turn's model; undefined when
+  // routing didn't engage. Renders the persistent `⚡tier` marker in the status bar.
+  private readonly routedTier?: "trivial" | "standard" | "complex";
 
   constructor(opts: LaunchTuiOptions) {
     // Backpressure-aware wrapper around the underlying writer (real stdout, or the
@@ -383,6 +392,7 @@ export class LaunchTui {
     this.renderer = new Renderer(this.write, undefined, { reserve: this.inline });
     this.spinner = new Spinner(undefined, { unicode: this.unicode });
     this.thinkingLevel = opts.thinking;
+    this.routedTier = opts.routedTier;
     this.footer = {
       model: opts.model,
       provider: opts.provider,
@@ -1041,6 +1051,11 @@ export class LaunchTui {
         touchSlot(`${roleLabel} ${bad} ${detail || "error"}`);
         this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${bad} ${detail || "error"}\n`, "subagent");
         break;
+      case "thinking":
+        // Live-only preview (mirrors the main turn's dimmed "Thinking" block) — never
+        // persisted to the ledger; see TaskSubEvent.kind's doc comment for why.
+        touchSlot(`${roleLabel} ${this.unicode ? "…" : "..."} ${detail || "thinking"}`);
+        break;
       case "done":
         // Clear ONLY this slot — a fan-out batch where one worker finishes early
         // must keep showing its still-running siblings, not drop the `(sub)`
@@ -1632,6 +1647,7 @@ export class LaunchTui {
     return renderStatusBar({
       model: `${this.footer.model}${this.footer.provider ? ` (${this.footer.provider})` : ""}`,
       thinking: this.thinkingLevel,
+      routedTier: this.routedTier,
       branch: this.footer.branch,
       dirtyCount: this.footer.dirtyCount,
       cwd: this.footer.cwd,

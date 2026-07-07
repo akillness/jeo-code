@@ -937,7 +937,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // config file. (gjc parity P1.B5: dirty count per-turn, not per-render.)
     const { provider: activeProvider } = await describeModel(activeModel, turnConfig);
     const turnDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
-    const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: initialStepLimit, cwd, branch, dirtyCount: turnDirtyCount, thinking: activeThinking }) : null;
+    const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: initialStepLimit, cwd, branch, dirtyCount: turnDirtyCount, thinking: activeThinking, routedTier: routed?.tier }) : null;
     if (routeCredentialNotice) {
       if (tui) tui.events().onNotice?.(routeCredentialNotice);
       else console.log(routeCredentialNotice);

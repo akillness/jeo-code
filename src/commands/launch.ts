@@ -45,10 +45,10 @@ import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/state";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
-import { describeModel, describeAllProviders, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
+import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
-import { routePrompt, deriveCacheSessionKey, type RouteDecision } from "../agent/prompt-router";
+import { routePrompt, deriveCacheSessionKey, warnOnce, type RouteDecision } from "../agent/prompt-router";
 
 import { listAliases } from "../ai/model-registry";
 import { openaiCompatDef, SUBSCRIPTION_PROVIDER_NAMES } from "../ai/providers/openai-compatible-catalog";
@@ -884,10 +884,39 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // that write silently switch THIS running session's model mid-run. Per-session model
     // selection must stay session-local: running sessions never influence each other.
     const routingEnabled = sessionRouteOverride ?? !!turnConfig.routing?.enabled;
-    const routed = routingEnabled && !sessionModel
+    let routed = routingEnabled && !sessionModel
       ? await routePrompt(userInput, turnConfig, { hasImages: !!images?.length }).catch(() => null)
       : null;
-    lastRouteDecision = routed ?? (routingEnabled && !sessionModel ? { note: "routing produced no decision (fail-open)" } : { note: "routing not active this turn" });
+    // Fail-open credential gate: `routePrompt` only resolves a tier's model from
+    // config (routing.tiers/roles.smol/roles.slow/defaultModel) — it deliberately
+    // stays pure/config-only (see its narrowed `Pick<Config,...>` param) and never
+    // checks whether that model's provider actually has a usable credential. A user
+    // can configure `roles.smol`/`roles.slow`/`routing.tiers.*.model` to a provider
+    // they never logged into (or whose OAuth token expired since setup), and without
+    // this gate that misconfiguration would silently turn a WORKING session
+    // (defaultModel) into a FAILING turn ("No credential for provider …") the
+    // instant routing engages — even though the turn would have succeeded unrouted.
+    // Uses the SAME `describeProvider` readiness check `/roles`'s live-picker path
+    // and `jeo doctor` already use — routing must never make a turn worse than
+    // routing being off, matching the "fail-open everywhere" contract documented at
+    // the top of prompt-router.ts. Nulling `routed` here (rather than patching its
+    // `.model`) lets the EXISTING `activeModel`/`lastRouteDecision` fallback lines
+    // below handle the rest unchanged.
+    let routeCredentialNotice: string | undefined;
+    let routeVetoNote: string | undefined;
+    if (routed) {
+      const routedProvider = resolveProvider(routed.model);
+      const status = await describeProvider(routedProvider, turnConfig);
+      if (!status.ready) {
+        routeVetoNote = `routed model '${routed.model}' (${routedProvider}) has no usable credential this turn — fell back to '${sessionModel || defaultModel}'`;
+        routeCredentialNotice = warnOnce(
+          `prompt-router:provider-not-ready:${routedProvider}`,
+          `[route] routed to '${routed.model}' (${routedProvider}) but that provider has no usable credential — falling back to the default model this turn. Run 'jeo auth login ${routedProvider}' or reconfigure routing.tiers/roles for a provider you're logged into.`,
+        );
+        routed = null;
+      }
+    }
+    lastRouteDecision = routed ?? (routeVetoNote ? { note: routeVetoNote } : routingEnabled && !sessionModel ? { note: "routing produced no decision (fail-open)" } : { note: "routing not active this turn" });
     // Explicit /model always wins: `routed` is only ever computed when `!sessionModel`.
     const activeModel = routed?.model ?? (sessionModel || defaultModel);
     const activeThinking = routed?.thinking ?? sessionThinking;
@@ -909,7 +938,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const { provider: activeProvider } = await describeModel(activeModel, turnConfig);
     const turnDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
     const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: initialStepLimit, cwd, branch, dirtyCount: turnDirtyCount, thinking: activeThinking }) : null;
-    if (routed?.warning) {
+    if (routeCredentialNotice) {
+      if (tui) tui.events().onNotice?.(routeCredentialNotice);
+      else console.log(routeCredentialNotice);
+    } else if (routed?.warning) {
       if (tui) tui.events().onNotice?.(routed.warning);
       else console.log(routed.warning);
     }

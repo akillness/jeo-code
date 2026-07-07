@@ -18,17 +18,34 @@
  * `config.roles`/`config.routing.tiers` so a user who already configured
  * `roles.smol`/`roles.slow` (for `--smol`/`--slow` role-tier resolution
  * elsewhere) gets working routing with zero additional config. An unconfigured
- * trivial/complex tier does NOT simply collapse to `defaultModel` (that would
- * defeat cross-provider routing for every user who hasn't hand-tuned
- * `routing.tiers`) — it auto-selects the cheapest (trivial) / most capable
- * (complex) model jeo has a stored credential for, computed LIVE off
- * `MODEL_CATALOG`/`pricing.ts` on every call. This is the "long-term" fix for
- * catalog drift: when jeo ships a new/cheaper/stronger model, auto-select
- * picks it up on the next call automatically — no user config edit, no
- * hand-maintained tier→model table to go stale. "standard" is the one
- * exception: it always falls through to `defaultModel` unless explicitly
- * configured, since routine day-to-day work should stay on the user's
- * deliberately chosen default rather than being silently reassigned.
+ * trivial/high/complex tier does NOT simply collapse to `defaultModel` (that
+ * would defeat cross-provider routing for every user who hasn't hand-tuned
+ * `routing.tiers`) — it auto-selects the cheapest (trivial) / a strong
+ * mid-class model (high) / the most capable (complex) model jeo has a stored
+ * credential for, computed LIVE off `MODEL_CATALOG`/`pricing.ts` on every
+ * call. This is the "long-term" fix for catalog drift: when jeo ships a
+ * new/cheaper/stronger model, auto-select picks it up on the next call
+ * automatically — no user config edit, no hand-maintained tier→model table to
+ * go stale. "standard" is the one exception: it always falls through to
+ * `defaultModel` unless explicitly configured, since routine day-to-day work
+ * should stay on the user's deliberately chosen default rather than being
+ * silently reassigned (unless `routing.crossProviderPool` opts it into the
+ * session-stable cross-provider pool below).
+ *
+ * Four content-based tiers map onto the four `roles.*` price points
+ * (smol/medium/high/xhigh) so automatic routing can actually reach all of
+ * them: `trivial`→smol, `standard`→medium, `high`→roles.high (a single
+ * borderline-complex signal — e.g. one deep-work keyword alone — no longer
+ * jumps straight to the most expensive `complex`/xhigh tier), `complex`→xhigh.
+ *
+ * `routing.crossProviderPool` (opt-in, default off) activates
+ * `tierModelPool`/`selectFromPool` for the `standard`/`high` tiers: instead of
+ * a single deterministic pick, a SESSION-STABLE hash spreads different
+ * sessions across every credentialed provider's equivalent-class model, so
+ * jeo actually captures different providers' respective strengths on
+ * comparably-priced work instead of converging every session onto one
+ * provider. Off by default to preserve the "safe no-op absent configuration"
+ * contract for users who never opted in.
  */
 import { callLlm } from "./loop";
 import { resolveRoleModel } from "../ai/model-manager";
@@ -40,7 +57,7 @@ import type { ThinkLevel } from "../ai/model-catalog";
 import type { ProviderName } from "../ai/types";
 import type { AuthProvider } from "../auth";
 
-export type PromptTier = "trivial" | "standard" | "complex";
+export type PromptTier = "trivial" | "standard" | "high" | "complex";
 
 export interface HeuristicResult {
   tier: PromptTier;
@@ -149,7 +166,10 @@ export function classifyPromptHeuristically(prompt: string): HeuristicResult {
     return { tier: "standard", confidence: 0.35, signals }; // conflicting signals -> let escalation decide
   }
   if (complexScore >= 2) return { tier: "complex", confidence: 0.85, signals };
-  if (complexScore === 1) return { tier: "complex", confidence: 0.65, signals };
+  // A single complex signal alone is treated as "high" (elevated but not full complex) —
+  // price efficiency: one weak/borderline signal must not jump straight to the priciest
+  // xhigh tier (that's reserved for >=2 corroborating complex signals).
+  if (complexScore === 1) return { tier: "high", confidence: 0.65, signals };
   if (trivialScore >= 2) return { tier: "trivial", confidence: 0.85, signals };
   if (trivialScore === 1) return { tier: "trivial", confidence: 0.65, signals };
   return { tier: "standard", confidence: 0.9, signals }; // no signals at all -> common case, high confidence
@@ -211,7 +231,7 @@ function sizeClassFor(canonical: string): "small" | "mid" | "large" | null {
   return null;
 }
 
-const TIER_TO_SIZE_CLASS: Record<PromptTier, "small" | "mid" | "large"> = { trivial: "small", standard: "mid", complex: "large" };
+const TIER_TO_SIZE_CLASS: Record<PromptTier, "small" | "mid" | "large"> = { trivial: "small", standard: "mid", high: "mid", complex: "large" };
 
 /** Multi-key strength comparator (ascending: weakest first) — same ranking signals
  *  as `strongestCredentialed`'s single-winner tiebreak, reused here to bucket
@@ -235,15 +255,23 @@ function compareStrengthAscending(a: CatalogModel, b: CatalogModel): number {
  *  for deterministic pool ordering (required by `selectFromPool`'s index math). */
 export function tierModelPool(tier: PromptTier, config: RoutingConfig): string[] {
   const targetClass = TIER_TO_SIZE_CLASS[tier];
-  const credentialed = MODEL_CATALOG.filter(m => isCloudProvider(m.provider) && (config.providers?.[m.provider] || config.oauth?.[m.provider]));
+  const credentialed = MODEL_CATALOG.filter(m => isCloudProvider(m.provider) && !m.limitedAvailability && (config.providers?.[m.provider] || config.oauth?.[m.provider]));
 
   const suffixPool = credentialed.filter(m => sizeClassFor(m.canonical) === targetClass);
 
   const unclassified = credentialed.filter(m => sizeClassFor(m.canonical) === null).sort(compareStrengthAscending);
   const third = Math.ceil(unclassified.length / 3);
+  // "high" shares "standard"'s unclassified-model tercile share: the catalog's
+  // size-suffix classification only has 3 real buckets (small/mid/large — see
+  // sizeClassFor), so there is no distinct 4th tercile to carve out for "high".
+  // resolveTierModel's "high" branch does not currently rely on this tercile
+  // share (it prefers a deterministic strongest-mid-class pick — see
+  // strongestMidTierCredentialed below); kept here only so this `Record<PromptTier,…>`
+  // stays exhaustive for external callers of `tierModelPool("high", …)`.
   const tercileByTier: Record<PromptTier, CatalogModel[]> = {
     trivial: unclassified.slice(0, third),
     standard: unclassified.slice(third, third * 2),
+    high: unclassified.slice(third, third * 2),
     complex: unclassified.slice(third * 2),
   };
 
@@ -271,7 +299,7 @@ export function selectFromPool(pool: readonly string[], sessionId: string | unde
  *  automatically, never a hand-maintained id. `null` when no credentialed
  *  model has a known price (caller falls back to `defaultModel`). Tiebreak:
  *  canonical id (deterministic across otherwise-equal candidates). */
-function cheapestCredentialed(config: RoutingConfig): string | null {
+export function cheapestCredentialed(config: RoutingConfig): string | null {
   let best: CatalogModel | null = null;
   let bestCost = Infinity;
   for (const m of MODEL_CATALOG) {
@@ -280,7 +308,7 @@ function cheapestCredentialed(config: RoutingConfig): string | null {
     // wins (unlike provider-status.ts's `configuredCredential` precedence). The
     // real veto gate in launch.ts's `runTurn` re-verifies full readiness (including
     // live OAuth expiry) before a turn actually uses the model.
-    if (!isCloudProvider(m.provider) || !(config.providers?.[m.provider] || config.oauth?.[m.provider])) continue;
+    if (!isCloudProvider(m.provider) || m.limitedAvailability || !(config.providers?.[m.provider] || config.oauth?.[m.provider])) continue;
     const price = priceForModel(m.canonical);
     if (!price) continue;
     const cost = price.inPerM + price.outPerM;
@@ -297,9 +325,10 @@ function cheapestCredentialed(config: RoutingConfig): string | null {
  *  output tokens, then context window, so a newly catalogued frontier model
  *  is picked up automatically without a hand-maintained id. `null` when no
  *  credentialed model qualifies (caller falls back to `defaultModel`).
- *  Tiebreak: canonical id (deterministic; also happens to prefer widely-
- *  available ids like `claude-fable-5` alphabetically ahead of limited-
- *  availability siblings such as `claude-mythos-5`). */
+ *  Tiebreak: canonical id (deterministic). Excludes `limitedAvailability`
+ *  models (e.g. `claude-mythos-5`) — a provider credential doesn't imply
+ *  access to a specific invite-only model; explicit `/model`/`routing.tiers`
+ *  can still target one by id for approved accounts. */
 export function strongestCredentialed(
   config: RoutingConfig,
   filter?: (m: CatalogModel) => boolean
@@ -307,7 +336,7 @@ export function strongestCredentialed(
   let best: CatalogModel | null = null;
   for (const m of MODEL_CATALOG) {
     // "ANY stored credential" is enough (see cheapestCredentialed's comment above).
-    if (!isCloudProvider(m.provider) || !(config.providers?.[m.provider] || config.oauth?.[m.provider])) continue;
+    if (!isCloudProvider(m.provider) || m.limitedAvailability || !(config.providers?.[m.provider] || config.oauth?.[m.provider])) continue;
     if (filter && !filter(m)) continue;
     if (!best) { best = m; continue; }
     const xhighM = m.thinking.includes("xhigh") ? 1 : 0;
@@ -320,6 +349,39 @@ export function strongestCredentialed(
   return best?.canonical ?? null;
 }
 
+/** Strongest credentialed model restricted to the SAME "mid" size class
+ *  `tierModelPool` uses for `standard` (sonnet/pro-suffixed families) — the
+ *  auto-select fallback for the `high` tier. Deliberately narrower than
+ *  `strongestCredentialed`'s catalog-wide search: an unrestricted search would
+ *  frequently tie with (or even prefer) `complex`'s own pick, since several
+ *  "unclassified" frontier ids (gpt-5.5, grok-4.3, …) publish flagship-tier
+ *  specs under a name with no size-suffix at all and would otherwise win over
+ *  a genuinely mid-class model like `claude-sonnet-4-6`. `null` when no
+ *  mid-class-suffixed model is credentialed (caller falls through to
+ *  `roles.medium`/`defaultModel` — never to `complex`'s flagship pick). */
+function strongestMidTierCredentialed(config: RoutingConfig): string | null {
+  const midClass = MODEL_CATALOG.filter(
+    m => isCloudProvider(m.provider) && !m.limitedAvailability && sizeClassFor(m.canonical) === "mid" && (config.providers?.[m.provider] || config.oauth?.[m.provider]),
+  );
+  if (midClass.length === 0) return null;
+  return midClass.sort(compareStrengthAscending).at(-1)!.canonical;
+}
+
+/** `routing.crossProviderPool` (opt-in, default off) fallback for ALL FOUR tiers:
+ *  a SESSION-STABLE pick from `tierModelPool(tier, config)` instead of each
+ *  tier's deterministic single-winner pick (`cheapestCredentialed`/
+ *  `strongestMidTierCredentialed`/`strongestCredentialed`). Off (or an empty
+ *  pool) returns `null` so the caller's next fallback applies unchanged — this
+ *  is purely additive: a user who has not set the flag keeps v0.7.56's exact
+ *  single-winner behavior; setting it distributes qualifying tiers across
+ *  every credentialed provider's equivalent-class model instead of always
+ *  resolving to the one deterministic winner. */
+function crossProviderPoolPick(tier: PromptTier, config: RoutingConfig, sessionId: string | undefined): string | null {
+  if (!config.routing?.crossProviderPool) return null;
+  const pool = tierModelPool(tier, config);
+  return pool.length > 0 ? selectFromPool(pool, sessionId) : null;
+}
+
 // --- Tier -> model/thinking resolution (inline off config.roles/config.routing.tiers; no static map). ---
 
 /** Exported for `jeo doctor`'s routing-preview diagnostic (same resolution the real
@@ -328,18 +390,10 @@ export function strongestCredentialed(
 export function resolveTierModel(tier: PromptTier, config: RoutingConfig, sessionId?: string): string {
   const configured = config.routing?.tiers?.[tier]?.model;
   if (configured) return configured;
-  if (tier === "trivial") {
-    if (config.roles?.smol) return config.roles.smol;
-    const pool = tierModelPool("trivial", config);
-    return (pool.length ? selectFromPool(pool, sessionId) : null) || cheapestCredentialed(config) || config.defaultModel;
-  }
-  if (tier === "standard") return config.roles?.medium || config.roles?.high || config.defaultModel;
-  if (tier === "complex") {
-    if (config.roles?.xhigh) return config.roles.xhigh;
-    if (config.roles?.slow) return config.roles.slow;
-    const pool = tierModelPool("complex", config);
-    return (pool.length ? selectFromPool(pool, sessionId) : null) || strongestCredentialed(config) || config.defaultModel;
-  }
+  if (tier === "trivial") return config.roles?.smol || crossProviderPoolPick(tier, config, sessionId) || cheapestCredentialed(config) || config.defaultModel;
+  if (tier === "standard") return config.roles?.medium || config.roles?.high || crossProviderPoolPick(tier, config, sessionId) || config.defaultModel;
+  if (tier === "high") return config.roles?.high || config.roles?.medium || crossProviderPoolPick(tier, config, sessionId) || strongestMidTierCredentialed(config) || config.defaultModel;
+  if (tier === "complex") return config.roles?.xhigh || config.roles?.slow || crossProviderPoolPick(tier, config, sessionId) || strongestCredentialed(config) || config.defaultModel;
   return config.defaultModel;
 }
 
@@ -347,7 +401,7 @@ function resolveTierThinking(tier: PromptTier, config: RoutingConfig): ThinkLeve
   return config.routing?.tiers?.[tier]?.thinking; // undefined = no override, caller keeps session/global level
 }
 
-const VALID_TIERS: readonly PromptTier[] = ["trivial", "standard", "complex"];
+const VALID_TIERS: readonly PromptTier[] = ["trivial", "standard", "high", "complex"];
 function isPromptTier(value: unknown): value is PromptTier {
   return typeof value === "string" && (VALID_TIERS as readonly string[]).includes(value);
 }
@@ -361,8 +415,9 @@ function buildClassifierPrompt(prompt: string): string {
   return (
     `Classify the complexity of the following user request for a coding assistant into exactly one ` +
     `tier: "trivial" (a quick factual lookup, no repo work), "standard" (routine coding/editing work), ` +
-    `or "complex" (multi-file, architectural, or root-cause debugging work). ` +
-    `Respond with ONLY a JSON object of the shape {"tier":"trivial"|"standard"|"complex"}.\n\n` +
+    `"high" (a single moderately complex change — one non-trivial refactor/debug in one area, not yet ` +
+    `multi-file or architectural), or "complex" (multi-file, architectural, or root-cause debugging work). ` +
+    `Respond with ONLY a JSON object of the shape {"tier":"trivial"|"standard"|"high"|"complex"}.\n\n` +
     `Request:\n${capped}`
   );
 }

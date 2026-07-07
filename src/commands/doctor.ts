@@ -8,7 +8,7 @@ import { meter } from "../tui/components/meter";
 import { size } from "../tui/terminal";
 import chalk from "chalk";
 import { extractChatgptAccountId, CODEX_RESPONSES_URL } from "../ai/providers/openai-responses";
-import { resolveTierModel } from "../agent/prompt-router";
+import { resolveTierModel, tierModelPool } from "../agent/prompt-router";
 
 interface ProbeResult {
   status: "ok" | "fail" | "skipped";
@@ -197,8 +197,9 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   if (routingEnabled) {
     const tierCandidates: { tier: string; model: string | undefined }[] = [
       { tier: "trivial", model: config.routing?.tiers?.trivial?.model || config.roles?.smol },
-      { tier: "standard", model: config.routing?.tiers?.standard?.model },
-      { tier: "complex", model: config.routing?.tiers?.complex?.model || config.roles?.slow },
+      { tier: "standard", model: config.routing?.tiers?.standard?.model || config.roles?.medium || config.roles?.high },
+      { tier: "high", model: config.routing?.tiers?.high?.model || config.roles?.high || config.roles?.medium },
+      { tier: "complex", model: config.routing?.tiers?.complex?.model || config.roles?.xhigh || config.roles?.slow },
     ];
     for (const { tier, model } of tierCandidates) {
       if (!model) continue;
@@ -220,11 +221,36 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   // informational — never affects ready/--strict, same contract as routingNotes.
   const routingPreview: { tier: string; model: string; provider: string; source: string }[] = [];
   if (routingEnabled) {
-    for (const tier of ["trivial", "standard", "complex"] as const) {
-      const explicit = config.routing?.tiers?.[tier]?.model || (tier === "trivial" ? config.roles?.smol : tier === "complex" ? config.roles?.slow : undefined);
+    // Legacy role-tier fallback per tier, mirroring resolveTierModel's OWN precedence
+    // (not just the id it happens to already show up under `routing.tiers.*.model`) —
+    // so e.g. a `roles.medium`-only config correctly shows "configured", not
+    // "auto-selected", for `standard`.
+
+    for (const tier of ["trivial", "standard", "high", "complex"] as const) {
+      const legacyRole =
+        tier === "trivial" ? config.roles?.smol
+        : tier === "standard" ? config.roles?.medium || config.roles?.high
+        : tier === "high" ? config.roles?.high || config.roles?.medium
+        : config.roles?.xhigh || config.roles?.slow;
+      const explicit = config.routing?.tiers?.[tier]?.model || legacyRole;
       const model = resolveTierModel(tier, config);
       const provider = resolveProvider(model);
-      const source = explicit ? "configured" : model === config.defaultModel ? "defaultModel" : tier === "trivial" ? "auto-selected: cheapest credentialed" : "auto-selected: strongest credentialed";
+      // crossProviderPoolPick (prompt-router.ts) is tried BEFORE every tier's own
+      // cheapest/strongest/mid-tier fallback, so a non-empty pool always wins over
+      // those once the flag is on — `.length > 0` alone is enough to know the pool,
+      // not the tier-specific fallback, produced `model`.
+      const pooled = !explicit && model !== config.defaultModel && !!config.routing?.crossProviderPool && tierModelPool(tier, config).length > 0;
+      const source = explicit
+        ? "configured"
+        : model === config.defaultModel
+          ? "defaultModel"
+          : pooled
+            ? "auto-selected: cross-provider pool"
+            : tier === "trivial"
+              ? "auto-selected: cheapest credentialed"
+              : tier === "high"
+                ? "auto-selected: strongest mid-tier credentialed"
+                : "auto-selected: strongest credentialed";
       routingPreview.push({ tier, model, provider, source });
     }
   }

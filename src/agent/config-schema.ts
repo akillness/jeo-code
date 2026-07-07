@@ -206,9 +206,11 @@ export const ConfigSchema = z
           .object({
             trivial: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh"]).optional() }).optional(),
             standard: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh"]).optional() }).optional(),
+            high: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh"]).optional() }).optional(),
             complex: z.object({ model: z.string().optional(), thinking: z.enum(["low", "medium", "high", "xhigh"]).optional() }).optional(),
           })
           .optional(),
+        crossProviderPool: z.boolean().optional(),
       })
       .optional(),
     gitAutoCommit: z.boolean().optional(),

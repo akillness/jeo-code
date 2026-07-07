@@ -77,6 +77,25 @@ test("parseConfig: 'minimal' routing-tier thinking overrides migrate to 'low'", 
   }
 });
 
+test("parseConfig: accepts routing.tiers.high and routing.crossProviderPool (4-tier PromptTier + cross-provider pooling)", () => {
+  const r = parseConfig({
+    defaultModel: "m",
+    routing: {
+      enabled: true,
+      crossProviderPool: true,
+      tiers: {
+        high: { model: "gpt-5.4", thinking: "high" },
+      },
+    },
+  });
+  expect(r.ok).toBe(true);
+  if (r.ok) {
+    expect(r.config.routing?.crossProviderPool).toBe(true);
+    expect(r.config.routing?.tiers?.high?.model).toBe("gpt-5.4");
+    expect(r.config.routing?.tiers?.high?.thinking).toBe("high");
+  }
+});
+
 test("parseConfig: a genuinely invalid thinking level (not the retired 'minimal') still fails validation", () => {
   // Confirms the migration is an exact-match rewrite, not an over-broad pass-through
   // that would silently swallow real typos/garbage.

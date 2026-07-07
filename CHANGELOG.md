@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.7.57] - 2026-07-07
+_"동급모델간 크로스 프로바이더 라우팅이 동작하게 개선" — v0.7.56's tier auto-select was single-winner by design (always the one cheapest/strongest model), so a user with `roles.smol` pinned (or simply multiple credentialed providers) never saw actual distribution across equivalent-class models. Deep-research-informed redesign: production LLM routers (LiteLLM, Bifrost/VoidLLM) model this as a named "model group" spanning provider deployments with a distribution strategy, not a single deterministic pick — jeo now supports both, opt-in._
+
+### Added
+- **`routing.crossProviderPool`** (opt-in, default off) — session-STABLE selection across every credentialed provider's EQUIVALENT-class model for a tier (`sizeClassFor`: provider-declared size suffixes — haiku/flash/mini=small, sonnet/pro=mid, opus/fable=large — computed live off `MODEL_CATALOG`, with a strength-tercile fallback for the ~50% of the catalog with no size-suffix naming). The same session always resolves to the same model (preserves provider-side prompt-cache warmth turn-to-turn); different sessions spread across different providers. Purely additive — unset, every existing config's behavior is byte-identical to v0.7.56.
+- **`CatalogModel.limitedAvailability`** — a real bug this work surfaced: invite-only models (`claude-mythos-5`) were reachable by auto-select/pool even though a provider credential doesn't imply access to that specific model. Now excluded from all auto-select paths; still targetable explicitly by id for approved accounts.
+- **`jeo doctor` routing preview** extended with an `"auto-selected: cross-provider pool"` source label when `crossProviderPool` resolved the shown model.
+
+### Verified
+- `bun run typecheck` clean; full suite 2692/2692 pass across 280 files.
+- End-to-end against the real 4-provider production config: `tierModelPool("trivial")` spans gemini/openai/anthropic/antigravity; 5 distinct sessions distribute across 3 different providers while each individual session stays stable across repeated turns.
+
 ## [0.7.56] - 2026-07-07
 _"서로다른 프로바이더로 급에 따라 나눠서 설정하도록 개선" — PromptRouter's `trivial`/`complex` tiers previously collapsed to `defaultModel` whenever `roles.smol`/`roles.slow`/`routing.tiers.*` were left unconfigured (the documented "safe no-op absent configuration" contract), which meant a user with multiple providers credentialed never actually got cross-provider routing without hand-picking a model per tier. Also the long-term ask: routing must stay correct as jeo's model catalog evolves, never a hand-maintained tier→model table that goes stale._
 

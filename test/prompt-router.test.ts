@@ -5,6 +5,8 @@ import {
   resetPromptRouterWarnings,
   deriveCacheSessionKey,
   resolveTierModel,
+  cheapestCredentialed,
+  strongestCredentialed,
   type RouteDecision,
 } from "../src/agent/prompt-router";
 import { resolveSubagentModel } from "../src/agent/subagents";
@@ -583,4 +585,35 @@ test("resolveSubagentModel: resolves critic using new config roles (medium, smol
     roles: { smol: "model-smol" }
   });
   expect(resolveSubagentModel("critic", config2)).toBe("model-smol");
+});
+
+test("resolveTierModel: resolves high prompt tier using new config roles (high, medium)", () => {
+  const config = credentialedConfig({
+    defaultModel: "claude-sonnet-4-6",
+    roles: {
+      high: "model-high",
+      medium: "model-medium"
+    }
+  });
+  expect(resolveTierModel("high", config)).toBe("model-high");
+
+  const configFallback = credentialedConfig({
+    defaultModel: "claude-sonnet-4-6",
+    roles: {
+      medium: "model-medium"
+    }
+  });
+  expect(resolveTierModel("high", configFallback)).toBe("model-medium");
+});
+
+test("cheapestCredentialed & strongestCredentialed: excludes limitedAvailability models", () => {
+  const config = credentialedConfig({
+    providers: { anthropic: "k1" },
+    routing: { enabled: true }
+  });
+  // claude-mythos-5 is limitedAvailability: true. So cheapest/strongest should not return it.
+  const cheapest = cheapestCredentialed(config);
+  const strongest = strongestCredentialed(config);
+  expect(cheapest).not.toBe("claude-mythos-5");
+  expect(strongest).not.toBe("claude-mythos-5");
 });

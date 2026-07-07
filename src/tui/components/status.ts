@@ -24,7 +24,7 @@ export interface StatusBarData {
    *  marker so the routed model stays visible without depending on the transient
    *  `[route] …` console notice, which intentionally stays silent for routine
    *  unescalated `standard`-tier turns. */
-  routedTier?: "trivial" | "standard" | "complex";
+  routedTier?: "trivial" | "standard" | "high" | "complex";
   branch?: string;
   /** Uncommitted-change count for the `?N` dirty flag; omit/0 = clean. */
   dirtyCount?: number;

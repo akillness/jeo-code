@@ -146,8 +146,19 @@ export interface Config {
     tiers?: {
       trivial?: { model?: string; thinking?: "low" | "medium" | "high" | "xhigh" };
       standard?: { model?: string; thinking?: "low" | "medium" | "high" | "xhigh" };
+      /** A single borderline-complex signal (see prompt-router.ts's `classifyPromptHeuristically`)
+       *  — routes to `roles.high` by default instead of jumping straight to `complex`/xhigh. */
+      high?: { model?: string; thinking?: "low" | "medium" | "high" | "xhigh" };
       complex?: { model?: string; thinking?: "low" | "medium" | "high" | "xhigh" };
     };
+    /** Opt-in (default off): for `standard`/`high` tiers left unconfigured (no
+     *  `routing.tiers.*.model`, no `roles.medium`/`roles.high`), pick a SESSION-STABLE
+     *  model from the cross-provider equivalence pool (`tierModelPool`/`selectFromPool`)
+     *  instead of falling straight to `defaultModel` — spreads different sessions across
+     *  every credentialed provider's comparable-tier model so jeo actually captures each
+     *  provider's respective strengths on comparably-priced work, rather than every
+     *  session converging on one provider. */
+    crossProviderPool?: boolean;
   };
   gitAutoCommit?: boolean;
   hooks?: HookConfig;

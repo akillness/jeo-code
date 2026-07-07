@@ -29,6 +29,13 @@ export interface CatalogModel {
   images: boolean;
   /** Optional company override. */
   company?: string;
+  /** True for models requiring separate approval/waitlist beyond the provider's
+   *  base credential (e.g. Anthropic's invite-only Project Glasswing models) — a
+   *  user with a valid API key/OAuth for the PROVIDER may still lack access to
+   *  this SPECIFIC model. Auto-select (prompt-router.ts's pool/single-winner
+   *  selection) excludes these; explicit `/model` or `routing.tiers.*.model`
+   *  can still target them by id for approved accounts. */
+  limitedAvailability?: boolean;
 }
 
 const FULL: ThinkLevel[] = ["low", "medium", "high", "xhigh"];
@@ -73,7 +80,7 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   // Fable 5 = Anthropic's most capable widely-released model (adaptive thinking always on);
   // Mythos 5 is limited-availability (Project Glasswing) but callable by id for approved accounts.
   { canonical: "claude-fable-5", provider: "anthropic", providerModel: "claude-fable-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
-  { canonical: "claude-mythos-5", provider: "anthropic", providerModel: "claude-mythos-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true },
+  { canonical: "claude-mythos-5", provider: "anthropic", providerModel: "claude-mythos-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, limitedAvailability: true },
   // OpenAI
   { canonical: "gpt-4o", provider: "openai", providerModel: "gpt-4o", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true },
   { canonical: "gpt-4o-mini", provider: "openai", providerModel: "gpt-4o-mini", contextTokens: 128_000, maxOutputTokens: 16_384, thinking: [], images: true },

@@ -138,6 +138,7 @@ test("runDoctorCommand --json: routing enabled + roles.smol unset -> note presen
     preview: [
       { tier: "trivial", model: "gpt-4o", provider: "openai", source: "defaultModel" },
       { tier: "standard", model: "gpt-4o", provider: "openai", source: "defaultModel" },
+      { tier: "high", model: "gpt-4o", provider: "openai", source: "defaultModel" },
       { tier: "complex", model: "gpt-4o", provider: "openai", source: "defaultModel" },
     ],
     notes: [expect.stringContaining("roles.smol is unset")],
@@ -171,6 +172,7 @@ test("runDoctorCommand --json: routing enabled + roles.smol set with a usable cr
     preview: [
       { tier: "trivial", model: "gpt-4o-mini", provider: "openai", source: "configured" },
       { tier: "standard", model: "gpt-4o", provider: "openai", source: "defaultModel" },
+      { tier: "high", model: "gpt-4o", provider: "openai", source: "defaultModel" },
       { tier: "complex", model: "gpt-5.4", provider: "openai", source: "auto-selected: strongest credentialed" },
     ],
   });

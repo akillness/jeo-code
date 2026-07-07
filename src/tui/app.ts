@@ -73,7 +73,7 @@ export interface LaunchTuiOptions {
    *  gate fell back). Renders a persistent `⚡tier` marker in the status bar so the
    *  routed model stays visible without depending on the transient `[route]`
    *  console notice. See `StatusBarData.routedTier` in components/status.ts. */
-  routedTier?: "trivial" | "standard" | "complex";
+  routedTier?: "trivial" | "standard" | "high" | "complex";
 }
 
 export interface AgentEventsLike {
@@ -375,7 +375,7 @@ export class LaunchTui {
   private readonly thinkingLevel?: string;
   // PromptRouter's resolved tier when routing chose this turn's model; undefined when
   // routing didn't engage. Renders the persistent `⚡tier` marker in the status bar.
-  private readonly routedTier?: "trivial" | "standard" | "complex";
+  private readonly routedTier?: "trivial" | "standard" | "high" | "complex";
 
   constructor(opts: LaunchTuiOptions) {
     // Backpressure-aware wrapper around the underlying writer (real stdout, or the

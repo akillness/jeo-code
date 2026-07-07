@@ -1130,3 +1130,135 @@ export async function deleteTool(
     return { success: false, output: "", error: err.message };
   }
 }
+
+
+/**
+ * Binary-search git history to find the commit that introduced a regression.
+ * Uses `git bisect run <predicate>` to automate the search.
+ * Exit codes: 0=good, non-zero=bad, 125=skip.
+ */
+export async function bisectTool(
+  good: string,
+  bad: string = "HEAD",
+  run: string = "",
+  invert: boolean = false,
+  maxSteps: number = 40,
+  stepTimeoutMs: number = 600000,
+  cwd: string = process.cwd()
+): Promise<ToolResult> {
+  try {
+    if (!good || !good.trim()) {
+      return { success: false, output: "", error: 'bisect requires "good" (a known-good commit)' };
+    }
+    if (!run || !run.trim()) {
+      return { success: false, output: "", error: 'bisect requires "run" (a shell command to test)' };
+    }
+
+    // Helper to run a command and capture output
+    const runCmd = async (args: string[]): Promise<{ code: number; out: string; err: string }> => {
+      const proc = Bun.spawn(args, {
+        cwd,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      let out = "";
+      let err = "";
+      
+      const stdoutReader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+      const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
+      
+      try {
+        while (true) {
+          const { done, value } = await stdoutReader.read();
+          if (done) break;
+          out += new TextDecoder().decode(value);
+        }
+      } catch {}
+      
+      try {
+        while (true) {
+          const { done, value } = await stderrReader.read();
+          if (done) break;
+          err += new TextDecoder().decode(value);
+        }
+      } catch {}
+      
+      const code = await proc.exited;
+      return { code: code || 0, out, err };
+    };
+
+    // Validate commits exist
+    const goodRes = await runCmd(["git", "rev-parse", good]);
+    const badRes = await runCmd(["git", "rev-parse", bad]);
+
+    if (goodRes.code !== 0) {
+      return { success: false, output: "", error: `Invalid or non-existent commit: ${good}` };
+    }
+    if (badRes.code !== 0) {
+      return { success: false, output: "", error: `Invalid or non-existent commit: ${bad}` };
+    }
+
+    const goodSha = goodRes.out.trim();
+    const badSha = badRes.out.trim();
+
+    // Start bisect
+    const initRes = await runCmd(["sh", "-c", `git bisect start "${badSha}" "${goodSha}"`]);
+    if (initRes.code !== 0) {
+      return { success: false, output: "", error: `Failed to start bisect: ${initRes.err || initRes.out}` };
+    }
+
+    // Run bisect with the predicate command
+    // Escape the run command for shell
+    const escapedRun = run.replace(/'/g, "'\\''");
+    const runCmd2 = invert
+      ? `git bisect run sh -c '${escapedRun} && exit 1 || exit 0'`
+      : `git bisect run sh -c '${escapedRun}'`;
+
+    const runRes = await runCmd(["sh", "-c", runCmd2]);
+
+    // Parse result: look for "XXXX is the first bad commit"
+    const badCommitMatch = runRes.out.match(/^([0-9a-f]{7,40}) is the first (bad|good) commit$/m);
+    let culprit: string | null = null;
+    let concluded = false;
+
+    if (badCommitMatch) {
+      culprit = badCommitMatch[1];
+      concluded = true;
+    } else if (runRes.out.includes("only 'skip'ped commits left")) {
+      concluded = false;
+    }
+
+    // Cleanup: reset bisect
+    await runCmd(["git", "bisect", "reset"]);
+    // Also reset working tree if dirty
+    await runCmd(["git", "reset", "--hard"]);
+
+    if (!concluded) {
+      return {
+        success: false,
+        output: `Bisect did not converge. Output:\n${runRes.out}`,
+        error: "",
+      };
+    }
+
+    if (culprit) {
+      // Get commit details
+      const detailsRes = await runCmd(["git", "show", "-s", "--format=%aN|%ai|%s", culprit]);
+      const [author, date, subject] = detailsRes.out.trim().split("|");
+      const message = [
+        invert ? `First fixing commit: ${culprit}` : `First bad commit: ${culprit}`,
+        author ? `Author:  ${author}` : "",
+        date ? `Date:    ${date}` : "",
+        subject ? `Subject: ${subject}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      return { success: true, output: message };
+    }
+
+    return { success: false, output: "Bisect completed but found no culprit.", error: "" };
+  } catch (err: any) {
+    return { success: false, output: "", error: err.message || String(err) };
+  }
+}

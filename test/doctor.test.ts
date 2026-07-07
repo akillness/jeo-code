@@ -61,7 +61,7 @@ test("runDoctorCommand --json: openai without credential is skipped instead of p
   expect(urls.some(u => u.includes("api.openai.com"))).toBe(false);
 });
 
-test("runDoctorCommand --json: gemini oauth-only probes Cloud Code Assist (the real call path)", async () => {
+test("runDoctorCommand --json: gemini oauth-only fails with an actionable API-key/antigravity hint", async () => {
   await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
     providers: {},
     oauth: { gemini: "oauth-gem" },
@@ -82,10 +82,11 @@ test("runDoctorCommand --json: gemini oauth-only probes Cloud Code Assist (the r
 
   const report = JSON.parse(lines.join("\n"));
   const gemini = report.providers.find((p: any) => p.name === "gemini");
-  expect(gemini.status).toBe("ok");
-  // OAuth tokens are served via Cloud Code Assist, not generativelanguage.
-  expect(gemini.detail).toContain("loadCodeAssist");
-  expect(gemini.detail).not.toContain("claude-3-5-sonnet");
+  // OAuth alone no longer serves gemini/* (no more Cloud Code Assist masquerade) —
+  // GEMINI_API_KEY is required; antigravity/* carries the OAuth-served Gemini models.
+  expect(gemini.status).toBe("fail");
+  expect(gemini.detail).toContain("GEMINI_API_KEY");
+  expect(gemini.detail).toContain("antigravity");
 });
 
 // --- routing diagnostic (design doc §7 risk #2) ---

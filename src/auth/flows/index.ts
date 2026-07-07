@@ -39,11 +39,11 @@ export const OAUTH_FLOW_REGISTRY: Record<OAuthProvider, OAuthFlow> = {
   },
   gemini: {
     provider: "gemini",
-    label: "Google (Gemini CLI / Cloud Code Assist)",
+    label: "Google (Gemini API)",
     login: loginGoogle,
     refresh: refreshGoogleToken,
-    verifiedEndToEnd: true,
-    note: "Served via the Cloud Code Assist backend (cloudcode-pa.googleapis.com) with an auto-discovered project — gemini-cli parity, no API key needed. A GEMINI_API_KEY, when set, takes precedence and uses the public generativelanguage API.",
+    verifiedEndToEnd: false,
+    note: "This OAuth login alone no longer serves google/gemini-* models (the Cloud Code Assist / gemini-cli masquerade was removed) — set GEMINI_API_KEY to use them. The SAME Gemini models remain reachable OAuth-only via antigravity/* (run 'jeo auth login antigravity'; this gemini login also works as its fallback credential).",
   },
   antigravity: {
     provider: "antigravity",

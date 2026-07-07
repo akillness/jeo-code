@@ -8,10 +8,10 @@ test("effectiveCredentialForProvider: anthropic OAuth wins even when an API key 
   expect(eff.kind).toBe("oauth");
 });
 
-test("effectiveCredentialForProvider: gemini OAuth wins over API key (Cloud Code Assist serves it)", () => {
+test("effectiveCredentialForProvider: gemini OAuth does not win over API key (google/gemini-* requires API key)", () => {
   const oauth: Credential = { kind: "oauth", provider: "gemini", token: "oauth-tok" };
   const eff = effectiveCredentialForProvider("gemini", oauth, { providers: { gemini: "AIza" } }, "gemini-2.5-flash");
-  expect(eff.kind).toBe("oauth");
+  expect(eff.kind).toBe("api_key");
 });
 
 test("effectiveCredentialForProvider: OpenAI OAuth serves Codex models but falls back to API key for others", () => {

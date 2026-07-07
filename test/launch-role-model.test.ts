@@ -82,7 +82,12 @@ test("/model sets only the DEFAULT thinking; role thinking is owned by /agents",
   }
 });
 
-test("antigravity stays selectable in /model with a gemini-fallback OAuth (warned, not refused)", async () => {
+test("antigravity is genuinely ready (no warning) with a live gemini-fallback OAuth", async () => {
+  // gemini OAuth is antigravity's default OAuth-served fallback (model-manager.ts's
+  // resolveCall antigravity branch actually falls back to it at call time) — a LIVE
+  // (non-expired, or expired-with-refresh) gemini token makes antigravity ready:true,
+  // not just catalog-listed/warned. Only a genuinely DEAD credential (no antigravity
+  // AND no usable gemini fallback) should warn.
   const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-role-ag-"));
   const savedCfg = process.env.JEO_CONFIG_DIR;
   const savedLog = console.log;
@@ -105,13 +110,42 @@ test("antigravity stays selectable in /model with a gemini-fallback OAuth (warne
     const { runLaunchCommand } = await import("../src/commands/launch");
     await runLaunchCommand(["--no-tui", "--no-session"]);
     const out = logged.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(out).toContain("Model set to: antigravity/gemini-3-pro-high");
+    expect(out).not.toContain("Cannot select antigravity");
+    // No readiness warning: a live gemini-fallback credential is genuinely usable.
+    expect(out).not.toContain("antigravity is not ready");
+    // Role pinning through /model subagent also works with an antigravity id.
+    const raw = JSON.parse(await fs.readFile(path.join(cfgDir, "config.json"), "utf8"));
+    expect(raw.subagents?.executor?.model).toBe("antigravity/claude-sonnet-4-5");
+  } finally {
+    console.log = savedLog;
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = savedCfg;
+    await fs.rm(cfgDir, { recursive: true, force: true });
+  }
+});
+
+test("antigravity stays selectable (warned, not refused) when neither antigravity nor a usable gemini fallback exists", async () => {
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-role-ag-dead-"));
+  const savedCfg = process.env.JEO_CONFIG_DIR;
+  const savedLog = console.log;
+  const logged: string[] = [];
+  console.log = (...a: unknown[]) => { logged.push(a.join(" ")); };
+  try {
+    process.env.JEO_CONFIG_DIR = cfgDir;
+    // No antigravity credential, no gemini credential at all — genuinely not ready.
+    await fs.writeFile(
+      path.join(cfgDir, "config.json"),
+      JSON.stringify({ defaultModel: "ollama/qwen2.5:0.5b" }),
+    );
+    mockQuestions = ["/model antigravity/gemini-3-pro-high", "/exit"];
+    const { runLaunchCommand } = await import("../src/commands/launch");
+    await runLaunchCommand(["--no-tui", "--no-session"]);
+    const out = logged.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
     // Selection is ALLOWED (session model set), with a not-ready warning instead of a refusal.
     expect(out).toContain("Model set to: antigravity/gemini-3-pro-high");
     expect(out).not.toContain("Cannot select antigravity");
     expect(out).toContain("antigravity is not ready");
-    // Role pinning through /model subagent also works with an antigravity id.
-    const raw = JSON.parse(await fs.readFile(path.join(cfgDir, "config.json"), "utf8"));
-    expect(raw.subagents?.executor?.model).toBe("antigravity/claude-sonnet-4-5");
   } finally {
     console.log = savedLog;
     if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;

@@ -299,9 +299,12 @@ export function resolveRetryOptions(retry: Config["retry"], kind: "request" | "s
  * OpenAI OAuth (ChatGPT/Codex) only serves Codex models, so any other OpenAI model
  * must use an API key. Kimi OAuth (Kimi Code subscription) only serves the Kimi Code
  * catalog (api.kimi.com/coding) — Moonshot API-platform ids (kimi-latest, moonshot-v1-*)
- * need a KIMI_API_KEY. A provider whose OAuth backend is not verified end-to-end
- * cannot serve any model over OAuth. Everything else (Anthropic Messages, Gemini /
- * Antigravity Cloud Code Assist) is served end-to-end.
+ * need a KIMI_API_KEY. Gemini OAuth no longer masquerades as gemini-cli against Cloud
+ * Code Assist, so it never serves google/gemini-* models on its own — a GEMINI_API_KEY
+ * is required (the SAME models remain OAuth-only reachable via antigravity/*). A
+ * provider whose OAuth backend is not verified end-to-end cannot serve any model over
+ * OAuth. Everything else (Anthropic Messages, Antigravity Cloud Code Assist) is served
+ * end-to-end.
  */
 function oauthServesModel(provider: AuthProvider, model: string): boolean {
   if (provider === "openai") return CODEX_MODELS.includes(model);
@@ -331,8 +334,11 @@ export function effectiveCredentialForProvider(
     const apiKey = config.providers[provider];
     if (apiKey) return { kind: "api_key", provider, token: apiKey };
     if (isOAuthProvider(provider) && OAUTH_FLOW_REGISTRY[provider].verifiedEndToEnd === false) {
+      const hint = provider === "gemini"
+        ? " Or use an antigravity/* model instead — the SAME Gemini models served OAuth-only via Cloud Code Assist (run 'jeo auth login antigravity')."
+        : "";
       throw new Error(
-        `Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'jeo setup') to use ${model}.`,
+        `Provider '${provider}' has only an OAuth token, but its OAuth backend is not compatible with the bundled adapter. Set ${provider.toUpperCase()}_API_KEY (or run 'jeo setup') to use ${model}.${hint}`,
       );
     }
   }
@@ -425,8 +431,10 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
 
   if (provider === "antigravity") {
     // Prefer the dedicated Antigravity login (its client is what the agent
-    // backend authorizes); fall back to a gemini-cli OAuth token for users with
-    // their own project/permissions.
+    // backend authorizes); fall back to a plain gemini OAuth token for users with
+    // their own project/permissions — this is now the DEFAULT OAuth-served path for
+    // Gemini models (google/gemini-* itself requires GEMINI_API_KEY, see
+    // `oauthServesModel` above).
     let credential = await resolveCredential("antigravity");
     if (credential.kind !== "oauth") credential = await resolveCredential("gemini");
     if (credential.kind !== "oauth") {

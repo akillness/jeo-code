@@ -3,6 +3,7 @@ import {
   classifyPromptHeuristically,
   warnOnce,
   resetPromptRouterWarnings,
+  deriveCacheSessionKey,
   type RouteDecision,
 } from "../src/agent/prompt-router";
 import type { Config } from "../src/agent/state";
@@ -374,4 +375,29 @@ test("routePrompt: an aborted signal during escalation fails open to the heurist
   const decision = (await routePrompt("why is this failing?", config, { signal: ac.signal })) as RouteDecision;
   expect(decision).not.toBeNull();
   expect(decision.source).toBe("heuristic");
+});
+
+// --- deriveCacheSessionKey (design doc §7 risk #4: per-model cache-key scoping) ---
+
+test("deriveCacheSessionKey: same sessionId + same model -> identical key across calls (cache reuse preserved)", () => {
+  const a = deriveCacheSessionKey("sess-1", "claude-sonnet-4-6");
+  const b = deriveCacheSessionKey("sess-1", "claude-sonnet-4-6");
+  expect(a).toBe(b);
+});
+
+test("deriveCacheSessionKey: same sessionId + different model -> different keys (no false cross-model cache hit)", () => {
+  const a = deriveCacheSessionKey("sess-1", "claude-sonnet-4-6");
+  const b = deriveCacheSessionKey("sess-1", "claude-haiku-4-5");
+  expect(a).not.toBe(b);
+});
+
+test("deriveCacheSessionKey: different sessionId + same model -> different keys (sessions never collide)", () => {
+  const a = deriveCacheSessionKey("sess-1", "claude-sonnet-4-6");
+  const b = deriveCacheSessionKey("sess-2", "claude-sonnet-4-6");
+  expect(a).not.toBe(b);
+});
+
+test("deriveCacheSessionKey: embeds both sessionId and model verbatim (no hashing/truncation at this layer)", () => {
+  const key = deriveCacheSessionKey("sess-abc", "gpt-5.5");
+  expect(key).toBe("sess-abc:gpt-5.5");
 });

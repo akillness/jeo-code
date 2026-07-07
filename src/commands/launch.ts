@@ -48,7 +48,7 @@ import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recen
 import { describeModel, describeAllProviders, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
-import { routePrompt, type RouteDecision } from "../agent/prompt-router";
+import { routePrompt, deriveCacheSessionKey, type RouteDecision } from "../agent/prompt-router";
 
 import { listAliases } from "../ai/model-registry";
 import { openaiCompatDef, SUBSCRIPTION_PROVIDER_NAMES } from "../ai/providers/openai-compatible-catalog";
@@ -891,6 +891,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // Explicit /model always wins: `routed` is only ever computed when `!sessionModel`.
     const activeModel = routed?.model ?? (sessionModel || defaultModel);
     const activeThinking = routed?.thinking ?? sessionThinking;
+    // Provider-side prompt caches are keyed PER MODEL — reusing the bare `sessionId`
+    // across a mid-session model switch (routePrompt changing activeModel turn to
+    // turn) sends the same cache-correlation key to a different model/provider,
+    // guaranteeing a cache miss on every switch and silently undermining routing's
+    // own cost/latency goal (design doc §7 risk #4). Scope the key to the resolved
+    // model so each model keeps its own stable cache lineage within the session.
+    // `sessionId` is undefined only under `--no-session` — in that case there is no
+    // provider-side cache lineage to protect anyway, so forward `undefined` unchanged
+    // (matches the prior behavior of `sessionKey: sessionId` for that mode).
+    const turnSessionKey = sessionId ? deriveCacheSessionKey(sessionId, activeModel) : undefined;
     const contextTokens = catalogMetadata(activeModel)?.contextTokens;
 
     // Resolve provider + dirty count up front — both are cheap and feed the live
@@ -1201,7 +1211,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           maxTokens: resolveMaxOutputTokens(activeModel, activeThinking),
           reasoningEffort: activeThinking ? thinkingToReasoningEffort(activeThinking) : undefined,
           signal: ac.signal,
-          sessionKey: sessionId,
+          sessionKey: turnSessionKey,
           steer: drainSteer,
           events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone }, persistTurnTail), opik),
         });
@@ -1221,7 +1231,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             maxTokens: resolveMaxOutputTokens(activeModel, activeThinking),
             reasoningEffort: activeThinking ? thinkingToReasoningEffort(activeThinking) : undefined,
             signal: ac.signal,
-            sessionKey: sessionId,
+            sessionKey: turnSessionKey,
             steer: drainSteer,
             events: wrapEvents(withToolDetailCapture(tui ? tui.events() : streamEvents), opik),
           });

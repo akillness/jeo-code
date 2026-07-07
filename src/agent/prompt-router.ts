@@ -271,3 +271,21 @@ export async function routePrompt(
     return null;
   }
 }
+
+/**
+ * Derive the provider-side prompt-cache correlation key for a turn (forwarded as
+ * `sessionKey` -> `prompt_cache_key`/`session_id` in loop.ts/model-manager.ts/
+ * openai-responses.ts). Provider-side prompt caches are keyed PER MODEL — reusing
+ * the bare `sessionId` across a mid-session model switch (routePrompt changing
+ * `activeModel` turn to turn) would send the same cache-correlation key to a
+ * DIFFERENT model/provider, guaranteeing a cache miss on every switch and silently
+ * undermining the cost/latency savings routing exists for (design doc §7 risk #4).
+ * Scoping the key to `${sessionId}:${model}` gives each model its own cache
+ * lineage within the session: same model across turns -> same key (cache reuse
+ * preserved), different model -> different key (no false cross-model cache hit).
+ * Deliberately excludes any turn counter/timestamp — the key must stay STABLE
+ * across consecutive turns that keep the same model.
+ */
+export function deriveCacheSessionKey(sessionId: string, model: string): string {
+  return `${sessionId}:${model}`;
+}

@@ -17,7 +17,7 @@ const realEngine = { ...(await import("../src/agent/engine")) };
 
 let mockQuestions: string[] = [];
 let mockIndex = 0;
-let capturedCalls: { model?: string; maxTokens?: number; reasoningEffort?: string }[] = [];
+let capturedCalls: { model?: string; maxTokens?: number; reasoningEffort?: string; sessionKey?: string }[] = [];
 
 mock.module("node:readline/promises", () => ({
   createInterface: () => ({
@@ -31,8 +31,8 @@ mock.module("node:readline/promises", () => ({
 
 mock.module("../src/agent/engine", () => ({
   ...realEngine,
-  runAgentLoop: mock(async (_history: unknown, opts: { model?: string; maxTokens?: number; reasoningEffort?: string }) => {
-    capturedCalls.push({ model: opts.model, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort });
+  runAgentLoop: mock(async (_history: unknown, opts: { model?: string; maxTokens?: number; reasoningEffort?: string; sessionKey?: string }) => {
+    capturedCalls.push({ model: opts.model, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, sessionKey: opts.sessionKey });
     return { done: true, steps: 1, doneReason: "ok" };
   }),
 }));
@@ -62,7 +62,7 @@ async function runOneTurn(
   config: Record<string, unknown>,
   prompt: string,
   extraArgs: string[] = [],
-): Promise<{ model?: string; maxTokens?: number; reasoningEffort?: string }[]> {
+): Promise<{ model?: string; maxTokens?: number; reasoningEffort?: string; sessionKey?: string }[]> {
   const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-prompt-routing-"));
   const savedCfg = process.env.JEO_CONFIG_DIR;
   const savedLog = console.log;
@@ -136,4 +136,81 @@ test("routing.tiers.trivial.thinking overrides the session thinking level when r
   expect(calls.length).toBeGreaterThan(0);
   expect(calls[0].model).toBe("claude-haiku-4-5");
   expect(calls[0].reasoningEffort).toBeDefined();
+});
+
+// --- sessionKey cache-scoping (design doc §7 risk #4) ---
+// A real session (no `--no-session`) is required here since the derived key is
+// `${sessionId}:${activeModel}` — `--no-session` leaves sessionId undefined and the
+// derivation short-circuits to `undefined` (see launch.ts's turnSessionKey guard, tested
+// separately as a pure-function unit test in test/prompt-router.test.ts). `process.chdir`
+// isolates session file writes (`.jeo/sessions/`) to a throwaway work dir, mirroring
+// test/stream-events.test.ts's established convention for real-session launch tests.
+async function runTurnsInOneSession(
+  config: Record<string, unknown>,
+  prompts: string[],
+): Promise<{ model?: string; maxTokens?: number; reasoningEffort?: string; sessionKey?: string }[]> {
+  const cfgDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-prompt-routing-cfg-"));
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-prompt-routing-work-"));
+  const savedCfg = process.env.JEO_CONFIG_DIR;
+  const savedCwd = process.cwd();
+  const savedLog = console.log;
+  console.log = () => {};
+  try {
+    process.env.JEO_CONFIG_DIR = cfgDir;
+    await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify(config));
+    process.chdir(workDir);
+    mockQuestions = [...prompts, "/exit"];
+
+    const { runLaunchCommand } = await import("../src/commands/launch");
+    await runLaunchCommand(["--no-tui"]); // real session: sessionId persists across all turns below
+
+    return capturedCalls;
+  } finally {
+    console.log = savedLog;
+    process.chdir(savedCwd);
+    if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = savedCfg;
+    await fs.rm(cfgDir, { recursive: true, force: true });
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
+}
+
+test("sessionKey: two turns routed to the SAME model within one session produce the SAME derived key (cache reuse preserved)", async () => {
+  const calls = await runTurnsInOneSession(
+    {
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "claude-haiku-4-5" },
+      routing: { enabled: true },
+    },
+    ["what is this?", "where is the config file located?"], // both trivial -> both route to roles.smol
+  );
+  expect(calls.length).toBe(2);
+  expect(calls[0].model).toBe("claude-haiku-4-5");
+  expect(calls[1].model).toBe("claude-haiku-4-5");
+  expect(calls[0].sessionKey).toBeDefined();
+  expect(calls[0].sessionKey).toBe(calls[1].sessionKey);
+});
+
+test("sessionKey: two turns routed to DIFFERENT models within one session produce DIFFERENT derived keys (no false cache hit across models)", async () => {
+  const calls = await runTurnsInOneSession(
+    {
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "claude-haiku-4-5" },
+      routing: { enabled: true },
+    },
+    [
+      "what is this?", // trivial, 0.85 confidence -> roles.smol
+      "Can you investigate and diagnose the root cause across src/agent/loop.ts and src/agent/engine.ts?", // complex, 0.85 confidence -> roles.slow unset -> defaultModel
+    ],
+  );
+  expect(calls.length).toBe(2);
+  expect(calls[0].model).toBe("claude-haiku-4-5");
+  expect(calls[1].model).toBe("claude-sonnet-4-6");
+  expect(calls[0].sessionKey).toBeDefined();
+  expect(calls[1].sessionKey).toBeDefined();
+  expect(calls[0].sessionKey).not.toBe(calls[1].sessionKey);
+  // Both keys still share the same session lineage (same sessionId prefix) — only the
+  // model suffix differs, proving the key is session-AND-model-scoped, not model-only.
+  const sessionPrefix = (calls[0].sessionKey as string).split(":")[0];
+  expect((calls[1].sessionKey as string).split(":")[0]).toBe(sessionPrefix);
 });

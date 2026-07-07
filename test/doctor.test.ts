@@ -87,3 +87,126 @@ test("runDoctorCommand --json: gemini oauth-only probes Cloud Code Assist (the r
   expect(gemini.detail).toContain("loadCodeAssist");
   expect(gemini.detail).not.toContain("claude-3-5-sonnet");
 });
+
+// --- routing diagnostic (design doc §7 risk #2) ---
+
+test("runDoctorCommand --json: routing disabled -> no routing block in the report", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
+    providers: {},
+    defaultModel: "gpt-4o",
+    // no `routing` key at all -> disabled by default
+  }));
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => lines.push(a.join(" "));
+  try {
+    const { runDoctorCommand } = await import("../src/commands/doctor");
+    await runDoctorCommand(["--json"]);
+  } finally {
+    console.log = orig;
+  }
+
+  const report = JSON.parse(lines.join("\n"));
+  expect(report.routing).toBeUndefined();
+});
+
+test("runDoctorCommand --json: routing enabled + roles.smol unset -> note present with escalation-skip wording", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
+    providers: {},
+    defaultModel: "gpt-4o",
+    routing: { enabled: true },
+    // no `roles` key -> roles.smol unconfigured
+  }));
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => lines.push(a.join(" "));
+  try {
+    const { runDoctorCommand } = await import("../src/commands/doctor");
+    await runDoctorCommand(["--json"]);
+  } finally {
+    console.log = orig;
+  }
+
+  const report = JSON.parse(lines.join("\n"));
+  expect(report.routing).toEqual({
+    enabled: true,
+    smolConfigured: false,
+    note: expect.stringContaining("roles.smol is unset"),
+  });
+  expect(report.routing.note).toContain("LLM escalation");
+});
+
+test("runDoctorCommand --json: routing enabled + roles.smol set -> no note, smolConfigured true", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
+    providers: {},
+    defaultModel: "gpt-4o",
+    routing: { enabled: true },
+    roles: { smol: "gpt-4o-mini" },
+  }));
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => lines.push(a.join(" "));
+  try {
+    const { runDoctorCommand } = await import("../src/commands/doctor");
+    await runDoctorCommand(["--json"]);
+  } finally {
+    console.log = orig;
+  }
+
+  const report = JSON.parse(lines.join("\n"));
+  expect(report.routing).toEqual({ enabled: true, smolConfigured: true });
+  expect(report.routing.note).toBeUndefined();
+});
+
+test("runDoctorCommand (human output): routing on + roles.smol unset prints a yellow [routing] note; ready/strict logic unaffected", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
+    providers: {},
+    defaultModel: "gpt-4o",
+    routing: { enabled: true },
+  }));
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => lines.push(a.join(" "));
+  try {
+    const { runDoctorCommand } = await import("../src/commands/doctor");
+    await runDoctorCommand([]);
+  } finally {
+    console.log = orig;
+  }
+
+  const output = lines.join("\n");
+  expect(output).toContain("[routing]");
+  expect(output).toContain("roles.smol is unset");
+  // Purely informational: the note must not turn NOT READY into a hard failure signal
+  // beyond what provider connectivity already determines (openai has no credential here,
+  // so NOT READY is expected from the provider gate, not from routing).
+  expect(output).toContain("NOT READY");
+});
+
+test("runDoctorCommand (human output): routing off prints no [routing] block at all", async () => {
+  await fs.writeFile(path.join(cfgDir, "config.json"), JSON.stringify({
+    providers: {},
+    defaultModel: "gpt-4o",
+  }));
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => lines.push(a.join(" "));
+  try {
+    const { runDoctorCommand } = await import("../src/commands/doctor");
+    await runDoctorCommand([]);
+  } finally {
+    console.log = orig;
+  }
+
+  expect(lines.join("\n")).not.toContain("[routing]");
+});

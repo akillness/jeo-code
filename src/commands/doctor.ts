@@ -170,6 +170,19 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   const defaultProvider = resolveProvider(resolvedModel);
   const ollamaBase = config.ollamaBaseUrl ?? "http://localhost:11434";
 
+  // Routing diagnostic (design doc §7 risk #2): routing.enabled without roles.smol
+  // means routePrompt()'s LLM-escalation path silently never fires — resolveRoleModel
+  // falls back to defaultModel, which is exactly the "cheap escalation call is actually
+  // the expensive default model" paradox routePrompt() itself guards against at runtime
+  // (see prompt-router.ts's warnOnce/SMOL_UNCONFIGURED_WARNING_KEY). Surface it here
+  // proactively, at onboarding time, instead of only mid-session on the first qualifying
+  // turn.
+  const routingEnabled = !!config.routing?.enabled;
+  const smolConfigured = !!config.roles?.smol;
+  const routingNote = routingEnabled && !smolConfigured
+    ? "routing is enabled but roles.smol is unset — LLM escalation for ambiguous prompts will never fire; heuristic-only tier resolution applies every turn. Set roles.smol to enable escalation."
+    : undefined;
+
   // --- Gather (probes run concurrently → ~1× the slowest timeout, not N×) ---
   const probes: { name: string; credKind: string; result: ProbeResult }[] = [];
   const cloud = ["anthropic", "openai", "gemini"] as AuthProvider[];
@@ -235,6 +248,7 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
       })),
       oauth: oauthHealth,
       ready,
+      ...(routingEnabled ? { routing: { enabled: true, smolConfigured, ...(routingNote ? { note: routingNote } : {}) } } : {}),
     };
     console.log(JSON.stringify(report, null, 2));
     if (strict && !ready) process.exit(1);
@@ -274,6 +288,15 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   if (oauthLines.length) {
     console.log("OAuth tokens:");
     for (const line of oauthLines) console.log(line);
+    console.log("");
+  }
+  // Routing diagnostic: informational only — never affects ready/strict exit logic.
+  if (routingEnabled) {
+    if (routingNote) {
+      console.log(`${chalk.yellow("[routing]")} ${routingNote}`);
+    } else {
+      console.log(`${chalk.green("[routing]")} enabled, roles.smol configured — LLM escalation available on ambiguous prompts.`);
+    }
     console.log("");
   }
 

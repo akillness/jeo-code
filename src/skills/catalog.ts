@@ -188,6 +188,7 @@ export function skillsPromptSection(skills: SkillDoc[] = SKILLS): string {
 }
 
 import * as fs from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
@@ -411,6 +412,54 @@ function isSupportedExternalSkill(doc: SkillDoc): boolean {
   return !RESERVED_SKILL_NAMES.has(nameLower);
 }
 
+/** Resolve ONE directory entry from {@link skillDirs} to its `SkillDoc`, or `null`
+ *  when the entry is not a skill (dotfile, non-`.md` file, directory with no
+ *  `SKILL.md`, unreadable/broken symlink). Pure I/O + parse — no shared-state
+ *  writes — so callers can run many of these concurrently. */
+async function resolveSkillEntry(dir: string, entry: Dirent): Promise<SkillDoc | null> {
+  if (entry.name.startsWith(".")) return null;
+  let isFile = entry.isFile();
+  let isDir = entry.isDirectory();
+  // Vercel `npx skills add` links agent dirs (.claude/skills/x) to its canonical
+  // store — a symlinked skill reports NEITHER isFile nor isDirectory on the
+  // Dirent, which silently dropped every linked skill. Follow the link.
+  if (entry.isSymbolicLink()) {
+    try {
+      const st = await fs.stat(path.join(dir, entry.name));
+      isFile = st.isFile();
+      isDir = st.isDirectory();
+    } catch { return null; /* broken symlink */ }
+  }
+  if (isFile && entry.name.endsWith(".md")) {
+    const nm = entry.name.slice(0, -3);
+    const filePath = path.join(dir, entry.name);
+    try {
+      const parsed = parseSkillMarkdown(nm, await fs.readFile(filePath, "utf-8"), { preferMetaName: true });
+      parsed.sourcePath = filePath;
+      return isSupportedExternalSkill(parsed) ? parsed : null;
+    } catch { return null; /* unreadable file */ }
+  }
+  if (isDir) {
+    const skillPath = path.join(dir, entry.name, "SKILL.md");
+    try {
+      const parsed = parseSkillMarkdown(entry.name, await fs.readFile(skillPath, "utf-8"), { preferMetaName: true });
+      parsed.sourcePath = skillPath;
+      return isSupportedExternalSkill(parsed) ? parsed : null;
+    } catch { return null; /* dir without SKILL.md, or unreadable */ }
+  }
+  return null;
+}
+
+/** Concurrency cap for {@link resolveSkillEntry} within one directory: high enough
+ *  that a large skill directory (hundreds of entries — a real field case: `npx skills
+ *  add`-style installs commonly accumulate 500+) resolves in one or two batches
+ *  instead of paying per-file `fs` round-trip latency SEQUENTIALLY (534 entries at
+ *  ~0.4ms/syscall was a measured ~220ms — a visible stall on every session start and
+ *  every `/skill` listing), while staying well under the lowest realistic per-process
+ *  file-descriptor ulimit (macOS defaults to 256) even with several directories'
+ *  batches racing across the `skillDirs` loop below. */
+const SKILL_ENTRY_LOAD_BATCH = 32;
+
 /** Bundled skills merged with user skill docs from {@link skillDirs} (user overrides by name). */
 export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[]> {
   try {
@@ -424,39 +473,20 @@ export async function loadSkills(cwd: string = process.cwd()): Promise<SkillDoc[
     }
   } catch {}
   const byName = new Map<string, SkillDoc>(SKILLS.map(s => [s.name.toLowerCase(), s]));
+  // Directories are walked in their documented lowest→highest precedence order
+  // (a later dir's skill overrides an earlier one with the same name) — that
+  // cross-directory override MUST stay sequential. Entries WITHIN one directory
+  // have no such contract (readdir order is not a precedence guarantee anyone
+  // depends on), so they resolve concurrently in bounded batches, then apply to
+  // `byName` in their original readdir order for a fully deterministic result.
   for (const dir of skillDirs(cwd)) {
-    let entries: import("node:fs").Dirent[] = [];
+    let entries: Dirent[] = [];
     try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { continue; }
-    for (const entry of entries) {
-      if (entry.name.startsWith(".")) continue;
-      let isFile = entry.isFile();
-      let isDir = entry.isDirectory();
-      // Vercel `npx skills add` links agent dirs (.claude/skills/x) to its canonical
-      // store — a symlinked skill reports NEITHER isFile nor isDirectory on the
-      // Dirent, which silently dropped every linked skill. Follow the link.
-      if (entry.isSymbolicLink()) {
-        try {
-          const st = await fs.stat(path.join(dir, entry.name));
-          isFile = st.isFile();
-          isDir = st.isDirectory();
-        } catch { continue; /* broken symlink */ }
-      }
-      if (isFile && entry.name.endsWith(".md")) {
-        const nm = entry.name.slice(0, -3);
-        try {
-          const parsed = parseSkillMarkdown(nm, await fs.readFile(path.join(dir, entry.name), "utf-8"), { preferMetaName: true });
-          parsed.sourcePath = path.join(dir, entry.name);
-          if (isSupportedExternalSkill(parsed)) byName.set(parsed.name.toLowerCase(), parsed);
-        } catch { /* skip unreadable file */ }
-        continue;
-      }
-      if (isDir) {
-        const skillPath = path.join(dir, entry.name, "SKILL.md");
-        try {
-          const parsed = parseSkillMarkdown(entry.name, await fs.readFile(skillPath, "utf-8"), { preferMetaName: true });
-          parsed.sourcePath = skillPath;
-          if (isSupportedExternalSkill(parsed)) byName.set(parsed.name.toLowerCase(), parsed);
-        } catch { /* skip dirs without SKILL.md or unreadable files */ }
+    for (let i = 0; i < entries.length; i += SKILL_ENTRY_LOAD_BATCH) {
+      const batch = entries.slice(i, i + SKILL_ENTRY_LOAD_BATCH);
+      const resolved = await Promise.all(batch.map(entry => resolveSkillEntry(dir, entry)));
+      for (const parsed of resolved) {
+        if (parsed) byName.set(parsed.name.toLowerCase(), parsed);
       }
     }
   }

@@ -229,11 +229,53 @@ interface ParsedConceptEntry { sig: string; concept: Concept | null }
 const parsedConceptCache = new Map<string, ParsedConceptEntry>();
 const PARSED_CONCEPT_CACHE_CAP = 512;
 
+/** Single-slot cache for `buildCorpusStats`/`buildConceptGraph` over the LAST
+ *  `concepts` array seen, keyed by reference identity. `memoryPromptSection` runs
+ *  `selectWithinBudget` once per interactive turn (`refreshSessionMemory`) and once
+ *  per subagent spawn (team/ralph/autopilot) — each call re-tokenized every concept's
+ *  searchable text and re-scanned every body for cross-links, even when NOTHING in the
+ *  bundle changed between calls. `loadConcepts` already returns the same cached `Concept`
+ *  OBJECTS when a file's mtime/size is unchanged (see `parsedConceptCache` above), so an
+ *  identical (same length + same object references) `concepts` array is the common case
+ *  across consecutive calls in one session — this hits that case with a cheap O(n)
+ *  reference-equality scan instead of paying the O(n · text length) rebuild. A genuinely
+ *  changed bundle (new/edited/deleted concept) always produces a different array — either
+ *  a different length or at least one different object reference — so correctness never
+ *  depends on this cache; it only skips work that would reach the same answer. */
+let statsGraphCacheConcepts: Concept[] | null = null;
+let statsGraphCacheStats: CorpusStats | null = null;
+let statsGraphCacheGraph: ConceptGraph | null = null;
+
+function sameConceptsArray(a: Concept[], b: Concept[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** Corpus stats + link graph for `concepts`, memoized against the last call (see above). */
+function statsAndGraphFor(concepts: Concept[]): { stats: CorpusStats; graph: ConceptGraph } {
+  if (
+    statsGraphCacheConcepts && statsGraphCacheStats && statsGraphCacheGraph &&
+    sameConceptsArray(statsGraphCacheConcepts, concepts)
+  ) {
+    return { stats: statsGraphCacheStats, graph: statsGraphCacheGraph };
+  }
+  const stats = buildCorpusStats(concepts);
+  const graph = buildConceptGraph(concepts);
+  statsGraphCacheConcepts = concepts;
+  statsGraphCacheStats = stats;
+  statsGraphCacheGraph = graph;
+  return { stats, graph };
+}
+
 /** Drop the per-file concept parse cache so the next loadConcepts re-reads disk.
  *  The cache is already mtime/size self-invalidating; this is a hard reset for
  *  tests and callers that mutate files without changing their stat signature. */
 export function invalidateConceptCache(): void {
   parsedConceptCache.clear();
+  statsGraphCacheConcepts = null;
+  statsGraphCacheStats = null;
+  statsGraphCacheGraph = null;
 }
 
 /** Read every concept document in the bundle into structured `Concept`s. Reserved
@@ -572,8 +614,7 @@ function selectWithinBudget(concepts: Concept[], query: string | undefined, budg
   const sectionLenByType = new Map<string, number>(); // type -> rendered length of that type's section so far
   let total = 0; // rendered length of `selected` under renderConcepts
 
-  const stats = buildCorpusStats(concepts);
-  const graph = buildConceptGraph(concepts);
+  const { stats, graph } = statsAndGraphFor(concepts);
 
   const take = (pool: Concept[]) => {
     for (const c of priorityOrder(pool, query, stats, graph)) {

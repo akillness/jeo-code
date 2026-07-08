@@ -60,15 +60,18 @@ export const TOOL_SPILL_THRESHOLD = TOOL_OUTPUT_MAX;
 /** Most recent tool-result artifacts to keep; older ones are pruned on each spill. */
 export const MAX_TOOL_ARTIFACTS = 50;
 
-/** Best-effort retention: keep the newest `MAX_TOOL_ARTIFACTS` files in `dir`, delete the rest. */
+/** Best-effort retention: keep the newest `MAX_TOOL_ARTIFACTS` files in `dir`, delete the
+ *  rest. Filenames are always `${Date.now()}-${rand}-${tool}.txt` (spillToolResult is the
+ *  sole writer into this directory) — the leading 13-digit millisecond timestamp is fixed-
+ *  width until year 2286, so a plain lexicographic sort of the FILENAMES reproduces mtime
+ *  order exactly. This replaces an `fs.stat` per file (up to MAX_TOOL_ARTIFACTS syscalls,
+ *  paid on every spill once a long session's artifact dir sits at/near the cap) with a pure
+ *  in-memory string sort — zero syscalls beyond the single `readdir` every call already paid. */
 async function pruneToolArtifacts(dir: string): Promise<void> {
   const files = await fs.readdir(dir).catch(() => [] as string[]);
   if (files.length <= MAX_TOOL_ARTIFACTS) return;
-  const stamped = await Promise.all(
-    files.map(async f => ({ f, m: (await fs.stat(path.join(dir, f)).catch(() => null))?.mtimeMs ?? 0 })),
-  );
-  stamped.sort((a, b) => b.m - a.m); // newest first
-  for (const { f } of stamped.slice(MAX_TOOL_ARTIFACTS)) {
+  const newestFirst = [...files].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+  for (const f of newestFirst.slice(MAX_TOOL_ARTIFACTS)) {
     await fs.rm(path.join(dir, f), { force: true }).catch(() => {});
   }
 }

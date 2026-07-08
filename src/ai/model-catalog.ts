@@ -201,6 +201,13 @@ export const KIMI_CODE_MODELS: readonly string[] = [
   "kimi-k2",
 ];
 
+/** Recency compare for `releaseDate` ("YYYY-MM"): `>0` when `a` is newer; a
+ *  missing date sorts oldest, so an unconfirmed date never outranks a
+ *  verified-newer model. */
+export function compareReleaseDate(a: string | undefined, b: string | undefined): number {
+  return (a ?? "").localeCompare(b ?? "");
+}
+
 /** Format a token count compactly (1000 → 1K, 1_000_000 → 1M). */
 export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;

@@ -12,6 +12,7 @@ import {
   type RouteDecision,
 } from "../src/agent/prompt-router";
 import { resolveSubagentModel } from "../src/agent/subagents";
+import { CODEX_MODELS } from "../src/ai/model-catalog";
 import type { Config } from "../src/agent/state";
 
 // `routePrompt` calls the real `callLlm` (src/agent/loop) for LLM escalation. Tests that
@@ -659,4 +660,50 @@ test("cheapestCredentialed & strongestCredentialed: excludes limitedAvailability
   const strongest = strongestCredentialed(config);
   expect(cheapest).not.toBe("claude-mythos-5");
   expect(strongest).not.toBe("claude-mythos-5");
+});
+
+// --- Model-level OAuth gate in isAutoSelectCandidate (via modelServableWithConfig):
+// an OAuth-only OpenAI login serves ONLY Codex ids, and an antigravity API key
+// serves NOTHING (OAuth-only provider). Reverting isAutoSelectCandidate to the old
+// provider-level "any stored credential" check reddens every assertion below
+// (gpt-4o/gpt-4o-mini/o3 re-enter the pools; antigravity rows reappear). ---
+
+test("tierModelPool: OAuth-only OpenAI pools contain ONLY Codex ids across all four tiers (never gpt-4o/gpt-4o-mini/o3)", () => {
+  const config = credentialedConfig({
+    providers: {},
+    oauth: { openai: "oauth-tok" },
+    routing: { enabled: true },
+  });
+  const tiers = ["trivial", "standard", "high", "complex"] as const;
+  const all = tiers.flatMap(tier => tierModelPool(tier, config));
+  // Not vacuous: the Codex ids ARE credentialed, so at least one pool is non-empty.
+  expect(all.length).toBeGreaterThan(0);
+  for (const id of all) expect(CODEX_MODELS).toContain(id);
+});
+
+test("cheapestCredentialed/strongestCredentialed: OAuth-only OpenAI picks stay within the Codex-served set", () => {
+  const config = credentialedConfig({
+    providers: {},
+    oauth: { openai: "oauth-tok" },
+    routing: { enabled: true },
+  });
+  const cheapest = cheapestCredentialed(config);
+  const strongest = strongestCredentialed(config);
+  // Without the model-level gate, cheapest would be gpt-4o-mini ($0.15/$0.6 —
+  // far cheaper than any Codex id) — the exact regression this pins.
+  expect(cheapest).not.toBeNull();
+  expect(CODEX_MODELS).toContain(cheapest!);
+  expect(strongest).not.toBeNull();
+  expect(CODEX_MODELS).toContain(strongest!);
+});
+
+test("tierModelPool/cheapest/strongest: an antigravity API key alone credentials NOTHING (antigravity is OAuth-only)", () => {
+  const config = credentialedConfig({
+    providers: { antigravity: "some-api-key" },
+    routing: { enabled: true },
+  });
+  const tiers = ["trivial", "standard", "high", "complex"] as const;
+  for (const tier of tiers) expect(tierModelPool(tier, config)).toEqual([]);
+  expect(cheapestCredentialed(config)).toBeNull();
+  expect(strongestCredentialed(config)).toBeNull();
 });

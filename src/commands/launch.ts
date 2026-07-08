@@ -45,7 +45,7 @@ import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/state";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
-import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId } from "../ai";
+import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
 import { routePrompt, deriveCacheSessionKey, warnOnce, type RouteDecision } from "../agent/prompt-router";
@@ -905,13 +905,27 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     let routeCredentialNotice: string | undefined;
     let routeVetoNote: string | undefined;
     if (routed) {
-      const routedProvider = resolveProvider(routed.model);
+      // describeModel expands aliases (e.g. a hand-written `roles.high: "gpt"`)
+      // exactly like the real call path, so the servability check below judges
+      // the id the provider will actually see — never a raw alias string.
+      const { resolved: routedResolved, provider: routedProvider } = await describeModel(routed.model, turnConfig);
       const status = await describeProvider(routedProvider, turnConfig);
       if (!status.ready) {
         routeVetoNote = `routed model '${routed.model}' (${routedProvider}) has no usable credential this turn — fell back to '${sessionModel || defaultModel}'`;
         routeCredentialNotice = warnOnce(
           `prompt-router:provider-not-ready:${routedProvider}`,
           `[route] routed to '${routed.model}' (${routedProvider}) but that provider has no usable credential — falling back to the default model this turn. Run 'jeo auth login ${routedProvider}' or reconfigure routing.tiers/roles for a provider you're logged into.`,
+        );
+        routed = null;
+      } else if (!modelServableWithConfig(routedProvider, routedResolved, turnConfig)) {
+        // Provider readiness is necessary but not sufficient: an OAuth login only
+        // serves specific models (auth matrix on modelServableWithConfig). Only
+        // user-pinned routing.tiers/roles models can hit this branch —
+        // auto-selected models already passed the same predicate.
+        routeVetoNote = `routed model '${routed.model}' (${routedProvider}) is not servable by the stored ${routedProvider} credential this turn — fell back to '${sessionModel || defaultModel}'`;
+        routeCredentialNotice = warnOnce(
+          `prompt-router:model-not-servable:${routed.model}`,
+          `[route] routed to '${routed.model}' but the stored ${routedProvider} OAuth login cannot serve that model — falling back to the default model this turn. Set ${routedProvider.toUpperCase()}_API_KEY or reconfigure routing.tiers/roles to a model your login serves.`,
         );
         routed = null;
       }

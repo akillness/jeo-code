@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, effectiveCredentialForProvider } from "../src/ai/model-manager";
+import { resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, effectiveCredentialForProvider, modelServableWithConfig } from "../src/ai/model-manager";
 import type { Credential } from "../src/auth/storage";
 
 test("effectiveCredentialForProvider: anthropic OAuth wins even when an API key is configured", () => {
@@ -91,4 +91,81 @@ test("thinkingToReasoningEffort: maps session level → provider reasoning tier"
   expect(thinkingToReasoningEffort("xhigh")).toBe("high");
   // Unset → undefined so the caller falls back to the global config.
   expect(thinkingToReasoningEffort(undefined)).toBeUndefined();
+});
+
+// --- modelServableWithConfig: the shared model-LEVEL credential gate behind
+// auto-routing candidacy (isAutoSelectCandidate) and launch.ts's routing veto.
+// Each block defends one rule of the contract; a flipped/dropped branch in the
+// implementation (e.g. treating an antigravity API key as a credential, or
+// letting OAuth-only OpenAI serve non-Codex ids) reddens the matching block. ---
+
+test("modelServableWithConfig: local providers (ollama/lmstudio) are keyless — servable with ZERO credentials", () => {
+  const empty = { providers: {}, oauth: {} };
+  expect(modelServableWithConfig("ollama", "qwen2.5", empty)).toBe(true);
+  expect(modelServableWithConfig("lmstudio", "some-local-model", empty)).toBe(true);
+});
+
+test("modelServableWithConfig: OAuth-only OpenAI serves ONLY Codex ids (gpt-5.5/gpt-5.4), never the API catalog", () => {
+  const oauthOnly = { providers: {}, oauth: { openai: "tok" } };
+  expect(modelServableWithConfig("openai", "gpt-5.5", oauthOnly)).toBe(true);
+  expect(modelServableWithConfig("openai", "gpt-5.4", oauthOnly)).toBe(true);
+  // Provider-qualified ids (`openai/…`) are valid route targets — adapters strip
+  // the prefix on the wire, so servability must match the bare id's verdict.
+  expect(modelServableWithConfig("openai", "openai/gpt-5.5", oauthOnly)).toBe(true);
+  // Non-Codex ids fail at call time with "set OPENAI_API_KEY" — the exact bug the gate prevents.
+  expect(modelServableWithConfig("openai", "gpt-4o", oauthOnly)).toBe(false);
+  expect(modelServableWithConfig("openai", "gpt-4o-mini", oauthOnly)).toBe(false);
+  expect(modelServableWithConfig("openai", "o3", oauthOnly)).toBe(false);
+  expect(modelServableWithConfig("openai", "openai/gpt-4o", oauthOnly)).toBe(false);
+});
+
+test("modelServableWithConfig: an API key serves the provider's FULL catalog (keys are never model-scoped)", () => {
+  expect(modelServableWithConfig("openai", "gpt-4o", { providers: { openai: "sk-oai" }, oauth: {} })).toBe(true);
+  expect(modelServableWithConfig("gemini", "gemini-3-flash", { providers: { gemini: "AIza" }, oauth: {} })).toBe(true);
+  // API key wins even when a (Codex-limited) OAuth token is ALSO stored.
+  expect(modelServableWithConfig("openai", "gpt-4o", { providers: { openai: "sk-oai" }, oauth: { openai: "tok" } })).toBe(true);
+});
+
+test("modelServableWithConfig: a configured OpenAI base URL is the keyless local-proxy path — any model", () => {
+  const baseUrlOnly = { providers: {}, oauth: {}, openaiBaseUrl: "http://localhost:8080/v1" };
+  expect(modelServableWithConfig("openai", "gpt-4o", baseUrlOnly)).toBe(true);
+  expect(modelServableWithConfig("openai", "totally-local-model", baseUrlOnly)).toBe(true);
+  // The base URL even overrides an OAuth token's Codex-only limit (local proxy serves anything).
+  expect(modelServableWithConfig("openai", "gpt-4o", { providers: {}, oauth: { openai: "tok" }, openaiBaseUrl: "http://localhost:8080/v1" })).toBe(true);
+});
+
+test("modelServableWithConfig: OAuth-only gemini serves NOTHING (Cloud Code Assist masquerade removed — GEMINI_API_KEY required)", () => {
+  const oauthOnly = { providers: {}, oauth: { gemini: "tok" } };
+  expect(modelServableWithConfig("gemini", "gemini-3-flash", oauthOnly)).toBe(false);
+  expect(modelServableWithConfig("gemini", "gemini-2.5-pro", oauthOnly)).toBe(false);
+});
+
+test("modelServableWithConfig: antigravity is OAuth-ONLY — an API key alone can never serve it", () => {
+  // resolveCall throws for a keyed antigravity call; the gate must agree.
+  expect(modelServableWithConfig("antigravity", "antigravity/gemini-3.1-pro-high", { providers: { antigravity: "key" }, oauth: {} })).toBe(false);
+  // Its own OAuth login serves it…
+  expect(modelServableWithConfig("antigravity", "antigravity/gemini-3.1-pro-high", { providers: {}, oauth: { antigravity: "tok" } })).toBe(true);
+  // …and so does the gemini OAuth fallback credential.
+  expect(modelServableWithConfig("antigravity", "antigravity/gemini-3.1-pro-high", { providers: {}, oauth: { gemini: "tok" } })).toBe(true);
+});
+
+test("modelServableWithConfig: OAuth-only kimi serves ONLY the Kimi Code catalog (kimi/ prefix stripped for the check)", () => {
+  const oauthOnly = { providers: {}, oauth: { kimi: "tok" } };
+  expect(modelServableWithConfig("kimi", "kimi/kimi-k2.5", oauthOnly)).toBe(true);
+  expect(modelServableWithConfig("kimi", "kimi-k2.5", oauthOnly)).toBe(true);
+  // Moonshot API-platform ids 404 against api.kimi.com/coding — need KIMI_API_KEY.
+  expect(modelServableWithConfig("kimi", "kimi-latest", oauthOnly)).toBe(false);
+  expect(modelServableWithConfig("kimi", "moonshot-v1-128k", oauthOnly)).toBe(false);
+});
+
+test("modelServableWithConfig: no credential at all -> not servable (cloud providers)", () => {
+  const empty = { providers: {}, oauth: {} };
+  expect(modelServableWithConfig("openai", "gpt-5.5", empty)).toBe(false);
+  expect(modelServableWithConfig("anthropic", "claude-sonnet-4-6", empty)).toBe(false);
+  expect(modelServableWithConfig("gemini", "gemini-3-flash", empty)).toBe(false);
+  expect(modelServableWithConfig("antigravity", "antigravity/gemini-3.1-pro-high", empty)).toBe(false);
+});
+
+test("modelServableWithConfig: verified end-to-end OAuth (anthropic) serves its models without an API key", () => {
+  expect(modelServableWithConfig("anthropic", "claude-sonnet-4-6", { providers: {}, oauth: { anthropic: "tok" } })).toBe(true);
 });

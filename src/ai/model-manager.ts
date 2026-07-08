@@ -307,13 +307,44 @@ export function resolveRetryOptions(retry: Config["retry"], kind: "request" | "s
  * end-to-end.
  */
 function oauthServesModel(provider: AuthProvider, model: string): boolean {
-  if (provider === "openai") return CODEX_MODELS.includes(model);
+  if (provider === "openai") {
+    // Provider-qualified ids (`openai/gpt-5.5`) are valid route targets — the
+    // adapters strip the prefix on the wire, so servability must match.
+    const wire = model.startsWith("openai/") ? model.slice(7) : model;
+    return CODEX_MODELS.includes(wire);
+  }
   if (provider === "kimi") {
     const wire = model.startsWith("kimi/") ? model.slice(5) : model;
     return KIMI_CODE_MODELS.includes(wire);
   }
   if (isOAuthProvider(provider) && OAUTH_FLOW_REGISTRY[provider].verifiedEndToEnd === false) return false;
   return true;
+}
+
+/**
+ * Whether jeo's STORED credentials can actually serve `model` — the shared
+ * model-LEVEL gate behind auto-routing candidacy (prompt-router's
+ * `isAutoSelectCandidate`) and launch.ts's routing veto. Mirrors `resolveCall`'s
+ * real rules instead of the provider-level "any credential exists" check that
+ * let OAuth-only OpenAI route to non-Codex models (then fail at call time with
+ * "set OPENAI_API_KEY" — the exact key-demand-despite-OAuth bug):
+ * - local providers (ollama/lmstudio) are keyless — always servable;
+ * - antigravity is OAuth-ONLY (its own login or the gemini OAuth fallback);
+ *   an `providers.antigravity` API key cannot serve calls (resolveCall throws);
+ * - an API key serves the provider's FULL catalog (API keys are never
+ *   model-scoped);
+ * - OAuth serves exactly what `oauthServesModel` says it serves end-to-end
+ *   (openai→Codex ids only, kimi→Kimi Code ids only, gemini→nothing);
+ * - a configured OpenAI base URL is the keyless local-proxy path — any model.
+ */
+export function modelServableWithConfig(provider: ProviderName, model: string, config: Partial<Pick<Config, "providers" | "oauth" | "openaiBaseUrl">>): boolean {
+  if (provider === "ollama" || provider === "lmstudio") return true;
+  if (provider === "antigravity") return !!(config.oauth?.antigravity || config.oauth?.gemini);
+  if (provider === "openai" && config.openaiBaseUrl) return true;
+  const auth = provider as AuthProvider;
+  if (config.providers?.[auth]) return true;
+  if (config.oauth?.[auth]) return oauthServesModel(auth, model);
+  return false;
 }
 
 /**
@@ -447,7 +478,7 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
   const credential = await resolveCredential(credentialProvider);
   const effective = effectiveCredentialForProvider(credentialProvider, credential, config, model);
   const isLocalOpenAi = provider === "openai" && !!baseUrl;
-  if (provider === "openai" && effective.kind === "oauth" && !isLocalOpenAi && !CODEX_MODELS.includes(model)) {
+  if (provider === "openai" && effective.kind === "oauth" && !isLocalOpenAi && !oauthServesModel("openai", model)) {
     throw new Error(
       "OpenAI OAuth 자격증명은 Codex 모델(gpt-5.5/gpt-5.4)만 지원. OPENAI_API_KEY를 설정하거나 모델을 변경하세요"
     );

@@ -449,3 +449,75 @@ test("credential gate: /route why after a veto explains the fallback, not a phan
   expect(whyLine).toContain("gpt-4o-mini");
   expect(whyLine).toContain("claude-sonnet-4-6"); // names the fallback that was actually used
 });
+// --- model-servability veto (v0.8.2): provider-level readiness is necessary but
+// NOT sufficient. An OAuth-only OpenAI login passes describeProvider's ready
+// check yet only serves Codex ids — an explicitly-pinned routing.tiers model
+// outside that set must be vetoed (fall back to the session/default model)
+// instead of failing at call time demanding an API key. ---
+
+// Clears env credentials that would leak into the temp config via withEnvOverlay
+// (an ambient OPENAI_API_KEY fills providers.openai and makes gpt-4o servable;
+// an ambient OPENAI_BASE_URL makes EVERY openai id servable), then restores them.
+async function withOpenAiEnvCleared<T>(run: () => Promise<T>): Promise<T> {
+  const saved: Record<string, string | undefined> = {};
+  for (const k of ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_OAUTH_TOKEN"]) {
+    saved[k] = process.env[k];
+    delete process.env[k];
+  }
+  try {
+    return await run();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+test("servability veto: OAuth-only openai + pinned non-Codex tier model -> falls back to defaultModel with a 'cannot serve' notice", async () => {
+  await withOpenAiEnvCleared(async () => {
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key" },
+      oauth: { openai: "oauth-tok" }, // provider IS ready (passes describeProvider)…
+      defaultModel: "claude-sonnet-4-6",
+      routing: { enabled: true, tiers: { trivial: { model: "gpt-4o" } } }, // …but OAuth cannot serve gpt-4o
+    }, "what is this?"); // trivial -> routes to the pinned gpt-4o
+    expect(calls.length).toBeGreaterThan(0);
+    // Without the model-level veto this dispatches gpt-4o and the call fails
+    // demanding OPENAI_API_KEY despite a valid OAuth login — the v0.8.2 bug.
+    expect(calls[0].model).toBe("claude-sonnet-4-6");
+    const notice = logs.find(l => l.includes("[route]") && l.includes("cannot serve"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("gpt-4o");
+    expect(notice).toContain("OPENAI_API_KEY");
+  });
+});
+
+test("servability veto: /route why explains the routed model is not servable and names the fallback", async () => {
+  await withOpenAiEnvCleared(async () => {
+    const { logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key" },
+      oauth: { openai: "oauth-tok" },
+      defaultModel: "claude-sonnet-4-6",
+      routing: { enabled: true, tiers: { trivial: { model: "gpt-4o" } } },
+    }, ["what is this?", "/route why"]);
+    const whyLine = logs.find(l => l.includes("not servable"));
+    expect(whyLine).toBeDefined();
+    expect(whyLine).toContain("gpt-4o");
+    expect(whyLine).toContain("claude-sonnet-4-6"); // names the fallback actually used
+  });
+});
+
+test("servability veto: does NOT fire for a Codex id the OAuth login serves (gate is model-scoped, not provider-scoped)", async () => {
+  await withOpenAiEnvCleared(async () => {
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key" },
+      oauth: { openai: "oauth-tok" },
+      defaultModel: "claude-sonnet-4-6",
+      routing: { enabled: true, tiers: { trivial: { model: "gpt-5.5" } } }, // Codex-served
+    }, "what is this?");
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls[0].model).toBe("gpt-5.5"); // routing engaged normally — no veto
+    expect(logs.some(l => l.includes("cannot serve") || l.includes("not servable"))).toBe(false);
+  });
+});

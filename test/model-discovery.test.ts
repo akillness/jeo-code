@@ -459,3 +459,67 @@ test("listProviderModels: gemini follows nextPageToken so the available list is 
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+// --- Gemini OAuth gate (v0.8.2): OAuth alone can LIST gemini models but can no
+// longer SERVE them (Cloud Code Assist masquerade removed), so discovery must
+// refuse WITHOUT fetching — surfacing models every call would reject sells a
+// broken picker. catalogOr must keep that refusal a failure, never resurrect
+// catalog rows for it. ---
+
+test("listProviderModels: gemini OAuth-only refuses with a GEMINI_API_KEY hint WITHOUT fetching, and catalogOr keeps it a failure", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-disc-gem-oauth-"));
+  const prev = process.env.JEO_CONFIG_DIR;
+  const prevKey = process.env.GEMINI_API_KEY;
+  process.env.JEO_CONFIG_DIR = dir;
+  delete process.env.GEMINI_API_KEY; // env key would fill config.providers.gemini and defeat the OAuth-only setup
+  await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({
+    providers: {},
+    oauth: { gemini: "oauth-gem" },
+    defaultModel: "claude-3-5-sonnet",
+  }));
+  let called = false;
+  const spy = (async () => { called = true; return new Response("{}", { status: 200 }); }) as unknown as typeof fetch;
+  try {
+    const r = await listProviderModels("gemini", { fetchImpl: spy });
+    expect(r.ok).toBe(false);
+    expect(r.source).toBe("oauth");
+    expect(r.error).toMatch(/GEMINI_API_KEY/);
+    expect(called).toBe(false); // short-circuits BEFORE any network probe
+    // catalogOr's gemini+oauth carve-out: the failure stays honest — no fabricated models.
+    const withCatalog = catalogOr(r);
+    expect(withCatalog.ok).toBe(false);
+    expect(withCatalog.models).toEqual([]);
+  } finally {
+    process.env.JEO_CONFIG_DIR = prev;
+    if (prevKey !== undefined) process.env.GEMINI_API_KEY = prevKey;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("listProviderModels: gemini OAuth + API key swaps to the key and still lists LIVE models (gate only fires key-less)", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-disc-gem-key-"));
+  const prev = process.env.JEO_CONFIG_DIR;
+  process.env.JEO_CONFIG_DIR = dir;
+  await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({
+    providers: { gemini: "sk-gem" },
+    oauth: { gemini: "oauth-gem" },
+    defaultModel: "claude-3-5-sonnet",
+  }));
+  const urls: string[] = [];
+  const fetchSpy = (async (url: string | URL | Request) => {
+    urls.push(String(url));
+    return new Response(JSON.stringify({
+      models: [{ name: "models/gemini-3-flash", supportedGenerationMethods: ["generateContent"] }],
+    }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const r = await listProviderModels("gemini", { fetchImpl: fetchSpy });
+    expect(r.ok).toBe(true);
+    expect(r.source).toBe("api_key"); // swapped off the OAuth token
+    expect(r.models).toEqual(["gemini-3-flash"]);
+    expect(urls.length).toBe(1);
+    expect(urls[0]).toContain("key=sk-gem"); // the live list ran under the API key
+  } finally {
+    process.env.JEO_CONFIG_DIR = prev;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

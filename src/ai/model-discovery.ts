@@ -285,6 +285,9 @@ export function catalogOr(result: ProviderModelsResult): ProviderModelsResult {
   // Antigravity's available models depend on the Cloud Code Assist agent backend
   // and must never be faked from a hard-coded catalog.
   if (result.provider === "antigravity") return result;
+  // No catalog-fallback for oauth-sourced gemini failures: OAuth can LIST but
+  // not SERVE gemini models (see listProviderModels' gemini gate).
+  if (result.provider === "gemini" && result.source === "oauth") return result;
   // OAuth: OpenAI/Codex legitimately rejects the standard /models endpoint while
   // the fixed Codex ids still work; other OAuth providers fall back to their full
   // static catalog too. API-key providers only fall back when the provider has NO
@@ -361,6 +364,15 @@ export async function listProviderModels(
       // An API key is the broader, documented path — prefer it for live discovery.
       cred = { kind: "api_key", provider: prov, token: config.providers[prov]! };
       source = "api_key";
+    }
+    // Gemini models are exposed ONLY under API-key auth: a gemini OAuth token can
+    // still list models from generativelanguage.googleapis.com, but it can no
+    // longer SERVE them (the gemini-cli/Cloud Code Assist masquerade was removed
+    // — see OAUTH_FLOW_REGISTRY.gemini.verifiedEndToEnd), so surfacing them in
+    // pickers sells models every call would reject. The API-key swap above
+    // already ran, so reaching here with an oauth credential means NO key exists.
+    if (provider === "gemini" && cred.kind === "oauth") {
+      return { provider, models: [], ok: false, source, error: "OAuth cannot serve gemini models — set GEMINI_API_KEY, or use antigravity/* (Cloud Code Assist)" };
     }
     const isLocalOpenAi = provider === "openai" && !!(opts.baseUrl ?? process.env.OPENAI_BASE_URL);
     if (source === "none" && !isLocalOpenAi) {

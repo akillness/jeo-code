@@ -48,7 +48,7 @@
  * contract for users who never opted in.
  */
 import { callLlm } from "./loop";
-import { resolveRoleModel } from "../ai/model-manager";
+import { resolveRoleModel, modelServableWithConfig } from "../ai/model-manager";
 import { catalogMetadata, MODEL_CATALOG, compareReleaseDate, type CatalogModel } from "../ai/model-catalog";
 import { priceForModel } from "../ai/pricing";
 import { tryExtractJsonObject } from "./json";
@@ -210,22 +210,7 @@ export type RoutingConfig = Pick<Config, "defaultModel" | "roles" | "routing"> &
 function isCloudProvider(p: ProviderName): p is AuthProvider {
   return p !== "ollama" && p !== "lmstudio";
 }
-/** Whether `provider`'s configured credential can actually serve ITS OWN catalog
- *  models for auto-routing purposes — mirrors the real fallback rules in
- *  model-manager.ts's `oauthServesModel`/`resolveCall`:
- *  - `gemini` requires an API key. Its OAuth login no longer masquerades as
- *    gemini-cli against Cloud Code Assist, so an OAuth-only credential can't
- *    serve google/gemini-* models — the SAME models route through `antigravity/*`
- *    instead.
- *  - `antigravity` accepts its OWN OAuth login OR a plain gemini OAuth token as a
- *    fallback credential (same fallback `resolveCall`'s antigravity branch uses),
- *    so it — not `gemini` — is the DEFAULT OAuth-served path for Gemini models.
- *  Every other provider keeps the original "any stored credential is enough" rule. */
-function providerCredentialed(provider: AuthProvider, config: RoutingConfig): boolean {
-  if (provider === "gemini") return !!config.providers?.gemini;
-  if (provider === "antigravity") return !!(config.oauth?.antigravity || config.oauth?.gemini || config.providers?.antigravity);
-  return !!(config.providers?.[provider] || config.oauth?.[provider]);
-}
+
 
 /** Antigravity OAuth is the Cloud Code Assist lane for Gemini-family OAuth routing.
  *  When present, auto-select must prefer provider-qualified `antigravity/*` ids and
@@ -249,7 +234,9 @@ function isAntigravityGeminiBelow31(canonical: string): boolean {
 }
 
 function isAutoSelectCandidate(m: CatalogModel, config: RoutingConfig): boolean {
-  if (!isCloudProvider(m.provider) || m.limitedAvailability || !providerCredentialed(m.provider, config)) return false;
+  // Shared model-LEVEL credential gate (the full auth matrix is documented on
+  // modelServableWithConfig; keep aligned with resolveCall).
+  if (!isCloudProvider(m.provider) || m.limitedAvailability || !modelServableWithConfig(m.provider, m.canonical, config)) return false;
   if (hasAntigravityOauth(config) && m.provider === "gemini") return false;
   if (hasAntigravityOauth(config) && m.provider === "antigravity" && isAntigravityGeminiBelow31(m.canonical)) return false;
   return true;

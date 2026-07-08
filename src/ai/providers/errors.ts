@@ -39,10 +39,14 @@ export class ProviderStreamError extends Error {
   readonly status: number;
   readonly provider: string;
   readonly code?: string;
-  constructor(provider: string, message: string, code?: string) {
+  /** `explicitStatus` lets a caller pass an ALREADY-numeric provider status (e.g. Google's
+   *  `error.code` on a `google.rpc.Status` envelope — 429/500/503) instead of relying on the
+   *  OpenAI-specific `code === "rate_limit_exceeded"` string heuristic below, which only
+   *  recognizes that one literal and defaults everything else to 500. */
+  constructor(provider: string, message: string, code?: string, explicitStatus?: number) {
     super(`${provider} stream failed${code ? ` (${code})` : ""}: ${message}`);
     this.name = "ProviderStreamError";
-    this.status = code === "rate_limit_exceeded" ? 429 : 500;
+    this.status = explicitStatus ?? (code === "rate_limit_exceeded" ? 429 : 500);
     this.provider = provider;
     this.code = code;
   }

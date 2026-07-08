@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.6] - 2026-07-08
+_Explicit `/model` pin always winning over PromptRouter was correct but opaque: `/route status` showed "routing: on" even while a session pin blocked routing from ever evaluating a prompt, and there was no way back to routed mode short of restarting the session. Also closed a related escalation gap: `routing.enabled` with `roles.smol` unset made ambiguous-prompt LLM escalation silently skip every turn, even when a cheaper credentialed model existed to run the classifier._
+
+### Added
+- **`/route status` pin visibility** (`src/commands/launch/route-slash.ts`) — a new `pinnedModel` field on `RouteSlashCtx` (threaded from `sessionModel` in `launch.ts`) makes an active session pin print `note: model pinned to '<model>' this session — routing will not evaluate any prompt until the pin is cleared (/model auto)` instead of a bare, misleading `routing: on`. Purely additive — the actual routing gate (`!sessionModel` in `runTurn`) is unchanged.
+- **`/model auto` (alias `/model clear`)** (`src/commands/launch/model-slash.ts`, `src/commands/launch.ts`) — releases an explicit `--model`/`/model <id>` pin, resuming per-turn `PromptRouter` evaluation for the rest of the session (subject to `routing.enabled`). `ModelSlashResult.sessionModel` is now 3-state (`undefined`=unchanged, `string`=new pin, `null`=pin explicitly cleared); `launch.ts` converts `null` to `undefined` so `runTurn`'s routing gate reopens. The "explicit pin always wins" contract itself is untouched — this only adds a way to release it.
+- **`routePrompt` escalation fallback when `roles.smol` is unconfigured** (`src/agent/prompt-router.ts`) — instead of unconditionally skipping LLM escalation for ambiguous prompts, `routePrompt` now falls back to `cheapestCredentialed(config)` (the same live `MODEL_CATALOG` lookup trivial-tier auto-select already uses) as the classifier model. Escalation is only skipped (heuristic-only tier, one-time warning) when that fallback also resolves to `defaultModel` or nothing qualifies at all.
+- **`jeo doctor` routing note synced to the same fallback** (`src/commands/doctor.ts`) — the "roles.smol is unset" note now checks `cheapestCredentialed(config)` before firing, so it stops claiming escalation "will never fire" when a real fallback classifier exists.
+
+### Verified
+Full suite 2778/2778 pass, typecheck clean. 10 new tests (`model-slash` ×4, `route-slash` ×2, `prompt-router` ×2, `launch-prompt-routing` ×2). Live tmux smoke test on the real interactive binary: `/route status` → pin note shown → `/model auto` → "Model pin (...) cleared" notice → `/route status` again → note gone, `routing: on (this session)` only.
+
 ## [0.8.5] - 2026-07-08
 _"딥리서치 다음과같이 페이블5 모델이 응답하게 되는경우를 피하기 위해" — a claude-fable-5 turn hit `Error: Refusal (reasoning_extraction): This request was blocked as it seems to violate Anthropic's Terms of Service.` jeo already had a full reactive recovery ladder (context reset → thinking-artifact strip → guidance strip → fail-fast on a category-shaped refusal), but every rung still resends to the SAME model — a deterministic classifier trip re-refuses identically no matter how much context gets stripped. Deep-researched Anthropic's current docs and found the actual fix: a documented, dedicated **server-side fallback** beta released alongside Fable 5 that retries a safety-classifier decline against a different model inside the SAME request, before the caller ever sees an error._
 

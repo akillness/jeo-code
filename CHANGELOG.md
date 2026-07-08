@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.7] - 2026-07-08
+_Fix-forward for a CI-caught release failure in v0.8.6 (this same session): `test/launch-prompt-routing.test.ts` shipped with a dropped closing brace (a git 3-way merge misaligned on a duplicate `});` line during this session's own working-tree isolation, then a subsequent `git stash push --keep-index` silently reset the working tree to the pre-fix staged content — the fix was applied once, verified once, then invisibly reverted before the commit that actually shipped). The v0.8.6 GitHub Actions release workflow correctly caught the syntax error at `bun test` and failed BEFORE the npm publish step ran; `npm view jeo-code version` confirmed 0.8.5 remained latest throughout — nothing broken ever reached the registry. Per this repo's established pattern for a same-day CI-caught regression (v0.8.0 → v0.8.1), shipping forward rather than retargeting the already-publicly-failed v0.8.6 tag._
+
+### Fixed
+- **Restored the dropped closing brace** in `test/launch-prompt-routing.test.ts`'s "servability veto: does NOT fire for a Codex id..." test — it was missing `});` for both the `withOpenAiEnvCleared` callback and the outer `test()`, which swallowed the next test's `test(...)` opener into the same block and produced a hard parse error (`error: Unexpected end of file`) under `bun test`.
+
+### Verified
+Full suite 2779/2779 pass, typecheck clean — run directly against the working tree immediately after the fix, with no stash operation between fix and verification this time (the actual root cause of v0.8.6 shipping broken).
+
 ## [0.8.6] - 2026-07-08
 _Explicit `/model` pin always winning over PromptRouter was correct but opaque: `/route status` showed "routing: on" even while a session pin blocked routing from ever evaluating a prompt, and there was no way back to routed mode short of restarting the session. Also closed a related escalation gap: `routing.enabled` with `roles.smol` unset made ambiguous-prompt LLM escalation silently skip every turn, even when a cheaper credentialed model existed to run the classifier._
 

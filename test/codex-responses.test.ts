@@ -1,5 +1,7 @@
 import { test, expect } from "bun:test";
 import { codexResponsesRequest, parseResponsesEvent, normalizePromptCacheKey } from "../src/ai/providers/openai-responses";
+import { ProviderStreamError } from "../src/ai/providers/errors";
+import { defaultRetryable, isRateLimitError } from "../src/util/retry";
 import type { CallOptions } from "../src/ai/types";
 
 const oauth = { kind: "oauth" as const, provider: "openai" as const, token: "x.y.z" };
@@ -38,6 +40,45 @@ test("parseResponsesEvent: captures usage on response.incomplete (not just compl
 test("parseResponsesEvent: delta + error events still parse", () => {
   expect(parseResponsesEvent(JSON.stringify({ type: "response.output_text.delta", delta: "hello" }))).toEqual({ delta: "hello" });
   expect(parseResponsesEvent(JSON.stringify({ type: "response.failed", response: { error: { message: "boom" } } })).error).toBe("boom");
+});
+
+// Round: in-band SSE error retry fix. `code` used to be silently dropped, so a
+// transient server_error/rate_limit_exceeded (OpenAI's own guidance: "retry with
+// exponential backoff") was thrown as an unclassified bare Error and never retried.
+test("parseResponsesEvent: captures the error `code` alongside the message (response.failed shape)", () => {
+  const ev = parseResponsesEvent(JSON.stringify({ type: "response.failed", response: { error: { message: "the server had an error processing your request", code: "server_error" } } }));
+  expect(ev.error).toBe("the server had an error processing your request");
+  expect(ev.errorCode).toBe("server_error");
+});
+
+test("parseResponsesEvent: captures the error `code` on the top-level `error` event shape too", () => {
+  const ev = parseResponsesEvent(JSON.stringify({ type: "error", error: { message: "rate limited", code: "rate_limit_exceeded" } }));
+  expect(ev.error).toBe("rate limited");
+  expect(ev.errorCode).toBe("rate_limit_exceeded");
+});
+
+test("parseResponsesEvent: errorCode is undefined when the provider omits it", () => {
+  const ev = parseResponsesEvent(JSON.stringify({ type: "response.failed", response: { error: { message: "boom" } } }));
+  expect(ev.errorCode).toBeUndefined();
+});
+
+test("codexResponsesCall/Stream: an in-band error event throws ProviderStreamError, classified retryable by defaultRetryable and isRateLimitError", () => {
+  const serverErr = new ProviderStreamError("OpenAI Codex", "the server had an error processing your request", "server_error");
+  expect(serverErr.status).toBe(500);
+  expect(defaultRetryable(serverErr)).toBe(true);
+  expect(isRateLimitError(serverErr)).toBe(false);
+
+  const rateLimitErr = new ProviderStreamError("OpenAI Codex", "rate limited", "rate_limit_exceeded");
+  expect(rateLimitErr.status).toBe(429);
+  expect(defaultRetryable(rateLimitErr)).toBe(true);
+  expect(isRateLimitError(rateLimitErr)).toBe(true);
+
+  // No code at all (unenumerated/future shape) still defaults to retryable — OpenAI's
+  // documented codes are all transient and an unknown one is rare enough that failing
+  // an entire multi-step turn outright is worse than one bounded extra retry.
+  const unknownErr = new ProviderStreamError("OpenAI Codex", "something else", undefined);
+  expect(unknownErr.status).toBe(500);
+  expect(defaultRetryable(unknownErr)).toBe(true);
 });
 
 test("codexResponsesRequest: OAuth Codex backend never receives max_output_tokens (backend 400s on it)", () => {

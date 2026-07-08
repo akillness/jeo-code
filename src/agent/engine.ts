@@ -22,7 +22,7 @@ import { createLspTool } from "./lsp-tool";
 import { createLspRenameTool } from "./lsp-rename-tool";
 import { createDebugTool } from "./debug-tool";
 import { createBrowserTool } from "./browser-tool";
-import { isRateLimitError, isTransientStreamDropError, waitAbortable } from "../util/retry";
+import { isRateLimitError, isTransientStreamDropError, isProviderStreamError, waitAbortable } from "../util/retry";
 import { isContextOverflowError, isRefusalError, friendlyProviderError } from "../util/provider-error";
 import { runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
 import { truncateToolOutput, formatToolResultBody } from "./tool-output";
@@ -818,14 +818,22 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         await waitAbortable(delayMs, opts.signal);
         continue; // loop top surfaces "Cancelled." when the wait was aborted
       }
-      // Mid-stream transient-network drop (see `transientNetworkRetries` above): bounded
-      // resend with capped exponential backoff. Deliberately narrower than a general
-      // `defaultRetryable` check — a rate-limit/5xx/timeout error already ran the FULL
-      // model-manager `withRetry` budget (visible as its own "auto-retry #N" notices)
-      // before reaching here, so re-retrying it in this ladder too would silently double
-      // that budget. `isTransientStreamDropError` matches only the mid-stream socket-death
-      // class that `retryableStream` structurally cannot retry once a chunk has streamed.
-      if (isTransientStreamDropError(err)) {
+      // Mid-stream transient fault (see `transientNetworkRetries` above): bounded resend
+      // with capped exponential backoff, covering TWO distinct failure classes that both
+      // land here unretried:
+      //   - `isTransientStreamDropError` — a live TCP/TLS socket dying mid-stream.
+      //   - `isProviderStreamError` — an in-band SSE error EVENT on an otherwise-200
+      //     connection (OpenAI Responses `response.failed`/`error`, e.g. `server_error`).
+      // Deliberately narrower than a general `defaultRetryable` check — a rate-limit/5xx/
+      // timeout error already ran the FULL model-manager `withRetry` budget (visible as
+      // its own "auto-retry #N" notices) before reaching here, so re-retrying it in this
+      // ladder too would silently double that budget. Both classes above are structurally
+      // exempt from that budget: `retryableStream` (model-manager.ts) only auto-retries
+      // losing the FIRST chunk — once any chunk has streamed it deliberately stops (a full
+      // re-call would replay already-emitted content) — so a fault arriving AFTER the
+      // first chunk never got a model-manager retry at all and needs this engine-level
+      // recovery instead.
+      if (isTransientStreamDropError(err) || isProviderStreamError(err)) {
         transientNetworkRetries++;
         if (transientNetworkRetries <= GUARD_LIMITS.MAX_TRANSIENT_NETWORK_RETRIES) {
           const baseRaw = Number(jeoEnv("TRANSIENT_NETWORK_BACKOFF_BASE_MS") ?? NaN);
@@ -833,7 +841,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           const delayMs = Math.min(baseMs * 2 ** (transientNetworkRetries - 1), GUARD_LIMITS.TRANSIENT_NETWORK_BACKOFF_MAX_MS);
           const escHint = ev.onModelStream ? " (Esc to cancel)" : "";
           ev.onNotice?.(
-            `connection dropped mid-response (${friendlyProviderError(err)}) — auto-retry #${transientNetworkRetries} in ${Math.max(1, Math.round(delayMs / 1000))}s${escHint}`,
+            `mid-response provider fault (${friendlyProviderError(err)}) — auto-retry #${transientNetworkRetries} in ${Math.max(1, Math.round(delayMs / 1000))}s${escHint}`,
           );
           await waitAbortable(delayMs, opts.signal);
           continue; // loop top surfaces "Cancelled." when the wait was aborted

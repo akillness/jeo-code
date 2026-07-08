@@ -56,6 +56,14 @@ export function defaultRetryable(err: unknown): boolean {
   if (isRefusalError(err)) {
     return false;
   }
+  // A pre-response connection failure (refused / unresolved host) — retryable: a
+  // local provider that is mid-restart, or a transient DNS blip, can clear within
+  // the backoff budget. A provider that is simply never running exhausts the
+  // budget and surfaces friendlyProviderError's actionable message instead of a
+  // bare "Unable to connect" (see isConnectionError's docs for the full rationale).
+  if (isConnectionError(err)) {
+    return true;
+  }
 
   let message = "";
   if (err instanceof Error) {
@@ -311,4 +319,44 @@ export function isRefusalError(err: unknown): boolean {
  *  a fresh request succeeds). */
 export function isTransientStreamDropError(err: unknown): boolean {
   return /socket connection was closed|socket hang up|other side closed|und_err_socket/i.test(errorMessageOf(err));
+}
+
+/** True for a pre-response TCP-level connection failure — the request never reached
+ *  a server at all (refused, DNS unresolved, host unreachable), as opposed to a
+ *  server responding with an error status or a mid-stream drop (see
+ *  `isTransientStreamDropError` for the latter). Bun's fetch/undici throws a bare
+ *  `Error("Unable to connect. Is the computer able to access the url?")` with
+ *  `.code === "ConnectionRefused"` for BOTH a refused connection and an unresolvable
+ *  host — no HTTP status is ever attached, so `defaultRetryable`'s status-based
+ *  checks never catch it. Node's equivalent carries a `.code` of ECONNREFUSED /
+ *  ENOTFOUND / EHOSTUNREACH / EAI_AGAIN. Most commonly hit when a local provider
+ *  (ollama/lmstudio) isn't running, or a custom base URL is misconfigured — see
+ *  `friendlyProviderError`, which turns this into an actionable message naming the
+ *  provider and base URL (attached by model-manager's `resolveCall` callers). */
+export function isConnectionError(err: unknown): boolean {
+  let code: string | undefined;
+  if (err && typeof err === "object" && "code" in err) code = String(err.code);
+  if (code && ["ConnectionRefused", "ECONNREFUSED", "ENOTFOUND", "EHOSTUNREACH", "EAI_AGAIN"].includes(code)) return true;
+  return /unable to connect\. is the computer able to access the url\?/i.test(errorMessageOf(err));
+}
+
+/** True for an in-band provider stream failure: the HTTP response itself was 200 (a
+ *  live SSE connection), but the provider emitted a terminal error EVENT instead of
+ *  completing (OpenAI Responses `response.failed`/`error`:
+ *  `{"error":{"code":"server_error",...}}`) — see `ProviderStreamError` in
+ *  `ai/providers/errors.ts`. Narrowed via `instanceof Error` + `.name` (not an import
+ *  of the concrete class) to keep this generic util free of a provider-layer
+ *  dependency, mirroring the existing `.name === "TimeoutError"` check in
+ *  `provider-error.ts`. Every instance is treated as retryable here: OpenAI's own
+ *  guidance for the two documented codes (`server_error`, `rate_limit_exceeded`) is
+ *  "retry with exponential backoff", and any other/unenumerated code is rare enough
+ *  that defaulting to retryable beats hard-failing a whole turn on one backend
+ *  hiccup. Note `ProviderStreamError` ALSO carries a numeric `.status` (429/500), so
+ *  `defaultRetryable`'s existing status check already retries it in the
+ *  pre-first-chunk/non-streaming path; this predicate exists for the SEPARATE
+ *  engine-level mid-stream ladder (see `transientNetworkRetries` in engine.ts),
+ *  which — like `isTransientStreamDropError` — deliberately does not call
+ *  `defaultRetryable` there to avoid double-spending that budget. */
+export function isProviderStreamError(err: unknown): boolean {
+  return err instanceof Error && err.name === "ProviderStreamError";
 }

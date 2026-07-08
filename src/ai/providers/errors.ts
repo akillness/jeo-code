@@ -22,6 +22,33 @@ export class ProviderHttpError extends Error {
 }
 
 /**
+ * In-band stream failure: the HTTP response itself was 200 (a live SSE
+ * connection), but the provider emitted a terminal error EVENT instead of
+ * completing normally (OpenAI Responses `response.failed`/`error`: `{"error":
+ * {"code":"server_error","message":"…"}}`). No `Response` object survives to
+ * build a `ProviderHttpError` from, so this carries a SYNTHETIC `.status` —
+ * 429 for a rate-limit code, 500 otherwise — purely so the existing
+ * status-based retry checks (`defaultRetryable`, `isRateLimitError`) treat it
+ * exactly like the equivalent HTTP failure instead of falling through as an
+ * unclassified bare Error (OpenAI's own guidance for `server_error`/
+ * `rate_limit_exceeded` is "retry with exponential backoff" — every other
+ * code is unenumerated/rare enough that defaulting to retryable is safer than
+ * hard-failing a whole turn on a transient backend hiccup).
+ */
+export class ProviderStreamError extends Error {
+  readonly status: number;
+  readonly provider: string;
+  readonly code?: string;
+  constructor(provider: string, message: string, code?: string) {
+    super(`${provider} stream failed${code ? ` (${code})` : ""}: ${message}`);
+    this.name = "ProviderStreamError";
+    this.status = code === "rate_limit_exceeded" ? 429 : 500;
+    this.provider = provider;
+    this.code = code;
+  }
+}
+
+/**
  * Parse a `Retry-After` header into ms. Supports the delta-seconds form
  * (`"5"`) and the HTTP-date form (`"Wed, 21 Oct 2025 07:28:00 GMT"`).
  * Returns undefined for missing/garbage values.

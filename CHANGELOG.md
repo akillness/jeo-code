@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.10] - 2026-07-08
+_"지피티 모델 연결이 안되는데 원인파악해서 개선해" — OpenAI's Codex/Responses backend (used by every `gpt-5.5`/`gpt-5.4` OAuth call, and by API-key reasoning models) can emit an in-band `response.failed`/`error` SSE EVENT on an otherwise-200 stream (documented codes: `server_error`, `rate_limit_exceeded` — OpenAI's own guidance is "retry with exponential backoff"). This was thrown as an unclassified bare `Error`, which propagated straight out of the engine's model call with NO retry — a transient OpenAI backend hiccup killed the whole turn outright, surfacing as "GPT doesn't connect" during real interactive use even though `jeo doctor` and a fresh one-shot call both looked healthy (the failure only manifests mid-stream, after the connection has already succeeded)._
+
+### Fixed
+- **In-band SSE error now retries instead of hard-failing** (`src/ai/providers/errors.ts`, `src/ai/providers/openai-responses.ts`, `src/util/retry.ts`, `src/agent/engine.ts`) — new `ProviderStreamError` class carries a synthetic `.status` (429 for `rate_limit_exceeded`, 500 otherwise) so existing retry classifiers treat it like the equivalent HTTP failure; `codexResponsesCall`/`codexResponsesStream` now throw it instead of a bare `Error`; the engine's mid-stream transient-network retry ladder (bounded, capped exponential backoff) now also catches it, sharing ONE retry budget with the existing socket-drop recovery path rather than two independent budgets.
+
+### Added
+- **In-band SSE error retry regression tests** (`test/codex-responses.test.ts`, `test/transient-network-recovery.test.ts`) — cover error-code capture on both SSE error shapes, `ProviderStreamError` retry classification, engine-level recovery from a mid-stream fault, and the shared retry-budget invariant across BOTH failure classes crossing the total cap (not just staying under a per-class cap).
+
 ## [0.8.9] - 2026-07-08
 _"프롬프트 라우팅 속도 문제가 있는거같은데 근본원인 알려줘" — prompt routing incurred significant latency due to a design oversight in LLM-based escalation: when heuristic confidence falls below threshold (standard conceptual questions with no code blocks/file paths conflict-trigger 0.35 confidence), it makes a blocking, synchronous LLM classifier call. If the user's global `thinkingLevel` is enabled (medium/high/xhigh), the cheap classifier model (Haiku 4.5 / GPT-4o-mini) also ran with reasoning enabled, wasting 500ms–1500ms on internal thoughts for a simple 1-word JSON response. The same reasoning-latency leak existed on all other background/internal LLM calls (compaction summarizer, goal verifier, memory distiller), blocking user turns on compaction boundaries._
 

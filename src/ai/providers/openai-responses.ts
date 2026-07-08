@@ -13,7 +13,7 @@
 import type { Credential } from "../../auth";
 import type { CallOptions, Message } from "../types";
 import { readSse } from "../sse";
-import { providerHttpError, fetchWithArtifactFailSafe } from "./errors";
+import { providerHttpError, fetchWithArtifactFailSafe, ProviderStreamError } from "./errors";
 import { serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
 import os from "node:os";
@@ -181,6 +181,10 @@ export interface ResponsesEvent {
   reasoningDelta?: string;
   usage?: { inputTokens?: number; outputTokens?: number };
   error?: string;
+  /** OpenAI's structured error `code` (e.g. `server_error`, `rate_limit_exceeded`) —
+   *  carried separately from the human-readable message so callers can classify
+   *  retryability without parsing prose (round: in-band SSE error retry fix). */
+  errorCode?: string;
   /** `response.incomplete` cause (e.g. max_output_tokens) — surfaced when the
    *  whole response produced no text (round-5 #1). */
   incompleteReason?: string;
@@ -201,10 +205,10 @@ export function parseResponsesEvent(data: string): ResponsesEvent {
     output_index?: number;
     response?: {
       usage?: { input_tokens?: number; output_tokens?: number };
-      error?: { message?: string };
+      error?: { message?: string; code?: string };
       incomplete_details?: { reason?: string };
     };
-    error?: { message?: string };
+    error?: { message?: string; code?: string };
   };
   try {
     o = JSON.parse(data);
@@ -237,7 +241,8 @@ export function parseResponsesEvent(data: string): ResponsesEvent {
     };
   }
   if (o.type === "response.failed" || o.type === "error") {
-    return { error: o.response?.error?.message ?? o.error?.message ?? "Codex response failed" };
+    const e = o.response?.error ?? o.error;
+    return { error: e?.message ?? "Codex response failed", errorCode: e?.code };
   }
   return {};
 }
@@ -294,7 +299,7 @@ export async function codexResponsesCall(messages: Message[], options: CallOptio
     accumulateResponsesToolCall(toolAcc, ev);
     if (ev.usage) options.onUsage?.(ev.usage);
     if (ev.incompleteReason) incompleteReason = ev.incompleteReason;
-    if (ev.error) throw new Error(`OpenAI Codex response failed: ${ev.error}`);
+    if (ev.error) throw new ProviderStreamError("OpenAI Codex", ev.error, ev.errorCode);
   }
   // Prefer a native tool call (re-serialized to canonical JSON) over any stray text.
   const envelope = serializeAccumulatedToolCalls(toolAcc);
@@ -326,7 +331,7 @@ export async function* codexResponsesStream(
     accumulateResponsesToolCall(toolAcc, ev);
     if (ev.usage) options.onUsage?.(ev.usage);
     if (ev.incompleteReason) incompleteReason = ev.incompleteReason;
-    if (ev.error) throw new Error(`OpenAI Codex response failed: ${ev.error}`);
+    if (ev.error) throw new ProviderStreamError("OpenAI Codex", ev.error, ev.errorCode);
   }
   // Native tool calls have no output_text deltas — yield the re-serialized envelope once.
   const envelope = serializeAccumulatedToolCalls(toolAcc);

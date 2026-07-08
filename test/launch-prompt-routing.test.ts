@@ -520,6 +520,8 @@ test("servability veto: does NOT fire for a Codex id the OAuth login serves (gat
     expect(calls[0].model).toBe("gpt-5.5"); // routing engaged normally — no veto
     expect(logs.some(l => l.includes("cannot serve") || l.includes("not servable"))).toBe(false);
   });
+});
+
 test("/model auto releases a CLI --model pin mid-session: the NEXT turn resumes routing instead of staying pinned", async () => {
   const { calls } = await runOneTurnWithLogs(
     {

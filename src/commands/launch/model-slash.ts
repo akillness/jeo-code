@@ -21,6 +21,7 @@ import {
   resolveSelection,
   catalogMetadata,
   CODEX_MODELS,
+  isCodexModel,
   qualifyModelId,
 } from "../../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ThinkLevel } from "../../ai";
@@ -287,7 +288,10 @@ export async function runModelSlash(input: string, ctx: ModelSlashCtx): Promise<
   if (st && !st.ready) console.log(`  ! ${provider} is not ready (${st.label}) — set ${st.envVar ?? "the provider key"} or run 'jeo setup'.`);
   // ChatGPT OAuth only serves the Codex models; warn before the turn fails if the user
   // pins a non-Codex id with no local base URL to fall back to (gjc-parity readiness guard).
-  if (arg && provider === "openai" && st?.kind === "oauth" && !CODEX_MODELS.includes(resolved)) {
+  // `isCodexModel` also accepts any id this session's OWN live discovery already
+  // confirmed (see model-catalog.ts) — a static-list-only check here would falsely
+  // warn about a model /model's own live picker just showed as valid.
+  if (arg && provider === "openai" && st?.kind === "oauth" && !isCodexModel(resolved)) {
     const hasLocalBase = !!((await readGlobalConfig()).openaiBaseUrl || process.env.OPENAI_BASE_URL);
     if (!hasLocalBase) {
       console.log(`  ! ChatGPT OAuth serves only Codex models (${CODEX_MODELS.join(", ")}); '${resolved}' will be rejected at runtime — pick one of those, or set OPENAI_API_KEY / OPENAI_BASE_URL.`);

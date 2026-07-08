@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.12] - 2026-07-08
+_"제오코드에서 oauth 지피티 모델 연결이 안되는데 원인파악해서 개선해" — root-caused a structural drift bug: OpenAI's live Codex models endpoint (`chatgpt.com/backend-api/codex/models`, the SAME endpoint the `/model` picker discovers from) had shipped `gpt-5.4-mini` alongside `gpt-5.5`/`gpt-5.4`, but jeo's static OAuth allow-list (`CODEX_MODELS`) hadn't caught up — the picker correctly listed the model (straight from that live endpoint), but selecting or calling it then hit a hard-coded `CODEX_MODELS.includes(...)` gate that rejected it with "OpenAI OAuth credential only supports Codex models", even though the account's own OAuth token genuinely serves it. This is a whole class of bug: it recurs every time OpenAI ships a new Codex model between jeo releases, and previously required a jeo update to fix each time._
+
+### Fixed
+- **Added the missing `gpt-5.4-mini` to the OAuth allow-list** (`src/ai/model-catalog.ts`) — immediate fix for the exact reported failure, with a full capability row (272K context, 128K max output, full thinking support, image input) added to `MODEL_CATALOG`.
+
+### Added
+- **Self-healing live Codex model gate** (`src/ai/model-catalog.ts`, `src/ai/model-discovery.ts`, `src/ai/model-manager.ts`, `src/commands/launch/model-slash.ts`) — new `isCodexModel()` checks the maintained `CODEX_MODELS` list PLUS any model id this session's OWN OAuth discovery call already observed live (`recordLiveCodexModels`, additive-only, session-lifetime). `listProviderModels` now records every `oauth`-sourced OpenAI model list on a successful call (picker open, `jeo doctor`, or any model resolution) — an `api_key`-sourced result never widens the gate, since it says nothing about what OAuth can serve. `oauthServesModel` (the gate behind `resolveCall`, `effectiveCredentialForProvider`, and `modelServableWithConfig`) and the `/model` pin-warning now both consult `isCodexModel` instead of the raw static list — closes this bug class permanently: any future Codex model OpenAI ships becomes usable the moment the account's own endpoint confirms it, with zero release lag. The OAuth-rejection error message is now built dynamically from `CODEX_MODELS` instead of a hard-coded two-model string.
+
+### Verified
+- Independently mutation-tested (5 mutations across all 4 touched files): all 5 caught by tests; found and closed 1 genuine gap in `recordLiveCodexModels`'s additive-across-separate-calls contract (a clear-then-add REPLACE implementation was indistinguishable from ADD until a test called it twice with disjoint id lists).
+- Live-verified: `jeo --model gpt-5.4-mini -p "hello"` failed with the OAuth-rejection error before the fix, succeeds after.
+- Full suite 2802/2802 pass, typecheck clean.
+
 ## [0.8.11] - 2026-07-08
 _"프롬프트 라우팅 동작이 Error: Unable to connect. Is the computer able to access the url? Error: Was there a typo in the url or port? 와 같은 메시지 남기고 동작안하는데 원인을 파악하고 근본문제해결하자" — traced the raw, provider-less connection error to two compounding gaps. (1) `describeProvider` reports local providers (ollama/lmstudio) as `ready: true` UNCONDITIONALLY — "keyless" only means no credential is required, never that the server is actually reachable — so the routing veto gate (which exists precisely to keep a misconfigured routing target from making a turn worse than routing being off) had no way to catch a `routing.tiers`/`roles` pin to a downed local server. (2) Bun's fetch/undici throws a bare `Error("Unable to connect. Is the computer able to access the url?")` with `.code === "ConnectionRefused"` for BOTH a refused connection and an unresolvable host — no HTTP status, no provider name, no URL — and this fell through every existing error classifier (`defaultRetryable`, `friendlyProviderError`) to reach the user completely unfiltered._
 

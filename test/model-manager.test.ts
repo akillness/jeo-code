@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, effectiveCredentialForProvider, modelServableWithConfig, describeModel, resolveCall } from "../src/ai/model-manager";
+import { resetLiveCodexModels, recordLiveCodexModels } from "../src/ai/model-catalog";
 import type { Credential } from "../src/auth/storage";
 
 test("effectiveCredentialForProvider: anthropic OAuth wins even when an API key is configured", () => {
@@ -105,10 +106,12 @@ test("modelServableWithConfig: local providers (ollama/lmstudio) are keyless —
   expect(modelServableWithConfig("lmstudio", "some-local-model", empty)).toBe(true);
 });
 
-test("modelServableWithConfig: OAuth-only OpenAI serves ONLY Codex ids (gpt-5.5/gpt-5.4), never the API catalog", () => {
+test("modelServableWithConfig: OAuth-only OpenAI serves ONLY Codex ids (gpt-5.5/gpt-5.4/gpt-5.4-mini), never the API catalog", () => {
+  resetLiveCodexModels(); // isolate from any prior listProviderModels("openai", oauth) discovery in this run
   const oauthOnly = { providers: {}, oauth: { openai: "tok" } };
   expect(modelServableWithConfig("openai", "gpt-5.5", oauthOnly)).toBe(true);
   expect(modelServableWithConfig("openai", "gpt-5.4", oauthOnly)).toBe(true);
+  expect(modelServableWithConfig("openai", "gpt-5.4-mini", oauthOnly)).toBe(true);
   // Provider-qualified ids (`openai/…`) are valid route targets — adapters strip
   // the prefix on the wire, so servability must match the bare id's verdict.
   expect(modelServableWithConfig("openai", "openai/gpt-5.5", oauthOnly)).toBe(true);
@@ -117,6 +120,40 @@ test("modelServableWithConfig: OAuth-only OpenAI serves ONLY Codex ids (gpt-5.5/
   expect(modelServableWithConfig("openai", "gpt-4o-mini", oauthOnly)).toBe(false);
   expect(modelServableWithConfig("openai", "o3", oauthOnly)).toBe(false);
   expect(modelServableWithConfig("openai", "openai/gpt-4o", oauthOnly)).toBe(false);
+});
+
+test("isCodexModel / oauthServesModel self-heal: a model OpenAI's live Codex endpoint confirms this session becomes servable even before it's added to the static list", () => {
+  resetLiveCodexModels();
+  const oauthOnly = { providers: {}, oauth: { openai: "tok" } };
+  // A hypothetical future Codex model, not yet in CODEX_MODELS — rejected before discovery.
+  expect(modelServableWithConfig("openai", "gpt-6-codex", oauthOnly)).toBe(false);
+  // The live endpoint (via listProviderModels -> recordLiveCodexModels) confirms it...
+  recordLiveCodexModels(["gpt-6-codex"]);
+  // ...and the SAME gate now accepts it, with no release/code change needed.
+  expect(modelServableWithConfig("openai", "gpt-6-codex", oauthOnly)).toBe(true);
+  expect(modelServableWithConfig("openai", "openai/gpt-6-codex", oauthOnly)).toBe(true);
+  // An id that was NEVER observed live and isn't in the static list still fails.
+  expect(modelServableWithConfig("openai", "gpt-7-imaginary", oauthOnly)).toBe(false);
+  resetLiveCodexModels();
+});
+
+test("recordLiveCodexModels: additive ACROSS separate discovery calls — a later call with a different id list never forgets an earlier-observed id", () => {
+  // Guards against a REPLACE implementation (e.g. clearing the Set before adding
+  // the new batch) — a transient discovery response missing a previously-confirmed
+  // id must never un-widen the gate for that id (see recordLiveCodexModels' own
+  // "additive only" doc comment).
+  resetLiveCodexModels();
+  const oauthOnly = { providers: {}, oauth: { openai: "tok" } };
+  recordLiveCodexModels(["gpt-6-codex"]);
+  expect(modelServableWithConfig("openai", "gpt-6-codex", oauthOnly)).toBe(true);
+  // A second, later discovery call returns a DIFFERENT list that does not include
+  // the first id (e.g. paginated/partial response, or the account's list simply
+  // changed order/content this time).
+  recordLiveCodexModels(["gpt-7-other"]);
+  expect(modelServableWithConfig("openai", "gpt-7-other", oauthOnly)).toBe(true);
+  // The earlier id must STILL be servable — recording is additive, never a reset.
+  expect(modelServableWithConfig("openai", "gpt-6-codex", oauthOnly)).toBe(true);
+  resetLiveCodexModels();
 });
 
 test("modelServableWithConfig: an API key serves the provider's FULL catalog (keys are never model-scoped)", () => {

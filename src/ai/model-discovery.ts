@@ -11,7 +11,7 @@ import { readGlobalConfig, type Config } from "../agent/state";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
 import type { ProviderName } from "./types";
 import { PROVIDER_NAMES } from "./provider-status";
-import { catalogByProvider, CODEX_MODELS, KIMI_CODE_MODELS } from "./model-catalog";
+import { catalogByProvider, CODEX_MODELS, KIMI_CODE_MODELS, recordLiveCodexModels } from "./model-catalog";
 import { extractChatgptAccountId } from "./providers/openai-responses";
 import { openaiCompatDef } from "./providers/openai-compatible-catalog";
 
@@ -405,6 +405,10 @@ export async function listProviderModels(
       }
     }
     const models = [...new Set(ids)].sort().slice(0, limit);
+    // Widen the self-healing Codex gate (model-catalog.ts) the moment the account's
+    // OWN live endpoint confirms a model — closes the "picker shows it, call-time
+    // gate rejects it" drift window without waiting for a jeo release.
+    if (provider === "openai" && source === "oauth") recordLiveCodexModels(models);
     return { provider, models, ok: true, source };
   } catch (err) {
     const msg = (err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError" ? "timeout" : "unreachable";

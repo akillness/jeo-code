@@ -11,6 +11,7 @@ import {
   isLocalProviderReachable,
 } from "../src/ai/model-discovery";
 import { PROVIDER_NAMES } from "../src/ai/provider-status";
+import { isCodexModel, resetLiveCodexModels } from "../src/ai/model-catalog";
 
 let dir: string;
 const prevCfgDir = process.env.JEO_CONFIG_DIR;
@@ -205,6 +206,46 @@ test("listProviderModels: OAuth-only discovery still probes the provider list", 
   expect(r.source).toBe("oauth");
   expect(r.models).toEqual(["gpt-5.5"]);
   expect(called).toBe(true);
+});
+
+test("listProviderModels: an OAuth-source OpenAI success widens isCodexModel with the observed ids — the actual root-cause fix", async () => {
+  // Reproduces the "OAuth GPT connection doesn't work" bug: the live endpoint lists a
+  // model the static CODEX_MODELS snapshot hasn't caught up to yet (OpenAI shipped it
+  // between jeo releases). Before recordLiveCodexModels wiring, the picker would show
+  // it (from this SAME endpoint) and the call-time gate would then hard-reject it.
+  resetLiveCodexModels();
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({ providers: {}, oauth: { openai: "oauth-oai" }, defaultModel: "claude-3-5-sonnet" }),
+  );
+  expect(isCodexModel("gpt-9-hypothetical")).toBe(false); // not yet observed
+  const fetchSpy = (async () =>
+    new Response(JSON.stringify({ models: [{ slug: "gpt-5.5", supported_in_api: true }, { slug: "gpt-9-hypothetical", supported_in_api: true }] }), { status: 200 })
+  ) as typeof fetch;
+  const r = await listProviderModels("openai", { fetchImpl: fetchSpy });
+  expect(r.ok).toBe(true);
+  expect(r.models).toEqual(["gpt-5.5", "gpt-9-hypothetical"]);
+  // The discovery call itself recorded it — no separate wiring step needed.
+  expect(isCodexModel("gpt-9-hypothetical")).toBe(true);
+  expect(isCodexModel("openai/gpt-9-hypothetical")).toBe(true);
+  resetLiveCodexModels();
+});
+
+test("listProviderModels: an api_key-source OpenAI result never widens the Codex gate (only oauth-sourced discovery is trustworthy for this)", async () => {
+  resetLiveCodexModels();
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({ providers: { openai: "sk-oai" }, defaultModel: "claude-3-5-sonnet" }),
+  );
+  const fetchSpy = (async () =>
+    new Response(JSON.stringify({ data: [{ id: "gpt-4o" }, { id: "gpt-4o-mini" }] }), { status: 200 })
+  ) as typeof fetch;
+  const r = await listProviderModels("openai", { fetchImpl: fetchSpy });
+  expect(r.ok).toBe(true);
+  expect(r.source).toBe("api_key");
+  // An api_key result says nothing about what OAuth can serve — must not leak in.
+  expect(isCodexModel("gpt-4o")).toBe(false);
+  resetLiveCodexModels();
 });
 
 test("listProviderModels: credential-less cloud short-circuits without fetching", async () => {

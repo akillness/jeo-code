@@ -101,6 +101,7 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   // OpenAI (newest first: gpt-5.5 > gpt-5.4 > o4-mini/o3/gpt-4.1 > o3-mini > gpt-4o-mini > gpt-4o)
   { canonical: "gpt-5.5", provider: "openai", providerModel: "gpt-5.5", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-04" },
   { canonical: "gpt-5.4", provider: "openai", providerModel: "gpt-5.4", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-03" },
+  { canonical: "gpt-5.4-mini", provider: "openai", providerModel: "gpt-5.4-mini", contextTokens: 272_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-03" },
   { canonical: "o4-mini", provider: "openai", providerModel: "o4-mini", contextTokens: 200_000, maxOutputTokens: 100_000, thinking: STD, images: true, releaseDate: "2025-04" },
   { canonical: "o3", provider: "openai", providerModel: "o3", contextTokens: 200_000, maxOutputTokens: 100_000, thinking: STD, images: true, releaseDate: "2025-04" },
   { canonical: "gpt-4.1", provider: "openai", providerModel: "gpt-4.1", contextTokens: 1_000_000, maxOutputTokens: 32_768, thinking: [], images: true, releaseDate: "2025-04" },
@@ -182,7 +183,44 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
  * usable list endpoint, so an OAuth-only OpenAI login surfaces exactly these instead
  * of the full chat-completions catalog. Verified live against a ChatGPT account.
  */
-export const CODEX_MODELS: readonly string[] = ["gpt-5.5", "gpt-5.4"];
+export const CODEX_MODELS: readonly string[] = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
+
+/**
+ * Session-lifetime cache of OpenAI Codex model ids OBSERVED live from the account's
+ * own `codex/models` response (see `listProviderModels` in model-discovery.ts, which
+ * calls `recordLiveCodexModels` on every successful OAuth discovery). `CODEX_MODELS`
+ * above is a maintained snapshot that WILL drift the moment OpenAI ships a new Codex
+ * model — that drift is exactly the bug class this closes: the picker shows a model
+ * (from the SAME live endpoint) that the static gate then hard-rejects at call time
+ * ("OAuth doesn't support this model") even though the account can serve it. Any
+ * successful discovery this session widens the gate immediately, no release needed;
+ * a fresh process starts empty and falls back to the static list until the first
+ * discovery call (picker open, `jeo doctor`, or model resolution) populates it.
+ */
+const liveCodexModels = new Set<string>();
+
+/** Record model ids OpenAI's live Codex endpoint returned for the current account
+ *  this session. Additive only — never removes a previously-observed id (a transient
+ *  discovery hiccup should never narrow what a call is allowed to reach). */
+export function recordLiveCodexModels(ids: readonly string[]): void {
+  for (const id of ids) liveCodexModels.add(id);
+}
+
+/** True when `model` is a Codex-servable id — either in the maintained static list,
+ *  or observed live this session (see `recordLiveCodexModels`). Accepts a bare or
+ *  `openai/`-qualified id. */
+export function isCodexModel(model: string): boolean {
+  const wire = model.startsWith("openai/") ? model.slice(7) : model;
+  return CODEX_MODELS.includes(wire) || liveCodexModels.has(wire);
+}
+
+/** Test-only: clear the live-observed Codex model cache (mirrors `resetPromptRouterWarnings`
+ *  / `resetAppearanceCache`). Bun runs test files in one process, so this module-level Set
+ *  would otherwise leak an `oauth`-source `listProviderModels("openai", …)` call's observed
+ *  ids into unrelated tests in the same run. */
+export function resetLiveCodexModels(): void {
+  liveCodexModels.clear();
+}
 
 /**
  * Model ids the Kimi Code OAuth backend (api.kimi.com/coding, Anthropic Messages

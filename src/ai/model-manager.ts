@@ -6,7 +6,7 @@ import "./register-providers"; // side-effect: registers built-in adapters into 
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId, effectiveAliasesFor, BUILTIN_ALIASES } from "./model-registry";
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
-import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel } from "./model-catalog";
+import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel, isCodexModel } from "./model-catalog";
 import { xaiCredential } from "./providers/xai";
 import { OPENAI_COMPAT_NAMES, isOpenAICompatProvider } from "./providers/openai-compatible-catalog";
 import { withRetry, defaultRetryable, withConnectionContext, isConnectionError, ConnectionContextError, type RetryOptions } from "../util/retry";
@@ -307,10 +307,11 @@ export function resolveRetryOptions(retry: Config["retry"], kind: "request" | "s
  */
 function oauthServesModel(provider: AuthProvider, model: string): boolean {
   if (provider === "openai") {
-    // Provider-qualified ids (`openai/gpt-5.5`) are valid route targets — the
-    // adapters strip the prefix on the wire, so servability must match.
-    const wire = model.startsWith("openai/") ? model.slice(7) : model;
-    return CODEX_MODELS.includes(wire);
+    // `isCodexModel` checks the maintained CODEX_MODELS list PLUS any id observed
+    // live this session (model-catalog.ts) — closes the "picker shows a model the
+    // account's own endpoint just confirmed, call-time gate rejects it anyway" drift
+    // window that opens every time OpenAI ships a new Codex model between releases.
+    return isCodexModel(model);
   }
   if (provider === "kimi") {
     const wire = model.startsWith("kimi/") ? model.slice(5) : model;
@@ -487,7 +488,7 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
   const isLocalOpenAi = provider === "openai" && !!baseUrl;
   if (provider === "openai" && effective.kind === "oauth" && !isLocalOpenAi && !oauthServesModel("openai", model)) {
     throw new Error(
-      "OpenAI OAuth 자격증명은 Codex 모델(gpt-5.5/gpt-5.4)만 지원. OPENAI_API_KEY를 설정하거나 모델을 변경하세요"
+      `OpenAI OAuth 자격증명은 Codex 모델(${CODEX_MODELS.join("/")})만 지원. OPENAI_API_KEY를 설정하거나 모델을 변경하세요`
     );
   }
   if (provider === "kimi" && effective.kind === "oauth" && !oauthServesModel("kimi", model)) {

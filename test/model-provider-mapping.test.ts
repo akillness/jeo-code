@@ -82,7 +82,7 @@ test("OpenAI OAuth-only + non-Codex model fails fast", async () => {
   try {
     const manager = createModelManager();
     await expect(manager.call([{ role: "user", content: "hello" }])).rejects.toThrow(
-      "OpenAI OAuth 자격증명은 Codex 모델(gpt-5.5/gpt-5.4)만 지원. OPENAI_API_KEY를 설정하거나 모델을 변경하세요"
+      "OpenAI OAuth 자격증명은 Codex 모델(gpt-5.5/gpt-5.4/gpt-5.4-mini)만 지원. OPENAI_API_KEY를 설정하거나 모델을 변경하세요"
     );
   } finally {
     if (originalConfigDir) {

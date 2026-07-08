@@ -1,9 +1,10 @@
 /**
  * `/model` slash-command handler extracted from launch.ts.
  *
- * Handles `/model [id|#N|save [id]|thinking <level>|subagent <role> [model|#N]]`
+ * Handles `/model [id|#N|auto|clear|save [id]|thinking <level>|subagent <role> [model|#N]]`
  * (default: interactive live-model picker on a TTY, else prints the current
  * model + a numbered pick list). This block shares mutable REPL state with
+
  * still-inline commands (`/agents`, `/roles`, `/provider` also read/write
  * `lastPickIndex`; `/thinking` reads/writes `sessionThinking`), so the caller
  * passes the current values in via an explicit context object and reads back
@@ -60,13 +61,17 @@ export interface ModelSlashCtx {
 }
 
 export interface ModelSlashResult {
-  /** Present only when changed. */
-  sessionModel?: string;
+  /** Present only when changed. `null` means the pin was explicitly CLEARED
+   *  (`/model auto`/`/model clear`) — distinct from `undefined` ("unchanged"),
+   *  since `sessionModel` itself must become `undefined` in the caller so
+   *  `runTurn`'s `!sessionModel` routing gate re-opens for the rest of the session. */
+  sessionModel?: string | null;
   /** Present only when changed. */
   sessionThinking?: ThinkLevel;
   /** Present only when the block builds/refreshes a pick list. */
   lastPickIndex?: PickEntry[];
 }
+
 
 /**
  * Handle `/model [id|#N|save|thinking <level>|subagent <role> ...]`. Extracted
@@ -91,6 +96,26 @@ export async function runModelSlash(input: string, ctx: ModelSlashCtx): Promise<
   });
 
   let arg = input.substring(6).trim();
+  // `/model auto` (or `/model clear`) releases an explicit pin (set by a prior
+  // `--model`/`/model <id>`), resuming per-turn PromptRouter evaluation for the
+  // rest of this session (subject to routing.enabled) — the release valve for
+  // the pin-always-wins contract, which otherwise gives no way back to routed
+  // mode short of restarting `jeo launch` with no `--model`. Distinct from
+  // `/model save`, which PERSISTS a pin; this clears the session-local one only
+  // (never touches ~/.jeo/config.json's defaultModel).
+  if (arg === "auto" || arg === "clear") {
+    if (!sessionModel) {
+      console.log("No model pin is active this session — routing already evaluates every turn (if routing.enabled).");
+      return result();
+    }
+    console.log(`Model pin ('${sessionModel}') cleared — routing resumes evaluating every turn (if routing.enabled); falls back to '${defaultModel}' whenever routing is off or produces no decision.`);
+    return {
+      sessionModel: null,
+      ...(sessionThinkingChanged ? { sessionThinking } : {}),
+      ...(lastPickIndexChanged ? { lastPickIndex } : {}),
+    };
+  }
+
   // `/model save [id]` → persist the (session or given) model as the config default.
   if (arg === "save" || arg.startsWith("save ")) {
     let toSave = arg.slice(4).trim();

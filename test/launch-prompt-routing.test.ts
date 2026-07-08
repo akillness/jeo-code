@@ -520,4 +520,33 @@ test("servability veto: does NOT fire for a Codex id the OAuth login serves (gat
     expect(calls[0].model).toBe("gpt-5.5"); // routing engaged normally — no veto
     expect(logs.some(l => l.includes("cannot serve") || l.includes("not servable"))).toBe(false);
   });
+test("/model auto releases a CLI --model pin mid-session: the NEXT turn resumes routing instead of staying pinned", async () => {
+  const { calls } = await runOneTurnWithLogs(
+    {
+      providers: { anthropic: "test-anthropic-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "claude-haiku-4-5" },
+      routing: { enabled: true },
+    },
+    ["/model auto", "what is this?"],
+    ["--model", "claude-sonnet-4-6"],
+  );
+  expect(calls.length).toBe(1); // "/model auto" is a slash command, not a turn -> only ONE runAgentLoop call
+  expect(calls[0].model).toBe("claude-haiku-4-5"); // routed to roles.smol, NOT the released 'claude-sonnet-4-6' pin
+});
+
+
+test("without /model auto, the CLI --model pin still wins on every subsequent turn (regression guard for the test above)", async () => {
+  const calls = await runOneTurn(
+    {
+      providers: { anthropic: "test-anthropic-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "claude-haiku-4-5" },
+      routing: { enabled: true },
+    },
+    "what is this?",
+    ["--model", "claude-sonnet-4-6"],
+  );
+  expect(calls.length).toBe(1);
+  expect(calls[0].model).toBe("claude-sonnet-4-6"); // pin still wins, unrouted
 });

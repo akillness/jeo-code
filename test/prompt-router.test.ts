@@ -764,3 +764,38 @@ test("cheapestCredentialed: on the flat Antigravity Gemini price tie, the SMALL 
 test("strongestCredentialed: antigravity-OAuth-only picks flash-agent — the 'Gemini 3.5 Flash (High)' flagship", () => {
   expect(strongestCredentialed(antigravityOnlyConfig())).toBe("antigravity/gemini-3-flash-agent");
 });
+
+test("routePrompt: roles.smol unconfigured but a cheaper credentialed model exists -> escalation still fires via that fallback classifier", async () => {
+  resetPromptRouterWarnings();
+  let capturedModel: string | undefined;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_messages: unknown, opts: { model: string }) => {
+      capturedModel = opts.model;
+      return JSON.stringify({ tier: "complex" });
+    },
+  }));
+  const { routePrompt, cheapestCredentialed: cheapestCredentialedFresh } = await import("../src/agent/prompt-router");
+  const config = credentialedConfig({ providers: { gemini: "k3" }, defaultModel: "claude-opus-4-6" });
+  // Sanity: a cheaper credentialed model really exists and differs from defaultModel —
+  // otherwise this test would pass for the wrong reason (the original skip-and-warn path).
+  const fallback = cheapestCredentialedFresh(config);
+  expect(fallback).not.toBeNull();
+  expect(fallback).not.toBe(config.defaultModel);
+
+  const decision = (await routePrompt("why is this failing?", config)) as RouteDecision;
+  expect(decision).not.toBeNull();
+  expect(decision.source).toBe("llm"); // escalation fired despite roles.smol being unset
+  expect(decision.tier).toBe("complex");
+  expect(decision.warning).toBeUndefined(); // no "skip" warning — the fallback classifier covered it
+  expect(capturedModel).toBe(fallback);
+});
+
+test("routePrompt: roles.smol unconfigured AND no cheaper credentialed model -> unchanged skip-and-warn behavior", async () => {
+  resetPromptRouterWarnings();
+  const { routePrompt } = await import("../src/agent/prompt-router");
+  const config = credentialedConfig({ providers: {}, defaultModel: "claude-sonnet-4-6" }); // nothing credentialed at all
+  const decision = (await routePrompt("why is this failing?", config)) as RouteDecision;
+  expect(decision).not.toBeNull();
+  expect(decision.source).toBe("heuristic");
+  expect(typeof decision.warning).toBe("string");
+});

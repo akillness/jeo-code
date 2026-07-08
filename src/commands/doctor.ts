@@ -8,7 +8,7 @@ import { meter } from "../tui/components/meter";
 import { size } from "../tui/terminal";
 import chalk from "chalk";
 import { extractChatgptAccountId, CODEX_RESPONSES_URL } from "../ai/providers/openai-responses";
-import { resolveTierModel, tierModelPool } from "../agent/prompt-router";
+import { resolveTierModel, tierModelPool, cheapestCredentialed } from "../agent/prompt-router";
 
 interface ProbeResult {
   status: "ok" | "fail" | "skipped";
@@ -173,20 +173,28 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   const ollamaBase = config.ollamaBaseUrl ?? "http://localhost:11434";
 
   // Routing diagnostic (design doc §7 risk #2): routing.enabled without roles.smol
-  // means routePrompt()'s LLM-escalation path silently never fires — resolveRoleModel
-  // falls back to defaultModel, which is exactly the "cheap escalation call is actually
-  // the expensive default model" paradox routePrompt() itself guards against at runtime
-  // (see prompt-router.ts's warnOnce/SMOL_UNCONFIGURED_WARNING_KEY). Surface it here
-  // proactively, at onboarding time, instead of only mid-session on the first qualifying
-  // turn.
+  // used to mean routePrompt()'s LLM-escalation path silently never fired. It no
+  // longer unconditionally gives up — it now falls back to the cheapest CREDENTIALED
+  // catalog model as the ambiguous-prompt classifier (same live MODEL_CATALOG lookup
+  // resolveTierModel's trivial-tier auto-select already uses), and only skips
+  // escalation entirely when that fallback ALSO resolves to defaultModel (nothing
+  // cheaper is credentialed) or nothing qualifies at all. Mirror that exact condition
+  // here so this note stays accurate instead of unconditionally claiming escalation
+  // "will never fire" — see prompt-router.ts's warnOnce/SMOL_UNCONFIGURED_WARNING_KEY
+  // for the matching runtime-side guard. Surface it here proactively, at onboarding
+  // time, instead of only mid-session on the first qualifying turn.
   const routingEnabled = !!config.routing?.enabled;
   const smolConfigured = !!config.roles?.smol;
   const routingNotes: string[] = [];
   if (routingEnabled && !smolConfigured) {
-    routingNotes.push(
-      "routing is enabled but roles.smol is unset — LLM escalation for ambiguous prompts will never fire; heuristic-only tier resolution applies every turn. Set roles.smol to enable escalation.",
-    );
+    const escalationFallback = cheapestCredentialed(config);
+    if (!escalationFallback || escalationFallback === config.defaultModel) {
+      routingNotes.push(
+        "routing is enabled but roles.smol is unset — LLM escalation for ambiguous prompts will never fire; heuristic-only tier resolution applies every turn. Set roles.smol to enable escalation.",
+      );
+    }
   }
+
   // Proactive credential-readiness check for every model routing could actually pick —
   // mirrors launch.ts's runTurn per-turn veto gate (v0.7.51) but surfaced at onboarding/
   // doctor time instead of only reactively on a session's first qualifying turn. Catches

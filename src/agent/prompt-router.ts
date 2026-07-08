@@ -515,16 +515,30 @@ export async function routePrompt(
 
     if (heuristic.confidence < threshold) {
       const smolModel = resolveRoleModel("smol", config);
-      if (smolModel === config.defaultModel) {
-        // roles.smol not configured -> "escalate to a cheap model" would actually call
-        // defaultModel (expensive) — the exact paradox the design doc identifies. Skip
-        // escalation, keep the heuristic result, and surface a one-time warning.
-        warning = warnOnce(
-          SMOL_UNCONFIGURED_WARNING_KEY,
-          "[route] confidence below threshold but roles.smol is not configured — skipping LLM escalation, using heuristic tier (set roles.smol to enable escalation)",
-        );
+      let classifierModel: string | undefined;
+      if (smolModel !== config.defaultModel) {
+        classifierModel = smolModel;
       } else {
-        const escalated = await escalateToLlm(prompt, smolModel, opts.signal);
+        // roles.smol not configured -> "escalate to a cheap model" would otherwise call
+        // defaultModel (expensive) — the exact paradox the design doc identifies. Rather
+        // than giving up outright, fall back to the cheapest CREDENTIALED catalog model
+        // (same live `MODEL_CATALOG` lookup `resolveTierModel`'s trivial-tier auto-select
+        // already uses) so an ambiguous per-turn prompt still gets a real LLM classification
+        // pass whenever a genuinely cheaper option exists. Only skip escalation entirely
+        // (heuristic-only, one-time warning) when even that fallback resolves to
+        // `defaultModel` itself (nothing cheaper is credentialed) or nothing qualifies at all.
+        const fallback = cheapestCredentialed(config);
+        if (fallback && fallback !== config.defaultModel) {
+          classifierModel = fallback;
+        } else {
+          warning = warnOnce(
+            SMOL_UNCONFIGURED_WARNING_KEY,
+            "[route] confidence below threshold but roles.smol is not configured and no cheaper credentialed model was found — skipping LLM escalation, using heuristic tier (set roles.smol to enable escalation)",
+          );
+        }
+      }
+      if (classifierModel) {
+        const escalated = await escalateToLlm(prompt, classifierModel, opts.signal);
         if (escalated) {
           tier = escalated;
           source = "llm";

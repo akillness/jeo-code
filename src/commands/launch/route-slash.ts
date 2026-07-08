@@ -23,7 +23,13 @@ export interface RouteSlashCtx {
   /** `turnConfig.routing?.enabled ?? false`, read fresh by the caller. */
   routingConfigEnabled: boolean;
   lastRouteDecision: RouteDecision | { note: string } | null;
+  /** The session's explicit model pin (`sessionModel`, from `--model`/`/model`),
+   *  if any. Threaded through purely for `/route status`'s visibility note below —
+   *  never changes routing's actual gating logic (`!sessionModel` in launch.ts's
+   *  `runTurn` stays the single source of truth for whether routing engages). */
+  pinnedModel?: string;
 }
+
 
 export interface RouteSlashResult {
   /** Present only when changed by "on"/"off". */
@@ -69,8 +75,16 @@ export function runRouteSlash(input: string, ctx: RouteSlashCtx): RouteSlashResu
     if (isRealDecision(ctx.lastRouteDecision)) {
       lines.push(`last decision: ${ctx.lastRouteDecision.tier} → ${ctx.lastRouteDecision.model} (${ctx.lastRouteDecision.source}: ${ctx.lastRouteDecision.signals.join(", ") || "none"}, confidence ${ctx.lastRouteDecision.confidence.toFixed(2)})`);
     }
+    // A model pin (`--model`/`/model`) unconditionally blocks routing regardless of
+    // this session's on/off toggle — surface that explicitly here, since "routing: on"
+    // read alone is misleading if it will never actually evaluate a prompt. Use
+    // /model auto to release the pin and let routing resume.
+    if (ctx.pinnedModel) {
+      lines.push(`note: model pinned to '${ctx.pinnedModel}' this session — routing will not evaluate any prompt until the pin is cleared (/model auto)`);
+    }
     return { lines };
   }
+
 
   if (sub === "on") {
     return { sessionRouteOverride: true, lines: ["routing: on (this session)"] };

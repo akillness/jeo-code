@@ -4166,7 +4166,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           isTTY: !!(process.stdin.isTTY && process.stdout.isTTY),
           getLiveModels, applyPickedModelWithTarget, persistSessionModel, pickLiveProviderModel,
         });
-        if (modelResult.sessionModel !== undefined) sessionModel = modelResult.sessionModel;
+        // `null` (from `/model auto`/`/model clear`) means "release the pin", NOT
+        // "unchanged" — `sessionModel` must become `undefined` so `runTurn`'s
+        // `!sessionModel` routing gate re-opens for the rest of this session.
+        if (modelResult.sessionModel !== undefined) sessionModel = modelResult.sessionModel === null ? undefined : modelResult.sessionModel;
         if (modelResult.sessionThinking !== undefined) sessionThinking = modelResult.sessionThinking;
         if (modelResult.lastPickIndex !== undefined) lastPickIndex = modelResult.lastPickIndex;
         continue;
@@ -4177,6 +4180,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           sessionRouteOverride,
           routingConfigEnabled: !!cfgNow.routing?.enabled,
           lastRouteDecision,
+          pinnedModel: sessionModel,
         });
         if (routeResult.sessionRouteOverride !== undefined) sessionRouteOverride = routeResult.sessionRouteOverride;
         for (const line of routeResult.lines) console.log(line);

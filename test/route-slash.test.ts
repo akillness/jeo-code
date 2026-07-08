@@ -96,3 +96,15 @@ test("unknown /route subcommand prints a usage hint, never throws", () => {
   expect(result.lines[0]).toContain("bogus");
   expect(result.lines[1]).toContain("/route [status|on|off|why]");
 });
+test("/route status: an active model pin appends a note that routing is blocked, with the escape hatch", () => {
+  const result = runRouteSlash("/route status", baseCtx({ routingConfigEnabled: true, pinnedModel: "claude-opus-4-6" }));
+  expect(result.lines).toEqual([
+    "routing: on (this session)",
+    "note: model pinned to 'claude-opus-4-6' this session — routing will not evaluate any prompt until the pin is cleared (/model auto)",
+  ]);
+});
+
+test("/route status: no pin note when the session has no explicit model pin", () => {
+  const result = runRouteSlash("/route status", baseCtx({ routingConfigEnabled: true }));
+  expect(result.lines).toEqual(["routing: on (this session)"]);
+});

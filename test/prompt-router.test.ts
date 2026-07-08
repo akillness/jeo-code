@@ -5,6 +5,8 @@ import {
   resetPromptRouterWarnings,
   deriveCacheSessionKey,
   resolveTierModel,
+  routePrompt,
+  tierModelPool,
   cheapestCredentialed,
   strongestCredentialed,
   type RouteDecision,
@@ -506,7 +508,48 @@ test("resolveTierModel auto-select: OAuth-stored credential (not just providers 
     routing: { enabled: true },
   });
   const decision = (await routePrompt("what is this?", config)) as RouteDecision;
-  expect(decision.model).toBe("gemini-2.0-flash"); // only gemini credentialed (via OAuth) -> cheapest gemini model
+  expect(decision.model).toBe("antigravity/gemini-3.1-pro-high"); // only antigravity credentialed (via gemini OAuth fallback) -> cheapest/newest antigravity model
+});
+
+test("resolveTierModel auto-select: Antigravity OAuth beats public Gemini API key on the trivial cheapest path", async () => {
+  const config = credentialedConfig({
+    providers: { gemini: "k3" },
+    oauth: { antigravity: { access: "tok", refresh: "r", expires: Date.now() + 100000 } },
+    routing: { enabled: true },
+  });
+  const decision = (await routePrompt("what is this?", config)) as RouteDecision;
+  expect(decision).not.toBeNull();
+  expect(decision.tier).toBe("trivial");
+  // The Gemini API key must not let public google/gemini ids outrank the OAuth-backed
+  // Antigravity Gemini lane; the selected Gemini auto-pick stays provider-qualified.
+  expect(decision.model).not.toMatch(/^gemini-/);
+  expect(decision.model).toStartWith("antigravity/gemini-");
+  const version = Number(/^antigravity\/gemini-(\d+(?:\.\d+)?)-/.exec(decision.model)?.[1] ?? "0");
+  expect(version).toBeGreaterThanOrEqual(3.1);
+});
+
+test("resolveTierModel auto-select: high tier uses Antigravity's provider-qualified Gemini when Gemini API key is also configured", () => {
+  const config = credentialedConfig({
+    providers: { gemini: "k3" },
+    oauth: { antigravity: { access: "tok", refresh: "r", expires: Date.now() + 100000 } },
+    routing: { enabled: true },
+  });
+  const model = resolveTierModel("high", config);
+  expect(model).not.toMatch(/^gemini-/);
+  expect(model).toStartWith("antigravity/gemini-");
+  const version = Number(/^antigravity\/gemini-(\d+(?:\.\d+)?)-/.exec(model)?.[1] ?? "0");
+  expect(version).toBeGreaterThanOrEqual(3.1);
+});
+
+test("tierModelPool: Antigravity OAuth plus Gemini API key excludes public Gemini ids from pooled auto-select candidates", () => {
+  const config = credentialedConfig({
+    providers: { gemini: "k3" },
+    oauth: { antigravity: { access: "tok", refresh: "r", expires: Date.now() + 100000 } },
+    routing: { enabled: true, crossProviderPool: true },
+  });
+  const pool = tierModelPool("standard", config);
+  expect(pool.some(model => model.startsWith("gemini-"))).toBe(false);
+  expect(pool.some(model => model.startsWith("antigravity/gemini-"))).toBe(true);
 });
 
 test("resolveTierModel: resolves standard and complex tiers using new config roles (medium, high, xhigh)", () => {

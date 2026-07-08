@@ -38,7 +38,7 @@
 
 ## 亮点
 
-- **多提供商、单一循环** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio，以及 20+ 个 OpenAI、Anthropic 兼容云服务(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai 等)，统一在一个 JSON 工具循环中。输入框内直接 OAuth 登录(`/provider login`),模型选择即刻持久化为默认值。
+- **多提供商、单一循环** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio，以及 20+ 个 OpenAI、Anthropic 兼容云服务(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai 等)，统一在一个 JSON 工具循环中。输入框内直接 OAuth 登录(`/provider login`)，模型选择即刻持久化为默认值。Prompt routing 只会自动选择真实可用的凭据路径: Gemini OAuth 会走 provider-qualified `antigravity/gemini-3.1+` 模型，绝不选择需要 `GEMINI_API_KEY` 的 public `google/gemini-*` 行。
 - **编辑完整性** — read 输出携带内容锚点(`42ab|`)；带锚点的编辑会与当前文件校验、行移动时自动重映射、不匹配时连同最新内容一起拒绝 — 绝不污染文件。
 - **自我修正的验证循环** — 配置 post-edit 钩子(tsc / eslint / 测试)，代理会*亲自读取*诊断并在循环内修复；钩子未通过时 `done` 会被阻断。
 - **没有表演的真实门禁** — `ralplan` 共识由真正读取仓库的 critic 子代理执行，`[OKAY]` 裁决被持久化且 `jeo approve` *强制要求*它；`ultragoal` 诚实报告(套件运行只是全局信号，绝不伪造逐条通过)。
@@ -46,7 +46,7 @@
 - **动态步数预算** — 只要近期工具调用展现新的进展就持续延长，停滞时优雅收敛为总结；子代理保持精确的步数契约。
 - **内联 TUI** — 已完成的工作流入真实滚动缓冲区(回合中也可用 tmux 滚轮)，代理运行时普通查询输入框仍保持可见并可编辑。Ctrl+O 详细信息切换、主题、剪贴板图片粘贴(Ctrl+V)、CJK/表情安全的宽度计算。
 - **浏览器工具** — 基于 Playwright 的无头 Chromium 自动化,作为一等代理工具:对命名并复用的标签页执行 `open`/`close`/`run`/`act`,优先使用 `observe` 标记的元素 id 而非截图来驱动页面。需要执行一次 `npx playwright install chromium`(未捆绑 — jeo 本身仍是零原生依赖,浏览器二进制文件是 Playwright 的独立下载项)。
-- **远程子代理可见性(Telegram)** — 配对一次机器人(`jeo notify setup`)后,`jeo daemon start` 会在子代理每次状态变化(启动 → 完成/失败/取消)时推送消息,并接受 `/subagents`、`/steer <id> <subagentId> <msg>`、`/cancel <id> <subagentId>` 回传 — 命令仅对配对的聊天授权。
+- **远程子代理可见性(Telegram)** — 配对一次机器人(`jeo notify setup`)后，`jeo daemon start` 会在子代理每次状态变化(启动 → 完成/失败/取消)时推送消息，并接受 `/subagents`、`/steer <id> <subagentId> <msg>`、`/cancel <id> <subagentId>` 回传。现在提供 Telegram 论坛主题、内联键盘、图片附件等完整 `gjc` parity；命令仅对配对的聊天授权。
 
 ## 安装
 
@@ -79,11 +79,11 @@ jeo --tmux               # 在独立 tmux 会话中运行
 | `/provider login <name>` · `/logout` | 在输入框内 OAuth 登录/登出 |
 | `/agents [role]` · `/subagent` | 按角色(executor/planner/architect/critic)配置模型·thinking·步数 |
 | `/thinking [level]` | 查看/设置默认推理预算(low…xhigh) |
-| `/fast [on|off|status]` | 当前模型支持 low 推理时切换 fast thinking 模式 |
+| `/fast [on\|off\|status]` | 当前模型支持 low 推理时切换 fast thinking 模式 |
 | `/skill` · `$<skill> [intent]` | 列出/运行工作流技能(`$team "任务"` 风格) |
 | `/view` · `/diff` · `/find` · `/search` | 代码查看、git diff、文件/模式搜索 |
 | `/new` · `/resume` · `/sessions` | 会话管理 |
-| `/history [n|all]` · `/export` | 将可读的工作活动历史重新输出到滚动区 · 导出记录 |
+| `/history [n\|all]` · `/export` | 将可读的工作活动历史重新输出到滚动区 · 导出记录 |
 | `/retry` · `/btw <问题>` | 重试上次请求 · 不写入历史的旁路提问 |
 | `/usage` · `/context` · `/compact` | Token 用量、上下文明细、手动压缩 |
 | `/theme` · `/config` · `/help` | 主题、运行时配置、帮助 |
@@ -212,8 +212,10 @@ JEO_TUI_THEME=cosmic            # cosmic/matrix/solar/red-claw/blue-crab/mono/au
 JEO_TUI_ALT_SCREEN=1            # 旧版 alt-screen 回合(默认: 内联滚动缓冲)
 JEO_STEP_BASE=24                # 动态步数预算的滚动基数
 JEO_STEP_HARD_CAP=600           # 绝对终止保证
-JEO_STREAM_MAX_MS=300000        # 可选的整体流截止(默认关闭; 约束慢滴流)
+JEO_STREAM_MAX_MS=1800000       # 整体流截止(默认30分钟; 约束 slow-drip 流，不是为了中断仍在活跃输出的流); 0 表示禁用
 JEO_STREAM_IDLE_MS=300000       # 单次分块空闲上限(默认300秒); 首个 token 前静默较久的慢速/本地后端可调高
+JEO_CALL_TIMEOUT_MS=1800000     # 非流式调用墙钟上限(默认30分钟; compaction/subagents/goal-verify)
+JEO_TURN_MAX_MS=1800000         # 回合停滞预算: 没有工具进展的最长时间(默认30分钟); 0 表示禁用
 JEO_TOOL_OUTPUT_MAX=4000        # 模型可见的工具输出上限(全文溢出到 artifacts)
 ```
 

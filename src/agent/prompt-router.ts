@@ -49,7 +49,7 @@
  */
 import { callLlm } from "./loop";
 import { resolveRoleModel } from "../ai/model-manager";
-import { catalogMetadata, MODEL_CATALOG, type CatalogModel } from "../ai/model-catalog";
+import { catalogMetadata, MODEL_CATALOG, compareReleaseDate, type CatalogModel } from "../ai/model-catalog";
 import { priceForModel } from "../ai/pricing";
 import { tryExtractJsonObject } from "./json";
 import type { Config } from "./state";
@@ -210,6 +210,51 @@ export type RoutingConfig = Pick<Config, "defaultModel" | "roles" | "routing"> &
 function isCloudProvider(p: ProviderName): p is AuthProvider {
   return p !== "ollama" && p !== "lmstudio";
 }
+/** Whether `provider`'s configured credential can actually serve ITS OWN catalog
+ *  models for auto-routing purposes — mirrors the real fallback rules in
+ *  model-manager.ts's `oauthServesModel`/`resolveCall`:
+ *  - `gemini` requires an API key. Its OAuth login no longer masquerades as
+ *    gemini-cli against Cloud Code Assist, so an OAuth-only credential can't
+ *    serve google/gemini-* models — the SAME models route through `antigravity/*`
+ *    instead.
+ *  - `antigravity` accepts its OWN OAuth login OR a plain gemini OAuth token as a
+ *    fallback credential (same fallback `resolveCall`'s antigravity branch uses),
+ *    so it — not `gemini` — is the DEFAULT OAuth-served path for Gemini models.
+ *  Every other provider keeps the original "any stored credential is enough" rule. */
+function providerCredentialed(provider: AuthProvider, config: RoutingConfig): boolean {
+  if (provider === "gemini") return !!config.providers?.gemini;
+  if (provider === "antigravity") return !!(config.oauth?.antigravity || config.oauth?.gemini || config.providers?.antigravity);
+  return !!(config.providers?.[provider] || config.oauth?.[provider]);
+}
+
+/** Antigravity OAuth is the Cloud Code Assist lane for Gemini-family OAuth routing.
+ *  When present, auto-select must prefer provider-qualified `antigravity/*` ids and
+ *  never silently fall back to public `gemini`/`google-gemini` catalog rows that need
+ *  a Gemini API key at execution time. A plain `oauth.gemini` token counts because
+ *  Antigravity deliberately accepts it as a fallback credential. */
+function hasAntigravityOauth(config: RoutingConfig): boolean {
+  return !!(config.oauth?.antigravity || config.oauth?.gemini);
+}
+
+/** Cloud Code Assist's current agent-quality floor for OAuth-routed Gemini models:
+ *  keep auto-routing on Gemini 3.1+ instead of cheaper/older Antigravity Gemini 2.5
+ *  or 3.0 rows. Non-Gemini Antigravity rows (Claude/GPT) are not version-comparable
+ *  to Gemini and are left to the normal strength/price ranking. */
+function isAntigravityGeminiBelow31(canonical: string): boolean {
+  const m = /^antigravity\/gemini-(\d+)(?:\.(\d+))?(?:-|$)/.exec(canonical.toLowerCase());
+  if (!m) return false;
+  const major = Number(m[1]);
+  const minor = Number(m[2] ?? "0");
+  return major < 3 || (major === 3 && minor < 1);
+}
+
+function isAutoSelectCandidate(m: CatalogModel, config: RoutingConfig): boolean {
+  if (!isCloudProvider(m.provider) || m.limitedAvailability || !providerCredentialed(m.provider, config)) return false;
+  if (hasAntigravityOauth(config) && m.provider === "gemini") return false;
+  if (hasAntigravityOauth(config) && m.provider === "antigravity" && isAntigravityGeminiBelow31(m.canonical)) return false;
+  return true;
+}
+
 
 /** Size class jeo infers for a catalog model, used to group EQUIVALENT models
  *  across DIFFERENT providers for pool-based routing (see `tierModelPool`) — the
@@ -233,21 +278,6 @@ function sizeClassFor(canonical: string): "small" | "mid" | "large" | null {
 
 const TIER_TO_SIZE_CLASS: Record<PromptTier, "small" | "mid" | "large"> = { trivial: "small", standard: "mid", high: "mid", complex: "large" };
 
-/** Compares `releaseDate` ("YYYY-MM", lexicographically sortable). `>0` when `a`
- *  is NEWER than `b`. A missing date sorts as OLDEST on that side — an
- *  unconfirmed date can never silently outrank a verified-newer model. Shared
- *  recency tiebreak for `compareStrengthAscending`/`cheapestCredentialed`/
- *  `strongestCredentialed`, replacing the arbitrary alphabetical canonical-id
- *  tiebreak those used before (which, on a full capability tie, picked the
- *  OLDEST id alphabetically — e.g. `claude-opus-4-6` beating `claude-opus-4-8`
- *  as "strongest" purely because "4-6" < "4-8" as a string). */
-function compareRecency(a: CatalogModel, b: CatalogModel): number {
-  if (a.releaseDate === b.releaseDate) return 0;
-  if (!a.releaseDate) return -1;
-  if (!b.releaseDate) return 1;
-  return a.releaseDate < b.releaseDate ? -1 : 1;
-}
-
 /** Multi-key strength comparator (ascending: weakest first) — same ranking signals
  *  as `strongestCredentialed`'s single-winner tiebreak, reused here to bucket
  *  UNCLASSIFIED (no size-suffix) models into a tercile fallback. */
@@ -257,7 +287,7 @@ function compareStrengthAscending(a: CatalogModel, b: CatalogModel): number {
   if (xhighA !== xhighB) return xhighA - xhighB;
   if (a.maxOutputTokens !== b.maxOutputTokens) return a.maxOutputTokens - b.maxOutputTokens;
   if (a.contextTokens !== b.contextTokens) return a.contextTokens - b.contextTokens;
-  const recency = compareRecency(a, b);
+  const recency = compareReleaseDate(a.releaseDate, b.releaseDate);
   if (recency !== 0) return recency;
   return a.canonical < b.canonical ? -1 : a.canonical > b.canonical ? 1 : 0;
 }
@@ -272,7 +302,7 @@ function compareStrengthAscending(a: CatalogModel, b: CatalogModel): number {
  *  for deterministic pool ordering (required by `selectFromPool`'s index math). */
 export function tierModelPool(tier: PromptTier, config: RoutingConfig): string[] {
   const targetClass = TIER_TO_SIZE_CLASS[tier];
-  const credentialed = MODEL_CATALOG.filter(m => isCloudProvider(m.provider) && !m.limitedAvailability && (config.providers?.[m.provider] || config.oauth?.[m.provider]));
+  const credentialed = MODEL_CATALOG.filter(m => isAutoSelectCandidate(m, config));
 
   const suffixPool = credentialed.filter(m => sizeClassFor(m.canonical) === targetClass);
 
@@ -322,12 +352,12 @@ export function cheapestCredentialed(config: RoutingConfig): string | null {
   let best: CatalogModel | null = null;
   let bestCost = Infinity;
   for (const m of MODEL_CATALOG) {
-    // "ANY stored credential" (API key OR OAuth) is enough here — auto-select only
-    // needs "can this provider serve a request at all", not WHICH credential kind
-    // wins (unlike provider-status.ts's `configuredCredential` precedence). The
-    // real veto gate in launch.ts's `runTurn` re-verifies full readiness (including
-    // live OAuth expiry) before a turn actually uses the model.
-    if (!isCloudProvider(m.provider) || m.limitedAvailability || !(config.providers?.[m.provider] || config.oauth?.[m.provider])) continue;
+    // Candidate eligibility is centralized in `isAutoSelectCandidate`: it keeps
+    // OAuth-backed Antigravity routing on provider-qualified 3.1+ Gemini rows and
+    // prevents public `gemini` catalog rows from winning when Antigravity OAuth is
+    // the available Gemini lane. The real veto gate in launch.ts's `runTurn` still
+    // re-verifies full readiness (including live OAuth expiry) before a turn uses it.
+    if (!isAutoSelectCandidate(m, config)) continue;
     const price = priceForModel(m.canonical);
     if (!price) continue;
     const cost = price.inPerM + price.outPerM;
@@ -335,7 +365,7 @@ export function cheapestCredentialed(config: RoutingConfig): string | null {
       best = m;
       bestCost = cost;
     } else if (cost === bestCost && best) {
-      const recency = compareRecency(m, best);
+      const recency = compareReleaseDate(m.releaseDate, best.releaseDate);
       if (recency > 0 || (recency === 0 && m.canonical < best.canonical)) best = m;
     }
   }
@@ -360,8 +390,9 @@ export function strongestCredentialed(
 ): string | null {
   let best: CatalogModel | null = null;
   for (const m of MODEL_CATALOG) {
-    // "ANY stored credential" is enough (see cheapestCredentialed's comment above).
-    if (!isCloudProvider(m.provider) || m.limitedAvailability || !(config.providers?.[m.provider] || config.oauth?.[m.provider])) continue;
+    // Candidate eligibility is centralized in `isAutoSelectCandidate` (see
+    // cheapestCredentialed above for the Antigravity/Gemini OAuth rationale).
+    if (!isAutoSelectCandidate(m, config)) continue;
     if (filter && !filter(m)) continue;
     if (!best) { best = m; continue; }
     const xhighM = m.thinking.includes("xhigh") ? 1 : 0;
@@ -369,7 +400,7 @@ export function strongestCredentialed(
     if (xhighM !== xhighBest) { if (xhighM > xhighBest) best = m; continue; }
     if (m.maxOutputTokens !== best.maxOutputTokens) { if (m.maxOutputTokens > best.maxOutputTokens) best = m; continue; }
     if (m.contextTokens !== best.contextTokens) { if (m.contextTokens > best.contextTokens) best = m; continue; }
-    const recency = compareRecency(m, best);
+    const recency = compareReleaseDate(m.releaseDate, best.releaseDate);
     if (recency !== 0) { if (recency > 0) best = m; continue; }
     if (m.canonical < best.canonical) best = m;
   }
@@ -388,7 +419,7 @@ export function strongestCredentialed(
  *  `roles.medium`/`defaultModel` — never to `complex`'s flagship pick). */
 function strongestMidTierCredentialed(config: RoutingConfig): string | null {
   const midClass = MODEL_CATALOG.filter(
-    m => isCloudProvider(m.provider) && !m.limitedAvailability && sizeClassFor(m.canonical) === "mid" && (config.providers?.[m.provider] || config.oauth?.[m.provider]),
+    m => isAutoSelectCandidate(m, config) && sizeClassFor(m.canonical) === "mid",
   );
   if (midClass.length === 0) return null;
   return midClass.sort(compareStrengthAscending).at(-1)!.canonical;

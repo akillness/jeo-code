@@ -38,7 +38,7 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 
 ## Highlights
 
-- **Multi-provider, one loop** — Anthropic / OpenAI (+Codex) / Gemini / Antigravity / Ollama / LM Studio, plus 20+ OpenAI- and Anthropic-compatible clouds (Groq, DeepSeek, Mistral, OpenRouter, xAI, Kimi, z.ai, …), all behind one uniform JSON tool loop. OAuth login from the input box (`/provider login`), every model pick persists as the new default.
+- **Multi-provider, one loop** — Anthropic / OpenAI (+Codex) / Gemini / Antigravity / Ollama / LM Studio, plus 20+ OpenAI- and Anthropic-compatible clouds (Groq, DeepSeek, Mistral, OpenRouter, xAI, Kimi, z.ai, …), all behind one uniform JSON tool loop. OAuth login happens from the input box (`/provider login`), every model pick persists as the new default, and prompt routing only auto-selects usable credentialed paths: Gemini OAuth goes through provider-qualified `antigravity/gemini-3.1+` models, never public `google/gemini-*` rows that require `GEMINI_API_KEY`.
 - **Edit integrity** — read output carries content anchors (`42ab|`); anchored edits are verified against the current file, re-mapped when lines shifted, and rejected with fresh content instead of corrupting.
 - **Self-correcting verification loop** — configure a post-edit hook (tsc / eslint / tests) and the agent *sees* the diagnostics and fixes them in-loop; a red hook blocks `done` until resolved.
 - **Real gates, no theater** — `ralplan` consensus is a repo-grounded critic subagent whose `[OKAY]` verdict is persisted and *required* by `jeo approve`; `ultragoal` reports honestly (a suite run is a global signal, never fabricated per-criterion passes).
@@ -80,11 +80,11 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 | `/provider login <name>` · `/logout` | OAuth login/logout from the input box |
 | `/agents [role]` · `/subagent` | Per-role (executor/planner/architect/critic) model · thinking · step config |
 | `/thinking [level]` | Show/set default reasoning budget (low…xhigh) |
-| `/fast [on|off|status]` | Toggle fast thinking mode when the active model advertises low reasoning |
+| `/fast [on\|off\|status]` | Toggle fast thinking mode when the active model advertises low reasoning |
 | `/skill` · `$<skill> [intent]` | List/run workflow skills (`$team "task"` style) |
 | `/view` · `/diff` · `/find` · `/search` | Code view, git diff, file/pattern search |
 | `/new` · `/resume` · `/sessions` | Session management |
-| `/history [n|all]` · `/export` | Reprint readable worked activity history into scrollback · transcript export |
+| `/history [n\|all]` · `/export` | Reprint readable worked activity history into scrollback · transcript export |
 | `/retry` · `/btw <q>` | Retry last request · side question without touching history |
 | `/usage` · `/context` · `/compact` | Token usage, context breakdown, manual compaction |
 | `/theme` · `/config` · `/help` | Theme, runtime config, help |

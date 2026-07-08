@@ -38,7 +38,7 @@
 
 ## 하이라이트
 
-- **멀티 프로바이더, 단일 루프** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio, 그리고 OpenAI·Anthropic 호환 클라우드 20종 이상(Groq, DeepSeek, Mistral, OpenRouter, xAI, Kimi, z.ai 등)까지 균일한 JSON 도구 루프로. 입력창에서 바로 OAuth 로그인(`/provider login`), 모델 선택은 즉시 기본값으로 영속.
+- **멀티 프로바이더, 단일 루프** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio, 그리고 OpenAI·Anthropic 호환 클라우드 20종 이상(Groq, DeepSeek, Mistral, OpenRouter, xAI, Kimi, z.ai 등)까지 균일한 JSON 도구 루프로. 입력창에서 바로 OAuth 로그인(`/provider login`), 모델 선택은 즉시 기본값으로 영속됩니다. 프롬프트 라우팅은 실제 사용 가능한 인증 경로만 자동 선택합니다: Gemini OAuth는 provider-qualified `antigravity/gemini-3.1+` 모델로만 가고, `GEMINI_API_KEY`가 필요한 public `google/gemini-*` 행은 고르지 않습니다.
 - **편집 무결성** — read 출력에 콘텐츠 앵커(`42ab|`)가 붙고, 앵커 편집은 현재 파일과 대조 검증·줄 이동 시 자동 재매핑·불일치 시 최신 내용과 함께 거부 — 파일을 오염시키지 않습니다.
 - **자기수정 검증 루프** — post-edit 훅(tsc / eslint / 테스트)을 설정하면 에이전트가 진단을 *직접 읽고* 루프 안에서 수정합니다. 훅이 빨간 상태면 `done`이 차단됩니다.
 - **연극 없는 진짜 게이트** — `ralplan` 합의는 실제 저장소를 읽는 critic 서브에이전트이며 `[OKAY]` 평결이 영속되고 `jeo approve`가 이를 *요구*합니다. `ultragoal`은 정직하게 보고합니다(스위트 1회 실행은 전역 신호일 뿐, 기준별 통과를 조작하지 않음).
@@ -80,11 +80,11 @@ jeo --tmux               # 독립 tmux 세션에서 실행
 | `/provider login <name>` · `/logout` | 입력창에서 OAuth 로그인/로그아웃 |
 | `/agents [role]` · `/subagent` | 역할별(executor/planner/architect/critic) 모델·thinking·스텝 구성 |
 | `/thinking [level]` | 기본 추론 예산(low…xhigh) 조회/설정 |
-| `/fast [on|off|status]` | 현재 모델이 low 추론을 지원하면 fast thinking 모드를 켜고 끔 |
+| `/fast [on\|off\|status]` | 현재 모델이 low 추론을 지원하면 fast thinking 모드를 켜고 끔 |
 | `/skill` · `$<skill> [intent]` | 워크플로 스킬 목록/실행(`$team "작업"` 스타일) |
 | `/view` · `/diff` · `/find` · `/search` | 코드 보기, git diff, 파일/패턴 검색 |
 | `/new` · `/resume` · `/sessions` | 세션 관리 |
-| `/history [n|all]` · `/export` | 작업 활동 히스토리를 읽기 좋게 스크롤백에 재출력 · 트랜스크립트 내보내기 |
+| `/history [n\|all]` · `/export` | 작업 활동 히스토리를 읽기 좋게 스크롤백에 재출력 · 트랜스크립트 내보내기 |
 | `/retry` · `/btw <질문>` | 마지막 요청 재시도 · 히스토리에 안 남는 사이드 질문 |
 | `/usage` · `/context` · `/compact` | 토큰 사용량, 컨텍스트 내역, 수동 컴팩션 |
 | `/theme` · `/config` · `/help` | 테마, 런타임 설정, 도움말 |
@@ -213,8 +213,10 @@ JEO_TUI_THEME=cosmic            # cosmic/matrix/solar/red-claw/blue-crab/mono/au
 JEO_TUI_ALT_SCREEN=1            # 레거시 alt-screen 턴(기본: 인라인 스크롤백)
 JEO_STEP_BASE=24                # 동적 스텝 버짓의 롤링 베이스
 JEO_STEP_HARD_CAP=600           # 절대 종료 보증
-JEO_STREAM_MAX_MS=300000        # 옵트인 전체 스트림 데드라인(기본 off; 슬로우드립 차단)
+JEO_STREAM_MAX_MS=1800000       # 전체 스트림 데드라인(기본 30분; 슬로우드립 스트림 제한, 활성 스트림 자체를 끊기 위한 값은 아님); 0이면 비활성화
 JEO_STREAM_IDLE_MS=300000       # 청크당 유휴 타임아웃(기본 300초); 첫 토큰 전 침묵이 긴 느린/로컬 백엔드는 값을 높이세요
+JEO_CALL_TIMEOUT_MS=1800000     # 비스트리밍 호출 벽시계 제한(기본 30분; 컴팩션/서브에이전트/goal-verify)
+JEO_TURN_MAX_MS=1800000         # 턴 정체 예산: 도구 진전이 없는 최대 시간(기본 30분); 0이면 비활성화
 JEO_TOOL_OUTPUT_MAX=4000        # 모델 가시 도구 출력 캡(전체는 아티팩트로 스필)
 ```
 

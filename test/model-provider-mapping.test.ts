@@ -42,10 +42,10 @@ test("providerModelFor maps correctly", () => {
 });
 
 test("Antigravity models stay provider-qualified and route to the Antigravity adapter", () => {
-  expect(resolveProvider("antigravity/gemini-3-pro-low")).toBe("antigravity");
+  expect(resolveProvider("antigravity/gemini-3.1-pro-low")).toBe("antigravity");
   expect(resolveProvider("antigravity/claude-sonnet-4-5")).toBe("antigravity");
-  expect(providerModelFor("antigravity/gemini-3-pro-low")).toBe("antigravity/gemini-3-pro-low");
-  expect(findCatalogModel("antigravity/gemini-3-pro-low")?.provider).toBe("antigravity");
+  expect(providerModelFor("antigravity/gemini-3.1-pro-low")).toBe("antigravity/gemini-3.1-pro-low");
+  expect(findCatalogModel("antigravity/gemini-3.1-pro-low")?.provider).toBe("antigravity");
 });
 
 test("alias sonnet/opus resolve to the 4.6 generation", () => {

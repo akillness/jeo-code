@@ -221,24 +221,11 @@ function hasAntigravityOauth(config: RoutingConfig): boolean {
   return !!(config.oauth?.antigravity || config.oauth?.gemini);
 }
 
-/** Cloud Code Assist's current agent-quality floor for OAuth-routed Gemini models:
- *  keep auto-routing on Gemini 3.1+ instead of cheaper/older Antigravity Gemini 2.5
- *  or 3.0 rows. Non-Gemini Antigravity rows (Claude/GPT) are not version-comparable
- *  to Gemini and are left to the normal strength/price ranking. */
-function isAntigravityGeminiBelow31(canonical: string): boolean {
-  const m = /^antigravity\/gemini-(\d+)(?:\.(\d+))?(?:-|$)/.exec(canonical.toLowerCase());
-  if (!m) return false;
-  const major = Number(m[1]);
-  const minor = Number(m[2] ?? "0");
-  return major < 3 || (major === 3 && minor < 1);
-}
-
 function isAutoSelectCandidate(m: CatalogModel, config: RoutingConfig): boolean {
   // Shared model-LEVEL credential gate (the full auth matrix is documented on
   // modelServableWithConfig; keep aligned with resolveCall).
   if (!isCloudProvider(m.provider) || m.limitedAvailability || !modelServableWithConfig(m.provider, m.canonical, config)) return false;
   if (hasAntigravityOauth(config) && m.provider === "gemini") return false;
-  if (hasAntigravityOauth(config) && m.provider === "antigravity" && isAntigravityGeminiBelow31(m.canonical)) return false;
   return true;
 }
 
@@ -246,15 +233,19 @@ function isAutoSelectCandidate(m: CatalogModel, config: RoutingConfig): boolean 
 /** Size class jeo infers for a catalog model, used to group EQUIVALENT models
  *  across DIFFERENT providers for pool-based routing (see `tierModelPool`) — the
  *  cross-provider counterpart to `cheapestCredentialed`/`strongestCredentialed`'s
- *  single-winner selection. Matches PROVIDER-DECLARED size-tier suffixes
- *  (Anthropic's haiku/sonnet/opus, Google's flash/pro, OpenAI's mini) against
+ *  single-winner selection. An explicit catalog `sizeClass` wins outright — the
+ *  authoritative tier for ids whose NAME misleads the suffix heuristic (e.g.
+ *  Antigravity's `gemini-3-flash-agent` is "Gemini 3.5 Flash (High)", a flagship).
+ *  Otherwise matches PROVIDER-DECLARED size-tier suffixes (Anthropic's
+ *  haiku/sonnet/opus, Google's flash/pro, OpenAI's mini) against
  *  hyphen/dot-delimited SEGMENTS of the canonical id — NOT a raw substring match,
  *  which would false-positive on "gemini" containing "mini" as a substring.
  *  `null` for ids with no size-tier suffix at all (gpt-5.5, o3, grok-4.3, kimi-*,
  *  glm-*, deepseek-*, minimax-* — providers whose naming doesn't encode size);
  *  `tierModelPool` falls those back to a strength-tercile split instead. */
-function sizeClassFor(canonical: string): "small" | "mid" | "large" | null {
-  const id = canonical.toLowerCase();
+function sizeClassFor(model: CatalogModel): "small" | "mid" | "large" | null {
+  if (model.sizeClass) return model.sizeClass;
+  const id = model.canonical.toLowerCase();
   const bare = id.includes("/") ? id.slice(id.indexOf("/") + 1) : id;
   const segments = bare.split(/[-.]/);
   if (segments.includes("haiku") || segments.includes("flash") || segments.includes("mini") || segments.includes("nano")) return "small";
@@ -291,9 +282,9 @@ export function tierModelPool(tier: PromptTier, config: RoutingConfig): string[]
   const targetClass = TIER_TO_SIZE_CLASS[tier];
   const credentialed = MODEL_CATALOG.filter(m => isAutoSelectCandidate(m, config));
 
-  const suffixPool = credentialed.filter(m => sizeClassFor(m.canonical) === targetClass);
+  const suffixPool = credentialed.filter(m => sizeClassFor(m) === targetClass);
 
-  const unclassified = credentialed.filter(m => sizeClassFor(m.canonical) === null).sort(compareStrengthAscending);
+  const unclassified = credentialed.filter(m => sizeClassFor(m) === null).sort(compareStrengthAscending);
   const third = Math.ceil(unclassified.length / 3);
   // "high" shares "standard"'s unclassified-model tercile share: the catalog's
   // size-suffix classification only has 3 real buckets (small/mid/large — see
@@ -352,8 +343,18 @@ export function cheapestCredentialed(config: RoutingConfig): string | null {
       best = m;
       bestCost = cost;
     } else if (cost === bestCost && best) {
+      // Same price (common inside one subscription family, e.g. every Antigravity
+      // Gemini row shares the flat "gemini" price): prefer the SMALLER declared
+      // size class first — "cheapest" is the trivial tier's pick, and a family's
+      // Low/(High) variants are priced identically while consuming very different
+      // quota — then NEWER release, then canonical id (deterministic).
+      const sizeRank = (m2: CatalogModel): number => {
+        const cls = sizeClassFor(m2);
+        return cls === "small" ? 0 : cls === "mid" ? 1 : cls === "large" ? 2 : 3;
+      };
+      const bySize = sizeRank(m) - sizeRank(best);
       const recency = compareReleaseDate(m.releaseDate, best.releaseDate);
-      if (recency > 0 || (recency === 0 && m.canonical < best.canonical)) best = m;
+      if (bySize < 0 || (bySize === 0 && (recency > 0 || (recency === 0 && m.canonical < best.canonical)))) best = m;
     }
   }
   return best?.canonical ?? null;
@@ -406,7 +407,7 @@ export function strongestCredentialed(
  *  `roles.medium`/`defaultModel` — never to `complex`'s flagship pick). */
 function strongestMidTierCredentialed(config: RoutingConfig): string | null {
   const midClass = MODEL_CATALOG.filter(
-    m => isAutoSelectCandidate(m, config) && sizeClassFor(m.canonical) === "mid",
+    m => isAutoSelectCandidate(m, config) && sizeClassFor(m) === "mid",
   );
   if (midClass.length === 0) return null;
   return midClass.sort(compareStrengthAscending).at(-1)!.canonical;

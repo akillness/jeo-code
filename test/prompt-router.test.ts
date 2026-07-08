@@ -509,7 +509,7 @@ test("resolveTierModel auto-select: OAuth-stored credential (not just providers 
     routing: { enabled: true },
   });
   const decision = (await routePrompt("what is this?", config)) as RouteDecision;
-  expect(decision.model).toBe("antigravity/gemini-3.1-pro-high"); // only antigravity credentialed (via gemini OAuth fallback) -> cheapest/newest antigravity model
+  expect(decision.model).toBe("antigravity/gemini-3.5-flash-extra-low"); // only antigravity credentialed (via gemini OAuth fallback) -> cheapest = smallest size class, newest on the flat-price tie ("Gemini 3.5 Flash (Low)")
 });
 
 test("resolveTierModel auto-select: Antigravity OAuth beats public Gemini API key on the trivial cheapest path", async () => {
@@ -706,4 +706,61 @@ test("tierModelPool/cheapest/strongest: an antigravity API key alone credentials
   for (const tier of tiers) expect(tierModelPool(tier, config)).toEqual([]);
   expect(cheapestCredentialed(config)).toBeNull();
   expect(strongestCredentialed(config)).toBeNull();
+});
+
+// --- Antigravity tier mapping (catalog `sizeClass` truth over the wire-id suffix
+// heuristic): the LIVE Cloud Code Assist agent set names its ids misleadingly —
+// `gemini-3-flash-agent` is "Gemini 3.5 Flash (High)" (flagship), `gemini-3.1-pro-low`
+// is the LOW agent tier. Reverting a row's explicit `sizeClass` (or restoring the old
+// suffix-only sizeClassFor) moves rows between pools and reddens the exact-set
+// assertions below. ---
+
+function antigravityOnlyConfig(): Config {
+  return credentialedConfig({
+    providers: {},
+    oauth: { antigravity: { access: "tok", refresh: "r", expires: Date.now() + 100000 } },
+    routing: { enabled: true },
+  });
+}
+
+test("tierModelPool: antigravity-OAuth-only trivial pool is EXACTLY the two Low-display rows (pro-low is 'small' despite its 'pro' segment)", () => {
+  // gemini-3.1-pro-low would land in "mid" under the suffix heuristic ('pro');
+  // its explicit sizeClass:"small" puts it in trivial instead.
+  expect(tierModelPool("trivial", antigravityOnlyConfig())).toEqual([
+    "antigravity/gemini-3.1-pro-low",
+    "antigravity/gemini-3.5-flash-extra-low",
+  ]);
+});
+
+test("tierModelPool: antigravity-OAuth-only complex pool is EXACTLY opus-thinking + flash-agent (flash-agent is 'large' despite its 'flash' segment)", () => {
+  // gemini-3-flash-agent would land in "small" under the suffix heuristic ('flash');
+  // its explicit sizeClass:"large" makes it a complex-tier flagship instead.
+  expect(tierModelPool("complex", antigravityOnlyConfig())).toEqual([
+    "antigravity/claude-opus-4-6-thinking",
+    "antigravity/gemini-3-flash-agent",
+  ]);
+});
+
+test("tierModelPool: antigravity-OAuth-only standard AND high pools carry the mid-class agents (pro-agent + sonnet), never the Low rows or flash-agent", () => {
+  const config = antigravityOnlyConfig();
+  for (const tier of ["standard", "high"] as const) {
+    const pool = tierModelPool(tier, config);
+    expect(pool).toContain("antigravity/gemini-pro-agent"); // "Gemini 3.1 Pro (High)" — the code-agent model
+    expect(pool).toContain("antigravity/claude-sonnet-4-6"); // "Claude Sonnet 4.6 (Thinking)"
+    expect(pool).not.toContain("antigravity/gemini-3.1-pro-low");
+    expect(pool).not.toContain("antigravity/gemini-3.5-flash-extra-low");
+    expect(pool).not.toContain("antigravity/gemini-3-flash-agent"); // flagship, complex-only
+  }
+});
+
+test("cheapestCredentialed: on the flat Antigravity Gemini price tie, the SMALL size class wins — extra-low, never the large flash-agent", () => {
+  // Every antigravity/gemini-* row resolves to the same family price, so the
+  // size-class tiebreak decides. Without sizeClass pins, flash-agent ('flash'
+  // suffix → small) would enter the tie and win on canonical order — the exact
+  // quota-burning regression this pins.
+  expect(cheapestCredentialed(antigravityOnlyConfig())).toBe("antigravity/gemini-3.5-flash-extra-low");
+});
+
+test("strongestCredentialed: antigravity-OAuth-only picks flash-agent — the 'Gemini 3.5 Flash (High)' flagship", () => {
+  expect(strongestCredentialed(antigravityOnlyConfig())).toBe("antigravity/gemini-3-flash-agent");
 });

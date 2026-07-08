@@ -4,7 +4,7 @@ import { readGlobalConfig } from "../agent/state";
 import { resolveCredential, isOAuthProvider, type AuthProvider, type Credential } from "../auth";
 import "./register-providers"; // side-effect: registers built-in adapters into providerRegistry
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
-import { expandAlias, resolveModelId, effectiveAliasesFor } from "./model-registry";
+import { expandAlias, resolveModelId, effectiveAliasesFor, BUILTIN_ALIASES } from "./model-registry";
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
 import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel } from "./model-catalog";
 import { xaiCredential } from "./providers/xai";
@@ -118,7 +118,7 @@ export function resolveMaxOutputTokens(
   model?: string,
   level?: "low" | "medium" | "high" | "xhigh",
 ): number {
-  const meta = model ? findCatalogEntry(expandAlias(model, ALIAS_DEFAULTS)) : undefined;
+  const meta = model ? findCatalogEntry(expandAlias(model, BUILTIN_ALIASES)) : undefined;
   if (!meta) return thinkingMaxTokens(level);
   const envCap = Number(jeoEnv("MAX_OUTPUT_TOKENS"));
   const cap = Number.isFinite(envCap) && envCap > 0 ? envCap : DEFAULT_MAX_OUTPUT_CAP;
@@ -198,7 +198,6 @@ export interface ModelManager {
   resolveProvider: typeof resolveProvider;
 }
 
-const ALIAS_DEFAULTS = { fast: "ollama/qwen2.5:0.5b", local: "ollama/qwen2.5:0.5b", sonnet: "claude-sonnet-4-6", opus: "claude-opus-4-6", haiku: "claude-haiku-4-5", gpt: "gpt-5.5", flash: "gemini-2.5-flash", grok: "grok-4.3" };
 
 /**
  * Build retry options from a config `retry` budget (gjc parity). `requestMaxRetries`
@@ -408,7 +407,7 @@ export function credentialForCall(
 async function resolveCall(options: Partial<CallOptions>, kind: "request" | "stream" = "request"): Promise<Resolved> {
   const config = await readGlobalConfig();
   const aliases = { ...((config as { modelAliases?: Record<string, string> }).modelAliases ?? {}) };
-  const model = expandAlias(options.model ?? config.defaultModel, { ...ALIAS_DEFAULTS, ...aliases });
+  const model = expandAlias(options.model ?? config.defaultModel, { ...BUILTIN_ALIASES, ...aliases });
   const provider = resolveProvider(model);
   const adapter = providerRegistry.get(provider)!;
 

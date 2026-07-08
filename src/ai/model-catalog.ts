@@ -45,34 +45,31 @@ export interface CatalogModel {
    *  date — these sort AFTER every dated entry within their block, never before,
    *  so an unconfirmed date can never silently outrank a verified-newer model. */
   releaseDate?: string;
+  /** Explicit routing size class, for ids whose NAME misleads the suffix
+   *  heuristic in prompt-router.ts's `sizeClassFor` (e.g. Antigravity's wire id
+   *  `gemini-3-flash-agent` is actually "Gemini 3.5 Flash (High)" — a flagship,
+   *  not a small flash tier). Unset = derive from the name suffix as before. */
+  sizeClass?: "small" | "mid" | "large";
 }
 
 const FULL: ThinkLevel[] = ["low", "medium", "high", "xhigh"];
 const STD: ThinkLevel[] = ["low", "medium", "high"];
 
-// [canonical model id, release YYYY-MM] tuples, deep-research sourced (Anthropic/
-// OpenAI/Google base-model announcement dates — antigravity is a hosting layer over
-// the SAME underlying models, not a separate release). Newest-first per family below;
-// -thinking/-high/-low suffixes are reasoning-effort variants of the SAME release.
-export const ANTIGRAVITY_MODELS = [
-  ["gpt-5.5", "2026-04"],
-  ["gemini-3.1-pro-high", "2026-02"],
-  ["gemini-3.1-pro-low", "2026-02"],
-  ["claude-opus-4-8", "2026-05"],
-  ["claude-opus-4-8-thinking", "2026-05"],
-  ["claude-opus-4-7", "2026-04"],
-  ["claude-opus-4-7-thinking", "2026-04"],
-  ["claude-sonnet-4-6", "2026-02"],
-  ["claude-sonnet-4-6-thinking", "2026-02"],
-  ["claude-opus-4-6-thinking", "2026-02"],
-  ["gemini-3-flash", "2025-12"],
-  ["gemini-3-pro-high", "2025-11"],
-  ["gemini-3-pro-low", "2025-11"],
-  ["gpt-oss-120b-medium", "2025-08"],
-  ["gemini-2.5-flash", "2025-06"],
-  ["gemini-2.5-flash-thinking", "2025-06"],
-  ["gemini-2.5-pro", "2025-03"],
-] as const;
+// Antigravity (Cloud Code Assist) agent-mode model rows, verified against the
+// LIVE fetchAvailableModels response (agentModelSorts "Recommended" group +
+// per-id displayName, probed 2026-07-08). CRITICAL: several wire ids do NOT
+// mean what their name suggests — the displayName is the truth:
+//   gemini-3-flash-agent      → "Gemini 3.5 Flash (High)"   (flagship agent tier)
+//   gemini-3.5-flash-low      → "Gemini 3.5 Flash (Medium)"
+//   gemini-3.5-flash-extra-low→ "Gemini 3.5 Flash (Low)"
+//   gemini-pro-agent          → "Gemini 3.1 Pro (High)"     (the code-agent model;
+//                                replaces DEPRECATED gemini-3.1-pro-high, per the
+//                                backend's deprecatedModelIds.newModelId mapping —
+//                                BUILTIN_ALIASES keeps the old id working)
+//   claude-sonnet-4-6         → "Claude Sonnet 4.6 (Thinking)"
+// `sizeClass` pins each row's routing tier to that display truth so the name
+// suffix heuristic can't misfile them (releaseDate = the underlying base-model
+// announcement; Antigravity is a hosting layer, not a separate release).
 
 /** A curated set of common public models with their documented capabilities.
  *  Ordered NEWEST-FIRST within each provider block per `releaseDate`
@@ -139,21 +136,22 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   { canonical: "gemini-2.5-pro", provider: "gemini", providerModel: "gemini-2.5-pro", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: STD, images: true, releaseDate: "2025-03" },
   { canonical: "gemini-2.0-flash", provider: "gemini", providerModel: "gemini-2.0-flash", contextTokens: 1_000_000, maxOutputTokens: 8_192, thinking: [], images: true, releaseDate: "2025-02" },
   { canonical: "gemini-1.5-pro", provider: "gemini", providerModel: "gemini-1.5-pro", contextTokens: 1_000_000, maxOutputTokens: 8_192, thinking: [], images: true, releaseDate: "2024-02" },
-  // Google Antigravity / Gemini CLI (Cloud Code Assist) — provider-qualified to avoid
-  // collisions with public Gemini, Anthropic, and OpenAI/Codex ids. A hosting layer
-  // over the SAME underlying models researched above, not a separate release —
-  // releaseDate comes from the [id, date] tuple, not re-derived.
-  ...ANTIGRAVITY_MODELS.map(([id, releaseDate]): CatalogModel => ({
-    canonical: `antigravity/${id}`,
-    provider: "antigravity",
-    providerModel: id,
-    contextTokens: id.includes("claude") ? 200_000 : id.startsWith("gpt-5") ? 400_000 : id.includes("gemini-3") ? 1_000_000 : 1_000_000,
-    maxOutputTokens: id.includes("claude") ? 64_000 : id.startsWith("gpt-5") ? 128_000 : 65_536,
-    thinking: id.includes("thinking") || id.includes("-high") || id.includes("-low") || id.includes("gemini-3") || id.startsWith("gpt-5") ? FULL : STD,
-    images: !id.includes("gpt-oss"),
-    company: id.includes("claude") ? "Anthropic via Antigravity" : id.includes("gpt") ? "OpenAI via Antigravity" : "Google Antigravity",
-    releaseDate,
-  })),
+  // Google Antigravity / Cloud Code Assist agent set — provider-qualified to avoid
+  // collisions with public Gemini/Anthropic ids. Rows mirror the LIVE
+  // fetchAvailableModels agent list (see the block comment above ANTIGRAVITY rows'
+  // sizeClass rationale near the top of this file). Newest first.
+  // Gemini 3.5 Flash tiers (base model released 2026-05, Google I/O):
+  { canonical: "antigravity/gemini-3-flash-agent", provider: "antigravity", providerModel: "gemini-3-flash-agent", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-05", sizeClass: "large" }, // "Gemini 3.5 Flash (High)" — the HIGH agent model
+  { canonical: "antigravity/gemini-3.5-flash-low", provider: "antigravity", providerModel: "gemini-3.5-flash-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-05", sizeClass: "mid" }, // "Gemini 3.5 Flash (Medium)"
+  { canonical: "antigravity/gemini-3.5-flash-extra-low", provider: "antigravity", providerModel: "gemini-3.5-flash-extra-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-05", sizeClass: "small" }, // "Gemini 3.5 Flash (Low)"
+  // Gemini 3.1 Pro tiers (base model released 2026-02):
+  { canonical: "antigravity/gemini-pro-agent", provider: "antigravity", providerModel: "gemini-pro-agent", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-02", sizeClass: "mid" }, // "Gemini 3.1 Pro (High)" — the CODE-AGENT model (replaces deprecated gemini-3.1-pro-high)
+  { canonical: "antigravity/gemini-3.1-pro-low", provider: "antigravity", providerModel: "gemini-3.1-pro-low", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: true, company: "Google Antigravity", releaseDate: "2026-02", sizeClass: "small" }, // "Gemini 3.1 Pro (Low)" — the LOW agent model
+  // Anthropic via Antigravity (wire id claude-sonnet-4-6 IS the thinking variant per its displayName):
+  { canonical: "antigravity/claude-sonnet-4-6", provider: "antigravity", providerModel: "claude-sonnet-4-6", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true, company: "Anthropic via Antigravity", releaseDate: "2026-02", sizeClass: "mid" }, // "Claude Sonnet 4.6 (Thinking)"
+  { canonical: "antigravity/claude-opus-4-6-thinking", provider: "antigravity", providerModel: "claude-opus-4-6-thinking", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true, company: "Anthropic via Antigravity", releaseDate: "2026-02", sizeClass: "large" }, // "Claude Opus 4.6 (Thinking)"
+  // OpenAI OSS via Antigravity:
+  { canonical: "antigravity/gpt-oss-120b-medium", provider: "antigravity", providerModel: "gpt-oss-120b-medium", contextTokens: 1_000_000, maxOutputTokens: 65_536, thinking: FULL, images: false, company: "OpenAI via Antigravity", releaseDate: "2025-08", sizeClass: "mid" }, // "GPT-OSS 120B (Medium)"
   // Tencent — hosts the same underlying models under its own cloud brand; dates
   // below are the ORIGINAL developer's release (DeepSeek/MiniMax/Zhipu/Moonshot),
   // not Tencent's hosting-catalog appearance date, except where the id itself pins

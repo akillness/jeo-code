@@ -30,7 +30,7 @@ export interface ModelCatalogEntry {
  *  actual top tier, claude-fable-5, is pricier than the "recommended" sonnet-5 —
  *  recommended means "solid everyday default", not "strongest"). Re-verify and
  *  update whenever a provider ships a new default-tier release. */
-const RECOMMENDED: Record<string, true> = { "claude-sonnet-5": true, "gpt-5.5": true, "gemini-3-flash": true, "antigravity/gpt-5.5": true, "qwen2.5": true };
+const RECOMMENDED: Record<string, true> = { "claude-sonnet-5": true, "gpt-5.5": true, "gemini-3-flash": true, "antigravity/gemini-pro-agent": true, "qwen2.5": true };
 
 export function normalizeModelId(id: string): string {
   return (id ?? "").trim().toLowerCase();

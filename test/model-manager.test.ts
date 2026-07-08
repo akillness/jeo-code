@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, effectiveCredentialForProvider, modelServableWithConfig } from "../src/ai/model-manager";
+import { resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, effectiveCredentialForProvider, modelServableWithConfig, describeModel } from "../src/ai/model-manager";
 import type { Credential } from "../src/auth/storage";
 
 test("effectiveCredentialForProvider: anthropic OAuth wins even when an API key is configured", () => {
@@ -168,4 +168,28 @@ test("modelServableWithConfig: no credential at all -> not servable (cloud provi
 
 test("modelServableWithConfig: verified end-to-end OAuth (anthropic) serves its models without an API key", () => {
   expect(modelServableWithConfig("anthropic", "claude-sonnet-4-6", { providers: {}, oauth: { anthropic: "tok" } })).toBe(true);
+});
+
+test("describeModel: deprecated antigravity/gemini-3.1-pro-high resolves to its successor gemini-pro-agent via BUILTIN_ALIASES", async () => {
+  // The Antigravity backend deprecated this wire id (deprecatedModelIds →
+  // newModelId: gemini-pro-agent); configs/roles pinned to the old id must keep
+  // working. Explicit empty config keeps the test off the user's global config.
+  const d = await describeModel("antigravity/gemini-3.1-pro-high", {});
+  expect(d.resolved).toBe("antigravity/gemini-pro-agent");
+  expect(d.provider).toBe("antigravity");
+  // The successor id itself passes through unchanged (not an alias loop).
+  expect((await describeModel("antigravity/gemini-pro-agent", {})).resolved).toBe("antigravity/gemini-pro-agent");
+});
+
+test("describeModel: user modelAliases override the built-in deprecation mapping (config wins over BUILTIN_ALIASES)", async () => {
+  const d = await describeModel("antigravity/gemini-3.1-pro-high", {
+    modelAliases: { "antigravity/gemini-3.1-pro-high": "claude-sonnet-4-6" },
+  });
+  expect(d.resolved).toBe("claude-sonnet-4-6");
+});
+
+test("modelServableWithConfig: antigravity OAuth serves the Anthropic-via-Antigravity rows, not just gemini-* wire ids", () => {
+  const oauthOnly = { providers: {}, oauth: { antigravity: "tok" } };
+  expect(modelServableWithConfig("antigravity", "antigravity/claude-sonnet-4-6", oauthOnly)).toBe(true);
+  expect(modelServableWithConfig("antigravity", "antigravity/claude-opus-4-6-thinking", oauthOnly)).toBe(true);
 });

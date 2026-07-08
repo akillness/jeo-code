@@ -16,6 +16,10 @@ export const BUILTIN_ALIASES: ModelAliases = {
   flash: "gemini-2.5-flash",
   grok: "grok-4.3",
   kimi: "kimi-k2-0711-preview",
+  // Antigravity's backend DEPRECATED this wire id (deprecatedModelIds:
+  // { "gemini-3.1-pro-high": { newModelId: "gemini-pro-agent" } }) — keep
+  // existing configs/roles pinned to the old id working on the successor.
+  "antigravity/gemini-3.1-pro-high": "antigravity/gemini-pro-agent",
 };
 
 // Expand an alias to a concrete model id. Unknown input passes through unchanged.

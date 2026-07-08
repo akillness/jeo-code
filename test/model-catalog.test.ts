@@ -162,3 +162,43 @@ test("inferCatalogMetadata: fable/mythos + single-digit 5th-gen ids infer Anthro
     expect(m?.maxOutputTokens).toBe(128_000);
   }
 });
+
+// --- Antigravity catalog rows mirror the LIVE Cloud Code Assist agent set
+// (fetchAvailableModels, probed 2026-07-08). The wire ids LIE about tier — the
+// displayName is the truth, pinned per-row via explicit `sizeClass`. ---
+
+test("antigravity catalog is EXACTLY the live agent set — removed rows (gpt-5.5, 3.1-pro-high, opus-4-8*, 3-pro-*, 2.5-*) stay gone", () => {
+  const rows = MODEL_CATALOG.filter(m => m.provider === "antigravity").map(m => m.canonical).sort();
+  expect(rows).toEqual([
+    "antigravity/claude-opus-4-6-thinking",
+    "antigravity/claude-sonnet-4-6",
+    "antigravity/gemini-3-flash-agent",
+    "antigravity/gemini-3.1-pro-low",
+    "antigravity/gemini-3.5-flash-extra-low",
+    "antigravity/gemini-3.5-flash-low",
+    "antigravity/gemini-pro-agent",
+    "antigravity/gpt-oss-120b-medium",
+  ]);
+});
+
+test("antigravity sizeClass pins displayName truth over the misleading wire-id suffixes", () => {
+  const sizeOf = (id: string) => MODEL_CATALOG.find(m => m.canonical === id)?.sizeClass;
+  // "Gemini 3.5 Flash (High)" — flagship despite the 'flash' segment:
+  expect(sizeOf("antigravity/gemini-3-flash-agent")).toBe("large");
+  // "Gemini 3.1 Pro (Low)" — low tier despite the 'pro' segment:
+  expect(sizeOf("antigravity/gemini-3.1-pro-low")).toBe("small");
+  // "Gemini 3.5 Flash (Medium)" / "(Low)":
+  expect(sizeOf("antigravity/gemini-3.5-flash-low")).toBe("mid");
+  expect(sizeOf("antigravity/gemini-3.5-flash-extra-low")).toBe("small");
+  // "Gemini 3.1 Pro (High)" — the code-agent model:
+  expect(sizeOf("antigravity/gemini-pro-agent")).toBe("mid");
+  // Anthropic via Antigravity:
+  expect(sizeOf("antigravity/claude-sonnet-4-6")).toBe("mid");
+  expect(sizeOf("antigravity/claude-opus-4-6-thinking")).toBe("large");
+});
+
+test("antigravity claude rows are FULL-thinking (both wire ids ARE the thinking variants per displayName)", () => {
+  for (const id of ["antigravity/claude-sonnet-4-6", "antigravity/claude-opus-4-6-thinking"]) {
+    expect(findCatalogModel(id)?.thinking).toEqual(["low", "medium", "high", "xhigh"]);
+  }
+});

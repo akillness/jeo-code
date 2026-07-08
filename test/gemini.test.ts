@@ -281,3 +281,45 @@ test("discoverGeminiProjectId: login-time discovery carries the gemini-cli ident
     globalThis.fetch = prevFetch;
   }
 });
+
+// Structural fix mirroring antigravity.test.ts's "안티그라비티 모델이 중간에 멈추는 현상":
+// Google's streaming endpoints (both the CCA/OAuth envelope and the public
+// generativelanguage streamGenerateContent envelope) can emit a `google.rpc.Status`-
+// shaped in-band error LINE on an otherwise-live 200 SSE connection. Previously
+// silently ignored — it matches neither `candidates` nor `promptFeedback`, so a turn
+// that had already streamed some text just ended early with NO error at all (a silent
+// truncation, not a visible failure).
+test("geminiAdapter (OAuth/CCA): an in-band error line throws ProviderStreamError mid-stream (not silently swallowed)", async () => {
+  const prevFetch = globalThis.fetch;
+  const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
+  const events = [
+    sse({ response: { candidates: [{ content: { parts: [{ text: "partial " }] } }] } }),
+    sse({ error: { code: 500, message: "internal error", status: "INTERNAL" } }),
+    sse({ response: { candidates: [{ content: { parts: [{ text: "never reached" }] } }] } }),
+  ].join("");
+  globalThis.fetch = (async () =>
+    new Response(events, { status: 200, headers: { "content-type": "text/event-stream" } })) as any;
+  try {
+    let text = "";
+    let caught: Error | undefined;
+    try {
+      for await (const d of geminiAdapter.stream!(
+        [{ role: "user", content: "hi" }],
+        { model: "gemini-3-flash" } as any,
+        { kind: "oauth", provider: "gemini", token: "tok", projectId: "proj-1" } as any,
+      )) {
+        text += d;
+      }
+    } catch (err) {
+      caught = err as Error;
+    }
+    // The pre-error delta streamed (proves this is a MID-stream fault, not a first-chunk one).
+    expect(text).toBe("partial ");
+    expect(caught).toBeDefined();
+    expect(caught!.name).toBe("ProviderStreamError");
+    expect(caught!.message).toContain("Gemini (Cloud Code Assist) stream failed (INTERNAL): internal error");
+    expect((caught as any).status).toBe(500);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});

@@ -1,7 +1,7 @@
 import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
-import { providerHttpError, fetchWithArtifactFailSafe } from "./errors";
+import { providerHttpError, fetchWithArtifactFailSafe, ProviderStreamError } from "./errors";
 import { jeoEnv } from "../../util/env";
 import { serializeToolCalls } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
@@ -258,11 +258,22 @@ interface GeminiChunk {
   candidates?: { content?: { parts?: { text?: string; thought?: boolean; thoughtSignature?: string; functionCall?: { name?: string; args?: Record<string, unknown> } }[] }; finishReason?: string }[];
   promptFeedback?: { blockReason?: string };
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
+  /** A `google.rpc.Status`-shaped in-band error line: Google's streaming endpoints can emit
+   *  this as its own SSE `data:` event on an otherwise-live 200 connection (the codebase
+   *  already knows this envelope shape from `parseRetryFromBody`'s `"retryDelay"` parsing on
+   *  the equivalent non-stream error body) instead of terminating the HTTP response with a
+   *  non-2xx status. Previously silently ignored — neither `candidates` nor `promptFeedback`
+   *  matches it, so it fell through every existing check with no error and no text, which for
+   *  a turn that had already streamed SOME text meant the turn just ended early with a
+   *  truncated reply and no error at all: the "모델이 중간에 멈추는" (model stops mid-way) report. */
+  error?: { code?: number; message?: string; status?: string };
 }
 
-/** Cloud Code Assist wraps each standard chunk under `response`. */
+/** Cloud Code Assist wraps each standard chunk under `response`; an in-band error (see
+ *  `GeminiChunk.error`) arrives as a SIBLING of `response`, not nested inside it. */
 interface CcaChunk {
   response?: GeminiChunk;
+  error?: { code?: number; message?: string; status?: string };
 }
 
 function textOf(chunk: GeminiChunk): string {
@@ -317,6 +328,20 @@ function blockedReason(chunk: GeminiChunk): string | undefined {
   return undefined;
 }
 
+/** Throw a {@link ProviderStreamError} for an in-band `google.rpc.Status` error line (see
+ *  `GeminiChunk.error`/`CcaChunk.error`) — a no-op when the chunk carries none. Mirrors the
+ *  OpenAI Responses `response.failed`/`error` fix: `error.status` (a string enum, e.g.
+ *  `"RESOURCE_EXHAUSTED"`/`"UNAVAILABLE"`/`"INTERNAL"`) plays the same "classifier" role our
+ *  `code` param plays for OpenAI, and `error.code` (Google's own numeric HTTP-equivalent) is
+ *  passed straight through as the explicit status instead of re-derived from a string match. */
+function throwIfGoogleStreamError(
+  provider: string,
+  err: { code?: number; message?: string; status?: string } | undefined,
+): void {
+  if (!err) return;
+  throw new ProviderStreamError(provider, err.message ?? "unknown error", err.status, err.code);
+}
+
 /**
  * Cloud Code Assist SSE turn for a Google OAuth credential: resolves the
  * projectId (stored → env → lazy loadCodeAssist/onboardUser discovery), POSTs
@@ -343,6 +368,7 @@ async function* ccaTurn(messages: Message[], options: CallOptions, credential: C
     } catch {
       continue;
     }
+    throwIfGoogleStreamError("Gemini (Cloud Code Assist)", chunk.error);
     const inner = chunk.response;
     if (!inner) continue;
     const thought = thoughtOf(inner);
@@ -419,6 +445,7 @@ export const geminiAdapter: ProviderAdapter = {
       } catch {
         continue;
       }
+      throwIfGoogleStreamError("Gemini", chunk.error);
       const thought = thoughtOf(chunk);
       if (thought) options.onReasoning?.(thought);
       captureGeminiSignatures(chunk, options, seenSigs);

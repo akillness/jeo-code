@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { antigravityRequest, getAntigravityUserAgent, antigravityAdapter } from "../src/ai/providers/antigravity";
-import { isRefusalError } from "../src/util/retry";
+import { isRefusalError, isProviderStreamError, isRateLimitError, defaultRetryable } from "../src/util/retry";
 
 const cred = { kind: "oauth" as const, provider: "gemini" as const, token: "tok", projectId: "proj-1" };
 
@@ -192,6 +192,65 @@ test("antigravityAdapter.call: empty completion with NO finishReason keeps the r
     expect(caught).toBeDefined();
     expect(caught!.message).toBe("Antigravity Cloud Code Assist returned no content.");
     expect(isRefusalError(caught!)).toBe(false);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+// Structural fix for "안티그라비티 모델이 중간에 멈추는 현상": Cloud Code Assist can emit a
+// `google.rpc.Status`-shaped in-band error LINE (sibling of `response`, not nested inside it)
+// on an otherwise-live 200 SSE connection. Previously silently ignored — it matches neither
+// `response.candidates` nor any other check, so a turn that had already streamed some text
+// just ended early with NO error at all (a silent truncation, not a visible failure).
+test("antigravityAdapter.stream: an in-band error line throws ProviderStreamError mid-stream (not silently swallowed)", async () => {
+  const prevFetch = globalThis.fetch;
+  const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
+  const events = [
+    sse({ response: { candidates: [{ content: { parts: [{ text: "partial " }] } }] } }),
+    sse({ error: { code: 500, message: "internal error", status: "INTERNAL" } }),
+    sse({ response: { candidates: [{ content: { parts: [{ text: "never reached" }] } }] } }),
+  ].join("");
+  globalThis.fetch = (async () =>
+    new Response(events, { status: 200, headers: { "content-type": "text/event-stream" } })) as any;
+  try {
+    let text = "";
+    let caught: Error | undefined;
+    try {
+      for await (const d of antigravityAdapter.stream([{ role: "user", content: "hi" }], { model: "antigravity/gemini-3-flash" } as any, cred)) {
+        text += d;
+      }
+    } catch (err) {
+      caught = err as Error;
+    }
+    // The pre-error delta streamed (proves this is a MID-stream fault, not a first-chunk one).
+    expect(text).toBe("partial ");
+    expect(caught).toBeDefined();
+    expect(isProviderStreamError(caught)).toBe(true);
+    expect(caught!.message).toContain("Antigravity stream failed (INTERNAL): internal error");
+    expect((caught as any).status).toBe(500);
+    expect(defaultRetryable(caught)).toBe(true);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("antigravityAdapter.call: an in-band RESOURCE_EXHAUSTED error line classifies as a rate limit (status 429)", async () => {
+  const prevFetch = globalThis.fetch;
+  const sse = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
+  globalThis.fetch = (async () =>
+    new Response(sse({ error: { code: 429, message: "quota exceeded", status: "RESOURCE_EXHAUSTED" } }), {
+      status: 200, headers: { "content-type": "text/event-stream" },
+    })) as any;
+  try {
+    let caught: Error | undefined;
+    try {
+      await antigravityAdapter.call([{ role: "user", content: "hi" }], { model: "antigravity/gemini-3-flash" } as any, cred);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).toBeDefined();
+    expect((caught as any).status).toBe(429);
+    expect(isRateLimitError(caught)).toBe(true);
   } finally {
     globalThis.fetch = prevFetch;
   }

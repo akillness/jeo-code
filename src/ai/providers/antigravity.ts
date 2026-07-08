@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { Credential } from "../../auth";
 import type { CallOptions, Message, ProviderAdapter } from "../types";
 import { readSse } from "../sse";
-import { providerHttpError } from "./errors";
+import { providerHttpError, ProviderStreamError } from "./errors";
 import { serializeToolCalls } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
-import { geminiThinkingConfig, getGeminiCliHeaders, type GeminiThinkingConfig } from "./gemini";
+import { geminiThinkingConfig, type GeminiThinkingConfig } from "./gemini";
 
 const ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_SANDBOX_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
@@ -95,11 +95,31 @@ export async function resolveAntigravityProjectId(
 
   const discover = opts.discover ?? (async (token: string) => {
     const { discoverGoogleProjectId, ANTIGRAVITY_DISCOVERY_METADATA } = await import("../../auth/flows/google-project");
-    // Antigravity-client tokens discover with ANTIGRAVITY metadata; gemini-cli
-    // tokens use the default gemini-cli metadata shape.
-    return discoverGoogleProjectId(token, credential.provider === "antigravity"
-      ? { metadata: { ...ANTIGRAVITY_DISCOVERY_METADATA }, extraHeaders: { "User-Agent": getAntigravityUserAgent() }, alwaysOnboard: true, signal: opts.signal }
-      : { extraHeaders: getGeminiCliHeaders(), signal: opts.signal });
+    // This function's SOLE callers are fetchAntigravity/ccaTurn — every discovery
+    // it performs exists to serve an Antigravity/Cloud-Code-Assist turn, so it must
+    // ALWAYS identify itself to Google as Antigravity (metadata + User-Agent),
+    // regardless of which OAuth STORAGE SLOT the token came from (a dedicated
+    // antigravity login vs a plain gemini-cli token used as fallback — the common
+    // case for users who only ran `jeo auth login gemini`, the documented default).
+    // Previously this branched on `credential.provider === "antigravity"` and sent
+    // gemini-cli identity (User-Agent `GeminiCLI/…`, metadata `pluginType: GEMINI`)
+    // for the fallback case. Root-caused live: Google's `loadCodeAssist` now REJECTS
+    // that identity for gemini-cli-individual accounts it has migrated to Antigravity
+    // (`ineligibleTiers[].reasonCode: "UNSUPPORTED_CLIENT"`, message "please migrate
+    // to the Antigravity suite of products") — the response omits `currentTier`/
+    // `cloudaicompanionProject` entirely, so discovery falls through into onboarding,
+    // which then fails after 5 polls with "did not return a provisioned project id"
+    // even though the SAME account resolves its EXISTING project instantly (0 polls)
+    // once the request honestly identifies as Antigravity. This was the actual
+    // observed "stops/hangs on Antigravity Gemini" symptom for any account without a
+    // dedicated antigravity OAuth login: a deterministic, fast-failing (not literally
+    // infinite) but 100%-reproducible discovery break, not a timeout/network hang.
+    return discoverGoogleProjectId(token, {
+      metadata: { ...ANTIGRAVITY_DISCOVERY_METADATA },
+      extraHeaders: { "User-Agent": getAntigravityUserAgent() },
+      alwaysOnboard: true,
+      signal: opts.signal,
+    });
   });
   let projectId: string;
   try {
@@ -232,6 +252,17 @@ interface CcaChunk {
     candidates?: { content?: { parts?: { text?: string; thought?: boolean; functionCall?: { name?: string; args?: Record<string, unknown> } }[] }; finishReason?: string }[];
     usageMetadata?: CcaUsage;
   };
+  /** A `google.rpc.Status`-shaped in-band error line, sibling of `response` — see
+   *  `gemini.ts`'s identical field for the full rationale (silently swallowed here
+   *  before this fix, which for a turn that had already streamed some text meant an
+   *  early, error-free, TRUNCATED stop: "안티그라비티 모델이 중간에 멈추는" report). */
+  error?: { code?: number; message?: string; status?: string };
+}
+/** Throw a {@link ProviderStreamError} for an in-band error line — no-op when absent. */
+function throwIfGoogleStreamError(chunk: CcaChunk): void {
+  const err = chunk.error;
+  if (!err) return;
+  throw new ProviderStreamError("Antigravity", err.message ?? "unknown error", err.status, err.code);
 }
 /** When Antigravity (Cloud Code Assist) returns HTTP 200 with no text, surface the
  *  real cause (safety block / RECITATION / etc.) instead of a silent, reason-free
@@ -293,6 +324,7 @@ export const antigravityAdapter: ProviderAdapter = {
     for await (const data of readSse(response.body)) {
       let chunk: CcaChunk;
       try { chunk = JSON.parse(data); } catch { continue; }
+      throwIfGoogleStreamError(chunk);
       const thought = thoughtOf(chunk);
       if (thought) options.onReasoning?.(thought);
       const delta = textOf(chunk);
@@ -321,6 +353,7 @@ export const antigravityAdapter: ProviderAdapter = {
     for await (const data of readSse(response.body, options.onStreamActivity)) {
       let chunk: CcaChunk;
       try { chunk = JSON.parse(data); } catch { continue; }
+      throwIfGoogleStreamError(chunk);
       const thought = thoughtOf(chunk);
       if (thought) options.onReasoning?.(thought);
       const delta = textOf(chunk);

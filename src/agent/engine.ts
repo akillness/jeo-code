@@ -789,6 +789,15 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         // OTHER refusal shape (bare stop_reason=refusal, finish_reason=content_filter,
         // Gemini finishReason=SAFETY/etc.) genuinely can clear as a rolling classifier
         // resets, so those still get the unbounded capped backoff below.
+        // NOTE (this rung reached at all is now the SECOND line of defense): a
+        // claude-fable-5 API-key call already carries server-side `fallbacks` to
+        // claude-opus-4-8 (see anthropicFallbackModels/postAnthropic's
+        // isFallbackUnsupportedError in providers/anthropic.ts) — Anthropic itself
+        // retries the SAME request against a different model before returning any
+        // error, so most reasoning_extraction/cyber/bio/frontier_llm declines never
+        // reach this ladder at all. This rung remains correct for: non-fable models,
+        // OAuth credentials, a custom baseUrl, or an account without the fallback
+        // beta (none of which carry the proactive fallback).
         const category = /Refusal \(\w+\)/i.test((err as Error)?.message ?? String(err));
         if (category) {
           return finish({ done: false, steps: step, doneReason: `Error: ${friendlyProviderError(err)}` });

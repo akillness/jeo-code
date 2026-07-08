@@ -5,6 +5,7 @@ import { readSse } from "../sse";
 import { ProviderHttpError, parseRetryAfter, parseRetryFromBody, providerHttpError } from "./errors";
 import { serializeToolCalls, serializeAccumulatedToolCalls } from "../../agent/tool-schemas";
 import { sanitizeJsonStrings } from "../../util/sanitize-json";
+import { jeoEnv } from "../../util/env";
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
@@ -127,6 +128,28 @@ function parseAnthropicVersion(model: string): { kind: "opus" | "sonnet" | "haik
   return { kind: m[1] as "opus" | "sonnet" | "haiku" | "fable" | "mythos", major: Number(m[2]), minor: m[3] !== undefined ? Number(m[3]) : 0 };
 }
 
+/** Server-side fallback (docs.claude.com/en/docs/build-with-claude/refusals-and-fallback):
+ *  name up to 3 fallback models on the request and Anthropic retries a safety-classifier
+ *  DECLINE (any `stop_details.category` — reasoning_extraction, cyber, bio, frontier_llm)
+ *  against the next model in the SAME request/stream, before jeo's engine ever sees an
+ *  error. Field case: fable-5 turns replaying thinking-block history tripped
+ *  `reasoning_extraction` and re-refused through the whole engine ladder (context reset,
+ *  artifact strip, guidance strip) because every rung resent the SAME model. Scoped to
+ *  `claude-fable-5` (the model this beta's docs are written against — Mythos-5's
+ *  invite-only status makes its fallback support unconfirmed) on a DIRECT api.anthropic.com
+ *  API-key call only: the beta's request/response shape is undocumented for the
+ *  Claude-Code OAuth cloak or a custom baseUrl (Anthropic-compatible third-party hosts),
+ *  so those paths keep today's reactive (post-refusal) recovery unchanged.
+ *  `JEO_ANTHROPIC_FALLBACK=0` opts out entirely. */
+const FALLBACK_BETA = "server-side-fallback-2026-06-01";
+function anthropicFallbackModels(model: string, credential: Credential, baseUrl: string | undefined): string[] {
+  if (jeoEnv("ANTHROPIC_FALLBACK") === "0") return [];
+  if (credential.kind !== "api_key" || baseUrl) return [];
+  const v = parseAnthropicVersion(model);
+  if (!v || v.kind !== "fable") return [];
+  return ["claude-opus-4-8"];
+}
+
 /** Adaptive thinking `display` is supported starting with Opus 4.7. Without it, Opus 4.7/4.8
  *  OMIT thinking content entirely (tokens billed, signature present, but zero visible thought —
  *  the "reasoning doesn't show" bug). Older adaptive models (Opus 4.6, Sonnet 4.6+) reject the
@@ -230,6 +253,7 @@ export function anthropicPayload(
   includeTemperature: boolean,
   credential: Credential = { kind: "none", provider: "anthropic" },
   stripArtifacts = false,
+  disableFallback = false,
 ): string {
   const model = stripAnthropicPrefix(options.model);
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
@@ -303,6 +327,10 @@ export function anthropicPayload(
     payload.tool_choice = { type: "auto" };
   }
   if (stream) payload.stream = true;
+  if (!disableFallback) {
+    const fallbacks = anthropicFallbackModels(model, credential, options.baseUrl);
+    if (fallbacks.length) payload.fallbacks = fallbacks.map(m => ({ model: m }));
+  }
   const system = anthropicSystemBlocks(systemPrompt, model, credential, payload, options.baseUrl);
   if (system) payload.system = system;
   return JSON.stringify(sanitizeJsonStrings(payload));
@@ -315,13 +343,14 @@ export function anthropicRequest(
   stream: boolean,
   includeTemperature: boolean,
   stripArtifacts = false,
+  disableFallback = false,
 ): { url: string; headers: Record<string, string>; body: string } {
   return {
     // Anthropic-compatible providers (z.ai, MiniMax, …) accept the Messages wire
     // format at their own host; an explicit baseUrl pins `${base}/v1/messages`.
     url: options.baseUrl ? `${options.baseUrl.replace(/\/$/, "")}/v1/messages` : ANTHROPIC_URL,
-    headers: { ...headersFor(credential, stream, stripAnthropicPrefix(options.model), options.baseUrl), ...options.extraHeaders },
-    body: anthropicPayload(messages, options, stream, includeTemperature, credential, stripArtifacts),
+    headers: { ...headersFor(credential, stream, stripAnthropicPrefix(options.model), options.baseUrl, disableFallback), ...options.extraHeaders },
+    body: anthropicPayload(messages, options, stream, includeTemperature, credential, stripArtifacts, disableFallback),
   };
 }
 
@@ -334,6 +363,16 @@ function isDeprecatedTemperatureError(status: number, detail: string): boolean {
  *  once with artifacts stripped (plain string history) so the turn survives. */
 function isReasoningArtifactError(status: number, detail: string): boolean {
   return status === 400 && /thinking|signature|redacted_thinking/i.test(detail);
+}
+
+/** A 400 naming "fallback" means the account/endpoint rejected the `fallbacks`
+ *  param or its beta header — not GA yet, a non-Claude-API Anthropic-compatible
+ *  host, OR (per the docs) the named fallback model can't satisfy a feature THIS
+ *  request uses ("rejects the request up front"). Retry once with fallback
+ *  disabled entirely so the turn survives on today's reactive-recovery path
+ *  instead of dying on an unrelated 400. */
+function isFallbackUnsupportedError(status: number, detail: string): boolean {
+  return status === 400 && /fallback/i.test(detail);
 }
 
 /** gjc parity (getSafeAnthropicHeaderEvidence): fold Anthropic's rate-limit response
@@ -358,8 +397,8 @@ async function postAnthropic(
   credential: Credential,
   stream: boolean,
 ): Promise<Response> {
-  const send = (includeTemperature: boolean, stripArtifacts = false) => {
-    const { url, headers, body } = anthropicRequest(messages, options, credential, stream, includeTemperature, stripArtifacts);
+  const send = (includeTemperature: boolean, stripArtifacts = false, disableFallback = false) => {
+    const { url, headers, body } = anthropicRequest(messages, options, credential, stream, includeTemperature, stripArtifacts, disableFallback);
     return fetch(url, { method: "POST", headers, body, signal: options.signal });
   };
 
@@ -375,6 +414,13 @@ async function postAnthropic(
   // Fail-safe: a rejected replay artifact → retry once with artifacts stripped (plain history).
   if (isReasoningArtifactError(response.status, detail)) {
     response = await send(true, true);
+    if (response.ok) return response;
+    throw await providerHttpError("Anthropic", response, stream ? "(stream)" : undefined);
+  }
+  // Fail-safe: the account/endpoint doesn't support server-side fallback (or the
+  // named fallback model rejected THIS request's shape) → retry once without it.
+  if (isFallbackUnsupportedError(response.status, detail)) {
+    response = await send(true, false, true);
     if (response.ok) return response;
     throw await providerHttpError("Anthropic", response, stream ? "(stream)" : undefined);
   }
@@ -425,14 +471,21 @@ export const anthropicAdapter: ProviderAdapter = {
   supportsNativeTools: true,
   async call(messages, options, credential) {
     const response = await postAnthropic(messages, options, credential, false);
-    const result = (await response.json()) as { content: { type: string; text?: string; name?: string; input?: unknown; thinking?: string; signature?: string; data?: string }[]; stop_reason?: string; stop_details?: { category?: string }; usage?: AnthropicUsage };
+    const result = (await response.json()) as { model?: string; content: { type: string; text?: string; name?: string; input?: unknown; thinking?: string; signature?: string; data?: string }[]; stop_reason?: string; stop_details?: { category?: string }; usage?: AnthropicUsage };
     if (result.usage) options.onUsage?.({ inputTokens: totalInputTokens(result.usage), outputTokens: result.usage.output_tokens });
+    // Tag with the model that ACTUALLY produced the content — on a server-side
+    // fallback (see anthropicFallbackModels), `result.model` names the fallback
+    // model, not `options.model` (the originally requested one). Stamping the
+    // wrong model would make a later same-`options.model` turn wrongly nativize
+    // (or wrongly SKIP nativizing) this artifact — `anthropicNativizable` gates
+    // strictly on an exact model match, so an honest tag is required either way.
+    const servedModel = result.model ?? options.model;
     // Capture thinking/redacted blocks as replay artifacts (parity with the stream path).
     for (const c of result.content) {
       if (c.type === "thinking" && (c.thinking || c.signature)) {
-        options.onReasoningArtifact?.({ provider: "anthropic", model: options.model, text: c.thinking || undefined, signature: c.signature });
+        options.onReasoningArtifact?.({ provider: "anthropic", model: servedModel, text: c.thinking || undefined, signature: c.signature });
       } else if (c.type === "redacted_thinking" && c.data) {
-        options.onReasoningArtifact?.({ provider: "anthropic", model: options.model, redacted: c.data });
+        options.onReasoningArtifact?.({ provider: "anthropic", model: servedModel, redacted: c.data });
       }
     }
     // Prefer a native tool call (re-serialized to canonical JSON) over any stray text.
@@ -453,6 +506,12 @@ export const anthropicAdapter: ProviderAdapter = {
     let yieldedAny = false;
     let stopReason: string | undefined;
     let stopCategory: string | undefined;
+    // The model that actually served the response — starts at the requested model,
+    // updated from `message_start.message.model` and, on a mid-stream server-side
+    // fallback (see anthropicFallbackModels), from the `fallback` block's `to.model`.
+    // Reasoning artifacts are tagged with THIS, not `options.model` — see call()'s
+    // matching comment for why an honest tag is required either way.
+    let servedModel = options.model;
     // Native tool_use streams as content_block_start (name) + input_json_delta fragments,
     // never as text_delta — accumulate per block index, then re-serialize to canonical
     // JSON and yield it once at the end (concatenation still equals call()).
@@ -465,9 +524,9 @@ export const anthropicAdapter: ProviderAdapter = {
       let evt: {
         type?: string;
         index?: number;
-        content_block?: { type?: string; name?: string; data?: string };
+        content_block?: { type?: string; name?: string; data?: string; to?: { model?: string } };
         delta?: { type?: string; text?: string; partial_json?: string; thinking?: string; signature?: string; stop_reason?: string; stop_details?: { category?: string } };
-        message?: { usage?: AnthropicUsage; stop_reason?: string; stop_details?: { category?: string } };
+        message?: { model?: string; usage?: AnthropicUsage; stop_reason?: string; stop_details?: { category?: string } };
         usage?: { output_tokens?: number };
       };
       try {
@@ -477,6 +536,18 @@ export const anthropicAdapter: ProviderAdapter = {
       }
       if (evt.type === "content_block_start" && evt.content_block?.type === "tool_use" && typeof evt.index === "number") {
         toolBlocks.set(evt.index, { name: evt.content_block.name ?? "", args: "" });
+      } else if (evt.type === "content_block_start" && evt.content_block?.type === "fallback") {
+        // A safety-classifier decline handed off mid-stream (docs.claude.com's "When the
+        // decline happens mid-output"): an ordinary content_block_start/stop pair with no
+        // deltas, marking the boundary. Everything accumulated so far was produced by the
+        // DECLINING model and must be dropped on replay (thinking/redacted_thinking/
+        // client-side tool_use before the boundary) — best-effort here since a
+        // redacted_thinking block streams its artifact immediately (see below) and can't
+        // be un-sent; the common case (decline BEFORE any output — the bug this fixes)
+        // has nothing accumulated yet, so this branch is rarely reached with state to drop.
+        toolBlocks.clear();
+        thinkBlocks.clear();
+        if (evt.content_block.to?.model) servedModel = evt.content_block.to.model;
       } else if (evt.type === "content_block_start" && evt.content_block?.type === "thinking" && typeof evt.index === "number") {
         thinkBlocks.set(evt.index, { text: "" });
         // Signal the thinking phase started so the UI shows a live "thinking" indicator
@@ -485,7 +556,7 @@ export const anthropicAdapter: ProviderAdapter = {
       } else if (evt.type === "content_block_start" && evt.content_block?.type === "redacted_thinking" && evt.content_block.data) {
         // Redacted thinking carries opaque `data` directly (no deltas) — emit immediately.
         options.onReasoningStart?.();
-        options.onReasoningArtifact?.({ provider: "anthropic", model: options.model, redacted: evt.content_block.data });
+        options.onReasoningArtifact?.({ provider: "anthropic", model: servedModel, redacted: evt.content_block.data });
       } else if (evt.type === "content_block_delta" && evt.delta?.type === "input_json_delta" && typeof evt.index === "number") {
         const b = toolBlocks.get(evt.index);
         if (b) b.args += evt.delta.partial_json ?? "";
@@ -504,6 +575,7 @@ export const anthropicAdapter: ProviderAdapter = {
         tb.signature = (tb.signature ?? "") + evt.delta.signature;
         thinkBlocks.set(evt.index, tb);
       } else if (evt.type === "message_start" && evt.message) {
+        if (evt.message.model) servedModel = evt.message.model;
         if (evt.message.stop_reason) stopReason = evt.message.stop_reason;
         if (evt.message.stop_details?.category) stopCategory = evt.message.stop_details.category;
         if (evt.message.usage) {
@@ -522,7 +594,7 @@ export const anthropicAdapter: ProviderAdapter = {
     for (const tb of thinkBlocks.values()) {
       if (tb.text || tb.signature) {
         yieldedAny = true;
-        options.onReasoningArtifact?.({ provider: "anthropic", model: options.model, text: tb.text || undefined, signature: tb.signature });
+        options.onReasoningArtifact?.({ provider: "anthropic", model: servedModel, text: tb.text || undefined, signature: tb.signature });
       }
     }
     const envelope = serializeAccumulatedToolCalls(toolBlocks);
@@ -581,7 +653,7 @@ function claudeCodeOAuthHeaders(stream: boolean, model: string): Record<string, 
   };
 }
 
-function headersFor(credential: Credential, stream: boolean, model: string, baseUrl?: string): Record<string, string> {
+function headersFor(credential: Credential, stream: boolean, model: string, baseUrl?: string, disableFallback = false): Record<string, string> {
   if (credential.kind === "oauth") {
     // OAuth against a NON-Anthropic base (Kimi Code, …): plain bearer, no Claude-Code
     // cloaking headers/betas. gjc parity: buildAnthropicHeaders' generic-bearer branch.
@@ -601,12 +673,14 @@ function headersFor(credential: Credential, stream: boolean, model: string, base
     };
   }
   if (credential.kind === "api_key") {
+    const betas = ANTHROPIC_API_KEY_BETA.slice();
+    if (!disableFallback && anthropicFallbackModels(model, credential, baseUrl).length) betas.push(FALLBACK_BETA);
     return {
       accept: stream ? "text/event-stream" : "application/json",
       "content-type": "application/json",
       "x-api-key": credential.token,
       "anthropic-version": "2023-06-01",
-      "anthropic-beta": anthropicBetaHeader(ANTHROPIC_API_KEY_BETA, model),
+      "anthropic-beta": anthropicBetaHeader(betas, model),
     };
   }
   throw new Error("anthropic adapter requires a credential");

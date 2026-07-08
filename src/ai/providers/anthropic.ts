@@ -189,6 +189,7 @@ function anthropicAdaptiveEffort(effort: NonNullable<CallOptions["reasoningEffor
     case "low": return "low";
     case "medium": return "medium";
     case "high": return "high";
+    default: return "medium";
   }
 }
 

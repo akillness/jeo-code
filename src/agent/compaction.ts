@@ -403,6 +403,7 @@ export async function maybeCompact(
         {
           model: opts.model,
           systemPrompt,
+          reasoningEffort: "none",
           signal: opts.signal,
         }
       );

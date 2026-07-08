@@ -69,6 +69,7 @@ export function geminiThinkingLevel(effort: NonNullable<CallOptions["reasoningEf
     case "medium": return "MEDIUM";
     case "high":
     case "xhigh": return "HIGH";
+    default: return "MEDIUM";
   }
 }
 

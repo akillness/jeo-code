@@ -404,7 +404,7 @@ export function credentialForCall(
   return effective;
 }
 
-async function resolveCall(options: Partial<CallOptions>, kind: "request" | "stream" = "request"): Promise<Resolved> {
+export async function resolveCall(options: Partial<CallOptions>, kind: "request" | "stream" = "request"): Promise<Resolved> {
   const config = await readGlobalConfig();
   const aliases = { ...((config as { modelAliases?: Record<string, string> }).modelAliases ?? {}) };
   const model = expandAlias(options.model ?? config.defaultModel, { ...BUILTIN_ALIASES, ...aliases });
@@ -429,7 +429,9 @@ async function resolveCall(options: Partial<CallOptions>, kind: "request" | "str
     numCtx: options.numCtx ?? (provider === "ollama" ? (config as { ollamaNumCtx?: number }).ollamaNumCtx : undefined),
     onUsage: options.onUsage,
     signal: options.signal,
-    reasoningEffort: options.reasoningEffort ?? thinkingToReasoningEffort(config.thinkingLevel),
+    reasoningEffort: options.reasoningEffort === "none"
+      ? undefined
+      : (options.reasoningEffort ?? thinkingToReasoningEffort(config.thinkingLevel)),
     onReasoning: options.onReasoning,
     onReasoningArtifact: options.onReasoningArtifact,
     tools: options.tools,

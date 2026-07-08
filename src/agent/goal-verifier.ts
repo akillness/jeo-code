@@ -56,7 +56,8 @@ Do not include any other text, markdown formatting, or code blocks. Output raw J
     ], {
       model,
       jsonMode: true,
-      maxTokens: 1000
+      maxTokens: 1000,
+      reasoningEffort: "none",
     });
 
     const parsed = JSON.parse(response.trim());

@@ -929,7 +929,7 @@ export async function distillSessionMemory(
 
     const timeoutMs = opts.timeoutMs ?? 20_000;
     const distilled = await Promise.race([
-      callLlm(prompt, { model: opts.model, jsonMode: true, maxTokens: 2_000 }),
+      callLlm(prompt, { model: opts.model, jsonMode: true, maxTokens: 2_000, reasoningEffort: "none" }),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`memory distill timed out after ${timeoutMs}ms`)), timeoutMs)),
     ]);
 

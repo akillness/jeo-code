@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, effectiveCredentialForProvider, modelServableWithConfig, describeModel } from "../src/ai/model-manager";
+import { resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, effectiveCredentialForProvider, modelServableWithConfig, describeModel, resolveCall } from "../src/ai/model-manager";
 import type { Credential } from "../src/auth/storage";
 
 test("effectiveCredentialForProvider: anthropic OAuth wins even when an API key is configured", () => {
@@ -192,4 +192,38 @@ test("modelServableWithConfig: antigravity OAuth serves the Anthropic-via-Antigr
   const oauthOnly = { providers: {}, oauth: { antigravity: "tok" } };
   expect(modelServableWithConfig("antigravity", "antigravity/claude-sonnet-4-6", oauthOnly)).toBe(true);
   expect(modelServableWithConfig("antigravity", "antigravity/claude-opus-4-6-thinking", oauthOnly)).toBe(true);
+});
+
+test("resolveCall: reasoningEffort 'none' explicitly disables thinking, ignoring the global default", async () => {
+  // Mock/override the global config to have thinkingLevel = "medium"
+  const originalConfigDir = process.env.JEO_CONFIG_DIR;
+  const tempDir = require("node:os").tmpdir() + "/jeo-test-none-" + Math.random().toString(36).slice(2);
+  require("node:fs").mkdirSync(tempDir, { recursive: true });
+  process.env.JEO_CONFIG_DIR = tempDir;
+
+  try {
+    // Write a temp config with thinkingLevel = "medium" and defaultModel = "claude-sonnet-4-6"
+    const configPath = require("node:path").join(tempDir, "config.json");
+    require("node:fs").writeFileSync(configPath, JSON.stringify({
+      defaultModel: "claude-sonnet-4-6",
+      thinkingLevel: "medium",
+      providers: { anthropic: "sk-mock" }
+    }));
+
+    // 1. Without reasoningEffort override: falls back to global default (medium -> medium)
+    const resDefault = await resolveCall({ model: "claude-sonnet-4-6" });
+    expect(resDefault.callOptions.reasoningEffort).toBe("medium");
+
+    // 2. With reasoningEffort: "none": disables thinking (resolves to undefined)
+    const resNone = await resolveCall({ model: "claude-sonnet-4-6", reasoningEffort: "none" });
+    expect(resNone.callOptions.reasoningEffort).toBeUndefined();
+
+    // 3. With explicit level override: honors the override (low -> low)
+    const resLow = await resolveCall({ model: "claude-sonnet-4-6", reasoningEffort: "low" });
+    expect(resLow.callOptions.reasoningEffort).toBe("low");
+  } finally {
+    if (originalConfigDir === undefined) delete process.env.JEO_CONFIG_DIR;
+    else process.env.JEO_CONFIG_DIR = originalConfigDir;
+    require("node:fs").rmSync(tempDir, { recursive: true, force: true });
+  }
 });

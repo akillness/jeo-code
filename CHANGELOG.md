@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.9] - 2026-07-08
+_"프롬프트 라우팅 속도 문제가 있는거같은데 근본원인 알려줘" — prompt routing incurred significant latency due to a design oversight in LLM-based escalation: when heuristic confidence falls below threshold (standard conceptual questions with no code blocks/file paths conflict-trigger 0.35 confidence), it makes a blocking, synchronous LLM classifier call. If the user's global `thinkingLevel` is enabled (medium/high/xhigh), the cheap classifier model (Haiku 4.5 / GPT-4o-mini) also ran with reasoning enabled, wasting 500ms–1500ms on internal thoughts for a simple 1-word JSON response. The same reasoning-latency leak existed on all other background/internal LLM calls (compaction summarizer, goal verifier, memory distiller), blocking user turns on compaction boundaries._
+
+### Fixed
+- **Exposed explicit reasoning disable (`reasoningEffort: "none"`)** (`src/ai/types.ts`, `src/ai/model-manager.ts`) — added `"none"` option to `CallOptions["reasoningEffort"]`. `resolveCall` maps `"none"` to a wire-level value of `undefined` (disabling thinking) while bypassing the global config's `thinkingLevel` fallback.
+- **Optimized prompt routing classifier latency** (`src/agent/prompt-router.ts`) — passed `reasoningEffort: "none"` to `escalateToLlm`'s `callLlm` options, cutting the classifier's thinking tokens entirely.
+- **Optimized background LLM call latency** (`src/agent/compaction.ts`, `src/agent/goal-verifier.ts`, `src/agent/memory.ts`) — passed `reasoningEffort: "none"` to the compaction summarizer, goal verifier, and memory distiller calls, preventing the model from thinking about summaries or logs and unblocking turn boundaries.
+
+### Added
+- **Reasoning-disable unit tests** (`test/model-manager.test.ts`) — added tests verifying that `resolveCall` with `reasoningEffort: "none"` resolves to `undefined` (thinking disabled) even when the global default is enabled, while ordinary levels and default values resolve correctly.
+
 ## [0.8.8] - 2026-07-08
 _"실동작검증을 통해서 유효성 평가하고 개선해줘" — live-verified the v0.8.5 fallback mechanism using active Claude Code OAuth credentials on this machine (confirmed 200 OK for both Fable 5 and Opus 4.8 via the proxy). Identified two critical improvement vectors during verification: (1) server-side fallback was previously scoped strictly to API-key credentials, leaving OAuth users (who also hit `reasoning_extraction` refusals) with today's reactive-only recovery; (2) the sequential `postAnthropic` retry ladder could throw immediately on a combination of different error types (e.g. temperature error first, then fallback error, then success)._
 

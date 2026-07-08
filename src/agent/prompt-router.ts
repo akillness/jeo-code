@@ -477,6 +477,7 @@ async function escalateToLlm(prompt: string, smolModel: string, signal: AbortSig
       model: smolModel,
       jsonMode: true,
       maxTokens: 200,
+      reasoningEffort: "none",
       signal,
     });
     const parsed = tryExtractJsonObject<{ tier?: unknown }>(raw);

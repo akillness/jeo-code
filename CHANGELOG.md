@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.8] - 2026-07-08
+_"실동작검증을 통해서 유효성 평가하고 개선해줘" — live-verified the v0.8.5 fallback mechanism using active Claude Code OAuth credentials on this machine (confirmed 200 OK for both Fable 5 and Opus 4.8 via the proxy). Identified two critical improvement vectors during verification: (1) server-side fallback was previously scoped strictly to API-key credentials, leaving OAuth users (who also hit `reasoning_extraction` refusals) with today's reactive-only recovery; (2) the sequential `postAnthropic` retry ladder could throw immediately on a combination of different error types (e.g. temperature error first, then fallback error, then success)._
+
+### Fixed
+- **OAuth support for server-side fallback** (`src/ai/providers/anthropic.ts`) — removed the `credential.kind !== "api_key"` constraint. The Claude Code OAuth proxy has been verified to fully support both the `fallbacks` parameter and the `server-side-fallback-2026-06-01` beta header. `headersFor` now dynamically injects the fallback beta header into the OAuth request headers when applicable, extending the refusal-avoidance benefit to all subscription users.
+- **Loop-based unified retry handling** (`src/ai/providers/anthropic.ts`) — refactored the sequential `if (isXError)` retry lines into a clean, unified `for` loop. The loop dynamically flips state flags (`includeTemperature`, `stripArtifacts`, `disableFallback`) and retries up to 4 times, allowing successful recovery from any combination of errors.
+
+### Added
+- **Combination retry test** (`test/anthropic-fallback.test.ts`) — added a robust regression test verifying that `postAnthropic` recovers successfully when multiple orthogonal errors occur in sequence (temperature error first, then fallback error, then success) and yields the correct final payload.
+
 ## [0.8.7] - 2026-07-08
 _Fix-forward for a CI-caught release failure in v0.8.6 (this same session): `test/launch-prompt-routing.test.ts` shipped with a dropped closing brace (a git 3-way merge misaligned on a duplicate `});` line during this session's own working-tree isolation, then a subsequent `git stash push --keep-index` silently reset the working tree to the pre-fix staged content — the fix was applied once, verified once, then invisibly reverted before the commit that actually shipped). The v0.8.6 GitHub Actions release workflow correctly caught the syntax error at `bun test` and failed BEFORE the npm publish step ran; `npm view jeo-code version` confirmed 0.8.5 remained latest throughout — nothing broken ever reached the registry. Per this repo's established pattern for a same-day CI-caught regression (v0.8.0 → v0.8.1), shipping forward rather than retargeting the already-publicly-failed v0.8.6 tag._
 

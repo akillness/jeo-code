@@ -137,14 +137,14 @@ function parseAnthropicVersion(model: string): { kind: "opus" | "sonnet" | "haik
  *  artifact strip, guidance strip) because every rung resent the SAME model. Scoped to
  *  `claude-fable-5` (the model this beta's docs are written against — Mythos-5's
  *  invite-only status makes its fallback support unconfirmed) on a DIRECT api.anthropic.com
- *  API-key call only: the beta's request/response shape is undocumented for the
- *  Claude-Code OAuth cloak or a custom baseUrl (Anthropic-compatible third-party hosts),
- *  so those paths keep today's reactive (post-refusal) recovery unchanged.
+ *  API-key or Claude-Code OAuth call: the beta's request/response shape is undocumented for
+ *  a custom baseUrl (Anthropic-compatible third-party hosts), so those paths keep today's
+ *  reactive (post-refusal) recovery unchanged.
  *  `JEO_ANTHROPIC_FALLBACK=0` opts out entirely. */
 const FALLBACK_BETA = "server-side-fallback-2026-06-01";
 function anthropicFallbackModels(model: string, credential: Credential, baseUrl: string | undefined): string[] {
   if (jeoEnv("ANTHROPIC_FALLBACK") === "0") return [];
-  if (credential.kind !== "api_key" || baseUrl) return [];
+  if (baseUrl) return [];
   const v = parseAnthropicVersion(model);
   if (!v || v.kind !== "fable") return [];
   return ["claude-opus-4-8"];
@@ -397,44 +397,48 @@ async function postAnthropic(
   credential: Credential,
   stream: boolean,
 ): Promise<Response> {
-  const send = (includeTemperature: boolean, stripArtifacts = false, disableFallback = false) => {
-    const { url, headers, body } = anthropicRequest(messages, options, credential, stream, includeTemperature, stripArtifacts, disableFallback);
-    return fetch(url, { method: "POST", headers, body, signal: options.signal });
-  };
+  let includeTemperature = true;
+  let stripArtifacts = false;
+  let disableFallback = false;
 
-  let response = await send(true);
-  if (response.ok) return response;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const { url, headers, body } = anthropicRequest(
+      messages,
+      options,
+      credential,
+      stream,
+      includeTemperature,
+      stripArtifacts,
+      disableFallback,
+    );
+    const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
+    if (response.ok) return response;
 
-  const detail = await response.text().catch(() => "");
-  if (isDeprecatedTemperatureError(response.status, detail)) {
-    response = await send(false);
-    if (response.ok) return response;
-    throw await providerHttpError("Anthropic", response, stream ? "(stream)" : undefined);
-  }
-  // Fail-safe: a rejected replay artifact → retry once with artifacts stripped (plain history).
-  if (isReasoningArtifactError(response.status, detail)) {
-    response = await send(true, true);
-    if (response.ok) return response;
-    throw await providerHttpError("Anthropic", response, stream ? "(stream)" : undefined);
-  }
-  // Fail-safe: the account/endpoint doesn't support server-side fallback (or the
-  // named fallback model rejected THIS request's shape) → retry once without it.
-  if (isFallbackUnsupportedError(response.status, detail)) {
-    response = await send(true, false, true);
-    if (response.ok) return response;
-    throw await providerHttpError("Anthropic", response, stream ? "(stream)" : undefined);
-  }
+    const detail = await response.text().catch(() => "");
+    if (isDeprecatedTemperatureError(response.status, detail) && includeTemperature) {
+      includeTemperature = false;
+      continue;
+    }
+    if (isReasoningArtifactError(response.status, detail) && !stripArtifacts) {
+      stripArtifacts = true;
+      continue;
+    }
+    if (isFallbackUnsupportedError(response.status, detail) && !disableFallback) {
+      disableFallback = true;
+      continue;
+    }
 
-  // 429s carry their rate-limit headers in the DETAIL so isUsageLimitError /
-  // friendlyProviderError can classify on the full evidence (gjc parity).
-  const enrichedDetail = response.status === 429 ? `${detail}${anthropicRateLimitEvidence(response.headers)}` : detail;
-  throw new ProviderHttpError(
-    "Anthropic",
-    response.status,
-    enrichedDetail,
-    stream ? "(stream)" : undefined,
-    parseRetryAfter(response.headers.get("retry-after")) ?? parseRetryFromBody(detail),
-  );
+    // Unrecoverable error, or all retries for the active error type spent
+    const enrichedDetail = response.status === 429 ? `${detail}${anthropicRateLimitEvidence(response.headers)}` : detail;
+    throw new ProviderHttpError(
+      "Anthropic",
+      response.status,
+      enrichedDetail,
+      stream ? "(stream)" : undefined,
+      parseRetryAfter(response.headers.get("retry-after")) ?? parseRetryFromBody(detail),
+    );
+  }
+  throw new Error("Anthropic request failed: maximum retries reached without response");
 }
 
 /** Anthropic usage: with prompt caching the input splits into uncached + cache read +
@@ -665,12 +669,20 @@ function headersFor(credential: Credential, stream: boolean, model: string, base
         "anthropic-version": "2023-06-01",
       };
     }
-    return {
+    const headers: Record<string, string> = {
       "content-type": "application/json",
       authorization: `Bearer ${credential.token}`,
       "anthropic-version": "2023-06-01",
       ...claudeCodeOAuthHeaders(stream, model),
     };
+    if (!disableFallback && anthropicFallbackModels(model, credential, baseUrl).length) {
+      const betas = headers["anthropic-beta"] ? headers["anthropic-beta"].split(",") : [];
+      if (!betas.includes(FALLBACK_BETA)) {
+        betas.push(FALLBACK_BETA);
+        headers["anthropic-beta"] = betas.join(",");
+      }
+    }
+    return headers;
   }
   if (credential.kind === "api_key") {
     const betas = ANTHROPIC_API_KEY_BETA.slice();

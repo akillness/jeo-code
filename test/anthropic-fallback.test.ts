@@ -38,23 +38,23 @@ afterEach(() => {
   else process.env.JEO_ANTHROPIC_FALLBACK = prevFallbackEnv;
 });
 
-test("anthropicRequest: fallbacks body param + beta header appear ONLY for fable-5 + api_key + no baseUrl (and disableFallback suppresses even that case)", () => {
-  const cases: { name: string; model: string; credential: Credential; baseUrl?: string; disableFallback?: boolean }[] = [
-    { name: "fable-5 + api_key + no baseUrl qualifies", model: "claude-fable-5", credential: apiKeyCred },
-    { name: "sonnet-5 (non-fable) never qualifies", model: "claude-sonnet-5", credential: apiKeyCred },
-    { name: "mythos-5 (non-fable, NOT included) never qualifies", model: "claude-mythos-5", credential: apiKeyCred },
-    { name: "fable-5 + oauth credential does not qualify", model: "claude-fable-5", credential: oauthCred },
-    { name: "fable-5 + api_key + baseUrl set does not qualify", model: "claude-fable-5", credential: apiKeyCred, baseUrl: "https://z.ai" },
-    { name: "fable-5 + api_key + explicit disableFallback:true suppresses an otherwise-qualifying call", model: "claude-fable-5", credential: apiKeyCred, disableFallback: true },
+test("anthropicRequest: fallbacks body param + beta header appear ONLY for fable-5 + (api_key or oauth) + no baseUrl (and disableFallback suppresses even that case)", () => {
+  const cases: { name: string; model: string; credential: Credential; baseUrl?: string; disableFallback?: boolean; expected: boolean }[] = [
+    { name: "fable-5 + api_key + no baseUrl qualifies", model: "claude-fable-5", credential: apiKeyCred, expected: true },
+    { name: "sonnet-5 (non-fable) never qualifies", model: "claude-sonnet-5", credential: apiKeyCred, expected: false },
+    { name: "mythos-5 (non-fable, NOT included) never qualifies", model: "claude-mythos-5", credential: apiKeyCred, expected: false },
+    { name: "fable-5 + oauth credential qualifies", model: "claude-fable-5", credential: oauthCred, expected: true },
+    { name: "fable-5 + api_key + baseUrl set does not qualify", model: "claude-fable-5", credential: apiKeyCred, baseUrl: "https://z.ai", expected: false },
+    { name: "fable-5 + api_key + explicit disableFallback:true suppresses an otherwise-qualifying call", model: "claude-fable-5", credential: apiKeyCred, disableFallback: true, expected: false },
   ];
-  const qualifies = (name: string) => name.startsWith("fable-5 + api_key + no baseUrl");
+  const qualifies = (c: typeof cases[0]) => c.expected;
 
   for (const c of cases) {
     const options: CallOptions = { model: c.model, maxTokens: 4000, baseUrl: c.baseUrl };
     const req = anthropicRequest(messages, options, c.credential, false, true, false, c.disableFallback ?? false);
     const body = JSON.parse(req.body) as { fallbacks?: { model: string }[] };
     const beta = req.headers["anthropic-beta"] ?? "";
-    if (qualifies(c.name)) {
+    if (qualifies(c)) {
       expect(body.fallbacks).toEqual([{ model: "claude-opus-4-8" }]);
       expect(beta).toContain("server-side-fallback-2026-06-01");
     } else {
@@ -234,6 +234,60 @@ test("regression: a refusal on a non-fable model (never fallback-eligible) still
     expect(friendly).toContain("declined to answer (safety refusal — no content returned)");
     expect(friendly).toContain("reasoning_extraction");
     expect(friendly).toContain("not an actual violation");
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("postAnthropic retry loop handles combinations of errors (e.g. temperature error first, then fallback error, then success)", async () => {
+  const prevFetch = globalThis.fetch;
+  let calls = 0;
+  const bodies: string[] = [];
+  globalThis.fetch = (async (_url, init) => {
+    calls++;
+    const bodyStr = (init as RequestInit).body as string;
+    bodies.push(bodyStr);
+    const body = JSON.parse(bodyStr) as { temperature?: number; fallbacks?: unknown };
+    if (body.temperature !== undefined) {
+      return new Response(
+        JSON.stringify({
+          type: "error",
+          error: { type: "invalid_request_error", message: "`temperature` is deprecated for this model." },
+        }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (body.fallbacks !== undefined) {
+      return new Response("Unsupported anthropic-beta value, or a parameter (fallbacks) requires a beta not present on this account", { status: 400 });
+    }
+    return new Response(
+      JSON.stringify({
+        model: "claude-fable-5",
+        content: [{ type: "text", text: "success after retries" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 5, output_tokens: 5 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    const opts: CallOptions = { model: "claude-fable-5", maxTokens: 100, temperature: 0.5 };
+    const text = await anthropicAdapter.call(messages, opts, apiKeyCred);
+    expect(text).toBe("success after retries");
+    expect(calls).toBe(3);
+    // Call 1: has temperature, has fallbacks
+    const b1 = JSON.parse(bodies[0]!);
+    expect(b1.temperature).toBe(0.5);
+    expect(b1.fallbacks).toEqual([{ model: "claude-opus-4-8" }]);
+    // Call 2: NO temperature (due to temp error), has fallbacks
+    const b2 = JSON.parse(bodies[1]!);
+    expect(b2.temperature).toBeUndefined();
+    expect(b2.fallbacks).toEqual([{ model: "claude-opus-4-8" }]);
+    // Call 3: NO temperature, NO fallbacks (due to fallback error)
+    const b3 = JSON.parse(bodies[2]!);
+    expect(b3.temperature).toBeUndefined();
+    expect(b3.fallbacks).toBeUndefined();
   } finally {
     globalThis.fetch = prevFetch;
   }

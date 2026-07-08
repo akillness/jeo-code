@@ -552,3 +552,115 @@ test("without /model auto, the CLI --model pin still wins on every subsequent tu
   expect(calls.length).toBe(1);
   expect(calls[0].model).toBe("claude-sonnet-4-6"); // pin still wins, unrouted
 });
+
+// --- local-provider reachability veto (v0.9.0): `describeProvider` reports ollama/
+// lmstudio as `ready: true` UNCONDITIONALLY (keyless just means "no credential
+// needed", not "the server is up"), so a routing.tiers/roles pin to a downed local
+// server previously sailed past every readiness check and only failed mid-turn with
+// a raw, provider-less "Unable to connect. Is the computer able to access the url?"
+// (Bun's fetch/undici error for both a refused connection and an unresolvable host).
+// A short-timeout live probe closes that gap. ---
+
+async function withMockedFetch<T>(impl: typeof fetch, run: () => Promise<T>): Promise<T> {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = impl;
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+}
+
+test("reachability veto: routing pinned to an unreachable ollama model falls back to defaultModel with an 'unreachable' notice", async () => {
+  await withMockedFetch(
+    (async () => { throw new Error("Unable to connect. Is the computer able to access the url?"); }) as typeof fetch,
+    async () => {
+      const { calls, logs } = await runOneTurnWithLogs({
+        providers: { anthropic: "test-anthropic-key" },
+        defaultModel: "claude-sonnet-4-6",
+        routing: { enabled: true, tiers: { trivial: { model: "ollama/llama3.1" } } },
+      }, "what is this?");
+      expect(calls.length).toBeGreaterThan(0);
+      // Without the reachability veto this dispatches ollama/llama3.1 and the call
+      // fails mid-turn with the raw Bun connection error instead of falling back.
+      expect(calls[0].model).toBe("claude-sonnet-4-6");
+      const notice = logs.find(l => l.includes("[route]") && l.includes("unreachable"));
+      expect(notice).toBeDefined();
+      expect(notice).toContain("ollama/llama3.1");
+      expect(notice).toContain("ollama");
+    },
+  );
+});
+
+test("reachability veto: does not fire when the local provider IS reachable (no false positives)", async () => {
+  await withMockedFetch(
+    (async () => new Response(JSON.stringify({ models: [{ name: "llama3.1" }] }), { status: 200 })) as typeof fetch,
+    async () => {
+      const { calls, logs } = await runOneTurnWithLogs({
+        providers: { anthropic: "test-anthropic-key" },
+        defaultModel: "claude-sonnet-4-6",
+        routing: { enabled: true, tiers: { trivial: { model: "ollama/llama3.1" } } },
+      }, "what is this?");
+      expect(calls[0].model).toBe("ollama/llama3.1"); // routing engaged normally
+      expect(logs.some(l => l.includes("unreachable"))).toBe(false);
+    },
+  );
+});
+
+test("reachability veto: /route why explains the routed model is unreachable and names the fallback", async () => {
+  await withMockedFetch(
+    (async () => { throw new Error("Unable to connect. Is the computer able to access the url?"); }) as typeof fetch,
+    async () => {
+      const { logs } = await runOneTurnWithLogs({
+        providers: { anthropic: "test-anthropic-key" },
+        defaultModel: "claude-sonnet-4-6",
+        routing: { enabled: true, tiers: { trivial: { model: "ollama/llama3.1" } } },
+      }, ["what is this?", "/route why"]);
+      const whyLine = logs.find(l => l.includes("fell back to"));
+      expect(whyLine).toBeDefined();
+      expect(whyLine).toContain("ollama/llama3.1");
+      expect(whyLine).toContain("claude-sonnet-4-6");
+    },
+  );
+});
+
+test("reachability veto: warnOnce suppresses the notice on a second turn hitting the SAME unreachable provider, but the veto still applies every turn", async () => {
+  await withMockedFetch(
+    (async () => { throw new Error("Unable to connect. Is the computer able to access the url?"); }) as typeof fetch,
+    async () => {
+      const config = {
+        providers: { anthropic: "test-anthropic-key" },
+        defaultModel: "claude-sonnet-4-6",
+        routing: { enabled: true, tiers: { trivial: { model: "ollama/llama3.1" } } },
+      };
+      const first = await runOneTurnWithLogs(config, "what is this?");
+      expect(first.calls[0].model).toBe("claude-sonnet-4-6"); // veto applied
+      expect(first.logs.some(l => l.includes("unreachable"))).toBe(true); // notice fired
+
+      const second = await runOneTurnWithLogs(config, "what is that?");
+      expect(second.calls[0].model).toBe("claude-sonnet-4-6"); // veto STILL applied
+      expect(second.logs.some(l => l.includes("unreachable"))).toBe(false); // notice suppressed (warnOnce)
+    },
+  );
+});
+
+test("reachability veto: is scoped to local providers only — a cloud provider pin never triggers a live probe", async () => {
+  let fetchCalls = 0;
+  await withMockedFetch(
+    (async (url: string | URL | Request) => {
+      fetchCalls++;
+      if (String(url).includes("localhost:11434")) throw new Error("Unable to connect. Is the computer able to access the url?");
+      return new Response(JSON.stringify({ content: [{ type: "text", text: "ok" }] }), { status: 200 });
+    }) as typeof fetch,
+    async () => {
+      const { calls, logs } = await runOneTurnWithLogs({
+        providers: { anthropic: "test-anthropic-key" },
+        defaultModel: "claude-sonnet-4-6",
+        roles: { smol: "claude-haiku-4-5" }, // same (credentialed) cloud provider
+        routing: { enabled: true },
+      }, "what is this?");
+      expect(calls[0].model).toBe("claude-haiku-4-5"); // routed normally — no local-provider probe involved
+      expect(logs.some(l => l.includes("unreachable"))).toBe(false);
+    },
+  );
+});

@@ -147,3 +147,77 @@ test("OpenAI OAuth-only + non-Codex model does NOT fail fast when base URL is co
     await fs.rm(tempConfigDir, { recursive: true, force: true });
   }
 });
+
+// --- ConnectionContextError integration (v0.9.0): model-manager's call()/stream()
+// wrap a raw pre-response connection failure with provider + baseUrl context so
+// friendlyProviderError can turn Bun's bare "Unable to connect. Is the computer
+// able to access the url?" into an actionable message naming what was unreachable. ---
+
+async function withTempConfig<T>(config: Record<string, unknown>, run: () => Promise<T>): Promise<T> {
+  const originalConfigDir = process.env.JEO_CONFIG_DIR;
+  const tempConfigDir = path.join(os.tmpdir(), `jeo-test-config-${Math.random().toString(36).slice(2)}`);
+  await fs.mkdir(tempConfigDir, { recursive: true });
+  process.env.JEO_CONFIG_DIR = tempConfigDir;
+  await fs.writeFile(path.join(tempConfigDir, "config.json"), JSON.stringify(config));
+  try {
+    return await run();
+  } finally {
+    if (originalConfigDir) process.env.JEO_CONFIG_DIR = originalConfigDir;
+    else delete process.env.JEO_CONFIG_DIR;
+    await fs.rm(tempConfigDir, { recursive: true, force: true });
+  }
+}
+
+test("model-manager.call: a raw connection failure to ollama is re-thrown as ConnectionContextError naming the provider + base URL", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw Object.assign(new Error("Unable to connect. Is the computer able to access the url?"), { code: "ConnectionRefused" });
+  }) as unknown as typeof fetch;
+  try {
+    await withTempConfig(
+      { defaultModel: "ollama/llama3.1", ollamaBaseUrl: "http://localhost:11434", retry: { requestMaxRetries: 0 } },
+      async () => {
+        const manager = createModelManager();
+        let caught: unknown;
+        try {
+          await manager.call([{ role: "user", content: "hi" }]);
+        } catch (e) {
+          caught = e;
+        }
+        expect(caught).toBeDefined();
+        expect((caught as { name?: string }).name).toBe("ConnectionContextError");
+        expect((caught as { provider?: string }).provider).toBe("ollama");
+        expect((caught as { baseUrl?: string }).baseUrl).toBe("http://localhost:11434");
+      },
+    );
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("model-manager.stream: a raw connection failure to lmstudio is re-thrown as ConnectionContextError naming the provider + base URL", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw Object.assign(new Error("Unable to connect. Is the computer able to access the url?"), { code: "ConnectionRefused" });
+  }) as unknown as typeof fetch;
+  try {
+    await withTempConfig(
+      { defaultModel: "lmstudio/qwen2.5-coder", lmstudioBaseUrl: "http://localhost:1234/v1", retry: { streamMaxRetries: 0 } },
+      async () => {
+        const manager = createModelManager();
+        let caught: unknown;
+        try {
+          for await (const _chunk of manager.stream([{ role: "user", content: "hi" }])) { /* drain */ }
+        } catch (e) {
+          caught = e;
+        }
+        expect(caught).toBeDefined();
+        expect((caught as { name?: string }).name).toBe("ConnectionContextError");
+        expect((caught as { provider?: string }).provider).toBe("lmstudio");
+        expect((caught as { baseUrl?: string }).baseUrl).toBe("http://localhost:1234/v1");
+      },
+    );
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});

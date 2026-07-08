@@ -412,6 +412,27 @@ export async function listProviderModels(
   }
 }
 
+/** Live reachability probe for a KEYLESS local provider (ollama/lmstudio) — the
+ *  narrow gap `describeProvider` leaves open: it reports these as `ready: true`
+ *  unconditionally (keyless means "no credential needed", not "server is up"), so
+ *  a routing decision that lands on a downed local server previously sailed past
+ *  every readiness check and only failed at call time with a raw, unhelpful
+ *  connection error (see `friendlyProviderError`'s `ConnectionContextError`
+ *  branch for the same failure surfaced OUTSIDE this proactive check, e.g. an
+ *  explicit `/model ollama/...` pin). Reuses `listProviderModels`'s tested
+ *  fetch/timeout/error handling — never throws. `timeoutMs` defaults short
+ *  (1500ms, well under `listProviderModels`'s 5000ms default): a live loopback
+ *  service answers in single-digit ms, so this stays cheap on the turn hot path
+ *  and still fails fast on a genuinely unreachable host. */
+export async function isLocalProviderReachable(
+  provider: "ollama" | "lmstudio",
+  baseUrl: string | undefined,
+  opts: Pick<DiscoveryOptions, "timeoutMs" | "fetchImpl"> = {},
+): Promise<boolean> {
+  const result = await listProviderModels(provider, { baseUrl, timeoutMs: opts.timeoutMs ?? 1500, fetchImpl: opts.fetchImpl, limit: 1 });
+  return result.ok;
+}
+
 /**
  * Discover live models across providers. By default only queries providers that
  * are logged in / reachable (skips `none` cloud providers); ollama is always

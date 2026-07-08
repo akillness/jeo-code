@@ -9,7 +9,7 @@ import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat
 import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel } from "./model-catalog";
 import { xaiCredential } from "./providers/xai";
 import { OPENAI_COMPAT_NAMES, isOpenAICompatProvider } from "./providers/openai-compatible-catalog";
-import { withRetry, defaultRetryable, type RetryOptions } from "../util/retry";
+import { withRetry, defaultRetryable, withConnectionContext, isConnectionError, ConnectionContextError, type RetryOptions } from "../util/retry";
 import { jeoEnv } from "../util/env";
 import type { Config } from "../agent/state";
 
@@ -380,6 +380,12 @@ interface Resolved {
   callOptions: CallOptions;
   credential: Credential;
   retry: RetryOptions;
+  /** The resolved provider + effective base URL, threaded through so a raw
+   *  pre-response connection failure (see `isConnectionError`) can be enriched
+   *  with "which provider/URL was unreachable" before it reaches the user —
+   *  the bare fetch error carries neither. */
+  provider: ProviderName;
+  baseUrl: string | undefined;
 }
 
 /**
@@ -452,13 +458,13 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
   const retry: RetryOptions = { ...resolveRetryOptions(config.retry, kind), ...(options.onRetry ? { onRetry: options.onRetry } : {}), ...(callOptions.signal ? { signal: callOptions.signal } : {}) };
 
   if (provider === "ollama" || provider === "lmstudio") {
-    return { adapter, callOptions, credential: { kind: "none", provider: "openai" }, retry };
+    return { adapter, callOptions, credential: { kind: "none", provider: "openai" }, retry, provider, baseUrl };
   }
 
   if (provider === "xai") {
     const key = config.providers?.xai;
     if (!key) throw new Error("No credential for provider 'xai'. Set XAI_API_KEY (or providers.xai in config).");
-    return { adapter, callOptions, credential: xaiCredential(key), retry };
+    return { adapter, callOptions, credential: xaiCredential(key), retry, provider, baseUrl };
   }
 
   if (provider === "antigravity") {
@@ -472,7 +478,7 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
     if (credential.kind !== "oauth") {
       throw new Error("Antigravity models use Google OAuth. Run 'jeo auth login antigravity' (recommended) or 'jeo auth login gemini', then retry — the Google Cloud projectId is discovered automatically.");
     }
-    return { adapter, callOptions, credential, retry };
+    return { adapter, callOptions, credential, retry, provider, baseUrl };
   }
 
   const credentialProvider = provider as AuthProvider;
@@ -494,7 +500,7 @@ export async function resolveCall(options: Partial<CallOptions>, kind: "request"
       `No credential for provider '${provider}'. Run 'jeo setup', 'jeo auth login', or set ${provider.toUpperCase()}_API_KEY / ${provider.toUpperCase()}_OAUTH_TOKEN.`
     );
   }
-  return { adapter, callOptions, credential: credentialForCall(provider, effective, config, baseUrl), retry };
+  return { adapter, callOptions, credential: credentialForCall(provider, effective, config, baseUrl), retry, provider, baseUrl };
 }
 
 /** Hard wall-clock cap for a single NON-streaming provider request (service-readiness: a
@@ -694,11 +700,15 @@ export function createModelManager(): ModelManager {
   return {
     resolveProvider,
     async call(messages, options = {}) {
-      const { adapter, callOptions, credential, retry } = await resolveCall(options);
-      return withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, callTimeoutMs()) }, credential), retry);
+      const { adapter, callOptions, credential, retry, provider, baseUrl } = await resolveCall(options);
+      return withConnectionContext(
+        () => withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, callTimeoutMs()) }, credential), retry),
+        provider,
+        baseUrl,
+      );
     },
     async *stream(messages, options = {}) {
-      const { adapter, callOptions, credential, retry } = await resolveCall(options, "stream");
+      const { adapter, callOptions, credential, retry, provider, baseUrl } = await resolveCall(options, "stream");
       if (adapter.stream) {
         const streamFn = adapter.stream.bind(adapter);
         // Per-attempt abort controller fired by the idle timeout — so a stalled stream
@@ -733,15 +743,24 @@ export function createModelManager(): ModelManager {
           return streamFn(messages, { ...liveOptions, signal }, credential)[Symbol.asyncIterator]();
         };
         const maxMs = streamMaxMs();
-        yield* retryableStream(makeIter, retry, {
-          idleMs: streamIdleMs(),
-          ...(maxMs !== undefined ? { deadlineAt: Date.now() + maxMs } : {}),
-          lastActivityAt: () => lastActivityAt,
-          onIdle: () => attempt?.abort(),
-        });
+        try {
+          yield* retryableStream(makeIter, retry, {
+            idleMs: streamIdleMs(),
+            ...(maxMs !== undefined ? { deadlineAt: Date.now() + maxMs } : {}),
+            lastActivityAt: () => lastActivityAt,
+            onIdle: () => attempt?.abort(),
+          });
+        } catch (err) {
+          if (isConnectionError(err)) throw new ConnectionContextError(provider, baseUrl, err);
+          throw err;
+        }
       } else {
         // Fallback: providers without streaming yield the full response as one chunk.
-        yield await withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, callTimeoutMs()) }, credential), retry);
+        yield await withConnectionContext(
+          () => withRetry(() => adapter.call(messages, { ...callOptions, signal: withTimeout(callOptions.signal, callTimeoutMs()) }, credential), retry),
+          provider,
+          baseUrl,
+        );
       }
     },
   };

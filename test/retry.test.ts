@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { withRetry, defaultRetryable, isRateLimitError } from "../src/util/retry";
+import { withRetry, defaultRetryable, isRateLimitError, isConnectionError, withConnectionContext, ConnectionContextError } from "../src/util/retry";
 import { resolveRetryOptions } from "../src/ai/model-manager";
 
 test("resolveRetryOptions maps a gjc retry budget to withRetry options", () => {
@@ -516,4 +516,81 @@ test("resolveRetryOptions: unset fail-fast overrides leave isRetryable unchanged
   expect(resolveRetryOptions({ requestMaxRetries: 2 }).isRetryable).toBe(defaultRetryable);
   // Empty arrays are a no-op too.
   expect(resolveRetryOptions({ failFastStatuses: [], failFastPatterns: [] }).isRetryable).toBe(defaultRetryable);
+});
+
+// --- isConnectionError / withConnectionContext / ConnectionContextError (v0.9.0):
+// a pre-response TCP-level connection failure (refused / unresolved host) carries
+// NO HTTP status and none of defaultRetryable's pre-existing message substrings
+// ("fetch", "network", "econn", "timeout"), so it previously fell through every
+// classification and surfaced as a bare, provider-less "Unable to connect. Is the
+// computer able to access the url?" (Bun's fetch/undici error, `.code ===
+// "ConnectionRefused"`, thrown identically for a refused connection AND an
+// unresolvable host). ---
+
+test("isConnectionError: recognizes Bun's ConnectionRefused code and message, plus Node's connection error codes", () => {
+  const bunErr = Object.assign(new Error("Unable to connect. Is the computer able to access the url?"), { code: "ConnectionRefused" });
+  expect(isConnectionError(bunErr)).toBe(true);
+  // Message alone (no .code) still matches — the exact shape a caller might
+  // reconstruct without preserving the original error's properties.
+  expect(isConnectionError(new Error("Unable to connect. Is the computer able to access the url?"))).toBe(true);
+  for (const code of ["ECONNREFUSED", "ENOTFOUND", "EHOSTUNREACH", "EAI_AGAIN"]) {
+    expect(isConnectionError(Object.assign(new Error("connect failed"), { code }))).toBe(true);
+  }
+});
+
+test("isConnectionError: no false positive on unrelated errors (including ones defaultRetryable already classifies)", () => {
+  expect(isConnectionError(new Error("fetch failed"))).toBe(false); // generic fetch error, no connection-refused signature
+  expect(isConnectionError(new Error("rate limited"))).toBe(false);
+  expect(isConnectionError(new Error("HTTP 500: overloaded"))).toBe(false);
+  expect(isConnectionError(null)).toBe(false);
+  expect(isConnectionError(undefined)).toBe(false);
+  expect(isConnectionError({})).toBe(false);
+});
+
+test("defaultRetryable: a connection-refused error is retryable (transient local-server-restart tolerance)", () => {
+  const err = Object.assign(new Error("Unable to connect. Is the computer able to access the url?"), { code: "ConnectionRefused" });
+  expect(defaultRetryable(err)).toBe(true);
+});
+
+test("ConnectionContextError: wraps the original message/cause and carries provider + baseUrl", () => {
+  const original = Object.assign(new Error("Unable to connect. Is the computer able to access the url?"), { code: "ConnectionRefused" });
+  const wrapped = new ConnectionContextError("ollama", "http://localhost:11434", original);
+  expect(wrapped.provider).toBe("ollama");
+  expect(wrapped.baseUrl).toBe("http://localhost:11434");
+  expect(wrapped.message).toBe(original.message);
+  expect(wrapped.cause).toBe(original);
+  expect(wrapped.code).toBe("ConnectionRefused");
+  // Still recognized by isConnectionError (message text survives the wrap), so a
+  // caller that only has the wrapped error can still classify it correctly.
+  expect(isConnectionError(wrapped)).toBe(true);
+});
+
+test("withConnectionContext: a raw connection failure is re-thrown as ConnectionContextError naming provider/baseUrl", async () => {
+  const raw = Object.assign(new Error("Unable to connect. Is the computer able to access the url?"), { code: "ConnectionRefused" });
+  let caught: unknown;
+  try {
+    await withConnectionContext(async () => { throw raw; }, "lmstudio", "http://localhost:1234/v1");
+  } catch (e) {
+    caught = e;
+  }
+  expect(caught).toBeInstanceOf(ConnectionContextError);
+  const wrapped = caught as ConnectionContextError;
+  expect(wrapped.provider).toBe("lmstudio");
+  expect(wrapped.baseUrl).toBe("http://localhost:1234/v1");
+});
+
+test("withConnectionContext: a non-connection error passes through UNCHANGED (no false wrapping)", async () => {
+  const httpErr = { status: 429, message: "rate limited" };
+  let caught: unknown;
+  try {
+    await withConnectionContext(async () => { throw httpErr; }, "anthropic", undefined);
+  } catch (e) {
+    caught = e;
+  }
+  expect(caught).toBe(httpErr); // same reference — not wrapped, not mutated
+});
+
+test("withConnectionContext: a successful call resolves normally", async () => {
+  const result = await withConnectionContext(async () => "ok", "anthropic", undefined);
+  expect(result).toBe("ok");
 });

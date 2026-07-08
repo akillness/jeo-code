@@ -4,7 +4,8 @@
  * (carrying `.status` and a body), and the agent loop surfaces failures both as a
  * thrown error and as a `doneReason`, so this lives in a shared util used by both.
  */
-import { isUsageLimitError, isRefusalError } from "./retry";
+import { isUsageLimitError, isRefusalError, isConnectionError, ConnectionContextError } from "./retry";
+import { companyLabel } from "../ai/model-catalog";
 // Re-export: engine.ts and callers import the refusal predicate from here; the
 // definition lives in retry.ts so defaultRetryable can fail fast without a cycle.
 export { isRefusalError } from "./retry";
@@ -32,6 +33,18 @@ function formatDuration(ms: number): string {
 }
 
 export function friendlyProviderError(err: unknown): string {
+  if (err instanceof ConnectionContextError) {
+    const provider = companyLabel(err.provider);
+    const target = err.baseUrl ? ` at ${err.baseUrl}` : "";
+    const isLocal = err.provider === "ollama" || err.provider === "lmstudio";
+    const hint = isLocal
+      ? ` Start the ${provider} server (or check it's still running), verify the base URL in 'jeo setup' / config.json ('${err.provider}BaseUrl'), or switch model with /model.`
+      : ` Check the configured base URL, your network connection, or switch model with /model.`;
+    return `Could not connect to ${provider}${target}.${hint}`;
+  }
+  if (isConnectionError(err)) {
+    return `Could not connect to the provider. Check the configured base URL, your network connection, or switch model with /model.`;
+  }
   const msg = (err as Error)?.message ?? String(err);
   const status = (err as { status?: number })?.status;
   const provider = /antigravity/i.test(msg)

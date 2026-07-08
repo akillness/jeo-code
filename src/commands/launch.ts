@@ -45,7 +45,7 @@ import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/state";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
-import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig } from "../ai";
+import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
 import { routePrompt, deriveCacheSessionKey, warnOnce, type RouteDecision } from "../agent/prompt-router";
@@ -926,6 +926,32 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           `[route] routed to '${routed.model}' but the stored ${routedProvider} OAuth login cannot serve that model — falling back to the default model this turn. Set ${routedProvider.toUpperCase()}_API_KEY or reconfigure routing.tiers/roles to a model your login serves.`,
         );
         routed = null;
+      } else if (routedProvider === "ollama" || routedProvider === "lmstudio") {
+        // Live reachability gate for LOCAL providers only: `describeProvider` reports
+        // ollama/lmstudio as `ready: true` unconditionally (keyless just means "no
+        // credential needed", not "the server is actually up"), so a routing.tiers/
+        // roles pin to a downed local server previously sailed past every readiness
+        // check above and only failed mid-turn with a raw, provider-less connection
+        // error ("Unable to connect. Is the computer able to access the url?" —
+        // Bun's fetch/undici error for a refused connection AND an unresolvable
+        // host alike). A short-timeout live probe here keeps routing's fail-open
+        // contract intact for the one credential class it couldn't previously see
+        // through. Cloud providers never reach this branch — their credential/
+        // servability checks above are sufficient and adding a live probe there
+        // would just add latency for a class of failure `withRetry` already
+        // recovers from at call time.
+        const localBaseUrl = routedProvider === "ollama"
+          ? (turnConfig.ollamaBaseUrl ?? "http://localhost:11434")
+          : (turnConfig.lmstudioBaseUrl ?? "http://localhost:1234/v1");
+        const reachable = await isLocalProviderReachable(routedProvider, localBaseUrl);
+        if (!reachable) {
+          routeVetoNote = `routed model '${routed.model}' (${routedProvider}) is unreachable at ${localBaseUrl} this turn — fell back to '${sessionModel || defaultModel}'`;
+          routeCredentialNotice = warnOnce(
+            `prompt-router:provider-unreachable:${routedProvider}`,
+            `[route] routed to '${routed.model}' (${routedProvider}) but ${localBaseUrl} is unreachable — falling back to the default model this turn. Start the ${routedProvider} server, or reconfigure routing.tiers/roles for a provider that is running.`,
+          );
+          routed = null;
+        }
       }
     }
     lastRouteDecision = routed ?? (routeVetoNote ? { note: routeVetoNote } : routingEnabled && !sessionModel ? { note: "routing produced no decision (fail-open)" } : { note: "routing not active this turn" });

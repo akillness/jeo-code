@@ -340,6 +340,34 @@ export function isConnectionError(err: unknown): boolean {
   return /unable to connect\. is the computer able to access the url\?/i.test(errorMessageOf(err));
 }
 
+/** A raw `isConnectionError` failure re-thrown with the provider/URL context the bare
+ *  fetch error never carries (see `isConnectionError`'s docs). `.cause` preserves the
+ *  original error so `isConnectionError`/`defaultRetryable` still recognize it (both
+ *  inspect `.code` and the message text, which this class forwards). */
+export class ConnectionContextError extends Error {
+  readonly code: string | undefined;
+  constructor(readonly provider: string, readonly baseUrl: string | undefined, cause: unknown) {
+    const causeCode = cause && typeof cause === "object" && "code" in cause ? String(cause.code) : undefined;
+    super(errorMessageOf(cause), { cause });
+    this.name = "ConnectionContextError";
+    this.code = causeCode;
+  }
+}
+
+/** Run `fn`; a raw `isConnectionError` failure is re-thrown as a `ConnectionContextError`
+ *  naming `provider`/`baseUrl` so `friendlyProviderError` can turn Bun's context-free
+ *  "Unable to connect. Is the computer able to access the url?" into an actionable
+ *  message. Every other error (including a non-connection failure) passes through
+ *  unchanged. */
+export async function withConnectionContext<T>(fn: () => Promise<T>, provider: string, baseUrl: string | undefined): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (isConnectionError(err)) throw new ConnectionContextError(provider, baseUrl, err);
+    throw err;
+  }
+}
+
 /** True for an in-band provider stream failure: the HTTP response itself was 200 (a
  *  live SSE connection), but the provider emitted a terminal error EVENT instead of
  *  completing (OpenAI Responses `response.failed`/`error`:

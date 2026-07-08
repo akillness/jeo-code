@@ -8,6 +8,7 @@ import {
   listProviderModels,
   discoverModels,
   catalogOr,
+  isLocalProviderReachable,
 } from "../src/ai/model-discovery";
 import { PROVIDER_NAMES } from "../src/ai/provider-status";
 
@@ -124,6 +125,22 @@ test("listProviderModels: ollama is keyless and never needs a credential", async
   expect(r.ok).toBe(true);
   expect(r.source).toBe("keyless");
   expect(r.models).toEqual(["ollama/llama3"]);
+});
+
+// isLocalProviderReachable (v0.9.0): the live probe backing the routing veto gate's
+// "is this local provider actually up" check — `describeProvider` reports ollama/
+// lmstudio as `ready: true` unconditionally (keyless ≠ reachable), so this is the
+// only signal that catches a downed local server before routing commits to it.
+test("isLocalProviderReachable: true when the server responds ok, false on a thrown connection error", async () => {
+  expect(await isLocalProviderReachable("ollama", "http://localhost:11434", { fetchImpl: okFetch({ models: [{ name: "llama3" }] }) })).toBe(true);
+  const fetchThrow = (async () => { throw Object.assign(new Error("Unable to connect. Is the computer able to access the url?"), { code: "ConnectionRefused" }); }) as unknown as typeof fetch;
+  expect(await isLocalProviderReachable("ollama", "http://localhost:11434", { fetchImpl: fetchThrow })).toBe(false);
+  expect(await isLocalProviderReachable("lmstudio", "http://localhost:1234/v1", { fetchImpl: fetchThrow })).toBe(false);
+});
+
+test("isLocalProviderReachable: a non-ok HTTP status is also unreachable", async () => {
+  const fetch500 = (async () => new Response("boom", { status: 500 })) as unknown as typeof fetch;
+  expect(await isLocalProviderReachable("ollama", "http://localhost:11434", { fetchImpl: fetch500 })).toBe(false);
 });
 
 test("listProviderModels: OAuth discovery uses the provider OAuth token directly", async () => {

@@ -410,6 +410,19 @@ export async function readGlobalConfig(): Promise<Config> {
 
 export async function saveGlobalConfig(config: Config): Promise<void> {
   const dir = globalConfigDir();
+  // Hermeticity guard: under `bun test` (Bun sets NODE_ENV=test, inherited by
+  // spawned CLI subprocesses via env spreads) a config WRITE may only target an
+  // explicitly sandboxed JEO_CONFIG_DIR — never the real ~/.jeo. A leaky test
+  // once overwrote the user's real providers.anthropic with the routing suite's
+  // "test-anthropic-key" fixture (~/.jeo/config.json.bak.test-clobber-20260702),
+  // silently killing every real Anthropic call afterwards. Reads stay unguarded
+  // (harmless); only the destructive path hard-fails, so a leak is caught in CI
+  // as a loud test error instead of corrupting the developer's machine.
+  if (process.env.NODE_ENV === "test" && !jeoEnv("CONFIG_DIR")) {
+    throw new Error(
+      "saveGlobalConfig: refusing to write the real ~/.jeo config under bun test — set JEO_CONFIG_DIR to a temp dir in the test (see test/config-save.test.ts's pattern).",
+    );
+  }
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   const target = globalConfigPath();
   const tmpPath = `${target}.${Math.random().toString(36).slice(2)}.tmp`;

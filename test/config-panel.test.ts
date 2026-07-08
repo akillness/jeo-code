@@ -8,7 +8,7 @@ import {
   formatAgentDetail,
   formatConfigPanel,
   formatLiveModels,
-  liveModelKnown,
+  liveModelMissing,
   formatPickList,
   formatPickListWithCapabilities,
   formatCanonicalCatalogTable,
@@ -114,10 +114,30 @@ test("formatLiveModels with nothing usable hints at login", () => {
   expect(out.join("\n")).toContain("no live models");
 });
 
-test("liveModelKnown matches only ok provider lists", () => {
-  expect(liveModelKnown(LIVE, "gpt-4o")).toBe(true);
-  expect(liveModelKnown(LIVE, "claude-x")).toBe(false); // anthropic failed → not counted
-  expect(liveModelKnown(LIVE, "nope")).toBe(false);
+test("liveModelMissing: true only when ITS provider's listing succeeded and the model is absent", () => {
+  // present in a successful listing → not missing
+  expect(liveModelMissing(LIVE, "openai", "gpt-4o")).toBe(false);
+  // provider succeeded, id genuinely absent from IT → missing (the honest-note case)
+  expect(liveModelMissing(LIVE, "openai", "gpt-5")).toBe(true);
+  // provider's listing FAILED — must NOT report missing (this is the bug being fixed:
+  // a discovery failure previously smeared perfectly valid ids as "not in the catalog").
+  expect(liveModelMissing(LIVE, "anthropic", "claude-x")).toBe(false);
+  // provider succeeded but its list is empty (no evidence either way) → not missing
+  expect(liveModelMissing(LIVE, "ollama", "qwen2.5")).toBe(false);
+  // provider absent from the results entirely → not missing (no evidence)
+  expect(liveModelMissing(LIVE, "gemini", "gemini-3-flash")).toBe(false);
+});
+
+test("liveModelMissing: no cross-provider contamination — a model present in a DIFFERENT provider's successful list is still reported missing for the queried provider", () => {
+  const multi: ProviderModelsResult[] = [
+    { provider: "openai", ok: true, source: "oauth", models: ["gpt-4o", "o3"] },
+    { provider: "anthropic", ok: true, source: "oauth", models: ["claude-3-5-sonnet"] },
+  ];
+  // "gpt-4o" exists in openai's own successful list — genuinely not missing for openai.
+  expect(liveModelMissing(multi, "openai", "gpt-4o")).toBe(false);
+  // "gpt-4o" is absent from anthropic's OWN list, even though it exists in openai's —
+  // scoping must never let one provider's catalog vouch for another's model id.
+  expect(liveModelMissing(multi, "anthropic", "gpt-4o")).toBe(true);
 });
 
 test("formatPickList numbers each model and marks the current one", () => {

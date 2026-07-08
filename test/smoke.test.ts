@@ -19,7 +19,9 @@ afterEach(() => {
 });
 
 function run(args: string[]): { code: number; out: string; err: string } {
-  const p = Bun.spawnSync(["bun", JEO, ...args], { cwd: dir });
+  // JEO_CONFIG_DIR: the spawned CLI must NEVER touch the real ~/.jeo — point it
+  // at this test's temp dir (which already exists and is cleaned by afterEach).
+  const p = Bun.spawnSync(["bun", JEO, ...args], { cwd: dir, env: { ...process.env, JEO_CONFIG_DIR: join(dir, ".jeo") } });
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() };
 }
 

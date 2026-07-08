@@ -24,7 +24,7 @@ import {
 } from "../../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ThinkLevel } from "../../ai";
 import { getSubagentRole, resolveSubagentModel, withSubagentSetting } from "../../agent/subagents";
-import { formatModelLine, liveModelKnown, formatPickListWithCapabilities, formatCapabilityLine } from "../../tui/components/config-panel";
+import { formatModelLine, liveModelMissing, formatPickListWithCapabilities, formatCapabilityLine } from "../../tui/components/config-panel";
 import { isThinkingLevel } from "./flags";
 
 // Antigravity with ANY Google OAuth (own login or the gemini-cli fallback) stays
@@ -268,7 +268,10 @@ export async function runModelSlash(input: string, ctx: ModelSlashCtx): Promise<
       console.log(`  ! ChatGPT OAuth serves only Codex models (${CODEX_MODELS.join(", ")}); '${resolved}' will be rejected at runtime — pick one of those, or set OPENAI_API_KEY / OPENAI_BASE_URL.`);
     }
   }
-  if (arg && liveModelsCache && resolved === label && !liveModelKnown(liveModelsCache, resolved)) {
+  // Only claim "not in the live catalog" when that provider's live listing
+  // actually SUCCEEDED and the id is absent — a failed/timed-out discovery
+  // (expired OAuth, network) must not smear a perfectly valid pick.
+  if (arg && liveModelsCache && resolved === label && liveModelMissing(liveModelsCache, provider, resolved)) {
     console.log(`  (note: '${resolved}' is not in the live ${provider} catalog — use /model to pick a valid id)`);
   }
   const meta = catalogMetadata(resolved);

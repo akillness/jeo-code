@@ -19,7 +19,9 @@ async function runOneShot(arg: string, timeoutMs = 20_000): Promise<{ code: numb
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, NO_COLOR: "1" },
+    // JEO_CONFIG_DIR: the spawned CLI must NEVER touch the real ~/.jeo (one-shot
+    // /theme, /wiki etc. persist config) — sandbox it in this run's temp dir.
+    env: { ...process.env, NO_COLOR: "1", JEO_CONFIG_DIR: path.join(dir, ".jeo") },
   });
   const stdoutPromise = new Response(proc.stdout).text();
   const stderrPromise = new Response(proc.stderr).text();

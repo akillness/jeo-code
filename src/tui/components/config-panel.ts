@@ -11,6 +11,7 @@ import type { ProviderModelsResult } from "../../ai/model-discovery";
 import type { PickEntry } from "../../ai/model-picker";
 import type { CatalogModel } from "../../ai/model-catalog";
 import type { EnrichedModel } from "../../ai/model-enrich";
+import type { ProviderName } from "../../ai/types";
 import { catalogMetadata, formatTokens, companyLabel } from "../../ai/model-catalog";
 
 /** A single "Model: alias → resolved (provider)" status line. */
@@ -155,9 +156,13 @@ export function formatLiveModels(
   return lines;
 }
 
-/** True when `model` appears in a provider's discovered list (exact match). */
-export function liveModelKnown(results: ProviderModelsResult[], model: string): boolean {
-  return results.some(r => r.ok && r.models.includes(model));
+/** True ONLY when `provider`'s live listing SUCCEEDED and `model` is absent from
+ *  it — the one state where "not in the live catalog" is an honest claim. A
+ *  failed/timed-out/absent listing proves nothing about the model (the note it
+ *  gates was firing on discovery failures, flagging perfectly valid ids). */
+export function liveModelMissing(results: ProviderModelsResult[], provider: ProviderName, model: string): boolean {
+  const r = results.find(x => x.provider === provider);
+  return !!r && r.ok && r.models.length > 0 && !r.models.includes(model);
 }
 
 /**

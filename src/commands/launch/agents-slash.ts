@@ -35,7 +35,7 @@ import {
 } from "../../agent/subagents";
 import {
   formatModelLine,
-  liveModelKnown,
+  liveModelMissing,
   formatPickListWithCapabilities,
   formatAgentsPanel,
   formatAgentDetail,
@@ -324,8 +324,10 @@ export async function runAgentsSlash(input: string, ctx: AgentsSlashCtx): Promis
     const { provider } = await describeModel(chosenModel);
     console.log(`${role.title} model set to ${chosenModel} (${provider}) — saved to ~/.jeo/config.json`);
     const live = await getLiveModels();
-    if (!liveModelKnown(live, chosenModel)) {
-      console.log(`  (note: '${chosenModel}' is not in any live model list — verify it is valid for ${provider})`);
+    // Honest-note gate: only flag the id when ITS provider's live listing
+    // succeeded without it (see liveModelMissing) — never on discovery failure.
+    if (liveModelMissing(live, provider, chosenModel)) {
+      console.log(`  (note: '${chosenModel}' is not in the live ${provider} model list — verify it is valid)`);
     }
     return result();
   }

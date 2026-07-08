@@ -62,8 +62,6 @@ import {
   formatAgentsPanel,
   formatAgentDetail,
   formatConfigPanel,
-
-  liveModelKnown,
   formatPickListWithCapabilities,
   formatCapabilityLine,
 } from "../tui/components/config-panel";

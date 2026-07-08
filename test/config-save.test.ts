@@ -180,3 +180,45 @@ test("saveConfigPatch on a schema-INVALID config preserves every OTHER stored cr
   // The invalid scalar field is coerced to the runtime default (not left invalid).
   expect(typeof onDisk.defaultModel).toBe("string");
 });
+
+test("saveGlobalConfig refuses to write when JEO_CONFIG_DIR is unset under bun test (NODE_ENV=test)", async () => {
+  // beforeEach sets JEO_CONFIG_DIR to a temp dir — remove it to hit the unguarded
+  // (no-JEO_CONFIG_DIR) branch. afterEach restores the original env unconditionally,
+  // so this deletion never leaks past the test.
+  delete process.env.JEO_CONFIG_DIR;
+  expect(process.env.NODE_ENV).toBe("test"); // the guard's other condition — `bun test` sets this
+  await expect(saveGlobalConfig({ providers: {}, defaultModel: "test-model" })).rejects.toThrow(
+    /refusing to write the real ~\/\.jeo config under bun test/,
+  );
+});
+
+test("saveConfigPatch (read-modify-write wrapper) propagates the same refusing-to-write guard when JEO_CONFIG_DIR is unset", async () => {
+  // saveConfigPatch acquires the config lock (mkdir + lockfile) BEFORE calling
+  // saveGlobalConfig, so a bare deletion of JEO_CONFIG_DIR would let that lock
+  // acquisition step touch the real ~/.jeo before the guard ever fires. Fake
+  // os.homedir() to a throwaway temp dir so ANY fallback-path write — lock file
+  // included — lands off the real user directory, never inside it.
+  delete process.env.JEO_CONFIG_DIR;
+  const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-fakehome-"));
+  const homedirSpy = spyOn(os, "homedir").mockReturnValue(fakeHome);
+  try {
+    await expect(saveConfigPatch(raw => ({ defaultModel: "should-never-persist" }))).rejects.toThrow(
+      /refusing to write the real ~\/\.jeo config under bun test/,
+    );
+    // No config.json was written anywhere — not even to the fake-home stand-in —
+    // because the guard fires before saveGlobalConfig's fs.writeFile.
+    const fakeConfigExists = await fs.access(path.join(fakeHome, ".jeo", "config.json")).then(() => true, () => false);
+    expect(fakeConfigExists).toBe(false);
+  } finally {
+    homedirSpy.mockRestore();
+    await fs.rm(fakeHome, { recursive: true, force: true });
+  }
+});
+
+test("saveGlobalConfig succeeds and writes into JEO_CONFIG_DIR when it IS set — no behavior change for hermetic callers", async () => {
+  // `dir` (from beforeEach) is a temp dir with JEO_CONFIG_DIR already pointed at it.
+  await saveGlobalConfig({ providers: { anthropic: "sk-guard-test" }, defaultModel: "guard-test-model" });
+  const onDisk = JSON.parse(await fs.readFile(path.join(dir, "config.json"), "utf-8"));
+  expect(onDisk.defaultModel).toBe("guard-test-model");
+  expect(onDisk.providers.anthropic).toBe("sk-guard-test");
+});

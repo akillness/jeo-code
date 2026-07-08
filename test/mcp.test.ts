@@ -1,4 +1,7 @@
 import { test, expect } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { drainIncomingMessages, handleLine } from "../src/mcp/server";
 import { TOOLS } from "../src/mcp/tools";
 import type { JsonRpcResponse } from "../src/mcp/protocol";
@@ -76,11 +79,13 @@ test("handleLine: tool list exposes base tools and optional ralph workflow tools
 
 test("stdio server: accepts framed MCP requests and advertises ralph workflow tools when enabled", async () => {
   const request = '{"jsonrpc":"2.0","id":9,"method":"tools/list"}';
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-mcp-cfg-"));
   const child = Bun.spawn(["bun", "src/cli.ts", "mcp", "serve"], {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, JEO_MCP_PIPELINE: "1" },
+    // JEO_CONFIG_DIR: the spawned server must NEVER touch the real ~/.jeo.
+    env: { ...process.env, JEO_MCP_PIPELINE: "1", JEO_CONFIG_DIR: configDir },
   });
 
   child.stdin.write(`Content-Length: ${Buffer.byteLength(request, "utf8")}\r\n\r\n${request}`);

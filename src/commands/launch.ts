@@ -1323,31 +1323,50 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         });
         const routeFailureReason = (doneReason: unknown): string | null => {
           const message = String(doneReason ?? "");
-          if (!message) return null;
+          if (!message) return "stopped without a final answer";
           const asError = new Error(message);
           if (isRateLimitError(asError)) return "hit a rate limit";
           if (isUsageLimitError(asError)) return "hit a usage/quota limit";
           if (/does not recognize the requested model|model .*?(?:not found|not available|unavailable|unsupported|retired|gated)|\b(?:400|404)\b/i.test(message)) {
             return "is unavailable";
           }
+          // Treat plain empty completions and protocol dead-ends as continuity failures:
+          // the routed model did not produce an answer the agent can commit. Do NOT
+          // reroute deterministic policy/budget errors — switching models must not be
+          // a safety bypass or a substitute for raising output/context budgets.
+          if (/returned no content/i.test(message)) {
+            if (/max[_ -]?(?:output[_ -]?)?tokens|finish_reason=length|done_reason=length|stop_reason=max_tokens|content_filter|refusal|safety|prohibited_content|blocklist|recitation|spii|reasoning_extraction/i.test(message)) {
+              return null;
+            }
+            return "returned no content";
+          }
+          if (/no valid tool call|without signaling done|consecutive failing tool calls|consecutive failing tool steps|repeating the same tool call|cycling through the same/i.test(message)) {
+            return "did not produce a usable agent response";
+          }
           return null;
         };
         result = await runLoopWithModel(activeModel, activeThinking, turnSessionKey);
-        const routedFailureReason = routed && !result.done ? routeFailureReason(result.doneReason) : null;
-        if (routed && routedFailureReason) {
-          const fallback = await equivalentRouteFallback(routed, routedFailureReason, [activeModel]);
-          if (fallback) {
-            const previousModel = activeModel;
-            activeModel = fallback;
-            activeThinking = routed.thinking ?? sessionThinking;
-            turnSessionKey = sessionId ? deriveCacheSessionKey(sessionId, activeModel) : undefined;
-            contextTokens = catalogMetadata(activeModel)?.contextTokens;
-            lastRouteDecision = { ...routed, model: activeModel, warning: `routed model '${previousModel}' ${routedFailureReason}; switched to equivalent '${activeModel}'` };
-            const notice = `[route] routed model '${previousModel}' ${routedFailureReason}; switching to equivalent '${activeModel}' for this turn.`;
-            if (tui) tui.events().onNotice?.(notice);
-            else console.log(notice);
-            result = await runLoopWithModel(activeModel, activeThinking, turnSessionKey);
-          }
+        const routeFallbackMaxRaw = Number(jeoEnv("ROUTE_FALLBACK_MAX_ATTEMPTS") ?? NaN);
+        const routeFallbackMax = Number.isFinite(routeFallbackMaxRaw) && routeFallbackMaxRaw >= 0
+          ? Math.floor(routeFallbackMaxRaw)
+          : 3;
+        const attemptedRouteModels = new Set<string>([activeModel]);
+        for (let routeFallbackAttempt = 0; routed && routeFallbackAttempt < routeFallbackMax; routeFallbackAttempt++) {
+          const routedFailureReason = !result.done ? routeFailureReason(result.doneReason) : null;
+          if (!routedFailureReason) break;
+          const fallback = await equivalentRouteFallback(routed, routedFailureReason, [...attemptedRouteModels]);
+          if (!fallback) break;
+          const previousModel = activeModel;
+          attemptedRouteModels.add(fallback);
+          activeModel = fallback;
+          activeThinking = routed.thinking ?? sessionThinking;
+          turnSessionKey = sessionId ? deriveCacheSessionKey(sessionId, activeModel) : undefined;
+          contextTokens = catalogMetadata(activeModel)?.contextTokens;
+          lastRouteDecision = { ...routed, model: activeModel, warning: `routed model '${previousModel}' ${routedFailureReason}; switched to equivalent '${activeModel}'` };
+          const notice = `[route] routed model '${previousModel}' ${routedFailureReason}; switching to equivalent '${activeModel}' for this turn.`;
+          if (tui) tui.events().onNotice?.(notice);
+          else console.log(notice);
+          result = await runLoopWithModel(activeModel, activeThinking, turnSessionKey);
         }
         if (result.done && looksLikeSkillEcho(result.doneReason ?? "", resolvedSkills)) {
           history.push({

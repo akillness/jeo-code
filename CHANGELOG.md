@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.14] - 2026-07-09
+_"GPT 연결 실패가 여전히 무응답으로 끝나는 케이스를 잡아줘" — traced the remaining GPT/routing failure path to post-call continuity: the route target could be credentialed and servable, but still end a turn with a recoverable terminal result such as plain `OpenAI returned no content`, rate/quota pressure, model unavailable/not found, or an invalid agent-tool response. jeo already knew the prompt tier and equivalent credentialed fallbacks, but it only applied that fallback before the model call. After the call failed, the turn stopped instead of trying another model in the same tier._
+
+### Fixed
+- **Post-call routing recovery now tries equivalent tier fallbacks** (`src/commands/launch.ts`) — after a routed model ends without a usable answer for recoverable reasons (`returned no content`, rate/usage limit, model unavailable/not found, or agent protocol dead-end), jeo now walks the same `tierModelPool()` equivalent model set used by the pre-call veto path, skips models already attempted this turn, preserves per-model cache keys, emits a `[route]` notice, updates `/route why` with the actual replacement, and retries the turn. Deterministic budget/safety cases (`max_output_tokens`, `finish_reason=length`, content filter/refusal/safety categories) intentionally do not reroute.
+
+### Added
+- **Post-call reroute regression coverage** (`test/launch-prompt-routing.test.ts`) — added tests for plain OpenAI no-content recovery to a same-tier fallback, continued traversal when the first fallback also fails recoverably, and no reroute for deterministic output-budget no-content.
+
+### Verified
+- Focused routing suite: `bun test test/launch-prompt-routing.test.ts` — 26 pass / 0 fail.
+
 ## [0.8.13] - 2026-07-09
 _"테스트검증 jeo --tmux 로 진행해줘" — traced a routing recovery weakness that survived the earlier credential, servability, and local reachability vetoes: once a configured route target was rejected, jeo threw away the whole routing decision and dropped to the session/default model even when the same prompt tier had another credentialed, servable model available. That kept turns working, but it also silently undid routing's cost/latency goal and made `/route why` less useful because the recorded decision was a fallback note instead of the actual model used._
 

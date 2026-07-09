@@ -149,6 +149,32 @@ test("classifyPromptHeuristically: EN 'where' factual question -> trivial", () =
   expect(r.confidence).toBeCloseTo(0.85);
 });
 
+test("classifyPromptHeuristically: CLI command -> trivial (cli-command + no-code-no-path)", () => {
+  const r = classifyPromptHeuristically("git status");
+  expect(r.signals).toContain("cli-command");
+  expect(r.signals).toContain("no-code-no-path");
+  expect(r.tier).toBe("trivial");
+  expect(r.confidence).toBeCloseTo(0.85);
+});
+
+test("classifyPromptHeuristically: code snippet without backticks suppresses no-code-no-path -> standard", () => {
+  const r = classifyPromptHeuristically("const x = 1; console.log(x);");
+  expect(r.signals).not.toContain("no-code-no-path");
+  expect(r.tier).toBe("standard");
+});
+
+test("classifyPromptHeuristically: plain English words like 'import' or 'export' in prose do NOT trigger code snippet detection", () => {
+  const r = classifyPromptHeuristically("I want to import some goods from the store.");
+  expect(r.signals).toContain("no-code-no-path");
+  expect(r.tier).toBe("trivial");
+});
+
+test("classifyPromptHeuristically: Windows path and extensionless path -> standard", () => {
+  const r = classifyPromptHeuristically("check src\\agent\\loop.ts");
+  expect(r.signals).not.toContain("no-code-no-path");
+  expect(r.tier).toBe("standard");
+});
+
 test("classifyPromptHeuristically: KR trivial question word ('인가요') -> trivial", () => {
   const r = classifyPromptHeuristically("몇 시인가요?");
   expect(r.tier).toBe("trivial");

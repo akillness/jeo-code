@@ -136,3 +136,59 @@ test("kimi API-key discovery fallback (404 route) still lists the full kimi cata
   // API key serves the moonshot catalog; Kimi Code entries are also present as catalog rows.
   expect(result.models).toContain("kimi-latest");
 });
+
+// Regression: kimiAdapter's OAuth path calls `anthropicAdapter` DIRECTLY (not through
+// `makeAnthropicCompatibleAdapter`), which hardcodes "Anthropic" at its ProviderHttpError/
+// ProviderStreamError construction sites — a Kimi Code failure previously surfaced as
+// "Anthropic rejected the credential (HTTP 401)", sending the user to fix the WRONG
+// (unrelated) Anthropic account instead of their Kimi Code subscription.
+test("kimiAdapter OAuth path: a thrown error is relabeled to Moonshot, not Anthropic", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({ error: { message: "invalid device token" } }),
+      { status: 401, headers: { "content-type": "application/json" } },
+    )
+  ) as typeof fetch;
+  try {
+    let caught: unknown;
+    try {
+      await kimiAdapter.call([{ role: "user", content: "hi" }], { model: "kimi/kimi-for-coding", maxTokens: 100 }, OAUTH_CRED);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const err = caught as Error & { provider?: string; status?: number };
+    expect(err.provider).toBe("Moonshot");
+    expect(err.status).toBe(401);
+    expect(err.message).toContain("Moonshot request failed (HTTP 401)");
+    expect(err.message).not.toContain("Anthropic");
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("kimiAdapter OAuth path: stream() errors are also relabeled to Moonshot", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({ error: { message: "rate limit exceeded" } }),
+      { status: 429, headers: { "content-type": "application/json" } },
+    )
+  ) as typeof fetch;
+  try {
+    let caught: unknown;
+    try {
+      for await (const _chunk of kimiAdapter.stream!([{ role: "user", content: "hi" }], { model: "kimi/kimi-for-coding", maxTokens: 100 }, OAUTH_CRED)) { /* drain */ }
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const err = caught as Error & { provider?: string; status?: number };
+    expect(err.provider).toBe("Moonshot");
+    expect(err.status).toBe(429);
+    expect(err.message).not.toContain("Anthropic");
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});

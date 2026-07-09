@@ -75,15 +75,19 @@ export function runRouteSlash(input: string, ctx: RouteSlashCtx): RouteSlashResu
     if (isRealDecision(ctx.lastRouteDecision)) {
       lines.push(`last decision: ${ctx.lastRouteDecision.tier} → ${ctx.lastRouteDecision.model} (${ctx.lastRouteDecision.source}: ${ctx.lastRouteDecision.signals.join(", ") || "none"}, confidence ${ctx.lastRouteDecision.confidence.toFixed(2)})`);
     }
-    // A model pin (`--model`/`/model`) unconditionally blocks routing regardless of
-    // this session's on/off toggle — surface that explicitly here, since "routing: on"
-    // read alone is misleading if it will never actually evaluate a prompt. Use
-    // /model auto to release the pin and let routing resume.
-    if (ctx.pinnedModel) {
-      lines.push(`note: model pinned to '${ctx.pinnedModel}' this session — routing will not evaluate any prompt until the pin is cleared (/model auto)`);
+    // A model pin (`--model`/`/model`) blocks routing UNLESS the user explicitly ran
+    // `/route on` this session — that explicit toggle wins over a prior pin (see
+    // `routeOverridesPin` in launch.ts's `runTurn`) so routing actually evaluates
+    // every prompt as requested. Surface the distinction here, since "routing: on"
+    // read alone would otherwise be misleading about whether it's actually pinned.
+    if (ctx.pinnedModel && ctx.sessionRouteOverride !== true) {
+      lines.push(`note: model pinned to '${ctx.pinnedModel}' this session — routing will not evaluate any prompt until the pin is cleared (/model auto) or you run '/route on' to override the pin`);
+    } else if (ctx.pinnedModel && ctx.sessionRouteOverride === true) {
+      lines.push(`note: model pinned to '${ctx.pinnedModel}', but '/route on' overrides the pin — routing will evaluate every prompt`);
     }
     return { lines };
   }
+
 
 
   if (sub === "on") {

@@ -77,6 +77,46 @@ test("concurrent fan-out: status shows the most recently active slot plus a runn
   }
 });
 
+// ── Parallel subagent panel (gjc TUI-exposure parity) ───────────────────────
+// A fan-out `task` batch with MORE THAN ONE concurrent slot live renders its own
+// multi-line panel — one row PER active worker — instead of collapsing every
+// worker into a single "+N more running" line. Pins the actual rendered frame,
+// not just the internal currentActivity() string.
+
+test("parallel subagent panel: a 3-worker fan-out renders one status line per worker in the live frame", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  tui.onSubagentEvent({ kind: "start", role: "executor", index: 1, total: 3, detail: "task A" });
+  tui.onSubagentEvent({ kind: "start", role: "executor", index: 2, total: 3, detail: "task B" });
+  tui.onSubagentEvent({ kind: "start", role: "executor", index: 3, total: 3, detail: "task C" });
+  const frame = strip(out.join(""));
+  try {
+    expect(frame).toContain("parallel · 3 running");
+    expect(frame).toContain("task A");
+    expect(frame).toContain("task B");
+    expect(frame).toContain("task C");
+  } finally {
+    clearInterval((tui as unknown as TuiInternals).timer);
+    tui.finish("done");
+  }
+});
+
+test("parallel subagent panel: a single (non-fan-out) subagent does NOT render the panel", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  tui.onSubagentEvent({ kind: "start", role: "executor", detail: "solo task" });
+  const frame = strip(out.join(""));
+  try {
+    expect(frame).not.toContain("parallel ·");
+  } finally {
+    clearInterval((tui as unknown as TuiInternals).timer);
+    tui.finish("done");
+  }
+});
+
+
 test("concurrent fan-out: one worker finishing does NOT clear the (sub) marker while siblings still run", () => {
   const { tui, internals } = makeTui();
   try {

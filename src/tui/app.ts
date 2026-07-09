@@ -1438,6 +1438,33 @@ export class LaunchTui {
    *  block shows only the most-recent lines, capped at ~30% of the screen height (a
    *  ceiling guards a tall terminal), so it grows with the stream and shrinks with the
    *  viewport. Returns [] when there is nothing to show. */
+  /** gjc-parity multi-line parallel-subagent panel: when a fan-out `task` batch has
+   *  MORE THAN ONE concurrent slot live, render one status line PER active slot
+   *  (most-recently-touched first) instead of collapsing everything into a single
+   *  "+N more running" summary line (see `currentActivity()`). A single/detached
+   *  subagent still uses the plain status-line path — this panel exists specifically
+   *  to make a truly PARALLEL batch visibly read as parallel: every worker's latest
+   *  activity is on screen at once, capped so a large fan-out can't blow the frame. */
+  private static readonly SUBAGENT_PANEL_MAX_ROWS = 6;
+  private renderSubagentPanel(cols: number): string[] {
+    if (this.subagentLiveSlots.size <= 1) return [];
+    const dim = this.theme.color ? chalk.dim : (s: string) => s;
+    const accent = this.theme.color ? accentPaint(this.theme) : (s: string) => s;
+    const spin = this.theme.color ? accent(this.spinner.current()) : this.spinner.current();
+    const order = [...this.subagentLiveOrder].reverse();
+    const shown = order.slice(0, LaunchTui.SUBAGENT_PANEL_MAX_ROWS);
+    const extra = order.length - shown.length;
+    const wrapW = Math.max(8, cols - 4);
+    const lines = shown.map(slot => {
+      const raw = this.subagentLiveSlots.get(slot) ?? "";
+      return `  ${spin} ${dim(truncateToWidth(raw, wrapW))}`;
+    });
+    const header = dim(`parallel · ${this.subagentLiveSlots.size} running`);
+    const rows = [header, ...lines];
+    if (extra > 0) rows.push(dim(`  … +${extra} more running`));
+    return rows;
+  }
+
   private renderLiveBlock(label: string, text: string, cols: number, rows: number, ceiling: number, cacheKey = label): string[] {
     const dim = this.theme.color ? chalk.dim : (s: string) => s;
     if (!text.trim()) return [];
@@ -1616,6 +1643,14 @@ export class LaunchTui {
     if (this.runningTool && this.liveToolOutput.trim()) {
       tail.push(...this.renderLiveBlock("Output", this.liveToolOutput, cols, rows, 8));
     }
+    // Parallel subagent panel (gjc parity): a fan-out `task` batch with more than one
+    // concurrent slot live gets its OWN multi-line block — one row per active worker —
+    // so a genuinely parallel batch reads as parallel instead of a single rotating line.
+    if (this.subagentActive) {
+      tail.push(...this.renderSubagentPanel(cols));
+    }
+
+
 
     // Live status field: unboxed thinking line + compact metrics row. The model's
     // streamed activity is uniform across providers via streamingActivity and keeps
@@ -1778,9 +1813,16 @@ export class LaunchTui {
       const phase = (this.tickCount * 0.05) % 1;
       const grad = themeGradient(this.theme, idx);
       const palette = [grad.from, grad.to];
-
       if (fit) {
         bottom.push("");
+        // Live status field: unboxed thinking line + compact metrics row. The
+        // streamed activity is uniform across providers, with the ⟦esc⟧ cancel hint
+        // right-aligned and no misleading step counter.
+        if (this.subagentActive) {
+          for (const line of this.renderSubagentPanel(innerWidth)) bottom.push(line);
+        }
+
+
         if (this.turnTitle) {
           const arrow = this.unicode ? "▸" : ">";
           const titleLine = `  ${arrow} ${this.turnTitle}`;

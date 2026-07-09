@@ -3,6 +3,8 @@ import { getKimiCommonHeaders } from "../../auth/flows/kimi";
 import type { CallOptions, ProviderAdapter } from "../types";
 import { anthropicAdapter } from "./anthropic";
 import { makeOpenAICompatibleAdapter } from "./openai-compatible";
+import { relabelProviderError } from "./errors";
+import { companyLabel } from "../model-catalog";
 
 /**
  * Kimi (Moonshot) — two credential-dependent backends (gjc parity):
@@ -18,6 +20,7 @@ export const KIMI_BASE_URL = "https://api.moonshot.ai/v1";
 export const KIMI_ANTHROPIC_BASE_URL = "https://api.kimi.com/coding";
 
 const openaiCompatKimi = makeOpenAICompatibleAdapter({ name: "kimi", baseUrl: KIMI_BASE_URL });
+const KIMI_LABEL = companyLabel("kimi");
 
 /** Route the `kimi/` prefix + OAuth base/headers onto the anthropic adapter. */
 // ponytail: model ids pass through untranslated — the moonshot catalog ids (kimi-latest, …)
@@ -33,19 +36,31 @@ function prepOAuth(o: CallOptions): CallOptions {
 }
 
 /** Dispatch on credential kind: OAuth → Kimi Code Anthropic endpoint; else the
- *  original OpenAI-compatible moonshot adapter (API-key behavior unchanged). */
+ *  original OpenAI-compatible moonshot adapter (API-key behavior unchanged).
+ *  The OAuth path delegates to `anthropicAdapter`, which hardcodes "Anthropic" at
+ *  its `ProviderHttpError`/`ProviderStreamError` construction sites — relabel to
+ *  "Moonshot" (same fix as `makeAnthropicCompatibleAdapter`/`makeOpenAICompatibleAdapter`)
+ *  so a Kimi Code failure never sends the user to fix their Anthropic account. */
 export const kimiAdapter: ProviderAdapter = {
   name: "kimi",
   supportsNativeTools: openaiCompatKimi.supportsNativeTools,
-  call: (messages, options, credential) =>
-    credential.kind === "oauth"
-      ? anthropicAdapter.call(messages, prepOAuth(options), credential)
-      : openaiCompatKimi.call(messages, options, credential),
+  call: async (messages, options, credential) => {
+    if (credential.kind !== "oauth") return openaiCompatKimi.call(messages, options, credential);
+    try {
+      return await anthropicAdapter.call(messages, prepOAuth(options), credential);
+    } catch (err) {
+      throw relabelProviderError(err, KIMI_LABEL);
+    }
+  },
   async *stream(messages, options, credential) {
-    if (credential.kind === "oauth") {
-      yield* anthropicAdapter.stream!(messages, prepOAuth(options), credential);
-    } else {
+    if (credential.kind !== "oauth") {
       yield* openaiCompatKimi.stream!(messages, options, credential);
+      return;
+    }
+    try {
+      yield* anthropicAdapter.stream!(messages, prepOAuth(options), credential);
+    } catch (err) {
+      throw relabelProviderError(err, KIMI_LABEL);
     }
   },
 };

@@ -6,6 +6,7 @@
  */
 import { isUsageLimitError, isRefusalError, isConnectionError, ConnectionContextError } from "./retry";
 import { companyLabel } from "../ai/model-catalog";
+import { ProviderHttpError, ProviderStreamError } from "../ai/providers/errors";
 // Re-export: engine.ts and callers import the refusal predicate from here; the
 // definition lives in retry.ts so defaultRetryable can fail fast without a cycle.
 export { isRefusalError } from "./retry";
@@ -15,8 +16,8 @@ export { isRefusalError } from "./retry";
  *  mismatch) — when the PROVIDER says the prompt doesn't fit, the loop can react
  *  (reactive trim + one retry) instead of dying on an opaque 400 (round-6 #4). */
 export function isContextOverflowError(err: unknown): boolean {
-  const msg = (err as Error)?.message ?? String(err);
-  const status = (err as { status?: number })?.status;
+  const msg = err instanceof Error ? err.message : String(err);
+  const status = statusOf(err);
   const pattern = /context[ _-]?length|context window|prompt is too long|input is too long|too many tokens|maximum (input|context)|exceeds.{0,30}(context|token)/i;
   if (pattern.test(msg)) return true;
   return status === 413; // payload-too-large is always an overflow signal
@@ -32,6 +33,43 @@ function formatDuration(ms: number): string {
   return rem ? `~${hours}h ${rem}m` : `~${hours}h`;
 }
 
+/** Narrow an unknown error to one carrying a numeric `.status` field — covers the
+ *  known structured classes AND ad-hoc errors a caller/test attaches `.status` to
+ *  directly (`Object.assign(new Error(...), { status: 413 })`), matching the prior
+ *  permissive cast-based read without an unchecked `as`. */
+function hasNumericStatus(err: unknown): err is { status: number } {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "status" in err &&
+    typeof err.status === "number"
+  );
+}
+
+/** True provider label for an error, when it's known: `ProviderHttpError`/
+ *  `ProviderStreamError` always carry the ACTUAL backend's DISPLAY label (already
+ *  `companyLabel`'d at every throw site — see `relabelProviderError`'s callers), so
+ *  use it as-is rather than guessing from message text. `undefined` for anything else
+ *  (bare `Error`, a re-wrapped doneReason string, …), letting the caller fall back to
+ *  the regex-based guess below. */
+function knownErrorProvider(err: unknown): string | undefined {
+  if (err instanceof ProviderHttpError || err instanceof ProviderStreamError) {
+    return err.provider;
+  }
+  return undefined;
+}
+
+function statusOf(err: unknown): number | undefined {
+  if (err instanceof ProviderHttpError || err instanceof ProviderStreamError) {
+    return err.status;
+  }
+  return hasNumericStatus(err) ? err.status : undefined;
+}
+
+function retryAfterMsOf(err: unknown): number | undefined {
+  return err instanceof ProviderHttpError ? err.retryAfterMs : undefined;
+}
+
 export function friendlyProviderError(err: unknown): string {
   if (err instanceof ConnectionContextError) {
     const provider = companyLabel(err.provider);
@@ -45,23 +83,32 @@ export function friendlyProviderError(err: unknown): string {
   if (isConnectionError(err)) {
     return `Could not connect to the provider. Check the configured base URL, your network connection, or switch model with /model.`;
   }
-  const msg = (err as Error)?.message ?? String(err);
-  const status = (err as { status?: number })?.status;
-  const provider = /antigravity/i.test(msg)
-    ? "Antigravity"
-    : /anthropic/i.test(msg)
-      ? "Anthropic"
-      : /openai/i.test(msg)
-        ? "OpenAI"
-        : /gemini|google/i.test(msg)
-          ? "Gemini"
-          : "the provider";
+  const msg = err instanceof Error ? err.message : String(err);
+  const status = statusOf(err);
+  // Prefer the error's OWN carried provider (accurate even for compat backends like
+  // Tencent/groq that speak Anthropic's/OpenAI's wire protocol — see
+  // `relabelProviderError`); only guess from message text for errors that never
+  // carried a `.provider` field (bare Error, a re-wrapped doneReason string, …).
+  const provider = knownErrorProvider(err) ?? (
+    /antigravity/i.test(msg)
+      ? "Antigravity"
+      : /anthropic/i.test(msg)
+        ? "Anthropic"
+        : /openai/i.test(msg)
+          ? "OpenAI"
+          : /gemini|google/i.test(msg)
+            ? "Gemini"
+            : "the provider"
+  );
 
   if (isUsageLimitError(err)) {
     return `${provider} usage/quota limit reached — this window will not clear in seconds, so auto-retry was skipped. Switch model with /model (e.g. a local ollama model), use another provider, or wait for the limit window to reset.`;
   }
+  if (status === 402 || /\b402\b/.test(msg) || /payment required|insufficient credit|billing (?:is )?not enabled|free trial quota/i.test(msg)) {
+    return `${provider} requires billing/payment on this account (HTTP 402) — free trial quota exhausted or postpaid billing not enabled. Enable billing on the ${provider} account, or switch model with /model.`;
+  }
   if (status === 429 || /\b429\b/.test(msg) || /rate[ _]?limit/i.test(msg)) {
-    const retryAfterMs = (err as { retryAfterMs?: number })?.retryAfterMs;
+    const retryAfterMs = retryAfterMsOf(err);
     const retry = typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs > 0
       ? ` Server requested retry after ${formatDuration(retryAfterMs)}.`
       : "";
@@ -70,7 +117,7 @@ export function friendlyProviderError(err: unknown): string {
   if (status === 401 || status === 403 || /\b40[13]\b/.test(msg)) {
     return `${provider} rejected the credential (HTTP ${status ?? "401/403"}). Run 'jeo auth status', re-login with /provider login <name>, and for Antigravity prefer '/provider login antigravity' (gemini login only works when the Cloud Code Assist backend authorizes that token).`;
   }
-  if ((err as { name?: string })?.name === "TimeoutError" || /the operation timed out/i.test(msg)) {
+  if ((err instanceof Error && err.name === "TimeoutError") || /the operation timed out/i.test(msg)) {
     return `${provider} did not complete the request within the call timeout (default 30min). This is expected for a HIGH/XHIGH-reasoning-effort completion that legitimately runs long on a hard problem — raise JEO_CALL_TIMEOUT_MS (ms) if this recurs, or lower the thinking level with /model.`;
   }
   if (/exceeded the overall deadline \(JEO_STREAM_MAX_MS\)/i.test(msg)) {

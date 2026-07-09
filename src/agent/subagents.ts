@@ -16,6 +16,9 @@ import architectPrompt from "../prompts/agents/architect.md" with { type: "text"
 import criticPrompt from "../prompts/agents/critic.md" with { type: "text" };
 import executorPrompt from "../prompts/agents/executor.md" with { type: "text" };
 import plannerPrompt from "../prompts/agents/planner.md" with { type: "text" };
+import type { PromptTier } from "./prompt-router";
+
+const PROMPT_ROUTE_TIERS = ["trivial", "standard", "high", "complex"] as const satisfies readonly PromptTier[];
 
 export interface SubagentRole {
   /** Stable id used in config + `/agents <id>`. */
@@ -362,9 +365,9 @@ export function clearSubagentSetting(config: Pick<Config, "subagents">, roleId: 
   return subs;
 }
 
-/** One pickable apply-target: the global default or a subagent role. */
+/** One pickable apply-target: the global default, a prompt-routing tier, or a subagent role. */
 export interface ApplyTargetChoice {
-  /** "default" or a subagent role id. */
+  /** "default", "routing:<tier>", or a subagent role id. */
   value: string;
   label: string;
   /** Right-aligned hint: the target's CURRENT model (so the picker doubles as a viewer). */
@@ -378,18 +381,32 @@ export interface ApplyTargetChoice {
  * read-and-change panel for existing role assignments. Pure — testable.
  */
 export function applyTargetChoices(
-  config: Pick<Config, "defaultModel" | "subagents" | "thinkingLevel">,
+  config: Pick<Config, "defaultModel" | "subagents" | "thinkingLevel" | "routing" | "roles"> &
+    Partial<Pick<Config, "providers" | "oauth" | "openaiBaseUrl">>,
 ): ApplyTargetChoice[] {
   const roleThink = (id: string): string => {
     const t = resolveSubagentThinking(id, config);
     return t ? ` (${t})` : " (inherit)";
   };
+  const routeThink = (tier: PromptTier): string => {
+    const t = config.routing?.tiers?.[tier]?.thinking;
+    return t ? ` (${t})` : " (auto thinking)";
+  };
+  // Lazy load keeps the existing subagents→prompt-router dependency from
+  // becoming an eager module cycle; resolveSubagentModel uses the same pattern.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { resolveTierModel } = require("./prompt-router");
   return [
     {
       value: "default",
       label: "default — every session",
       hint: `${config.defaultModel} (${config.thinkingLevel ?? "medium"})`,
     },
+    ...PROMPT_ROUTE_TIERS.map(tier => ({
+      value: `routing:${tier}`,
+      label: `route ${tier} — PromptRouter tier`,
+      hint: `${config.routing?.tiers?.[tier]?.model ?? resolveTierModel(tier, config)}${config.routing?.tiers?.[tier]?.model ? "" : " (auto)"}${routeThink(tier)}`,
+    })),
     ...allSubagentRoles(config).map(role => ({
       value: role.id,
       label: `subagent ${role.id} — ${role.title}`,

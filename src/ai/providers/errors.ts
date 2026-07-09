@@ -12,12 +12,20 @@ export class ProviderHttpError extends Error {
   readonly provider: string;
   /** Server-directed backoff from a `Retry-After` header, in ms (if present). */
   readonly retryAfterMs?: number;
+  /** Raw response body (or synthesized detail text) — kept separately so a caller can
+   *  reconstruct this error under a DIFFERENT provider label (see `relabelProviderError`)
+   *  without re-parsing it back out of the composed `.message`. */
+  readonly detail: string;
+  /** Optional context suffix (e.g. "(stream)") — see `detail`'s rationale. */
+  readonly context?: string;
   constructor(provider: string, status: number, detail: string, context?: string, retryAfterMs?: number) {
     super(`${provider} request failed (HTTP ${status})${context ? ` ${context}` : ""}: ${detail}`);
     this.name = "ProviderHttpError";
     this.status = status;
     this.provider = provider;
     this.retryAfterMs = retryAfterMs;
+    this.detail = detail;
+    this.context = context;
   }
 }
 
@@ -39,6 +47,10 @@ export class ProviderStreamError extends Error {
   readonly status: number;
   readonly provider: string;
   readonly code?: string;
+  /** Raw stream-error message (pre-composition) — see `ProviderHttpError.detail`'s
+   *  rationale; lets `relabelProviderError` reconstruct this error under a different
+   *  provider label without re-parsing `.message`. */
+  readonly rawMessage: string;
   /** `explicitStatus` lets a caller pass an ALREADY-numeric provider status (e.g. Google's
    *  `error.code` on a `google.rpc.Status` envelope — 429/500/503) instead of relying on the
    *  OpenAI-specific `code === "rate_limit_exceeded"` string heuristic below, which only
@@ -49,7 +61,29 @@ export class ProviderStreamError extends Error {
     this.status = explicitStatus ?? (code === "rate_limit_exceeded" ? 429 : 500);
     this.provider = provider;
     this.code = code;
+    this.rawMessage = message;
   }
+}
+
+/** Rebuild `err` under a DIFFERENT provider label — both `.provider` and the composed
+ *  `.message` are corrected, not just the field (a caller matching on message text, or
+ *  a user reading the raw error, must see the TRUE provider either way). Used by the
+ *  Anthropic/OpenAI-compatible adapter factories (`makeAnthropicCompatibleAdapter`,
+ *  `makeOpenAICompatibleAdapter`): they delegate to `anthropicAdapter`/`openaiAdapter`,
+ *  which hardcode "Anthropic"/"OpenAI" at their `ProviderHttpError`/`ProviderStreamError`
+ *  construction sites — so a groq/tencent/zai/deepseek/… failure previously surfaced as
+ *  "Anthropic rejected the credential" or "OpenAI requires billing", sending the user to
+ *  fix the WRONG account. Non-`ProviderHttpError`/`ProviderStreamError` errors (bare
+ *  `Error`, network failures, etc.) pass through unchanged — those never carried a
+ *  hardcoded label to begin with. */
+export function relabelProviderError(err: unknown, provider: string): unknown {
+  if (err instanceof ProviderHttpError) {
+    return new ProviderHttpError(provider, err.status, err.detail, err.context, err.retryAfterMs);
+  }
+  if (err instanceof ProviderStreamError) {
+    return new ProviderStreamError(provider, err.rawMessage, err.code, err.status);
+  }
+  return err;
 }
 
 /**

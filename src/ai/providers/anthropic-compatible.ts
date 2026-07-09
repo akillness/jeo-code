@@ -1,5 +1,7 @@
 import type { ProviderAdapter, CallOptions, ProviderName } from "../types";
 import { anthropicAdapter } from "./anthropic";
+import { relabelProviderError } from "./errors";
+import { companyLabel } from "../model-catalog";
 
 /**
  * Factory for Anthropic-Messages-compatible providers (z.ai, MiniMax, …). They speak
@@ -11,17 +13,32 @@ import { anthropicAdapter } from "./anthropic";
  */
 export function makeAnthropicCompatibleAdapter(opts: { name: ProviderName; baseUrl: string }): ProviderAdapter {
   const prefix = `${opts.name}/`;
+  const label = companyLabel(opts.name);
   const prep = (o: CallOptions): CallOptions => ({
     ...o,
     model: o.model.startsWith(prefix) ? o.model.slice(prefix.length) : o.model,
     baseUrl: o.baseUrl ?? opts.baseUrl,
   });
+  // `anthropicAdapter` hardcodes "Anthropic" as the provider label on every thrown
+  // ProviderHttpError/ProviderStreamError — relabel to the REAL backend (e.g. "Tencent",
+  // "z.ai") so friendlyProviderError/the fallback classifier/the user all see the true
+  // account that needs attention (auth, billing, rate limit) instead of Anthropic's.
   return {
     name: opts.name,
     supportsNativeTools: anthropicAdapter.supportsNativeTools,
-    call: (messages, options, credential) => anthropicAdapter.call(messages, prep(options), credential),
+    call: async (messages, options, credential) => {
+      try {
+        return await anthropicAdapter.call(messages, prep(options), credential);
+      } catch (err) {
+        throw relabelProviderError(err, label);
+      }
+    },
     async *stream(messages, options, credential) {
-      yield* anthropicAdapter.stream!(messages, prep(options), credential);
+      try {
+        yield* anthropicAdapter.stream!(messages, prep(options), credential);
+      } catch (err) {
+        throw relabelProviderError(err, label);
+      }
     },
   };
 }

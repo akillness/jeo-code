@@ -100,9 +100,18 @@ test("/route status: an active model pin appends a note that routing is blocked,
   const result = runRouteSlash("/route status", baseCtx({ routingConfigEnabled: true, pinnedModel: "claude-opus-4-6" }));
   expect(result.lines).toEqual([
     "routing: on (this session)",
-    "note: model pinned to 'claude-opus-4-6' this session — routing will not evaluate any prompt until the pin is cleared (/model auto)",
+    "note: model pinned to 'claude-opus-4-6' this session — routing will not evaluate any prompt until the pin is cleared (/model auto) or you run '/route on' to override the pin",
   ]);
 });
+
+test("/route status: an explicit /route on override notes that it overrides the pin instead of being blocked", () => {
+  const result = runRouteSlash("/route status", baseCtx({ sessionRouteOverride: true, pinnedModel: "claude-opus-4-6" }));
+  expect(result.lines).toEqual([
+    "routing: on (this session)",
+    "note: model pinned to 'claude-opus-4-6', but '/route on' overrides the pin — routing will evaluate every prompt",
+  ]);
+});
+
 
 test("/route status: no pin note when the session has no explicit model pin", () => {
   const result = runRouteSlash("/route status", baseCtx({ routingConfigEnabled: true }));

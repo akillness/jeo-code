@@ -19,6 +19,7 @@ import * as path from "node:path";
 const realReadline = { ...(await import("node:readline/promises")) };
 const realEngine = { ...(await import("../src/agent/engine")) };
 const realApp = { ...(await import("../src/tui/app")) };
+const realAI = { ...(await import("../src/ai")) };
 
 // Captures the `routedTier` field passed into EVERY `LaunchTui` construction across
 // a real multi-turn session — the only way to prove the status-bar exposure (added
@@ -64,6 +65,20 @@ mock.module("../src/agent/engine", () => ({
   }),
 }));
 
+// Interactive-mode tests below (`runOneTurn`/`runOneTurnWithLogs` never pass `-p`, so
+// `isOneShot` is false — see launch.ts) trigger an UNAWAITED `void getLiveModels()`
+// background warm at REPL startup, which otherwise makes REAL network calls to every
+// credentialed provider (anthropic/openai test keys here) that RACE this file's
+// synchronous assertions — the source of prior flakiness (unexpected fallback picks
+// like "antigravity/gemini-3.1-pro-low" appearing only when run as part of the FULL
+// suite, where a slow/failed real fetch could still be in flight when a later test's
+// assertions ran). Mocking discoverModels to resolve instantly with nothing makes
+// every test in this file deterministic regardless of run order or network state.
+mock.module("../src/ai", () => ({
+  ...realAI,
+  discoverModels: mock(async () => []),
+}));
+
 let originalIsTTY: boolean | undefined;
 
 beforeEach(() => {
@@ -87,6 +102,7 @@ afterAll(() => {
   mock.module("node:readline/promises", () => realReadline);
   mock.module("../src/agent/engine", () => realEngine);
   mock.module("../src/tui/app", () => realApp);
+  mock.module("../src/ai", () => realAI);
 });
 
 
@@ -587,6 +603,54 @@ test("without /model auto, the CLI --model pin still wins on every subsequent tu
   expect(calls.length).toBe(1);
   expect(calls[0].model).toBe("claude-sonnet-4-6"); // pin still wins, unrouted
 });
+test("/route on overrides an active CLI --model pin: routing evaluates the prompt instead of staying pinned", async () => {
+  const { calls } = await runOneTurnWithLogs(
+    {
+      providers: { anthropic: "test-anthropic-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "claude-haiku-4-5" },
+      // routing.enabled deliberately OFF/unset — proves the explicit `/route on`
+      // toggle alone (not config) is what re-opens routing past the pin.
+    },
+    ["/route on", "what is this?"],
+    ["--model", "claude-sonnet-4-6"],
+  );
+  expect(calls.length).toBe(1); // "/route on" is a slash command, not a turn -> only ONE runAgentLoop call
+  expect(calls[0].model).toBe("claude-haiku-4-5"); // routed to roles.smol, NOT the pinned 'claude-sonnet-4-6'
+});
+
+test("/route on then /route off: pin reasserts itself once the explicit override is turned back off", async () => {
+  const { calls } = await runOneTurnWithLogs(
+    {
+      providers: { anthropic: "test-anthropic-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "claude-haiku-4-5" },
+      routing: { enabled: true },
+    },
+    ["/route on", "what is this?", "/route off", "what is this?"],
+    ["--model", "claude-sonnet-4-6"],
+  );
+  expect(calls.length).toBe(2); // two real prompts, two slash commands consumed inline
+  expect(calls[0].model).toBe("claude-haiku-4-5"); // override engaged -> routed past the pin
+  expect(calls[1].model).toBe("claude-sonnet-4-6"); // override turned off -> pin wins again
+});
+
+test("routing.enabled: true + no explicit /route toggle still respects an active --model pin (regression guard: config alone must not gain the override's pin-bypass power)", async () => {
+  const calls = await runOneTurn(
+    {
+      providers: { anthropic: "test-anthropic-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "claude-haiku-4-5" },
+      routing: { enabled: true },
+    },
+    "what is this?",
+    ["--model", "claude-sonnet-4-6"],
+  );
+  expect(calls.length).toBe(1);
+  expect(calls[0].model).toBe("claude-sonnet-4-6"); // still pinned — only an explicit /route on bypasses the pin
+});
+
+
 
 // --- local-provider reachability veto (v0.9.0): `describeProvider` reports ollama/
 // lmstudio as `ready: true` UNCONDITIONALLY (keyless just means "no credential
@@ -779,5 +843,145 @@ test("post-call reroute: deterministic output-budget no-content does not switch 
     expect(logs.some(l => l.includes("[route]") && l.includes("switching to equivalent"))).toBe(false);
     expect(logs.some(l => l === "model: gpt-4o-mini")).toBe(true);
     expect(logs.some(l => l.startsWith("warning:") && l.includes("switched to equivalent"))).toBe(false);
+  });
+});
+
+test("post-call reroute: auth/credential rejection (401) on the routed model switches to a same-tier fallback", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "gpt-4o-mini") {
+        return { done: false, steps: 1, doneReason: "Error: OpenAI rejected the credential (HTTP 401). Run 'jeo auth status', re-login with /provider login <name>." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, ["what is this?", "/route why"]);
+
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("unauthenticated"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("gpt-4o-mini");
+    expect(notice).toContain("claude-haiku-4-5");
+  });
+});
+
+test("post-call reroute: unreachable/connection-refused failure on the routed model switches to a same-tier fallback", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "gpt-4o-mini") {
+        return { done: false, steps: 1, doneReason: "Error: Could not connect to OpenAI. Check the configured base URL, your network connection, or switch model with /model." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, ["what is this?", "/route why"]);
+
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("unreachable"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("gpt-4o-mini");
+    expect(notice).toContain("claude-haiku-4-5");
+  });
+});
+
+test("post-call reroute: silent/no-response call-timeout on the routed model switches to a same-tier fallback", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "gpt-4o-mini") {
+        return { done: false, steps: 1, doneReason: "Error: OpenAI did not complete the request within the call timeout (default 30min). This is expected for a HIGH/XHIGH-reasoning-effort completion." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, ["what is this?", "/route why"]);
+
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("did not respond in time"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("gpt-4o-mini");
+    expect(notice).toContain("claude-haiku-4-5");
+  });
+});
+
+test("post-call reroute: billing/quota-exhausted (402) on the routed model switches to a same-tier fallback", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "gpt-4o-mini") {
+        return { done: false, steps: 1, doneReason: "Error: OpenAI request failed (HTTP 402): {\"error\":{\"message\":\"The free trial quota for the service has been exhausted and postpaid billing is not enabled, so the service cannot be accessed.\",\"type\":\"api_error\"}}" };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, ["what is this?", "/route why"]);
+
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("billing/payment"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("gpt-4o-mini");
+    expect(notice).toContain("claude-haiku-4-5");
+  });
+});
+
+test("post-call reroute: persistent 5xx (server error surviving the retry budget) on the routed model switches to a same-tier fallback", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "gpt-4o-mini") {
+        return { done: false, steps: 1, doneReason: "Error: OpenAI request failed (HTTP 503): the server is overloaded or not ready yet." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, ["what is this?", "/route why"]);
+
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("persistent server-side error"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("gpt-4o-mini");
+    expect(notice).toContain("claude-haiku-4-5");
+  });
+});
+
+test("post-call reroute: context-overflow (400/413, conversation too large) does NOT switch models — switching providers cannot fix a prompt that no longer fits", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async () => ({
+      done: false,
+      steps: 1,
+      doneReason: "Error: Anthropic rejected the request: the conversation no longer fits the model's context window. Run /compact, drop large attachments, or start a fresh session.",
+    });
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, "what is this?");
+
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini"]);
+    expect(logs.some(l => l.startsWith("[route]") && l.includes("switching to equivalent"))).toBe(false);
   });
 });

@@ -55,6 +55,8 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/usage", usage: "/usage", description: "Show cumulative token usage for this session", group: "system" },
   { command: "/context", usage: "/context", description: "Show context token usage breakdown", group: "system" },
   { command: "/tools", usage: "/tools", description: "Show the tools currently visible to the agent", group: "system" },
+  { command: "/computer", usage: "/computer [on|off]", description: "Show/toggle the desktop-automation 'computer' tool (screenshot/click/type/etc) for this session", group: "system" },
+
   { command: "/hotkeys", usage: "/hotkeys", description: "Show keyboard shortcuts", group: "system" },
   { command: "/theme", usage: "/theme [name]", description: "Show or set the TUI theme (cosmic/matrix/solar/mono)", group: "system" },
   { command: "/wiki", usage: "/wiki [path|off]", description: "Show or set the global llm-wiki vault root (shared across all sessions)", group: "system" },

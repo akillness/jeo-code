@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.16] - 2026-07-09
+_"jeo code의 computer use 기능은 / 명령어로 설정할수있도록하고, 실동작검증까지진행해줘" — the desktop-automation `computer` tool was only togglable by hand-editing `computer.enabled` in `~/.jeo/config.json`; there was no in-session way to enable it for a single run without leaving a permanent config change behind._
+
+### Added
+- **`/computer [status|on|off]` slash command** (`src/commands/launch/computer-slash.ts`, `src/commands/launch.ts`, `src/tui/components/slash.ts`) — mirrors `/route`'s session-local-override pattern. `executeComputerAction` (`src/commands/computer.ts`) now accepts an `opts.enabledOverride` that wins over `config.computer.enabled` when set, and forwards through batched sub-actions. `/computer on|off` sets a REPL-local override for the current session only (never persisted); `/computer status` reports the effective on/off state and reminds the caller that the fail-closed `computerSupervisor` kill-switch/heartbeat gate still applies independently to every non-read-only action.
+- **New mascot artwork** (`assets/character-v2.png`) — a second character illustration (god-tibo-imagen / `gti`, same crimson-shell/cyan-magenta-glasses/purple-DNA-robe identity as `character.png`) depicting the mascot piloting the desktop-automation control panel while juggling provider-routing nodes, tying the two headline features (prompt routing, computer use) into one image.
+
+### Verified
+- `bun run typecheck` — no errors.
+- `bun test test/computer-slash.test.ts test/computer.test.ts test/computer-supervisor.test.ts test/engine-computer-wiring.test.ts` — 25 pass / 0 fail (new `/computer` subcommand coverage + `enabledOverride` true/false end-to-end execution cases).
+- `bun test test/slash.test.ts` — 30 pass / 0 fail (palette prefix-match fixture updated for the new `/computer` entry).
+- Full `bun test` — 2843 pass / 1 pre-existing unrelated flake (`reachability veto: ...unreachable ollama model...`), 0 fail introduced by this change.
+
+
 ## [0.8.15] - 2026-07-09
 _"api 인증 모델도 사용가능하도록 딥리서치하고 개선해줘" — traced the API-authenticated GPT path to a routing catalog gap: `GET /models` with an OpenAI API key or an OpenAI-compatible provider returned real account-scoped model ids, and `/model` could show/pin them, but prompt routing still built its auto-select pools from static `MODEL_CATALOG` rows only. A custom `openaiBaseUrl` made this worse by treating every public OpenAI row as servable, so routing could choose `gpt-*`/`o*` ids that the configured local/Azure/proxy endpoint never listed._
 

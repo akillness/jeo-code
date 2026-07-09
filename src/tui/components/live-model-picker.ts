@@ -20,9 +20,9 @@ function liveModelHint(model: string, current?: string): string {
 }
 
 export interface ModelAssignmentBadge {
-  /** Stable target id: "default" or a subagent role id. */
+  /** Stable target id: "default", a subagent role id, or "routing:<tier>". */
   role: string;
-  /** Short badge text shown beside a matching model (DEFAULT, EXECUTOR, ...). */
+  /** Short badge text shown beside a matching model (DEFAULT, EXECUTOR, ROUTE:HIGH, ...). */
   label: string;
   /** Configured model id for this target, qualified (`provider/model`) when possible. */
   model: string;
@@ -120,6 +120,8 @@ const THINKING_LEVEL_DESCRIPTION: Record<string, string> = {
 export interface ThinkingLevelChoiceOptions {
   /** Prepend an "inherit" row (role targets only, which can follow the default). */
   inheritLabel?: string;
+  /** Restrict visible reasoning levels to the selected model's supported levels. */
+  levels?: readonly string[];
   /** Per-level reasoning-budget hint, e.g. "~32k tokens". Return undefined to omit. */
   tokenHint?: (level: string) => string | undefined;
 }
@@ -138,7 +140,8 @@ export function buildThinkingLevelChoices(
   if (opts.inheritLabel) {
     items.push({ value: "inherit", label: opts.inheritLabel, hint: current === undefined ? "current" : "" });
   }
-  for (const level of THINKING_LEVEL_ORDER) {
+  const levels = opts.levels?.length ? THINKING_LEVEL_ORDER.filter(level => opts.levels!.includes(level)) : THINKING_LEVEL_ORDER;
+  for (const level of levels) {
     const tokens = opts.tokenHint?.(level);
     const label = `${level} — ${THINKING_LEVEL_DESCRIPTION[level]}${tokens ? ` (${tokens})` : ""}`;
     items.push({ value: level, label, hint: current === level ? "current" : "" });

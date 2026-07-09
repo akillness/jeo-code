@@ -58,6 +58,8 @@ import type { AuthProvider } from "../auth";
 
 export type PromptTier = "trivial" | "standard" | "high" | "complex";
 
+export const PROMPT_TIERS = ["trivial", "standard", "high", "complex"] as const satisfies readonly PromptTier[];
+
 export interface HeuristicResult {
   tier: PromptTier;
   confidence: number; // 0..1
@@ -89,24 +91,17 @@ export interface RoutePromptOptions {
 // --- Frozen, bilingual-validated classification signals (do not re-derive). ---
 
 const RE_CAUSAL = /\b(why|how|root cause|how come)\b/i;
-const RE_CAUSAL_KR = /(왜\s|근본\s*원인|이유가|어떻게)/;
+const RE_CAUSAL_KR = /(왜\s|근본\s*원인|이유가|어떻게|이유|어째서|원인|해결책|해결방안)/;
 const RE_TRIVIAL_QUESTION_WORD = /\b(what|who|when|where|which)\b/i;
-const RE_TRIVIAL_QUESTION_WORD_KR = /(뭐|뭔가요|무엇|언제|어디|누구|몇\s|인가요|있나요)/;
+const RE_TRIVIAL_QUESTION_WORD_KR = /(뭐|뭔가요|무엇|언제|어디|누구|몇\s|인가요|있나요|냐|음\?|인가)/;
 const RE_CODE_FENCE = /```/;
-const RE_PATH_TOKEN = /(?:^|[\s"'`(])@?(?:\.{0,2}[\w-]*\/)+[\w-]+(?:\.[\w-]+)*\.[A-Za-z]\w{0,7}\b/g;
+const RE_CODE_SNIPPET = /(?:\b(?:const|let|var)\s+\w+\s*=|\bimport\s+.*?\s+from\s+['"`\.\/]|\bexport\s+(?:const|let|var|function|class|default)\b|\b(?:function|class)\s+\w+|if\s*\(|try\s*{|=>|\{\s*[\w\d_]+\s*\})/;
+const RE_PATH_TOKEN = /(?:^|[\s"'`(])@?(?:\.{0,2}[\w-]*[\/\\])+[\w-]+(?:\.[\w-]+)*(?:\.[A-Za-z]\w{0,7}|[\/\\])\b/g;
+const RE_CLI_COMMAND = /(?:^|\s)(git|npm|bun|docker-compose|pip|cargo)\s+[a-z-_]+/i;
 const RE_DEEP_KEYWORDS_EN = /\b(design|architecture|refactor|debug|deep\s*dive|investigate|diagnose|redesign)\b/i;
 const RE_DEEP_KEYWORDS_KR = /(설계|아키텍처|리팩터|디버그|딥\s*다이브|딥다이브|진단)/;
-const RE_SENTENCE_BOUNDARY = /[.!?][ \n]|[.!?]$/g;
+const RE_SENTENCE_BOUNDARY = /[.!?][ \n]|[.!?.]$/g;
 
-/**
- * Pure, synchronous, zero-I/O prompt classification. Every branch and threshold
- * here is frozen per the PromptRouter contract (validated against a 17+-case
- * bilingual corpus) — in particular: a causal ("why"/"how"/"왜"/"어떻게") question
- * is NEVER treated as trivial just because it's short and question-shaped (a
- * debugging question is the opposite of trivial), and the path-token regex is
- * anchored so numeric fractions like "3/4.5" or "10/10" never false-positive as
- * a file path (the trailing segment must end in a letter-led extension).
- */
 export function classifyPromptHeuristically(prompt: string): HeuristicResult {
   const trimmed = prompt.trim();
   const signals: string[] = [];
@@ -125,12 +120,20 @@ export function classifyPromptHeuristically(prompt: string): HeuristicResult {
     signals.push("short-question");
   }
 
-  // trivial signal 2: no code fence AND no file path mention.
+  // trivial signal 2: no code fence AND no code snippet AND no file path mention.
   const hasCodeFence = RE_CODE_FENCE.test(trimmed);
+  const hasCodeSnippet = RE_CODE_SNIPPET.test(trimmed);
+  const hasCliCommand = RE_CLI_COMMAND.test(trimmed);
   const pathMatches = [...trimmed.matchAll(RE_PATH_TOKEN)];
-  if (!hasCodeFence && pathMatches.length === 0) {
+  if (!hasCodeFence && !hasCodeSnippet && pathMatches.length === 0) {
     trivialScore++;
     signals.push("no-code-no-path");
+  }
+
+  // trivial signal 3: explicit CLI command (usually simple lookup/execution)
+  if (hasCliCommand) {
+    trivialScore++;
+    signals.push("cli-command");
   }
 
   // complex signal 1: deep-work keyword.
@@ -159,7 +162,6 @@ export function classifyPromptHeuristically(prompt: string): HeuristicResult {
     complexScore++;
     signals.push("multi-file");
   }
-
   // Tier + confidence resolution (frozen thresholds).
   if (trivialScore > 0 && complexScore > 0) {
     return { tier: "standard", confidence: 0.35, signals }; // conflicting signals -> let escalation decide
@@ -261,6 +263,24 @@ function sizeClassFor(model: CatalogModel): "small" | "mid" | "large" | null {
   if (segments.includes("sonnet") || segments.includes("pro")) return "mid";
   return null;
 }
+const SIZE_CLASS_TO_TIER: Record<"small" | "mid" | "large", PromptTier> = { small: "trivial", mid: "standard", large: "complex" };
+
+/** Infers the `PromptTier` whose equivalence pool matches `model`'s size class — lets a
+ *  NON-ROUTED turn (routing disabled, or the user pinned a model via `/model`) reuse the
+ *  same cross-provider equivalent-pool fallback (`tierModelPool`/`equivalentRouteFallback`
+ *  in launch.ts) that a routed turn already gets on a usage-limit/rate-limit/credential
+ *  failure — without silently downgrading a pinned flagship (e.g. opus) to a cheap
+ *  trivial-tier substitute, or promoting a pinned cheap model to an expensive one. `null`
+ *  sizeClass (no size-tier suffix — gpt-5.5/o3/grok-4.3/kimi-* / glm-* / …) and an
+ *  uncatalogued model id both default to "standard" (the mid pool) as a reasonable
+ *  middle ground rather than guessing complex/trivial. */
+export function inferTierForModel(model: string): PromptTier {
+  const meta = catalogMetadata(model);
+  if (!meta) return "standard";
+  const cls = sizeClassFor(meta);
+  return cls ? SIZE_CLASS_TO_TIER[cls] : "standard";
+}
+
 
 const TIER_TO_SIZE_CLASS: Record<PromptTier, "small" | "mid" | "large"> = { trivial: "small", standard: "mid", high: "mid", complex: "large" };
 
@@ -455,9 +475,30 @@ function resolveTierThinking(tier: PromptTier, config: RoutingConfig): ThinkLeve
   return config.routing?.tiers?.[tier]?.thinking; // undefined = no override, caller keeps session/global level
 }
 
-const VALID_TIERS: readonly PromptTier[] = ["trivial", "standard", "high", "complex"];
+/** Apply one interactive `/model` pick to a PromptRouter tier without touching the
+ *  global model registry. The write enables routing because a configured tier is
+ *  otherwise invisible until `routing.enabled` is set. */
+export function withRoutingTierSetting(
+  config: Pick<Config, "routing">,
+  tier: PromptTier,
+  patch: { model: string; thinking?: ThinkLevel },
+): NonNullable<Config["routing"]> {
+  return {
+    ...(config.routing ?? {}),
+    enabled: true,
+    tiers: {
+      ...(config.routing?.tiers ?? {}),
+      [tier]: {
+        ...(config.routing?.tiers?.[tier] ?? {}),
+        model: patch.model,
+        thinking: patch.thinking,
+      },
+    },
+  };
+}
+
 function isPromptTier(value: unknown): value is PromptTier {
-  return typeof value === "string" && (VALID_TIERS as readonly string[]).includes(value);
+  return typeof value === "string" && (PROMPT_TIERS as readonly string[]).includes(value);
 }
 
 /** Hard cap on how much of the prompt is embedded in the escalation classifier call —

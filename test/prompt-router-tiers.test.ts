@@ -82,6 +82,38 @@ test("resolveTierModel: high tier falls through to defaultModel when the ONLY cr
   expect(resolveTierModel("complex", config)).toBe("gpt-5.5"); // sanity: complex is unaffected (gpt-5.5 is OpenAI's newest catalogued model, correctly wins the recency tiebreak over gpt-5.4)
 });
 
+test("resolveTierModel: no cross-call caching — sequential calls with different tiers, same config/sessionId, never bleed into each other", () => {
+  const config = credentialedConfig({
+    providers: { anthropic: "k1", openai: "k2", gemini: "k3" },
+    routing: { enabled: true },
+  });
+  // Same session id reused across all three calls to prove no session-keyed cache
+  // is silently created either — each call must re-derive its result purely from
+  // (tier, config), never from what the PREVIOUS call for a different tier resolved.
+  const firstTrivial = resolveTierModel("trivial", config, "session-x");
+  const complex = resolveTierModel("complex", config, "session-x");
+  const secondTrivial = resolveTierModel("trivial", config, "session-x");
+
+  expect(firstTrivial).toBe("gemini-2.0-flash"); // cheapest credentialed
+  expect(complex).toBe("claude-fable-5"); // strongest credentialed (unrelated to trivial's pick)
+  expect(secondTrivial).toBe(firstTrivial); // re-evaluated fresh, not left holding "complex"'s result
+  expect(secondTrivial).not.toBe(complex);
+});
+
+test("resolveTierModel: tier-scoping contrast — standard and high both fall through to defaultModel, but complex's live scan does not", () => {
+  // Mirrors the fixture above ("high tier falls through to defaultModel..."): OpenAI is
+  // the only credentialed provider and its catalogued ids never carry a sonnet/pro-style
+  // mid-class suffix, so the mid-class scan `high` relies on comes up empty. `standard`
+  // has no live-scan fallback at all (its ladder stops at defaultModel), and `complex`'s
+  // catalog-wide strongest-credentialed scan succeeds regardless — all three must be
+  // asserted together so a future change can't silently narrow "falls through to
+  // defaultModel" from a high-tier-specific claim into a universal one, or vice versa.
+  const config = credentialedConfig({ providers: { openai: "k2" }, routing: { enabled: true } });
+  expect(resolveTierModel("standard", config)).toBe(config.defaultModel); // guaranteed fallback, no live scan for standard
+  expect(resolveTierModel("high", config)).toBe(config.defaultModel); // mid-class scan empty -> falls through
+  expect(resolveTierModel("complex", config)).not.toBe(config.defaultModel); // catalog-wide scan still finds gpt-5.5
+});
+
 // --- routing.crossProviderPool: opt-in, purely additive, session-stable ---
 
 test("resolveTierModel: crossProviderPool unset (default) never changes standard/high's pre-existing defaultModel fallback", () => {

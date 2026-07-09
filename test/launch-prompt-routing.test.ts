@@ -650,6 +650,64 @@ test("routing.enabled: true + no explicit /route toggle still respects an active
   expect(calls[0].model).toBe("claude-sonnet-4-6"); // still pinned — only an explicit /route on bypasses the pin
 });
 
+test("mid-session /model <name> (literal slash command, not --model CLI flag) locks the pin: the turn AFTER it stops using roles.smol", async () => {
+  const { calls } = await runOneTurnWithLogs(
+    {
+      providers: { anthropic: "test-anthropic-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "claude-haiku-4-5" },
+      routing: { enabled: true },
+    },
+    ["what is this?", "/model claude-sonnet-4-6", "what is this?"],
+    // no --model CLI flag: the session starts fully unpinned, routing-only
+  );
+  expect(calls.length).toBe(2); // 2 real prompts; "/model claude-sonnet-4-6" is consumed inline, not a turn
+  expect(calls[0].model).toBe("claude-haiku-4-5"); // turn 1: routing active pre-pin -> roles.smol
+  expect(calls[1].model).toBe("claude-sonnet-4-6"); // turn 3 (after the pin): explicit pin wins, NOT roles.smol, despite an equally trivial prompt
+});
+
+test("mid-session /model <name> pin persists across EVERY subsequent turn, not just the first one after pinning", async () => {
+  const { calls } = await runOneTurnWithLogs(
+    {
+      providers: { anthropic: "test-anthropic-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "claude-haiku-4-5" },
+      routing: { enabled: true },
+    },
+    ["what is this?", "/model claude-sonnet-4-6", "what is this?", "what is this?", "what is this?"],
+  );
+  expect(calls.length).toBe(4); // 1 pre-pin routed turn + 3 pinned turns after "/model claude-sonnet-4-6"
+  expect(calls[0].model).toBe("claude-haiku-4-5"); // pre-pin: routed to roles.smol
+  expect(calls[1].model).toBe("claude-sonnet-4-6"); // 1st turn after pin
+  expect(calls[2].model).toBe("claude-sonnet-4-6"); // 2nd turn after pin — NOT roles.smol
+  expect(calls[3].model).toBe("claude-sonnet-4-6"); // 3rd turn after pin — NOT roles.smol
+});
+
+test("mid-session /model <name> pin, then /model auto, then re-pin to a DIFFERENT model: each turn matches the expected state transition", async () => {
+  const { calls } = await runOneTurnWithLogs(
+    {
+      providers: { anthropic: "test-anthropic-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "claude-haiku-4-5" },
+      routing: { enabled: true },
+    },
+    [
+      "what is this?",             // turn 1: routed (no pin yet)
+      "/model claude-sonnet-4-6",  // pin to sonnet
+      "what is this?",             // turn 2: pinned to sonnet
+      "/model auto",               // release the pin
+      "what is this?",             // turn 3: routed again
+      "/model claude-opus-4-6",    // re-pin to a DIFFERENT model
+      "what is this?",             // turn 4: pinned to opus
+    ],
+  );
+  expect(calls.length).toBe(4);
+  expect(calls[0].model).toBe("claude-haiku-4-5"); // routed pre-pin
+  expect(calls[1].model).toBe("claude-sonnet-4-6"); // pinned
+  expect(calls[2].model).toBe("claude-haiku-4-5"); // routed again after /model auto released the pin
+  expect(calls[3].model).toBe("claude-opus-4-6"); // re-pinned to a DIFFERENT model than before
+});
+
 
 
 // --- local-provider reachability veto (v0.9.0): `describeProvider` reports ollama/

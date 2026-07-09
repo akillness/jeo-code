@@ -90,6 +90,9 @@ jeo --tmux               # 在独立 tmux 会话中运行
 | `/theme` · `/config` · `/help` | 主题、运行时配置、帮助 |
 | `jeo autopilot status` | 显示分数方向、keep/revert 次数和下一步动作的 ratchet 状态字段 |
 
+> [!CAUTION]
+> **通过 `/model <name>` 手动指定模型后，路由会在本会话内保持锁定。** Prompt routing(`/route`)只在没有手动锁定模型时才会逐轮重新评估。用 `/model <name>` 选定具体模型后，该选择会被锁定 — 直到你运行 `/model auto`(彻底解除锁定)，或运行 `/route on`(不会清除锁定，只是优先级更高 — 一旦运行 `/route off`，锁定会立刻恢复)之前，路由都不会再切换。未配置 `roles.*` 条目时，只有 `standard` 层级会确定性地退回到 `defaultModel`；`high`/`complex` 层级会先实时扫描已配置凭证中最强的可用模型再决定是否回退，所以即使未配置，也可能每轮落到不同的模型上。
+
 ## Spec-first 工作流
 
 需求 → 计划 → 批准 → 执行 → 验证，经由 `.jeo/state/` 串联，每次交接都有**可阻断的真实门禁**:
@@ -262,11 +265,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.8.17]** (2026-07-09) — "서브에이전트 이용해. 병렬루 부가 나머지모두 개선하고 검증후 배포까지하자" — a prior 4-way parallel subagent cross-verification pass found the README `[!CAUTION]` routing-lock block (added this session for "프롬프트 라우팅이 한번 정해지면 안바뀌는데?") was directionally correct but had 2 real inaccuracies, plus a concrete test-coverage gap: every existing pin/override regression test drove the lock via the `--model` CLI startup flag, never via typing `/model <name>` as an interactive slash command mid-session, and none proved persistence across 3+ consecutive turns.
 - **[0.8.16]** (2026-07-09) — "jeo code의 computer use 기능은 / 명령어로 설정할수있도록하고, 실동작검증까지진행해줘" — the desktop-automation `computer` tool was only togglable by hand-editing `computer.enabled` in `~/.jeo/config.json`; there was no in-session way to enable it for a single run without leaving a permanent config change behind.
 - **[0.8.15]** (2026-07-09) — "api 인증 모델도 사용가능하도록 딥리서치하고 개선해줘" — traced the API-authenticated GPT path to a routing catalog gap: `GET /models` with an OpenAI API key or an OpenAI-compatible provider returned real account-scoped model ids, and `/model` could show/pin them, but prompt routing still built its auto-select pools from static `MODEL_CATALOG` rows only. A custom `openaiBaseUrl` made this worse by treating every public OpenAI row as servable, so routing could choose `gpt-*`/`o*` ids that the configured local/Azure/proxy endpoint never listed.
 - **[0.8.14]** (2026-07-09) — "GPT 연결 실패가 여전히 무응답으로 끝나는 케이스를 잡아줘" — traced the remaining GPT/routing failure path to post-call continuity: the route target could be credentialed and servable, but still end a turn with a recoverable terminal result such as plain `OpenAI returned no content`, rate/quota pressure, model unavailable/not found, or an invalid agent-tool response. jeo already knew the prompt tier and equivalent credentialed fallbacks, but it only applied that fallback before the model call. After the call failed, the turn stopped instead of trying another model in the same tier.
 - **[0.8.13]** (2026-07-09) — "테스트검증 jeo --tmux 로 진행해줘" — traced a routing recovery weakness that survived the earlier credential, servability, and local reachability vetoes: once a configured route target was rejected, jeo threw away the whole routing decision and dropped to the session/default model even when the same prompt tier had another credentialed, servable model available. That kept turns working, but it also silently undid routing's cost/latency goal and made `/route why` less useful because the recorded decision was a fallback note instead of the actual model used.
-- **[0.8.12]** (2026-07-08) — "제오코드에서 oauth 지피티 모델 연결이 안되는데 원인파악해서 개선해" — root-caused a structural drift bug: OpenAI's live Codex models endpoint (`chatgpt.com/backend-api/codex/models`, the SAME endpoint the `/model` picker discovers from) had shipped `gpt-5.4-mini` alongside `gpt-5.5`/`gpt-5.4`, but jeo's static OAuth allow-list (`CODEX_MODELS`) hadn't caught up — the picker correctly listed the model (straight from that live endpoint), but selecting or calling it then hit a hard-coded `CODEX_MODELS.includes(...)` gate that rejected it with "OpenAI OAuth credential only supports Codex models", even though the account's own OAuth token genuinely serves it. This is a whole class of bug: it recurs every time OpenAI ships a new Codex model between jeo releases, and previously required a jeo update to fix each time.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

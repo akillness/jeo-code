@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.17] - 2026-07-09
+_"서브에이전트 이용해. 병렬루 부가 나머지모두 개선하고 검증후 배포까지하자" — a prior 4-way parallel subagent cross-verification pass found the README `[!CAUTION]` routing-lock block (added this session for "프롬프트 라우팅이 한번 정해지면 안바뀌는데?") was directionally correct but had 2 real inaccuracies, plus a concrete test-coverage gap: every existing pin/override regression test drove the lock via the `--model` CLI startup flag, never via typing `/model <name>` as an interactive slash command mid-session, and none proved persistence across 3+ consecutive turns._
+
+### Fixed
+- **README `/route on` semantics corrected** (`README.md`, `README.ko.md`, `README.ja.md`, `README.zh.md`) — the caution block previously said the model pin releases "until `/route on` with no pin active", which has the mechanism backwards: `/route on` (`src/commands/launch/route-slash.ts:93-98`) sets `sessionRouteOverride = true`, which *outranks* an active `sessionModel` pin without clearing it — the pin reasserts itself the instant `/route off` runs (confirmed by the existing `test/launch-prompt-routing.test.ts` "/route on then /route off" regression). Only `/model auto` actually clears the pin (`sessionModel = undefined`).
+- **README tier-fallback claim scoped correctly** — the caution block previously implied any tier missing a `roles.*` entry falls back to `defaultModel` on every turn. `resolveTierModel` (`src/agent/prompt-router.ts:464-472`) only guarantees that for the `standard` tier; `high` and `complex` first run a live credentialed-model scan (`strongestMidTierCredentialed` / `strongestCredentialed`) before falling back, so they can still resolve to a different model each turn even when unconfigured. Reworded in all 4 languages; also fixed a KO/JA translation drift that narrowed "a tier" to "상위 티어"/"上位ティア" (upper tier), which had no counterpart in the EN/ZH text.
+
+### Added
+- **Mid-session `/model <name>` slash-command lock + persistence coverage** (`test/launch-prompt-routing.test.ts`) — 3 new tests proving the pin set by literally typing `/model <name>` (not just the `--model` CLI flag) holds on the very next turn, persists across 3+ consecutive subsequent turns with no further commands, and correctly cycles through pin → `/model auto` release → re-pin to a different model.
+- **Tier-resolution freshness + scoping coverage** (`test/prompt-router-tiers.test.ts`) — 2 new tests proving `resolveTierModel` has no cross-call caching (interleaved trivial/complex/trivial calls never bleed into each other) and asserting the standard/high/complex fallback-boundary contrast in one place (`standard` and `high` fall through to `defaultModel` on an OpenAI-only fixture with no mid-class model, `complex` does not) as a regression guard against this exact scope-of-claim mistake recurring silently.
+
+### Verified
+- `bun test test/launch-prompt-routing.test.ts` — 38 pass / 0 fail (35 pre-existing + 3 new).
+- `bun test test/prompt-router-tiers.test.ts test/prompt-router.test.ts` — 86 pass / 0 fail (84 pre-existing + 2 new).
+- Full `bun test` — 2877 pass / 0 fail across 290 files.
+- `bun run typecheck` — no errors.
+- Live PTY re-verification (`bun src/cli.ts`, isolated `JEO_CONFIG_DIR`, real Anthropic credentials): trivial prompt → routed to `roles.smol`; `/model claude-sonnet-4-6` → next trivial prompt stayed pinned (no `[route]` notice, confirmed via raw byte-stream regex search, not just screen snapshot); `/model auto` → next trivial prompt re-routed to `roles.smol` again. Closes the one claim that was previously only inferred from a code comment.
+
 ## [0.8.16] - 2026-07-09
 _"jeo code의 computer use 기능은 / 명령어로 설정할수있도록하고, 실동작검증까지진행해줘" — the desktop-automation `computer` tool was only togglable by hand-editing `computer.enabled` in `~/.jeo/config.json`; there was no in-session way to enable it for a single run without leaving a permanent config change behind._
 

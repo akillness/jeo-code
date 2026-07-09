@@ -1,14 +1,15 @@
 /**
  * `/route` slash-command handler extracted from launch.ts.
  *
- * Handles `/route [status|on|off|why]` (default/`status`: report the effective
- * session routing state + the last decision, if any; `on`/`off`: toggle a
- * SESSION-LOCAL override of `config.routing.enabled`; `why`: explain the last
- * routing decision in detail). This block shares mutable REPL state
- * (`sessionRouteOverride`, `lastRouteDecision`) with `runTurn`'s own routing
- * insertion, so the caller passes the current values in via an explicit
- * context object and reads back a result object instead of this function
- * closing over REPL state directly.
+ * Handles `/route [status|on|off|why|history]` (default/`status`: report the
+ * effective session routing state + the last decision, if any; `on`/`off`:
+ * toggle a SESSION-LOCAL override of `config.routing.enabled`; `why`: explain
+ * the last routing decision in detail; `history [n]`: print the last `n`
+ * (default 10) recorded decisions, one per line). This block shares mutable
+ * REPL state (`sessionRouteOverride`, `lastRouteDecision`, `routeHistory`)
+ * with `runTurn`'s own routing insertion, so the caller passes the current
+ * values in via an explicit context object and reads back a result object
+ * instead of this function closing over REPL state directly.
  *
  * Session-level toggle only — `sessionRouteOverride` is never persisted to
  * `~/.jeo/config.json` (mirrors `/thinking` being session-only vs. `/model
@@ -17,6 +18,7 @@
  */
 
 import type { RouteDecision } from "../../agent/prompt-router";
+import type { RouteHistoryEntry } from "../../agent/route-history";
 
 export interface RouteSlashCtx {
   sessionRouteOverride: boolean | undefined;
@@ -28,7 +30,11 @@ export interface RouteSlashCtx {
    *  never changes routing's actual gating logic (`!sessionModel` in launch.ts's
    *  `runTurn` stays the single source of truth for whether routing engages). */
   pinnedModel?: string;
+  /** Chronological (oldest-first) snapshot of this session's `RouteHistory`
+   *  (`routeHistory.getAll()`), read fresh by the caller for `/route history`. */
+  routeHistory: RouteHistoryEntry[];
 }
+
 
 
 export interface RouteSlashResult {
@@ -38,7 +44,7 @@ export interface RouteSlashResult {
   lines: string[];
 }
 
-const USAGE = "Usage: /route [status|on|off|why]";
+const USAGE = "Usage: /route [status|on|off|why|history [n]]";
 
 function isRealDecision(decision: RouteDecision | { note: string } | null): decision is RouteDecision {
   return !!decision && "model" in decision;
@@ -61,13 +67,25 @@ function explainDecision(decision: RouteDecision | { note: string } | null): str
 }
 
 /**
- * Handle `/route [status|on|off|why]`. Extracted for the same reason as
- * `/model`: shares REPL-local routing state with `runTurn` via an explicit
- * ctx/result object rather than closing over it.
+ * Format the last `n` history entries (default 10) as one line each:
+ * `turn N: tier -> model (source, confidence X.XX)`, oldest of the selected
+ * window first — matches `getAll()`'s chronological ordering.
+ */
+function formatHistory(entries: RouteHistoryEntry[], n: number): string[] {
+  if (entries.length === 0) return ["No routing decisions recorded yet this session."];
+  const selected = n > 0 ? entries.slice(Math.max(0, entries.length - n)) : [];
+  if (selected.length === 0) return ["No routing decisions recorded yet this session."];
+  return selected.map((e) => `turn ${e.turnNumber}: ${e.tier} -> ${e.model} (${e.source}, confidence ${e.confidence.toFixed(2)})`);
+}
+
+/**
+ * Handle `/route [status|on|off|why|history]`. Extracted for the same reason
+ * as `/model`: shares REPL-local routing state with `runTurn` via an
+ * explicit ctx/result object rather than closing over it.
  */
 export function runRouteSlash(input: string, ctx: RouteSlashCtx): RouteSlashResult {
   const rest = input.slice("/route".length).trim();
-  const [sub] = rest.split(/\s+/).filter(Boolean);
+  const [sub, arg] = rest.split(/\s+/).filter(Boolean);
   const effective = ctx.sessionRouteOverride ?? ctx.routingConfigEnabled;
 
   if (!sub || sub === "status") {
@@ -100,6 +118,16 @@ export function runRouteSlash(input: string, ctx: RouteSlashCtx): RouteSlashResu
 
   if (sub === "why") {
     return { lines: explainDecision(ctx.lastRouteDecision) };
+  }
+
+  if (sub === "history") {
+    // Only a finite POSITIVE count selects a window; 0, negatives, and
+    // non-numeric args (`bogus`) all fall back to the default 10 rather than
+    // silently printing the empty-history message when decisions actually
+    // exist (that message must mean "nothing recorded", never "you asked for 0").
+    const parsed = arg !== undefined ? Number.parseInt(arg, 10) : 10;
+    const n = Number.isFinite(parsed) && parsed > 0 ? parsed : 10;
+    return { lines: formatHistory(ctx.routeHistory, n) };
   }
 
   return { lines: [`Unknown /route subcommand: ${sub}`, USAGE] };

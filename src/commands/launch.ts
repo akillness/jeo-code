@@ -52,6 +52,7 @@ import { describeModel, describeAllProviders, describeProvider, resolveProvider,
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
 import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, type PromptTier, type RouteDecision } from "../agent/prompt-router";
+import { RouteHistory } from "../agent/route-history";
 
 import { isRateLimitError, isUsageLimitError, isConnectionError } from "../util/retry";
 
@@ -659,6 +660,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let sessionRouteOverride: boolean | undefined;
   // Last routing decision (or the reason none applied) — /route why reads this.
   let lastRouteDecision: RouteDecision | { note: string } | null = null;
+  // Bounded FIFO of this session's routing decisions — /route history reads this.
+  // Same lifecycle scope as `lastRouteDecision`: one instance per REPL session,
+  // never persisted to config.
+  const routeHistory = new RouteHistory();
   // Computer-use session override: undefined = follow config.computer.enabled, true/false = /computer on|off wins this session.
   let sessionComputerOverride: boolean | undefined;
 
@@ -1025,6 +1030,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
     }
     lastRouteDecision = routed ?? (routeVetoNote ? { note: routeVetoNote } : routingEnabled && (routeOverridesPin || !sessionModel) ? { note: "routing produced no decision (fail-open)" } : { note: "routing not active this turn" });
+    // Only a REAL decision (not a `{note}` placeholder) is worth recording —
+    // `/route history` exists to show what actually routed, not every turn's
+    // gating outcome.
+    if (routed) routeHistory.add(routed);
     // Explicit /model always wins UNLESS an explicit `/route on` this session opted
     // back into per-prompt routing (`routeOverridesPin`); otherwise `routed` is only
     // ever computed when `!sessionModel`.
@@ -1465,9 +1474,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           contextTokens = catalogMetadata(activeModel)?.contextTokens;
           fallbackBaseDecision = { ...fallbackBaseDecision, model: activeModel };
           lastRouteDecision = { ...fallbackBaseDecision, warning: `model '${previousModel}' ${routedFailureReason}; switched to equivalent '${activeModel}'` };
+          // Post-call fallback: the pre-call `routed` pick (already recorded above,
+          // if any) got superseded mid-turn — record the decision that ACTUALLY
+          // served the turn so `/route history`/`why` reflect reality, not a
+          // since-abandoned pre-call guess.
+          routeHistory.add(lastRouteDecision);
           const notice = `[route] model '${previousModel}' ${routedFailureReason}; switching to equivalent '${activeModel}' for this turn.`;
-          if (tui) tui.events().onNotice?.(notice);
-          else console.log(notice);
+          if (tui) {
+            const { provider: fallbackProvider } = await describeModel(activeModel, turnConfig);
+            tui.events().onModelSwitch?.(activeModel, fallbackProvider);
+            tui.events().onNotice?.(notice);
+          } else {
+            console.log(notice);
+          }
           result = await runLoopWithModel(activeModel, activeThinking, turnSessionKey);
         }
 
@@ -4435,6 +4454,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           routingConfigEnabled: !!cfgNow.routing?.enabled,
           lastRouteDecision,
           pinnedModel: sessionModel,
+          routeHistory: routeHistory.getAll(),
         });
         if (routeResult.sessionRouteOverride !== undefined) sessionRouteOverride = routeResult.sessionRouteOverride;
         for (const line of routeResult.lines) console.log(line);

@@ -1,11 +1,13 @@
 import { test, expect } from "bun:test";
 import { runRouteSlash, type RouteSlashCtx } from "../src/commands/launch/route-slash";
 import type { RouteDecision } from "../src/agent/prompt-router";
+import type { RouteHistoryEntry } from "../src/agent/route-history";
 
 const baseCtx = (overrides: Partial<RouteSlashCtx> = {}): RouteSlashCtx => ({
   sessionRouteOverride: undefined,
   routingConfigEnabled: false,
   lastRouteDecision: null,
+  routeHistory: [],
   ...overrides,
 });
 
@@ -94,7 +96,7 @@ test("unknown /route subcommand prints a usage hint, never throws", () => {
   const result = runRouteSlash("/route bogus", baseCtx());
   expect(result.sessionRouteOverride).toBeUndefined();
   expect(result.lines[0]).toContain("bogus");
-  expect(result.lines[1]).toContain("/route [status|on|off|why]");
+  expect(result.lines[1]).toContain("/route [status|on|off|why|history [n]]");
 });
 test("/route status: an active model pin appends a note that routing is blocked, with the escape hatch", () => {
   const result = runRouteSlash("/route status", baseCtx({ routingConfigEnabled: true, pinnedModel: "claude-opus-4-6" }));
@@ -116,4 +118,74 @@ test("/route status: an explicit /route on override notes that it overrides the 
 test("/route status: no pin note when the session has no explicit model pin", () => {
   const result = runRouteSlash("/route status", baseCtx({ routingConfigEnabled: true }));
   expect(result.lines).toEqual(["routing: on (this session)"]);
+});
+
+const mkEntry = (turnNumber: number, model: string, tier: string = "standard"): RouteHistoryEntry => ({
+  model,
+  tier: tier as RouteDecision["tier"],
+  confidence: 0.75,
+  source: "heuristic",
+  signals: [],
+  timestamp: Date.now(),
+  turnNumber,
+});
+
+test("/route history reports a plain message when nothing has been recorded", () => {
+  const result = runRouteSlash("/route history", baseCtx());
+  expect(result.lines).toEqual(["No routing decisions recorded yet this session."]);
+});
+
+test("/route history lists each recorded entry as one formatted line", () => {
+  const history = [
+    mkEntry(1, "claude-haiku-4-5", "trivial"),
+    mkEntry(2, "claude-sonnet-4-5", "standard"),
+  ];
+  const result = runRouteSlash("/route history", baseCtx({ routeHistory: history }));
+  expect(result.lines).toEqual([
+    "turn 1: trivial -> claude-haiku-4-5 (heuristic, confidence 0.75)",
+    "turn 2: standard -> claude-sonnet-4-5 (heuristic, confidence 0.75)",
+  ]);
+});
+
+test("/route history defaults to the last 10 entries when no n is given", () => {
+  const history = Array.from({ length: 12 }, (_, i) => mkEntry(i + 1, `model-${i + 1}`));
+  const result = runRouteSlash("/route history", baseCtx({ routeHistory: history }));
+  expect(result.lines).toHaveLength(10);
+  expect(result.lines[0]).toContain("turn 3:");
+  expect(result.lines[9]).toContain("turn 12:");
+});
+
+test("/route history <n> limits output to the last n entries", () => {
+  const history = [mkEntry(1, "model-1"), mkEntry(2, "model-2"), mkEntry(3, "model-3")];
+  const result = runRouteSlash("/route history 2", baseCtx({ routeHistory: history }));
+  expect(result.lines).toEqual([
+    "turn 2: standard -> model-2 (heuristic, confidence 0.75)",
+    "turn 3: standard -> model-3 (heuristic, confidence 0.75)",
+  ]);
+});
+
+test("/route history with a non-numeric n falls back to the default window", () => {
+  const history = [mkEntry(1, "model-1")];
+  const result = runRouteSlash("/route history bogus", baseCtx({ routeHistory: history }));
+  expect(result.lines).toEqual(["turn 1: standard -> model-1 (heuristic, confidence 0.75)"]);
+});
+
+test("/route history 0 falls back to the default window (not the empty message)", () => {
+  const history = [mkEntry(1, "model-1"), mkEntry(2, "model-2")];
+  const result = runRouteSlash("/route history 0", baseCtx({ routeHistory: history }));
+  // `0` must NOT print "No routing decisions recorded yet this session." — that
+  // message means the history is empty, and here it is not.
+  expect(result.lines).toEqual([
+    "turn 1: standard -> model-1 (heuristic, confidence 0.75)",
+    "turn 2: standard -> model-2 (heuristic, confidence 0.75)",
+  ]);
+});
+
+test("/route history with a negative n falls back to the default window", () => {
+  const history = [mkEntry(1, "model-1"), mkEntry(2, "model-2")];
+  const result = runRouteSlash("/route history -3", baseCtx({ routeHistory: history }));
+  expect(result.lines).toEqual([
+    "turn 1: standard -> model-1 (heuristic, confidence 0.75)",
+    "turn 2: standard -> model-2 (heuristic, confidence 0.75)",
+  ]);
 });

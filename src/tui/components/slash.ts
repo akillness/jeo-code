@@ -43,7 +43,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/logout", usage: "/logout <anthropic|openai|gemini|antigravity>", description: "Remove the stored OAuth token for a provider", group: "models" },
   { command: "/roles", usage: "/roles [tier model]", description: "Show or set model role tiers (smol/slow/plan)", group: "models" },
   { command: "/thinking", usage: "/thinking [level]", description: "Show or set thinking budget (low/medium/high/xhigh)", group: "models" },
-  { command: "/route", usage: "/route [on|off|why]", description: "Show/toggle prompt-based model routing for this session, or explain the last routing decision", group: "models" },
+  { command: "/route", usage: "/route [on|off|why|history [n]]", description: "Show/toggle prompt-based model routing for this session, explain the last routing decision, or list recent routing history", group: "models" },
   { command: "/agents", usage: "/agents [edit|role] [model|#N|thinking L|maxSteps N|reset]", description: "List subagent roles; use /agents edit for the interactive picker or pin role model/settings", group: "subagents" },
   { command: "/subagent", usage: "/subagent [role]", description: "Show the current subagent composition (per-role model · thinking · steps); alias of /agents", group: "subagents" },
   { command: "/view", usage: "/view <file> [a-b]", description: "Render a file with line numbers + light highlight", group: "code" },

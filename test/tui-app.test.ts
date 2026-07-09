@@ -671,6 +671,28 @@ test("LaunchTui (inline): routedTier renders the ⚡ marker in the persistent mo
   }
 });
 
+test("LaunchTui: onModelSwitch updates the footer model/provider label live (post-call fallback)", () => {
+  const realRender = Renderer.prototype.render;
+  let frame: string[] = [];
+  (Renderer.prototype as unknown as { render: (f: string[]) => void }).render = function (f: string[]) { frame = f; };
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  try {
+    const tui = new LaunchTui({ model: "gpt-5.4-mini", provider: "openai", routedTier: "trivial", tty: true, write: () => {} });
+    tui.start();
+    const ev = tui.events();
+    ev.onModelSwitch!("claude-haiku-4-5-20251001", "anthropic");
+    const txt = frame.map(strip);
+    const modelBar = txt[txt.length - 1] ?? "";
+    expect(modelBar).toContain("claude-haiku-4-5-20251001");
+    expect(modelBar).not.toContain("gpt-5.4-mini");
+    // routedTier persists across the switch — the fallback stays within the same tier,
+    // only the model changed (mirrors launch.ts's fallbackBaseDecision.tier reuse).
+    expect(modelBar).toMatch(/[⚡~]trivial/);
+  } finally {
+    Renderer.prototype.render = realRender;
+  }
+});
+
 test("LaunchTui (inline): no routedTier marker when routing didn't engage this turn", () => {
   const realRender = Renderer.prototype.render;
   let frame: string[] = [];

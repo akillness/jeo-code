@@ -92,6 +92,13 @@ export interface AgentEventsLike {
    *  item). The TUI ignores these; launch.ts uses them to persist the final reply's artifacts. */
   onReasoningArtifactStream?(artifact: import("../ai/types").ReasoningArtifact): void;
   onBudget?(limit: number, reason: string): void;
+  /** Fired when the active model changes mid-turn (post-call equivalent-pool fallback,
+   *  launch.ts's `routeFallbackAttempt` loop) — updates the footer's model/provider
+   *  label so the status bar reflects the model that actually serves the REST of the
+   *  turn, instead of staying stuck on the pre-fallback model for the remainder of the
+   *  render (the backend `lastRouteDecision`/`routeHistory` were already correct; only
+   *  this footer label lagged). */
+  onModelSwitch?(model: string, provider?: string): void;
 
 }
 
@@ -694,6 +701,17 @@ export class LaunchTui {
         const mark = this.unicode ? "↻" : "~";
         const dim = this.theme.color ? chalk.dim : (s: string) => s;
         this.appendLedger(dim(`${mark} ${reason}`) + "\n", "notice");
+        this.draw();
+      },
+      onModelSwitch: (model: string, provider?: string) => {
+        // Mid-turn equivalent-pool fallback: the footer's model/provider label was
+        // frozen at construction time otherwise, so a post-call reroute (the model
+        // that ACTUALLY produces the rest of the reply) never showed in the status
+        // bar for the remainder of the turn — even though lastRouteDecision/
+        // routeHistory were already correct. Mutate the SAME footer object the
+        // render loop reads every frame; no separate re-render path needed.
+        this.footer.model = model;
+        this.footer.provider = provider;
         this.draw();
       },
       onUsage: (u: { inputTokens: number; outputTokens: number }) => {

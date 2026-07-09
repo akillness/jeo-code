@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.18] - 2026-07-09
+_"라우팅 매 프롬프트마다 변경되는지, route why 의도대로 동작하는지 검증하고 배포할게있는지 확인해줘" — 2 parallel subagents live-verified per-prompt routing + `/route why` (including the previously-only-unit-tested post-call equivalent-model fallback path, now reproduced against a real mock 500-error server) and audited a disconnected `RouteHistory` class shipped as incomplete scaffolding in 0.8.16/0.8.17 (class + 11 tests existed, but nothing ever called it — no `/route history` subcommand, no wiring into the turn loop). Live testing also surfaced one real bug: the TUI footer's model/provider label never updated after a mid-turn fallback, staying on the pre-fallback model for the rest of that turn's render even though the backend decision (`lastRouteDecision`) was already correct._
+
+### Fixed
+- **TUI footer no longer shows a stale model after a mid-turn equivalent-pool fallback** (`src/tui/app.ts`, `src/commands/launch.ts`) — the footer's `model`/`provider` fields were set once at `LaunchTui` construction and never updated when `launch.ts`'s post-call fallback loop (routed model hit a persistent server-side error, rate limit, etc.) switched `activeModel` mid-turn; the status bar kept showing the ORIGINAL pre-fallback model for the remainder of that turn even though the reply actually came from the fallback model. Added an `onModelSwitch(model, provider)` event, fired from the fallback loop right alongside the existing `[route] … switching to equivalent …` notice, that updates the live footer in place.
+
+### Added
+- **`/route history [n]`** (`src/agent/route-history.ts`, `src/commands/launch/route-slash.ts`, registered in `src/tui/components/slash.ts`) — wires the `RouteHistory` class (shipped disconnected in the prior commit) into the live turn loop: a session-scoped bounded FIFO (never persisted) records every real routing decision — both the pre-call routed pick and any mid-turn equivalent-model fallback that actually served the turn — so history reflects reality, not a since-superseded pre-call guess. `/route history [n]` prints the last n (default 10, non-positive/non-numeric args fall back to the default) as `turn N: tier -> model (source, confidence X.XX)`.
+
+### Removed
+- **`IMPROVEMENT_SUMMARY.md`, `REVIEW.md`** — stray AI-session working notes from the prior commit, never referenced by `README.md`, `CHANGELOG.md`, or `package.json`'s `files` allowlist.
+
+### Verified
+- Live PTY re-verification (`bun src/cli.ts`, isolated `JEO_CONFIG_DIR`, real Anthropic credentials): 5 prompts of varying complexity in one session routed to 5 distinct tier/model pairs (trivial→claude-haiku-4-5, complex→claude-fable-5, trivial→claude-haiku-4-5, high→claude-sonnet-5, trivial→claude-haiku-4-5); `/route why` and `/route status` matched the actual serving model on every turn.
+- Live post-call-fallback reproduction: a real `Bun.serve` mock returning HTTP 500 on every call forced `launch.ts`'s equivalent-pool fallback to fire mid-turn; `/route why` immediately after correctly reported the POST-fallback model and a `warning: … switched to equivalent …` field, not the original pre-call pick.
+- `bun test test/route-history.test.ts test/route-slash.test.ts test/launch-prompt-routing.test.ts` — 69 pass / 0 fail.
+- `bun test test/tui-app.test.ts` — 51 pass / 0 fail (50 pre-existing + 1 new, covering the footer live-update fix).
+- Full `bun test` — 2885 pass / 0 fail across 290 files.
+- `bun run typecheck` — no errors.
+
 ## [0.8.17] - 2026-07-09
 _"서브에이전트 이용해. 병렬루 부가 나머지모두 개선하고 검증후 배포까지하자" — a prior 4-way parallel subagent cross-verification pass found the README `[!CAUTION]` routing-lock block (added this session for "프롬프트 라우팅이 한번 정해지면 안바뀌는데?") was directionally correct but had 2 real inaccuracies, plus a concrete test-coverage gap: every existing pin/override regression test drove the lock via the `--model` CLI startup flag, never via typing `/model <name>` as an interactive slash command mid-session, and none proved persistence across 3+ consecutive turns._
 

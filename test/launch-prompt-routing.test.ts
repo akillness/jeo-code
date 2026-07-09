@@ -383,7 +383,7 @@ test("sessionKey: two turns routed to DIFFERENT models within one session produc
 // routing being off — a routed tier's model can be configured without its
 // provider ever having a usable credential) ---
 
-test("credential gate: routed tier resolves to a provider with NO credential -> falls back to defaultModel (whose provider IS credentialed)", async () => {
+test("credential gate: routed tier resolves to a provider with NO credential -> switches to an equivalent credentialed model", async () => {
   const { calls } = await runOneTurnWithLogs({
     providers: { anthropic: "test-anthropic-key" }, // defaultModel's provider: credentialed
     defaultModel: "claude-sonnet-4-6",
@@ -393,7 +393,7 @@ test("credential gate: routed tier resolves to a provider with NO credential -> 
   expect(calls.length).toBeGreaterThan(0);
   // Without the gate this would be "gpt-4o-mini" and the real call would fail with
   // "No credential for provider 'openai'" — the gate must prevent dispatch to it.
-  expect(calls[0].model).toBe("claude-sonnet-4-6");
+  expect(calls[0].model).toBe("claude-haiku-4-5");
 });
 
 test("credential gate: veto notice explains what happened and how to fix it", async () => {
@@ -421,7 +421,7 @@ test("credential gate: does not fire when the routed provider IS credentialed (n
   expect(logs.some(l => l.includes("no usable credential"))).toBe(false);
 });
 
-test("credential gate: warnOnce suppresses the notice on a second turn hitting the SAME unready provider, but the veto still applies every turn", async () => {
+test("credential gate: warnOnce suppresses the notice on a second turn hitting the SAME unready provider, but the alternate still applies every turn", async () => {
   const config = {
     providers: { anthropic: "test-anthropic-key" },
     defaultModel: "claude-sonnet-4-6",
@@ -429,25 +429,25 @@ test("credential gate: warnOnce suppresses the notice on a second turn hitting t
     routing: { enabled: true },
   };
   const first = await runOneTurnWithLogs(config, "what is this?");
-  expect(first.calls[0].model).toBe("claude-sonnet-4-6"); // veto applied
+  expect(first.calls[0].model).toBe("claude-haiku-4-5"); // alternate applied
   expect(first.logs.some(l => l.includes("no usable credential"))).toBe(true); // notice fired
 
   const second = await runOneTurnWithLogs(config, "what is that?");
-  expect(second.calls[0].model).toBe("claude-sonnet-4-6"); // veto STILL applied
+  expect(second.calls[0].model).toBe("claude-haiku-4-5"); // alternate STILL applied
   expect(second.logs.some(l => l.includes("no usable credential"))).toBe(false); // notice suppressed (warnOnce)
 });
 
-test("credential gate: /route why after a veto explains the fallback, not a phantom routed decision", async () => {
+test("credential gate: /route why after a veto explains the equivalent fallback, not a phantom routed decision", async () => {
   const { logs } = await runOneTurnWithLogs({
     providers: { anthropic: "test-anthropic-key" },
     defaultModel: "claude-sonnet-4-6",
     roles: { smol: "gpt-4o-mini" },
     routing: { enabled: true },
   }, ["what is this?", "/route why"]);
-  const whyLine = logs.find(l => l.includes("fell back to"));
+  const whyLine = logs.find(l => l.includes("switched to equivalent"));
   expect(whyLine).toBeDefined();
   expect(whyLine).toContain("gpt-4o-mini");
-  expect(whyLine).toContain("claude-sonnet-4-6"); // names the fallback that was actually used
+  expect(whyLine).toContain("claude-haiku-4-5"); // names the equivalent actually used
 });
 // --- model-servability veto (v0.8.2): provider-level readiness is necessary but
 // NOT sufficient. An OAuth-only OpenAI login passes describeProvider's ready
@@ -474,7 +474,7 @@ async function withOpenAiEnvCleared<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-test("servability veto: OAuth-only openai + pinned non-Codex tier model -> falls back to defaultModel with a 'cannot serve' notice", async () => {
+test("servability veto: OAuth-only openai + pinned non-Codex tier model -> switches to an equivalent credentialed model with a 'cannot serve' notice", async () => {
   await withOpenAiEnvCleared(async () => {
     const { calls, logs } = await runOneTurnWithLogs({
       providers: { anthropic: "test-anthropic-key" },
@@ -485,7 +485,7 @@ test("servability veto: OAuth-only openai + pinned non-Codex tier model -> falls
     expect(calls.length).toBeGreaterThan(0);
     // Without the model-level veto this dispatches gpt-4o and the call fails
     // demanding OPENAI_API_KEY despite a valid OAuth login — the v0.8.2 bug.
-    expect(calls[0].model).toBe("claude-sonnet-4-6");
+    expect(calls[0].model).toBe("claude-haiku-4-5");
     const notice = logs.find(l => l.includes("[route]") && l.includes("cannot serve"));
     expect(notice).toBeDefined();
     expect(notice).toContain("gpt-4o");
@@ -493,7 +493,7 @@ test("servability veto: OAuth-only openai + pinned non-Codex tier model -> falls
   });
 });
 
-test("servability veto: /route why explains the routed model is not servable and names the fallback", async () => {
+test("servability veto: /route why explains the routed model is not servable and names the equivalent fallback", async () => {
   await withOpenAiEnvCleared(async () => {
     const { logs } = await runOneTurnWithLogs({
       providers: { anthropic: "test-anthropic-key" },
@@ -504,7 +504,7 @@ test("servability veto: /route why explains the routed model is not servable and
     const whyLine = logs.find(l => l.includes("not servable"));
     expect(whyLine).toBeDefined();
     expect(whyLine).toContain("gpt-4o");
-    expect(whyLine).toContain("claude-sonnet-4-6"); // names the fallback actually used
+    expect(whyLine).toContain("claude-haiku-4-5"); // names the equivalent actually used
   });
 });
 
@@ -571,7 +571,7 @@ async function withMockedFetch<T>(impl: typeof fetch, run: () => Promise<T>): Pr
   }
 }
 
-test("reachability veto: routing pinned to an unreachable ollama model falls back to defaultModel with an 'unreachable' notice", async () => {
+test("reachability veto: routing pinned to an unreachable ollama model switches to an equivalent credentialed model with an 'unreachable' notice", async () => {
   await withMockedFetch(
     (async () => { throw new Error("Unable to connect. Is the computer able to access the url?"); }) as typeof fetch,
     async () => {
@@ -582,8 +582,8 @@ test("reachability veto: routing pinned to an unreachable ollama model falls bac
       }, "what is this?");
       expect(calls.length).toBeGreaterThan(0);
       // Without the reachability veto this dispatches ollama/llama3.1 and the call
-      // fails mid-turn with the raw Bun connection error instead of falling back.
-      expect(calls[0].model).toBe("claude-sonnet-4-6");
+      // fails mid-turn with the raw Bun connection error instead of switching.
+      expect(calls[0].model).toBe("claude-haiku-4-5");
       const notice = logs.find(l => l.includes("[route]") && l.includes("unreachable"));
       expect(notice).toBeDefined();
       expect(notice).toContain("ollama/llama3.1");
@@ -607,7 +607,7 @@ test("reachability veto: does not fire when the local provider IS reachable (no 
   );
 });
 
-test("reachability veto: /route why explains the routed model is unreachable and names the fallback", async () => {
+test("reachability veto: /route why explains the routed model is unreachable and names the equivalent fallback", async () => {
   await withMockedFetch(
     (async () => { throw new Error("Unable to connect. Is the computer able to access the url?"); }) as typeof fetch,
     async () => {
@@ -616,15 +616,15 @@ test("reachability veto: /route why explains the routed model is unreachable and
         defaultModel: "claude-sonnet-4-6",
         routing: { enabled: true, tiers: { trivial: { model: "ollama/llama3.1" } } },
       }, ["what is this?", "/route why"]);
-      const whyLine = logs.find(l => l.includes("fell back to"));
+      const whyLine = logs.find(l => l.includes("switched to equivalent"));
       expect(whyLine).toBeDefined();
       expect(whyLine).toContain("ollama/llama3.1");
-      expect(whyLine).toContain("claude-sonnet-4-6");
+      expect(whyLine).toContain("claude-haiku-4-5");
     },
   );
 });
 
-test("reachability veto: warnOnce suppresses the notice on a second turn hitting the SAME unreachable provider, but the veto still applies every turn", async () => {
+test("reachability veto: warnOnce suppresses the notice on a second turn hitting the SAME unreachable provider, but the alternate still applies every turn", async () => {
   await withMockedFetch(
     (async () => { throw new Error("Unable to connect. Is the computer able to access the url?"); }) as typeof fetch,
     async () => {
@@ -634,11 +634,11 @@ test("reachability veto: warnOnce suppresses the notice on a second turn hitting
         routing: { enabled: true, tiers: { trivial: { model: "ollama/llama3.1" } } },
       };
       const first = await runOneTurnWithLogs(config, "what is this?");
-      expect(first.calls[0].model).toBe("claude-sonnet-4-6"); // veto applied
+      expect(first.calls[0].model).toBe("claude-haiku-4-5"); // alternate applied
       expect(first.logs.some(l => l.includes("unreachable"))).toBe(true); // notice fired
 
       const second = await runOneTurnWithLogs(config, "what is that?");
-      expect(second.calls[0].model).toBe("claude-sonnet-4-6"); // veto STILL applied
+      expect(second.calls[0].model).toBe("claude-haiku-4-5"); // alternate STILL applied
       expect(second.logs.some(l => l.includes("unreachable"))).toBe(false); // notice suppressed (warnOnce)
     },
   );

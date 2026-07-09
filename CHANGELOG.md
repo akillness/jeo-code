@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.13] - 2026-07-09
+_"테스트검증 jeo --tmux 로 진행해줘" — traced a routing recovery weakness that survived the earlier credential, servability, and local reachability vetoes: once a configured route target was rejected, jeo threw away the whole routing decision and dropped to the session/default model even when the same prompt tier had another credentialed, servable model available. That kept turns working, but it also silently undid routing's cost/latency goal and made `/route why` less useful because the recorded decision was a fallback note instead of the actual model used._
+
+### Fixed
+- **Routing vetoes now prefer equivalent credentialed tier models** (`src/commands/launch.ts`) — credential-missing, OAuth-not-servable, and local-provider-unreachable vetoes now scan `tierModelPool()` for the same prompt tier, exclude the rejected target, validate provider readiness, model servability, image support, and local-provider reachability, then switch to a session-stable equivalent before falling back to the session/default model. A misconfigured `roles.smol: "gpt-4o-mini"` with only Anthropic credentials now routes to `claude-haiku-4-5` instead of either failing on OpenAI or wasting a Sonnet turn.
+- **`/route why` now explains equivalent fallback decisions** (`src/commands/launch.ts`) — when a veto switches to an alternate model, the route decision keeps the actual model used and carries a warning that names the rejected model, the reason, and the equivalent replacement.
+
+### Added
+- **Equivalent-fallback regression coverage** (`test/launch-prompt-routing.test.ts`) — updated the credential, OpenAI OAuth servability, and local-provider reachability veto tests to assert the equivalent model path, `warnOnce` behavior, and `/route why` explanation.
+
+### Verified
+- Focused routing suite: `bun test test/launch-prompt-routing.test.ts` — 23 pass / 0 fail.
+
 ## [0.8.12] - 2026-07-08
 _"제오코드에서 oauth 지피티 모델 연결이 안되는데 원인파악해서 개선해" — root-caused a structural drift bug: OpenAI's live Codex models endpoint (`chatgpt.com/backend-api/codex/models`, the SAME endpoint the `/model` picker discovers from) had shipped `gpt-5.4-mini` alongside `gpt-5.5`/`gpt-5.4`, but jeo's static OAuth allow-list (`CODEX_MODELS`) hadn't caught up — the picker correctly listed the model (straight from that live endpoint), but selecting or calling it then hit a hard-coded `CODEX_MODELS.includes(...)` gate that rejected it with "OpenAI OAuth credential only supports Codex models", even though the account's own OAuth token genuinely serves it. This is a whole class of bug: it recurs every time OpenAI ships a new Codex model between jeo releases, and previously required a jeo update to fix each time._
 

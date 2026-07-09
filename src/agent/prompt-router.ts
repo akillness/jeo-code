@@ -49,11 +49,10 @@
  */
 import { callLlm } from "./loop";
 import { resolveRoleModel, modelServableWithConfig } from "../ai/model-manager";
-import { catalogMetadata, MODEL_CATALOG, compareReleaseDate, type CatalogModel } from "../ai/model-catalog";
+import { catalogMetadata, MODEL_CATALOG, compareReleaseDate, liveProviderCatalogModels, isLiveProviderModel, type CatalogModel, type ThinkLevel } from "../ai/model-catalog";
 import { priceForModel } from "../ai/pricing";
 import { tryExtractJsonObject } from "./json";
 import type { Config } from "./state";
-import type { ThinkLevel } from "../ai/model-catalog";
 import type { ProviderName } from "../ai/types";
 import type { AuthProvider } from "../auth";
 
@@ -202,7 +201,7 @@ export function resetPromptRouterWarnings(): void {
  *  `undefined`. Production callers (`readGlobalConfig()`'s real `Config`) always
  *  provide both. */
 export type RoutingConfig = Pick<Config, "defaultModel" | "roles" | "routing"> &
-  Partial<Pick<Config, "providers" | "oauth">>;
+  Partial<Pick<Config, "providers" | "oauth" | "openaiBaseUrl">>;
 
 /** Cloud providers eligible for cross-provider auto-select (excludes local
  *  ollama/lmstudio, which are never a sensible "route to the cheapest/strongest"
@@ -221,10 +220,19 @@ function hasAntigravityOauth(config: RoutingConfig): boolean {
   return !!(config.oauth?.antigravity || config.oauth?.gemini);
 }
 
+function routingCatalog(config: RoutingConfig): CatalogModel[] {
+  const rows = [...MODEL_CATALOG, ...liveProviderCatalogModels(config)];
+  const eligible = rows.filter(m => isAutoSelectCandidate(m, config));
+  const byId = new Map<string, CatalogModel>();
+  for (const row of eligible) if (!byId.has(row.canonical)) byId.set(row.canonical, row);
+  return [...byId.values()];
+}
+
 function isAutoSelectCandidate(m: CatalogModel, config: RoutingConfig): boolean {
   // Shared model-LEVEL credential gate (the full auth matrix is documented on
   // modelServableWithConfig; keep aligned with resolveCall).
   if (!isCloudProvider(m.provider) || m.limitedAvailability || !modelServableWithConfig(m.provider, m.canonical, config)) return false;
+  if (m.provider === "openai" && config.openaiBaseUrl && !isLiveProviderModel("openai", m.canonical, config)) return false;
   if (hasAntigravityOauth(config) && m.provider === "gemini") return false;
   return true;
 }
@@ -280,7 +288,7 @@ function compareStrengthAscending(a: CatalogModel, b: CatalogModel): number {
  *  for deterministic pool ordering (required by `selectFromPool`'s index math). */
 export function tierModelPool(tier: PromptTier, config: RoutingConfig): string[] {
   const targetClass = TIER_TO_SIZE_CLASS[tier];
-  const credentialed = MODEL_CATALOG.filter(m => isAutoSelectCandidate(m, config));
+  const credentialed = routingCatalog(config);
 
   const suffixPool = credentialed.filter(m => sizeClassFor(m) === targetClass);
 
@@ -329,7 +337,7 @@ export function selectFromPool(pool: readonly string[], sessionId: string | unde
 export function cheapestCredentialed(config: RoutingConfig): string | null {
   let best: CatalogModel | null = null;
   let bestCost = Infinity;
-  for (const m of MODEL_CATALOG) {
+  for (const m of routingCatalog(config)) {
     // Candidate eligibility is centralized in `isAutoSelectCandidate`: it keeps
     // OAuth-backed Antigravity routing on provider-qualified 3.1+ Gemini rows and
     // prevents public `gemini` catalog rows from winning when Antigravity OAuth is
@@ -377,7 +385,7 @@ export function strongestCredentialed(
   filter?: (m: CatalogModel) => boolean
 ): string | null {
   let best: CatalogModel | null = null;
-  for (const m of MODEL_CATALOG) {
+  for (const m of routingCatalog(config)) {
     // Candidate eligibility is centralized in `isAutoSelectCandidate` (see
     // cheapestCredentialed above for the Antigravity/Gemini OAuth rationale).
     if (!isAutoSelectCandidate(m, config)) continue;
@@ -406,8 +414,8 @@ export function strongestCredentialed(
  *  mid-class-suffixed model is credentialed (caller falls through to
  *  `roles.medium`/`defaultModel` — never to `complex`'s flagship pick). */
 function strongestMidTierCredentialed(config: RoutingConfig): string | null {
-  const midClass = MODEL_CATALOG.filter(
-    m => isAutoSelectCandidate(m, config) && sizeClassFor(m) === "mid",
+  const midClass = routingCatalog(config).filter(
+    m => sizeClassFor(m) === "mid",
   );
   if (midClass.length === 0) return null;
   return midClass.sort(compareStrengthAscending).at(-1)!.canonical;

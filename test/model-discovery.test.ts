@@ -11,7 +11,7 @@ import {
   isLocalProviderReachable,
 } from "../src/ai/model-discovery";
 import { PROVIDER_NAMES } from "../src/ai/provider-status";
-import { isCodexModel, resetLiveCodexModels } from "../src/ai/model-catalog";
+import { isCodexModel, liveProviderCatalogModels, resetLiveCodexModels, resetLiveProviderModels } from "../src/ai/model-catalog";
 
 let dir: string;
 const prevCfgDir = process.env.JEO_CONFIG_DIR;
@@ -46,6 +46,8 @@ afterAll(async () => {
     else process.env[k] = savedEnv[k];
   }
   await fs.rm(dir, { recursive: true, force: true });
+  resetLiveCodexModels();
+  resetLiveProviderModels();
 });
 
 const okFetch = (body: unknown): typeof fetch =>
@@ -246,6 +248,30 @@ test("listProviderModels: an api_key-source OpenAI result never widens the Codex
   // An api_key result says nothing about what OAuth can serve — must not leak in.
   expect(isCodexModel("gpt-4o")).toBe(false);
   resetLiveCodexModels();
+});
+
+test("listProviderModels: OpenAI api_key discovery records live provider models without widening the Codex allow-list", async () => {
+  resetLiveCodexModels();
+  resetLiveProviderModels();
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({ providers: { openai: "sk-oai" }, defaultModel: "claude-3-5-sonnet" }),
+  );
+  const apiOnlyModel = "gpt-9-api-only";
+  expect(isCodexModel(apiOnlyModel)).toBe(false);
+  const fetchSpy = (async () =>
+    new Response(JSON.stringify({ data: [{ id: apiOnlyModel }] }), { status: 200 })
+  ) as typeof fetch;
+  const r = await listProviderModels("openai", { fetchImpl: fetchSpy });
+  expect(r.ok).toBe(true);
+  expect(r.source).toBe("api_key");
+  expect(r.models).toEqual([apiOnlyModel]);
+  expect(isCodexModel(apiOnlyModel)).toBe(false);
+  const live = liveProviderCatalogModels().find(row => row.canonical === apiOnlyModel);
+  expect(live?.provider).toBe("openai");
+  expect(live?.providerModel).toBe(apiOnlyModel);
+  resetLiveCodexModels();
+  resetLiveProviderModels();
 });
 
 test("listProviderModels: credential-less cloud short-circuits without fetching", async () => {

@@ -1135,14 +1135,23 @@ export class LaunchTui {
         this.draw();
       });
     // Watch terminal resizes: rows/cols changes invalidate the previous frame, so
-    // force a full repaint instead of diffing against stale line positions.
+    // force a full repaint instead of diffing against stale line positions. Tests and
+    // embedded runners can create several co-resident TUI instances before teardown;
+    // raise the listener ceiling just enough to represent that real fan-out instead
+    // of letting Node/Bun turn legitimate co-residency into a MaxListeners warning.
     if (this.tty) {
+      const resizeCount = process.stdout.listenerCount("resize");
+      const stdoutMax = process.stdout.getMaxListeners();
+      if (stdoutMax > 0 && resizeCount + 1 >= stdoutMax) process.stdout.setMaxListeners(resizeCount + 2);
       process.stdout.on("resize", this.onResize);
       // Suspend (Ctrl-Z) → resume (fg): SIGWINCH is lost while the process is stopped,
       // so a terminal resized mid-suspend would resume with stale geometry and a torn
       // frame. SIGCONT fires on resume; force a re-measure + full repaint. POSIX only
       // (Windows has no SIGCONT — registering it would throw).
       if (process.platform !== "win32") {
+        const resumeCount = process.listenerCount("SIGCONT");
+        const processMax = process.getMaxListeners();
+        if (processMax > 0 && resumeCount + 1 >= processMax) process.setMaxListeners(resumeCount + 2);
         process.on("SIGCONT", this.onResume);
       }
     }

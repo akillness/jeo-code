@@ -1,6 +1,7 @@
 import { test, expect, mock, beforeEach, afterEach, afterAll } from "bun:test";
 import { resetPromptRouterWarnings } from "../src/agent/prompt-router";
 import { OPENAI_COMPAT_PROVIDERS } from "../src/ai/providers/openai-compatible-catalog";
+import { resetLiveProviderModels } from "../src/ai/model-catalog";
 import type { AgentLoopOptions, AgentLoopResult } from "../src/agent/engine";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -74,6 +75,7 @@ beforeEach(() => {
   capturedRoutedTiers = [];
   runAgentLoopDelegate = async () => ({ done: true, steps: 1, doneReason: "ok" });
   resetPromptRouterWarnings();
+  resetLiveProviderModels();
 });
 
 

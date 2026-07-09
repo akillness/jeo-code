@@ -12,14 +12,17 @@ import {
   type RouteDecision,
 } from "../src/agent/prompt-router";
 import { resolveSubagentModel } from "../src/agent/subagents";
-import { CODEX_MODELS } from "../src/ai/model-catalog";
+import { CODEX_MODELS, recordLiveProviderModels, resetLiveProviderModels } from "../src/ai/model-catalog";
 import type { Config } from "../src/agent/state";
 
 // `routePrompt` calls the real `callLlm` (src/agent/loop) for LLM escalation. Tests that
 // exercise escalation mock that module first, then dynamically re-import the SUT so it
 // picks up the mocked binding — mirrors test/engine.test.ts's established convention for
 // mocking callLlm (module-mock + fresh dynamic import, not a bespoke DI parameter).
-afterEach(() => mock.restore());
+afterEach(() => {
+  mock.restore();
+  resetLiveProviderModels();
+});
 
 function baseConfig(overrides: Partial<Pick<Config, "defaultModel" | "roles" | "routing">> = {}): Pick<
   Config,
@@ -660,6 +663,48 @@ test("cheapestCredentialed & strongestCredentialed: excludes limitedAvailability
   const strongest = strongestCredentialed(config);
   expect(cheapest).not.toBe("claude-mythos-5");
   expect(strongest).not.toBe("claude-mythos-5");
+});
+
+test("tierModelPool/routePrompt: custom OpenAI base URL without live discovery does not auto-select public OpenAI catalog rows", async () => {
+  resetLiveProviderModels();
+  const config = credentialedConfig({
+    providers: { openai: "sk-custom" },
+    defaultModel: "openai/local-default",
+    openaiBaseUrl: "http://127.0.0.1:4321/v1",
+    routing: { enabled: true, crossProviderPool: true },
+  });
+  const tiers = ["trivial", "standard", "high", "complex"] as const;
+  const allPooled = tiers.flatMap(tier => tierModelPool(tier, config));
+  expect(allPooled).toEqual([]);
+  const decision = (await routePrompt("what is this?", config)) as RouteDecision;
+  expect(decision).not.toBeNull();
+  expect(decision.model).toBe("openai/local-default");
+});
+
+test("tierModelPool/routePrompt: live custom OpenAI base models are routed only after being recorded for that base URL", async () => {
+  resetLiveProviderModels();
+  const baseUrl = "http://127.0.0.1:4321/v1";
+  recordLiveProviderModels("openai", ["local-flash-mini"], { source: "api_key", baseUrl: `${baseUrl}/` });
+  const config = credentialedConfig({
+    providers: { openai: "sk-custom" },
+    defaultModel: "openai/local-default",
+    openaiBaseUrl: baseUrl,
+    routing: { enabled: true, crossProviderPool: true },
+  });
+  expect(tierModelPool("trivial", config)).toEqual(["openai/local-flash-mini"]);
+  const decision = (await routePrompt("what is this?", config, { sessionId: "custom-openai-live" })) as RouteDecision;
+  expect(decision).not.toBeNull();
+  expect(decision.model).toBe("openai/local-flash-mini");
+});
+
+test("tierModelPool: live OpenAI-compatible provider models enter routing pools under their provider prefix", () => {
+  resetLiveProviderModels();
+  recordLiveProviderModels("groq", ["llama-3.3-70b-versatile"], { source: "api_key" });
+  const config = credentialedConfig({
+    providers: { groq: "sk-groq" },
+    routing: { enabled: true, crossProviderPool: true },
+  });
+  expect(tierModelPool("trivial", config)).toEqual(["groq/llama-3.3-70b-versatile"]);
 });
 
 // --- Model-level OAuth gate in isAutoSelectCandidate (via modelServableWithConfig):

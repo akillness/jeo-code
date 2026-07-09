@@ -222,6 +222,122 @@ export function resetLiveCodexModels(): void {
   liveCodexModels.clear();
 }
 
+/** Live provider model ids observed from authenticated/keyless `/models` endpoints during
+ *  this process. Unlike `liveCodexModels`, this is NOT an OAuth allow-list; it is a
+ *  routing supplement so API-key and OpenAI-compatible catalogs discovered at runtime
+ *  can participate in prompt routing without waiting for a static release. */
+type LiveProviderModelSource = "oauth" | "api_key" | "keyless" | "none";
+interface LiveProviderModelRecord {
+  row: CatalogModel;
+  source: LiveProviderModelSource;
+  baseUrl?: string;
+}
+const liveProviderModels = new Map<string, LiveProviderModelRecord>();
+
+function normalizeBaseUrl(baseUrl: string | undefined): string | undefined {
+  return baseUrl?.replace(/\/+$/, "");
+}
+
+function stripProviderPrefix(provider: ProviderName, id: string): string {
+  const prefix = `${provider}/`;
+  if (id.startsWith(prefix)) return id.slice(prefix.length);
+  if (provider === "openai" && id.startsWith("openai/")) return id.slice("openai/".length);
+  if (provider === "gemini" && id.startsWith("google/")) return id.slice("google/".length);
+  return id;
+}
+
+function liveCanonicalId(provider: ProviderName, id: string): string {
+  const trimmed = id.trim();
+  if (!trimmed) return trimmed;
+  if (trimmed.startsWith(`${provider}/`)) return trimmed;
+  if (provider === "openai") {
+    const lower = trimmed.toLowerCase();
+    // Official OpenAI-style ids already route to OpenAI by heuristic. Custom
+    // OpenAI-compatible deployments (Azure/local/proxy) often use arbitrary names;
+    // qualify those so routing sends them back to the endpoint that listed them.
+    return lower.includes("gpt") || /^o\d/.test(lower) || lower.includes("chatgpt")
+      ? trimmed
+      : `openai/${trimmed}`;
+  }
+  if (provider === "xai" || provider === "kimi") return trimmed;
+  return openaiCompatDef(provider) || provider === "ollama" || provider === "lmstudio" || provider === "antigravity"
+    ? `${provider}/${trimmed}`
+    : trimmed;
+}
+
+function liveModelRecordKey(provider: ProviderName, canonical: string, baseUrl: string | undefined): string {
+  return `${provider}\u0000${normalizeBaseUrl(baseUrl) ?? ""}\u0000${canonical}`;
+}
+
+function liveModelFallbackRow(provider: ProviderName, canonical: string, providerModel: string): CatalogModel {
+  const inferred = inferCatalogMetadata(canonical) ?? inferCatalogMetadata(providerModel);
+  return {
+    canonical,
+    provider,
+    providerModel,
+    contextTokens: inferred?.contextTokens ?? 128_000,
+    maxOutputTokens: inferred?.maxOutputTokens ?? 16_384,
+    thinking: inferred?.thinking ?? [],
+    images: inferred?.images ?? true,
+    company: inferred?.company ?? companyLabel(provider),
+    releaseDate: inferred?.releaseDate,
+    sizeClass: inferred?.sizeClass,
+  };
+}
+
+/** Record live ids returned by a provider's own model-list endpoint. Additive only:
+ *  transient partial responses must not evict an id observed earlier this session. */
+export function recordLiveProviderModels(
+  provider: ProviderName,
+  ids: readonly string[],
+  opts: { source?: LiveProviderModelSource; baseUrl?: string } = {},
+): void {
+  const baseUrl = normalizeBaseUrl(opts.baseUrl);
+  for (const id of ids) {
+    const canonical = liveCanonicalId(provider, id);
+    if (!canonical) continue;
+    const providerModel = stripProviderPrefix(provider, canonical);
+    const known = findCatalogModel(canonical) ?? findCatalogModel(providerModel);
+    const row = known
+      ? { ...known, canonical, provider, providerModel }
+      : liveModelFallbackRow(provider, canonical, providerModel);
+    liveProviderModels.set(liveModelRecordKey(provider, canonical, baseUrl), {
+      row,
+      source: opts.source ?? "none",
+      baseUrl,
+    });
+  }
+}
+
+function liveRecordMatchesConfig(record: LiveProviderModelRecord, config?: { openaiBaseUrl?: string }): boolean {
+  if (record.row.provider !== "openai") return true;
+  const wanted = normalizeBaseUrl(config?.openaiBaseUrl);
+  if (wanted || record.baseUrl) return wanted === record.baseUrl;
+  return true;
+}
+
+/** Live-discovered catalog rows usable for routing under the current config. */
+export function liveProviderCatalogModels(config?: { openaiBaseUrl?: string }): CatalogModel[] {
+  return [...liveProviderModels.values()]
+    .filter(record => liveRecordMatchesConfig(record, config))
+    .map(record => record.row);
+}
+
+/** True when a model came from the current provider/base URL's live model list. */
+export function isLiveProviderModel(provider: ProviderName, model: string, config?: { openaiBaseUrl?: string }): boolean {
+  const candidates = new Set([model, liveCanonicalId(provider, model), stripProviderPrefix(provider, model)]);
+  return [...liveProviderModels.values()].some(record =>
+    record.row.provider === provider &&
+    liveRecordMatchesConfig(record, config) &&
+    (candidates.has(record.row.canonical) || candidates.has(record.row.providerModel))
+  );
+}
+
+/** Test-only: clear live provider model supplements. */
+export function resetLiveProviderModels(): void {
+  liveProviderModels.clear();
+}
+
 /**
  * Model ids the Kimi Code OAuth backend (api.kimi.com/coding, Anthropic Messages
  * format) actually serves. The subscription endpoint rejects Moonshot API-platform

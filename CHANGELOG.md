@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.15] - 2026-07-09
+_"api 인증 모델도 사용가능하도록 딥리서치하고 개선해줘" — traced the API-authenticated GPT path to a routing catalog gap: `GET /models` with an OpenAI API key or an OpenAI-compatible provider returned real account-scoped model ids, and `/model` could show/pin them, but prompt routing still built its auto-select pools from static `MODEL_CATALOG` rows only. A custom `openaiBaseUrl` made this worse by treating every public OpenAI row as servable, so routing could choose `gpt-*`/`o*` ids that the configured local/Azure/proxy endpoint never listed._
+
+### Fixed
+- **API-authenticated live model catalogs now feed routing** (`src/ai/model-catalog.ts`, `src/ai/model-discovery.ts`, `src/agent/prompt-router.ts`) — successful provider `/models` responses are recorded in a session-lifetime live-provider supplement separate from the OpenAI OAuth Codex allow-list. API-key OpenAI and OpenAI-compatible clouds (Groq, OpenRouter, custom base URLs, etc.) can now contribute live model rows to `tierModelPool()`, `cheapestCredentialed()`, and `strongestCredentialed()` without waiting for a static release.
+- **Custom OpenAI base URLs no longer auto-select unrelated public OpenAI rows** (`src/agent/prompt-router.ts`) — when `openaiBaseUrl` is configured, routing excludes static public OpenAI catalog rows unless the current base URL's own `/models` response observed that id. Explicit user pins still work as manual overrides, but automatic routing now only chooses models the configured endpoint actually exposed.
+- **Co-resident TUI instances no longer trip listener-leak warnings** (`src/tui/app.ts`, `test/tui-app.test.ts`) — resize/SIGCONT listener ceilings are raised only to the observed in-process TUI fan-out, and the backpressure test now calls `finish()` so its cleanup path matches production.
+
+### Added
+- **API-auth model regression coverage** (`test/model-discovery.test.ts`, `test/prompt-router.test.ts`) — added tests proving API-key OpenAI discovery records live routing rows without widening `isCodexModel()`, custom base URLs do not inherit public `gpt-*` pools before discovery, recorded custom-base models route as `openai/...`, and OpenAI-compatible provider models enter pools under their provider prefix.
+
+### Verified
+- Focused model/routing suite: `bun test test/model-discovery.test.ts test/prompt-router.test.ts test/model-manager.test.ts` — 132 pass / 0 fail.
+- Typecheck: `bun run typecheck` — pass.
+- Full suite: `bun test` — 2814 pass / 0 fail.
+- Package tarball smoke: `npm pack --dry-run` — produced `jeo-code-0.8.15.tgz`.
+
 ## [0.8.14] - 2026-07-09
 _"GPT 연결 실패가 여전히 무응답으로 끝나는 케이스를 잡아줘" — traced the remaining GPT/routing failure path to post-call continuity: the route target could be credentialed and servable, but still end a turn with a recoverable terminal result such as plain `OpenAI returned no content`, rate/quota pressure, model unavailable/not found, or an invalid agent-tool response. jeo already knew the prompt tier and equivalent credentialed fallbacks, but it only applied that fallback before the model call. After the call failed, the turn stopped instead of trying another model in the same tier._
 

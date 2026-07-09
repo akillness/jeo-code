@@ -1326,6 +1326,6 @@ test("LaunchTui: the live-frame interval skips scheduled frames while write() si
     await new Promise(r => setTimeout(r, 260)); // several more ticks once drained
     expect(out.length).toBeGreaterThan(0); // normal cadence resumed
   } finally {
-    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    tui.finish("");
   }
 });

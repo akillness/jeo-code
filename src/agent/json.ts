@@ -15,26 +15,38 @@ export function extractJsonObject<T = unknown>(
   text: string,
   opts?: { preferKeys?: string[] },
 ): T {
+  return extractJsonObjectWithSpan<T>(text, opts).value;
+}
+
+/**
+ * Like {@link extractJsonObject}, but also reports the exact substring of `text`
+ * that was matched (verbatim, pre-repair) — the object itself, with none of the
+ * surrounding prose/fences/trailing commentary. Callers that persist the model's
+ * reply (e.g. into conversation history) use this to store ONLY the valid JSON:
+ * a degenerate model that appends garbled/repeated text after a valid tool call
+ * must not have that garbage echoed back into its own context on the next turn,
+ * where it would reinforce the corruption instead of self-correcting.
+ */
+export function extractJsonObjectWithSpan<T = unknown>(
+  text: string,
+  opts?: { preferKeys?: string[] },
+): { value: T; matched: string } {
   const raw = text.trim();
   const preferKeys = opts?.preferKeys;
 
   // Fast path: already pure JSON (optionally with a trailing comma to repair).
   const fast = tryParse<T>(raw);
-  if (fast !== undefined) return fast;
+  if (fast !== undefined) return { value: fast, matched: raw };
 
   // Strip common code fences and retry (pure, then trailing-comma-repaired).
   const defenced = raw.replace(/```(?:json|JSON)?/g, "").trim();
   const fromDefencedWhole = tryParse<T>(defenced);
-  if (fromDefencedWhole !== undefined) return fromDefencedWhole;
+  if (fromDefencedWhole !== undefined) return { value: fromDefencedWhole, matched: defenced };
 
-  const parsedFromDefenced = findAndParseBalancedObject<T>(defenced, preferKeys);
-  if (parsedFromDefenced !== undefined) {
-    return parsedFromDefenced;
-  }
-  const parsedFromRaw = findAndParseBalancedObject<T>(raw, preferKeys);
-  if (parsedFromRaw !== undefined) {
-    return parsedFromRaw;
-  }
+  const fromDefenced = findAndParseBalancedObject<T>(defenced, preferKeys);
+  if (fromDefenced !== undefined) return fromDefenced;
+  const fromRaw = findAndParseBalancedObject<T>(raw, preferKeys);
+  if (fromRaw !== undefined) return fromRaw;
   throw new Error(`No parseable JSON object found in model output: ${truncate(raw, 200)}`);
 }
 
@@ -204,29 +216,33 @@ function extractBalancedObject(text: string, startIndex: number): string | null 
  * after a stray JSON-looking object in reasoning prose); fall back to the first
  * parseable object when none carries a preferred key.
  */
-function findAndParseBalancedObject<T>(text: string, preferKeys?: string[]): T | undefined {
-  let firstParsed: T | undefined;
+function findAndParseBalancedObject<T>(
+  text: string,
+  preferKeys?: string[],
+): { value: T; matched: string } | undefined {
+  let first: { value: T; matched: string } | undefined;
   for (let i = 0; i < text.length; i++) {
     if (text[i] === "{") {
       const candidate = extractBalancedObject(text, i);
       if (candidate) {
         const parsed = tryParse<T>(candidate);
         if (parsed !== undefined) {
-          if (firstParsed === undefined) firstParsed = parsed;
-          if (!preferKeys || preferKeys.length === 0) return parsed;
+          const found = { value: parsed, matched: candidate };
+          if (first === undefined) first = found;
+          if (!preferKeys || preferKeys.length === 0) return found;
           if (
             parsed !== null &&
             typeof parsed === "object" &&
             preferKeys.some(k => k in (parsed as Record<string, unknown>))
           ) {
-            return parsed;
+            return found;
           }
           // else: keep scanning for an object that carries a preferred key
         }
       }
     }
   }
-  return firstParsed;
+  return first;
 }
 
 function truncate(s: string, n: number): string {

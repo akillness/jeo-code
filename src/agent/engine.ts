@@ -10,7 +10,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Message } from "./loop";
-import { extractJsonObject } from "./json";
+import { extractJsonObjectWithSpan, tryExtractJsonObject } from "./json";
 import { nativeToolSchemasFor, normalizeNativeToolName } from "./tool-schemas";
 import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, mkdirTool, deleteTool, bisectTool, type ToolResult } from "./tools";
 import { webSearchTool, setWebSearchActiveModel } from "./web-search";
@@ -469,7 +469,14 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           { jsonMode: false, model: opts.model, maxTokens: opts.maxTokens, signal: opts.signal, sessionKey: opts.sessionKey },
         );
         const consolidated = wrapUp.trim();
-        if (consolidated) {
+        // Defensive: the wrap-up call explicitly forbids tool/JSON output, but a
+        // degenerate model under a long, polluted turn can still emit tool-call-shaped
+        // JSON here. Never surface that raw to the user as if it were the answer —
+        // fall through to the plain stop message instead (same as an empty wrap-up).
+        const looksLikeToolCall = tryExtractJsonObject<any>(consolidated, { preferKeys: ["tool", "tools"] });
+        const isToolCallShaped = looksLikeToolCall && typeof looksLikeToolCall === "object" &&
+          (typeof looksLikeToolCall.tool === "string" || Array.isArray(looksLikeToolCall.tools));
+        if (consolidated && !isToolCallShaped) {
           pushAssistantTurn(history, consolidated, "", []);
           return finish({
             done: false,
@@ -671,10 +678,12 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       responseText = await invokeCallLlm(history, {
               jsonMode: true,
               // NATIVE tool-calling: declare the ACTIVE toolset (read-only subagents
-              // expose only their non-mutating tools). Capable adapters (anthropic …)
-              // use these and re-serialize the structured call to canonical JSON; the
-              // antigravity/ollama fallback ignores them. Only on the main step — never
-              // the prose wrap-up call below.
+              // expose only their non-mutating tools). NATIVE-capable adapters
+              // (anthropic, gemini, antigravity — see supportsNativeTools) send these
+              // on the wire and re-serialize the structured call to canonical JSON;
+              // ollama (no native tool support) ignores them and relies solely on the
+              // JSON-in-prose protocol above. Only on the main step — never the prose
+              // wrap-up call below.
               tools: turnToolSchemas,
               model: opts.model,
               maxTokens: opts.maxTokens,
@@ -857,7 +866,14 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
 
     let invocation: any;
     try {
-      invocation = extractJsonObject<any>(responseText, { preferKeys: ["tool", "tools"] });
+      const extracted = extractJsonObjectWithSpan<any>(responseText, { preferKeys: ["tool", "tools"] });
+      invocation = extracted.value;
+      // Trim to ONLY the matched JSON — a degenerate model that appends
+      // garbled/repeated text after a valid tool call must not have that
+      // garbage (a) shown to the user as this turn's assistant record, or
+      // (b) echoed back into its own history on the next call, where it
+      // would reinforce the corruption instead of self-correcting.
+      responseText = extracted.matched;
     } catch (err) {
       ev.onAssistant?.(responseText, null);
       // Prose salvage: a reply with no JSON object at all is a chat-style final

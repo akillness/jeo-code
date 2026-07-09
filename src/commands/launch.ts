@@ -48,7 +48,8 @@ import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recen
 import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
-import { routePrompt, deriveCacheSessionKey, warnOnce, type RouteDecision } from "../agent/prompt-router";
+import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, type RouteDecision } from "../agent/prompt-router";
+import { isRateLimitError, isUsageLimitError } from "../util/retry";
 
 import { listAliases } from "../ai/model-registry";
 import { openaiCompatDef, SUBSCRIPTION_PROVIDER_NAMES } from "../ai/providers/openai-compatible-catalog";
@@ -882,6 +883,42 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // that write silently switch THIS running session's model mid-run. Per-session model
     // selection must stay session-local: running sessions never influence each other.
     const routingEnabled = sessionRouteOverride ?? !!turnConfig.routing?.enabled;
+    let routeCredentialNotice: string | undefined;
+    let routeVetoNote: string | undefined;
+    const equivalentRouteFallback = async (decision: RouteDecision, reason: string, exclude: readonly string[] = []): Promise<string | null> => {
+      const excluded = new Set([decision.model, ...exclude]);
+      const candidates = tierModelPool(decision.tier, turnConfig)
+        .filter(model => !excluded.has(model))
+        .filter(model => !images?.length || catalogMetadata(model)?.images !== false);
+      if (candidates.length === 0) return null;
+      const selected = selectFromPool(candidates, sessionId ? `${sessionId}:fallback:${decision.model}:${reason}` : undefined);
+      const start = Math.max(0, candidates.indexOf(selected));
+      const ordered = [...candidates.slice(start), ...candidates.slice(0, start)];
+      for (const candidate of ordered) {
+        const { resolved, provider } = await describeModel(candidate, turnConfig);
+        const status = await describeProvider(provider, turnConfig);
+        if (!status.ready || !modelServableWithConfig(provider, resolved, turnConfig)) continue;
+        if (provider === "ollama" || provider === "lmstudio") {
+          const localBaseUrl = provider === "ollama"
+            ? (turnConfig.ollamaBaseUrl ?? "http://localhost:11434")
+            : (turnConfig.lmstudioBaseUrl ?? "http://localhost:1234/v1");
+          if (!await isLocalProviderReachable(provider, localBaseUrl)) continue;
+        }
+        return candidate;
+      }
+      return null;
+    };
+    const fallbackDecision = async (decision: RouteDecision, reason: string, noticeKey: string, notice: string): Promise<RouteDecision | null> => {
+      const fallback = await equivalentRouteFallback(decision, reason);
+      if (!fallback) {
+        routeVetoNote = `routed model '${decision.model}' ${reason} — fell back to '${sessionModel || defaultModel}'`;
+        routeCredentialNotice = warnOnce(noticeKey, notice);
+        return null;
+      }
+      routeVetoNote = `routed model '${decision.model}' ${reason} — switched to equivalent '${fallback}'`;
+      routeCredentialNotice = warnOnce(noticeKey, `${notice} Switching to equivalent '${fallback}' for this turn.`);
+      return { ...decision, model: fallback, warning: decision.warning ? `${decision.warning}; ${routeVetoNote}` : routeVetoNote };
+    };
     let routed = routingEnabled && !sessionModel
       ? await routePrompt(userInput, turnConfig, { hasImages: !!images?.length, sessionId }).catch(() => null)
       : null;
@@ -900,8 +937,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // the top of prompt-router.ts. Nulling `routed` here (rather than patching its
     // `.model`) lets the EXISTING `activeModel`/`lastRouteDecision` fallback lines
     // below handle the rest unchanged.
-    let routeCredentialNotice: string | undefined;
-    let routeVetoNote: string | undefined;
     if (routed) {
       // describeModel expands aliases (e.g. a hand-written `roles.high: "gpt"`)
       // exactly like the real call path, so the servability check below judges
@@ -909,23 +944,23 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       const { resolved: routedResolved, provider: routedProvider } = await describeModel(routed.model, turnConfig);
       const status = await describeProvider(routedProvider, turnConfig);
       if (!status.ready) {
-        routeVetoNote = `routed model '${routed.model}' (${routedProvider}) has no usable credential this turn — fell back to '${sessionModel || defaultModel}'`;
-        routeCredentialNotice = warnOnce(
+        routed = await fallbackDecision(
+          routed,
+          `(${routedProvider}) has no usable credential this turn`,
           `prompt-router:provider-not-ready:${routedProvider}`,
-          `[route] routed to '${routed.model}' (${routedProvider}) but that provider has no usable credential — falling back to the default model this turn. Run 'jeo auth login ${routedProvider}' or reconfigure routing.tiers/roles for a provider you're logged into.`,
+          `[route] routed to '${routed.model}' (${routedProvider}) but that provider has no usable credential. Run 'jeo auth login ${routedProvider}' or reconfigure routing.tiers/roles for a provider you're logged into.`,
         );
-        routed = null;
       } else if (!modelServableWithConfig(routedProvider, routedResolved, turnConfig)) {
         // Provider readiness is necessary but not sufficient: an OAuth login only
         // serves specific models (auth matrix on modelServableWithConfig). Only
         // user-pinned routing.tiers/roles models can hit this branch —
         // auto-selected models already passed the same predicate.
-        routeVetoNote = `routed model '${routed.model}' (${routedProvider}) is not servable by the stored ${routedProvider} credential this turn — fell back to '${sessionModel || defaultModel}'`;
-        routeCredentialNotice = warnOnce(
+        routed = await fallbackDecision(
+          routed,
+          `(${routedProvider}) is not servable by the stored ${routedProvider} credential this turn`,
           `prompt-router:model-not-servable:${routed.model}`,
-          `[route] routed to '${routed.model}' but the stored ${routedProvider} OAuth login cannot serve that model — falling back to the default model this turn. Set ${routedProvider.toUpperCase()}_API_KEY or reconfigure routing.tiers/roles to a model your login serves.`,
+          `[route] routed to '${routed.model}' but the stored ${routedProvider} OAuth login cannot serve that model. Set ${routedProvider.toUpperCase()}_API_KEY or reconfigure routing.tiers/roles to a model your login serves.`,
         );
-        routed = null;
       } else if (routedProvider === "ollama" || routedProvider === "lmstudio") {
         // Live reachability gate for LOCAL providers only: `describeProvider` reports
         // ollama/lmstudio as `ready: true` unconditionally (keyless just means "no
@@ -945,19 +980,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           : (turnConfig.lmstudioBaseUrl ?? "http://localhost:1234/v1");
         const reachable = await isLocalProviderReachable(routedProvider, localBaseUrl);
         if (!reachable) {
-          routeVetoNote = `routed model '${routed.model}' (${routedProvider}) is unreachable at ${localBaseUrl} this turn — fell back to '${sessionModel || defaultModel}'`;
-          routeCredentialNotice = warnOnce(
+          routed = await fallbackDecision(
+            routed,
+            `(${routedProvider}) is unreachable at ${localBaseUrl} this turn`,
             `prompt-router:provider-unreachable:${routedProvider}`,
-            `[route] routed to '${routed.model}' (${routedProvider}) but ${localBaseUrl} is unreachable — falling back to the default model this turn. Start the ${routedProvider} server, or reconfigure routing.tiers/roles for a provider that is running.`,
+            `[route] routed to '${routed.model}' (${routedProvider}) but ${localBaseUrl} is unreachable. Start the ${routedProvider} server, or reconfigure routing.tiers/roles for a provider that is running.`,
           );
-          routed = null;
         }
       }
     }
     lastRouteDecision = routed ?? (routeVetoNote ? { note: routeVetoNote } : routingEnabled && !sessionModel ? { note: "routing produced no decision (fail-open)" } : { note: "routing not active this turn" });
     // Explicit /model always wins: `routed` is only ever computed when `!sessionModel`.
-    const activeModel = routed?.model ?? (sessionModel || defaultModel);
-    const activeThinking = routed?.thinking ?? sessionThinking;
+    let activeModel = routed?.model ?? (sessionModel || defaultModel);
+    let activeThinking = routed?.thinking ?? sessionThinking;
     // Provider-side prompt caches are keyed PER MODEL — reusing the bare `sessionId`
     // across a mid-session model switch (routePrompt changing activeModel turn to
     // turn) sends the same cache-correlation key to a different model/provider,
@@ -967,8 +1002,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // `sessionId` is undefined only under `--no-session` — in that case there is no
     // provider-side cache lineage to protect anyway, so forward `undefined` unchanged
     // (matches the prior behavior of `sessionKey: sessionId` for that mode).
-    const turnSessionKey = sessionId ? deriveCacheSessionKey(sessionId, activeModel) : undefined;
-    const contextTokens = catalogMetadata(activeModel)?.contextTokens;
+    let turnSessionKey = sessionId ? deriveCacheSessionKey(sessionId, activeModel) : undefined;
+    let contextTokens = catalogMetadata(activeModel)?.contextTokens;
 
     // Resolve provider + dirty count up front — both are cheap and feed the live
     // frame's footer. `turnConfig` is reused so describeModel does NOT re-read the
@@ -1273,18 +1308,47 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           tags: ["jeo", "launch"],
         });
         opik.startTurn();
-        result = await runAgentLoop(history, {
+        const runLoopWithModel = (model: string, thinking: ThinkLevel | undefined, cacheKey: string | undefined, maxSteps = flags.maxSteps, budget?: { maxExtensions: number }) => runAgentLoop(history, {
           cwd,
           tools,
-          maxSteps: flags.maxSteps,
-          model: activeModel,
-          maxTokens: resolveMaxOutputTokens(activeModel, activeThinking),
-          reasoningEffort: activeThinking ? thinkingToReasoningEffort(activeThinking) : undefined,
+          maxSteps,
+          ...(budget ? { budget } : {}),
+          model,
+          maxTokens: resolveMaxOutputTokens(model, thinking),
+          reasoningEffort: thinking ? thinkingToReasoningEffort(thinking) : undefined,
           signal: ac.signal,
-          sessionKey: turnSessionKey,
+          sessionKey: cacheKey,
           steer: drainSteer,
           events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone }, persistTurnTail), opik),
         });
+        const routeFailureReason = (doneReason: unknown): string | null => {
+          const message = String(doneReason ?? "");
+          if (!message) return null;
+          const asError = new Error(message);
+          if (isRateLimitError(asError)) return "hit a rate limit";
+          if (isUsageLimitError(asError)) return "hit a usage/quota limit";
+          if (/does not recognize the requested model|model .*?(?:not found|not available|unavailable|unsupported|retired|gated)|\b(?:400|404)\b/i.test(message)) {
+            return "is unavailable";
+          }
+          return null;
+        };
+        result = await runLoopWithModel(activeModel, activeThinking, turnSessionKey);
+        const routedFailureReason = routed && !result.done ? routeFailureReason(result.doneReason) : null;
+        if (routed && routedFailureReason) {
+          const fallback = await equivalentRouteFallback(routed, routedFailureReason, [activeModel]);
+          if (fallback) {
+            const previousModel = activeModel;
+            activeModel = fallback;
+            activeThinking = routed.thinking ?? sessionThinking;
+            turnSessionKey = sessionId ? deriveCacheSessionKey(sessionId, activeModel) : undefined;
+            contextTokens = catalogMetadata(activeModel)?.contextTokens;
+            lastRouteDecision = { ...routed, model: activeModel, warning: `routed model '${previousModel}' ${routedFailureReason}; switched to equivalent '${activeModel}'` };
+            const notice = `[route] routed model '${previousModel}' ${routedFailureReason}; switching to equivalent '${activeModel}' for this turn.`;
+            if (tui) tui.events().onNotice?.(notice);
+            else console.log(notice);
+            result = await runLoopWithModel(activeModel, activeThinking, turnSessionKey);
+          }
+        }
         if (result.done && looksLikeSkillEcho(result.doneReason ?? "", resolvedSkills)) {
           history.push({
             role: "user",

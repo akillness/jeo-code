@@ -53,15 +53,20 @@ async function runCommand(cmd: string[]): Promise<{ success: boolean; stdout: st
   }
 }
 
-export async function executeComputerAction(action: ComputerAction): Promise<{ success: boolean; output: string; error?: string }> {
-  const config = await readGlobalConfig().catch(() => null);
-  if (!config?.computer?.enabled) {
+export async function executeComputerAction(action: ComputerAction, opts?: { enabledOverride?: boolean }): Promise<{ success: boolean; output: string; error?: string }> {
+  let enabled = opts?.enabledOverride;
+  if (enabled === undefined) {
+    const config = await readGlobalConfig().catch(() => null);
+    enabled = !!config?.computer?.enabled;
+  }
+  if (!enabled) {
     return {
       success: false,
       output: "",
-      error: "Computer use is disabled. Enable it by setting 'computer.enabled: true' in ~/.jeo/config.json",
+      error: "Computer use is disabled. Enable it by running '/computer on' this session, or setting 'computer.enabled: true' in ~/.jeo/config.json",
     };
   }
+
 
   // Read-only actions don't need supervisor inputAllowed check
   const isReadOnly = action.action === "screenshot" || action.action === "wait";
@@ -247,7 +252,8 @@ export async function executeComputerAction(action: ComputerAction): Promise<{ s
       const results: string[] = [];
       for (let i = 0; i < action.actions.length; i++) {
         const subAction = action.actions[i];
-        const res = await executeComputerAction(subAction);
+        const res = await executeComputerAction(subAction, opts);
+
         if (!res.success) {
           const err = `Batch failed at step ${i}: ${res.error}`;
           await logAudit(action, false, err);

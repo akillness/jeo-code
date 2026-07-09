@@ -2,6 +2,9 @@ import { createInterface } from "node:readline/promises";
 import { emitKeypressEvents } from "node:readline";
 import { PassThrough } from "node:stream";
 import { runAgentLoop, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, type AgentLoopEvents } from "../agent/engine";
+import { computerSupervisor } from "../agent/computer-supervisor";
+import { executeComputerAction } from "./computer";
+
 import { createOpikTracer, wrapEvents } from "../agent/opik-tracer";
 import { initialDynamicStepLimit } from "../agent/step-budget";
 import { memoryPromptSection, spawnDetachedDistill, recordFailedAttempt } from "../agent/memory";
@@ -48,8 +51,10 @@ import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recen
 import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
-import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, type RouteDecision } from "../agent/prompt-router";
-import { isRateLimitError, isUsageLimitError } from "../util/retry";
+import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, type PromptTier, type RouteDecision } from "../agent/prompt-router";
+
+import { isRateLimitError, isUsageLimitError, isConnectionError } from "../util/retry";
+
 
 import { listAliases } from "../ai/model-registry";
 import { openaiCompatDef, SUBSCRIPTION_PROVIDER_NAMES } from "../ai/providers/openai-compatible-catalog";
@@ -206,6 +211,8 @@ import { handleUndoSlash } from "./launch/git-slash";
 import { runSessionSlash } from "./launch/session-slash";
 import { runModelSlash } from "./launch/model-slash";
 import { runRouteSlash } from "./launch/route-slash";
+import { runComputerSlash } from "./launch/computer-slash";
+
 import { runAgentsSlash, runRolesSlash, runFastSlash, runThinkingSlash } from "./launch/agents-slash";
 import { wikiRootPromptLine, decideWikiSlash } from "./launch/wiki-slash";
 import { decideThemeSlash, buildConfigPanelLines, runEvolveSimulation } from "./launch/system-slash";
@@ -652,6 +659,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let sessionRouteOverride: boolean | undefined;
   // Last routing decision (or the reason none applied) — /route why reads this.
   let lastRouteDecision: RouteDecision | { note: string } | null = null;
+  // Computer-use session override: undefined = follow config.computer.enabled, true/false = /computer on|off wins this session.
+  let sessionComputerOverride: boolean | undefined;
+
   // Cache of live, credential-validated models per provider (refreshed by live pickers).
   let liveModelsCache: ProviderModelsResult[] | null = null;
   const getLiveModels = async (force = false): Promise<ProviderModelsResult[]> => {
@@ -887,9 +897,26 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     let routeVetoNote: string | undefined;
     const equivalentRouteFallback = async (decision: RouteDecision, reason: string, exclude: readonly string[] = []): Promise<string | null> => {
       const excluded = new Set([decision.model, ...exclude]);
-      const candidates = tierModelPool(decision.tier, turnConfig)
-        .filter(model => !excluded.has(model))
-        .filter(model => !images?.length || catalogMetadata(model)?.images !== false);
+      const poolCandidates = (): string[] =>
+        tierModelPool(decision.tier, turnConfig)
+          .filter(model => !excluded.has(model))
+          .filter(model => !images?.length || catalogMetadata(model)?.images !== false);
+      let candidates = poolCandidates();
+      // The static MODEL_CATALOG only lists a couple of OpenAI-compatible clouds by
+      // name (tencent, xai) — every other API-key provider (groq, deepseek, mistral,
+      // openrouter, …) only enters `tierModelPool` once its `/models` endpoint has
+      // been discovered THIS session (`recordLiveProviderModels`, driven by
+      // `getLiveModels`). Interactive sessions warm that cache in the background at
+      // startup, but a ONE-SHOT invocation (`jeo -p`/piped input) never calls
+      // `getLiveModels()` at all — so a credentialed-but-undiscovered API provider
+      // had ZERO fallback candidates even though the user's key works. Warming here
+      // is cheap: `getLiveModels()` caches its result (`liveModelsCache`), so this
+      // only pays real discovery latency once per cold session, exactly when the
+      // primary model already failed and a fallback is genuinely needed.
+      if (candidates.length === 0) {
+        await getLiveModels().catch(() => []);
+        candidates = poolCandidates();
+      }
       if (candidates.length === 0) return null;
       const selected = selectFromPool(candidates, sessionId ? `${sessionId}:fallback:${decision.model}:${reason}` : undefined);
       const start = Math.max(0, candidates.indexOf(selected));
@@ -919,9 +946,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       routeCredentialNotice = warnOnce(noticeKey, `${notice} Switching to equivalent '${fallback}' for this turn.`);
       return { ...decision, model: fallback, warning: decision.warning ? `${decision.warning}; ${routeVetoNote}` : routeVetoNote };
     };
-    let routed = routingEnabled && !sessionModel
+    // `sessionRouteOverride === true` means the user explicitly ran `/route on` —
+    // that explicit request wins over a prior model pin (`sessionModel`, from
+    // `--model`/`/model`) so routing actually evaluates every prompt as asked,
+    // instead of being silently blocked by a pin the user may have forgotten about.
+    // Routing enabled only via config (`routing.enabled: true`, no explicit /route
+    // toggle this session) still respects an existing pin, as before.
+    const routeOverridesPin = sessionRouteOverride === true;
+    let routed = routingEnabled && (routeOverridesPin || !sessionModel)
       ? await routePrompt(userInput, turnConfig, { hasImages: !!images?.length, sessionId }).catch(() => null)
       : null;
+
     // Fail-open credential gate: `routePrompt` only resolves a tier's model from
     // config (routing.tiers/roles.smol/roles.slow/defaultModel) — it deliberately
     // stays pure/config-only (see its narrowed `Pick<Config,...>` param) and never
@@ -989,8 +1024,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         }
       }
     }
-    lastRouteDecision = routed ?? (routeVetoNote ? { note: routeVetoNote } : routingEnabled && !sessionModel ? { note: "routing produced no decision (fail-open)" } : { note: "routing not active this turn" });
-    // Explicit /model always wins: `routed` is only ever computed when `!sessionModel`.
+    lastRouteDecision = routed ?? (routeVetoNote ? { note: routeVetoNote } : routingEnabled && (routeOverridesPin || !sessionModel) ? { note: "routing produced no decision (fail-open)" } : { note: "routing not active this turn" });
+    // Explicit /model always wins UNLESS an explicit `/route on` this session opted
+    // back into per-prompt routing (`routeOverridesPin`); otherwise `routed` is only
+    // ever computed when `!sessionModel`.
+
     let activeModel = routed?.model ?? (sessionModel || defaultModel);
     let activeThinking = routed?.thinking ?? sessionThinking;
     // Provider-side prompt caches are keyed PER MODEL — reusing the bare `sessionId`
@@ -1296,6 +1334,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           irc: createIrcTool(subagentRegistry),
           goal: createGoalTool(),
           approve: createApproveTool(),
+          // `/computer on|off` session override wins over `config.computer.enabled`
+          // (see `sessionComputerOverride`/`computer-slash.ts`); undefined = fall
+          // through to DEFAULT_TOOLS' own config-only gate inside executeComputerAction.
+          computer: (a: Record<string, any>) => {
+            computerSupervisor.setKillSwitchLive(true);
+            computerSupervisor.heartbeat();
+            return executeComputerAction(a as any, { enabledOverride: sessionComputerOverride });
+          },
+
         };
         const tools = filterToolMap(fullTools, Array.from(allowedTools));
         // Opik observability (opt-in via JEO_OPIK): one trace per turn, spans per
@@ -1327,6 +1374,46 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           const asError = new Error(message);
           if (isRateLimitError(asError)) return "hit a rate limit";
           if (isUsageLimitError(asError)) return "hit a usage/quota limit";
+          // Auth/credential failures (401/403 rejection, missing/expired credential) are
+          // an operational fault of THIS provider, not the prompt or the model's
+          // capability — the equivalent-pool fallback exists precisely to route around a
+          // provider whose credential just broke (expired OAuth token, revoked key, no
+          // key configured) mid-session, instead of failing the whole turn.
+          if (/rejected the credential|no credential for provider|no usable credential|\b401\b|\b403\b/i.test(message)) {
+            return "is unauthenticated for this session";
+          }
+          // Pre-response connection failures (refused/unresolvable host, local
+          // ollama/lmstudio server down, unreachable custom base URL) — see
+          // isConnectionError's docs. Distinct from a mid-stream drop (transient,
+          // already retried by the engine) or a genuine timeout (handled below).
+          if (isConnectionError(asError) || /could not connect|is unreachable at/i.test(message)) {
+            return "is unreachable";
+          }
+          // A silent/no-response provider (the call ran the full wall-clock timeout
+          // with no usable output) is exactly the "no response" exception the
+          // equivalent-pool fallback exists to route around.
+          if (/did not complete the request within the call timeout|the operation timed out|exceeded the overall deadline/i.test(message)) {
+            return "did not respond in time";
+          }
+          // Billing/payment failures (HTTP 402 — quota exhausted with postpaid billing
+          // off, insufficient credit, free-trial exhausted) are a provider-account
+          // fault, not a prompt/model problem: the SAME account's other models are
+          // often unaffected (observed: Tencent's kimi-k2.5/deepseek-v3.2 402 while
+          // deepseek-v4-flash/glm-5.2 on the SAME key kept working). Reroute exactly
+          // like a rate/usage limit instead of leaving a configured-but-billing-blocked
+          // model dead for the rest of the session.
+          if (/\b402\b|payment required|insufficient credit|billing (?:is )?not enabled|free trial quota/i.test(message)) {
+            return "requires billing/payment on this provider account";
+          }
+          // A persistent 5xx that SURVIVED the model-manager's own retry budget
+          // (withRetry already backed off 500/502/503/504/529 internally — see
+          // defaultRetryable's RETRYABLE_STATUS) means the provider's server itself
+          // is down/overloaded beyond what backoff can recover from THIS session.
+          // Equally a provider-side fault as the classes above, not a prompt issue.
+          if (/\b(?:500|502|503|504|529)\b/.test(message)) {
+            return "hit a persistent server-side error";
+          }
+
           if (/does not recognize the requested model|model .*?(?:not found|not available|unavailable|unsupported|retired|gated)|\b(?:400|404)\b/i.test(message)) {
             return "is unavailable";
           }
@@ -1351,23 +1438,39 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           ? Math.floor(routeFallbackMaxRaw)
           : 3;
         const attemptedRouteModels = new Set<string>([activeModel]);
-        for (let routeFallbackAttempt = 0; routed && routeFallbackAttempt < routeFallbackMax; routeFallbackAttempt++) {
+        // A NON-routed turn (routing disabled, or the user pinned a model via /model)
+        // still needs the equivalent-pool fallback on a usage-limit/rate-limit/credential
+        // failure — the exact "5-hour usage window exhausted, model just stops working"
+        // case this loop exists to fix. Synthesize a same-size-class RouteDecision
+        // (inferTierForModel) so `equivalentRouteFallback` has a tier/pool to search even
+        // with routing off; a real `routed` decision (routing enabled) is used unchanged.
+        let fallbackBaseDecision: RouteDecision = routed ?? {
+          model: activeModel,
+          thinking: activeThinking,
+          tier: inferTierForModel(activeModel),
+          confidence: 1,
+          source: "heuristic",
+          signals: [],
+        };
+        for (let routeFallbackAttempt = 0; routeFallbackAttempt < routeFallbackMax; routeFallbackAttempt++) {
           const routedFailureReason = !result.done ? routeFailureReason(result.doneReason) : null;
           if (!routedFailureReason) break;
-          const fallback = await equivalentRouteFallback(routed, routedFailureReason, [...attemptedRouteModels]);
+          const fallback = await equivalentRouteFallback(fallbackBaseDecision, routedFailureReason, [...attemptedRouteModels]);
           if (!fallback) break;
           const previousModel = activeModel;
           attemptedRouteModels.add(fallback);
           activeModel = fallback;
-          activeThinking = routed.thinking ?? sessionThinking;
+          activeThinking = fallbackBaseDecision.thinking ?? sessionThinking;
           turnSessionKey = sessionId ? deriveCacheSessionKey(sessionId, activeModel) : undefined;
           contextTokens = catalogMetadata(activeModel)?.contextTokens;
-          lastRouteDecision = { ...routed, model: activeModel, warning: `routed model '${previousModel}' ${routedFailureReason}; switched to equivalent '${activeModel}'` };
-          const notice = `[route] routed model '${previousModel}' ${routedFailureReason}; switching to equivalent '${activeModel}' for this turn.`;
+          fallbackBaseDecision = { ...fallbackBaseDecision, model: activeModel };
+          lastRouteDecision = { ...fallbackBaseDecision, warning: `model '${previousModel}' ${routedFailureReason}; switched to equivalent '${activeModel}'` };
+          const notice = `[route] model '${previousModel}' ${routedFailureReason}; switching to equivalent '${activeModel}' for this turn.`;
           if (tui) tui.events().onNotice?.(notice);
           else console.log(notice);
           result = await runLoopWithModel(activeModel, activeThinking, turnSessionKey);
         }
+
         if (result.done && looksLikeSkillEcho(result.doneReason ?? "", resolvedSkills)) {
           history.push({
             role: "user",
@@ -2845,6 +2948,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         color: "default",
       },
     ];
+    for (const tier of PROMPT_TIERS) {
+      const configured = cfg.routing?.tiers?.[tier];
+      if (!configured?.model) continue;
+      assignments.push({
+        role: `routing:${tier}`,
+        label: `ROUTE:${tier}`,
+        model: configured.model,
+        thinking: configured.thinking ?? "auto",
+        color: "default",
+      });
+    }
     for (const roleId of orderedRoleIds) {
       const role = byId.get(roleId);
       if (!role) continue;
@@ -2950,9 +3064,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     title: string,
     current: ThinkLevel | undefined,
     inheritLabel?: string,
+    supportedLevels?: readonly ThinkLevel[],
   ): Promise<ThinkLevel | "inherit" | undefined> => {
     const levels = buildThinkingLevelChoices(current, {
       inheritLabel,
+      levels: supportedLevels,
       tokenHint: lvl => `~${Math.round(thinkingMaxTokens(lvl as ThinkLevel) / 1000)}k tokens`,
     });
     const picked = await pickFromOptions(title, levels);
@@ -3020,6 +3136,35 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         ...(defaultThinking ? { thinkingLevel: defaultThinking } : {}),
       }));
       console.log(`Model set to ${formatModelLine({ label: target, resolved, provider, ready: st?.ready })}${defaultThinking ? ` · thinking ${defaultThinking}` : ""} — saved as default.`);
+      return true;
+    }
+
+    if (targetId.startsWith("routing:")) {
+      const tier = targetId.slice("routing:".length) as PromptTier;
+      if (!PROMPT_TIERS.includes(tier)) return false;
+      const meta = catalogMetadata(target);
+      const supportedThinking = meta?.thinking ?? [];
+      const currentRouteThinking = cfgForPick.routing?.tiers?.[tier]?.thinking;
+      let thinking: ThinkLevel | undefined;
+      if (supportedThinking.length > 0) {
+        const level = await pickThinkingLevel(
+          `Reasoning for route ${tier}: ${target}`,
+          currentRouteThinking,
+          undefined,
+          supportedThinking,
+        );
+        if (level === undefined) {
+          console.log("(cancelled)");
+          return true;
+        }
+        thinking = isThinkingLevel(level) ? level : undefined;
+      }
+      await saveConfigPatch(raw => ({
+        routing: withRoutingTierSetting(raw, tier, { model: target, thinking }),
+      }));
+      const { provider } = await describeModel(target);
+      const thinkingLabel = supportedThinking.length > 0 ? ` · thinking ${thinking}` : " · no thinking override (model does not advertise thinking)";
+      console.log(`Prompt route ${tier} set to ${target} (${provider})${thinkingLabel} — routing enabled in ~/.jeo/config.json. Clear any session model pin with /model auto to let routing evaluate prompts.`);
       return true;
     }
 
@@ -4295,6 +4440,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         for (const line of routeResult.lines) console.log(line);
         continue;
       }
+      if (input.startsWith("/computer") && (input === "/computer" || input[9] === " ")) {
+        const cfgNow = await readGlobalConfig();
+        const computerResult = runComputerSlash(input, {
+          sessionComputerOverride,
+          computerConfigEnabled: !!cfgNow.computer?.enabled,
+        });
+        if (computerResult.sessionComputerOverride !== undefined) sessionComputerOverride = computerResult.sessionComputerOverride;
+        for (const line of computerResult.lines) console.log(line);
+        continue;
+      }
+
       if (input.startsWith("/view") && (input === "/view" || input[5] === " ")) {
         for (const line of await handleViewSlash(input, cwd)) console.log(line);
         continue;

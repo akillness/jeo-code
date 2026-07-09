@@ -40,6 +40,20 @@ describe("Computer Use Command & Actions", () => {
     expect(res.error).toContain("disabled");
   });
 
+  test("enabledOverride: true bypasses a disabled config (e.g. /computer on this session)", async () => {
+    mockComputerEnabled = false;
+    const res = await executeComputerAction({ action: "wait", duration: 0.01 }, { enabledOverride: true });
+    expect(res.success).toBe(true);
+  });
+
+  test("enabledOverride: false forces disabled even when config enables it (e.g. /computer off this session)", async () => {
+    mockComputerEnabled = true;
+    const res = await executeComputerAction({ action: "screenshot" }, { enabledOverride: false });
+    expect(res.success).toBe(false);
+    expect(res.error).toContain("disabled");
+  });
+
+
   test("should block side-effecting actions if supervisor is not live", async () => {
     computerSupervisor.setKillSwitchLive(false);
     const res = await executeComputerAction({ action: "click", x: 100, y: 200 });

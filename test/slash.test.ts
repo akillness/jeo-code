@@ -4,7 +4,8 @@ import { matchSlash, isSlashAttempt, suggestSlashCommands, SLASH_COMMANDS, SLASH
 test("matchSlash: prefix matches lead, fuzzy subsequence hits trail (case-insensitive)", () => {
   expect(matchSlash("/")).toEqual(SLASH_COMMANDS);
   // Prefix block comes first, in palette order; fuzzy hits may follow.
-  expect(matchSlash("/c").slice(0, 4)).toEqual(["/clear", "/compact", "/context", "/config"]);
+  expect(matchSlash("/c").slice(0, 5)).toEqual(["/clear", "/compact", "/context", "/computer", "/config"]);
+
   expect(matchSlash("/MO").slice(0, 1)).toEqual(["/model"]);
   expect(matchSlash("/exit")).toEqual(["/exit"]);
   expect(matchSlash("/zzz")).toEqual([]);

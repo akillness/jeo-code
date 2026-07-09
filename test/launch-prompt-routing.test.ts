@@ -1,5 +1,7 @@
 import { test, expect, mock, beforeEach, afterEach, afterAll } from "bun:test";
 import { resetPromptRouterWarnings } from "../src/agent/prompt-router";
+import { OPENAI_COMPAT_PROVIDERS } from "../src/ai/providers/openai-compatible-catalog";
+import type { AgentLoopOptions, AgentLoopResult } from "../src/agent/engine";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -41,6 +43,7 @@ mock.module("../src/tui/app", () => ({
 let mockQuestions: string[] = [];
 let mockIndex = 0;
 let capturedCalls: { model?: string; maxTokens?: number; reasoningEffort?: string; sessionKey?: string }[] = [];
+let runAgentLoopDelegate: (history: unknown, opts: AgentLoopOptions) => Promise<AgentLoopResult> = async () => ({ done: true, steps: 1, doneReason: "ok" });
 
 mock.module("node:readline/promises", () => ({
   createInterface: () => ({
@@ -54,9 +57,9 @@ mock.module("node:readline/promises", () => ({
 
 mock.module("../src/agent/engine", () => ({
   ...realEngine,
-  runAgentLoop: mock(async (_history: unknown, opts: { model?: string; maxTokens?: number; reasoningEffort?: string; sessionKey?: string }) => {
+  runAgentLoop: mock(async (history: unknown, opts: AgentLoopOptions) => {
     capturedCalls.push({ model: opts.model, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, sessionKey: opts.sessionKey });
-    return { done: true, steps: 1, doneReason: "ok" };
+    return runAgentLoopDelegate(history, opts);
   }),
 }));
 
@@ -69,6 +72,7 @@ beforeEach(() => {
   mockIndex = 0;
   capturedCalls = [];
   capturedRoutedTiers = [];
+  runAgentLoopDelegate = async () => ({ done: true, steps: 1, doneReason: "ok" });
   resetPromptRouterWarnings();
 });
 
@@ -474,6 +478,35 @@ async function withOpenAiEnvCleared<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
+const ROUTING_PROVIDER_ENV_KEYS = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_OAUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OPENAI_OAUTH_TOKEN",
+  "GEMINI_API_KEY",
+  "GEMINI_OAUTH_TOKEN",
+  "XAI_API_KEY",
+  ...OPENAI_COMPAT_PROVIDERS.map(def => def.apiKeyEnv),
+];
+
+async function withRoutingProviderEnvCleared<T>(run: () => Promise<T>): Promise<T> {
+  const saved: Record<string, string | undefined> = {};
+  for (const k of ROUTING_PROVIDER_ENV_KEYS) {
+    saved[k] = process.env[k];
+    delete process.env[k];
+  }
+  try {
+    return await run();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
 test("servability veto: OAuth-only openai + pinned non-Codex tier model -> switches to an equivalent credentialed model with a 'cannot serve' notice", async () => {
   await withOpenAiEnvCleared(async () => {
     const { calls, logs } = await runOneTurnWithLogs({
@@ -663,4 +696,86 @@ test("reachability veto: is scoped to local providers only — a cloud provider 
       expect(logs.some(l => l.includes("unreachable"))).toBe(false);
     },
   );
+});
+
+// --- post-call rerouting continuity (v0.8.14): once routing dispatches a model,
+// recoverable terminal failures should keep the turn alive by walking same-tier
+// servable fallbacks. Deterministic budget/safety/cancel failures must stay put
+// so the user sees the real failure instead of a silent model switch. ---
+
+test("post-call reroute: plain OpenAI no-content retry switches to same-tier fallback and /route why names it", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "gpt-4o-mini") {
+        return { done: false, steps: 1, doneReason: "Error: OpenAI returned no content." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, ["what is this?", "/route why"]);
+
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("returned no content"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("gpt-4o-mini");
+    expect(notice).toContain("claude-haiku-4-5");
+    const whyWarning = logs.find(l => l.startsWith("warning:") && l.includes("returned no content"));
+    expect(whyWarning).toBeDefined();
+    expect(whyWarning).toContain("gpt-4o-mini");
+    expect(whyWarning).toContain("claude-haiku-4-5");
+  });
+});
+
+test("post-call reroute: recoverable failure on first fallback keeps trying the next servable equivalent", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    const recoverableFailures: Record<string, true> = { "gpt-4o-mini": true, "claude-haiku-4-5": true };
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model && recoverableFailures[opts.model]) {
+        return { done: false, steps: 1, doneReason: "Error: OpenAI returned no content." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, "what is this?");
+
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5", "gpt-4.1"]);
+    const notices = logs.filter(l => l.includes("[route]") && l.includes("switching to equivalent"));
+    expect(notices).toHaveLength(2);
+    expect(notices[0]).toContain("gpt-4o-mini");
+    expect(notices[0]).toContain("claude-haiku-4-5");
+    expect(notices[1]).toContain("claude-haiku-4-5");
+    expect(notices[1]).toContain("gpt-4.1");
+  });
+});
+
+test("post-call reroute: deterministic output-budget no-content does not switch models", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async () => ({
+      done: false,
+      steps: 1,
+      doneReason: "Error: OpenAI returned no content (finish_reason=length) — output budget exhausted before any text (often reasoning tokens); raise maxTokens or lower reasoning effort.",
+    });
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, ["what is this?", "/route why"]);
+
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini"]);
+    expect(logs.some(l => l.includes("[route]") && l.includes("switching to equivalent"))).toBe(false);
+    expect(logs.some(l => l === "model: gpt-4o-mini")).toBe(true);
+    expect(logs.some(l => l.startsWith("warning:") && l.includes("switched to equivalent"))).toBe(false);
+  });
 });

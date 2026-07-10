@@ -1111,10 +1111,14 @@ test("rate-limit fast fallback: predicate re-evaluates fresh after a fallback sw
     }, "what is this?");
 
     // Two calls: gpt-4o-mini (rate limited) then claude-haiku-4-5 (the equivalent
-    // fallback, succeeds). Both calls see a TRUE predicate at the time they run — the
-    // first because claude-haiku-4-5 (untried) is credentialed, the second because a
-    // FURTHER untried candidate (e.g. gpt-4.1, per the "recoverable failure on first
-    // fallback" test above) is still available even after gpt-4o-mini was excluded.
+    // fallback, succeeds). Both models here are API-KEY-served (providers.openai/
+    // providers.anthropic, no oauth block) — `credentialScopeFor` returns `null` for
+    // both, so the credential-scope exclusion never engages and both calls see a TRUE
+    // predicate: first because claude-haiku-4-5 (untried) is credentialed, second
+    // because a FURTHER untried candidate (e.g. gpt-4.1, per the "recoverable failure
+    // on first fallback" test above) is still available even after gpt-4o-mini was
+    // excluded by id. See the "OAuth subscription" tests below for the scope-exclusion
+    // behavior this test does NOT exercise.
     expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
     expect(capturedRateLimitAvailability).toEqual([true, true]);
   });
@@ -1141,5 +1145,120 @@ test("post-call reroute: HTTP 429 rate limit on the routed model switches to a s
     expect(notice).toBeDefined();
     expect(notice).toContain("gpt-4o-mini");
     expect(notice).toContain("claude-haiku-4-5");
+  });
+});
+
+// --- OAuth-SUBSCRIPTION credential-scope exclusion (v0.8.22 follow-up): the fix
+// above (excluding by MODEL id only) is insufficient when several models share ONE
+// account-wide OAuth subscription rate-limit window (Claude Pro/Max, ChatGPT/Codex,
+// Kimi Code, Antigravity Cloud Code Assist). A real field report: `claude-sonnet-5`
+// 429s, the equivalent-pool fallback picks `claude-sonnet-4-6` (SAME Anthropic OAuth
+// token, SAME rate-limit window), which immediately re-429s — indistinguishable from
+// "never escaping auto-retry #1" even though a different model WAS dispatched each
+// round. Fix: `credentialScopeFor` classifies OAuth-subscription-served models into a
+// shared scope key; a 429/quota/auth failure excludes the WHOLE scope, not just the
+// one model id — while API-key-served models (independent per-key budget, exercised
+// by the tests above) are correctly left untouched (`credentialScopeFor` -> null). ---
+
+const OAUTH_STAMP = { access: "x", refresh: "x", expires: Date.now() + 1e9 };
+
+test("OAuth subscription scope: rateLimitFallbackAvailable() is FALSE when every untried same-tier candidate shares the SAME exhausted OAuth subscription", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => ({ done: true, steps: 1, doneReason: `completed on ${opts.model}` });
+
+    await runOneTurn({
+      providers: {},
+      oauth: { anthropic: OAUTH_STAMP },
+      defaultModel: "claude-sonnet-4-6",
+      routing: { enabled: true },
+    }, "Update the styling in src/app.css to use a darker background color for the header.");
+
+    // Standard tier under anthropic-OAuth-only credentials pools ONLY
+    // claude-sonnet-4-6/claude-sonnet-5 — both ride the SAME anthropic:oauth
+    // subscription scope as the active model, so there is genuinely no different-
+    // scope candidate to escape to.
+    expect(capturedCalls.map(c => c.model)).toEqual(["claude-sonnet-4-6"]);
+    expect(capturedRateLimitAvailability).toEqual([false]);
+  });
+});
+
+test("OAuth subscription scope: rateLimitFallbackAvailable() is TRUE when a DIFFERENT-scope (API-key-served) candidate exists alongside the exhausted OAuth subscription", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => ({ done: true, steps: 1, doneReason: `completed on ${opts.model}` });
+
+    await runOneTurn({
+      providers: { openai: "sk-test-openai" },
+      oauth: { anthropic: OAUTH_STAMP },
+      defaultModel: "claude-sonnet-4-6",
+      routing: { enabled: true },
+    }, "Update the styling in src/app.css to use a darker background color for the header.");
+
+    // Now the standard-tier pool also has gpt-5.4/o3 (API-key-served, independent
+    // budget from the anthropic OAuth subscription) — a genuine fallback exists.
+    expect(capturedCalls.map(c => c.model)).toEqual(["claude-sonnet-4-6"]);
+    expect(capturedRateLimitAvailability).toEqual([true]);
+  });
+});
+
+test("OAuth subscription scope: a 429 does NOT switch to another model on the SAME OAuth subscription — switches to a genuinely different credential scope instead", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "claude-sonnet-4-6") {
+        return { done: false, steps: 1, doneReason: "Error: Rate limited by Anthropic (HTTP 429). Auto-retry cannot clear this window right now." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { openai: "sk-test-openai" },
+      oauth: { anthropic: OAUTH_STAMP },
+      defaultModel: "claude-sonnet-4-6",
+      routing: { enabled: true },
+    }, ["Update the styling in src/app.css to use a darker background color for the header.", "/route why"]);
+
+    // Must switch to gpt-5.4/o3 (API-key, different scope) — NEVER to claude-sonnet-5
+    // (same anthropic:oauth scope as the model that just 429'd).
+    expect(calls.map(c => c.model)).toEqual(["claude-sonnet-4-6", expect.any(String)]);
+    const secondModel = calls[1].model;
+    expect(secondModel).not.toBe("claude-sonnet-5");
+    expect(["gpt-5.4", "o3"]).toContain(secondModel);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("hit a rate limit"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("claude-sonnet-4-6");
+    expect(notice).toContain(secondModel!);
+  });
+});
+
+test("OAuth subscription scope: exclusion accumulates across rounds — a SECOND OAuth-subscription failure (Antigravity) also gets scope-excluded, not just the first (Anthropic)", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    let calls = 0;
+    runAgentLoopDelegate = async (_history, opts) => {
+      calls++;
+      // Both the original Anthropic OAuth model AND its first Antigravity OAuth
+      // fallback 429 — only the third candidate (API-key OpenAI) succeeds.
+      if (opts.model === "claude-sonnet-4-6" || (typeof opts.model === "string" && opts.model.startsWith("antigravity/"))) {
+        return { done: false, steps: 1, doneReason: "Error: Rate limited (HTTP 429). Auto-retry cannot clear this window right now." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls: captured } = await runOneTurnWithLogs({
+      providers: { openai: "sk-test-openai" },
+      oauth: { anthropic: OAUTH_STAMP, antigravity: OAUTH_STAMP },
+      defaultModel: "claude-sonnet-4-6",
+      routing: { enabled: true },
+    }, "Update the styling in src/app.css to use a darker background color for the header.");
+
+    const models = captured.map(c => c.model);
+    // Every attempted model's PROVIDER must be distinct from every OTHER attempted
+    // OAuth-subscription model — anthropic and antigravity never both appear if one
+    // of them already failed and got scope-excluded (only ONE OAuth-scope model may
+    // appear per distinct scope: anthropic:oauth OR antigravity, never both after
+    // either has failed once — the accumulating excludedCredentialScopes set is what
+    // this proves). The turn must end on the API-key OpenAI model.
+    expect(models[models.length - 1]).toMatch(/^(gpt-5\.4|o3)$/);
+    // No model is repeated (the exact "stuck at auto-retry #1" symptom this fix targets).
+    expect(new Set(models).size).toBe(models.length);
+    expect(calls).toBe(models.length);
   });
 });

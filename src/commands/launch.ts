@@ -48,10 +48,10 @@ import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/state";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
-import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
+import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable, oauthServesModel } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal, applyEvidenceGate } from "../agent/goal-verifier";
-import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, type PromptTier, type RouteDecision } from "../agent/prompt-router";
+import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, type PromptTier, type RouteDecision, type RoutingConfig } from "../agent/prompt-router";
 import { RouteHistory } from "../agent/route-history";
 
 import { isRateLimitError, isUsageLimitError, isConnectionError } from "../util/retry";
@@ -976,11 +976,76 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const routingEnabled = sessionRouteOverride ?? !!turnConfig.routing?.enabled;
     let routeCredentialNotice: string | undefined;
     let routeVetoNote: string | undefined;
+    // Credential SCOPES that have shown an ACCOUNT-LEVEL failure (rate limit,
+    // usage/quota limit, or zero usable credential) THIS turn — accumulates across
+    // every fallback round. Read by both `equivalentRouteFallback` (post/pre-call
+    // fallback search) and `rateLimitFallbackAvailable` (the engine's fast-bail
+    // predicate) so neither path proposes a candidate doomed to fail the same way.
+    //
+    // Scoped to the CREDENTIAL, not the bare provider: an OAuth SUBSCRIPTION (Claude
+    // Pro/Max, ChatGPT/Codex, Kimi Code, …) shares ONE account-wide rate-limit window
+    // across every model it serves — `claude-sonnet-5` and `claude-sonnet-4-6` both
+    // ride the SAME Anthropic OAuth token, so a same-tier pool that only excluded the
+    // exact failed MODEL id (the old behavior) could — and, per a real field report,
+    // DID — select another model on the SAME exhausted subscription, immediately
+    // re-429, and look indistinguishable from "stuck at auto-retry #1" even though a
+    // different model was actually being dispatched each round. An API KEY, by
+    // contrast, is typically its OWN per-model or per-key budget (Groq/OpenAI/etc
+    // rate-limit each model independently) — over-broadly excluding every model on an
+    // API-key-served provider for one model's 429 would break the pre-existing,
+    // intentionally-tested "same-provider fallback" behavior for that class (see
+    // test/launch-fallback-live-discovery.test.ts). `null` (from `credentialScopeFor`)
+    // means "this candidate is API-key-served, or otherwise not sharing a subscription
+    // credential" — never added to or matched against this set.
+    const excludedCredentialScopes = new Set<string>();
+    type CredentialScope = { kind: "no-credential" | "oauth-subscription"; key: string };
+    // The credential path `model` actually resolves through, mirroring
+    // `effectiveCredentialForProvider`'s real precedence (OAuth wins over an API key
+    // whenever it serves the model) WITHOUT touching the network — config-only, so this
+    // stays safely callable from the synchronous `rateLimitFallbackAvailable` predicate.
+    // `null` = API-key-served (own independent budget) — never excluded as a group.
+    function credentialScopeFor(model: string, config: RoutingConfig): CredentialScope | null {
+      const provider = resolveProvider(model);
+      if (provider === "ollama" || provider === "lmstudio") return null; // keyless, no shared account limit
+      if (provider === "antigravity") {
+        const hasOauth = !!(config.oauth?.antigravity || config.oauth?.gemini);
+        return hasOauth ? { kind: "oauth-subscription", key: "antigravity" } : { kind: "no-credential", key: "antigravity" };
+      }
+      const auth = provider as AuthProvider;
+      const hasApiKey = !!config.providers?.[auth];
+      const hasOauth = !!config.oauth?.[auth];
+      if (!hasApiKey && !hasOauth) return { kind: "no-credential", key: provider };
+      // OAuth wins over a configured API key whenever it actually serves this model
+      // (same precedence resolveCall/effectiveCredentialForProvider apply live) — that
+      // is the credential this call will really use, and its subscription window is
+      // what a 429 here reports on. When OAuth is present but does NOT serve this
+      // model (e.g. a non-Codex id under OpenAI OAuth), the call falls through to the
+      // API key (if any) — API-key-served, so `null` (independent budget).
+      if (hasOauth && oauthServesModel(auth, model)) return { kind: "oauth-subscription", key: `${provider}:oauth` };
+      return null;
+    }
+    // Matches routeFailureReason's post-call reasons ("hit a rate limit", "hit a
+    // usage/quota limit", "is unauthenticated for this session") AND the pre-call
+    // credential gate's "(<provider>) has no usable credential this turn" — every
+    // string that means "this CREDENTIAL is exhausted/broken", as opposed to a
+    // model-specific issue (OAuth serves only some models, a single model is
+    // retired/gated, billing blocks one model but not others on the same key — see
+    // routeFailureReason's own doc comments for why those stay model-scoped).
+    const isAccountLevelRouteFailure = (reason: string): boolean =>
+      /hit a rate limit|hit a usage\/quota limit|is unauthenticated for this session|has no usable credential/i.test(reason);
     const equivalentRouteFallback = async (decision: RouteDecision, reason: string, exclude: readonly string[] = []): Promise<string | null> => {
+      if (isAccountLevelRouteFailure(reason)) {
+        const scope = credentialScopeFor(decision.model, turnConfig);
+        if (scope) excludedCredentialScopes.add(scope.key);
+      }
       const excluded = new Set([decision.model, ...exclude]);
       const poolCandidates = (): string[] =>
         tierModelPool(decision.tier, turnConfig)
           .filter(model => !excluded.has(model))
+          .filter(model => {
+            const scope = credentialScopeFor(model, turnConfig);
+            return !scope || !excludedCredentialScopes.has(scope.key);
+          })
           .filter(model => !images?.length || catalogMetadata(model)?.images !== false);
       let candidates = poolCandidates();
       // The static MODEL_CATALOG only lists a couple of OpenAI-compatible clouds by
@@ -1470,17 +1535,35 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         };
         // Cheap SYNC check (no network/credential probing — that full validation is
         // `equivalentRouteFallback`'s job when a switch actually happens) for "does an
-        // untried, same-tier candidate exist RIGHT NOW". Feeds
+        // untried, DIFFERENT-PROVIDER candidate exist RIGHT NOW". Feeds
         // AgentLoopOptions.rateLimitFallbackAvailable so the engine can bail a 429 retry
         // ladder on the first failed attempt instead of riding ~90s of backoff on a
         // model that has an equivalent sitting right there. Mirrors
         // `equivalentRouteFallback`'s own `poolCandidates` filters (tier pool minus
         // already-tried models minus image-incapable models when this turn has images)
-        // so "available" here never promises more than the real fallback can deliver.
-        const rateLimitFallbackAvailable = (): boolean =>
-          tierModelPool(fallbackBaseDecision.tier, turnConfig)
+        // PLUS excludes any candidate sharing the SAME CREDENTIAL SCOPE as the model
+        // CURRENTLY being attempted (a 429 on this model means ITS credential's
+        // account/subscription window is exhausted THIS instant — another model
+        // riding the SAME OAuth subscription hits that exact limit and is not a real
+        // fallback; an API-key-served candidate has an independent budget and is NOT
+        // excluded) and any scope already excluded by an earlier account-level
+        // failure this turn — see `excludedCredentialScopes`'s doc comment. Without
+        // this, the predicate could see e.g. `claude-sonnet-4-6` as "available" while
+        // `claude-sonnet-5` (same Anthropic OAuth subscription) is the one currently
+        // 429ing, bail, switch to it, and immediately re-429 — which looks
+        // indistinguishable from "never escaping auto-retry #1".
+        const rateLimitFallbackAvailable = (): boolean => {
+          const currentScope = credentialScopeFor(fallbackBaseDecision.model, turnConfig);
+          return tierModelPool(fallbackBaseDecision.tier, turnConfig)
             .filter(model => !attemptedRouteModels.has(model))
+            .filter(model => {
+              const scope = credentialScopeFor(model, turnConfig);
+              if (!scope) return true; // API-key-served (or keyless) — independent budget
+              if (currentScope && scope.key === currentScope.key) return false; // same exhausted subscription
+              return !excludedCredentialScopes.has(scope.key);
+            })
             .some(model => !images?.length || catalogMetadata(model)?.images !== false);
+        };
         const runLoopWithModel = (model: string, thinking: ThinkLevel | undefined, cacheKey: string | undefined, maxSteps = flags.maxSteps, budget?: { maxExtensions: number }) => runAgentLoop(history, {
           cwd,
           tools,

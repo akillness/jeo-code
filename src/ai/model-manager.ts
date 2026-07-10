@@ -305,7 +305,7 @@ export function resolveRetryOptions(retry: Config["retry"], kind: "request" | "s
  * OAuth. Everything else (Anthropic Messages, Antigravity Cloud Code Assist) is served
  * end-to-end.
  */
-function oauthServesModel(provider: AuthProvider, model: string): boolean {
+export function oauthServesModel(provider: AuthProvider, model: string): boolean {
   if (provider === "openai") {
     // `isCodexModel` checks the maintained CODEX_MODELS list PLUS any id observed
     // live this session (model-catalog.ts) — closes the "picker shows a model the

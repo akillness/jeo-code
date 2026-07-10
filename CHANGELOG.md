@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.21] - 2026-07-10
+_"반영할꺼 같은방식으로 체크하고 배포까지" — a rescan of the working tree (after the prior audit pass) turned up 15 uncommitted files: 3 genuinely distinct features left unwired by a concurrent session, partially casualty of an earlier accidental `git checkout` incident this session (disclosed in the 0.8.20 entry above). Each was independently traced from its existing plumbing, wired to a real call site, tested, and one live-verified end-to-end over a real PTY before shipping._
+
+### Added
+- **Session draft-restore** (`src/agent/session.ts`, `src/commands/launch/session-slash.ts`, `src/commands/launch.ts`, `src/commands/launch/input.ts`) — an unsent, half-typed prompt now survives a hard exit (Ctrl+D/EOF/disconnected terminal) and is restored into the prompt box on `/resume` (gajae-code parity). The read-side plumbing (`updateSessionDraft`, `header.draft`, `runSessionSlash` surfacing it) already existed; `launch.ts` never consumed it. Added `persistSessionDraft` (mirrors the existing `persistSessionModel` pattern) and a new pure predicate `draftFromUnsentLine` (`launch/input.ts`), wired into all 3 resume paths — the interactive picker, the mid-loop `/session resume` command, and `--resume <id>`/`--continue`'s non-interactive startup path (this third path had NO draft restoration at all before this fix). Live-verified: seeded a real session's draft, launched the real `bun src/cli.ts --resume <id>` under a genuine PTY, confirmed the exact unsent text appeared in the live prompt box.
+- **Evidence-gated goal verification** (`src/agent/goal-verifier.ts`, `src/agent/engine.ts`, `src/commands/launch.ts`) — an LLM-judged `MET` goal verdict is now deterministically downgraded to `NOT_MET` when the turn mutated files with no fresh verification evidence, closing the "gate theater" failure mode (an LLM asserting success without re-checked evidence). `applyEvidenceGate` (pure, already unit-tested with 5 tests) existed but was never called anywhere — the same disconnected-scaffolding pattern `RouteHistory` shipped with in 0.8.16/0.8.17. `onBeforeDone`'s signature now carries the SAME `sawMutation`/`sawVerification`/`verificationStale` signals the engine's own done-gate already computes; `launch.ts`'s goal-verifier closure now gates `verifyGoal`'s raw verdict through it before persisting or acting on it.
+
+### Fixed
+- **`toolTarget` dedup** (`src/agent/step-budget.ts`, `src/agent/task-tool.ts`) — `task-tool.ts` had a private copy of the same coarse-call-target labeler `step-budget.ts` needed for a new edit-thrashing novelty rule (a model rewriting the same file with different content every attempt no longer earns endless step-budget extensions — only the first attempt at a given target counts as novel). Moved to `step-budget.ts` (exported), `task-tool.ts` now imports it — confirmed byte-identical, zero behavior change.
+
+### Added (catalog)
+- **`gpt-5.6`** (`src/ai/model-catalog.ts`) — OpenAI's newest catalogued model, consistent with existing entries; correctly excluded from the OAuth-only `CODEX_MODELS` allow-list (live discovery handles that drift per its own documented contract, not a static edit).
+
+### Verified
+- `bun test test/launch-flags.test.ts test/session-draft-restore.test.ts test/step-budget.test.ts test/goal-verifier.test.ts test/task-tool.test.ts test/doctor.test.ts test/prompt-router-tiers.test.ts test/model-catalog.test.ts` — 128 pass / 0 fail.
+- Full `bun test` — 2906 pass / 0 fail across 291 files.
+- `bun run typecheck` — no errors.
+- Live PTY end-to-end: real session seeded with `updateSessionDraft`, real `bun src/cli.ts --resume <id>` subprocess, confirmed the exact restored text in the live prompt box.
+
 ## [0.8.20] - 2026-07-10
 _"모든 검증 다시 리뷰하고 변경사항 모두 체크해" — 4 fresh, skeptical subagents independently re-audited every change from v0.8.17-0.8.19 (bc8768f..92c6b7d) with zero trust in prior claims: a code-correctness auditor manually traced the Antigravity routing logic against the live catalog, a test-integrity auditor mutation-tested the new tests (confirmed each one genuinely fails when its fix is reverted) and ran the suite fresh, a live-behavior verifier re-reproduced all 4 behavioral claims from scratch with self-generated data (own session ids, own mock server, own HTTP status code), and a docs-accuracy auditor cross-checked every README/CHANGELOG claim against current code in isolated git worktrees. Verdict: all core logic and tests GENUINE/CONFIRMED CORRECT — but the audit surfaced 1 real doc staleness gap, 1 changelog count error, and 2 minor precision gaps, all fixed here._
 

@@ -558,17 +558,67 @@ test("resolveTierModel auto-select: Antigravity OAuth beats public Gemini API ke
   expect(version).toBeGreaterThanOrEqual(3.1);
 });
 
-test("resolveTierModel auto-select: high tier uses Antigravity's provider-qualified Gemini when Gemini API key is also configured", () => {
+test("resolveTierModel auto-select: high tier stays Antigravity-qualified (never a bare public Gemini id) even when a Gemini API key is also configured", () => {
   const config = credentialedConfig({
     providers: { gemini: "k3" },
     oauth: { antigravity: { access: "tok", refresh: "r", expires: Date.now() + 100000 } },
     routing: { enabled: true },
   });
+  // No sessionId -> deterministic index-0 pick across the antigravity multi-company
+  // pool (see antigravityCompanyPoolPick): Anthropic's Sonnet now sorts first
+  // alphabetically among the 3 company representatives, so it wins the no-session
+  // case. What this test actually pins is the invariant that mattered before that
+  // change too: the public `providers.gemini` credential must NEVER let a bare
+  // `gemini-*` id (unqualified, no `antigravity/` prefix) leak into auto-select —
+  // every candidate stays provider-qualified regardless of which one wins.
   const model = resolveTierModel("high", config);
   expect(model).not.toMatch(/^gemini-/);
-  expect(model).toStartWith("antigravity/gemini-");
-  const version = Number(/^antigravity\/gemini-(\d+(?:\.\d+)?)-/.exec(model)?.[1] ?? "0");
-  expect(version).toBeGreaterThanOrEqual(3.1);
+  expect(model).toStartWith("antigravity/");
+});
+
+test("resolveTierModel auto-select: high/complex tiers are session-stably reachable across ALL of Antigravity's re-exported companies (Anthropic/Google/OpenAI), not just Google's", () => {
+  const config = credentialedConfig({
+    oauth: { antigravity: { access: "tok", refresh: "r", expires: Date.now() + 100000 } },
+    routing: { enabled: true },
+  });
+  const highModels = new Set<string>();
+  const complexModels = new Set<string>();
+  for (let i = 0; i < 50; i++) {
+    highModels.add(resolveTierModel("high", config, `sess-${i}`));
+    complexModels.add(resolveTierModel("complex", config, `sess-${i}`));
+  }
+  // "high": Anthropic (claude-sonnet-4-6), Google (strongest same-tier Gemini row),
+  // OpenAI (gpt-oss-120b-medium) — all 3 companies reachable, never just Google's.
+  expect(highModels).toContain("antigravity/claude-sonnet-4-6");
+  expect(highModels.has("antigravity/gemini-3.5-flash-low") || highModels.has("antigravity/gemini-pro-agent")).toBe(true);
+  expect(highModels).toContain("antigravity/gpt-oss-120b-medium");
+  // "complex": only 2 companies have a large-class row (Anthropic's Opus, Google's
+  // flash-agent) — OpenAI's gpt-oss is mid-class only, correctly absent here.
+  expect(complexModels).toContain("antigravity/claude-opus-4-6-thinking");
+  expect(complexModels).toContain("antigravity/gemini-3-flash-agent");
+  expect(complexModels).not.toContain("antigravity/gpt-oss-120b-medium");
+  // Every reachable model stays provider-qualified — no bare/public id ever wins.
+  for (const m of [...highModels, ...complexModels]) expect(m).toStartWith("antigravity/");
+});
+
+test("resolveTierModel auto-select: SAME session always resolves to the SAME antigravity company pick (session-stable, not re-randomized per call)", () => {
+  const config = credentialedConfig({
+    oauth: { antigravity: { access: "tok", refresh: "r", expires: Date.now() + 100000 } },
+    routing: { enabled: true },
+  });
+  const first = resolveTierModel("high", config, "stable-session-id");
+  for (let i = 0; i < 10; i++) expect(resolveTierModel("high", config, "stable-session-id")).toBe(first);
+});
+
+test("resolveTierModel auto-select: an explicit roles.high override still wins over Antigravity's multi-company spread", () => {
+  const config = credentialedConfig({
+    roles: { high: "antigravity/gemini-pro-agent" },
+    oauth: { antigravity: { access: "tok", refresh: "r", expires: Date.now() + 100000 } },
+    routing: { enabled: true },
+  });
+  for (let i = 0; i < 20; i++) {
+    expect(resolveTierModel("high", config, `sess-${i}`)).toBe("antigravity/gemini-pro-agent");
+  }
 });
 
 test("tierModelPool: Antigravity OAuth plus Gemini API key excludes public Gemini ids from pooled auto-select candidates", () => {

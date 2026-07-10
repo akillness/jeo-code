@@ -456,6 +456,44 @@ function crossProviderPoolPick(tier: PromptTier, config: RoutingConfig, sessionI
   return pool.length > 0 ? selectFromPool(pool, sessionId) : null;
 }
 
+/** Antigravity re-exports THREE distinct model families (Anthropic's Claude
+ *  Sonnet/Opus, Google's own Gemini, OpenAI's GPT-OSS) behind one credential —
+ *  structurally different from every other provider, which represents exactly
+ *  one vendor. The tier's plain single-winner pick (`strongestMidTierCredentialed`/
+ *  `strongestCredentialed`) always resolves to Google's rows for `high`/`complex`:
+ *  Anthropic's real 64,000-token output ceiling loses a same-thinking-tier tie to
+ *  Google's 65,536 by a margin with no practical significance, and Gemini's
+ *  1M-token context further outranks Claude's real (but comparatively narrower)
+ *  200K window — so `antigravity/claude-sonnet-4-6`/`antigravity/claude-opus-4-6-thinking`
+ *  were NEVER reachable through auto-select even though both are already
+ *  correctly `sizeClass`-tagged into the `high`/`complex` pools (`tierModelPool`).
+ *  This applies the SAME session-stable spread `routing.crossProviderPool` uses
+ *  globally (opt-in, default off), but scoped and DEFAULT-ON specifically for
+ *  Antigravity's multi-company pool: one candidate per COMPANY (the strongest
+ *  Antigravity row for that company, by `compareStrengthAscending`) so Google's
+ *  several same-tier Gemini rows don't crowd out the single Anthropic/OpenAI
+ *  candidate 3-to-1 — each vendor Antigravity re-exports gets an equal, genuinely
+ *  reachable share. `null` when Antigravity isn't credentialed this turn, the
+ *  tier's Antigravity-only pool is empty, or it spans only ONE company (nothing
+ *  to spread — the plain single-winner path already picks correctly and this
+ *  would just add indirection). */
+function antigravityCompanyPoolPick(tier: PromptTier, config: RoutingConfig, sessionId: string | undefined): string | null {
+  if (!hasAntigravityOauth(config)) return null;
+  const pool = tierModelPool(tier, config)
+    .map(id => catalogMetadata(id))
+    .filter((m): m is CatalogModel => !!m && m.provider === "antigravity");
+  if (pool.length === 0) return null;
+  const byCompany = new Map<string, CatalogModel>();
+  for (const m of pool) {
+    const company = m.company ?? "antigravity";
+    const current = byCompany.get(company);
+    if (!current || compareStrengthAscending(current, m) < 0) byCompany.set(company, m);
+  }
+  if (byCompany.size < 2) return null; // one vendor in this tier -> nothing to spread across
+  const representatives = [...byCompany.values()].map(m => m.canonical).sort();
+  return selectFromPool(representatives, sessionId);
+}
+
 // --- Tier -> model/thinking resolution (inline off config.roles/config.routing.tiers; no static map). ---
 
 /** Exported for `jeo doctor`'s routing-preview diagnostic (same resolution the real
@@ -466,8 +504,8 @@ export function resolveTierModel(tier: PromptTier, config: RoutingConfig, sessio
   if (configured) return configured;
   if (tier === "trivial") return config.roles?.smol || crossProviderPoolPick(tier, config, sessionId) || cheapestCredentialed(config) || config.defaultModel;
   if (tier === "standard") return config.roles?.medium || config.roles?.high || crossProviderPoolPick(tier, config, sessionId) || config.defaultModel;
-  if (tier === "high") return config.roles?.high || config.roles?.medium || crossProviderPoolPick(tier, config, sessionId) || strongestMidTierCredentialed(config) || config.defaultModel;
-  if (tier === "complex") return config.roles?.xhigh || config.roles?.slow || crossProviderPoolPick(tier, config, sessionId) || strongestCredentialed(config) || config.defaultModel;
+  if (tier === "high") return config.roles?.high || config.roles?.medium || crossProviderPoolPick(tier, config, sessionId) || antigravityCompanyPoolPick(tier, config, sessionId) || strongestMidTierCredentialed(config) || config.defaultModel;
+  if (tier === "complex") return config.roles?.xhigh || config.roles?.slow || crossProviderPoolPick(tier, config, sessionId) || antigravityCompanyPoolPick(tier, config, sessionId) || strongestCredentialed(config) || config.defaultModel;
   return config.defaultModel;
 }
 

@@ -6,7 +6,7 @@ import "./register-providers"; // side-effect: registers built-in adapters into 
 import type { CallOptions, Message, ProviderAdapter, ProviderName } from "./types";
 import { expandAlias, resolveModelId, effectiveAliasesFor, BUILTIN_ALIASES } from "./model-registry";
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
-import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel, isCodexModel } from "./model-catalog";
+import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel, isCodexModel, findLiveCatalogModel } from "./model-catalog";
 import { xaiCredential } from "./providers/xai";
 import { OPENAI_COMPAT_NAMES, isOpenAICompatProvider } from "./providers/openai-compatible-catalog";
 import { withRetry, defaultRetryable, withConnectionContext, isConnectionError, ConnectionContextError, type RetryOptions } from "../util/retry";
@@ -21,6 +21,15 @@ export function resolveProvider(model: string): ProviderName {
   // misroute a future/edge id); heuristics handle everything uncatalogued.
   const entry = findCatalogEntry(model);
   if (entry) return entry.provider;
+  // Live-discovered rows carry an ALREADY-CORRECT `.provider` tag (set at discovery
+  // time by `recordLiveProviderModels`, itself passed the real provider by the
+  // caller) — this must win over the substring heuristics below, which only
+  // recognize brand names present in the id string (grok/kimi/gpt/gemini) and
+  // silently misroute anything else (a future provider rename, or a brand-neutral
+  // id from an OpenAI-compatible aggregator like Groq/OpenRouter/Together) to the
+  // final `anthropic` fallthrough.
+  const liveEntry = findLiveCatalogModel(model);
+  if (liveEntry) return liveEntry.provider;
   const m = (model ?? "").toLowerCase();
   // Explicit `<provider>/` prefixes ALWAYS win over substring heuristics — a model id
   // can legitimately contain another provider's name (e.g. `synthetic/hf:moonshotai/Kimi-K2.5`

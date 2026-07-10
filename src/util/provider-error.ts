@@ -117,6 +117,21 @@ export function friendlyProviderError(err: unknown): string {
   if (status === 401 || status === 403 || /\b40[13]\b/.test(msg)) {
     return `${provider} rejected the credential (HTTP ${status ?? "401/403"}). Run 'jeo auth status', re-login with /provider login <name>, and for Antigravity prefer '/provider login antigravity' (gemini login only works when the Cloud Code Assist backend authorizes that token).`;
   }
+  // A persistent 5xx (server-side fault on the provider's backend) — `ProviderHttpError`
+  // already embeds the numeric status directly in its message ("… failed (HTTP 500) …",
+  // caught here too, redundantly but harmlessly), but `ProviderStreamError` (the in-band
+  // SSE/stream error shape — antigravity.ts/gemini.ts's `google.rpc.Status` and
+  // openai-responses.ts's `response.failed`/`error` events) composes its `.message` from
+  // a STRING status code only ("Antigravity stream failed (INTERNAL): internal error"),
+  // never the numeric one, even though `.status` carries it correctly (explicitStatus
+  // for antigravity/gemini's google.rpc.Status `error.code`; the 500 default for
+  // openai-responses's non-rate_limit_exceeded codes). Without a digit anywhere in the
+  // text, launch.ts's `routeFailureReason` `/\b(?:500|502|503|504|529)\b/` text regex
+  // never matched, so the equivalent-pool fallback never fired for a stream-shaped 5xx
+  // even with a credentialed same-tier fallback sitting right there.
+  if (status !== undefined && status >= 500 && status < 600) {
+    return `${provider} hit a persistent server-side error (HTTP ${status}) — ${msg}. The provider's backend itself is failing; switch model with /model or wait and retry.`;
+  }
   if ((err instanceof Error && err.name === "TimeoutError") || /the operation timed out/i.test(msg)) {
     return `${provider} did not complete the request within the call timeout (default 30min). This is expected for a HIGH/XHIGH-reasoning-effort completion that legitimately runs long on a hard problem — raise JEO_CALL_TIMEOUT_MS (ms) if this recurs, or lower the thinking level with /model.`;
   }

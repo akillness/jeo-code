@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { test, expect } from "bun:test";
-import { MODEL_CATALOG, findCatalogModel } from "../src/ai/model-catalog";
+import { MODEL_CATALOG, findCatalogModel, recordLiveProviderModels, resetLiveProviderModels } from "../src/ai/model-catalog";
 import { providerModelFor, resolveProvider } from "../src/ai/model-manager";
 import { expandAlias } from "../src/ai/model-registry";
 
@@ -46,6 +46,56 @@ test("Antigravity models stay provider-qualified and route to the Antigravity ad
   expect(resolveProvider("antigravity/claude-sonnet-4-5")).toBe("antigravity");
   expect(providerModelFor("antigravity/gemini-3.1-pro-low")).toBe("antigravity/gemini-3.1-pro-low");
   expect(findCatalogModel("antigravity/gemini-3.1-pro-low")?.provider).toBe("antigravity");
+});
+
+// --- resolveProvider must consult the live-discovered-model index (v0.9.x fix):
+// substring heuristics (grok->xai, kimi/moonshot->kimi, gpt/o\d->openai, gemini->gemini)
+// only recognize TODAY's brand-carrying ids. A live-discovered row from
+// `recordLiveProviderModels` already carries the CORRECT `.provider` tag set by the
+// caller at discovery time — that must win over the lossy heuristic fallthrough
+// (which otherwise silently defaults an unrecognized id to "anthropic"). Closes the
+// gap for xAI/Kimi/Gemini future renames AND brand-neutral aggregator ids (Groq,
+// OpenRouter, Together, …) that never match any brand substring at all. ---
+
+test("resolveProvider: a live-discovered model with no recognizable brand substring resolves via the live catalog, not the anthropic fallthrough", () => {
+  resetLiveProviderModels();
+  try {
+    recordLiveProviderModels("xai", ["aurora-2"], { source: "api_key" });
+    expect(resolveProvider("aurora-2")).toBe("xai");
+  } finally {
+    resetLiveProviderModels();
+  }
+});
+
+// `groq` (and every other OpenAI-compatible aggregator provider — deepseek, mistral,
+// openrouter, together, …) is deliberately NOT used for this second case: model-catalog's
+// `liveCanonicalId` auto-prefixes EVERY OpenAI-compatible provider's bare id with
+// `${provider}/` at record time (`recordLiveProviderModels("groq", ["x"])` actually
+// stores canonical `"groq/x"`), so `resolveProvider("groq/x")` already resolves
+// correctly via the PRE-EXISTING `OPENAI_COMPAT_NAMES` prefix loop — that path was never
+// broken and wouldn't exercise this fix. `kimi` (like `xai`) is one of the few providers
+// `liveCanonicalId` leaves BARE (see model-catalog.ts's `liveCanonicalId`), so a
+// brand-neutral live-discovered `kimi` id reproduces the exact same landmine class the
+// problem statement describes for a future/third-party provider whose ids stay bare.
+test("resolveProvider: a brand-neutral live-discovered id from a provider with no brand substring resolves to ITS provider, not anthropic", () => {
+  resetLiveProviderModels();
+  try {
+    recordLiveProviderModels("kimi", ["nova-flash-x1"], { source: "api_key" });
+    expect(resolveProvider("nova-flash-x1")).toBe("kimi");
+  } finally {
+    resetLiveProviderModels();
+  }
+});
+
+test("resolveProvider: static catalog + substring heuristics still win when no live row shadows them (regression guard)", () => {
+  resetLiveProviderModels();
+  // Static catalog entry — unaffected by the live-catalog check (it returns before
+  // findLiveCatalogModel is ever consulted).
+  expect(resolveProvider("claude-sonnet-4-6")).toBe("anthropic");
+  // Uncatalogued + never live-discovered — falls through to the substring heuristics
+  // exactly as before.
+  expect(resolveProvider("grok-99-nonexistent")).toBe("xai");
+  expect(resolveProvider("totally-unknown-id")).toBe("anthropic");
 });
 
 test("alias sonnet/opus resolve to the 4.6 generation", () => {

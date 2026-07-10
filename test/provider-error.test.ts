@@ -46,6 +46,42 @@ test("friendlyProviderError detects 402 from the message when status is absent",
   expect(out).toContain("402");
 });
 
+// Antigravity/Gemini's `google.rpc.Status` shape (an explicit numeric `error.code`
+// passed straight through as `explicitStatus`) and OpenAI Codex's `response.failed`/
+// `error` SSE event shape (no `explicitStatus` — defaults to 500 for any non-
+// rate_limit_exceeded code) both carry a STRING status code in the composed message
+// ("… (INTERNAL): …", "… (server_error): …") with no digits anywhere — before this
+// fix these fell through every branch to the bare `return msg;`, so launch.ts's
+// `/\b(?:500|502|503|504|529)\b/` post-call reroute regex never matched and the
+// equivalent-pool fallback never fired for a fully credentialed same-tier fallback.
+test("friendlyProviderError maps a persistent 5xx ProviderStreamError (Antigravity/Gemini google.rpc.Status shape, explicit numeric status) to a message embedding the numeric HTTP code", () => {
+  const err = new ProviderStreamError("Antigravity", "internal error", "INTERNAL", 500);
+  const out = friendlyProviderError(err);
+  expect(out).toContain("500");
+  expect(out).toContain("HTTP 500");
+  expect(out).toContain("Antigravity");
+  expect(out).toContain("persistent server-side error");
+  expect(out).toContain("/model");
+});
+
+test("friendlyProviderError maps a persistent 5xx ProviderStreamError (OpenAI Codex response.failed shape, no explicitStatus — defaults to 500) to a message embedding the numeric HTTP code", () => {
+  const err = new ProviderStreamError("OpenAI Codex", "the server had an error processing your request", "server_error");
+  expect(err.status).toBe(500); // confirms the documented explicitStatus ?? 500 default fires
+  const out = friendlyProviderError(err);
+  expect(out).toContain("500");
+  expect(out).toContain("HTTP 500");
+  expect(out).toContain("OpenAI Codex");
+  expect(out).toContain("persistent server-side error");
+});
+
+test("friendlyProviderError maps a persistent 5xx ProviderStreamError (Gemini google.rpc.Status shape, 503 UNAVAILABLE) to a message embedding the numeric HTTP code", () => {
+  const err = new ProviderStreamError("Gemini", "model overloaded", "UNAVAILABLE", 503);
+  const out = friendlyProviderError(err);
+  expect(out).toContain("503");
+  expect(out).toContain("HTTP 503");
+  expect(out).not.toBe(err.message); // not the bare "Gemini stream failed (UNAVAILABLE): model overloaded"
+});
+
 test("friendlyProviderError passes through unrelated errors unchanged", () => {
   expect(friendlyProviderError(new Error("boom"))).toBe("boom");
 });

@@ -353,6 +353,22 @@ export function liveProviderCatalogModels(config?: { openaiBaseUrl?: string }): 
     .map(record => record.row);
 }
 
+/** Live-discovered catalog row for `canonical`, regardless of config/base-URL scope —
+ *  used by `resolveProvider` to recover a live-discovered model's ALREADY-CORRECT
+ *  `.provider` tag when the static catalog and substring heuristics both miss it (e.g.
+ *  a brand-neutral id from an OpenAI-compatible aggregator, or any future provider
+ *  rename). Deliberately NOT config-scoped like `liveProviderCatalogModels`/
+ *  `isLiveProviderModel` — a model discovered under one base URL is still THE model
+ *  `resolveProvider` needs to route correctly, independent of THIS call's routing-
+ *  eligibility (config). Live model count is bounded by session discovery (never
+ *  large), so a linear scan is cheap — same access pattern as `liveProviderCatalogModels`. */
+export function findLiveCatalogModel(canonical: string): CatalogModel | undefined {
+  for (const record of liveProviderModels.values()) {
+    if (record.row.canonical === canonical) return record.row;
+  }
+  return undefined;
+}
+
 /** True when a model came from the current provider/base URL's live model list.
  *  O(1) average case via `liveModelIdIndex` — see that Map's doc comment for why
  *  this must not be an O(n) scan over every live-discovered model (it runs once

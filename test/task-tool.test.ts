@@ -431,3 +431,100 @@ test("createTaskTool: parallel read-only fan-out does NOT chain across workers (
   // Neither worker should see a chain note from the other
   expect(userMessages.every(m => !m.includes("Previous task result"))).toBe(true);
 });
+
+// --- Rate-limit fast fallback for subagents (mirrors launch.ts's turn-level
+// design — see df3475d/cca5fe2/02b7e59): a subagent's own 429 should switch to
+// a genuinely different-credential-scope model and complete, instead of either
+// (a) riding the full retry ladder when a fallback IS available, or (b) bailing
+// with nothing to switch to when NO fallback exists (which would be a pure
+// regression — see 02b7e59's doc comment on why a bail-only predicate without a
+// real reroute loop is net harmful). ---
+
+const OAUTH_STAMP = { access: "x", refresh: "x", expires: Date.now() + 1e9 };
+
+test("createTaskTool: executor's 429 with a genuinely different-credential-scope fallback available switches models and completes", async () => {
+  const modelsCalled: (string | undefined)[] = [];
+  const onRetryReturns: (void | false)[] = [];
+  // mock.module boundary (see file header comment): task-tool.ts resolves
+  // "../src/agent/loop" dynamically inside engine.ts's invokeCallLlm, so the SUT
+  // must import task-tool.ts AFTER this mock is registered.
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_h: unknown, options: { model?: string; onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false }) => {
+      modelsCalled.push(options.model);
+      if (options.model === "claude-sonnet-4-6") {
+        // First attempt: 429 on the OAuth-subscription model. The real engine's
+        // onRetry closure checks task-tool.ts's rateLimitFallbackAvailable() —
+        // capture what it actually returns, exactly like engine.test.ts does.
+        onRetryReturns.push(options.onRetry?.(1, { status: 429, message: "rate limited" }, 2000));
+        throw { status: 429, message: "Rate limited by Anthropic (HTTP 429)." };
+      }
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\ndone on fallback" } });
+    },
+  }));
+
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({
+    config: {
+      // anthropic served via OAuth subscription (one shared rate-limit window);
+      // openai served via an independent API key — a genuinely different
+      // credential scope per credentialScopeFor's classification.
+      providers: { openai: "sk-test-openai" },
+      oauth: { anthropic: OAUTH_STAMP },
+      defaultModel: "claude-sonnet-4-6",
+      subagents: { executor: { model: "claude-sonnet-4-6" } },
+    },
+  });
+
+  const res = await tool({ role: "executor", task: "fix the bug" }, await tmpDir());
+
+  // onRetry bailed (returned false) on the FIRST failed attempt — a fallback WAS
+  // available, so the retry ladder never rode a backoff wait.
+  expect(onRetryReturns).toEqual([false]);
+  // Switched to gpt-5.4 (API-key-served, independent budget) — NEVER to
+  // claude-sonnet-5 (same anthropic:oauth scope as the model that just 429'd).
+  expect(modelsCalled).toEqual(["claude-sonnet-4-6", "gpt-5.4"]);
+  expect(res.success).toBe(true);
+  expect(res.output).toContain("done on fallback");
+  expect(res.output).toContain("completed");
+});
+
+test("createTaskTool: executor's 429 with NO fallback available (single-provider config) still rides the normal retry ladder (regression guard)", async () => {
+  const modelsCalled: (string | undefined)[] = [];
+  const onRetryReturns: (void | false)[] = [];
+  const notices: string[] = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_h: unknown, options: { model?: string; onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false }) => {
+      modelsCalled.push(options.model);
+      onRetryReturns.push(options.onRetry?.(1, { status: 429, message: "rate limited" }, 4000));
+      throw { status: 429, message: "Rate limited by Anthropic (HTTP 429)." };
+    },
+  }));
+
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({
+    config: {
+      // Single provider (Anthropic OAuth only) — the standard-tier pool contains
+      // only claude-sonnet-4-6/claude-sonnet-5, BOTH on the SAME anthropic:oauth
+      // scope as the model currently 429ing. Genuinely no fallback candidate.
+      providers: {},
+      oauth: { anthropic: OAUTH_STAMP },
+      defaultModel: "claude-sonnet-4-6",
+      subagents: { executor: { model: "claude-sonnet-4-6" } },
+    },
+    onEvent: ev => { if (ev.kind === "step" && ev.detail) notices.push(ev.detail); },
+  });
+
+  const res = await tool({ role: "executor", task: "fix the bug" }, await tmpDir());
+
+  // onRetry did NOT bail — no candidate existed to switch to, so the engine rides
+  // its normal notice-and-wait path exactly as if the fast-fallback wiring were
+  // absent (never a bail with nothing to switch to — that would just fail faster
+  // with an identical outcome, per 02b7e59's doc comment).
+  expect(onRetryReturns).toEqual([undefined]);
+  // Only ONE model was ever dispatched — no reroute switch happened.
+  expect(modelsCalled).toEqual(["claude-sonnet-4-6"]);
+  expect(res.success).toBe(false);
+  expect(res.output).toContain("HTTP 429");
+  // No "switching to equivalent" reroute notice — this run never had one to give.
+  expect(notices.some(n => n.includes("switching to equivalent"))).toBe(false);
+});

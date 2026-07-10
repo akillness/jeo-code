@@ -49,7 +49,7 @@ The core runtime loop, tool registry, session management, and state persistence 
 | `subagent-registry.ts` | Brief description of purpose |
 | `subagent-tool.ts` | Brief description of purpose |
 | `subagents.ts` | Brief description of purpose |
-| `task-tool.ts` | `task` tool (single/fan-out/detached delegation) — exports `runSubagentOnce`, the single subagent execution core (history/runAgentLoop/contract validation/mutation audit/fenced report) shared with `jeo team`'s executor in `src/commands/team.ts` |
+| `task-tool.ts` | `task` tool (single/fan-out/detached delegation) — exports `runSubagentOnce`, the single subagent execution core (history/runAgentLoop/contract validation/mutation audit/fenced report) shared with `jeo team`'s executor in `src/commands/team.ts` and the consensus critic gate in `src/commands/ralplan.ts`. A subagent's own 429 gets the SAME rate-limit fast-fallback treatment as the main turn (`launch.ts`): `rateLimitFallbackAvailable` (via `prompt-router.ts`'s `tierModelPool`/`credentialScopeFor`) lets the engine bail a retry ladder early when a same-tier, different-credential-scope model is available, and a small bounded reroute loop (`MAX_SUBAGENT_REROUTES`, exported) actually switches and retries — never a bail-only predicate, which would just fail faster with no fallback attempted. Concurrent fan-out workers share ONE batch-scoped `excludedCredentialScopes` Set so a scope one worker discovers exhausted is skipped by its siblings too |
 | `todo-tool.ts` | Brief description of purpose |
 | `tokenizer.ts` | Brief description of purpose |
 | `tool-output.ts` | Brief description of purpose |

@@ -1,8 +1,10 @@
 import { test, expect, mock, beforeEach, afterEach, afterAll } from "bun:test";
-import { resetPromptRouterWarnings } from "../src/agent/prompt-router";
+import { resetPromptRouterWarnings, credentialScopeFor } from "../src/agent/prompt-router";
 import { OPENAI_COMPAT_PROVIDERS } from "../src/ai/providers/openai-compatible-catalog";
-import { resetLiveProviderModels } from "../src/ai/model-catalog";
+import { recordLiveProviderModels, resetLiveProviderModels } from "../src/ai/model-catalog";
 import type { AgentLoopOptions, AgentLoopResult } from "../src/agent/engine";
+import { ProviderStreamError } from "../src/ai/providers/errors";
+import { friendlyProviderError } from "../src/util/provider-error";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -1032,6 +1034,44 @@ test("post-call reroute: persistent 5xx (server error surviving the retry budget
   });
 });
 
+// Mirrors the "persistent 5xx" test immediately above, but using the exact message
+// shape `friendlyProviderError` now produces for a `ProviderStreamError` (Antigravity/
+// Gemini's in-band `google.rpc.Status` SSE error, or OpenAI Codex's `response.failed`
+// event) instead of the `ProviderHttpError` (REST) shape — proves the fix in
+// src/util/provider-error.ts's `friendlyProviderError` (the 5xx status branch that now
+// embeds the numeric HTTP code) round-trips all the way through engine.ts's
+// `doneReason: \`Error: ${friendlyProviderError(err)}\`` composition into launch.ts's
+// `routeFailureReason` text regex and the post-call reroute loop, not just the
+// REST-level `ProviderHttpError` shape which already embedded the numeric status.
+test("post-call reroute: persistent 5xx from a ProviderStreamError (Antigravity/Gemini in-band google.rpc.Status shape, no numeric status in the raw stream-error text) on the routed model switches to a same-tier fallback", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "gpt-4o-mini") {
+        // Built LIVE via friendlyProviderError + ProviderStreamError (not a hardcoded
+        // string) so this test is genuinely coupled to — and mutation-sensitive to —
+        // the fix in src/util/provider-error.ts, and mirrors engine.ts's real
+        // `doneReason: \`Error: ${friendlyProviderError(err)}\`` composition exactly.
+        const streamErr = new ProviderStreamError("Antigravity", "internal error", "INTERNAL", 500);
+        return { done: false, steps: 1, doneReason: `Error: ${friendlyProviderError(streamErr)}` };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, ["what is this?", "/route why"]);
+
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("persistent server-side error"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("gpt-4o-mini");
+    expect(notice).toContain("claude-haiku-4-5");
+  });
+});
+
 test("post-call reroute: context-overflow (400/413, conversation too large) does NOT switch models — switching providers cannot fix a prompt that no longer fits", async () => {
   await withRoutingProviderEnvCleared(async () => {
     runAgentLoopDelegate = async () => ({
@@ -1313,5 +1353,78 @@ test("402 billing failure on an API-KEY-served model does NOT exclude the whole 
     // NOT exclude other openai models by scope, only by exact id. Falls back to the
     // normal same-tier pool exactly as the pre-existing 402 test (line ~987) proves.
     expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+  });
+});
+
+// --- Live-discovered credential-scope classification (resolveProvider live-catalog
+// fix): `credentialScopeFor` classifies a model's scope by first resolving ITS
+// provider via `resolveProvider`. Before the fix, `resolveProvider` never consulted
+// the live-discovered-model index (`liveProviderModels`/`recordLiveProviderModels`),
+// so a live-discovered id with no recognizable brand substring (e.g. an xAI model
+// that doesn't contain "grok") silently fell through to the final `anthropic`
+// heuristic — wrongly bucketing it into the SAME `{oauth-subscription,"anthropic:oauth"}`
+// scope as an active Anthropic OAuth session, excluding it from the fallback pool the
+// instant that OAuth subscription 429s despite the model having its OWN independent
+// xai API-key budget. `aurora-2-pro` is chosen so `sizeClassFor` deterministically
+// places it in the "standard" tier's suffix pool (segment "pro") — the SAME tier
+// `claude-sonnet-4-6` occupies — instead of the tercile split reserved for
+// unclassified ids, keeping this test's pool membership independent of how many
+// OTHER unclassified models happen to be credentialed. ---
+
+test("live-discovered credential scope: credentialScopeFor classifies a live-discovered xai model independently of an unrelated Anthropic OAuth subscription", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    resetLiveProviderModels();
+    recordLiveProviderModels("xai", ["aurora-2-pro"], { source: "api_key" });
+    try {
+      const config = {
+        providers: { xai: "test-xai-key" },
+        oauth: { anthropic: OAUTH_STAMP },
+        defaultModel: "claude-sonnet-4-6",
+        routing: { enabled: true },
+      };
+      // Without the fix, `resolveProvider("aurora-2-pro")` misresolves to "anthropic"
+      // (the substring-heuristic fallthrough — "aurora-2-pro" contains no recognized
+      // brand substring), so `credentialScopeFor` wrongly returns the SAME
+      // `{oauth-subscription,"anthropic:oauth"}` scope as the actively-routed Anthropic
+      // OAuth model below — indistinguishable from a genuinely same-subscription
+      // sibling. With the fix, `resolveProvider` recovers the live row's correct "xai"
+      // provider; xai is API-key-served here (no xai OAuth configured), so the scope
+      // is `null` (independent per-key budget, never group-excluded).
+      expect(credentialScopeFor("aurora-2-pro", config)).toBeNull();
+      // Sanity check on the OTHER side of the bug: the actively-routed Anthropic OAuth
+      // model DOES classify into the oauth-subscription scope aurora-2-pro must NOT share.
+      expect(credentialScopeFor("claude-sonnet-4-6", config)).toEqual({ kind: "oauth-subscription", key: "anthropic:oauth" });
+    } finally {
+      resetLiveProviderModels();
+    }
+  });
+});
+
+test("live-discovered credential scope: a 429 on the Anthropic OAuth model actually SWITCHES to the live xai model, not just reports availability", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    resetLiveProviderModels();
+    recordLiveProviderModels("xai", ["aurora-2-pro"], { source: "api_key" });
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "claude-sonnet-4-6") {
+        return { done: false, steps: 1, doneReason: "Error: Rate limited by Anthropic (HTTP 429). Auto-retry cannot clear this window right now." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { xai: "test-xai-key" },
+      oauth: { anthropic: OAUTH_STAMP },
+      defaultModel: "claude-sonnet-4-6",
+      routing: { enabled: true },
+    }, ["Update the styling in src/app.css to use a darker background color for the header.", "/route why"]);
+
+    // Must switch to the live-discovered xai model (independent budget) — never
+    // silently give up (falling back to defaultModel) despite a genuine fallback
+    // candidate existing.
+    expect(calls.map(c => c.model)).toEqual(["claude-sonnet-4-6", "aurora-2-pro"]);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("hit a rate limit"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("claude-sonnet-4-6");
+    expect(notice).toContain("aurora-2-pro");
   });
 });

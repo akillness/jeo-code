@@ -14,7 +14,7 @@ import { toolTarget } from "./step-budget";
 
 import type { ToolResult } from "./tools";
 import type { Message } from "./loop";
-import { loadProjectContext, withProjectContext } from "./context-files";
+import { loadProjectContext, withProjectContext, type ProjectContextFile } from "./context-files";
 import { memoryPromptSection } from "./memory";
 
 import type { Config } from "./state";
@@ -28,10 +28,25 @@ import {
   resolveSubagentThinking,
   subagentRoleIds,
   validateSubagentDoneReason,
+  type SubagentRole,
 } from "./subagents";
 import { resolveMaxOutputTokens } from "../ai/model-manager";
 import type { SubagentRegistry } from "./subagent-registry";
 import { ensureSessionNotifyEndpoint, type SessionNotifyEndpoint } from "./notify/session-endpoint";
+import { inferTierForModel, tierModelPool, credentialScopeFor, selectFromPool, type RoutingConfig } from "./prompt-router";
+import { isRateLimitError } from "../util/retry";
+
+/** `runSubagentOnce`/`createTaskTool`'s config requirement: everything
+ *  `resolveSubagentModel`/`resolveSubagentMaxSteps`/`resolveSubagentThinking` need
+ *  (`defaultModel`/`subagents`/`thinkingLevel`) PLUS `RoutingConfig` (`roles`/
+ *  `routing`, optionally `providers`/`oauth`/`openaiBaseUrl`) — the rate-limit
+ *  fast-fallback reroute below (`tierModelPool`/`credentialScopeFor`) needs the
+ *  SAME credential-aware routing config `launch.ts`'s `rateLimitFallbackAvailable`
+ *  uses, not just the narrower subagent-resolution slice this type used to be.
+ *  Both real call sites (`launch.ts`'s `createTaskTool({ config: turnConfig, … })`
+ *  and `team.ts`'s two `runSubagentOnce` call sites) already pass a full `Config`
+ *  at runtime, so this widening is type-only — zero runtime behavior change. */
+export type SubagentTaskConfig = RoutingConfig & Pick<Config, "subagents" | "thinkingLevel">;
 
 
 /** Lifecycle event emitted while a delegated subagent runs. */
@@ -61,8 +76,11 @@ export interface TaskSubEvent {
 }
 
 export interface TaskToolOptions {
-  /** Resolves per-role model/step/thinking overrides; `defaultModel` is the fallback. */
-  config: Pick<Config, "defaultModel" | "subagents" | "thinkingLevel">;
+  /** Resolves per-role model/step/thinking overrides; `defaultModel` is the fallback.
+   *  Widened to `SubagentTaskConfig` (RoutingConfig-compatible) — see its doc comment
+   *  — so the rate-limit fast-fallback reroute in `runSubagentOnce` can classify
+   *  credential scopes without a second, narrower config type at this boundary. */
+  config: SubagentTaskConfig;
   /** Forwarded to the subagent loop so Ctrl-C cancels nested work too. */
   signal?: AbortSignal;
   /** Optional live sink (e.g. plain-stream rendering of nested progress). */
@@ -90,6 +108,16 @@ export interface TaskToolOptions {
  *  should either run sequentially (separate `task` calls) or coordinate — jeo has
  *  no in-batch peer channel yet, so overlapping-scope tasks MUST be sequential. */
 const MAX_FANOUT = 4;
+
+/** Small bounded reroute budget for a SUBAGENT's own 429 (distinct from
+ *  launch.ts's `ROUTE_FALLBACK_MAX_ATTEMPTS`, default 3): a subagent is already
+ *  bounded by its own step/token budget and the parent turn's patience, so this
+ *  stays intentionally tight — 2 extra attempts (3 total dispatches) is plenty to
+ *  escape a same-credential-scope 429 without turning one subagent slot into an
+ *  unbounded model-hopping loop. Exported so `ralplan.ts`'s `runConsensusCriticGate`
+ *  (a single, non-fan-out subagent call following the same reroute pattern) shares
+ *  ONE budget definition instead of a second magic number drifting out of sync. */
+export const MAX_SUBAGENT_REROUTES = 2;
 
 /** Hard cap on a fan-out BATCH SIZE (queue length, not concurrency): an unbounded
  *  queue behind MAX_FANOUT workers would still monopolize the parent turn for a
@@ -182,8 +210,9 @@ export function fenceSubagentReport(detail: string): string {
  * handler accepts `{ role?, task | prompt | assignment, context? }`.
  */
 export interface RunSubagentOptions {
-  /** Resolves per-role model/step/thinking overrides; `defaultModel` is the fallback. */
-  config: Pick<Config, "defaultModel" | "subagents" | "thinkingLevel">;
+  /** Resolves per-role model/step/thinking overrides; `defaultModel` is the fallback.
+   *  Widened to `SubagentTaskConfig` — see its doc comment for why. */
+  config: SubagentTaskConfig;
   /** Forwarded to the subagent's own runAgentLoop so Ctrl-C cancels nested work too. */
   signal?: AbortSignal;
   /** Optional live sink (e.g. plain-stream rendering of nested progress). */
@@ -193,7 +222,18 @@ export interface RunSubagentOptions {
   /** 1-based position within a fan-out/parallel batch, for event tagging. */
   slot?: { index: number; total: number };
   /** Pre-loaded project context to avoid re-scanning AGENTS.md per batch item. */
-  projectContext?: Awaited<ReturnType<typeof loadProjectContext>>;
+  projectContext?: ProjectContextFile[];
+  /** BATCH-scoped (not per-call) credential scopes already known exhausted this
+   *  turn, shared across every CONCURRENT fan-out worker (see `createTaskTool`'s
+   *  fan-out path). Up to MAX_FANOUT subagents can be dispatched against the SAME
+   *  OAuth-scoped model simultaneously (e.g. bare `task` calls all defaulting to
+   *  `executor`); without a shared set, each worker independently 429s, waits,
+   *  and rediscovers the SAME exhausted scope instead of the first worker to hit
+   *  it saving its siblings the wasted round. Mutated in place (`.add`) — every
+   *  worker sharing this Set sees a scope the instant ANY of them excludes it.
+   *  Omitted (single-task/detached calls with no batch) = a fresh local Set,
+   *  scoped to just this one run. */
+  excludedCredentialScopes?: Set<string>;
 }
 
 /** `runSubagentOnce`'s result — a superset of `ToolResult` exposing the raw
@@ -227,7 +267,7 @@ export interface SubagentRunResult extends ToolResult {
  * plan step.
  */
 export async function runSubagentOnce(
-  role: ReturnType<typeof getSubagentRole> & {},
+  role: SubagentRole,
   taskText: string,
   context: string,
   cwd: string,
@@ -238,7 +278,7 @@ export async function runSubagentOnce(
   // task 1 from task 3 when several same-role subagents stream concurrently.
   const emit = (ev: TaskSubEvent) =>
     opts.onEvent?.(slot ? { ...ev, index: slot.index, total: slot.total } : ev);
-  const model = resolveSubagentModel(role.id, opts.config);
+  const initialModel = resolveSubagentModel(role.id, opts.config);
   const maxSteps = resolveSubagentMaxSteps(role.id, opts.config);
   // gjc parity: a role may pin its own reasoning budget; absent = inherit the
   // session/global thinking level (the "(inherit)" row in the picker).
@@ -258,71 +298,141 @@ export async function runSubagentOnce(
   // calls so the parent can audit a "Changed Files:" claim against observed
   // reality. File-writing tools (write/edit/mkdir/delete) are tracked apart from
   // bash: read-only bash (e.g. `bun test`) MUST NOT count as edit evidence, but
-  // bash CAN mutate, so the audit message distinguishes the two cases.
+  // bash CAN mutate, so the audit message distinguishes the two cases. These
+  // accumulate ACROSS a rate-limit reroute below — a step that already ran (and
+  // its file writes/bash calls) stays real evidence even if a LATER step 429s
+  // and switches models; only `history` state matters for what actually happened,
+  // never which model dispatched a given step.
   let fileMutations = 0;
   let bashRuns = 0;
-  emit({ role: role.id, kind: "start", detail: taskText, maxSteps, model });
-  const result = await runAgentLoop(history, {
-    cwd,
-    model,
-    maxSteps,
-    maxTokens: resolveMaxOutputTokens(model, thinking),
-    // Per-run prompt-cache key: the subagent replays its own growing history each
-    // step, so a stable per-run key gets provider cache hits (gjc sub-session parity).
-    sessionKey: crypto.randomUUID(),
-    // Bounded delegation: a subagent's step contract stays exact — the parent
-    // owns any retry/extension decision, so the gjc retry flow is disabled here.
-    budget: { maxExtensions: 0 },
-    signal,
-    steer,
-    tools: subagentToolset(role),
-    events: {
-      onStep: n => { currentStep = n; },
-      // Live reasoning preview (native extended-thinking models only — the JSON-protocol
-      // "reasoning" field the main turn also extracts from onModelStream is intentionally
-      // NOT wired here: a subagent's forming tool-call JSON is rarely useful mid-stream and
-      // doubling the stream sinks would double emit() calls for the same underlying delta).
-      // Tail-sliced + whitespace-collapsed to a compact one-line preview — the ledger never
-      // records this (see the `kind` doc comment); it only drives the live per-slot status.
-      onReasoningStream: textSoFar => {
-        const tail = textSoFar.length > 200 ? textSoFar.slice(textSoFar.length - 200) : textSoFar;
-        const preview = tail.replace(/\s+/g, " ").trim();
-        if (preview) emit({ role: role.id, kind: "thinking", detail: preview, step: currentStep, maxSteps, model });
+  // Per-run prompt-cache key: the subagent replays its own growing history each
+  // step, so a stable key (even across a model switch below — a stale cache key
+  // on a NEW provider is simply unused, never wrong) gets provider cache hits
+  // (gjc sub-session parity).
+  const sessionKey = crypto.randomUUID();
+
+  // --- Rate-limit fast fallback (mirrors launch.ts's `rateLimitFallbackAvailable`/
+  // `equivalentRouteFallback` pattern — see df3475d/cca5fe2/02b7e59's commit docs for
+  // the full design history) adapted to a SUBAGENT's narrower, bounded context: a
+  // subagent is already bounded by its own step/token budget, so this stays a SMALL
+  // reroute loop (MAX_SUBAGENT_REROUTES extra attempts) instead of launch.ts's fuller
+  // multi-round loop with live provider-reachability probing. Pairing the bail
+  // predicate with an ACTUAL reroute-and-retry loop is not optional — per 02b7e59's
+  // doc comment, bailing the retry ladder early WITHOUT a real switch-and-retry
+  // around it is a net regression (fails faster with the identical outcome, trading
+  // away the one real win the full backoff still offers: a transient <~90s rate-limit
+  // blip clearing mid-wait and the ORIGINAL call succeeding).
+  const tier = inferTierForModel(initialModel);
+  const attemptedModels = new Set<string>([initialModel]);
+  // Batch-shared when a fan-out worker passes one (see RunSubagentOptions'
+  // doc comment); a fresh local Set for a single-task/detached run.
+  const excludedCredentialScopes = opts.excludedCredentialScopes ?? new Set<string>();
+  // Synchronous, config-only candidate search — same tierModelPool/credentialScopeFor
+  // filtering launch.ts's fast-bail predicate uses, deliberately WITHOUT the async
+  // describeModel/describeProvider/local-reachability validation `equivalentRouteFallback`
+  // does: a bounded 1-2-attempt subagent reroute does not warrant that extra latency/
+  // complexity — tierModelPool already filters to config-servable models
+  // (modelServableWithConfig), so a candidate here is at minimum "configured", even if
+  // (rarely) it turns out unreachable mid-call, in which case the reroute loop below
+  // just reports that real failure instead of masking it.
+  const fallbackCandidates = (): string[] => {
+    const currentScope = credentialScopeFor(activeModel, opts.config);
+    return tierModelPool(tier, opts.config)
+      .filter(m => !attemptedModels.has(m))
+      .filter(m => {
+        const scope = credentialScopeFor(m, opts.config);
+        if (!scope) return true; // API-key-served (or keyless) — independent budget
+        if (currentScope && scope.key === currentScope.key) return false; // same exhausted subscription
+        return !excludedCredentialScopes.has(scope.key);
+      });
+  };
+  // Fed to AgentLoopOptions.rateLimitFallbackAvailable — lets the engine bail a 429
+  // retry ladder on the FIRST failed attempt instead of riding ~90s of backoff when
+  // a genuinely different-credential-scope candidate is available RIGHT NOW.
+  const rateLimitFallbackAvailable = (): boolean => fallbackCandidates().length > 0;
+
+  let activeModel = initialModel;
+  emit({ role: role.id, kind: "start", detail: taskText, maxSteps, model: activeModel });
+  const runOnce = () => {
+    return runAgentLoop(history, {
+      cwd,
+      model: activeModel,
+      maxSteps,
+      maxTokens: resolveMaxOutputTokens(activeModel, thinking),
+      sessionKey,
+      // Bounded delegation: a subagent's step contract stays exact — the parent
+      // owns any retry/extension decision, so the gjc retry flow is disabled here.
+      budget: { maxExtensions: 0 },
+      signal,
+      steer,
+      tools: subagentToolset(role),
+      rateLimitFallbackAvailable,
+      events: {
+        onStep: n => { currentStep = n; },
+        // Live reasoning preview (native extended-thinking models only — the JSON-protocol
+        // "reasoning" field the main turn also extracts from onModelStream is intentionally
+        // NOT wired here: a subagent's forming tool-call JSON is rarely useful mid-stream and
+        // doubling the stream sinks would double emit() calls for the same underlying delta).
+        // Tail-sliced + whitespace-collapsed to a compact one-line preview — the ledger never
+        // records this (see the `kind` doc comment); it only drives the live per-slot status.
+        onReasoningStream: textSoFar => {
+          const tail = textSoFar.length > 200 ? textSoFar.slice(textSoFar.length - 200) : textSoFar;
+          const preview = tail.replace(/\s+/g, " ").trim();
+          if (preview) emit({ role: role.id, kind: "thinking", detail: preview, step: currentStep, maxSteps, model: activeModel });
+        },
+        onAssistant: (_raw, invocation) => {
+          if (invocation && invocation.tool && invocation.tool !== "done") {
+            lastTarget = toolTarget(invocation.tool, invocation.arguments);
+            trace.push(`  step ${currentStep}/${maxSteps}: ${lastTarget}`);
+            emit({ role: role.id, kind: "step", detail: lastTarget, step: currentStep, maxSteps, model: activeModel });
+          }
+        },
+        onToolResult: (tool, success, output) => {
+          if (success) {
+            if (tool === "write" || tool === "edit" || tool === "mkdir" || tool === "delete") fileMutations++;
+            else if (tool === "bash") bashRuns++;
+          }
+          const label = lastTarget || tool;
+          const summary = firstUsefulLine(output);
+          const suffix = summary ? ` — ${summary}` : "";
+          trace.push(`  ${success ? "✓" : "✗"} ${label}${suffix}`);
+          emit({ role: role.id, kind: "tool", detail: label, success, summary, step: currentStep, maxSteps, model: activeModel });
+          lastTarget = "";
+        },
+        // Retry notices (rate-limit backoff etc.) surface as live "step" beats so the
+        // parent's monitor shows WHY a subagent is pausing instead of going silent.
+        onNotice: msg => emit({ role: role.id, kind: "step", detail: msg, step: currentStep, maxSteps, model: activeModel }),
+        // Mid-turn steering reached this subagent: surface it as a live beat so the
+        // parent's monitor shows the redirect instead of an unexplained behavior change.
+        onSteer: text => emit({ role: role.id, kind: "step", detail: `↳ steer: ${text}`, step: currentStep, maxSteps, model: activeModel }),
       },
-      onAssistant: (_raw, invocation) => {
-        if (invocation && invocation.tool && invocation.tool !== "done") {
-          lastTarget = toolTarget(invocation.tool, invocation.arguments);
-          trace.push(`  step ${currentStep}/${maxSteps}: ${lastTarget}`);
-          emit({ role: role.id, kind: "step", detail: lastTarget, step: currentStep, maxSteps, model });
-        }
-      },
-      onToolResult: (tool, success, output) => {
-        if (success) {
-          if (tool === "write" || tool === "edit" || tool === "mkdir" || tool === "delete") fileMutations++;
-          else if (tool === "bash") bashRuns++;
-        }
-        const label = lastTarget || tool;
-        const summary = firstUsefulLine(output);
-        const suffix = summary ? ` — ${summary}` : "";
-        trace.push(`  ${success ? "✓" : "✗"} ${label}${suffix}`);
-        emit({ role: role.id, kind: "tool", detail: label, success, summary, step: currentStep, maxSteps, model });
-        lastTarget = "";
-      },
-      // Retry notices (rate-limit backoff etc.) surface as live "step" beats so the
-      // parent's monitor shows WHY a subagent is pausing instead of going silent.
-      onNotice: msg => emit({ role: role.id, kind: "step", detail: msg, step: currentStep, maxSteps, model }),
-      // Mid-turn steering reached this subagent: surface it as a live beat so the
-      // parent's monitor shows the redirect instead of an unexplained behavior change.
-      onSteer: text => emit({ role: role.id, kind: "step", detail: `↳ steer: ${text}`, step: currentStep, maxSteps, model }),
-    },
-  });
+    });
+  };
+
+  let result = await runOnce();
+  for (let attempt = 0; attempt < MAX_SUBAGENT_REROUTES; attempt++) {
+    if (result.done || !isRateLimitError(new Error(result.doneReason ?? ""))) break;
+    // The model that just 429'd: exclude its WHOLE credential scope (not just its
+    // own id) so a sibling model riding the SAME exhausted OAuth subscription is
+    // never proposed as a "fallback" (cca5fe2's fix, mirrored here).
+    const failedScope = credentialScopeFor(activeModel, opts.config);
+    if (failedScope) excludedCredentialScopes.add(failedScope.key);
+    const candidates = fallbackCandidates();
+    if (candidates.length === 0) break;
+    const previousModel = activeModel;
+    activeModel = selectFromPool(candidates, undefined);
+    attemptedModels.add(activeModel);
+    emit({ role: role.id, kind: "step", detail: `↳ rate limited on '${previousModel}' — switching to equivalent '${activeModel}'`, step: currentStep, maxSteps, model: activeModel });
+    result = await runOnce();
+  }
+
   const reason = result.doneReason?.trim() || `(subagent reached the ${result.steps}-step limit without signaling done)`;
   const validation = validateSubagentDoneReason(role, reason);
   const complete = result.done && validation.ok;
   const detail = validation.ok ? reason : `${reason}\n\n[contract incomplete: missing ${validation.missing?.join(", ")}]`;
-  emit({ role: role.id, kind: "done", detail, success: complete, step: result.steps, maxSteps, model, tokens: result.usage ? { input: result.usage.inputTokens, output: result.usage.outputTokens } : undefined });
+  emit({ role: role.id, kind: "done", detail, success: complete, step: result.steps, maxSteps, model: activeModel, tokens: result.usage ? { input: result.usage.inputTokens, output: result.usage.outputTokens } : undefined });
   const tokNote = result.usage ? `, ${result.usage.inputTokens + result.usage.outputTokens} tok` : "";
-  const header = `[${role.title} subagent] ${complete ? "completed" : "stopped"} in ${result.steps} step(s) on ${model}${tokNote}.`;
+  const header = `[${role.title} subagent] ${complete ? "completed" : "stopped"} in ${result.steps} step(s) on ${activeModel}${tokNote}.`;
   const body = trace.length ? `\nSteps:\n${trace.join("\n")}` : "";
   // Parent-side audit: a mutating role that "completed" without a successful file
   // mutation (write/edit/mkdir/delete) likely changed nothing — flag the claim.
@@ -353,17 +463,20 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
   /** Run ONE subagent via the shared execution core, binding this tool instance's
    *  config/signal/onEvent (the original single-task path). */
   const runOne = (
-    role: ReturnType<typeof getSubagentRole> & {},
+    role: SubagentRole,
     taskText: string,
     context: string,
     cwd: string,
     extra: {
       steer?: () => string[];
       slot?: { index: number; total: number };
-      projectContext?: Awaited<ReturnType<typeof loadProjectContext>>;
+      projectContext?: ProjectContextFile[];
       /** Overrides opts.signal — a detached run uses its own registry signal so it
        *  is cancellable independently of the parent turn. */
       signal?: AbortSignal;
+      /** Batch-shared exhausted-scope set — see RunSubagentOptions' doc comment.
+       *  Omitted for the single-task/detached paths (each gets its own local Set). */
+      excludedCredentialScopes?: Set<string>;
     } = {},
   ): Promise<ToolResult> =>
     runSubagentOnce(role, taskText, context, cwd, {
@@ -373,6 +486,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       steer: extra.steer,
       slot: extra.slot,
       projectContext: extra.projectContext,
+      excludedCredentialScopes: extra.excludedCredentialScopes,
     });
 
   return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {
@@ -435,6 +549,13 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       // Load project context ONCE per batch instead of re-scanning AGENTS.md for
       // every fan-out task (redundant IO + duplicated tokens).
       const batchContext = await loadProjectContext(cwd);
+      // Batch-scoped, shared across every CONCURRENT worker in THIS fan-out (not
+      // across separate `task` calls) — see RunSubagentOptions.excludedCredentialScopes'
+      // doc comment: several workers can 429 the SAME OAuth-scoped model near-
+      // simultaneously (the common case, since bare `task` calls all default to
+      // `executor`'s single resolved model), so the first worker to exclude a
+      // scope saves every sibling worker the same wasted round.
+      const batchExcludedScopes = new Set<string>();
       const results: ToolResult[] = new Array(items.length);
       let next = 0;
       // #7: broadcast steering hub — each concurrent worker sees every parent
@@ -452,7 +573,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
           // dead/misleading once the executor stopped being forced-serial). Each
           // task runs isolated on its own slice of context; a task that genuinely
           // depends on another's output belongs in a sequential follow-up call.
-          results[i] = await runOne(role, items[i]!.task, items[i]!.context, cwd, { slot: { index: i + 1, total: items.length }, projectContext: batchContext, steer: workerSteer });
+          results[i] = await runOne(role, items[i]!.task, items[i]!.context, cwd, { slot: { index: i + 1, total: items.length }, projectContext: batchContext, steer: workerSteer, excludedCredentialScopes: batchExcludedScopes });
         }
 
       };

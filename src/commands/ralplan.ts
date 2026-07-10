@@ -19,6 +19,9 @@ import {
   resolveSubagentMaxSteps,
 } from "../agent/subagents";
 import { runAgentLoop } from "../agent/engine";
+import { inferTierForModel, tierModelPool, credentialScopeFor, selectFromPool } from "../agent/prompt-router";
+import { isRateLimitError } from "../util/retry";
+import { MAX_SUBAGENT_REROUTES } from "../agent/task-tool";
 
 /** Round-11 (architect ref 8-Round10Planning #1): the REAL consensus gate. A
  *  read-only critic SUBAGENT (repo access via read/search/find) reviews the
@@ -33,7 +36,7 @@ export async function runConsensusCriticGate(args: {
 }): Promise<{ verdict: "okay" | "iterate" | "reject" | "unverified"; detail: string }> {
   const role = getSubagentRole("critic")!;
   const config = await readGlobalConfig();
-  const model = resolveSubagentModel(role.id, config);
+  const initialModel = resolveSubagentModel(role.id, config);
   const maxSteps = resolveSubagentMaxSteps(role.id, config);
   const history: Message[] = [
     { role: "system", content: subagentSystemPrompt(role) },
@@ -48,14 +51,48 @@ export async function runConsensusCriticGate(args: {
         `Then call done — your reason MUST start with [OKAY], [ITERATE], or [REJECT] and include a 'Justification:' section.`,
     },
   ];
-  const result = await runAgentLoop(history, {
+  // Rate-limit fast fallback (see task-tool.ts's `runSubagentOnce` for the full
+  // design doc — same pattern, single-call variant: no fan-out here, so no
+  // batch-shared excludedCredentialScopes need apply). A bail-only predicate with
+  // no real reroute-and-retry loop around it is a net regression (02b7e59) — this
+  // gate pairs `rateLimitFallbackAvailable` with the actual switch-and-retry below.
+  const tier = inferTierForModel(initialModel);
+  const attemptedModels = new Set<string>([initialModel]);
+  const excludedCredentialScopes = new Set<string>();
+  const fallbackCandidates = (): string[] => {
+    const currentScope = credentialScopeFor(activeModel, config);
+    return tierModelPool(tier, config)
+      .filter(m => !attemptedModels.has(m))
+      .filter(m => {
+        const scope = credentialScopeFor(m, config);
+        if (!scope) return true; // API-key-served (or keyless) — independent budget
+        if (currentScope && scope.key === currentScope.key) return false; // same exhausted subscription
+        return !excludedCredentialScopes.has(scope.key);
+      });
+  };
+  const rateLimitFallbackAvailable = (): boolean => fallbackCandidates().length > 0;
+
+  let activeModel = initialModel;
+  const runOnce = () => runAgentLoop(history, {
     cwd: args.cwd,
-    model,
+    model: activeModel,
     maxSteps,
     budget: { maxExtensions: 0 },
     signal: args.signal,
     tools: subagentToolset(role),
+    rateLimitFallbackAvailable,
   });
+  let result = await runOnce();
+  for (let attempt = 0; attempt < MAX_SUBAGENT_REROUTES; attempt++) {
+    if (result.done || !isRateLimitError(new Error(result.doneReason ?? ""))) break;
+    const failedScope = credentialScopeFor(activeModel, config);
+    if (failedScope) excludedCredentialScopes.add(failedScope.key);
+    const candidates = fallbackCandidates();
+    if (candidates.length === 0) break;
+    activeModel = selectFromPool(candidates, undefined);
+    attemptedModels.add(activeModel);
+    result = await runOnce();
+  }
   const reason = result.doneReason?.trim() ?? "";
   if (!result.done) return { verdict: "unverified", detail: reason || `critic did not converge within ${result.steps} steps` };
   const contract = validateSubagentDoneReason(role, reason);

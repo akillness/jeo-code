@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.19] - 2026-07-09
+_"프롬프트 라우팅에 안티그라비티 프로바이더의 경우, 안티그라비티용 소넷과 오퍼스도 3.5급으로 라우팅될수있도록해줘" — Antigravity re-exports 3 distinct model families (Anthropic Claude, Google Gemini, OpenAI GPT-OSS) behind one credential, structurally unlike every other provider. `high`/`complex` tier auto-select always resolved to Google's Gemini 3.5 rows: Anthropic's real 64,000-token output ceiling lost a same-thinking-tier tie to Google's 65,536 by a margin with no practical significance, and Gemini's 1M-token context further outranked Claude's real 200K window — so `antigravity/claude-sonnet-4-6`/`antigravity/claude-opus-4-6-thinking` were NEVER reachable through auto-select, even though both were already correctly `sizeClass`-tagged into the `high`/`complex` pools._
+
+### Fixed
+- **Antigravity's Claude Sonnet/Opus are now reachable at the `high`/`complex` routing tiers** (`src/agent/prompt-router.ts`) — added `antigravityCompanyPoolPick`: when Antigravity is credentialed and a tier's pool spans 2+ companies, session-stably spreads across ONE candidate per company (the strongest Antigravity row for that company) instead of the plain single-winner comparator always resolving to Google's Gemini rows. Wired into `resolveTierModel`'s `high`/`complex` branches, after the explicit `routing.crossProviderPool` opt-in but before the plain single-winner fallback — purely additive, default-on specifically for Antigravity's multi-vendor case (every other provider represents exactly one vendor and is unaffected).
+
+### Added
+- **Antigravity multi-company routing coverage** (`test/prompt-router.test.ts`) — 3 new tests: reachability across all 3 re-exported companies (Anthropic/Google/OpenAI) over 50 sessions, session-stability (same session always resolves to the same pick), and an explicit `roles.high` override still winning over the new spread. Updated one test whose assertion had locked in the old Gemini-only behavior — its actual invariant (never leak a bare public `gemini-*` id) still holds and is now asserted more precisely.
+
+### Verified
+- Live: `resolveTierModel("high"/"complex", …)` across 5 distinct real sessionIds confirms `antigravity/claude-sonnet-4-6` reachable at `high` and `antigravity/claude-opus-4-6-thinking` reachable at `complex`, spread across all 3 companies.
+- `bun test test/prompt-router.test.ts test/prompt-router-tiers.test.ts test/model-manager.test.ts test/launch-prompt-routing.test.ts test/model-provider-mapping.test.ts` — 159 pass / 0 fail.
+- Full `bun test` — 2893 pass / 0 fail across 291 files.
+- `bun run typecheck` — no errors.
+
 ## [0.8.18] - 2026-07-09
 _"라우팅 매 프롬프트마다 변경되는지, route why 의도대로 동작하는지 검증하고 배포할게있는지 확인해줘" — 2 parallel subagents live-verified per-prompt routing + `/route why` (including the previously-only-unit-tested post-call equivalent-model fallback path, now reproduced against a real mock 500-error server) and audited a disconnected `RouteHistory` class shipped as incomplete scaffolding in 0.8.16/0.8.17 (class + 11 tests existed, but nothing ever called it — no `/route history` subcommand, no wiring into the turn loop). Live testing also surfaced one real bug: the TUI footer's model/provider label never updated after a mid-turn fallback, staying on the pre-fallback model for the rest of that turn's render even though the backend decision (`lastRouteDecision`) was already correct._
 

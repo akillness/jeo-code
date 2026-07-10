@@ -9,12 +9,21 @@ import type { RouteDecision } from "./prompt-router";
 
 export interface RouteHistoryEntry extends RouteDecision {
   timestamp: number; // Date.now()
-  turnNumber: number; // 1-indexed turn in this session
+  /** 1-indexed sequence number of this RECORDED DECISION (not the REPL turn) —
+   *  `add()` fires once for the pre-call routing pick AND once more per
+   *  mid-turn equivalent-pool fallback (launch.ts's retry loop), so a single
+   *  user turn that hits a fallback can produce several CONSECUTIVE entries
+   *  here. Do not treat this as a 1:1 conversational-turn counter. */
+  turnNumber: number;
 }
 
 /**
  * Bounded FIFO queue of routing decisions. Oldest entries are dropped when
- * the queue exceeds `maxSize`.
+ * the queue exceeds `maxSize`. The REPL constructs this with the default
+ * `maxSize` (10) — `/route history <n>`'s `n` argument only WINDOWS this
+ * already-capped retention (`launch.ts`'s single `new RouteHistory()` call
+ * site never passes a wider size), so `/route history 50` silently returns
+ * at most the last 10 decisions recorded this session, not 50.
  */
 export class RouteHistory {
   private entries: RouteHistoryEntry[] = [];

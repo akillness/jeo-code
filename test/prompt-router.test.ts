@@ -490,7 +490,8 @@ test("resolveTierModel auto-select constrains candidates to ONLY credentialed pr
     config,
   )) as RouteDecision;
   expect(trivial.model).toBe("gpt-4o-mini"); // cheapest OpenAI-catalogued model
-  expect(complex.model).toBe("gpt-5.5"); // strongest OpenAI-catalogued model (recency tiebreak: 2026-04 beats gpt-5.4's 2026-03)
+  expect(complex.model).toBe("gpt-5.6"); // strongest OpenAI-catalogued model (recency tiebreak: 2026-06 beats gpt-5.5's 2026-04)
+
   expect(trivial.model).not.toContain("claude");
   expect(trivial.model).not.toContain("gemini");
   expect(complex.model).not.toContain("claude");
@@ -590,7 +591,12 @@ test("resolveTierModel auto-select: high/complex tiers are session-stably reacha
   // "high": Anthropic (claude-sonnet-4-6), Google (strongest same-tier Gemini row),
   // OpenAI (gpt-oss-120b-medium) — all 3 companies reachable, never just Google's.
   expect(highModels).toContain("antigravity/claude-sonnet-4-6");
-  expect(highModels.has("antigravity/gemini-3.5-flash-low") || highModels.has("antigravity/gemini-pro-agent")).toBe(true);
+  // Google's slot is deterministic, not a coin flip: gemini-3.5-flash-low and
+  // gemini-pro-agent tie on thinking/maxOutputTokens/contextTokens, so the
+  // releaseDate tiebreak picks the newer row (2026-05 > 2026-02) EVERY time —
+  // gemini-pro-agent never wins Google's company slot for "high".
+  expect(highModels.has("antigravity/gemini-3.5-flash-low")).toBe(true);
+  expect(highModels.has("antigravity/gemini-pro-agent")).toBe(false);
   expect(highModels).toContain("antigravity/gpt-oss-120b-medium");
   // "complex": only 2 companies have a large-class row (Anthropic's Opus, Google's
   // flash-agent) — OpenAI's gpt-oss is mid-class only, correctly absent here.

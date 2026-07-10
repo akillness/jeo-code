@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.20] - 2026-07-10
+_"모든 검증 다시 리뷰하고 변경사항 모두 체크해" — 4 fresh, skeptical subagents independently re-audited every change from v0.8.17-0.8.19 (bc8768f..92c6b7d) with zero trust in prior claims: a code-correctness auditor manually traced the Antigravity routing logic against the live catalog, a test-integrity auditor mutation-tested the new tests (confirmed each one genuinely fails when its fix is reverted) and ran the suite fresh, a live-behavior verifier re-reproduced all 4 behavioral claims from scratch with self-generated data (own session ids, own mock server, own HTTP status code), and a docs-accuracy auditor cross-checked every README/CHANGELOG claim against current code in isolated git worktrees. Verdict: all core logic and tests GENUINE/CONFIRMED CORRECT — but the audit surfaced 1 real doc staleness gap, 1 changelog count error, and 2 minor precision gaps, all fixed here._
+
+### Fixed
+- **README `[!CAUTION]` block updated for the Antigravity exception** (`README.md`, `README.ko.md`, `README.ja.md`, `README.zh.md`) — the block's `high`/`complex` tier-fallback description ("scan for the strongest live-credentialed model... land on a different model each turn") stopped being accurate for Antigravity-/Gemini-OAuth-credentialed sessions after v0.8.19's `antigravityCompanyPoolPick` (default-on, no opt-in): those sessions instead spread across ONE model per company, session-stably (same session -> same pick every turn, not varying). Added an explicit exception clause in all 4 languages.
+- **CHANGELOG 0.8.18 test-count error** — "69 pass" for `test/route-history.test.ts test/route-slash.test.ts test/launch-prompt-routing.test.ts` corrected to the actual **71 pass** (independently reproduced twice, including in an isolated `git worktree` pinned to commit 50bd0b1).
+- **`RouteHistory`/`route-slash.ts` doc comments corrected** (`src/agent/route-history.ts`, `src/commands/launch/route-slash.ts`) — `turnNumber`'s doc comment now states it's a sequential ADD-counter (increments once per pre-call route AND once per mid-turn fallback retry), not a 1:1 conversational-turn counter as the old wording implied; `RouteHistory`'s hardcoded `maxSize` default (10) is now documented as an unconditional retention cap that `/route history <n>` can only narrow, never widen — `/route history 50` silently returns at most 10 entries. No behavior changed, doc-only.
+- **Tightened an over-loose test assertion** (`test/prompt-router.test.ts`) — the antigravity multi-company reachability test asserted `gemini-3.5-flash-low OR gemini-pro-agent` for Google's "high"-tier company slot, when the code's actual behavior (confirmed by independent manual trace against `MODEL_CATALOG`) is fully deterministic: `gemini-3.5-flash-low` always wins the recency tiebreak, `gemini-pro-agent` never does. Replaced the OR with two precise assertions.
+
+### Verified
+- 4 independent subagent audits, zero trust in prior claims: CodeCorrectnessAuditor (manual pen-and-paper trace of 2 antigravity routing scenarios against live `MODEL_CATALOG` — both confirmed correct), TestIntegrityAuditor (mutation-tested `onModelSwitch` and the `/model`-pin gate — both confirmed to genuinely fail when reverted; zero `.skip`/`.todo`/weakened assertions found across all 5 touched test files), LiveBehaviorVerifier (re-reproduced all 4 behavioral claims with self-generated session ids/mock server/HTTP status code — all PASS), DocsAccuracyAuditor (cross-checked every README/CHANGELOG claim in isolated `git worktree`s pinned to the exact historical commits).
+- Full `bun test` — 2898 pass / 0 fail across 291 files (290 tracked at this commit; the +1 is an unrelated concurrent session's untracked file, not part of this change).
+- `bun run typecheck` — no errors.
+- `bun run changelog:sync` — idempotent, zero diff on a clean run (independently confirmed by DocsAccuracyAuditor before this entry was added).
+
 ## [0.8.19] - 2026-07-09
 _"프롬프트 라우팅에 안티그라비티 프로바이더의 경우, 안티그라비티용 소넷과 오퍼스도 3.5급으로 라우팅될수있도록해줘" — Antigravity re-exports 3 distinct model families (Anthropic Claude, Google Gemini, OpenAI GPT-OSS) behind one credential, structurally unlike every other provider. `high`/`complex` tier auto-select always resolved to Google's Gemini 3.5 rows: Anthropic's real 64,000-token output ceiling lost a same-thinking-tier tie to Google's 65,536 by a margin with no practical significance, and Gemini's 1M-token context further outranked Claude's real 200K window — so `antigravity/claude-sonnet-4-6`/`antigravity/claude-opus-4-6-thinking` were NEVER reachable through auto-select, even though both were already correctly `sizeClass`-tagged into the `high`/`complex` pools._
 
@@ -36,7 +51,7 @@ _"라우팅 매 프롬프트마다 변경되는지, route why 의도대로 동�
 ### Verified
 - Live PTY re-verification (`bun src/cli.ts`, isolated `JEO_CONFIG_DIR`, real Anthropic credentials): 5 prompts of varying complexity in one session routed to 5 distinct tier/model pairs (trivial→claude-haiku-4-5, complex→claude-fable-5, trivial→claude-haiku-4-5, high→claude-sonnet-5, trivial→claude-haiku-4-5); `/route why` and `/route status` matched the actual serving model on every turn.
 - Live post-call-fallback reproduction: a real `Bun.serve` mock returning HTTP 500 on every call forced `launch.ts`'s equivalent-pool fallback to fire mid-turn; `/route why` immediately after correctly reported the POST-fallback model and a `warning: … switched to equivalent …` field, not the original pre-call pick.
-- `bun test test/route-history.test.ts test/route-slash.test.ts test/launch-prompt-routing.test.ts` — 69 pass / 0 fail.
+- `bun test test/route-history.test.ts test/route-slash.test.ts test/launch-prompt-routing.test.ts` — 71 pass / 0 fail.
 - `bun test test/tui-app.test.ts` — 51 pass / 0 fail (50 pre-existing + 1 new, covering the footer live-update fix).
 - Full `bun test` — 2885 pass / 0 fail across 290 files.
 - `bun run typecheck` — no errors.

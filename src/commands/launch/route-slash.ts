@@ -69,7 +69,10 @@ function explainDecision(decision: RouteDecision | { note: string } | null): str
 /**
  * Format the last `n` history entries (default 10) as one line each:
  * `turn N: tier -> model (source, confidence X.XX)`, oldest of the selected
- * window first — matches `getAll()`'s chronological ordering.
+ * window first — matches `getAll()`'s chronological ordering. `entries` is
+ * ALREADY capped to `RouteHistory`'s `maxSize` (default 10) by the caller —
+ * `n` only narrows that window further, it can never widen it, so a large
+ * `n` (e.g. 50) silently returns at most `maxSize` entries.
  */
 function formatHistory(entries: RouteHistoryEntry[], n: number): string[] {
   if (entries.length === 0) return ["No routing decisions recorded yet this session."];

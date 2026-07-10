@@ -249,6 +249,79 @@ test("withRetry: onRetry receives the actually-applied delay", async () => {
   expect(seen).toEqual([{ attempt: 1, delayMs: 2000 }]);
 });
 
+// --- onRetry returning `false` aborts immediately (rate-limit fast-fallback):
+// a caller (jeo's engine.ts, when an equivalent-pool fallback model is ready) can
+// bail the retry ladder on the FIRST failed attempt instead of sleeping through
+// the escalating 429 backoff — see RetryOptions.onRetry's doc comment. ---
+
+test("withRetry: onRetry returning false aborts immediately without sleeping (rate-limit fast-fallback)", async () => {
+  let attempts = 0;
+  const sleeps: number[] = [];
+  await expect(
+    withRetry(
+      async () => {
+        attempts++;
+        throw { status: 429, message: "slow down" };
+      },
+      {
+        retries: 1,
+        rateLimitRetries: 6, // generous budget — onRetry's false must short-circuit it, not the budget itself
+        baseDelayMs: 1,
+        sleep: async ms => { sleeps.push(ms); },
+        onRetry: () => false,
+      },
+    ),
+  ).rejects.toMatchObject({ status: 429 });
+  // Exactly ONE attempt: onRetry fired once (before any sleep), returned false, and
+  // the pending error was re-thrown immediately — no backoff wait, no second attempt.
+  expect(attempts).toBe(1);
+  expect(sleeps).toEqual([]);
+});
+
+test("withRetry: onRetry returning undefined (the common case) continues retrying unchanged", async () => {
+  let attempts = 0;
+  await withRetry(
+    async () => {
+      attempts++;
+      if (attempts < 3) throw { status: 429, message: "slow down" };
+      return "ok";
+    },
+    {
+      retries: 1,
+      rateLimitRetries: 5,
+      baseDelayMs: 1,
+      sleep: async () => {},
+      onRetry: () => { /* returns undefined, not false */ },
+    },
+  );
+  expect(attempts).toBe(3);
+});
+
+test("withRetry: onRetry's false only takes effect on ITS OWN call — a later attempt can still abort even if an earlier onRetry did not", async () => {
+  let attempts = 0;
+  const seenAttempts: number[] = [];
+  await expect(
+    withRetry(
+      async () => {
+        attempts++;
+        throw { status: 429, message: "slow down" };
+      },
+      {
+        retries: 1,
+        rateLimitRetries: 6,
+        baseDelayMs: 1,
+        sleep: async () => {},
+        onRetry: attempt => {
+          seenAttempts.push(attempt);
+          return attempt >= 2 ? false : undefined; // ride out attempt 1, bail at attempt 2
+        },
+      },
+    ),
+  ).rejects.toMatchObject({ status: 429 });
+  expect(seenAttempts).toEqual([1, 2]);
+  expect(attempts).toBe(2); // initial call (attempt=1's onRetry rides it out, sleeps) + the retried call (attempt=2's onRetry then bails, no 3rd call)
+});
+
 test("withRetry honors a resolved requestMaxRetries budget (attempt count)", async () => {
   let attempts = 0;
   const opts = resolveRetryOptions({ requestMaxRetries: 2, maxDelayMs: 0 });

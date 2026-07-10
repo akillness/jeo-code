@@ -42,7 +42,7 @@ async function invokeCallLlm(history: Message[], options: {
   reasoningEffort?: import("../ai/types").CallOptions["reasoningEffort"];
   signal?: AbortSignal;
   onUsage?: (u: { inputTokens?: number; outputTokens?: number }) => void;
-  onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
+  onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false;
   onToken?: (delta: string) => void;
   onReasoning?: (delta: string) => void;
   onReasoningStart?: () => void;
@@ -313,6 +313,18 @@ export interface AgentLoopOptions {
    *  An agent loop replays nearly-identical history each step, so cache hits here cut
    *  both latency and billed input tokens. */
   sessionKey?: string;
+  /** Sync predicate: true when the caller has an equivalent-pool fallback model
+   *  ready to switch to RIGHT NOW (a different model in the same size tier that
+   *  hasn't already been tried this turn). When set and a 429 rate-limit error
+   *  fires, the engine bails the model-manager retry ladder on the VERY FIRST
+   *  failed attempt instead of riding the full `rateLimitRetries` backoff budget
+   *  (up to ~6 attempts / ~90s on the SAME rate-limited model) — the caller's own
+   *  post-call equivalent-pool fallback (launch.ts's `routeFailureReason` loop)
+   *  then switches models immediately. Absent, `false`, or a non-rate-limit error
+   *  leaves the normal retry ladder unchanged (no fallback pool = no reason to
+   *  cut the budget short; a single-provider session still rides out a transient
+   *  per-minute window as before). */
+  rateLimitFallbackAvailable?: () => boolean;
 }
 
 export interface AgentLoopResult {
@@ -707,10 +719,18 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               onReasoningArtifact,
               // Make provider auto-retry visible: previously a rate-limited call sat in a
               // silent backoff wait, then surfaced "auto-retry was exhausted" with no trace
-              // of the retries that DID happen.
+              // of the retries that DID happen. A rate limit with a fallback model ready
+              // bails HERE (returns false) instead of sleeping through the backoff — the
+              // caller's equivalent-pool fallback then switches models immediately (see
+              // AgentLoopOptions.rateLimitFallbackAvailable's doc comment).
               onRetry: (attempt, err, delayMs) => {
+                const rateLimited = isRateLimitError(err);
+                if (rateLimited && opts.rateLimitFallbackAvailable?.()) {
+                  ev.onNotice?.("rate limited (HTTP 429) — a fallback model is available, switching instead of retrying");
+                  return false;
+                }
                 const wait = Math.max(1, Math.round(delayMs / 1000));
-                const what = isRateLimitError(err) ? "rate limited (HTTP 429)" : "transient provider error";
+                const what = rateLimited ? "rate limited (HTTP 429)" : "transient provider error";
                 ev.onNotice?.(`${what} — auto-retry #${attempt} in ${wait}s`);
               },
             });

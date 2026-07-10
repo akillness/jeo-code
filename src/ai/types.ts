@@ -120,8 +120,10 @@ export interface CallOptions {
    *  hits instead of full-prompt re-reads. Optional — absent for one-shot calls. */
   sessionKey?: string;
   /** Notified before each auto-retry backoff wait (rate limits / transient errors).
-   *  NOT forwarded to provider adapters — consumed by the manager's retry layer. */
-  onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
+   *  NOT forwarded to provider adapters — consumed by the manager's retry layer.
+   *  Returning `false` aborts the retry immediately instead of backing off and
+   *  re-attempting (see util/retry.ts's RetryOptions.onRetry). */
+  onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false;
   /** Streaming sink for native model reasoning/thinking text deltas (separate from the
    *  answer text). Surfaced as a transient dimmed view; absent for models that emit no
    *  thought text. */

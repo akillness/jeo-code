@@ -46,6 +46,12 @@ let mockQuestions: string[] = [];
 let mockIndex = 0;
 let capturedCalls: { model?: string; maxTokens?: number; reasoningEffort?: string; sessionKey?: string }[] = [];
 let runAgentLoopDelegate: (history: unknown, opts: AgentLoopOptions) => Promise<AgentLoopResult> = async () => ({ done: true, steps: 1, doneReason: "ok" });
+// Rate-limit fast-fallback (opts.rateLimitFallbackAvailable): one entry per
+// runAgentLoop call, the predicate's return value at CALL TIME (undefined when
+// the caller never wired the predicate — must never happen for a routed/pinned
+// call in launch.ts's runTurn, but distinguishes "false" from "not wired" for a
+// defensive assertion).
+let capturedRateLimitAvailability: (boolean | undefined)[] = [];
 
 mock.module("node:readline/promises", () => ({
   createInterface: () => ({
@@ -61,6 +67,7 @@ mock.module("../src/agent/engine", () => ({
   ...realEngine,
   runAgentLoop: mock(async (history: unknown, opts: AgentLoopOptions) => {
     capturedCalls.push({ model: opts.model, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, sessionKey: opts.sessionKey });
+    capturedRateLimitAvailability.push(opts.rateLimitFallbackAvailable?.());
     return runAgentLoopDelegate(history, opts);
   }),
 }));
@@ -87,6 +94,7 @@ beforeEach(() => {
   mockQuestions = [];
   mockIndex = 0;
   capturedCalls = [];
+  capturedRateLimitAvailability = [];
   capturedRoutedTiers = [];
   runAgentLoopDelegate = async () => ({ done: true, steps: 1, doneReason: "ok" });
   resetPromptRouterWarnings();
@@ -1041,5 +1049,97 @@ test("post-call reroute: context-overflow (400/413, conversation too large) does
 
     expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini"]);
     expect(logs.some(l => l.startsWith("[route]") && l.includes("switching to equivalent"))).toBe(false);
+  });
+});
+
+// --- Rate-limit fast fallback (v0.8.22): opts.rateLimitFallbackAvailable is threaded
+// into EVERY runAgentLoop call so the engine can bail a same-model 429 retry ladder on
+// the FIRST failed attempt (instead of riding ~90s of backoff) whenever an untried
+// same-tier model is available RIGHT NOW — see engine.ts's AgentLoopOptions doc comment
+// and launch.ts's `rateLimitFallbackAvailable` closure. ---
+
+test("rate-limit fast fallback: rateLimitFallbackAvailable() is true when an untried same-tier candidate is credentialed", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => ({ done: true, steps: 1, doneReason: `completed on ${opts.model}` });
+
+    await runOneTurn({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, "what is this?");
+
+    // gpt-4o-mini is the only call (turn succeeded first try) — claude-haiku-4-5 (proven
+    // reachable by the "post-call reroute" tests above, same trivial-tier pool) is an
+    // untried, credentialed candidate at that moment, so the predicate reads true.
+    expect(capturedCalls.map(c => c.model)).toEqual(["gpt-4o-mini"]);
+    expect(capturedRateLimitAvailability).toEqual([true]);
+  });
+});
+
+test("rate-limit fast fallback: rateLimitFallbackAvailable() is false when no credentialed fallback candidate exists at all", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => ({ done: true, steps: 1, doneReason: `completed on ${opts.model}` });
+
+    // Zero providers credentialed, routing off, no /model pin: the turn still runs on
+    // defaultModel (routing not active this turn), but the tier pool is empty — nothing
+    // is credentialed for ANY provider, so there is genuinely no candidate to switch to.
+    await runOneTurn({
+      providers: {},
+      defaultModel: "claude-sonnet-4-6",
+    }, "what is this?");
+
+    expect(capturedCalls.map(c => c.model)).toEqual(["claude-sonnet-4-6"]);
+    expect(capturedRateLimitAvailability).toEqual([false]);
+  });
+});
+
+test("rate-limit fast fallback: predicate re-evaluates fresh after a fallback switch (excludes the already-tried model from the SECOND call too)", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "gpt-4o-mini") {
+        return { done: false, steps: 1, doneReason: "Error: Rate limited by OpenAI (HTTP 429)." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, "what is this?");
+
+    // Two calls: gpt-4o-mini (rate limited) then claude-haiku-4-5 (the equivalent
+    // fallback, succeeds). Both calls see a TRUE predicate at the time they run — the
+    // first because claude-haiku-4-5 (untried) is credentialed, the second because a
+    // FURTHER untried candidate (e.g. gpt-4.1, per the "recoverable failure on first
+    // fallback" test above) is still available even after gpt-4o-mini was excluded.
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    expect(capturedRateLimitAvailability).toEqual([true, true]);
+  });
+});
+
+test("post-call reroute: HTTP 429 rate limit on the routed model switches to a same-tier fallback (the actual scenario rateLimitFallbackAvailable exists to shortcut)", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "gpt-4o-mini") {
+        return { done: false, steps: 1, doneReason: "Error: Rate limited by OpenAI (HTTP 429). Auto-retry cannot clear this window right now." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, ["what is this?", "/route why"]);
+
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("hit a rate limit"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("gpt-4o-mini");
+    expect(notice).toContain("claude-haiku-4-5");
   });
 });

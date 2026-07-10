@@ -5,8 +5,16 @@ export interface RetryOptions {
   isRetryable?: (err: unknown, attempt: number) => boolean;
   sleep?: (ms: number) => Promise<void>;   // injectable for tests (default real setTimeout)
   random?: () => number;   // injectable RNG for jitter (default Math.random); equal-jitter in [0.5x, 1x]
-  /** Notified before each backoff wait; `delayMs` is the wait actually applied. */
-  onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
+  /** Notified before each backoff wait; `delayMs` is the wait actually applied.
+   *  Returning `false` (explicitly) aborts the retry ladder immediately — the
+   *  pending error is thrown right away instead of sleeping and re-attempting.
+   *  Lets a caller with a same-tier FALLBACK model available bail out of a
+   *  same-model rate-limit retry loop early rather than riding the full
+   *  `rateLimitRetries` budget (up to ~90s of escalating backoff) before the
+   *  turn-level equivalent-pool fallback ever gets a chance to switch models.
+   *  Any other return value (including `undefined`, the common case) continues
+   *  the retry ladder unchanged. */
+  onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false;
   /** Aborts an in-progress backoff wait (e.g. Ctrl-C / turn cancel). Already-aborted or
    *  aborted-mid-wait rejects immediately instead of completing the sleep — the escape hatch
    *  for a long, honored provider `Retry-After` (see `rateLimitMaxServerDelayMs`: those are no
@@ -200,8 +208,11 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
         : 0;
       const delay = Math.max(base, floor);
 
-      if (onRetry) {
-        onRetry(attempt, err, delay);
+      // A `false` return from onRetry means the caller wants to bail NOW instead of
+      // sleeping and re-attempting (see RetryOptions.onRetry's doc comment) — throw
+      // the pending error immediately rather than entering the backoff wait.
+      if (onRetry && onRetry(attempt, err, delay) === false) {
+        throw err;
       }
 
       await abortableSleep(sleep, delay, signal);

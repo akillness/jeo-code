@@ -1448,6 +1448,39 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           tags: ["jeo", "launch"],
         });
         opik.startTurn();
+        // Hoisted above `runLoopWithModel` (moved from after its first call) so the
+        // rate-limit fast-fallback predicate below can see the CURRENT attempted-model
+        // set on every call, including the very first one. `attemptedRouteModels` is
+        // mutated in place (`.add`) as the fallback loop below tries more models — this
+        // closure always reads its live contents, never a stale snapshot.
+        const attemptedRouteModels = new Set<string>([activeModel]);
+        // A NON-routed turn (routing disabled, or the user pinned a model via /model)
+        // still needs the equivalent-pool fallback on a usage-limit/rate-limit/credential
+        // failure — the exact "5-hour usage window exhausted, model just stops working"
+        // case this loop exists to fix. Synthesize a same-size-class RouteDecision
+        // (inferTierForModel) so `equivalentRouteFallback` has a tier/pool to search even
+        // with routing off; a real `routed` decision (routing enabled) is used unchanged.
+        let fallbackBaseDecision: RouteDecision = routed ?? {
+          model: activeModel,
+          thinking: activeThinking,
+          tier: inferTierForModel(activeModel),
+          confidence: 1,
+          source: "heuristic",
+          signals: [],
+        };
+        // Cheap SYNC check (no network/credential probing — that full validation is
+        // `equivalentRouteFallback`'s job when a switch actually happens) for "does an
+        // untried, same-tier candidate exist RIGHT NOW". Feeds
+        // AgentLoopOptions.rateLimitFallbackAvailable so the engine can bail a 429 retry
+        // ladder on the first failed attempt instead of riding ~90s of backoff on a
+        // model that has an equivalent sitting right there. Mirrors
+        // `equivalentRouteFallback`'s own `poolCandidates` filters (tier pool minus
+        // already-tried models minus image-incapable models when this turn has images)
+        // so "available" here never promises more than the real fallback can deliver.
+        const rateLimitFallbackAvailable = (): boolean =>
+          tierModelPool(fallbackBaseDecision.tier, turnConfig)
+            .filter(model => !attemptedRouteModels.has(model))
+            .some(model => !images?.length || catalogMetadata(model)?.images !== false);
         const runLoopWithModel = (model: string, thinking: ThinkLevel | undefined, cacheKey: string | undefined, maxSteps = flags.maxSteps, budget?: { maxExtensions: number }) => runAgentLoop(history, {
           cwd,
           tools,
@@ -1459,6 +1492,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           signal: ac.signal,
           sessionKey: cacheKey,
           steer: drainSteer,
+          rateLimitFallbackAvailable,
           events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone }, persistTurnTail), opik),
         });
         const routeFailureReason = (doneReason: unknown): string | null => {
@@ -1530,21 +1564,6 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const routeFallbackMax = Number.isFinite(routeFallbackMaxRaw) && routeFallbackMaxRaw >= 0
           ? Math.floor(routeFallbackMaxRaw)
           : 3;
-        const attemptedRouteModels = new Set<string>([activeModel]);
-        // A NON-routed turn (routing disabled, or the user pinned a model via /model)
-        // still needs the equivalent-pool fallback on a usage-limit/rate-limit/credential
-        // failure — the exact "5-hour usage window exhausted, model just stops working"
-        // case this loop exists to fix. Synthesize a same-size-class RouteDecision
-        // (inferTierForModel) so `equivalentRouteFallback` has a tier/pool to search even
-        // with routing off; a real `routed` decision (routing enabled) is used unchanged.
-        let fallbackBaseDecision: RouteDecision = routed ?? {
-          model: activeModel,
-          thinking: activeThinking,
-          tier: inferTierForModel(activeModel),
-          confidence: 1,
-          source: "heuristic",
-          signals: [],
-        };
         for (let routeFallbackAttempt = 0; routeFallbackAttempt < routeFallbackMax; routeFallbackAttempt++) {
           const routedFailureReason = !result.done ? routeFailureReason(result.doneReason) : null;
           if (!routedFailureReason) break;

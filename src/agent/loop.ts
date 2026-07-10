@@ -18,8 +18,9 @@ export interface ChatOptions {
   jsonMode?: boolean;
   signal?: AbortSignal;
   onUsage?: (usage: import("../ai/types").Usage) => void;
-  /** Notified before each provider auto-retry backoff wait (e.g. rate limits). */
-  onRetry?: (attempt: number, err: unknown, delayMs: number) => void;
+  /** Notified before each provider auto-retry backoff wait (e.g. rate limits).
+   *  Returning `false` aborts the retry immediately (see ai/types.ts's CallOptions). */
+  onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false;
   /** When set, the response is consumed via the provider STREAM and each text delta is
    *  delivered here (concatenation equals the returned string). Absent ⇒ a single
    *  non-streaming `call()` (unchanged behavior for non-interactive/test callers). */

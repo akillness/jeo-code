@@ -238,6 +238,101 @@ test("runAgentLoop: provider auto-retry surfaces as onNotice and the terminal er
   expect(result.doneReason).toContain("429");
 });
 
+// --- Rate-limit fast fallback (AgentLoopOptions.rateLimitFallbackAvailable): a 429
+// with an equivalent-pool fallback model ready bails the engine's onRetry closure
+// on the FIRST failed attempt (returns `false`) instead of announcing/riding a
+// normal backoff wait, so the caller (launch.ts) can switch models immediately
+// rather than burning the model-manager's ~90s rate-limit retry budget. ---
+
+test("runAgentLoop: onRetry returns false (bails immediately) for a 429 when rateLimitFallbackAvailable() is true", async () => {
+  const onRetryReturns: (void | false)[] = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_h: unknown, options: { onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false }) => {
+      // Capture what the engine's onRetry closure actually RETURNS for a 429 —
+      // this is the real contract withRetry acts on (see util/retry.ts).
+      onRetryReturns.push(options.onRetry?.(1, { status: 429, message: "rate limited" }, 2000));
+      throw { status: 429, message: "Rate limited by Anthropic (HTTP 429)." };
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const notices: string[] = [];
+  const history = [{ role: "system" as const, content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 5,
+    events: { onNotice: msg => notices.push(msg) },
+    rateLimitFallbackAvailable: () => true,
+  });
+  expect(onRetryReturns).toEqual([false]);
+  expect(notices).toEqual(["rate limited (HTTP 429) — a fallback model is available, switching instead of retrying"]);
+  expect(result.done).toBe(false);
+  expect(result.doneReason).toContain("429");
+});
+
+test("runAgentLoop: onRetry does NOT bail a 429 when rateLimitFallbackAvailable() is false (rides the normal backoff notice)", async () => {
+  const onRetryReturns: (void | false)[] = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_h: unknown, options: { onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false }) => {
+      onRetryReturns.push(options.onRetry?.(1, { status: 429, message: "rate limited" }, 4000));
+      throw { status: 429, message: "Anthropic request failed (HTTP 429): rate limited" };
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const notices: string[] = [];
+  const history = [{ role: "system" as const, content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 5,
+    events: { onNotice: msg => notices.push(msg) },
+    rateLimitFallbackAvailable: () => false,
+  });
+  expect(onRetryReturns).toEqual([undefined]);
+  expect(notices).toEqual(["rate limited (HTTP 429) — auto-retry #1 in 4s"]);
+  expect(result.done).toBe(false);
+});
+
+test("runAgentLoop: onRetry does NOT bail a NON-rate-limit transient error even when rateLimitFallbackAvailable() is true (fast-fallback is 429-scoped only)", async () => {
+  const onRetryReturns: (void | false)[] = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_h: unknown, options: { onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false }) => {
+      onRetryReturns.push(options.onRetry?.(1, { status: 503, message: "overloaded" }, 1000));
+      throw { status: 503, message: "HTTP 503: overloaded" };
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const notices: string[] = [];
+  const history = [{ role: "system" as const, content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 5,
+    events: { onNotice: msg => notices.push(msg) },
+    rateLimitFallbackAvailable: () => true,
+  });
+  expect(onRetryReturns).toEqual([undefined]);
+  expect(notices).toEqual(["transient provider error — auto-retry #1 in 1s"]);
+  expect(result.done).toBe(false);
+});
+
+test("runAgentLoop: absent rateLimitFallbackAvailable preserves the original (pre-fast-fallback) retry-notice behavior", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_h: unknown, options: { onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false }) => {
+      options.onRetry?.(1, { status: 429, message: "rate limited" }, 4000);
+      throw { status: 429, message: "Anthropic request failed (HTTP 429): rate limited" };
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const notices: string[] = [];
+  const history = [{ role: "system" as const, content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 5,
+    events: { onNotice: msg => notices.push(msg) },
+    // rateLimitFallbackAvailable omitted entirely — must behave exactly like existing callers.
+  });
+  expect(notices).toEqual(["rate limited (HTTP 429) — auto-retry #1 in 4s"]);
+  expect(result.done).toBe(false);
+});
+
 test("truncateToolOutput: keeps head and tail (tail holds the decisive part)", () => {
   const short = "all good";
   expect(truncateToolOutput(short, 100)).toBe(short);

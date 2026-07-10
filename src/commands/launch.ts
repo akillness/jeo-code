@@ -48,10 +48,10 @@ import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/state";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
-import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable, oauthServesModel } from "../ai";
+import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal, applyEvidenceGate } from "../agent/goal-verifier";
-import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, type PromptTier, type RouteDecision, type RoutingConfig } from "../agent/prompt-router";
+import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, credentialScopeFor, type PromptTier, type RouteDecision, type RoutingConfig } from "../agent/prompt-router";
 import { RouteHistory } from "../agent/route-history";
 
 import { isRateLimitError, isUsageLimitError, isConnectionError } from "../util/retry";
@@ -982,57 +982,35 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // fallback search) and `rateLimitFallbackAvailable` (the engine's fast-bail
     // predicate) so neither path proposes a candidate doomed to fail the same way.
     //
-    // Scoped to the CREDENTIAL, not the bare provider: an OAuth SUBSCRIPTION (Claude
-    // Pro/Max, ChatGPT/Codex, Kimi Code, …) shares ONE account-wide rate-limit window
-    // across every model it serves — `claude-sonnet-5` and `claude-sonnet-4-6` both
-    // ride the SAME Anthropic OAuth token, so a same-tier pool that only excluded the
-    // exact failed MODEL id (the old behavior) could — and, per a real field report,
-    // DID — select another model on the SAME exhausted subscription, immediately
-    // re-429, and look indistinguishable from "stuck at auto-retry #1" even though a
-    // different model was actually being dispatched each round. An API KEY, by
-    // contrast, is typically its OWN per-model or per-key budget (Groq/OpenAI/etc
-    // rate-limit each model independently) — over-broadly excluding every model on an
-    // API-key-served provider for one model's 429 would break the pre-existing,
-    // intentionally-tested "same-provider fallback" behavior for that class (see
-    // test/launch-fallback-live-discovery.test.ts). `null` (from `credentialScopeFor`)
-    // means "this candidate is API-key-served, or otherwise not sharing a subscription
-    // credential" — never added to or matched against this set.
+    // Scoped to the CREDENTIAL, not the bare provider (see `credentialScopeFor` in
+    // prompt-router.ts for the full classification rationale/doc comment) — an OAuth
+    // SUBSCRIPTION shares ONE account-wide rate-limit window across every model it
+    // serves; an API key is typically its OWN independent per-key/per-model budget.
+    // `null` (from `credentialScopeFor`) means "API-key-served, or otherwise not
+    // sharing a subscription credential" — never added to or matched against this set.
     const excludedCredentialScopes = new Set<string>();
-    type CredentialScope = { kind: "no-credential" | "oauth-subscription"; key: string };
-    // The credential path `model` actually resolves through, mirroring
-    // `effectiveCredentialForProvider`'s real precedence (OAuth wins over an API key
-    // whenever it serves the model) WITHOUT touching the network — config-only, so this
-    // stays safely callable from the synchronous `rateLimitFallbackAvailable` predicate.
-    // `null` = API-key-served (own independent budget) — never excluded as a group.
-    function credentialScopeFor(model: string, config: RoutingConfig): CredentialScope | null {
-      const provider = resolveProvider(model);
-      if (provider === "ollama" || provider === "lmstudio") return null; // keyless, no shared account limit
-      if (provider === "antigravity") {
-        const hasOauth = !!(config.oauth?.antigravity || config.oauth?.gemini);
-        return hasOauth ? { kind: "oauth-subscription", key: "antigravity" } : { kind: "no-credential", key: "antigravity" };
-      }
-      const auth = provider as AuthProvider;
-      const hasApiKey = !!config.providers?.[auth];
-      const hasOauth = !!config.oauth?.[auth];
-      if (!hasApiKey && !hasOauth) return { kind: "no-credential", key: provider };
-      // OAuth wins over a configured API key whenever it actually serves this model
-      // (same precedence resolveCall/effectiveCredentialForProvider apply live) — that
-      // is the credential this call will really use, and its subscription window is
-      // what a 429 here reports on. When OAuth is present but does NOT serve this
-      // model (e.g. a non-Codex id under OpenAI OAuth), the call falls through to the
-      // API key (if any) — API-key-served, so `null` (independent budget).
-      if (hasOauth && oauthServesModel(auth, model)) return { kind: "oauth-subscription", key: `${provider}:oauth` };
-      return null;
-    }
     // Matches routeFailureReason's post-call reasons ("hit a rate limit", "hit a
-    // usage/quota limit", "is unauthenticated for this session") AND the pre-call
-    // credential gate's "(<provider>) has no usable credential this turn" — every
-    // string that means "this CREDENTIAL is exhausted/broken", as opposed to a
-    // model-specific issue (OAuth serves only some models, a single model is
-    // retired/gated, billing blocks one model but not others on the same key — see
+    // usage/quota limit", "is unauthenticated for this session", "requires
+    // billing/payment on this provider account") AND the pre-call credential gate's
+    // "(<provider>) has no usable credential this turn" — every string that means
+    // "this CREDENTIAL is exhausted/broken", as opposed to a model-specific issue
+    // (OAuth serves only some models, a single model is retired/gated — see
     // routeFailureReason's own doc comments for why those stay model-scoped).
+    //
+    // Billing/payment (402) is intentionally included even though the ORIGINAL field
+    // observation behind routeFailureReason's 402 branch (Tencent: kimi-k2.5/
+    // deepseek-v3.2 402 while deepseek-v4-flash/glm-5.2 kept working on the SAME key)
+    // is a per-MODEL billing block on an API-KEY-served provider — this does NOT
+    // contradict including it here: `credentialScopeFor` already returns `null` for
+    // every API-key-served model (never group-excluded regardless of this regex's
+    // answer), so the Tencent case is unaffected either way. What this DOES newly
+    // catch: an OAuth SUBSCRIPTION billing failure (e.g. a Claude Pro/Max payment
+    // lapse) is account-wide by construction — every model riding that subscription
+    // is equally blocked — and previously wasted a full fallback round retrying a
+    // same-scope sibling model guaranteed to 402 identically before ever reaching a
+    // genuinely different credential.
     const isAccountLevelRouteFailure = (reason: string): boolean =>
-      /hit a rate limit|hit a usage\/quota limit|is unauthenticated for this session|has no usable credential/i.test(reason);
+      /hit a rate limit|hit a usage\/quota limit|is unauthenticated for this session|has no usable credential|requires billing\/payment on this provider account/i.test(reason);
     const equivalentRouteFallback = async (decision: RouteDecision, reason: string, exclude: readonly string[] = []): Promise<string | null> => {
       if (isAccountLevelRouteFailure(reason)) {
         const scope = credentialScopeFor(decision.model, turnConfig);
@@ -1694,6 +1672,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             signal: ac.signal,
             sessionKey: turnSessionKey,
             steer: drainSteer,
+            // Deliberately NOT wiring rateLimitFallbackAvailable here: this repair
+            // retry has no reroute loop around it (unlike runLoopWithModel's
+            // routeFallbackAttempt loop) — bailing the retry ladder early on a 429
+            // would only fail FASTER with the identical outcome (no fallback model to
+            // switch to either way), trading away the one real win the full backoff
+            // ladder still offers here: a transient (<~90s) rate-limit blip clearing
+            // mid-wait and this retry succeeding. See launch.ts's `rateLimitFallbackAvailable`
+            // doc comment / commit history for why this predicate is paired with an
+            // actual model-switch loop everywhere else it's used.
             events: wrapEvents(withToolDetailCapture(tui ? tui.events() : streamEvents), opik),
           });
           const usage =

@@ -1262,3 +1262,56 @@ test("OAuth subscription scope: exclusion accumulates across rounds — a SECOND
     expect(calls).toBe(models.length);
   });
 });
+
+test("OAuth subscription scope: a 402 billing/payment failure ALSO excludes the whole OAuth subscription (not just rate limits/quota/auth) — never wastes a round on the same doomed subscription", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "claude-sonnet-4-6") {
+        return { done: false, steps: 1, doneReason: "Error: Anthropic requires billing/payment on this account (HTTP 402) — free trial quota exhausted or postpaid billing not enabled." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { openai: "sk-test-openai" },
+      oauth: { anthropic: OAUTH_STAMP },
+      defaultModel: "claude-sonnet-4-6",
+      routing: { enabled: true },
+    }, ["Update the styling in src/app.css to use a darker background color for the header.", "/route why"]);
+
+    // Must switch straight to gpt-5.4/o3 (API-key, different scope) — never wastes a
+    // round retrying claude-sonnet-5 (same anthropic:oauth scope, guaranteed to 402
+    // identically since the SAME subscription's billing is what's actually blocked).
+    expect(calls.map(c => c.model)).toEqual(["claude-sonnet-4-6", expect.any(String)]);
+    const secondModel = calls[1].model;
+    expect(secondModel).not.toBe("claude-sonnet-5");
+    expect(["gpt-5.4", "o3"]).toContain(secondModel);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("billing/payment"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("claude-sonnet-4-6");
+    expect(notice).toContain(secondModel!);
+  });
+});
+
+test("402 billing failure on an API-KEY-served model does NOT exclude the whole provider (regression guard: preserves the Tencent-style per-model billing-block case)", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "gpt-4o-mini") {
+        return { done: false, steps: 1, doneReason: "Error: OpenAI requires billing/payment on this account (HTTP 402) — free trial quota exhausted or postpaid billing not enabled." };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, "what is this?");
+
+    // gpt-4o-mini is API-key-served (credentialScopeFor -> null) — a 402 on it must
+    // NOT exclude other openai models by scope, only by exact id. Falls back to the
+    // normal same-tier pool exactly as the pre-existing 402 test (line ~987) proves.
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+  });
+});

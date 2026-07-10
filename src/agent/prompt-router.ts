@@ -48,7 +48,7 @@
  * contract for users who never opted in.
  */
 import { callLlm } from "./loop";
-import { resolveRoleModel, modelServableWithConfig } from "../ai/model-manager";
+import { resolveRoleModel, modelServableWithConfig, resolveProvider, oauthServesModel } from "../ai/model-manager";
 import { catalogMetadata, MODEL_CATALOG, compareReleaseDate, liveProviderCatalogModels, isLiveProviderModel, type CatalogModel, type ThinkLevel } from "../ai/model-catalog";
 import { priceForModel } from "../ai/pricing";
 import { tryExtractJsonObject } from "./json";
@@ -220,6 +220,60 @@ function isCloudProvider(p: ProviderName): p is AuthProvider {
  *  Antigravity deliberately accepts it as a fallback credential. */
 function hasAntigravityOauth(config: RoutingConfig): boolean {
   return !!(config.oauth?.antigravity || config.oauth?.gemini);
+}
+
+/** A model's classified credential-sharing SCOPE — models on the SAME scope share
+ *  ONE account-wide rate-limit/billing window, so an account-level failure (429,
+ *  usage/quota limit, credential rejection, billing block) on one model means every
+ *  OTHER model in the same scope is doomed the same way THIS instant. `"oauth-subscription"`:
+ *  an OAuth SUBSCRIPTION (Claude Pro/Max, ChatGPT/Codex, Kimi Code, Antigravity Cloud
+ *  Code Assist) serves this model — `key` is `${provider}:oauth` (bare `"antigravity"`
+ *  for that provider: all three re-exported companies route through the SAME Cloud
+ *  Code Assist account/credential, confirmed no per-company quota separation exists).
+ *  `"no-credential"`: the provider has ZERO usable credential of any kind — every
+ *  model on it is equally dead. */
+export type CredentialScope = { kind: "no-credential" | "oauth-subscription"; key: string };
+
+/** Classify `model` into the credential it actually resolves through, mirroring
+ *  `resolveCall`/`effectiveCredentialForProvider`'s real precedence (OAuth wins over
+ *  a configured API key whenever it serves the model) WITHOUT touching the network —
+ *  config-only, so this stays safely callable from a synchronous fast-path predicate
+ *  (e.g. the engine's per-retry `rateLimitFallbackAvailable` check).
+ *
+ *  `null` = API-key-served (or keyless/local) — an API key is typically its OWN
+ *  independent per-key/per-model budget (Groq/OpenAI/etc rate-limit each model
+ *  independently, unlike an OAuth subscription's single shared window), so a `null`
+ *  candidate is NEVER excluded as a group — only its exact model id is excluded on
+ *  failure, preserving the intentionally-tested "same-provider API-key fallback"
+ *  behavior (see test/launch-fallback-live-discovery.test.ts). */
+export function credentialScopeFor(model: string, config: RoutingConfig): CredentialScope | null {
+  const provider = resolveProvider(model);
+  if (provider === "ollama" || provider === "lmstudio") return null; // keyless, no shared account limit
+  if (provider === "antigravity") {
+    const hasOauth = !!(config.oauth?.antigravity || config.oauth?.gemini);
+    return hasOauth ? { kind: "oauth-subscription", key: "antigravity" } : { kind: "no-credential", key: "antigravity" };
+  }
+  const auth = provider as AuthProvider;
+  const hasApiKey = !!config.providers?.[auth];
+  const hasOauth = !!config.oauth?.[auth];
+  if (!hasApiKey && !hasOauth) return { kind: "no-credential", key: provider };
+  // OAuth wins over a configured API key whenever it actually serves this model
+  // (same precedence resolveCall/effectiveCredentialForProvider apply live) — that
+  // is the credential this call will really use, and its subscription window is
+  // what a 429 here reports on. When OAuth is present but does NOT serve this
+  // model (e.g. a non-Codex id under OpenAI OAuth), the call falls through to the
+  // API key (if any) — API-key-served, so `null` (independent budget).
+  if (hasOauth && oauthServesModel(auth, model)) return { kind: "oauth-subscription", key: `${provider}:oauth` };
+  // Defense-in-depth (currently unreachable in practice — every OAuth provider
+  // whose token doesn't serve a given model AND has no verified end-to-end backend
+  // is already excluded upstream from every auto-select pool, per
+  // isCoreEligible/hasAntigravityOauth): OAuth is configured, has NO API key
+  // fallback, and does not actually serve this model (e.g. a bare `gemini`-provider
+  // model under gemini-OAuth-only, since gemini's OAuth backend is not verified
+  // end-to-end) — genuinely zero usable credential for this specific model, not an
+  // independent API-key budget.
+  if (hasOauth && !hasApiKey) return { kind: "no-credential", key: provider };
+  return null;
 }
 
 /** Builds the routing catalog once per call: static `MODEL_CATALOG` rows need the

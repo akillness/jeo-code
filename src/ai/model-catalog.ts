@@ -235,6 +235,32 @@ interface LiveProviderModelRecord {
 }
 const liveProviderModels = new Map<string, LiveProviderModelRecord>();
 
+/** Secondary index for `isLiveProviderModel`: `provider\u0000id` -> the set of
+ *  `liveProviderModels` keys whose row `canonical` or `providerModel` equals that
+ *  id. Keeps the lookup O(1) (average case) instead of an O(n) scan over every
+ *  live-discovered model — the scan previously ran once per STATIC catalog row
+ *  inside `isAutoSelectCandidate` (routingCatalog's OpenAI/`openaiBaseUrl` gate),
+ *  making `routingCatalog()` O(n*m) whenever an aggregator-style base URL (e.g.
+ *  OpenRouter, a local proxy) had discovered hundreds of live models — measured
+ *  ~165ms/call at 2000 live models, on every routed turn.
+ */
+const liveModelIdIndex = new Map<string, Set<string>>();
+
+function liveIndexKey(provider: ProviderName, id: string): string {
+  return `${provider}\u0000${id}`;
+}
+
+function addToLiveIndex(provider: ProviderName, id: string, recordKey: string): void {
+  if (!id) return;
+  const key = liveIndexKey(provider, id);
+  let set = liveModelIdIndex.get(key);
+  if (!set) {
+    set = new Set();
+    liveModelIdIndex.set(key, set);
+  }
+  set.add(recordKey);
+}
+
 function normalizeBaseUrl(baseUrl: string | undefined): string | undefined {
   return baseUrl?.replace(/\/+$/, "");
 }
@@ -302,11 +328,14 @@ export function recordLiveProviderModels(
     const row = known
       ? { ...known, canonical, provider, providerModel }
       : liveModelFallbackRow(provider, canonical, providerModel);
-    liveProviderModels.set(liveModelRecordKey(provider, canonical, baseUrl), {
+    const recordKey = liveModelRecordKey(provider, canonical, baseUrl);
+    liveProviderModels.set(recordKey, {
       row,
       source: opts.source ?? "none",
       baseUrl,
     });
+    addToLiveIndex(provider, canonical, recordKey);
+    addToLiveIndex(provider, providerModel, recordKey);
   }
 }
 
@@ -324,20 +353,29 @@ export function liveProviderCatalogModels(config?: { openaiBaseUrl?: string }): 
     .map(record => record.row);
 }
 
-/** True when a model came from the current provider/base URL's live model list. */
+/** True when a model came from the current provider/base URL's live model list.
+ *  O(1) average case via `liveModelIdIndex` — see that Map's doc comment for why
+ *  this must not be an O(n) scan over every live-discovered model (it runs once
+ *  per STATIC catalog row inside `isAutoSelectCandidate`). */
 export function isLiveProviderModel(provider: ProviderName, model: string, config?: { openaiBaseUrl?: string }): boolean {
   const candidates = new Set([model, liveCanonicalId(provider, model), stripProviderPrefix(provider, model)]);
-  return [...liveProviderModels.values()].some(record =>
-    record.row.provider === provider &&
-    liveRecordMatchesConfig(record, config) &&
-    (candidates.has(record.row.canonical) || candidates.has(record.row.providerModel))
-  );
+  for (const candidate of candidates) {
+    const recordKeys = liveModelIdIndex.get(liveIndexKey(provider, candidate));
+    if (!recordKeys) continue;
+    for (const recordKey of recordKeys) {
+      const record = liveProviderModels.get(recordKey);
+      if (record && liveRecordMatchesConfig(record, config)) return true;
+    }
+  }
+  return false;
 }
 
 /** Test-only: clear live provider model supplements. */
 export function resetLiveProviderModels(): void {
   liveProviderModels.clear();
+  liveModelIdIndex.clear();
 }
+
 
 /**
  * Model ids the Kimi Code OAuth backend (api.kimi.com/coding, Anthropic Messages

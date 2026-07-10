@@ -222,21 +222,41 @@ function hasAntigravityOauth(config: RoutingConfig): boolean {
   return !!(config.oauth?.antigravity || config.oauth?.gemini);
 }
 
+/** Builds the routing catalog once per call: static `MODEL_CATALOG` rows need the
+ *  full `isAutoSelectCandidate` gate (including the `isLiveProviderModel` check,
+ *  when `openaiBaseUrl` is set), but rows already returned by
+ *  `liveProviderCatalogModels()` are live BY CONSTRUCTION — re-verifying each one
+ *  with `isLiveProviderModel` is pure O(n) waste (it dominated this function's
+ *  cost: ~1.4ms/call at 2000 live models). Live rows still need the shared
+ *  provider/OAuth gates (cloud provider, credential, antigravity/gemini), just not
+ *  the live-membership check specific to static rows. */
 function routingCatalog(config: RoutingConfig): CatalogModel[] {
-  const rows = [...MODEL_CATALOG, ...liveProviderCatalogModels(config)];
-  const eligible = rows.filter(m => isAutoSelectCandidate(m, config));
+  const staticEligible = MODEL_CATALOG.filter(m => isAutoSelectCandidate(m, config));
+  const liveEligible = liveProviderCatalogModels(config).filter(m => isAutoSelectCandidateLive(m, config));
   const byId = new Map<string, CatalogModel>();
-  for (const row of eligible) if (!byId.has(row.canonical)) byId.set(row.canonical, row);
+  for (const row of staticEligible) if (!byId.has(row.canonical)) byId.set(row.canonical, row);
+  for (const row of liveEligible) if (!byId.has(row.canonical)) byId.set(row.canonical, row);
   return [...byId.values()];
 }
 
-function isAutoSelectCandidate(m: CatalogModel, config: RoutingConfig): boolean {
-  // Shared model-LEVEL credential gate (the full auth matrix is documented on
-  // modelServableWithConfig; keep aligned with resolveCall).
+/** Shared provider/OAuth eligibility gates, independent of live-membership. */
+function isCoreEligible(m: CatalogModel, config: RoutingConfig): boolean {
   if (!isCloudProvider(m.provider) || m.limitedAvailability || !modelServableWithConfig(m.provider, m.canonical, config)) return false;
-  if (m.provider === "openai" && config.openaiBaseUrl && !isLiveProviderModel("openai", m.canonical, config)) return false;
   if (hasAntigravityOauth(config) && m.provider === "gemini") return false;
   return true;
+}
+
+function isAutoSelectCandidate(m: CatalogModel, config: RoutingConfig): boolean {
+  if (!isCoreEligible(m, config)) return false;
+  if (m.provider === "openai" && config.openaiBaseUrl && !isLiveProviderModel("openai", m.canonical, config)) return false;
+  return true;
+}
+
+/** Same eligibility as `isAutoSelectCandidate`, for a row ALREADY sourced from
+ *  `liveProviderCatalogModels()` — skips the live-membership re-check (see
+ *  `routingCatalog`'s doc comment). */
+function isAutoSelectCandidateLive(m: CatalogModel, config: RoutingConfig): boolean {
+  return isCoreEligible(m, config);
 }
 
 
@@ -358,12 +378,10 @@ export function cheapestCredentialed(config: RoutingConfig): string | null {
   let best: CatalogModel | null = null;
   let bestCost = Infinity;
   for (const m of routingCatalog(config)) {
-    // Candidate eligibility is centralized in `isAutoSelectCandidate`: it keeps
-    // OAuth-backed Antigravity routing on provider-qualified 3.1+ Gemini rows and
-    // prevents public `gemini` catalog rows from winning when Antigravity OAuth is
-    // the available Gemini lane. The real veto gate in launch.ts's `runTurn` still
-    // re-verifies full readiness (including live OAuth expiry) before a turn uses it.
-    if (!isAutoSelectCandidate(m, config)) continue;
+    // `routingCatalog(config)` already filtered to eligible rows (static rows via
+    // `isAutoSelectCandidate`, live rows via `isAutoSelectCandidateLive`) — no need
+    // to re-check here. See cheapestCredentialed's own doc comment for the
+    // Antigravity/Gemini OAuth rationale behind that eligibility gate.
     const price = priceForModel(m.canonical);
     if (!price) continue;
     const cost = price.inPerM + price.outPerM;
@@ -406,9 +424,8 @@ export function strongestCredentialed(
 ): string | null {
   let best: CatalogModel | null = null;
   for (const m of routingCatalog(config)) {
-    // Candidate eligibility is centralized in `isAutoSelectCandidate` (see
+    // `routingCatalog(config)` already filtered to eligible rows (see
     // cheapestCredentialed above for the Antigravity/Gemini OAuth rationale).
-    if (!isAutoSelectCandidate(m, config)) continue;
     if (filter && !filter(m)) continue;
     if (!best) { best = m; continue; }
     const xhighM = m.thinking.includes("xhigh") ? 1 : 0;

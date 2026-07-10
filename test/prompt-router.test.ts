@@ -926,3 +926,54 @@ test("routePrompt: roles.smol unconfigured AND no cheaper credentialed model -> 
   expect(decision.source).toBe("heuristic");
   expect(typeof decision.warning).toBe("string");
 });
+
+// --- Performance regression: isAutoSelectCandidate's live-membership check
+// (isLiveProviderModel, via routingCatalog) must stay O(1)-ish per row, not O(n)
+// over every live-discovered model. A prior implementation did a fresh
+// `[...liveProviderModels.values()]` linear scan PER STATIC CATALOG ROW inside
+// routingCatalog whenever `openaiBaseUrl` was configured — turning routingCatalog
+// into O(n*m) (n = catalog rows, m = live models). Aggregator-style base URLs
+// (OpenRouter, a local proxy fronting hundreds of models) hit this on EVERY
+// routed turn: measured ~165ms/call at 2000 live models before the fix (see
+// prompt-router.ts's routingCatalog / model-catalog.ts's liveModelIdIndex doc
+// comments). This test validates the COMBINED fix — model-catalog.ts's O(1)
+// index AND prompt-router.ts's routingCatalog static/live split both need to
+// regress together to reproduce the O(n*m) blowup at this model count (the
+// live-row path skips isLiveProviderModel entirely via isAutoSelectCandidateLive,
+// so reverting ONLY the index barely moves this test's timing). Fails loudly
+// (timeout) if the COMBINED optimization regresses. ---
+
+test("resolveTierModel stays fast (not O(n^2)) with a large live-discovered catalog behind a custom openaiBaseUrl", () => {
+  resetLiveProviderModels();
+  const baseUrl = "https://openrouter.example/api/v1";
+  const ids = Array.from({ length: 1500 }, (_, i) => `aggregator-model-${i}`);
+  recordLiveProviderModels("openai", ids, { source: "api_key", baseUrl });
+  const config = credentialedConfig({
+    providers: { openai: "sk-agg" },
+    openaiBaseUrl: baseUrl,
+    routing: { enabled: true },
+  });
+  // Warm up (JIT + first-call allocation) so the timed section measures steady-state cost.
+  for (let i = 0; i < 10; i++) resolveTierModel("high", config, `warm-${i}`);
+  const start = performance.now();
+  for (let i = 0; i < 200; i++) resolveTierModel("high", config, `session-${i}`);
+  const elapsedMs = performance.now() - start;
+  // O(n) steady-state is comfortably under 1ms/call even at 1500 live models on CI
+  // hardware; the pre-fix O(n^2) behavior took >100ms/call at this scale — a 100x
+  // margin below that catches a regression without being flaky on slow CI runners.
+  expect(elapsedMs / 200).toBeLessThan(20);
+});
+
+test("isLiveProviderModel (via routingCatalog): still correctly scopes live OpenAI models to their recorded base URL after the index optimization", () => {
+  resetLiveProviderModels();
+  const baseUrlA = "https://aggregator-a.example/v1";
+  const baseUrlB = "https://aggregator-b.example/v1";
+  recordLiveProviderModels("openai", ["only-on-a"], { source: "api_key", baseUrl: baseUrlA });
+  recordLiveProviderModels("openai", ["only-on-b"], { source: "api_key", baseUrl: baseUrlB });
+  const configA = credentialedConfig({ providers: { openai: "k" }, openaiBaseUrl: baseUrlA, routing: { enabled: true, crossProviderPool: true } });
+  const configB = credentialedConfig({ providers: { openai: "k" }, openaiBaseUrl: baseUrlB, routing: { enabled: true, crossProviderPool: true } });
+  // Each base URL's pool must contain ONLY its own recorded model — the index must
+  // not conflate records that share a provider but differ by baseUrl.
+  expect(tierModelPool("trivial", configA)).toEqual(["openai/only-on-a"]);
+  expect(tierModelPool("trivial", configB)).toEqual(["openai/only-on-b"]);
+});

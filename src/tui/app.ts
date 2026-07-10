@@ -11,7 +11,8 @@
  */
 import { Renderer } from "./renderer";
 import { readWorkflowStateStrict } from "../agent/state";
-import { size, isTTY, hideCursor, showCursor, enterAltScreen, leaveAltScreen } from "./terminal";
+import { size, isTTY, hideCursor, showCursor, enterAltScreen, leaveAltScreen, watchResize } from "./terminal";
+
 import { Spinner } from "./components/spinner";
 import { ToolList } from "./components/tool-list";
 import { StreamRegion } from "./components/stream";
@@ -251,6 +252,10 @@ export class LaunchTui {
   private lastResizeAt = 0;
   private lastCols = -1;
   private lastRows = -1;
+  // Stops the poll-based resize safety net (terminal.ts's watchResize) started in
+  // begin(); cleared in finish() alongside the 'resize'/SIGCONT listeners.
+  private stopResizeWatch: (() => void) | undefined;
+
   private pendingIndex: number | null = null;
   private pendingTitle: string | null = null;
   private pendingForge: ForgeSummary | null = null;
@@ -1172,7 +1177,15 @@ export class LaunchTui {
         if (processMax > 0 && resumeCount + 1 >= processMax) process.setMaxListeners(resumeCount + 2);
         process.on("SIGCONT", this.onResume);
       }
+      // Poll-based safety net (terminal.ts's watchResize): catches a resize the TTY
+      // 'resize' event missed (e.g. a tmux pane switch while this pane wasn't the
+      // foreground one — tmux only forwards SIGWINCH to the active pane). Cheap
+      // (300ms comparison poll), fires resizeRepaint() only on an actual geometry
+      // change, and is a no-op alongside a real 'resize' event (whichever notices
+      // first wins; lastCols/lastRows dedupe the other).
+      this.stopResizeWatch = watchResize(() => this.resizeRepaint());
     }
+
     // Animate the spinner + elapsed clock while the model is thinking.
     this.timer = setInterval(() => {
       try {
@@ -1269,7 +1282,12 @@ export class LaunchTui {
       if (process.platform !== "win32") {
         process.removeListener("SIGCONT", this.onResume);
       }
+      if (this.stopResizeWatch) {
+        this.stopResizeWatch();
+        this.stopResizeWatch = undefined;
+      }
     }
+
     if (this.usedAltScreen) {
       // Leave the alt screen (restores the main buffer + scrollback), then print the
       // static summary below the prior output so the turn leaves exactly one record.

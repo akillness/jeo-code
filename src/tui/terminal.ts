@@ -84,6 +84,75 @@ export function size(): { cols: number; rows: number } {
     rows: process.stdout.rows || 24,
   };
 }
+/** True live geometry via `getWindowSize()` — a real `TIOCGWINSZ` ioctl through libuv,
+ *  bypassing `process.stdout.columns`/`.rows` entirely. Node/Bun only refresh THOSE
+ *  cached fields when a `'resize'` (SIGWINCH) event fires, which is exactly the signal
+ *  {@link watchResize} exists to work around (tmux pane/window switch while jeo's pane
+ *  isn't foregrounded, a SIGCONT race after Ctrl-Z, an SSH/multiplexer layer that only
+ *  propagates the ioctl update on the next write) — in every one of those, the cached
+ *  fields go stale and NOTHING re-freshes them without a real event. Returns `null` when
+ *  unavailable (older runtimes, non-TTY streams — Bun/Node only expose `getWindowSize`
+ *  on a real `tty.WriteStream`), it throws (handle torn down), or it reports `0,0` (no
+ *  controlling terminal ever set a winsize, e.g. a bare pty as `bun test` sees). */
+function liveWindowSize(): { cols: number; rows: number } | null {
+  const stream = process.stdout as NodeJS.WriteStream & { getWindowSize?: () => [number, number] };
+  if (typeof stream.getWindowSize !== "function") return null;
+  try {
+    const [cols, rows] = stream.getWindowSize();
+    return cols > 0 && rows > 0 ? { cols, rows } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Poll-based resize watcher — a SAFETY NET alongside the TTY `'resize'` event.
+ *  `'resize'` (SIGWINCH) is missed in several real-world cases jeo actually hits: a
+ *  tmux pane/window switch while jeo's pane isn't the foreground one (tmux only
+ *  forwards SIGWINCH to the active pane), a SIGCONT race after Ctrl-Z where the resize
+ *  happened entirely during the stop, and some SSH/multiplexer layers that only
+ *  propagate the ioctl update on the next write rather than emitting a fresh event.
+ *  In every one of these, `process.stdout.columns`/`.rows` (and therefore `size()`)
+ *  go stale and NOTHING short of a real `'resize'` event ever refreshes them — so a
+ *  naive poll comparing `size()` against itself can never observe a change that
+ *  already happened, it would just keep comparing one stale cache to itself.
+ *
+ *  Each tick instead asks the OS DIRECTLY via {@link liveWindowSize} (a cheap,
+ *  allocation-free ioctl — safe every `intervalMs`). When that live read disagrees
+ *  with the last-seen geometry, this SELF-HEALS the stale cache — writing the
+ *  corrected values onto `process.stdout.columns`/`.rows` exactly like Node's own
+ *  SIGWINCH handler would — before firing `onChange`, so every other reader of
+ *  `size()` (the live-frame `draw()`, `resizeRepaint()`, `idleResizeHandler()`, a
+ *  picker's `repaint()`) sees the corrected geometry too, not just this callback.
+ *  When `getWindowSize` is unavailable, falls back to comparing `size()` against
+ *  itself (the pre-existing behavior) — still catches a genuine cache update that
+ *  arrived via some OTHER path (e.g. a real `'resize'` event firing between polls).
+ *  Never fires spuriously — only on an actual geometry change — so it composes
+ *  safely alongside an existing `'resize'` listener (whichever notices first wins,
+ *  the other becomes a no-op once both routes converge on the same geometry).
+ *  Returns a `stop()` to clear the interval; the timer is `unref()`d so it can never
+ *  keep the process alive on its own. */
+export function watchResize(onChange: (cols: number, rows: number) => void, intervalMs = 300): () => void {
+  let last = size();
+  const timer = setInterval(() => {
+    const live = liveWindowSize();
+    const cur = live ?? size();
+    if (cur.cols !== last.cols || cur.rows !== last.rows) {
+      last = cur;
+      if (live) {
+        try {
+          process.stdout.columns = live.cols;
+          process.stdout.rows = live.rows;
+        } catch { /* non-writable in this environment — onChange still fires below */ }
+      }
+      onChange(cur.cols, cur.rows);
+    }
+  }, intervalMs);
+  if (typeof (timer as unknown as { unref?: () => void }).unref === "function") {
+    (timer as unknown as { unref: () => void }).unref();
+  }
+  return () => clearInterval(timer);
+}
+
 
 export function isTTY(): boolean {
   return !!process.stdout.isTTY;
@@ -136,4 +205,24 @@ export function enableKittyKeyboard(): string {
  *  the shell/tmux had. Terminals without kitty-protocol support ignore both. */
 export function disableKittyKeyboard(): string {
   return `${ESC}<u`;
+}
+/** Set the terminal's TEXT CURSOR color via OSC 12 (`\x1b]12;#rrggbb\x07`) — widely
+ *  supported (xterm, iTerm2, kitty, wezterm, alacritty, ghostty, foot, most tmux/VTE
+ *  terminals). jeo's input box parks the REAL terminal cursor at the caret (see
+ *  `input-box.ts`'s `cursorRow`/`cursorCol`) rather than drawing a fake one, so the
+ *  cursor's on-screen color is entirely up to the terminal's default — usually a
+ *  solid white/light block. On every theme except `mono` (whose panels/prompt already
+ *  render colorless), that default cursor color visually MATCHES the light card
+ *  backgrounds used elsewhere in the UI (e.g. `cardFillPaint`), making the caret
+ *  nearly impossible to spot against typed text. Setting it to the theme's accent hue
+ *  gives the caret a color that's always distinct from body text and panel fills. */
+export function setCursorColor(hex: string): string {
+  return `\x1b]12;${hex}\x07`;
+}
+
+/** Restore the terminal's default cursor color (OSC 112, no color id) — the
+ *  counterpart to {@link setCursorColor}, sent on exit so a shell/editor started
+ *  afterward isn't left with jeo's accent-colored cursor. */
+export function resetCursorColor(): string {
+  return `\x1b]112\x07`;
 }

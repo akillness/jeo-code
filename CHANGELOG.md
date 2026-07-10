@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.22] - 2026-07-11
+_A rescan of the working tree turned up a resume-fidelity gap plus two unwired TUI safety-net helpers left by a concurrent session; each was traced, wired where needed, and verified before shipping._
+
+### Added
+- **Full-transcript restore on `/resume`/`--continue`** (`src/commands/launch.ts`) — all three non-interactive startup resume paths (`--resume <id>`, `--continue`/`-c`, and the TTY-less bare `--resume`) previously printed only `"Resumed session <id> (N messages)."` with no reproduction of the prior conversation. They now render the same `formatTranscript` ledger (user prompt boxes, ✔/✗ tool-call lines, `jeo ◂` reply blocks) that the mid-session `/session resume` and `/history` commands already used, so resuming any session created going forward reproduces the prior work on screen instead of a one-line summary. Live-verified against a real on-disk session and a real `bun run src/cli.ts launch --resume <id>` child process.
+- **Resize-detection safety net** (`src/tui/terminal.ts`'s `watchResize`/`liveWindowSize`, wired into `src/tui/app.ts`'s `LaunchTui`) — a 300ms poll against the real `TIOCGWINSZ` ioctl (`getWindowSize()`) that self-heals `process.stdout.columns`/`.rows` and repaints when a `'resize'` (SIGWINCH) event is missed — e.g. a tmux pane switch while jeo's pane isn't foregrounded, or a SIGCONT race after Ctrl-Z. Composes safely alongside the existing `'resize'` listener; started in `begin()`, torn down in `finish()`.
+
+### Fixed
+- **`updateSessionDraft` trim bug** (`src/agent/session.ts`) — the no-op comparison checked `draft.trim()` for truthiness but persisted the untrimmed original string; now trims once and persists the trimmed value consistently.
+
+### Verified
+- Full `bun test` — 2906 pass / 0 fail across 291 files.
+- `bun run typecheck` — no errors.
+- Live PTY/CLI verification of the resume-transcript restore end-to-end (real session file, real child-process `launch --resume`).
+
+
 ## [0.8.21] - 2026-07-10
 _"반영할꺼 같은방식으로 체크하고 배포까지" — a rescan of the working tree (after the prior audit pass) turned up 15 uncommitted files: 3 genuinely distinct features left unwired by a concurrent session, partially casualty of an earlier accidental `git checkout` incident this session (disclosed in the 0.8.20 entry above). Each was independently traced from its existing plumbing, wired to a real call site, tested, and one live-verified end-to-end over a real PTY before shipping._
 

@@ -114,7 +114,9 @@ import {
   appendCompaction,
   resolveSessionRef,
 } from "../agent/session";
-import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize, resetMouseTracking, clearScreen, clearVisible, clearToEnd, enableModifyOtherKeys, disableModifyOtherKeys, enableKittyKeyboard, disableKittyKeyboard } from "../tui/terminal";
+import { clearLine, cursorUp, toColumn, truncate as truncateAnsi, size as terminalSize, resetMouseTracking, clearScreen, clearVisible, clearToEnd, enableModifyOtherKeys, disableModifyOtherKeys, enableKittyKeyboard, disableKittyKeyboard, setCursorColor, resetCursorColor, isTTY, watchResize } from "../tui/terminal";
+
+
 
 
 import {
@@ -196,6 +198,8 @@ import {
   contextUsageLines,
   historyViewLines,
 } from "./launch/slash-views";
+import { formatTranscript } from "../tui/components/transcript";
+
 
 import {
   handleUsage,
@@ -761,17 +765,29 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   // pi-style session persistence: resume an existing session or create a new one.
   let sessionId: string | undefined;
+  // True once a resume actually restored PRIOR messages (not just an empty
+  // placeholder). Consumed by the "INTERACTIVE mode" welcome-banner block below to
+  // skip the fresh-start clearScreen()+banner render — found live: printing the
+  // resumed transcript ledger here, then unconditionally wiping the screen and
+  // drawing the generic welcome box a few hundred lines later, buried the actual
+  // restored work under a "fresh start" banner instead of leaving it on screen.
+  let resumedWithHistory = false;
+
   let compactionSeq = 0;
   if (!flags.noSession) {
     if (flags.resumeInteractive) {
+
       // Bare `--resume`/`-r` (no value) at cold startup (gjc-parity): the interactive
       // session picker — added right before the REPL loop starts, below — takes over
       // and replaces this session before the user ever sees it, but ONLY in a TTY.
-      // Start with a fresh session here as the safe default either way.
-      sessionId = (await createSession(cwd, undefined, sessionModel)).id;
       if (!process.stdin.isTTY || !process.stdout.isTTY) {
         // No TTY means no picker is possible — fall back to the same silent-latest
-        // behavior as `--continue` rather than silently doing nothing.
+        // behavior as `--continue` rather than silently doing nothing. Resolve the
+        // TRUE latest session BEFORE creating any placeholder session below — creating
+        // one first would make IT the newest-mtime file, permanently masking the real
+        // prior session and turning this fallback into dead code (found live: a bare
+        // `--resume` outside a TTY always "resumed" a fresh empty session instead of
+        // the actual prior one).
         const id = await latestSessionId(cwd);
         if (id) {
           try {
@@ -781,11 +797,35 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             if (!initialSessionModel && header.model) sessionModel = header.model;
             const modelNote = sessionModel ? ` · model ${sessionModel}` : "";
             console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
+            // Reproduce the prior screen exactly (gjc/gajae-code parity): a bare
+            // `--resume` picker with no TTY falls back to the latest session, so
+            // this is the ONLY chance to show the prior work before the REPL
+            // starts — replay it as a scrollback ledger, same formatter `/session
+            // resume` uses mid-session, so a resumed screen always reads like the
+            // exact prior conversation instead of a bare message count.
+            if (messages.length > 0) {
+              resumedWithHistory = true;
+              const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
+              console.log([sep, ...formatTranscript(history, { maxTurns: 6, color: true, unicode: true }), sep].join("\n"));
+            }
+
+
           } catch (err) {
             console.log(`Could not resume ${id}: ${(err as Error).message}. Starting fresh.`);
           }
         }
+        // No prior session to resume (fresh cwd), or the resume attempt above failed —
+        // safe-default fresh session, same as every other "nothing to resume" path.
+        if (!sessionId) {
+          sessionId = (await createSession(cwd, undefined, sessionModel)).id;
+        }
+      } else {
+        // TTY: start with a fresh session as the safe default; the interactive picker
+        // below (right before the REPL loop) takes over and replaces it before the
+        // user ever sees this one, so creating it first here is harmless.
+        sessionId = (await createSession(cwd, undefined, sessionModel)).id;
       }
+
     } else if (flags.resume) {
       let id: string | undefined;
       let skipResume = false;
@@ -823,6 +863,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           if (header.draft) startupDraft = header.draft;
           const modelNote = sessionModel ? ` · model ${sessionModel}` : "";
           console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
+          // Reproduce the prior screen exactly (gjc/gajae-code parity): same
+          // scrollback-ledger replay `/session resume` uses mid-session, so
+          // `--resume`/`-c`/`--resume <id>` restores the prior work onto the
+          // screen instead of just a bare message count.
+          if (messages.length > 0) {
+            resumedWithHistory = true;
+            const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
+            console.log([sep, ...formatTranscript(history, { maxTurns: 6, color: true, unicode: true }), sep].join("\n"));
+          }
+
+
         } catch (err) {
           console.log(`Could not resume ${id}: ${(err as Error).message}. Starting fresh.`);
           sessionId = (await createSession(cwd, undefined, sessionModel)).id;
@@ -1914,18 +1965,28 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     renderWelcome({ ...welcomeData, cols: terminalSize().cols });
   // gjc-style fresh-start clear so the banner opens atop a clean screen. TTY only,
   // never mid-turn (scrollback flood). ponytail: add an opt-out env if anyone misses their scrollback.
-  if (process.stdout.isTTY) process.stdout.write(clearScreen());
-  // Launch sweep: the forge mark's gradient loops seamlessly (default 2 full
-  // cycles, JEO_WELCOME_ANIM_CYCLES overrides), ending on the static banner.
-  // Truecolor TTYs only; JEO_NO_WELCOME_ANIM=1 opts out.
-  const sweepable =
-    !!process.stdout.isTTY &&
-    welcomeTheme.color &&
-    detectColorLevel(process.env, true) === ColorLevel.TrueColor &&
-    jeoEnv("NO_WELCOME_ANIM") !== "1";
-  const sweepCycles = Math.min(10, Math.max(1, Number(jeoEnv("WELCOME_ANIM_CYCLES")) || 2));
-  if (sweepable) await playWelcomeSweep(welcomeData, { cycles: sweepCycles });
-  else console.log(renderWelcome(welcomeData).join("\n"));
+  // SKIPPED on a resume that actually restored prior messages: the transcript ledger
+  // was already printed above (during session persistence, right after "Resumed
+  // session ... (N messages)"), so clearing here would wipe it and the generic
+  // "fresh start" banner below would bury the just-restored work — live-verified via
+  // a real pty run of `--resume <id>`, which showed exactly that: the resumed
+  // conversation flashed on screen then vanished under the welcome box a moment later.
+  if (!resumedWithHistory) {
+    if (process.stdout.isTTY) process.stdout.write(clearScreen());
+    // Launch sweep: the forge mark's gradient loops seamlessly (default 2 full
+    // cycles, JEO_WELCOME_ANIM_CYCLES overrides), ending on the static banner.
+    // Truecolor TTYs only; JEO_NO_WELCOME_ANIM=1 opts out.
+    const sweepable =
+      !!process.stdout.isTTY &&
+      welcomeTheme.color &&
+      detectColorLevel(process.env, true) === ColorLevel.TrueColor &&
+      jeoEnv("NO_WELCOME_ANIM") !== "1";
+    const sweepCycles = Math.min(10, Math.max(1, Number(jeoEnv("WELCOME_ANIM_CYCLES")) || 2));
+    if (sweepable) await playWelcomeSweep(welcomeData, { cycles: sweepCycles });
+    else console.log(renderWelcome(welcomeData).join("\n"));
+  }
+
+
 
   // Surface the "New version" banner reliably: render ONCE from the on-disk cache
   // instantly (no network wait, works offline — the common path after the first
@@ -2624,11 +2685,28 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     return out;
   };
+  // Match the REAL terminal cursor's color to the theme accent (OSC 12) so the caret
+  // is never a same-toned block over the input box's typed text — the default terminal
+  // cursor color (usually solid white) otherwise reads as a stray light patch on every
+  // non-mono theme, especially the darker ones, making it hard to spot where typing
+  // lands. Colorless (`mono`) intentionally skips this and any terminal that ignores
+  // OSC 12 (rare) is unaffected either way. Reset on process exit (see below).
+  const applyCursorColor = (): void => {
+    if (isTTY() && uiTheme.color) {
+      try { process.stdout.write(setCursorColor(uiTheme.accent)); } catch { /* terminal gone */ }
+    }
+  };
   const refreshUiTheme = (): void => {
     uiTheme = resolveTheme(process.env);
     uiAccent = accentPaint(uiTheme);
     uiAccentShadow = accentShadowPaint(uiTheme);
+    applyCursorColor();
   };
+  applyCursorColor();
+  process.once("exit", () => {
+    try { process.stdout.write(resetCursorColor()); } catch { /* terminal gone */ }
+  });
+
   // The gjc-layout status bar pinned directly ABOVE the input box: bg-gradient
   // identity block (model · thinking / branch / cwd) left, live ctx% right.
   const statusBarLine = (cols: number): string => {
@@ -2945,7 +3023,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }, 16);
     };
     process.stdout.on("resize", onPickerResize);
+    // Poll-based safety net (same rationale as the idle footer's watchResize): a
+    // picker left open across a missed 'resize' event would otherwise stay pinned
+    // to its opening geometry until a keypress happened to trigger a repaint.
+    const stopPickerResizeWatch = watchResize(() => onPickerResize());
     try {
+
       await new Promise<void>(resolve => {
         const handler = (ch: string, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean; sequence?: string } | undefined) => {
           // Same normalization as the footer handler: kitty CSI-u Esc/Ctrl+C must
@@ -2963,7 +3046,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       });
     } finally {
       process.stdout.off("resize", onPickerResize);
+      stopPickerResizeWatch();
       if (resizeTimer) clearTimeout(resizeTimer);
+
       if (process.stdin.setRawMode && !wasRaw) {
         process.stdin.setRawMode(false);
       }
@@ -3716,11 +3801,21 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }, RESIZE_THROTTLE_MS);
     };
     process.stdout.on("resize", idleResizeHandler);
+    // Poll-based safety net: the idle footer sits between turns for most of a
+    // session's wall-clock time, so a missed 'resize' event here (tmux pane switch
+    // while this pane isn't foreground, a SIGCONT race, etc. — see terminal.ts's
+    // watchResize doc) is the single biggest source of "screen stays at its
+    // starting size" reports. Cheap 300ms poll; idleResizeHandler already dedupes
+    // via lastIdleAt/reReserveFooter so this composes safely with the real event.
+    const stopIdleResizeWatch = watchResize(() => idleResizeHandler());
     promptListenerCleanups.push(() => {
       process.stdout.off("resize", idleResizeHandler);
       if (idleResizeTimer) clearTimeout(idleResizeTimer);
+      stopIdleResizeWatch();
     });
   }
+
+
 
   // Bare `--resume`/`-r` (no value) at cold startup (gjc-parity): show the SAME
   // interactive session picker `/session resume` (no arg) uses, in place of the

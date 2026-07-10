@@ -351,3 +351,89 @@ test("runAgentLoop: a mostly-failing batch with one trivial success earns no ext
   expect(result.steps).toBe(3); // stopped at the rolling base
   expect(result.doneReason).toContain("no recent progress");
 });
+
+// ---------- unit: target-based novelty (edit-thrashing loop) ----------
+
+test("StepBudget: a targetKey collapses repeated edits to the SAME file — no endless novelty credit", () => {
+  const b = new StepBudget({ ...baseCfg, extensionSteps: 3, maxExtensions: 5, hardCap: 40 });
+  // Each call's exact signature is unique (content differs every attempt, like a model
+  // rewriting the same function slightly differently each try) but they all share one
+  // targetKey ("edit src/x.ts"). The first two attempts earn ONE novelty credit total
+  // (from the first record), which the first tryExtend consumes.
+  b.record("edit:src/x.ts:v1", true, "edit src/x.ts");
+  b.record("edit:src/x.ts:v2", true, "edit src/x.ts");
+  const d1 = b.tryExtend();
+  expect(d1.extend).toBe(true);
+  // Further thrashing on the SAME target earns nothing further.
+  b.record("edit:src/x.ts:v3", true, "edit src/x.ts");
+  b.record("edit:src/x.ts:v4", true, "edit src/x.ts");
+  const d2 = b.tryExtend();
+  expect(d2.extend).toBe(false);
+  expect(d2.reason).toContain("no novel tool calls");
+});
+
+
+test("StepBudget: without a targetKey, distinct content still reads as novel (legacy/back-compat behavior)", () => {
+  const b = new StepBudget({ ...baseCfg, extensionSteps: 3, maxExtensions: 5, hardCap: 40 });
+  b.record("edit:src/x.ts:v1", true); // no targetKey — falls back to the exact signature
+  b.record("edit:src/x.ts:v2", true);
+  const d = b.tryExtend();
+  expect(d.extend).toBe(true); // two distinct exact signatures both look novel
+});
+
+test("StepBudget: a fresh targetKey after a thrashed one still earns an extension", () => {
+  const b = new StepBudget({ ...baseCfg, extensionSteps: 3, maxExtensions: 5, hardCap: 40 });
+  b.record("edit:src/x.ts:v1", true, "edit src/x.ts");
+  b.record("edit:src/x.ts:v2", true, "edit src/x.ts");
+  b.record("edit:src/y.ts:v1", true, "edit src/y.ts"); // a genuinely different target
+  const d = b.tryExtend();
+  expect(d.extend).toBe(true);
+  expect(d.reason).toContain("progress detected");
+});
+
+// ---------- unit: toolTarget (coarse call target for novelty + subagent monitor labels) ----------
+
+test("toolTarget: labels a call by its identifying field, not its full argument blob", async () => {
+  const { toolTarget } = await import("../src/agent/step-budget");
+  expect(toolTarget("edit", { filePath: "src/x.ts", editBlock: "huge content A" })).toBe("edit src/x.ts");
+  expect(toolTarget("edit", { filePath: "src/x.ts", editBlock: "huge content B (totally different)" })).toBe(
+    "edit src/x.ts",
+  );
+  expect(toolTarget("write", { filePath: "src/y.ts", content: "..." })).toBe("write src/y.ts");
+  expect(toolTarget("bash", { command: "bun test\nsome trailing junk" })).toBe("bash: bun test");
+  expect(toolTarget("find", { globPattern: "**/*.ts" })).toBe("find **/*.ts");
+  expect(toolTarget("search", { pattern: "foo" })).toBe("search foo");
+  expect(toolTarget("task", { role: "executor" })).toBe("task executor");
+  expect(toolTarget("done", { reason: "x" })).toBe("done");
+});
+
+test("runAgentLoop: an edit-thrashing model (same file, ever-different content) stops earning extensions after its first attempt", async () => {
+  let calls = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_h: unknown, options: { jsonMode?: boolean }) => {
+      if (options?.jsonMode === false) return "wrap-up: kept rewriting the same file";
+      calls++;
+      // Every call edits the SAME target file with unique content — a real
+      // low-tier-model symptom (re-thinking + rewriting the same JSX block on
+      // every retry). Exact signatures never repeat, so pre-fix this read as
+      // endless "novel progress" and the budget extended forever.
+      return JSON.stringify({ tool: "edit", arguments: { filePath: "src/x.ts", editBlock: `attempt #${calls}` } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const budgets: number[] = [];
+  const result = await runAgentLoop([{ role: "user", content: "go" }], {
+    cwd: process.cwd(),
+    maxSteps: 0, // dynamic
+    budget: { baseSteps: 3, extensionSteps: 2, windowSize: 4 },
+    tools: { edit: async () => ({ success: true, output: "ok" }) },
+    events: { onBudget: limit => budgets.push(limit) },
+  });
+  expect(result.done).toBe(false);
+  // At most ONE extension (the first edit was novel by target); every subsequent
+  // rewrite of the same file earns nothing further, so the turn consolidates
+  // instead of grinding on indefinitely.
+  expect(budgets.length).toBeLessThanOrEqual(1);
+  expect(result.doneReason).toContain("wrap-up: kept rewriting the same file");
+  expect(calls).toBeLessThan(10); // terminated promptly, not at the 600-step safety cap
+});

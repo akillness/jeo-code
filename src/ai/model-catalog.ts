@@ -98,7 +98,8 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   { canonical: "claude-sonnet-4-6", provider: "anthropic", providerModel: "claude-sonnet-4-6", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-02" },
   { canonical: "claude-opus-4-6", provider: "anthropic", providerModel: "claude-opus-4-6", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-02" },
   { canonical: "claude-haiku-4-5", provider: "anthropic", providerModel: "claude-haiku-4-5-20251001", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true, releaseDate: "2025-10" },
-  // OpenAI (newest first: gpt-5.5 > gpt-5.4 > o4-mini/o3/gpt-4.1 > o3-mini > gpt-4o-mini > gpt-4o)
+  // OpenAI (newest first: gpt-5.6 > gpt-5.5 > gpt-5.4 > o4-mini/o3/gpt-4.1 > o3-mini > gpt-4o-mini > gpt-4o)
+  { canonical: "gpt-5.6", provider: "openai", providerModel: "gpt-5.6", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-06" },
   { canonical: "gpt-5.5", provider: "openai", providerModel: "gpt-5.5", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-04" },
   { canonical: "gpt-5.4", provider: "openai", providerModel: "gpt-5.4", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-03" },
   { canonical: "gpt-5.4-mini", provider: "openai", providerModel: "gpt-5.4-mini", contextTokens: 272_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-03" },

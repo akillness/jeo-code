@@ -79,7 +79,8 @@ test("resolveTierModel: high tier falls through to defaultModel when the ONLY cr
   // complex's catalog-wide strongest pick (gpt-5.4).
   const config = credentialedConfig({ providers: { openai: "k2" }, routing: { enabled: true } });
   expect(resolveTierModel("high", config)).toBe(config.defaultModel);
-  expect(resolveTierModel("complex", config)).toBe("gpt-5.5"); // sanity: complex is unaffected (gpt-5.5 is OpenAI's newest catalogued model, correctly wins the recency tiebreak over gpt-5.4)
+  expect(resolveTierModel("complex", config)).toBe("gpt-5.6"); // sanity: complex is unaffected (gpt-5.6 is OpenAI's newest catalogued model, correctly wins the recency tiebreak over gpt-5.5)
+
 });
 
 test("resolveTierModel: no cross-call caching — sequential calls with different tiers, same config/sessionId, never bleed into each other", () => {

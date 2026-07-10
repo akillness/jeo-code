@@ -27,7 +27,8 @@ import { isContextOverflowError, isRefusalError, friendlyProviderError } from ".
 import { runPreToolHooks, runPostTurnHooksForBatch } from "./hooks";
 import { truncateToolOutput, formatToolResultBody } from "./tool-output";
 export { TOOL_OUTPUT_MAX, READ_OUTPUT_MAX, TOOL_SPILL_THRESHOLD, MAX_TOOL_ARTIFACTS, truncateToolOutput, spillToolResult } from "./tool-output";
-import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, hashSignature, type StepBudgetConfig } from "./step-budget";
+import { StepBudget, dynamicStepBudgetConfig, resolveStepBudgetConfig, hashSignature, toolTarget, type StepBudgetConfig } from "./step-budget";
+
 import { historyTokens, trimToolResultsInPlace, stripReasoningArtifactsInPlace } from "./compaction";
 import { jeoEnv } from "../util/env";
 import { GUARD_LIMITS, isVerificationSignal, repeatHint, classifyDoneGate } from "./loop-guards";
@@ -258,8 +259,17 @@ export interface AgentLoopEvents {
   /** Consulted when a lone `done` arrives. Return a corrective message to bounce
    *  the done ONCE (e.g. "todo list still shows unfinished items — update it
    *  first"); return null to let the turn finish. The engine guarantees at most
-   *  one bounce per turn, so a stubborn model can never loop here. */
-  onBeforeDone?(reason: string): Promise<string | null> | string | null;
+   *  one bounce per turn, so a stubborn model can never loop here. `evidence` is
+   *  the SAME mutation/verification signal the engine's own done-gate already
+   *  computed (see `classifyDoneGate` above) — a caller-owned gate (e.g. the goal
+   *  verifier) can use it to deterministically downgrade an LLM-judged MET verdict
+   *  when the turn mutated files without a fresh passing verification, instead of
+   *  trusting the transcript self-report alone. */
+  onBeforeDone?(
+    reason: string,
+    evidence: { sawMutation: boolean; sawVerification: boolean; verificationStale: boolean }
+  ): Promise<string | null> | string | null;
+
   /** Fired when a mid-turn steering message (an additional user query typed while
    *  the turn is running) is injected into the live history. `text` is the raw
    *  user line — drives a TUI notice so the user sees their input was picked up. */
@@ -994,7 +1004,12 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       // [DONE] with the Todos checklist still showing 1 in-progress + 4 pending
       // because nothing ever forced a status update.
       if (!beforeDoneNudgeUsed && ev.onBeforeDone) {
-        const nudge = await ev.onBeforeDone((toolCalls[0].arguments?.reason as string) ?? "");
+        const nudge = await ev.onBeforeDone((toolCalls[0].arguments?.reason as string) ?? "", {
+          sawMutation,
+          sawVerification,
+          verificationStale: sawMutation && lastMutationSeq > lastVerificationSeq,
+        });
+
         if (nudge) {
           beforeDoneNudgeUsed = true;
           pushAssistantTurn(history, responseText, reasonBuf, artifactBuf);
@@ -1044,6 +1059,22 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     // once per call here (instead of joining full sigs, hashing, then re-hashing
     // inside budget.record) avoids re-scanning a large write body 3× per step.
     const callSigs = toolCalls.map(c => hashSignature(`${c.tool}:${JSON.stringify(c.arguments ?? {})}`));
+    // Coarse per-call TARGET (e.g. `edit src/x.ts`) — feeds the budget's novelty rule
+    // separately from the exact-args digest above. A model that keeps rewriting the
+    // SAME file/command with slightly different content each attempt produces a fresh
+    // `callSigs` entry every time (never "seen" before) but the SAME `callTargets`
+    // entry, so that thrashing stops earning step-budget extensions after its first try.
+    // `toolTarget` falls back to the bare tool name when it can't find an identifying
+    // field (e.g. a custom/dynamic tool with no filePath/command/pattern argument) — that
+    // generic case carries NO real identity ("work" for every call), so treat it as "no
+    // coarse target" and let `budget.record` fall back to the exact-args signature
+    // instead (unchanged legacy novelty for tools this helper doesn't specifically know).
+    const callTargets = toolCalls.map(c => {
+      const t = toolTarget(c.tool, c.arguments);
+      return t.toLowerCase() === (c.tool || "").toLowerCase() ? undefined : t;
+    });
+
+
     const sig = callSigs.length === 1 ? callSigs[0] : hashSignature(callSigs.join(" | "));
     if (sig === lastSig) repeatCount++;
     else {
@@ -1299,7 +1330,8 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     // edits plus one trivial successful read must not look like a progressing
     // step to the extension heuristic (that loophole earned endless extensions).
     for (let i = 0; i < toolCalls.length; i++) {
-      if (results[i].executed) budget.record(callSigs[i], results[i].success);
+      if (results[i].executed) budget.record(callSigs[i], results[i].success, callTargets[i]);
+
     }
     // done-verification guard bookkeeping: write/edit successes mark the turn as
     // mutating; a successful bash whose command/output looks like a test/build run

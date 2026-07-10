@@ -78,8 +78,47 @@ Do not include any other text, markdown formatting, or code blocks. Output raw J
       verdict: "NOT_MET",
       reason: `Goal verification failed to parse or execute: ${(err as Error).message}. Please verify the goal manually.`
     };
+
   }
 }
+
+/** Evidence the engine's own done-gate already computed this turn (see
+ *  `classifyDoneGate`/`engine.ts`) — NOT re-derived here, just consumed, so this
+ *  stays a pure function over already-verified signals rather than a second
+ *  regex/text scan. */
+export interface TurnEvidence {
+  sawMutation: boolean;
+  sawVerification: boolean;
+  verificationStale: boolean;
+}
+
+/**
+ * Deterministic downgrade gate: an LLM-judged MET verdict is trustworthy only when
+ * the turn either made no file changes, or made changes AND a fresh (non-stale)
+ * verification signal (test/build/typecheck/lint) was observed. A turn that mutated
+ * files with no verification at all, or whose only verification predates the last
+ * mutation, cannot self-report MET on the transcript alone — that is exactly the
+ * "gate theater" failure mode (an LLM asserting success without re-checked evidence).
+ * NOT_MET/IMPOSSIBLE verdicts pass through unchanged: this only ever tightens MET,
+ * never loosens a verdict the LLM itself already found lacking.
+ */
+export function applyEvidenceGate(verdict: GoalVerdict, evidence: TurnEvidence): GoalVerdict {
+  if (verdict.verdict !== "MET") return verdict;
+  if (!evidence.sawMutation) return verdict; // nothing changed — the transcript judgment stands
+  if (evidence.sawVerification && !evidence.verificationStale) return verdict; // fresh verification backs the claim
+
+  const gap = !evidence.sawVerification
+    ? "the turn modified files but no test/build/typecheck/lint run was observed"
+    : "the turn's only verification run predates its last file modification (stale evidence)";
+  return {
+    verdict: "NOT_MET",
+    reason:
+      `Goal verifier LLM judged MET, but this was overridden by deterministic evidence: ${gap}. ` +
+      `Re-run the relevant verification AFTER the last file change, then call done again. ` +
+      `(Original LLM reason: ${verdict.reason})`,
+  };
+}
+
  
 
 export interface GoalState {

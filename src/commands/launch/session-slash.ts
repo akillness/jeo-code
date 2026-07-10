@@ -47,6 +47,11 @@ export interface SessionSlashResult {
   lastUserInput?: string;
   /** Present only when changed (by `/session resume` re-seeding retry state). */
   lastReply?: string;
+  /** Present only when changed (by `/session resume` restoring header.draft into
+   *  the prompt box). */
+  draft?: string;
+
+
 }
 
 /**
@@ -62,13 +67,17 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
   let sessionModelChanged = false;
   let lastUserInput: string | undefined;
   let lastReply: string | undefined;
+  let draft: string | undefined;
+
 
   const result = (): SessionSlashResult => ({
     sessionId,
     ...(sessionModelChanged ? { sessionModel } : {}),
     ...(lastUserInput !== undefined ? { lastUserInput } : {}),
     ...(lastReply !== undefined ? { lastReply } : {}),
+    ...(draft !== undefined ? { draft } : {}),
   });
+
 
   const tokens = input.substring(8).trim().split(/\s+/).filter(Boolean);
   const sub = (tokens[0] ?? "").toLowerCase();
@@ -125,6 +134,10 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
         sessionId = rid;
         // Restore the model this session was last using (per-session model).
         if (header.model) { sessionModel = header.model; sessionModelChanged = true; }
+        // Restore the unsent input-box draft left over at last save, if any.
+        if (header.draft) draft = header.draft;
+
+
         // Seed /retry + reply marker from the last user/assistant turn.
         lastUserInput = ""; lastReply = "";
         for (let k = history.length - 1; k >= 1; k--) {

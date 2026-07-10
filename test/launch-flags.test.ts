@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseFlags, gatedStdout, shouldUseOneShotTui, createInFlightAbortHarness, queuePromptInputChunk, captureLivePromptInputChunk, formatResumeHint, PASTE_START, PASTE_END, type PromptInputQueue } from "../src/commands/launch";
+import { parseFlags, gatedStdout, shouldUseOneShotTui, createInFlightAbortHarness, queuePromptInputChunk, captureLivePromptInputChunk, draftFromUnsentLine, formatResumeHint, PASTE_START, PASTE_END, type PromptInputQueue } from "../src/commands/launch";
 import { createInterface } from "node:readline/promises";
 import { Readable, Writable } from "node:stream";
 
@@ -131,6 +131,17 @@ test("captureLivePromptInputChunk keeps live-turn text in the prompt draft, not 
 
   expect(captureLivePromptInputChunk(state, "\u001b[A")).toBe(false);
   expect(state).toEqual({ ...freshQueue(), partial: "작업내용 확인해줘" });
+});
+
+test("draftFromUnsentLine: trims and returns non-empty text unsent at a hard exit", () => {
+  expect(draftFromUnsentLine("half-typed prom")).toBe("half-typed prom");
+  expect(draftFromUnsentLine("  padded text  ")).toBe("padded text");
+});
+
+test("draftFromUnsentLine: empty, whitespace-only, or absent input is never a draft", () => {
+  expect(draftFromUnsentLine("")).toBeUndefined();
+  expect(draftFromUnsentLine("   ")).toBeUndefined();
+  expect(draftFromUnsentLine(undefined)).toBeUndefined();
 });
 
 test("bracketed paste: multi-line paste splits into pastedLines + editable partial", () => {

@@ -13,6 +13,11 @@ export interface SessionHeader {
   /** Model id pinned to this session; restored on resume so each session can carry
    *  its own model independent of the global default (per-session model selection). */
   model?: string;
+  /** Unsent input-box draft at last save, restored into the prompt on `/resume`
+   *  (gajae-code parity: an in-progress prompt survives a quit + resume instead
+   *  of being silently lost). Absent/empty when there was nothing to restore. */
+  draft?: string;
+
 }
 
 export interface SessionEntry {
@@ -416,6 +421,25 @@ export async function updateSessionModel(id: string, model: string, cwd = proces
     return true;
   }, cwd);
 }
+/**
+ * Persist (or clear) the unsent input-box draft in a session's JSONL header so a
+ * later `/resume` restores it into the prompt (gajae-code parity). Empty text
+ * clears any stale draft rather than writing an empty string. No-op (no write)
+ * when the header's current draft already matches. Throws a clear Error if the
+ * session file does not exist.
+ */
+export async function updateSessionDraft(id: string, draft: string, cwd = process.cwd()): Promise<void> {
+  const trimmed = draft.trim();
+  const next = trimmed ? trimmed : undefined;
+  await rewriteSessionHeader(id, header => {
+    if ((header.draft ?? undefined) === next) return false;
+    if (next === undefined) delete header.draft;
+    else header.draft = next;
+    return true;
+  }, cwd);
+}
+
+
 
 /**
  * Delete a session file.

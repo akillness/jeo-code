@@ -168,16 +168,28 @@ export class StepBudget {
   }
 
   /** Record an executed tool call (ring-buffered to the scoring window).
-   *  Stored as a fixed-size digest — see `hashSignature` (memory bound). */
-  record(signature: string, success: boolean): void {
+   *  Stored as a fixed-size digest — see `hashSignature` (memory bound).
+   *
+   *  `targetKey` (optional) is the COARSE target (e.g. `edit src/x.ts`) the novelty rule
+   *  scores against, instead of `signature`'s full-args hash. Without it, retrying an
+   *  edit on the SAME file with slightly different content each attempt looks "novel"
+   *  forever (the exact args hash never repeats) and the extension heuristic reads that
+   *  edit-thrashing loop as endless progress. With it, only the FIRST attempt at a given
+   *  target counts as novel; grinding on the same file/command afterwards does not, so a
+   *  stuck rewrite loop stops earning extensions even though every individual call
+   *  "succeeds" and every exact signature is technically unique. Falls back to `signature`
+   *  when omitted (unchanged behavior for existing callers/tests). */
+  record(signature: string, success: boolean, targetKey?: string): void {
     const sig = hashSignature(signature);
-    if (!this.seen.has(sig)) {
-      this.seen.add(sig);
+    const noveltyKey = hashSignature(targetKey ?? signature);
+    if (!this.seen.has(noveltyKey)) {
+      this.seen.add(noveltyKey);
       this.novelSinceExtension++;
     }
     this.window.push({ signature: sig, success });
     if (this.window.length > this.cfg.windowSize) this.window.shift();
   }
+
 
   /** A mid-turn steering message arrived — fresh, user-driven work. Grant headroom
    *  (capped at the hard cap, without consuming the extension budget) and clear the
@@ -238,4 +250,32 @@ export class StepBudget {
       limit: this.currentLimit,
     };
   }
+}
+/**
+ * A concise, gjc-style label for a tool call's actual TARGET (file / command / glob) —
+ * not just the bare tool name plus its full argument blob. Two calls that touch the SAME
+ * target (e.g. `edit src/x.ts` twice with different bodies) collapse to the same target
+ * key here even though `hashSignature` of their full arguments differs. Shared by the
+ * budget's novelty rule (below) and `task-tool.ts`'s live subagent monitor label — kept
+ * pure/local (no TUI dependency in the agent layer).
+ */
+export function toolTarget(tool: string, rawArgs: unknown): string {
+  const a = (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) ? rawArgs : {}) as Record<string, unknown>;
+  const t = (tool || "").toLowerCase();
+  const str = (...keys: string[]): string => {
+    for (const k of keys) { const v = a[k]; if (typeof v === "string" && v.length > 0) return v; }
+    return "";
+  };
+  if (t === "bash") {
+    const cmd = str("command", "cmd").split("\n")[0]!.trim();
+    return cmd ? `bash: ${cmd.length > 80 ? cmd.slice(0, 79) + "…" : cmd}` : "bash";
+  }
+  if (t === "read" || t === "write" || t === "edit") {
+    const f = str("filePath", "path");
+    return f ? `${t} ${f}` : t;
+  }
+  if (t === "find") { const g = str("globPattern", "pattern"); return g ? `find ${g}` : "find"; }
+  if (t === "search") { const p = str("pattern"); return p ? `search ${p}` : "search"; }
+  if (t === "task") { const r = str("role"); return r ? `task ${r}` : "task"; }
+  return tool || "tool";
 }

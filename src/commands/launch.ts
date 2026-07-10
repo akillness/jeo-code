@@ -50,7 +50,7 @@ import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/sta
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
 import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
-import { readGoalState, writeGoalState, clearGoalState, verifyGoal } from "../agent/goal-verifier";
+import { readGoalState, writeGoalState, clearGoalState, verifyGoal, applyEvidenceGate } from "../agent/goal-verifier";
 import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, type PromptTier, type RouteDecision } from "../agent/prompt-router";
 import { RouteHistory } from "../agent/route-history";
 
@@ -110,6 +110,7 @@ import {
   latestSessionId,
   exportSession,
   updateSessionModel,
+  updateSessionDraft,
   appendCompaction,
   resolveSessionRef,
 } from "../agent/session";
@@ -163,6 +164,7 @@ import {
   boxVerticalNavAction,
   queuePromptInputChunk,
   captureLivePromptInputChunk,
+  draftFromUnsentLine,
   restoreQueuedLinesToPrefill,
   createInFlightAbortHarness,
   classifyMidTurnLine,
@@ -262,6 +264,7 @@ export {
   boxVerticalNavAction,
   queuePromptInputChunk,
   captureLivePromptInputChunk,
+  draftFromUnsentLine,
   restoreQueuedLinesToPrefill,
   createInFlightAbortHarness,
   classifyMidTurnLine,
@@ -687,6 +690,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let lastUserInput = "";
   // Full untruncated text of the last assistant reply — surfaced in detail by Ctrl+O.
   let lastReply = "";
+  // Unsent draft restored from a NON-interactive resume path (`--resume <id>`,
+  // `--continue`/`-c`) — the interactive-picker and mid-loop `/session resume`
+  // paths feed `queuedPromptInput.partial` directly (declared much later); this
+  // one exists because `queuedPromptInput` isn't in scope yet at startup. Read
+  // once by `queuedPromptInput`'s own initializer below, then not touched again.
+  let startupDraft: string | undefined;
   // Full untruncated output of the most recent tool call — the clipped forge
   // card's `⟦Ctrl+O for more⟧` hint resolves here.
   let lastToolDetail: { tool: string; output: string } | null = null;
@@ -808,6 +817,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // Restore the model this session was last using unless the CLI explicitly
           // pinned one (flags.model/role/provider → initialSessionModel wins).
           if (!initialSessionModel && header.model) sessionModel = header.model;
+          // Restore the unsent input-box draft (gajae-code parity) — see
+          // startupDraft's own doc comment for why this path can't feed
+          // queuedPromptInput.partial directly yet.
+          if (header.draft) startupDraft = header.draft;
           const modelNote = sessionModel ? ` · model ${sessionModel}` : "";
           console.log(`Resumed session ${id} (${messages.length} messages).${modelNote}`);
         } catch (err) {
@@ -838,6 +851,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (flags.noSession || !sessionId || !sessionModel) return;
     try {
       await updateSessionModel(sessionId, sessionModel, cwd);
+    } catch { /* best-effort */ }
+  };
+
+  // Persist (or clear) the unsent input-box draft into the session header so a
+  // later `/resume` restores it into the prompt (gajae-code parity: an
+  // in-progress prompt survives a quit + resume instead of being silently
+  // lost). Best-effort, same contract as persistSessionModel above — a
+  // header-rewrite failure must never abort the exit path that calls this.
+  const persistSessionDraft = async (draft: string): Promise<void> => {
+    if (flags.noSession || !sessionId) return;
+    try {
+      await updateSessionDraft(sessionId, draft, cwd);
     } catch { /* best-effort */ }
   };
 
@@ -1282,7 +1307,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         // Todos checklist used to end a finished turn stuck at "✓0 ◐1 ·4 / 5"
         // because nothing ever forced the model to update item statuses).
         let turnTodos: { title: string; status: string }[] = [];
-        const onBeforeDone = async (reason: string): Promise<string | null> => {
+        const onBeforeDone = async (
+          reason: string,
+          evidence: { sawMutation: boolean; sawVerification: boolean; verificationStale: boolean },
+        ): Promise<string | null> => {
           const unfinished = turnTodos.filter(t => t.status !== "done");
           if (turnTodos.length > 0 && unfinished.length > 0) {
             return (
@@ -1304,7 +1332,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             }
 
             if (tui) tui.events().onNotice?.("[Goal Verifier] Running goal verification...");
-            const verdict = await verifyGoal(goalState.condition, history, activeModel);
+            const llmVerdict = await verifyGoal(goalState.condition, history, activeModel);
+            // Deterministic downgrade: a fresh MET from the transcript-only LLM
+            // judge still needs mutation/verification evidence to back it up —
+            // see applyEvidenceGate's own docs (goal-verifier.ts). NOT_MET/
+            // IMPOSSIBLE pass through unchanged; this only ever tightens MET.
+            const verdict = applyEvidenceGate(llmVerdict, evidence);
 
             goalState.verdicts.push({
               at: Date.now(),
@@ -2182,7 +2215,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // IMMEDIATELY on its next iteration, bypassing the "new input first" prefill contract
   // (the user explicitly invoked them — no second Enter).
   const pendingMidTurnCommands: string[] = [];
-  const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: "", pastedLines: [], inPaste: false };
+  const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: startupDraft ?? "", pastedLines: [], inPaste: false };
   queueBusyInput = (chunk: string) => captureLivePromptInputChunk(queuedPromptInput, chunk);
   queueBusyPasteActive = () => queuedPromptInput.inPaste;
   queueBusySnapshot = () => ({
@@ -2251,6 +2284,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // hard break, not a graceful `/exit`. Some Bun/tmux paths leave stdin.isTTY
     // false while stdout is still a TTY, so accept either side as interactive.
     if ((process.stdin.isTTY || process.stdout.isTTY || previewEnabled) && !gracefulReadlineClose) {
+      // Best-effort, fire-and-forget: persist whatever's still typed but unsent
+      // (Ctrl+D / EOF / disconnected terminal — no explicit discard gesture, unlike
+      // Ctrl+C's own "clear the box" contract, which stays untouched here) so
+      // `/resume` can restore it (see persistSessionDraft above). Must not block
+      // process.exit() below.
+      const draft = draftFromUnsentLine((rl as unknown as { line?: string }).line);
+      if (draft) void persistSessionDraft(draft);
       hardExitOnLoopEnd = true;
       forceExitFromCtrlC();
     }
@@ -3695,6 +3735,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     if (pickResult.sessionModel !== undefined) sessionModel = pickResult.sessionModel;
     if (pickResult.lastUserInput !== undefined) lastUserInput = pickResult.lastUserInput;
     if (pickResult.lastReply !== undefined) lastReply = pickResult.lastReply;
+    // Restore the unsent input-box draft left over at last save (gajae-code
+    // parity) — feeds the SAME "new input first" prefill path queued mid-turn
+    // lines already use, so it's visible in the box, Enter to run, Esc/Ctrl+U
+    // to discard, on the very first prompt of this resumed session.
+    if (pickResult.draft) queuedPromptInput.partial = pickResult.draft;
   }
 
   // Remote (Telegram) free-text reply / config command routing — wired here,
@@ -3898,6 +3943,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (result.sessionModel !== undefined) sessionModel = result.sessionModel;
         if (result.lastUserInput !== undefined) lastUserInput = result.lastUserInput;
         if (result.lastReply !== undefined) lastReply = result.lastReply;
+        // Restore the unsent input-box draft (see the resumeInteractive call
+        // site above for the full rationale) — `continue` below immediately
+        // re-enters the loop top, which consumes `queuedPromptInput.partial`
+        // as this next prompt's prefill.
+        if (result.draft) queuedPromptInput.partial = result.draft;
         continue;
       }
       if (input === "/retry") {

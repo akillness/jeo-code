@@ -10,6 +10,8 @@
  * `task` itself, so delegation cannot recurse infinitely.
  */
 import { runAgentLoop, type ToolHandler } from "./engine";
+import { toolTarget } from "./step-budget";
+
 import type { ToolResult } from "./tools";
 import type { Message } from "./loop";
 import { loadProjectContext, withProjectContext } from "./context-files";
@@ -146,31 +148,6 @@ export function taskToolProtocolLine(config?: Pick<Config, "subagents">): string
   );
 }
 
-/**
- * A concise, gjc-style label for a subagent's tool call — the actual TARGET (file / command /
- * glob), not just the bare tool name — so the parent's live monitor shows "read src/x.ts" or
- * "bash: bun test" instead of "read"/"bash". Kept local (no TUI dependency in the agent layer).
- */
-function toolTarget(tool: string, rawArgs: unknown): string {
-  const a = (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) ? rawArgs : {}) as Record<string, unknown>;
-  const t = (tool || "").toLowerCase();
-  const str = (...keys: string[]): string => {
-    for (const k of keys) { const v = a[k]; if (typeof v === "string" && v.length > 0) return v; }
-    return "";
-  };
-  if (t === "bash") {
-    const cmd = str("command", "cmd").split("\n")[0]!.trim();
-    return cmd ? `bash: ${cmd.length > 80 ? cmd.slice(0, 79) + "…" : cmd}` : "bash";
-  }
-  if (t === "read" || t === "write" || t === "edit") {
-    const f = str("filePath", "path");
-    return f ? `${t} ${f}` : t;
-  }
-  if (t === "find") { const g = str("globPattern", "pattern"); return g ? `find ${g}` : "find"; }
-  if (t === "search") { const p = str("pattern"); return p ? `search ${p}` : "search"; }
-  if (t === "task") { const r = str("role"); return r ? `task ${r}` : "task"; }
-  return tool || "tool";
-}
 
 function firstUsefulLine(output: string | undefined): string {
   if (!output) return "";

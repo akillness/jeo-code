@@ -8,6 +8,7 @@ import { executeComputerAction } from "./computer";
 import { createOpikTracer, wrapEvents } from "../agent/opik-tracer";
 import { initialDynamicStepLimit } from "../agent/step-budget";
 import { memoryPromptSection, spawnDetachedDistill, recordFailedAttempt } from "../agent/memory";
+import { recordSkillLesson } from "../agent/skill-lessons";
 import { createTaskTool, taskToolProtocolLine, type TaskSubEvent } from "../agent/task-tool";
 import { createSubagentTool, SUBAGENT_TOOL_PROTOCOL_LINE } from "../agent/subagent-tool";
 import { SubagentRegistry } from "../agent/subagent-registry";
@@ -51,7 +52,7 @@ import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recen
 import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal, applyEvidenceGate } from "../agent/goal-verifier";
-import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, credentialScopeFor, type PromptTier, type RouteDecision, type RoutingConfig } from "../agent/prompt-router";
+import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, credentialScopeFor, resolveVerifierModel, type PromptTier, type RouteDecision, type RoutingConfig } from "../agent/prompt-router";
 import { RouteHistory } from "../agent/route-history";
 
 import { isRateLimitError, isUsageLimitError, isConnectionError } from "../util/retry";
@@ -1426,7 +1427,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             }
 
             if (tui) tui.events().onNotice?.("[Goal Verifier] Running goal verification...");
-            const llmVerdict = await verifyGoal(goalState.condition, history, activeModel);
+            const llmVerdict = await verifyGoal(goalState.condition, history, resolveVerifierModel(turnConfig));
             // Deterministic downgrade: a fresh MET from the transcript-only LLM
             // judge still needs mutation/verification evidence to back it up —
             // see applyEvidenceGate's own docs (goal-verifier.ts). NOT_MET/
@@ -1774,12 +1775,17 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       const tags = Array.from(new Set(
         task.toLowerCase().match(/[a-z0-9][a-z0-9_-]{3,}/g) ?? [],
       )).slice(0, 8);
-      void recordFailedAttempt(cwd, {
-        title: `Stalled on: ${excerpt}`,
-        description: `A prior turn stalled (${why}) on this task — change approach before retrying.`,
-        body: `Task: ${task.slice(0, 240)}\n\nThe agent gave up after ${why} (${result.steps} steps) and could not recover. ` +
-          `Do NOT repeat the same line of attack; try a different decomposition, tool, or verification path.`,
-        tags,
+      const title = `Stalled on: ${excerpt}`;
+      const description = `A prior turn stalled (${why}) on this task — change approach before retrying.`;
+      const body = `Task: ${task.slice(0, 240)}\n\nThe agent gave up after ${why} (${result.steps} steps) and could not recover. ` +
+        `Do NOT repeat the same line of attack; try a different decomposition, tool, or verification path.`;
+      void recordFailedAttempt(cwd, { title, description, body, tags }).catch(() => {});
+      // Also offer the same failure to the skill-lessons system (deterministic
+      // free-text -> skill match; writes nothing when no skill clearly relates).
+      void recordSkillLesson(cwd, `${title} ${description}`, {
+        kind: "failure-mode",
+        title,
+        detail: body.slice(0, 300),
       }).catch(() => {});
     }
     const usage = result.usage ? `  (${result.usage.inputTokens} in / ${result.usage.outputTokens} out tokens)` : "";

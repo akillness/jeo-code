@@ -12,15 +12,22 @@ import type { ToolHandler } from "./engine";
 import type { ToolResult } from "./tools";
 import { browserSession, type BrowserSession } from "./browser-session";
 import type { ObservedElement, ExtractFormat } from "./browser-tab";
+import type { ImageAttachment } from "../ai/types";
+import { visionVerify } from "./vision-verify";
+import { resolveVerifierModel } from "./prompt-router";
+import { readGlobalConfig } from "./state";
 
 /** One-line protocol description appended to the launch system prompt. */
 export const BROWSER_TOOL_PROTOCOL_LINE =
   `browser {action:"open"|"close"|"run"|"act", name?, url?, viewport?, code?, actions?, all?} — headless ` +
   `Chromium automation (Playwright). 'open' {name, url?} opens/reuses a named tab (name defaults to "main"). ` +
   `'close' {name?, all?} closes one tab or every tab. 'act' {name, actions:[{verb, ...}]} runs structured steps ` +
-  `(navigate/click/type/fill/select/press/scroll/back/wait/observe/extract/screenshot) — address elements by ` +
-  `numeric 'id' from a prior 'observe' step (preferred) or a CSS 'selector'; prefer 'observe' over 'screenshot' ` +
-  `for understanding page state. 'run' {name, code} executes an async function BODY with page/browser/tab/` +
+  `(navigate/click/type/fill/select/press/scroll/back/wait/observe/extract/screenshot/verify) — address elements ` +
+  `by numeric 'id' from a prior 'observe' step (preferred) or a CSS 'selector'; prefer 'observe' over 'screenshot' ` +
+  `for understanding page state. 'verify' {goal, selector?, fullPage?, design_tokens?, prior_screenshot?} takes a ` +
+  `screenshot and asks an INDEPENDENT vision-capable model to judge it against 'goal' (plain language) — returns ` +
+  `{verdict:"PASS"|"MISMATCH", detail}; use this to close the loop on visual/UI work instead of eyeballing a saved ` +
+  `screenshot yourself. 'run' {name, code} executes an async function BODY with page/browser/tab/` +
   `display/assert/wait in scope for anything the structured verbs don't cover.`;
 
 function err(message: string): ToolResult {
@@ -108,6 +115,28 @@ async function runActStep(session: BrowserSession, name: string, step: ActStep):
         const savePath = path.join(os.tmpdir(), `jeo-browser-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
         await fs.writeFile(savePath, buf);
         return { verb, ok: true, saved: savePath, bytes: buf.length };
+      }
+      case "verify": {
+        const goal = String(step.goal ?? "").trim();
+        if (!goal) return { verb, ok: false, error: "verify requires a non-empty 'goal' describing what the page should show." };
+        const buf = await tab.screenshot({ selector: typeof step.selector === "string" ? step.selector : undefined, fullPage: !!step.fullPage });
+        const image: ImageAttachment = { mediaType: "image/png", data: buf.toString("base64") };
+        let priorImage: ImageAttachment | undefined;
+        if (typeof step.prior_screenshot === "string" && step.prior_screenshot) {
+          try {
+            priorImage = { mediaType: "image/png", data: (await fs.readFile(step.prior_screenshot)).toString("base64") };
+          } catch (e: any) {
+            return { verb, ok: false, error: `Could not read prior_screenshot '${step.prior_screenshot}': ${e.message ?? e}` };
+          }
+        }
+        const config = await readGlobalConfig();
+        const model = resolveVerifierModel(config, { requireImages: true });
+        const verdict = await visionVerify(image, goal, {
+          model,
+          designTokens: typeof step.design_tokens === "string" ? step.design_tokens : undefined,
+          priorImage,
+        });
+        return { verb, ok: verdict.verdict === "PASS", verdict: verdict.verdict, detail: verdict.detail, model };
       }
       default:
         return { verb, ok: false, error: `Unknown act verb '${verb}'.` };

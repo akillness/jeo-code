@@ -33,7 +33,7 @@ import {
 import { resolveMaxOutputTokens } from "../ai/model-manager";
 import type { SubagentRegistry } from "./subagent-registry";
 import { ensureSessionNotifyEndpoint, type SessionNotifyEndpoint } from "./notify/session-endpoint";
-import { inferTierForModel, tierModelPool, credentialScopeFor, selectFromPool, type RoutingConfig } from "./prompt-router";
+import { inferTierForModel, tierModelPool, credentialScopeFor, selectFromPool, strongestMidTierCredentialed, type RoutingConfig } from "./prompt-router";
 import { isRateLimitError } from "../util/retry";
 
 /** `runSubagentOnce`/`createTaskTool`'s config requirement: everything
@@ -234,6 +234,13 @@ export interface RunSubagentOptions {
    *  Omitted (single-task/detached calls with no batch) = a fresh local Set,
    *  scoped to just this one run. */
   excludedCredentialScopes?: Set<string>;
+  /** Overrides the role's own `resolveSubagentModel` pick for THIS run only
+   *  (never persisted, never a per-role config change). Used by `createTaskTool`'s
+   *  fan-out path to default an unpinned batch to a mid-tier model instead of the
+   *  role's normal strongest-tier resolution — see MAX_FANOUT's fan-out call site
+   *  for the cost rationale (bulk/high-volume work does not need the same tier a
+   *  single deep task gets). Absent = unchanged `resolveSubagentModel` behavior. */
+  modelOverride?: string;
 }
 
 /** `runSubagentOnce`'s result — a superset of `ToolResult` exposing the raw
@@ -278,7 +285,7 @@ export async function runSubagentOnce(
   // task 1 from task 3 when several same-role subagents stream concurrently.
   const emit = (ev: TaskSubEvent) =>
     opts.onEvent?.(slot ? { ...ev, index: slot.index, total: slot.total } : ev);
-  const initialModel = resolveSubagentModel(role.id, opts.config);
+  const initialModel = opts.modelOverride || resolveSubagentModel(role.id, opts.config);
   const maxSteps = resolveSubagentMaxSteps(role.id, opts.config);
   // gjc parity: a role may pin its own reasoning budget; absent = inherit the
   // session/global thinking level (the "(inherit)" row in the picker).
@@ -477,6 +484,8 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       /** Batch-shared exhausted-scope set — see RunSubagentOptions' doc comment.
        *  Omitted for the single-task/detached paths (each gets its own local Set). */
       excludedCredentialScopes?: Set<string>;
+      /** See RunSubagentOptions.modelOverride. */
+      modelOverride?: string;
     } = {},
   ): Promise<ToolResult> =>
     runSubagentOnce(role, taskText, context, cwd, {
@@ -487,6 +496,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       slot: extra.slot,
       projectContext: extra.projectContext,
       excludedCredentialScopes: extra.excludedCredentialScopes,
+      modelOverride: extra.modelOverride,
     });
 
   return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {
@@ -549,6 +559,17 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       // Load project context ONCE per batch instead of re-scanning AGENTS.md for
       // every fan-out task (redundant IO + duplicated tokens).
       const batchContext = await loadProjectContext(cwd);
+      // Cost tier: an UNPINNED fan-out batch (no explicit 'role' arg — the common
+      // case, MAX_FANOUT concurrent items all defaulting to executor) is bulk/
+      // high-volume work by construction, not a single deep task — default it to
+      // a mid-tier model instead of executor's normal strongest-tier resolution.
+      // An EXPLICIT role arg (a caller deliberately fanning out e.g. architect
+      // reviews) is left untouched: that is a real per-role choice, not the
+      // "whatever's unpinned" case this discount targets. roles.high (explicit
+      // pin) wins first, mirroring 'planner''s own resolution order.
+      const fanoutModelOverride = roleArg
+        ? undefined
+        : (opts.config.roles?.high || strongestMidTierCredentialed(opts.config) || undefined);
       // Batch-scoped, shared across every CONCURRENT worker in THIS fan-out (not
       // across separate `task` calls) — see RunSubagentOptions.excludedCredentialScopes'
       // doc comment: several workers can 429 the SAME OAuth-scoped model near-
@@ -573,7 +594,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
           // dead/misleading once the executor stopped being forced-serial). Each
           // task runs isolated on its own slice of context; a task that genuinely
           // depends on another's output belongs in a sequential follow-up call.
-          results[i] = await runOne(role, items[i]!.task, items[i]!.context, cwd, { slot: { index: i + 1, total: items.length }, projectContext: batchContext, steer: workerSteer, excludedCredentialScopes: batchExcludedScopes });
+          results[i] = await runOne(role, items[i]!.task, items[i]!.context, cwd, { slot: { index: i + 1, total: items.length }, projectContext: batchContext, steer: workerSteer, excludedCredentialScopes: batchExcludedScopes, modelOverride: fanoutModelOverride });
         }
 
       };

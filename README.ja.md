@@ -45,7 +45,10 @@
 - **クラッシュ耐久・ローカルファースト** — 全状態は `.jeo/` 配下にアトミック書き込み、プロセス間ロック、失敗タスクマーカー + 再開時の部分編集警告。
 - **動的ステップ予算** — 直近のツール呼び出しが新規の進捗を示す間は延長され、停滞すれば要約に収束。サブエージェントは厳密なステップ契約を維持。
 - **インライン TUI** — 完了した作業は実スクロールバックに流れ(ターン中も tmux ホイール可)、エージェント実行中も通常のクエリ入力欄が表示されたまま編集できます。Ctrl+O の詳細トグル、テーマ、クリップボード画像貼り付け(Ctrl+V)、CJK/絵文字対応の幅計算。
-- **ブラウザツール** — Playwright によるヘッドレス Chromium 自動化を第一級のエージェントツールとして搭載: 名前付きタブを再利用しつつ `open`/`close`/`run`/`act`、スクリーンショットより `observe` でタグ付けした要素 id を優先。`npx playwright install chromium` を一度実行する必要があります(バンドルされていません — jeo 自体はネイティブ依存ゼロのまま、ブラウザバイナリは Playwright 側の別ダウンロードです)。
+- **ブラウザツール** — Playwright によるヘッドレス Chromium 自動化を第一級のエージェントツールとして搭載: 名前付きタブを再利用しつつ `open`/`close`/`run`/`act`、スクリーンショットより `observe` でタグ付けした要素 id を優先。`act {verb:"verify", goal, ...}` はビジュアル QA ループを完結させます: ページをスクリーンショットし、独立したビジョン対応モデルに平易な言葉のゴールと照らして判定させ(`{verdict:"PASS"|"MISMATCH", detail}`)、人間(または同じエージェント)が保存済み PNG を目視確認する必要をなくします。`npx playwright install chromium` を一度実行する必要があります(バンドルされていません — jeo 自体はネイティブ依存ゼロのまま、ブラウザバイナリは Playwright 側の別ダウンロードです)。
+- **蓄積されるスキル** — 行き詰まったターンは、その行き止まりをまさに同じスキルのプロジェクトレベルファイル(`.jeo/skills/<name>.md`、初回書き込み時にバンドルスキルからシード、決定論的なキーワードマッチ、LLM不使用)に書き込むようになりました。これにより次のセッションの `$<skill>` 呼び出しは、バンドルされたドキュメントが永遠に静的なままでいる代わりに、蓄積された「Known Failure Modes」/「Anti-Patterns」の知識を引き継ぎます。`jeo skills lesson <skill> <failure|anti-pattern> "<title>" "<detail>"` で手動記録、`jeo skills eval <skill>` は記録済みの各教訓がスキルの現行ガイダンスでまだカバーされているか、それとも陳腐化したかを実際の LLM 判定で確認します。
+- **低コスト層のグレーダールーティング** — `/goal` の検証器、`critic` サブエージェントロール、固定されていない `task` ファンアウトバッチは、採点・実行対象の作業と同じフルプライスモデルに黙って乗る代わりに、デフォルトで低コストのクレデンシャル済みモデルを使用します(`resolveVerifierModel`、ブラウザの `verify` アクションについてはビジョン対応能力でフィルタされ、テキストのみの低コストモデルが添付スクリーンショットを黙って取りこぼすことがありません)。
+- **`jeo routine init`** — スケジュール/issue/PR トリガーで jeo をヘッドレス実行する(`jeo "<prompt>" -p`) GitHub Actions ワークフローを、GitHub 自身のランナー上に生成します — ラップトップは不要で、jeo 自体の内部に新しい攻撃対象領域も一切増えません(インプロセスのスケジューラや Webhook リスナーはありません)。`--dry-run` でプレビュー、`--no-pr` でデフォルトの実行ごとの PR の代わりに直接コミット。
 - **リモートサブエージェント可視化(Telegram)** — ボットを一度ペアリング(`jeo notify setup`)すれば、`jeo daemon start` がサブエージェントの状態遷移(開始 → 完了/失敗/キャンセル)ごとにメッセージを送り、`/subagents`、`/steer <id> <subagentId> <msg>`、`/cancel <id> <subagentId>` を受け付けます。Telegram フォーラムトピック、インラインキーボード、画像添付を含む `gjc` 完全パリティを提供し、コマンドはペアリングされたチャットのみ許可されます。
 
 ## インストール
@@ -195,6 +198,15 @@ jeo daemon stop         # SIGTERM で停止
 | `/cancel <sessionId> <subagentId>` | 実行中のサブエージェントをキャンセル |
 | `/help` | コマンドリファレンスを表示 |
 
+## ルーティン(GitHub Actions)
+
+```bash
+jeo routine init --trigger schedule --cron "0 7 * * *" --prompt "Re-run the eval suite and post a digest" --dry-run
+jeo routine init --trigger issues --prompt "Triage this issue" --name "issue-triage"
+```
+
+GitHub Actions ワークフロー(`.github/workflows/<name>.yml`)を生成し、jeo をインストールして `schedule` / `issues` / `pull_request` でヘッドレス実行します(`jeo "<prompt>" -p`) — 手動テスト実行のために常に `workflow_dispatch` と組み合わせます — GitHub 自身のホステッドランナー上で。これが jeo の「ラップトップなしで動く」ストーリーです: jeo 自体の内部にインプロセスのスケジューラも、Webhook リスナーも、コード実行サンドボックスもありません — GitHub のインフラがトリガーを担い、jeo は既存のヘッドレスモードを実行するだけです。デフォルトでは変更があれば PR を開きます(`peter-evans/create-pull-request`、diff が空なら安全な no-op); `--no-pr` はトリガーしたブランチへ直接コミットします。`--dry-run` は YAML を書き込まずに出力するだけです; 同じ `--out` パスで `jeo routine init` を再実行すると `--force` なしでは上書きを拒否します。ワークフローの最初の実際の実行前に、リポジトリシークレット `ANTHROPIC_API_KEY`(または `--api-key-env <VAR>`)を設定してください。
+
 ## ローカルモデル
 
 ```bash
@@ -265,11 +277,11 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 ## 変更履歴 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.8.23]** (2026-07-12) — Gap analysis against an external "self-improving agent system" framework (Fable-5-style loops: independent verifiers, memory compounding, model-tier cost discipline, and scheduled routines) found jeo-code already had strong equivalents for most primitives — but 3 real gaps and 1 deliberately-scoped-safe gap. Closed all 4: skills that were "hand-authored, read-mostly, zero learning" now compound from real session failures; screenshots that were captured but never judged now close a real vision-verify loop; the `/goal` verifier and bulk fan-out dispatch that silently rode the same full-price model as the work they graded/executed now default to a cheap tier; and "runs without your laptop" is now achievable via a generated GitHub Actions template wrapping jeo's existing headless mode — with zero new attack surface inside jeo-code itself (no code-exec sandbox, no in-process scheduler/webhook receiver, both deliberately rejected as out of scope). Also absorbs 3 fixes shipped after 0.8.22 but never changelogged: a rate-limit fast-fallback audit that closed 4 real gaps, plus the cross-file `mock.module()` test-isolation class this release's own test additions collided with and fixed at its root cause.
 - **[0.8.22]** (2026-07-11) — A rescan of the working tree turned up a resume-fidelity gap plus two unwired TUI safety-net helpers left by a concurrent session; each was traced, wired where needed, and verified before shipping.
 - **[0.8.21]** (2026-07-10) — "반영할꺼 같은방식으로 체크하고 배포까지" — a rescan of the working tree (after the prior audit pass) turned up 15 uncommitted files: 3 genuinely distinct features left unwired by a concurrent session, partially casualty of an earlier accidental `git checkout` incident this session (disclosed in the 0.8.20 entry above). Each was independently traced from its existing plumbing, wired to a real call site, tested, and one live-verified end-to-end over a real PTY before shipping.
 - **[0.8.20]** (2026-07-10) — "모든 검증 다시 리뷰하고 변경사항 모두 체크해" — 4 fresh, skeptical subagents independently re-audited every change from v0.8.17-0.8.19 (bc8768f..92c6b7d) with zero trust in prior claims: a code-correctness auditor manually traced the Antigravity routing logic against the live catalog, a test-integrity auditor mutation-tested the new tests (confirmed each one genuinely fails when its fix is reverted) and ran the suite fresh, a live-behavior verifier re-reproduced all 4 behavioral claims from scratch with self-generated data (own session ids, own mock server, own HTTP status code), and a docs-accuracy auditor cross-checked every README/CHANGELOG claim against current code in isolated git worktrees. Verdict: all core logic and tests GENUINE/CONFIRMED CORRECT — but the audit surfaced 1 real doc staleness gap, 1 changelog count error, and 2 minor precision gaps, all fixed here.
 - **[0.8.19]** (2026-07-09) — "프롬프트 라우팅에 안티그라비티 프로바이더의 경우, 안티그라비티용 소넷과 오퍼스도 3.5급으로 라우팅될수있도록해줘" — Antigravity re-exports 3 distinct model families (Anthropic Claude, Google Gemini, OpenAI GPT-OSS) behind one credential, structurally unlike every other provider. `high`/`complex` tier auto-select always resolved to Google's Gemini 3.5 rows: Anthropic's real 64,000-token output ceiling lost a same-thinking-tier tie to Google's 65,536 by a margin with no practical significance, and Gemini's 1M-token context further outranked Claude's real 200K window — so `antigravity/claude-sonnet-4-6`/`antigravity/claude-opus-4-6-thinking` were NEVER reachable through auto-select, even though both were already correctly `sizeClass`-tagged into the `high`/`complex` pools.
-- **[0.8.18]** (2026-07-09) — "라우팅 매 프롬프트마다 변경되는지, route why 의도대로 동작하는지 검증하고 배포할게있는지 확인해줘" — 2 parallel subagents live-verified per-prompt routing + `/route why` (including the previously-only-unit-tested post-call equivalent-model fallback path, now reproduced against a real mock 500-error server) and audited a disconnected `RouteHistory` class shipped as incomplete scaffolding in 0.8.16/0.8.17 (class + 11 tests existed, but nothing ever called it — no `/route history` subcommand, no wiring into the turn loop). Live testing also surfaced one real bug: the TUI footer's model/provider label never updated after a mid-turn fallback, staying on the pre-fallback model for the rest of that turn's render even though the backend decision (`lastRouteDecision`) was already correct.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

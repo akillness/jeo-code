@@ -427,11 +427,15 @@ export function selectFromPool(pool: readonly string[], sessionId: string | unde
  *  model has a known price (caller falls back to `defaultModel`). Tiebreak on
  *  an exact cost tie: NEWER `releaseDate` wins (a same-priced newer model is
  *  likely a refined successor), then canonical id (deterministic fallback
- *  when recency also ties or is unconfirmed on both sides). */
-export function cheapestCredentialed(config: RoutingConfig): string | null {
+ *  when recency also ties or is unconfirmed on both sides). Optional `filter`
+ *  narrows the candidate pool BEFORE price comparison (e.g. vision-capable
+ *  only, matching `strongestCredentialed`'s filter param) — a cheap model that
+ *  fails the filter is never picked over a pricier one that passes it. */
+export function cheapestCredentialed(config: RoutingConfig, filter?: (m: CatalogModel) => boolean): string | null {
   let best: CatalogModel | null = null;
   let bestCost = Infinity;
   for (const m of routingCatalog(config)) {
+    if (filter && !filter(m)) continue;
     // `routingCatalog(config)` already filtered to eligible rows (static rows via
     // `isAutoSelectCandidate`, live rows via `isAutoSelectCandidateLive`) — no need
     // to re-check here. See cheapestCredentialed's own doc comment for the
@@ -458,6 +462,27 @@ export function cheapestCredentialed(config: RoutingConfig): string | null {
     }
   }
   return best?.canonical ?? null;
+}
+
+/** Cheap-tier model for a GRADER/VERIFIER call (goal-verifier, vision-verify,
+ *  `critic` role) — the blog-post "Haiku-for-graders" principle: a verdict call
+ *  reads an artifact + a rubric, it does not need frontier reasoning strength,
+ *  and defaulting graders to the SAME expensive model driving the turn they are
+ *  grading both wastes budget and (for self-graded turns) reintroduces the very
+ *  self-preference bias an independent grader exists to avoid. Resolution order:
+ *  `roles.smol` (explicit user pin, but only when it also satisfies `requireImages`)
+ *  → live-cheapest credentialed (filtered the same way) → `defaultModel` (never
+ *  null — every caller needs a concrete model id to pass to `callLlm`).
+ *  `opts.requireImages` (the browser vision-verify caller) excludes catalog rows
+ *  with `images: false` — a text-only cheap model silently ignores an attached
+ *  screenshot rather than erroring, which would surface as a hallucinated verdict
+ *  instead of a loud failure, so the filter runs BEFORE cost/pin selection, not after. */
+export function resolveVerifierModel(config: RoutingConfig, opts: { requireImages?: boolean } = {}): string {
+  const pinned = config.roles?.smol;
+  const pinnedOk = pinned && (!opts.requireImages || catalogMetadata(pinned)?.images !== false);
+  if (pinnedOk) return pinned!;
+  const filter = opts.requireImages ? (m: CatalogModel) => m.images !== false : undefined;
+  return cheapestCredentialed(config, filter) || config.defaultModel;
 }
 
 /** Most capable cloud model jeo has a credential for, computed LIVE off
@@ -504,7 +529,7 @@ export function strongestCredentialed(
  *  a genuinely mid-class model like `claude-sonnet-4-6`. `null` when no
  *  mid-class-suffixed model is credentialed (caller falls through to
  *  `roles.medium`/`defaultModel` — never to `complex`'s flagship pick). */
-function strongestMidTierCredentialed(config: RoutingConfig): string | null {
+export function strongestMidTierCredentialed(config: RoutingConfig): string | null {
   const midClass = routingCatalog(config).filter(
     m => sizeClassFor(m) === "mid",
   );

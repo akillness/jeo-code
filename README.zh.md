@@ -45,7 +45,10 @@
 - **崩溃耐久、本地优先** — 全部状态位于 `.jeo/`，原子写入、跨进程运行锁、失败任务标记 + 恢复时的部分编辑警告。
 - **动态步数预算** — 只要近期工具调用展现新的进展就持续延长，停滞时优雅收敛为总结；子代理保持精确的步数契约。
 - **内联 TUI** — 已完成的工作流入真实滚动缓冲区(回合中也可用 tmux 滚轮)，代理运行时普通查询输入框仍保持可见并可编辑。Ctrl+O 详细信息切换、主题、剪贴板图片粘贴(Ctrl+V)、CJK/表情安全的宽度计算。
-- **浏览器工具** — 基于 Playwright 的无头 Chromium 自动化,作为一等代理工具:对命名并复用的标签页执行 `open`/`close`/`run`/`act`,优先使用 `observe` 标记的元素 id 而非截图来驱动页面。需要执行一次 `npx playwright install chromium`(未捆绑 — jeo 本身仍是零原生依赖,浏览器二进制文件是 Playwright 的独立下载项)。
+- **浏览器工具** — 基于 Playwright 的无头 Chromium 自动化,作为一等代理工具:对命名并复用的标签页执行 `open`/`close`/`run`/`act`,优先使用 `observe` 标记的元素 id 而非截图来驱动页面。`act {verb:"verify", goal, ...}` 闭合了可视化 QA 循环:对页面截图,并让一个独立的、具备视觉能力的模型依据一句大白话目标来判断(`{verdict:"PASS"|"MISMATCH", detail}`),不再需要人工(或同一个代理)去肉眼核对保存下来的 PNG。需要执行一次 `npx playwright install chromium`(未捆绑 — jeo 本身仍是零原生依赖,浏览器二进制文件是 Playwright 的独立下载项)。
+- **持续积累的技能** — 卡壳的一轮现在会把死胡同写入同一个技能的项目级文件(`.jeo/skills/<name>.md`,首次写入时从内置技能播种,采用确定性关键词匹配,不使用 LLM),因此下一个会话的 `$<skill>` 调用会带上累积的"Known Failure Modes"/"Anti-Patterns"知识,而不是让内置文档永远保持静态。手动记录用 `jeo skills lesson <skill> <failure|anti-pattern> "<title>" "<detail>"`;`jeo skills eval <skill>` 会运行一次真正的 LLM 判断,检查每条已记录的经验是否仍被技能当前的指引覆盖,还是已经过时。
+- **低价位评分模型路由** — `/goal` 验证器、`critic` 子代理角色,以及未锁定的 `task` 扇出批次,现在默认使用低价位、已配置凭证的模型,而不是悄悄搭乘与它们所评分/执行的工作相同的全价模型(`resolveVerifierModel`,针对浏览器 `verify` 动作按视觉能力过滤,确保纯文本的低价模型不会悄悄丢弃附带的截图)。
+- **`jeo routine init`** — 生成一个 GitHub Actions 工作流,在 schedule/issue/PR 触发器上以无头模式运行 jeo(`jeo "<prompt>" -p`),运行在 GitHub 自己的 runner 上 — 不需要笔记本电脑,并且不会给 jeo 自身增加任何新的攻击面(没有进程内调度器或 webhook 监听器)。`--dry-run` 可预览,`--no-pr` 则改为直接提交而非默认的每次运行一个 PR。
 - **远程子代理可见性(Telegram)** — 配对一次机器人(`jeo notify setup`)后，`jeo daemon start` 会在子代理每次状态变化(启动 → 完成/失败/取消)时推送消息，并接受 `/subagents`、`/steer <id> <subagentId> <msg>`、`/cancel <id> <subagentId>` 回传。现在提供 Telegram 论坛主题、内联键盘、图片附件等完整 `gjc` parity；命令仅对配对的聊天授权。
 
 ## 安装
@@ -195,6 +198,15 @@ jeo daemon stop         # 发送 SIGTERM 停止
 | `/cancel <sessionId> <subagentId>` | 取消正在运行的子代理 |
 | `/help` | 显示命令参考 |
 
+## 例行任务 (GitHub Actions)
+
+```bash
+jeo routine init --trigger schedule --cron "0 7 * * *" --prompt "Re-run the eval suite and post a digest" --dry-run
+jeo routine init --trigger issues --prompt "Triage this issue" --name "issue-triage"
+```
+
+生成一个 GitHub Actions 工作流(`.github/workflows/<name>.yml`),安装 jeo 并在 `schedule` / `issues` / `pull_request` 上以无头模式运行它(`jeo "<prompt>" -p`)— 始终与 `workflow_dispatch` 搭配,便于手动测试运行 — 运行在 GitHub 自己的托管 runner 上。这就是 jeo "无需笔记本电脑运行"的故事:jeo 自身内部没有进程内调度器、没有 webhook 监听器、没有代码执行沙箱 — 由 GitHub 的基础设施负责触发,jeo 只是运行它现有的无头模式。默认在有任何变更时开一个 PR(`peter-evans/create-pull-request`,diff 为空时是安全的空操作);`--no-pr` 则改为直接提交到触发分支。`--dry-run` 只打印 YAML 而不写入;在相同的 `--out` 路径上重新运行 `jeo routine init`,若不加 `--force` 会拒绝覆盖。请在工作流首次真正运行前,设置好仓库密钥 `ANTHROPIC_API_KEY`(或 `--api-key-env <VAR>`)。
+
 ## 本地模型
 
 ```bash
@@ -265,11 +277,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.8.23]** (2026-07-12) — Gap analysis against an external "self-improving agent system" framework (Fable-5-style loops: independent verifiers, memory compounding, model-tier cost discipline, and scheduled routines) found jeo-code already had strong equivalents for most primitives — but 3 real gaps and 1 deliberately-scoped-safe gap. Closed all 4: skills that were "hand-authored, read-mostly, zero learning" now compound from real session failures; screenshots that were captured but never judged now close a real vision-verify loop; the `/goal` verifier and bulk fan-out dispatch that silently rode the same full-price model as the work they graded/executed now default to a cheap tier; and "runs without your laptop" is now achievable via a generated GitHub Actions template wrapping jeo's existing headless mode — with zero new attack surface inside jeo-code itself (no code-exec sandbox, no in-process scheduler/webhook receiver, both deliberately rejected as out of scope). Also absorbs 3 fixes shipped after 0.8.22 but never changelogged: a rate-limit fast-fallback audit that closed 4 real gaps, plus the cross-file `mock.module()` test-isolation class this release's own test additions collided with and fixed at its root cause.
 - **[0.8.22]** (2026-07-11) — A rescan of the working tree turned up a resume-fidelity gap plus two unwired TUI safety-net helpers left by a concurrent session; each was traced, wired where needed, and verified before shipping.
 - **[0.8.21]** (2026-07-10) — "반영할꺼 같은방식으로 체크하고 배포까지" — a rescan of the working tree (after the prior audit pass) turned up 15 uncommitted files: 3 genuinely distinct features left unwired by a concurrent session, partially casualty of an earlier accidental `git checkout` incident this session (disclosed in the 0.8.20 entry above). Each was independently traced from its existing plumbing, wired to a real call site, tested, and one live-verified end-to-end over a real PTY before shipping.
 - **[0.8.20]** (2026-07-10) — "모든 검증 다시 리뷰하고 변경사항 모두 체크해" — 4 fresh, skeptical subagents independently re-audited every change from v0.8.17-0.8.19 (bc8768f..92c6b7d) with zero trust in prior claims: a code-correctness auditor manually traced the Antigravity routing logic against the live catalog, a test-integrity auditor mutation-tested the new tests (confirmed each one genuinely fails when its fix is reverted) and ran the suite fresh, a live-behavior verifier re-reproduced all 4 behavioral claims from scratch with self-generated data (own session ids, own mock server, own HTTP status code), and a docs-accuracy auditor cross-checked every README/CHANGELOG claim against current code in isolated git worktrees. Verdict: all core logic and tests GENUINE/CONFIRMED CORRECT — but the audit surfaced 1 real doc staleness gap, 1 changelog count error, and 2 minor precision gaps, all fixed here.
 - **[0.8.19]** (2026-07-09) — "프롬프트 라우팅에 안티그라비티 프로바이더의 경우, 안티그라비티용 소넷과 오퍼스도 3.5급으로 라우팅될수있도록해줘" — Antigravity re-exports 3 distinct model families (Anthropic Claude, Google Gemini, OpenAI GPT-OSS) behind one credential, structurally unlike every other provider. `high`/`complex` tier auto-select always resolved to Google's Gemini 3.5 rows: Anthropic's real 64,000-token output ceiling lost a same-thinking-tier tie to Google's 65,536 by a margin with no practical significance, and Gemini's 1M-token context further outranked Claude's real 200K window — so `antigravity/claude-sonnet-4-6`/`antigravity/claude-opus-4-6-thinking` were NEVER reachable through auto-select, even though both were already correctly `sizeClass`-tagged into the `high`/`complex` pools.
-- **[0.8.18]** (2026-07-09) — "라우팅 매 프롬프트마다 변경되는지, route why 의도대로 동작하는지 검증하고 배포할게있는지 확인해줘" — 2 parallel subagents live-verified per-prompt routing + `/route why` (including the previously-only-unit-tested post-call equivalent-model fallback path, now reproduced against a real mock 500-error server) and audited a disconnected `RouteHistory` class shipped as incomplete scaffolding in 0.8.16/0.8.17 (class + 11 tests existed, but nothing ever called it — no `/route history` subcommand, no wiring into the turn loop). Live testing also surfaced one real bug: the TUI footer's model/provider label never updated after a mid-turn fallback, staying on the pre-fallback model for the rest of that turn's render even though the backend decision (`lastRouteDecision`) was already correct.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

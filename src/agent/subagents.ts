@@ -16,7 +16,7 @@ import architectPrompt from "../prompts/agents/architect.md" with { type: "text"
 import criticPrompt from "../prompts/agents/critic.md" with { type: "text" };
 import executorPrompt from "../prompts/agents/executor.md" with { type: "text" };
 import plannerPrompt from "../prompts/agents/planner.md" with { type: "text" };
-import type { PromptTier } from "./prompt-router";
+import { strongestCredentialed, cheapestCredentialed, type PromptTier } from "./prompt-router";
 
 const PROMPT_ROUTE_TIERS = ["trivial", "standard", "high", "complex"] as const satisfies readonly PromptTier[];
 
@@ -176,9 +176,6 @@ export function resolveSubagentModel(
   const entry = config.subagents?.[normalized];
   if (entry?.model) return entry.model;
 
-  // Exception: load strongestCredentialed dynamically using require to prevent eager loading and circular dependency issues that break test mocking.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { strongestCredentialed } = require("./prompt-router");
   if (normalized === "executor") {
     return config.roles?.xhigh || config.roles?.slow || strongestCredentialed(config) || config.defaultModel;
   }
@@ -189,11 +186,15 @@ export function resolveSubagentModel(
     return config.roles?.high || strongestCredentialed(config) || config.defaultModel;
   }
   if (normalized === "critic") {
+    // Grader role (plan reviewer): prefer an explicit mid/cheap pin, else the
+    // live-cheapest credentialed model — a GENERAL search (not 2 hardcoded ids),
+    // so critic tracks catalog drift the same way every other role's fallback
+    // does instead of silently collapsing to defaultModel when neither o3-mini
+    // nor gemini-2.5-flash happens to be credentialed.
     return (
       config.roles?.medium ||
       config.roles?.smol ||
-      strongestCredentialed(config, (m: CatalogModel) => m.canonical === "o3-mini") ||
-      strongestCredentialed(config, (m: CatalogModel) => m.canonical === "gemini-2.5-flash") ||
+      cheapestCredentialed(config) ||
       config.defaultModel
     );
   }

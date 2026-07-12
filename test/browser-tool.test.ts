@@ -1,5 +1,7 @@
-import { test, expect, afterEach } from "bun:test";
+import { test, expect, mock, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { browserSession } from "../src/agent/browser-session";
 import { createBrowserTool } from "../src/agent/browser-tool";
 
@@ -17,6 +19,7 @@ try {
 
 afterEach(async () => {
   await browserSession.terminate();
+  mock.restore();
 });
 
 test.skipIf(!hasChromium)("browser: open navigates a named tab and reports its url", async () => {
@@ -143,4 +146,155 @@ test("browser: rejects an unknown action", async () => {
   const res = await tool({ action: "bogus" }, process.cwd());
   expect(res.success).toBe(false);
   expect(res.error).toContain("Unknown browser action");
+});
+
+// --- 'verify' act-step (visionVerify integration) ---------------------------
+// visionVerify's OWN unit contract (verdict/detail JSON parsing, empty-goal
+// short-circuit, malformed/throwing LLM handling) is covered in
+// vision-verify.test.ts. Here we cover the browser-tool WIRING contract: does
+// runActStep's "verify" case correctly gate on 'goal', build the
+// ImageAttachment(s) from real screenshot bytes, forward design_tokens/prior
+// image through, and surface the verdict through the tool's JSON result.
+//
+// Deliberately mocks `callLlm` (../src/agent/loop) — NEVER `../src/agent/
+// vision-verify` itself — so the REAL visionVerify runs as a genuine
+// integration path. Every static import binding to a `mock.module()`'d
+// specifier is a LIVE binding in Bun (verified empirically: an `import *
+// as X`, a destructured named import, and an aliased import ALL resolve to
+// whatever the module CURRENTLY exports, even if captured before any mock —
+// there is no way to "capture and restore" a mocked module via any import
+// form). Mocking vision-verify.ts from here would permanently corrupt every
+// OTHER file's un-mocked import of it for the rest of the `bun test` process
+// (this is exactly the failure this rewrite fixes — see CHANGELOG's
+// documented `mock.module` cross-file leak class, commit 57a8bc5, for the
+// general pattern: mock at the lowest dependency boundary, never re-mock a
+// module more than one file already owns).
+
+test.skipIf(!hasChromium)("browser: verify with no goal fails without calling callLlm", async () => {
+  let called = false;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => { called = true; return JSON.stringify({ verdict: "PASS", detail: "should not be reached" }); },
+  }));
+  const tool = createBrowserTool();
+  await tool({ action: "open", name: "v1", url: "data:text/html,<h1>hi</h1>" }, process.cwd());
+  const res = await tool({ action: "act", name: "v1", actions: [{ verb: "verify" }] }, process.cwd());
+
+  expect(res.success).toBe(false);
+  const [step] = JSON.parse(res.output);
+  expect(step.ok).toBe(false);
+  expect(step.error).toContain("requires a non-empty 'goal'");
+  expect(called).toBe(false);
+});
+
+test.skipIf(!hasChromium)("browser: verify surfaces a PASS verdict through the act result, forwarding goal/design_tokens as a real screenshot", async () => {
+  let seenMessages: Array<{ role: string; content: string; images?: Array<{ mediaType: string; data: string }> }> = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: typeof seenMessages) => {
+      seenMessages = messages;
+      return JSON.stringify({ verdict: "PASS", detail: "matches the goal" });
+    },
+  }));
+  const tool = createBrowserTool();
+  await tool({ action: "open", name: "v2", url: "data:text/html,<h1>Shot</h1>" }, process.cwd());
+  const res = await tool({
+    action: "act",
+    name: "v2",
+    actions: [{ verb: "verify", goal: "a heading reading Shot", design_tokens: "font: sans-serif" }],
+  }, process.cwd());
+
+  expect(res.success).toBe(true);
+  const [step] = JSON.parse(res.output);
+  expect(step.ok).toBe(true);
+  expect(step.verdict).toBe("PASS");
+  expect(step.detail).toBe("matches the goal");
+  // Wiring contract: the tool built a real PNG screenshot and forwarded the
+  // exact goal/design_tokens text through the REAL visionVerify -> callLlm —
+  // not placeholders, and not a mock standing in for visionVerify itself.
+  const systemMsg = seenMessages.find(m => m.role === "system");
+  const userMsg = seenMessages.find(m => m.role === "user");
+  expect(systemMsg?.content).toContain("a heading reading Shot");
+  expect(systemMsg?.content).toContain("font: sans-serif");
+  expect(userMsg?.images?.length).toBe(1);
+  const seenImage = userMsg!.images![0]!;
+  expect(seenImage.mediaType).toBe("image/png");
+  expect(typeof seenImage.data).toBe("string");
+  expect(seenImage.data.length).toBeGreaterThan(0);
+  // Decodes to a real PNG (magic bytes), not an empty/garbage buffer.
+  const decoded = Buffer.from(seenImage.data, "base64");
+  expect(decoded.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+});
+
+test.skipIf(!hasChromium)("browser: verify surfaces a MISMATCH verdict as a failed act step", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ verdict: "MISMATCH", detail: "the heading says something else entirely" }),
+  }));
+  const tool = createBrowserTool();
+  await tool({ action: "open", name: "v3", url: "data:text/html,<h1>Shot</h1>" }, process.cwd());
+  const res = await tool({ action: "act", name: "v3", actions: [{ verb: "verify", goal: "a heading reading Nope" }] }, process.cwd());
+
+  expect(res.success).toBe(false);
+  const [step] = JSON.parse(res.output);
+  expect(step.ok).toBe(false);
+  expect(step.verdict).toBe("MISMATCH");
+  expect(step.detail).toBe("the heading says something else entirely");
+});
+
+test.skipIf(!hasChromium)("browser: verify with a nonexistent prior_screenshot path fails clearly without calling callLlm", async () => {
+  let called = false;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => { called = true; return JSON.stringify({ verdict: "PASS", detail: "should not be reached" }); },
+  }));
+  const tool = createBrowserTool();
+  await tool({ action: "open", name: "v4", url: "data:text/html,<h1>Shot</h1>" }, process.cwd());
+  const ghostPath = path.join(os.tmpdir(), `jeo-verify-ghost-${Date.now()}.png`);
+  const res = await tool({
+    action: "act",
+    name: "v4",
+    actions: [{ verb: "verify", goal: "anything", prior_screenshot: ghostPath }],
+  }, process.cwd());
+
+  expect(res.success).toBe(false);
+  const [step] = JSON.parse(res.output);
+  expect(step.ok).toBe(false);
+  expect(step.error).toContain(ghostPath);
+  expect(called).toBe(false);
+});
+
+test.skipIf(!hasChromium)("browser: verify with a real prior_screenshot forwards BOTH images to visionVerify (dual-image compare wiring)", async () => {
+  let seenMessages: Array<{ role: string; images?: Array<{ mediaType: string; data: string }> }> = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: typeof seenMessages) => {
+      seenMessages = messages;
+      return JSON.stringify({ verdict: "PASS", detail: "changed as expected" });
+    },
+  }));
+  const tool = createBrowserTool();
+  await tool({ action: "open", name: "v5", url: "data:text/html,<h1>Shot</h1>" }, process.cwd());
+
+  // A real (tiny, valid) prior PNG on disk — the well-known 1x1 transparent PNG.
+  const priorPath = path.join(os.tmpdir(), `jeo-verify-prior-${Date.now()}.png`);
+  const onePixelPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  await fs.writeFile(priorPath, onePixelPng);
+  try {
+    const res = await tool({
+      action: "act",
+      name: "v5",
+      actions: [{ verb: "verify", goal: "the page changed", prior_screenshot: priorPath }],
+    }, process.cwd());
+
+    expect(res.success).toBe(true);
+    const [step] = JSON.parse(res.output);
+    expect(step.ok).toBe(true);
+    const userMsg = seenMessages.find(m => m.role === "user");
+    expect(userMsg?.images?.length).toBe(2);
+    const [seenPriorImage, seenImage] = userMsg!.images!;
+    expect(seenPriorImage!.mediaType).toBe("image/png");
+    expect(seenPriorImage!.data).toBe(onePixelPng.toString("base64"));
+    expect(seenImage!.data).not.toBe(seenPriorImage!.data); // distinct current-state screenshot
+  } finally {
+    await fs.unlink(priorPath).catch(() => {});
+  }
 });

@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { SKILLS, getSkillFrom, formatSkill, loadSkills, skillDirs, bundledSkillFileContent, userSkillsDir } from "../skills/catalog";
 import { getLocalJeoDir } from "../agent/state";
+import { appendSkillLesson, evalSkillLessons, type SkillLesson } from "../agent/skill-lessons";
 
 export { userSkillsDir };
 
@@ -144,6 +145,62 @@ export async function runSkillsCommand(args: string[] = []): Promise<void> {
   // ~/.jeo/skills, preserve existing local copies by default, and report drift.
   if (cleanArgs[0] === "sync") {
     await runSkillsSync(cleanArgs, isJson, cwd);
+    return;
+  }
+
+  // `jeo skills lesson <skill> <failure|anti-pattern> "<title>" "<detail>"` — manual
+  // lesson entry into the project-level skill file (the same compounding write the
+  // launch.ts stall-guard fires automatically; lets an agent or human record one directly).
+  if (cleanArgs[0] === "lesson") {
+    const [, skillName, kindArg, title, detail] = cleanArgs;
+    if (!skillName || !kindArg || !title || !detail) {
+      console.log('Usage: jeo skills lesson <skill> <failure|anti-pattern> "<title>" "<detail>"');
+      process.exitCode = 1;
+      return;
+    }
+    const kind: SkillLesson["kind"] | null =
+      kindArg === "failure" ? "failure-mode" : kindArg === "anti-pattern" ? "anti-pattern" : null;
+    if (!kind) {
+      console.log(`Error: kind must be 'failure' or 'anti-pattern' (got '${kindArg}').`);
+      process.exitCode = 1;
+      return;
+    }
+    const result = await appendSkillLesson(cwd, { skill: skillName, kind, title, detail });
+    if (isJson) {
+      console.log(JSON.stringify(result, null, 2));
+    } else if (result.appended) {
+      console.log("Appended.");
+    } else if (result.reason === "duplicate") {
+      console.log("Already recorded (duplicate).");
+    } else {
+      console.log(`Error: ${result.reason ?? "unknown error"}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  // `jeo skills eval <skill>` — self-eval half: judge whether recorded lessons are
+  // still covered by the skill's current guidance, or have gone stale.
+  if (cleanArgs[0] === "eval") {
+    const skillName = cleanArgs[1];
+    if (!skillName) {
+      console.log("Error: Missing skill name for 'eval' command.");
+      process.exitCode = 1;
+      return;
+    }
+    const result = await evalSkillLessons(cwd, skillName);
+    if (result === null) {
+      console.log(`No recorded lessons for '${skillName}' yet.`);
+      return;
+    }
+    if (isJson) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(`${result.covered}/${result.total} lessons still covered by current guidance.`);
+      for (const s of result.stale) {
+        console.log(`  STALE  ${s.title}: ${s.reason}`);
+      }
+    }
     return;
   }
 

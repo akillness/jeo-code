@@ -528,3 +528,87 @@ test("createTaskTool: executor's 429 with NO fallback available (single-provider
   // No "switching to equivalent" reroute notice — this run never had one to give.
   expect(notices.some(n => n.includes("switching to equivalent"))).toBe(false);
 });
+
+// --- Fan-out cost tier: an UNPINNED tasks[] batch (no explicit 'role') dispatches
+// at a mid-tier override model instead of the role's normal strongest-tier pick
+// (see task-tool.ts's `fanoutModelOverride`). An EXPLICIT role, or the single-task
+// path, must be completely unaffected. ---
+
+test("createTaskTool: unpinned fan-out (no role) dispatches with the mid-tier override model, not executor's normal strongest-tier pick", async () => {
+  const modelsCalled: (string | undefined)[] = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_msgs: unknown, options: { model?: string } = {}) => {
+      modelsCalled.push(options.model);
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\nOpen Risks: none" } });
+    },
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({
+    config: {
+      defaultModel: "ollama/fast",
+      // roles.high pin — the override's first-choice source. Left unset, executor's
+      // OWN normal resolution (xhigh/slow/strongestCredentialed/default) would pick
+      // "ollama/fast" here too, which would make this assertion pass vacuously —
+      // pinning roles.high to a DISTINCT value proves the override path, not luck.
+      roles: { high: "mid-tier-override-model" },
+      subagents: {},
+    },
+  });
+  const res = await tool({ tasks: ["task A", "task B"] }, await tmpDir());
+
+  expect(res.success).toBe(true);
+  expect(modelsCalled).toEqual(["mid-tier-override-model", "mid-tier-override-model"]);
+  expect(modelsCalled).not.toContain("ollama/fast");
+});
+
+test("createTaskTool: EXPLICIT-role fan-out is unaffected by the override — architect gets its own normal model resolution", async () => {
+  const modelsCalled: (string | undefined)[] = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_msgs: unknown, options: { model?: string } = {}) => {
+      modelsCalled.push(options.model);
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: reviewed\nFindings: none\nRecommendations: ship\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } });
+    },
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({
+    config: {
+      defaultModel: "ollama/fast",
+      // Same roles.high pin as the previous test — if the override wrongly applied
+      // here too, architect would ALSO get "mid-tier-override-model".
+      roles: { high: "mid-tier-override-model" },
+      subagents: { architect: { model: "architect-pinned-model" } },
+    },
+  });
+  const res = await tool({ role: "architect", tasks: ["review A", "review B"] }, await tmpDir());
+
+  expect(res.success).toBe(true);
+  expect(modelsCalled).toEqual(["architect-pinned-model", "architect-pinned-model"]);
+  expect(modelsCalled).not.toContain("mid-tier-override-model");
+});
+
+test("createTaskTool: a single-task call (no tasks array) is unaffected by the fan-out override, even with role omitted", async () => {
+  const modelsCalled: (string | undefined)[] = [];
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (_msgs: unknown, options: { model?: string } = {}) => {
+      modelsCalled.push(options.model);
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\nOpen Risks: none" } });
+    },
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({
+    config: {
+      defaultModel: "ollama/fast",
+      // Same roles.high pin as the fan-out test above: only the tasks[] path may
+      // ever route to it. A single 'task' call (role omitted -> executor default)
+      // must fall through to executor's OWN resolution chain (no xhigh/slow pin
+      // here -> no credentialed catalog match in this test env -> defaultModel).
+      roles: { high: "mid-tier-override-model" },
+      subagents: {},
+    },
+  });
+  const res = await tool({ task: "single task, no role" }, await tmpDir());
+
+  expect(res.success).toBe(true);
+  expect(modelsCalled).toEqual(["ollama/fast"]);
+  expect(modelsCalled).not.toContain("mid-tier-override-model");
+});

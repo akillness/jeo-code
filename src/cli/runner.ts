@@ -119,11 +119,23 @@ export const COMMANDS: readonly CommandSpec[] = [
       return args => m.runDaemonCommand(args);
     },
   },
+  {
+    name: "routine",
+    summary: "Generate a GitHub Actions workflow that runs jeo headlessly on a schedule or repo event.",
+    usage: 'routine init --trigger <schedule|issues|pull_request> --prompt "<task>" [--cron <expr>] [--name <name>] [--out <path>] [--no-pr] [--force] [--dry-run] [--json]',
+    loader: async () => {
+      // Dynamic import: lazy-loaded command registry entry (CommandSpec.loader
+      // contract), matching every other entry in this array — avoids eagerly
+      // importing all ~25 command modules at CLI startup.
+      const m = await import("../commands/routine");
+      return args => m.runRoutineCommand(args);
+    },
+  },
 
   {
     name: "skills",
     summary: "List bundled workflow skills, or sync them into ~/.jeo/skills (jeo skills <name> for details).",
-    usage: "skills [list|read <name>|sync [--check|--force] [dir]|--write [dir]] [--json]",
+    usage: "skills [list|read <name>|sync [--check|--force] [dir]|--write [dir]|lesson <skill> <failure|anti-pattern> \"<title>\" \"<detail>\"|eval <skill>] [--json]",
     loader: async () => {
       const m = await import("../commands/skills");
       return args => m.runSkillsCommand(args);

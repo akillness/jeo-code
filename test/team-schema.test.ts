@@ -205,3 +205,19 @@ test("PlanSchema ordering: a critic in a SEPARATE step AFTER the parallel_group 
   ));
   expect(result.success).toBe(true);
 });
+
+test("PlanSchema ordering: role matching is CASE-INSENSITIVE, matching subagents.ts's normalizeRoleId (dispatch already tolerates mixed case)", () => {
+  // Regression: without .toLowerCase(), a plan ending in role: ARCHITECT
+  // (or Critic, etc.) resolved correctly at RUNTIME (getSubagentRole ->
+  // normalizeRoleId) but was WRONGLY rejected HERE as an unverified
+  // mutation, since READONLY_ROLES["ARCHITECT"] !== READONLY_ROLES["architect"].
+  const upper = PlanSchema.safeParse(parseYaml('steps:\n  - name: "Build it"\n    role: executor\n  - name: "verify"\n    role: ARCHITECT\n'));
+  expect(upper.success).toBe(true);
+  const mixed = PlanSchema.safeParse(parseYaml('steps:\n  - name: "Build it"\n    role: Executor\n  - name: "verify"\n    role: Critic\n'));
+  expect(mixed.success).toBe(true);
+  // An uppercase MUTATING role (e.g. EXECUTOR) with no trailing verifier must
+  // still be rejected — case-insensitivity must not accidentally widen
+  // READONLY_ROLES to also match, e.g., an uppercase unknown role.
+  const upperNoVerifier = PlanSchema.safeParse(parseYaml('steps:\n  - name: "Build it"\n    role: EXECUTOR\n'));
+  expect(upperNoVerifier.success).toBe(false);
+});

@@ -89,7 +89,11 @@ export const PlanSchema = z.object({
   }
   let pendingUnverifiedMutation: string | undefined;
   for (const unit of units) {
-    const roleIds = unit.steps.map(s => (s.role?.trim() || DEFAULT_STEP_ROLE));
+    // .toLowerCase() mirrors subagents.ts's normalizeRoleId (dispatch is
+    // case-insensitive) — without it, a plan ending in e.g. `role: ARCHITECT`
+    // would resolve correctly at runtime but be WRONGLY rejected here as an
+    // unverified mutation (READONLY_ROLES["ARCHITECT"] is undefined, not true).
+    const roleIds = unit.steps.map(s => (s.role?.trim().toLowerCase() || DEFAULT_STEP_ROLE));
     const unitMutates = roleIds.some(r => READONLY_ROLES[r] !== true);
     const unitVerifies = roleIds.some(r => VERIFIER_ROLES[r] === true);
     if (unitMutates) {

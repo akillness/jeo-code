@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.25] - 2026-07-13
+_Post-audit follow-up: 0.8.24's fixture-repair subagent flagged (but, correctly, did not itself fix — out of its assigned scope) a case-sensitivity bug in the new PlanSchema maker→verifier ordering rule. Fixed._
+
+### Fixed
+- **PlanSchema ordering rule: role matching is now case-insensitive, matching dispatch** (`src/agent/plan.ts`) — the ordering rule's local `READONLY_ROLES`/`VERIFIER_ROLES` lookup compared `step.role?.trim()` directly, while `subagents.ts`'s `normalizeRoleId` (which every actual role DISPATCH goes through) lowercases first. A plan ending in e.g. `role: ARCHITECT` (or any mixed-case role) resolved correctly at runtime but was WRONGLY rejected by the schema as an unverified mutation (`READONLY_ROLES["ARCHITECT"]` is `undefined`, not `true`) — a real, live discrepancy between what `jeo team` would actually execute and what `PlanSchema`/`jeo approve` would accept. Fixed with `.toLowerCase()` at the one lookup site; an uppercase MUTATING role with no trailing verifier is still correctly rejected (verified — case-insensitivity does not widen `READONLY_ROLES` itself).
+
+### Verified
+- Full `bun test` — 3050 pass / 0 fail across 301 files (3049 baseline + 1 new dedicated test: mixed/upper-case verifier roles now accept, an upper-case mutating role with no verifier still correctly rejects).
+- `bun run typecheck` — no errors.
+- Live end-to-end (real CLI entrypoint, no mocks) — genuinely reproduced BEFORE fixing, not merely reasoned about: `git stash` the fix, ran `jeo approve` on a plan ending in `role: ARCHITECT` — refused with exit 1, the exact "unverified mutation" message quoted above; `git stash pop` restored the fix, re-ran the SAME plan — approved successfully, exit 0.
+
 ## [0.8.24] - 2026-07-13
 _Follow-up gap analysis against the same external "self-improving agent system" framework (Fable-5-style loops), continuing 0.8.23's audit into 4 more primitives: independent-verifier ENFORCEMENT (0.8.23 had the gate logic but nothing forced a plan to actually contain one), model-tier safety-boundary fallback (a false-positive safety refusal previously backed off forever on the SAME model instead of trying a genuinely different one — the pattern already shipped for rate limits), memory confidence that was self-assigned once instead of earned via a real verification event, and Dynamic Workflows (jeo had parallel fan-out but no sequential composition or real control flow across subagent calls). Closed all 4, the last one non-trivially: an in-process `AsyncFunction` (the same pattern `browser {run}` already ships) cannot be given a real wall-clock timeout — a synchronous bug in agent-authored code blocks jeo's own event loop forever, and `Promise.race` can never preempt it (verified empirically). Fixed by running Dynamic Workflows scripts in an isolated `Worker` (a genuinely separate OS thread `worker.terminate()` can preempt unconditionally, mirroring `bashTool`'s own SIGTERM/SIGKILL escalation on a spawned process) with `task()` bridged back to the main thread over a `postMessage` RPC — config/credentials never leave the main thread, and every dispatch (however the script shapes it) stays bounded by a real concurrency semaphore, not just a per-call count cap._
 

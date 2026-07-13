@@ -12,7 +12,7 @@ async function tmp(): Promise<string> {
 test("approve tool: explicit planPath approves a schema-valid, consensus-reviewed plan", async () => {
   const dir = await tmp();
   const planPath = path.join(dir, "plan.yaml");
-  const planContent = 'steps:\n  - name: "Build it"\n    role: executor\n';
+  const planContent = 'steps:\n  - name: "Build it"\n    role: executor\n  - name: "verify"\n    role: critic\n';
   await fs.writeFile(planPath, planContent, "utf-8");
   await writeWorkflowState(
     "ralplan",
@@ -32,7 +32,7 @@ test("approve tool: explicit planPath approves a schema-valid, consensus-reviewe
 test("approve tool: omitted planPath defaults to the active ralplan state's plan_path", async () => {
   const dir = await tmp();
   const planPath = path.join(dir, "active-plan.yaml");
-  const planContent = 'steps:\n  - name: "Ship it"\n    role: executor\n';
+  const planContent = 'steps:\n  - name: "Ship it"\n    role: executor\n  - name: "verify"\n    role: critic\n';
   await fs.writeFile(planPath, planContent, "utf-8");
   await writeWorkflowState(
     "ralplan",
@@ -59,7 +59,7 @@ test("approve tool: no planPath and no active ralplan state errors clearly", asy
 test("approve tool: surfaces the same content gate as the CLI (missing consensus verdict)", async () => {
   const dir = await tmp();
   const planPath = path.join(dir, "no-consensus.yaml");
-  await fs.writeFile(planPath, 'steps:\n  - name: "Build it"\n    role: executor\n', "utf-8");
+  await fs.writeFile(planPath, 'steps:\n  - name: "Build it"\n    role: executor\n  - name: "verify"\n    role: critic\n', "utf-8");
   await writeWorkflowState(
     "ralplan",
     { active: true, current_phase: "complete", skill: "ralplan", plan_path: planPath, approved: false },

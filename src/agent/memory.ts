@@ -18,6 +18,7 @@ import { jeoEnv } from "../util/env";
 import { parseConcept, serializeConcept, slugify, isReservedFile, conceptId } from "./memory-okf";
 import { tryExtractJsonObject } from "./json";
 import { buildConceptGraph, expandByGraph, lintConceptGraph, type ConceptGraph, type GraphLintReport } from "./memory-graph";
+import { ensureJeoGitignore } from "./state";
 
 /** On-disk document cap — the distill prompt instructs the model to stay under it. */
 export const MEMORY_MAX_CHARS = 6_000;
@@ -215,6 +216,24 @@ export interface Concept {
   pinned: boolean;
   /** Bundle-relative path, e.g. `commands/bun-test.md`. */
   relPath: string;
+}
+
+/** Pure mechanical staleness check (2026 industry-pattern research: confidence
+ *  must be EARNED via a verification event and staleness must be ACTIVELY
+ *  tracked, not read off a passive write-timestamp). A concept is stale when
+ *  it has never been verified (`last_verified` absent/unparseable) or its last
+ *  verification is older than `staleDays` (default 30). Pure/no I/O so it is
+ *  trivially unit-testable and wireable into a future `lintConceptGraph` pass
+ *  or a `jeo memory verify` command without touching this module again. */
+export function isConceptStale(
+  concept: Pick<Concept, "confidence"> & { last_verified?: string },
+  opts: { staleDays?: number } = {},
+): boolean {
+  if (!concept.last_verified) return true;
+  const verifiedAtMs = new Date(concept.last_verified).getTime();
+  if (Number.isNaN(verifiedAtMs)) return true;
+  const staleDays = opts.staleDays ?? 30;
+  return Date.now() - verifiedAtMs > staleDays * 24 * 60 * 60 * 1000;
 }
 
 /** Per-file parse cache keyed by absolute path → (mtimeMs+size signature, parsed
@@ -849,6 +868,7 @@ async function cleanupStalePendingFiles(dir: string): Promise<void> {
 async function upsertConceptFile(
   bundleDir: string,
   c: { type: string; title: string; description?: string; body?: string; tags?: string[]; confidence?: string; links?: string[]; pinned?: boolean },
+  opts: { verified?: boolean } = {},
 ): Promise<string> {
   const dir = DIR_BY_TYPE[c.type] ?? "facts";
   await fs.mkdir(path.join(bundleDir, dir), { recursive: true });
@@ -879,8 +899,8 @@ async function upsertConceptFile(
     tags: c.tags ?? [],
     timestamp: new Date().toISOString(),
     confidence: c.confidence ?? "high",
-    last_verified: new Date().toISOString().split("T")[0],
     links: c.links ?? [],
+    ...(opts.verified ? { last_verified: new Date().toISOString().split("T")[0] } : {}),
     ...(c.pinned ? { pinned: true } : {}),
   };
   const tmpPath = `${fullPath}.tmp-${process.pid}`;
@@ -892,7 +912,7 @@ async function upsertConceptFile(
 export async function distillSessionMemory(
   history: Message[],
   cwd: string,
-  opts: { model?: string; timeoutMs?: number } = {},
+  opts: { model?: string; timeoutMs?: number; sessionVerified?: boolean } = {},
 ): Promise<DistillResult> {
   if (jeoEnv("NO_MEMORY") === "1") return { updated: false, skipped: "disabled (JEO_NO_MEMORY=1)" };
   const body = history.filter(m => m.role !== "system");
@@ -983,6 +1003,7 @@ export async function distillSessionMemory(
 
     if (parsedJson && Array.isArray(parsedJson.concepts)) {
       await fs.mkdir(bundleDir, { recursive: true });
+      await ensureJeoGitignore(cwd);
       const updatedConcepts: { title: string; type: string }[] = [];
 
       for (const raw of parsedJson.concepts) {
@@ -1008,7 +1029,7 @@ export async function distillSessionMemory(
             tags: Array.isArray(concept.tags) ? concept.tags.filter((t): t is string => typeof t === "string") : [],
             confidence: typeof concept.confidence === "string" ? concept.confidence : "high",
             links: Array.isArray(concept.links) ? concept.links.filter((l): l is string => typeof l === "string") : [],
-          });
+          }, { verified: opts.sessionVerified === true });
           updatedConcepts.push({ title, type });
         } catch {
           // Skip just this concept; keep distilling the rest of the batch.

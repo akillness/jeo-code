@@ -9,7 +9,7 @@
  * repo). Subagents are spawned with `subagentToolset(role)`, which never includes
  * `task` itself, so delegation cannot recurse infinitely.
  */
-import { runAgentLoop, type ToolHandler } from "./engine";
+import { runAgentLoop, isSafetyFallbackBail, stripSafetyFallbackTag, type ToolHandler } from "./engine";
 import { toolTarget } from "./step-budget";
 
 import type { ToolResult } from "./tools";
@@ -30,7 +30,7 @@ import {
   validateSubagentDoneReason,
   type SubagentRole,
 } from "./subagents";
-import { resolveMaxOutputTokens } from "../ai/model-manager";
+import { resolveMaxOutputTokens, resolveProvider } from "../ai/model-manager";
 import type { SubagentRegistry } from "./subagent-registry";
 import { ensureSessionNotifyEndpoint, type SessionNotifyEndpoint } from "./notify/session-endpoint";
 import { inferTierForModel, tierModelPool, credentialScopeFor, selectFromPool, strongestMidTierCredentialed, type RoutingConfig } from "./prompt-router";
@@ -107,7 +107,7 @@ export interface TaskToolOptions {
  *  disjoint files (documented in `taskToolProtocolLine`); overlapping scopes
  *  should either run sequentially (separate `task` calls) or coordinate — jeo has
  *  no in-batch peer channel yet, so overlapping-scope tasks MUST be sequential. */
-const MAX_FANOUT = 4;
+export const MAX_FANOUT = 4;
 
 /** Small bounded reroute budget for a SUBAGENT's own 429 (distinct from
  *  launch.ts's `ROUTE_FALLBACK_MAX_ATTEMPTS`, default 3): a subagent is already
@@ -263,6 +263,14 @@ export interface SubagentRunResult extends ToolResult {
   fileMutations: number;
   /** Successful bash calls observed (tracked apart — bash CAN mutate but isn't proof). */
   bashRuns: number;
+  /** Successful read/search/find/ast_grep/lsp calls observed — evidence a
+   *  READ-ONLY role (architect/critic) actually inspected real files before
+   *  rendering a verdict, mirroring goal-verifier.ts's `applyEvidenceGate`
+   *  philosophy (a claim is only trustworthy when backed by an OBSERVED
+   *  signal in THIS run, never by the model's own unverified assertion).
+   *  Zero means the verdict's `Inspected:`/prose claims are unevidenced,
+   *  regardless of what the text says. */
+  readOnlyEvidenceCalls: number;
 }
 
 /**
@@ -312,6 +320,7 @@ export async function runSubagentOnce(
   // never which model dispatched a given step.
   let fileMutations = 0;
   let bashRuns = 0;
+  let readOnlyEvidenceCalls = 0;
   // Per-run prompt-cache key: the subagent replays its own growing history each
   // step, so a stable key (even across a model switch below — a stale cache key
   // on a NEW provider is simply unused, never wrong) gets provider cache hits
@@ -357,6 +366,28 @@ export async function runSubagentOnce(
   // retry ladder on the FIRST failed attempt instead of riding ~90s of backoff when
   // a genuinely different-credential-scope candidate is available RIGHT NOW.
   const rateLimitFallbackAvailable = (): boolean => fallbackCandidates().length > 0;
+  // Providers that have ALREADY produced an uncategorized-refusal bail THIS run —
+  // accumulates across reroutes (mirrors excludedCredentialScopes' own pattern)
+  // so a 2nd safety bail (on the FIRST fallback model) can never cycle back to a
+  // provider already ruled out, even though `attemptedModels` only tracks exact
+  // model ids, not whole providers.
+  const excludedSafetyProviders = new Set<string>();
+  // Stricter than fallbackCandidates(): a same-provider sibling shares the SAME
+  // constitutional/moderation classifier (unlike a same-credential-scope sibling,
+  // which is a BILLING boundary, not a classifier boundary) — trying it after an
+  // uncategorized refusal is not a genuinely different verdict, it's very likely
+  // the identical false positive again. Always excludes the CURRENT provider (not
+  // just accumulated ones), so this is correct from the very first check too.
+  const safetyFallbackCandidates = (): string[] => {
+    const currentProvider = resolveProvider(activeModel);
+    return fallbackCandidates().filter(m => {
+      const p = resolveProvider(m);
+      return p !== currentProvider && !excludedSafetyProviders.has(p);
+    });
+  };
+  // Fed to AgentLoopOptions.safetyFallbackAvailable — see its doc comment for the
+  // "false positive -> try a different model" design this implements.
+  const safetyFallbackAvailable = (): boolean => safetyFallbackCandidates().length > 0;
 
   let activeModel = initialModel;
   emit({ role: role.id, kind: "start", detail: taskText, maxSteps, model: activeModel });
@@ -374,6 +405,7 @@ export async function runSubagentOnce(
       steer,
       tools: subagentToolset(role),
       rateLimitFallbackAvailable,
+      safetyFallbackAvailable,
       events: {
         onStep: n => { currentStep = n; },
         // Live reasoning preview (native extended-thinking models only — the JSON-protocol
@@ -398,6 +430,7 @@ export async function runSubagentOnce(
           if (success) {
             if (tool === "write" || tool === "edit" || tool === "mkdir" || tool === "delete") fileMutations++;
             else if (tool === "bash") bashRuns++;
+            else if (tool === "read" || tool === "search" || tool === "find" || tool === "ast_grep" || tool === "lsp") readOnlyEvidenceCalls++;
           }
           const label = lastTarget || tool;
           const summary = firstUsefulLine(output);
@@ -418,22 +451,35 @@ export async function runSubagentOnce(
 
   let result = await runOnce();
   for (let attempt = 0; attempt < MAX_SUBAGENT_REROUTES; attempt++) {
-    if (result.done || !isRateLimitError(new Error(result.doneReason ?? ""))) break;
-    // The model that just 429'd: exclude its WHOLE credential scope (not just its
-    // own id) so a sibling model riding the SAME exhausted OAuth subscription is
-    // never proposed as a "fallback" (cca5fe2's fix, mirrored here).
-    const failedScope = credentialScopeFor(activeModel, opts.config);
-    if (failedScope) excludedCredentialScopes.add(failedScope.key);
-    const candidates = fallbackCandidates();
-    if (candidates.length === 0) break;
+    const rateLimited = !result.done && isRateLimitError(new Error(result.doneReason ?? ""));
+    const safetyBail = !result.done && !rateLimited && isSafetyFallbackBail(result.doneReason);
+    if (!rateLimited && !safetyBail) break;
     const previousModel = activeModel;
-    activeModel = selectFromPool(candidates, undefined);
+    if (rateLimited) {
+      // The model that just 429'd: exclude its WHOLE credential scope (not just its
+      // own id) so a sibling model riding the SAME exhausted OAuth subscription is
+      // never proposed as a "fallback" (cca5fe2's fix, mirrored here).
+      const failedScope = credentialScopeFor(activeModel, opts.config);
+      if (failedScope) excludedCredentialScopes.add(failedScope.key);
+      const candidates = fallbackCandidates();
+      if (candidates.length === 0) break;
+      activeModel = selectFromPool(candidates, undefined);
+      emit({ role: role.id, kind: "step", detail: `↳ rate limited on '${previousModel}' — switching to equivalent '${activeModel}'`, step: currentStep, maxSteps, model: activeModel });
+    } else {
+      // Uncategorized refusal with a fallback available (engine already verified
+      // this via safetyFallbackAvailable before bailing) — exclude the WHOLE
+      // provider (see safetyFallbackCandidates' doc comment), not just this model.
+      excludedSafetyProviders.add(resolveProvider(activeModel));
+      const candidates = safetyFallbackCandidates();
+      if (candidates.length === 0) break;
+      activeModel = selectFromPool(candidates, undefined);
+      emit({ role: role.id, kind: "step", detail: `↳ refused on '${previousModel}' — switching to '${activeModel}' in case of a classifier false positive`, step: currentStep, maxSteps, model: activeModel });
+    }
     attemptedModels.add(activeModel);
-    emit({ role: role.id, kind: "step", detail: `↳ rate limited on '${previousModel}' — switching to equivalent '${activeModel}'`, step: currentStep, maxSteps, model: activeModel });
     result = await runOnce();
   }
 
-  const reason = result.doneReason?.trim() || `(subagent reached the ${result.steps}-step limit without signaling done)`;
+  const reason = stripSafetyFallbackTag(result.doneReason?.trim() || "") || `(subagent reached the ${result.steps}-step limit without signaling done)`;
   const validation = validateSubagentDoneReason(role, reason);
   const complete = result.done && validation.ok;
   const detail = validation.ok ? reason : `${reason}\n\n[contract incomplete: missing ${validation.missing?.join(", ")}]`;
@@ -459,6 +505,7 @@ export async function runSubagentOnce(
     missingMarkers: validation.ok ? undefined : validation.missing,
     fileMutations,
     bashRuns,
+    readOnlyEvidenceCalls,
   };
 }
 

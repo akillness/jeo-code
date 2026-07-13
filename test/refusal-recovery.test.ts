@@ -339,3 +339,106 @@ test("refusal rung 4: the backoff notice keeps '(Esc to cancel)' for an interact
     delete process.env.JEO_REFUSAL_BACKOFF_BASE_MS;
   }
 });
+
+test("refusal rung 4: an uncategorized refusal bails with the SafetyFallback tag when safetyFallbackAvailable() is true, instead of entering backoff", async () => {
+  // Same plain-refusal shape as the regression-guard test above, but this time
+  // the caller HAS an equivalent-pool fallback ready — the engine must bail
+  // immediately with the distinctly-tagged doneReason instead of ever reaching
+  // the backoff-resend branch (asserted via zero onNotice "auto-retry" beats and
+  // the exact rung-1/rung-2/rung-3-noop call count, mirroring the category test).
+  let calls = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      calls++;
+      throw new Error("Gemini returned no content (finishReason=SAFETY).");
+    },
+  }));
+  const { runAgentLoop, isSafetyFallbackBail, stripSafetyFallbackTag } = await import("../src/agent/engine");
+  const notices: string[] = [];
+  const history: Message[] = [
+    { role: "system", content: "Core instructions only." }, // no <project_context> — rung 3 is a no-op
+    { role: "user", content: "init" },
+  ];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 10,
+    budget: { maxExtensions: 0 },
+    tools: {},
+    events: { onNotice: m => notices.push(m) },
+    safetyFallbackAvailable: () => true,
+  });
+  expect(result.done).toBe(false);
+  expect(isSafetyFallbackBail(result.doneReason)).toBe(true);
+  expect(stripSafetyFallbackTag(result.doneReason!)).toContain("declined to answer (safety refusal — no content returned)");
+  // Rung 1 (free resend) + rung 2 (context reset) + rung 3/4 catch (bails, no backoff resend).
+  expect(calls).toBe(3);
+  expect(notices.some(n => /auto-retry/.test(n))).toBe(false); // never entered the backoff loop
+});
+
+test("refusal rung 4 regression guard: safetyFallbackAvailable() returning false still enters the unbounded backoff loop, not the fast-bail path", async () => {
+  process.env.JEO_REFUSAL_BACKOFF_BASE_MS = "1"; // keep the test fast
+  try {
+    let calls = 0;
+    await mock.module("../src/agent/loop", () => ({
+      callLlm: async () => {
+        calls++;
+        if (calls <= 4) throw new Error("Gemini returned no content (finishReason=SAFETY).");
+        return JSON.stringify({ tool: "done", arguments: { reason: "recovered after backoff" } });
+      },
+    }));
+    const { runAgentLoop } = await import("../src/agent/engine");
+    const notices: string[] = [];
+    const history: Message[] = [
+      { role: "system", content: "Core instructions only." },
+      { role: "user", content: "init" },
+    ];
+    const result = await runAgentLoop(history, {
+      cwd: process.cwd(),
+      maxSteps: 10,
+      budget: { maxExtensions: 0 },
+      tools: {},
+      events: { onNotice: m => notices.push(m) },
+      safetyFallbackAvailable: () => false, // no fallback candidate exists this turn
+    });
+    expect(result.done).toBe(true);
+    expect(result.doneReason).toBe("recovered after backoff");
+    expect(calls).toBe(5); // plain resend + post-reset retry + 2 backoff resends + success
+    expect(notices.some(n => /auto-retry/.test(n))).toBe(true); // DID enter the backoff loop
+  } finally {
+    delete process.env.JEO_REFUSAL_BACKOFF_BASE_MS;
+  }
+});
+
+test("refusal rung 4 regression guard: a category-shaped refusal NEVER checks safetyFallbackAvailable — the true-positive path is untouched", async () => {
+  // The category check (rung 4's FIRST branch) must return before
+  // safetyFallbackAvailable is ever consulted — a genuine content-policy hit
+  // must hard-fail regardless of whether a fallback model is configured.
+  let calls = 0;
+  let safetyFallbackChecked = false;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      calls++;
+      throw new Error("Refusal (reasoning_extraction): This request was blocked as it seems to violate Anthropic's Terms of Service.");
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const history: Message[] = [
+    { role: "system", content: "Core instructions only." },
+    { role: "user", content: "init" },
+  ];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 10,
+    budget: { maxExtensions: 0 },
+    tools: {},
+    safetyFallbackAvailable: () => {
+      safetyFallbackChecked = true;
+      return true;
+    },
+  });
+  expect(result.done).toBe(false);
+  expect(result.doneReason).toContain("reasoning_extraction");
+  expect(result.doneReason?.startsWith("Error:")).toBe(true); // category rung's own tag, NOT SafetyFallback
+  expect(safetyFallbackChecked).toBe(false);
+  expect(calls).toBe(3);
+});

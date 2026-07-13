@@ -22,7 +22,7 @@ import * as path from "node:path";
 import { SKILLS, getSkill, bundledSkillFileContent } from "../skills/catalog";
 import { callLlm } from "./loop";
 import { resolveVerifierModel } from "./prompt-router";
-import { readGlobalConfig } from "./state";
+import { readGlobalConfig, ensureJeoGitignore } from "./state";
 import { tryExtractJsonObject } from "./json";
 
 export interface SkillLesson {
@@ -154,6 +154,7 @@ export async function appendSkillLesson(cwd: string, lesson: SkillLesson): Promi
 
     const finalContent = lines.join("\n").replace(/\n{3,}$/, "\n\n");
     await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await ensureJeoGitignore(cwd);
     const tmpPath = `${filePath}.tmp-${process.pid}`;
     await fs.writeFile(tmpPath, finalContent, "utf-8");
     await fs.rename(tmpPath, filePath);

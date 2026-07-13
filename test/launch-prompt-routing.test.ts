@@ -54,6 +54,10 @@ let runAgentLoopDelegate: (history: unknown, opts: AgentLoopOptions) => Promise<
 // call in launch.ts's runTurn, but distinguishes "false" from "not wired" for a
 // defensive assertion).
 let capturedRateLimitAvailability: (boolean | undefined)[] = [];
+// Same shape as capturedRateLimitAvailability above, for safetyFallbackAvailable
+// (v0.8.24: the safety-boundary automatic model fallback — see engine.ts's
+// AgentLoopOptions doc comment).
+let capturedSafetyFallbackAvailability: (boolean | undefined)[] = [];
 
 mock.module("node:readline/promises", () => ({
   createInterface: () => ({
@@ -70,6 +74,7 @@ mock.module("../src/agent/engine", () => ({
   runAgentLoop: mock(async (history: unknown, opts: AgentLoopOptions) => {
     capturedCalls.push({ model: opts.model, maxTokens: opts.maxTokens, reasoningEffort: opts.reasoningEffort, sessionKey: opts.sessionKey });
     capturedRateLimitAvailability.push(opts.rateLimitFallbackAvailable?.());
+    capturedSafetyFallbackAvailability.push(opts.safetyFallbackAvailable?.());
     return runAgentLoopDelegate(history, opts);
   }),
 }));
@@ -97,6 +102,7 @@ beforeEach(() => {
   mockIndex = 0;
   capturedCalls = [];
   capturedRateLimitAvailability = [];
+  capturedSafetyFallbackAvailability = [];
   capturedRoutedTiers = [];
   runAgentLoopDelegate = async () => ({ done: true, steps: 1, doneReason: "ok" });
   resetPromptRouterWarnings();
@@ -1426,5 +1432,114 @@ test("live-discovered credential scope: a 429 on the Anthropic OAuth model actua
     expect(notice).toBeDefined();
     expect(notice).toContain("claude-sonnet-4-6");
     expect(notice).toContain("aurora-2-pro");
+  });
+});
+
+// --- Safety-boundary automatic model fallback (v0.8.24 — engine.ts's
+// AgentLoopOptions.safetyFallbackAvailable): mirrors the rate-limit fast-fallback
+// block above end-to-end through launch.ts's ACTUAL main-turn wiring (routeFailureReason's
+// dedicated tag branch, safetyFallbackAvailable's provider-aware predicate,
+// equivalentRouteFallback's provider-level exclusion, and stripSafetyFallbackTag on
+// the terminal reply) — the exact surface that was previously untested end-to-end. ---
+
+test("post-call reroute: an uncategorized refusal (SafetyFallback tag) on the routed model switches to a DIFFERENT-PROVIDER fallback and completes", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "gpt-4o-mini") {
+        return {
+          done: false,
+          steps: 1,
+          doneReason: "SafetyFallback (uncategorized): OpenAI declined to answer (safety refusal — no content returned). Usually a content classifier tripped on recently read file/search content.",
+        };
+      }
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, ["what is this?", "/route why"]);
+
+    // Switched PROVIDER (openai -> anthropic), never a same-provider sibling —
+    // safetyFallbackAvailable/equivalentRouteFallback's provider-level exclusion.
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    const notice = logs.find(l => l.includes("[route]") && l.includes("possible safety classifier false positive"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("gpt-4o-mini");
+    expect(notice).toContain("claude-haiku-4-5");
+    // The internal engine tag never leaks into ANY user-visible log line.
+    expect(logs.some(l => l.includes("SafetyFallback (uncategorized)"))).toBe(false);
+  });
+});
+
+test("safetyFallbackAvailable() is FALSE when every untried same-tier candidate shares the SAME provider (no genuinely different classifier boundary)", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => ({ done: true, steps: 1, doneReason: `completed on ${opts.model}` });
+
+    await runOneTurn({
+      providers: {},
+      oauth: { anthropic: OAUTH_STAMP },
+      defaultModel: "claude-sonnet-4-6",
+      routing: { enabled: true },
+    }, "Update the styling in src/app.css to use a darker background color for the header.");
+
+    // Standard tier under anthropic-only credentials pools ONLY claude models —
+    // same provider as the active model, so safetyFallbackAvailable is FALSE even
+    // though rateLimitFallbackAvailable is also false here for the same reason
+    // (both checks correctly agree: no fallback of ANY kind exists).
+    expect(capturedCalls.map(c => c.model)).toEqual(["claude-sonnet-4-6"]);
+    expect(capturedSafetyFallbackAvailability).toEqual([false]);
+  });
+});
+
+test("safetyFallbackAvailable() is stricter than rateLimitFallbackAvailable(): FALSE for a same-provider-different-credential-scope candidate that the rate-limit predicate would accept", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async (_history, opts) => ({ done: true, steps: 1, doneReason: `completed on ${opts.model}` });
+
+    // anthropic served via OAuth (one scope) PLUS a configured anthropic API key —
+    // credentialScopeFor still classifies every anthropic model into the SAME
+    // "anthropic:oauth" scope (OAuth wins over API key whenever it serves the
+    // model), but even if it did not, they are the SAME PROVIDER regardless of
+    // credential — proving safetyFallbackAvailable's provider check is the
+    // binding constraint here, not the credential-scope one.
+    await runOneTurn({
+      providers: { anthropic: "test-anthropic-key" },
+      oauth: { anthropic: OAUTH_STAMP },
+      defaultModel: "claude-sonnet-4-6",
+      routing: { enabled: true },
+    }, "Update the styling in src/app.css to use a darker background color for the header.");
+
+    expect(capturedCalls.map(c => c.model)).toEqual(["claude-sonnet-4-6"]);
+    expect(capturedSafetyFallbackAvailability).toEqual([false]);
+  });
+});
+
+test("post-call reroute: an uncategorized refusal with NO different-provider fallback strips the internal SafetyFallback tag from the terminal reply (regression guard against the raw tag leaking to the user)", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    runAgentLoopDelegate = async () => ({
+      done: false,
+      steps: 3,
+      doneReason:
+        "SafetyFallback (uncategorized): Anthropic declined to answer (safety refusal — no content returned). " +
+        "Usually a content classifier tripped on recently read file/search content: /retry, /compact or /new to drop the triggering context, or switch model with /model.",
+    });
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: {},
+      oauth: { anthropic: OAUTH_STAMP },
+      defaultModel: "claude-sonnet-4-6",
+      routing: { enabled: true },
+    }, "Update the styling in src/app.css to use a darker background color for the header.");
+
+    // No fallback exists (single-provider config) — never switched, reroute loop
+    // broke on the FIRST iteration (equivalentRouteFallback returned null).
+    expect(calls.map(c => c.model)).toEqual(["claude-sonnet-4-6"]);
+    // The reply printed to the user carries the FRIENDLY message, with the
+    // internal "SafetyFallback (uncategorized):" prefix tag stripped.
+    const printed = logs.find(l => l.includes("declined to answer (safety refusal"));
+    expect(printed).toBeDefined();
+    expect(printed).not.toContain("SafetyFallback (uncategorized)");
   });
 });

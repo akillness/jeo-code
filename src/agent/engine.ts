@@ -276,6 +276,29 @@ export interface AgentLoopEvents {
   onSteer?(text: string): void;
 }
 
+/** The doneReason PREFIX the engine emits when `safetyFallbackAvailable` bails an
+ *  uncategorized refusal (see `AgentLoopOptions.safetyFallbackAvailable`'s doc
+ *  comment) — the single source of truth for this tag's shape, so every caller
+ *  (task-tool.ts, launch.ts) recognizes and strips it identically instead of each
+ *  re-deriving its own regex that could drift out of sync. */
+export const SAFETY_FALLBACK_TAG = "SafetyFallback (uncategorized): ";
+
+/** True for the engine's OWN safety-fallback bail signal — NOT a general refusal
+ *  detector (the engine already did that categorization; this only recognizes the
+ *  specific case it decided to hand back for a caller-side model switch, distinct
+ *  from a `Refusal (<category>)` hard-fail which never produces this tag). */
+export function isSafetyFallbackBail(doneReason: string | undefined): boolean {
+  return (doneReason ?? "").startsWith(SAFETY_FALLBACK_TAG);
+}
+
+/** Strips the internal tag prefix, leaving the already-user-friendly
+ *  `friendlyProviderError` text the engine wrapped it around. Idempotent/safe on
+ *  a non-tagged string (returned unchanged) — callers can apply this
+ *  unconditionally to any terminal doneReason before it reaches the user. */
+export function stripSafetyFallbackTag(doneReason: string): string {
+  return doneReason.startsWith(SAFETY_FALLBACK_TAG) ? doneReason.slice(SAFETY_FALLBACK_TAG.length) : doneReason;
+}
+
 export interface AgentLoopOptions {
   /** Optional system prompt: prepended to `history` when it has no system message. */
   systemPrompt?: string;
@@ -325,6 +348,21 @@ export interface AgentLoopOptions {
    *  cut the budget short; a single-provider session still rides out a transient
    *  per-minute window as before). */
   rateLimitFallbackAvailable?: () => boolean;
+  /** Sync predicate, same shape/contract as `rateLimitFallbackAvailable` (see its
+   *  doc comment for the design precedent this mirrors): true when the caller has
+   *  an equivalent-pool fallback model ready RIGHT NOW. Consulted ONLY at the
+   *  refusal ladder's final rung (rung 4 — every context mutation already spent)
+   *  for an UNCATEGORIZED refusal (bare `stop_reason=refusal`/content_filter/SAFETY,
+   *  the "rolling classifier, can clear with time OR be a false positive" shape —
+   *  NEVER for a `Refusal (<category>)`-shaped error, which is a deterministic
+   *  classification of the REQUEST CONTENT and fails fast regardless of this
+   *  option, exactly as before: switching models must never be a bypass for a
+   *  genuine content-policy hit). When set and true, the engine bails with a
+   *  distinctly-tagged `SafetyFallback (uncategorized): <message>` doneReason
+   *  instead of entering the unbounded backoff-resend loop, so the caller's own
+   *  equivalent-pool fallback can switch models immediately — the 2026 "false
+   *  positive -> try a different model; true positive -> hard-halt" pattern. */
+  safetyFallbackAvailable?: () => boolean;
 }
 
 export interface AgentLoopResult {
@@ -840,6 +878,24 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         const category = /Refusal \(\w+\)/i.test((err as Error)?.message ?? String(err));
         if (category) {
           return finish({ done: false, steps: step, doneReason: `Error: ${friendlyProviderError(err)}` });
+        }
+        // Safety-boundary automatic model fallback (2026 pattern: an UNCATEGORIZED
+        // refusal is treated as a possible false-positive classifier trip — try a
+        // DIFFERENT model before committing to the full unbounded backoff below).
+        // Deliberately AFTER the category check above: a genuinely categorized
+        // refusal NEVER reaches here and NEVER gets a model switch, matching
+        // launch.ts's own `routeFailureReason` guard ("switching models must not
+        // be a safety bypass") — this only widens WHICH uncategorized refusals can
+        // escape the same-model backoff loop, it does not touch the true-positive
+        // path at all. Checked only once (the first time this rung is reached);
+        // if no fallback is available OR the caller didn't wire the predicate, the
+        // existing backoff-forever behavior is completely unchanged.
+        if (opts.safetyFallbackAvailable?.()) {
+          return finish({
+            done: false,
+            steps: step,
+            doneReason: `${SAFETY_FALLBACK_TAG}${friendlyProviderError(err)}`,
+          });
         }
         // Backoff-resend forever (abortable).
         const attempt = Math.max(1, refusalRetries - MAX_REFUSAL_RETRIES);

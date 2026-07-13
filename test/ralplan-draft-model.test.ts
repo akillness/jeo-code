@@ -31,6 +31,8 @@ const VALID_PLAN = [
   '  - name: "Implement thing in src/x.ts"',
   "    role: executor",
   '    target: "src/x.ts"',
+  '  - name: "Review the change"',
+  "    role: critic",
 ].join("\n");
 
 test("ralplan drafting passes route to their per-role configured model; the consensus gate is independent", async () => {
@@ -56,12 +58,15 @@ test("ralplan drafting passes route to their per-role configured model; the cons
   // tool-call so the read-only critic converges to [OKAY]. This keeps the test to a
   // single loop-module mock (no engine mock that would leak into other suites).
   const draftModels: (string | undefined)[] = [];
+  let gateCall = 0;
   await mock.module("../src/agent/loop", () => ({
     callLlm: async (_msgs: unknown, opts: { model?: string; systemPrompt?: string }) => {
       if (opts?.systemPrompt) {
         draftModels.push(opts.model);
         return VALID_PLAN;
       }
+      gateCall++;
+      if (gateCall === 1) return JSON.stringify({ tool: "read", arguments: { filePath: "seed.yaml" } });
       return JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: verified against the repo." } });
     },
   }));

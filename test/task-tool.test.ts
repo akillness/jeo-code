@@ -529,6 +529,159 @@ test("createTaskTool: executor's 429 with NO fallback available (single-provider
   expect(notices.some(n => n.includes("switching to equivalent"))).toBe(false);
 });
 
+// --- Safety-boundary automatic model fallback for subagents (mirrors the
+// rate-limit fast-fallback block above, and launch.ts's main-turn equivalent —
+// see engine.ts's AgentLoopOptions.safetyFallbackAvailable doc comment): an
+// UNCATEGORIZED refusal should switch to a genuinely different-PROVIDER model
+// (not just different-credential-scope — a same-provider sibling shares the
+// same classifier) and complete, instead of looping forever on the same model. ---
+
+test("createTaskTool: executor's uncategorized refusal with a different-provider fallback available switches models and completes", async () => {
+  // Isolate HOME (matches context-files.test.ts's convention): loadProjectContext
+  // walks ~/.agents/rules etc. via discoverAgentGuidanceFiles — on a real dev
+  // machine that can be non-empty, which would inject a real <project_context>
+  // block and make rung 3 (guidance-strip) fire, throwing off the exact refusal-
+  // ladder call count this test asserts. An isolated empty HOME keeps rung 3 a
+  // guaranteed no-op, matching refusal-recovery.test.ts's own fixtures.
+  const savedHome = process.env.HOME;
+  process.env.HOME = await tmpDir();
+  try {
+    const modelsCalled: (string | undefined)[] = [];
+    await mock.module("../src/agent/loop", () => ({
+      callLlm: async (_h: unknown, options: { model?: string }) => {
+        modelsCalled.push(options.model);
+        if (options.model === "claude-sonnet-4-6") {
+          // Plain (non-categorized) refusal shape — never a hard-fail, always
+          // eligible for the safety-fallback bail when a candidate exists.
+          throw new Error("Gemini returned no content (finishReason=SAFETY).");
+        }
+        return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\ndone on fallback" } });
+      },
+    }));
+
+    const { createTaskTool } = await import("../src/agent/task-tool");
+    const notices: string[] = [];
+    const tool = createTaskTool({
+      config: {
+        providers: { openai: "sk-test-openai", gemini: "test-gemini-key" },
+        oauth: { anthropic: OAUTH_STAMP },
+        defaultModel: "claude-sonnet-4-6",
+        subagents: { executor: { model: "claude-sonnet-4-6" } },
+      },
+      onEvent: e => { if (e.kind === "step" && e.detail) notices.push(e.detail); },
+    });
+
+    const res = await tool({ role: "executor", task: "fix the bug" }, await tmpDir());
+
+    // 3 calls on claude-sonnet-4-6 (refusal ladder rungs 1-2 free resends, rung 3
+    // a no-op with no <project_context> to strip, rung 4 bails) then switches to a
+    // genuinely different PROVIDER (gemini, first in the standard-tier pool after
+    // anthropic) — never another anthropic model.
+    expect(modelsCalled).toEqual(["claude-sonnet-4-6", "claude-sonnet-4-6", "claude-sonnet-4-6", "gemini-1.5-pro"]);
+    expect(res.success).toBe(true);
+    expect(res.output).toContain("done on fallback");
+    expect(notices.some(n => n.includes("refused on 'claude-sonnet-4-6'") && n.includes("classifier false positive"))).toBe(true);
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+  }
+});
+
+test("createTaskTool: a SECOND uncategorized refusal (on the first fallback) excludes the WHOLE provider, not just that one model", async () => {
+  const savedHome = process.env.HOME;
+  process.env.HOME = await tmpDir();
+  try {
+    const modelsCalled: (string | undefined)[] = [];
+    await mock.module("../src/agent/loop", () => ({
+      callLlm: async (_h: unknown, options: { model?: string }) => {
+        modelsCalled.push(options.model);
+        // anthropic AND every gemini model refuse; only openai recovers — proves
+        // excludedSafetyProviders accumulates the whole "gemini" provider after
+        // the second bail, instead of only excluding "gemini-1.5-pro" by id (which
+        // would incorrectly re-offer a DIFFERENT gemini model next).
+        if (options.model === "claude-sonnet-4-6" || options.model?.startsWith("gemini-")) {
+          throw new Error("Gemini returned no content (finishReason=SAFETY).");
+        }
+        return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\ndone on second fallback" } });
+      },
+    }));
+
+    const { createTaskTool } = await import("../src/agent/task-tool");
+    const tool = createTaskTool({
+      config: {
+        providers: { openai: "sk-test-openai", gemini: "test-gemini-key" },
+        oauth: { anthropic: OAUTH_STAMP },
+        defaultModel: "claude-sonnet-4-6",
+        subagents: { executor: { model: "claude-sonnet-4-6" } },
+      },
+    });
+
+    const res = await tool({ role: "executor", task: "fix the bug" }, await tmpDir());
+
+    // 3 calls per model (same ladder as above) x anthropic, then gemini-1.5-pro
+    // (1st gemini model tried, also refuses all 3), then gpt-5.4 (openai, first
+    // genuinely untried provider, succeeds immediately) — MAX_SUBAGENT_REROUTES=2
+    // covers exactly this 2-hop sequence.
+    expect(modelsCalled).toEqual([
+      "claude-sonnet-4-6", "claude-sonnet-4-6", "claude-sonnet-4-6",
+      "gemini-1.5-pro", "gemini-1.5-pro", "gemini-1.5-pro",
+      "gpt-5.4",
+    ]);
+    expect(res.success).toBe(true);
+    expect(res.output).toContain("done on second fallback");
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+  }
+});
+
+test("createTaskTool: an uncategorized refusal with NO different-provider fallback (single-provider config) still rides the normal backoff (regression guard)", async () => {
+  const savedHome = process.env.HOME;
+  process.env.HOME = await tmpDir();
+  process.env.JEO_REFUSAL_BACKOFF_BASE_MS = "1"; // keep the test fast
+  try {
+    const modelsCalled: (string | undefined)[] = [];
+    let calls = 0;
+    await mock.module("../src/agent/loop", () => ({
+      callLlm: async (_h: unknown, options: { model?: string }) => {
+        modelsCalled.push(options.model);
+        calls++;
+        if (calls <= 4) throw new Error("Gemini returned no content (finishReason=SAFETY).");
+        return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: none\nVerification: ran\nrecovered after backoff" } });
+      },
+    }));
+
+    const { createTaskTool } = await import("../src/agent/task-tool");
+    const notices: string[] = [];
+    const tool = createTaskTool({
+      config: {
+        // ONLY anthropic credentialed — tierModelPool's gemini/openai rows are all
+        // filtered out by modelServableWithConfig, so safetyFallbackCandidates()
+        // (like fallbackCandidates()) is genuinely empty.
+        providers: {},
+        oauth: { anthropic: OAUTH_STAMP },
+        defaultModel: "claude-sonnet-4-6",
+        subagents: { executor: { model: "claude-sonnet-4-6" } },
+      },
+      onEvent: e => { if (e.kind === "step" && e.detail) notices.push(e.detail); },
+    });
+
+    const res = await tool({ role: "executor", task: "fix the bug" }, await tmpDir());
+
+    // 3 free rungs + 2 backoff resends (JEO_REFUSAL_BACKOFF_BASE_MS=1 keeps this
+    // fast) + success on the 5th call, matching refusal-recovery.test.ts's own
+    // "plain refusal enters the unbounded backoff loop" fixture exactly.
+    expect(modelsCalled).toEqual(Array(5).fill("claude-sonnet-4-6")); // never switched — rode the backoff on the SAME model
+    expect(res.success).toBe(true);
+    expect(res.output).toContain("recovered after backoff");
+    expect(notices.some(n => n.includes("classifier false positive"))).toBe(false);
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    delete process.env.JEO_REFUSAL_BACKOFF_BASE_MS;
+  }
+});
+
 // --- Fan-out cost tier: an UNPINNED tasks[] batch (no explicit 'role') dispatches
 // at a mid-tier override model instead of the role's normal strongest-tier pick
 // (see task-tool.ts's `fanoutModelOverride`). An EXPLICIT role, or the single-task

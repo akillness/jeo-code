@@ -36,7 +36,7 @@ test("approve command: nonexistent plan rejection, validation, and idempotency",
 
     // 2. Plan exists on disk, but no workflow state exists
     const planPath = path.join(tempDir, "plan-test.yaml");
-    await fs.writeFile(planPath, "steps:\n  - step 1", "utf-8");
+    await fs.writeFile(planPath, 'steps:\n  - name: "step 1"\n    role: executor\n  - name: "verify"\n    role: critic\n', "utf-8");
 
     logs.length = 0;
     console.log = (...args: any[]) => {
@@ -141,7 +141,7 @@ test("approve command: nonexistent plan rejection, validation, and idempotency",
 
     // 6. Hash verification: refuses to approve if the plan file has been modified since consensus
     const planPathHash = path.join(tempDir, "plan-hash.yaml");
-    const planContent = "steps:\n  - name: \"Build it\"\n    role: executor\n";
+    const planContent = "steps:\n  - name: \"Build it\"\n    role: executor\n  - name: \"verify\"\n    role: critic\n";
     await fs.writeFile(planPathHash, planContent, "utf-8");
 
     const { createHash } = await import("node:crypto");
@@ -162,7 +162,7 @@ test("approve command: nonexistent plan rejection, validation, and idempotency",
     );
 
     // Modify the plan file
-    await fs.writeFile(planPathHash, planContent + "  - name: \"Extra step\"\n    role: executor\n", "utf-8");
+    await fs.writeFile(planPathHash, planContent + "  - name: \"Extra step\"\n    role: critic\n", "utf-8");
 
     logs.length = 0;
     console.log = (...args: any[]) => {

@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { emitKeypressEvents } from "node:readline";
 import { PassThrough } from "node:stream";
-import { runAgentLoop, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, type AgentLoopEvents } from "../agent/engine";
+import { runAgentLoop, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, isSafetyFallbackBail, stripSafetyFallbackTag, type AgentLoopEvents } from "../agent/engine";
 import { computerSupervisor } from "../agent/computer-supervisor";
 import { executeComputerAction } from "./computer";
 
@@ -10,6 +10,7 @@ import { initialDynamicStepLimit } from "../agent/step-budget";
 import { memoryPromptSection, spawnDetachedDistill, recordFailedAttempt } from "../agent/memory";
 import { recordSkillLesson } from "../agent/skill-lessons";
 import { createTaskTool, taskToolProtocolLine, type TaskSubEvent } from "../agent/task-tool";
+import { createEvalTool, evalToolProtocolLine } from "../agent/eval-tool";
 import { createSubagentTool, SUBAGENT_TOOL_PROTOCOL_LINE } from "../agent/subagent-tool";
 import { SubagentRegistry } from "../agent/subagent-registry";
 import { stopSessionNotifyEndpoint, startSessionNotifyEndpoint, type SessionNotifyEndpoint } from "../agent/notify/session-endpoint";
@@ -550,7 +551,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // pi-style: load project context (JEO.md / AGENTS.md / .jeo/context.md / CLAUDE.md) into the prompt.
   const contextFiles = await loadProjectContext(cwd);
 
-  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "todo", "subagent", "job", "irc", "goal", "approve", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug", "browser"]);
+  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "eval", "todo", "subagent", "job", "irc", "goal", "approve", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug", "browser"]);
   let allowedTools = new Set(KNOWN_TOOLS);
 
   if (flags.noTools) {
@@ -618,6 +619,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     "\nWhen you have finished the user's request, or need to reply to or ask the user something, call done with {\"reason\": <your natural-language reply to the user>}. The reason text is shown to the user as your message." +
     (allowedTools.has("task") ? "\n\nDelegation: " + taskToolProtocolLine(cfg) +
     " Call task with {\"role\": <one of the advertised roles>, \"task\": <assignment>, \"context\": <optional>} to hand a focused slice to a subagent." : "") +
+    (allowedTools.has("eval") ? "\n\nDynamic Workflows: " + evalToolProtocolLine(cfg) : "") +
     (allowedTools.has("todo") ? "\n\nPlanning: " + TODO_TOOL_PROTOCOL_LINE : "") +
     (allowedTools.has("subagent") ? "\n\nDetached subagents: " + SUBAGENT_TOOL_PROTOCOL_LINE +
     " Launch background work with task {\"detached\": true, \"role\": <role>, \"task\": <assignment>}; it returns a subagent id immediately so you can keep working and collect the result later." : "") +
@@ -1012,11 +1014,33 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // genuinely different credential.
     const isAccountLevelRouteFailure = (reason: string): boolean =>
       /hit a rate limit|hit a usage\/quota limit|is unauthenticated for this session|has no usable credential|requires billing\/payment on this provider account/i.test(reason);
+    // Providers that have ALREADY produced a safety-classifier bail THIS turn —
+    // accumulates across fallback rounds (mirrors excludedCredentialScopes exactly,
+    // one paragraph up). Provider-scoped rather than credential-scoped: a
+    // same-provider sibling model shares the SAME constitutional/moderation
+    // classifier regardless of which credential serves it (unlike a rate limit,
+    // which is a billing/quota boundary, not a classifier boundary) — trying it
+    // after an uncategorized refusal is very likely the identical false positive,
+    // not a genuinely different verdict.
+    const excludedSafetyProviders = new Set<string>();
+    // Matches ONLY routeFailureReason's dedicated safety-fallback branch (the
+    // engine's `SafetyFallback (uncategorized):`-tagged bail, stripped to this
+    // reason text) — deliberately narrower than isRefusalError/isSafetyFallbackBail
+    // so a genuinely categorized (true-positive) refusal, which never reaches this
+    // branch at all, can never be classified as an account-level OR safety-level
+    // route failure by this predicate.
+    const isSafetyRouteFailure = (reason: string): boolean => /was refused \(possible safety classifier false positive\)/i.test(reason);
     const equivalentRouteFallback = async (decision: RouteDecision, reason: string, exclude: readonly string[] = []): Promise<string | null> => {
       if (isAccountLevelRouteFailure(reason)) {
         const scope = credentialScopeFor(decision.model, turnConfig);
         if (scope) excludedCredentialScopes.add(scope.key);
       }
+      // Provider-level exclusion (not just the credential scope above): a
+      // same-provider sibling shares the identical classifier a safety refusal
+      // just tripped on, so it is excluded ENTIRELY here — a stricter exclusion
+      // than the account-level branch's credential-scope-only one, matching
+      // task-tool.ts's `safetyFallbackCandidates` (same rationale, same shape).
+      if (isSafetyRouteFailure(reason)) excludedSafetyProviders.add(resolveProvider(decision.model));
       const excluded = new Set([decision.model, ...exclude]);
       const poolCandidates = (): string[] =>
         tierModelPool(decision.tier, turnConfig)
@@ -1025,6 +1049,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             const scope = credentialScopeFor(model, turnConfig);
             return !scope || !excludedCredentialScopes.has(scope.key);
           })
+          .filter(model => !excludedSafetyProviders.has(resolveProvider(model)))
           .filter(model => !images?.length || catalogMetadata(model)?.images !== false);
       let candidates = poolCandidates();
       // The static MODEL_CATALOG only lists a couple of OpenAI-compatible clouds by
@@ -1465,6 +1490,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
               ? (e => tui?.onSubagentEvent(e))
               : (e => logTaskSubEvent(e)),
           }),
+          eval: createEvalTool({
+            config: { ...turnConfig, defaultModel: activeModel },
+            signal: ac.signal,
+            steer: drainSteer,
+            onEvent: useTui
+              ? (e => tui?.onSubagentEvent(e))
+              : (e => logTaskSubEvent(e)),
+          }),
           todo: createTodoTool({ onChange: items => { turnTodos = items; tui?.setTodos(items); } }),
           subagent: createSubagentTool(subagentRegistry),
           job: createJobTool(jobRegistry),
@@ -1543,6 +1576,25 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             })
             .some(model => !images?.length || catalogMetadata(model)?.images !== false);
         };
+        // Same shape as rateLimitFallbackAvailable above, plus a same-PROVIDER
+        // exclusion (not just same-credential-scope): a sibling model from the
+        // provider that JUST safety-bailed shares its classifier, so it is not a
+        // genuinely different fallback candidate (see excludedSafetyProviders'
+        // doc comment). Fed to AgentLoopOptions.safetyFallbackAvailable.
+        const safetyFallbackAvailable = (): boolean => {
+          const currentScope = credentialScopeFor(fallbackBaseDecision.model, turnConfig);
+          const currentProvider = resolveProvider(fallbackBaseDecision.model);
+          return tierModelPool(fallbackBaseDecision.tier, turnConfig)
+            .filter(model => !attemptedRouteModels.has(model))
+            .filter(model => resolveProvider(model) !== currentProvider && !excludedSafetyProviders.has(resolveProvider(model)))
+            .filter(model => {
+              const scope = credentialScopeFor(model, turnConfig);
+              if (!scope) return true; // API-key-served (or keyless) — independent budget
+              if (currentScope && scope.key === currentScope.key) return false; // same exhausted subscription
+              return !excludedCredentialScopes.has(scope.key);
+            })
+            .some(model => !images?.length || catalogMetadata(model)?.images !== false);
+        };
         const runLoopWithModel = (model: string, thinking: ThinkLevel | undefined, cacheKey: string | undefined, maxSteps = flags.maxSteps, budget?: { maxExtensions: number }) => runAgentLoop(history, {
           cwd,
           tools,
@@ -1555,11 +1607,20 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           sessionKey: cacheKey,
           steer: drainSteer,
           rateLimitFallbackAvailable,
+          safetyFallbackAvailable,
           events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone }, persistTurnTail), opik),
         });
         const routeFailureReason = (doneReason: unknown): string | null => {
           const message = String(doneReason ?? "");
           if (!message) return "stopped without a final answer";
+          // MUST be checked before every pattern below: the engine's own tagged
+          // safety-fallback bail wraps a `friendlyProviderError` refusal message,
+          // which contains "refusal"/"safety" text that the safety-refusal guard
+          // further down (`returned no content` branch) would otherwise swallow
+          // (return null, never reroute) — this tag means the engine ALREADY
+          // verified a fallback is available and deliberately asked for a reroute,
+          // so it must win outright, not fall through to that guard.
+          if (isSafetyFallbackBail(message)) return "was refused (possible safety classifier false positive)";
           const asError = new Error(message);
           if (isRateLimitError(asError)) return "hit a rate limit";
           if (isUsageLimitError(asError)) return "hit a usage/quota limit";
@@ -1720,7 +1781,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     }
     // A completed turn with an empty done-reason must NOT masquerade as a step-limit
     // failure ("reached the 3-step limit" after the model called done at step 3).
-    const reply = result.doneReason
+    const reply = stripSafetyFallbackTag(result.doneReason ?? "")
       || (result.done
         ? `(done in ${result.steps} step${result.steps === 1 ? "" : "s"} — the model returned no summary)`
         : `(reached the ${result.steps}-step limit without signaling done)`);
@@ -1820,6 +1881,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
 
   const joinedArgs = flags.message;
   const isOneShot = flags.print || joinedArgs.length > 0 || !process.stdin.isTTY;
+  // hermes-style experience distill (plan/gjc-inheritance.md B6) for one-shot
+  // (`-p`/`--print`/piped) mode — previously ONLY the interactive exit path
+  // spawned this, so a one-shot invocation (the common CI/scripted shape, e.g.
+  // `jeo "task" -p`) never wrote anything to session memory no matter how many
+  // turns it ran. Mirrors the interactive path's exact gate (sessionUsage.turns
+  // > 0) and stays silent (no stdout noise) since one-shot output may be
+  // piped/parsed by a script.
+  const maybeDistillOneShot = async (): Promise<void> => {
+    if (sessionUsage.turns > 0) {
+      await spawnDetachedDistill(history, cwd, sessionModel || defaultModel);
+    }
+  };
 
   if (isOneShot) {
     let messageContent = joinedArgs;
@@ -2006,12 +2079,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       for (const inv of skillChain.invocations) {
         await runOneSkillShot(inv);
       }
+      await maybeDistillOneShot();
       return;
     }
     // A `$skill` invocation resolves to a single skill (by name, declared alias, or unique prefix).
     const skillInvocation = parseSkillInvocation(messageContent, resolvedSkills);
     if (skillInvocation) {
       await runOneSkillShot(skillInvocation);
+      await maybeDistillOneShot();
       return;
     }
     try {
@@ -2021,6 +2096,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     } catch (err) {
       console.log(`! ${friendlyProviderError(err)}`);
     }
+    await maybeDistillOneShot();
     return;
   }
 

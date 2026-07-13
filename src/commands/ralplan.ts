@@ -73,6 +73,13 @@ export async function runConsensusCriticGate(args: {
   const rateLimitFallbackAvailable = (): boolean => fallbackCandidates().length > 0;
 
   let activeModel = initialModel;
+  // Evidence tracking (mirrors task-tool.ts's runSubagentOnce readOnlyEvidenceCalls
+  // + team.ts's evaluateSubagentResult gate): this consensus gate is the OTHER
+  // independent-verifier code path in jeo (team.ts's per-step gate is the first) —
+  // it does NOT go through runSubagentOnce, so it needs its own tracking. A verdict
+  // is gated the SAME way: zero observed read/search/find/ast_grep/lsp calls means
+  // the [OKAY]/[ITERATE]/[REJECT] text is unevidenced regardless of what it claims.
+  let evidenceCalls = 0;
   const runOnce = () => runAgentLoop(history, {
     cwd: args.cwd,
     model: activeModel,
@@ -81,6 +88,11 @@ export async function runConsensusCriticGate(args: {
     signal: args.signal,
     tools: subagentToolset(role),
     rateLimitFallbackAvailable,
+    events: {
+      onToolResult: (tool, success) => {
+        if (success && (tool === "read" || tool === "search" || tool === "find" || tool === "ast_grep" || tool === "lsp")) evidenceCalls++;
+      },
+    },
   });
   let result = await runOnce();
   for (let attempt = 0; attempt < MAX_SUBAGENT_REROUTES; attempt++) {
@@ -97,6 +109,9 @@ export async function runConsensusCriticGate(args: {
   if (!result.done) return { verdict: "unverified", detail: reason || `critic did not converge within ${result.steps} steps` };
   const contract = validateSubagentDoneReason(role, reason);
   if (!contract.ok) return { verdict: "unverified", detail: `critic report incomplete (missing ${contract.missing?.join(", ")}): ${reason.slice(0, 300)}` };
+  if (evidenceCalls === 0) {
+    return { verdict: "unverified", detail: `critic returned a verdict with ZERO observed read/search/find/ast_grep/lsp calls — unevidenced, regardless of the verdict text: ${reason.slice(0, 300)}` };
+  }
   const firstLine = reason.split(/\r?\n/, 1)[0]?.trim() ?? "";
   const verdict = firstLine === "[OKAY]" ? "okay" : firstLine === "[ITERATE]" ? "iterate" : firstLine === "[REJECT]" ? "reject" : "unverified";
   return { verdict, detail: reason };
@@ -189,7 +204,14 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     `reading or building on another's output. Never mark two steps parallel if one depends on, ` +
     `reads, or extends a file another writes. When unsure, leave parallel_group out — a plain ` +
     `serial step is always correct; a wrongly-parallel step risks a merge conflict that halts ` +
-    `execution.`;
+    `execution.\n\n` +
+    `MANDATORY: if ANY step mutates (role: executor, or role omitted — omitted defaults to ` +
+    `executor), the plan MUST end with a DEDICATED role: architect or role: critic step AFTER ` +
+    `the last mutating step (never inside the same parallel_group as a mutating step — concurrent ` +
+    `steps cannot verify each other). A plan of executor-only steps with no trailing verifier is ` +
+    `REJECTED. This is the independent verifier that inspects what was actually built before the ` +
+    `plan counts as done — a read-only-only plan (planner/architect/critic steps with no executor ` +
+    `at all) needs no verifier, since nothing mutated.`;
 
   const PLANNER = `You are the PLANNER. From the crystallized spec, sequence the work into a logical, outcome-based progression of concrete, ordered tasks.\n` + SCHEMA_SPEC;
   const ARCHITECT = `You are the ARCHITECT. Review the Planner's draft for technical feasibility, correct file targets, directory structure, and any missing setup/wiring/test steps. Return an improved plan (same shape).\n` + SCHEMA_SPEC;
@@ -212,16 +234,26 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
       const raw = await callLlm([{ role: "user" as const, content: userContent }], { systemPrompt, model });
       return raw.replace(/```yaml|```/g, "").trim();
     };
-    const isValidPlan = (yaml: string): boolean => {
+    /** Validates `yaml` against `PlanSchema` + role-name legality, returning the
+     *  FIRST concrete reason it's invalid (zod issue message, or an unknown-role
+     *  name) — or `undefined` when valid. Feeding the actual reason back into the
+     *  repair prompt (instead of a generic "didn't match the schema") lets the
+     *  Critic's one repair attempt fix the REAL problem (e.g. a missing trailing
+     *  verifier step) instead of guessing. */
+    const planValidationError = (yaml: string): string | undefined => {
       try {
         const parsed = PlanSchema.safeParse(normalizePlanShape(parseYaml(yaml)));
-        if (!parsed.success) return false;
+        if (!parsed.success) {
+          return parsed.error.issues[0]?.message ?? "plan did not match the required schema";
+        }
         // Round-10 #2 (architect ref 8-Round10Planning): write-time parity with
         // team's execution gate — an unknown role (e.g. "developer") used to pass
         // here and abort only at `jeo team`, after the planning model was gone.
-        return parsed.data.steps.every(s => !s.role?.trim() || !!getSubagentRole(s.role));
-      } catch {
-        return false;
+        const badRole = parsed.data.steps.find(s => s.role?.trim() && !getSubagentRole(s.role));
+        if (badRole) return `step "${badRole.name}" declares unknown role "${badRole.role}" (must be executor|planner|architect|critic)`;
+        return undefined;
+      } catch (e) {
+        return e instanceof Error ? e.message : "plan YAML failed to parse";
       }
     };
 
@@ -266,11 +298,12 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
     // complete (round-10 #2) — failing here, while the model is still in the loop,
     // beats failing later at `jeo team` with the same plan.
     let planValid = true;
-    if (!isValidPlan(cleanPlan)) {
-      log("[ralplan] Final plan did not match the required shape; requesting a corrected plan…");
-      cleanPlan = await callRole(CRITIC, `Your previous output was not valid for the required schema. Fix it (roles MUST be one of executor|planner|architect|critic).\n\n${SCHEMA_SPEC}\n\nPlan to fix:\n\n${cleanPlan}`, CRITIC_MODEL);
-      if (!isValidPlan(cleanPlan)) {
-        const fallback = [reviewed, draft].find(isValidPlan);
+    const firstError = planValidationError(cleanPlan);
+    if (firstError) {
+      log(`[ralplan] Final plan did not match the required shape (${firstError}); requesting a corrected plan…`);
+      cleanPlan = await callRole(CRITIC, `Your previous output was invalid: ${firstError}\n\n${SCHEMA_SPEC}\n\nPlan to fix:\n\n${cleanPlan}`, CRITIC_MODEL);
+      if (planValidationError(cleanPlan)) {
+        const fallback = [reviewed, draft].find(p => !planValidationError(p));
         if (fallback) {
           cleanPlan = fallback;
           log("[ralplan] Using an earlier valid pass output (Critic output was unparseable).");
@@ -314,7 +347,7 @@ export async function runRalplanEngine(opts: RalplanEngineOptions = {}): Promise
         `Revise the plan to address every point.\n\n${SCHEMA_SPEC}\n\nCurrent plan:\n\n${cleanPlan}`,
         CRITIC_MODEL,
       );
-      if (isValidPlan(revised)) {
+      if (!planValidationError(revised)) {
         cleanPlan = revised;
         await fs.writeFile(planPath, cleanPlan, "utf-8");
         gate = await runConsensusCriticGate({ cwd, seedContent, plan: cleanPlan, signal: opts.signal });

@@ -96,6 +96,10 @@ function writeAction(filePath: string, content: string) {
  *  (`VERIFY_SIGNAL_RE` in `src/agent/loop-guards.ts`) so a mutating step's `done`
  *  is accepted instead of being nudged back for "no verification ran". */
 const verifyAction = { tool: "bash", arguments: { command: "echo test ok" } };
+/** Evidence-gate satisfying read call — every seeded plan writes plan.yaml to
+ *  its temp dir, so this always resolves against a real file. */
+const readAction = { tool: "read", arguments: { filePath: "plan.yaml" } };
+const criticOkay = { tool: "done", arguments: { reason: "[OKAY]\nJustification: verified against the repo." } };
 
 /**
  * Per-task scripted `callLlm` mock: each named task gets its OWN ordered list of
@@ -140,10 +144,12 @@ steps:
   - name: "group step 2"
     parallel_group: g1
   - name: "solo after"
+  - name: "verify"
+    role: critic
 `));
   expect(mixed.success).toBe(true);
   if (mixed.success) {
-    expect(mixed.data.steps.map(s => s.parallel_group)).toEqual([undefined, "g1", "g1", undefined]);
+    expect(mixed.data.steps.map(s => s.parallel_group)).toEqual([undefined, "g1", "g1", undefined, undefined]);
   }
 
   // No regression: a regular ungrouped plan (no parallel_group anywhere) still validates.
@@ -151,6 +157,8 @@ steps:
 steps:
   - name: "Task A"
   - name: "Task B"
+  - name: "verify"
+    role: critic
 `));
   expect(plain.success).toBe(true);
 });
@@ -161,6 +169,8 @@ steps:
   - name: "lone group step"
     parallel_group: solo-group
   - name: "next step"
+  - name: "verify"
+    role: critic
 `));
   expect(result.success).toBe(true);
 });
@@ -169,10 +179,11 @@ test("a size-1 parallel_group runs through the ordinary serial path, identically
   await mock.module("../src/agent/loop", () => ({
     callLlm: scriptedCallLlm({
       "lone group step": [() => writeAction("solo.txt", "solo\n"), () => verifyAction, () => doneOk],
+      "verify": [() => readAction, () => criticOkay],
     }),
   }));
   const { runTeamCommand } = await import("../src/commands/team");
-  tmp = await seedParallelPlan([{ name: "lone group step", parallel_group: "solo-group" }]);
+  tmp = await seedParallelPlan([{ name: "lone group step", parallel_group: "solo-group" }, { name: "verify", role: "critic" }]);
   process.chdir(tmp);
 
   console.log = (...a: unknown[]) => logs.push(a.map(String).join(" "));
@@ -194,12 +205,14 @@ test("a two-step parallel_group with both steps mutating different files, both s
     callLlm: scriptedCallLlm({
       "write file a": [() => writeAction("a.txt", "a content\n"), () => verifyAction, () => doneOk],
       "write file b": [() => writeAction("b.txt", "b content\n"), () => verifyAction, () => doneOk],
+      "verify": [() => readAction, () => criticOkay],
     }),
   }));
   const { runTeamCommand } = await import("../src/commands/team");
   tmp = await seedParallelPlan([
     { name: "write file a", parallel_group: "g1" },
     { name: "write file b", parallel_group: "g1" },
+    { name: "verify", role: "critic" },
   ]);
   process.chdir(tmp);
 
@@ -224,7 +237,7 @@ test("a two-step parallel_group with both steps mutating different files, both s
 
   const teamState = JSON.parse(await fs.readFile(path.join(tmp, ".jeo", "state", "team-state.json"), "utf-8"));
   expect(teamState.current_phase).toBe("complete");
-  expect(teamState.completed_tasks).toEqual(["write file a", "write file b"]);
+  expect(teamState.completed_tasks).toEqual(["write file a", "write file b", "verify"]);
   expect(teamState.pending_tasks).toEqual([]);
 });
 
@@ -240,6 +253,7 @@ test("a two-step parallel_group where one step has a contract-incomplete done re
   tmp = await seedParallelPlan([
     { name: "write file a", parallel_group: "g1" },
     { name: "broken step", parallel_group: "g1" },
+    { name: "verify", role: "critic" },
   ]);
   process.chdir(tmp);
 
@@ -273,6 +287,7 @@ test("a two-step parallel_group with a genuine merge conflict aborts cleanly and
     [
       { name: "edit shared A", parallel_group: "g1" },
       { name: "edit shared B", parallel_group: "g1" },
+      { name: "verify", role: "critic" },
     ],
     { "shared.txt": "orig\n" },
   );

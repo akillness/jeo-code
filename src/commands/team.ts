@@ -519,6 +519,25 @@ function evaluateSubagentResult(
     return false;
   }
 
+  // Evidence gate (UNCONDITIONAL — same tier as parseRoleGateVerdict, never
+  // softened by --strict-mutations): an architect/critic verdict is worthless
+  // if the subagent never actually looked at anything. Mirrors goal-verifier.ts's
+  // applyEvidenceGate philosophy applied to the OTHER independent-verifier gate
+  // in this codebase — a formatted "Architectural Status: CLEAR" or "[OKAY]"
+  // first line is text the model can emit with ZERO real inspection; only an
+  // OBSERVED read/search/find/ast_grep/lsp call in this run counts as evidence
+  // the verdict is grounded in the actual repository state, not the model's own
+  // unverified assertion (2026 pattern: "avoid vibes verification — a claim is
+  // only trustworthy when backed by a programmatic, observed signal").
+  if ((role.id === "architect" || role.id === "critic") && result.readOnlyEvidenceCalls === 0) {
+    log(formatRalphStreamEvent(
+      "error",
+      `${role.title} returned a verdict with ZERO observed read/search/find/ast_grep/lsp calls — an unevidenced verdict is not trustworthy regardless of what the text claims. Blocking.`,
+      renderOpts,
+    ));
+    return false;
+  }
+
   // Round-8: a mutating role finished without a successful file mutation — the
   // task may be legitimately read-only, but its "Changed Files:" claim is
   // unverified. bash is tracked apart: an only-bash run MIGHT have mutated.

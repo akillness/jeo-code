@@ -79,6 +79,7 @@ test("runConsensusCriticGate: 429 with a genuinely different-credential-scope fa
     // mock.module boundary: runAgentLoop (engine.ts) resolves "../src/agent/loop"
     // dynamically inside invokeCallLlm, so ralplan.ts must be imported AFTER this
     // mock is registered (established convention — see ralplan-draft-model.test.ts).
+    let fallbackCall = 0;
     await mock.module("../src/agent/loop", () => ({
       callLlm: async (_msgs: unknown, opts: { model?: string; onRetry?: (attempt: number, err: unknown, delayMs: number) => void | false }) => {
         modelsCalled.push(opts.model);
@@ -86,6 +87,11 @@ test("runConsensusCriticGate: 429 with a genuinely different-credential-scope fa
           onRetryReturns.push(opts.onRetry?.(1, { status: 429, message: "rate limited" }, 2000));
           throw { status: 429, message: "Rate limited by Anthropic (HTTP 429)." };
         }
+        fallbackCall++;
+        // Fresh mkdtemp cwd (nothing written yet) — `find` with a broad pattern
+        // still returns success:true (empty match list), unlike `read` which
+        // would need a real file to exist.
+        if (fallbackCall === 1) return JSON.stringify({ tool: "find", arguments: { globPattern: "*" } });
         return JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: verified against the repo on the fallback model." } });
       },
     }));
@@ -103,7 +109,7 @@ test("runConsensusCriticGate: 429 with a genuinely different-credential-scope fa
     expect(onRetryReturns).toEqual([false]);
     // Switched to gpt-5.4 (API-key-served, independent budget) — NEVER to
     // claude-sonnet-5 (same anthropic:oauth scope as the model that just 429'd).
-    expect(modelsCalled).toEqual(["claude-sonnet-4-6", "gpt-5.4"]);
+    expect(modelsCalled).toEqual(["claude-sonnet-4-6", "gpt-5.4", "gpt-5.4"]);
     expect(res.verdict).toBe("okay");
     expect(res.detail).toContain("verified against the repo on the fallback model");
 

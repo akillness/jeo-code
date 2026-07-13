@@ -53,6 +53,61 @@ export const PlanSchema = z.object({
     }
     prevGroup = group;
   }
+
+  // Maker -> verifier ORDERING (not mere presence): a plan containing any
+  // mutating work must have a DEDICATED architect/critic step AFTER the last
+  // such mutation, or `jeo team` never runs an independent, evidence-grounded
+  // gate over what was actually changed (team.ts's parseRoleGateVerdict is
+  // fail-closed and genuinely reads real files — but only fires for a step
+  // that HAS an architect/critic role in the right position; nothing before
+  // this rule required the plan to include one at all, or forbade a verifier
+  // sitting BEFORE the mutations it's supposed to check). Roles read-only by
+  // the SUBAGENT_ROLES registry (planner/architect/critic) never mutate;
+  // architect/critic ALSO carry a verdict contract team.ts enforces — planner
+  // does not, so it can't discharge this gate. `executor` (or an unset/unknown
+  // role, which resolves to executor's default) mutates. Grouped
+  // (`parallel_group`) steps are evaluated as ONE atomic unit: concurrent
+  // steps cannot verify each other (they run in isolated worktrees with no
+  // visibility into siblings' STILL-IN-FLIGHT changes), so a critic/architect
+  // inside the SAME group as a mutating sibling does not clear the gate —
+  // only a later, separate unit does.
+  // Local literal, not imported from subagents.ts — `plan.ts` stays a pure,
+  // dependency-free schema module (mirrors subagents.ts's own DEFAULT_ROLE_ID).
+  const DEFAULT_STEP_ROLE = "executor";
+  const READONLY_ROLES: Record<string, true> = { planner: true, architect: true, critic: true };
+  const VERIFIER_ROLES: Record<string, true> = { architect: true, critic: true };
+  type Unit = { steps: typeof plan.steps; label: string };
+  const units: Unit[] = [];
+  for (const step of plan.steps) {
+    const group = step.parallel_group?.trim() || undefined;
+    const last = units[units.length - 1];
+    if (group && last && last.label === group) {
+      last.steps.push(step);
+    } else {
+      units.push({ steps: [step], label: group ?? `#solo:${step.name}` });
+    }
+  }
+  let pendingUnverifiedMutation: string | undefined;
+  for (const unit of units) {
+    const roleIds = unit.steps.map(s => (s.role?.trim() || DEFAULT_STEP_ROLE));
+    const unitMutates = roleIds.some(r => READONLY_ROLES[r] !== true);
+    const unitVerifies = roleIds.some(r => VERIFIER_ROLES[r] === true);
+    if (unitMutates) {
+      pendingUnverifiedMutation = unit.steps[unit.steps.length - 1]!.name;
+    } else if (unitVerifies) {
+      pendingUnverifiedMutation = undefined;
+    }
+  }
+  if (pendingUnverifiedMutation) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        `plan ends with an unverified mutation (last mutating step: "${pendingUnverifiedMutation}") — add an ` +
+        `architect or critic step AFTER it (never inside the same parallel_group, which runs concurrently and ` +
+        `cannot verify a still-in-flight sibling) so team.ts's evidence-grounded role gate actually runs over the ` +
+        `real changes before the plan is considered complete.`,
+    });
+  }
 });
 
 /**

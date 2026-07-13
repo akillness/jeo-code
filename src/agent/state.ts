@@ -541,6 +541,32 @@ export function getLocalJeoDir(cwd: string = process.cwd()): string {
   return path.join(cwd, ".jeo");
 }
 
+/** Ensure `.jeo/` self-ignores in git — memory/skill-lesson writes under `.jeo/`
+ *  are agent-local working state, not source; without this a CI routine (`jeo
+ *  routine init`, running `jeo -p` then committing via create-pull-request)
+ *  ships `.jeo/memory/*`/`.jeo/skills/*` churn into every generated PR. Writes
+ *  a bare `*` pattern ONCE on first `.jeo/` creation — idempotent (checked via
+ *  a stat, never overwrites a file that already exists, so a user's own
+ *  customized `.jeo/.gitignore` is never clobbered). Best-effort: any I/O
+ *  failure is swallowed, never thrown (this is a hygiene nicety, not a
+ *  correctness requirement — a missing .gitignore degrades gracefully to "no
+ *  ignore", not a broken feature). */
+export async function ensureJeoGitignore(cwd: string = process.cwd()): Promise<void> {
+  const gitignorePath = path.join(getLocalJeoDir(cwd), ".gitignore");
+  try {
+    await fs.access(gitignorePath);
+    return; // already exists — never overwrite (user customization respected)
+  } catch {
+    // does not exist — fall through to create
+  }
+  try {
+    await fs.mkdir(getLocalJeoDir(cwd), { recursive: true });
+    await fs.writeFile(gitignorePath, "*\n", "utf-8");
+  } catch {
+    // best-effort — a failed write here must never break the caller's real work
+  }
+}
+
 // mtime+size-validated cache for the small per-skill workflow-state JSON. readWorkflowState
 // runs repeatedly (the mutation guard reads before every mutating tool), so re-reading +
 // re-parsing each call is wasteful. CROSS-PROCESS-SAFE: a write by another process bumps

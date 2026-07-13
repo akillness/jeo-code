@@ -25,9 +25,13 @@ const DONE = JSON.stringify({
   arguments: { reason: "Summary: did the task Changed Files: none Verification: covered by suite" },
 });
 
+/** Round-14 (PlanSchema maker->verifier ordering rule): every plan below now
+ *  needs a trailing read-only (architect/critic) step after its mutating work,
+ *  or PlanSchema itself rejects the plan before execution/approval is even
+ *  reached. `seedApprovedPlan` always appends one "verify" (critic) step. */
 async function seedApprovedPlan(dir: string, slug: string, planFile: string, taskName: string): Promise<string> {
   const planPath = path.join(dir, planFile);
-  await fs.writeFile(planPath, `steps:\n  - name: "${taskName}"\n    role: executor\n`);
+  await fs.writeFile(planPath, `steps:\n  - name: "${taskName}"\n    role: executor\n  - name: "verify"\n    role: critic\n`);
   await writeWorkflowState("ralplan", {
     active: false,
     current_phase: "complete",
@@ -39,9 +43,41 @@ async function seedApprovedPlan(dir: string, slug: string, planFile: string, tas
   return planPath;
 }
 
+/** Extract the current todo's task name from a team-dispatched subagent's own
+ *  user message (see team.ts's buildRalphSubagentPrompt: `Current todo: N/M "<task>"`). */
+function currentTodoName(messages: { role: string; content: string }[]): string {
+  const content = String(messages[1]?.content ?? "");
+  const m = content.match(/Current todo: \d+\/\d+ "([^"]+)"/);
+  return m?.[1] ?? "unknown";
+}
+
+/** Critic's own required-done-markers contract needs "Justification:"
+ *  (subagents.ts SUBAGENT_ROLES) plus a real evidence call (team.ts's
+ *  evaluateSubagentResult: architect/critic with readOnlyEvidenceCalls===0 is
+ *  blocked) — the FIRST turn reads a file guaranteed to exist
+ *  (.jeo/state/ralplan-state.json, written by seedApprovedPlan before any
+ *  subagent runs), the SECOND turn returns the [OKAY] verdict.
+ *
+ *  `perTaskCallCount` is a per-task-name counter (not a shared turn number) so
+ *  the executor step's own call count never interferes with the critic step's. */
+function verifyStepScript(perTaskCallCount: Map<string, number>, taskName: string): string | undefined {
+  if (taskName !== "verify") return undefined;
+  const n = perTaskCallCount.get(taskName) ?? 0;
+  perTaskCallCount.set(taskName, n + 1);
+  if (n === 0) return JSON.stringify({ tool: "read", arguments: { filePath: ".jeo/state/ralplan-state.json" } });
+  return JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: changes verified against the plan." } });
+}
+
+
 test("team: stale state from a previous plan restarts execution instead of no-opping (round-7 #1)", async () => {
   const dir = await tmpProject();
-  await mock.module("../src/agent/loop", () => ({ callLlm: async () => DONE }));
+  const perTaskCallCount = new Map<string, number>();
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: { role: string; content: string }[]) => {
+      const taskName = currentTodoName(messages);
+      return verifyStepScript(perTaskCallCount, taskName) ?? DONE;
+    },
+  }));
 
   // Plan A ran to completion earlier — its team-state has pending=[].
   const planAPath = path.join(dir, "plan-a.yaml");
@@ -67,7 +103,7 @@ test("team: stale state from a previous plan restarts execution instead of no-op
   expect(lines.some(l => l.includes("New plan detected"))).toBe(true);
   const state = await readWorkflowState("team", dir);
   expect(state?.slug).toBe("plan-b");
-  expect(state?.completed_tasks).toEqual(["plan B task"]); // plan B actually RAN
+  expect(state?.completed_tasks).toEqual(["plan B task", "verify"]); // plan B actually RAN
   expect(state?.current_phase).toBe("complete");
   expect(state?.active).toBe(false); // execution finished — flag flipped
   await fs.rm(dir, { recursive: true, force: true });
@@ -75,10 +111,16 @@ test("team: stale state from a previous plan restarts execution instead of no-op
 
 test("team: refuses to execute if the plan file has been modified since consensus (round-13)", async () => {
   const dir = await tmpProject();
-  await mock.module("../src/agent/loop", () => ({ callLlm: async () => DONE }));
+  const perTaskCallCount = new Map<string, number>();
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: { role: string; content: string }[]) => {
+      const taskName = currentTodoName(messages);
+      return verifyStepScript(perTaskCallCount, taskName) ?? DONE;
+    },
+  }));
 
   const planPath = path.join(dir, "plan-hash.yaml");
-  const planContent = "steps:\n  - name: \"Build it\"\n    role: executor\n";
+  const planContent = "steps:\n  - name: \"Build it\"\n    role: executor\n  - name: \"verify\"\n    role: critic\n";
   await fs.writeFile(planPath, planContent);
 
   const { createHash } = await import("node:crypto");
@@ -96,7 +138,7 @@ test("team: refuses to execute if the plan file has been modified since consensu
   }, dir);
 
   // Modify the plan file
-  await fs.writeFile(planPath, planContent + "  - name: \"Extra step\"\n    role: executor\n");
+  await fs.writeFile(planPath, planContent + "  - name: \"Extra step\"\n    role: critic\n");
 
   const lines: string[] = [];
   const { runTeamEngine } = await import("../src/commands/team");
@@ -307,7 +349,13 @@ test("acquireWorkflowRunLock: live holder refuses, release reopens, dead-pid loc
 test("team: a failed task persists a marker; the next run warns about partial edits", async () => {
   const dir = await tmpProject();
   let reply = JSON.stringify({ tool: "done", arguments: { reason: "no contract markers here" } }); // contract fails
-  await mock.module("../src/agent/loop", () => ({ callLlm: async () => reply }));
+  const perTaskCallCount = new Map<string, number>();
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async (messages: { role: string; content: string }[]) => {
+      const taskName = currentTodoName(messages);
+      return verifyStepScript(perTaskCallCount, taskName) ?? reply;
+    },
+  }));
   await seedApprovedPlan(dir, "plan-f", "plan-f.yaml", "fragile task");
 
   const { runTeamEngine } = await import("../src/commands/team");
@@ -376,11 +424,18 @@ test("ralplan: a valid plan + critic [OKAY] completes with the verdict persisted
   // Dual-mode mock: drafting passes carry opts.systemPrompt (bare callLlm);
   // the consensus-critic SUBAGENT runs through the engine (system message in
   // history, no opts.systemPrompt) and must emit a done tool call.
+  const draftPlan = 'name: "ok plan"\nsteps:\n  - name: "Build it"\n    role: executor\n  - name: "verify"\n    role: critic\n';
+  let consensusCalls = 0;
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async (_m: unknown, llmOpts?: { systemPrompt?: string }) =>
-      llmOpts?.systemPrompt
-        ? 'name: "ok plan"\nsteps:\n  - name: "Build it"\n    role: executor\n'
-        : JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: steps are actionable and match the repo." } }),
+    callLlm: async (_m: unknown, llmOpts?: { systemPrompt?: string }) => {
+      if (llmOpts?.systemPrompt) return draftPlan;
+      // Consensus-critic subagent (runAgentLoop-driven, no opts.systemPrompt):
+      // needs an OBSERVED evidence call before its verdict counts (runConsensusCriticGate's
+      // own evidenceCalls===0 gate) — read a file guaranteed to exist first.
+      consensusCalls++;
+      if (consensusCalls === 1) return JSON.stringify({ tool: "read", arguments: { filePath: "seed.yaml" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "[OKAY]\nJustification: steps are actionable and match the repo." } });
+    },
   }));
   const { runRalplanEngine } = await import("../src/commands/ralplan");
   const res = await runRalplanEngine({ cwd: dir, io: { output: () => {} } });
@@ -389,9 +444,7 @@ test("ralplan: a valid plan + critic [OKAY] completes with the verdict persisted
   expect(state?.current_phase).toBe("complete");
   expect(state?.consensus).toBe("okay"); // round-11: verdict persisted
   const { createHash } = await import("node:crypto");
-  const expectedHash = createHash("sha256")
-    .update('name: "ok plan"\nsteps:\n  - name: "Build it"\n    role: executor')
-    .digest("hex");
+  const expectedHash = createHash("sha256").update(draftPlan.trim()).digest("hex");
   expect(state?.consensus_hash).toBe(expectedHash);
   await fs.rm(dir, { recursive: true, force: true });
 });
@@ -399,11 +452,17 @@ test("ralplan: a valid plan + critic [OKAY] completes with the verdict persisted
 test("ralplan: critic [REJECT] blocks completion and persists the verdict (round-11)", async () => {
   const dir = await tmpProject();
   await seedInterview(dir);
+  let consensusCalls = 0;
   await mock.module("../src/agent/loop", () => ({
-    callLlm: async (_m: unknown, llmOpts?: { systemPrompt?: string }) =>
-      llmOpts?.systemPrompt
-        ? 'steps:\n  - name: "Build it"\n    role: executor\n'
-        : JSON.stringify({ tool: "done", arguments: { reason: "[REJECT]\nJustification: the plan ignores the acceptance criteria entirely." } }),
+    callLlm: async (_m: unknown, llmOpts?: { systemPrompt?: string }) => {
+      if (llmOpts?.systemPrompt) return 'steps:\n  - name: "Build it"\n    role: executor\n  - name: "verify"\n    role: critic\n';
+      // Evidence gate applies BEFORE the verdict text is even parsed (ralplan.ts's
+      // runConsensusCriticGate: evidenceCalls===0 check runs unconditionally) —
+      // REJECT needs a real read call too, or it downgrades to "unverified".
+      consensusCalls++;
+      if (consensusCalls === 1) return JSON.stringify({ tool: "read", arguments: { filePath: "seed.yaml" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "[REJECT]\nJustification: the plan ignores the acceptance criteria entirely." } });
+    },
   }));
   const { runRalplanEngine } = await import("../src/commands/ralplan");
   const lines: string[] = [];
@@ -420,7 +479,7 @@ test("ralplan: critic [REJECT] blocks completion and persists the verdict (round
 test("approve: refuses a plan without an [OKAY] consensus verdict (round-11)", async () => {
   const dir = await tmpProject();
   const planPath = path.join(dir, "good-shape.yaml");
-  await fs.writeFile(planPath, 'steps:\n  - name: "Build it"\n    role: executor\n'); // schema-valid
+  await fs.writeFile(planPath, 'steps:\n  - name: "Build it"\n    role: executor\n  - name: "verify"\n    role: critic\n'); // schema-valid
   await writeWorkflowState("ralplan", {
     active: false,
     current_phase: "complete",
@@ -455,7 +514,7 @@ test("approve: refuses a plan without an [OKAY] consensus verdict (round-11)", a
 test("approve: refuses a plan that team would reject (unknown role / malformed)", async () => {
   const dir = await tmpProject();
   const planPath = path.join(dir, "bad-plan.yaml");
-  await fs.writeFile(planPath, 'steps:\n  - name: "Build it"\n    role: developer\n');
+  await fs.writeFile(planPath, 'steps:\n  - name: "Build it"\n    role: developer\n  - name: "verify"\n    role: critic\n');
   await writeWorkflowState("ralplan", {
     active: false,
     current_phase: "complete",

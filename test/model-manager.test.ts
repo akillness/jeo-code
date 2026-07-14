@@ -54,8 +54,8 @@ test("resolveMaxOutputTokens: catalogued models use catalog max-output capped at
   // must no longer constrain output size (it steers depth via reasoningEffort).
   expect(resolveMaxOutputTokens("claude-fable-5", "xhigh")).toBe(64000);
   expect(resolveMaxOutputTokens("claude-sonnet-5", "low")).toBe(64000);
-  // Catalog max BELOW the cap passes through (haiku 4.5 = 64k exactly, gpt-4o = 16384).
-  expect(resolveMaxOutputTokens("claude-haiku-4-5", "high")).toBe(64000);
+  // Catalog max BELOW the cap passes through (grok-4.3 = 64k exactly, gpt-4o = 16384).
+  expect(resolveMaxOutputTokens("grok-4.3", "high")).toBe(64000);
   expect(resolveMaxOutputTokens("gpt-4o", "high")).toBe(16384);
   // Aliases expand before lookup (sonnet → claude-sonnet-4-6, 128k → 64k cap).
   expect(resolveMaxOutputTokens("sonnet", "medium")).toBe(64000);

@@ -20,7 +20,9 @@ export interface FooterData {
   unicode?: boolean;
   /** Colorize the stage track (default true). Set false for the mono theme. */
   color?: boolean;
-  /** Estimated context usage in tokens, when known. */
+  /** Context usage in tokens. Provider-anchored once a call has returned this turn
+   *  (the last response's own reported `inputTokens` — gjc v0.10.1 SSOT parity);
+   *  a client-side character-count estimate only for the brief pre-first-response gap. */
   contextUsedTokens?: number;
   /** Provider/model context window in tokens, when known. */
   contextMaxTokens?: number;

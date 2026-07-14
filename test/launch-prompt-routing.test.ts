@@ -423,7 +423,7 @@ test("sessionKey: two turns routed to DIFFERENT models within one session produc
 
 test("credential gate: routed tier resolves to a provider with NO credential -> switches to an equivalent credentialed model", async () => {
   const { calls } = await runOneTurnWithLogs({
-    providers: { anthropic: "test-anthropic-key" }, // defaultModel's provider: credentialed
+    providers: { anthropic: "test-anthropic-key", gemini: "test-gemini-key" }, // defaultModel's provider + a real trivial-tier equivalent: both credentialed
     defaultModel: "claude-sonnet-4-6",
     roles: { smol: "gpt-4o-mini" }, // openai: NOT credentialed anywhere in this config
     routing: { enabled: true },
@@ -431,7 +431,7 @@ test("credential gate: routed tier resolves to a provider with NO credential -> 
   expect(calls.length).toBeGreaterThan(0);
   // Without the gate this would be "gpt-4o-mini" and the real call would fail with
   // "No credential for provider 'openai'" — the gate must prevent dispatch to it.
-  expect(calls[0].model).toBe("claude-haiku-4-5");
+  expect(calls[0].model).toBe("gemini-2.0-flash");
 });
 
 test("credential gate: veto notice explains what happened and how to fix it", async () => {
@@ -461,23 +461,23 @@ test("credential gate: does not fire when the routed provider IS credentialed (n
 
 test("credential gate: warnOnce suppresses the notice on a second turn hitting the SAME unready provider, but the alternate still applies every turn", async () => {
   const config = {
-    providers: { anthropic: "test-anthropic-key" },
+    providers: { anthropic: "test-anthropic-key", gemini: "test-gemini-key" },
     defaultModel: "claude-sonnet-4-6",
     roles: { smol: "gpt-4o-mini" },
     routing: { enabled: true },
   };
   const first = await runOneTurnWithLogs(config, "what is this?");
-  expect(first.calls[0].model).toBe("claude-haiku-4-5"); // alternate applied
+  expect(first.calls[0].model).toBe("gemini-2.0-flash"); // alternate applied
   expect(first.logs.some(l => l.includes("no usable credential"))).toBe(true); // notice fired
 
   const second = await runOneTurnWithLogs(config, "what is that?");
-  expect(second.calls[0].model).toBe("claude-haiku-4-5"); // alternate STILL applied
+  expect(second.calls[0].model).toBe("gemini-2.0-flash"); // alternate STILL applied
   expect(second.logs.some(l => l.includes("no usable credential"))).toBe(false); // notice suppressed (warnOnce)
 });
 
 test("credential gate: /route why after a veto explains the equivalent fallback, not a phantom routed decision", async () => {
   const { logs } = await runOneTurnWithLogs({
-    providers: { anthropic: "test-anthropic-key" },
+    providers: { anthropic: "test-anthropic-key", gemini: "test-gemini-key" },
     defaultModel: "claude-sonnet-4-6",
     roles: { smol: "gpt-4o-mini" },
     routing: { enabled: true },
@@ -485,7 +485,7 @@ test("credential gate: /route why after a veto explains the equivalent fallback,
   const whyLine = logs.find(l => l.includes("switched to equivalent"));
   expect(whyLine).toBeDefined();
   expect(whyLine).toContain("gpt-4o-mini");
-  expect(whyLine).toContain("claude-haiku-4-5"); // names the equivalent actually used
+  expect(whyLine).toContain("gemini-2.0-flash"); // names the equivalent actually used
 });
 // --- model-servability veto (v0.8.2): provider-level readiness is necessary but
 // NOT sufficient. An OAuth-only OpenAI login passes describeProvider's ready
@@ -552,7 +552,7 @@ test("servability veto: OAuth-only openai + pinned non-Codex tier model -> switc
     expect(calls.length).toBeGreaterThan(0);
     // Without the model-level veto this dispatches gpt-4o and the call fails
     // demanding OPENAI_API_KEY despite a valid OAuth login — the v0.8.2 bug.
-    expect(calls[0].model).toBe("claude-haiku-4-5");
+    expect(calls[0].model).toBe("gpt-5.4");
     const notice = logs.find(l => l.includes("[route]") && l.includes("cannot serve"));
     expect(notice).toBeDefined();
     expect(notice).toContain("gpt-4o");
@@ -571,7 +571,7 @@ test("servability veto: /route why explains the routed model is not servable and
     const whyLine = logs.find(l => l.includes("not servable"));
     expect(whyLine).toBeDefined();
     expect(whyLine).toContain("gpt-4o");
-    expect(whyLine).toContain("claude-haiku-4-5"); // names the equivalent actually used
+    expect(whyLine).toContain("gpt-5.4"); // names the equivalent actually used
   });
 });
 
@@ -749,14 +749,14 @@ test("reachability veto: routing pinned to an unreachable ollama model switches 
     (async () => { throw new Error("Unable to connect. Is the computer able to access the url?"); }) as typeof fetch,
     async () => {
       const { calls, logs } = await runOneTurnWithLogs({
-        providers: { anthropic: "test-anthropic-key" },
+        providers: { anthropic: "test-anthropic-key", gemini: "test-gemini-key" },
         defaultModel: "claude-sonnet-4-6",
         routing: { enabled: true, tiers: { trivial: { model: "ollama/llama3.1" } } },
       }, "what is this?");
       expect(calls.length).toBeGreaterThan(0);
       // Without the reachability veto this dispatches ollama/llama3.1 and the call
       // fails mid-turn with the raw Bun connection error instead of switching.
-      expect(calls[0].model).toBe("claude-haiku-4-5");
+      expect(calls[0].model).toBe("gemini-2.0-flash");
       const notice = logs.find(l => l.includes("[route]") && l.includes("unreachable"));
       expect(notice).toBeDefined();
       expect(notice).toContain("ollama/llama3.1");
@@ -785,14 +785,14 @@ test("reachability veto: /route why explains the routed model is unreachable and
     (async () => { throw new Error("Unable to connect. Is the computer able to access the url?"); }) as typeof fetch,
     async () => {
       const { logs } = await runOneTurnWithLogs({
-        providers: { anthropic: "test-anthropic-key" },
+        providers: { anthropic: "test-anthropic-key", gemini: "test-gemini-key" },
         defaultModel: "claude-sonnet-4-6",
         routing: { enabled: true, tiers: { trivial: { model: "ollama/llama3.1" } } },
       }, ["what is this?", "/route why"]);
       const whyLine = logs.find(l => l.includes("switched to equivalent"));
       expect(whyLine).toBeDefined();
       expect(whyLine).toContain("ollama/llama3.1");
-      expect(whyLine).toContain("claude-haiku-4-5");
+      expect(whyLine).toContain("gemini-2.0-flash");
     },
   );
 });
@@ -802,16 +802,16 @@ test("reachability veto: warnOnce suppresses the notice on a second turn hitting
     (async () => { throw new Error("Unable to connect. Is the computer able to access the url?"); }) as typeof fetch,
     async () => {
       const config = {
-        providers: { anthropic: "test-anthropic-key" },
+        providers: { anthropic: "test-anthropic-key", gemini: "test-gemini-key" },
         defaultModel: "claude-sonnet-4-6",
         routing: { enabled: true, tiers: { trivial: { model: "ollama/llama3.1" } } },
       };
       const first = await runOneTurnWithLogs(config, "what is this?");
-      expect(first.calls[0].model).toBe("claude-haiku-4-5"); // alternate applied
+      expect(first.calls[0].model).toBe("gemini-2.0-flash"); // alternate applied
       expect(first.logs.some(l => l.includes("unreachable"))).toBe(true); // notice fired
 
       const second = await runOneTurnWithLogs(config, "what is that?");
-      expect(second.calls[0].model).toBe("claude-haiku-4-5"); // alternate STILL applied
+      expect(second.calls[0].model).toBe("gemini-2.0-flash"); // alternate STILL applied
       expect(second.logs.some(l => l.includes("unreachable"))).toBe(false); // notice suppressed (warnOnce)
     },
   );
@@ -859,21 +859,21 @@ test("post-call reroute: plain OpenAI no-content retry switches to same-tier fal
       routing: { enabled: true },
     }, ["what is this?", "/route why"]);
 
-    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1"]);
     const notice = logs.find(l => l.includes("[route]") && l.includes("returned no content"));
     expect(notice).toBeDefined();
     expect(notice).toContain("gpt-4o-mini");
-    expect(notice).toContain("claude-haiku-4-5");
+    expect(notice).toContain("gpt-4.1");
     const whyWarning = logs.find(l => l.startsWith("warning:") && l.includes("returned no content"));
     expect(whyWarning).toBeDefined();
     expect(whyWarning).toContain("gpt-4o-mini");
-    expect(whyWarning).toContain("claude-haiku-4-5");
+    expect(whyWarning).toContain("gpt-4.1");
   });
 });
 
 test("post-call reroute: recoverable failure on first fallback keeps trying the next servable equivalent", async () => {
   await withRoutingProviderEnvCleared(async () => {
-    const recoverableFailures: Record<string, true> = { "gpt-4o-mini": true, "claude-haiku-4-5": true };
+    const recoverableFailures: Record<string, true> = { "gpt-4o-mini": true, "gpt-4.1": true };
     runAgentLoopDelegate = async (_history, opts) => {
       if (opts.model && recoverableFailures[opts.model]) {
         return { done: false, steps: 1, doneReason: "Error: OpenAI returned no content." };
@@ -888,13 +888,13 @@ test("post-call reroute: recoverable failure on first fallback keeps trying the 
       routing: { enabled: true },
     }, "what is this?");
 
-    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5", "gpt-4.1"]);
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1", "gpt-4o"]);
     const notices = logs.filter(l => l.includes("[route]") && l.includes("switching to equivalent"));
     expect(notices).toHaveLength(2);
     expect(notices[0]).toContain("gpt-4o-mini");
-    expect(notices[0]).toContain("claude-haiku-4-5");
-    expect(notices[1]).toContain("claude-haiku-4-5");
+    expect(notices[0]).toContain("gpt-4.1");
     expect(notices[1]).toContain("gpt-4.1");
+    expect(notices[1]).toContain("gpt-4o");
   });
 });
 
@@ -936,11 +936,11 @@ test("post-call reroute: auth/credential rejection (401) on the routed model swi
       routing: { enabled: true },
     }, ["what is this?", "/route why"]);
 
-    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1"]);
     const notice = logs.find(l => l.includes("[route]") && l.includes("unauthenticated"));
     expect(notice).toBeDefined();
     expect(notice).toContain("gpt-4o-mini");
-    expect(notice).toContain("claude-haiku-4-5");
+    expect(notice).toContain("gpt-4.1");
   });
 });
 
@@ -960,11 +960,11 @@ test("post-call reroute: unreachable/connection-refused failure on the routed mo
       routing: { enabled: true },
     }, ["what is this?", "/route why"]);
 
-    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1"]);
     const notice = logs.find(l => l.includes("[route]") && l.includes("unreachable"));
     expect(notice).toBeDefined();
     expect(notice).toContain("gpt-4o-mini");
-    expect(notice).toContain("claude-haiku-4-5");
+    expect(notice).toContain("gpt-4.1");
   });
 });
 
@@ -984,11 +984,11 @@ test("post-call reroute: silent/no-response call-timeout on the routed model swi
       routing: { enabled: true },
     }, ["what is this?", "/route why"]);
 
-    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1"]);
     const notice = logs.find(l => l.includes("[route]") && l.includes("did not respond in time"));
     expect(notice).toBeDefined();
     expect(notice).toContain("gpt-4o-mini");
-    expect(notice).toContain("claude-haiku-4-5");
+    expect(notice).toContain("gpt-4.1");
   });
 });
 
@@ -1008,11 +1008,11 @@ test("post-call reroute: billing/quota-exhausted (402) on the routed model switc
       routing: { enabled: true },
     }, ["what is this?", "/route why"]);
 
-    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1"]);
     const notice = logs.find(l => l.includes("[route]") && l.includes("billing/payment"));
     expect(notice).toBeDefined();
     expect(notice).toContain("gpt-4o-mini");
-    expect(notice).toContain("claude-haiku-4-5");
+    expect(notice).toContain("gpt-4.1");
   });
 });
 
@@ -1032,11 +1032,11 @@ test("post-call reroute: persistent 5xx (server error surviving the retry budget
       routing: { enabled: true },
     }, ["what is this?", "/route why"]);
 
-    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1"]);
     const notice = logs.find(l => l.includes("[route]") && l.includes("persistent server-side error"));
     expect(notice).toBeDefined();
     expect(notice).toContain("gpt-4o-mini");
-    expect(notice).toContain("claude-haiku-4-5");
+    expect(notice).toContain("gpt-4.1");
   });
 });
 
@@ -1070,11 +1070,11 @@ test("post-call reroute: persistent 5xx from a ProviderStreamError (Antigravity/
       routing: { enabled: true },
     }, ["what is this?", "/route why"]);
 
-    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1"]);
     const notice = logs.find(l => l.includes("[route]") && l.includes("persistent server-side error"));
     expect(notice).toBeDefined();
     expect(notice).toContain("gpt-4o-mini");
-    expect(notice).toContain("claude-haiku-4-5");
+    expect(notice).toContain("gpt-4.1");
   });
 });
 
@@ -1156,16 +1156,16 @@ test("rate-limit fast fallback: predicate re-evaluates fresh after a fallback sw
       routing: { enabled: true },
     }, "what is this?");
 
-    // Two calls: gpt-4o-mini (rate limited) then claude-haiku-4-5 (the equivalent
-    // fallback, succeeds). Both models here are API-KEY-served (providers.openai/
-    // providers.anthropic, no oauth block) — `credentialScopeFor` returns `null` for
-    // both, so the credential-scope exclusion never engages and both calls see a TRUE
-    // predicate: first because claude-haiku-4-5 (untried) is credentialed, second
-    // because a FURTHER untried candidate (e.g. gpt-4.1, per the "recoverable failure
-    // on first fallback" test above) is still available even after gpt-4o-mini was
-    // excluded by id. See the "OAuth subscription" tests below for the scope-exclusion
-    // behavior this test does NOT exercise.
-    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    // Two calls: gpt-4o-mini (rate limited) then gpt-4.1 (the equivalent
+    // fallback, succeeds) — both same-provider (openai) API-KEY-served ids
+    // (`credentialScopeFor` returns `null` for both, so the credential-scope
+    // exclusion never engages) and both calls see a TRUE predicate: first because
+    // gpt-4.1 (untried) is credentialed, second because a FURTHER untried candidate
+    // (e.g. gpt-4o, per the "recoverable failure on first fallback" test above) is
+    // still available even after gpt-4o-mini was excluded by id. See the "OAuth
+    // subscription" tests below for the scope-exclusion behavior this test does NOT
+    // exercise.
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1"]);
     expect(capturedRateLimitAvailability).toEqual([true, true]);
   });
 });
@@ -1186,11 +1186,11 @@ test("post-call reroute: HTTP 429 rate limit on the routed model switches to a s
       routing: { enabled: true },
     }, ["what is this?", "/route why"]);
 
-    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1"]);
     const notice = logs.find(l => l.includes("[route]") && l.includes("hit a rate limit"));
     expect(notice).toBeDefined();
     expect(notice).toContain("gpt-4o-mini");
-    expect(notice).toContain("claude-haiku-4-5");
+    expect(notice).toContain("gpt-4.1");
   });
 });
 
@@ -1358,7 +1358,7 @@ test("402 billing failure on an API-KEY-served model does NOT exclude the whole 
     // gpt-4o-mini is API-key-served (credentialScopeFor -> null) — a 402 on it must
     // NOT exclude other openai models by scope, only by exact id. Falls back to the
     // normal same-tier pool exactly as the pre-existing 402 test (line ~987) proves.
-    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1"]);
   });
 });
 
@@ -1456,19 +1456,21 @@ test("post-call reroute: an uncategorized refusal (SafetyFallback tag) on the ro
     };
 
     const { calls, logs } = await runOneTurnWithLogs({
-      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key", gemini: "test-gemini-key" },
       defaultModel: "claude-sonnet-4-6",
       roles: { smol: "gpt-4o-mini" },
       routing: { enabled: true },
     }, ["what is this?", "/route why"]);
 
-    // Switched PROVIDER (openai -> anthropic), never a same-provider sibling —
+    // Switched PROVIDER (openai -> gemini), never a same-provider sibling —
     // safetyFallbackAvailable/equivalentRouteFallback's provider-level exclusion.
-    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
+    // (anthropic is credentialed too but has no trivial-tier model to offer —
+    // gemini is the only genuinely different-provider small-tier candidate.)
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gemini-2.0-flash"]);
     const notice = logs.find(l => l.includes("[route]") && l.includes("possible safety classifier false positive"));
     expect(notice).toBeDefined();
     expect(notice).toContain("gpt-4o-mini");
-    expect(notice).toContain("claude-haiku-4-5");
+    expect(notice).toContain("gemini-2.0-flash");
     // The internal engine tag never leaks into ANY user-visible log line.
     expect(logs.some(l => l.includes("SafetyFallback (uncategorized)"))).toBe(false);
   });

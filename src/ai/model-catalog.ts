@@ -80,7 +80,7 @@ const STD: ThinkLevel[] = ["low", "medium", "high"];
  *  (`cheapestCredentialed`/`strongestCredentialed`/`compareStrengthAscending`)
  *  now tiebreak on `releaseDate` directly rather than relying on position. */
 export const MODEL_CATALOG: readonly CatalogModel[] = [
-  // Anthropic (newest first: sonnet-5 > fable-5 > opus-4-8 > opus-4-7 > sonnet-4-6 > opus-4-6 > haiku-4-5)
+  // Anthropic (newest first: sonnet-5 > fable-5 > opus-4-8 > opus-4-7 > sonnet-4-6 > opus-4-6). 4.5-and-below dropped from jeo's exposed model list per user direction.
   { canonical: "claude-sonnet-5", provider: "anthropic", providerModel: "claude-sonnet-5", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-06" },
   // Fable 5 = Anthropic's most capable widely-released model (adaptive thinking always on);
   // Mythos 5 is limited-availability (Project Glasswing) but callable by id for approved accounts.
@@ -92,12 +92,11 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   // The nativizable path still replays signature-only thinking blocks for cross-turn continuity.
   // The 4.6 generation onward is 1M context / 128k sync max output (Anthropic docs:
   // Opus 4.8 & Sonnet 5 comparison table; Opus 4.6/4.7, Sonnet 4.6 share the gen's
-  // dateless-snapshot 1M/128k + 300k batch-output beta). Dated pre-4.6 ids keep 200k/64k.
+  // dateless-snapshot 1M/128k + 300k batch-output beta).
   { canonical: "claude-opus-4-8", provider: "anthropic", providerModel: "claude-opus-4-8", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-05" },
   { canonical: "claude-opus-4-7", provider: "anthropic", providerModel: "claude-opus-4-7", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-04" },
   { canonical: "claude-sonnet-4-6", provider: "anthropic", providerModel: "claude-sonnet-4-6", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-02" },
   { canonical: "claude-opus-4-6", provider: "anthropic", providerModel: "claude-opus-4-6", contextTokens: 1_000_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-02" },
-  { canonical: "claude-haiku-4-5", provider: "anthropic", providerModel: "claude-haiku-4-5-20251001", contextTokens: 200_000, maxOutputTokens: 64_000, thinking: FULL, images: true, releaseDate: "2025-10" },
   // OpenAI (newest first: gpt-5.6 > gpt-5.5 > gpt-5.4 > o4-mini/o3/gpt-4.1 > o3-mini > gpt-4o-mini > gpt-4o)
   { canonical: "gpt-5.6", provider: "openai", providerModel: "gpt-5.6", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-06" },
   { canonical: "gpt-5.5", provider: "openai", providerModel: "gpt-5.5", contextTokens: 400_000, maxOutputTokens: 128_000, thinking: FULL, images: true, releaseDate: "2026-04" },

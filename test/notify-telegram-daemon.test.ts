@@ -141,9 +141,12 @@ class FakeTelegramApi {
     this.topicsCreated.push({ chatId, name });
     return this.createForumTopicImpl(chatId, name);
   }
+  /** Overridable per-test to simulate a transient rename failure (e.g. a rate-limited editForumTopic call). */
+  editForumTopicImpl: (chatId: string | number, messageThreadId: number, name: string) => Promise<{ ok: boolean }> =
+    async () => ({ ok: true });
   async editForumTopic(chatId: string | number, messageThreadId: number, name: string): Promise<{ ok: boolean }> {
     this.topicsEdited.push({ chatId, messageThreadId, name });
-    return { ok: true };
+    return this.editForumTopicImpl(chatId, messageThreadId, name);
   }
   async getFile(fileId: string): Promise<{ ok: boolean; result?: { file_path?: string } }> {
     this.filesFetched.push(fileId);
@@ -581,6 +584,37 @@ test("identity_header renames an already-created topic via editForumTopic ONCE, 
 
   await daemon.handleSessionMessage(conn, JSON.stringify({ type: "identity_header", sessionId: conn.sessionId, repo: "my-repo", branch: "main", cwd: "/tmp/x" }));
   expect(telegram.topicsEdited.length).toBe(1);
+});
+
+test("identity_header rename retries on the NEXT identical header after a transient editForumTopic failure (does not get stuck at the provisional name)", async () => {
+  const telegram = new FakeTelegramApi();
+  const daemon = makePerSessionDaemon(telegram);
+  const conn = sessionConn();
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+  expect(telegram.topicsCreated.length).toBe(1);
+
+  telegram.editForumTopicImpl = async () => {
+    throw new Error("rate limited");
+  };
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "identity_header", sessionId: conn.sessionId, repo: "my-repo", branch: "main", cwd: "/tmp/x" }));
+  // The attempt happened (and failed) — the daemon must not have silently
+  // skipped it.
+  expect(telegram.topicsEdited.length).toBe(1);
+
+  // The SAME identity is reasserted (e.g. the next context_update-adjacent
+  // identity_header). Without the fix, the local registry would already
+  // believe the rename applied and skip retrying — editForumTopic would
+  // never be called again, leaving the remote topic stuck at its
+  // provisional "session <shortId>" name forever.
+  telegram.editForumTopicImpl = async () => ({ ok: true });
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "identity_header", sessionId: conn.sessionId, repo: "my-repo", branch: "main", cwd: "/tmp/x" }));
+  expect(telegram.topicsEdited.length).toBe(2);
+  expect(telegram.topicsEdited[1]!.name).toBe("my-repo@main");
+
+  // Now that the rename has actually landed, a THIRD identical header is a
+  // true no-op (no further editForumTopic calls).
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "identity_header", sessionId: conn.sessionId, repo: "my-repo", branch: "main", cwd: "/tmp/x" }));
+  expect(telegram.topicsEdited.length).toBe(2);
 });
 
 test("context_update frame sends a message reflecting phase/summary/model", async () => {

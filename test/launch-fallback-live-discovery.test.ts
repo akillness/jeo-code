@@ -170,8 +170,8 @@ test("equivalentRouteFallback: does not call discoverModels when the static cata
     routing: { enabled: true },
   }, "what is this?");
 
-  expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "claude-haiku-4-5"]);
-  // Static catalog (claude-haiku-4-5, trivial tier) already satisfies the fallback —
+  expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini", "gpt-4.1"]);
+  // Static catalog (gpt-4.1, trivial tier) already satisfies the fallback —
   // the empty-pool discovery warm-up must never fire when candidates already exist.
   expect(discoverCalls).toBe(0);
 });

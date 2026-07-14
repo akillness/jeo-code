@@ -47,7 +47,7 @@ test("catalog entries are well-formed (provider, positive limits)", () => {
 
 test("findCatalogModel matches canonical and provider model id", () => {
   expect(findCatalogModel("gpt-4o")?.provider).toBe("openai");
-  expect(findCatalogModel("claude-haiku-4-5-20251001")?.canonical).toBe("claude-haiku-4-5");
+  expect(findCatalogModel("ollama/qwen2.5:0.5b")?.canonical).toBe("qwen2.5");
   expect(findCatalogModel("nope")).toBeUndefined();
 });
 
@@ -149,8 +149,8 @@ test("4.6+ Anthropic models are catalogued as 1M/128k with full thinking", () =>
     expect(m?.maxOutputTokens).toBe(128_000);
     expect(m?.thinking).toEqual(["low", "medium", "high", "xhigh"]);
   }
-  // The retained sub-4.6 id (haiku) keeps the older 200k/64k shape.
-  expect(findCatalogModel("claude-haiku-4-5")?.contextTokens).toBe(200_000);
+  // haiku-4-5 (sub-4.6) was dropped from the exposed catalog per user direction.
+  expect(findCatalogModel("claude-haiku-4-5")).toBeUndefined();
 });
 
 test("inferCatalogMetadata: fable/mythos + single-digit 5th-gen ids infer Anthropic thinking", () => {

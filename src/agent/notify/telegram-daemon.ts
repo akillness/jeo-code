@@ -507,13 +507,21 @@ export class TelegramDaemon {
         // `getOrCreateTopic` only names a topic on FIRST creation — a later,
         // more-informative identity (the provisional short-id name gets
         // superseded once the real repo/branch is known) needs an explicit
-        // rename, applied only when the name actually changed (dedup).
-        if (this.topics.applyName(conn.sessionId, name)) {
+        // rename, attempted only when the name actually changed (dedup).
+        // The LOCAL registry is committed (`applyName`) only AFTER
+        // `editForumTopic` confirms success — committing it first would let a
+        // transient remote failure leave the registry believing the rename
+        // already applied, so the next identical `identity_header`
+        // reassertion would silently skip retrying and the remote topic
+        // would stay stuck at its provisional name forever.
+        if (this.topics.wouldRename(conn.sessionId, name)) {
           try {
             await this.opts.telegram.editForumTopic(this.opts.chatId, topicId, name);
+            this.topics.applyName(conn.sessionId, name);
             void this.persistTopics();
           } catch {
-            // best-effort — a failed rename just leaves the provisional name.
+            // best-effort — a failed rename just leaves the provisional name,
+            // and (unlike before) leaves the registry retry-eligible too.
           }
         }
       }

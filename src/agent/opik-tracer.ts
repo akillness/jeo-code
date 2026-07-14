@@ -355,9 +355,9 @@ export function wrapEvents(events: AgentLoopEvents | undefined, tracer: OpikTrac
       } catch { /* I2 */ }
       base.onToolResult?.(tool, success, output);
     },
-    onUsage(usage: { inputTokens: number; outputTokens: number }) {
+    onUsage(usage: { inputTokens: number; outputTokens: number }, lastCall?: { inputTokens: number; outputTokens: number }) {
       try { tracer.usage(usage); } catch { /* I2 */ }
-      base.onUsage?.(usage);
+      base.onUsage?.(usage, lastCall);
     },
   };
   return wrapped;

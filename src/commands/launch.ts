@@ -37,8 +37,9 @@ import { staticCompletionContext, readlineCompleter, formatCompletionPreview, fo
 import { normalizeBaseUrl } from "./setup-helpers";
 import { EVOLUTION_STAGES, animateAsciiArt } from "../tui/components/ascii-art";
 import { getEvolutionTip } from "../tui/components/evolution";
-import { renderWelcome, playWelcomeSweep } from "../tui/components/welcome";
 import { checkForUpdate, readUpdateCache, writeUpdateCache } from "../util/update-check";
+import { checkNofileLimit } from "../util/nofile-limit";
+import { renderWelcome, playWelcomeSweep } from "../tui/components/welcome";
 import { jeoEnv } from "../util/env";
 import { renderUpdateBox } from "../tui/components/update-box";
 import { consumeLaunchWhatsNew } from "../util/whats-new";
@@ -366,6 +367,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  // macOS startup preflight: a low soft fd limit (BSD default is often 256-1024)
+  // surfaces as an opaque downstream EMFILE ("too many open files") from file
+  // watching, the browser tool, or a broad repo scan — warn up front with
+  // actionable guidance instead of letting the user hit that later. No-op on
+  // non-macOS platforms and opt-out-able via JEO_SKIP_NOFILE_CHECK=1.
+  const nofileWarning = checkNofileLimit();
+  if (nofileWarning) console.error(nofileWarning);
 
   if (flags.worktree) {
     const wt = resolveWorktree(cwd, flags.worktree);

@@ -110,6 +110,22 @@ export class TopicRegistry {
   }
 
   /**
+   * Pure peek: true when applying `name` to `sessionId`'s topic would
+   * actually change it (no topic record, or already at that name, both
+   * return false). Does NOT mutate — pair with `applyName`, called only
+   * AFTER a remote rename (`editForumTopic`) confirms success. Committing
+   * the name here unconditionally (as a prior version did) let a transient
+   * remote failure leave the LOCAL registry believing the rename had already
+   * applied, so the next identical `identity_header` reassertion silently
+   * skipped retrying and the remote topic stayed stuck at its provisional
+   * name forever.
+   */
+  wouldRename(sessionId: string, name: string): boolean {
+    const record = this.topics.get(sessionId);
+    return !!record && record.name !== name;
+  }
+
+  /**
    * Record the topic's applied title. Returns `true` when it changed (so the
    * caller should `editForumTopic`), `false` when already current or unknown.
    */

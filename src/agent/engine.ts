@@ -238,8 +238,13 @@ export interface AgentLoopEvents {
   onToolProgress?(tool: string, partial: string): void;
   /** Transient progress notice (e.g. "rate limited — retrying in Ns"); NOT a terminal error. */
   onNotice?(message: string): void;
-  /** Cumulative token usage after each LLM call — drives live usage meters. */
-  onUsage?(usage: { inputTokens: number; outputTokens: number }): void;
+  /** Cumulative token usage after each LLM call — drives live usage meters (billing/
+   *  `/usage` totals). `lastCall` is the SAME provider response's OWN reported tokens
+   *  (not summed across steps) — since every step resends the full growing history,
+   *  `lastCall.inputTokens` is the provider's own measurement of the CURRENT context
+   *  size and is the correct source for a context-window percentage meter (gjc v0.10.1
+   *  parity: provider-reported usage as SSOT, not a client-side character estimate). */
+  onUsage?(usage: { inputTokens: number; outputTokens: number }, lastCall?: { inputTokens: number; outputTokens: number }): void;
   /** Accumulated streamed model response so far — drives the live reasoning view. Only
    *  requested when a consumer sets it (the engine streams solely for the TUI). */
   onModelStream?(textSoFar: string): void;
@@ -506,6 +511,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   let stopKind: "steps" | "time" = "steps";
   let step = 1;
   const acc = { inputTokens: 0, outputTokens: 0 };
+  // The most recent SINGLE provider call's OWN reported usage (never summed across
+  // steps) — each step resends the whole growing history, so this is the provider's
+  // own measurement of the CURRENT context size, not a cumulative billing total.
+  let lastCallUsage: { inputTokens: number; outputTokens: number } | undefined;
   let sawUsage = false;
   const finish = (r: AgentLoopResult): AgentLoopResult => (sawUsage ? { ...r, usage: { ...acc } } : r);
   // Salvage a spin-stop into a useful answer (C): instead of returning a bare
@@ -750,7 +759,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
               reasoningEffort: opts.reasoningEffort,
               signal: stepSignal,
               sessionKey: opts.sessionKey,
-              onUsage: u => { acc.inputTokens += u.inputTokens ?? 0; acc.outputTokens += u.outputTokens ?? 0; sawUsage = true; },
+              onUsage: u => { const inputTokens = u.inputTokens ?? 0, outputTokens = u.outputTokens ?? 0; acc.inputTokens += inputTokens; acc.outputTokens += outputTokens; lastCallUsage = { inputTokens, outputTokens }; sawUsage = true; },
               onToken,
               onReasoning,
               onReasoningStart: ev.onReasoningStart,
@@ -948,7 +957,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       return finish({ done: false, steps: step, doneReason: `Error: ${message}` });
     }
     flushStreams(); // deliver the final (possibly throttled-out) snapshot before parse/commit
-    if (sawUsage) ev.onUsage?.({ ...acc });
+    if (sawUsage) ev.onUsage?.({ ...acc }, lastCallUsage ? { ...lastCallUsage } : undefined);
 
     let invocation: any;
     try {

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { dispatch } from "./cli/runner";
 import { restoreTerminalState } from "./util/terminal-restore";
+import { isBrokenPipeError, BROKEN_PIPE_EXIT_CODE } from "./util/broken-pipe";
 import pkg from "../package.json";
 
 const APP_NAME = "jeo";
@@ -22,8 +23,14 @@ process.title = APP_NAME;
 // the REPL has put stdin in raw mode + enabled bracketed paste. Without this the
 // shell is left mute ("error printed, then input is dead"). Restore the terminal
 // SYNCHRONOUSLY, print one clean line, and exit non-zero — never a raw stack dump.
+//
+// A downstream pipe reader that stops early (`jeo --help | head`, a vanished
+// socket peer) makes the NEXT stdout/stderr write throw EPIPE from an async tick
+// outside any user try/catch — that is NOT a real fatal, so it exits quietly
+// (matching the shell's own SIGPIPE exit code) instead of dumping the raw error.
 const fatal = (err: unknown): never => {
   restoreTerminalState();
+  if (isBrokenPipeError(err)) process.exit(BROKEN_PIPE_EXIT_CODE);
   const msg = (err as Error)?.message ?? String(err);
   process.stderr.write(`error: ${msg}\n`);
   process.exit(1);
@@ -37,6 +44,7 @@ try {
 } catch (err) {
   // Service-readiness: never surface a raw stack trace to users; clean error + non-zero exit.
   restoreTerminalState();
+  if (isBrokenPipeError(err)) process.exit(BROKEN_PIPE_EXIT_CODE);
   process.stderr.write(`error: ${(err as Error)?.message ?? String(err)}\n`);
   process.exit(1);
 }

@@ -65,7 +65,7 @@ export interface SearchProviderDef {
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const WEB_SEARCH_TOOL_TYPE = "web_search_20250305";
-const DEFAULT_SEARCH_MODEL = "claude-haiku-4-5";
+const DEFAULT_SEARCH_MODEL = "claude-sonnet-4-6"; // haiku-4-5 dropped from jeo's exposed model list (>=4.6 only); sonnet-4-6 is the cheapest surviving Anthropic model
 const DEFAULT_MAX_TOKENS = 4096;
 const HARD_TIMEOUT_MS = 90_000;
 const SEARCH_SYSTEM_PROMPT =

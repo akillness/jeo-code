@@ -129,6 +129,41 @@ test("applyName: returns false for a session with no topic record", () => {
   expect(registry.applyName("no-such-session", "anything")).toBe(false);
 });
 
+// ── wouldRename ──────────────────────────────────────────────────────────────
+
+test("wouldRename: true for a new name on an existing topic, and does NOT mutate the record", async () => {
+  const registry = new TopicRegistry();
+  await registry.getOrCreateTopic("session-a", async () => 42, () => 1000);
+  const before = registry.get("session-a");
+  expect(registry.wouldRename("session-a", "repo@main")).toBe(true);
+  expect(registry.get("session-a")).toEqual(before);
+  expect(registry.get("session-a")?.name).toBeUndefined();
+});
+
+test("wouldRename: false once applyName has committed the same name", async () => {
+  const registry = new TopicRegistry();
+  await registry.getOrCreateTopic("session-a", async () => 42, () => 1000);
+  registry.applyName("session-a", "repo@main");
+  expect(registry.wouldRename("session-a", "repo@main")).toBe(false);
+  expect(registry.wouldRename("session-a", "repo@feature")).toBe(true);
+});
+
+test("wouldRename: false for a session with no topic record", () => {
+  const registry = new TopicRegistry();
+  expect(registry.wouldRename("no-such-session", "anything")).toBe(false);
+});
+
+test("wouldRename: repeated calls with a failed-to-commit name stay true (peek never mutates, so a caller can retry after a failed remote rename)", async () => {
+  const registry = new TopicRegistry();
+  await registry.getOrCreateTopic("session-a", async () => 42, () => 1000);
+  expect(registry.wouldRename("session-a", "repo@main")).toBe(true);
+  // Simulate: caller checked wouldRename, attempted a remote rename, it
+  // failed, so applyName was never called — the peek must still say "yes,
+  // this would still be a change" on the next attempt.
+  expect(registry.wouldRename("session-a", "repo@main")).toBe(true);
+  expect(registry.get("session-a")?.name).toBeUndefined();
+});
+
 // ── delete ───────────────────────────────────────────────────────────────────
 
 test("delete: removes the record, reverse lookup and get() both become undefined, returns true", async () => {

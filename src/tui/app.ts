@@ -453,7 +453,11 @@ export class LaunchTui {
     this.draw();
   }
 
-  /** Update estimated context usage shown in the footer. */
+  /** Seed the footer's context meter with a client-side character-count ESTIMATE
+   *  before the turn's first provider call returns (called once, right after the
+   *  user prompt is appended). The `onUsage` handler below overwrites
+   *  `contextUsedTokens` with the provider's own reported usage the moment a real
+   *  response arrives, so this estimate is only ever visible for the pre-call gap. */
   setContextUsage(usedTokens: number, maxTokens?: number): void {
     this.footer.contextUsedTokens = usedTokens;
     this.footer.contextMaxTokens = maxTokens;
@@ -719,10 +723,16 @@ export class LaunchTui {
         this.footer.provider = provider;
         this.draw();
       },
-      onUsage: (u: { inputTokens: number; outputTokens: number }) => {
-        // Live cumulative token usage for the turn — shown in the final summary
-        // (and available to the footer meter).
+      onUsage: (u: { inputTokens: number; outputTokens: number }, lastCall?: { inputTokens: number; outputTokens: number }) => {
+        // Cumulative turn usage — shown in the final summary/cost meter (unchanged).
         this.turnUsage = u;
+        // Context-window meter (gjc v0.10.1 parity): once a provider response reports
+        // its OWN usage, that call's `inputTokens` IS the provider's own measurement of
+        // the current context size — since every step resends the whole growing
+        // history, this is strictly more accurate than the pre-call character-count
+        // estimate `setContextUsage` seeded the footer with. Overwrite the estimate the
+        // instant real data exists; `contextMaxTokens` (the catalog ceiling) is untouched.
+        if (lastCall) this.footer.contextUsedTokens = lastCall.inputTokens;
         this.draw();
       },
     };

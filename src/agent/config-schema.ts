@@ -226,7 +226,7 @@ export const ConfigSchema = z
 export type ValidatedConfig = z.infer<typeof ConfigSchema>;
 
 /** Validate parsed JSON against the config schema. Returns a tagged result, never throws. */
-const BUILTIN_ALIASES = new Set(["fast", "local", "sonnet", "opus", "haiku", "gpt", "flash"]);
+const BUILTIN_ALIASES = new Set(["fast", "local", "sonnet", "opus", "gpt", "flash"]);
 
 function normalizeModelId(id: string | undefined, aliases: Record<string, string>): string | undefined {
   if (!id) return id;

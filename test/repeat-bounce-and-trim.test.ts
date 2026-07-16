@@ -34,6 +34,150 @@ test("repeat bounce: a 2nd identical write is SKIPPED with a corrective prompt; 
   expect(writeRuns).toBe(1); // the duplicate was skipped, not re-executed
 });
 
+test("refusal reset: an elided read result permits exactly one identical replay, then the repeat guard resumes", async () => {
+  let llmCalls = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      llmCalls++;
+      if (llmCalls === 1 || llmCalls === 4 || llmCalls === 5) {
+        return JSON.stringify({ tool: "read", arguments: { filePath: "notes.txt" } });
+      }
+      if (llmCalls === 2 || llmCalls === 3) {
+        throw new Error("Anthropic returned no content (stop_reason=refusal).");
+      }
+      return JSON.stringify({ tool: "done", arguments: { reason: "read recovery completed" } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  let readRuns = 0;
+  const history: Message[] = [{ role: "system", content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 10,
+    budget: { maxExtensions: 0 },
+    tools: {
+      read: async () => {
+        readRuns++;
+        return { success: true, output: `read run ${readRuns}: ${"source ".repeat(80)}` };
+      },
+    },
+  });
+
+  expect(result.done).toBe(true);
+  expect(result.doneReason).toBe("read recovery completed");
+  expect(llmCalls).toBe(6);
+  // The reset explicitly removed the only prior read result before authorizing its replay.
+  expect(history.some(m => m.role === "user" && m.content.includes("older tool outputs were elided"))).toBe(true);
+  expect(history.some(m => m.role === "user" && m.content.includes("Tool [read] result (ok): [elided mid-turn"))).toBe(true);
+  // Calls 1, 4, and 5 ask for the same read. Only the post-reset call may run.
+  expect(readRuns).toBe(2);
+  const corrections = history.filter(m => m.role === "user" && m.content.includes("repeated the EXACT same 'read' call"));
+  expect(corrections).toHaveLength(1);
+  expect(corrections[0]!.content).toContain("NOT re-executed");
+});
+
+test("refusal reset: an identical write remains skipped after its result is elided", async () => {
+  let llmCalls = 0;
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      llmCalls++;
+      if (llmCalls === 1 || llmCalls === 4) {
+        return JSON.stringify({ tool: "write", arguments: { filePath: "notes.txt", content: "replacement" } });
+      }
+      if (llmCalls === 2 || llmCalls === 3) {
+        throw new Error("Anthropic returned no content (stop_reason=refusal).");
+      }
+      if (llmCalls === 5) return JSON.stringify({ tool: "bash", arguments: { command: "bun test" } });
+      return JSON.stringify({ tool: "done", arguments: { reason: "write guard preserved" } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  let writeRuns = 0;
+  let verificationRuns = 0;
+  const history: Message[] = [{ role: "system", content: "sys" }];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 10,
+    budget: { maxExtensions: 0 },
+    tools: {
+      write: async () => {
+        writeRuns++;
+        return { success: true, output: `write run ${writeRuns}: ${"changed ".repeat(80)}` };
+      },
+      bash: async () => {
+        verificationRuns++;
+        return { success: true, output: "1 pass 0 fail" };
+      },
+    },
+  });
+
+  expect(result.done).toBe(true);
+  expect(result.doneReason).toBe("write guard preserved");
+  expect(llmCalls).toBe(6);
+  expect(history.some(m => m.role === "user" && m.content.includes("older tool outputs were elided"))).toBe(true);
+  expect(history.some(m => m.role === "user" && m.content.includes("Tool [write] result (ok): [elided mid-turn"))).toBe(true);
+  // The refusal reset never opens a mutation replay path: the duplicate write is skipped.
+  expect(writeRuns).toBe(1);
+  expect(verificationRuns).toBe(1);
+  const corrections = history.filter(m => m.role === "user" && m.content.includes("repeated the EXACT same 'write' call"));
+  expect(corrections).toHaveLength(1);
+  expect(corrections[0]!.content).toContain("NOT re-executed");
+});
+
+test("context-overflow elision: an identical read-only batch replays without a repeat correction", async () => {
+  let llmCalls = 0;
+  const batch = {
+    tools: [
+      { tool: "read", arguments: { filePath: "notes.txt" } },
+      { tool: "read", arguments: { filePath: "notes.txt" } },
+      { tool: "read", arguments: { filePath: "notes.txt" } },
+    ],
+  };
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      llmCalls++;
+      if (llmCalls === 1 || llmCalls === 3) return JSON.stringify(batch);
+      if (llmCalls === 2) throw new Error("HTTP 400: context_length_exceeded");
+      return JSON.stringify({ tool: "done", arguments: { reason: "overflow batch replay completed" } });
+    },
+  }));
+  const { runAgentLoop } = await import("../src/agent/engine");
+  const notices: string[] = [];
+  let readRuns = 0;
+  // A carried-over turn has older results. Keeping the newest two forces the
+  // provider-directed trim to elide exactly one stale result while preserving the
+  // just-run three-read batch as the replay candidate.
+  const history: Message[] = [
+    { role: "system", content: "sys" },
+    { role: "user", content: `Tool [search] result (ok):\n${"stale-a ".repeat(500)}` },
+    { role: "user", content: `Tool [search] result (ok):\n${"stale-b ".repeat(500)}` },
+  ];
+  const result = await runAgentLoop(history, {
+    cwd: process.cwd(),
+    maxSteps: 10,
+    maxHistoryTokens: 10_000,
+    budget: { maxExtensions: 0 },
+    events: { onNotice: notice => notices.push(notice) },
+    tools: {
+      read: async () => {
+        readRuns++;
+        const body = readRuns % 3 === 1 ? "oldest ".repeat(2_000) : "recent ".repeat(450);
+        return { success: true, output: `read run ${readRuns}: ${body}` };
+      },
+    },
+  });
+
+  expect(result.done, result.doneReason).toBe(true);
+  expect(result.doneReason).toBe("overflow batch replay completed");
+  expect(llmCalls).toBe(4);
+  // All three calls in the first batch replay once after the provider-directed trim.
+  expect(readRuns).toBe(6);
+  expect(notices.some(notice => notice.includes("provider reported context overflow — elided 1 older tool result"))).toBe(true);
+  expect(history.some(m => m.role === "user" && m.content.includes("Tool [search] result (ok): [elided mid-turn"))).toBe(true);
+  expect(history.some(m => m.role === "user" && m.content.includes("repeated the EXACT same tool batch"))).toBe(false);
+});
+
+
 test("repeat bounce: repeating THROUGH both corrections still stops the turn (anti-spin)", async () => {
   await mock.module("../src/agent/loop", () => ({
     // jsonMode:false is the consolidation salvage call — return a plain wrap-up so the

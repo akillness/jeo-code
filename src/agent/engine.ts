@@ -108,6 +108,16 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
   browser: createBrowserTool(),
   bisect: (a, cwd) => bisectTool(a.good, a.bad, a.run, !!a.invert, a.maxSteps, a.stepTimeoutMs, cwd),
 };
+
+/** Tool names whose calls have no workspace side effects. Shared by execution,
+ *  failure accounting, and the refusal-recovery replay exemption. */
+const READONLY_TOOL_NAMES: Record<string, true> = {
+  read: true,
+  find: true,
+  search: true,
+  ls: true,
+  web_search: true,
+};
 /** Tool-protocol description injected into the system prompt. */
 export const TOOL_PROTOCOL = [
   "You have these tools (call exactly ONE per step, or batch multiple independent calls):",
@@ -617,6 +627,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
   // resend is exactly as safe as the refusal ladder's rung-1 free resend below.
   let transientNetworkRetries = 0;
   let lastSig = "";
+  // Context recovery can erase evidence the model was explicitly told it may
+  // re-run. Consume this exact prior signature at the next valid tool decision;
+  // only an identical all-read-only batch can bypass the normal repeat correction once.
+  let elidedReadReplaySig: string | null = null;
   let repeatCount = 0;
   // Cycle guard (the A↔B ping-pong the exact-repeat guard cannot see): the recent
   // executed step signatures, as fixed-size digests. When a full window cycles
@@ -793,6 +807,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
         // this prompt — freeing real space beats keeping evidence that can be re-run.
         const res = trimToolResultsInPlace(history, { budgetTokens: Math.max(1, Math.floor(maxHistoryTokens / 2)), keepRecent: 2 });
         if (res.trimmed > 0) {
+          if (lastSig) elidedReadReplaySig = lastSig;
           ev.onNotice?.(`provider reported context overflow — elided ${res.trimmed} older tool result(s), retrying once`);
           continue; // free retry: the step counter is unchanged
         }
@@ -839,6 +854,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
           const strippedTurns = stripReasoningArtifactsInPlace(history);
           const parts: string[] = [];
           if (res.trimmed > 0) parts.push(`reset ${res.trimmed} tool result(s)`);
+          if (res.trimmed > 0 && lastSig) elidedReadReplaySig = lastSig;
           if (strippedTurns > 0) parts.push(`dropped thinking replay from ${strippedTurns} turn(s)`);
           ev.onNotice?.(
             parts.length
@@ -1161,7 +1177,16 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
 
 
     const sig = callSigs.length === 1 ? callSigs[0] : hashSignature(callSigs.join(" | "));
-    if (sig === lastSig) repeatCount++;
+    const replayingElidedReadOnlyBatch =
+      elidedReadReplaySig === sig &&
+      toolCalls.every(call => READONLY_TOOL_NAMES[call.tool] === true);
+    // The exemption is tied to the next valid tool-call decision, not to a later
+    // matching call. A changed, mutating, or unknown-tool batch consumes it too.
+    elidedReadReplaySig = null;
+    if (replayingElidedReadOnlyBatch) {
+      repeatCount = 1;
+      lastSig = sig;
+    } else if (sig === lastSig) repeatCount++;
     else {
       repeatCount = 1;
       lastSig = sig;
@@ -1261,13 +1286,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
       return { success, output };
     };
 
-    const READONLY_TOOLS = new Set(["read", "find", "search", "ls", "web_search"]);
     const WRITE_TOOLS = new Set(["write", "edit"]);
     // Batch grouping → concurrency plan (plan/gjc-inheritance.md cycle 12):
     //   read group      — consecutive read-only calls run in parallel (safe).
     //   write group     — consecutive write/edit calls to DISTINCT files run in
-    //                     parallel; a same-file (or path-less) collision opens a
-    //                     sequential boundary so ordered edits to one file stay ordered.
     //   exclusive group — bash (and anything else) always runs alone, in order.
     // Reads and writes never share a group, so a read can never race a write.
     type ToolGroup = {
@@ -1288,7 +1310,7 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     for (let i = 0; i < toolCalls.length; i++) {
       const entry = { ...toolCalls[i], index: i };
       const last = groups[groups.length - 1];
-      if (READONLY_TOOLS.has(entry.tool)) {
+      if (READONLY_TOOL_NAMES[entry.tool] === true) {
         if (last && last.kind === "read") last.calls.push(entry);
         else groups.push({ kind: "read", calls: [entry] });
       } else if (WRITE_TOOLS.has(entry.tool)) {
@@ -1442,11 +1464,10 @@ export async function runAgentLoop(history: Message[], opts: AgentLoopOptions): 
     // Read-only-only steps keep the old any-success rule.
     const nonTrivial = toolCalls
       .map((c, i) => ({ tool: c.tool, r: results[i] }))
-      .filter(x => !READONLY_TOOLS.has(x.tool) && x.r.executed);
+      .filter(x => READONLY_TOOL_NAMES[x.tool] !== true && x.r.executed);
     const stepSuccess = nonTrivial.length > 0
       ? nonTrivial.some(x => x.r.success)
       : results.some(r => r.success);
-
     if (stepSuccess) {
       consecutiveFailures = 0;
     } else if (++consecutiveFailures >= MAX_FAILURES) {

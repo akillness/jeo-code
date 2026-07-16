@@ -871,6 +871,33 @@ test("post-call reroute: plain OpenAI no-content retry switches to same-tier fal
   });
 });
 
+test("post-call reroute: a repeat stopClass is terminal even when an equivalent is available", async () => {
+  await withRoutingProviderEnvCleared(async () => {
+    const guardStop = {
+      done: false,
+      steps: 4,
+      doneReason: "opaque guard terminal wording",
+      stopClass: "repeat" as const,
+    };
+    runAgentLoopDelegate = async (_history, opts) => {
+      if (opts.model === "gpt-4o-mini") return guardStop;
+      return { done: true, steps: 1, doneReason: `completed on ${opts.model}` };
+    };
+
+    const { calls, logs } = await runOneTurnWithLogs({
+      providers: { anthropic: "test-anthropic-key", openai: "test-openai-key" },
+      defaultModel: "claude-sonnet-4-6",
+      roles: { smol: "gpt-4o-mini" },
+      routing: { enabled: true },
+    }, "what is this?");
+
+    // A guard stop is terminal for this turn: another engine would lose its
+    // anti-spin state and could re-execute the mutation that triggered it.
+    expect(calls.map(c => c.model)).toEqual(["gpt-4o-mini"]);
+    expect(logs.some(l => l.includes("[route]") && l.includes("switching to equivalent"))).toBe(false);
+  });
+});
+
 test("post-call reroute: recoverable failure on first fallback keeps trying the next servable equivalent", async () => {
   await withRoutingProviderEnvCleared(async () => {
     const recoverableFailures: Record<string, true> = { "gpt-4o-mini": true, "gpt-4.1": true };

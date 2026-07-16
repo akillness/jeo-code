@@ -1696,7 +1696,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           ? Math.floor(routeFallbackMaxRaw)
           : 3;
         for (let routeFallbackAttempt = 0; routeFallbackAttempt < routeFallbackMax; routeFallbackAttempt++) {
-          const routedFailureReason = !result.done ? routeFailureReason(result.doneReason) : null;
+          // A loop guard is a local safety boundary, not a provider failure. A
+          // fresh loop on an equivalent model loses the guard state and could
+          // re-execute a previously skipped mutation.
+          const routedFailureReason = !result.done && !result.stopClass
+            ? routeFailureReason(result.doneReason)
+            : null;
           if (!routedFailureReason) break;
           const fallback = await equivalentRouteFallback(fallbackBaseDecision, routedFailureReason, [...attemptedRouteModels]);
           if (!fallback) break;

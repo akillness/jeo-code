@@ -2,6 +2,7 @@ import { test, expect, mock, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { credentialScopeFor } from "../src/agent/prompt-router";
 
 // Rate-limit fast fallback for `runConsensusCriticGate` (mirrors the same pattern
 // wired into task-tool.ts's `runSubagentOnce` and launch.ts's turn-level
@@ -64,7 +65,7 @@ async function writeConfig(config: Record<string, unknown>): Promise<void> {
 
 test("runConsensusCriticGate: 429 with a genuinely different-credential-scope fallback available switches models and completes", async () => {
   await withRoutingProviderEnvCleared(async () => {
-    await writeConfig({
+    const config = {
       // anthropic served via OAuth subscription (one shared rate-limit window);
       // openai served via an independent API key — a genuinely different
       // credential scope per credentialScopeFor's classification.
@@ -72,7 +73,8 @@ test("runConsensusCriticGate: 429 with a genuinely different-credential-scope fa
       oauth: { anthropic: OAUTH_STAMP },
       defaultModel: "claude-sonnet-4-6",
       subagents: { critic: { model: "claude-sonnet-4-6" } },
-    });
+    };
+    await writeConfig(config);
 
     const modelsCalled: (string | undefined)[] = [];
     const onRetryReturns: (void | false)[] = [];
@@ -107,9 +109,16 @@ test("runConsensusCriticGate: 429 with a genuinely different-credential-scope fa
     // onRetry bailed (returned false) on the FIRST failed attempt — a fallback
     // WAS available, so the retry ladder never rode a backoff wait.
     expect(onRetryReturns).toEqual([false]);
-    // Switched to gpt-5.4 (API-key-served, independent budget) — NEVER to
-    // claude-sonnet-5 (same anthropic:oauth scope as the model that just 429'd).
-    expect(modelsCalled).toEqual(["claude-sonnet-4-6", "gpt-5.4", "gpt-5.4"]);
+    // The first call failed on the configured Anthropic OAuth model. A static
+    // OpenAI model or a live-discovered one may be the selected fallback.
+    const failedModel = "claude-sonnet-4-6";
+    const fallbackModel = modelsCalled[1];
+    expect(modelsCalled[0]).toBe(failedModel);
+    expect(fallbackModel).toBeDefined();
+    if (!fallbackModel) throw new Error("Expected a fallback model after the 429.");
+    expect(modelsCalled.slice(1)).toEqual([fallbackModel, fallbackModel]);
+    expect(fallbackModel).not.toBe(failedModel);
+    expect(credentialScopeFor(fallbackModel, config)?.key).not.toBe(credentialScopeFor(failedModel, config)?.key);
     expect(res.verdict).toBe("okay");
     expect(res.detail).toContain("verified against the repo on the fallback model");
 

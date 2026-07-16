@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.27] - 2026-07-16
+_Repeat-read recovery now survives both context-overflow and refusal-result elision without reopening mutating-call loops._
+
+### Fixed
+- **Exact repeat-read recovery after context elision** (`src/agent/engine.ts`) — after either provider context-overflow or refusal-result elision, the engine may replay its exact prior all-read-only tool batch once; mutation batches remain covered by the anti-spin guard.
+
+### Added
+- **Targeted regression coverage** (`test/repeat-bounce-and-trim.test.ts`) — covers one-time exact all-read-only replay after both elision paths and mutation anti-spin preservation.
+
+### Verified
+- Full `bun test` — 3079 pass / 0 fail across 304 files.
+- `bun run typecheck` — no errors.
+
 ## [0.8.26] - 2026-07-14
 _Model catalog cleanup (drop sub-4.6 Anthropic `claude-haiku-4-5` from the exposed catalog/aliases per user direction) plus a focused gap analysis against `gajae-code`'s (gjc) 0.8.0→0.10.1 release history (~200 PRs) — most of gjc's surface (RPC/ACP/coordinator-mcp/IRC-sidebar/psmux/Windows-team) doesn't exist in jeo's smaller architecture and was ruled out with direct evidence; a few genuinely applicable gaps were found and closed._
 

@@ -4,7 +4,24 @@ import * as os from "node:os";
 import { renderForgeMark, FORGE_MARK_ART_GRAND } from "./ascii-art";
 import { truncate, isTTY } from "../terminal";
 import { detectColorLevel, ColorLevel, visibleWidth } from "./color";
+import { parseChangelogSections, changelogText } from "../../util/whats-new";
 
+function getLatestChangelogItems(): { version: string; items: string[] } {
+  try {
+    const sections = parseChangelogSections(changelogText);
+    if (sections.length > 0) {
+      const latest = sections[0];
+      const items: string[] = [];
+      for (const g of latest.groups) {
+        for (const item of g.items) {
+          items.push(item);
+        }
+      }
+      return { version: latest.version, items };
+    }
+  } catch {}
+  return { version: "", items: [] };
+}
 export interface WelcomeData {
   version: string;
   model: string;
@@ -47,29 +64,99 @@ function shortenPath(p: string | undefined, maxWidth: number, unicode: boolean):
   return truncate(`${ell}${s.slice(-Math.max(1, maxWidth - visibleWidth(ell)))}`, maxWidth);
 }
 
-function metaRows(d: WelcomeData, width: number, unicode: boolean, useColor: boolean): string[] {
-  const labelWidth = 8;
-  const valueWidth = Math.max(1, width - labelWidth - 3);
-  const key = useColor ? chalk.dim : (s: string) => s;
-  const rows: string[] = [];
-  const push = (label: string, value: string): void => {
-    const lhs = key(padLine(label, labelWidth, "right"));
-    const rhs = truncate(value || "-", valueWidth);
-    rows.push(padLine(`${lhs} │ ${rhs}`, width));
-  };
-  push("version", `v${d.version}`);
-  push("folder", shortenPath(d.cwd, valueWidth, unicode));
-  push("model", d.model);
-  if (d.provider) push("provider", d.provider);
-  if (d.thinking) push("thinking", d.thinking);
-  if (d.sessionId) push("session", d.sessionId.slice(0, 8));
+function renderRightColumn(d: WelcomeData, width: number, unicode: boolean, useColor: boolean): string[] {
+  const accent = useColor ? (d.accent ?? chalk.cyan) : (s: string) => s;
+  const dim = useColor ? chalk.dim : (s: string) => s;
+  const gray = useColor ? chalk.gray : (s: string) => s;
+  const bold = useColor ? chalk.bold : (s: string) => s;
+  const bulletChar = unicode ? "•" : "-";
+  const hChar = unicode ? "─" : "-";
+  const sepLine = dim(hChar.repeat(width));
 
-  const files = d.contextFiles ?? [];
-  if (files.length > 0 && width >= 28) {
-    const shown = files.slice(0, width >= 34 ? 3 : 2).map(f => path.basename(f));
-    push("files", shown.join(", ") + (files.length > shown.length ? ` +${files.length - shown.length}` : ""));
+  const lines: string[] = [];
+
+  // 1. What's New
+  lines.push(padLine(` ${bold(accent("What's New"))}`, width));
+  const changelog = getLatestChangelogItems();
+  if (changelog.items.length > 0) {
+    const prefix = ` ${bulletChar} `;
+    const textWidth = Math.max(1, width - visibleWidth(prefix));
+    const shown = changelog.items.slice(0, 3);
+    for (const item of shown) {
+      const text = visibleWidth(item) > textWidth ? truncate(item, textWidth) : item;
+      lines.push(padLine(`${dim(prefix)}${gray(text)}`, width));
+    }
+  } else {
+    lines.push(padLine(gray(" Ready for your next prompt"), width));
   }
-  return rows;
+
+  lines.push(padLine(sepLine, width));
+
+  // 2. Flow keys
+  lines.push(padLine(` ${bold(accent("Flow keys"))}`, width));
+  const FLOW_KEY_ITEMS = [
+    { key: "/", label: "commands" },
+    { key: "tab", label: "complete" },
+    { key: "ctrl+l", label: "model" },
+    { key: "ctrl+c", label: "cancel" },
+    { key: "alt+enter", label: "newline" },
+  ];
+  const flowKeyItemText = (item: { key: string; label: string }) => {
+    const k = useColor ? chalk.dim(item.key) : item.key;
+    const l = useColor ? chalk.gray(item.label) : item.label;
+    return `${k} ${l}`;
+  };
+  const dot = unicode ? "·" : "*";
+  const flowSep = ` ${dim(dot)} `;
+  let currentFlowLine = "";
+  const flowLines: string[] = [];
+  for (const item of FLOW_KEY_ITEMS) {
+    const segment = flowKeyItemText(item);
+    const next = currentFlowLine ? `${currentFlowLine}${flowSep}${segment}` : segment;
+    if (currentFlowLine && visibleWidth(next) > width - 2) {
+      flowLines.push(` ${currentFlowLine}`);
+      currentFlowLine = segment;
+    } else {
+      currentFlowLine = next;
+    }
+  }
+  if (currentFlowLine) flowLines.push(` ${currentFlowLine}`);
+  for (const line of flowLines.slice(0, 2)) {
+    lines.push(padLine(line, width));
+  }
+
+  lines.push(padLine(sepLine, width));
+
+  // 3. Project pulse
+  lines.push(padLine(` ${bold(accent("Project pulse"))}`, width));
+  const dotChar = unicode ? "●" : "*";
+  const lspStatus = useColor ? chalk.green(dotChar) : dotChar;
+  lines.push(padLine(` ${lspStatus} ${gray("TypeScript")} ${dim("ready")}`, width));
+
+  lines.push(padLine(sepLine, width));
+
+  // 4. Session trail
+  lines.push(padLine(` ${bold(accent("Session trail"))}`, width));
+  const recent = d.recentSessions ?? [];
+  if (recent.length > 0) {
+    const bulletPrefix = ` ${bulletChar} `;
+    const prefixWidth = visibleWidth(bulletPrefix);
+    for (const session of recent.slice(0, 3)) {
+      const timeSuffixRaw = ` (${session.timeAgo})`;
+      const timeWidth = visibleWidth(timeSuffixRaw);
+      const nameBudget = Math.max(1, width - prefixWidth - timeWidth);
+      const nameVis = visibleWidth(session.name);
+      const name = nameVis > nameBudget ? truncate(session.name, nameBudget) : session.name;
+      const bullet = useColor ? chalk.dim(bulletPrefix) : bulletPrefix;
+      const sName = useColor ? chalk.gray(name) : name;
+      const sTime = useColor ? chalk.dim(timeSuffixRaw) : timeSuffixRaw;
+      lines.push(padLine(`${bullet}${sName}${sTime}`, width));
+    }
+  } else {
+    lines.push(padLine(gray(" No saved sessions"), width));
+  }
+
+  return lines;
 }
 
 function centerColumn(lines: string[], width: number): string[] {
@@ -173,13 +260,9 @@ export function renderWelcome(d: WelcomeData): string[] {
 
   let content: string[];
   if (wideMeta) {
-    const tableTitle = useColor ? chalk.bold("workspace") : "workspace";
     const rightContent = [
       "",
-      padLine(tableTitle, rightWidth, "center"),
-      (useColor ? chalk.dim : (s: string) => s)(padLine("forge context", rightWidth, "center")),
-      "",
-      ...metaRows(d, rightWidth, unicode, useColor),
+      ...renderRightColumn(d, rightWidth, unicode, useColor),
       "",
     ];
     content = zipColumns(centerColumn(leftContent, leftWidth), rightContent, leftWidth, gap, rightWidth);

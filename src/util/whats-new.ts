@@ -1,5 +1,6 @@
 import pkg from "../../package.json";
 import changelogText from "../../CHANGELOG.md" with { type: "text" };
+export { changelogText };
 import { compareVersions } from "../commands/update";
 import * as os from "node:os";
 import * as path from "node:path";

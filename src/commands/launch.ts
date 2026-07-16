@@ -2129,6 +2129,25 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const activeStartModel = sessionModel || defaultModel;
   const { provider: startProvider } = await describeModel(activeStartModel);
   const welcomeTheme = resolveTheme(process.env);
+
+  const formatTimeAgo = (isoString?: string): string => {
+    if (!isoString) return "unknown";
+    const diffMs = Date.now() - new Date(isoString).getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return "just now";
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays}d ago`;
+  };
+
+  const sessions = await listSessions(cwd || process.cwd());
+  const recentSessions = sessions.map(s => ({
+    name: s.title || s.preview || s.id,
+    timeAgo: formatTimeAgo(s.timestamp),
+  }));
+
   const welcomeData = {
     version: pkg.version,
     model: activeStartModel,
@@ -2137,6 +2156,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     thinking: sessionThinking ?? "medium",
     sessionId,
     contextFiles: contextFiles.map(f => f.path),
+    recentSessions,
     cols: terminalSize().cols,
     unicode: supportsUnicode(),
     color: welcomeTheme.color,

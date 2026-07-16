@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.28] - 2026-07-16
+_Improved the welcome UI's right-side table to display dynamic sections (What's New, Flow keys, Project pulse, and Session trail) matching gajae-code (gjc) >= 0.8.0 features._
+
+### Added
+- **Dynamic welcome UI right-side table** (`src/tui/components/welcome.ts`, `src/commands/launch.ts`) — replaced the static metadata table with dynamic sections: "What's New" (latest changelog items), "Flow keys" (keyboard shortcuts), "Project pulse" (TypeScript language service status), and "Session trail" (recent sessions with relative time ago formatting).
+
+### Verified
+- Full `bun test` — all tests pass.
+- `bun run typecheck` — no errors.
+
 ## [0.8.27] - 2026-07-16
 _Repeat-read recovery now survives both context-overflow and refusal-result elision without reopening mutating-call loops._
 

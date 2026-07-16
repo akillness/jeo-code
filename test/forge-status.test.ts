@@ -70,13 +70,13 @@ test("welcome forge uses right-side metadata table only on wide terminals", () =
   };
 
   const wide = renderWelcome({ ...data, cols: 120 });
-  expect(wide.some(line => line.includes("workspace"))).toBe(true);
-  expect(wide.some(line => line.includes("folder"))).toBe(true);
-  expect(wide.some(line => line.includes("version"))).toBe(true);
+  expect(wide.some(line => line.includes("What's New"))).toBe(true);
+  expect(wide.some(line => line.includes("Flow keys"))).toBe(true);
+  expect(wide.some(line => line.includes("Project pulse"))).toBe(true);
   for (const line of wide) expect(visibleWidth(line)).toBeLessThanOrEqual(119);
 
   const narrow = renderWelcome({ ...data, cols: 80 });
-  expect(narrow.some(line => line.includes("workspace"))).toBe(false);
+  expect(narrow.some(line => line.includes("What's New"))).toBe(false);
   for (const line of narrow) expect(visibleWidth(line)).toBeLessThanOrEqual(79);
 });
 

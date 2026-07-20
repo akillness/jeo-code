@@ -4,6 +4,8 @@ import {
   setWebSearchActiveModel,
   webSearchTool,
   parseAnthropicSearchResponse,
+  parseOpenAISearchResponse,
+  parseGeminiSearchResponse,
   formatWebSearchOutput,
   parseHtmlResults,
   parseLiteResults,
@@ -12,9 +14,10 @@ import {
 import { webSearchCardLines } from "../src/tui/components/forge";
 
 const SEARCH_ENV_KEYS = [
-  "JEO_SEARCH_PROVIDER", "JEO_SEARCH_PROVIDER",
-  "JEO_SEARCH_API_KEY", "JEO_SEARCH_API_KEY",
-  "JEO_SEARCH_MODEL", "JEO_SEARCH_MODEL",
+  "JEO_SEARCH_PROVIDER",
+  "JEO_SEARCH_API_KEY", "JEO_SEARCH_MODEL",
+  "JEO_SEARCH_API_KEY_OPENAI", "JEO_SEARCH_MODEL_OPENAI",
+  "JEO_SEARCH_API_KEY_GEMINI", "JEO_SEARCH_MODEL_GEMINI",
 ];
 
 function withSearchEnv(env: Record<string, string>, fn: () => Promise<void>): Promise<void> {
@@ -46,11 +49,39 @@ test("resolveSearchChain: active anthropic model + credentials → anthropic pri
   });
 });
 
-test("resolveSearchChain: model providers without a native search fall through to ddg", async () => {
+test("resolveSearchChain: a native provider without ITS OWN credentials falls through to ddg (never borrows another provider's key)", async () => {
   await withSearchEnv({ JEO_SEARCH_API_KEY: "sk-test" }, async () => {
-    // Credentials exist, but the chain is active-model-GATED (gjc), never
-    // credential-scanning: a gemini-model session does not silently use Anthropic.
+    // JEO_SEARCH_API_KEY is Anthropic-scoped only — a gemini-model session does
+    // NOT silently borrow it (gemini has its OWN native search, but gated on
+    // its OWN credential, JEO_SEARCH_API_KEY_GEMINI or a real Gemini API key).
     const chain = await resolveSearchChain({ modelProvider: "gemini" });
+    expect(chain.map(p => p.id)).toEqual(["duckduckgo"]);
+  });
+});
+
+test("resolveSearchChain: active openai model + ITS OWN credentials → openai primary, ddg fallback", async () => {
+  await withSearchEnv({ JEO_SEARCH_API_KEY_OPENAI: "sk-test-openai" }, async () => {
+    const chain = await resolveSearchChain({ modelProvider: "openai" });
+    expect(chain.map(p => p.id)).toEqual(["openai", "duckduckgo"]);
+  });
+});
+
+test("resolveSearchChain: active gemini model + ITS OWN credentials → gemini primary, ddg fallback", async () => {
+  await withSearchEnv({ JEO_SEARCH_API_KEY_GEMINI: "sk-test-gemini" }, async () => {
+    const chain = await resolveSearchChain({ modelProvider: "gemini" });
+    expect(chain.map(p => p.id)).toEqual(["gemini", "duckduckgo"]);
+  });
+});
+
+test("resolveSearchChain: antigravity sessions route to Gemini's native search, never to its own OAuth", async () => {
+  await withSearchEnv({ JEO_SEARCH_API_KEY_GEMINI: "sk-test-gemini" }, async () => {
+    const chain = await resolveSearchChain({ modelProvider: "antigravity" });
+    expect(chain.map(p => p.id)).toEqual(["gemini", "duckduckgo"]);
+  });
+  // Without a real GEMINI_API_KEY, an antigravity session's own (OAuth) credentials
+  // never qualify — antigravity has no native search of its own.
+  await withSearchEnv({}, async () => {
+    const chain = await resolveSearchChain({ modelProvider: "antigravity" });
     expect(chain.map(p => p.id)).toEqual(["duckduckgo"]);
   });
 });
@@ -168,6 +199,163 @@ test("formatWebSearchOutput: gjc card sections with a DYNAMIC provider label", (
   expect(ddg).toContain("Provider: DuckDuckGo");
   expect(ddg).toContain("No synthesized answer (see sources)");
   expect(ddg).toContain("- snip");
+});
+// ── OpenAI response parsing + live request shape ──────────────────────────────
+
+const OPENAI_FIXTURE = {
+  id: "resp_01TEST",
+  model: "gpt-4o-mini",
+  usage: { input_tokens: 14, output_tokens: 62 },
+  output: [
+    { type: "web_search_call", id: "ws_1", status: "completed", action: { type: "search", query: "hermes agent philosophy" } },
+    {
+      id: "msg_1",
+      type: "message",
+      status: "completed",
+      role: "assistant",
+      content: [
+        {
+          type: "output_text",
+          text: "Hermes Agent is a self-improving AI agent built by Nous Research.",
+          annotations: [
+            { type: "url_citation", start_index: 0, end_index: 12, url: "https://jimmysong.io/ai/hermes-agent/", title: "Hermes Agent | AI Native Landscape" },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+test("parseOpenAISearchResponse: maps Responses API output items into the unified shape", () => {
+  const r = parseOpenAISearchResponse(OPENAI_FIXTURE);
+  expect(r.provider).toBe("OpenAI");
+  expect(r.answer).toContain("self-improving AI agent");
+  expect(r.sources).toEqual([{ title: "Hermes Agent | AI Native Landscape", url: "https://jimmysong.io/ai/hermes-agent/" }]);
+  expect(r.citations).toEqual([{ url: "https://jimmysong.io/ai/hermes-agent/", title: "Hermes Agent | AI Native Landscape", citedText: "Hermes Agent" }]);
+  expect(r.searchQueries).toEqual(["hermes agent philosophy"]);
+  expect(r.usage).toEqual({ inputTokens: 14, outputTokens: 62, searchRequests: 1 });
+  expect(r.model).toBe("gpt-4o-mini");
+  expect(r.requestId).toBe("resp_01TEST");
+});
+
+test("webSearchTool: openai provider hits the real Responses API endpoint with the web_search tool", async () => {
+  await withSearchEnv({ JEO_SEARCH_PROVIDER: "openai", JEO_SEARCH_API_KEY_OPENAI: "sk-openai-test" }, async () => {
+    const realFetch = globalThis.fetch;
+    let capturedUrl = "";
+    let capturedHeaders: Record<string, string> = {};
+    let capturedBody: any = null;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      capturedUrl = String(typeof input === "string" ? input : input?.url ?? input);
+      capturedHeaders = init?.headers ?? {};
+      capturedBody = JSON.parse(init?.body ?? "{}");
+      return new Response(JSON.stringify(OPENAI_FIXTURE), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const res = await webSearchTool({ query: "hermes agent philosophy" });
+      expect(res.success).toBe(true);
+      expect(res.output).toContain("Provider: OpenAI");
+      expect(capturedUrl).toBe("https://api.openai.com/v1/responses");
+      expect(capturedHeaders.authorization).toBe("Bearer sk-openai-test");
+      expect(capturedBody.tools).toEqual([{ type: "web_search" }]);
+      expect(capturedBody.input).toBe("hermes agent philosophy");
+      expect(capturedBody.model).toBe("gpt-4o-mini");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+test("webSearchTool: openai without a real API key skips straight to DuckDuckGo (Codex OAuth never qualifies)", async () => {
+  await withSearchEnv({ JEO_SEARCH_PROVIDER: "openai" }, async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: any) => {
+      const url = String(typeof input === "string" ? input : input?.url ?? input);
+      if (url.includes("duckduckgo.com")) return new Response(DDG_HTML_FIXTURE, { status: 200 });
+      throw new Error(`unexpected fetch (openai should have been skipped): ${url}`);
+    }) as typeof fetch;
+    try {
+      const res = await webSearchTool({ query: "no key set" });
+      expect(res.success).toBe(true);
+      expect(res.output).toContain("Provider: DuckDuckGo");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+// ── Gemini response parsing + live request shape ───────────────────────────────
+
+const GEMINI_FIXTURE = {
+  modelVersion: "gemini-2.5-flash-002",
+  responseId: "resp_gemini_1",
+  usageMetadata: { promptTokenCount: 21, candidatesTokenCount: 47 },
+  candidates: [
+    {
+      content: { parts: [{ text: "Hermes Agent is a self-improving AI agent built by Nous Research." }] },
+      groundingMetadata: {
+        webSearchQueries: ["hermes agent philosophy"],
+        groundingChunks: [
+          { web: { uri: "https://jimmysong.io/ai/hermes-agent/", title: "Hermes Agent | AI Native Landscape" } },
+        ],
+        groundingSupports: [
+          { segment: { startIndex: 0, endIndex: 12, text: "Hermes Agent" }, groundingChunkIndices: [0] },
+        ],
+      },
+    },
+  ],
+};
+
+test("parseGeminiSearchResponse: maps groundingMetadata into the unified shape", () => {
+  const r = parseGeminiSearchResponse(GEMINI_FIXTURE);
+  expect(r.provider).toBe("Gemini");
+  expect(r.answer).toContain("self-improving AI agent");
+  expect(r.sources).toEqual([{ title: "Hermes Agent | AI Native Landscape", url: "https://jimmysong.io/ai/hermes-agent/" }]);
+  expect(r.citations).toEqual([{ url: "https://jimmysong.io/ai/hermes-agent/", title: "Hermes Agent | AI Native Landscape", citedText: "Hermes Agent" }]);
+  expect(r.searchQueries).toEqual(["hermes agent philosophy"]);
+  expect(r.usage).toEqual({ inputTokens: 21, outputTokens: 47, searchRequests: 1 });
+  expect(r.model).toBe("gemini-2.5-flash-002");
+  expect(r.requestId).toBe("resp_gemini_1");
+});
+
+test("webSearchTool: gemini provider hits generateContent with the googleSearch grounding tool", async () => {
+  await withSearchEnv({ JEO_SEARCH_PROVIDER: "gemini", JEO_SEARCH_API_KEY_GEMINI: "sk-gemini-test" }, async () => {
+    const realFetch = globalThis.fetch;
+    let capturedUrl = "";
+    let capturedBody: any = null;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      capturedUrl = String(typeof input === "string" ? input : input?.url ?? input);
+      capturedBody = JSON.parse(init?.body ?? "{}");
+      return new Response(JSON.stringify(GEMINI_FIXTURE), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const res = await webSearchTool({ query: "hermes agent philosophy" });
+      expect(res.success).toBe(true);
+      expect(res.output).toContain("Provider: Gemini");
+      expect(capturedUrl).toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=sk-gemini-test");
+      expect(capturedBody.tools).toEqual([{ googleSearch: {} }]);
+      expect(capturedBody.contents).toEqual([{ role: "user", parts: [{ text: "hermes agent philosophy" }] }]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+test("webSearchTool: gemini without a real API key skips straight to DuckDuckGo (Google OAuth never qualifies)", async () => {
+  await withSearchEnv({ JEO_SEARCH_PROVIDER: "gemini" }, async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: any) => {
+      const url = String(typeof input === "string" ? input : input?.url ?? input);
+      if (url.includes("duckduckgo.com")) return new Response(DDG_HTML_FIXTURE, { status: 200 });
+      throw new Error(`unexpected fetch (gemini should have been skipped): ${url}`);
+    }) as typeof fetch;
+    try {
+      const res = await webSearchTool({ query: "no key set" });
+      expect(res.success).toBe(true);
+      expect(res.output).toContain("Provider: DuckDuckGo");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
 });
 
 // ── Runtime failover through the chain (real fetch path, mocked transport) ────

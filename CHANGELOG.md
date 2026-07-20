@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.31] - 2026-07-20
+_`web_search` no longer silently degrades every non-Anthropic model to keyless DuckDuckGo scraping — OpenAI and Gemini sessions now get their own native, hosted search tool (matching the same active-model-gated, credential-required design Anthropic already had), with DuckDuckGo remaining the always-on terminal fallback for everyone else._
+
+### Added
+- **Native OpenAI web search** (`src/agent/web-search.ts`) — routes an active `openai`-provider session through the Responses API's hosted `web_search` tool (`api.openai.com/v1/responses`, per platform.openai.com/docs/guides/tools-web-search), parsing `web_search_call` output items for the executed queries and `message` items' `annotations[].url_citation` for inline-cited sources. Gated on a REAL API key only — the ChatGPT/Codex OAuth backend (`chatgpt.com/backend-api/codex/responses`) is a separate, undocumented surface never verified to support hosted Responses tools, so it deliberately never qualifies (falls through to DuckDuckGo instead of guessing). New `JEO_SEARCH_API_KEY_OPENAI` / `JEO_SEARCH_MODEL_OPENAI` overrides (default model: `gpt-4o-mini`).
+- **Native Gemini web search** (`src/agent/web-search.ts`) — routes an active `gemini` (and `antigravity`, when a plain `GEMINI_API_KEY` also happens to be configured) session through Grounding with Google Search (`generateContent` with `tools: [{googleSearch: {}}]`, per ai.google.dev/gemini-api/docs/google-search), parsing `groundingMetadata.groundingChunks`/`groundingSupports`/`webSearchQueries` (verified against the current `google-genai` SDK's `GroundingMetadata`/`GroundingChunk`/`GroundingSupport` schema, whose Python snake_case fields map to the documented classic-endpoint camelCase wire shape) into sources + inline citations. Gated on a REAL API key only — Gemini/Google OAuth is scoped to the separate Cloud Code Assist/antigravity backend and never serves this endpoint (matching `model-manager.ts`'s existing `oauthServesModel` contract). New `JEO_SEARCH_API_KEY_GEMINI` / `JEO_SEARCH_MODEL_GEMINI` overrides (default model: `gemini-2.5-flash`).
+
+### Verified
+- `test/web-search.test.ts` — 23 pass (was 14): +9 new tests covering response parsing against real documented fixture shapes, live-mocked-fetch request-shape assertions (exact URL/headers/body for both new providers), provider-chain routing (openai/gemini/antigravity → their own native provider when THEIR OWN credential is set, never borrowing another provider's key), and the no-API-key → DuckDuckGo fallback path for both.
+- Real (unmocked) end-to-end run of the full chain in this environment (`bun -e`, no OpenAI/Gemini API keys configured here) — genuinely hit DuckDuckGo over the network and returned real, current search results, confirming the provider-chain plumbing works live, not just under test mocks.
+- Full `bun test` — 3090 pass / 0 fail across 304 files.
+- `bun run typecheck` — no errors.
+
 ## [0.8.30] - 2026-07-20
 _`bun run build` (the host-only dev binary build) has been silently broken for every user who ran it — a drift between the plain `package.json` `build` script and the actual working release-binary build command (`scripts/ci-release-build-binaries.ts`), which had already documented and fixed the exact same crash._
 

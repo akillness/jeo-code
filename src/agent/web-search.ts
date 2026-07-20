@@ -7,8 +7,11 @@
  *      available is primary.
  *   2. Otherwise the ACTIVE MODEL's own native search provider is primary,
  *      but only when that provider's credentials are present (active-model
- *      gating — never credential scanning). Today that maps Anthropic models
- *      to Anthropic's server-side `web_search_20250305` tool.
+ *      gating — never credential scanning). Native providers today: Anthropic's
+ *      server-side `web_search_20250305` tool, OpenAI's Responses API `web_search`
+ *      hosted tool, and Gemini's `googleSearch` grounding tool (also used for
+ *      `antigravity` sessions when a plain `GEMINI_API_KEY` happens to be set —
+ *      Google/Gemini OAuth does not serve this endpoint, so it never qualifies).
  *   3. DuckDuckGo (keyless HTML scraping, no API key, no OAuth) is ALWAYS
  *      appended as the terminal fallback, so a missing/failed primary still
  *      returns real results with zero configuration — results are always
@@ -53,7 +56,7 @@ export interface SearchRequest {
 }
 
 export interface SearchProviderDef {
-  id: "anthropic" | "duckduckgo";
+  id: "anthropic" | "openai" | "gemini" | "duckduckgo";
   label: string;
   /** Credential gate — keyless providers return true unconditionally. */
   isAvailable(): Promise<boolean> | boolean;
@@ -198,6 +201,196 @@ async function searchAnthropic(req: SearchRequest): Promise<WebSearchResponse> {
     throw new Error(`Anthropic API error (${response.status}): ${detail}`);
   }
   const parsed = parseAnthropicSearchResponse(await response.json().catch(() => null));
+  if (req.limit && req.limit > 0 && parsed.sources.length > req.limit) {
+    parsed.sources = parsed.sources.slice(0, req.limit);
+  }
+  return parsed;
+}
+
+// ── OpenAI provider (Responses API `web_search` hosted tool) ─────────────────
+
+const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+// Cheapest current tool-calling-capable model — the hosted `web_search` tool works
+// across the whole Responses API model line (per platform.openai.com/docs/guides/
+// tools-web-search), not just the now-deprecated `*-search-preview` variants.
+const DEFAULT_SEARCH_MODEL_OPENAI = "gpt-4o-mini";
+const OPENAI_HARD_TIMEOUT_MS = 90_000;
+
+/** Only a real API key is trusted for the hosted `web_search` tool. The ChatGPT/Codex
+ *  OAuth backend (`chatgpt.com/backend-api/codex/responses`, see openai-responses.ts) is
+ *  a SEPARATE, undocumented surface never verified to support hosted Responses tools —
+ *  `api.openai.com/v1/responses` with a plain Bearer API key is the documented, stable
+ *  path this provider uses exclusively. */
+async function resolveOpenAISearchCredential(): Promise<Credential> {
+  const dedicated = jeoEnv("SEARCH_API_KEY_OPENAI");
+  if (dedicated) return { kind: "api_key", provider: "openai", token: dedicated };
+  const cred = await resolveCredential("openai");
+  return cred.kind === "api_key" ? cred : { kind: "none", provider: "openai" };
+}
+
+/** Parse a non-streaming Responses API `web_search` result into the unified shape.
+ *  Per platform.openai.com/docs/guides/tools-web-search: `output` items of type
+ *  `web_search_call` carry the executed queries (`action.query`), `message` items
+ *  carry `content[].text` + `annotations[]` of type `url_citation` (url/title/
+ *  start_index/end_index) for inline-cited sources. */
+export function parseOpenAISearchResponse(response: any): WebSearchResponse {
+  const answerParts: string[] = [];
+  const searchQueries: string[] = [];
+  const citations: WebSearchResponse["citations"] = [];
+  const sourcesByUrl = new Map<string, WebSearchSource>();
+
+  for (const item of response?.output ?? []) {
+    if (item?.type === "web_search_call" && item.action?.type === "search" && typeof item.action.query === "string") {
+      searchQueries.push(item.action.query);
+    } else if (item?.type === "message" && Array.isArray(item.content)) {
+      for (const block of item.content) {
+        if ((block?.type === "output_text" || block?.type === "text") && typeof block.text === "string") {
+          const text = block.text as string;
+          answerParts.push(text);
+          for (const a of block.annotations ?? []) {
+            if (a?.type === "url_citation" && typeof a.url === "string") {
+              const citedText = typeof a.start_index === "number" && typeof a.end_index === "number"
+                ? text.slice(a.start_index, a.end_index)
+                : undefined;
+              citations.push({ url: a.url, title: typeof a.title === "string" ? a.title : undefined, citedText });
+              if (!sourcesByUrl.has(a.url)) sourcesByUrl.set(a.url, { title: (typeof a.title === "string" && a.title) || a.url, url: a.url });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    provider: "OpenAI",
+    answer: answerParts.join("\n\n") || undefined,
+    sources: [...sourcesByUrl.values()],
+    citations,
+    searchQueries,
+    usage: response?.usage
+      ? {
+          inputTokens: response.usage.input_tokens,
+          outputTokens: response.usage.output_tokens,
+          searchRequests: searchQueries.length || undefined,
+        }
+      : undefined,
+    model: typeof response?.model === "string" ? response.model : undefined,
+    requestId: typeof response?.id === "string" ? response.id : undefined,
+  };
+}
+
+async function searchOpenAI(req: SearchRequest): Promise<WebSearchResponse> {
+  const credential = await resolveOpenAISearchCredential();
+  if (credential.kind !== "api_key") {
+    throw new Error("OpenAI: no API key credentials (set OPENAI_API_KEY or JEO_SEARCH_API_KEY_OPENAI — the ChatGPT/Codex subscription login does not serve the hosted web_search tool)");
+  }
+  const effectiveQuery = req.recency ? `${req.query} (results from the last ${req.recency})` : req.query;
+  const body = {
+    model: jeoEnv("SEARCH_MODEL_OPENAI") || DEFAULT_SEARCH_MODEL_OPENAI,
+    tools: [{ type: "web_search" }],
+    input: effectiveQuery,
+  };
+  const response = await fetch(OPENAI_RESPONSES_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${credential.token}` },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(OPENAI_HARD_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).slice(0, 300);
+    throw new Error(`OpenAI API error (${response.status}): ${detail}`);
+  }
+  const parsed = parseOpenAISearchResponse(await response.json().catch(() => null));
+  if (req.limit && req.limit > 0 && parsed.sources.length > req.limit) {
+    parsed.sources = parsed.sources.slice(0, req.limit);
+  }
+  return parsed;
+}
+
+// ── Gemini provider (Grounding with Google Search, generateContent tool) ─────
+
+const GEMINI_GENERATE_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+const DEFAULT_SEARCH_MODEL_GEMINI = "gemini-2.5-flash";
+const GEMINI_HARD_TIMEOUT_MS = 90_000;
+
+/** Only a real API key is trusted. The plain `generativelanguage.googleapis.com`
+ *  endpoint this hits does NOT serve Gemini/Google OAuth credentials — those are
+ *  scoped to the separate Cloud Code Assist / antigravity backend (see
+ *  model-manager.ts's `oauthServesModel`: a Gemini OAuth token never serves
+ *  `google/gemini-*` models on its own). */
+async function resolveGeminiSearchCredential(): Promise<Credential> {
+  const dedicated = jeoEnv("SEARCH_API_KEY_GEMINI");
+  if (dedicated) return { kind: "api_key", provider: "gemini", token: dedicated };
+  const cred = await resolveCredential("gemini");
+  return cred.kind === "api_key" ? cred : { kind: "none", provider: "gemini" };
+}
+
+interface GeminiGroundingChunk { web?: { uri?: string; title?: string } }
+interface GeminiGroundingSupport { segment?: { startIndex?: number; endIndex?: number; text?: string }; groundingChunkIndices?: number[] }
+
+/** Parse a `generateContent` response carrying `groundingMetadata` (Grounding with
+ *  Google Search) into the unified shape. Per ai.google.dev/gemini-api/docs/google-search
+ *  and the current google-genai SDK's GroundingMetadata/GroundingChunk/GroundingSupport
+ *  schema (Python SDK's snake_case maps to camelCase on the classic REST wire:
+ *  groundingChunks, groundingSupports, webSearchQueries, groundingChunkIndices). */
+export function parseGeminiSearchResponse(response: any): WebSearchResponse {
+  const candidate = response?.candidates?.[0];
+  const parts: any[] = candidate?.content?.parts ?? [];
+  const answer = parts.map((p: any) => (typeof p?.text === "string" ? p.text : "")).join("");
+  const grounding = candidate?.groundingMetadata;
+  const chunks: GeminiGroundingChunk[] = grounding?.groundingChunks ?? [];
+  const sources: WebSearchSource[] = chunks
+    .filter(c => !!c.web?.uri)
+    .map(c => ({ title: c.web!.title || c.web!.uri!, url: c.web!.uri! }));
+  const citations: WebSearchResponse["citations"] = (grounding?.groundingSupports as GeminiGroundingSupport[] | undefined ?? []).flatMap(s => {
+    const text = s.segment?.text
+      ?? (typeof s.segment?.startIndex === "number" && typeof s.segment?.endIndex === "number" ? answer.slice(s.segment.startIndex, s.segment.endIndex) : undefined);
+    return (s.groundingChunkIndices ?? [])
+      .map(i => chunks[i])
+      .filter((chunk): chunk is GeminiGroundingChunk & { web: { uri: string } } => !!chunk?.web?.uri)
+      .map(chunk => ({ url: chunk.web.uri, title: chunk.web.title, citedText: text }));
+  });
+
+  return {
+    provider: "Gemini",
+    answer: answer.trim() || undefined,
+    sources,
+    citations,
+    searchQueries: grounding?.webSearchQueries ?? [],
+    usage: response?.usageMetadata
+      ? {
+          inputTokens: response.usageMetadata.promptTokenCount,
+          outputTokens: response.usageMetadata.candidatesTokenCount,
+          searchRequests: (grounding?.webSearchQueries ?? []).length || undefined,
+        }
+      : undefined,
+    model: typeof response?.modelVersion === "string" ? response.modelVersion : undefined,
+    requestId: typeof response?.responseId === "string" ? response.responseId : undefined,
+  };
+}
+
+async function searchGemini(req: SearchRequest): Promise<WebSearchResponse> {
+  const credential = await resolveGeminiSearchCredential();
+  if (credential.kind !== "api_key") {
+    throw new Error("Gemini: no API key credentials (set GEMINI_API_KEY or JEO_SEARCH_API_KEY_GEMINI — Google/Gemini OAuth does not serve this endpoint)");
+  }
+  const effectiveQuery = req.recency ? `${req.query} (results from the last ${req.recency})` : req.query;
+  const model = jeoEnv("SEARCH_MODEL_GEMINI") || DEFAULT_SEARCH_MODEL_GEMINI;
+  const body = {
+    contents: [{ role: "user", parts: [{ text: effectiveQuery }] }],
+    tools: [{ googleSearch: {} }],
+  };
+  const response = await fetch(`${GEMINI_GENERATE_URL_BASE}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(credential.token)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(GEMINI_HARD_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).slice(0, 300);
+    throw new Error(`Gemini API error (${response.status}): ${detail}`);
+  }
+  const parsed = parseGeminiSearchResponse(await response.json().catch(() => null));
   if (req.limit && req.limit > 0 && parsed.sources.length > req.limit) {
     parsed.sources = parsed.sources.slice(0, req.limit);
   }
@@ -381,6 +574,26 @@ const PROVIDERS: Record<SearchProviderDef["id"], SearchProviderDef> = {
     },
     search: searchAnthropic,
   },
+  openai: {
+    id: "openai",
+    label: "OpenAI",
+    isAvailable: async () => {
+      if (jeoEnv("SEARCH_API_KEY_OPENAI")) return true;
+      const cred = await resolveCredential("openai").catch(() => null);
+      return cred?.kind === "api_key";
+    },
+    search: searchOpenAI,
+  },
+  gemini: {
+    id: "gemini",
+    label: "Gemini",
+    isAvailable: async () => {
+      if (jeoEnv("SEARCH_API_KEY_GEMINI")) return true;
+      const cred = await resolveCredential("gemini").catch(() => null);
+      return cred?.kind === "api_key";
+    },
+    search: searchGemini,
+  },
   duckduckgo: {
     id: "duckduckgo",
     label: "DuckDuckGo",
@@ -393,6 +606,13 @@ const PROVIDERS: Record<SearchProviderDef["id"], SearchProviderDef> = {
  *  Providers without a jeo-native search implementation fall through to DuckDuckGo. */
 const MODEL_PROVIDER_TO_SEARCH: Record<string, SearchProviderDef["id"]> = {
   anthropic: "anthropic",
+  openai: "openai",
+  gemini: "gemini",
+  // antigravity sessions route to Google's OWN native search when a plain
+  // GEMINI_API_KEY also happens to be configured — the antigravity OAuth
+  // credential itself never qualifies (see resolveGeminiSearchCredential),
+  // so this never silently scans an unrelated provider's credentials.
+  antigravity: "gemini",
 };
 
 let activeModelHint: string | undefined;

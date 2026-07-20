@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.29] - 2026-07-20
+_gajae-code (gjc) v0.10.2→v0.11.4 gap analysis: most of that range is gjc-specific architecture jeo intentionally does not replicate (SDK broker/session-index recovery, Gajae Pet, coordinator-mcp, Telegram/Discord rich-delivery internals, browser tab workers, worktree-subcommand removal, RPC durable model selection) — one genuinely applicable TUI bug was found and closed; the CLI empty-non-TTY-stdin fix (gjc #2586) was investigated and found already-correct by construction (jeo's one-shot gate forces true whenever stdin isn't a TTY, regardless of args, so the hang gjc fixed cannot occur here)._
+
+### Fixed
+- **Backtick-span literals no longer pop the `/command`/`$skill` autocomplete palette** (`src/tui/components/autocomplete.ts`) — gjc v0.11.3 parity ("suppress autocomplete in backtick spans", #2629). A composer example like "use `` `/model` `` to switch" or plain prose containing a lone, not-yet-closed backtick followed later by a `/word` or `$word` previously matched `complete()`'s mid-line command/skill branches and popped the live dropdown (and rode along into `readlineCompleter`'s Tab dispatch), because completion only ever looked at the trailing whitespace-delimited token, never the line's backtick-span state. New `insideBacktickSpan()` walks the line up to the token's start offset with escape-parity (a `\`` never toggles the span), and the mid-line `$skill`/`/command` branches now check it before matching; `@path` mentions are unaffected (preserved live inside a span, matching gjc's split). Closed/paired spans before the token, and lines with no span at all, are unaffected — this only suppresses matching while genuinely inside an open span.
+
+### Verified
+- `test/autocomplete.test.ts` — 32 pass (new coverage: open span suppresses `/command`/`$skill`, closed span doesn't, escape-parity distinguishes an escaped backtick from a real toggle, `@path` stays live inside a span).
+- Full `bun test` — 3080 pass / 0 fail across 304 files.
+- `bun run typecheck` — no errors.
+
 ## [0.8.28] - 2026-07-16
 _Improved the welcome UI's right-side table to display dynamic sections (What's New, Flow keys, Project pulse, and Session trail) matching gajae-code (gjc) >= 0.8.0 features._
 

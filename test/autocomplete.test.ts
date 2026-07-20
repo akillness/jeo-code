@@ -239,6 +239,28 @@ test("/command mention completes mid-line against the plugin command list", () =
   // Plain words and paths stay untouched.
   expect(complete("open src/cli.ts", ctx()).completions).toEqual([]);
 });
+test("backtick-span literals suppress /command and $skill mid-line matching (gjc parity, #2619)", () => {
+  const c = ctx({ skillNames: ["spec-kit", "team"] } as Partial<CompletionContext>);
+  // A standalone backtick opens an UNTERMINATED span — a plain-prose "`" typed
+  // as ordinary punctuation (not yet closed) must not turn a later /word or
+  // $word into a live command/skill match while the user keeps typing.
+  expect(complete("note ` then /mo", c)).toEqual({ completions: [], token: "note ` then /mo", kind: "none" });
+  expect(complete("note ` then $te", c)).toEqual({ completions: [], token: "note ` then $te", kind: "none" });
+  // A CLOSED (paired) span before the token does not carry over — matching
+  // resumes as normal once the span has closed.
+  expect(complete("note ` code ` then /mo", c).kind).toBe("command");
+  // A backslash ALWAYS escapes the next character — an escaped backtick never
+  // toggles the span. Naive (non-escape-aware) counting would see 2 backtick
+  // characters here (closed/even) and wrongly allow the match; escape-parity
+  // counting sees only 1 real toggle (the un-escaped one) and correctly
+  // suppresses it.
+  expect(complete("note \\` then ` and /mo", c).kind).toBe("none");
+  // No span at all — ordinary mid-line matching is untouched.
+  expect(complete("do X then /mo", c).kind).toBe("command");
+  // `@path` mentions stay live INSIDE a span (gjc parity: only command/skill
+  // matching is suppressed; path completion is preserved in literals).
+  expect(complete("note ` then @", c).kind).toBe("path");
+});
 test("fuzzyMatch is a case-sensitive subsequence test", () => {
   expect(fuzzyMatch("mdl", "model")).toBe(true); // m-o-d-e-l contains m,d,l in order
   expect(fuzzyMatch("model", "model")).toBe(true);

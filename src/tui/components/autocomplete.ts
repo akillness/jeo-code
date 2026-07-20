@@ -184,6 +184,25 @@ function rankedModelPool(ctx: CompletionContext): string[] {
  * before; free-text input stays untouched except for `@path` mentions, which can
  * surface local relative paths.
  */
+/**
+ * True when `pos` sits inside an unterminated (or paired) single-backtick span
+ * opened earlier on the same line (gjc parity, #2619/#2629). A backslash
+ * ALWAYS escapes the next character — an escaped backtick (`\``) never toggles
+ * the span — so a composer example like "use `/model` to switch" or a literal
+ * "type \` then a command" both classify correctly. Only line-local state:
+ * spans never carry across lines (there is no multi-line buffer here).
+ */
+function insideBacktickSpan(line: string, pos: number): boolean {
+  let open = false;
+  let i = 0;
+  while (i < pos && i < line.length) {
+    const ch = line[i];
+    if (ch === "\\") { i += 2; continue; }
+    if (ch === "`") open = !open;
+    i++;
+  }
+  return open;
+}
 export function complete(line: string, ctx: CompletionContext): CompletionResult {
   const { tokens, trailingSpace } = tokenize(line);
   if (!line.startsWith("/")) {
@@ -195,6 +214,16 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
       // is returned as-is rather than re-filtered by strict prefix.
       const pool = (ctx.mentionPaths?.(prefix) ?? []).map(p => (p.startsWith("@") ? p : `@${p}`));
       return { completions: dedupeCap(pool), token, kind: "path" };
+    }
+    // Literal backtick spans (`` `/model` ``, `` `$skill` ``) are protected text,
+    // not live mentions — suppress command/skill matching (and the Tab/Enter
+    // dispatch riding on it) below so a typed example never pops the palette.
+    // `@path` mentions above stay live inside a span (gjc parity: path
+    // completion is preserved in literals; only command/skill matching is
+    // suppressed). The token's own start offset is `line.length - token.length`
+    // (or `line.length` when trailing-space, which never matches $/ below).
+    if (insideBacktickSpan(line, line.length - token.length)) {
+      return { completions: [], token: line, kind: "none" };
     }
     // `$skill` mention completion at ANY position in the line (mention-style;
     // a leading `$name` is additionally the direct-invocation entrypoint).

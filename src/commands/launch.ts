@@ -764,7 +764,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
    *  mid-turn TUI binding): full last reply + full last tool output. */
   const composeDetailLines = (): string[] => {
     if (!lastReply && !lastToolDetail) return [];
-    const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
+    const sep = "─".repeat(Math.min(48, Math.max(1, (process.stdout.columns ?? 80) - 1)));
     const toolDetail = lastToolDetail
       ? [sep, `detail · full last tool output (${lastToolDetail.tool})`, sep, ...lastToolDetail.output.split("\n").slice(0, 2000).map(sanitizeForTerminal)]
       : [];
@@ -816,7 +816,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             // exact prior conversation instead of a bare message count.
             if (messages.length > 0) {
               resumedWithHistory = true;
-              const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
+              const sep = "─".repeat(Math.min(48, Math.max(1, (process.stdout.columns ?? 80) - 1)));
               console.log([sep, ...formatTranscript(history, { maxTurns: 6, color: true, unicode: true }), sep].join("\n"));
             }
 
@@ -880,7 +880,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // screen instead of just a bare message count.
           if (messages.length > 0) {
             resumedWithHistory = true;
-            const sep = "─".repeat(Math.min(48, Math.max(20, (process.stdout.columns ?? 80) - 1)));
+            const sep = "─".repeat(Math.min(48, Math.max(1, (process.stdout.columns ?? 80) - 1)));
             console.log([sep, ...formatTranscript(history, { maxTurns: 6, color: true, unicode: true }), sep].join("\n"));
           }
 
@@ -2209,7 +2209,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // so it never repeats. Screen-safe: prints BEFORE the prompt is armed.
   try {
     const whatsNew = await consumeLaunchWhatsNew({
-      cols: Math.min(100, Math.max(40, (process.stdout.columns ?? 80) - 2)),
+      cols: Math.min(100, Math.max(1, (process.stdout.columns ?? 80) - 2)),
       unicode: supportsUnicode(),
       color: welcomeTheme.color,
     });
@@ -2224,7 +2224,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     {
       const card = formatForgeBox(
         { title: "[skill]", lines: skillInvocationCard(skill, intent) },
-        { width: scaleForgeWidth(Math.min(100, Math.max(40, (process.stdout.columns ?? 80) - 2))), unicode: supportsUnicode(), paint: accentPaint(uiTheme), paintShadow: accentShadowPaint(uiTheme), color: uiTheme.color },
+        { width: scaleForgeWidth(Math.min(100, Math.max(1, (process.stdout.columns ?? 80) - 2))), unicode: supportsUnicode(), paint: accentPaint(uiTheme), paintShadow: accentShadowPaint(uiTheme), color: uiTheme.color },
       );
       logLines(card);
     }
@@ -2729,7 +2729,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let lastFooterKey = "";
   const logLines = (lines: string | string[]) => {
     const arr = Array.isArray(lines) ? lines : [lines];
-    const cols = Math.max(20, (process.stdout.columns ?? 80) - 1);
+    const cols = Math.max(1, (process.stdout.columns ?? 80) - 1);
     for (const line of arr) {
       console.log(truncateAnsi(line, cols));
     }
@@ -2934,7 +2934,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     });
   };
   const previewLines = (line: string, selected = -1): string[] => {
-    const cols = Math.max(24, (process.stdout.columns ?? 80) - 1);
+    const cols = Math.max(1, (process.stdout.columns ?? 80) - 1);
     // Caret offset comes from readline's live cursor when it matches the rendered
     // line (arrow keys/Home/End move it); otherwise (history nav mismatch) caret
     // sits at the end of the text.
@@ -2983,7 +2983,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // with ↑/↓ counters. Recomputes the scroll bound/page size each paint so scroll
   // keys can clamp correctly. Mirrors the mid-turn LaunchTui panel.
   const historyPreviewLines = (detail: string[]): string[] => {
-    const cols = Math.max(24, (process.stdout.columns ?? 80) - 1);
+    const cols = Math.max(1, (process.stdout.columns ?? 80) - 1);
     const physical = detail.flatMap(line => line.split("\n")).map(line => truncateAnsi(line, cols));
     const bodyLimit = Math.max(1, footerRows - 2); // status bar + title rows
     const scrollable = physical.length > bodyLimit;

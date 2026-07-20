@@ -107,7 +107,13 @@ function normalizeHighlights(
  * can park the REAL terminal cursor right after `>` — moving with the arrow keys.
  */
 export function renderInputFrame(line: string, opts: InputBoxOptions = {}): InputFrame {
-  const cols = Math.max(24, Math.trunc(opts.cols ?? 80));
+  // Never clamp UP past what the caller reports as the real terminal width — a
+  // fixed floor here (previously 24) silently overflowed any narrower terminal
+  // (e.g. a resize down to 20 cols still drew a 24-col box), which real terminals
+  // then hard-wrap/split at the boundary (the exact box-border corruption a real
+  // resize-down reproduces live). Degrading to a very small, ugly-but-correctly-
+  // sized box is strictly better than one that overflows and gets torn.
+  const cols = Math.max(1, Math.trunc(opts.cols ?? 80));
   const useColor = opts.color !== false;
   const placeholder = opts.placeholder ?? "Type your message...";
   const bodyWidth = Math.max(1, cols - 4);

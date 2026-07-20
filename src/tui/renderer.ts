@@ -49,7 +49,29 @@ export class Renderer {
     const currentRows = size().rows;
     if ((this.prevCols !== undefined && this.prevCols !== currentCols) ||
         (this.prevRows !== undefined && this.prevRows !== currentRows)) {
-      this.clear();
+      if (this.reserve) {
+        // Inline/reserve mode: a resize needs a full repaint, but NOT an immediate
+        // clear() — clear() zeroes coverRows/prev to 0 as an independent write, which
+        // then fools the reserve block below (right after this) into believing NOTHING
+        // currently occupies the screen (occupied=0) — even though the old frame's rows
+        // are still physically there. With occupied wrongly 0, `next.length > occupied`
+        // spuriously trips even when the new (post-resize) frame is SHORTER than the
+        // old one, inserting real "\n" characters that ACTUALLY SCROLL the terminal —
+        // corrupting whatever sits above the live frame and permanently desyncing this
+        // renderer's row bookkeeping from reality (every later diff then paints at the
+        // wrong absolute row, producing progressively worse duplicate/torn content on
+        // each subsequent tick — reproduced deterministically with a standalone
+        // Renderer harness before this fix landed). reset() is the same self-heal path
+        // the periodic full-resync already uses: it remembers the old occupied rows via
+        // coverRows (no output), so the diff loop below EL-clears exactly the excess
+        // rows in place — no scroll, no desync.
+        this.reset();
+      } else {
+        // Non-reserve (alt-screen/pipe) mode has no reserve block to fool (gated on
+        // `this.reserve`), and the underlying screen buffer's own dimensions just
+        // changed — keep the defensive full ED clear.
+        this.clear();
+      }
     }
     this.prevCols = currentCols;
     this.prevRows = currentRows;

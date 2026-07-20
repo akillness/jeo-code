@@ -300,3 +300,54 @@ test("Renderer clears on column or row changes", () => {
     process.stdout.rows = originalRows;
   }
 });
+
+test("Renderer reserve mode: a resize down to a SHORTER frame never scrolls the terminal", () => {
+  // Root-cause regression: render()'s resize branch used to call clear() unconditionally,
+  // which zeroes coverRows/prev to 0 as an independent write — right before the SAME
+  // render() call's own reserve block reads that (now-wrong) occupancy and, believing
+  // NOTHING occupies the screen, spuriously inserts real "\n" characters even though the
+  // new (post-resize) frame is SHORTER than the old one. Literal "\n" characters
+  // genuinely SCROLL a real terminal, corrupting whatever sits above the live frame and
+  // permanently desyncing every later diff's row math (reproduced live via tmux: a
+  // resize-down produced progressively worse duplicate/torn footer+input-box content on
+  // every subsequent keystroke). Reserve mode must repaint in place — no "\n" at all.
+  const out: string[] = [];
+  let cols = 80;
+  const r = new Renderer(s => out.push(s), () => cols, { reserve: true });
+
+  const wideFrame = Array.from({ length: 10 }, (_, i) => `wide row ${i} `.padEnd(70, "-"));
+  r.render(wideFrame);
+  expect((r as unknown as { prev: string[] }).prev.length).toBe(10);
+
+  // Resize down: narrower AND fewer rows (mirrors app.ts dropping optional sections
+  // — forge preview, right-hand welcome panel, etc. — at narrow widths).
+  cols = 20;
+  out.length = 0;
+  r.render(["hud", "row1", "row2", "row3"]);
+  const resized = out.join("");
+  expect(resized).not.toContain("\n"); // the corrupting scroll must never happen
+  expect(resized).toContain("hud");
+  expect(resized).toContain("row3");
+  // The 6 now-excess old rows (10 - 4) are still EL-cleared in place.
+  expect(resized.split(clearLine()).length - 1).toBeGreaterThanOrEqual(6);
+
+  // A SECOND render right after (same, now-settled size) must repaint cleanly too —
+  // no lingering desync from the resize (the progressive-corruption symptom this fix
+  // closes: each subsequent tick got WORSE, not just the first one after resize).
+  out.length = 0;
+  r.render(["hud", "row1-changed", "row2", "row3"]);
+  const settled = out.join("");
+  expect(settled).not.toContain("\n");
+  expect(settled).toContain("row1-changed");
+});
+
+test("Renderer non-reserve mode still ED-clears on resize (unaffected by the reserve-mode fix)", () => {
+  const out: string[] = [];
+  let cols = 40;
+  const r = new Renderer(s => out.push(s), () => cols);
+  r.render(["a", "b"]);
+  out.length = 0;
+  cols = 20;
+  r.render(["x"]);
+  expect(out.join("")).toContain("\x1b[0J");
+});

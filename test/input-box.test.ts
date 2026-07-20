@@ -34,6 +34,17 @@ test("renderInputBox wraps long input across multiple rows", () => {
   expect(out.every(line => line.length <= 24)).toBe(true);
 });
 
+test("renderInputBox never overflows a terminal narrower than the old 24-col floor", () => {
+  // Regression: `cols` used to be clamped UP to a minimum of 24 (Math.max(24, ...)),
+  // silently overflowing any REAL terminal narrower than that (a resize down to 20
+  // cols still drew a 24-col box). A real terminal then hard-wraps/splits that
+  // overflowing border across two rows — reproduced live via tmux.
+  for (const cols of [5, 10, 15, 19, 20, 23]) {
+    const out = renderInputBox("hello", { cols, color: false, unicode: false }).map(stripAnsi);
+    for (const line of out) expect(line.length).toBeLessThanOrEqual(cols);
+  }
+});
+
 test("renderInputFrame: empty line shows `>` + dim placeholder with the caret right after `>`", () => {
   const { renderInputFrame } = require("../src/tui/components/input-box");
   const frame = renderInputFrame("", { cols: 40, color: false, unicode: false });

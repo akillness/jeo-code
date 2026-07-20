@@ -66,7 +66,14 @@ function shortenCwd(cwd: string, maxLen: number, unicode: boolean): string {
 export function renderStatusBar(d: StatusBarData): string {
   const unicode = d.unicode !== false;
   const useColor = d.color !== false;
-  const cols = Math.max(24, Math.trunc(d.cols));
+  // Never clamp UP past the caller's real terminal width — a fixed floor here
+  // (previously 24) silently overflowed any narrower terminal (e.g. a resize down
+  // to 20 cols still emitted a 24-col status bar), which a real terminal then
+  // hard-wraps at the boundary and desyncs the idle-footer's own row bookkeeping
+  // on every subsequent repaint (reproduced live: a growing stack of duplicate
+  // status-bar lines on each keystroke after a resize-down, root-caused to this
+  // exact overflow via a byte-for-byte ANSI replay outside jeo/tmux entirely).
+  const cols = Math.max(1, Math.trunc(d.cols));
   const sep = " / ";
 
   // Right side first — it has priority and fixed width.
@@ -97,7 +104,7 @@ export function renderStatusBar(d: StatusBarData): string {
     bits.push(`${unicode ? "⑂" : "y"} ${d.branch}${dirty}`);
   }
   // Budget the cwd into whatever width remains (right stats + 2-col gap reserved).
-  const leftBudget = Math.max(8, cols - rightWidth - (rightWidth > 0 ? 2 : 0));
+  const leftBudget = Math.max(1, cols - rightWidth - (rightWidth > 0 ? 2 : 0));
   if (d.cwd) {
     const used = visibleWidth(` ${bits.join(sep)}${sep}${unicode ? "▸" : ">"}  `);
     const room = leftBudget - used - 1;

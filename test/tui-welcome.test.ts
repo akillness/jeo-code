@@ -184,7 +184,7 @@ test("narrow box falls back to the compact forge mark", () => {
   expect(joined).not.toContain("╭──────────────╮"); // not the grand bridge (14-wide)
 });
 
-test("narrow cols (<30) -> single-line fallback", () => {
+test("narrow cols (<30) -> single-line fallback, width-capped", () => {
   const lines = renderWelcome({
     version: "1.2.3",
     model: "claude-3-5-sonnet",
@@ -193,7 +193,28 @@ test("narrow cols (<30) -> single-line fallback", () => {
     color: false,
   });
 
-  expect(lines).toEqual(["jeo v1.2.3 · claude-3-5-sonnet"]);
+  // The fallback line is now width-capped to `cols - 1` (same "leave the last column
+  // free" convention as the boxed banner below — a line filled to EXACTLY `cols`
+  // followed by its own trailing newline is ambiguous to real terminals: a full-width
+  // row + explicit LF can double-advance a row via the pending-autowrap/explicit-LF
+  // ambiguity, reproduced live as a duplicated line on every subsequent repaint).
+  // Unbounded concatenation ("jeo v1.2.3 · claude-3-5-sonnet", 30 chars) overflowed a
+  // 25-col terminal by 5 columns; a longer, provider-qualified model id like
+  // "antigravity/claude-sonnet-4-6 (antigravity)" overflowed by up to 47 columns.
+  expect(lines).toEqual(["jeo v1.2.3 · claude-3-5-"]);
+  expect(lines[0]!.length).toBe(24);
+});
+
+test("narrow cols (<30) fallback never overflows, even with a long provider-qualified model id", () => {
+  for (const cols of [1, 5, 10, 15, 20, 25, 29]) {
+    for (const model of ["m", "gpt-4o-mini", "antigravity/claude-sonnet-4-6 (antigravity)"]) {
+      const lines = renderWelcome({ version: "1.2.3", model, cols, unicode: true, color: false });
+      expect(lines.length).toBe(1);
+      // Strictly LESS than cols, never equal — a fallback line filled to exactly `cols`
+      // is the same pending-autowrap/explicit-LF ambiguity the fix closes.
+      expect(lines[0]!.length).toBeLessThan(cols || 1);
+    }
+  }
 });
 
 test("banner fills the full terminal width on wide and narrow terminals; never wraps", () => {

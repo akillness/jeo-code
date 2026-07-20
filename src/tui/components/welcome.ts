@@ -185,7 +185,17 @@ export function renderWelcome(d: WelcomeData): string[] {
   const useColor = d.color !== false;
 
   if (cols < 30) {
-    return [ `jeo v${d.version} · ${d.model}` ];
+    // Narrow-terminal one-line fallback — MUST itself be width-capped: an unbounded
+    // `jeo v{version} · {model}` overflows badly with a realistic provider-qualified
+    // model id (e.g. "antigravity/claude-sonnet-4-6 (antigravity)" overflows a 10-col
+    // terminal by 47 columns), which is exactly the box-border/wrap misalignment a
+    // real terminal-resize-down reproduces live. `cols - 1` (not `cols`) — same
+    // "leave the last column free" convention as the boxed banner below: a line
+    // truncated to EXACTLY `cols` is ambiguous to real terminals (a full-width row
+    // followed by this line's own trailing "\n" can double-advance a row via the
+    // pending-autowrap/explicit-LF ambiguity), which is a second, independent
+    // corruption vector reproduced live — not just a cosmetic nicety.
+    return [truncate(`jeo v${d.version} · ${d.model}`, Math.max(0, cols - 1))];
   }
 
   // The banner fills the full terminal width (gjc forge: flush with the input box and

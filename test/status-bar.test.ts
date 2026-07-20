@@ -55,6 +55,20 @@ test("status bar: omits absent pieces and still fits", () => {
   expect(line).not.toContain("⑂");
 });
 
+test("status bar: never overflows a terminal narrower than the old 24-col floor", () => {
+  // Regression: `cols` used to be clamped UP to a minimum of 24 (Math.max(24, ...)),
+  // silently overflowing any REAL terminal narrower than that (e.g. a resize down to
+  // 20 cols still produced a 24-col-wide status line). A real terminal then hard-wraps
+  // that overflow, which — live in tmux — desynced the idle-footer's own row
+  // bookkeeping and produced a growing stack of duplicate status-bar lines on every
+  // subsequent keystroke (reproduced deterministically via a byte-for-byte ANSI replay
+  // outside jeo/tmux entirely, confirming the escape sequences themselves, not timing).
+  for (const cols of [5, 10, 15, 19, 20, 23]) {
+    const line = renderStatusBar({ model: "antigravity/claude-sonnet-4-6 (antigravity)", cols, color: false, unicode: true, thinking: "xhigh", branch: "main", dirtyCount: 3 });
+    expect(visibleWidth(line)).toBeLessThanOrEqual(cols);
+  }
+});
+
 test("status bar: live rate renders with the ⤴ glyph", () => {
   const line = renderStatusBar({ ...base, rate: 12.14, ctxPct: 50, ctxMaxTokens: 200_000 });
   expect(line).toContain("⤴ 12.1/s");

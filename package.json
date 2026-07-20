@@ -1,6 +1,6 @@
 {
   "name": "jeo-code",
-  "version": "0.8.29",
+  "version": "0.8.30",
   "description": "Clean, highly optimized AI coding agent using spec-first loop",
   "type": "module",
   "main": "src/cli.ts",
@@ -45,7 +45,7 @@
   "scripts": {
     "start": "bun src/cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "bun build src/cli.ts --compile --outfile dist/jeo",
+    "build": "bun build src/cli.ts --compile --keep-names --external chromium-bidi --no-compile-autoload-dotenv --outfile dist/jeo",
     "build:binaries": "bun scripts/ci-release-build-binaries.ts",
     "build:win": "bun scripts/ci-release-build-binaries.ts --targets win32-x64",
     "pack:check": "npm pack --dry-run",

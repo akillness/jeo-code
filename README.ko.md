@@ -284,11 +284,11 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 ## 변경 이력 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.8.30]** (2026-07-20) — `bun run build` (the host-only dev binary build) has been silently broken for every user who ran it — a drift between the plain `package.json` `build` script and the actual working release-binary build command (`scripts/ci-release-build-binaries.ts`), which had already documented and fixed the exact same crash.
 - **[0.8.29]** (2026-07-20) — gajae-code (gjc) v0.10.2→v0.11.4 gap analysis: most of that range is gjc-specific architecture jeo intentionally does not replicate (SDK broker/session-index recovery, Gajae Pet, coordinator-mcp, Telegram/Discord rich-delivery internals, browser tab workers, worktree-subcommand removal, RPC durable model selection) — one genuinely applicable TUI bug was found and closed; the CLI empty-non-TTY-stdin fix (gjc #2586) was investigated and found already-correct by construction (jeo's one-shot gate forces true whenever stdin isn't a TTY, regardless of args, so the hang gjc fixed cannot occur here).
 - **[0.8.28]** (2026-07-16) — Improved the welcome UI's right-side table to display dynamic sections (What's New, Flow keys, Project pulse, and Session trail) matching gajae-code (gjc) >= 0.8.0 features.
 - **[0.8.27]** (2026-07-16) — Repeat-read recovery now survives both context-overflow and refusal-result elision without reopening mutating-call loops.
 - **[0.8.26]** (2026-07-14) — Model catalog cleanup (drop sub-4.6 Anthropic `claude-haiku-4-5` from the exposed catalog/aliases per user direction) plus a focused gap analysis against `gajae-code`'s (gjc) 0.8.0→0.10.1 release history (~200 PRs) — most of gjc's surface (RPC/ACP/coordinator-mcp/IRC-sidebar/psmux/Windows-team) doesn't exist in jeo's smaller architecture and was ruled out with direct evidence; a few genuinely applicable gaps were found and closed.
-- **[0.8.25]** (2026-07-13) — Post-audit follow-up: 0.8.24's fixture-repair subagent flagged (but, correctly, did not itself fix — out of its assigned scope) a case-sensitivity bug in the new PlanSchema maker→verifier ordering rule. Fixed.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

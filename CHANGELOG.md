@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.30] - 2026-07-20
+_`bun run build` (the host-only dev binary build) has been silently broken for every user who ran it — a drift between the plain `package.json` `build` script and the actual working release-binary build command (`scripts/ci-release-build-binaries.ts`), which had already documented and fixed the exact same crash._
+
+### Fixed
+- **`bun run build` no longer crashes with `Could not resolve: "chromium-bidi/lib/cjs/bidiMapper/BidiMapper"`** (`package.json`) — `playwright-core`'s bundled `coreBundle.js` has a lazy `require("chromium-bidi/...")` reachable only through its BiDi bridge, a code path jeo never takes (`browser-session.ts` launches Chromium over plain CDP only). `chromium-bidi` isn't a declared dependency of `playwright-core` (confirmed against the published npm metadata — real `playwright-core@1.61.0` ships zero `dependencies`, everything is bundled), so it's absent from `node_modules`; Bun's `--compile` bundler statically resolves every reachable `require()` — dead code path or not — and fails the whole build without an explicit `--external`. `scripts/ci-release-build-binaries.ts`'s `buildCommand()` already carried `--external chromium-bidi` (plus `--keep-names` and `--no-compile-autoload-dotenv`) with a comment explaining exactly this, but the separate, hand-written `package.json` `"build"` script was never updated to match and always failed for anyone running the plain host-only dev build. Brought into sync with the same three flags.
+
+### Added
+- **Regression coverage locking the two build commands together** (`test/release-binaries.test.ts`) — `buildCommand()`'s own test now also asserts `--external chromium-bidi` is present (it wasn't previously locked, despite existing in the source); a new test reads `package.json` at runtime and asserts every `--flag` `buildCommand()` emits (excluding target-specific `--target`/`--outfile`) is present in the plain `build` script, plus the `chromium-bidi` module name itself, so the two commands can never silently drift apart again.
+
+### Verified
+- `bun run build` — real compile succeeds (`bundle 257 modules` / `compile dist/jeo`), producing a genuine standalone Mach-O binary (86MB, arm64 host).
+- Ran the compiled binary directly (not the interpreted `bun src/cli.ts` path): `./dist/jeo --version` → `jeo v0.8.30`, exit 0; `./dist/jeo --help` → full command listing, exit 0.
+- `test/release-binaries.test.ts` — 9 pass (was 8; +1 new test, +2 new assertions in the existing `buildCommand` test).
+- Full `bun test` — 3081 pass / 0 fail across 304 files.
+- `bun run typecheck` — no errors.
+
 ## [0.8.29] - 2026-07-20
 _gajae-code (gjc) v0.10.2→v0.11.4 gap analysis: most of that range is gjc-specific architecture jeo intentionally does not replicate (SDK broker/session-index recovery, Gajae Pet, coordinator-mcp, Telegram/Discord rich-delivery internals, browser tab workers, worktree-subcommand removal, RPC durable model selection) — one genuinely applicable TUI bug was found and closed; the CLI empty-non-TTY-stdin fix (gjc #2586) was investigated and found already-correct by construction (jeo's one-shot gate forces true whenever stdin isn't a TTY, regardless of args, so the hang gjc fixed cannot occur here)._
 

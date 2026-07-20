@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { charWidth, visibleWidth, truncateToWidth, wrapTextWithAnsi, sanitizeForFrame, lastValueCache } from "../src/tui/components/width";
+import { charWidth, visibleWidth, truncateToWidth, wrapTextWithAnsi, sanitizeForFrame, lastValueCache, nextGraphemeCluster } from "../src/tui/components/width";
 
 test("charWidth: wide / narrow / zero-width classes", () => {
   expect(charWidth("a".codePointAt(0)!)).toBe(1);
@@ -9,6 +9,51 @@ test("charWidth: wide / narrow / zero-width classes", () => {
   expect(charWidth("🚀".codePointAt(0)!)).toBe(2);  // emoji (astral)
   expect(charWidth(0x0301)).toBe(0);                  // combining acute
   expect(charWidth(0xfe0f)).toBe(0);                  // variation selector
+});
+test("nextGraphemeCluster: absorbs VS16/VS15, Fitzpatrick modifiers, keycaps, and ZWJ chains into ONE atomic cluster (gjc parity)", () => {
+  // ❤️ = U+2764 (narrow=1 on its own) + VS16 → emoji presentation, width 2 (NOT 1+0=1).
+  const heart = "\u2764\ufe0f";
+  expect(nextGraphemeCluster(heart, 0)).toEqual({ length: heart.length, width: 2 });
+  expect(visibleWidth(heart)).toBe(2);
+
+  // VS15 forces TEXT presentation — narrow, width 1.
+  const heartText = "\u2764\ufe0e";
+  expect(nextGraphemeCluster(heartText, 0)).toEqual({ length: heartText.length, width: 1 });
+
+  // 👍🏽 = thumbs-up (already wide=2) + Fitzpatrick Type-4 modifier → ONE 2-wide glyph
+  // (NOT 2+2=4, which is what naive per-code-point summing produced before this fix).
+  const thumbsUp = "\u{1f44d}\u{1f3fd}";
+  expect(nextGraphemeCluster(thumbsUp, 0)).toEqual({ length: [...thumbsUp].join("").length, width: 2 });
+  expect(visibleWidth(thumbsUp)).toBe(2);
+
+  // Keycap sequence: digit + VS16 + combining enclosing keycap → ONE 2-wide glyph.
+  const keycap1 = "1\ufe0f\u20e3";
+  expect(nextGraphemeCluster(keycap1, 0)).toEqual({ length: keycap1.length, width: 2 });
+  expect(visibleWidth(keycap1)).toBe(2);
+
+  // 4-person ZWJ family emoji: naive summing would count 4 wide code points = 8 cols;
+  // a terminal renders the WHOLE joined sequence as ONE 2-wide glyph.
+  const family = "\u{1f468}\u200d\u{1f469}\u200d\u{1f467}\u200d\u{1f466}";
+  expect(nextGraphemeCluster(family, 0)).toEqual({ length: family.length, width: 2 });
+  expect(visibleWidth(family)).toBe(2);
+  expect(visibleWidth(`${family}!`)).toBe(3); // trailing plain char still counts normally
+
+  // A plain (non-modified) astral emoji is unaffected — still counts 2, consumes its
+  // own surrogate pair only (no over-absorption of unrelated following text).
+  const rocket = "\u{1f680}x";
+  expect(nextGraphemeCluster(rocket, 0)).toEqual({ length: 2, width: 2 });
+});
+
+test("truncateToWidth: never splits a VS16/ZWJ/modifier cluster at the boundary", () => {
+  const heart = "\u2764\ufe0f"; // width 2
+  // A 1-col budget can't fit the 2-col cluster — dropped whole, not half (no VS16 leaking
+  // out with a lone, unrendered heart glyph left dangling).
+  expect(truncateToWidth(heart, 1)).toBe("");
+  expect(truncateToWidth(heart, 2)).toBe(heart);
+  const family = "\u{1f468}\u200d\u{1f469}\u200d\u{1f467}\u200d\u{1f466}"; // width 2, one atomic ZWJ chain
+  expect(truncateToWidth(family, 1)).toBe("");
+  expect(truncateToWidth(family, 2)).toBe(family);
+  expect(truncateToWidth(`${family}ab`, 3)).toBe(`${family}a`);
 });
 
 test("visibleWidth: CJK counts 2, ANSI counts 0, tabs advance to 8-stop", () => {

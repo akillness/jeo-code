@@ -58,6 +58,85 @@ export function charWidth(cp: number): number {
   }
   return 1;
 }
+const ZWJ = 0x200d;
+const VS15 = 0xfe0e; // variation selector: force TEXT (narrow) presentation
+const VS16 = 0xfe0f; // variation selector: force EMOJI (wide) presentation
+const FITZPATRICK_MIN = 0x1f3fb; // Emoji Modifier Fitzpatrick Type-1-2 .. Type-6
+const FITZPATRICK_MAX = 0x1f3ff;
+const KEYCAP_COMBINING = 0x20e3; // combining enclosing keycap (1️⃣, #️⃣, *️⃣)
+
+function isFitzpatrick(cp: number): boolean {
+  return cp >= FITZPATRICK_MIN && cp <= FITZPATRICK_MAX;
+}
+
+/** True for combining/zero-width marks that attach to a preceding base rather than
+ *  starting a new cluster on their own (diacritics etc.) — the zero-width branch of
+ *  `charWidth` MINUS variation selectors (VS15/VS16 are handled explicitly above,
+ *  since they change the CLUSTER's width rather than merely contributing 0 to it). */
+function isAttachableCombining(cp: number): boolean {
+  return (cp >= 0x0300 && cp <= 0x036f)
+    || (cp >= 0x1ab0 && cp <= 0x1aff)
+    || (cp >= 0x1dc0 && cp <= 0x1dff)
+    || (cp >= 0x20d0 && cp <= 0x20ff)
+    || cp === 0xfeff;
+}
+
+function codePointAndLength(s: string, i: number): { cp: number; length: number } {
+  const cp = s.codePointAt(i)!;
+  return { cp, length: cp > 0xffff ? 2 : 1 };
+}
+
+/**
+ * Resolve the visual CLUSTER starting at `s[i]` (not an SGR escape or tab — callers
+ * handle those separately) into its total consumed UTF-16 length and DISPLAY width,
+ * absorbing variation selectors, skin-tone modifiers, keycap combiners, combining
+ * marks, and ZWJ-joined sequences into ONE atomic unit (gjc parity: "preserve …
+ * Unicode grapheme semantics for … Korean tone marks, VS16 emoji presentation, ZWJ,
+ * keycaps, and emoji modifiers").
+ *
+ * Per-code-point summing (the old behavior) over- or under-counts every one of these:
+ * 👍🏽 (thumbs-up + Fitzpatrick modifier) summed to 4 columns where a terminal renders
+ * ONE 2-wide glyph; ❤️ (heart + VS16) summed to 1 where a terminal renders 2; a 4-person
+ * ZWJ family emoji summed to 8 where a terminal renders 2. Every one of those is a real,
+ * visible box-border/wrap misalignment ("깨짐") the instant such a sequence appears in a
+ * message — this collapses each sequence to the width a terminal ACTUALLY renders it at,
+ * atomically, so `truncateToWidth`/`wrapTextWithAnsi` also never split one in half at a
+ * boundary (this is a pragmatic subset of UAX #29 grapheme-cluster breaking scoped to
+ * the sequences a chat/coding TUI actually sees — not a general script-shaping engine).
+ */
+export function nextGraphemeCluster(s: string, i: number): { length: number; width: number } {
+  const base = codePointAndLength(s, i);
+  let width = charWidth(base.cp);
+  let len = base.length;
+  let j = i + base.length;
+  const peek = (): number => s.codePointAt(j) ?? -1;
+
+  if (peek() === VS15) { width = 1; len += 1; j += 1; }
+  else if (peek() === VS16) { width = 2; len += 1; j += 1; }
+
+  while (isFitzpatrick(peek())) {
+    const mod = codePointAndLength(s, j);
+    len += mod.length;
+    j += mod.length;
+    width = 2;
+  }
+
+  if (peek() === KEYCAP_COMBINING) { len += 1; j += 1; width = 2; }
+
+  while (isAttachableCombining(peek())) {
+    const mark = codePointAndLength(s, j);
+    len += mark.length;
+    j += mark.length;
+  }
+
+  if (peek() === ZWJ && j + 1 < s.length) {
+    const joined = nextGraphemeCluster(s, j + 1);
+    len += 1 + joined.length;
+    width = 2;
+  }
+
+  return { length: len, width };
+}
 
 /**
  * Visible display width of a string: SGR escapes count 0, tabs advance to the
@@ -81,9 +160,9 @@ export function visibleWidth(s: string): number {
       i += 1;
       continue;
     }
-    const cp = s.codePointAt(i)!;
-    w += charWidth(cp);
-    i += cp > 0xffff ? 2 : 1;
+    const cluster = nextGraphemeCluster(s, i);
+    w += cluster.width;
+    i += cluster.length;
   }
   return w;
 }
@@ -130,9 +209,9 @@ export function truncateToWidth(s: string, cols: number): string {
       cw = TAB_STOP - (w % TAB_STOP);
       chunk = "\t";
     } else {
-      const cp = s.codePointAt(i)!;
-      cw = charWidth(cp);
-      chunk = cp > 0xffff ? s.slice(i, i + 2) : s[i]!;
+      const cluster = nextGraphemeCluster(s, i);
+      cw = cluster.width;
+      chunk = s.slice(i, i + cluster.length);
     }
     if (w + cw > limit) break;
     out += chunk;

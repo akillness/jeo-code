@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.32] - 2026-07-20
+_gjc parity: TUI display-width/wrapping is now grapheme-cluster-aware for emoji sequences (VS16 presentation, skin-tone modifiers, keycaps, ZWJ-joined emoji like family/profession glyphs), fixing box-border and wrap misalignment ("깨짐") that the old per-code-point width summation produced whenever such a sequence appeared in a message — Korean/CJK-only text was already correctly handled and is unaffected._
+
+### Fixed
+- **Display-width no longer over/under-counts emoji sequences, so box borders and hard-wraps never misalign when one appears in a message** (`src/tui/components/width.ts`) — gjc parity (`#1996` "preserve … Unicode grapheme semantics for … VS16 emoji presentation, ZWJ, keycaps, and emoji modifiers"). The old `visibleWidth`/`truncateToWidth` summed `charWidth()` per CODE POINT, which is wrong for any sequence a terminal renders as ONE glyph: `❤️` (heart + VS16) summed to 1 column where terminals render 2; `👍🏽` (thumbs-up + Fitzpatrick skin-tone modifier) summed to 4 where terminals render 2; a 4-person ZWJ family emoji (`👨‍👩‍👧‍👦`) summed to 8 where terminals render 2 — quantified live against the actual old per-code-point path before fixing (not asserted from inference). New `nextGraphemeCluster()` absorbs VS15/VS16, Fitzpatrick modifiers (`U+1F3FB`-`U+1F3FF`), keycap combiners (`U+20E3`), combining marks, and ZWJ-joined chains into one atomic width-2 (or width-1 for VS15 text-presentation) unit; `visibleWidth`/`truncateToWidth` (and therefore `wrapTextWithAnsi`, built on both) now consume it instead of raw per-code-point `charWidth()`, and `truncateToWidth` can no longer split one of these sequences in half at a wrap/truncation boundary (a second corruption vector the old code point-by-point cut was exposed to). Korean/CJK/Hangul-only text (no emoji sequences) was already correct and is byte-identical before/after.
+
+### Verified
+- `test/width.test.ts` — 11 pass (was 9): new `nextGraphemeCluster` unit coverage for the VS15/VS16/Fitzpatrick/keycap/ZWJ cases above, plus a `truncateToWidth` atomicity test proving a 2-wide cluster is dropped whole (never half) at a 1-column budget.
+- Live (unmocked) reproduction: quantified the OLD per-code-point sum against the NEW `visibleWidth` for all 4 sequence classes — heart 1→2, thumbs-up+modifier 4→2, ZWJ family 8→2, keycap 1→2 — confirming this was a real, sometimes-severe (family emoji off by 6 columns) miscount, not a hypothetical.
+- Live (unmocked) box-render smoke test: wrapped a real mixed Korean/emoji message (family emoji, VS16 heart, skin-tone thumbs-up) into a 20-column box via `wrapTextWithAnsi` — every wrapped line's `visibleWidth` fit the declared budget with correct padding, confirming no overflow/misalignment end-to-end (not just at the unit level).
+- Full `bun test` — 3092 pass / 0 fail across 304 files (2 transient parallel-load flakes on the first run — unrelated `/model` pin routing + a Node `--inspect-brk` debug-session test, neither touching `width.ts` — both isolated-pass and a full clean re-run confirmed no regression).
+- `bun run typecheck` — no errors.
+
 ## [0.8.31] - 2026-07-20
 _`web_search` no longer silently degrades every non-Anthropic model to keyless DuckDuckGo scraping — OpenAI and Gemini sessions now get their own native, hosted search tool (matching the same active-model-gated, credential-required design Anthropic already had), with DuckDuckGo remaining the always-on terminal fallback for everyone else._
 

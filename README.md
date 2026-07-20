@@ -291,11 +291,11 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 ## Changelog
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.8.32]** (2026-07-20) — gjc parity: TUI display-width/wrapping is now grapheme-cluster-aware for emoji sequences (VS16 presentation, skin-tone modifiers, keycaps, ZWJ-joined emoji like family/profession glyphs), fixing box-border and wrap misalignment ("깨짐") that the old per-code-point width summation produced whenever such a sequence appeared in a message — Korean/CJK-only text was already correctly handled and is unaffected.
 - **[0.8.31]** (2026-07-20) — `web_search` no longer silently degrades every non-Anthropic model to keyless DuckDuckGo scraping — OpenAI and Gemini sessions now get their own native, hosted search tool (matching the same active-model-gated, credential-required design Anthropic already had), with DuckDuckGo remaining the always-on terminal fallback for everyone else.
 - **[0.8.30]** (2026-07-20) — `bun run build` (the host-only dev binary build) has been silently broken for every user who ran it — a drift between the plain `package.json` `build` script and the actual working release-binary build command (`scripts/ci-release-build-binaries.ts`), which had already documented and fixed the exact same crash.
 - **[0.8.29]** (2026-07-20) — gajae-code (gjc) v0.10.2→v0.11.4 gap analysis: most of that range is gjc-specific architecture jeo intentionally does not replicate (SDK broker/session-index recovery, Gajae Pet, coordinator-mcp, Telegram/Discord rich-delivery internals, browser tab workers, worktree-subcommand removal, RPC durable model selection) — one genuinely applicable TUI bug was found and closed; the CLI empty-non-TTY-stdin fix (gjc #2586) was investigated and found already-correct by construction (jeo's one-shot gate forces true whenever stdin isn't a TTY, regardless of args, so the hang gjc fixed cannot occur here).
 - **[0.8.28]** (2026-07-16) — Improved the welcome UI's right-side table to display dynamic sections (What's New, Flow keys, Project pulse, and Session trail) matching gajae-code (gjc) >= 0.8.0 features.
-- **[0.8.27]** (2026-07-16) — Repeat-read recovery now survives both context-overflow and refusal-result elision without reopening mutating-call loops.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

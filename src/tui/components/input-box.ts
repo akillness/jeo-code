@@ -135,22 +135,31 @@ export function renderInputFrame(line: string, opts: InputBoxOptions = {}): Inpu
   }
 
   // Scroll the visible window so the caret row stays in view — cursor movement reveals
-  // every line (no content is unreachable). `…` markers flag rows hidden above/below.
+  // every line (no content is unreachable). A count-bearing marker (not a bare `…`) flags
+  // rows hidden above/below so a large paste's user isn't left guessing how much text is
+  // off-screen — e.g. pasting a 20-line block previously showed a bare "…line sixteen"
+  // with no indication 15 more lines existed above it.
   const maxBodyRows = Math.max(1, Math.trunc(opts.maxBodyRows ?? rows.length));
   const totalRows = rows.length;
   let hidden = 0;
+  let topPrefixWidth = 0;
   if (totalRows > maxBodyRows) {
     hidden = Math.min(Math.max(0, crow - maxBodyRows + 1), totalRows - maxBodyRows);
     if (crow < hidden) hidden = crow; // caret above the window → scroll up to it
     rows = rows.slice(hidden, hidden + maxBodyRows);
-    if (hidden > 0) rows[0] = truncateToWidth(`…${rows[0] ?? ""}`, textWidth);
-    if (hidden + maxBodyRows < totalRows) {
+    if (hidden > 0) {
+      const topPrefix = `+${hidden}⋯`;
+      topPrefixWidth = visibleWidth(topPrefix);
+      rows[0] = truncateToWidth(`${topPrefix}${rows[0] ?? ""}`, textWidth);
+    }
+    const hiddenBelow = totalRows - hidden - maxBodyRows;
+    if (hiddenBelow > 0) {
       const last = rows.length - 1;
-      rows[last] = truncateToWidth(`${rows[last] ?? ""}…`, textWidth);
+      rows[last] = truncateToWidth(`${rows[last] ?? ""}⋯+${hiddenBelow}`, textWidth);
     }
   }
   let visRow = Math.max(0, Math.min(crow - hidden, rows.length - 1));
-  if (hidden > 0 && crow - hidden === 0) ccol += 1; // shifted by the leading `…`
+  if (hidden > 0 && crow - hidden === 0) ccol += topPrefixWidth; // shifted by the leading "+N⋯" marker
   if (crow - hidden < 0) { visRow = 0; ccol = 0; }
 
   const promptMark = "> ";

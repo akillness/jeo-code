@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.39] - 2026-07-21
+_User report (paraphrased): "when I copy and paste content from elsewhere, it doesn't need to show every line — like gjc — update it so the composer stays a reasonable size and shows a clear indicator when width/length isn't enough." Investigated live before assuming intent: pasting a large multi-line block into the composer already caps the visible box height and scrolls to the caret, but the scrolled-off content above/below was flagged with a bare `…` — no indication of HOW MUCH text was hidden. (Checked gjc's own actual paste-handling source directly: it does not have a general text-paste-collapse feature either — only image-path detection — so this fix targets the concrete, reproducible UX gap found live, not a specific gjc feature to port.)_
+
+### Changed
+- **The input box's scrolled-content indicator now shows a count, not a bare ellipsis** (`src/tui/components/input-box.ts`'s `renderInputFrame`) — pasting a 20-line block previously showed `…line sixteen` at the top of the box with zero indication that 15 more lines existed above; it now shows `+15⋯line sixteen`. Same treatment for content scrolled below the visible window (`text⋯+N`). Purely a rendering-layer change — the bracketed-paste parsing state machine (chunk carrying, CRLF splits, escape stripping) is untouched.
+
+### Verified
+- Live (unmocked): booted a real `jeo --tmux` session and pasted a real 20-line bracketed-paste block via `tmux send-keys` with real `\x1b[200~`/`\x1b[201~` markers — the box now shows `+15⋯line sixteen` instead of the previous bare `…line sixteen`.
+- `test/input-box.test.ts` — 13 pass (was 11): a new test reproduces the exact 20-line scenario end to end (asserts the count-bearing marker appears and no bare `…` remains anywhere), plus a negative test confirming no marker at all appears when content fits without scrolling.
+- Full `bun test` — 3125 pass / 0 fail across 307 files.
+- `bun run typecheck` — no errors.
+
 ## [0.8.38] - 2026-07-21
 _Independent architect-subagent review of this whole session's TUI/workflow changes (v0.8.29-v0.8.37), requested explicitly to verify stability before calling the work done. Verdict: WATCH/COMMENT, no P0/P1 — the resize fix, the idle↔mid-turn transition, the new `calc` tool wiring, and the web-search credential gating all held up under independent scrutiny. Found and fixed 3 real, previously-unknown bugs in `width.ts`; 1 architectural observation recorded as tech debt, not fixed._
 

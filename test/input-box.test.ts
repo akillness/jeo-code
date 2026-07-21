@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { renderInputBox } from "../src/tui/components/input-box";
+import { renderInputBox, renderInputFrame } from "../src/tui/components/input-box";
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -149,4 +149,30 @@ test("renderInputFrame: caret lands right after the [image #N] tag from insertIm
   expect(frame.cursorCol).toBe(4 + text.length);
   const body = frame.lines.map(stripAnsi);
   expect(body[1]).toContain("> [image #1]");
+});
+
+// UX follow-up (pasting a large multi-line block): a bare "…" scroll marker gave no
+// indication of HOW MUCH content was hidden — pasting a 20-line block previously showed
+// "…line sixteen" with no count. A count-bearing marker fixes this without touching the
+// bracketed-paste parsing state machine at all (this is a pure rendering-layer change).
+test("renderInputFrame: a scrolled-above window shows a count-bearing '+N⋯' marker, not a bare ellipsis", () => {
+  const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+  const text = lines.join("\n");
+  const frame = renderInputFrame(text, { cols: 40, maxBodyRows: 5, cursor: text.length, unicode: true, color: false });
+  const body = frame.lines.map(stripAnsi);
+  // Caret at the very end (a paste naturally lands here) pins the window to the last
+  // 5 lines; 15 lines (1..15) are hidden above.
+  expect(body.some(l => l.includes("+15⋯line 16"))).toBe(true);
+  expect(body.some(l => l.includes("…"))).toBe(false); // no bare ellipsis anywhere
+  // No lines hidden BELOW (caret is on the last real line) — no "text⋯+N" trailing marker
+  // anywhere (only the "+15⋯" LEADING marker on row 0, checked above).
+  expect(body.some(l => /line 20⋯\+\d/.test(l))).toBe(false);
+});
+
+test("renderInputFrame: no scroll marker at all when every line fits within maxBodyRows", () => {
+  const text = "one\ntwo\nthree";
+  const frame = renderInputFrame(text, { cols: 40, maxBodyRows: 5, cursor: text.length, unicode: true, color: false });
+  const body = frame.lines.map(stripAnsi);
+  expect(body.some(l => l.includes("⋯"))).toBe(false);
+  expect(body.some(l => l.includes("…"))).toBe(false);
 });

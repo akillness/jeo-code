@@ -12,6 +12,8 @@ import {
   stopDaemon,
   reloadDaemon,
   isPidAlive,
+  processStartTimeMs,
+  isLockOwnerAlive,
 } from "../src/agent/notify/daemon-control";
 import { notifyDaemonLockPath } from "../src/agent/notify/paths";
 import { saveConfigPatch } from "../src/agent/state";
@@ -34,6 +36,10 @@ async function deadPid(): Promise<number> {
   const child = Bun.spawn(["true"]);
   await child.exited;
   return child.pid;
+}
+async function realStartedAt(pid: number): Promise<number> {
+  const real = await processStartTimeMs(pid);
+  return real ?? Date.now();
 }
 
 test("isPidAlive is true for our own process and false for an exited one", async () => {
@@ -90,7 +96,7 @@ test("daemonStatus reports stopped+not-configured on a clean install", async () 
 
 test("daemonStatus reports running for a live-pid lock and stale for a dead-pid lock", async () => {
   await fs.mkdir(path.dirname(notifyDaemonLockPath()), { recursive: true });
-  await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt: 123 }));
+  await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt: await realStartedAt(process.pid) }));
   const running = await daemonStatus();
   expect(running.running).toBe(true);
   expect(running.stale).toBe(false);
@@ -100,6 +106,38 @@ test("daemonStatus reports running for a live-pid lock and stale for a dead-pid 
   const stale = await daemonStatus();
   expect(stale.running).toBe(false);
   expect(stale.stale).toBe(true);
+});
+
+test("isLockOwnerAlive is true when the recorded startedAt matches the process's real start time", async () => {
+  const startedAt = await realStartedAt(process.pid);
+  expect(await isLockOwnerAlive({ pid: process.pid, startedAt })).toBe(true);
+});
+
+test("isLockOwnerAlive is false when the recorded startedAt does not match — PID reuse detection", async () => {
+  // Simulates a stale lock whose pid was reassigned by the OS to an unrelated
+  // live process (here, this test runner) long after the original daemon
+  // actually started — a bare kill(pid, 0) cannot tell these apart.
+  const bogusStartedAt = (await realStartedAt(process.pid)) - 60 * 60 * 1000; // 1h off
+  expect(await isLockOwnerAlive({ pid: process.pid, startedAt: bogusStartedAt })).toBe(false);
+});
+
+test("stopDaemon refuses to signal a live pid whose startedAt does not match (PID reuse) and clears the lock instead", async () => {
+  const child = Bun.spawn(["sleep", "5"]);
+  try {
+    await fs.mkdir(path.dirname(notifyDaemonLockPath()), { recursive: true });
+    // Deliberately wrong startedAt — simulates the recorded owner having
+    // already died and this pid now belonging to an unrelated process.
+    await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: child.pid, startedAt: 1 }));
+    const res = await stopDaemon();
+    expect(res.ok).toBe(true);
+    expect(res.message).toBe("daemon was not running");
+    expect(await readDaemonLock()).toBeUndefined();
+    // The unrelated live process must NOT have been signaled.
+    expect(isPidAlive(child.pid)).toBe(true);
+  } finally {
+    child.kill();
+    await child.exited;
+  }
 });
 
 test("daemonInvocation resolves .ts source through the bun runtime", () => {
@@ -120,7 +158,7 @@ test("daemonInvocation runs a non-.ts entrypoint (already-built binary) directly
 
 test("startDaemon reports already-running without re-spawning when a live lock exists", async () => {
   await fs.mkdir(path.dirname(notifyDaemonLockPath()), { recursive: true });
-  await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt: 1 }));
+  await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt: await realStartedAt(process.pid) }));
   let spawned = false;
   const res = await startDaemon(() => {
     spawned = true;

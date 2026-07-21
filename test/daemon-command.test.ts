@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { runDaemonCommand } from "../src/commands/daemon";
 import { notifyDaemonLockPath } from "../src/agent/notify/paths";
+import { processStartTimeMs } from "../src/agent/notify/daemon-control";
 
 let dir: string;
 const savedCfgDir = process.env.JEO_CONFIG_DIR;
@@ -14,6 +15,10 @@ async function deadPid(): Promise<number> {
   const child = Bun.spawn(["true"]);
   await child.exited;
   return child.pid;
+}
+async function realStartedAt(pid: number): Promise<number> {
+  const real = await processStartTimeMs(pid);
+  return real ?? Date.now();
 }
 
 beforeEach(async () => {
@@ -41,12 +46,12 @@ test("default action (no args) is 'status'", async () => {
 
 test("status reports 'running' with pid + ISO timestamp for a live-pid lock", async () => {
   await fs.mkdir(path.dirname(notifyDaemonLockPath()), { recursive: true });
-  const startedAt = Date.parse("2024-01-01T00:00:00.000Z");
+  const startedAt = await realStartedAt(process.pid);
   await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt }));
   await runDaemonCommand(["status"]);
   const text = logs.join("\n");
   expect(text).toContain(`running (pid ${process.pid}`);
-  expect(text).toContain("2024-01-01T00:00:00.000Z");
+  expect(text).toContain(new Date(startedAt).toISOString());
 });
 
 test("status reports 'stale' for a dead-pid lock", async () => {

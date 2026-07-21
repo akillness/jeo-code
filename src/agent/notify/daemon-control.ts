@@ -25,6 +25,67 @@ export function isPidAlive(pid: number): boolean {
     return false;
   }
 }
+export function parseEtimeToMs(raw: string): number | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const dayMatch = trimmed.match(/^(\d+)-(.+)$/);
+  let days = 0;
+  let rest = trimmed;
+  if (dayMatch) {
+    days = Number(dayMatch[1]);
+    rest = dayMatch[2]!;
+  }
+  const parts = rest.split(":").map(Number);
+  if (parts.length < 2 || parts.length > 3 || parts.some(n => !Number.isFinite(n))) return undefined;
+  const [h, m, s] = parts.length === 3 ? parts : [0, parts[0]!, parts[1]!];
+  return ((days * 24 + h!) * 60 + m!) * 60 * 1000 + s! * 1000;
+}
+
+/** Best-effort actual OS process start time in epoch ms, via `ps -o etime=`
+ *  (POSIX-portable across macOS/Linux `ps`; unsupported on Windows, where
+ *  there is no equivalent zero-dependency lookup). Returns `undefined` when
+ *  the lookup is unavailable or unparseable — callers MUST treat that as
+ *  "cannot verify" and fall back to the existence-only check, not as "dead". */
+export async function processStartTimeMs(pid: number): Promise<number | undefined> {
+  if (process.platform === "win32") return undefined;
+  const output = await new Promise<string | undefined>(resolve => {
+    let child: ReturnType<typeof nodeSpawn>;
+    try {
+      child = nodeSpawn("ps", ["-o", "etime=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      resolve(undefined);
+      return;
+    }
+    let buf = "";
+    child.stdout?.on("data", d => { buf += d; });
+    child.on("error", () => resolve(undefined));
+    child.on("close", code => resolve(code === 0 ? buf : undefined));
+  });
+  if (output === undefined) return undefined;
+  const ms = parseEtimeToMs(output);
+  return ms === undefined ? undefined : Date.now() - ms;
+}
+
+/** `etime` is truncated to whole seconds and adds a little spawn/poll jitter;
+ *  genuine PID reuse shows up as a gap of minutes/hours/days, never a few
+ *  seconds, so a generous-but-tight tolerance loses no real detections. */
+const START_TIME_TOLERANCE_MS = 10_000;
+
+/** Stronger alternative to a bare `isPidAlive(lock.pid)`: also cross-checks
+ *  the recorded `startedAt` against the OS-reported actual process start
+ *  time to rule out PID reuse — a dead daemon's pid can be reassigned by the
+ *  OS to a completely unrelated process before the next status/stop check
+ *  runs, which `kill(pid, 0)` alone cannot distinguish (gjc #2786 parity:
+ *  "restore macOS daemon signaling (kill(2) + start-time recheck)"). Falls
+ *  back to the existence-only result whenever the OS lookup itself is
+ *  unavailable (Windows, `ps` missing, permission denied) — never a
+ *  regression versus the old behavior in that case. */
+export async function isLockOwnerAlive(lock: DaemonLockInfo): Promise<boolean> {
+  if (!isPidAlive(lock.pid)) return false;
+  const real = await processStartTimeMs(lock.pid);
+  if (real === undefined) return true;
+  return Math.abs(real - lock.startedAt) <= START_TIME_TOLERANCE_MS;
+}
 
 export async function readDaemonLock(): Promise<DaemonLockInfo | undefined> {
   try {
@@ -43,7 +104,7 @@ export async function readDaemonLock(): Promise<DaemonLockInfo | undefined> {
 export async function acquireDaemonLock(): Promise<{ release: () => Promise<void> } | undefined> {
   await fs.mkdir(notifyDir(), { recursive: true, mode: 0o700 });
   const existing = await readDaemonLock();
-  if (existing && existing.pid !== process.pid && isPidAlive(existing.pid)) return undefined;
+  if (existing && existing.pid !== process.pid && (await isLockOwnerAlive(existing))) return undefined;
   const info: DaemonLockInfo = { pid: process.pid, startedAt: Date.now() };
   await fs.writeFile(notifyDaemonLockPath(), JSON.stringify(info), { mode: 0o600 });
   return {
@@ -71,7 +132,7 @@ export async function isNotifyConfigured(): Promise<boolean> {
 export async function daemonStatus(): Promise<DaemonStatus> {
   const [lock, configured] = await Promise.all([readDaemonLock(), isNotifyConfigured()]);
   if (!lock) return { configured, running: false, stale: false };
-  const alive = isPidAlive(lock.pid);
+  const alive = await isLockOwnerAlive(lock);
   return { configured, running: alive, stale: !alive, pid: lock.pid, startedAt: lock.startedAt };
 }
 
@@ -115,7 +176,7 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs: number, ste
 
 export async function startDaemon(spawnImpl: SpawnLike = defaultSpawn): Promise<{ ok: boolean; pid?: number; message: string }> {
   const existing = await readDaemonLock();
-  if (existing && isPidAlive(existing.pid)) {
+  if (existing && (await isLockOwnerAlive(existing))) {
     return { ok: true, pid: existing.pid, message: `daemon already running (pid ${existing.pid})` };
   }
   // Check BEFORE spawning: an unconfigured daemon exits almost immediately (see
@@ -138,7 +199,7 @@ export async function startDaemon(spawnImpl: SpawnLike = defaultSpawn): Promise<
 
 export async function stopDaemon(): Promise<{ ok: boolean; message: string }> {
   const lock = await readDaemonLock();
-  if (!lock || !isPidAlive(lock.pid)) {
+  if (!lock || !(await isLockOwnerAlive(lock))) {
     await fs.unlink(notifyDaemonLockPath()).catch(() => {});
     return { ok: true, message: "daemon was not running" };
   }

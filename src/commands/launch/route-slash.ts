@@ -1,8 +1,8 @@
 /**
  * `/route` slash-command handler extracted from launch.ts.
  *
- * Handles `/route [status|on|off|why|history]` (default/`status`: report the
- * effective session routing state + the last decision, if any; `on`/`off`:
+ * Handles `/route [status|on|off|why|history|save]` (default/`status`: report
+ * the effective session routing state + the last decision, if any; `on`/`off`:
  * toggle a SESSION-LOCAL override of `config.routing.enabled`; `why`: explain
  * the last routing decision in detail; `history [n]`: print the last `n`
  * (default 10) recorded decisions, one per line). This block shares mutable
@@ -11,14 +11,16 @@
  * values in via an explicit context object and reads back a result object
  * instead of this function closing over REPL state directly.
  *
- * Session-level toggle only — `sessionRouteOverride` is never persisted to
- * `~/.jeo/config.json` (mirrors `/thinking` being session-only vs. `/model
- * save` being the explicit opt-in for persistence). `/route` has no `save`
- * subcommand in v1.
+ * `on`/`off` alone are SESSION-LOCAL only (mirrors `/thinking`), same as
+ * before — but `on save`/`off save`/bare `save` now persist `routing.enabled`
+ * to `~/.jeo/config.json` (mirrors `/model save`'s explicit opt-in for
+ * persistence), so a user who wants routing on by default no longer has to
+ * remember to type `/route on` at the start of every session.
  */
 
 import type { RouteDecision } from "../../agent/prompt-router";
 import type { RouteHistoryEntry } from "../../agent/route-history";
+import { saveConfigPatch } from "../../agent/state";
 
 export interface RouteSlashCtx {
   sessionRouteOverride: boolean | undefined;
@@ -44,7 +46,7 @@ export interface RouteSlashResult {
   lines: string[];
 }
 
-const USAGE = "Usage: /route [status|on|off|why|history [n]]";
+const USAGE = "Usage: /route [status|on|off|why|history [n]|save|on save|off save]";
 
 function isRealDecision(decision: RouteDecision | { note: string } | null): decision is RouteDecision {
   return !!decision && "model" in decision;
@@ -82,11 +84,11 @@ function formatHistory(entries: RouteHistoryEntry[], n: number): string[] {
 }
 
 /**
- * Handle `/route [status|on|off|why|history]`. Extracted for the same reason
- * as `/model`: shares REPL-local routing state with `runTurn` via an
+ * Handle `/route [status|on|off|why|history|save]`. Extracted for the same
+ * reason as `/model`: shares REPL-local routing state with `runTurn` via an
  * explicit ctx/result object rather than closing over it.
  */
-export function runRouteSlash(input: string, ctx: RouteSlashCtx): RouteSlashResult {
+export async function runRouteSlash(input: string, ctx: RouteSlashCtx): Promise<RouteSlashResult> {
   const rest = input.slice("/route".length).trim();
   const [sub, arg] = rest.split(/\s+/).filter(Boolean);
   const effective = ctx.sessionRouteOverride ?? ctx.routingConfigEnabled;
@@ -111,12 +113,21 @@ export function runRouteSlash(input: string, ctx: RouteSlashCtx): RouteSlashResu
 
 
 
-  if (sub === "on") {
-    return { sessionRouteOverride: true, lines: ["routing: on (this session)"] };
+  if (sub === "on" || sub === "off") {
+    const enabled = sub === "on";
+    if (arg === "save") {
+      await saveConfigPatch(raw => ({ routing: { ...raw.routing, enabled } }));
+      return { sessionRouteOverride: enabled, lines: [`routing: ${enabled ? "on" : "off"} (this session) — saved to ~/.jeo/config.json`] };
+    }
+    return { sessionRouteOverride: enabled, lines: [`routing: ${enabled ? "on" : "off"} (this session)`] };
   }
 
-  if (sub === "off") {
-    return { sessionRouteOverride: false, lines: ["routing: off (this session)"] };
+  // Bare `/route save` persists whatever is CURRENTLY effective (a prior
+  // session-local `on`/`off`, or — if neither was toggled this session —
+  // the config's existing value) rather than requiring `/route on save`.
+  if (sub === "save") {
+    await saveConfigPatch(raw => ({ routing: { ...raw.routing, enabled: effective } }));
+    return { lines: [`routing: ${effective ? "on" : "off"} — saved to ~/.jeo/config.json`] };
   }
 
   if (sub === "why") {

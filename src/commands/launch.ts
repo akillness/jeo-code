@@ -4810,7 +4810,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
       if (input.startsWith("/route") && (input === "/route" || input[6] === " ")) {
         const cfgNow = await readGlobalConfig();
-        const routeResult = runRouteSlash(input, {
+        const routeResult = await runRouteSlash(input, {
           sessionRouteOverride,
           routingConfigEnabled: !!cfgNow.routing?.enabled,
           lastRouteDecision,

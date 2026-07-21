@@ -6,6 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.34] - 2026-07-21
+_Provider/model-catalog sync against gjc's actual current source (a shallow clone of the real, public `Yeachan-Heo/gajae-code` repo at v0.11.5 — direct `packages/ai/src/models.json` comparison, not inference from release notes). The system prompt's philosophy, the `/route` command, and the `tencent` provider were explicitly out of scope and are unchanged._
+
+### Added
+- **`deepinfra` provider** (`src/ai/providers/openai-compatible-catalog.ts`) — `https://api.deepinfra.com/v1/openai`, `DEEPINFRA_API_KEY`, default `deepinfra/deepseek-ai/DeepSeek-V3.2`, plus known-model picker fallbacks (DeepSeek-R1-0528, Llama-3.3-70B-Instruct-Turbo, Kimi-K2.6, Qwen3-Coder-480B, gpt-oss-120b) — a real, popular inference cloud gjc's catalog has that jeo's didn't; one data-driven catalog row, auto-registered (no new adapter code, per this file's own "add a provider = one table row" design).
+- **`litellm` provider** — `http://localhost:4000/v1` (LiteLLM's own documented local-proxy default, expected to be overridden via `jeo provider add litellm --base-url <your-proxy>`), `LITELLM_API_KEY`. Deliberately has no `knownModels` list — unlike every other row, LiteLLM is a self-hosted proxy whose model catalog is entirely user-defined (whatever their own `config.yaml` routes to), so there is no globally-fixed list to offer.
+- `src/ai/types.ts`'s `ProviderName` and `src/auth/storage.ts`'s `AuthProvider`/`API_KEY_ONLY_PROVIDERS` gained both new names; `test/deepinfra-litellm-provider.test.ts` (+5 tests: registration, env var, base URL, routing, credential-gated readiness).
+
+### Scope notes (why the rest of gjc's current provider list wasn't ported wholesale)
+- **`tencent` — explicitly kept**, per instruction, even though gjc's current `models.json` has no such entry at all (jeo's Tencent Cloud MaaS integration predates and is independent of gjc's own catalog).
+- **`moonshot`** and **`firepass`** are gjc's OWN renamed/split entries for base URLs jeo already serves under different names — `moonshot`'s `https://api.moonshot.ai/v1` is jeo's existing `kimi` provider's base URL (jeo intentionally keeps ONE `kimi` provider spanning both the OAuth Kimi-Code subscription and the plain API-key path, rather than gjc's two separate provider identifiers); `firepass`'s `https://api.fireworks.ai/inference/v1` is byte-identical to jeo's existing `fireworks` entry. Already at parity, no action needed.
+- **`opencode` / `opencode-go` / `opencode-zen`** — these are the competing `opencode` CLI's own hosted proxy/gateway products; a jeo user would need an opencode account to use them, and integrating a rival agent's own product as an upstream provider has little practical value for jeo's userbase. Not ported.
+- **`azure-openai`, `amazon-bedrock`, `google-vertex`, `cursor`, `github-copilot`, `gitlab-duo`** — each requires a fundamentally new, non-trivial auth/wire-protocol adapter (Azure resource/deployment config, AWS SigV4 request signing, GCP OAuth + region/project config, Cursor's proprietary undocumented agent API, a GitHub Copilot-specific device-auth flow, GitLab OAuth) — none fit the existing "OpenAI-compatible base URL + API key" pattern every other row here uses; each is a real, separate feature in its own right, not a catalog row. Not ported in this pass to avoid fabricating auth flows without live verification.
+- **`cloudflare-ai-gateway` / `vercel-ai-gateway`** — both require a per-account/per-gateway URL embedded in the base (`.../v1/<account>/<gateway>/...`), which isn't a good fit for a fixed catalog row; already achievable today via jeo's existing `jeo provider add --base-url` custom-endpoint mechanism.
+- **`ollama-cloud`** — `src/ai/providers/ollama.ts`'s adapter never sends an `Authorization` header (by design, for the keyless local daemon); serving the hosted `https://ollama.com` cloud variant needs that adapter to accept a bearer credential, a real (if modest) code change beyond a catalog row. Deferred as a follow-up rather than rushed.
+- System prompt philosophy (`src/prompts/`) and the `/route` command (`src/commands/launch/route-slash.ts`, `src/agent/route-history.ts`) were not touched — out of scope per the request.
+
+### Verified
+- `test/deepinfra-litellm-provider.test.ts` — 5 pass (new).
+- `bun run typecheck` clean; full `bun test` 3102 pass / 0 fail across 305 files (an initial run under heavy concurrent system load hit many unrelated timeouts across subsystems this pass never touched — browser, daemon, tokenizer, tmux, search-gitignore — all confirmed pre-existing/load-induced via isolated re-runs, then a clean full re-run came back 0 fail).
+
 ## [0.8.33] - 2026-07-20
 _Real terminal-resize testing (repeated tmux resize-window + keystroke reproductions, byte-for-byte ANSI replay outside jeo/tmux to isolate root causes deterministically) uncovered and closed a progressive screen-corruption bug: resizing down to a narrow terminal (e.g. a ~20-column tmux pane) produced a growing stack of duplicate status-bar lines on every subsequent keystroke, and a separate, independently-reproducible scroll bug in the mid-turn live renderer._
 

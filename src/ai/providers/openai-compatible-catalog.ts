@@ -59,6 +59,13 @@ export const OPENAI_COMPAT_PROVIDERS: readonly OpenAICompatProviderDef[] = [
   { name: "zenmux", label: "ZenMux", baseUrl: "https://zenmux.ai/api/v1", apiKeyEnv: "ZENMUX_API_KEY", defaultModel: "zenmux/anthropic/claude-opus-4.6" },
   { name: "qianfan", label: "Qianfan", baseUrl: "https://qianfan.baidubce.com/v2", apiKeyEnv: "QIANFAN_API_KEY", defaultModel: "qianfan/deepseek-v3.2" },
   { name: "xiaomi", label: "Xiaomi", baseUrl: "https://api.xiaomimimo.com/v1", apiKeyEnv: "XIAOMI_API_KEY", defaultModel: "xiaomi/mimo-v2-flash" },
+  { name: "deepinfra", label: "DeepInfra", baseUrl: "https://api.deepinfra.com/v1/openai", apiKeyEnv: "DEEPINFRA_API_KEY", defaultModel: "deepinfra/deepseek-ai/DeepSeek-V3.2", knownModels: ["deepseek-ai/DeepSeek-V3.2", "deepseek-ai/DeepSeek-R1-0528", "meta-llama/Llama-3.3-70B-Instruct-Turbo", "moonshotai/Kimi-K2.6", "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo", "openai/gpt-oss-120b"] },
+  // Self-hosted OpenAI-compatible proxy (LiteLLM) — the model catalog behind it is
+  // entirely user-configured (whatever the user's own litellm config.yaml routes to),
+  // so unlike every other row here there is no globally-fixed `knownModels` list to
+  // offer; `baseUrl` is LiteLLM's own documented local-proxy default and is expected
+  // to be overridden via `jeo provider add litellm --base-url <your-proxy-url>`.
+  { name: "litellm", label: "LiteLLM", baseUrl: "http://localhost:4000/v1", apiKeyEnv: "LITELLM_API_KEY", defaultModel: "litellm/gpt-4o-mini" },
   { name: "xiaomi-token-plan-ams", label: "Xiaomi Token Plan (Europe)", baseUrl: "https://token-plan-ams.xiaomimimo.com/v1", apiKeyEnv: "XIAOMI_TOKEN_PLAN_AMS_API_KEY", defaultModel: "xiaomi-token-plan-ams/mimo-v2.5", subscription: true },
   { name: "xiaomi-token-plan-cn", label: "Xiaomi Token Plan (China)", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", apiKeyEnv: "XIAOMI_TOKEN_PLAN_CN_API_KEY", defaultModel: "xiaomi-token-plan-cn/mimo-v2.5", subscription: true },
   { name: "xiaomi-token-plan-sgp", label: "Xiaomi Token Plan (Singapore)", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1", apiKeyEnv: "XIAOMI_TOKEN_PLAN_SGP_API_KEY", defaultModel: "xiaomi-token-plan-sgp/mimo-v2.5", subscription: true },

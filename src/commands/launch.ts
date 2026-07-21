@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { emitKeypressEvents } from "node:readline";
+import { StringDecoder } from "node:string_decoder";
 import { PassThrough } from "node:stream";
 import { runAgentLoop, DEFAULT_TOOLS, TOOL_PROTOCOL, WORKING_DISCIPLINE, OUTPUT_DISCIPLINE, VERIFICATION_DIRECTIVE, isSafetyFallbackBail, stripSafetyFallbackTag, type AgentLoopEvents } from "../agent/engine";
 import { computerSupervisor } from "../agent/computer-supervisor";
@@ -2395,8 +2396,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // lives in `filterPromptInputChunk` (pure + exported) so the full keystroke wiring is
     // testable without a live readline/PTY; this handler is the thin live adapter.
     const kfState = { inPaste: false };
+    // gjc parity (#2591 "preserve supplementary Unicode input"): a raw stdin "data"
+    // chunk boundary can land MID multi-byte UTF-8 sequence (real terminals/ptys do not
+    // guarantee byte-aligned-to-character delivery, especially under load or over
+    // SSH/tmux) — naive per-chunk `chunk.toString("utf8")` then replaces the split
+    // sequence's incomplete tail/head with U+FFFD on EACH side of the split, corrupting
+    // any non-ASCII input (Korean/CJK IME text, emoji, ...) whenever this happens. A
+    // persistent `StringDecoder` buffers an incomplete trailing byte sequence across
+    // `write()` calls and only emits complete characters, exactly like Node's own
+    // string-mode streams do internally — this is the standard fix for streaming UTF-8.
+    const kfUtf8Decoder = new StringDecoder("utf8");
     const kfDataHandler = (chunk: Buffer) => {
-      const data = chunk.toString("utf8");
+      const data = kfUtf8Decoder.write(chunk);
+      if (!data) return; // an incomplete sequence is buffered inside the decoder; wait for the rest
       const result = filterPromptInputChunk(
         data,
         activeRl ? (activeRl as unknown as { line: string; cursor: number }) : null,

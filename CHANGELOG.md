@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.36] - 2026-07-21
+_First full audit of gjc v0.11.5's actual ~65-PR "What's Changed" list (prior passes had used release-note prose or direct-source structural diffs — this is the first time every individual PR was read and triaged against jeo's own codebase)._
+
+### Fixed
+- **A raw stdin chunk boundary landing mid multi-byte UTF-8 sequence corrupted the composer's input** (`src/commands/launch.ts`'s `kfDataHandler`) — gjc parity (#2591 "preserve supplementary Unicode input"). The live stdin `"data"` handler did `chunk.toString("utf8")` on EACH raw `Buffer` chunk independently; real terminals/ptys never guarantee byte-aligned-to-character delivery (more likely under load, over SSH, or during a fast paste), so a split sequence produced the Unicode replacement character (`U+FFFD`) on BOTH sides of the split instead of the real character — corrupting any non-ASCII input: Korean/CJK IME text, emoji, accented Latin. Quantified the exact corruption before fixing: a 4-byte emoji (`😀`) split after 2 bytes decoded to `"\uFFFD" + "\uFFFD\uFFFD"`, never the original character. Fixed with a persistent `node:string_decoder` `StringDecoder` that buffers an incomplete trailing byte sequence across chunks and only emits complete characters — the standard fix for streaming UTF-8, and exactly what Node's own string-mode streams do internally. `filterPromptInputChunk`'s own separate ASCII-level carry logic (bracketed-paste markers, CRLF splits) is unaffected and unchanged; the two are complementary, not overlapping.
+
+### Verified
+- `test/stdin-utf8-decode.test.ts` — 5 pass (new): quantifies the OLD per-chunk `toString("utf8")` bug directly (a split 4-byte emoji really does decode to two replacement characters), proves the `StringDecoder` fix reassembles both a split 4-byte emoji AND a split 3-byte Hangul character correctly, confirms complete ASCII-only chunks are unaffected (no behavior change for the common case), and asserts the real wiring in `launch.ts`'s source (not a naive `chunk.toString("utf8")`).
+- Real (unmocked) live verification: booted a real `jeo --tmux` session and typed real Korean + emoji text (`안녕하세요 테스트 😀🎉 한글입력`) via `tmux send-keys`, real UTF-8 bytes over a real pty — rendered correctly and completely, no corruption, no regression.
+- Full `bun test` — 3119 pass / 0 fail across 307 files.
+- `bun run typecheck` — no errors.
+
+### Audit status (answering "is everything through gjc v0.11.5 covered?")
+- **No** — not fully verified as of this entry. This pass read all ~65 PRs in v0.11.5's actual "What's Changed" list for the first time (prior passes used release-note prose for v0.10.2-v0.11.4, and direct-source structural diffs — not a PR-by-PR read — for v0.11.5's provider catalog and tool surface). Only the one fixed above was confirmed both applicable and safely portable so far; the rest of v0.11.5's list is still being triaged in-session.
+
 ## [0.8.35] - 2026-07-21
 _Deeper gjc-parity pass: re-cloned the real, public `Yeachan-Heo/gajae-code` source and, this time, structurally compared its actual tool implementations (`packages/coding-agent/src/tools/`) against jeo's own tool surface, not just the provider catalog._
 

@@ -13,6 +13,7 @@ import type { Message } from "./loop";
 import { extractJsonObjectWithSpan, tryExtractJsonObject } from "./json";
 import { nativeToolSchemasFor, normalizeNativeToolName } from "./tool-schemas";
 import { readTool, writeTool, editTool, bashTool, findTool, searchTool, lsTool, mkdirTool, deleteTool, bisectTool, type ToolResult } from "./tools";
+import { calcTool } from "./calc-tool";
 import { webSearchTool, setWebSearchActiveModel } from "./web-search";
 import { executeComputerAction } from "../commands/computer";
 import { computerSupervisor } from "./computer-supervisor";
@@ -107,6 +108,7 @@ export const DEFAULT_TOOLS: Record<string, ToolHandler> = {
   debug: createDebugTool(),
   browser: createBrowserTool(),
   bisect: (a, cwd) => bisectTool(a.good, a.bad, a.run, !!a.invert, a.maxSteps, a.stepTimeoutMs, cwd),
+  calc: a => calcTool(Array.isArray(a.calculations) ? a.calculations : []),
 };
 
 /** Tool names whose calls have no workspace side effects. Shared by execution,
@@ -117,6 +119,7 @@ const READONLY_TOOL_NAMES: Record<string, true> = {
   search: true,
   ls: true,
   web_search: true,
+  calc: true,
 };
 /** Tool-protocol description injected into the system prompt. */
 export const TOOL_PROTOCOL = [
@@ -139,7 +142,8 @@ export const TOOL_PROTOCOL = [
   "16. debug {action, ...} — Node.js debugging (launch/set_breakpoint/continue/step_over/step_in/step_out/pause/evaluate/stack_trace/scopes/variables/threads/output/terminate); one active session, 'launch' spawns 'node --inspect-brk' and pauses at start",
   "17. browser {action:\"open\"|\"close\"|\"run\"|\"act\", name?, url?, actions?} — headless Chromium automation (Playwright); 'act' runs structured steps (navigate/click/type/fill/select/press/scroll/back/wait/observe/extract/screenshot/verify) addressing elements by numeric id from 'observe' or a CSS selector; 'verify' {goal, selector?, fullPage?, design_tokens?, prior_screenshot?} screenshots and asks an INDEPENDENT vision model to judge it against 'goal' -> {verdict:\"PASS\"|\"MISMATCH\", detail} — prefer this over eyeballing a screenshot yourself for UI/visual work; 'run' executes JS with page/browser/tab/display/assert/wait in scope",
   "18. bisect {good, bad?, run, invert?, maxSteps?, stepTimeoutMs?} — binary-search git history to find the commit that introduced a regression; 'good' is a known-good commit, 'bad' defaults to HEAD, 'run' is a test command (exit 0=good, non-zero=bad, 125=skip), 'invert' finds a FIX instead of a regression",
-  "19. done   {reason?}                  — call when the task is fully implemented AND verified",
+  "19. calc  {calculations:[{expression, prefix?, suffix?}]} — evaluate arithmetic expressions (+ - * / % **, parens, hex 0x/binary 0b/octal 0o literals, scientific notation); each result is prefix+value+suffix, one per line — use this instead of doing arithmetic in your head for anything beyond trivial",
+  "20. done   {reason?}                  — call when the task is fully implemented AND verified",
   "",
   "Reply with STRICT JSON only — no code fences. You MAY include an optional leading",
   '"reasoning" string (one short sentence on your plan) before "tool":',
@@ -165,7 +169,8 @@ export const READONLY_TOOL_PROTOCOL = [
   "5. lsp {action, file, line?, symbol?} — TypeScript/JavaScript definition/references/hover/symbols/diagnostics (read-only; cross-file rename is not available to this role)",
   "6. ls     {dirPath}                   — list a directory's entries",
   "7. web_search {query, recency?, limit?} — search the web (answer + sources + citations)",
-  "8. done   {reason?}                   — call when your review/analysis is complete",
+  "8. calc   {calculations:[{expression, prefix?, suffix?}]} — evaluate arithmetic expressions (+ - * / % **, parens, hex/binary/octal literals)",
+  "9. done   {reason?}                   — call when your review/analysis is complete",
   "",
   "Reply with STRICT JSON only — no prose, no code fences:",
   '{ "tool": "<name>", "arguments": { ... } }',

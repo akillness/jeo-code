@@ -98,6 +98,24 @@ const SCHEMAS: Record<string, NativeToolSchema> = {
       required: ["action"],
     },
   },
+  calc: {
+    name: "calc",
+    description: "Evaluate one or more arithmetic expressions (+ - * / % **, parens, hex/binary/octal literals, scientific notation). Each result is prefix+value+suffix.",
+    parameters: {
+      type: "object",
+      properties: {
+        calculations: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { expression: STRING, prefix: STRING, suffix: STRING },
+            required: ["expression"],
+          },
+        },
+      },
+      required: ["calculations"],
+    },
+  },
   done: {
     name: "done",
     description: "Call when the task is fully implemented AND verified. The reason is shown to the user as your message.",

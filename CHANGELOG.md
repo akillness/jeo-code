@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.35] - 2026-07-21
+_Deeper gjc-parity pass: re-cloned the real, public `Yeachan-Heo/gajae-code` source and, this time, structurally compared its actual tool implementations (`packages/coding-agent/src/tools/`) against jeo's own tool surface, not just the provider catalog._
+
+### Added
+- **`calc` tool** (`src/agent/calc-tool.ts`) — a new native tool evaluating one or more arithmetic expressions, each optionally wrapped in prefix/suffix text (e.g. `{expression:"3*7", prefix:"total: "}` → `"total: 21"`). Faithful port of gjc's `packages/coding-agent/src/tools/calculator.ts` tokenizer/recursive-descent-parser/evaluator (read directly, not inferred) — jeo's own `ToolResult` contract and tool-registration conventions, not gjc's bespoke TUI renderer. Supports `+ - * / % **` (exponentiation, right-associative), parentheses, unary +/-, and decimal/hex(`0x`)/binary(`0b`)/octal(`0o`)/scientific-notation numeric literals. Wired as tool 19 in `TOOL_PROTOCOL` (tool 8 in the read-only-subagent `READONLY_TOOL_PROTOCOL` — it has no side effects, so it survives `subagentToolset`'s mutating-tool filter automatically), registered in `DEFAULT_TOOLS`/`READONLY_TOOL_NAMES`, and given a full native function-calling schema in `tool-schemas.ts` (gjc doesn't expose its own `bisect`-equivalent tool on that path, but `calc`'s parameters are simple enough that leaving it native-schema-less would have been a needless gap).
+
+### Investigated but not ported (with reasons)
+- Compared the rest of `packages/coding-agent/src/tools/` against jeo's tool surface: `archive-reader`/`sqlite-reader` (jeo's own `read` tool already handles both — see its docstring), `image-gen` (jeo's `generate_image` tool is the equivalent), `ast-edit`/`ast-grep`/`irc`/`job`/`subagent`/`todo-write`/`skill`/`debug` (already ported under matching names in earlier passes). `gh`/`review`/`ssh`/`cron`/`render-mermaid`/`checkpoint`/`json-tree`/`monitor`/`ask`/`vim` are genuinely new capabilities gjc has that jeo doesn't — each is a real, separately-scoped feature (GitHub CLI integration, remote SSH execution, scheduled tasks, diagram rendering, git-based checkpoints, a full Vim-mode composer, etc.), not a one-file port, and deferred rather than rushed into this pass.
+
+### Verified
+- `test/calc-tool.test.ts` — 12 pass (new): precedence/associativity (including right-associative `**` and left-associative `-`/`/`), unary chaining, hex/binary/octal/scientific literals, `-0` normalization, syntax/empty/non-finite error paths, tokenizer shape, and END-TO-END wiring through the REAL `DEFAULT_TOOLS.calc`, the native schema registry, both `TOOL_PROTOCOL` texts, and read-only `subagentToolset` filtering (not mocks).
+- `bun run typecheck` clean; full `bun test` 3114 pass / 0 fail across 306 files.
+
 ## [0.8.34] - 2026-07-21
 _Provider/model-catalog sync against gjc's actual current source (a shallow clone of the real, public `Yeachan-Heo/gajae-code` repo at v0.11.5 — direct `packages/ai/src/models.json` comparison, not inference from release notes). The system prompt's philosophy, the `/route` command, and the `tencent` provider were explicitly out of scope and are unchanged._
 

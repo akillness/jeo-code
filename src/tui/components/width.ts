@@ -26,6 +26,11 @@ export function charWidth(cp: number): number {
   // C0/C1 control characters have no width here (callers strip/By handle them).
   if (cp < 32 || (cp >= 0x7f && cp < 0xa0)) return 0;
   // Zero-width: combining marks, ZWSP/ZWNJ/ZWJ, variation selectors, BOM.
+  // Non-Latin combining-mark ranges (Hebrew points/cantillation, Arabic vowel signs,
+  // Devanagari matras/virama, Thai vowels/tone marks) verified against the current
+  // jquast/wcwidth zero-width table (github.com/termux/wcwidth, table_zero.py,
+  // Unicode-aligned as of 2022-12-16) — a real, reproduced gap: e.g. Arabic "بّّ"َ
+  // (base + shadda + fatha) previously counted visibleWidth 3 instead of 1.
   if (
     (cp >= 0x0300 && cp <= 0x036f) || // combining diacritical marks
     (cp >= 0x200b && cp <= 0x200f) || // zero-width space..RLM
@@ -33,6 +38,14 @@ export function charWidth(cp: number): number {
     (cp >= 0x1ab0 && cp <= 0x1aff) || // combining diacritical marks extended
     (cp >= 0x1dc0 && cp <= 0x1dff) || // combining diacritical marks supplement
     (cp >= 0x20d0 && cp <= 0x20ff) || // combining marks for symbols
+    (cp >= 0x0591 && cp <= 0x05bd) || // Hebrew accents/points (Etnahta..Meteg)
+    cp === 0x05bf || (cp >= 0x05c1 && cp <= 0x05c2) || (cp >= 0x05c4 && cp <= 0x05c5) || cp === 0x05c7 || // Hebrew points (Rafe, Shin/Sin Dot, upper/lower dot, Qamats Qatan)
+    (cp >= 0x0610 && cp <= 0x061a) || // Arabic honorific/small signs
+    (cp >= 0x064b && cp <= 0x065f) || cp === 0x0670 || // Arabic vowel signs/tanwin, superscript alef
+    (cp >= 0x06d6 && cp <= 0x06dc) || (cp >= 0x06df && cp <= 0x06e4) || (cp >= 0x06e7 && cp <= 0x06e8) || (cp >= 0x06ea && cp <= 0x06ed) || // Arabic Quranic annotation signs
+    (cp >= 0x0900 && cp <= 0x0902) || cp === 0x093a || cp === 0x093c || // Devanagari candrabindu/anusvara/vowel-sign-oe/nukta
+    (cp >= 0x0941 && cp <= 0x0948) || cp === 0x094d || (cp >= 0x0951 && cp <= 0x0957) || (cp >= 0x0962 && cp <= 0x0963) || // Devanagari vowel signs/virama/stress/vocalic
+    cp === 0x0e31 || (cp >= 0x0e34 && cp <= 0x0e3a) || (cp >= 0x0e47 && cp <= 0x0e4e) || // Thai vowels/tone marks
     cp === 0xfeff
   ) {
     return 0;
@@ -64,6 +77,12 @@ const VS16 = 0xfe0f; // variation selector: force EMOJI (wide) presentation
 const FITZPATRICK_MIN = 0x1f3fb; // Emoji Modifier Fitzpatrick Type-1-2 .. Type-6
 const FITZPATRICK_MAX = 0x1f3ff;
 const KEYCAP_COMBINING = 0x20e3; // combining enclosing keycap (1️⃣, #️⃣, *️⃣)
+const RI_MIN = 0x1f1e6; // Regional Indicator Symbol Letter A
+const RI_MAX = 0x1f1ff; // Regional Indicator Symbol Letter Z
+
+function isRegionalIndicator(cp: number): boolean {
+  return cp >= RI_MIN && cp <= RI_MAX;
+}
 
 function isFitzpatrick(cp: number): boolean {
   return cp >= FITZPATRICK_MIN && cp <= FITZPATRICK_MAX;
@@ -78,6 +97,10 @@ function isAttachableCombining(cp: number): boolean {
     || (cp >= 0x1ab0 && cp <= 0x1aff)
     || (cp >= 0x1dc0 && cp <= 0x1dff)
     || (cp >= 0x20d0 && cp <= 0x20ff)
+    || (cp >= 0x0591 && cp <= 0x05bd) || cp === 0x05bf || (cp >= 0x05c1 && cp <= 0x05c2) || (cp >= 0x05c4 && cp <= 0x05c5) || cp === 0x05c7 // Hebrew
+    || (cp >= 0x0610 && cp <= 0x061a) || (cp >= 0x064b && cp <= 0x065f) || cp === 0x0670 || (cp >= 0x06d6 && cp <= 0x06dc) || (cp >= 0x06df && cp <= 0x06e4) || (cp >= 0x06e7 && cp <= 0x06e8) || (cp >= 0x06ea && cp <= 0x06ed) // Arabic
+    || (cp >= 0x0900 && cp <= 0x0902) || cp === 0x093a || cp === 0x093c || (cp >= 0x0941 && cp <= 0x0948) || cp === 0x094d || (cp >= 0x0951 && cp <= 0x0957) || (cp >= 0x0962 && cp <= 0x0963) // Devanagari
+    || cp === 0x0e31 || (cp >= 0x0e34 && cp <= 0x0e3a) || (cp >= 0x0e47 && cp <= 0x0e4e) // Thai
     || cp === 0xfeff;
 }
 
@@ -110,6 +133,17 @@ export function nextGraphemeCluster(s: string, i: number): { length: number; wid
   let len = base.length;
   let j = i + base.length;
   const peek = (): number => s.codePointAt(j) ?? -1;
+  // A pair of adjacent Regional Indicators forms ONE flag-emoji cluster (UAX #29's
+  // RI-pairing rule) — e.g. 🇰🇷 = REGIONAL INDICATOR K + REGIONAL INDICATOR R. Each
+  // RI alone is already width 1 (no dedicated charWidth range; falls through to the
+  // default), so an unpaired scan already SUMS to the right total (2) even without
+  // this — but without pairing, a wrap/truncate boundary can land BETWEEN the two,
+  // rendering a lone indicator-letter square instead of a flag. No further
+  // modifiers (VS16/ZWJ/Fitzpatrick) are defined for a flag pair, so return early.
+  if (isRegionalIndicator(base.cp) && isRegionalIndicator(peek())) {
+    const second = codePointAndLength(s, j);
+    return { length: len + second.length, width: 2 };
+  }
 
   if (peek() === VS15) { width = 1; len += 1; j += 1; }
   else if (peek() === VS16) { width = 2; len += 1; j += 1; }
@@ -322,6 +356,28 @@ export function wrapTextWithAnsi(text: string, cols: number): string[] {
         : head.endsWith(RESET) && rest.startsWith(head.slice(0, -RESET.length))
           ? head.slice(0, -RESET.length)
           : head;
+      if (consumed.length === 0) {
+        // `truncateToWidth` couldn't fit even ONE whole cluster in `width` — a wide
+        // grapheme cluster (CJK/emoji/ZWJ sequence) wider than the available column
+        // budget, e.g. a 2-wide cluster at cols=1. Left alone, `rest` never shrinks
+        // and this loop spins forever — a REAL, reproduced infinite loop (hangs the
+        // whole TUI; confirmed live via a 5s timeout kill before this fix). Force
+        // forward progress: emit that one cluster on its own, deliberately
+        // over-width, line — an unavoidable overflow beats a hung process. `rest[0]`
+        // is guaranteed to be real content here, never an escape sequence (those are
+        // always consumed into `head` regardless of the width budget, so an empty
+        // `head` can only mean the first REAL cluster itself didn't fit).
+        const forced = nextGraphemeCluster(rest, 0);
+        const forcedText = rest.slice(0, forced.length);
+        let forcedLine = active + forcedText;
+        const forcedActive = sgrStateAfter(active, forcedText);
+        if (forcedActive && !forcedLine.endsWith(RESET)) forcedLine += RESET;
+        out.push(forcedLine);
+        active = forcedActive;
+        rest = rest.slice(forced.length);
+        if (rest.length === 0) break;
+        continue;
+      }
       if (consumed.length === rest.length) {
         let line = active + rest;
         if (active && !line.endsWith(RESET)) line += RESET;

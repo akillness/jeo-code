@@ -44,6 +44,57 @@ test("nextGraphemeCluster: absorbs VS16/VS15, Fitzpatrick modifiers, keycaps, an
   expect(nextGraphemeCluster(rocket, 0)).toEqual({ length: 2, width: 2 });
 });
 
+// Architect-review follow-up (independent read-only audit after v0.8.29-v0.8.37):
+// non-Latin combining marks were NOT in the zero-width tables (Hebrew/Arabic/
+// Devanagari/Thai all over-counted), wrapTextWithAnsi could hang forever at a
+// narrow width with a leading wide cluster, and paired regional-indicator flag
+// emoji weren't atomic. All three reproduced live before fixing.
+test("charWidth/nextGraphemeCluster: non-Latin combining marks are zero-width (Hebrew, Arabic, Devanagari, Thai)", () => {
+  // Arabic: ب (base) + ّ (shadda, U+0651) + َ (fatha, U+064E) — naive summing
+  // counted 3 (each combining mark as width 1); real terminals render 1 column.
+  expect(visibleWidth("\u0628\u0651\u064E")).toBe(1);
+  // Hebrew: א (base) + ָ (qamats, U+05B8).
+  expect(visibleWidth("\u05D0\u05B8")).toBe(1);
+  // Thai: ก (base) + ิ (sara i, U+0E34).
+  expect(visibleWidth("\u0E01\u0E34")).toBe(1);
+  // Devanagari: क (Ka) + ् (virama, U+094D) + ष (Ssa) — matches the unicode-width
+  // crate's own documented example ("क्ष".width() == 2), verified against its README.
+  expect(visibleWidth("\u0915\u094D\u0937")).toBe(2);
+  // Standalone combining marks (verified against jquast/wcwidth's zero-width table).
+  expect(charWidth(0x064e)).toBe(0); // Arabic fatha
+  expect(charWidth(0x05b8)).toBe(0); // Hebrew qamats
+  expect(charWidth(0x094d)).toBe(0); // Devanagari virama
+  expect(charWidth(0x0e34)).toBe(0); // Thai sara i
+});
+
+test("nextGraphemeCluster: a pair of adjacent Regional Indicators is ONE atomic flag-emoji cluster", () => {
+  const flagKR = "\u{1F1F0}\u{1F1F7}"; // REGIONAL INDICATOR K + R
+  expect(nextGraphemeCluster(flagKR, 0)).toEqual({ length: flagKR.length, width: 2 });
+  expect(visibleWidth(flagKR)).toBe(2);
+  // Atomicity: truncateToWidth must never split a flag mid-sequence (a lone
+  // regional-indicator letter square instead of a flag).
+  expect(truncateToWidth(flagKR, 1)).toBe("");
+  expect(truncateToWidth(flagKR, 2)).toBe(flagKR);
+  expect(truncateToWidth(`${flagKR}x`, 3)).toBe(`${flagKR}x`);
+  // A LONE, unpaired regional indicator (no second RI following) is NOT force-paired.
+  const lone = "\u{1F1F0}x";
+  expect(nextGraphemeCluster(lone, 0)).toEqual({ length: 2, width: 1 });
+});
+
+test("wrapTextWithAnsi: never hangs at cols<=1 with a leading wide cluster (reproduced live via a 5s timeout kill before this fix)", () => {
+  // Each Korean syllable is width 2 — none can fit in a 1-column budget, so the
+  // OLD code made zero forward progress and looped forever. Now each wide
+  // cluster is forced onto its own (deliberately overflowing) line instead.
+  const lines = wrapTextWithAnsi("\uD55C\uAE00\uD14C\uC2A4\uD2B8", 1); // 한글테스트
+  expect(lines).toEqual(["한", "글", "테", "스", "트"]);
+  // Mixed content: a wide cluster forces its own line; subsequent narrow content
+  // still wraps normally against the requested width once it fits.
+  const mixed = wrapTextWithAnsi("a한b", 1);
+  expect(mixed).toEqual(["a", "한", "b"]);
+  // A single already-too-wide emoji at cols=1 terminates too (not just CJK).
+  expect(wrapTextWithAnsi("\u{1F680}", 1)).toEqual(["\u{1F680}"]);
+});
+
 test("truncateToWidth: never splits a VS16/ZWJ/modifier cluster at the boundary", () => {
   const heart = "\u2764\ufe0f"; // width 2
   // A 1-col budget can't fit the 2-col cluster — dropped whole, not half (no VS16 leaking

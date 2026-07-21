@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.38] - 2026-07-21
+_Independent architect-subagent review of this whole session's TUI/workflow changes (v0.8.29-v0.8.37), requested explicitly to verify stability before calling the work done. Verdict: WATCH/COMMENT, no P0/P1 — the resize fix, the idle↔mid-turn transition, the new `calc` tool wiring, and the web-search credential gating all held up under independent scrutiny. Found and fixed 3 real, previously-unknown bugs in `width.ts`; 1 architectural observation recorded as tech debt, not fixed._
+
+### Fixed
+- **`wrapTextWithAnsi` could hang the whole TUI forever at `cols<=1` with a leading wide grapheme cluster** (`src/tui/components/width.ts`) — reproduced live (a 5-second `timeout` kill was required to stop it) before fixing: when the very first cluster of the remaining text is wider than the available column budget (e.g. any CJK/emoji character at `cols=1`), `truncateToWidth` returned `""`, so `rest` never shrank and the wrap loop spun forever. This session's own floor-removal fixes (v0.8.33) made `cols=1` a real, reachable value in several call sites, directly increasing exposure to this latent defect. Fixed by forcing forward progress: when nothing fits, the one cluster that doesn't is emitted on its own (deliberately over-width) line instead of hanging — an unavoidable overflow beats a hung process.
+- **Non-Latin combining marks (Hebrew, Arabic, Devanagari, Thai) were not zero-width**, over-counting `visibleWidth` and misaligning box borders/wraps for those scripts (`src/tui/components/width.ts`'s `charWidth`/`isAttachableCombining`) — e.g. Arabic "بَّ" (base + shadda + fatha) counted 3 instead of the 1 a terminal renders. Fixed by extending the zero-width tables with the Hebrew/Arabic/Devanagari/Thai combining-mark ranges, verified against the current `jquast/wcwidth` reference table (github.com/termux/wcwidth, Unicode-aligned as of 2022-12-16) rather than guessed from memory; the Devanagari fix was additionally cross-checked against the `unicode-width` crate's own documented example (`"क्ष".width() == 2`).
+- **Paired regional-indicator flag emoji (e.g. 🇰🇷) were not one atomic cluster** (`nextGraphemeCluster`) — the total width was already coincidentally correct (1+1=2), but a wrap/truncate boundary could land between the two indicators, rendering a lone indicator-letter square instead of a flag. Fixed per UAX #29's RI-pairing rule: a Regional Indicator immediately followed by another Regional Indicator now absorbs into one width-2 cluster; a lone, unpaired indicator is left alone (not force-paired).
+
+### Investigated, not changed (tech debt, not a bug)
+- **Idle-prompt (`launch.ts`) and mid-turn (`tui/app.ts`+`tui/renderer.ts`) run two independent differential-render + resize systems.** The architect traced the actual handoff (`previewArmed` gate, `disarmPreview()`/`armPreview()`, independent `onResize` registration/teardown) and found a clean, correctly-gated transition with no shared row-accounting state to desync — confirmed live too (multiple `--tmux` resize-during-transition reproductions, including an extreme 8-column terminal, all rendered and typed correctly with no corruption). No concrete bug found; flagged only as a maintainability risk (a future renderer-level fix has to be reasoned about twice) worth a future unification, not an urgent fix.
+
+### Verified
+- `test/width.test.ts` — 14 pass (was 11): new tests for the combining-mark fix (Hebrew/Arabic/Devanagari/Thai, cross-checked against the unicode-width crate's own documented example), the flag-emoji atomicity fix (including the "lone indicator is not force-paired" case), and the hang fix (reproducing the exact previously-hanging input, plus a mixed narrow/wide case and a lone emoji case).
+- Live (unmocked) verification beyond the subagent's read-only review: real `jeo --tmux` sessions resized exactly at the idle↔mid-turn transition boundary (including across a real turn error and a real successful reply) showed clean transitions with no corruption; a real 8-column-wide terminal degraded gracefully (no crash, no hang) end to end.
+- Full `bun test` — 3123 pass / 0 fail across 307 files.
+- `bun run typecheck` — no errors.
+
 ## [0.8.37] - 2026-07-21
 _Long-term goal opened to triage every remaining PR in gjc v0.11.5's ~65-entry list, one batch at a time. This entry covers the first batch (10 PRs read in full)._
 

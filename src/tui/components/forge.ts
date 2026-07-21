@@ -293,6 +293,37 @@ export function summarizeForgeInvocation(tool: string, rawArgs: unknown, opts: {
 
   if (normalized === "task") {
     const role = stringArg(args, "role") ?? "executor";
+    // Fan-out/batch form (`tasks: [...]`, task-tool.ts's concurrent MAX_FANOUT path) previously
+    // fell through to the single-task branch below, which only reads `task`/`prompt`/`assignment`
+    // — every batch call rendered as a bare "<missing task>" placeholder with zero visibility into
+    // what was actually about to run concurrently, even on a well-formed call (live-reproduced: a
+    // real 3-item fan-out showed nothing but "<missing task>" in the tool-call preview box).
+    // A JSON-STRINGIFIED `tasks` (live-reproduced model mistake task-tool.ts's handler itself now
+    // tolerates — see createTaskTool's `tasksArg` coercion) is accepted here too, for the same
+    // reason: the preview must reflect what will actually run, not just the well-formed case.
+    const tasksValue = typeof args.tasks === "string"
+      ? (() => { try { const p = JSON.parse(args.tasks as string); return Array.isArray(p) ? p : args.tasks; } catch { return args.tasks; } })()
+      : args.tasks;
+    if (Array.isArray(tasksValue)) {
+      const items = (tasksValue as unknown[])
+        .map(entry => {
+          if (typeof entry === "string") return entry.trim();
+          if (entry && typeof entry === "object") {
+            const e = entry as Record<string, unknown>;
+            return String(e.task ?? e.assignment ?? e.prompt ?? "").trim();
+          }
+          return "";
+        })
+        .filter(Boolean);
+      const lines = items.length > 0
+        ? items.map((t, i) => {
+            const firstLine = t.split("\n")[0]!;
+            const truncated = firstLine.length > 120 || t.includes("\n");
+            return `${i + 1}. ${firstLine.slice(0, 120)}${truncated ? "…" : ""}`;
+          })
+        : ["<missing tasks>"];
+      return { title: `Task: ${role} ×${items.length}`, language: "text", lines };
+    }
     const task = stringArg(args, "task", "prompt", "assignment") ?? "<missing task>";
     const context = stringArg(args, "context");
     return {

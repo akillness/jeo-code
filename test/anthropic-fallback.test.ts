@@ -204,6 +204,51 @@ test("anthropicAdapter.call: a 400 naming 'fallback' retries ONCE with disableFa
   }
 });
 
+test("anthropicAdapter.call: a 400 naming 'does not support the effort parameter' retries ONCE with output_config dropped and succeeds transparently (exactly 2 fetch calls, thinking/budget_tokens stay on the retry)", async () => {
+  // Live-reproduced (v0.8.42): a rate-limit-fallback-selected dated snapshot
+  // (claude-sonnet-4-5-20250929) 400'd with this exact message even though its
+  // name/version classifies onto the budget-effort transport, which normally
+  // carries output_config.effort successfully.
+  const prevFetch = globalThis.fetch;
+  let calls = 0;
+  const bodies: string[] = [];
+  globalThis.fetch = (async (_input, init) => {
+    const body = String(init?.body ?? "");
+    bodies.push(body);
+    calls++;
+    const parsed = JSON.parse(body) as { output_config?: unknown };
+    if (parsed.output_config) {
+      return new Response(
+        JSON.stringify({
+          type: "error",
+          error: { type: "invalid_request_error", message: "This model does not support the effort parameter." },
+        }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(
+      JSON.stringify({ content: [{ type: "text", text: "ok" }], usage: { input_tokens: 3, output_tokens: 2 } }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const opts: CallOptions = { model: "claude-sonnet-4-5-20250929", maxTokens: 5000, reasoningEffort: "high" };
+    const text = await anthropicAdapter.call([{ role: "user", content: "hi" }], opts, apiKeyCred);
+    expect(text).toBe("ok"); // never throws — the caller never sees the intermediate 400
+    expect(calls).toBe(2);
+    const first = JSON.parse(bodies[0]!) as { output_config?: { effort?: string }; thinking?: { budget_tokens?: number } };
+    const second = JSON.parse(bodies[1]!) as { output_config?: { effort?: string }; thinking?: { budget_tokens?: number } };
+    expect(first.output_config).toEqual({ effort: "high" });
+    expect(second.output_config).toBeUndefined();
+    // Only the effort field is dropped — thinking/budget_tokens (the actual depth
+    // control) survives the retry, since that part of the request was never rejected.
+    expect(second.thinking?.budget_tokens).toBeDefined();
+    expect(second.thinking?.budget_tokens).toBe(first.thinking?.budget_tokens);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
 test("regression: a refusal on a non-fable model (never fallback-eligible) still throws, and isRefusalError/friendlyProviderError classify it exactly as before this change", async () => {
   const prevFetch = globalThis.fetch;
   let calls = 0;

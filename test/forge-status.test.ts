@@ -29,6 +29,68 @@ test("summarizeForgeInvocation renders bash, read, and write as code-box summari
   expect(write.lines).toContain("wrote 2 lines, 3 bytes");
 });
 
+test("summarizeForgeInvocation: single-task form renders role/task/context (unchanged pre-existing shape)", () => {
+  const single = summarizeForgeInvocation("task", { role: "architect", task: "review the auth module", context: "focus on token refresh" });
+  expect(single.title).toBe("Task: architect");
+  expect(single.lines).toContain("review the auth module");
+  expect(single.lines).toContain("context:");
+  expect(single.lines).toContain("focus on token refresh");
+});
+
+test("summarizeForgeInvocation: fan-out 'tasks' array form renders a numbered per-task preview, not '<missing task>'", () => {
+  // Live-reproduced (v0.8.42): a real 3-item fan-out call previously rendered
+  // nothing but a bare "<missing task>" placeholder — the preview only ever
+  // read a single task/prompt/assignment string, never the batch array.
+  const batch = summarizeForgeInvocation("task", {
+    role: "executor",
+    tasks: [
+      "append a comment to src/a/index.ts",
+      { task: "append a comment to src/b/index.ts" },
+      { assignment: "append a comment to src/c/index.ts" },
+    ],
+  });
+  expect(batch.title).toBe("Task: executor ×3");
+  expect(batch.lines).toEqual([
+    "1. append a comment to src/a/index.ts",
+    "2. append a comment to src/b/index.ts",
+    "3. append a comment to src/c/index.ts",
+  ]);
+  expect(batch.lines.join("\n")).not.toContain("<missing task>");
+});
+
+test("summarizeForgeInvocation: 'tasks' array entries truncate long/multiline text to a single preview line", () => {
+  const longText = "x".repeat(200);
+  const batch = summarizeForgeInvocation("task", { tasks: [longText, "line one\nline two"] });
+  expect(batch.lines[0]).toBe(`1. ${"x".repeat(120)}…`);
+  expect(batch.lines[1]).toBe("2. line one…");
+});
+
+test("summarizeForgeInvocation: an empty/malformed 'tasks' array shows a clear placeholder instead of a bare 0-title", () => {
+  const empty = summarizeForgeInvocation("task", { tasks: [] });
+  expect(empty.title).toBe("Task: executor ×0");
+  expect(empty.lines).toEqual(["<missing tasks>"]);
+
+  const allBlank = summarizeForgeInvocation("task", { tasks: ["", { task: "" }, 42] });
+  expect(allBlank.lines).toEqual(["<missing tasks>"]);
+});
+
+test("summarizeForgeInvocation: a JSON-STRINGIFIED 'tasks' array (the exact live-reproduced model mistake createTaskTool's handler now also tolerates) previews correctly instead of falling to '<missing task>'", () => {
+  const batch = summarizeForgeInvocation("task", { role: "executor", tasks: JSON.stringify(["append to a.ts", "append to b.ts"]) });
+  expect(batch.title).toBe("Task: executor ×2");
+  expect(batch.lines).toEqual(["1. append to a.ts", "2. append to b.ts"]);
+  expect(batch.lines.join("\n")).not.toContain("<missing task>");
+});
+
+test("summarizeForgeInvocation: a 'tasks' string that is not valid JSON (or parses to a non-array) falls through to the single-task placeholder, never throws", () => {
+  const notJson = summarizeForgeInvocation("task", { tasks: "append to a.ts, append to b.ts" });
+  expect(notJson.title).toBe("Task: executor");
+  expect(notJson.lines).toEqual(["<missing task>"]);
+
+  const jsonButNotArray = summarizeForgeInvocation("task", { tasks: JSON.stringify({ not: "an array" }) });
+  expect(jsonButNotArray.title).toBe("Task: executor");
+  expect(jsonButNotArray.lines).toEqual(["<missing task>"]);
+});
+
 test("forge boxes are width-bounded and redact secret-like values", () => {
   expect(redactSecrets("API_KEY=abcdef token: secret-value")).toContain("<redacted>");
   const summary = summarizeForgeResult("bash", false, "password=abc123\nline two");

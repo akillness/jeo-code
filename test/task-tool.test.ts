@@ -13,6 +13,20 @@ async function tmpDir(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "jeo-task-"));
 }
 
+test("taskToolProtocolLine: spells out single vs fan-out shapes with a concrete array example, and explicitly warns against a stringified/single-string 'tasks' mistake", async () => {
+  // v0.8.42: replaced the ambiguous `{role, task|tasks[], context?}` shorthand
+  // after live reproduction (multiple real models, including a native-tool-
+  // calling-capable one) repeatedly sent `tasks` as a JSON-stringified array
+  // or a single task string instead of a real array, self-diagnosing the
+  // mistake turn after turn until the loop guard stopped them.
+  const { taskToolProtocolLine } = await import("../src/agent/task-tool");
+  const line = taskToolProtocolLine();
+  expect(line).toContain('tasks:["task 1", "task 2", ...]');
+  expect(line).toContain("MUST be a real JSON array");
+  expect(line).toContain("NEVER a JSON-stringified array");
+  expect(line).toContain("NEVER a single task string");
+});
+
 test("createTaskTool: executor delegates, runs a tool, then completes on done", async () => {
   let turn = 0;
   await mock.module("../src/agent/loop", () => ({
@@ -260,6 +274,36 @@ test("createTaskTool: read-only fan-out runs all tasks and combines results", as
   expect(res.output).toContain("[Architect fan-out] 3/3 completed (concurrency 3)");
   expect(res.output).toContain("### Task 1/3");
   expect(res.output).toContain("### Task 3/3");
+});
+
+test("createTaskTool: a JSON-STRINGIFIED 'tasks' array (the exact live-reproduced model mistake — real content, wrong JSON type) is coerced and fanned out normally", async () => {
+  // v0.8.42: multiple real models (across two different providers, including a
+  // native-tool-calling-capable one) repeatedly sent `tasks` as a JSON string
+  // instead of a real array, even self-diagnosing the mistake in their own
+  // reasoning, and never recovered within the loop-guard's attempt budget.
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: reviewed\nFindings: none\nRecommendations: ship\nArchitectural Status: CLEAR\nCode Review Recommendation: APPROVE" } }),
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
+  const res = await tool({ role: "architect", tasks: JSON.stringify(["review A", "review B", "review C"]) }, await tmpDir());
+  expect(res.success).toBe(true);
+  expect(res.output).toContain("[Architect fan-out] 3/3 completed (concurrency 3)");
+  expect(res.output).toContain("### Task 1/3");
+  expect(res.output).toContain("### Task 3/3");
+});
+
+test("createTaskTool: a 'tasks' string that is NOT valid JSON (or parses to something other than an array) falls through to the ordinary single-task/empty-tasks error, never throws", async () => {
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } });
+
+  const notJson = await tool({ role: "architect", tasks: "review A, review B" }, await tmpDir());
+  expect(notJson.success).toBe(false);
+  expect(notJson.error).toContain("requires a non-empty 'task'");
+
+  const jsonButNotArray = await tool({ role: "architect", tasks: JSON.stringify({ not: "an array" }) }, await tmpDir());
+  expect(jsonButNotArray.success).toBe(false);
+  expect(jsonButNotArray.error).toContain("requires a non-empty 'task'");
 });
 
 test("createTaskTool: executor fan-out runs CONCURRENTLY, bounded like the read-only roles (gjc parity)", async () => {

@@ -255,6 +255,7 @@ export function anthropicPayload(
   credential: Credential = { kind: "none", provider: "anthropic" },
   stripArtifacts = false,
   disableFallback = false,
+  disableEffort = false,
 ): string {
   const model = stripAnthropicPrefix(options.model);
   const systemPrompt = options.systemPrompt ?? messages.find(m => m.role === "system")?.content;
@@ -306,16 +307,21 @@ export function anthropicPayload(
       // Opus/Sonnet 4.6+: the model decides how much to think. `display: "summarized"` is
       // REQUIRED on Opus 4.7+ or thinking content is omitted from the response (the empty-thought
       // bug); older adaptive models (4.6) reject the field, so it is gated. Effort rides
-      // output_config — there is no budget_tokens on this transport.
+      // output_config — there is no budget_tokens on this transport. `disableEffort` (fail-safe
+      // retry after a live "does not support the effort parameter" 400 — some model variants
+      // classify as adaptive-transport by name/version but still reject this field) drops ONLY
+      // output_config; `thinking` alone is still valid, the model just uses its own default depth.
       payload.thinking = supportsAdaptiveThinkingDisplay(model)
         ? { type: "adaptive", display: "summarized" }
         : { type: "adaptive" };
-      payload.output_config = { effort: anthropicAdaptiveEffort(effort) };
+      if (!disableEffort) payload.output_config = { effort: anthropicAdaptiveEffort(effort) };
     } else {
       // Budget-based extended thinking. `display: "summarized"` keeps human-readable thought
-      // streaming. The 4.5 (budget-effort) transport also carries an output_config effort.
+      // streaming. The 4.5 (budget-effort) transport also carries an output_config effort —
+      // unless `disableEffort` is set (see the adaptive branch above for the same rationale;
+      // this mirrors Haiku 4.5's already-proven-working budget_tokens-without-effort combination).
       payload.thinking = { type: "enabled", budget_tokens: thinkingBudget, display: "summarized" };
-      if (thinkingMode === "budget-effort") payload.output_config = { effort: anthropicAdaptiveEffort(effort) };
+      if (thinkingMode === "budget-effort" && !disableEffort) payload.output_config = { effort: anthropicAdaptiveEffort(effort) };
     }
   } else if (includeTemperature && options.temperature !== undefined) {
     payload.temperature = options.temperature;
@@ -345,13 +351,14 @@ export function anthropicRequest(
   includeTemperature: boolean,
   stripArtifacts = false,
   disableFallback = false,
+  disableEffort = false,
 ): { url: string; headers: Record<string, string>; body: string } {
   return {
     // Anthropic-compatible providers (z.ai, MiniMax, …) accept the Messages wire
     // format at their own host; an explicit baseUrl pins `${base}/v1/messages`.
     url: options.baseUrl ? `${options.baseUrl.replace(/\/$/, "")}/v1/messages` : ANTHROPIC_URL,
     headers: { ...headersFor(credential, stream, stripAnthropicPrefix(options.model), options.baseUrl, disableFallback), ...options.extraHeaders },
-    body: anthropicPayload(messages, options, stream, includeTemperature, credential, stripArtifacts, disableFallback),
+    body: anthropicPayload(messages, options, stream, includeTemperature, credential, stripArtifacts, disableFallback, disableEffort),
   };
 }
 
@@ -374,6 +381,18 @@ function isReasoningArtifactError(status: number, detail: string): boolean {
  *  instead of dying on an unrelated 400. */
 function isFallbackUnsupportedError(status: number, detail: string): boolean {
   return status === 400 && /fallback/i.test(detail);
+}
+
+/** A 400 naming "effort"/"output_config" means this specific model variant rejects the
+ *  effort field even though its name/version classifies it onto a transport that normally
+ *  carries one (live-reproduced: a rate-limit-fallback-selected dated snapshot,
+ *  `claude-sonnet-4-5-20250929`, 400'd with "This model does not support the effort
+ *  parameter" — the same wording already known for Haiku 4.5, but on a model this
+ *  codebase's version-based classification did not expect to reject it). Retry once with
+ *  `output_config` dropped (thinking/budget_tokens, if any, stay — only the effort field
+ *  itself is unsupported) so the turn survives instead of dying on an avoidable 400. */
+function isEffortUnsupportedError(status: number, detail: string): boolean {
+  return status === 400 && /effort/i.test(detail) && /output_config|not support/i.test(detail);
 }
 
 /** gjc parity (getSafeAnthropicHeaderEvidence): fold Anthropic's rate-limit response
@@ -401,8 +420,9 @@ async function postAnthropic(
   let includeTemperature = true;
   let stripArtifacts = false;
   let disableFallback = false;
+  let disableEffort = false;
 
-  for (let attempt = 1; attempt <= 4; attempt++) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
     const { url, headers, body } = anthropicRequest(
       messages,
       options,
@@ -411,6 +431,7 @@ async function postAnthropic(
       includeTemperature,
       stripArtifacts,
       disableFallback,
+      disableEffort,
     );
     const response = await fetch(url, { method: "POST", headers, body, signal: options.signal });
     if (response.ok) return response;
@@ -426,6 +447,10 @@ async function postAnthropic(
     }
     if (isFallbackUnsupportedError(response.status, detail) && !disableFallback) {
       disableFallback = true;
+      continue;
+    }
+    if (isEffortUnsupportedError(response.status, detail) && !disableEffort) {
+      disableEffort = true;
       continue;
     }
 

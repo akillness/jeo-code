@@ -167,12 +167,25 @@ function createSteerHub(drain?: () => string[]) {
 }
 
 /** One-line protocol description appended to the launch system prompt. Pass a
- *  config so CONFIG-DECLARED custom roles are advertised to the model too. */
+ *  config so CONFIG-DECLARED custom roles are advertised to the model too.
+ *
+ *  The single-vs-fan-out shapes are spelled out as two SEPARATE literal
+ *  examples (not the terse `task|tasks[]` shorthand this replaced) — live
+ *  reproduction (multiple real models, including a native-tool-calling-capable
+ *  one) showed models repeatedly sending `tasks` as a JSON-STRINGIFIED array
+ *  or a single task string instead of a real JSON array, self-diagnosing
+ *  "I'm passing tasks as a string instead of as an actual array" turn after
+ *  turn until the loop guard stopped them. `task` has no native function-
+ *  calling schema (its shape is too variable for one static schema) — EVERY
+ *  provider, including native-schema-capable ones, learns this tool's shape
+ *  from this exact prose line, so ambiguity here directly costs reliability
+ *  across the board, not just for the JSON-in-prose fallback providers. */
 export function taskToolProtocolLine(config?: Pick<Config, "subagents">): string {
   return (
-    `task   {role, task|tasks[], context?}  — delegate to a subagent ` +
-    `(role: ${subagentRoleIds(config).join("|")}; executor can edit, planner/architect/critic are read-only). ` +
-    `Pass 'tasks' (array) to fan out — ALL roles run concurrently (bounded); scope each executor task to disjoint files (no shared-file coordination channel between concurrent tasks — use sequential task calls if scopes overlap). Integrate the findings yourself.`
+    `task   single: {role?, task, context?}  —  fan-out: {role?, tasks:["task 1", "task 2", ...]} ` +
+    `— delegate to a subagent (role: ${subagentRoleIds(config).join("|")}; executor can edit, planner/architect/critic are read-only). ` +
+    `'tasks' MUST be a real JSON array (of strings, or {task, context?} objects) — NEVER a JSON-stringified array, NEVER a single task string. ` +
+    `All items in 'tasks' run concurrently (bounded); scope each executor task to disjoint files (no shared-file coordination channel between concurrent tasks — use sequential task calls if scopes overlap). Integrate the findings yourself.`
   );
 }
 
@@ -555,8 +568,17 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     const ctx = (c: unknown) => (typeof c === "string" && c.trim() ? `\n\nContext:\n${c.trim()}` : "");
 
     // Fan-out form: `tasks: [ "assignment" | {task|assignment|prompt, context?} ]`.
-    if (Array.isArray(args.tasks)) {
-      const items = (args.tasks as unknown[])
+    // Live-reproduced (v0.8.42, multiple real models across two different providers,
+    // including a native-tool-calling-capable one): even with an explicit, example-driven
+    // protocol line, models repeatedly send `tasks` as a JSON-STRINGIFIED array (correct
+    // content, wrong JSON type) rather than a real array — a classifiable, unambiguous
+    // mistake, not a genuinely different intent. Accept it rather than hard-reject: any
+    // string that itself parses to an array is exactly this mistake.
+    const tasksArg = typeof args.tasks === "string"
+      ? (() => { try { const p = JSON.parse(args.tasks as string); return Array.isArray(p) ? p : args.tasks; } catch { return args.tasks; } })()
+      : args.tasks;
+    if (Array.isArray(tasksArg)) {
+      const items = (tasksArg as unknown[])
         .map(entry => {
           if (typeof entry === "string") return { task: entry.trim(), context: "" };
           if (entry && typeof entry === "object") {

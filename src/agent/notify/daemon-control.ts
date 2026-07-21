@@ -25,6 +25,7 @@ export function isPidAlive(pid: number): boolean {
     return false;
   }
 }
+
 export function parseEtimeToMs(raw: string): number | undefined {
   const trimmed = raw.trim();
   if (!trimmed) return undefined;

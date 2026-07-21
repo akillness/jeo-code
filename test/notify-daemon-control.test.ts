@@ -13,6 +13,7 @@ import {
   reloadDaemon,
   isPidAlive,
   processStartTimeMs,
+  parseEtimeToMs,
   isLockOwnerAlive,
 } from "../src/agent/notify/daemon-control";
 import { notifyDaemonLockPath } from "../src/agent/notify/paths";
@@ -37,6 +38,7 @@ async function deadPid(): Promise<number> {
   await child.exited;
   return child.pid;
 }
+
 async function realStartedAt(pid: number): Promise<number> {
   const real = await processStartTimeMs(pid);
   return real ?? Date.now();
@@ -45,6 +47,38 @@ async function realStartedAt(pid: number): Promise<number> {
 test("isPidAlive is true for our own process and false for an exited one", async () => {
   expect(isPidAlive(process.pid)).toBe(true);
   expect(isPidAlive(await deadPid())).toBe(false);
+});
+
+test("parseEtimeToMs parses mm:ss, hh:mm:ss, and dd-hh:mm:ss `ps -o etime=` formats", () => {
+  expect(parseEtimeToMs("00:01")).toBe(1_000);
+  expect(parseEtimeToMs("05:23")).toBe((5 * 60 + 23) * 1_000);
+  expect(parseEtimeToMs("01:02:03")).toBe(((1 * 60 + 2) * 60 + 3) * 1_000);
+  expect(parseEtimeToMs("2-03:04:05")).toBe((((2 * 24 + 3) * 60 + 4) * 60 + 5) * 1_000);
+});
+
+test("parseEtimeToMs returns undefined for empty or malformed input instead of throwing", () => {
+  expect(parseEtimeToMs("")).toBeUndefined();
+  expect(parseEtimeToMs("   ")).toBeUndefined();
+  expect(parseEtimeToMs("not-a-time")).toBeUndefined();
+  expect(parseEtimeToMs("1:2:3:4")).toBeUndefined();
+  expect(parseEtimeToMs("1")).toBeUndefined();
+});
+
+test("processStartTimeMs returns undefined for a pid that no longer exists", async () => {
+  expect(await processStartTimeMs(await deadPid())).toBeUndefined();
+});
+
+test("processStartTimeMs resolves a real live process to a plausible (not garbage) start time", async () => {
+  const before = Date.now();
+  const real = await processStartTimeMs(process.pid);
+  expect(real).toBeDefined();
+  // Sanity bounds only — not a precision check. Under a heavily contended full
+  // suite run, spawning `ps` itself can be delayed by seconds, so this must
+  // tolerate real scheduling jitter rather than assert tight timing; the exact
+  // arithmetic is already covered precisely by the parseEtimeToMs unit tests
+  // above. What matters here is that the real live process resolves to SOME
+  // recent-past timestamp, not NaN/0/far-future/wildly-stale.
+  expect(Math.abs(real! - before)).toBeLessThan(60_000);
 });
 
 test("readDaemonLock returns undefined when no lock file exists", async () => {

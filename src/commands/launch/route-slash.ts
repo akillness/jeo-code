@@ -37,8 +37,6 @@ export interface RouteSlashCtx {
   routeHistory: RouteHistoryEntry[];
 }
 
-
-
 export interface RouteSlashResult {
   /** Present only when changed by "on"/"off". */
   sessionRouteOverride?: boolean | undefined;
@@ -110,8 +108,6 @@ export async function runRouteSlash(input: string, ctx: RouteSlashCtx): Promise<
     }
     return { lines };
   }
-
-
 
   if (sub === "on" || sub === "off") {
     const enabled = sub === "on";

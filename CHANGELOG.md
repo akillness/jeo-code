@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.41] - 2026-07-21
+_Ponytail-mode review requested directly ("review ponytail") over the two files this session's most recent pass (v0.8.40) touched: `src/agent/notify/daemon-control.ts` and `src/commands/launch/route-slash.ts`. Self-review found no correctness bugs (the v0.8.40 logic held up), but did find real, concrete style-bloat and one genuine test-coverage gap — both fixed with evidence, per the established convention._
+
+### Fixed
+- **Formatting bloat from the v0.8.40 edit passes** (`route-slash.ts`): two spots left double/triple blank lines between declarations (an artifact of iterative insert/delete edits) instead of the file's established single-blank-line convention; `daemon-control.ts` was missing the separating blank line between `isPidAlive` and the newly added `parseEtimeToMs`. Purely whitespace — zero behavior change, confirmed by an unchanged `bun test` pass count before/after.
+- **`parseEtimeToMs` had zero direct unit tests** despite being a new, non-trivial 3-branch parser (`mm:ss` / `hh:mm:ss` / `dd-hh:mm:ss`) introduced in v0.8.40 — it was previously exercised only indirectly (through `isLockOwnerAlive`/`processStartTimeMs` against real short-lived test processes, which never reach the multi-day branch nor explicitly probe malformed input). Added direct tests for all three time formats plus empty/malformed/wrong-segment-count input, and direct tests for `processStartTimeMs` against both a dead pid (undefined) and a real live one (a plausible, non-garbage timestamp).
+
+### Verified
+- `bun run typecheck` clean.
+- Targeted files (`test/route-slash.test.ts`, `test/notify-daemon-control.test.ts`, `test/daemon-command.test.ts`) — 61 pass / 0 fail, stable across 3 repeated isolated runs.
+- Full `bun test`: the host this session runs on was under extreme, unrelated multi-tenant load during this pass (load average 18-35, 29 concurrent users, 700+ processes) — a full-suite run surfaced ~39 timing-shaped failures (5s+ timeouts) spread across completely unrelated areas (OAuth, LSP rename, model routing/rate-limit fallback), none touching the files changed this pass; the three targeted files stayed green and fast (under 3s) in every isolated run regardless of host load. Recorded here rather than claiming an unreliable full-suite number.
+
 ## [0.8.40] - 2026-07-21
 _User report (paraphrased): "the /route command doesn't work, fix it." Investigated live before assuming a defect — booted a real `jeo --tmux` session with real Anthropic OAuth credentials from the actual `~/.jeo/config.json` and drove `/route status|on|off|why|history|bogus` plus real end-to-end routed turns. Every subcommand and the routing engine itself (heuristic tiering, `roles.smol` resolution, live provider call, per-turn "thinking" card showing the routed model) worked correctly, including a real stale-catalog edge case (`roles.smol: "claude-haiku-4-5"`, removed from jeo's own catalog in an earlier curation pass, still being accepted directly by the Anthropic API). The one genuine, reproducible gap: `/route on` is SESSION-LOCAL ONLY — `config.routing.enabled` in `~/.jeo/config.json` is never written, so a user has to retype `/route on` at the start of every single session, and (separately, working as designed but easy to miss) an explicit `--model`/`/model` pin silently blocks routing from ever engaging unless `/route on` is run to override it that session. The "settings don't stick" experience is the most likely reading of "doesn't work."_
 

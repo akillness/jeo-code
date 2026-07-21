@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.8.37] - 2026-07-21
+_Long-term goal opened to triage every remaining PR in gjc v0.11.5's ~65-entry list, one batch at a time. This entry covers the first batch (10 PRs read in full)._
+
+### Fixed
+- **A dropped/pasted image path with no size limit could read an arbitrarily large file entirely into memory before the format check ever ran** (`src/util/file-attachment.ts`'s `attachImagePaths`) — gjc parity in spirit (#2658's "source size" bound, scoped down for jeo's much simpler single-read attach path — jeo has none of gjc's symlink/hardlink/TOCTOU/remote-`file://`/consent hardening, and doesn't need most of it: unlike gjc's arbitrary bracketed-paste-from-a-possibly-untrusted-clipboard threat model, this reads a path the user directly typed/dropped into their own composer, and the existing magic-byte check already blocks the worst case of exfiltrating an arbitrary non-image file's contents via a misleadingly-named path). The default file reader now `stat()`s the path first and rejects non-files or anything over 25 MiB before ever calling `readFile`, instead of unconditionally reading the whole file into memory first.
+
+### Investigated, confirmed N/A (with direct evidence, not guesses)
+- **#2622** "fail closed on tab worker startup" — gjc's browser tool spawns a separate native-addon-resolving tab-WORKER PROCESS; jeo's `browser-tool.ts` runs Playwright in-process, with no analogous worker-process bootstrap to fail-close on.
+- **#2664** "isolate keybinding configuration arrays" — jeo has no user-configurable keybinding-array system to alias in the first place (confirmed via search: only a static, non-mutable key-hint display in `hints.ts`).
+- **#2665** "share restricted state argv classification" — this hardens gjc's own restricted-role-agent access to a `state` TOOL; jeo's `state.ts` is a human-invoked CLI command only, never a callable agent tool (`DEFAULT_TOOLS` has no `state` entry), so the vulnerability class (a subagent bypassing an argv-based restriction) cannot occur.
+- **#2670** "resource-gc: advance earlier sweep deadlines" — gjc tracks MULTIPLE independently-deadlined cleanup policies behind one shared re-armable timer (the bug: a newly-registered EARLIER deadline didn't preempt it); jeo's `process-reaper.ts` is a single global periodic sweep with no per-policy deadline tracking, so this specific race cannot occur.
+- **#2669** "bound malformed compatible responses" (web-search) — verified live (not just read) that jeo's own `parseOpenAISearchResponse`/`parseGeminiSearchResponse` (added in v0.8.31) already degrade gracefully on a wrong-shaped-but-valid-JSON response body (e.g. `output` being a string instead of an array) via existing `?? []`/`Array.isArray()` guards — fed exactly that shape through both parsers directly; neither threw, both returned an empty-but-valid result. Already correct; no change needed.
+- **#2652** "recover malformed Round 0 intent asks" — specific to gjc's own multi-turn "deep-interview Round 0" AskTool wire-schema/coordinator state machine; jeo's `deep-interview.ts` has no equivalent wire-schema-to-runtime-validation mismatch surface of this shape.
+
+### Verified
+- `test/file-attachment.test.ts` — 18 pass (was 17): new test writes a REAL oversized file (25 MiB + 1 KiB) and a real small PNG to a temp directory and drives them through the REAL (non-injected) filesystem reader — confirms the oversized one is rejected without ever being attached, and the small one still attaches normally through the same code path.
+- Full `bun test` — 3120 pass / 0 fail across 307 files.
+- `bun run typecheck` — no errors.
+
+### Audit status
+- 11 of gjc v0.11.5's ~65 PRs now triaged across this and the prior entry (2 fixed — #2591, #2658's size-cap; 9 confirmed N/A with evidence — #2667, #2749, #2721, #2622, #2664, #2665, #2670, #2669/already-correct, #2652). Tracked as an ongoing goal; remaining PRs continue in subsequent passes.
+
 ## [0.8.36] - 2026-07-21
 _First full audit of gjc v0.11.5's actual ~65-PR "What's Changed" list (prior passes had used release-note prose or direct-source structural diffs — this is the first time every individual PR was read and triaged against jeo's own codebase)._
 

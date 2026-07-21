@@ -1,4 +1,7 @@
 import { test, expect } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
   imageMediaTypeFromBytes,
   attachmentFromImageBytes,
@@ -8,6 +11,7 @@ import {
   normalizeImageTags,
   caretAfterTag,
   insertImageTag,
+  MAX_ATTACH_IMAGE_BYTES,
 } from "../src/util/file-attachment";
 
 
@@ -158,3 +162,33 @@ test("attachImagePaths: cursor falls back to text end when nothing is attached",
   const none = await attachImagePaths("no paths here", 1, async () => PNG);
   expect(none.cursor).toBe("no paths here".length);
 });
+
+// gjc parity (#2658 "safely attach multiple pasted image paths" — source-size bound,
+// scoped down for jeo's simpler single-read attach path): the REAL filesystem reader
+// (attachImagePaths's default, unlike the injected `read` fakes above) must reject an
+// oversized file BEFORE reading it fully into memory, and must never hang/OOM trying.
+test("attachImagePaths (real filesystem default reader): rejects a file over MAX_ATTACH_IMAGE_BYTES without reading it fully", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-attach-"));
+  try {
+    const bigPath = path.join(dir, "huge.png");
+    // A real PNG header followed by padding past the cap — if the cap were not
+    // enforced, this would still read as SOME bytes (not necessarily a valid
+    // decoded image), but the point is it must never even attempt the full read.
+    const header = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const padding = Buffer.alloc(MAX_ATTACH_IMAGE_BYTES + 1024, 0);
+    await fs.writeFile(bigPath, Buffer.concat([header, padding]));
+
+    const res = await attachImagePaths(`see ${bigPath} please`); // no injected reader — real fs path
+    expect(res.images).toHaveLength(0);
+    expect(res.text).toBe(`see ${bigPath} please`); // left verbatim, never attached
+
+    // A small real PNG under the cap through the SAME real reader still attaches normally.
+    const smallPath = path.join(dir, "small.png");
+    await fs.writeFile(smallPath, Buffer.from(PNG));
+    const ok = await attachImagePaths(`see ${smallPath} please`);
+    expect(ok.images).toHaveLength(1);
+    expect(ok.text).toBe("see [image #1] please");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);

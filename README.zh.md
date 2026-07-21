@@ -283,11 +283,11 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 ## 更新日志 (Changelog)
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
+- **[0.8.37]** (2026-07-21) — Long-term goal opened to triage every remaining PR in gjc v0.11.5's ~65-entry list, one batch at a time. This entry covers the first batch (10 PRs read in full).
 - **[0.8.36]** (2026-07-21) — First full audit of gjc v0.11.5's actual ~65-PR "What's Changed" list (prior passes had used release-note prose or direct-source structural diffs — this is the first time every individual PR was read and triaged against jeo's own codebase).
 - **[0.8.35]** (2026-07-21) — Deeper gjc-parity pass: re-cloned the real, public `Yeachan-Heo/gajae-code` source and, this time, structurally compared its actual tool implementations (`packages/coding-agent/src/tools/`) against jeo's own tool surface, not just the provider catalog.
 - **[0.8.34]** (2026-07-21) — Provider/model-catalog sync against gjc's actual current source (a shallow clone of the real, public `Yeachan-Heo/gajae-code` repo at v0.11.5 — direct `packages/ai/src/models.json` comparison, not inference from release notes). The system prompt's philosophy, the `/route` command, and the `tencent` provider were explicitly out of scope and are unchanged.
 - **[0.8.33]** (2026-07-20) — Real terminal-resize testing (repeated tmux resize-window + keystroke reproductions, byte-for-byte ANSI replay outside jeo/tmux to isolate root causes deterministically) uncovered and closed a progressive screen-corruption bug: resizing down to a narrow terminal (e.g. a ~20-column tmux pane) produced a growing stack of duplicate status-bar lines on every subsequent keystroke, and a separate, independently-reproducible scroll bug in the mid-turn live renderer.
-- **[0.8.32]** (2026-07-20) — gjc parity: TUI display-width/wrapping is now grapheme-cluster-aware for emoji sequences (VS16 presentation, skin-tone modifiers, keycaps, ZWJ-joined emoji like family/profession glyphs), fixing box-border and wrap misalignment ("깨짐") that the old per-code-point width summation produced whenever such a sequence appeared in a message — Korean/CJK-only text was already correctly handled and is unaffected.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

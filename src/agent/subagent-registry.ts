@@ -11,10 +11,51 @@
  * can push a message into a running detached subagent's inbox; the subagent's own
  * agent loop drains it between steps, same mechanism as ordinary task steering.
  *
- * Lifecycle is bounded to the turn that created the registry — `cancelAll()` on
- * turn teardown guarantees no background promise leaks into the next turn.
+ * Lifecycle is owned by the session registry — detached subagents survive turn
+ * boundaries and remain controllable across prompts in the launch session;
+ * `cancelAll()` on session teardown guarantees no background promise leaks.
  */
 import type { ToolResult } from "./tools";
+
+/** Maximum un-truncated detached result size in bytes (100 KiB). Outputs exceeding
+ *  this are head/tail truncated with an explicit marker and truthful original size. */
+export const MAX_DETACHED_RESULT_BYTES = 100 * 1024;
+
+/** Bounded cap for detached subagent output string: byte/char-safe head/tail split
+ *  with an explicit truncation marker indicating exact original size. Small outputs
+ *  (≤ MAX_DETACHED_RESULT_BYTES) are returned verbatim. */
+export function truncateDetachedResult(s: string, maxBytes = MAX_DETACHED_RESULT_BYTES): string {
+  if (!s) return "";
+  const originalBytes = Buffer.byteLength(s, "utf-8");
+  if (originalBytes <= maxBytes) return s;
+
+  const headTargetBytes = Math.floor(maxBytes * 0.6);
+  const tailTargetBytes = maxBytes - headTargetBytes;
+
+  let headChars = Math.min(s.length, headTargetBytes);
+  let tailChars = Math.min(s.length - headChars, tailTargetBytes);
+
+  while (headChars > 0 && Buffer.byteLength(s.slice(0, headChars), "utf-8") > headTargetBytes) {
+    headChars--;
+  }
+  let headSlice = s.slice(0, headChars);
+  if (headSlice.length > 0 && /[\uD800-\uDBFF]$/.test(headSlice)) {
+    headSlice = headSlice.slice(0, -1);
+  }
+
+  while (tailChars > 0 && Buffer.byteLength(s.slice(s.length - tailChars), "utf-8") > tailTargetBytes) {
+    tailChars--;
+  }
+  let tailSlice = s.slice(s.length - tailChars);
+  if (tailSlice.length > 0 && /^[\uDC00-\uDFFF]/.test(tailSlice)) {
+    tailSlice = tailSlice.slice(1);
+  }
+
+  const omittedBytes = originalBytes - (Buffer.byteLength(headSlice, "utf-8") + Buffer.byteLength(tailSlice, "utf-8"));
+  const marker = `\n\n[…output truncated (${omittedBytes} bytes omitted; original size: ${originalBytes} bytes)…]\n\n`;
+
+  return headSlice + marker + tailSlice;
+}
 
 export type SubagentStatus = "running" | "completed" | "failed" | "cancelled";
 
@@ -72,11 +113,11 @@ export class SubagentRegistry {
         if (record.status === "cancelled") return;
         record.status = res.success ? "completed" : "failed";
         record.success = res.success;
-        record.result = res.output || res.error || "";
+        record.result = truncateDetachedResult(res.output || res.error || "");
       } catch (err) {
         if (record.status === "cancelled") return;
         record.status = "failed";
-        record.result = err instanceof Error ? err.message : String(err);
+        record.result = truncateDetachedResult(err instanceof Error ? err.message : String(err));
       } finally {
         if (record.finishedAt === undefined) record.finishedAt = Date.now();
         this.steerInboxes.delete(id);
@@ -160,7 +201,7 @@ export class SubagentRegistry {
     return out;
   }
 
-  /** Abort every still-running subagent (turn teardown / Ctrl-C). */
+  /** Abort every still-running subagent (session teardown / Ctrl-C). */
   cancelAll(): SubagentRecord[] {
     return this.cancel(this.running().map(r => r.id));
   }

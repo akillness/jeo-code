@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.9.0] - 2026-07-22
+_Session-scoped async execution, detached subagent control, background monitors, and parallel TUI activity are now documented and shipped for the gjc-parity release line._
+
+### Added
+- **Session-scoped async execution** — fan out independent work through the `task` tool's real `tasks` array without blocking the parent turn; detached subagents, background jobs, and line monitors remain controllable from later turns with `subagent`/`job`/`monitor` actions.
+- **Parallel TUI activity tracking** — each concurrent worker keeps a stable live-activity slot, sibling completion no longer clears other workers, and session teardown cancels all session-owned registries.
+
+### Changed
+- **Bounded detached results and terminal cancellation** — detached output is capped before storage, while cancellation wins over late runner resolution.
+
+### Verified
+- Focused parity tests passed, including detached lifecycle, job/monitor control, and parallel TUI activity coverage.
+- `bun run typecheck` passed.
+- Full `bun test` reported 3156 passes and one unrelated timing-sensitive `notify-daemon-control` failure; that file passed independently with 26 tests.
+
 ## [0.8.42] - 2026-07-21
 _Request (paraphrased): "adopt gjc's subagent execution model and TUI parallel-processing monitoring — all the async/parallel parts — into jeo-code, with real operational verification." Investigated live before assuming a gap: jeo already has a mature, gjc-parity concurrent fan-out worker pool (`MAX_FANOUT`-bounded `Promise.all`, broadcast steering hub, detached/subagent/job/irc tools, a live TUI panel for concurrent subagents). Booted real `jeo --tmux` sessions with real credentials and repeatedly drove a genuine 3-file concurrent executor fan-out to verify this stack end to end — not to re-implement what already works, but to find what's actually broken in it. Found and fixed three real, live-reproduced bugs across the fan-out call path, none of them "missing gjc parity" — all pre-existing defects in jeo's own already-built implementation._
 
@@ -2129,7 +2144,8 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/akillness/jeo-code/releases/tag/v0.9.0
 [0.4.5]: https://github.com/akillness/jeo-code/releases/tag/v0.4.5
 [0.4.4]: https://github.com/akillness/jeo-code/releases/tag/v0.4.4
 [0.4.3]: https://github.com/akillness/jeo-code/releases/tag/v0.4.3

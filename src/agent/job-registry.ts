@@ -5,8 +5,11 @@
  * can keep working and later list / tail / await / cancel it via the `job` control
  * tool while stdout/stderr drain into a bounded buffer in the background.
  *
- * Lifecycle is bounded to the turn that created the registry — `cancelAll()` on
- * turn teardown guarantees no background process leaks into the next turn.
+ * Lifecycle is owned by the launch session — jobs survive turn boundaries and remain
+ * controllable across prompts; `cancelAll()` on session teardown prevents leaks.
+ *
+ * `cancelAll()` is also safe for explicit Ctrl-C cleanup.
+ *
  */
 
 export type JobStatus = "running" | "exited" | "killed" | "failed";
@@ -156,7 +159,7 @@ export class JobRegistry {
     return out;
   }
 
-  /** Kill every still-running job (turn teardown / Ctrl-C). */
+  /** Kill every still-running job (session teardown / Ctrl-C). */
   cancelAll(): JobRecord[] {
     return this.cancel(this.running().map(r => r.id));
   }

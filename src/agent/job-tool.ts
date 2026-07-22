@@ -55,7 +55,7 @@ export function createJobTool(registry: JobRegistry): ToolHandler {
     if (action === "list") {
       const rows = registry.list();
       if (rows.length === 0) {
-        return { success: true, output: `No background jobs this turn. Launch one with job {action:"start", command}.` };
+        return { success: true, output: `No background jobs in this session. Launch one with job {action:"start", command}.` };
       }
       const running = rows.filter(r => r.status === "running").length;
       return { success: true, output: `${rows.length} job(s), ${running} running:\n${rows.map(rowLine).join("\n")}` };

@@ -137,6 +137,57 @@ test("concurrent fan-out: one worker finishing does NOT clear the (sub) marker w
   }
 });
 
+test("detached subagent events keep distinct identities while settling independently", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  tui.start();
+  const internals = tui as unknown as TuiInternals;
+  try {
+    tui.onSubagentEvent({
+      kind: "start",
+      role: "executor",
+      detachedId: "executor-1",
+      detail: "first detached task",
+    });
+    tui.onSubagentEvent({
+      kind: "start",
+      role: "executor",
+      detachedId: "executor-2",
+      detail: "second detached task",
+    });
+
+    const frame = strip(out.join(""));
+    expect(frame).toContain("parallel · 2 running");
+    expect(frame).toContain("EXECUTOR[executor-1]");
+    expect(frame).toContain("first detached task");
+    expect(frame).toContain("EXECUTOR[executor-2]");
+    expect(frame).toContain("second detached task");
+
+    tui.onSubagentEvent({
+      kind: "done",
+      role: "executor",
+      detachedId: "executor-1",
+      detail: "first detached task done",
+      success: true,
+    });
+    const remaining = strip(internals.currentActivity());
+    expect(remaining).toContain("EXECUTOR[executor-2]");
+    expect(remaining).toContain("second detached task");
+
+    tui.onSubagentEvent({
+      kind: "done",
+      role: "executor",
+      detachedId: "executor-2",
+      detail: "second detached task done",
+      success: true,
+    });
+    expect(strip(internals.currentActivity())).not.toContain("EXECUTOR");
+  } finally {
+    clearInterval(internals.timer);
+    tui.finish("done");
+  }
+});
+
 // ── Activity-history ring (Ctrl+O tail) ────────────────────────────────────
 
 test("recentActivity records ledger events with turn-relative timestamps, ANSI-stripped", () => {

@@ -19,6 +19,8 @@ import { parseInThreadConfigCommand } from "../agent/notify/config-commands";
 
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { createJobTool, JOB_TOOL_PROTOCOL_LINE } from "../agent/job-tool";
+import { createMonitorTool, MONITOR_TOOL_PROTOCOL_LINE } from "../agent/monitor-tool";
+import { MonitorRegistry } from "../agent/monitor-registry";
 import { JobRegistry } from "../agent/job-registry";
 import { createIrcTool, IRC_TOOL_PROTOCOL_LINE } from "../agent/irc-tool";
 import { createGoalTool, GOAL_TOOL_PROTOCOL_LINE } from "../agent/goal-tool";
@@ -560,7 +562,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // pi-style: load project context (JEO.md / AGENTS.md / .jeo/context.md / CLAUDE.md) into the prompt.
   const contextFiles = await loadProjectContext(cwd);
 
-  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "eval", "todo", "subagent", "job", "irc", "goal", "approve", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug", "browser"]);
+  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "eval", "todo", "subagent", "job", "monitor", "irc", "goal", "approve", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug", "browser"]);
   let allowedTools = new Set(KNOWN_TOOLS);
 
   if (flags.noTools) {
@@ -633,6 +635,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     (allowedTools.has("subagent") ? "\n\nDetached subagents: " + SUBAGENT_TOOL_PROTOCOL_LINE +
     " Launch background work with task {\"detached\": true, \"role\": <role>, \"task\": <assignment>}; it returns a subagent id immediately so you can keep working and collect the result later." : "") +
     (allowedTools.has("job") ? "\n\nBackground jobs: " + JOB_TOOL_PROTOCOL_LINE : "") +
+    (allowedTools.has("monitor") ? "\n\nBackground monitors: " + MONITOR_TOOL_PROTOCOL_LINE : "") +
     (allowedTools.has("irc") ? "\n\nPeer messaging: " + IRC_TOOL_PROTOCOL_LINE : "") +
     (allowedTools.has("goal") ? "\n\nGoal tracking: " + GOAL_TOOL_PROTOCOL_LINE : "") +
     (allowedTools.has("approve") ? "\n\nPlan approval: " + APPROVE_TOOL_PROTOCOL_LINE : "") +
@@ -906,6 +909,33 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   if (sessionNotifyEndpoint) {
     sessionNotifyEndpoint.sendIdentity({ repo: cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd, branch, cwd });
   }
+
+  // Session-scoped registries for DETACHED subagents, background jobs, and monitors (gjc parity).
+  // Created ONCE for the whole launch session lifetime (not per-turn) so detached
+  // runs persist across turns and remain controllable/inspectable.
+  const subagentRegistry = new SubagentRegistry();
+  const jobRegistry = new JobRegistry();
+  let activeTui: LaunchTui | null = null;
+  const monitorRegistry = new MonitorRegistry({
+    onLine: (record, line) => {
+      const notice = `[monitor ${record.id}] ${line}`;
+      if (activeTui) activeTui.events().onNotice?.(notice);
+      else console.log(notice);
+    },
+  });
+  sessionNotifyEndpoint?.attachRegistry(subagentRegistry);
+
+  let cleanedUp = false;
+  const cleanupSession = async (): Promise<void> => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    subagentRegistry.cancelAll();
+    jobRegistry.cancelAll();
+    monitorRegistry.cancelAll();
+    sessionNotifyEndpoint?.detachRegistry();
+    await sessionNotifyEndpoint?.stop();
+    await stopSessionNotifyEndpoint(subagentRegistry);
+  };
 
   // Persist the active per-session model into the session header so `/resume` restores
   // it (each session can carry its own model independent of the global default).
@@ -1212,6 +1242,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const { provider: activeProvider } = await describeModel(activeModel, turnConfig);
     const turnDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
     const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: initialStepLimit, cwd, branch, dirtyCount: turnDirtyCount, thinking: activeThinking, routedTier: routed?.tier }) : null;
+    activeTui = tui;
     if (routeCredentialNotice) {
       if (tui) tui.events().onNotice?.(routeCredentialNotice);
       else console.log(routeCredentialNotice);
@@ -1269,7 +1300,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         },
         onHardExit: () => {
           if (tui) tui.finish("Cancelled.", { ok: false });
-          process.exit(130);
+          forceExitFromCtrlC();
         },
       });
       let compRes: Awaited<ReturnType<typeof maybeCompact>>;
@@ -1415,15 +1446,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         },
         onHardExit: () => {
           if (tui) tui.finish("Cancelled.", { ok: false });
-          process.exit(130);
+          forceExitFromCtrlC();
         },
       });
       const ac = harness.controller;
-      // #9: per-turn registry for DETACHED subagents (task{detached:true}); the
-      // `subagent` tool controls them and cancelAll() in finally prevents orphans.
-      const subagentRegistry = new SubagentRegistry();
-      const jobRegistry = new JobRegistry();
-      sessionNotifyEndpoint?.attachRegistry(subagentRegistry);
       currentTurnSteer = { push: line => steerInbox.push(line), flushCard: line => tui?.flushSteerCard(line) };
       if (sessionNotifyEndpoint && !notifyRedact) {
         const preview = userInput.length > 200 ? `${userInput.slice(0, 200)}…` : userInput;
@@ -1510,6 +1536,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           todo: createTodoTool({ onChange: items => { turnTodos = items; tui?.setTodos(items); } }),
           subagent: createSubagentTool(subagentRegistry),
           job: createJobTool(jobRegistry),
+          monitor: createMonitorTool(monitorRegistry),
           irc: createIrcTool(subagentRegistry),
           goal: createGoalTool(),
           approve: createApproveTool(),
@@ -1772,11 +1799,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         await opik.endTurn({ done: result.done, steps: result.steps, output: result.doneReason });
       } finally {
         harness.dispose();
-        subagentRegistry.cancelAll(); // #9: no detached run leaks past the turn
-        sessionNotifyEndpoint?.detachRegistry(); // this turn's registry is gone — subagent frames stop applying to it
+        activeTui = null;
         currentTurnSteer = undefined; // a remote message after this point queues instead of steering a dead turn
-        await stopSessionNotifyEndpoint(subagentRegistry); // tear down the FALLBACK lazy endpoint, if one was started (no-op when sessionNotifyEndpoint owns the registry)
-        jobRegistry.cancelAll(); // background jobs are turn-scoped too — no orphaned processes
 
         // Steering typed but never drained (e.g. entered just after the final step)
         // must not be lost — fold it into the next prompt draft so it runs next.
@@ -2030,7 +2054,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const harness = createInFlightAbortHarness({
           captureEsc: false,
           onAbortNotice: msg => console.log(msg),
-          onHardExit: () => process.exit(130),
+          onHardExit: () => forceExitFromCtrlC(),
         });
         const ac = harness.controller;
 
@@ -2243,7 +2267,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       const harness = createInFlightAbortHarness({
         captureEsc: false,
         onAbortNotice: msg => console.log(msg),
-        onHardExit: () => process.exit(130),
+        onHardExit: () => forceExitFromCtrlC(),
       });
       const ac = harness.controller;
 
@@ -3141,8 +3165,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     } catch {
       // Best-effort terminal restore; process exit is the contract.
     }
-    // Fire-and-forget — see the identical rationale at the main hard-exit path.
+    subagentRegistry.cancelAll();
+    jobRegistry.cancelAll();
+    monitorRegistry.cancelAll();
+    sessionNotifyEndpoint?.detachRegistry();
     void sessionNotifyEndpoint?.stop();
+    void stopSessionNotifyEndpoint(subagentRegistry);
     process.exit(130);
   };
   // Prompt Ctrl+C: a single press clears a non-empty box; on an empty box it exits.
@@ -4964,11 +4992,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       disarmPreview();
       out.write("\x1b[?25h\n");
     } catch { /* best effort */ }
-    // Fire-and-forget: process.exit() below does not wait for this, but the OS
-    // tears down the socket on process death regardless, and a leaked discovery
-    // file is self-healing (the daemon's scanSessions() reaps dead-pid entries
-    // on its next 3s poll — see notify-telegram-daemon.test.ts).
-    void sessionNotifyEndpoint?.stop();
+    await cleanupSession();
     process.removeListener("SIGINT", handleCtrlC);
     process.stdin.off("data", handleCtrlCByte);
     drainPromptListeners();
@@ -4985,7 +5009,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // gjc-parity resume pointer (logs/gjc-tui-study analysis Gap C): leave the exact
   // resume command in scrollback on exit, mirroring the --list handler's convention.
   if (sessionId && !flags.noSession) console.log(formatResumeHint(sessionId));
-  await sessionNotifyEndpoint?.stop();
+  await cleanupSession();
   process.removeListener("SIGINT", handleCtrlC);
   process.stdin.off("data", handleCtrlCByte);
   drainPromptListeners();

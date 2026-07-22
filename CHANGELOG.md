@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
 ## [0.8.43] - 2026-07-22
-_Release packaging for the completed gjc-parity async subagent and TUI monitoring work._
+_Release packaging and publication of the completed gjc-parity async subagent and TUI monitoring work._
 
 ### Changed
 - **Documented the actual parallel contract** — the README now distinguishes bounded `task {tasks:[...]}` fan-out (concurrent executor/read-only workers with input-order results), independently cancellable `task {detached:true}` runs, and turn-scoped `monitor` observations.
@@ -17,6 +17,10 @@ _Release packaging for the completed gjc-parity async subagent and TUI monitorin
 - `bun run typecheck` — clean.
 - Focused async/TUI coverage — 120 pass / 0 fail across six targeted test files.
 - Isolated launch-role regression coverage — 9 pass / 0 fail.
+
+### Published
+- GitHub release: [`v0.8.43`](https://github.com/akillness/jeo-code/releases/tag/v0.8.43).
+- npm package: [`jeo-code@0.8.43`](https://www.npmjs.com/package/jeo-code).
 
 ## [0.8.42] - 2026-07-21
 _Request (paraphrased): "adopt gjc's subagent execution model and TUI parallel-processing monitoring — all the async/parallel parts — into jeo-code, with real operational verification." Investigated live before assuming a gap: jeo already has a mature, gjc-parity concurrent fan-out worker pool (`MAX_FANOUT`-bounded `Promise.all`, broadcast steering hub, detached/subagent/job/irc tools, a live TUI panel for concurrent subagents). Booted real `jeo --tmux` sessions with real credentials and repeatedly drove a genuine 3-file concurrent executor fan-out to verify this stack end to end — not to re-implement what already works, but to find what's actually broken in it. Found and fixed three real, live-reproduced bugs across the fan-out call path, none of them "missing gjc parity" — all pre-existing defects in jeo's own already-built implementation._

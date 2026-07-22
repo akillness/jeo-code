@@ -47,6 +47,16 @@ test("formatTaskSubEvent treats only explicit false as incomplete", () => {
   expect(out).toContain("done: ok");
   expect(out).not.toContain("(incomplete)");
 });
+test("formatTaskSubEvent keeps a detached lifecycle id in plain output", () => {
+  const out = formatTaskSubEvent({
+    kind: "step",
+    role: "executor",
+    detached: true,
+    id: "executor-7",
+    detail: "bash: bun test",
+  }).replace(/\x1b\[[0-9;]*m/g, "");
+  expect(out).toContain("EXECUTOR [executor-7]");
+});
 
 test("end-to-end: a piped one-shot turn prints the per-step flow (not just the final reply)", async () => {
   let turn = 0;

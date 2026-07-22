@@ -89,7 +89,7 @@ export function createJobTool(registry: JobRegistry): ToolHandler {
       const head = stillRunning > 0
         ? `Awaited ${recs.length} job(s); ${stillRunning} still running after the ${timeoutMs}ms timeout — await again or cancel.`
         : `Awaited ${recs.length} job(s); all settled.`;
-      return { success: stillRunning === 0, output: `${head}\n\n${recs.map(rowLine).join("\n")}` };
+      return { success: true, output: `${head}\n\n${recs.map(rowLine).join("\n")}` };
     }
 
     if (action === "cancel") {

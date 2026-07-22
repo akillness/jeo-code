@@ -42,6 +42,7 @@ test("handleTools: lists all tool protocol lines", async () => {
     expect(result.lines.length).toBeGreaterThan(5);
     // All lines after header should be indented
     for (const line of result.lines.slice(1)) expect(line.startsWith("  ")).toBe(true);
+    expect(result.lines.some(line => line.includes("monitor {command, kind, description"))).toBe(true);
   }
 });
 

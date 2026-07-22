@@ -78,3 +78,21 @@ test("ast_edit operates across multiple files under a directory path", async () 
   expect(await fs.readFile(path.join(cwd, "a.ts"), "utf-8")).toContain('logger.info("a")');
   expect(await fs.readFile(path.join(cwd, "b.ts"), "utf-8")).toContain('logger.info("b")');
 });
+test("ast_edit does not commit a rewrite after its signal is aborted", async () => {
+  const cwd = await tmpDir();
+  const file = path.join(cwd, "a.ts");
+  await fs.writeFile(file, 'console.log("keep");\n');
+  const controller = new AbortController();
+  controller.abort();
+
+  const result = await createAstEditTool()(
+    { pattern: "console.log($$$ARGS)", replacement: "logger.info($$$ARGS)", paths: ["a.ts"] },
+    cwd,
+    undefined,
+    controller.signal,
+  );
+
+  expect(result.success).toBe(false);
+  expect(result.error).toContain("Operation cancelled");
+  expect(await fs.readFile(file, "utf-8")).toContain('console.log("keep")');
+});

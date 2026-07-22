@@ -81,6 +81,23 @@ test("registry: awaitIds honours a timeout while the run is still going", async 
   expect(snap[0]!.status).toBe("running"); // timed out before completion
   reg.cancelAll(); // releases the timer so the test exits cleanly
 });
+test("subagent tool: await timeout is a successful running snapshot", async () => {
+  const { SubagentRegistry } = await import("../src/agent/subagent-registry");
+  const { createSubagentTool } = await import("../src/agent/subagent-tool");
+  const reg = new SubagentRegistry();
+  const tool = createSubagentTool(reg);
+  const rec = reg.launch("architect", "slow", signal =>
+    new Promise<ToolResult>(resolve => {
+      signal.addEventListener("abort", () => resolve({ success: false, output: "aborted" }));
+    }),
+  );
+
+  const result = await tool({ action: "await", ids: [rec.id], timeoutMs: 1 }, await tmpDir());
+  expect(result.success).toBe(true);
+  expect(result.output).toContain("still running");
+  expect(result.output).toContain("[RUNNING]");
+  reg.cancelAll();
+});
 
 // ── subagent control tool ───────────────────────────────────────────────────────
 
@@ -136,7 +153,12 @@ test("createTaskTool: detached launch returns immediately and the registry colle
   const { createTaskTool } = await import("../src/agent/task-tool");
   const { SubagentRegistry } = await import("../src/agent/subagent-registry");
   const reg = new SubagentRegistry();
-  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} }, registry: reg });
+  const events: Array<{ id?: string; detached?: boolean }> = [];
+  const tool = createTaskTool({
+    config: { defaultModel: "m", subagents: {} },
+    registry: reg,
+    onEvent: event => events.push(event),
+  });
 
   const res = await tool({ role: "executor", task: "do a thing", detached: true }, await tmpDir());
   expect(res.success).toBe(true);
@@ -146,6 +168,25 @@ test("createTaskTool: detached launch returns immediately and the registry colle
   const [settled] = await reg.awaitIds(["executor-1"]);
   expect(settled!.status).toBe("completed");
   expect(settled!.result).toContain("[Executor subagent] completed");
+  expect(events.length).toBeGreaterThan(0);
+  expect(events.every(event => event.id === "executor-1" && event.detached === true)).toBe(true);
+});
+test("createTaskTool: string true dispatches a detached run instead of silently blocking", async () => {
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: a.ts\nVerification: ran" } }),
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const { SubagentRegistry } = await import("../src/agent/subagent-registry");
+  const reg = new SubagentRegistry();
+  const res = await createTaskTool({ config: { defaultModel: "m", subagents: {} }, registry: reg })(
+    { role: "executor", task: "do a thing", detached: "true" },
+    await tmpDir(),
+  );
+
+  expect(res.success).toBe(true);
+  expect(res.output).toContain("[detached] launched");
+  expect(reg.list()).toHaveLength(1);
+  await reg.awaitIds(["executor-1"]);
 });
 
 test("createTaskTool: detached without a registry falls back to a synchronous run", async () => {
@@ -153,9 +194,142 @@ test("createTaskTool: detached without a registry falls back to a synchronous ru
     callLlm: async () => JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: a.ts\nVerification: ran" } }),
   }));
   const { createTaskTool } = await import("../src/agent/task-tool");
-  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} } }); // no registry
+  const events: Array<{ id?: string; detached?: boolean }> = [];
+  const tool = createTaskTool({
+    config: { defaultModel: "m", subagents: {} },
+    onEvent: event => events.push(event),
+  }); // no registry
   const res = await tool({ role: "executor", task: "do a thing", detached: true }, await tmpDir());
   // No registry → the detached flag is ignored and the full report comes back inline.
   expect(res.output).toContain("[Executor subagent]");
   expect(res.output).not.toContain("[detached] launched");
+  expect(events.every(event => event.id === undefined && event.detached === undefined)).toBe(true);
+});
+test("createTaskTool: detached cap refuses a fifth running run but permits a terminal record to remain inspectable", async () => {
+  const releases: Array<() => void> = [];
+  let started = 0;
+  let fourStarted!: () => void;
+  const allStarted = new Promise<void>(resolve => { fourStarted = resolve; });
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => {
+      started++;
+      if (started === 4) fourStarted();
+      await new Promise<void>(resolve => releases.push(resolve));
+      return JSON.stringify({ tool: "done", arguments: { reason: "Summary: ok\nChanged Files: a.ts\nVerification: ran" } });
+    },
+  }));
+
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const { SubagentRegistry } = await import("../src/agent/subagent-registry");
+  const reg = new SubagentRegistry();
+  const tool = createTaskTool({ config: { defaultModel: "m", subagents: {} }, registry: reg });
+  const cwd = await tmpDir();
+
+  for (let n = 0; n < 4; n++) {
+    expect((await tool({ role: "executor", task: `run ${n}`, detached: true }, cwd)).success).toBe(true);
+  }
+  await allStarted;
+  const refused = await tool({ role: "executor", task: "fifth", detached: true }, cwd);
+  expect(refused.success).toBe(false);
+  expect(refused.error).toContain("limit reached");
+  expect(reg.running()).toHaveLength(4);
+  expect(started).toBe(4);
+
+  for (const release of releases) release();
+  await reg.awaitIds(reg.running().map(rec => rec.id));
+  expect(reg.get("executor-1")!.result).toContain("[Executor subagent] completed");
+  expect((await tool({ role: "executor", task: "after terminal", detached: true }, cwd)).success).toBe(true);
+  reg.cancelAll();
+});
+test("createTaskTool: cancelling a detached bash run kills the active child process", async () => {
+  const cwd = await tmpDir();
+  const started = path.join(cwd, "bash-started");
+  const leaked = path.join(cwd, "must-not-exist");
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({
+      tool: "bash",
+      arguments: {
+        command: `printf started > ${JSON.stringify(started)}; sleep 1; printf leaked > ${JSON.stringify(leaked)}`,
+      },
+    }),
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const { SubagentRegistry } = await import("../src/agent/subagent-registry");
+  const reg = new SubagentRegistry();
+  try {
+    const result = await createTaskTool({ config: { defaultModel: "m", subagents: {} }, registry: reg })(
+      { role: "executor", task: "run a long command", detached: true },
+      cwd,
+    );
+    expect(result.success).toBe(true);
+
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      try {
+        await fs.access(started);
+        break;
+      } catch {
+        await Bun.sleep(10);
+      }
+    }
+    await fs.access(started);
+
+    reg.cancel(["executor-1"]);
+    await reg.awaitIds(["executor-1"]);
+    await Bun.sleep(1_200);
+    await expect(fs.access(leaked)).rejects.toThrow();
+    expect(reg.get("executor-1")!.status).toBe("cancelled");
+  } finally {
+    reg.cancelAll();
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+test("createTaskTool: cancellation before a detached write prevents the mutation", async () => {
+  const cwd = await tmpDir();
+  const leaked = path.join(cwd, "must-not-write.txt");
+  await mock.module("../src/agent/loop", () => ({
+    callLlm: async () => JSON.stringify({
+      tool: "write",
+      arguments: { filePath: "must-not-write.txt", content: "leaked" },
+    }),
+  }));
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const { SubagentRegistry } = await import("../src/agent/subagent-registry");
+  const reg = new SubagentRegistry();
+  try {
+    const tool = createTaskTool({
+      config: { defaultModel: "m", subagents: {} },
+      registry: reg,
+      onEvent: event => {
+        if (event.kind === "step" && event.id) reg.cancel([event.id]);
+      },
+    });
+    const result = await tool({ role: "executor", task: "write a file", detached: true }, cwd);
+    expect(result.success).toBe(true);
+    await reg.awaitIds(["executor-1"]);
+    expect(reg.get("executor-1")!.status).toBe("cancelled");
+    await expect(fs.access(leaked)).rejects.toThrow();
+  } finally {
+    reg.cancelAll();
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("createTaskTool: rejects detached fan-out instead of silently running it synchronously", async () => {
+  const { createTaskTool } = await import("../src/agent/task-tool");
+  const { SubagentRegistry } = await import("../src/agent/subagent-registry");
+  const cwd = await tmpDir();
+  const reg = new SubagentRegistry();
+  try {
+    const result = await createTaskTool({ config: { defaultModel: "m", subagents: {} }, registry: reg })(
+      { role: "executor", tasks: ["one", "two"], detached: true },
+      cwd,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Detached task fan-out is not supported");
+    expect(reg.list()).toEqual([]);
+  } finally {
+    reg.cancelAll();
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
 });

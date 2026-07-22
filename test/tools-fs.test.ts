@@ -600,6 +600,24 @@ test("DEFAULT_TOOLS exposes mkdir and delete", async () => {
   const del = await DEFAULT_TOOLS.delete({ path: "viatools", recursive: true }, dir);
   expect(del.success).toBe(true);
 });
+test("mutating filesystem tools refuse an aborted signal before committing", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const retained = path.join(dir, "retained-after-cancel.txt");
+  await fs.writeFile(retained, "original");
+
+  const [write, mkdir, edit, remove] = await Promise.all([
+    writeTool("cancelled-write.txt", "leaked", dir, controller.signal),
+    mkdirTool("cancelled-dir", dir, controller.signal),
+    editTool("retained-after-cancel.txt", "≔1\nchanged", dir, controller.signal),
+    deleteTool("retained-after-cancel.txt", dir, false, controller.signal),
+  ]);
+
+  expect([write, mkdir, edit, remove].every(result => result.success === false && result.error === "Operation cancelled")).toBe(true);
+  await expect(fs.access(path.join(dir, "cancelled-write.txt"))).rejects.toThrow();
+  await expect(fs.access(path.join(dir, "cancelled-dir"))).rejects.toThrow();
+  expect(await fs.readFile(retained, "utf-8")).toBe("original");
+});
 
 test("bashTool: an AbortSignal fired mid-run kills the child and returns an aborted result", async () => {
   const ac = new AbortController();

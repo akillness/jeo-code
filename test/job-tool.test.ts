@@ -85,6 +85,35 @@ test("job tool: tail returns buffered output for a completed job", async () => {
   expect(res.output).toContain("hi-there");
 });
 
+test("job tool: bounded await returns a successful running snapshot on timeout", async () => {
+  const { JobRegistry } = await import("../src/agent/job-registry");
+  const { createJobTool } = await import("../src/agent/job-tool");
+  const reg = new JobRegistry();
+  const tool = createJobTool(reg);
+  const rec = reg.start("sleep 5", process.cwd());
+
+  const res = await tool({ action: "await", ids: [rec.id], timeoutMs: 20 }, process.cwd());
+  expect(res.success).toBe(true);
+  expect(res.output).toContain("still running after the 20ms timeout");
+  expect(res.output).toContain("[RUNNING]");
+  expect(reg.get(rec.id)!.status).toBe("running");
+
+  reg.cancelAll();
+});
+
+test("job tool: await receipt preserves a terminal failed status", async () => {
+  const { JobRegistry } = await import("../src/agent/job-registry");
+  const { createJobTool } = await import("../src/agent/job-tool");
+  const reg = new JobRegistry();
+  const tool = createJobTool(reg);
+  const rec = reg.start("echo unreachable", `${process.cwd()}/.missing-job-tool-cwd-${crypto.randomUUID()}`);
+
+  const res = await tool({ action: "await", ids: [rec.id] }, process.cwd());
+  expect(res.success).toBe(true);
+  expect(res.output).toContain("[FAILED]");
+  expect(reg.get(rec.id)!.status).toBe("failed");
+});
+
 test("job tool: unknown action fails with a clear message", async () => {
   const { JobRegistry } = await import("../src/agent/job-registry");
   const { createJobTool } = await import("../src/agent/job-tool");

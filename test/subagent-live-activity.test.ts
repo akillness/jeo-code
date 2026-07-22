@@ -136,6 +136,58 @@ test("concurrent fan-out: one worker finishing does NOT clear the (sub) marker w
     tui.finish("done");
   }
 });
+test("concurrent detached runs retain separate ids and only remove the completed run", () => {
+  const out: string[] = [];
+  const tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+  const internals = tui as unknown as TuiInternals;
+  tui.start();
+  try {
+    tui.onSubagentEvent({ kind: "start", role: "executor", detached: true, id: "run-alpha", detail: "inspect A" });
+    tui.onSubagentEvent({ kind: "start", role: "reviewer", detached: true, id: "run-beta", detail: "inspect B" });
+
+    const frame = strip(out.join(""));
+    expect(frame).toContain("parallel · 2 running");
+    expect(frame).toContain("[run-alpha]");
+    expect(frame).toContain("[run-beta]");
+
+    tui.onSubagentEvent({ kind: "done", role: "executor", detached: true, id: "run-alpha", detail: "A done", success: true });
+    const live = strip(internals.currentActivity());
+    expect(live).toContain("REVIEWER [run-beta]");
+    expect(live).toContain("inspect B");
+    expect(live).not.toContain("+1 more running");
+
+    tui.onSubagentEvent({ kind: "done", role: "reviewer", detached: true, id: "run-beta", detail: "B done", success: true });
+    expect(strip(internals.currentActivity())).not.toContain("RUN-BETA");
+  } finally {
+    clearInterval(internals.timer);
+    tui.finish("done");
+  }
+});
+test("monitor events render as distinct sanitized background activity", () => {
+  const { tui, internals } = makeTui();
+  const record = {
+    id: "job-1",
+    command: "printf ready",
+    cwd: process.cwd(),
+    status: "running" as const,
+    startedAt: Date.now(),
+    category: "watch" as const,
+    description: "readiness probe",
+    persistent: false,
+  };
+  try {
+    tui.onMonitorEvent({ type: "start", record });
+    tui.onMonitorEvent({ type: "line", record, line: "ready\u001b[2J" });
+
+    const activity = tui.recentActivity().join("\n");
+    expect(activity).toContain("Monitor job-1");
+    expect(activity).toContain("ready");
+    expect(activity).not.toContain("\u001b[2J");
+  } finally {
+    clearInterval(internals.timer);
+    tui.finish("done");
+  }
+});
 
 // ── Activity-history ring (Ctrl+O tail) ────────────────────────────────────
 

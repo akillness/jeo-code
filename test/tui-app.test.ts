@@ -745,8 +745,8 @@ test("LaunchTui.onSubagentEvent: a 'thinking' event drives the live per-slot pre
   tui.onSubagentEvent({ role: "executor", kind: "thinking", detail: "weighing an LRU vs a plain Map for the cache" });
   // Live per-slot preview reflects the thinking beat (drives the status row via
   // currentActivity() regardless of TTY/inline mode — checked directly here).
-  const internals = tui as unknown as { subagentLiveSlots: Map<number, string> };
-  const live = internals.subagentLiveSlots.get(0) ?? "";
+  const internals = tui as unknown as { subagentLiveSlots: Map<string, string> };
+  const live = internals.subagentLiveSlots.get("single") ?? "";
   expect(live).toContain("weighing an LRU vs a plain Map");
   clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
 

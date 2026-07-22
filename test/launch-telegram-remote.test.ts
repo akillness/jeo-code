@@ -396,7 +396,10 @@ async function runInteractiveWithNotify(): Promise<{ done: Promise<void>; config
   // which only happens on first import — a static top-level import here would
   // load launch.ts (and readline) before this file's mocks are wired.
   const { runLaunchCommand } = await import("../src/commands/launch");
-  const done = runLaunchCommand(["--no-tui", "--no-session", "--no-skills"]).finally(async () => {
+  // This harness verifies notification-driven input delivery, not mutation tools.
+  // Disable tools so a leaked cross-suite LLM mock cannot write into the test runner's
+  // workspace while this intentionally credential-free turn settles.
+  const done = runLaunchCommand(["--no-tui", "--no-session", "--no-skills", "--no-tools"]).finally(async () => {
     if (savedCfg === undefined) delete process.env.JEO_CONFIG_DIR;
     else process.env.JEO_CONFIG_DIR = savedCfg;
   });
@@ -450,33 +453,15 @@ async function waitForCondition(check: () => boolean, timeoutMs: number): Promis
 // printed with `!` by the OUTER main-loop catch — never a network call,
 // never a hang.
 //
-// GENUINE PRE-EXISTING TEST-SUITE FINDING (root-caused empirically via
-// temporary `console.error` instrumentation across engine.ts/model-manager.ts,
-// reverted after diagnosis — not present in the final code): under the FULL
-// 280-file suite (never reproducible standalone or in smaller subsets), this
-// turn's `callLlm` sometimes resolves against a STALE, LEAKED
-// `mock.module("../src/agent/loop", ...)` from an unrelated, already-finished
-// test elsewhere in the suite (confirmed via `fn.toString()` at the exact
-// call site — the leaked closure's literal string matched
-// `test/subagent-detached.test.ts`'s mock verbatim) instead of the real
-// `callLlm`. This is a pre-existing Bun `mock.module`/event-loop-scheduling
-// interaction in the wider suite, unrelated to this feature and out of scope
-// to fix here (auditing 32 files' mock lifecycles is a separate project) — it
-// makes the credential check NEVER RUN on an unlucky ordering, so `runTurn`
-// SUCCEEDS instead of throwing. Both outcomes are asserted below via a race,
-// so this test passes deterministically regardless of which one occurs THIS
-// run, and the invariant that must ALWAYS hold either way — the REPL fully
-// recovers to its next idle prompt, never hanging or crashing — is checked
-// unconditionally at the end.
+// The interactive harness starts launch with `--no-tools`: this test only
+// verifies notification-driven input delivery, and disabling mutations keeps
+// any unrelated leaked LLM mock from modifying the shared test workspace.
 //
 // This test observes: (a) the literal injected text reached a REAL turn
 // (context_update/turn_start's summary === the injected text, proving
 // promptInput()'s pendingRemoteInject path fired exactly as if Enter had been
-// pressed on that text); (b) the turn then settled via EITHER expected
-// outcome — the real credential failure (`! No credential for provider`, main-
-// loop catch) or (only under the pre-existing mock-leak condition above) a
-// successful completion (`context_update`/`turn_end`) — never a hang; and
-// (c) the REPL loop unconditionally reaches its NEXT prompt afterward.
+// pressed on that text); (b) the turn settles through a turn-end or the expected
+// credential error; and (c) the REPL reaches its next idle prompt without hanging.
 // ---------------------------------------------------------------------------
 test("a user_message while idle at the prompt is injected as the next turn's input (context_update/turn_start proves it)", async () => {
   const { done, configDir } = await runInteractiveWithNotify();

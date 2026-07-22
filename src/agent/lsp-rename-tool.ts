@@ -29,7 +29,7 @@ function err(message: string): ToolResult {
 const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 export function createLspRenameTool(): ToolHandler {
-  return async (args: Record<string, any>, cwd: string): Promise<ToolResult> => {
+  return async (args: Record<string, any>, cwd: string, _onProgress, signal): Promise<ToolResult> => {
     const fileArg = typeof args.file === "string" ? args.file.trim() : "";
     if (!fileArg) return err(`lsp_rename requires a non-empty "file".`);
 
@@ -95,7 +95,7 @@ export function createLspRenameTool(): ToolHandler {
         for (const span of [...spans].sort((a, b) => b.start - a.start)) {
           newText = newText.slice(0, span.start) + newName + newText.slice(span.start + span.length);
         }
-        const res = await writeTool(rel, newText, cwd);
+        const res = await writeTool(rel, newText, cwd, signal);
         if (!res.success) return err(`${rel}: ${res.error ?? "write failed"}`);
       }
     }

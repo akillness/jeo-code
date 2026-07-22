@@ -12,6 +12,13 @@ test("nativeToolSchemasFor: always appends `done` and mirrors handler arg keys",
   expect(Object.keys(read.parameters.properties)).toContain("filePath");
   expect(read.parameters.required).toContain("filePath");
 });
+test("nativeToolSchemasFor: exposes monitor with its strict lifecycle fields", () => {
+  const monitor = nativeToolSchemasFor(["monitor"]).find(schema => schema.name === "monitor")!;
+  expect(monitor.parameters.required).toEqual(["command", "kind", "description"]);
+  expect(Object.keys(monitor.parameters.properties)).toEqual(
+    expect.arrayContaining(["command", "kind", "description", "timeout", "persistent", "cwd"]),
+  );
+});
 
 test("nativeToolSchemasFor: a read-only toolset exposes NO write/edit/bash natively", () => {
   // Read-only subagents (planner/architect/critic) must never get mutating tools on the

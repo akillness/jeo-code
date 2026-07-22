@@ -111,6 +111,10 @@ export async function assertBashAllowed(
   }
 }
 
+function cancelledMutationResult(signal?: AbortSignal): ToolResult | undefined {
+  return signal?.aborted ? { success: false, output: "", error: "Operation cancelled" } : undefined;
+}
+
 /**
  * Parse a read line selector into sorted, merged, inclusive [start,end] ranges.
  * Segments are comma-separated; each is one of: "a-b" (range), "a-" (a→EOF),
@@ -312,15 +316,22 @@ export async function readTool(
 export async function writeTool(
   filePath: string,
   content: string,
-  cwd: string = process.cwd()
+  cwd: string = process.cwd(),
+  signal?: AbortSignal,
 ): Promise<ToolResult> {
   try {
+    const aborted = cancelledMutationResult(signal);
+    if (aborted) return aborted;
     if (typeof filePath !== "string" || filePath.trim() === "") {
       return { success: false, output: "", error: 'write requires a non-empty "filePath".' };
     }
     await assertMutationAllowed(filePath, cwd);
+    const abortedAfterGuard = cancelledMutationResult(signal);
+    if (abortedAfterGuard) return abortedAfterGuard;
     const absPath = path.resolve(cwd, filePath);
     await fs.mkdir(path.dirname(absPath), { recursive: true });
+    const abortedBeforeWrite = cancelledMutationResult(signal);
+    if (abortedBeforeWrite) return abortedBeforeWrite;
     await fs.writeFile(absPath, content, "utf-8");
     markRead(absPath); // own change counts as having seen the file
     return { success: true, output: `Successfully wrote ${content.length} characters to ${filePath}` };
@@ -360,9 +371,12 @@ export function parseEditHunks(block: string): { search: string; replace: string
 export async function editTool(
   filePath: string,
   editBlock: string,
-  cwd: string = process.cwd()
+  cwd: string = process.cwd(),
+  signal?: AbortSignal,
 ): Promise<ToolResult> {
   try {
+    const aborted = cancelledMutationResult(signal);
+    if (aborted) return aborted;
     if (typeof filePath !== "string" || filePath.trim() === "") {
       return { success: false, output: "", error: 'edit requires a non-empty "filePath".' };
     }
@@ -370,6 +384,8 @@ export async function editTool(
       return { success: false, output: "", error: 'edit requires a non-empty "editBlock" (≔ directive or <<<<<<< SEARCH block).' };
     }
     await assertMutationAllowed(filePath, cwd);
+    const abortedAfterGuard = cancelledMutationResult(signal);
+    if (abortedAfterGuard) return abortedAfterGuard;
     const absPath = path.resolve(cwd, filePath);
     let content = await fs.readFile(absPath, "utf-8");
 
@@ -581,6 +597,8 @@ export async function editTool(
       };
     }
 
+    const abortedBeforeWrite = cancelledMutationResult(signal);
+    if (abortedBeforeWrite) return abortedBeforeWrite;
     await fs.writeFile(absPath, content, "utf-8");
     markRead(absPath); // own change counts as having seen the file
     return { success: true, output: `Successfully updated ${filePath}` };
@@ -1076,18 +1094,25 @@ export async function lsTool(
  */
 export async function mkdirTool(
   dirPath: string,
-  cwd: string = process.cwd()
+  cwd: string = process.cwd(),
+  signal?: AbortSignal,
 ): Promise<ToolResult> {
   try {
+    const aborted = cancelledMutationResult(signal);
+    if (aborted) return aborted;
     if (typeof dirPath !== "string" || dirPath.trim() === "") {
       return { success: false, output: "", error: 'mkdir requires a non-empty "dirPath".' };
     }
     await assertMutationAllowed(dirPath, cwd);
+    const abortedAfterGuard = cancelledMutationResult(signal);
+    if (abortedAfterGuard) return abortedAfterGuard;
     const abs = path.resolve(cwd, dirPath);
     const existing = await fs.stat(abs).catch(() => null);
     if (existing && !existing.isDirectory()) {
       return { success: false, output: "", error: `Path exists and is not a directory: ${dirPath}` };
     }
+    const abortedBeforeMkdir = cancelledMutationResult(signal);
+    if (abortedBeforeMkdir) return abortedBeforeMkdir;
     await fs.mkdir(abs, { recursive: true });
     return { success: true, output: `Directory ready: ${dirPath}` };
   } catch (err: any) {
@@ -1105,13 +1130,18 @@ export async function mkdirTool(
 export async function deleteTool(
   targetPath: string,
   cwd: string = process.cwd(),
-  recursive: boolean = false
+  recursive: boolean = false,
+  signal?: AbortSignal,
 ): Promise<ToolResult> {
   try {
+    const aborted = cancelledMutationResult(signal);
+    if (aborted) return aborted;
     if (typeof targetPath !== "string" || targetPath.trim() === "") {
       return { success: false, output: "", error: 'delete requires a non-empty "path".' };
     }
     await assertMutationAllowed(targetPath, cwd);
+    const abortedAfterGuard = cancelledMutationResult(signal);
+    if (abortedAfterGuard) return abortedAfterGuard;
     const abs = path.resolve(cwd, targetPath);
     if (abs === path.resolve(cwd)) {
       return { success: false, output: "", error: "Refusing to delete the working directory itself." };
@@ -1123,6 +1153,8 @@ export async function deleteTool(
     if (st.isDirectory() && !recursive) {
       return { success: false, output: "", error: `${targetPath} is a directory — pass recursive:true to remove it and its contents.` };
     }
+    const abortedBeforeDelete = cancelledMutationResult(signal);
+    if (abortedBeforeDelete) return abortedBeforeDelete;
     await fs.rm(abs, { recursive, force: false });
     readThisSession.delete(abs); // a future edit against this path must read it again first
     return { success: true, output: `Deleted ${st.isDirectory() ? "directory" : "file"}: ${targetPath}` };

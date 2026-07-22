@@ -20,6 +20,7 @@ import { renderFooter, type FooterData } from "./components/footer";
 import { renderForgeMark, forgeMarkHeight, forgeMarkFrameCount, forgeBeat } from "./components/ascii-art";
 import { evolutionTrack, createStageProgress, type StageProgress, transitionMessage } from "./components/evolution";
 import type { TaskSubEvent } from "../agent/task-tool";
+import type { MonitorJobEvent } from "../agent/job-registry";
 import { supportsUnicode } from "./components/capability";
 import { centerBlock, padLineTo, boxBlock, BOX_ASCII, BOX_UNICODE } from "./components/layout";
 import { SECTION_GAP, sectionLabel, stackSections } from "./components/section";
@@ -274,19 +275,15 @@ export class LaunchTui {
   // Cumulative token usage for the live turn (engine onUsage event).
   private turnUsage: { inputTokens: number; outputTokens: number } | null = null;
   // True while at least one delegated subagent SLOT is in flight — drives the `(sub)`
-  // status marker. Derived from `subagentLiveSlots.size` (see below) rather than a
-  // plain boolean so a fan-out batch where ONE worker finishes early no longer
-  // clears the marker while its siblings are still visibly running.
+  // status marker. Derived from `subagentLiveSlots.size` rather than a plain boolean
+  // so one completed concurrent run cannot clear still-running siblings.
   private subagentActive = false;
-  // Latest nested subagent activity, PER CONCURRENT SLOT (fan-out `task` batches — both
-  // the executor and read-only roles — now run several workers at once; a single
-  // shared string clobbered on every event made concurrent subagents look sequential
-  // and, worse, cleared the whole `(sub)` marker the instant ANY one worker finished).
-  // Keyed by the event's fan-out `index` (1-based); a single/detached run with no
-  // index shares the fixed key 0. `subagentLiveOrder` tracks touch order so the
+  // Latest nested subagent activity, PER CONCURRENT SLOT. Detached runs use their
+  // stable registry id, fan-out workers use their 1-based index, and legacy
+  // synchronous runs share one slot. `subagentLiveOrder` tracks touch order so the
   // status row can show the MOST RECENTLY active slot plus a "+N more" count.
-  private readonly subagentLiveSlots = new Map<number, string>();
-  private readonly subagentLiveOrder: number[] = [];
+  private readonly subagentLiveSlots = new Map<string, string>();
+  private readonly subagentLiveOrder: string[] = [];
   // Bounded activity-history ring: one plain-text entry per ledger append, with a
   // turn-relative timestamp. Powers Ctrl+O's "recent activity" tail so the detail
   // view ALWAYS answers "what has been happening", even before the first reply.
@@ -1004,10 +1001,9 @@ export class LaunchTui {
     }
     // A delegated subagent's LATEST nested event beats the parent's static
     // "Task: <role> …" card title — a long task otherwise reads as a stall even
-    // though the subagent is actively reading/editing/running underneath. When a
-    // fan-out batch has MULTIPLE concurrent slots live, append a "+N more running"
-    // count so a parallel batch visibly reads as parallel instead of looking like
-    // one subagent whose label keeps randomly changing.
+    // though the subagent is actively reading/editing/running underneath. When
+    // multiple concurrent slots live, append a "+N more running" count so parallel
+    // work does not look like one subagent whose label keeps randomly changing.
     if (this.subagentActive && this.subagentLiveSlots.size > 0) {
       const mostRecent = this.subagentLiveOrder[this.subagentLiveOrder.length - 1];
       const line = (mostRecent !== undefined ? this.subagentLiveSlots.get(mostRecent) : undefined)
@@ -1063,6 +1059,7 @@ export class LaunchTui {
     const color = this.theme.color;
     const role = e.role || "subagent";
     const roleLabel = e.index && e.total ? `${role.toUpperCase()}[${e.index}/${e.total}]` : role.toUpperCase();
+    const detachedLabel = e.detached && e.id ? ` [${e.id}]` : "";
     const badge = categoryBadge("subagent", { color });
     const ok = this.unicode ? "✓" : "v";
     const bad = this.unicode ? "✗" : "x";
@@ -1070,10 +1067,14 @@ export class LaunchTui {
     const last = this.unicode ? "└─" : "`-";
     const detail = (e.detail ?? "").split("\n").find(l => l.trim().length > 0)?.trim().slice(0, 140) ?? "";
     const summary = e.summary ? ` — ${e.summary}` : "";
-    // Fan-out slot key: the event's 1-based `index` when present (concurrent batch
-    // worker), else the fixed key 0 (single-task/detached run — matches the prior
-    // single-string behavior for the non-batch case).
-    const slot = e.index ?? 0;
+    // Detached runs must retain their registry identity so concurrent detached events
+    // cannot collide. Fan-out indices remain separate, while legacy synchronous/eval
+    // events preserve their single shared slot.
+    const slot = e.detached && e.id
+      ? `detached:${e.id}`
+      : e.index !== undefined
+        ? `fanout:${e.index}`
+        : "single";
     const touchSlot = (line: string) => {
       this.subagentLiveSlots.set(slot, line);
       const at = this.subagentLiveOrder.indexOf(slot);
@@ -1086,38 +1087,55 @@ export class LaunchTui {
     // activity readable in scrollback and visually separate from parent tools.
     switch (e.kind) {
       case "start":
-        touchSlot(`${roleLabel} ${this.unicode ? "▸" : ">"} ${detail || "starting"}`);
-        this.appendLedger(`${badge} ${this.unicode ? "▸" : ">"} ${roleLabel} · ${detail}\n`, "subagent");
+        touchSlot(`${roleLabel}${detachedLabel} ${this.unicode ? "▸" : ">"} ${detail || "starting"}`);
+        this.appendLedger(`${badge} ${this.unicode ? "▸" : ">"} ${roleLabel}${detachedLabel} · ${detail}\n`, "subagent");
         break;
       case "step":
-        touchSlot(`${roleLabel} ${this.unicode ? "·" : "-"} ${detail || "working"}`);
-        this.appendLedger(`  ${badge} ${branch} ${roleLabel} · ${detail || "working"}\n`, "subagent");
+        touchSlot(`${roleLabel}${detachedLabel} ${this.unicode ? "·" : "-"} ${detail || "working"}`);
+        this.appendLedger(`  ${badge} ${branch} ${roleLabel}${detachedLabel} · ${detail || "working"}\n`, "subagent");
         break;
       case "tool":
-        touchSlot(`${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}`);
-        this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`, "subagent");
+        touchSlot(`${roleLabel}${detachedLabel} ${e.success === false ? bad : ok} ${detail || "tool"}`);
+        this.appendLedger(`  ${badge} ${branch} ${roleLabel}${detachedLabel} ${e.success === false ? bad : ok} ${detail || "tool"}${summary}\n`, "subagent");
         break;
       case "error":
-        touchSlot(`${roleLabel} ${bad} ${detail || "error"}`);
-        this.appendLedger(`  ${badge} ${branch} ${roleLabel} ${bad} ${detail || "error"}\n`, "subagent");
+        touchSlot(`${roleLabel}${detachedLabel} ${bad} ${detail || "error"}`);
+        this.appendLedger(`  ${badge} ${branch} ${roleLabel}${detachedLabel} ${bad} ${detail || "error"}\n`, "subagent");
         break;
       case "thinking":
         // Live-only preview (mirrors the main turn's dimmed "Thinking" block) — never
         // persisted to the ledger; see TaskSubEvent.kind's doc comment for why.
-        touchSlot(`${roleLabel} ${this.unicode ? "…" : "..."} ${detail || "thinking"}`);
+        touchSlot(`${roleLabel}${detachedLabel} ${this.unicode ? "…" : "..."} ${detail || "thinking"}`);
         break;
       case "done":
-        // Clear ONLY this slot — a fan-out batch where one worker finishes early
-        // must keep showing its still-running siblings, not drop the `(sub)`
-        // marker for the whole batch (the bug this per-slot map fixes).
+        // Clear ONLY this slot — completing one concurrent run must leave its
+        // still-running siblings visible and keep the `(sub)` marker active.
         this.subagentLiveSlots.delete(slot);
         {
           const at = this.subagentLiveOrder.indexOf(slot);
           if (at !== -1) this.subagentLiveOrder.splice(at, 1);
         }
         this.subagentActive = this.subagentLiveSlots.size > 0;
-        this.appendLedger(`${badge} ${last} ${roleLabel} done${e.tokens ? ` (${e.tokens.input + e.tokens.output} tok)` : ""}${e.success === false ? " (incomplete)" : ""}: ${detail}\n`, "subagent");
+        this.appendLedger(`${badge} ${last} ${roleLabel}${detachedLabel} done${e.tokens ? ` (${e.tokens.input + e.tokens.output} tok)` : ""}${e.success === false ? " (incomplete)" : ""}: ${detail}\n`, "subagent");
         break;
+    }
+    this.draw();
+  }
+  /** Render turn-scoped monitor lifecycle/output separately from subagent activity. */
+  onMonitorEvent(e: MonitorJobEvent): void {
+    if (this.finished) return;
+    const badge = categoryBadge("progress", { color: this.theme.color });
+    const label = sanitizeForFrame(
+      `${e.record.id} · ${e.record.category} · ${e.record.description}`,
+    ).replace(/\s+/g, " ").trim().slice(0, 180);
+    const branch = this.unicode ? "│" : "|";
+    if (e.type === "start") {
+      this.appendLedger(`${badge} ${this.unicode ? "◉" : "o"} Monitor ${label} started\n`, "monitor");
+    } else if (e.type === "line") {
+      const line = sanitizeForFrame(e.line).split("\n").find(row => row.trim())?.trim().slice(0, 180) ?? "";
+      this.appendLedger(`${badge} ${branch} Monitor ${label}${line ? ` — ${line}` : ""}\n`, "monitor");
+    } else {
+      this.appendLedger(`${badge} ${this.unicode ? "└" : "`"} Monitor ${label} done\n`, "monitor");
     }
     this.draw();
   }
@@ -1484,13 +1502,12 @@ export class LaunchTui {
    *  block shows only the most-recent lines, capped at ~30% of the screen height (a
    *  ceiling guards a tall terminal), so it grows with the stream and shrinks with the
    *  viewport. Returns [] when there is nothing to show. */
-  /** gjc-parity multi-line parallel-subagent panel: when a fan-out `task` batch has
-   *  MORE THAN ONE concurrent slot live, render one status line PER active slot
+  /** gjc-parity multi-line parallel-subagent panel: when MORE THAN ONE concurrent
+   *  fan-out or detached slot is live, render one status line PER active slot
    *  (most-recently-touched first) instead of collapsing everything into a single
-   *  "+N more running" summary line (see `currentActivity()`). A single/detached
-   *  subagent still uses the plain status-line path — this panel exists specifically
-   *  to make a truly PARALLEL batch visibly read as parallel: every worker's latest
-   *  activity is on screen at once, capped so a large fan-out can't blow the frame. */
+   *  "+N more running" summary line (see `currentActivity()`). A single subagent
+   *  still uses the plain status-line path; this panel makes concurrent work visibly
+   *  parallel while capping rows so a large batch cannot blow the frame. */
   private static readonly SUBAGENT_PANEL_MAX_ROWS = 6;
   private renderSubagentPanel(cols: number): string[] {
     if (this.subagentLiveSlots.size <= 1) return [];
@@ -1689,9 +1706,8 @@ export class LaunchTui {
     if (this.runningTool && this.liveToolOutput.trim()) {
       tail.push(...this.renderLiveBlock("Output", this.liveToolOutput, cols, rows, 8));
     }
-    // Parallel subagent panel (gjc parity): a fan-out `task` batch with more than one
-    // concurrent slot live gets its OWN multi-line block — one row per active worker —
-    // so a genuinely parallel batch reads as parallel instead of a single rotating line.
+    // Parallel subagent panel: more than one fan-out or detached slot gets its own
+    // multi-line block so genuinely parallel work does not read as one rotating line.
     if (this.subagentActive) {
       tail.push(...this.renderSubagentPanel(cols));
     }

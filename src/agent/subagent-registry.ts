@@ -11,8 +11,8 @@
  * can push a message into a running detached subagent's inbox; the subagent's own
  * agent loop drains it between steps, same mechanism as ordinary task steering.
  *
- * Lifecycle is bounded to the turn that created the registry — `cancelAll()` on
- * turn teardown guarantees no background promise leaks into the next turn.
+ * Lifecycle is bounded to the originating turn: `cancelAll()` requests cooperative
+ * abort on teardown. A filesystem operation already committing cannot be rolled back.
  */
 import type { ToolResult } from "./tools";
 

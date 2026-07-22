@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import { type AgentLoopEvents } from "../../agent/engine";
 import { type TaskSubEvent } from "../../agent/task-tool";
+import { type MonitorJobEvent } from "../../agent/job-registry";
 import { categoryBadge } from "../../tui/components/category-index";
 import { summarizeForgeInvocation } from "../../tui/components/forge";
 import { formatDuration, formatUsage } from "../../tui/components/duration";
@@ -44,7 +45,8 @@ function streamResultSuffix(tool: string, ok: boolean, output: string | undefine
 
 export function formatTaskSubEvent(e: TaskSubEvent): string {
   const role = e.role || "subagent";
-  const roleLabel = e.index && e.total ? `${role.toUpperCase()}[${e.index}/${e.total}]` : role.toUpperCase();
+  const detachedLabel = e.detached && e.id ? ` [${e.id}]` : "";
+  const roleLabel = `${e.index && e.total ? `${role.toUpperCase()}[${e.index}/${e.total}]` : role.toUpperCase()}${detachedLabel}`;
   const tokTag = e.tokens ? ` (${e.tokens.input + e.tokens.output} tok)` : "";
   const detail = firstOutputLine(e.detail);
   const summary = e.summary ? ` — ${e.summary}` : "";
@@ -65,6 +67,19 @@ export function formatTaskSubEvent(e: TaskSubEvent): string {
 export function logTaskSubEvent(e: TaskSubEvent, log: (line: string) => void = (s: string) => console.log(s)): void {
   const line = formatTaskSubEvent(e);
   if (line) log(line);
+}
+export function formatMonitorJobEvent(e: MonitorJobEvent): string {
+  const label = `${e.record.id} · ${e.record.category} · ${e.record.description}`;
+  if (e.type === "start") return `${categoryBadge("progress")} ${chalk.cyan("monitor ▸")} ${label}`.slice(0, 240);
+  if (e.type === "line") {
+    const line = firstOutputLine(e.line);
+    return `${categoryBadge("progress")} ${chalk.cyan("monitor │")} ${label}${line ? ` — ${line}` : ""}`.slice(0, 240);
+  }
+  return `${categoryBadge("progress")} ${chalk.cyan("monitor └")} ${label} ${chalk.dim("done")}`.slice(0, 240);
+}
+
+export function logMonitorJobEvent(e: MonitorJobEvent, log: (line: string) => void = (s: string) => console.log(s)): void {
+  log(formatMonitorJobEvent(e));
 }
 
 export function createStreamEvents(

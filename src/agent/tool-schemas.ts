@@ -116,6 +116,22 @@ const SCHEMAS: Record<string, NativeToolSchema> = {
       required: ["calculations"],
     },
   },
+  monitor: {
+    name: "monitor",
+    description: "Start a bounded background stdout monitor. Non-persistent monitors stop after their first output line; control the returned job id with the job tool.",
+    parameters: {
+      type: "object",
+      properties: {
+        command: STRING,
+        kind: { type: "string", enum: ["log", "poll", "watch", "other"] },
+        description: STRING,
+        timeout: { type: "number" },
+        persistent: { type: "boolean" },
+        cwd: STRING,
+      },
+      required: ["command", "kind", "description"],
+    },
+  },
   done: {
     name: "done",
     description: "Call when the task is fully implemented AND verified. The reason is shown to the user as your message.",

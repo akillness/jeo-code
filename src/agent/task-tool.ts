@@ -52,6 +52,10 @@ export type SubagentTaskConfig = RoutingConfig & Pick<Config, "subagents" | "thi
 /** Lifecycle event emitted while a delegated subagent runs. */
 export interface TaskSubEvent {
   role: string;
+  /** Stable registry id for a detached run; absent for synchronous work. */
+  id?: string;
+  /** True when this event belongs to a detached registry run. */
+  detached?: boolean;
   /** `"thinking"` streams the subagent's live reasoning/thought text (native
    *  extended-thinking models) — a transient live-preview beat, not persisted to
    *  the ledger (mirrors the main turn's dimmed "Thinking" block, scoped per
@@ -108,6 +112,9 @@ export interface TaskToolOptions {
  *  should either run sequentially (separate `task` calls) or coordinate — jeo has
  *  no in-batch peer channel yet, so overlapping-scope tasks MUST be sequential. */
 export const MAX_FANOUT = 4;
+/** Task-tool policy: cap independently launched detached runs at four per turn.
+ * The registry remains reusable by other execution paths with their own limits. */
+const MAX_ACTIVE_DETACHED_SUBAGENTS = 4;
 
 /** Small bounded reroute budget for a SUBAGENT's own 429 (distinct from
  *  launch.ts's `ROUTE_FALLBACK_MAX_ATTEMPTS`, default 3): a subagent is already
@@ -182,7 +189,7 @@ function createSteerHub(drain?: () => string[]) {
  *  across the board, not just for the JSON-in-prose fallback providers. */
 export function taskToolProtocolLine(config?: Pick<Config, "subagents">): string {
   return (
-    `task   single: {role?, task, context?}  —  fan-out: {role?, tasks:["task 1", "task 2", ...]} ` +
+    `task   single: {role?, task, context?, detached?:true}  —  fan-out: {role?, tasks:["task 1", "task 2", ...]} (fan-out cannot be detached) ` +
     `— delegate to a subagent (role: ${subagentRoleIds(config).join("|")}; executor can edit, planner/architect/critic are read-only). ` +
     `'tasks' MUST be a real JSON array (of strings, or {task, context?} objects) — NEVER a JSON-stringified array, NEVER a single task string. ` +
     `All items in 'tasks' run concurrently (bounded); scope each executor task to disjoint files (no shared-file coordination channel between concurrent tasks — use sequential task calls if scopes overlap). Integrate the findings yourself.`
@@ -234,6 +241,8 @@ export interface RunSubagentOptions {
   steer?: () => string[];
   /** 1-based position within a fan-out/parallel batch, for event tagging. */
   slot?: { index: number; total: number };
+  /** Stable registry id for a detached run's lifecycle events. */
+  detachedId?: string;
   /** Pre-loaded project context to avoid re-scanning AGENTS.md per batch item. */
   projectContext?: ProjectContextFile[];
   /** BATCH-scoped (not per-call) credential scopes already known exhausted this
@@ -301,11 +310,14 @@ export async function runSubagentOnce(
   cwd: string,
   opts: RunSubagentOptions,
 ): Promise<SubagentRunResult> {
-  const { steer, slot, projectContext: preloadedContext, signal } = opts;
-  // Tag every live event with its fan-out slot so a parent monitor can tell
-  // task 1 from task 3 when several same-role subagents stream concurrently.
+  const { steer, slot, detachedId, projectContext: preloadedContext, signal } = opts;
+  // Tag live events with their fan-out slot and/or detached registry identity.
   const emit = (ev: TaskSubEvent) =>
-    opts.onEvent?.(slot ? { ...ev, index: slot.index, total: slot.total } : ev);
+    opts.onEvent?.({
+      ...ev,
+      ...(slot ? { index: slot.index, total: slot.total } : {}),
+      ...(detachedId ? { id: detachedId, detached: true } : {}),
+    });
   const initialModel = opts.modelOverride || resolveSubagentModel(role.id, opts.config);
   const maxSteps = resolveSubagentMaxSteps(role.id, opts.config);
   // gjc parity: a role may pin its own reasoning budget; absent = inherit the
@@ -537,6 +549,8 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     extra: {
       steer?: () => string[];
       slot?: { index: number; total: number };
+      /** Stable registry id for detached-run lifecycle events. */
+      detachedId?: string;
       projectContext?: ProjectContextFile[];
       /** Overrides opts.signal — a detached run uses its own registry signal so it
        *  is cancellable independently of the parent turn. */
@@ -554,6 +568,7 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       onEvent: opts.onEvent,
       steer: extra.steer,
       slot: extra.slot,
+      detachedId: extra.detachedId,
       projectContext: extra.projectContext,
       excludedCredentialScopes: extra.excludedCredentialScopes,
       modelOverride: extra.modelOverride,
@@ -567,6 +582,13 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     }
     const ctx = (c: unknown) => (typeof c === "string" && c.trim() ? `\n\nContext:\n${c.trim()}` : "");
 
+    // Native/function-call adapters normally preserve boolean values, but the prose-only
+    // protocol can still yield the exact string "true" from otherwise valid model JSON.
+    // This is an unambiguous serialization mistake; treating it as synchronous defeats
+    // detached dispatch while the parent waits for the very task it intended to background.
+    const detached = args.detached === true
+      || (typeof args.detached === "string" && args.detached.trim().toLowerCase() === "true");
+
     // Fan-out form: `tasks: [ "assignment" | {task|assignment|prompt, context?} ]`.
     // Live-reproduced (v0.8.42, multiple real models across two different providers,
     // including a native-tool-calling-capable one): even with an explicit, example-driven
@@ -578,6 +600,13 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
       ? (() => { try { const p = JSON.parse(args.tasks as string); return Array.isArray(p) ? p : args.tasks; } catch { return args.tasks; } })()
       : args.tasks;
     if (Array.isArray(tasksArg)) {
+      if (detached) {
+        return {
+          success: false,
+          output: "",
+          error: "Detached task fan-out is not supported. Launch each independent task with detached:true so each has its own lifecycle id and control handle.",
+        };
+      }
       const items = (tasksArg as unknown[])
         .map(entry => {
           if (typeof entry === "string") return { task: entry.trim(), context: "" };
@@ -683,9 +712,20 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
     // parent can keep working, then list/inspect/await/cancel via the `subagent`
     // tool. Live peer messaging (steer/irc) DOES reach a detached run — it drains
     // its own registry inbox (registry.steerDrainFor(id)) between its own steps.
-    if (args.detached === true && opts.registry) {
+    if (detached && opts.registry) {
+      if (opts.registry.running().length >= MAX_ACTIVE_DETACHED_SUBAGENTS) {
+        return {
+          success: false,
+          output: "",
+          error: `Detached subagent limit reached (${MAX_ACTIVE_DETACHED_SUBAGENTS} running). Await or cancel a running subagent before launching another.`,
+        };
+      }
       const rec = opts.registry.launch(role.id, taskText, (signal, id) =>
-        runOne(role, taskText, ctx(args.context), cwd, { signal, steer: opts.registry!.steerDrainFor(id) }),
+        runOne(role, taskText, ctx(args.context), cwd, {
+          signal,
+          steer: opts.registry!.steerDrainFor(id),
+          detachedId: id,
+        }),
       );
       // Remote subagent visibility/control over Telegram (gjc daemon parity, see
       // `src/agent/notify/`): best-effort, no-op unless `notifications.enabled`.

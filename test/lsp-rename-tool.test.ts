@@ -71,3 +71,20 @@ test("lsp_rename refuses to rename at a non-renameable position", async () => {
   expect(res.success).toBe(false);
   expect(res.error).toContain("Cannot rename");
 });
+test("lsp_rename does not commit a rename after its signal is aborted", async () => {
+  const cwd = await fixture();
+  const controller = new AbortController();
+  controller.abort();
+
+  const result = await createLspRenameTool()(
+    { file: "a.ts", line: 1, symbol: "greet", new_name: "salute" },
+    cwd,
+    undefined,
+    controller.signal,
+  );
+
+  expect(result.success).toBe(false);
+  expect(result.error).toContain("Operation cancelled");
+  expect(await fs.readFile(path.join(cwd, "a.ts"), "utf-8")).toContain("function greet(");
+  expect(await fs.readFile(path.join(cwd, "b.ts"), "utf-8")).toContain("greet");
+});

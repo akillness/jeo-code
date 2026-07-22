@@ -19,7 +19,8 @@ import { parseInThreadConfigCommand } from "../agent/notify/config-commands";
 
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { createJobTool, JOB_TOOL_PROTOCOL_LINE } from "../agent/job-tool";
-import { JobRegistry } from "../agent/job-registry";
+import { JobRegistry, type MonitorJobEvent } from "../agent/job-registry";
+import { createMonitorTool, MONITOR_TOOL_PROTOCOL_LINE } from "../agent/monitor-tool";
 import { createIrcTool, IRC_TOOL_PROTOCOL_LINE } from "../agent/irc-tool";
 import { createGoalTool, GOAL_TOOL_PROTOCOL_LINE } from "../agent/goal-tool";
 import { createApproveTool, APPROVE_TOOL_PROTOCOL_LINE } from "../agent/approve-tool";
@@ -185,6 +186,7 @@ import {
   gatedStdout,
   formatTaskSubEvent,
   logTaskSubEvent,
+  formatMonitorJobEvent,
   createStreamEvents,
   shouldUseOneShotTui,
 } from "./launch/stream";
@@ -560,7 +562,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // pi-style: load project context (JEO.md / AGENTS.md / .jeo/context.md / CLAUDE.md) into the prompt.
   const contextFiles = await loadProjectContext(cwd);
 
-  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "eval", "todo", "subagent", "job", "irc", "goal", "approve", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug", "browser"]);
+  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "eval", "todo", "subagent", "job", "monitor", "irc", "goal", "approve", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug", "browser"]);
   let allowedTools = new Set(KNOWN_TOOLS);
 
   if (flags.noTools) {
@@ -633,6 +635,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     (allowedTools.has("subagent") ? "\n\nDetached subagents: " + SUBAGENT_TOOL_PROTOCOL_LINE +
     " Launch background work with task {\"detached\": true, \"role\": <role>, \"task\": <assignment>}; it returns a subagent id immediately so you can keep working and collect the result later." : "") +
     (allowedTools.has("job") ? "\n\nBackground jobs: " + JOB_TOOL_PROTOCOL_LINE : "") +
+    (allowedTools.has("monitor") ? "\n\nBackground monitors: " + MONITOR_TOOL_PROTOCOL_LINE : "") +
     (allowedTools.has("irc") ? "\n\nPeer messaging: " + IRC_TOOL_PROTOCOL_LINE : "") +
     (allowedTools.has("goal") ? "\n\nGoal tracking: " + GOAL_TOOL_PROTOCOL_LINE : "") +
     (allowedTools.has("approve") ? "\n\nPlan approval: " + APPROVE_TOOL_PROTOCOL_LINE : "") +
@@ -1422,7 +1425,32 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       // #9: per-turn registry for DETACHED subagents (task{detached:true}); the
       // `subagent` tool controls them and cancelAll() in finally prevents orphans.
       const subagentRegistry = new SubagentRegistry();
+      // TUI callbacks are scoped to this registry. cancelAll() may trigger a detached
+      // run's final event after the turn is complete; do not let it paint a freshly
+      // reset later TUI. Non-TUI streams retain direct event logging.
+      let acceptingTuiSubagentEvents = true;
+      const onSubagentEvent = useTui
+        ? (e: TaskSubEvent) => {
+            if (acceptingTuiSubagentEvents) tui?.onSubagentEvent(e);
+          }
+        : (e: TaskSubEvent) => logTaskSubEvent(e);
       const jobRegistry = new JobRegistry();
+      // Monitor output stays bounded and turn-scoped. It deliberately feeds the
+      // engine's observational inbox rather than the steering inbox.
+      const monitorInbox: string[] = [];
+      const MONITOR_INBOX_CAP = 32;
+      let acceptingMonitorEvents = true;
+      const onMonitorEvent = (e: MonitorJobEvent) => {
+        if (!acceptingMonitorEvents) return;
+        if (useTui) tui?.onMonitorEvent(e);
+        else console.log(formatMonitorJobEvent(e));
+        if (e.type !== "line" || monitorInbox.length >= MONITOR_INBOX_CAP) return;
+        const description = e.record.description.replace(/\s+/g, " ").trim().slice(0, 240);
+        const line = e.line.slice(0, 2_000);
+        monitorInbox.push(`[monitor ${e.record.id} · ${e.record.category} · ${description}]\n${line}`);
+      };
+      const unsubscribeMonitor = jobRegistry.subscribeMonitor(onMonitorEvent);
+      const drainMonitor = () => monitorInbox.splice(0, monitorInbox.length);
       sessionNotifyEndpoint?.attachRegistry(subagentRegistry);
       currentTurnSteer = { push: line => steerInbox.push(line), flushCard: line => tui?.flushSteerCard(line) };
       if (sessionNotifyEndpoint && !notifyRedact) {
@@ -1495,21 +1523,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             steer: drainSteer,
             registry: subagentRegistry,
             sessionEndpoint: sessionNotifyEndpoint,
-            onEvent: useTui
-              ? (e => tui?.onSubagentEvent(e))
-              : (e => logTaskSubEvent(e)),
+            onEvent: onSubagentEvent,
           }),
           eval: createEvalTool({
             config: { ...turnConfig, defaultModel: activeModel },
             signal: ac.signal,
             steer: drainSteer,
-            onEvent: useTui
-              ? (e => tui?.onSubagentEvent(e))
-              : (e => logTaskSubEvent(e)),
+            onEvent: onSubagentEvent,
           }),
           todo: createTodoTool({ onChange: items => { turnTodos = items; tui?.setTodos(items); } }),
           subagent: createSubagentTool(subagentRegistry),
           job: createJobTool(jobRegistry),
+          monitor: createMonitorTool(jobRegistry),
           irc: createIrcTool(subagentRegistry),
           goal: createGoalTool(),
           approve: createApproveTool(),
@@ -1615,6 +1640,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           signal: ac.signal,
           sessionKey: cacheKey,
           steer: drainSteer,
+          monitor: drainMonitor,
           rateLimitFallbackAvailable,
           safetyFallbackAvailable,
           events: wrapEvents(withStepPersistence({ ...withToolDetailCapture(tui ? tui.events() : streamEvents), onBeforeDone }, persistTurnTail), opik),
@@ -1748,6 +1774,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             signal: ac.signal,
             sessionKey: turnSessionKey,
             steer: drainSteer,
+            monitor: drainMonitor,
             // Deliberately NOT wiring rateLimitFallbackAvailable here: this repair
             // retry has no reroute loop around it (unlike runLoopWithModel's
             // routeFallbackAttempt loop) — bailing the retry ladder early on a 429
@@ -1772,11 +1799,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         await opik.endTurn({ done: result.done, steps: result.steps, output: result.doneReason });
       } finally {
         harness.dispose();
+        acceptingTuiSubagentEvents = false;
+        acceptingMonitorEvents = false;
         subagentRegistry.cancelAll(); // #9: no detached run leaks past the turn
         sessionNotifyEndpoint?.detachRegistry(); // this turn's registry is gone — subagent frames stop applying to it
         currentTurnSteer = undefined; // a remote message after this point queues instead of steering a dead turn
         await stopSessionNotifyEndpoint(subagentRegistry); // tear down the FALLBACK lazy endpoint, if one was started (no-op when sessionNotifyEndpoint owns the registry)
         jobRegistry.cancelAll(); // background jobs are turn-scoped too — no orphaned processes
+        unsubscribeMonitor();
 
         // Steering typed but never drained (e.g. entered just after the final step)
         // must not be lost — fold it into the next prompt draft so it runs next.

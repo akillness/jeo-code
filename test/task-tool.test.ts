@@ -26,6 +26,10 @@ test("taskToolProtocolLine: spells out single vs fan-out shapes with a concrete 
   expect(line).toContain("NEVER a JSON-stringified array");
   expect(line).toContain("NEVER a single task string");
 });
+test("taskToolProtocolLine: documents that detached execution is single-task only", async () => {
+  const { taskToolProtocolLine } = await import("../src/agent/task-tool");
+  expect(taskToolProtocolLine()).toContain("fan-out cannot be detached");
+});
 
 test("createTaskTool: executor delegates, runs a tool, then completes on done", async () => {
   let turn = 0;

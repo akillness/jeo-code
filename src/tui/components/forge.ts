@@ -582,7 +582,13 @@ export function formatForgeBox(summary: ForgeSummary, opts: ForgeBoxOptions = {}
   const highlightLang = opts.color !== false && summary.language && CODE_LANGS.has(summary.language) ? summary.language : undefined;
   const contentRow = (line: string): string => {
     const lit = highlightLang ? lightHighlightLine(line, highlightLang) : line;
-    const padded = padLineTo(` ${lit}`, inner, "left");
+    // Defense-in-depth truncation: ordinary content already arrives pre-wrapped to
+    // `gutterWidth` (inner - 1) below, but the clip-hint rows (line ~605/609) append
+    // the "N more lines ⟦Ctrl+O for more⟧" marker AFTER that wrap step, so on a narrow
+    // box the marker text alone can exceed `inner` and poke the row past the right
+    // border (the "screen breaks on resize" corruption). Cap every row here so no
+    // content path — wrapped or not — can widen the box past its declared width.
+    const padded = padLineTo(` ${truncateToWidth(lit, Math.max(1, inner - 1))}`, inner, "left");
     const body = diffRows && line.startsWith("+")
       ? diffRows.add(padded)
       : diffRows && line.startsWith("-")

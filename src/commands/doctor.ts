@@ -6,6 +6,10 @@ import { effectiveCredentialForProvider } from "../ai/model-manager";
 import { resolveModelId } from "../ai/model-registry";
 import { meter } from "../tui/components/meter";
 import { size } from "../tui/terminal";
+import { formatForgeBox, scaleForgeWidth } from "../tui/components/forge";
+import { renderMarkdownTables } from "../tui/components/markdown-table";
+import { supportsUnicode } from "../tui/components/capability";
+import { visibleWidth, truncateToWidth } from "../tui/components/width";
 import chalk from "chalk";
 import { extractChatgptAccountId, CODEX_RESPONSES_URL } from "../ai/providers/openai-responses";
 import { resolveTierModel, tierModelPool, cheapestCredentialed } from "../agent/prompt-router";
@@ -153,15 +157,65 @@ function colorStatus(status: ProbeResult["status"], label: string): string {
   return chalk.red(label);
 }
 
-function formatRow(provider: string, credKind: string, result: ProbeResult): string {
-  const status =
-    result.status === "ok" ? "  OK  " :
-    result.status === "skipped" ? " SKIP " :
-    " FAIL ";
-  const latency = result.latencyMs !== undefined ? `${result.latencyMs}ms` : "—";
-  // Visual latency bar (relative to a 2s baseline) for OK probes.
-  const bar = result.status === "ok" && result.latencyMs !== undefined ? `  ${meter(result.latencyMs, 2000, 12)}` : "";
-  return `  ${provider.padEnd(10)} ${credKind.padEnd(16)} [${colorStatus(result.status, status)}] ${latency.padEnd(7)} ${result.detail}${bar}`;
+/**
+ * Build the "Provider connectivity" table as a box-drawn GFM table (jeo's forge/
+ * markdown-table renderer — the same component that boxes tables in assistant
+ * output) sized to the LIVE terminal width, so it never hard-wraps on a narrow
+ * terminal. The old layout used a fixed 75-col separator and fixed `padEnd`
+ * columns that broke (wrapped mid-row) on anything narrower than ~80 cols and
+ * never shrank OR grew with the terminal. Only the free-text Detail column is
+ * width-capped; the other columns size naturally off their own short, fixed-
+ * shape content.
+ */
+function providerTableLines(
+  probes: { name: string; credKind: string; result: ProbeResult }[],
+  cols: number,
+  unicode: boolean,
+): string[] {
+  const escape = (s: string) => s.replace(/\|/g, "\\|");
+  const statusLabel = (s: ProbeResult["status"]) => (s === "ok" ? "OK" : s === "skipped" ? "SKIP" : "FAIL");
+  const header = ["Provider", "Credential", "Status", "Latency", "Detail"];
+  const rows = probes.map(p => {
+    const latency = p.result.latencyMs !== undefined ? `${p.result.latencyMs}ms` : "—";
+    // Visual latency bar (relative to a 2s baseline) for OK probes.
+    const bar = p.result.status === "ok" && p.result.latencyMs !== undefined ? ` ${meter(p.result.latencyMs, 2000, 12)}` : "";
+    return [
+      escape(p.name),
+      escape(p.credKind),
+      colorStatus(p.result.status, statusLabel(p.result.status)),
+      latency,
+      escape(p.result.detail) + bar,
+    ];
+  });
+  // 5 columns → fixed box-drawing overhead (borders + 1-space padding on each side)
+  // is `3*5 + 1 = 16` display columns; whatever's left over after the other four
+  // columns' natural (content-driven) widths goes to Detail.
+  const colWidth = (i: number) => Math.max(visibleWidth(header[i]!), ...rows.map(r => visibleWidth(r[i]!)));
+  const overhead = 16;
+  const fixedWidth = colWidth(0) + colWidth(1) + colWidth(2) + colWidth(3);
+  const minDetailWidth = 8;
+  // Provider/Credential/Status/Latency are fixed-shape and can't shrink below their
+  // own content width — a grid table can't fit under `overhead + fixedWidth +
+  // minDetailWidth` cols no matter how tight Detail is capped. Below that floor, fall
+  // back to a stacked one-block-per-provider list (each line truncated to `cols`)
+  // instead of drawing a table that overflows and tears the terminal.
+  if (cols < overhead + fixedWidth + minDetailWidth) {
+    const out: string[] = [];
+    for (const p of probes) {
+      const latency = p.result.latencyMs !== undefined ? `${p.result.latencyMs}ms` : "—";
+      const head = `${p.name} · ${p.credKind} · [${colorStatus(p.result.status, statusLabel(p.result.status))}] ${latency}`;
+      out.push(truncateToWidth(head, cols));
+      out.push(truncateToWidth(`  ${p.result.detail}`, cols));
+    }
+    return out;
+  }
+  const detailBudget = Math.max(minDetailWidth, cols - overhead - fixedWidth);
+  const md = [
+    `| ${header.join(" | ")} |`,
+    `| ${header.map(() => "---").join(" | ")} |`,
+    ...rows.map(r => `| ${r.join(" | ")} |`),
+  ].join("\n");
+  return renderMarkdownTables(md, { unicode, maxColWidth: detailBudget }).split("\n");
 }
 
 export async function runDoctorCommand(args: string[] = []): Promise<void> {
@@ -338,27 +392,45 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   }
 
   // --- Human output ---
-  console.log("");
-  console.log(`=== ${APP_NAME} doctor ===`);
-  console.log("");
-  console.log(`Bun runtime:    v${Bun.version}`);
-  console.log(`Default model:  ${config.defaultModel}${resolvedModel !== config.defaultModel ? ` → ${resolvedModel}` : ""} → ${defaultProvider}`);
-  console.log(`Config:         ${process.env.HOME}/.jeo/config.json`);
-  if (config.openaiBaseUrl) console.log(`OpenAI base:    ${config.openaiBaseUrl}`);
-  console.log(`Ollama base:    ${ollamaBase}`);
-
   const termSize = size();
+  // LIVE terminal width — every panel below is sized off this, not a fixed guess, so
+  // the report reflows (never hard-wraps/tears) whatever the terminal's current size is.
+  const cols = Math.max(20, termSize.cols);
+  const unicode = supportsUnicode();
+
   const tuiVerdict = termSize.cols < 40 
     ? `${termSize.cols}x${termSize.rows} ${chalk.red("(too narrow for ASCII art)")}` 
     : `${termSize.cols}x${termSize.rows} ${chalk.green("(ASCII art enabled)")}`;
-  console.log(`Terminal size:  ${tuiVerdict}`);
-  console.log(`Color support:  Level ${chalk.level} (${chalk.level > 0 ? chalk.green("enabled") : "disabled"})`);
+  const headerLines = [
+    `Bun runtime:    v${Bun.version}`,
+    `Default model:  ${config.defaultModel}${resolvedModel !== config.defaultModel ? ` → ${resolvedModel}` : ""} → ${defaultProvider}`,
+    `Config:         ${process.env.HOME}/.jeo/config.json`,
+  ];
+  if (config.openaiBaseUrl) headerLines.push(`OpenAI base:    ${config.openaiBaseUrl}`);
+  headerLines.push(`Ollama base:    ${ollamaBase}`);
+  headerLines.push(`Terminal size:  ${tuiVerdict}`);
+  headerLines.push(`Color support:  Level ${chalk.level} (${chalk.level > 0 ? chalk.green("enabled") : "disabled"})`);
+
+  console.log("");
+  // gjc/forge-style bordered card, width-scaled off the live terminal (same
+  // formatForgeBox + scaleForgeWidth the interactive TUI's tool cards use) so the
+  // panel reflows cleanly on any width instead of raw unbounded console.log lines.
+  // scaleForgeWidth floors at 24 (its own minimum readable card width, shared by
+  // every forge card app-wide) — below `24 + 2 border cols`, the box itself would
+  // be wider than the terminal, so fall back to plain unboxed lines instead.
+  if (cols >= 26) {
+    for (const line of formatForgeBox(
+      { title: `${APP_NAME} doctor`, lines: headerLines },
+      { width: scaleForgeWidth(cols - 2), unicode, color: chalk.level > 0 },
+    )) console.log(line);
+  } else {
+    console.log(`=== ${APP_NAME} doctor ===`);
+    for (const line of headerLines) console.log(truncateToWidth(line, cols));
+  }
   console.log("");
 
   console.log("Provider connectivity:");
-  console.log(`  ${"Provider".padEnd(10)} ${"Credential".padEnd(16)} ${"Status".padEnd(8)} ${"Latency".padEnd(7)} Detail`);
-  console.log(`  ${"-".repeat(75)}`);
-  for (const p of probes) console.log(formatRow(p.name, p.credKind, p.result));
+  for (const line of providerTableLines(probes, cols, unicode)) console.log(line);
 
   console.log("");
   const oauthLines = oauthHealth.map(o => {

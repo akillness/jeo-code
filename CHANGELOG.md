@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
+## [0.9.1] - 2026-07-24
+_User request (paraphrased, Korean): "make the TUI resize responsively like gjc's TUI when terminal width/height changes, without breaking the layout — also borrow forge's layout and table components." Investigated the existing resize infrastructure first (already extensive: throttled live-frame resize repaint, a poll-based SIGWINCH safety net, resize-aware interactive pickers) before assuming a gap. Found one concrete un-responsive panel — `jeo doctor`'s Provider connectivity table — and, while rebuilding it on forge's own box-drawn table renderer, also found and fixed a real, previously-unknown overflow bug in `formatForgeBox` itself, shared by every tool card across the whole live TUI._
+
+### Fixed
+- **`jeo doctor`'s Provider connectivity table no longer breaks on a narrow terminal** (`src/commands/doctor.ts`) — replaced the fixed 75-column separator and fixed-width `padEnd` columns (never resized, hard-wrapped under ~80 cols) with jeo's own forge/markdown-table box-drawn table (`renderMarkdownTables`), sized off the LIVE terminal width every run. The free-text Detail column absorbs whatever budget the other short, fixed-shape columns leave, and the grid falls back to a stacked per-provider list when even that can't fit. The header block (Bun runtime/model/config/terminal size) now renders as a forge-style bordered card (`formatForgeBox` + `scaleForgeWidth`) that scales with the terminal too, with a plain-text fallback below the card's own ~26-column floor.
+- **`formatForgeBox`'s "N more lines ⟦Ctrl+O for more⟧" clip-hint row could overflow a narrow card's declared width** (`src/tui/components/forge.ts`) — the hint text is appended AFTER the normal wrap-to-width step, so on a narrow box it could poke past the right border; every forge card in the live TUI (tool-execution cards, skill-invocation cards, etc.) was exposed to this whenever content was long enough to clip on a narrow terminal. Added a defense-in-depth truncation in `contentRow` so no content path — wrapped or not — can widen a box past its declared width.
+
+### Verified
+- Pure-function width sweep (20-200 columns) confirmed zero overflow for both the provider table and the header card, including the fallback thresholds.
+- `bun run typecheck` clean.
+- `test/doctor.test.ts` + `test/forge-status.test.ts` + `test/forge-mark-anim.test.ts` — 54 pass; `test/tui-components.test.ts` + `test/tui-frame-width.test.ts` + `test/tui-frame-wrap-tail.test.ts` + `test/tui-app.test.ts` + `test/tui-renderer.test.ts` + `test/todo-card.test.ts` — 96 pass; 0 fail across both targeted runs.
+- Full `bun test` — 3134 pass / 23 fail across 308 files; every failure (team-parallel, engine-multitool ×3 timeouts, notify-daemon-control timing, team-subagent timeout) reproduces identically on a clean `git stash` of this pass's changes — confirmed pre-existing, unrelated flakiness, not caused by this pass.
+
 ## [0.9.0] - 2026-07-22
 _Session-scoped async execution, detached subagent control, background monitors, and parallel TUI activity are now documented and shipped for the gjc-parity release line._
 

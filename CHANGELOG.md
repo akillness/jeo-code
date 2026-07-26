@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
 ## [Unreleased]
-_Compatibility audit of GJC v0.11.6–v0.11.9 against jeo-code; only jeo-native gaps are included here. The already-published `jeo-code@0.9.1` remains immutable and is verified separately._
+
+## [0.9.2] - 2026-07-26
+_Released the jeo-native GJC v0.11.6–v0.11.9 parity improvements after a complete cross-audit and live verification pass._
 
 ### Added
 - **Bounded, non-destructive `/handoff [focus]` summaries** (`src/agent/compaction.ts`, `src/commands/launch.ts`) — generates a session handoff document without mutating history, preserves touched-file references, supports an optional configured focus, and exposes the command through help/autocomplete.
@@ -22,6 +24,7 @@ _Compatibility audit of GJC v0.11.6–v0.11.9 against jeo-code; only jeo-native 
 - `bun run typecheck`: clean.
 - Live piped `jeo --no-tui` `/handoff` scenario: short history is rejected non-destructively with an explicit message.
 - Full `bun test` was attempted for 300 seconds but remained affected by pre-existing host-load timeouts/failures in write-parallel, team-parallel, engine-multitool, team-subagent, and daemon timing tests; no focused parity test failed.
+
 ## [0.9.1] - 2026-07-24
 _User request (paraphrased, Korean): "make the TUI resize responsively like gjc's TUI when terminal width/height changes, without breaking the layout — also borrow forge's layout and table components." Investigated the existing resize infrastructure first (already extensive: throttled live-frame resize repaint, a poll-based SIGWINCH safety net, resize-aware interactive pickers) before assuming a gap. Found one concrete un-responsive panel — `jeo doctor`'s Provider connectivity table — and, while rebuilding it on forge's own box-drawn table renderer, also found and fixed a real, previously-unknown overflow bug in `formatForgeBox` itself, shared by every tool card across the whole live TUI._
 

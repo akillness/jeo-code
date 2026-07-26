@@ -847,3 +847,100 @@ test("fail-closed privacy gate: a non-private paired chat (group) blocks per-ses
   expect(telegram.sent.length).toBe(2);
   expect(telegram.chatsChecked.length).toBe(1);
 });
+// ── pollTelegramLoop error backoff (jeo-native subset of GJC v0.11.10 #3048) ─────
+
+/** Minimal daemon for exercising `start()`'s `pollTelegramLoop`: no real
+ *  session scan (empty `readdir`) and an injected `sleep` so backoff delays
+ *  are observed/controlled without real timers. `sleep` is responsible for
+ *  calling `daemon.stop()` once the test has seen enough iterations — that's
+ *  what lets `start()` (which blocks until stopped) resolve. */
+function makePollDaemon(
+  telegram: FakeTelegramApi,
+  sleep: (ms: number) => Promise<void>,
+): TelegramDaemon {
+  return new TelegramDaemon({
+    chatId: "999",
+    telegram: telegram as unknown as TelegramApi,
+    WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    readdir: async () => [],
+    sleep,
+  });
+}
+
+test("pollTelegramLoop backs off starting near 1s, doubling on each consecutive non-ok getUpdates, capped at 10s", async () => {
+  const telegram = new FakeTelegramApi();
+  telegram.getUpdates = async () => ({ ok: false }) as any;
+  const delays: number[] = [];
+  let daemon: TelegramDaemon;
+  daemon = makePollDaemon(telegram, async ms => {
+    delays.push(ms);
+    if (delays.length >= 5) daemon.stop();
+  });
+  await daemon.start();
+  expect(delays).toEqual([1_000, 2_000, 4_000, 8_000, 10_000]);
+});
+
+test("pollTelegramLoop backs off on a thrown/rejected getUpdates the same way as a non-ok response", async () => {
+  const telegram = new FakeTelegramApi();
+  telegram.getUpdates = async () => {
+    throw new Error("network blip");
+  };
+  const delays: number[] = [];
+  let daemon: TelegramDaemon;
+  daemon = makePollDaemon(telegram, async ms => {
+    delays.push(ms);
+    if (delays.length >= 3) daemon.stop();
+  });
+  await daemon.start();
+  expect(delays).toEqual([1_000, 2_000, 4_000]);
+});
+
+test("pollTelegramLoop resets backoff to the initial ~1s delay after a successful getUpdates", async () => {
+  const telegram = new FakeTelegramApi();
+  let call = 0;
+  telegram.getUpdates = async () => {
+    call++;
+    if (call === 3) return { ok: true, result: [] };
+    return { ok: false } as any;
+  };
+  const delays: number[] = [];
+  let daemon: TelegramDaemon;
+  daemon = makePollDaemon(telegram, async ms => {
+    delays.push(ms);
+    if (delays.length >= 3) daemon.stop();
+  });
+  await daemon.start();
+  // fail (1000, backoff->2000), fail (2000, backoff->4000), success (reset->1000), fail (1000)
+  expect(delays).toEqual([1_000, 2_000, 1_000]);
+});
+
+test("pollTelegramLoop imposes no sleep/cooldown between consecutive successful getUpdates polls (long-polling stays exempt from backoff)", async () => {
+  const telegram = new FakeTelegramApi();
+  let call = 0;
+  let daemon: TelegramDaemon;
+  telegram.getUpdates = async () => {
+    call++;
+    if (call >= 3) daemon.stop();
+    return { ok: true, result: [] };
+  };
+  const sleepCalls: number[] = [];
+  daemon = makePollDaemon(telegram, async ms => {
+    sleepCalls.push(ms);
+  });
+  await daemon.start();
+  expect(call).toBeGreaterThanOrEqual(3);
+  expect(sleepCalls).toEqual([]);
+});
+
+test("pollTelegramLoop remains stoppable mid-backoff (stop() during the error sleep still halts the loop)", async () => {
+  const telegram = new FakeTelegramApi();
+  telegram.getUpdates = async () => ({ ok: false }) as any;
+  let daemon: TelegramDaemon;
+  let sleepCallCount = 0;
+  daemon = makePollDaemon(telegram, async () => {
+    sleepCallCount++;
+    daemon.stop();
+  });
+  await daemon.start();
+  expect(sleepCallCount).toBe(1);
+});

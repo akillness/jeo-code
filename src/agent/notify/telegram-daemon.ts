@@ -44,6 +44,17 @@ import { markdownToTelegramHtml, splitTelegramHtml } from "./telegram-html";
 import type { SubagentRecord } from "../subagent-registry";
 
 
+/** Initial (and post-success-reset) delay before retrying a failed/non-ok
+ *  `getUpdates` poll. Doubles on each consecutive failure up to
+ *  `POLL_ERROR_BACKOFF_MAX_MS` (see `pollTelegramLoop`) — jeo-native subset of
+ *  GJC v0.11.10 PR #3048's bounded backoff, adapted to jeo's DI/testing style
+ *  instead of GJC's SDK/root-registry plumbing. */
+const POLL_ERROR_BACKOFF_MIN_MS = 1_000;
+/** Ceiling for the doubling backoff above — repeated 409s (another
+ *  `getUpdates` long-poll owner) or transient network errors must never
+ *  wait longer than this between retries. */
+const POLL_ERROR_BACKOFF_MAX_MS = 10_000;
+
 function sleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, ms);
@@ -215,6 +226,10 @@ export interface TelegramDaemonOptions {
   saveTopicState?: (state: TopicRegistryState) => Promise<void>;
   /** Injectable clock for `RateLimitPool` determinism in tests. */
   now?: () => number;
+  /** Injectable delay for `pollTelegramLoop`'s error backoff — defaults to a
+   *  real `setTimeout`-based sleep. Tests inject a fake to assert on the
+   *  requested delays without real wall-clock waits. */
+  sleep?: (ms: number) => Promise<void>;
   /** Injectable temp-file writer for downloaded inbound attachments — defaults
    *  to a real `os.tmpdir()` write. Returns the written file's absolute path. */
   writeTempFile?: (bytes: Uint8Array, suggestedName: string) => Promise<string>;
@@ -235,6 +250,10 @@ export class TelegramDaemon {
   readonly sessions = new Map<string, SessionConnection>();
   private readonly pendingAcks = new Map<string, (ok: boolean) => void>();
   private updateOffset: number | undefined;
+  /** Current error-poll retry delay; starts at `POLL_ERROR_BACKOFF_MIN_MS`,
+   *  doubles (capped at `POLL_ERROR_BACKOFF_MAX_MS`) on each consecutive
+   *  non-ok/failed `getUpdates`, and resets on the next success. */
+  private pollErrorBackoffMs = POLL_ERROR_BACKOFF_MIN_MS;
   private stopped = false;
   private scanTimer: ReturnType<typeof setInterval> | undefined;
   private poolTimer: ReturnType<typeof setInterval> | undefined;
@@ -726,21 +745,36 @@ export class TelegramDaemon {
     );
   }
 
+  /** Sleeps for the current backoff delay, then grows it (capped) for the
+   *  NEXT consecutive failure — e.g. a 409 (another `getUpdates` long-poll
+   *  owner) or transient network error. Without this a hot failure would
+   *  hot-loop against the API; growing it also avoids sitting at a single
+   *  fixed multi-second delay for the entire outage. */
+  private async pollErrorBackoff(): Promise<void> {
+    const sleepFn = this.opts.sleep ?? sleep;
+    await sleepFn(this.pollErrorBackoffMs);
+    this.pollErrorBackoffMs = Math.min(this.pollErrorBackoffMs * 2, POLL_ERROR_BACKOFF_MAX_MS);
+  }
+
   private async pollTelegramLoop(): Promise<void> {
     while (!this.stopped) {
       let res;
       try {
         res = await this.opts.telegram.getUpdates(this.updateOffset, 25);
       } catch {
-        await sleep(2_000);
+        await this.pollErrorBackoff();
         continue;
       }
       if (!res.ok) {
         // e.g. 409 Conflict (another getUpdates owner) or 401 (revoked token) —
         // without a pause this would hot-loop against the API.
-        await sleep(2_000);
+        await this.pollErrorBackoff();
         continue;
       }
+      // A successful round-trip clears any accumulated backoff — the next
+      // failure (if any) starts fresh from POLL_ERROR_BACKOFF_MIN_MS rather
+      // than staying parked at whatever ceiling a prior outage reached.
+      this.pollErrorBackoffMs = POLL_ERROR_BACKOFF_MIN_MS;
       for (const update of res.result) {
         this.updateOffset = update.update_id + 1;
         await this.handleUpdate(update);

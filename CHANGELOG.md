@@ -8,6 +8,9 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-07-26
+_Released Telegram integration reliability improvements adapted from GJC v0.11.10, with safe jeo-native behavior and live verification._
+
 ### Fixed
 - **Telegram Bot API flood-control cooldown** (`src/agent/notify/telegram-api.ts`) — honors HTTP 429 `retry_after` responses with a bot-wide, bounded cooldown; non-polling calls suppress safely while `getUpdates` remains available for recovery.
 - **Telegram daemon polling backoff** (`src/agent/notify/telegram-daemon.ts`) — backs off repeated failed/409 long-polls from 1s to a 10s ceiling and resets after a successful poll, avoiding retry storms.
@@ -16,7 +19,6 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 - Telegram-focused suite: 256 pass / 0 fail across 11 notification test files.
 - `bun run typecheck`: clean.
 - Isolated no-credential CLI smoke: `notify status` exits cleanly and `daemon start` refuses with the setup guidance.
-
 ## [0.9.2] - 2026-07-26
 _Released the jeo-native GJC v0.11.6–v0.11.9 parity improvements after a complete cross-audit and live verification pass._
 

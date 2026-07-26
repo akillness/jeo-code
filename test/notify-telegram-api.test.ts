@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { TelegramApi, maskToken } from "../src/agent/notify/telegram-api";
+import { TelegramApi, maskToken, MAX_TELEGRAM_DOWNLOAD_BYTES } from "../src/agent/notify/telegram-api";
 
 function fakeFetch(responses: Record<string, unknown>): { calls: { url: string; init?: RequestInit }[]; fetch: typeof fetch } {
   const calls: { url: string; init?: RequestInit }[] = [];
@@ -260,5 +260,36 @@ test("downloadFile returns undefined (not a throw) on a non-ok response", async 
   const { fetch } = fakeBytesFetch(new Uint8Array(), { ok: false });
   const api = new TelegramApi("TOKEN123", fetch);
   const result = await api.downloadFile("photos/file.jpg");
+  expect(result).toBeUndefined();
+});
+
+// ── Bounded download size (jeo-native subset of GJC #2714) ──────────────────────
+
+test("downloadFile rejects a response whose body exceeds an injected maxBytes cap, without ever returning the oversized bytes", async () => {
+  const bytes = new Uint8Array(2048).fill(7);
+  const { fetch } = fakeBytesFetch(bytes);
+  const api = new TelegramApi("TOKEN123", fetch);
+  const result = await api.downloadFile("photos/file.jpg", 1024);
+  expect(result).toBeUndefined();
+});
+
+test("downloadFile returns the full bytes for a normal image within an injected maxBytes cap", async () => {
+  const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+  const { fetch } = fakeBytesFetch(bytes);
+  const api = new TelegramApi("TOKEN123", fetch);
+  const result = await api.downloadFile("photos/file.jpg", 1024);
+  expect(result).toBeInstanceOf(Uint8Array);
+  expect(Array.from(result!)).toEqual([1, 2, 3, 4, 5]);
+});
+
+// Real filesystem/bytes analogue of test/file-attachment.test.ts's oversized-source
+// check, but bounding the NETWORK download instead of a local `stat`+`readFile` — a
+// remote server can't lie its way past this by omitting/understating `content-length`
+// since the cap is enforced while streaming, not from the header alone.
+test("downloadFile rejects a response over the default MAX_TELEGRAM_DOWNLOAD_BYTES cap when no maxBytes is given", async () => {
+  const bytes = new Uint8Array(MAX_TELEGRAM_DOWNLOAD_BYTES + 1024).fill(9);
+  const { fetch } = fakeBytesFetch(bytes);
+  const api = new TelegramApi("TOKEN123", fetch);
+  const result = await api.downloadFile("photos/huge.jpg");
   expect(result).toBeUndefined();
 });

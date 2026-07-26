@@ -218,6 +218,10 @@ export interface TelegramDaemonOptions {
   /** Injectable temp-file writer for downloaded inbound attachments — defaults
    *  to a real `os.tmpdir()` write. Returns the written file's absolute path. */
   writeTempFile?: (bytes: Uint8Array, suggestedName: string) => Promise<string>;
+  /** Injectable cap (bytes) on an inbound photo/document download, passed
+   *  through to `TelegramApi.downloadFile` — defaults to that method's own
+   *  conservative fixed default (`MAX_TELEGRAM_DOWNLOAD_BYTES`) when unset. */
+  maxAttachmentBytes?: number;
 }
 
 /** Outbound payload the shared `RateLimitPool` schedules; `flushPool` maps each
@@ -421,14 +425,18 @@ export class TelegramDaemon {
 
   /** Download a Telegram-hosted file into a local temp file for relay into a
    *  session's `[image #N]` attachment pipeline (`attachImagePaths`, see
-   *  `src/util/file-attachment.ts`). Returns `undefined` on any failure — the
-   *  message still delivers as text-only rather than being dropped entirely. */
+   *  `src/util/file-attachment.ts`). Bounded by `opts.maxAttachmentBytes`
+   *  (or `TelegramApi.downloadFile`'s own default when unset) — an oversized
+   *  remote file is rejected there and this returns `undefined` exactly as
+   *  it would for any other download failure. Returns `undefined` on any
+   *  failure — the message still delivers as text-only rather than being
+   *  dropped entirely. */
   private async downloadAttachment(fileId: string, suggestedName: string): Promise<string | undefined> {
     try {
       const got = await this.opts.telegram.getFile(fileId);
       const filePath = got.result?.file_path;
       if (!filePath) return undefined;
-      const bytes = await this.opts.telegram.downloadFile(filePath);
+      const bytes = await this.opts.telegram.downloadFile(filePath, this.opts.maxAttachmentBytes);
       if (!bytes) return undefined;
       const write = this.opts.writeTempFile ?? defaultWriteTempFile;
       return await write(bytes, suggestedName);

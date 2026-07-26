@@ -152,9 +152,14 @@ class FakeTelegramApi {
     this.filesFetched.push(fileId);
     return { ok: true, result: { file_path: `photos/${fileId}.jpg` } };
   }
-  async downloadFile(filePath: string): Promise<Uint8Array | undefined> {
+  /** Overridable per-test to simulate an oversized/rejected download (mirrors
+   *  `TelegramApi.downloadFile` returning `undefined` when the response exceeds
+   *  its byte cap) without needing real network bytes here. */
+  downloadFileImpl: (filePath: string, maxBytes?: number) => Promise<Uint8Array | undefined> =
+    async () => new Uint8Array([1, 2, 3]);
+  async downloadFile(filePath: string, maxBytes?: number): Promise<Uint8Array | undefined> {
     this.filesDownloaded.push(filePath);
-    return new Uint8Array([1, 2, 3]);
+    return this.downloadFileImpl(filePath, maxBytes);
   }
   /** Overridable per-test to simulate a paired chat that is NOT private (e.g. a group). */
   getChatImpl: (chatId: string | number) => Promise<{ ok: boolean; result?: { type?: string } }> =
@@ -742,6 +747,50 @@ test("an image document attachment (sent 'as file') in a session's topic is also
   expect(frame.type).toBe("user_message");
   expect(frame.text).toBe("a diagram");
   expect(frame.imagePaths).toEqual(["/tmp/fake/diagram.png"]);
+});
+
+// ── Bounded download size (jeo-native subset of GJC #2714) ──────────────────────
+
+test("an oversized inbound photo (downloadFile rejected) still delivers as text-only, with no imagePaths and no written temp file", async () => {
+  const telegram = new FakeTelegramApi();
+  let seenMaxBytes: number | undefined;
+  telegram.downloadFileImpl = async (_filePath, maxBytes) => {
+    seenMaxBytes = maxBytes; // confirms opts.maxAttachmentBytes actually threads through to TelegramApi.downloadFile
+    return undefined; // simulates TelegramApi.downloadFile rejecting an over-cap response
+  };
+  const written: { bytes: Uint8Array; suggestedName: string }[] = [];
+  const daemon = makePerSessionDaemon(telegram, {
+    maxAttachmentBytes: 1024,
+    writeTempFile: async (bytes, suggestedName) => {
+      written.push({ bytes, suggestedName });
+      return `/tmp/fake/${suggestedName}`;
+    },
+  });
+  const conn = sessionConn();
+  daemon.sessions.set(conn.sessionId, conn);
+  await daemon.handleSessionMessage(conn, JSON.stringify({ type: "snapshot", subagents: [rec({ status: "running" })] }));
+
+  await daemon.handleUpdate({
+    update_id: 1,
+    message: {
+      message_id: 10,
+      date: 0,
+      chat: { id: 999, type: "private" },
+      message_thread_id: 1000,
+      caption: "a screenshot",
+      photo: [{ file_id: "huge-1", width: 4000, height: 4000 }],
+    },
+  });
+
+  expect(seenMaxBytes).toBe(1024);
+  expect(telegram.filesFetched).toEqual(["huge-1"]);
+  expect(telegram.filesDownloaded).toEqual(["photos/huge-1.jpg"]);
+  expect(written.length).toBe(0); // never reached writeTempFile — the oversized download was rejected first
+  const ws = conn.ws as unknown as FakeWebSocket;
+  const frame = JSON.parse(ws.sent.at(-1)!);
+  expect(frame.type).toBe("user_message");
+  expect(frame.text).toBe("a screenshot");
+  expect(frame.imagePaths).toBeUndefined();
 });
 
 test("a plain-text inbound message that routes as user_message gets a 👀 reaction (setMessageReaction) confirming delivery", async () => {

@@ -35,6 +35,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/dump", usage: "/dump", description: "Copy the session transcript to the clipboard", group: "session" },
   { command: "/btw", usage: "/btw <question>", description: "Ask an ephemeral side question (history untouched)", group: "session" },
   { command: "/compact", usage: "/compact", description: "Summarize older turns to free context", group: "session" },
+  { command: "/handoff", usage: "/handoff [focus]", description: "Generate a bounded handoff summary without mutating session history", group: "session" },
   { command: "/goal", usage: "/goal <condition>", description: "Set a natural language stop condition for the session", group: "session" },
   { command: "/model", usage: "/model [id|#N|save|thinking <level>|subagent <role> <model|#N|thinking L>]", description: "Show/switch model; picker can apply to default or any subagent role and set thinking", group: "models" },
   { command: "/fast", usage: "/fast [on|off|status]", description: "Toggle fast thinking mode when the active model supports it", group: "models" },

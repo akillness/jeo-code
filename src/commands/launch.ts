@@ -103,7 +103,7 @@ import { formatDuration, formatUsage } from "../tui/components/duration";
 import { bashTool } from "../agent/tools";
 
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
-import { maybeCompact, historyTokens } from "../agent/compaction";
+import { maybeCompact, historyTokens, buildHandoffDocument } from "../agent/compaction";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { listThemes, resolveTheme, themeGradient, accentPaint, accentShadowPaint } from "../tui/components/themes";
@@ -203,6 +203,8 @@ import {
   hotkeysLines,
   contextUsageLines,
   historyViewLines,
+  parseHandoffCommand,
+  handoffLines,
 } from "./launch/slash-views";
 import { formatTranscript } from "../tui/components/transcript";
 
@@ -1994,6 +1996,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
         const result = handleHotkeys(ctx);
         if (result && "lines" in result) for (const line of result.lines) console.log(line);
+        return;
+      }
+      if (cmd === "/handoff" || cmd.startsWith("/handoff ")) {
+        const parsed = parseHandoffCommand(cmd) ?? {};
+        const cfg = await readGlobalConfig();
+        const activeModel = sessionModel || defaultModel;
+        // `Config` (state.ts) predates config-schema.ts's `compaction` field and is
+        // out of this change's scope — read the passthrough-preserved value via a
+        // narrow structural cast instead of widening the shared interface.
+        const focus = parsed.focus ?? (cfg as { compaction?: { handoffFocus?: string } }).compaction?.handoffFocus;
+        const res = await buildHandoffDocument(history, { model: activeModel, focus });
+        for (const line of handoffLines(res, process.stdout.columns)) console.log(line);
         return;
       }
       if (cmd === "/theme" || cmd.startsWith("/theme ")) {
@@ -4271,6 +4285,22 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         } else {
           console.log("(nothing to compact)");
         }
+        continue;
+      }
+      if (input === "/handoff" || input.startsWith("/handoff ")) {
+        // jeo-native subset of gjc `/handoff` parity: bounded, read-only handoff
+        // document (like /compact's summary, framed for a session handoff) — jeo
+        // has no ACP/SDK-broker managed-session boundary to hand off INTO, so this
+        // NEVER mutates history (see buildHandoffDocument's doc comment).
+        const parsed = parseHandoffCommand(input) ?? {};
+        const activeModel = sessionModel || defaultModel;
+        const cfg = await readGlobalConfig();
+        // `Config` (state.ts) predates config-schema.ts's `compaction` field and is
+        // out of this change's scope — read the passthrough-preserved value via a
+        // narrow structural cast instead of widening the shared interface.
+        const focus = parsed.focus ?? (cfg as { compaction?: { handoffFocus?: string } }).compaction?.handoffFocus;
+        const res = await buildHandoffDocument(history, { model: activeModel, focus });
+        logLines(handoffLines(res, process.stdout.columns));
         continue;
       }
       if (input === "/session" || input.startsWith("/session ")) {

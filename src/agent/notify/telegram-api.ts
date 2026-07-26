@@ -100,6 +100,17 @@ export interface AnswerCallbackQueryOptions {
 
 export type FetchLike = typeof fetch;
 
+/** Conservative fixed default cap on a downloaded Telegram file (photo or
+ *  document), enforced before/while buffering the response body so a
+ *  malicious or oversized remote attachment can't allocate unbounded memory
+ *  on the daemon. Same order of magnitude as jeo's local image-attachment
+ *  bound (`MAX_ATTACH_IMAGE_BYTES` in `src/util/file-attachment.ts`) — kept
+ *  as an independent constant rather than importing that one, since this
+ *  guards a different codepath (network download vs. local `stat`+`readFile`).
+ *  Injectable per call via {@link TelegramApi.downloadFile}'s `maxBytes`
+ *  argument for callers/tests that need a different policy. */
+export const MAX_TELEGRAM_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+
 export class TelegramApi {
   constructor(
     private readonly token: string,
@@ -206,15 +217,49 @@ export class TelegramApi {
    * since this is new network I/O every caller must treat as fallible
    * (gjc `downloadTelegramFile` parity, minus the retry logic gjc layers on
    * top at the daemon level).
+   *
+   * Bounded by `maxBytes` (default {@link MAX_TELEGRAM_DOWNLOAD_BYTES}):
+   * a `content-length` over the cap short-circuits before any read, and
+   * the body is otherwise streamed and counted chunk-by-chunk so a
+   * remote server that lies about (or omits) `content-length` still can't
+   * buffer past the cap — the read is aborted and `undefined` returned the
+   * moment the running total exceeds it, never after buffering the whole
+   * oversized body first.
    */
-  async downloadFile(filePath: string): Promise<Uint8Array | undefined> {
+  async downloadFile(filePath: string, maxBytes: number = MAX_TELEGRAM_DOWNLOAD_BYTES): Promise<Uint8Array | undefined> {
     if (filePath.includes("..") || filePath.startsWith("/") || filePath.includes("\\")) return undefined;
     const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
     const url = `https://api.telegram.org/file/bot${this.token}/${encodedPath}`;
     try {
       const res = await this.fetchImpl(url);
       if (!res.ok) return undefined;
-      return new Uint8Array(await res.arrayBuffer());
+      const declaredLength = Number(res.headers?.get?.("content-length"));
+      if (Number.isFinite(declaredLength) && declaredLength > maxBytes) return undefined;
+      if (!res.body) {
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        return bytes.byteLength > maxBytes ? undefined : bytes;
+      }
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel();
+          return undefined;
+        }
+        chunks.push(value);
+      }
+      const out = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        out.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return out;
     } catch {
       return undefined;
     }

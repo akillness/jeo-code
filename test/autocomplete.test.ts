@@ -210,7 +210,7 @@ test("/export completes format keywords for the first two args", () => {
 
 test("staticCompletionContext includes the gjc-parity commands", () => {
   const base = staticCompletionContext();
-  for (const cmd of ["/session", "/retry", "/export", "/dump", "/btw", "/usage", "/context", "/tools", "/hotkeys", "/theme", "/settings", "/login"]) {
+  for (const cmd of ["/session", "/retry", "/export", "/dump", "/btw", "/handoff", "/usage", "/context", "/tools", "/hotkeys", "/theme", "/settings", "/login"]) {
     expect(base.slashCommands).toContain(cmd);
   }
 });

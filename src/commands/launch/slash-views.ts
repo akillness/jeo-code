@@ -74,3 +74,37 @@ export function historyViewLines(history: Message[], arg: string, columns: numbe
   ];
 }
 
+/** Recognizes `/handoff` or `/handoff <focus text>` — returns `undefined` when
+ *  `input` is not a handoff invocation. A missing or whitespace-only argument
+ *  is treated as "no CLI focus" (the caller falls back to the configured
+ *  `compaction.handoffFocus` default, if any). Pure string parsing so command
+ *  recognition is testable without wiring up the REPL. */
+export function parseHandoffCommand(input: string): { focus?: string } | undefined {
+  if (input === "/handoff") return {};
+  if (!input.startsWith("/handoff ")) return undefined;
+  const focus = input.slice("/handoff ".length).trim();
+  return focus ? { focus } : {};
+}
+
+/** Renders a generated handoff document (or its failure) for scrollback —
+ *  pure over the already-computed result so the bounded-document formatting
+ *  and the non-destructive failure path are both testable without an LLM
+ *  call or a live REPL. History is never touched by this presenter (or by
+ *  the `/handoff` command it renders for) — it only ever reads and prints. */
+export function handoffLines(
+  result: { ok: boolean; document?: string; error?: string },
+  columns: number | undefined,
+): string[] {
+  if (!result.ok || !result.document) {
+    return [`(handoff not generated: ${result.error ?? "unknown error"} — history left untouched)`];
+  }
+  const sep = "─".repeat(Math.min(48, Math.max(20, (columns ?? 80) - 1)));
+  return [
+    sep,
+    "/handoff · bounded session summary (display/export only — history left untouched)",
+    sep,
+    ...result.document.split("\n"),
+    sep,
+  ];
+}
+

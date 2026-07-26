@@ -1898,7 +1898,7 @@ export class LaunchTui {
     // TTY only: keep the same query input box visible above the footer while the
     // turn is running; typed text edits the next-prompt draft, not a side queue.
     if (fit) {
-      bottom.push(formatHintBar(undefined, { unicode: this.unicode, color: this.theme.color, cols: innerWidth }));
+      bottom.push(formatHintBar(undefined, { unicode: this.unicode, color: this.theme.color, cols: innerWidth, platform: process.platform }));
       bottom.push(...this.renderLiveInputBox(innerWidth));
     }
     // Live animated step strip appended to the footer when the turn has steps.

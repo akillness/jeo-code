@@ -220,6 +220,17 @@ export const ConfigSchema = z
         enabled: z.boolean().optional(),
       })
       .optional(),
+    /** Threaded through the existing compaction/summary settings (gjc `/handoff`
+     *  parity, jeo-native subset). `handoffFocus` is an operator-configured
+     *  default focus text for the interactive `/handoff [focus]` command —
+     *  used ONLY when the command is invoked with no CLI-typed focus argument,
+     *  and always appended as its own trailing section (never merged into or
+     *  replacing the generated handoff document's base sections). */
+    compaction: z
+      .object({
+        handoffFocus: z.string().optional(),
+      })
+      .optional(),
   })
   .passthrough();
 

@@ -42,7 +42,79 @@ jobs:
         run: bun test
 
       - name: Check package contents
-        run: npm pack --dry-run
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --json > pack-manifest.json
+          cat > pack-check.mjs <<'EOF'
+          import { readFileSync } from "node:fs";
+          import { execSync } from "node:child_process";
+
+          const manifest = JSON.parse(readFileSync("pack-manifest.json", "utf8"));
+          const packedFiles = manifest[0].files.map((f) => f.path);
+
+          const tracked = new Set(
+            execSync("git ls-files", { encoding: "utf8" }).trim().split("\n"),
+          );
+
+          // Untracked/leaked local scratch files must never ship in the published
+          // tarball. These three previously leaked in because npm pack --dry-run
+          // was only printed, never asserted against the tracked file set.
+          const forbidden = [
+            "src/agent/monitor-registry.ts",
+            "src/agent/monitor-tool.ts",
+            "src/types/playwriter.d.ts",
+          ];
+
+          const required = [
+            "package.json",
+            "src/cli.ts",
+            "src/ai/model-discovery.ts",
+            "src/ai/providers/openai.ts",
+            "CHANGELOG.md",
+            "README.md",
+            "README.ko.md",
+            "README.ja.md",
+            "README.zh.md",
+          ];
+
+          const errors = [];
+
+          for (const path of packedFiles) {
+            if (!tracked.has(path)) {
+              errors.push(`untracked path leaked into npm package: ${path}`);
+              continue;
+            }
+            if (forbidden.includes(path)) {
+              errors.push(`forbidden dev/runtime artifact packed: ${path}`);
+            }
+            if (
+              /(^|\/)(test|tests)\//.test(path) ||
+              /\.test\.ts$/.test(path) ||
+              /^\.github\//.test(path)
+            ) {
+              errors.push(`test/CI artifact leaked into npm package: ${path}`);
+            }
+          }
+
+          const packedSet = new Set(packedFiles);
+          for (const path of required) {
+            if (!packedSet.has(path)) {
+              errors.push(`required release file missing from npm package: ${path}`);
+            }
+          }
+
+          if (errors.length > 0) {
+            console.error("npm pack content check failed:");
+            for (const e of errors) console.error(`  - ${e}`);
+            process.exit(1);
+          }
+
+          console.log(
+            `npm pack content check passed (${packedFiles.length} tracked files; required release files present; no forbidden or test/CI artifacts).`,
+          );
+          EOF
+          node pack-check.mjs
+          rm -f pack-manifest.json pack-check.mjs
 
       - name: Verify npm token
         run: |

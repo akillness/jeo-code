@@ -102,3 +102,64 @@ test("release workflow builds every target (incl. Windows) and uploads them", ()
   // Uploading release assets needs contents: write permission.
   expect(releaseWorkflow).toContain("contents: write");
 });
+
+test("package-content check captures the npm pack manifest as asserted JSON, not a bare printout", () => {
+  expect(releaseWorkflow).toContain("npm pack --dry-run --json > pack-manifest.json");
+  // The step must actually run the assertion script and fail the job on a non-zero exit
+  // (no `|| true`/`continue-on-error` escape hatch undermining the guard).
+  expect(releaseWorkflow).toContain("node pack-check.mjs");
+  expect(releaseWorkflow).not.toMatch(/node pack-check\.mjs\s*(\|\|\s*true|;\s*true)/);
+});
+
+test("package-content check asserts every packed path is tracked by git", () => {
+  expect(releaseWorkflow).toContain("git ls-files");
+  expect(releaseWorkflow).toContain("untracked path leaked into npm package");
+});
+
+test("package-content check requires the core release files to be present in the tarball", () => {
+  for (const requiredFile of [
+    "package.json",
+    "src/cli.ts",
+    "src/ai/model-discovery.ts",
+    "src/ai/providers/openai.ts",
+    "CHANGELOG.md",
+    "README.md",
+    "README.ko.md",
+    "README.ja.md",
+    "README.zh.md",
+  ]) {
+    expect(releaseWorkflow).toContain(`"${requiredFile}"`);
+  }
+  expect(releaseWorkflow).toContain("required release file missing from npm package");
+});
+
+test("package-content check explicitly guards against the previously leaked untracked artifacts", () => {
+  for (const leakedFile of [
+    "src/agent/monitor-registry.ts",
+    "src/agent/monitor-tool.ts",
+    "src/types/playwriter.d.ts",
+  ]) {
+    expect(releaseWorkflow).toContain(`"${leakedFile}"`);
+  }
+  expect(releaseWorkflow).toContain("forbidden dev/runtime artifact packed");
+});
+
+test("package-content check rejects test/CI artifacts leaking into the tarball", () => {
+  expect(releaseWorkflow).toContain("test/CI artifact leaked into npm package");
+  expect(releaseWorkflow).toContain("(test|tests)");
+  expect(releaseWorkflow).toContain("\\.test\\.ts$");
+  expect(releaseWorkflow).toContain("^\\.github\\/");
+});
+
+test("Check package contents keeps its place between Test and Verify npm token, preserving typecheck/test/publish order", () => {
+  const typecheckIdx = releaseWorkflow.indexOf("run: bun run typecheck");
+  const testIdx = releaseWorkflow.indexOf("run: bun test");
+  const packCheckIdx = releaseWorkflow.indexOf("name: Check package contents");
+  const verifyTokenIdx = releaseWorkflow.indexOf("name: Verify npm token");
+  const publishIdx = releaseWorkflow.indexOf("name: Publish to npm");
+  expect(typecheckIdx).toBeGreaterThan(-1);
+  expect(typecheckIdx).toBeLessThan(testIdx);
+  expect(testIdx).toBeLessThan(packCheckIdx);
+  expect(packCheckIdx).toBeLessThan(verifyTokenIdx);
+  expect(verifyTokenIdx).toBeLessThan(publishIdx);
+});

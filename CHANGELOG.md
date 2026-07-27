@@ -8,6 +8,17 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-07-27
+_Root-causes the frozen `jeo --tmux` TUI: the window was pinned to its launch size, so resizing the terminal only cut the view._
+
+### Fixed
+- **`jeo --tmux` no longer freezes the window at its launch geometry** (`src/commands/launch.ts`, `src/commands/launch/tmux.ts`) — the pre-attach `tmux resize-window` flipped the window's `window-size` option to `manual` as a documented side effect, permanently detaching it from the attached client. Resizing the terminal then left the tmux window frozen: the pane was shown cut/letterboxed and jeo never received SIGWINCH, so no amount of in-app reflow could help. The redundant `resize-window` is gone (`new-session -x/-y` already sizes the detached window), and every jeo-owned session now explicitly asserts `window-size latest`, which also protects users whose `tmux.conf` sets `manual` globally.
+
+### Verified
+- Live tmux 3.6a: attached client 100x30 → window 100x29, 140x40 → 140x39, 72x20 → 72x19, with the TUI reflowing at each step.
+- Control run reproducing the old behaviour: with `window-size manual` the window stayed 80x24 under a 120x36 client (the reported truncation); restoring `latest` recovered instantly.
+- tmux suite: 18 pass / 0 fail, including new assertions that the launch flow never issues `resize-window` and always sets `window-size latest`.
+
 ## [0.9.8] - 2026-07-27
 _The provider model list now persists and rehydrates, so an account's live models survive across launches (gjc parity)._
 

@@ -491,13 +491,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             : `Starting new independent tmux session: ${sessionName} (another live jeo session already owns ${sessionBase}; reattach later with: tmux attach -t ${sessionName})`,
         );
 
-        // Re-assert the caller dimensions right before attach (best-effort): profile
-        // commands or a slow first frame can land while the window is still detached.
-        if (termSize) {
-          try {
-            Bun.spawnSync([tmuxBin, "resize-window", "-t", `=${sessionName}`, "-x", String(termSize.columns), "-y", String(termSize.rows)]);
-          } catch { /* best-effort — old tmux without resize-window is fine */ }
-        }
+        // NOTE: never `tmux resize-window` here. tmux flips the window's `window-size`
+        // option to `manual` as a side effect of that command, which permanently
+        // detaches the window from the attached client's geometry — the terminal is
+        // resized, tmux keeps the window frozen at its old size, and the pane is shown
+        // letterboxed/cut with jeo never receiving SIGWINCH (the "TUI is stuck at the
+        // launch size and the screen is cut" report). `new-session -x/-y` already
+        // creates the detached window at the caller's size, and `window-size latest`
+        // (asserted in tmuxProfileCommands) makes the attach and every later terminal
+        // resize track the client automatically.
 
         const attach = Bun.spawn([tmuxBin, "attach-session", "-t", `=${sessionName}`], {
           stdin: "inherit",

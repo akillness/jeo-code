@@ -84,6 +84,24 @@ test("tmux session launch behavior", async () => {
     const attachTarget = attachCall![attachCall!.indexOf("-t") + 1] as string;
     expect(attachTarget.startsWith("=jeo-feature-branch-")).toBe(true);
 
+    // The launch flow must NEVER issue `resize-window`: tmux flips the window's
+    // `window-size` option to `manual` as a side effect, which permanently
+    // detaches the window from the attached client. The terminal then resizes
+    // while the tmux window stays frozen at its launch geometry, so the pane is
+    // shown cut and jeo never receives SIGWINCH to reflow.
+    const resizeCall = spawnSyncCalls.find(c => c[0] === "/usr/local/bin/tmux" && c[1] === "resize-window");
+    expect(resizeCall).toBeUndefined();
+
+    // …and the session profile must assert `window-size latest` so the window
+    // tracks the client even if the user's tmux.conf defaults to manual.
+    const windowSizeCall = spawnSyncCalls.find(
+      c => c[0] === "/usr/local/bin/tmux" && c.includes("window-size"),
+    );
+    expect(windowSizeCall).toBeDefined();
+    expect(windowSizeCall!.at(-1)).toBe("latest");
+    // (The `-x/-y` sizing of the detached window is covered by tmuxNewSessionSizeArgs;
+    // this harness has no TTY, so the caller size is legitimately unknown here.)
+
   } finally {
     Bun.which = originalWhich;
     Bun.spawnSync = originalSpawnSync;
@@ -347,8 +365,12 @@ test("tmuxProfileCommands: gjc-parity profile — mouse, markers, clipboard, cop
     expect(c.args[c.args.indexOf("-t") + 1]).toBe("=jeo-main-abc:");
     expect(c.args).not.toContain("-g");
   }
-  // mouse on comes first: it is the load-bearing wheel→copy-mode scrollback switch.
-  expect(cmds[0]!.args.slice(-2)).toEqual(["mouse", "on"]);
+  // window-size latest comes first: a frozen (manual) window never follows the
+  // terminal, so the pane would render cut at the launch geometry forever.
+  expect(cmds[0]!.args.slice(-2)).toEqual(["window-size", "latest"]);
+  expect(cmds[0]!.args[0]).toBe("set-window-option");
+  // mouse on follows: the load-bearing wheel→copy-mode scrollback switch.
+  expect(cmds[1]!.args.slice(-2)).toEqual(["mouse", "on"]);
   // Ownership + identity markers (gjc @gjc-* parity).
   expect(byDesc["mark jeo tmux ownership"]!.slice(-2)).toEqual(["@jeo-profile", "1"]);
   expect(byDesc["record jeo branch identity"]!.slice(-2)).toEqual(["@jeo-branch", "main"]);

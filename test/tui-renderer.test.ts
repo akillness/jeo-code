@@ -374,6 +374,54 @@ test("Renderer reserve mode: a viewport shrink below the old frame never walks p
     setRows(originalRows);
   }
 });
+test("Renderer reserve mode: insertAbove after a viewport shrink bounds the stale-row walk", () => {
+  const out: string[] = [];
+  const originalRows = process.stdout.rows;
+  const setRows = (rows: number | undefined): void => {
+    Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true, writable: true });
+  };
+  const r = new Renderer(s => out.push(s), () => 80, { reserve: true });
+  try {
+    setRows(30);
+    r.render(Array.from({ length: 20 }, (_, i) => `old-${i}`));
+    out.length = 0;
+
+    // Resize lands before an async ledger flush, so insertAbove() must use the
+    // current viewport rather than the previous render's stale frame height.
+    setRows(8);
+    r.insertAbove("ledger\n");
+    const flushed = out.join("");
+    const cursorUps = [...flushed.matchAll(/\x1b\[(\d+)A/g)].map(m => Number(m[1]));
+    expect(Math.max(0, ...cursorUps)).toBeLessThanOrEqual(7);
+    expect(flushed).toContain("ledger\n");
+    expect(flushed.split(clearLine()).length - 1).toBeGreaterThanOrEqual(8);
+  } finally {
+    setRows(originalRows);
+  }
+});
+
+test("Renderer reserve mode: clear after a viewport shrink bounds the stale-row walk", () => {
+  const out: string[] = [];
+  const originalRows = process.stdout.rows;
+  const setRows = (rows: number | undefined): void => {
+    Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true, writable: true });
+  };
+  const r = new Renderer(s => out.push(s), () => 80, { reserve: true });
+  try {
+    setRows(30);
+    r.render(Array.from({ length: 20 }, (_, i) => `old-${i}`));
+    out.length = 0;
+
+    setRows(8);
+    r.clear();
+    const cleared = out.join("");
+    const cursorUps = [...cleared.matchAll(/\x1b\[(\d+)A/g)].map(m => Number(m[1]));
+    expect(Math.max(0, ...cursorUps)).toBeLessThanOrEqual(7);
+    expect(cleared.split(clearLine()).length - 1).toBe(8);
+  } finally {
+    setRows(originalRows);
+  }
+});
 
 test("Renderer non-reserve mode still ED-clears on resize (unaffected by the reserve-mode fix)", () => {
   const out: string[] = [];

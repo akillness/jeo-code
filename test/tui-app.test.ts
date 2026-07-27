@@ -420,6 +420,43 @@ test("LaunchTui resize: real renderer stays anchored when the viewport shrinks b
     setSize(origCols, origRows);
   }
 });
+test("LaunchTui resize: a ledger flush arriving before repaint stays anchored", () => {
+  const out: string[] = [];
+  const origCols = process.stdout.columns;
+  const origRows = process.stdout.rows;
+  const setGeometry = (cols: number | undefined, rows: number | undefined): void => {
+    Object.defineProperty(process.stdout, "columns", { value: cols, configurable: true, writable: true });
+    Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true, writable: true });
+    process.stdout.emit("resize");
+  };
+  const setRowsOnly = (rows: number): void => {
+    Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true, writable: true });
+  };
+  let tui: LaunchTui | undefined;
+  try {
+    setGeometry(80, 40);
+    tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+    tui.start();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    tui.setTodos(Array.from({ length: 20 }, (_, i) => ({ title: `Task ${i}`, status: "in_progress" as const })));
+    tui.events().onStep!(1);
+
+    out.length = 0;
+    // Simulate the pty shrinking before SIGWINCH/repaint is processed. The async
+    // ledger callback runs first and therefore exercises insertAbove() directly.
+    setRowsOnly(6);
+    tui.onSubagentEvent({ role: "executor", kind: "start", detail: "Add a retry guard" });
+    const flushed = out.join("");
+    const cursorUps = [...flushed.matchAll(/\x1b\[(\d+)A/g)].map(m => Number(m[1]));
+    expect(Math.max(0, ...cursorUps)).toBeLessThanOrEqual(5);
+  } finally {
+    if (tui) {
+      clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+      tui.finish("done");
+    }
+    setGeometry(origCols, origRows);
+  }
+});
 
 test("LaunchTui.usable is false under a non-TTY test process", () => {
   expect(LaunchTui.usable(false)).toBe(false); // bun test stdout is not a TTY

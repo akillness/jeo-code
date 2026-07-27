@@ -164,10 +164,12 @@ export class Renderer {
       .join("\n");
     let out = BEGIN_SYNC + body;
     // EL-clear the old frame rows the inserted block did NOT cover, then hop back to the
-    // row right below the insert (where the next render() anchors). occupied = max(prev,
-    // coverRows) matches the reserve block so a reset()->insertAbove() ordering still
-    // clears the old frame's lower rows (the off-by-one that duplicated the model bar).
-    const occupied = Math.max(this.prev.length, this.coverRows);
+    // row right below the insert (where the next render() anchors). The terminal may have
+    // shrunk since the last render, so never walk farther than its currently visible rows:
+    // cursor-down clamps at the bottom margin and an uncapped cursor-up would desync the
+    // physical anchor used by every subsequent diff.
+    const viewportRows = Math.max(1, size().rows);
+    const occupied = Math.min(Math.max(this.prev.length, this.coverRows), viewportRows);
     const stale = occupied - written;
     if (stale > 0) {
       for (let i = 0; i < stale; i++) {
@@ -187,7 +189,8 @@ export class Renderer {
   clear(): void {
     let out: string;
     if (this.reserve) {
-      const rows = Math.max(this.prev.length, this.coverRows);
+      const viewportRows = Math.max(1, size().rows);
+      const rows = Math.min(Math.max(this.prev.length, this.coverRows), viewportRows);
       out = toColumn(1);
       for (let i = 0; i < rows; i++) {
         out += (i > 0 ? cursorDown(1) : "") + toColumn(1) + clearLine();

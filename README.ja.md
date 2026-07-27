@@ -285,10 +285,10 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.9.6]** (2026-07-27) — Resize-safe ledger flush and terminal clear handling after viewport shrink.
 - **[0.9.5]** (2026-07-27) — Resize-safe live TUI rendering for terminal viewport shrink/grow transitions.
 - **[0.9.4]** (2026-07-27) — Real OpenAI/Codex model discovery after login, npm package-content hardening, and pinned self-update support.
 - **[0.9.3]** (2026-07-26) — Released Telegram integration reliability improvements adapted from GJC v0.11.10, with safe jeo-native behavior and live verification.
-- **[0.9.2]** (2026-07-26) — Released the jeo-native GJC v0.11.6–v0.11.9 parity improvements after a complete cross-audit and live verification pass.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

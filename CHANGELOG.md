@@ -8,6 +8,17 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-07-27
+_Resize-safe ledger flush and terminal clear handling after viewport shrink._
+
+### Fixed
+- **TUI ledger/clear cursor anchoring** (`src/tui/renderer.ts`) — clamps `insertAbove()` and reserve-mode `clear()` to the current visible row count, preventing asynchronous ledger flushes or finish-time cleanup from overshooting a newly shrunken terminal bottom margin.
+
+### Verified
+- Renderer resize suite: 25 pass / 0 fail, including shrink-before-ledger and shrink-before-clear paths.
+- LaunchTui integration: real ledger flush remains cursor-bounded when a 40-row viewport shrinks to 6 rows before repaint.
+- `bun run typecheck`: clean.
+
 ## [0.9.5] - 2026-07-27
 _Resize-safe live TUI rendering for terminal viewport shrink/grow transitions._
 

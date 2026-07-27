@@ -55,6 +55,7 @@ import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/state";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
 import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
+import { rehydrateLiveModels, writeModelCache } from "../ai/model-cache";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal, applyEvidenceGate } from "../agent/goal-verifier";
 import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, credentialScopeFor, resolveVerifierModel, type PromptTier, type RouteDecision, type RoutingConfig } from "../agent/prompt-router";
@@ -692,10 +693,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let sessionComputerOverride: boolean | undefined;
 
   // Cache of live, credential-validated models per provider (refreshed by live pickers).
+  // Every successful discovery is also persisted (`writeModelCache`), so the NEXT launch
+  // starts from the account's real model set instead of the maintained static snapshot.
   let liveModelsCache: ProviderModelsResult[] | null = null;
   const getLiveModels = async (force = false): Promise<ProviderModelsResult[]> => {
     if (force || !liveModelsCache) {
       liveModelsCache = await discoverModels({ timeoutMs: 4000 });
+      void writeModelCache(liveModelsCache);
     }
     return liveModelsCache;
   };
@@ -2352,7 +2356,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // Tab autocomplete: alias names snapshotted once; live models come from the
   // background-warmed cache (logged-in/OAuth accounts). The completer is sync, so
   // it never blocks on the network — it reads whatever the cache currently holds.
+  //
+  // Disk rehydration runs FIRST and synchronously-awaited: it costs one small file
+  // read but makes the account's real model set (including ids newer than the
+  // maintained static snapshot) available to the picker, autocomplete, routing, and
+  // the OAuth Codex gate from the first keystroke, instead of only after the network
+  // discovery below happens to land.
   const aliasNames = Object.keys(await listAliases());
+  const cachedModels = await rehydrateLiveModels().catch(() => null);
   void getLiveModels()
     .then(r => {
       liveModelsCache ??= r;
@@ -2361,13 +2372,20 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const mentionPaths = (prefix: string): string[] => mentionPathsIn(cwd, prefix);
   const completionContext = (): CompletionContext => {
     const base = staticCompletionContext();
+    // Until this launch's own discovery lands, completion falls back to the models
+    // the account reported on a PREVIOUS run. Without the fallback a cold start
+    // offered only the static catalog, so freshly released ids the user already has
+    // access to were un-completable for the first seconds of every session.
+    const liveFromDiscovery = liveModelsCache ? flattenModels(liveModelsCache).map(e => e.model) : null;
+    const cachedFor = (p: string): string[] =>
+      cachedModels?.providers.filter(entry => entry.provider === p).flatMap(entry => entry.models) ?? [];
     return {
       ...base,
       slashCommands: [...base.slashCommands, ...skillSlashDetails.map(d => d.command)],
-      liveModels: liveModelsCache ? flattenModels(liveModelsCache).map(e => e.model) : [],
+      liveModels: liveFromDiscovery ?? (cachedModels?.providers.flatMap(entry => entry.models) ?? []),
       aliases: aliasNames,
       skillNames: resolvedSkillTokens,
-      modelsForProvider: p => liveModelsCache?.find(r => r.provider === p)?.models ?? [],
+      modelsForProvider: p => liveModelsCache?.find(r => r.provider === p)?.models ?? cachedFor(p),
       mentionPaths,
     };
   };

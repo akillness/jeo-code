@@ -8,6 +8,21 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-07-27
+_The provider model list now persists and rehydrates, so an account's live models survive across launches (gjc parity)._
+
+### Added
+- **Persistent live model catalog** (`src/ai/model-cache.ts`) — every successful discovery is written to `~/.jeo/model-catalog-cache.json` and rehydrated at the next launch, before any network call. `jeo auth login openai` persists the account's Codex list immediately.
+
+### Fixed
+- **Newly released OpenAI models were rejected at cold start** (`src/ai/model-cache.ts`, `src/commands/launch.ts`) — the OAuth Codex gate only knew the maintained static snapshot until this launch's own discovery landed, so an account that already serves `gpt-5.6-luna`/`-sol`/`-terra` could not select them for the first seconds of a session. Rehydration seeds the gate, routing, and the pickers from the account's own last-reported list.
+- **Cold-start model completion fell back to the static catalog** (`src/commands/launch.ts`) — tab completion and `modelsForProvider` now use the persisted per-provider lists until live discovery replaces them.
+
+### Verified
+- Model cache suite: 11 pass / 0 fail (round-trip, gate rehydration, api_key vs oauth scoping, offline/merge safety, corrupt-file degradation, test-write hermeticity).
+- Model/provider suite: 169 pass / 0 fail across discovery, catalog, routing, pickers, `/model`, OpenAI OAuth, and autocomplete.
+- Live account check: discovery persisted 4 providers; a fresh process turned `gpt-5.6-luna` from rejected into servable purely from disk.
+
 ## [0.9.7] - 2026-07-27
 _Fixes the broken 0.9.3-0.9.6 npm releases: `jeo` and `jeo --tmux` crashed at startup right after `jeo update`._
 

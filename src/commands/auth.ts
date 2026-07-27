@@ -6,6 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { readGlobalConfig } from "../agent/state";
 import { jeoEnv } from "../util/env";
 import { listProviderModels, CODEX_MODELS_URL } from "../ai/model-discovery";
+import { writeModelCache } from "../ai/model-cache";
 import {
   OAUTH_FLOWS,
   OAUTH_FLOW_REGISTRY,
@@ -152,6 +153,10 @@ async function reportOpenAiCodexModels(): Promise<void> {
   try {
     const result = await listProviderModels("openai", { preferOAuth: true });
     if (result.ok) {
+      // Persist immediately: the very next `jeo` launch then knows this account's
+      // real model set (including ids newer than the maintained static snapshot)
+      // before it makes any network call.
+      await writeModelCache([result]);
       console.log(`Live Codex models (${result.models.length}): ${result.models.join(", ")}`);
     } else {
       console.log(`[WARN] Could not verify live Codex models from ${CODEX_MODELS_URL}: ${result.error ?? "unknown error"} (non-fatal — login succeeded).`);

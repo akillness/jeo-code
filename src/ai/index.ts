@@ -2,6 +2,7 @@ export * from "./types";
 export * from "./model-manager";
 export * from "./provider-status";
 export * from "./model-discovery";
+export * from "./model-cache";
 export * from "./model-picker";
 export * from "./model-catalog";
 export * from "./model-enrich";

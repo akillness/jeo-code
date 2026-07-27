@@ -385,6 +385,41 @@ test("LaunchTui resize: live frame reflows back to full width after shrink→gro
     setSize(origCols, origRows);
   }
 });
+test("LaunchTui resize: real renderer stays anchored when the viewport shrinks below the live frame", () => {
+  const out: string[] = [];
+  const origCols = process.stdout.columns;
+  const origRows = process.stdout.rows;
+  const setSize = (cols: number | undefined, rows: number | undefined): void => {
+    Object.defineProperty(process.stdout, "columns", { value: cols, configurable: true, writable: true });
+    Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true, writable: true });
+    process.stdout.emit("resize");
+  };
+  let tui: LaunchTui | undefined;
+  try {
+    setSize(80, 30);
+    tui = new LaunchTui({ model: "m1", tty: true, write: s => out.push(s) });
+    tui.start();
+    clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+    tui.setTodos(Array.from({ length: 8 }, (_, i) => ({ title: `Task ${i}`, status: "in_progress" as const })));
+    tui.events().onStep!(1);
+
+    out.length = 0;
+    setSize(80, 6);
+    const resized = out.join("");
+    const cursorUps = [...resized.matchAll(/\x1b\[(\d+)A/g)].map(m => Number(m[1]));
+
+    // A real inline resize must not scroll or walk the cursor above the visible
+    // viewport; either leaves the next prompt/footer permanently torn.
+    expect(resized).not.toContain("\n");
+    expect(Math.max(0, ...cursorUps)).toBeLessThanOrEqual(5);
+  } finally {
+    if (tui) {
+      clearInterval((tui as unknown as { timer: ReturnType<typeof setInterval> }).timer);
+      tui.finish("done");
+    }
+    setSize(origCols, origRows);
+  }
+});
 
 test("LaunchTui.usable is false under a non-TTY test process", () => {
   expect(LaunchTui.usable(false)).toBe(false); // bun test stdout is not a TTY

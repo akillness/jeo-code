@@ -293,10 +293,10 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.9.5]** (2026-07-27) — Resize-safe live TUI rendering for terminal viewport shrink/grow transitions.
 - **[0.9.4]** (2026-07-27) — Real OpenAI/Codex model discovery after login, npm package-content hardening, and pinned self-update support.
 - **[0.9.3]** (2026-07-26) — Released Telegram integration reliability improvements adapted from GJC v0.11.10, with safe jeo-native behavior and live verification.
 - **[0.9.2]** (2026-07-26) — Released the jeo-native GJC v0.11.6–v0.11.9 parity improvements after a complete cross-audit and live verification pass.
-- **[0.9.1]** (2026-07-24) — User request (paraphrased, Korean): "make the TUI resize responsively like gjc's TUI when terminal width/height changes, without breaking the layout — also borrow forge's layout and table components." Investigated the existing resize infrastructure first (already extensive: throttled live-frame resize repaint, a poll-based SIGWINCH safety net, resize-aware interactive pickers) before assuming a gap. Found one concrete un-responsive panel — `jeo doctor`'s Provider connectivity table — and, while rebuilding it on forge's own box-drawn table renderer, also found and fixed a real, previously-unknown overflow bug in `formatForgeBox` itself, shared by every tool card across the whole live TUI.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

@@ -8,6 +8,17 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-07-27
+_Resize-safe live TUI rendering for terminal viewport shrink/grow transitions._
+
+### Fixed
+- **TUI viewport shrink anchoring** (`src/tui/renderer.ts`) — bounds differential row walks and cursor movement to the visible terminal height, preventing clipped frames from moving the repaint anchor past the bottom margin and corrupting subsequent footer/input rendering.
+
+### Verified
+- Renderer resize suite: 24 pass / 0 fail, including a viewport shrink below the previous frame and recovery after growth.
+- LaunchTui resize integration: real renderer output remains scroll-free and cursor-bounded during a live 30-row → 6-row transition.
+- `bun run typecheck`: clean.
+
 ## [0.9.4] - 2026-07-27
 _Real OpenAI/Codex model discovery after login, npm package-content hardening, and pinned self-update support._
 

@@ -8,6 +8,16 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.9.10] - 2026-07-27
+_`jeo update` now verifies the binary you actually run, and recovers from bun's stale registry cache._
+
+### Fixed
+- **`jeo update` claimed success while the machine still ran the old build** (`src/commands/update.ts`) — a package manager's zero exit was treated as proof of an update. In practice bun can fail to resolve a just-published version (`No version matching "x.y.z" ... (but package exists)`) from a stale manifest, jeo then fell back to npm, npm installed into a prefix the user's PATH does not resolve, and the command printed `Successfully installed` while `jeo --version` still reported the previous release. The install now retries bun with `--force` (which re-resolves against the registry) before falling back to npm, stops only once the binary on PATH reports the requested version, and reports a stale active binary as a failure (exit 1, `installed: false` in `--json`) with the exact recovery commands.
+
+### Verified
+- Update suite: 33 pass / 0 fail, including the new stale-active-binary failure, its `--json` shape, and the bun `--force` retry ordering.
+- Reproduced live: `bun install -g jeo-code@0.9.9` resolved nothing from cache while `--force` installed it correctly.
+
 ## [0.9.9] - 2026-07-27
 _Root-causes the frozen `jeo --tmux` TUI: the window was pinned to its launch size, so resizing the terminal only cut the view._
 

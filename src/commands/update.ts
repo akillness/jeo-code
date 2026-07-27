@@ -43,6 +43,36 @@ export interface UpdateDeps {
   activeVersion?: () => string | null;
 }
 
+/**
+ * Ordered install attempts for `target` (`jeo-code@<version>`).
+ *
+ * `bun install -g` alone is not enough in practice: right after a publish bun can
+ * still hold a stale registry manifest and fail with `No version matching "<v>"
+ * found ... (but package exists)`. `--force` re-resolves against the registry and
+ * is what actually recovers that state. npm remains the last resort for
+ * npm-installed globals. Pure so the policy is unit-testable without spawning.
+ */
+export function installCandidates(target: string): string[][] {
+  return [
+    ["bun", "install", "-g", target],
+    // Cache-buster: bun's resolver held a stale manifest for a just-published version.
+    ["bun", "install", "-g", target, "--force"],
+    ["npm", "install", "-g", target],
+  ];
+}
+
+/** Version of the `jeo` binary PATH actually resolves, or null when unreadable. */
+function readActiveVersion(): string | null {
+  try {
+    const proc = Bun.spawnSync(["jeo", "--version"], { stdout: "pipe", stderr: "pipe" });
+    if (!proc.success) return null;
+    const out = new TextDecoder().decode(proc.stdout);
+    const m = out.match(/(\d+\.\d+\.\d+(?:-[\w.]+)?)/);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
 export const defaultDeps: UpdateDeps = {
   fetchJson: async (url: string, options?: { signal?: AbortSignal }) => {
     const res = await fetch(url, options);
@@ -65,17 +95,20 @@ export const defaultDeps: UpdateDeps = {
     // Self-update the global install via the SAME toolchain it was installed with. jeo
     // ships as a `#!/usr/bin/env bun` script so bun is the common case, but npm-installed
     // globals exist too — try bun first, fall back to npm (and tolerate either missing).
-    // `@<version>` (the resolved latest) forces the newest publish past a stale global cache.
     const target = `jeo-code@${version ?? "latest"}`;
-    const managers: string[][] = [
-      ["bun", "install", "-g", target],
-      ["npm", "install", "-g", target],
-    ];
     let lastErr = "";
-    for (const cmd of managers) {
+    for (const cmd of installCandidates(target)) {
       try {
         const proc = Bun.spawnSync(cmd, { stdout: "inherit", stderr: "inherit" });
-        if (proc.success) return { success: true };
+        if (proc.success) {
+          // A zero exit is NOT proof the user's `jeo` moved: npm's global prefix is
+          // often a different directory than the bun prefix PATH actually resolves,
+          // so an npm fallback can "succeed" while the active binary is untouched.
+          // Only stop once the binary on PATH really reports the requested version.
+          if (!version || readActiveVersion() === version) return { success: true };
+          lastErr = `${cmd[0]} reported success but the active 'jeo' is still ${readActiveVersion() ?? "unknown"}`;
+          continue;
+        }
         lastErr = `${cmd[0]} exited with code ${proc.exitCode}`;
       } catch (err: any) {
         lastErr = `${cmd[0]} unavailable: ${err?.message ?? String(err)}`;
@@ -84,20 +117,10 @@ export const defaultDeps: UpdateDeps = {
     return { success: false, stderr: lastErr };
   }
 ,
-  activeVersion: () => {
-    // Read the version of the `jeo` actually on PATH (may differ from this process's bundled
-    // version after a self-update, e.g. when bun installed to ~/.bun/bin but PATH prefers an
-    // npm global). Used to detect a silent "installed but PATH unchanged" no-op.
-    try {
-      const proc = Bun.spawnSync(["jeo", "--version"], { stdout: "pipe", stderr: "pipe" });
-      if (!proc.success) return null;
-      const out = new TextDecoder().decode(proc.stdout);
-      const m = out.match(/(\d+\.\d+\.\d+(?:-[\w.]+)?)/);
-      return m ? m[1] : null;
-    } catch {
-      return null;
-    }
-  }
+  // Version of the `jeo` actually on PATH — may differ from this process's bundled
+  // version after a self-update (e.g. npm installed into a prefix PATH does not
+  // resolve). Detects the silent "installed but PATH unchanged" no-op.
+  activeVersion: readActiveVersion
   ,
   showWhatsNew: () => {
     try {
@@ -279,25 +302,31 @@ export async function runUpdateCommandWith(args: string[], deps: UpdateDeps): Pr
       try {
         const result = await deps.install(latest ?? undefined);
         if (result.success) {
+          // A package manager's zero exit does not prove the user's `jeo` moved: npm's
+          // global prefix is frequently a different directory than the one PATH resolves,
+          // so the install lands somewhere the user never runs. Verify the ACTIVE binary
+          // and treat a still-stale one as a failed update (exit 1) rather than printing
+          // a success line the machine contradicts.
+          const active = deps.activeVersion?.();
+          const stale = !!(active && latest && compareVersions(active, latest) < 0);
           if (hasJson) {
             console.log(JSON.stringify({
               current,
               latest,
               upToDate: false,
-              installed: true
+              installed: !stale,
+              ...(stale ? { activeVersion: active, error: "active jeo still reports an older version" } : {}),
             }));
+            if (stale) process.exitCode = 1;
+          } else if (stale) {
+            console.error(`[FAILED] Installed jeo-code@${latest}, but the active 'jeo' on PATH still reports ${active}.`);
+            console.error(`The install landed in a prefix your PATH does not use. Fix it with one of:`);
+            console.error(`  bun install -g jeo-code@${latest} --force`);
+            console.error(`  npm install -g jeo-code@${latest}`);
+            console.error(`Then confirm with: jeo --version`);
+            process.exitCode = 1;
           } else {
             console.log(`Successfully installed jeo-code@${latest}`);
-            // Verify the `jeo` on PATH actually picked up the new install — a bun-vs-npm or
-            // PATH mismatch can leave an older binary in front, which looks like "update did
-            // nothing". Surface that loudly with the manual fix instead of failing silently.
-            const active = deps.activeVersion?.();
-            if (active && latest && compareVersions(active, latest) < 0) {
-              console.warn(`Warning: installed ${latest}, but the active 'jeo' on PATH still reports ${active}.`);
-              console.warn(`Your PATH points at a different install. Fix it with one of:`);
-              console.warn(`  npm install -g jeo-code@${latest}`);
-              console.warn(`  bun install -g jeo-code@${latest}`);
-            }
             deps.showWhatsNew?.();
           }
         } else {

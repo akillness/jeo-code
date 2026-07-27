@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach, mock } from "bun:test";
-import { runUpdateCommandWith, compareVersions, type UpdateDeps } from "../src/commands/update";
+import { runUpdateCommandWith, compareVersions, installCandidates, type UpdateDeps } from "../src/commands/update";
 
 let logged: string[] = [];
 let errored: string[] = [];
@@ -380,9 +380,11 @@ test("update - --help", async () => {
   expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true);
 });
 
-// Post-install verification: a successful install that leaves an OLDER binary on PATH
-// (bun-vs-npm / PATH mismatch) must warn loudly instead of looking like a silent no-op.
-test("update: warns when install succeeds but the active jeo on PATH is still old", async () => {
+// Post-install verification: a package manager's zero exit does not prove the user's
+// `jeo` moved (npm's global prefix is often not the one PATH resolves). An install
+// that leaves an OLDER binary in front is a FAILED update, not a success with a note —
+// reporting it as success is what made "I ran jeo update and nothing changed" invisible.
+test("update: a successful install that leaves an older jeo on PATH fails loudly", async () => {
   const deps: UpdateDeps = {
     localVersion: () => "0.5.13",
     fetchJson: async () => ({ version: "0.5.16" }),
@@ -390,9 +392,35 @@ test("update: warns when install succeeds but the active jeo on PATH is still ol
     activeVersion: () => "0.5.13", // PATH still points at the old binary
   };
   await runUpdateCommandWith([], deps);
-  expect(logged.some(l => l.includes("Successfully installed jeo-code@0.5.16"))).toBe(true);
-  expect(warned.some(l => l.includes("still reports 0.5.13"))).toBe(true);
-  expect(warned.some(l => l.includes("jeo-code@0.5.16"))).toBe(true);
+  expect(logged.some(l => l.includes("Successfully installed"))).toBe(false);
+  expect(errored.some(l => l.includes("still reports 0.5.13"))).toBe(true);
+  expect(errored.some(l => l.includes("bun install -g jeo-code@0.5.16 --force"))).toBe(true);
+  expect(errored.some(l => l.includes("jeo --version"))).toBe(true);
+  expect(process.exitCode).toBe(1);
+});
+
+test("update --json surfaces the stale-active-binary failure as machine-readable output", async () => {
+  const deps: UpdateDeps = {
+    localVersion: () => "0.5.13",
+    fetchJson: async () => ({ version: "0.5.16" }),
+    install: async () => ({ success: true }),
+    activeVersion: () => "0.5.13",
+  };
+  await runUpdateCommandWith(["--json", "--install"], deps);
+  const payload = JSON.parse([...logged].reverse().find(l => l.trim().startsWith("{"))!);
+  expect(payload.installed).toBe(false);
+  expect(payload.activeVersion).toBe("0.5.13");
+  expect(process.exitCode).toBe(1);
+});
+
+test("installCandidates retries bun with --force before falling back to npm", () => {
+  // Right after a publish, bun can hold a stale registry manifest and fail with
+  // `No version matching "<v>" found ... (but package exists)`; --force re-resolves.
+  expect(installCandidates("jeo-code@1.2.3")).toEqual([
+    ["bun", "install", "-g", "jeo-code@1.2.3"],
+    ["bun", "install", "-g", "jeo-code@1.2.3", "--force"],
+    ["npm", "install", "-g", "jeo-code@1.2.3"],
+  ]);
 });
 
 test("update: no PATH warning when the active jeo matches the installed version", async () => {

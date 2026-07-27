@@ -285,10 +285,10 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.9.10]** (2026-07-27) — `jeo update` now verifies the binary you actually run, and recovers from bun's stale registry cache.
 - **[0.9.9]** (2026-07-27) — Root-causes the frozen `jeo --tmux` TUI: the window was pinned to its launch size, so resizing the terminal only cut the view.
 - **[0.9.8]** (2026-07-27) — The provider model list now persists and rehydrates, so an account's live models survive across launches (gjc parity).
 - **[0.9.7]** (2026-07-27) — Fixes the broken 0.9.3-0.9.6 npm releases: `jeo` and `jeo --tmux` crashed at startup right after `jeo update`.
-- **[0.9.6]** (2026-07-27) — Resize-safe ledger flush and terminal clear handling after viewport shrink.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

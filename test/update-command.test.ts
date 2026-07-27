@@ -406,3 +406,147 @@ test("update: no PATH warning when the active jeo matches the installed version"
   expect(logged.some(l => l.includes("Successfully installed jeo-code@0.5.16"))).toBe(true);
   expect(warned.some(l => l.includes("still reports"))).toBe(false);
 });
+
+test("update - --version pins the exact registry version (skips /latest) and installs it", async () => {
+  let installedWith: string | undefined = "UNCALLED";
+  let requestedUrl = "";
+  const deps: UpdateDeps = {
+    fetchJson: async (url: string) => {
+      requestedUrl = url;
+      return { version: "0.9.4" };
+    },
+    localVersion: () => "0.9.3",
+    install: async (version?: string) => { installedWith = version; return { success: true }; },
+  };
+
+  await runUpdateCommandWith(["--version", "0.9.4", "--install"], deps);
+
+  expect(requestedUrl).toBe("https://registry.npmjs.org/jeo-code/0.9.4");
+  expect(requestedUrl.includes("latest")).toBe(false);
+  expect(installedWith).toBe("0.9.4");
+  expect(logged.some(line => line.includes("Successfully installed jeo-code@0.9.4"))).toBe(true);
+  expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true);
+});
+
+test("update - --version rolls back even when current is newer (exact-match pin, not 'don't downgrade')", async () => {
+  let installedWith: string | undefined = "UNCALLED";
+  const deps: UpdateDeps = {
+    fetchJson: async () => ({ version: "0.9.4" }),
+    localVersion: () => "0.9.5",
+    install: async (version?: string) => { installedWith = version; return { success: true }; },
+  };
+
+  await runUpdateCommandWith(["--version", "0.9.4", "--install"], deps);
+
+  expect(installedWith).toBe("0.9.4");
+  expect(logged.some(line => line.includes("Successfully installed jeo-code@0.9.4"))).toBe(true);
+});
+
+test("update - --check --version reports pinned diff without installing", async () => {
+  let installCalled = false;
+  const deps: UpdateDeps = {
+    fetchJson: async () => ({ version: "0.9.4" }),
+    localVersion: () => "0.9.3",
+    install: async () => { installCalled = true; return { success: true }; },
+  };
+
+  await runUpdateCommandWith(["--check", "--version", "0.9.4"], deps);
+
+  expect(installCalled).toBe(false);
+  expect(logged.some(line => line.includes("Pinned version 0.9.4 differs from current (0.9.3)"))).toBe(true);
+  expect(logged.some(line => line.includes("Run 'jeo update --version 0.9.4' to install it"))).toBe(true);
+  expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true);
+});
+
+test("update - --check --version already at pinned version reports up-to-date, no install", async () => {
+  let installCalled = false;
+  const deps: UpdateDeps = {
+    fetchJson: async () => ({ version: "0.9.4" }),
+    localVersion: () => "0.9.4",
+    install: async () => { installCalled = true; return { success: true }; },
+  };
+
+  await runUpdateCommandWith(["--check", "--version", "0.9.4"], deps);
+
+  expect(installCalled).toBe(false);
+  expect(logged.some(line => line.includes("already at the pinned version (0.9.4)"))).toBe(true);
+});
+
+test("update - --version with missing value errors clearly and never installs", async () => {
+  let installCalled = false;
+  const deps: UpdateDeps = {
+    fetchJson: async () => { throw new Error("fetchJson should not be called"); },
+    localVersion: () => "0.9.3",
+    install: async () => { installCalled = true; return { success: true }; },
+  };
+
+  await runUpdateCommandWith(["--version"], deps);
+
+  expect(installCalled).toBe(false);
+  expect(errored.some(line => line.includes("--version requires a semver value"))).toBe(true);
+  expect(process.exitCode).toBe(1);
+});
+
+test("update - --version with invalid semver shape errors clearly and never installs", async () => {
+  let installCalled = false;
+  const deps: UpdateDeps = {
+    fetchJson: async () => { throw new Error("fetchJson should not be called"); },
+    localVersion: () => "0.9.3",
+    install: async () => { installCalled = true; return { success: true }; },
+  };
+
+  await runUpdateCommandWith(["--version", "not-a-version", "--install"], deps);
+
+  expect(installCalled).toBe(false);
+  expect(errored.some(line => line.includes('"not-a-version" is not a valid semver'))).toBe(true);
+  expect(process.exitCode).toBe(1);
+});
+
+test("update - --version --json invalid value emits JSON error shape, still no install", async () => {
+  let installCalled = false;
+  const deps: UpdateDeps = {
+    fetchJson: async () => { throw new Error("fetchJson should not be called"); },
+    localVersion: () => "0.9.3",
+    install: async () => { installCalled = true; return { success: true }; },
+  };
+
+  await runUpdateCommandWith(["--version", "1.2", "--json", "--install"], deps);
+
+  expect(installCalled).toBe(false);
+  expect(logged.length).toBe(1);
+  const parsed = JSON.parse(logged[0]);
+  expect(parsed.current).toBe("0.9.3");
+  expect(parsed.upToDate).toBe(false);
+  expect(String(parsed.error)).toContain("not a valid semver");
+  expect(process.exitCode).toBe(1);
+});
+
+test("update - --version pointing at an unpublished release 404s with a clear, always-nonzero error", async () => {
+  const deps: UpdateDeps = {
+    fetchJson: async () => {
+      const err = new Error("Not Found");
+      (err as any).status = 404;
+      throw err;
+    },
+    localVersion: () => "0.9.3",
+    install: async () => ({ success: true }),
+  };
+
+  await runUpdateCommandWith(["--version", "9.9.9", "--install"], deps);
+
+  expect(logged.some(line => line.includes("Version 9.9.9 not found on registry: jeo-code"))).toBe(true);
+  expect(process.exitCode).toBe(1);
+});
+
+test("update - unknown flag after --version's value is still caught", async () => {
+  const deps: UpdateDeps = {
+    fetchJson: async () => ({ version: "0.9.4" }),
+    localVersion: () => "0.9.3",
+    install: async () => ({ success: true }),
+  };
+
+  await runUpdateCommandWith(["--version", "0.9.4", "--bogus"], deps);
+
+  expect(logged.some(line => line.includes("Unknown flag: --bogus"))).toBe(true);
+  expect(process.exitCode).toBe(1);
+});

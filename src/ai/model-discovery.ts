@@ -39,6 +39,15 @@ export interface DiscoveryOptions {
   limit?: number;
   /** Config snapshot used for provider base URLs. */
   config?: Config;
+  /**
+   * Narrowly scoped for the post-login report (`jeo auth login openai`): keep
+   * the just-stored OAuth credential even when an unrelated `providers.openai`
+   * API key is also configured, so the report reflects the account that was
+   * JUST logged in rather than silently swapping to the API key. Does not
+   * change any other discovery caller — the TUI/`discoverModels` default
+   * (API key preferred when configured) is untouched.
+   */
+  preferOAuth?: boolean;
 }
 
 const DEFAULT_TIMEOUT = 5000;
@@ -48,7 +57,7 @@ const DEFAULT_LIMIT = 100;
 // to receive the full current list (verified live 2026-06-12: 0.46→[], 0.99→gpt-5.4,
 // 1.0/2.0→full gpt-5.5 set). On drift the catalog fallback keeps Codex usable.
 const CODEX_CLIENT_VERSION = "2.0.0";
-const CODEX_MODELS_URL = `https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`;
+export const CODEX_MODELS_URL = `https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`;
 const ANTIGRAVITY_MODELS_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 const ANTIGRAVITY_MODEL_DENYLIST = new Set([
   "chat_20706",
@@ -360,7 +369,9 @@ export async function listProviderModels(
     const prov = authProvider!;
     // Antigravity's list endpoint accepts ONLY OAuth (the request builder sends
     // no api-key header), so never swap its credential to an api_key.
-    if (provider !== "antigravity" && cred.kind === "oauth" && config.providers?.[prov]) {
+    // `preferOAuth` (post-login report only) skips this swap so the report
+    // reflects the freshly stored OAuth credential, not an unrelated key.
+    if (provider !== "antigravity" && cred.kind === "oauth" && config.providers?.[prov] && !opts.preferOAuth) {
       // An API key is the broader, documented path — prefer it for live discovery.
       cred = { kind: "api_key", provider: prov, token: config.providers[prov]! };
       source = "api_key";

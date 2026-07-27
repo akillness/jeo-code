@@ -5,6 +5,7 @@ import { type StoredOAuth } from "../agent/state";
 import { createInterface } from "node:readline/promises";
 import { readGlobalConfig } from "../agent/state";
 import { jeoEnv } from "../util/env";
+import { listProviderModels, CODEX_MODELS_URL } from "../ai/model-discovery";
 import {
   OAUTH_FLOWS,
   OAUTH_FLOW_REGISTRY,
@@ -121,6 +122,7 @@ async function runAuthLogin(rest: string[]): Promise<void> {
     rl.close();
     await loginOAuth(chosen, manualToken.trim());
     console.log(`[SUCCESS] Stored manual OAuth bearer for ${chosen} (no auto-refresh).`);
+    if (chosen === "openai") await reportOpenAiCodexModels();
     return;
   }
 
@@ -128,12 +130,34 @@ async function runAuthLogin(rest: string[]): Promise<void> {
     const { email } = await interactiveOAuthLogin(chosen, rl);
     console.log(`\n[SUCCESS] OAuth login complete for ${chosen}${email ? ` (${email})` : ""}.`);
     console.log("Stored access + refresh tokens in ~/.jeo/config.json; jeo will auto-refresh on expiry.");
+    if (chosen === "openai") await reportOpenAiCodexModels();
   } catch (err) {
     console.log(`\n[FAILED] ${(err as Error).message}`);
     console.log("Tip: paste the redirect URL when prompted, or use 'jeo auth login <provider> --token <bearer>'.");
     process.exitCode = 1;
   } finally {
     rl.close();
+  }
+}
+
+/**
+ * Best-effort, timeout-bounded live Codex model check run immediately after a
+ * successful `jeo auth login openai`. Uses `preferOAuth` so the report reflects
+ * the account that was JUST logged in — never the catalog fallback, and never
+ * silently swapped to an unrelated pre-existing `providers.openai` API key.
+ * A failure here is NEVER fatal: login has already succeeded and is not rolled
+ * back by this check. Prints only model ids/count — no tokens/secrets.
+ */
+async function reportOpenAiCodexModels(): Promise<void> {
+  try {
+    const result = await listProviderModels("openai", { preferOAuth: true });
+    if (result.ok) {
+      console.log(`Live Codex models (${result.models.length}): ${result.models.join(", ")}`);
+    } else {
+      console.log(`[WARN] Could not verify live Codex models from ${CODEX_MODELS_URL}: ${result.error ?? "unknown error"} (non-fatal — login succeeded).`);
+    }
+  } catch (err) {
+    console.log(`[WARN] Could not verify live Codex models from ${CODEX_MODELS_URL}: ${(err as Error).message} (non-fatal — login succeeded).`);
   }
 }
 

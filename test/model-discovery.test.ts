@@ -9,6 +9,7 @@ import {
   discoverModels,
   catalogOr,
   isLocalProviderReachable,
+  CODEX_MODELS_URL,
 } from "../src/ai/model-discovery";
 import { PROVIDER_NAMES } from "../src/ai/provider-status";
 import { isCodexModel, liveProviderCatalogModels, resetLiveCodexModels, resetLiveProviderModels } from "../src/ai/model-catalog";
@@ -184,6 +185,70 @@ test("listProviderModels: OpenAI OAuth + API Key swaps to API Key", async () => 
   expect(r.ok).toBe(true);
   expect(r.source).toBe("api_key");
   expect(auth).toBe("Bearer sk-oai");
+});
+test("listProviderModels: preferOAuth (post-login report) skips the API-key swap and sends the OAuth bearer to the Codex models endpoint even with providers.openai also configured", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: { openai: "sk-oai" },
+      oauth: { openai: "oauth-oai" },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  let capturedUrl = "";
+  let capturedAuth = "";
+  const fetchSpy = (async (url: string | URL | Request, init?: RequestInit) => {
+    capturedUrl = String(url);
+    capturedAuth = String((init?.headers as Record<string, string>)?.Authorization ?? "");
+    return new Response(JSON.stringify({ models: [{ slug: "gpt-5.5", supported_in_api: true }, { slug: "hidden", supported_in_api: false }] }), { status: 200 });
+  }) as typeof fetch;
+  const r = await listProviderModels("openai", { fetchImpl: fetchSpy, preferOAuth: true });
+  expect(capturedUrl).toBe(CODEX_MODELS_URL);
+  expect(capturedUrl).toBe("https://chatgpt.com/backend-api/codex/models?client_version=2.0.0");
+  expect(capturedAuth).toBe("Bearer oauth-oai");
+  expect(r.source).toBe("oauth");
+  expect(r.ok).toBe(true);
+  expect(r.models).toEqual(["gpt-5.5"]);
+});
+
+test("listProviderModels: preferOAuth is a no-op for an OAuth-only config (no API key to skip swapping to) — still fetches Codex with the bearer", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: {},
+      oauth: { openai: "oauth-oai-only" },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  let capturedAuth = "";
+  const fetchSpy = (async (_url: string | URL | Request, init?: RequestInit) => {
+    capturedAuth = String((init?.headers as Record<string, string>)?.Authorization ?? "");
+    return new Response(JSON.stringify({ models: [{ slug: "gpt-5.4", supported_in_api: true }] }), { status: 200 });
+  }) as typeof fetch;
+  const r = await listProviderModels("openai", { fetchImpl: fetchSpy, preferOAuth: true });
+  expect(r.source).toBe("oauth");
+  expect(r.ok).toBe(true);
+  expect(r.models).toEqual(["gpt-5.4"]);
+  expect(capturedAuth).toBe("Bearer oauth-oai-only");
+});
+
+test("listProviderModels: without preferOAuth, an OAuth+API-key config still swaps to the API key — the TUI/default discovery path is unchanged by the new option", async () => {
+  await fs.writeFile(
+    path.join(dir, "config.json"),
+    JSON.stringify({
+      providers: { openai: "sk-oai" },
+      oauth: { openai: "oauth-oai" },
+      defaultModel: "claude-3-5-sonnet",
+    }),
+  );
+  let capturedAuth = "";
+  const fetchSpy = (async (_url: string | URL | Request, init?: RequestInit) => {
+    capturedAuth = String((init?.headers as Record<string, string>)?.Authorization ?? "");
+    return new Response(JSON.stringify({ data: [{ id: "gpt-4o" }] }), { status: 200 });
+  }) as typeof fetch;
+  const r = await listProviderModels("openai", { fetchImpl: fetchSpy });
+  expect(r.source).toBe("api_key");
+  expect(capturedAuth).toBe("Bearer sk-oai");
 });
 
 test("listProviderModels: OAuth-only discovery still probes the provider list", async () => {

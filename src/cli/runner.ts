@@ -217,7 +217,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "update",
     summary: "Update jeo-code to the latest npm release (bare = install; --check only checks).",
-    usage: "update [--check|--install] [--json] [--strict]",
+    usage: "update [--check|--install] [--json] [--strict] [--version <semver>]",
     loader: async () => {
       const m = await import("../commands/update");
       return args => m.runUpdateCommand(args);

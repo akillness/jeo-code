@@ -8,6 +8,21 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-07-27
+_Real OpenAI/Codex model discovery after login, npm package-content hardening, and pinned self-update support._
+
+### Added
+- **Live OpenAI/Codex models after login** (`src/commands/auth.ts`, `src/ai/model-discovery.ts`) — immediately probes the authenticated account's Codex models endpoint after manual or interactive OpenAI login, prefers that OAuth credential for the report, and keeps login successful when discovery is unavailable.
+- **Pinned self-update targets** (`src/commands/update.ts`) — `jeo update --version <semver>` resolves and installs an exact published release without falling back to npm `latest`.
+
+### Fixed
+- **npm package-content CI guard** (`.github/workflows/npm-publish.yml`) — asserts `npm pack --dry-run --json` against git-tracked files, required release files, and forbidden test/runtime artifacts before publishing.
+
+### Verified
+- Release-focused suite: 148 pass / 0 fail across model discovery, update, package workflow, Codex responses, model manager, and catalog tests.
+- `bun run typecheck`: clean.
+- Clean-worktree package manifest excludes the previously leaked monitor/playwriter files.
+
 ## [0.9.3] - 2026-07-26
 _Released Telegram integration reliability improvements adapted from GJC v0.11.10, with safe jeo-native behavior and live verification._
 

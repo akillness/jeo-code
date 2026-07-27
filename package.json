@@ -1,6 +1,6 @@
 {
   "name": "jeo-code",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "description": "Clean, highly optimized AI coding agent using spec-first loop",
   "type": "module",
   "main": "src/cli.ts",
@@ -48,7 +48,7 @@
     "build": "bun build src/cli.ts --compile --keep-names --external chromium-bidi --no-compile-autoload-dotenv --outfile dist/jeo",
     "build:binaries": "bun scripts/ci-release-build-binaries.ts",
     "build:win": "bun scripts/ci-release-build-binaries.ts --targets win32-x64",
-    "pack:check": "npm pack --dry-run",
+    "pack:check": "bun scripts/check-package.ts",
     "publish:npm": "npm publish --access public --registry https://registry.npmjs.org/",
     "changelog:sync": "bun scripts/sync-changelog.ts",
     "test": "bun test",

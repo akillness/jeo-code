@@ -285,10 +285,10 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.9.7]** (2026-07-27) — Fixes the broken 0.9.3-0.9.6 npm releases: `jeo` and `jeo --tmux` crashed at startup right after `jeo update`.
 - **[0.9.6]** (2026-07-27) — Resize-safe ledger flush and terminal clear handling after viewport shrink.
 - **[0.9.5]** (2026-07-27) — Resize-safe live TUI rendering for terminal viewport shrink/grow transitions.
 - **[0.9.4]** (2026-07-27) — Real OpenAI/Codex model discovery after login, npm package-content hardening, and pinned self-update support.
-- **[0.9.3]** (2026-07-26) — Released Telegram integration reliability improvements adapted from GJC v0.11.10, with safe jeo-native behavior and live verification.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

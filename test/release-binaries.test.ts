@@ -103,52 +103,25 @@ test("release workflow builds every target (incl. Windows) and uploads them", ()
   expect(releaseWorkflow).toContain("contents: write");
 });
 
-test("package-content check captures the npm pack manifest as asserted JSON, not a bare printout", () => {
-  expect(releaseWorkflow).toContain("npm pack --dry-run --json > pack-manifest.json");
-  // The step must actually run the assertion script and fail the job on a non-zero exit
-  // (no `|| true`/`continue-on-error` escape hatch undermining the guard).
-  expect(releaseWorkflow).toContain("node pack-check.mjs");
-  expect(releaseWorkflow).not.toMatch(/node pack-check\.mjs\s*(\|\|\s*true|;\s*true)/);
+test("package-content check runs the shared pack:check gate and fails the job on a non-zero exit", () => {
+  expect(releaseWorkflow).toContain("run: bun run pack:check");
+  // No `|| true` / continue-on-error escape hatch undermining the guard.
+  expect(releaseWorkflow).not.toMatch(/bun run pack:check\s*(\|\|\s*true|;\s*true)/);
+  expect(releaseWorkflow).not.toContain("continue-on-error");
 });
 
-test("package-content check asserts every packed path is tracked by git", () => {
-  expect(releaseWorkflow).toContain("git ls-files");
-  expect(releaseWorkflow).toContain("untracked path leaked into npm package");
-});
-
-test("package-content check requires the core release files to be present in the tarball", () => {
-  for (const requiredFile of [
-    "package.json",
-    "src/cli.ts",
-    "src/ai/model-discovery.ts",
-    "src/ai/providers/openai.ts",
-    "CHANGELOG.md",
-    "README.md",
-    "README.ko.md",
-    "README.ja.md",
-    "README.zh.md",
-  ]) {
-    expect(releaseWorkflow).toContain(`"${requiredFile}"`);
-  }
-  expect(releaseWorkflow).toContain("required release file missing from npm package");
-});
-
-test("package-content check explicitly guards against the previously leaked untracked artifacts", () => {
-  for (const leakedFile of [
-    "src/agent/monitor-registry.ts",
-    "src/agent/monitor-tool.ts",
-    "src/types/playwriter.d.ts",
-  ]) {
-    expect(releaseWorkflow).toContain(`"${leakedFile}"`);
-  }
-  expect(releaseWorkflow).toContain("forbidden dev/runtime artifact packed");
-});
-
-test("package-content check rejects test/CI artifacts leaking into the tarball", () => {
-  expect(releaseWorkflow).toContain("test/CI artifact leaked into npm package");
-  expect(releaseWorkflow).toContain("(test|tests)");
-  expect(releaseWorkflow).toContain("\\.test\\.ts$");
-  expect(releaseWorkflow).toContain("^\\.github\\/");
+test("release pipeline BOOTS the packed tarball, not just its file list", () => {
+  // Releases 0.9.3-0.9.6 shipped a tarball whose `jeo` crashed instantly because
+  // tracked source imported never-committed modules. A file-list check alone
+  // cannot catch that; the artifact has to be executed.
+  expect(releaseWorkflow).toContain("name: Smoke-test the packed tarball");
+  expect(releaseWorkflow).toContain("npm pack --silent");
+  expect(releaseWorkflow).toContain("/src/commands/launch.ts");
+  const packCheckIdx = releaseWorkflow.indexOf("name: Check package contents");
+  const smokeIdx = releaseWorkflow.indexOf("name: Smoke-test the packed tarball");
+  const publishIdx = releaseWorkflow.indexOf("name: Publish to npm");
+  expect(packCheckIdx).toBeLessThan(smokeIdx);
+  expect(smokeIdx).toBeLessThan(publishIdx);
 });
 
 test("Check package contents keeps its place between Test and Verify npm token, preserving typecheck/test/publish order", () => {

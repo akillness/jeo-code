@@ -8,6 +8,20 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-07-27
+_Fixes the broken 0.9.3-0.9.6 npm releases: `jeo` and `jeo --tmux` crashed at startup right after `jeo update`._
+
+### Fixed
+- **Published package no longer crashes on launch** (`src/agent/monitor-tool.ts`, `src/agent/monitor-registry.ts`) — the `monitor` tool modules that `src/commands/launch.ts` and `src/commands/launch/slash-handlers.ts` import were never committed, so releases 0.9.3-0.9.6 shipped without them and every `jeo` / `jeo --tmux` run died with `Cannot find module '../agent/monitor-tool'`. Both modules (and their tests) are now part of the repository.
+
+### Changed
+- **Release gate verifies the artifact, not just its file list** (`scripts/check-package.ts`, `.github/workflows/npm-publish.yml`) — `bun run pack:check` now resolves every relative import inside the packed files against the packed set, asserts the required entrypoints, rejects untracked or test/CI paths, and CI additionally unpacks the real tarball and imports the launch module graph before publishing.
+
+### Verified
+- Ran the new gate against the v0.9.6 tag: it reports the three missing-module imports that broke that release.
+- Packed-tarball boot smoke: `src/cli/runner.ts` + `src/commands/launch.ts` import cleanly from the unpacked artifact.
+- Live `jeo --tmux` from the published install renders the TUI instead of exiting with a module error.
+
 ## [0.9.6] - 2026-07-27
 _Resize-safe ledger flush and terminal clear handling after viewport shrink._
 

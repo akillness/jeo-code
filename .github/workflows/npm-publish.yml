@@ -42,79 +42,29 @@ jobs:
         run: bun test
 
       - name: Check package contents
+        run: bun run pack:check
+
+      - name: Smoke-test the packed tarball
         run: |
           set -euo pipefail
-          npm pack --dry-run --json > pack-manifest.json
-          cat > pack-check.mjs <<'EOF'
-          import { readFileSync } from "node:fs";
-          import { execSync } from "node:child_process";
-
-          const manifest = JSON.parse(readFileSync("pack-manifest.json", "utf8"));
-          const packedFiles = manifest[0].files.map((f) => f.path);
-
-          const tracked = new Set(
-            execSync("git ls-files", { encoding: "utf8" }).trim().split("\n"),
-          );
-
-          // Untracked/leaked local scratch files must never ship in the published
-          // tarball. These three previously leaked in because npm pack --dry-run
-          // was only printed, never asserted against the tracked file set.
-          const forbidden = [
-            "src/agent/monitor-registry.ts",
-            "src/agent/monitor-tool.ts",
-            "src/types/playwriter.d.ts",
-          ];
-
-          const required = [
-            "package.json",
-            "src/cli.ts",
-            "src/ai/model-discovery.ts",
-            "src/ai/providers/openai.ts",
-            "CHANGELOG.md",
-            "README.md",
-            "README.ko.md",
-            "README.ja.md",
-            "README.zh.md",
-          ];
-
-          const errors = [];
-
-          for (const path of packedFiles) {
-            if (!tracked.has(path)) {
-              errors.push(`untracked path leaked into npm package: ${path}`);
-              continue;
-            }
-            if (forbidden.includes(path)) {
-              errors.push(`forbidden dev/runtime artifact packed: ${path}`);
-            }
-            if (
-              /(^|\/)(test|tests)\//.test(path) ||
-              /\.test\.ts$/.test(path) ||
-              /^\.github\//.test(path)
-            ) {
-              errors.push(`test/CI artifact leaked into npm package: ${path}`);
-            }
-          }
-
-          const packedSet = new Set(packedFiles);
-          for (const path of required) {
-            if (!packedSet.has(path)) {
-              errors.push(`required release file missing from npm package: ${path}`);
-            }
-          }
-
-          if (errors.length > 0) {
-            console.error("npm pack content check failed:");
-            for (const e of errors) console.error(`  - ${e}`);
-            process.exit(1);
-          }
-
-          console.log(
-            `npm pack content check passed (${packedFiles.length} tracked files; required release files present; no forbidden or test/CI artifacts).`,
-          );
-          EOF
-          node pack-check.mjs
-          rm -f pack-manifest.json pack-check.mjs
+          # `pack:check` proves the tarball's import graph resolves on paper. This
+          # step proves it BOOTS: unpack the real tarball and import the launch
+          # entrypoint, the module graph a plain `jeo` / `jeo --tmux` run pulls in.
+          # Releases 0.9.3-0.9.6 published a package whose `jeo` crashed instantly
+          # (`Cannot find module '../agent/monitor-tool'`) because nothing ever
+          # executed the artifact. Declared third-party deps come from the already
+          # installed node_modules, so this isolates PACKAGE-INTERNAL resolution.
+          SMOKE="$(mktemp -d)"
+          TARBALL="$(npm pack --silent --pack-destination "$SMOKE")"
+          tar -xzf "$SMOKE/$TARBALL" -C "$SMOKE"
+          ln -s "$PWD/node_modules" "$SMOKE/package/node_modules"
+          bun -e '
+            const pkg = process.argv[1];
+            await import(pkg + "/src/cli/runner.ts");
+            await import(pkg + "/src/commands/launch.ts");
+            console.log("packed tarball boots: cli runner + launch module graph loaded");
+          ' "$SMOKE/package"
+          rm -rf "$SMOKE"
 
       - name: Verify npm token
         run: |

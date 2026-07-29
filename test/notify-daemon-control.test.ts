@@ -69,16 +69,22 @@ test("processStartTimeMs returns undefined for a pid that no longer exists", asy
 });
 
 test("processStartTimeMs resolves a real live process to a plausible (not garbage) start time", async () => {
-  const before = Date.now();
-  const real = await processStartTimeMs(process.pid);
-  expect(real).toBeDefined();
-  // Sanity bounds only — not a precision check. Under a heavily contended full
-  // suite run, spawning `ps` itself can be delayed by seconds, so this must
-  // tolerate real scheduling jitter rather than assert tight timing; the exact
-  // arithmetic is already covered precisely by the parseEtimeToMs unit tests
-  // above. What matters here is that the real live process resolves to SOME
-  // recent-past timestamp, not NaN/0/far-future/wildly-stale.
-  expect(Math.abs(real! - before)).toBeLessThan(60_000);
+  // Use a freshly spawned child rather than the Bun test runner itself. The full
+  // suite legitimately runs longer than a minute, so the runner's start time is
+  // not a valid "recent-past" fixture once this test executes near the end.
+  const child = Bun.spawn(["sleep", "5"]);
+  try {
+    const before = Date.now();
+    const real = await processStartTimeMs(child.pid);
+    expect(real).toBeDefined();
+    // Sanity bounds only — not a precision check. Under a heavily contended full
+    // suite run, spawning `ps` itself can be delayed by seconds; the exact
+    // arithmetic is covered precisely by the parseEtimeToMs unit tests above.
+    expect(Math.abs(real! - before)).toBeLessThan(60_000);
+  } finally {
+    child.kill();
+    await child.exited;
+  }
 });
 
 test("readDaemonLock returns undefined when no lock file exists", async () => {

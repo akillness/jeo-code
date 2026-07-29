@@ -94,7 +94,9 @@ jeo --tmux               # 독립 tmux 세션에서 실행
 | `/fast [on\|off\|status]` | 현재 모델이 low 추론을 지원하면 fast thinking 모드를 켜고 끔 |
 | `/skill` · `$<skill> [intent]` | 워크플로 스킬 목록/실행(`$team "작업"` 스타일) |
 | `/view` · `/diff` · `/find` · `/search` | 코드 보기, git diff, 파일/패턴 검색 |
-| `/new` · `/resume` · `/sessions` | 세션 관리 |
+|| `/new` · `/sessions` | 새 세션 시작 또는 저장된 세션 목록 표시 |
+|| `/resume [id|gajae:<session-id>[#<leaf>]] [--any-cwd]` | Jeo 세션을 재개하거나 읽기 전용 정확한 버전의 GJC v5 브랜치를 새 Jeo 세션으로 가져오기 |
+|| `/changelog [--full]` · `/jobs [list|tail|await|cancel]` | 릴리스 노트 표시 · 현재 세션의 백그라운드 작업 조회·대기·취소 |
 | `/history [n\|all]` · `/export` | 작업 활동 히스토리를 읽기 좋게 스크롤백에 재출력 · 트랜스크립트 내보내기 |
 | `/retry` · `/btw <질문>` | 마지막 요청 재시도 · 히스토리에 안 남는 사이드 질문 |
 | `/usage` · `/context` · `/compact` | 토큰 사용량, 컨텍스트 내역, 수동 컴팩션 |

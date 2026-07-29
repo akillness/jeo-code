@@ -99,7 +99,9 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 | `/fast [on\|off\|status]` | Toggle fast thinking mode when the active model advertises low reasoning |
 | `/skill` · `$<skill> [intent]` | List/run workflow skills (`$team "task"` style) |
 | `/view` · `/diff` · `/find` · `/search` | Code view, git diff, file/pattern search |
-| `/new` · `/resume` · `/sessions` | Session management |
+|| `/new` · `/sessions` | Start a fresh session or list saved sessions |
+|| `/resume [id|gajae:<session-id>[#<leaf>]] [--any-cwd]` | Resume a Jeo session or import a read-only exact-version GJC v5 branch into a fresh Jeo session |
+|| `/changelog [--full]` · `/jobs [list|tail|await|cancel]` | Show release notes · inspect, await, or cancel this session's background jobs |
 | `/history [n\|all]` · `/export` | Reprint readable worked activity history into scrollback · transcript export |
 | `/retry` · `/btw <q>` | Retry last request · side question without touching history |
 | `/usage` · `/context` · `/compact` | Token usage, context breakdown, manual compaction |

@@ -93,7 +93,9 @@ jeo --tmux               # 独立した tmux セッションで実行
 | `/fast [on\|off\|status]` | 現在のモデルが low 推論をサポートする場合に fast thinking モードを切替 |
 | `/skill` · `$<skill> [intent]` | ワークフロースキルの一覧/実行(`$team "task"` 形式) |
 | `/view` · `/diff` · `/find` · `/search` | コード表示、git diff、ファイル/パターン検索 |
-| `/new` · `/resume` · `/sessions` | セッション管理 |
+|| `/new` · `/sessions` | 新しいセッションを開始、または保存済みセッションを一覧表示 |
+|| `/resume [id|gajae:<session-id>[#<leaf>]] [--any-cwd]` | Jeo セッションを再開、または読み取り専用の正確なバージョンの GJC v5 ブランチを新しい Jeo セッションへインポート |
+|| `/changelog [--full]` · `/jobs [list|tail|await|cancel]` | リリースノートを表示 · 現在のセッションのバックグラウンドジョブを確認・待機・キャンセル |
 | `/history [n\|all]` · `/export` | 作業アクティビティ履歴を読みやすくスクロールバックへ再出力・トランスクリプト出力 |
 | `/retry` · `/btw <q>` | 直前要求の再試行 · 履歴に残らないサイド質問 |
 | `/usage` · `/context` · `/compact` | トークン使用量、コンテキスト内訳、手動コンパクション |

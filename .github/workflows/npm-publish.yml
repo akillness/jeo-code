@@ -7,6 +7,10 @@ on:
         description: "Run npm publish --dry-run instead of publishing"
         type: boolean
         default: false
+      ref:
+        description: "Exact git ref (sha, branch, or tag) to run on"
+        type: string
+        required: true
   release:
     types: [published]
 
@@ -20,6 +24,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Manual dispatches should run against the explicitly requested git ref.
+          ref: "${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}"
+          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -34,11 +42,18 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+      - name: Provision Playwright Chromium
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run browser hard gate
+        run: bun run verify:browser
 
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Test
+      - name: Test with Chromium required
+        env:
+          JEO_REQUIRE_BROWSER: "1"
         run: bun test
 
       - name: Check package contents
@@ -81,6 +96,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      # Non-dry manual dispatch and released events are the only publish path.
       - name: Check if this version is already on npm
         id: check_published
         if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
@@ -99,6 +115,7 @@ jobs:
           PKG_VERSION=$(node -p "require('./package.json').version")
           echo "::notice title=npm publish skipped::jeo-code@${PKG_VERSION} is already on the registry (published outside this workflow run, or a prior attempt already succeeded) — nothing to publish."
 
+      # This is the only step that actually publishes a non-dry workflow event.
       - name: Publish to npm
         id: publish
         if: ${{ (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)) && steps.check_published.outputs.already_published != 'true' }}
@@ -117,9 +134,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # Dry-run workflow_dispatch is check-only; build/upload binaries only for publish-capable runs.
+    if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Manual dispatches should run against the explicitly requested git ref.
+          ref: "${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}"
+          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2

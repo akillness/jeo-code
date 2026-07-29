@@ -8,6 +8,22 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-07-30
+_Imports GJC v5 sessions safely, exposes bounded slash controls, and gates the release artifact before publication._
+
+### Added
+- **Read-only GJC v5 session continuation** (`/resume gajae:<session-id>[#<leaf-entry-id>]`) — imports only exact version 5 JSONL sessions into a fresh Jeo v1 session, preserves SHA-256 and source session/leaf provenance, supports deterministic branch/tool/image/patch errors, and never writes the GJC format.
+- **Slash command parity** — `/changelog [--full]` uses the existing release-notes renderer, `/jobs` controls the existing session `JobRegistry`, and `/resume gajae:` provides a TTY picker with a non-TTY list-only fallback.
+- **Account-scoped OpenAI Codex discovery** — live/cache model rows are scoped to the authenticated OAuth account; `gpt-5.3-codex-spark` is accepted only from that account's Codex Responses model list with `supported_in_api !== false`.
+
+### Changed
+- **Release verification** — Chromium rendering/screenshot checks, exact-SHA check-only CI, and packed-artifact smoke gates are now required before a 0.9.11 release.
+- **Upstream parity baseline** — the gajae-code review is pinned to commit `5224493208ab11549fa3d48cc699f21114eed518`; only evidence-backed deltas are carried into Jeo.
+- **Provider catalog safety** — no unverified static provider rows were added; API-key discovery cannot widen the OAuth Codex allow-list.
+
+### Verified
+- Verification results are recorded only after the complete release gate has run.
+
 ## [0.9.10] - 2026-07-27
 _`jeo update` now verifies the binary you actually run, and recovers from bun's stale registry cache._
 

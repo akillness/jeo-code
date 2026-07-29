@@ -18,7 +18,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { jeoEnv } from "../util/env";
-import { recordLiveCodexModels, recordLiveProviderModels } from "./model-catalog";
+import { recordLiveCodexModels, recordLiveProviderModels, setOpenAIOauthAccountScope } from "./model-catalog";
+import { getStoredOAuth } from "../auth/storage";
+import { extractChatgptAccountId } from "./providers/openai-responses";
 import type { ProviderName } from "./types";
 
 /** How a provider's list was obtained; mirrors `ProviderModelsResult["source"]`. */
@@ -30,15 +32,17 @@ export interface CachedProviderModels {
   source: ModelCacheSource;
   /** Base URL the list came from, so an OpenAI-compatible endpoint's ids stay scoped to it. */
   baseUrl?: string;
+  /** Stable OpenAI OAuth account scope for this row; required for account-specific rehydration. */
+  accountId?: string;
 }
 
 export interface ModelCacheFile {
-  version: 1;
+  version: 2;
   updatedAt: number;
   providers: CachedProviderModels[];
 }
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 /** Refresh in the background once the cache is older than this (6h). */
 export const MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 /** Bound a single provider's persisted list so a pathological aggregator cannot bloat the file. */
@@ -52,7 +56,6 @@ function cachePath(): string {
   return path.join(cacheDir(), "model-catalog-cache.json");
 }
 
-/** Keep only well-formed entries; a hand-edited or partially-written file must not throw. */
 export function normalizeCacheEntries(raw: unknown): CachedProviderModels[] {
   if (!Array.isArray(raw)) return [];
   const out: CachedProviderModels[] = [];
@@ -61,11 +64,18 @@ export function normalizeCacheEntries(raw: unknown): CachedProviderModels[] {
     if (!row || typeof row.provider !== "string" || !Array.isArray(row.models)) continue;
     const models = row.models.filter((m): m is string => typeof m === "string" && m.trim().length > 0).slice(0, MAX_MODELS_PER_PROVIDER);
     if (models.length === 0) continue;
+    const provider = row.provider as ProviderName;
+    const source: ModelCacheSource =
+      row.source === "oauth" || row.source === "api_key" || row.source === "keyless" || row.source === "none" ? row.source : "none";
+    const baseUrl = typeof row.baseUrl === "string" ? row.baseUrl.replace(/\/+$/, "") : undefined;
+    const accountId = typeof row.accountId === "string" ? row.accountId.trim() : "";
+    if (provider === "openai" && source === "oauth" && !accountId) continue;
     out.push({
-      provider: row.provider as ProviderName,
+      provider,
       models,
-      source: row.source === "oauth" || row.source === "api_key" || row.source === "keyless" ? row.source : "none",
-      ...(typeof row.baseUrl === "string" && row.baseUrl ? { baseUrl: row.baseUrl } : {}),
+      source,
+      ...(baseUrl ? { baseUrl } : {}),
+      ...(provider === "openai" && source === "oauth" ? { accountId } : {}),
     });
   }
   return out;
@@ -101,18 +111,29 @@ export function isModelCacheStale(cache: ModelCacheFile | null, now = Date.now()
  */
 export function mergeCacheEntries(
   previous: readonly CachedProviderModels[],
-  results: readonly { provider: ProviderName; models: readonly string[]; ok: boolean; source?: ModelCacheSource; baseUrl?: string }[],
+  results: readonly { provider: ProviderName; models: readonly string[]; ok: boolean; source?: ModelCacheSource; baseUrl?: string; accountId?: string }[],
 ): CachedProviderModels[] {
   const byKey = new Map<string, CachedProviderModels>();
-  const keyOf = (provider: string, baseUrl?: string) => `${provider}\u0000${baseUrl ?? ""}`;
-  for (const entry of previous) byKey.set(keyOf(entry.provider, entry.baseUrl), entry);
+  const keyOf = (provider: string, baseUrl?: string, accountId?: string) =>
+    `${provider}\u0000${baseUrl ?? ""}\u0000${accountId ?? ""}`;
+  for (const entry of previous) {
+    const isOpenAIOAuth = entry.provider === "openai" && entry.source === "oauth";
+    if (isOpenAIOAuth && !entry.accountId) continue;
+    byKey.set(keyOf(entry.provider, entry.baseUrl, isOpenAIOAuth ? entry.accountId : undefined), entry);
+  }
   for (const result of results) {
     if (!result.ok || result.models.length === 0) continue;
-    byKey.set(keyOf(result.provider, result.baseUrl), {
+    const source: ModelCacheSource = result.source ?? "none";
+    const isOpenAIOAuth = result.provider === "openai" && source === "oauth";
+    const baseUrl = typeof result.baseUrl === "string" ? result.baseUrl.replace(/\/+$/, "") : undefined;
+    const accountId = typeof result.accountId === "string" ? result.accountId.trim() : "";
+    if (isOpenAIOAuth && !accountId) continue;
+    byKey.set(keyOf(result.provider, baseUrl, isOpenAIOAuth ? accountId : undefined), {
       provider: result.provider,
       models: [...result.models].slice(0, MAX_MODELS_PER_PROVIDER),
-      source: result.source ?? "none",
-      ...(result.baseUrl ? { baseUrl: result.baseUrl } : {}),
+      source,
+      ...(baseUrl ? { baseUrl } : {}),
+      ...(isOpenAIOAuth ? { accountId } : {}),
     });
   }
   return [...byKey.values()];
@@ -120,7 +141,7 @@ export function mergeCacheEntries(
 
 /** Persist discovery results (best-effort; never throws, never blocks a turn). */
 export async function writeModelCache(
-  results: readonly { provider: ProviderName; models: readonly string[]; ok: boolean; source?: ModelCacheSource; baseUrl?: string }[],
+  results: readonly { provider: ProviderName; models: readonly string[]; ok: boolean; source?: ModelCacheSource; baseUrl?: string; accountId?: string }[],
 ): Promise<void> {
   // Same hermeticity rule as saveGlobalConfig: a test run may only write into an
   // explicitly sandboxed JEO_CONFIG_DIR, never the developer's real ~/.jeo.
@@ -142,14 +163,21 @@ export async function writeModelCache(
  * routing, and — critically — the OAuth Codex gate know the account's real models
  * BEFORE the first network call of this launch. Returns the number of ids applied.
  */
-export function applyCachedModels(cache: ModelCacheFile | null): number {
+export function applyCachedModels(cache: ModelCacheFile | null, openAIOauthAccountId?: string): number {
   if (!cache) return 0;
+  const accountId = typeof openAIOauthAccountId === "string" ? openAIOauthAccountId.trim() : "";
   let applied = 0;
   for (const entry of cache.providers) {
-    recordLiveProviderModels(entry.provider, entry.models, { source: entry.source, baseUrl: entry.baseUrl });
-    // An OAuth-sourced OpenAI list IS the Codex allow-list; without this the gate
-    // still rejects any model newer than the maintained static snapshot.
-    if (entry.provider === "openai" && entry.source === "oauth") recordLiveCodexModels(entry.models);
+    const isOpenAIOAuth = entry.provider === "openai" && entry.source === "oauth";
+    if (isOpenAIOAuth && (!accountId || entry.accountId !== accountId)) continue;
+    recordLiveProviderModels(entry.provider, entry.models, {
+      source: entry.source,
+      baseUrl: entry.baseUrl,
+      ...(isOpenAIOAuth && entry.accountId ? { accountId: entry.accountId } : {}),
+    });
+    if (isOpenAIOAuth && entry.accountId) {
+      recordLiveCodexModels(entry.models, entry.accountId);
+    }
     applied += entry.models.length;
   }
   return applied;
@@ -158,6 +186,15 @@ export function applyCachedModels(cache: ModelCacheFile | null): number {
 /** Read + apply in one step. Returns the cache so callers can decide about refreshing. */
 export async function rehydrateLiveModels(): Promise<ModelCacheFile | null> {
   const cache = await readModelCache();
-  applyCachedModels(cache);
+  let accountId: string | undefined;
+  try {
+    const stored = await getStoredOAuth("openai");
+    const jwtAccountId = stored ? extractChatgptAccountId(stored.access) : undefined;
+    accountId = jwtAccountId || stored?.accountId;
+  } catch {
+    accountId = undefined;
+  }
+  setOpenAIOauthAccountScope(accountId);
+  applyCachedModels(cache, accountId);
   return cache;
 }

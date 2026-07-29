@@ -9,8 +9,8 @@ import { parseChangelogSections, changelogText } from "../../util/whats-new";
 function getLatestChangelogItems(): { version: string; items: string[] } {
   try {
     const sections = parseChangelogSections(changelogText);
-    if (sections.length > 0) {
-      const latest = sections[0];
+    const latest = sections.find(section => section.groups.some(group => group.items.length > 0));
+    if (latest) {
       const items: string[] = [];
       for (const g of latest.groups) {
         for (const item of g.items) {

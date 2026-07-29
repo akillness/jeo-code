@@ -281,20 +281,27 @@ test("listProviderModels: an OAuth-source OpenAI success widens isCodexModel wit
   // between jeo releases). Before recordLiveCodexModels wiring, the picker would show
   // it (from this SAME endpoint) and the call-time gate would then hard-reject it.
   resetLiveCodexModels();
+  expect(isCodexModel("gpt-5.3-codex-spark")).toBe(false); // static catalog does not grant Spark access
   await fs.writeFile(
     path.join(dir, "config.json"),
     JSON.stringify({ providers: {}, oauth: { openai: "oauth-oai" }, defaultModel: "claude-3-5-sonnet" }),
   );
   expect(isCodexModel("gpt-9-hypothetical")).toBe(false); // not yet observed
   const fetchSpy = (async () =>
-    new Response(JSON.stringify({ models: [{ slug: "gpt-5.5", supported_in_api: true }, { slug: "gpt-9-hypothetical", supported_in_api: true }] }), { status: 200 })
+    new Response(JSON.stringify({ models: [
+      { slug: "gpt-5.5", supported_in_api: true },
+      { slug: "gpt-5.3-codex-spark", supported_in_api: true },
+      { slug: "gpt-9-hypothetical", supported_in_api: true },
+      { slug: "hidden", supported_in_api: false },
+    ] }), { status: 200 })
   ) as typeof fetch;
   const r = await listProviderModels("openai", { fetchImpl: fetchSpy });
   expect(r.ok).toBe(true);
-  expect(r.models).toEqual(["gpt-5.5", "gpt-9-hypothetical"]);
+  expect(r.models).toEqual(["gpt-5.3-codex-spark", "gpt-5.5", "gpt-9-hypothetical"]);
   // The discovery call itself recorded it — no separate wiring step needed.
   expect(isCodexModel("gpt-9-hypothetical")).toBe(true);
   expect(isCodexModel("openai/gpt-9-hypothetical")).toBe(true);
+  expect(isCodexModel("gpt-5.3-codex-spark")).toBe(true);
   resetLiveCodexModels();
 });
 

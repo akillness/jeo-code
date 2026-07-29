@@ -12,10 +12,14 @@ import {
   writeModelCache,
   MODEL_CACHE_TTL_MS,
 } from "../src/ai/model-cache";
+import { setOauthCredentialNoLock } from "../src/auth/storage";
 import { isCodexModel, isLiveProviderModel, resetLiveCodexModels, resetLiveProviderModels } from "../src/ai/model-catalog";
 
 const origConfigDir = process.env.JEO_CONFIG_DIR;
 const tempDirs: string[] = [];
+const accountToken = "header." + Buffer.from(JSON.stringify({
+  "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
+})).toString("base64url") + ".signature";
 
 async function sandbox(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-model-cache-"));
@@ -35,11 +39,11 @@ afterEach(async () => {
 test("discovered models round-trip through the cache file", async () => {
   await sandbox();
   await writeModelCache([
-    { provider: "openai", models: ["gpt-5.5", "gpt-5.6-luna"], ok: true, source: "oauth" },
+    { provider: "openai", models: ["gpt-5.5", "gpt-5.6-luna"], ok: true, source: "oauth", accountId: "acct-1" },
     { provider: "anthropic", models: ["claude-sonnet-5"], ok: true, source: "api_key" },
   ]);
   const cache = await readModelCache();
-  expect(cache?.version).toBe(1);
+  expect(cache?.version).toBe(2);
   expect(cache?.providers.find(p => p.provider === "openai")?.models).toEqual(["gpt-5.5", "gpt-5.6-luna"]);
   expect(cache?.providers.find(p => p.provider === "anthropic")?.source).toBe("api_key");
   expect(cache!.updatedAt).toBeGreaterThan(0);
@@ -52,7 +56,8 @@ test("rehydration teaches the OAuth Codex gate the account's newer models", asyn
   await sandbox();
   expect(isCodexModel("gpt-5.6-luna")).toBe(false); // static snapshot only
 
-  await writeModelCache([{ provider: "openai", models: ["gpt-5.5", "gpt-5.6-luna"], ok: true, source: "oauth" }]);
+  await setOauthCredentialNoLock("openai", { access: accountToken });
+  await writeModelCache([{ provider: "openai", models: ["gpt-5.5", "gpt-5.6-luna"], ok: true, source: "oauth", accountId: "acct-1" }]);
   resetLiveCodexModels();
   resetLiveProviderModels();
 
@@ -74,9 +79,9 @@ test("an API-key-sourced OpenAI list feeds routing but never widens the OAuth Co
 });
 
 test("failed or empty discovery results never overwrite a known-good cached list", () => {
-  const previous = [{ provider: "openai" as const, models: ["gpt-5.5"], source: "oauth" as const }];
+  const previous = [{ provider: "openai" as const, models: ["gpt-5.5"], source: "oauth" as const, accountId: "acct-1" }];
   const merged = mergeCacheEntries(previous, [
-    { provider: "openai", models: [], ok: false, source: "oauth" },
+    { provider: "openai", models: [], ok: false, source: "oauth", accountId: "acct-1" },
     { provider: "anthropic", models: [], ok: true, source: "api_key" },
   ]);
   expect(merged).toEqual(previous);
@@ -85,10 +90,10 @@ test("failed or empty discovery results never overwrite a known-good cached list
 test("a provider absent from this run keeps its previous entry (offline launch is not destructive)", () => {
   const merged = mergeCacheEntries(
     [
-      { provider: "openai", models: ["gpt-5.5"], source: "oauth" },
+      { provider: "openai", models: ["gpt-5.5"], source: "oauth", accountId: "acct-1" },
       { provider: "anthropic", models: ["claude-sonnet-5"], source: "api_key" },
     ],
-    [{ provider: "openai", models: ["gpt-5.5", "gpt-5.6-sol"], ok: true, source: "oauth" }],
+    [{ provider: "openai", models: ["gpt-5.5", "gpt-5.6-sol"], ok: true, source: "oauth", accountId: "acct-1" }],
   );
   expect(merged.find(e => e.provider === "openai")?.models).toEqual(["gpt-5.5", "gpt-5.6-sol"]);
   expect(merged.find(e => e.provider === "anthropic")?.models).toEqual(["claude-sonnet-5"]);
@@ -134,18 +139,18 @@ test("normalizeCacheEntries drops malformed rows and blank ids", () => {
 test("staleness drives the background refresh decision", () => {
   const now = Date.now();
   expect(isModelCacheStale(null, now)).toBe(true);
-  expect(isModelCacheStale({ version: 1, updatedAt: now, providers: [] }, now)).toBe(false);
-  expect(isModelCacheStale({ version: 1, updatedAt: now - MODEL_CACHE_TTL_MS - 1, providers: [] }, now)).toBe(true);
+  expect(isModelCacheStale({ version: 2, updatedAt: now, providers: [] }, now)).toBe(false);
+  expect(isModelCacheStale({ version: 2, updatedAt: now - MODEL_CACHE_TTL_MS - 1, providers: [] }, now)).toBe(true);
 });
 
 test("applyCachedModels reports how many ids it seeded and tolerates a null cache", () => {
   expect(applyCachedModels(null)).toBe(0);
   expect(
     applyCachedModels({
-      version: 1,
+      version: 2,
       updatedAt: Date.now(),
-      providers: [{ provider: "openai", models: ["gpt-5.5", "gpt-5.6-sol"], source: "oauth" }],
-    }),
+      providers: [{ provider: "openai", models: ["gpt-5.5", "gpt-5.6-sol"], source: "oauth", accountId: "acct-1" }],
+    }, "acct-1"),
   ).toBe(2);
 });
 

@@ -5,6 +5,10 @@ import * as path from "node:path";
 import { browserSession } from "../src/agent/browser-session";
 import { createBrowserTool } from "../src/agent/browser-tool";
 
+const requireBrowser = process.env.JEO_REQUIRE_BROWSER === "1";
+const requireBrowserFailure =
+  "Chromium is required when JEO_REQUIRE_BROWSER=1. Run `bunx playwright install --with-deps chromium`.";
+
 let hasChromium = true;
 try {
   // Cheap availability probe: launch+close once up front so every test below can
@@ -15,6 +19,10 @@ try {
   await b.close();
 } catch {
   hasChromium = false;
+}
+
+if (requireBrowser && !hasChromium) {
+  throw new Error(requireBrowserFailure);
 }
 
 afterEach(async () => {
@@ -122,7 +130,12 @@ test.skipIf(!hasChromium)("browser: close closes a specific tab, and close all t
 });
 
 test("browser: act on an unopened tab auto-opens it (about:blank) rather than erroring", async () => {
-  if (!hasChromium) return;
+  if (!hasChromium) {
+    if (requireBrowser) {
+      throw new Error(requireBrowserFailure);
+    }
+    return;
+  }
   const tool = createBrowserTool();
   const res = await tool({ action: "act", name: "auto", actions: [{ verb: "navigate", url: "data:text/html,<p>ok</p>" }] }, process.cwd());
   expect(res.success).toBe(true);

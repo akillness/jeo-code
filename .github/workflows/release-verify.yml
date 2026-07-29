@@ -1,0 +1,141 @@
+name: Release verification (checks only)
+
+on:
+  push:
+    branches:
+      - release/v0.9.11
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Exact 40-character commit SHA to verify"
+        required: true
+        type: string
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve target commit SHA
+        id: target_ref
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            target="${{ inputs.sha }}"
+          else
+            target="${{ github.sha }}"
+          fi
+          if ! printf '%s\n' "$target" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+            echo "::error title=Invalid target SHA::This workflow only verifies an exact 40-character commit SHA"
+            exit 1
+          fi
+          echo "value=$target" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout target
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.target_ref.outputs.value }}
+
+      - name: Print and assert checked-out commit
+        run: |
+          set -euo pipefail
+          target="${{ steps.target_ref.outputs.value }}"
+          requested="$(git rev-parse --verify "$target")"
+          actual="$(git rev-parse HEAD)"
+          echo "requested ref: $target"
+          echo "requested sha:  $requested"
+          echo "checked-out sha: $actual"
+          if [ "$actual" != "$requested" ]; then
+            echo "::error title=Checkout mismatch::Checked-out commit ($actual) does not match requested commit ($requested)"
+            exit 1
+          fi
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Provision Playwright Chromium from lockfile
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run browser hard gate
+        run: bun run verify:browser
+
+      - name: Run browser-required tests
+        env:
+          JEO_REQUIRE_BROWSER: "1"
+        run: bun test
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Check packed package
+        run: bun run pack:check
+
+      - name: Pack + install tarball in isolated prefix and verify executable
+        id: isolated_install
+        run: |
+          set -euo pipefail
+          TARBALL_DIR="$(mktemp -d)"
+          TARBALL_NAME="$(npm pack --silent --pack-destination "$TARBALL_DIR")"
+          TARBALL_PATH="$TARBALL_DIR/$TARBALL_NAME"
+          PREFIX="$(mktemp -d)"
+
+          npm install --global --prefix "$PREFIX" "$TARBALL_PATH"
+
+          PACKAGE_DIR="$PREFIX/lib/node_modules/jeo-code"
+          CLI="$PREFIX/bin/jeo"
+
+          if [ ! -d "$PACKAGE_DIR" ]; then
+            echo "::error title=Isolated install failed::package directory not found: $PACKAGE_DIR"
+            exit 1
+          fi
+          if [ ! -x "$CLI" ]; then
+            echo "::error title=Isolated install failed::cli executable missing: $CLI"
+            exit 1
+          fi
+
+          SOURCE_VERSION="$(node -p 'require("./package.json").version')"
+          INSTALLED_VERSION="$(node -p "require('$PACKAGE_DIR/package.json').version")"
+          if [ "$SOURCE_VERSION" != "$INSTALLED_VERSION" ]; then
+            echo "::error title=Pack version mismatch::source=$SOURCE_VERSION installed=$INSTALLED_VERSION"
+            exit 1
+          fi
+
+          HELP_OUTPUT="$PREFIX/jeo-help.txt"
+          if ! "$CLI" --help >"$HELP_OUTPUT" 2>&1; then
+            echo "::error title=Installed CLI failed::$CLI --help exited non-zero"
+            sed -n '1,120p' "$HELP_OUTPUT"
+            exit 1
+          fi
+          if ! grep -Eq "Usage|help|jeo" "$HELP_OUTPUT"; then
+            echo "::error title=Installed CLI help invalid::$CLI --help output is empty or unexpected"
+            sed -n '1,120p' "$HELP_OUTPUT"
+            exit 1
+          fi
+
+          bun -e '
+            const packagePath = process.argv[1];
+            await import(packagePath + "/src/cli/runner.ts");
+            await import(packagePath + "/src/commands/launch.ts");
+            console.log("packed tarball import smoke-test: ok");
+          ' "$PACKAGE_DIR"
+
+          echo "version=$INSTALLED_VERSION" >> "$GITHUB_OUTPUT"
+          echo "path=$PACKAGE_DIR" >> "$GITHUB_OUTPUT"
+          echo "cli_path=$CLI" >> "$GITHUB_OUTPUT"
+
+      - name: Run release-time tmux battery on installed executable
+        env:
+          JEO_CLI: ${{ steps.isolated_install.outputs.cli_path }}
+        run: bash scripts/tmux-verify.sh battery

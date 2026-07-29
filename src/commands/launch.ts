@@ -46,6 +46,7 @@ import { renderWelcome, playWelcomeSweep } from "../tui/components/welcome";
 import { jeoEnv } from "../util/env";
 import { renderUpdateBox } from "../tui/components/update-box";
 import { consumeLaunchWhatsNew } from "../util/whats-new";
+import { runWhatsNewCommand } from "./whats-new";
 import { maybeBell } from "../util/notify";
 import { supportsUnicode } from "../tui/components/capability";
 import pkg from "../../package.json";
@@ -225,6 +226,7 @@ import {
 } from "./launch/code-slash";
 import { handleUndoSlash } from "./launch/git-slash";
 import { runSessionSlash } from "./launch/session-slash";
+import { runJobsSlash } from "./launch/jobs-slash";
 import { runModelSlash } from "./launch/model-slash";
 import { runRouteSlash } from "./launch/route-slash";
 import { runComputerSlash } from "./launch/computer-slash";
@@ -2416,7 +2418,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // protocol nor xterm modifyOtherKeys. JEO_NO_MULTILINE=1 fully disables the
   // filter (reads stdin directly).
   const multilineInput = !!process.stdin.isTTY && jeoEnv("NO_MULTILINE") !== "1";
-  const loneLfShiftEnter = jeoEnv("MULTILINE") !== "0";
+  // tmux-owned panes can translate the plain Enter key to LF after the launcher's
+  // keyboard modes are enabled. In that mode LF must remain readline's submit key;
+  // explicit Shift+Enter escape sequences still become MULTILINE_SENTINEL below.
+  const loneLfShiftEnter =
+    jeoEnv("MULTILINE") !== "0" && jeoEnv("TMUX_LAUNCHED") !== "1";
   const expandSentinel = (s: string): string => (multilineInput ? s.split(SENTINEL).join("\n") : s);
   // Prompt-scoped process listeners (stdin data/keypress, stdout resize). Registered
   // once per launch but previously anonymous and never removed — benign for a single
@@ -4321,6 +4327,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const focus = parsed.focus ?? (cfg as { compaction?: { handoffFocus?: string } }).compaction?.handoffFocus;
         const res = await buildHandoffDocument(history, { model: activeModel, focus });
         logLines(handoffLines(res, process.stdout.columns));
+        continue;
+      }
+      if (input === "/changelog" || input.startsWith("/changelog ")) {
+        const args = input.slice("/changelog".length).trim().split(/\s+/).filter(Boolean)
+          .map(arg => arg === "--full" ? "--all" : arg);
+        await runWhatsNewCommand(args);
+        continue;
+      }
+      if (input === "/jobs" || input.startsWith("/jobs ")) {
+        await runJobsSlash(input, jobRegistry, cwd, lines => logLines(lines));
         continue;
       }
       if (input === "/session" || input.startsWith("/session ")) {

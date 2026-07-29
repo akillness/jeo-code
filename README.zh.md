@@ -93,7 +93,9 @@ jeo --tmux               # 在独立 tmux 会话中运行
 | `/fast [on\|off\|status]` | 当前模型支持 low 推理时切换 fast thinking 模式 |
 | `/skill` · `$<skill> [intent]` | 列出/运行工作流技能(`$team "任务"` 风格) |
 | `/view` · `/diff` · `/find` · `/search` | 代码查看、git diff、文件/模式搜索 |
-| `/new` · `/resume` · `/sessions` | 会话管理 |
+|| `/new` · `/sessions` | 开始新会话或列出已保存会话 |
+|| `/resume [id|gajae:<session-id>[#<leaf>]] [--any-cwd]` | 恢复 Jeo 会话，或将只读的精确版本 GJC v5 分支导入新的 Jeo 会话 |
+|| `/changelog [--full]` · `/jobs [list|tail|await|cancel]` | 显示发布说明 · 查看、等待或取消当前会话的后台任务 |
 | `/history [n\|all]` · `/export` | 将可读的工作活动历史重新输出到滚动区 · 导出记录 |
 | `/retry` · `/btw <问题>` | 重试上次请求 · 不写入历史的旁路提问 |
 | `/usage` · `/context` · `/compact` | Token 用量、上下文明细、手动压缩 |
@@ -285,10 +287,10 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.9.11]** (2026-07-30) — Imports GJC v5 sessions safely, exposes bounded slash controls, and gates the release artifact before publication.
 - **[0.9.10]** (2026-07-27) — `jeo update` now verifies the binary you actually run, and recovers from bun's stale registry cache.
 - **[0.9.9]** (2026-07-27) — Root-causes the frozen `jeo --tmux` TUI: the window was pinned to its launch size, so resizing the terminal only cut the view.
 - **[0.9.8]** (2026-07-27) — The provider model list now persists and rehydrates, so an account's live models survive across launches (gjc parity).
-- **[0.9.7]** (2026-07-27) — Fixes the broken 0.9.3-0.9.6 npm releases: `jeo` and `jeo --tmux` crashed at startup right after `jeo update`.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

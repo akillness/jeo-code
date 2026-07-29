@@ -94,7 +94,9 @@ jeo --tmux               # 독립 tmux 세션에서 실행
 | `/fast [on\|off\|status]` | 현재 모델이 low 추론을 지원하면 fast thinking 모드를 켜고 끔 |
 | `/skill` · `$<skill> [intent]` | 워크플로 스킬 목록/실행(`$team "작업"` 스타일) |
 | `/view` · `/diff` · `/find` · `/search` | 코드 보기, git diff, 파일/패턴 검색 |
-| `/new` · `/resume` · `/sessions` | 세션 관리 |
+|| `/new` · `/sessions` | 새 세션 시작 또는 저장된 세션 목록 표시 |
+|| `/resume [id|gajae:<session-id>[#<leaf>]] [--any-cwd]` | Jeo 세션을 재개하거나 읽기 전용 정확한 버전의 GJC v5 브랜치를 새 Jeo 세션으로 가져오기 |
+|| `/changelog [--full]` · `/jobs [list|tail|await|cancel]` | 릴리스 노트 표시 · 현재 세션의 백그라운드 작업 조회·대기·취소 |
 | `/history [n\|all]` · `/export` | 작업 활동 히스토리를 읽기 좋게 스크롤백에 재출력 · 트랜스크립트 내보내기 |
 | `/retry` · `/btw <질문>` | 마지막 요청 재시도 · 히스토리에 안 남는 사이드 질문 |
 | `/usage` · `/context` · `/compact` | 토큰 사용량, 컨텍스트 내역, 수동 컴팩션 |
@@ -286,10 +288,10 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.9.11]** (2026-07-30) — Imports GJC v5 sessions safely, exposes bounded slash controls, and gates the release artifact before publication.
 - **[0.9.10]** (2026-07-27) — `jeo update` now verifies the binary you actually run, and recovers from bun's stale registry cache.
 - **[0.9.9]** (2026-07-27) — Root-causes the frozen `jeo --tmux` TUI: the window was pinned to its launch size, so resizing the terminal only cut the view.
 - **[0.9.8]** (2026-07-27) — The provider model list now persists and rehydrates, so an account's live models survive across launches (gjc parity).
-- **[0.9.7]** (2026-07-27) — Fixes the broken 0.9.3-0.9.6 npm releases: `jeo` and `jeo --tmux` crashed at startup right after `jeo update`.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

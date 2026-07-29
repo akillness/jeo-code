@@ -99,7 +99,9 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 | `/fast [on\|off\|status]` | Toggle fast thinking mode when the active model advertises low reasoning |
 | `/skill` · `$<skill> [intent]` | List/run workflow skills (`$team "task"` style) |
 | `/view` · `/diff` · `/find` · `/search` | Code view, git diff, file/pattern search |
-| `/new` · `/resume` · `/sessions` | Session management |
+|| `/new` · `/sessions` | Start a fresh session or list saved sessions |
+|| `/resume [id|gajae:<session-id>[#<leaf>]] [--any-cwd]` | Resume a Jeo session or import a read-only exact-version GJC v5 branch into a fresh Jeo session |
+|| `/changelog [--full]` · `/jobs [list|tail|await|cancel]` | Show release notes · inspect, await, or cancel this session's background jobs |
 | `/history [n\|all]` · `/export` | Reprint readable worked activity history into scrollback · transcript export |
 | `/retry` · `/btw <q>` | Retry last request · side question without touching history |
 | `/usage` · `/context` · `/compact` | Token usage, context breakdown, manual compaction |
@@ -293,10 +295,10 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.9.11]** (2026-07-30) — Imports GJC v5 sessions safely, exposes bounded slash controls, and gates the release artifact before publication.
 - **[0.9.10]** (2026-07-27) — `jeo update` now verifies the binary you actually run, and recovers from bun's stale registry cache.
 - **[0.9.9]** (2026-07-27) — Root-causes the frozen `jeo --tmux` TUI: the window was pinned to its launch size, so resizing the terminal only cut the view.
 - **[0.9.8]** (2026-07-27) — The provider model list now persists and rehydrates, so an account's live models survive across launches (gjc parity).
-- **[0.9.7]** (2026-07-27) — Fixes the broken 0.9.3-0.9.6 npm releases: `jeo` and `jeo --tmux` crashed at startup right after `jeo update`.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

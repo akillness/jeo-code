@@ -186,42 +186,75 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
 export const CODEX_MODELS: readonly string[] = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
 
 /**
- * Session-lifetime cache of OpenAI Codex model ids OBSERVED live from the account's
- * own `codex/models` response (see `listProviderModels` in model-discovery.ts, which
- * calls `recordLiveCodexModels` on every successful OAuth discovery). `CODEX_MODELS`
- * above is a maintained snapshot that WILL drift the moment OpenAI ships a new Codex
- * model — that drift is exactly the bug class this closes: the picker shows a model
- * (from the SAME live endpoint) that the static gate then hard-rejects at call time
- * ("OAuth doesn't support this model") even though the account can serve it. Any
- * successful discovery this session widens the gate immediately, no release needed;
- * a fresh process starts empty and falls back to the static list until the first
- * discovery call (picker open, `jeo doctor`, or model resolution) populates it.
+ * Session-lifetime Codex model observations. The maintained `CODEX_MODELS` list
+ * above is deliberately static; live-only ids are accepted only after the
+ * current OAuth account's Codex Responses model list confirms them.
+ *
+ * An identity-less observation uses the ephemeral scope and is never persisted.
+ * Account changes evict prior OAuth observations so a model from one account
+ * cannot authorize a call for another account.
  */
-const liveCodexModels = new Set<string>();
+const EPHEMERAL_OPENAI_OAUTH_SCOPE = "__jeo-openai-oauth-ephemeral__";
+let activeOpenAIOauthScope = EPHEMERAL_OPENAI_OAUTH_SCOPE;
+const liveCodexModels = new Map<string, Set<string>>();
 
-/** Record model ids OpenAI's live Codex endpoint returned for the current account
- *  this session. Additive only — never removes a previously-observed id (a transient
- *  discovery hiccup should never narrow what a call is allowed to reach). */
-export function recordLiveCodexModels(ids: readonly string[]): void {
-  for (const id of ids) liveCodexModels.add(id);
+function normalizeOpenAIOauthScope(scope: string | undefined): string {
+  return typeof scope === "string" ? scope.trim() : "";
 }
 
-/** True when `model` is a Codex-servable id — either in the maintained static list,
- *  or observed live this session (see `recordLiveCodexModels`). Accepts a bare or
- *  `openai/`-qualified id. */
+function oauthScope(scope: string | undefined): string {
+  return normalizeOpenAIOauthScope(scope) || EPHEMERAL_OPENAI_OAUTH_SCOPE;
+}
+
+function removeLiveProviderRecord(recordKey: string, record: LiveProviderModelRecord): void {
+  liveProviderModels.delete(recordKey);
+  for (const id of [record.row.canonical, record.row.providerModel]) {
+    const indexKey = liveIndexKey(record.row.provider, id);
+    const bucket = liveModelIdIndex.get(indexKey);
+    if (!bucket) continue;
+    bucket.delete(recordKey);
+    if (bucket.size === 0) liveModelIdIndex.delete(indexKey);
+  }
+}
+
+/** Select the current OAuth account and evict every other account's live rows. */
+export function setOpenAIOauthAccountScope(accountId: string | undefined): void {
+  const nextScope = oauthScope(accountId);
+  activeOpenAIOauthScope = nextScope;
+  for (const scope of [...liveCodexModels.keys()]) {
+    if (scope !== nextScope) liveCodexModels.delete(scope);
+  }
+  for (const [recordKey, record] of liveProviderModels.entries()) {
+    if (record.row.provider === "openai" && record.source === "oauth" && oauthScope(record.accountId) !== nextScope) {
+      removeLiveProviderRecord(recordKey, record);
+    }
+  }
+}
+
+/** Record ids confirmed by the current account's Codex Responses endpoint. */
+export function recordLiveCodexModels(ids: readonly string[], accountId?: string): void {
+  const explicitScope = normalizeOpenAIOauthScope(accountId);
+  if (explicitScope) setOpenAIOauthAccountScope(explicitScope);
+  const scope = explicitScope || EPHEMERAL_OPENAI_OAUTH_SCOPE;
+  const bucket = liveCodexModels.get(scope) ?? new Set<string>();
+  for (const id of ids) {
+    const trimmed = id.trim();
+    if (trimmed) bucket.add(trimmed);
+  }
+  liveCodexModels.set(scope, bucket);
+}
+
+/** True for the static Codex snapshot or a live id confirmed for the active scope. */
 export function isCodexModel(model: string): boolean {
   const wire = model.startsWith("openai/") ? model.slice(7) : model;
-  return CODEX_MODELS.includes(wire) || liveCodexModels.has(wire);
+  return CODEX_MODELS.includes(wire) || (liveCodexModels.get(activeOpenAIOauthScope)?.has(wire) ?? false);
 }
 
-/** Test-only: clear the live-observed Codex model cache (mirrors `resetPromptRouterWarnings`
- *  / `resetAppearanceCache`). Bun runs test files in one process, so this module-level Set
- *  would otherwise leak an `oauth`-source `listProviderModels("openai", …)` call's observed
- *  ids into unrelated tests in the same run. */
+/** Test-only reset for live Codex observations and the active account scope. */
 export function resetLiveCodexModels(): void {
   liveCodexModels.clear();
+  activeOpenAIOauthScope = EPHEMERAL_OPENAI_OAUTH_SCOPE;
 }
-
 /** Live provider model ids observed from authenticated/keyless `/models` endpoints during
  *  this process. Unlike `liveCodexModels`, this is NOT an OAuth allow-list; it is a
  *  routing supplement so API-key and OpenAI-compatible catalogs discovered at runtime
@@ -231,6 +264,7 @@ interface LiveProviderModelRecord {
   row: CatalogModel;
   source: LiveProviderModelSource;
   baseUrl?: string;
+  accountId?: string;
 }
 const liveProviderModels = new Map<string, LiveProviderModelRecord>();
 
@@ -291,8 +325,14 @@ function liveCanonicalId(provider: ProviderName, id: string): string {
     : trimmed;
 }
 
-function liveModelRecordKey(provider: ProviderName, canonical: string, baseUrl: string | undefined): string {
-  return `${provider}\u0000${normalizeBaseUrl(baseUrl) ?? ""}\u0000${canonical}`;
+function liveModelRecordKey(
+  provider: ProviderName,
+  canonical: string,
+  baseUrl: string | undefined,
+  accountId?: string,
+): string {
+  const normalizedAccountId = provider === "openai" ? normalizeOpenAIOauthScope(accountId) : "";
+  return `${provider}\u0000${normalizeBaseUrl(baseUrl) ?? ""}\u0000${normalizedAccountId}\u0000${canonical}`;
 }
 
 function liveModelFallbackRow(provider: ProviderName, canonical: string, providerModel: string): CatalogModel {
@@ -316,9 +356,16 @@ function liveModelFallbackRow(provider: ProviderName, canonical: string, provide
 export function recordLiveProviderModels(
   provider: ProviderName,
   ids: readonly string[],
-  opts: { source?: LiveProviderModelSource; baseUrl?: string } = {},
+  opts: { source?: LiveProviderModelSource; baseUrl?: string; accountId?: string } = {},
 ): void {
+  const source = opts.source ?? "none";
   const baseUrl = normalizeBaseUrl(opts.baseUrl);
+  const scopedAccountId = provider === "openai" && source === "oauth"
+    ? normalizeOpenAIOauthScope(opts.accountId) || undefined
+    : undefined;
+  if (provider === "openai" && source === "oauth" && scopedAccountId) {
+    setOpenAIOauthAccountScope(scopedAccountId);
+  }
   for (const id of ids) {
     const canonical = liveCanonicalId(provider, id);
     if (!canonical) continue;
@@ -327,26 +374,34 @@ export function recordLiveProviderModels(
     const row = known
       ? { ...known, canonical, provider, providerModel }
       : liveModelFallbackRow(provider, canonical, providerModel);
-    const recordKey = liveModelRecordKey(provider, canonical, baseUrl);
+    const recordKey = liveModelRecordKey(provider, canonical, baseUrl, scopedAccountId);
     liveProviderModels.set(recordKey, {
       row,
-      source: opts.source ?? "none",
+      source,
       baseUrl,
+      ...(scopedAccountId ? { accountId: scopedAccountId } : {}),
     });
     addToLiveIndex(provider, canonical, recordKey);
     addToLiveIndex(provider, providerModel, recordKey);
   }
 }
 
-function liveRecordMatchesConfig(record: LiveProviderModelRecord, config?: { openaiBaseUrl?: string }): boolean {
+function liveRecordMatchesConfig(
+  record: LiveProviderModelRecord,
+  config?: { openaiBaseUrl?: string; openaiOauthScope?: string },
+): boolean {
   if (record.row.provider !== "openai") return true;
   const wanted = normalizeBaseUrl(config?.openaiBaseUrl);
-  if (wanted || record.baseUrl) return wanted === record.baseUrl;
-  return true;
+  if (wanted || record.baseUrl) {
+    if (wanted !== record.baseUrl) return false;
+  }
+  if (record.source !== "oauth") return true;
+  const wantedScope = oauthScope(config?.openaiOauthScope ?? activeOpenAIOauthScope);
+  return oauthScope(record.accountId) === wantedScope;
 }
 
 /** Live-discovered catalog rows usable for routing under the current config. */
-export function liveProviderCatalogModels(config?: { openaiBaseUrl?: string }): CatalogModel[] {
+export function liveProviderCatalogModels(config?: { openaiBaseUrl?: string; openaiOauthScope?: string }): CatalogModel[] {
   return [...liveProviderModels.values()]
     .filter(record => liveRecordMatchesConfig(record, config))
     .map(record => record.row);
@@ -363,7 +418,9 @@ export function liveProviderCatalogModels(config?: { openaiBaseUrl?: string }): 
  *  large), so a linear scan is cheap — same access pattern as `liveProviderCatalogModels`. */
 export function findLiveCatalogModel(canonical: string): CatalogModel | undefined {
   for (const record of liveProviderModels.values()) {
-    if (record.row.canonical === canonical) return record.row;
+    if (record.row.canonical !== canonical) continue;
+    if (record.row.provider === "openai" && record.source === "oauth" && !liveRecordMatchesConfig(record)) continue;
+    return record.row;
   }
   return undefined;
 }
@@ -372,7 +429,7 @@ export function findLiveCatalogModel(canonical: string): CatalogModel | undefine
  *  O(1) average case via `liveModelIdIndex` — see that Map's doc comment for why
  *  this must not be an O(n) scan over every live-discovered model (it runs once
  *  per STATIC catalog row inside `isAutoSelectCandidate`). */
-export function isLiveProviderModel(provider: ProviderName, model: string, config?: { openaiBaseUrl?: string }): boolean {
+export function isLiveProviderModel(provider: ProviderName, model: string, config?: { openaiBaseUrl?: string; openaiOauthScope?: string }): boolean {
   const candidates = new Set([model, liveCanonicalId(provider, model), stripProviderPrefix(provider, model)]);
   for (const candidate of candidates) {
     const recordKeys = liveModelIdIndex.get(liveIndexKey(provider, candidate));

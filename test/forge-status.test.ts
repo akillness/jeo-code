@@ -133,6 +133,7 @@ test("welcome forge uses right-side metadata table only on wide terminals", () =
 
   const wide = renderWelcome({ ...data, cols: 120 });
   expect(wide.some(line => line.includes("What's New"))).toBe(true);
+  expect(wide.join("\n")).toContain("Read-only GJC v5");
   expect(wide.some(line => line.includes("Flow keys"))).toBe(true);
   expect(wide.some(line => line.includes("Project pulse"))).toBe(true);
   for (const line of wide) expect(visibleWidth(line)).toBeLessThanOrEqual(119);

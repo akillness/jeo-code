@@ -27,7 +27,8 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/drop", usage: "/drop", description: "Delete the current session and start a new one", group: "session" },
   { command: "/session", usage: "/session [info|delete]", description: "Show current session info, or delete it", group: "session" },
   { command: "/rename", usage: "/rename <title>", description: "Rename the current session", group: "session" },
-  { command: "/resume", usage: "/resume [id]", description: "Resume a saved session in this REPL", group: "session" },
+  { command: "/resume", usage: "/resume [id|gajae:<session-id>[#<leaf>]] [--any-cwd]", description: "Resume a saved session or import a read-only GJC v5 session", group: "session" },
+  { command: "/changelog", usage: "/changelog [--full]", description: "Show recent release notes (use --full for the complete changelog)", group: "system" },
   { command: "/retry", usage: "/retry", description: "Retry the last request", group: "session" },
   { command: "/undo", usage: "/undo", description: "Undo the last jeo auto-commit and restore the working tree", group: "session" },
   { command: "/history", usage: "/history [n|all]", description: "Re-print the worked turn history (prompts, tool steps, replies) into scrollback", group: "session" },
@@ -53,6 +54,7 @@ export const SLASH_COMMAND_DETAILS: readonly SlashCommandInfo[] = [
   { command: "/search", usage: "/search <pat> [glob]", description: "Search the repo for a pattern", group: "code" },
 
   { command: "/sessions", usage: "/sessions", description: "List saved sessions", group: "session" },
+  { command: "/jobs", usage: "/jobs [list|tail|await|cancel]", description: "List, inspect, await, or cancel background jobs in this session", group: "system" },
   { command: "/usage", usage: "/usage", description: "Show cumulative token usage for this session", group: "system" },
   { command: "/context", usage: "/context", description: "Show context token usage breakdown", group: "system" },
   { command: "/tools", usage: "/tools", description: "Show the tools currently visible to the agent", group: "system" },

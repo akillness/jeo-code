@@ -81,7 +81,10 @@ test("attachImagePaths: replaces readable image paths with [image #N] tags and c
 test("attachImagePaths: continues numbering from startNumber for clipboard images already attached", async () => {
   const read = async () => PNG;
   const res = await attachImagePaths("see /tmp/x.png", 3, read);
-  expect(res.text).toBe("see [image #3]");
+  // A tag that ends the draft keeps ONE trailing space (same contract as insertImageTag's
+  // Ctrl+V path), so the next typed word cannot glue onto it as "[image #3]please".
+  expect(res.text).toBe("see [image #3] ");
+  expect(res.cursor).toBe("see [image #3] ".length);
   expect(res.images).toHaveLength(1);
 });
 
@@ -89,7 +92,7 @@ test("attachImagePaths: leaves unreadable or non-image paths untouched", async (
   const read = async (p: string) => (p === "/real.png" ? PNG : p === "/fake.png" ? new Uint8Array([0, 1, 2, 3]) : null);
   const res = await attachImagePaths("/missing.png /fake.png /real.png", 1, read);
   // Only the real PNG is replaced/attached; the missing + non-image paths stay verbatim.
-  expect(res.text).toBe("/missing.png /fake.png [image #1]");
+  expect(res.text).toBe("/missing.png /fake.png [image #1] ");
   expect(res.images).toHaveLength(1);
 });
 
@@ -149,11 +152,19 @@ test("insertImageTag: never accumulates spaces when the caret already sits on wh
 
 test("attachImagePaths: normalizes terminal-added spacing around a dropped path and reports the caret", async () => {
   const read = async (p: string) => (p === "/tmp/shot.png" ? PNG : null);
-  // A terminal pads a dropped path with extra spaces; the swapped tag must not inherit them.
+  // A terminal pads a dropped path with extra spaces; the swapped tag must not inherit them —
+  // exactly ONE trailing space survives, and the caret parks after it, ready to type.
   const res = await attachImagePaths("look   /tmp/shot.png  ", 1, read);
-  expect(res.text).toBe("look [image #1]");
+  expect(res.text).toBe("look [image #1] ");
   expect(res.images).toHaveLength(1);
-  expect(res.cursor).toBe("look [image #1]".length); // caret right after the tag, not past stray spaces
+  expect(res.cursor).toBe("look [image #1] ".length); // caret right after the tag, not past stray spaces
+});
+
+test("attachImagePaths: a tag followed by more text keeps its single separator, no extra tail", async () => {
+  const read = async (p: string) => (p === "/tmp/shot.png" ? PNG : null);
+  const res = await attachImagePaths("look /tmp/shot.png please", 1, read);
+  expect(res.text).toBe("look [image #1] please");
+  expect(res.cursor).toBe("look [image #1] ".length);
 });
 
 test("attachImagePaths: cursor falls back to text end when nothing is attached", async () => {

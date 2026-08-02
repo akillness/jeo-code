@@ -11,8 +11,16 @@ import { readGlobalConfig, type Config } from "../agent/state";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
 import type { ProviderName } from "./types";
 import { PROVIDER_NAMES } from "./provider-status";
-import { catalogByProvider, CODEX_MODELS, KIMI_CODE_MODELS, recordLiveCodexModels, recordLiveProviderModels } from "./model-catalog";
+import {
+  catalogByProvider,
+  CODEX_MODELS,
+  KIMI_CODE_MODELS,
+  recordLiveCodexModels,
+  recordLiveProviderModels,
+  setOpenAIOauthAccountScope,
+} from "./model-catalog";
 import { extractChatgptAccountId } from "./providers/openai-responses";
+import { getStoredOAuth } from "../auth/storage";
 import { openaiCompatDef } from "./providers/openai-compatible-catalog";
 
 export interface ProviderModelsResult {
@@ -22,6 +30,8 @@ export interface ProviderModelsResult {
   ok: boolean;
   /** How the request authenticated (for display). */
   source: "oauth" | "api_key" | "keyless" | "none";
+  /** Stable OpenAI OAuth account scope for account-specific cache rows. */
+  accountId?: string;
   /** Present on failure: a short, human-readable reason. */
   error?: string;
   /** True when the live endpoint was unusable and ids came from the static catalog. */
@@ -334,6 +344,7 @@ export async function listProviderModels(
   const limit = opts.limit ?? DEFAULT_LIMIT;
 
   let cred: Credential | undefined;
+  let oauthAccountId: string | undefined;
   let source: ProviderModelsResult["source"] = "keyless";
   if (provider === "xai") {
     // xAI (Grok) is API-key only and not an OAuth AuthProvider: resolve its key
@@ -375,6 +386,12 @@ export async function listProviderModels(
       // An API key is the broader, documented path — prefer it for live discovery.
       cred = { kind: "api_key", provider: prov, token: config.providers[prov]! };
       source = "api_key";
+    }
+    if (provider === "openai" && source === "oauth" && cred.kind === "oauth") {
+      const stored = await getStoredOAuth("openai").catch(() => undefined);
+      const jwtAccountId = extractChatgptAccountId(cred.token);
+      oauthAccountId = jwtAccountId || stored?.accountId;
+      setOpenAIOauthAccountScope(oauthAccountId);
     }
     // Gemini models are exposed ONLY under API-key auth: a gemini OAuth token can
     // still list models from generativelanguage.googleapis.com, but it can no
@@ -419,9 +436,19 @@ export async function listProviderModels(
     // Record live ids for routing supplements. For OpenAI OAuth, keep the
     // existing Codex allow-list widening separate: API-key/custom-base discovery
     // must not make OAuth Codex calls accept unrelated API models.
-    recordLiveProviderModels(provider, models, { source, baseUrl: opts.baseUrl });
-    if (provider === "openai" && source === "oauth") recordLiveCodexModels(models);
-    return { provider, models, ok: true, source };
+    recordLiveProviderModels(provider, models, {
+      source,
+      baseUrl: opts.baseUrl,
+      ...(provider === "openai" && source === "oauth" && oauthAccountId ? { accountId: oauthAccountId } : {}),
+    });
+    if (provider === "openai" && source === "oauth") recordLiveCodexModels(models, oauthAccountId);
+    return {
+      provider,
+      models,
+      ok: true,
+      source,
+      ...(oauthAccountId ? { accountId: oauthAccountId } : {}),
+    };
   } catch (err) {
     const msg = (err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError" ? "timeout" : "unreachable";
     return { provider, models: [], ok: false, source, error: msg };

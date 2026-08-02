@@ -46,6 +46,7 @@ import { renderWelcome, playWelcomeSweep } from "../tui/components/welcome";
 import { jeoEnv } from "../util/env";
 import { renderUpdateBox } from "../tui/components/update-box";
 import { consumeLaunchWhatsNew } from "../util/whats-new";
+import { runWhatsNewCommand } from "./whats-new";
 import { maybeBell } from "../util/notify";
 import { supportsUnicode } from "../tui/components/capability";
 import pkg from "../../package.json";
@@ -225,6 +226,7 @@ import {
 } from "./launch/code-slash";
 import { handleUndoSlash } from "./launch/git-slash";
 import { runSessionSlash } from "./launch/session-slash";
+import { runJobsSlash } from "./launch/jobs-slash";
 import { runModelSlash } from "./launch/model-slash";
 import { runRouteSlash } from "./launch/route-slash";
 import { runComputerSlash } from "./launch/computer-slash";
@@ -1396,7 +1398,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             !chunk.includes(PASTE_END);
           const captured = queueBusyInput?.(chunk) ?? false;
           if (typedEnter) {
-            const line = (queueBusySnapshot?.().text ?? "").trim();
+            // Expand the sentinel here too: a mid-turn paste keeps its line breaks in the
+            // draft, and the steering inbox / command dispatcher both take REAL text — a
+            // raw private-use sentinel would otherwise reach the model verbatim.
+            const line = expandSentinel(queueBusySnapshot?.().text ?? "").trim();
             if (line) {
               // A mid-turn /command or $skill is NOT a query for the model — steering it
               // would send the literal "/model" / "$skill" text to the LLM. Recognize it
@@ -1438,7 +1443,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // inbox and surfaces as a `user` card (above). JEO_NO_LIVE_DRAFT=1 opts out.
           if (captured && jeoEnv("NO_LIVE_DRAFT") !== "1") {
             const draft = queueBusySnapshot?.().text ?? "";
-            tui.setLivePromptInput(draft);
+            // The live box renders REAL text: expand the sentinel (as the idle box and the
+            // highlight pass below already do) so a mid-turn pasted block shows as separate
+            // rows instead of a run of unprintable private-use glyphs.
+            tui.setLivePromptInput(expandSentinel(draft));
             // Mid-turn command preview: as you type a /command or $skill DURING a turn,
             // show its matches above the input box so command input visibly reacts
             // (idle-prompt parity). Cleared the moment the draft stops being command-shaped.
@@ -2416,7 +2424,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // protocol nor xterm modifyOtherKeys. JEO_NO_MULTILINE=1 fully disables the
   // filter (reads stdin directly).
   const multilineInput = !!process.stdin.isTTY && jeoEnv("NO_MULTILINE") !== "1";
-  const loneLfShiftEnter = jeoEnv("MULTILINE") !== "0";
+  // tmux-owned panes can translate the plain Enter key to LF after the launcher's
+  // keyboard modes are enabled. In that mode LF must remain readline's submit key;
+  // explicit Shift+Enter escape sequences still become MULTILINE_SENTINEL below.
+  const loneLfShiftEnter =
+    jeoEnv("MULTILINE") !== "0" && jeoEnv("TMUX_LAUNCHED") !== "1";
   const expandSentinel = (s: string): string => (multilineInput ? s.split(SENTINEL).join("\n") : s);
   // Prompt-scoped process listeners (stdin data/keypress, stdout resize). Registered
   // once per launch but previously anonymous and never removed — benign for a single
@@ -2551,7 +2563,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // (the user explicitly invoked them — no second Enter).
   const pendingMidTurnCommands: string[] = [];
   const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: startupDraft ?? "", pastedLines: [], inPaste: false };
-  queueBusyInput = (chunk: string) => captureLivePromptInputChunk(queuedPromptInput, chunk);
+  // `multilineInput` gates the SENTINEL contract end to end: a mid-turn paste keeps its
+  // line breaks only when the submit path expands them again (it always does unless
+  // JEO_NO_MULTILINE=1, which degrades the same paste to space-joined text).
+  queueBusyInput = (chunk: string) => captureLivePromptInputChunk(queuedPromptInput, chunk, { multiline: multilineInput });
   queueBusyPasteActive = () => queuedPromptInput.inPaste;
   queueBusySnapshot = () => ({
     text: queuedPromptInput.partial,
@@ -4321,6 +4336,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const focus = parsed.focus ?? (cfg as { compaction?: { handoffFocus?: string } }).compaction?.handoffFocus;
         const res = await buildHandoffDocument(history, { model: activeModel, focus });
         logLines(handoffLines(res, process.stdout.columns));
+        continue;
+      }
+      if (input === "/changelog" || input.startsWith("/changelog ")) {
+        const args = input.slice("/changelog".length).trim().split(/\s+/).filter(Boolean)
+          .map(arg => arg === "--full" ? "--all" : arg);
+        await runWhatsNewCommand(args);
+        continue;
+      }
+      if (input === "/jobs" || input.startsWith("/jobs ")) {
+        await runJobsSlash(input, jobRegistry, cwd, lines => logLines(lines));
         continue;
       }
       if (input === "/session" || input.startsWith("/session ")) {

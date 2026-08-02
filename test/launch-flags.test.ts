@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { parseFlags, gatedStdout, shouldUseOneShotTui, createInFlightAbortHarness, queuePromptInputChunk, captureLivePromptInputChunk, draftFromUnsentLine, formatResumeHint, PASTE_START, PASTE_END, type PromptInputQueue } from "../src/commands/launch";
+import { MULTILINE_SENTINEL } from "../src/commands/launch/input";
 import { createInterface } from "node:readline/promises";
 import { Readable, Writable } from "node:stream";
 
@@ -286,4 +287,26 @@ test("parseFlags defaults maxSteps to 0 (dynamic process-driven budget, no hardc
   expect(parseFlags(["--max-steps=40"]).maxSteps).toBe(40);
   // Invalid values keep the dynamic default instead of inventing a cap.
   expect(parseFlags(["--max-steps=-3"]).maxSteps).toBe(0);
+});
+
+test("captureLivePromptInputChunk: a mid-turn paste keeps its line breaks (sentinel) and indentation", () => {
+  const state = freshQueue();
+  const body = "def run():\n    return 1\n";
+  expect(captureLivePromptInputChunk(state, `${PASTE_START}${body}${PASTE_END}`)).toBe(true);
+  expect(state.partial).toBe(`def run():${MULTILINE_SENTINEL}    return 1${MULTILINE_SENTINEL}`);
+  expect(state.pastedLines).toEqual([]); // a mid-turn paste edits the draft, never auto-runs
+  expect(state.inPaste).toBe(false);
+});
+
+test("captureLivePromptInputChunk: a paste split across stdin reads never gains a stray space", () => {
+  const state = freshQueue();
+  captureLivePromptInputChunk(state, `${PASTE_START}hello wo`);
+  captureLivePromptInputChunk(state, `rld${PASTE_END}`);
+  expect(state.partial).toBe("hello world");
+});
+
+test("captureLivePromptInputChunk: multiline:false degrades a pasted break to one space", () => {
+  const state = freshQueue();
+  captureLivePromptInputChunk(state, `${PASTE_START}one\ntwo${PASTE_END}`, { multiline: false });
+  expect(state.partial).toBe("one two");
 });

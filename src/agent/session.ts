@@ -14,18 +14,25 @@ export interface SessionHeader {
    *  its own model independent of the global default (per-session model selection). */
   model?: string;
   /** Unsent input-box draft at last save, restored into the prompt on `/resume`
-   *  (gajae-code parity: an in-progress prompt survives a quit + resume instead
+   *  (gajae-code parity: an in-progress cursor survives a quit + resume instead
    *  of being silently lost). Absent/empty when there was nothing to restore. */
   draft?: string;
-
+  /** Source system marker for imported sessions (read-only session importer layer). */
+  sourceSystem?: "gjc";
+  /** Source session id for imported sessions. */
+  sourceSessionId?: string;
+  /** Source leaf id for imported sessions. */
+  sourceLeafId?: string;
+  /** SHA-256 hex of the exact imported source bytes. */
+  sourceSha256?: string;
+  /** Import timestamp for imported sessions (ISO-8601 UTC string). */
+  importTimestamp?: string;
 }
-
 export interface SessionEntry {
   type: "message";
   timestamp: string;
   message: Message;
 }
-
 export interface CompactionEntry {
   type: "compaction";
   timestamp: string;
@@ -45,6 +52,19 @@ export interface SessionSummary {
   title?: string;
   /** Model id pinned to this session (header `model`), if any. */
   model?: string;
+  /** GJC import provenance (present for imported sessions). */
+  sourceSystem?: "gjc";
+  sourceSessionId?: string;
+  sourceLeafId?: string;
+  sourceSha256?: string;
+  importTimestamp?: string;
+}
+
+export interface ImportedSessionLookup {
+  sourceSystem: "gjc";
+  sourceSessionId: string;
+  sourceLeafId: string;
+  sourceSha256: string;
 }
 
 export const SESSION_VERSION = 1;
@@ -183,15 +203,15 @@ export async function loadSession(
   if (compactions.length > 0) {
     const lastComp = compactions[compactions.length - 1];
     const { summary, replacesThrough } = lastComp;
-    
+
     const hasSystem = rawMessages.length > 0 && rawMessages[0].role === "system";
     const systemPrompt = hasSystem ? [rawMessages[0]] : [];
-    
+
     const summaryMessage: Message = {
       role: "user",
       content: `[Earlier conversation summary]\n${summary}`,
     };
-    
+
     const remaining = rawMessages.slice(replacesThrough + 1);
     messages = [...systemPrompt, summaryMessage, ...remaining];
   }
@@ -305,6 +325,11 @@ export async function listSessions(cwd = process.cwd()): Promise<SessionSummary[
         sizeBytes: stat.size,
         title: header.title,
         model: header.model,
+        sourceSystem: header.sourceSystem,
+        sourceSessionId: header.sourceSessionId,
+        sourceLeafId: header.sourceLeafId,
+        sourceSha256: header.sourceSha256,
+        importTimestamp: header.importTimestamp,
       });
     } catch {
       // Tolerate malformed files (skip them)
@@ -346,6 +371,22 @@ export async function resolveSessionRef(idOrPrefix: string, cwd = process.cwd())
   if (matches.length === 1) return { kind: "ok", id: matches[0]! };
   if (matches.length > 1) return { kind: "ambiguous", matches };
   return { kind: "not-found" };
+}
+
+/**
+ * Locate an imported session by exact provenance match.
+ */
+export async function findImportedSessionByProvenance(
+  cwd = process.cwd(),
+  lookup: ImportedSessionLookup,
+): Promise<SessionSummary | undefined> {
+  const all = await listSessions(cwd);
+  return all.find(s =>
+    s.sourceSystem === lookup.sourceSystem &&
+    s.sourceSessionId === lookup.sourceSessionId &&
+    s.sourceLeafId === lookup.sourceLeafId &&
+    s.sourceSha256 === lookup.sourceSha256
+  );
 }
 
 /**

@@ -1,6 +1,6 @@
 {
   "name": "jeo-code",
-  "version": "0.9.10",
+  "version": "0.9.12",
   "description": "Clean, highly optimized AI coding agent using spec-first loop",
   "type": "module",
   "main": "src/cli.ts",
@@ -52,6 +52,7 @@
     "publish:npm": "npm publish --access public --registry https://registry.npmjs.org/",
     "changelog:sync": "bun scripts/sync-changelog.ts",
     "test": "bun test",
+    "verify:browser": "bun scripts/verify-browser.ts",
     "verify:tmux": "bash scripts/tmux-verify.sh",
     "dev:link": "bun scripts/dev-link.ts link",
     "dev:doctor": "bun scripts/dev-link.ts doctor"

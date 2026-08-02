@@ -8,6 +8,36 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.9.12] - 2026-08-02
+_Fixes the boxed prompt's stolen keystrokes, drifting caret, and paste/attachment spacing under `jeo --tmux`._
+
+### Fixed
+- **A lone `Esc` swallowed the next keystroke — including the first character of a command or a paste** (`src/commands/launch/input.ts`) — a standalone `Esc` byte is a valid bracketed-paste-marker prefix, so the prompt filter carried it and re-prepended it to the NEXT stdin chunk. Forwarded that way, readline's key decoder read `ESC` + `z` as meta-z and consumed the character: after clearing the box with Esc, typing `zebra` produced `ebra`, and typing `/route off` produced `route off` — no longer a slash command, so it was sent to the model as a prompt and routing stayed on (the "`jeo --tmux` 에서 `/route off` 가 안 먹힌다" report). A carried `Esc` that cannot begin an escape sequence is now dropped before readline sees it (jeo already owns Esc on its own raw-stdin keypress listener); an `ESC x` pair delivered in ONE chunk is still a real Alt/Meta chord and passes through untouched.
+- **The painted caret drifted right of the real insertion point in any draft containing emoji** (`src/tui/components/input-box.ts`) — the box mapped `rl.cursor` (UTF-16 code units) onto a CODE-POINT index, so every surrogate pair before the caret shifted it one column and `←` after an emoji appeared not to move at all. `wrapWithCursor`/`caretCells` now index by code unit (a surrogate pair keeps both offsets addressable), and every offset returned to readline by the Up/Down and row-Home/End helpers snaps to a whole character.
+- **A drag-and-dropped image left the next typed word glued to its tag** (`src/util/file-attachment.ts`) — `attachImagePaths` trimmed the tag's trailing space, so `[image #1]` + typing became `[image #1]please`, while the Ctrl+V path (`insertImageTag`) kept one space. Both attach paths now leave exactly one trailing space at end-of-draft with the caret parked after it. Dropped/typed `~/…` paths are also expanded to the home directory (gjc parity), so `~/Downloads/shot.png` attaches instead of being sent to the model as literal text.
+- **A paste made WHILE a turn was running lost its line structure** (`src/commands/launch/input.ts`, `src/commands/launch.ts`) — the live-turn capture trimmed every pasted line and space-joined them, so a pasted code block/stack trace arrived at the next prompt as one flattened line with its indentation gone, and a large paste split across stdin reads gained a stray space wherever the read boundary fell (`hello wo` + `rld` → `hello wo rld`). Mid-turn pastes now fold line breaks to the same `MULTILINE_SENTINEL` the idle path uses and append verbatim; the live box and the mid-turn steering/command paths expand that sentinel, so the model never sees the private-use character. `JEO_NO_MULTILINE=1` degrades to the old space join, which is the only mode where the sentinel is not expanded on submit.
+
+### Verified
+- Live in tmux (`jeo --tmux` inner process, real PTY, caret cell read back with `tmux display-message -p '#{cursor_x},#{cursor_y}'`): Esc → `zebra` stays `zebra`; Esc → `/route off` prints `routing: off (this session)`; `←` after `안녕하세요 테스트😀😀` steps 24 → 22 → 20 columns; a dropped `assets/icon.png` renders `look at [image #1] please` with the caret exactly at column 28; `~/…` and backslash-escaped paths attach.
+- Suites: input-box, vertical-cursor, box-vertical-nav, prompt-key-filter, row-home-end-filter, extended-key-decode, mouse/terminal-report filters, file-attachment, image-attachments, input-history, new-input-first, launch-flags, slash, tmux — 215 pass / 0 fail. `bun run typecheck` clean. (`test/team-subagent.test.ts` timeouts are pre-existing and reproduce with these changes stashed.)
+- Mid-turn paste: a bracketed paste delivered WHILE a turn runs kept its line breaks and indentation in the live box (`def run():` / `    return 1`), and a paste split across stdin reads no longer gains a stray space at the boundary.
+
+## [0.9.11] - 2026-07-30
+_Imports GJC v5 sessions safely, exposes bounded slash controls, and gates the release artifact before publication._
+
+### Added
+- **Read-only GJC v5 session continuation** (`/resume gajae:<session-id>[#<leaf-entry-id>]`) — imports only exact version 5 JSONL sessions into a fresh Jeo v1 session, preserves SHA-256 and source session/leaf provenance, supports deterministic branch/tool/image/patch errors, and never writes the GJC format.
+- **Slash command parity** — `/changelog [--full]` uses the existing release-notes renderer, `/jobs` controls the existing session `JobRegistry`, and `/resume gajae:` provides a TTY picker with a non-TTY list-only fallback.
+- **Account-scoped OpenAI Codex discovery** — live/cache model rows are scoped to the authenticated OAuth account; `gpt-5.3-codex-spark` is accepted only from that account's Codex Responses model list with `supported_in_api !== false`.
+
+### Changed
+- **Release verification** — Chromium rendering/screenshot checks, exact-SHA check-only CI, and packed-artifact smoke gates are now required before a 0.9.11 release.
+- **Upstream parity baseline** — the gajae-code review is pinned to commit `5224493208ab11549fa3d48cc699f21114eed518`; only evidence-backed deltas are carried into Jeo.
+- **Provider catalog safety** — no unverified static provider rows were added; API-key discovery cannot widen the OAuth Codex allow-list.
+
+### Verified
+- Verification results are recorded only after the complete release gate has run.
+
 ## [0.9.10] - 2026-07-27
 _`jeo update` now verifies the binary you actually run, and recovers from bun's stale registry cache._
 

@@ -287,10 +287,10 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.9.12]** (2026-08-02) — Fixes the boxed prompt's stolen keystrokes, drifting caret, and paste/attachment spacing under `jeo --tmux`.
 - **[0.9.11]** (2026-07-30) — Imports GJC v5 sessions safely, exposes bounded slash controls, and gates the release artifact before publication.
 - **[0.9.10]** (2026-07-27) — `jeo update` now verifies the binary you actually run, and recovers from bun's stale registry cache.
 - **[0.9.9]** (2026-07-27) — Root-causes the frozen `jeo --tmux` TUI: the window was pinned to its launch size, so resizing the terminal only cut the view.
-- **[0.9.8]** (2026-07-27) — The provider model list now persists and rehydrates, so an account's live models survive across launches (gjc parity).
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

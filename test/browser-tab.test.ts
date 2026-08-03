@@ -5,7 +5,18 @@ import {
   callbackUrlFragment,
   closeAuthTab,
   closeAuthTabScript,
+  runningBrowserApps,
 } from "../src/auth/browser-tab";
+
+// A `ps -Ax -o comm=` listing with Chrome running. Injected everywhere so the suite
+// asserts the same behavior on macOS and on a Linux CI runner (the real listing
+// there never names a .app bundle, which would otherwise short-circuit every case).
+const PS_WITH_CHROME = [
+  "/usr/libexec/secinitd",
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/1/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper",
+].join("\n");
+const PS_WITHOUT_BROWSER = "/usr/libexec/secinitd\n/Applications/Notes.app/Contents/MacOS/Notes";
 
 // The OAuth callback page asks the browser to close itself, but every current
 // browser refuses that for a tab its own script did not open — and jeo hands the
@@ -64,6 +75,7 @@ test("closeAuthTab: spawns the close command and reports success on exit 0", asy
   const ok = await closeAuthTab("http://localhost:1455/callback", {
     platform: "darwin",
     env: {},
+    listProcesses: () => PS_WITH_CHROME,
     spawn: cmd => {
       calls.push(cmd);
       return { exited: Promise.resolve(0), kill: () => {} };
@@ -80,6 +92,7 @@ test("closeAuthTab: JEO_AUTH_TAB_CLOSE=0 opts out entirely (no spawn)", async ()
   const ok = await closeAuthTab("http://localhost:1455/callback", {
     platform: "darwin",
     env: { JEO_AUTH_TAB_CLOSE: "0" },
+    listProcesses: () => PS_WITH_CHROME,
     spawn: () => {
       spawned = true;
       return { exited: Promise.resolve(0), kill: () => {} };
@@ -93,6 +106,7 @@ test("closeAuthTab: a non-zero exit, a throw, or an unsupported platform never r
   const failed = await closeAuthTab("http://localhost:1455/callback", {
     platform: "darwin",
     env: {},
+    listProcesses: () => PS_WITH_CHROME,
     spawn: () => ({ exited: Promise.resolve(1), kill: () => {} }),
   });
   expect(failed).toBe(false);
@@ -100,6 +114,7 @@ test("closeAuthTab: a non-zero exit, a throw, or an unsupported platform never r
   const threw = await closeAuthTab("http://localhost:1455/callback", {
     platform: "darwin",
     env: {},
+    listProcesses: () => PS_WITH_CHROME,
     spawn: () => {
       throw new Error("osascript missing");
     },
@@ -115,6 +130,7 @@ test("closeAuthTab: a hung osascript is killed at the timeout instead of stallin
   const ok = await closeAuthTab("http://localhost:1455/callback", {
     platform: "darwin",
     env: {},
+    listProcesses: () => PS_WITH_CHROME,
     timeoutMs: 30,
     spawn: () => ({
       exited: new Promise<number>(() => {}), // never settles (permission prompt, wedged browser)
@@ -126,4 +142,41 @@ test("closeAuthTab: a hung osascript is killed at the timeout instead of stallin
   expect(ok).toBe(false);
   expect(killed).toBe(true);
   expect(Date.now() - started).toBeLessThan(2000);
+});
+
+test("runningBrowserApps: matches the .app bundle in a ps listing, ignores unrelated apps", () => {
+  expect(runningBrowserApps(PS_WITH_CHROME)).toEqual(["Google Chrome"]);
+  expect(runningBrowserApps(PS_WITHOUT_BROWSER)).toEqual([]);
+  expect(runningBrowserApps("")).toEqual([]);
+});
+
+test("closeAuthTab: no known browser running means no script and no spawn", async () => {
+  let spawned = false;
+  const ok = await closeAuthTab("http://localhost:1455/callback", {
+    platform: "darwin",
+    env: {},
+    listProcesses: () => PS_WITHOUT_BROWSER,
+    spawn: () => {
+      spawned = true;
+      return { exited: Promise.resolve(0), kill: () => {} };
+    },
+  });
+  expect(ok).toBe(false);
+  expect(spawned).toBe(false);
+});
+
+test("closeAuthTab: the generated script names ONLY the running browsers", async () => {
+  let script = "";
+  await closeAuthTab("http://localhost:1455/callback", {
+    platform: "darwin",
+    env: {},
+    listProcesses: () => PS_WITH_CHROME,
+    spawn: cmd => {
+      script = cmd[2] ?? "";
+      return { exited: Promise.resolve(0), kill: () => {} };
+    },
+  });
+  expect(script).toContain('tell application "Google Chrome"');
+  expect(script).not.toContain('tell application "Safari"');
+  expect(script).not.toContain('tell application "Arc"');
 });

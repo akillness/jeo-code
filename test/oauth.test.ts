@@ -7,6 +7,13 @@ import { OAuthCallbackFlow, parseCallbackInput } from "../src/auth/callback-serv
 import type { OAuthController, OAuthCredentials } from "../src/auth/types";
 import { googleClientSecret } from "../src/auth/flows/google";
 
+// The login flow closes the leftover callback tab through the OS (macOS osascript)
+// once the callback page has been served. Tests must stay hermetic — no browser
+// automation, no subprocess — so opt out for the whole file with the same switch
+// users have (`JEO_AUTH_TAB_CLOSE=0`). `browser-tab.test.ts` covers that path with
+// an injected spawn instead.
+process.env.JEO_AUTH_TAB_CLOSE = "0";
+
 test("generatePKCE: challenge is base64url(SHA-256(verifier))", async () => {
   const { verifier, challenge } = await generatePKCE();
   expect(verifier.length).toBeGreaterThan(80);
@@ -38,6 +45,8 @@ class TestFlow extends OAuthCallbackFlow {
   capturedState = "";
   capturedRedirect = "";
   exchanged: { code: string; state: string; redirectUri: string } | null = null;
+  /** Every OS-level tab-close attempt this flow made (see browser-tab.ts). */
+  tabCloseAttempts: string[] = [];
   constructor(ctrl: OAuthController) {
     super(ctrl, { preferredPort: 0, callbackPath: "/callback" });
   }
@@ -49,6 +58,10 @@ class TestFlow extends OAuthCallbackFlow {
   async exchangeToken(code: string, state: string, redirectUri: string): Promise<OAuthCredentials> {
     this.exchanged = { code, state, redirectUri };
     return { access: `acc-${code}`, refresh: "refresh-1", expires: Date.now() + 3_600_000, email: "u@example.com" };
+  }
+  protected override closeBrowserTab(redirectUri: string): Promise<boolean> {
+    this.tabCloseAttempts.push(redirectUri);
+    return Promise.resolve(true);
   }
 }
 
@@ -72,12 +85,41 @@ test("OAuthCallbackFlow: browser callback delivers code, state validated, token 
   expect(body).toContain('id="jeo-countdown"');
   expect(body).toContain('id="jeo-close"');
   expect(body).toContain("window.close()");
+  // The self-adopt call that lets the engines which still honor it close an
+  // OS-opened tab; tried BEFORE window.close() on both the timer and the button.
+  expect(body).toContain('window.open("","_self")');
+  // Regression: the close attempt must never be gated on window.close()'s return
+  // value — it is ALWAYS undefined, so the old `if(!closed)` branch fired even on a
+  // successful close and hid the button, leaving a tab with no way to dismiss it.
+  expect(body).not.toContain("var closed=window.close()");
+  // The button keeps working after a refused attempt (only the countdown hint is
+  // swapped for the manual instruction).
+  expect(body).not.toContain('btn.style.display="none"');
+  expect(body).toContain("attemptClose");
 
 
   const creds = await loginPromise;
   expect(creds.access).toBe("acc-mycode");
   expect(flow.exchanged?.code).toBe("mycode");
   expect(flow.exchanged?.state).toBe(flow.capturedState);
+  // The browser refuses a scripted close for the OS-opened OAuth tab, so the flow
+  // also asks the OS to close it — exactly once, for THIS login's callback URI.
+  expect(flow.tabCloseAttempts).toEqual([flow.capturedRedirect]);
+});
+
+test("OAuthCallbackFlow: no callback page served (manual paste) means no tab-close attempt", async () => {
+  let ready: () => void;
+  const readyPromise = new Promise<void>(r => (ready = r));
+  const flow = new TestFlow({
+    onAuth: () => ready(),
+    onManualCodeInput: async () => `pasted-code#${flow.capturedState}`,
+  });
+  const creds = await flow.login();
+  await readyPromise;
+  expect(creds.access).toBe("acc-pasted-code");
+  // Nothing ever rendered the callback page, so there is no tab of ours to close —
+  // never pay for (or prompt for) browser automation in that case.
+  expect(flow.tabCloseAttempts).toEqual([]);
 });
 
 test("OAuthCallbackFlow: state mismatch is rejected (CSRF guard)", async () => {
@@ -98,6 +140,8 @@ test("OAuthCallbackFlow: state mismatch is rejected (CSRF guard)", async () => {
   expect(failBody).toContain('id="jeo-countdown"');
   expect(failBody).toContain('id="jeo-close"');
   expect(failBody).toContain("window.close()");
+  expect(failBody).toContain('window.open("","_self")');
+  expect(failBody).not.toContain("var closed=window.close()");
 
   expect(String(await caught)).toContain("State mismatch");
 });

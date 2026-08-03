@@ -8,6 +8,24 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.9.13] - 2026-08-03
+_The provider-login browser tab now actually goes away — by itself on macOS, by a working button everywhere else._
+
+### Fixed
+- **The OAuth login tab stayed open after "Login complete"** (`src/auth/callback-server.ts`, new `src/auth/browser-tab.ts`) — two separate defects:
+  - The page decided whether the close worked from `window.close()`'s return value, which is `undefined` on EVERY browser. The failure branch therefore always ran and hid the "Close" button on the first countdown tick, so the tab was left open with its only manual control gone. Success is now inferred from the document actually going away (`pagehide` / `document.hidden`); the button stays visible and re-attempts on every press, and the countdown hint is replaced by an explicit "press ⌘W / Ctrl+W" instruction only when the browser refuses.
+  - `window.close()` cannot close a tab the page's own script did not open, and jeo hands the auth URL to the OS (`open` / `xdg-open` / `start`), so the request was always ignored. jeo now closes the tab from the OUTSIDE on macOS: after the callback page is served, it lists running processes (no Automation permission needed), builds an AppleScript naming ONLY the browsers that are actually running, and closes just the tabs whose URL contains this login's `localhost:<port>/callback`. `window.open("","_self")` is also tried first for the engines that still honor the legacy self-adopt, and the countdown is 3s instead of 5s.
+- **A single missing browser silently disabled the whole close script** — AppleScript resolves app terminology at COMPILE time, which `try` cannot guard, so one static `tell application "Arc"` block on a machine without Arc made the entire script fail to compile and close nothing (`osacompile`: "Expected class name but found property"). The script is now generated only for browsers found in the live process list.
+
+### Added
+- `JEO_AUTH_TAB_CLOSE=0` opts out of the OS-level tab close entirely; the attempt is hard-capped at 2s, never surfaces an error, and is skipped when the login finished through a manual code paste (no tab of ours was ever rendered).
+
+### Verified
+- Real Chromium (Playwright) against the actual served page: the scripted close is refused exactly as it is for a real OAuth tab, and the page survives intact — URL unchanged (`window.open("","_self")` does not blank it), "Login complete ✓" still rendered, countdown hint swapped for the manual instruction, Close button still visible; `window.close()` is invoked once by the countdown and again on every button press (the old build stopped after the first).
+- `osacompile` on the generated AppleScript: fails on the full browser list (reproducing the compile bug) and compiles cleanly for the running-process-derived list.
+- `closeAuthTab` against a live loopback callback URL returns in ~2s without hanging when macOS withholds Automation permission, so a login can never stall behind it.
+- Suites: oauth, browser-tab, openai-oauth, antigravity-login, kimi-oauth, oauth-lock, auth-matrix, doctor — 53 pass / 0 fail. `bun run typecheck` clean, `bun run pack:check` 283 files.
+
 ## [0.9.12] - 2026-08-02
 _Fixes the boxed prompt's stolen keystrokes, drifting caret, and paste/attachment spacing under `jeo --tmux`._
 

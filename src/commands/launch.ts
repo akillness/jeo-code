@@ -687,6 +687,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let sessionThinking: "low" | "medium" | "high" | "xhigh" | undefined = flags.thinking ?? cfg.thinkingLevel;
   // PromptRouter session override: undefined = follow config.routing.enabled, true/false = /route on|off wins this session.
   let sessionRouteOverride: boolean | undefined;
+  // Last model that actually served a completed turn (routed or pinned) — the idle
+  // status bar (`statusBarLine`) and `/compact`/`/handoff` read THIS instead of
+  // recomputing `sessionModel || defaultModel`, which ignored routing entirely and
+  // kept showing the pre-routing default even while routing was actively picking a
+  // different model turn-to-turn (e.g. "/route on" routing every prompt to
+  // claude-sonnet-5 while the footer kept showing claude-opus-5 — looked exactly
+  // like routing "wasn't working" even though it was). `undefined` until the first
+  // turn completes, so the initial idle render still falls back to `sessionModel ||
+  // defaultModel` unchanged.
+  let lastActiveModel: string | undefined;
+
+
+
   // Last routing decision (or the reason none applied) — /route why reads this.
   let lastRouteDecision: RouteDecision | { note: string } | null = null;
   // Bounded FIFO of this session's routing decisions — /route history reads this.
@@ -1929,7 +1942,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
     }
 
+    lastActiveModel = activeModel;
     return { done: result.done, steps: result.steps, reply, rendered: !!tui, usage };
+
   };
 
 
@@ -3017,7 +3032,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // The gjc-layout status bar pinned directly ABOVE the input box: bg-gradient
   // identity block (model · thinking / branch / cwd) left, live ctx% right.
   const statusBarLine = (cols: number): string => {
-    const activeModel = sessionModel || defaultModel;
+    const activeModel = lastActiveModel ?? (sessionModel || defaultModel);
+
     const meta = catalogMetadata(activeModel);
     const used = historyTokens(history);
     const theme = uiTheme;
@@ -4321,10 +4337,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
       if (input === "/compact") {
+
         // Session-start default snapshot (not the live global default) — keeps a
         // concurrent session's `/model` write from changing this session's context budget.
-        const activeModel = sessionModel || defaultModel;
+        // Compaction budget should reflect the model that actually served the last
+        // turn (routing may have picked something other than sessionModel/defaultModel),
+        // not the pre-routing session-start snapshot — otherwise a routed session could
+        // compact against the wrong context window.
+        const activeModel = lastActiveModel ?? (sessionModel || defaultModel);
         const contextTokens = catalogMetadata(activeModel)?.contextTokens;
+
         const res = await maybeCompact(history, { model: activeModel, force: true, contextTokens });
         if (res.error) {
           console.error(chalk.red(res.error));
@@ -4346,7 +4368,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         // has no ACP/SDK-broker managed-session boundary to hand off INTO, so this
         // NEVER mutates history (see buildHandoffDocument's doc comment).
         const parsed = parseHandoffCommand(input) ?? {};
-        const activeModel = sessionModel || defaultModel;
+        const activeModel = lastActiveModel ?? (sessionModel || defaultModel);
+
         const cfg = await readGlobalConfig();
         // `Config` (state.ts) predates config-schema.ts's `compaction` field and is
         // out of this change's scope — read the passthrough-preserved value via a

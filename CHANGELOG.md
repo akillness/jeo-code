@@ -1,12 +1,20 @@
 # Changelog
 
 All notable changes to **jeo-code** are documented here.
+
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
 
 ## [Unreleased]
+
+## [0.9.16] - 2026-08-18
+_Routing looked broken while it was actually working: the idle status bar and `/compact`/`/handoff` never reflected which model `routePrompt` actually routed to._
+
+### Fixed
+- **`/route on`'s footer/status bar and `/compact`/`/handoff` model budget kept showing the pre-routing default model instead of what was actually routed** (`src/commands/launch.ts`) — the idle status bar (`statusBarLine`) and `/compact`'s/`/handoff`'s `activeModel` all recomputed `sessionModel || defaultModel` from scratch every render, which has no idea what `routePrompt` actually picked for the last turn. With routing on, a turn would genuinely route to (and reply from) e.g. `claude-sonnet-5`, but the footer kept showing `claude-opus-5` (the unrouted default) the whole time — indistinguishable from routing silently doing nothing. Fixed by tracking `lastActiveModel` (the model that actually served the most recently completed turn) and reading it first everywhere the idle/compaction UI previously assumed `sessionModel || defaultModel` was the truth.
+
 
 ## [0.9.15] - 2026-08-18
 _The 0.9.14 fix wired `promptInput` into the `$a $b …` one-shot skill-chain's `io.input`, but that chain runs before the interactive REPL's own `readline.Interface` exists — so a bundled workflow skill (`$deep-interview`, with or without `--tmux`) invoked directly from the command line still froze forever on its first question._

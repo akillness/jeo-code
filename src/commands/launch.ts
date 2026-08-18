@@ -1570,6 +1570,29 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           io: {
             output: (line: string) => {
               console.log(line);
+            },
+            // Reuse the SAME readline interface the interactive REPL already owns
+            // (via promptInput) instead of letting the workflow engine spin up a
+            // second `readline.Interface` on process.stdin — deep-interview.ts only
+            // creates its own internal rl when `opts.io?.input` is absent, and two
+            // concurrent readline interfaces on one stdin silently fight over raw
+            // mode: no error, no visible prompt, the workflow just hangs forever.
+            // The sibling io-wiring below (plain skill invocation) already does
+            // this; this `$a $b …` skill-chain path must match it.
+            input: async () => {
+              const wasPreviewArmed = previewArmed;
+              if (wasPreviewArmed) {
+                disarmPreview();
+                previewArmed = false;
+              }
+              try {
+                return await promptInput("");
+              } finally {
+                if (wasPreviewArmed) {
+                  armPreview();
+                  drawFooter(previewLines(typedLine, navIdx));
+                }
+              }
             }
           },
           args: inv.skill.name === "deep-interview" ? (inv.intent ? inv.intent.split(/\s+/) : []) : undefined

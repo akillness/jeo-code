@@ -2094,18 +2094,26 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             output: (line: string) => {
               console.log(line);
             },
-            // Reuse the SAME readline interface the interactive REPL already owns
-            // (via promptInput) instead of letting the workflow engine spin up a
-            // second `readline.Interface` on process.stdin — deep-interview.ts only
-            // creates its own internal rl when `opts.io?.input` is absent, and two
-            // concurrent readline interfaces on one stdin silently fight over raw
-            // mode: no error, no visible prompt, the workflow just hangs forever.
-            // The sibling `runSkillInvocation` path already wires `promptInput`
-            // here; this `$a $b …` chain path must match it.
-            input: () => promptInput("")
+            // This `$a $b …` one-shot chain runs BEFORE the interactive REPL's
+            // `promptInput`/`rl` exist (this whole dispatch is reached and returns
+            // long before the `const promptInput = …` further down the function
+            // executes) — referencing `promptInput` here throws a TDZ
+            // ReferenceError ("Cannot access 'promptInput' before initialization")
+            // the instant the workflow engine asks its first question. That error
+            // is caught and stashed into session history (never printed to the
+            // terminal), so the visible symptom is just a frozen prompt forever
+            // (the "jeo --tmux $deep-interview hangs" / "$deep-interview hangs"
+            // report). Omitting `input` here is safe and correct: no other
+            // readline exists yet at this point, so deep-interview.ts's own
+            // fallback `createInterface({input: process.stdin, ...})` (used
+            // whenever `opts.io?.input` is absent) has nothing to fight over raw
+            // mode with. The INTERACTIVE `runSkillInvocation` sibling path below
+            // runs AFTER `promptInput` is declared and correctly wires it — do not
+            // "fix" this block by copying that wiring here again.
           },
 
           args: inv.skill.name === "deep-interview" ? (inv.intent ? inv.intent.split(/\s+/) : []) : undefined
+
         };
 
         let ok = false;

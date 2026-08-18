@@ -8,6 +8,13 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.9.15] - 2026-08-18
+_The 0.9.14 fix wired `promptInput` into the `$a $b …` one-shot skill-chain's `io.input`, but that chain runs before the interactive REPL's own `readline.Interface` exists — so a bundled workflow skill (`$deep-interview`, with or without `--tmux`) invoked directly from the command line still froze forever on its first question._
+
+### Fixed
+- **One-shot `$skill` workflow invocations (`jeo launch "$deep-interview …"`, incl. under `--tmux`) still hung on the first question** (`src/commands/launch.ts`) — `runOneSkillShot`'s pre-REPL dispatch (used for `jeo launch "$a $b … [intent]"` at startup, BEFORE the interactive REPL's `promptInput`/`readline.Interface` are constructed) referenced `promptInput` inside its `io.input` closure. The instant the workflow engine asked its first question, that reference threw a TDZ `ReferenceError: Cannot access 'promptInput' before initialization` — caught internally and stashed into session history (never printed to the terminal), so the visible symptom was a frozen prompt with no error, indistinguishable from the 0.9.14 hang. Fixed by omitting `input` from this pre-REPL `io` block entirely: no other `readline.Interface` exists yet at this point, so `deep-interview.ts`'s own fallback `createInterface({input: process.stdin, ...})` (used whenever `opts.io?.input` is absent) has nothing to fight over raw mode with — the same fallback the interactive `runSkillInvocation` sibling path never needed to touch, since it always ran after `promptInput` was already declared.
+
+
 ## [0.9.14] - 2026-08-04
 _A `$a $b … [intent]` skill-chain invocation of a bundled workflow skill (deep-interview/ralplan/team/ultragoal) hung forever with no error and no prompt._
 

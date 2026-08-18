@@ -288,10 +288,10 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.9.14]** (2026-08-04) — A `$a $b … [intent]` skill-chain invocation of a bundled workflow skill (deep-interview/ralplan/team/ultragoal) hung forever with no error and no prompt.
 - **[0.9.13]** (2026-08-03) — The provider-login browser tab now actually goes away — by itself on macOS, by a working button everywhere else.
 - **[0.9.12]** (2026-08-02) — Fixes the boxed prompt's stolen keystrokes, drifting caret, and paste/attachment spacing under `jeo --tmux`.
 - **[0.9.11]** (2026-07-30) — Imports GJC v5 sessions safely, exposes bounded slash controls, and gates the release artifact before publication.
-- **[0.9.10]** (2026-07-27) — `jeo update` now verifies the binary you actually run, and recovers from bun's stale registry cache.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

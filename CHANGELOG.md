@@ -8,6 +8,18 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.9.14] - 2026-08-04
+_A `$a $b … [intent]` skill-chain invocation of a bundled workflow skill (deep-interview/ralplan/team/ultragoal) hung forever with no error and no prompt._
+
+### Fixed
+- **`$a $b …` skill-chain workflow invocations hung silently** (`src/commands/launch.ts`) — the chain path (`runOneSkillShot`) wired `io.output` to a bundled workflow engine but omitted `io.input`. `runDeepInterviewEngine` (and the other workflow engines) only spin up their own `readline.Interface` on `process.stdin` when `opts.io?.input` is absent; the interactive REPL already owns a `readline.Interface` on the same stdin via `promptInput`, so the two interfaces silently fought over raw mode — no prompt was ever drawn and no input was ever delivered, so the workflow just hung forever. The sibling single-invocation path (`runSkillInvocation`) already wired `promptInput` through `io.input`; the chain path now does the same (including the preview-arm/disarm dance around the prompt).
+
+### Verified
+- `bun run typecheck` clean.
+- `test/deep-interview-noninteractive.test.ts`, `test/launch-flags.test.ts` pass.
+- `test/launch-repl-eof.test.ts`'s 2 failures are pre-existing (reproduce identically on the unmodified branch).
+
+
 ## [0.9.13] - 2026-08-03
 _The provider-login browser tab now actually goes away — by itself on macOS, by a working button everywhere else._
 

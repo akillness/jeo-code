@@ -9,6 +9,13 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.9.17] - 2026-08-18
+_Live model discovery already existed (`listProviderModels`/`discoverModels`), but only `jeo auth login openai` ever called it — logging into Anthropic or Antigravity left the account pinned to the maintained static catalog snapshot until the next unrelated live-discovery call happened to run._
+
+### Added
+- **`jeo auth login anthropic` / `jeo auth login antigravity` now fetch and cache the account's live model list immediately after login**, matching the existing OpenAI/Codex behavior (`src/commands/auth.ts`) — the prior `reportOpenAiCodexModels` helper was generalized into `reportLiveModels(provider)` (driven by a `LIVE_MODEL_REPORT_PROVIDERS` set covering `openai`/`anthropic`/`antigravity`) so a freshly logged-in Anthropic or Antigravity account immediately shows its real, current model ids (e.g. newly released Claude/Gemini models not yet in the bundled static catalog) instead of waiting for the next launch's background discovery. The result is persisted via the existing `writeModelCache` so the very next `jeo` launch rehydrates it before any network call. Verified live: `listProviderModels("anthropic", …)` and `listProviderModels("antigravity", …)` both returned real, larger-than-catalog model sets (10 and 11 ids respectively) against live logged-in accounts, and the merged cache file reflected all three providers correctly.
+
+
 ## [0.9.16] - 2026-08-18
 _Routing looked broken while it was actually working: the idle status bar and `/compact`/`/handoff` never reflected which model `routePrompt` actually routed to._
 

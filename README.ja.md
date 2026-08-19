@@ -287,10 +287,10 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.9.17]** (2026-08-18) — Live model discovery already existed (`listProviderModels`/`discoverModels`), but only `jeo auth login openai` ever called it — logging into Anthropic or Antigravity left the account pinned to the maintained static catalog snapshot until the next unrelated live-discovery call happened to run.
 - **[0.9.16]** (2026-08-18) — Routing looked broken while it was actually working: the idle status bar and `/compact`/`/handoff` never reflected which model `routePrompt` actually routed to.
 - **[0.9.15]** (2026-08-18) — The 0.9.14 fix wired `promptInput` into the `$a $b …` one-shot skill-chain's `io.input`, but that chain runs before the interactive REPL's own `readline.Interface` exists — so a bundled workflow skill (`$deep-interview`, with or without `--tmux`) invoked directly from the command line still froze forever on its first question.
 - **[0.9.14]** (2026-08-04) — A `$a $b … [intent]` skill-chain invocation of a bundled workflow skill (deep-interview/ralplan/team/ultragoal) hung forever with no error and no prompt.
-- **[0.9.13]** (2026-08-03) — The provider-login browser tab now actually goes away — by itself on macOS, by a working button everywhere else.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

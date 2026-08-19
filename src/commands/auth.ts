@@ -5,7 +5,8 @@ import { type StoredOAuth } from "../agent/state";
 import { createInterface } from "node:readline/promises";
 import { readGlobalConfig } from "../agent/state";
 import { jeoEnv } from "../util/env";
-import { listProviderModels, CODEX_MODELS_URL } from "../ai/model-discovery";
+import { listProviderModels } from "../ai/model-discovery";
+
 import { writeModelCache } from "../ai/model-cache";
 import {
   OAUTH_FLOWS,
@@ -123,7 +124,7 @@ async function runAuthLogin(rest: string[]): Promise<void> {
     rl.close();
     await loginOAuth(chosen, manualToken.trim());
     console.log(`[SUCCESS] Stored manual OAuth bearer for ${chosen} (no auto-refresh).`);
-    if (chosen === "openai") await reportOpenAiCodexModels();
+    if (LIVE_MODEL_REPORT_PROVIDERS.has(chosen)) await reportLiveModels(chosen);
     return;
   }
 
@@ -131,7 +132,7 @@ async function runAuthLogin(rest: string[]): Promise<void> {
     const { email } = await interactiveOAuthLogin(chosen, rl);
     console.log(`\n[SUCCESS] OAuth login complete for ${chosen}${email ? ` (${email})` : ""}.`);
     console.log("Stored access + refresh tokens in ~/.jeo/config.json; jeo will auto-refresh on expiry.");
-    if (chosen === "openai") await reportOpenAiCodexModels();
+    if (LIVE_MODEL_REPORT_PROVIDERS.has(chosen)) await reportLiveModels(chosen);
   } catch (err) {
     console.log(`\n[FAILED] ${(err as Error).message}`);
     console.log("Tip: paste the redirect URL when prompted, or use 'jeo auth login <provider> --token <bearer>'.");
@@ -142,29 +143,34 @@ async function runAuthLogin(rest: string[]): Promise<void> {
 }
 
 /**
- * Best-effort, timeout-bounded live Codex model check run immediately after a
- * successful `jeo auth login openai`. Uses `preferOAuth` so the report reflects
- * the account that was JUST logged in — never the catalog fallback, and never
- * silently swapped to an unrelated pre-existing `providers.openai` API key.
- * A failure here is NEVER fatal: login has already succeeded and is not rolled
- * back by this check. Prints only model ids/count — no tokens/secrets.
+ * Best-effort, timeout-bounded live model check run immediately after a
+ * successful `jeo auth login <provider>` for the providers whose model set
+ * changes fastest (openai/Codex, anthropic, antigravity/Cloud Code Assist).
+ * Uses `preferOAuth` so the report reflects the account that was JUST logged
+ * in — never the catalog fallback, and never silently swapped to an
+ * unrelated pre-existing API key. A failure here is NEVER fatal: login has
+ * already succeeded and is not rolled back by this check. Prints only model
+ * ids/count — no tokens/secrets.
  */
-async function reportOpenAiCodexModels(): Promise<void> {
+const LIVE_MODEL_REPORT_PROVIDERS = new Set<AuthProvider>(["openai", "anthropic", "antigravity"]);
+
+async function reportLiveModels(provider: AuthProvider): Promise<void> {
   try {
-    const result = await listProviderModels("openai", { preferOAuth: true });
+    const result = await listProviderModels(provider, { preferOAuth: true });
     if (result.ok) {
       // Persist immediately: the very next `jeo` launch then knows this account's
       // real model set (including ids newer than the maintained static snapshot)
       // before it makes any network call.
       await writeModelCache([result]);
-      console.log(`Live Codex models (${result.models.length}): ${result.models.join(", ")}`);
+      console.log(`Live ${provider} models (${result.models.length}): ${result.models.join(", ")}`);
     } else {
-      console.log(`[WARN] Could not verify live Codex models from ${CODEX_MODELS_URL}: ${result.error ?? "unknown error"} (non-fatal — login succeeded).`);
+      console.log(`[WARN] Could not verify live ${provider} models: ${result.error ?? "unknown error"} (non-fatal — login succeeded).`);
     }
   } catch (err) {
-    console.log(`[WARN] Could not verify live Codex models from ${CODEX_MODELS_URL}: ${(err as Error).message} (non-fatal — login succeeded).`);
+    console.log(`[WARN] Could not verify live ${provider} models: ${(err as Error).message} (non-fatal — login succeeded).`);
   }
 }
+
 
 async function runAuthImport(rest: string[]): Promise<void> {
   const provider = rest.find(a => a !== "--import") as AuthProvider | undefined;

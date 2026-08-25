@@ -9,6 +9,21 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-08-25
+_Every non-interactive `jeo` run hung forever once Telegram notifications were configured — `echo "..." | jeo`, `jeo -p "..."` in CI, any scripted use. The work completed and the command returned; the process just never exited._
+
+### Fixed
+- **A one-shot run never exited when `notifications.enabled` was set** (`src/agent/notify/session-endpoint.ts`, `src/commands/launch.ts`) — `startSessionNotifyEndpoint` binds a `Bun.serve` socket plus a snapshot-poll `setInterval` for the whole launch lifetime, but its teardown lived only on the interactive REPL's exit path. A one-shot run leaves through one of ~17 early `return`s, none of which reach it, so the listening socket and the ref'd timer kept the event loop alive indefinitely. Fixed on both sides: the server and poll timer are now `unref`'d so the endpoint can never be the reason the process stays up, and the entire one-shot block is wrapped in a `try/finally` that stops the endpoint — which also removes the session discovery file, so the Telegram daemon stops dialling a dead socket after a scripted run.
+  - This was invisible for two compounding reasons: it only reproduces on a machine with notifications actually configured, and Bun timers/servers do not appear in `process._getActiveHandles()` — so the hung process reported **zero** active handles while refusing to exit. It was found by monkey-patching `setInterval`/`setTimeout` to record creation sites and dumping the still-ref'd ones after `dispatch()` returned.
+- **The `bashTool` orphan-reaping assertions compared raw command output to the string `"0"`** (`test/tools-fs.test.ts`) — `bashTool` merges stdout and stderr, so any warning `pgrep` wrote to stderr false-failed a run in which zero strays actually existed. The count is now parsed rather than string-matched, and the orphan check is gated on process enumeration actually working (hardened sandboxes answer `pgrep: Cannot get process list`). The abort **contract** itself (`success:false` / `"Command aborted"`) is still asserted unconditionally, so a restricted host keeps covering the behaviour that matters.
+
+### Added
+- `test/notify-endpoint-exit.test.ts` — pins the exit contract deterministically by pointing `JEO_CONFIG_DIR` at a temp config with notifications ON, rather than depending on the developer's real `~/.jeo/config.json`. Covers both halves independently: the `finally` teardown (one-shot exits, no leftover discovery file) and the `unref` guard (any future path that forgets `stop()` still cannot pin the process open).
+
+### Verified
+- `bun run typecheck` clean; `bun test` **3348 pass, 0 fail** — down from 22 failures two releases ago and 6 at 0.11.0. Suite wall time also dropped ~148s → ~88s, since the hung specs no longer burn their full 25s/5s timeouts.
+- The unref guard was verified by reverting it and confirming the new unit test fails, then restoring it.
+
 ## [0.11.0] - 2026-08-25
 _One bad boundary check was corrupting agent context, subagent fan-out, and the Telegram daemon's kill safety at the same time — and none of the three looked related from the outside._
 

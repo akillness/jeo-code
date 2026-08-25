@@ -229,7 +229,22 @@ export class SessionNotifyEndpoint {
         },
       },
     });
+    // Same reasoning as the poll timer below: a listening socket also keeps the Bun
+    // event loop alive. This server exists to MIRROR a session, never to outlive it,
+    // so it must not be able to decide the process stays up. `stop()` still tears it
+    // down explicitly on the paths that have one — this only removes its veto over exit.
+    (this.server as { unref?: () => void }).unref?.();
     this.pollTimer = setInterval(() => this.broadcastIfChanged(), SNAPSHOT_POLL_MS);
+    // Unref the poll timer so it can NEVER be the reason the process stays alive.
+    // This endpoint mirrors an already-running session; it has no work of its own
+    // worth holding the event loop open for. Left ref'd, any code path that starts
+    // the endpoint but does not reach an explicit `stop()` hangs the process
+    // forever — which is exactly what happened to every non-interactive invocation
+    // (`echo "…" | jeo`, `jeo -p "…"` in CI): the one-shot branch returns long
+    // before the interactive REPL's exit teardown runs. Bun timers do not appear in
+    // `process._getActiveHandles()`, so that hang presented as a process with zero
+    // active handles refusing to exit.
+    (this.pollTimer as { unref?: () => void }).unref?.();
     await fs.mkdir(notifySessionsDir(), { recursive: true, mode: 0o700 });
     const payload = {
       url: `ws://127.0.0.1:${this.server.port}`,

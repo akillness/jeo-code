@@ -319,10 +319,10 @@ CI は `.github/workflows/npm-publish.yml` で公開します — GitHub リリ�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.11.1]** (2026-08-25) — Every non-interactive `jeo` run hung forever once Telegram notifications were configured — `echo "..." | jeo`, `jeo -p "..."` in CI, any scripted use. The work completed and the command returned; the process just never exited.
 - **[0.11.0]** (2026-08-25) — One bad boundary check was corrupting agent context, subagent fan-out, and the Telegram daemon's kill safety at the same time — and none of the three looked related from the outside.
 - **[0.10.0]** (2026-08-25) — jeo could only be pointed at ONE user-supplied endpoint (`config.openaiBaseUrl`), and doing so rebound the built-in `openai` provider: it stole the `openai/` routing prefix, collided with real OpenAI model ids, and could not speak the Anthropic Messages protocol at all. There was no way to run a company LiteLLM proxy and a self-hosted vLLM box at the same time, or to reach either from a script.
 - **[0.9.17]** (2026-08-18) — Live model discovery already existed (`listProviderModels`/`discoverModels`), but only `jeo auth login openai` ever called it — logging into Anthropic or Antigravity left the account pinned to the maintained static catalog snapshot until the next unrelated live-discovery call happened to run.
-- **[0.9.16]** (2026-08-18) — Routing looked broken while it was actually working: the idle status bar and `/compact`/`/handoff` never reflected which model `routePrompt` actually routed to.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

@@ -1974,239 +1974,250 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   };
 
   if (isOneShot) {
-    let messageContent = joinedArgs;
-    if (!process.stdin.isTTY && joinedArgs.length === 0) {
-      messageContent = (await Bun.stdin.text()).trim();
-    }
-    if (!messageContent) {
-      console.log("No input provided.");
-      return;
-    }
-    // One-shot piped/`-p` input that is a control slash command must be handled
-    // HERE — never forwarded to the model. `echo "/clear" | jeo` (and Ctrl-D after
-    // a piped command) previously sent the literal "/clear" to the LLM as a prompt:
-    // a slow, flaky, and semantically wrong round-trip. These no-arg session/system
-    // commands have a meaningful one-shot effect (or are simple no-ops) and exit.
-    {
-      const cmd = messageContent.trim();
-      if (cmd === "/exit" || cmd === "/quit") {
-        return;
-      }
-      if (cmd === "/clear" || cmd === "/session new" || cmd === "/session drop" || cmd === "/session delete") {
-        // Reset history to just the system prompt and overwrite the session file so
-        // the persisted transcript matches (a fresh session for /session new and /session drop).
-        history.length = 1;
-        if (sessionId && !flags.noSession) {
-          try {
-            sessionId = (await createSession(cwd, undefined, sessionModel)).id;
-          } catch { /* best-effort: in-memory clear already done */ }
-        }
-        console.log("(history cleared)");
-        return;
-      }
-      if (cmd === "/" || cmd === "/?" || cmd === "/help") {
-        for (const line of formatSlashCommandList("/", skillSlashDetails)) console.log(line);
-        console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .jeo/sessions/.");
-        return;
-      }
-      if (cmd === "/usage") {
-        const cfg = await readGlobalConfig();
-        const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
-        const result = handleUsage(ctx, sessionUsage);
-        if (result && "lines" in result) for (const line of result.lines) console.log(line);
-        return;
-      }
-      if (cmd === "/context") {
-        const cfg = await readGlobalConfig();
-        const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
-        const result = await handleContext(ctx);
-        if (result && "lines" in result) for (const line of result.lines) console.log(line);
-        return;
-      }
-      if (cmd === "/tools") {
-        const cfg = await readGlobalConfig();
-        const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
-        const result = await handleTools(ctx);
-        if (result && "lines" in result) for (const line of result.lines) console.log(line);
-        return;
-      }
-      if (cmd === "/hotkeys") {
-        const cfg = await readGlobalConfig();
-        const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
-        const result = handleHotkeys(ctx);
-        if (result && "lines" in result) for (const line of result.lines) console.log(line);
-        return;
-      }
-      if (cmd === "/handoff" || cmd.startsWith("/handoff ")) {
-        const parsed = parseHandoffCommand(cmd) ?? {};
-        const cfg = await readGlobalConfig();
-        const activeModel = sessionModel || defaultModel;
-        // `Config` (state.ts) predates config-schema.ts's `compaction` field and is
-        // out of this change's scope — read the passthrough-preserved value via a
-        // narrow structural cast instead of widening the shared interface.
-        const focus = parsed.focus ?? (cfg as { compaction?: { handoffFocus?: string } }).compaction?.handoffFocus;
-        const res = await buildHandoffDocument(history, { model: activeModel, focus });
-        for (const line of handoffLines(res, process.stdout.columns)) console.log(line);
-        return;
-      }
-      if (cmd === "/theme" || cmd.startsWith("/theme ")) {
-        const decision = decideThemeSlash(cmd, listThemes(), resolveTheme().name);
-        for (const line of decision.lines) console.log(line);
-        if (decision.kind === "set") {
-          process.env.JEO_TUI_THEME = decision.themeName!;
-          await saveConfigPatch(raw => ({ theme: decision.themeName }));
-          // No refreshUiTheme() here — one-shot mode returns immediately after this
-          // block, so there is no live TUI paint state to re-resolve (and
-          // refreshUiTheme is declared later in this closure, out of scope here).
-        }
-        return;
-      }
-      if (cmd === "/wiki" || cmd.startsWith("/wiki ")) {
-        const decision = decideWikiSlash(
-          cmd,
-          resolveWikiRoot(await readGlobalConfig()),
-          !!jeoEnv("WIKI_ROOT"),
-        );
-        for (const line of decision.lines) console.log(line);
-        if (decision.kind === "clear") {
-          await saveConfigPatch(() => ({ wikiRoot: undefined }));
-          delete process.env.JEO_WIKI_ROOT;
-          sessionWikiRoot = undefined;
-          await refreshSessionMemory("");
-        } else if (decision.kind === "set") {
-          await saveConfigPatch(() => ({ wikiRoot: decision.persistArg }));
-          process.env.JEO_WIKI_ROOT = decision.root;
-          sessionWikiRoot = decision.root;
-          await refreshSessionMemory("");
-        }
-        return;
-      }
-      if (cmd === "/config" || cmd === "/settings") {
-        for (const line of await buildConfigPanelLines({ sessionModel, sessionThinking, sessionId })) console.log(line);
-        return;
-      }
-      if (cmd === "/evolve") {
-        await runEvolveSimulation(animateAsciiArt);
-        return;
-      }
-    }
-    // One skill run (bundle workflow → engine; regular skill → agent turn). Shared by the
-    // single-invocation path and the `$a $b …` chain path so every `$` skill actually runs.
-    const runOneSkillShot = async (inv: SkillInvocation): Promise<void> => {
-      const isBundleWorkflow = isWorkflowSkill(inv.skill.name);
-      if (isBundleWorkflow) {
-        const startMsg: Message = {
-          role: "system",
-          content: `[workflow:${inv.skill.name}:start]${inv.intent ? ` intent: ${inv.intent}` : ""}`
-        };
-        history.push(startMsg);
-        if (sessionId) {
-          await appendMessage(sessionId, startMsg, cwd);
-        }
-
-        const harness = createInFlightAbortHarness({
-          captureEsc: false,
-          onAbortNotice: msg => console.log(msg),
-          onHardExit: () => forceExitFromCtrlC(),
-        });
-        const ac = harness.controller;
-
-        const opts = {
-          cwd,
-          signal: ac.signal,
-          onProgress: (e: { skill: string; phase: string; detail?: string }) => console.log(`[workflow:${e.skill}] ${e.phase}${e.detail ? ` — ${e.detail}` : ""}`),
-          io: {
-            output: (line: string) => {
-              console.log(line);
-            },
-            // This `$a $b …` one-shot chain runs BEFORE the interactive REPL's
-            // `promptInput`/`rl` exist (this whole dispatch is reached and returns
-            // long before the `const promptInput = …` further down the function
-            // executes) — referencing `promptInput` here throws a TDZ
-            // ReferenceError ("Cannot access 'promptInput' before initialization")
-            // the instant the workflow engine asks its first question. That error
-            // is caught and stashed into session history (never printed to the
-            // terminal), so the visible symptom is just a frozen prompt forever
-            // (the "jeo --tmux $deep-interview hangs" / "$deep-interview hangs"
-            // report). Omitting `input` here is safe and correct: no other
-            // readline exists yet at this point, so deep-interview.ts's own
-            // fallback `createInterface({input: process.stdin, ...})` (used
-            // whenever `opts.io?.input` is absent) has nothing to fight over raw
-            // mode with. The INTERACTIVE `runSkillInvocation` sibling path below
-            // runs AFTER `promptInput` is declared and correctly wires it — do not
-            // "fix" this block by copying that wiring here again.
-          },
-
-          args: inv.skill.name === "deep-interview" ? (inv.intent ? inv.intent.split(/\s+/) : []) : undefined
-
-        };
-
-        let ok = false;
-        let reason: string | undefined;
-        try {
-          const res: { ok: boolean; reason?: string } = await runWorkflowEngine(inv.skill.name, opts);
-          ok = res.ok;
-          reason = res.reason;
-        } catch (err: any) {
-          ok = false;
-          reason = err.message;
-        } finally {
-          harness.dispose();
-        }
-
-        const endMsg: Message = {
-          role: "system",
-          content: ok
-            ? `[workflow:${inv.skill.name}:finish]`
-            : `[workflow:${inv.skill.name}:abort]${reason ? ` reason: ${reason}` : ""}`
-        };
-        if (sessionId) {
-          await appendMessage(sessionId, endMsg, cwd);
-        }
-        return;
-      }
-
-      const useOneShotTui = shouldUseOneShotTui(flags.noTui);
-      if (!useOneShotTui) {
-        console.log(`▶ Running skill: ${inv.skill.name}${inv.intent ? ` — ${inv.intent}` : ""}`);
-      }
-      const task = buildSkillTask(inv.skill, inv.intent, inv.invokedAs);
-      const { reply, rendered, usage } = await runTurn(task, useOneShotTui, undefined, { userCard: null });
-      if (!rendered) console.log(stripMarkdown(renderMarkdownTables(reply)) + usage);
-      else if (usage) console.log(usage.trim());
-    };
-
-    // `$a $b … [intent]` — run every resolved skill in order; a lone `$skill` is a chain of 1.
-    const skillChain = parseSkillChain(messageContent, resolvedSkills);
-    if (skillChain && skillChain.invocations.length) {
-      if (skillChain.unresolved.length) {
-        console.log(`(skipping unknown skill${skillChain.unresolved.length > 1 ? "s" : ""}: ${skillChain.unresolved.map(u => `$${u}`).join(", ")})`);
-      }
-      if (skillChain.invocations.length > 1) {
-        console.log(`▶ Chaining ${skillChain.invocations.length} skills: ${skillChain.invocations.map(i => `$${i.skill.name}`).join(" → ")}`);
-      }
-      for (const inv of skillChain.invocations) {
-        await runOneSkillShot(inv);
-      }
-      await maybeDistillOneShot();
-      return;
-    }
-    // A `$skill` invocation resolves to a single skill (by name, declared alias, or unique prefix).
-    const skillInvocation = parseSkillInvocation(messageContent, resolvedSkills);
-    if (skillInvocation) {
-      await runOneSkillShot(skillInvocation);
-      await maybeDistillOneShot();
-      return;
-    }
+    // A one-shot run has ~17 exit points below. The session notify endpoint (a
+    // listening socket + a discovery file the Telegram daemon polls) is created for
+    // the WHOLE launch lifetime up at `startSessionNotifyEndpoint`, but its teardown
+    // lives on the interactive REPL's exit path — which none of those 17 returns
+    // reach. The endpoint's socket/timer are unref'd so a leak can no longer HANG the
+    // process, but a one-shot run would still leave a stale discovery file behind for
+    // the daemon to keep dialling. One `finally` covers every exit point.
     try {
-      const { reply, rendered, usage } = await runTurn(messageContent, shouldUseOneShotTui(flags.noTui));
-      if (!rendered) console.log(stripMarkdown(renderMarkdownTables(reply)) + usage);
-      else if (usage) console.log(usage.trim());
-    } catch (err) {
-      console.log(`! ${friendlyProviderError(err)}`);
+      let messageContent = joinedArgs;
+      if (!process.stdin.isTTY && joinedArgs.length === 0) {
+        messageContent = (await Bun.stdin.text()).trim();
+      }
+      if (!messageContent) {
+        console.log("No input provided.");
+        return;
+      }
+      // One-shot piped/`-p` input that is a control slash command must be handled
+      // HERE — never forwarded to the model. `echo "/clear" | jeo` (and Ctrl-D after
+      // a piped command) previously sent the literal "/clear" to the LLM as a prompt:
+      // a slow, flaky, and semantically wrong round-trip. These no-arg session/system
+      // commands have a meaningful one-shot effect (or are simple no-ops) and exit.
+      {
+        const cmd = messageContent.trim();
+        if (cmd === "/exit" || cmd === "/quit") {
+          return;
+        }
+        if (cmd === "/clear" || cmd === "/session new" || cmd === "/session drop" || cmd === "/session delete") {
+          // Reset history to just the system prompt and overwrite the session file so
+          // the persisted transcript matches (a fresh session for /session new and /session drop).
+          history.length = 1;
+          if (sessionId && !flags.noSession) {
+            try {
+              sessionId = (await createSession(cwd, undefined, sessionModel)).id;
+            } catch { /* best-effort: in-memory clear already done */ }
+          }
+          console.log("(history cleared)");
+          return;
+        }
+        if (cmd === "/" || cmd === "/?" || cmd === "/help") {
+          for (const line of formatSlashCommandList("/", skillSlashDetails)) console.log(line);
+          console.log("Tools: read / write / edit / bash / find / search. Sessions persist to .jeo/sessions/.");
+          return;
+        }
+        if (cmd === "/usage") {
+          const cfg = await readGlobalConfig();
+          const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
+          const result = handleUsage(ctx, sessionUsage);
+          if (result && "lines" in result) for (const line of result.lines) console.log(line);
+          return;
+        }
+        if (cmd === "/context") {
+          const cfg = await readGlobalConfig();
+          const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
+          const result = await handleContext(ctx);
+          if (result && "lines" in result) for (const line of result.lines) console.log(line);
+          return;
+        }
+        if (cmd === "/tools") {
+          const cfg = await readGlobalConfig();
+          const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
+          const result = await handleTools(ctx);
+          if (result && "lines" in result) for (const line of result.lines) console.log(line);
+          return;
+        }
+        if (cmd === "/hotkeys") {
+          const cfg = await readGlobalConfig();
+          const ctx: SlashContext = { history, sessionModel, sessionId, cwd, config: cfg };
+          const result = handleHotkeys(ctx);
+          if (result && "lines" in result) for (const line of result.lines) console.log(line);
+          return;
+        }
+        if (cmd === "/handoff" || cmd.startsWith("/handoff ")) {
+          const parsed = parseHandoffCommand(cmd) ?? {};
+          const cfg = await readGlobalConfig();
+          const activeModel = sessionModel || defaultModel;
+          // `Config` (state.ts) predates config-schema.ts's `compaction` field and is
+          // out of this change's scope — read the passthrough-preserved value via a
+          // narrow structural cast instead of widening the shared interface.
+          const focus = parsed.focus ?? (cfg as { compaction?: { handoffFocus?: string } }).compaction?.handoffFocus;
+          const res = await buildHandoffDocument(history, { model: activeModel, focus });
+          for (const line of handoffLines(res, process.stdout.columns)) console.log(line);
+          return;
+        }
+        if (cmd === "/theme" || cmd.startsWith("/theme ")) {
+          const decision = decideThemeSlash(cmd, listThemes(), resolveTheme().name);
+          for (const line of decision.lines) console.log(line);
+          if (decision.kind === "set") {
+            process.env.JEO_TUI_THEME = decision.themeName!;
+            await saveConfigPatch(raw => ({ theme: decision.themeName }));
+            // No refreshUiTheme() here — one-shot mode returns immediately after this
+            // block, so there is no live TUI paint state to re-resolve (and
+            // refreshUiTheme is declared later in this closure, out of scope here).
+          }
+          return;
+        }
+        if (cmd === "/wiki" || cmd.startsWith("/wiki ")) {
+          const decision = decideWikiSlash(
+            cmd,
+            resolveWikiRoot(await readGlobalConfig()),
+            !!jeoEnv("WIKI_ROOT"),
+          );
+          for (const line of decision.lines) console.log(line);
+          if (decision.kind === "clear") {
+            await saveConfigPatch(() => ({ wikiRoot: undefined }));
+            delete process.env.JEO_WIKI_ROOT;
+            sessionWikiRoot = undefined;
+            await refreshSessionMemory("");
+          } else if (decision.kind === "set") {
+            await saveConfigPatch(() => ({ wikiRoot: decision.persistArg }));
+            process.env.JEO_WIKI_ROOT = decision.root;
+            sessionWikiRoot = decision.root;
+            await refreshSessionMemory("");
+          }
+          return;
+        }
+        if (cmd === "/config" || cmd === "/settings") {
+          for (const line of await buildConfigPanelLines({ sessionModel, sessionThinking, sessionId })) console.log(line);
+          return;
+        }
+        if (cmd === "/evolve") {
+          await runEvolveSimulation(animateAsciiArt);
+          return;
+        }
+      }
+      // One skill run (bundle workflow → engine; regular skill → agent turn). Shared by the
+      // single-invocation path and the `$a $b …` chain path so every `$` skill actually runs.
+      const runOneSkillShot = async (inv: SkillInvocation): Promise<void> => {
+        const isBundleWorkflow = isWorkflowSkill(inv.skill.name);
+        if (isBundleWorkflow) {
+          const startMsg: Message = {
+            role: "system",
+            content: `[workflow:${inv.skill.name}:start]${inv.intent ? ` intent: ${inv.intent}` : ""}`
+          };
+          history.push(startMsg);
+          if (sessionId) {
+            await appendMessage(sessionId, startMsg, cwd);
+          }
+
+          const harness = createInFlightAbortHarness({
+            captureEsc: false,
+            onAbortNotice: msg => console.log(msg),
+            onHardExit: () => forceExitFromCtrlC(),
+          });
+          const ac = harness.controller;
+
+          const opts = {
+            cwd,
+            signal: ac.signal,
+            onProgress: (e: { skill: string; phase: string; detail?: string }) => console.log(`[workflow:${e.skill}] ${e.phase}${e.detail ? ` — ${e.detail}` : ""}`),
+            io: {
+              output: (line: string) => {
+                console.log(line);
+              },
+              // This `$a $b …` one-shot chain runs BEFORE the interactive REPL's
+              // `promptInput`/`rl` exist (this whole dispatch is reached and returns
+              // long before the `const promptInput = …` further down the function
+              // executes) — referencing `promptInput` here throws a TDZ
+              // ReferenceError ("Cannot access 'promptInput' before initialization")
+              // the instant the workflow engine asks its first question. That error
+              // is caught and stashed into session history (never printed to the
+              // terminal), so the visible symptom is just a frozen prompt forever
+              // (the "jeo --tmux $deep-interview hangs" / "$deep-interview hangs"
+              // report). Omitting `input` here is safe and correct: no other
+              // readline exists yet at this point, so deep-interview.ts's own
+              // fallback `createInterface({input: process.stdin, ...})` (used
+              // whenever `opts.io?.input` is absent) has nothing to fight over raw
+              // mode with. The INTERACTIVE `runSkillInvocation` sibling path below
+              // runs AFTER `promptInput` is declared and correctly wires it — do not
+              // "fix" this block by copying that wiring here again.
+            },
+
+            args: inv.skill.name === "deep-interview" ? (inv.intent ? inv.intent.split(/\s+/) : []) : undefined
+
+          };
+
+          let ok = false;
+          let reason: string | undefined;
+          try {
+            const res: { ok: boolean; reason?: string } = await runWorkflowEngine(inv.skill.name, opts);
+            ok = res.ok;
+            reason = res.reason;
+          } catch (err: any) {
+            ok = false;
+            reason = err.message;
+          } finally {
+            harness.dispose();
+          }
+
+          const endMsg: Message = {
+            role: "system",
+            content: ok
+              ? `[workflow:${inv.skill.name}:finish]`
+              : `[workflow:${inv.skill.name}:abort]${reason ? ` reason: ${reason}` : ""}`
+          };
+          if (sessionId) {
+            await appendMessage(sessionId, endMsg, cwd);
+          }
+          return;
+        }
+
+        const useOneShotTui = shouldUseOneShotTui(flags.noTui);
+        if (!useOneShotTui) {
+          console.log(`▶ Running skill: ${inv.skill.name}${inv.intent ? ` — ${inv.intent}` : ""}`);
+        }
+        const task = buildSkillTask(inv.skill, inv.intent, inv.invokedAs);
+        const { reply, rendered, usage } = await runTurn(task, useOneShotTui, undefined, { userCard: null });
+        if (!rendered) console.log(stripMarkdown(renderMarkdownTables(reply)) + usage);
+        else if (usage) console.log(usage.trim());
+      };
+
+      // `$a $b … [intent]` — run every resolved skill in order; a lone `$skill` is a chain of 1.
+      const skillChain = parseSkillChain(messageContent, resolvedSkills);
+      if (skillChain && skillChain.invocations.length) {
+        if (skillChain.unresolved.length) {
+          console.log(`(skipping unknown skill${skillChain.unresolved.length > 1 ? "s" : ""}: ${skillChain.unresolved.map(u => `$${u}`).join(", ")})`);
+        }
+        if (skillChain.invocations.length > 1) {
+          console.log(`▶ Chaining ${skillChain.invocations.length} skills: ${skillChain.invocations.map(i => `$${i.skill.name}`).join(" → ")}`);
+        }
+        for (const inv of skillChain.invocations) {
+          await runOneSkillShot(inv);
+        }
+        await maybeDistillOneShot();
+        return;
+      }
+      // A `$skill` invocation resolves to a single skill (by name, declared alias, or unique prefix).
+      const skillInvocation = parseSkillInvocation(messageContent, resolvedSkills);
+      if (skillInvocation) {
+        await runOneSkillShot(skillInvocation);
+        await maybeDistillOneShot();
+        return;
+      }
+      try {
+        const { reply, rendered, usage } = await runTurn(messageContent, shouldUseOneShotTui(flags.noTui));
+        if (!rendered) console.log(stripMarkdown(renderMarkdownTables(reply)) + usage);
+        else if (usage) console.log(usage.trim());
+      } catch (err) {
+        console.log(`! ${friendlyProviderError(err)}`);
+      }
+      await maybeDistillOneShot();
+      return;
+    } finally {
+      await sessionNotifyEndpoint?.stop().catch(() => {});
     }
-    await maybeDistillOneShot();
-    return;
   }
 
   // INTERACTIVE mode

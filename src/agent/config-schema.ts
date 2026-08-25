@@ -179,6 +179,12 @@ export const ConfigSchema = z
      * (executor / planner / architect / critic); each may pin a model and/or a
      * step budget. Tolerant of unknown keys.
      */
+    /** Max subagents a fan-out batch runs CONCURRENTLY (`task: {tasks:[...]}`) and the
+     *  bound the eval tool's `parallel`/`pipeline` helpers enforce. Default 4.
+     *  Lower it on a rate-limited account (4 concurrent Anthropic streams trips Tier-1
+     *  limits immediately); raise it when the provider has headroom. Clamped to 1..16 —
+     *  above that the parent turn is monopolized regardless of provider capacity. */
+    subagentConcurrency: z.number().int().min(1).max(16).optional(),
     subagents: z
       .record(
         z.object({

@@ -1,7 +1,77 @@
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 
 import { IGNORED_DIRS } from "./tools";
+
+/**
+ * The user's home directory, or `undefined` when it genuinely cannot be determined.
+ *
+ * `$HOME` is NOT always set: bare Docker images, systemd units without `User=`,
+ * `env -i` wrappers and some CI runners all launch processes without it. Two separate
+ * bugs came out of reading `process.env.HOME` raw:
+ *
+ *  1. The parent walk below stops at the home directory. With `HOME` unset that guard
+ *     was `null` and never fired, so the walk climbed PAST the user's home into
+ *     `/Users`, `/home`, or `/` — loading whatever `AGENTS.md` / `CLAUDE.md` happened
+ *     to sit there (on a shared machine, potentially another account's) straight into
+ *     the system prompt.
+ *  2. `discoverAgentGuidanceFiles` built its home roots with
+ *     `path.join(process.env.HOME || "", ".agents", "rules")`, and `path.join("", ...)`
+ *     yields a RELATIVE path — so with `HOME` unset it scanned `./.agents/rules`,
+ *     i.e. the current working directory, and treated a project's files as if they were
+ *     the user's global config.
+ *
+ * `os.homedir()` consults the OS user database (getpwuid / USERPROFILE), so it still
+ * answers correctly when the env var is missing. It is only allowed to return a usable
+ * value — an empty or relative result is rejected rather than silently becoming ".".
+ */
+export function resolveHomeDir(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const candidates = [env.HOME, safeOsHomedir()];
+  for (const c of candidates) {
+    const trimmed = c?.trim();
+    if (!trimmed) continue;
+    const resolved = path.resolve(trimmed);
+    // `path.resolve` always returns an absolute path, but a bogus "."/"" input would
+    // resolve to the CWD — which is exactly the bug this function exists to prevent.
+    if (resolved === path.resolve(process.cwd()) && trimmed !== resolved) continue;
+    return resolved;
+  }
+  return undefined;
+}
+
+function safeOsHomedir(): string | undefined {
+  try {
+    return os.homedir() || undefined;
+  } catch {
+    // os.homedir() throws on exotic platforms with no user database.
+    return undefined;
+  }
+}
+
+/** Hard ceiling on the parent walk. The home boundary and the git-root check normally
+ *  stop it long before this; the cap is defence in depth so a pathological environment
+ *  (no home, no git root, deeply nested cwd) can never walk the whole filesystem. */
+const MAX_PARENT_WALK_DEPTH = 24;
+
+/**
+ * True when `dir` is at or above the user's home directory — i.e. a shared/system path
+ * such as `/Users`, `/home` or `/`.
+ *
+ * The parent walk must never read agent context from these. Stopping only on
+ * `curr === home` was too weak: when the working directory is NOT inside home (a repo
+ * under `/opt`, or a temp dir whose `TMPDIR` points outside home) that equality never
+ * holds, and the walk climbs into directories that can belong to another account or to
+ * the machine itself — silently splicing their `AGENTS.md` / `CLAUDE.md` into the
+ * system prompt. Testing "is an ancestor of home" stops at the same place for the
+ * common case AND caps the uncommon one at the last non-shared directory.
+ */
+function isAtOrAboveHome(dir: string, home: string | null): boolean {
+  if (!home) return false;
+  if (dir === home) return true;
+  // `home` lives under `dir` → `dir` is a shared ancestor (e.g. /Users for /Users/x).
+  return home.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
+}
 
 interface ContextItem {
   filePath: string;
@@ -225,15 +295,20 @@ export function invalidateWorkspaceScan(cwd?: string): void {
 export async function discoverAgentGuidanceFiles(cwd = process.cwd()): Promise<Array<{ filePath: string; displayPath: string }>> {
   const scan = await getWorkspaceScan(cwd);
   const out: Array<{ filePath: string; displayPath: string }> = [...scan.localGuidance];
-  const home = path.join(process.env.HOME || "", "");
-  const homeRoots = [
-    { rootDir: path.join(home, ".agents", "rules"), displayPrefix: "~/.agents/rules" },
-    { rootDir: path.join(home, ".jeo", "rules"), displayPrefix: "~/.jeo/rules" },
-    { rootDir: path.join(home, ".agents", "hooks"), displayPrefix: "~/.agents/hooks" },
-    { rootDir: path.join(home, ".jeo", "hooks"), displayPrefix: "~/.jeo/hooks" },
-  ];
-  for (const root of homeRoots) {
-    await collectTextFiles(root.rootDir, root.displayPrefix, 2, out);
+  // No resolvable home → NO home roots. Previously this fell back to `path.join("", …)`,
+  // a RELATIVE path, so the "user global" scan silently read the current working
+  // directory's `.agents/rules` and presented project files as user-global config.
+  const home = resolveHomeDir();
+  if (home) {
+    const homeRoots = [
+      { rootDir: path.join(home, ".agents", "rules"), displayPrefix: "~/.agents/rules" },
+      { rootDir: path.join(home, ".jeo", "rules"), displayPrefix: "~/.jeo/rules" },
+      { rootDir: path.join(home, ".agents", "hooks"), displayPrefix: "~/.agents/hooks" },
+      { rootDir: path.join(home, ".jeo", "hooks"), displayPrefix: "~/.jeo/hooks" },
+    ];
+    for (const root of homeRoots) {
+      await collectTextFiles(root.rootDir, root.displayPrefix, 2, out);
+    }
   }
   const seen = new Set<string>();
   return out.filter(entry => {
@@ -261,7 +336,7 @@ export async function loadProjectContext(cwd = process.cwd()): Promise<ProjectCo
   };
 
   const resolvedCwd = path.resolve(cwd);
-  const home = process.env.HOME ? path.resolve(process.env.HOME) : null;
+  const home = resolveHomeDir() ?? null;
   const collectedItems: ContextItem[] = [];
 
   // 0. User-global context files (~/.jeo/agent/AGENTS.md) — lowest precedence.
@@ -293,7 +368,11 @@ export async function loadProjectContext(cwd = process.cwd()): Promise<ProjectCo
   let curr = resolvedCwd;
   let distance = 0;
   while (true) {
-    if (home && curr === home) {
+    if (isAtOrAboveHome(curr, home)) {
+      break;
+    }
+    // Never walk the entire filesystem, even if the home boundary is unknowable.
+    if (distance >= MAX_PARENT_WALK_DEPTH) {
       break;
     }
 

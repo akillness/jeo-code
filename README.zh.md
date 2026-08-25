@@ -38,7 +38,7 @@
 
 ## 亮点
 
-- **多提供商、单一循环** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio，以及 20+ 个 OpenAI、Anthropic 兼容云服务(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai 等)，统一在一个 JSON 工具循环中。输入框内直接 OAuth 登录(`/provider login`)，模型选择即刻持久化为默认值。Prompt routing 只会自动选择真实可用的凭据路径: Gemini OAuth 会走 provider-qualified 的 `antigravity/*` 代理模型集(Gemini 3.5 Flash 各档、Gemini 3.1 Pro、Claude Sonnet/Opus 4.6)，绝不选择需要 `GEMINI_API_KEY` 的 public `google/gemini-*` 行。
+- **多提供商、单一循环** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio，以及 20+ 个 OpenAI、Anthropic 兼容云服务(Groq、DeepSeek、Mistral、OpenRouter、xAI、Kimi、z.ai 等)，统一在一个 JSON 工具循环中 — **还包括你自己注册的端点**: `jeo provider add --id my-proxy --base-url https://…`(或 `--preset litellm|vllm|sglang|azure-openai|…`)让 LiteLLM 代理、自托管 vLLM、企业内部 Anthropic 网关拥有各自的路由前缀、模型列表和凭据，而不是劫持内置的 `openai` 提供商。输入框内直接 OAuth 登录(`/provider login`)，模型选择即刻持久化为默认值。Prompt routing 只会自动选择真实可用的凭据路径: Gemini OAuth 会走 provider-qualified 的 `antigravity/*` 代理模型集(Gemini 3.5 Flash 各档、Gemini 3.1 Pro、Claude Sonnet/Opus 4.6)，绝不选择需要 `GEMINI_API_KEY` 的 public `google/gemini-*` 行。
 - **编辑完整性** — read 输出携带内容锚点(`42ab|`)；带锚点的编辑会与当前文件校验、行移动时自动重映射、不匹配时连同最新内容一起拒绝 — 绝不污染文件。
 - **自我修正的验证循环** — 配置 post-edit 钩子(tsc / eslint / 测试)，代理会*亲自读取*诊断并在循环内修复；钩子未通过时 `done` 会被阻断。
 - **没有表演的真实门禁** — `ralplan` 共识由真正读取仓库的 critic 子代理执行，`[OKAY]` 裁决被持久化且 `jeo approve` *强制要求*它；`ultragoal` 诚实报告(套件运行只是全局信号，绝不伪造逐条通过)。
@@ -87,6 +87,7 @@ jeo --tmux               # 在独立 tmux 会话中运行
 | --- | --- |
 | `/model` · `/provider` | 选择模型/提供商；`/model` 在一个流程内显示默认/角色徽章、Ralph 风格嵌套角色·thinking 选择与 OpenAI Codex 角色预设 |
 | `/provider login <name>` · `/logout` | 在输入框内 OAuth 登录/登出 |
+| `/provider add` · `list` · `remove` · `presets` | 将 OpenAI/Anthropic 兼容端点注册为一等提供商(15 个网关预设) |
 | `/agents [role]` · `/subagent` | 按角色(executor/planner/architect/critic)配置模型·thinking·步数 |
 | `/thinking [level]` | 查看/设置默认推理预算(low…xhigh) |
 | `/route [status\|on\|off\|why\|history [n]]` | 切换本会话的基于提示词的模型路由 · 解释最近一次路由决策 · `history [n]` 列出本会话最近 n 条(默认 10 条)路由决策(仅在已配置凭证 — OAuth 或 API 密钥 — 实际可用的模型内自动路由) |
@@ -246,6 +247,35 @@ JEO_TOOL_OUTPUT_MAX=4000        # 模型可见的工具输出上限(全文溢出
 
 重试行为通过 `~/.jeo/config.json` 的 `retry` 调整(`requestMaxRetries`、`streamMaxRetries`、`rateLimitRetries`、`failFastStatuses` 等)。步数预算默认动态 — 只要看到新的进展就延长，停滞时收敛为总结；`--max-steps N` 恢复有界流程。
 
+### 自定义提供商
+
+```jsonc
+{
+  "customProviders": {
+    "my-proxy": {
+      "baseUrl": "https://gateway.internal/v1",
+      "protocol": "openai",            // 或 "anthropic" (/v1/messages 协议)
+      "apiKeyEnv": "MY_PROXY_API_KEY", // 默认: <ID>_API_KEY
+      "models": ["fast", "smart"]      // 离线列表；实时 /models 优先
+    }
+  }
+}
+```
+
+命令行(`jeo provider add|list|remove|presets|test`)与输入框(`/provider add …`)操作同一份注册表。
+`jeo provider test <id>` 会真实探测端点，并**分别报告凭据问题与端点问题**，
+失败时以非零码退出，可直接用作部署脚本的检查关卡。
+
+### 子代理扇出并发度
+
+```jsonc
+{ "subagentConcurrency": 2 }   // 默认 4，限制在 1~16
+```
+
+Anthropic Tier-1 账号在 4 条并发流时会立刻触发限流，使扇出变成比顺序执行**更慢**的
+退避风暴。限流紧张的账号请调低，额度充足时可调高。该值同时约束 `task` 工具的
+`tasks[]` 批处理与 `eval` 工具的 `parallel`/`pipeline` 辅助函数。
+
 ## 技能迁移与内置技能检查
 
 把某个工作流迁移到 jeo 之前，先检查内置默认值，再决定是否安装或覆盖任何内容:
@@ -287,10 +317,10 @@ CI 通过 `.github/workflows/npm-publish.yml` 发布 — GitHub 发布 release �
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.11.0]** (2026-08-25) — One bad boundary check was corrupting agent context, subagent fan-out, and the Telegram daemon's kill safety at the same time — and none of the three looked related from the outside.
 - **[0.10.0]** (2026-08-25) — jeo could only be pointed at ONE user-supplied endpoint (`config.openaiBaseUrl`), and doing so rebound the built-in `openai` provider: it stole the `openai/` routing prefix, collided with real OpenAI model ids, and could not speak the Anthropic Messages protocol at all. There was no way to run a company LiteLLM proxy and a self-hosted vLLM box at the same time, or to reach either from a script.
 - **[0.9.17]** (2026-08-18) — Live model discovery already existed (`listProviderModels`/`discoverModels`), but only `jeo auth login openai` ever called it — logging into Anthropic or Antigravity left the account pinned to the maintained static catalog snapshot until the next unrelated live-discovery call happened to run.
 - **[0.9.16]** (2026-08-18) — Routing looked broken while it was actually working: the idle status bar and `/compact`/`/handoff` never reflected which model `routePrompt` actually routed to.
-- **[0.9.15]** (2026-08-18) — The 0.9.14 fix wired `promptInput` into the `$a $b …` one-shot skill-chain's `io.input`, but that chain runs before the interactive REPL's own `readline.Interface` exists — so a bundled workflow skill (`$deep-interview`, with or without `--tmux`) invoked directly from the command line still froze forever on its first question.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

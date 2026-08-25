@@ -111,6 +111,27 @@ export interface TaskToolOptions {
  *  no in-batch peer channel yet, so overlapping-scope tasks MUST be sequential. */
 export const MAX_FANOUT = 4;
 
+/** Clamp for {@link resolveFanoutLimit}. Below 1 there is no fan-out at all; above 16
+ *  the parent turn is monopolized no matter how much provider capacity exists. */
+export const MIN_FANOUT_LIMIT = 1;
+export const MAX_FANOUT_LIMIT = 16;
+
+/**
+ * Effective fan-out concurrency for this account.
+ *
+ * {@link MAX_FANOUT} is a reasonable default, not a universal one: four concurrent
+ * Anthropic streams trip a Tier-1 rate limit immediately (turning a fan-out into a
+ * backoff storm that is SLOWER than running sequentially), while an account with real
+ * headroom leaves throughput on the table at four. `config.subagentConcurrency` lets
+ * that be tuned per machine; the clamp keeps a typo (`0`, `-1`, `500`) from producing a
+ * batch that never runs or never yields.
+ */
+export function resolveFanoutLimit(config?: { subagentConcurrency?: number }): number {
+  const raw = config?.subagentConcurrency;
+  if (raw === undefined || !Number.isFinite(raw)) return MAX_FANOUT;
+  return Math.min(MAX_FANOUT_LIMIT, Math.max(MIN_FANOUT_LIMIT, Math.trunc(raw)));
+}
+
 /** Small bounded reroute budget for a SUBAGENT's own 429 (distinct from
  *  launch.ts's `ROUTE_FALLBACK_MAX_ATTEMPTS`, default 3): a subagent is already
  *  bounded by its own step/token budget and the parent turn's patience, so this
@@ -635,9 +656,12 @@ export function createTaskTool(opts: TaskToolOptions): ToolHandler {
           };
         }
       }
-      // Both roles fan out CONCURRENTLY, bounded at MAX_FANOUT (gjc parity — see
-      // MAX_FANOUT's docstring for the disjoint-file-scope expectation this relies on).
-      const limit = Math.min(items.length, MAX_FANOUT);
+      // Both roles fan out CONCURRENTLY, bounded at the account's effective limit
+      // (gjc parity — see MAX_FANOUT's docstring for the disjoint-file-scope expectation
+      // this relies on). `config.subagentConcurrency` tunes it per machine so a
+      // rate-limited account can drop below the default instead of backoff-storming.
+      const fanoutLimit = resolveFanoutLimit(opts.config as { subagentConcurrency?: number });
+      const limit = Math.min(items.length, fanoutLimit);
       // Load project context ONCE per batch instead of re-scanning AGENTS.md for
       // every fan-out task (redundant IO + duplicated tokens).
       const batchContext = await loadProjectContext(cwd);

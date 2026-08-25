@@ -15,9 +15,21 @@ import {
   processStartTimeMs,
   parseEtimeToMs,
   isLockOwnerAlive,
+  canVerifyProcessStartTime,
+  inspectLockOwner,
 } from "../src/agent/notify/daemon-control";
 import { notifyDaemonLockPath } from "../src/agent/notify/paths";
 import { saveConfigPatch } from "../src/agent/state";
+
+// The PID-reuse guard needs the OS to report a process start time. That is a real host
+// CAPABILITY, not a jeo behaviour: `/proc` is Linux-only and hardened sandboxes/seccomp
+// profiles routinely block the setuid `/bin/ps`. Where the lookup is genuinely
+// unavailable the guard documents itself as degrading to an existence-only check, so
+// asserting the strong behaviour there would be asserting something the host cannot do.
+// Skip honestly instead of failing — and keep a test below that pins the DEGRADED
+// contract, so the fallback path is still covered everywhere.
+const canVerifyStart = await canVerifyProcessStartTime();
+const startTimeTest = canVerifyStart ? test : test.skip;
 
 let dir: string;
 const savedCfgDir = process.env.JEO_CONFIG_DIR;
@@ -68,7 +80,7 @@ test("processStartTimeMs returns undefined for a pid that no longer exists", asy
   expect(await processStartTimeMs(await deadPid())).toBeUndefined();
 });
 
-test("processStartTimeMs resolves a real live process to a plausible (not garbage) start time", async () => {
+startTimeTest("processStartTimeMs resolves a real live process to a plausible (not garbage) start time", async () => {
   const before = Date.now();
   const real = await processStartTimeMs(process.pid);
   expect(real).toBeDefined();
@@ -147,7 +159,7 @@ test("isLockOwnerAlive is true when the recorded startedAt matches the process's
   expect(await isLockOwnerAlive({ pid: process.pid, startedAt })).toBe(true);
 });
 
-test("isLockOwnerAlive is false when the recorded startedAt does not match — PID reuse detection", async () => {
+startTimeTest("isLockOwnerAlive is false when the recorded startedAt does not match — PID reuse detection", async () => {
   // Simulates a stale lock whose pid was reassigned by the OS to an unrelated
   // live process (here, this test runner) long after the original daemon
   // actually started — a bare kill(pid, 0) cannot tell these apart.
@@ -155,7 +167,7 @@ test("isLockOwnerAlive is false when the recorded startedAt does not match — P
   expect(await isLockOwnerAlive({ pid: process.pid, startedAt: bogusStartedAt })).toBe(false);
 });
 
-test("stopDaemon refuses to signal a live pid whose startedAt does not match (PID reuse) and clears the lock instead", async () => {
+startTimeTest("stopDaemon refuses to signal a live pid whose startedAt does not match (PID reuse) and clears the lock instead", async () => {
   const child = Bun.spawn(["sleep", "5"]);
   try {
     await fs.mkdir(path.dirname(notifyDaemonLockPath()), { recursive: true });
@@ -275,4 +287,33 @@ test("reloadDaemon stops the old owner and starts a fresh one", async () => {
   const lock = await readDaemonLock();
   expect(lock?.pid).toBe(process.pid);
   await child.exited;
+});
+
+
+// --- Degraded-host contract (runs everywhere) ---------------------------------
+// When the start time cannot be read, the guard must stay USABLE (a daemon in a
+// distroless container still has to be stoppable) but must not silently claim it
+// verified anything. inspectLockOwner separates those two facts; daemonStatus and
+// stopDaemon surface the caveat rather than hiding it.
+
+test("inspectLockOwner separates 'alive' from 'verified' so a degraded host is visible", async () => {
+  const alive = await inspectLockOwner({ pid: process.pid, startedAt: Date.now() });
+  expect(alive.alive).toBe(true);
+  expect(alive.verified).toBe(canVerifyStart);
+
+  // A dead pid is always a VERIFIED negative — existence alone settles it, no start
+  // time needed — so this holds on every host regardless of `ps`//proc availability.
+  const dead = await inspectLockOwner({ pid: await deadPid(), startedAt: Date.now() });
+  expect(dead).toEqual({ alive: false, verified: true });
+});
+
+test("daemonStatus reports whether the running claim was actually verified", async () => {
+  await fs.mkdir(path.dirname(notifyDaemonLockPath()), { recursive: true });
+  await fs.writeFile(notifyDaemonLockPath(), JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
+  const status = await daemonStatus();
+  expect(status.running).toBe(true);
+  expect(status.ownerVerified).toBe(canVerifyStart);
+  // No lock at all → nothing to verify, so the field stays absent rather than false.
+  await fs.unlink(notifyDaemonLockPath()).catch(() => {});
+  expect((await daemonStatus()).ownerVerified).toBeUndefined();
 });

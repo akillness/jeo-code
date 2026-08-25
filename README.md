@@ -42,7 +42,7 @@ Run `jeo` inside a repository and it reads files, edits them, runs commands, and
 
 - **Prompt routing (cost-aware, credential-aware)** — every turn can auto-route to a tier-appropriate model among only the providers your configured credentials actually serve (`/route [status|on|off|why|history]`), with a live equivalent-model fallback whenever a routed provider is rate-limited, unauthenticated, unreachable, or silently times out — see `/route why` for the last decision, `/route history` for the recent ones.
 - **Computer use (desktop automation)** — a fail-closed `computer` tool (screenshot/click/type/scroll/drag/batch) gated by both a config flag and an independent kill-switch/heartbeat supervisor; toggle it for the current session with `/computer [status|on|off]` without touching `~/.jeo/config.json`.
-- **Multi-provider, one loop** — Anthropic / OpenAI (+Codex) / Gemini / Antigravity / Ollama / LM Studio, plus 20+ OpenAI- and Anthropic-compatible clouds (Groq, DeepSeek, Mistral, OpenRouter, xAI, Kimi, z.ai, …), all behind one uniform JSON tool loop. OAuth login happens from the input box (`/provider login`), every model pick persists as the new default, and prompt routing only auto-selects usable credentialed paths: Gemini OAuth goes through the provider-qualified `antigravity/*` agent set (Gemini 3.5 Flash tiers, Gemini 3.1 Pro, Claude Sonnet/Opus 4.6), never public `google/gemini-*` rows that require `GEMINI_API_KEY`; if a configured route points at an unready provider, jeo switches to an equivalent credentialed tier model before falling back to the default.
+- **Multi-provider, one loop** — Anthropic / OpenAI (+Codex) / Gemini / Antigravity / Ollama / LM Studio, plus 20+ OpenAI- and Anthropic-compatible clouds (Groq, DeepSeek, Mistral, OpenRouter, xAI, Kimi, z.ai, …), all behind one uniform JSON tool loop — **plus any endpoint you register yourself**: `jeo provider add --id my-proxy --base-url https://…` (or `--preset litellm|vllm|sglang|azure-openai|…`) gives a LiteLLM proxy, a self-hosted vLLM box or a corporate Anthropic gateway its own routing prefix, model list and credential, instead of hijacking the built-in `openai` provider. OAuth login happens from the input box (`/provider login`), every model pick persists as the new default, and prompt routing only auto-selects usable credentialed paths: Gemini OAuth goes through the provider-qualified `antigravity/*` agent set (Gemini 3.5 Flash tiers, Gemini 3.1 Pro, Claude Sonnet/Opus 4.6), never public `google/gemini-*` rows that require `GEMINI_API_KEY`; if a configured route points at an unready provider, jeo switches to an equivalent credentialed tier model before falling back to the default.
 
 - **Edit integrity** — read output carries content anchors (`42ab|`); anchored edits are verified against the current file, re-mapped when lines shifted, and rejected with fresh content instead of corrupting.
 - **Self-correcting verification loop** — configure a post-edit hook (tsc / eslint / tests) and the agent *sees* the diagnostics and fixes them in-loop; a red hook blocks `done` until resolved.
@@ -93,6 +93,7 @@ Inside the `jeo` REPL (Tab autocompletes; `/` opens the palette).
 | --- | --- |
 | `/model` · `/provider` | Pick model/provider; `/model` shows default/role badges, Ralph-style nested Set-as-role thinking choices, and the OpenAI Codex role preset in one flow |
 | `/provider login <name>` · `/logout` | OAuth login/logout from the input box |
+| `/provider add` · `list` · `remove` · `presets` | Register OpenAI/Anthropic-compatible endpoints as first-class providers (15 gateway presets) |
 | `/agents [role]` · `/subagent` | Per-role (executor/planner/architect/critic) model · thinking · step config |
 | `/thinking [level]` | Show/set default reasoning budget (low…xhigh) |
 | `/route [status\|on\|off\|why\|history [n]]` | Toggle prompt-based model routing for this session · explain the last routing decision · `history [n]` lists the last n (default 10) routing decisions this session (auto-routes each turn to a tier-appropriate model among the models your configured credentials — OAuth or API key — actually serve, and switches to an equivalent tier model when a configured route is unready) |
@@ -195,7 +196,7 @@ jeo notify setup        # pair a BotFather bot once (getMe verification + chat-i
 jeo notify status       # masked token, paired chat id, daemon state
 jeo daemon start        # spawn the singleton background daemon
 jeo daemon status       # check whether it's running
-jeo daemon stop         # SIGTERM it
+jeo daemon stop         # SIGTERM it (refuses to signal a recycled pid)
 ```
 
 ```
@@ -253,6 +254,37 @@ JEO_TOOL_OUTPUT_MAX=4000        # model-visible tool output cap (full output spi
 
 Retry behavior is tunable via `retry` in `~/.jeo/config.json` (`requestMaxRetries`, `streamMaxRetries`, `rateLimitRetries`, `failFastStatuses`, …). The step budget is dynamic by default — it extends while recent tool calls show novel progress and consolidates with a wrap-up when stalled; `--max-steps N` restores a bounded flow.
 
+### Custom providers
+
+```jsonc
+{
+  "customProviders": {
+    "my-proxy": {
+      "baseUrl": "https://gateway.internal/v1",
+      "protocol": "openai",          // or "anthropic" (/v1/messages wire format)
+      "apiKeyEnv": "MY_PROXY_API_KEY", // default: <ID>_API_KEY
+      "models": ["fast", "smart"]      // offline pick-list; live /models supersedes it
+    }
+  }
+}
+```
+
+Manage it from the shell (`jeo provider add|list|remove|presets|test`) or the input box
+(`/provider add …`). `jeo provider test <id>` probes the endpoint and reports the
+credential source and endpoint health *separately*, exiting non-zero on failure so
+provisioning scripts can gate on it.
+
+### Subagent fan-out concurrency
+
+```jsonc
+{ "subagentConcurrency": 2 }   // default 4, clamped to 1..16
+```
+
+Four concurrent Anthropic streams trip a Tier-1 rate limit immediately, turning a
+fan-out into a backoff storm that is *slower* than running sequentially. Lower this on a
+rate-limited account; raise it when the provider has headroom. It bounds both the `task`
+tool's `tasks[]` batch and the `eval` tool's `parallel`/`pipeline` helpers.
+
 ## Skill migration and bundled skill inspection
 
 When moving a workflow into jeo, inspect the bundled defaults before installing or overwriting anything:
@@ -295,10 +327,10 @@ Huge thanks to [gajae-code](https://github.com/Yeachan-Heo/gajae-code) for the i
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.11.0]** (2026-08-25) — One bad boundary check was corrupting agent context, subagent fan-out, and the Telegram daemon's kill safety at the same time — and none of the three looked related from the outside.
 - **[0.10.0]** (2026-08-25) — jeo could only be pointed at ONE user-supplied endpoint (`config.openaiBaseUrl`), and doing so rebound the built-in `openai` provider: it stole the `openai/` routing prefix, collided with real OpenAI model ids, and could not speak the Anthropic Messages protocol at all. There was no way to run a company LiteLLM proxy and a self-hosted vLLM box at the same time, or to reach either from a script.
 - **[0.9.17]** (2026-08-18) — Live model discovery already existed (`listProviderModels`/`discoverModels`), but only `jeo auth login openai` ever called it — logging into Anthropic or Antigravity left the account pinned to the maintained static catalog snapshot until the next unrelated live-discovery call happened to run.
 - **[0.9.16]** (2026-08-18) — Routing looked broken while it was actually working: the idle status bar and `/compact`/`/handoff` never reflected which model `routePrompt` actually routed to.
-- **[0.9.15]** (2026-08-18) — The 0.9.14 fix wired `promptInput` into the `$a $b …` one-shot skill-chain's `io.input`, but that chain runs before the interactive REPL's own `readline.Interface` exists — so a bundled workflow skill (`$deep-interview`, with or without `--tmux`) invoked directly from the command line still froze forever on its first question.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

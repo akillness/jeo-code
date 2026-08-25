@@ -9,6 +9,28 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-25
+_One bad boundary check was corrupting agent context, subagent fan-out, and the Telegram daemon's kill safety at the same time — and none of the three looked related from the outside._
+
+### Fixed
+- **The project-context parent walk did not stop at the home directory when `$HOME` was unset** (`src/agent/context-files.ts`) — the boundary was `process.env.HOME ? path.resolve(...) : null`, and a `null` guard never fires. `$HOME` is genuinely absent in bare Docker images, systemd units without `User=`, `env -i` wrappers and several CI runners, so on those hosts the walk climbed *past* the user's home into `/Users`, `/home` or `/` and spliced whatever `AGENTS.md` / `CLAUDE.md` lived there straight into the system prompt — on a shared machine, potentially another account's. Now resolved through `os.homedir()` (the OS user database, which answers correctly without the env var), the boundary test is "at or **above** home" so it also holds when the working directory is outside the home subtree entirely, and a `MAX_PARENT_WALK_DEPTH` cap makes walking the whole filesystem structurally impossible.
+- **The user-global guidance scan read the current working directory when `$HOME` was unset** (`src/agent/context-files.ts`) — roots were built with `path.join(process.env.HOME || "", ".agents", "rules")`, and `path.join("", …)` yields a **relative** path, so the "user global" scan silently read `./.agents/rules` and presented a project's own files as the user's global config. No resolvable home now means no home roots, full stop.
+- **Subagent fan-out burned an extra dispatch per refusal** (`src/agent/task-tool.ts` path, via the same context bug) — the leaked ancestor context made the refusal ladder's rung 3 (guidance-strip) fire as a real retry instead of the intended no-op, so every uncategorized refusal cost 4 model calls where 3 were budgeted, against `MAX_SUBAGENT_REROUTES`.
+- **The Telegram daemon's PID-reuse guard silently degraded to a bare `kill(pid, 0)`** (`src/agent/notify/daemon-control.ts`) — `processStartTimeMs` had a single point of failure in `ps`, which is exactly what is missing where daemons actually run: distroless/scratch containers ship no `ps`, and hardened sandboxes block the setuid `/bin/ps`. With the start-time check unavailable, `jeo daemon stop` would happily `SIGTERM` a recycled PID belonging to an unrelated process. Added a `/proc/<pid>/stat` + `/proc/uptime` fast path (Linux, no subprocess, works in distroless) ahead of `ps`, and split the result into `{ alive, verified }` via the new `inspectLockOwner` so the two facts stop being conflated.
+
+### Added
+- **`config.subagentConcurrency`** (`resolveFanoutLimit`, default 4, clamped 1..16) — fan-out concurrency is now tunable per machine instead of a hardcoded `MAX_FANOUT`. Four concurrent Anthropic streams trip a Tier-1 rate limit immediately, turning a fan-out into a backoff storm that is *slower* than running sequentially; accounts with headroom can raise it. Bounds both the `task` tool's `tasks[]` batch and the `eval` tool's `parallel`/`pipeline` helpers.
+- **Retired-model registry** (`src/ai/model-retirements.ts`) + a `jeo doctor` check that names the exact stale config key. Alias expansion already reroutes a sunset id to its successor, which means a stale pin keeps working and the user is *never told* their `defaultModel` / `roles.*` / `subagents.<role>.model` is out of date — until the alias is eventually dropped and every turn starts 404-ing. `findRetiredPins` reports the location, the replacement and why, and the table is constrained to same-provider successors so nobody is silently moved to another vendor.
+- **`daemonStatus().ownerVerified`**, surfaced by `jeo daemon status` — says outright when the host cannot report process start times, so "running" is not mistaken for "verified".
+
+### Changed
+- README (en/ko/ja/zh): custom-provider registry in the highlights, the `/provider add|list|remove|presets` row in the slash table, and new Configuration sections for `customProviders` and `subagentConcurrency`.
+
+### Verified
+- `bun run typecheck` clean; `bun test` **3339 pass**, failures down from **22 to 6** against the 0.10.0 baseline. The 16 fixed are real (13 context/fan-out, 3 daemon); the remaining 6 are sandbox-only (`bashTool` child signals, REPL stdin-EOF and `--resume` spawn timeouts) and unrelated to this change.
+- 3 PID-reuse tests are now capability-gated (`canVerifyProcessStartTime`) rather than failing on hosts without `ps`//proc, with 2 new tests pinning the **degraded** contract so the fallback path stays covered everywhere.
+- 8 new tests in `test/model-retirements-fanout.test.ts`; `test/context-files.test.ts` isolation corrected to an empty temp `HOME` (deleting `$HOME` no longer isolates, by design).
+
 ## [0.10.0] - 2026-08-25
 _jeo could only be pointed at ONE user-supplied endpoint (`config.openaiBaseUrl`), and doing so rebound the built-in `openai` provider: it stole the `openai/` routing prefix, collided with real OpenAI model ids, and could not speak the Anthropic Messages protocol at all. There was no way to run a company LiteLLM proxy and a self-hosted vLLM box at the same time, or to reach either from a script._
 

@@ -38,7 +38,7 @@
 
 ## 하이라이트
 
-- **멀티 프로바이더, 단일 루프** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio, 그리고 OpenAI·Anthropic 호환 클라우드 20종 이상(Groq, DeepSeek, Mistral, OpenRouter, xAI, Kimi, z.ai 등)까지 균일한 JSON 도구 루프로. 입력창에서 바로 OAuth 로그인(`/provider login`), 모델 선택은 즉시 기본값으로 영속됩니다. 프롬프트 라우팅은 실제 사용 가능한 인증 경로만 자동 선택합니다: Gemini OAuth는 provider-qualified `antigravity/*` 에이전트 세트(Gemini 3.5 Flash 등급, Gemini 3.1 Pro, Claude Sonnet/Opus 4.6)로만 가고, `GEMINI_API_KEY`가 필요한 public `google/gemini-*` 행은 고르지 않습니다.
+- **멀티 프로바이더, 단일 루프** — Anthropic / OpenAI(+Codex) / Gemini / Antigravity / Ollama / LM Studio, 그리고 OpenAI·Anthropic 호환 클라우드 20종 이상(Groq, DeepSeek, Mistral, OpenRouter, xAI, Kimi, z.ai 등)까지 균일한 JSON 도구 루프로 — **여기에 직접 등록한 엔드포인트까지**: `jeo provider add --id my-proxy --base-url https://…` (또는 `--preset litellm|vllm|sglang|azure-openai|…`)로 LiteLLM 프록시·자체 호스팅 vLLM·사내 Anthropic 게이트웨이가 내장 `openai` 프로바이더를 덮어쓰지 않고 자기만의 라우팅 접두사·모델 목록·자격증명을 갖습니다. 입력창에서 바로 OAuth 로그인(`/provider login`), 모델 선택은 즉시 기본값으로 영속됩니다. 프롬프트 라우팅은 실제 사용 가능한 인증 경로만 자동 선택합니다: Gemini OAuth는 provider-qualified `antigravity/*` 에이전트 세트(Gemini 3.5 Flash 등급, Gemini 3.1 Pro, Claude Sonnet/Opus 4.6)로만 가고, `GEMINI_API_KEY`가 필요한 public `google/gemini-*` 행은 고르지 않습니다.
 - **편집 무결성** — read 출력에 콘텐츠 앵커(`42ab|`)가 붙고, 앵커 편집은 현재 파일과 대조 검증·줄 이동 시 자동 재매핑·불일치 시 최신 내용과 함께 거부 — 파일을 오염시키지 않습니다.
 - **자기수정 검증 루프** — post-edit 훅(tsc / eslint / 테스트)을 설정하면 에이전트가 진단을 *직접 읽고* 루프 안에서 수정합니다. 훅이 빨간 상태면 `done`이 차단됩니다.
 - **연극 없는 진짜 게이트** — `ralplan` 합의는 실제 저장소를 읽는 critic 서브에이전트이며 `[OKAY]` 평결이 영속되고 `jeo approve`가 이를 *요구*합니다. `ultragoal`은 정직하게 보고합니다(스위트 1회 실행은 전역 신호일 뿐, 기준별 통과를 조작하지 않음).
@@ -88,6 +88,7 @@ jeo --tmux               # 독립 tmux 세션에서 실행
 | --- | --- |
 | `/model` · `/provider` | 모델/프로바이더 선택; `/model`에서 기본/역할 배지, Ralph식 하위 리스트 역할·thinking 선택, OpenAI Codex 역할 프리셋을 한 흐름으로 설정 |
 | `/provider login <name>` · `/logout` | 입력창에서 OAuth 로그인/로그아웃 |
+| `/provider add` · `list` · `remove` · `presets` | OpenAI/Anthropic 호환 엔드포인트를 정식 프로바이더로 등록 (게이트웨이 프리셋 15종) |
 | `/agents [role]` · `/subagent` | 역할별(executor/planner/architect/critic) 모델·thinking·스텝 구성 |
 | `/thinking [level]` | 기본 추론 예산(low…xhigh) 조회/설정 |
 | `/route [status\|on\|off\|why\|history [n]]` | 세션별 프롬프트 기반 모델 라우팅 켜기/끄기 · 마지막 라우팅 결정 설명 · `history [n]`은 이번 세션의 최근 n개(기본 10개) 라우팅 결정 표시(설정된 자격증명 — OAuth 또는 API 키 — 이 실제로 서비스하는 모델 안에서만 자동 라우팅) |
@@ -247,6 +248,37 @@ JEO_TOOL_OUTPUT_MAX=4000        # 모델 가시 도구 출력 캡(전체는 아�
 
 재시도 동작은 `~/.jeo/config.json`의 `retry`로 조정합니다(`requestMaxRetries`, `streamMaxRetries`, `rateLimitRetries`, `failFastStatuses`, …). 스텝 버짓은 기본 동적 — 새로운 진전이 보이는 동안 연장되고 정체 시 요약으로 수렴하며, `--max-steps N`이면 유한 플로로 복귀합니다.
 
+### 커스텀 프로바이더
+
+```jsonc
+{
+  "customProviders": {
+    "my-proxy": {
+      "baseUrl": "https://gateway.internal/v1",
+      "protocol": "openai",            // 또는 "anthropic" (/v1/messages 와이어 포맷)
+      "apiKeyEnv": "MY_PROXY_API_KEY", // 기본값: <ID>_API_KEY
+      "models": ["fast", "smart"]      // 오프라인 목록. 라이브 /models 가 우선합니다
+    }
+  }
+}
+```
+
+셸(`jeo provider add|list|remove|presets|test`)에서도, 입력창(`/provider add …`)에서도
+같은 레지스트리를 다룹니다. `jeo provider test <id>`는 엔드포인트를 실제로 찔러보고
+**자격증명 문제와 엔드포인트 문제를 따로** 보고하며, 실패 시 non-zero로 종료하므로
+프로비저닝 스크립트에서 게이트로 쓸 수 있습니다.
+
+### 서브에이전트 팬아웃 동시성
+
+```jsonc
+{ "subagentConcurrency": 2 }   // 기본 4, 1~16으로 클램프
+```
+
+Anthropic Tier-1 계정은 동시 스트림 4개에서 곧바로 레이트 리밋에 걸려, 팬아웃이
+순차 실행보다 *느려지는* 백오프 폭풍이 됩니다. 레이트 리밋이 빡빡한 계정은 낮추고,
+여유가 있으면 올리세요. `task` 도구의 `tasks[]` 배치와 `eval` 도구의
+`parallel`/`pipeline` 헬퍼 양쪽 모두에 적용됩니다.
+
 ## 스킬 마이그레이션 및 번들 스킬 확인
 
 워크플로를 jeo로 옮기기 전에, 무언가를 설치하거나 덮어쓰기 전에 먼저 번들 기본값을 확인하세요:
@@ -288,10 +320,10 @@ CI는 `.github/workflows/npm-publish.yml`로 배포합니다 — GitHub 릴리�
 
 <!-- CHANGELOG:START (auto-generated from CHANGELOG.md — run `bun run changelog:sync`) -->
 - **[Unreleased]**
+- **[0.11.0]** (2026-08-25) — One bad boundary check was corrupting agent context, subagent fan-out, and the Telegram daemon's kill safety at the same time — and none of the three looked related from the outside.
 - **[0.10.0]** (2026-08-25) — jeo could only be pointed at ONE user-supplied endpoint (`config.openaiBaseUrl`), and doing so rebound the built-in `openai` provider: it stole the `openai/` routing prefix, collided with real OpenAI model ids, and could not speak the Anthropic Messages protocol at all. There was no way to run a company LiteLLM proxy and a self-hosted vLLM box at the same time, or to reach either from a script.
 - **[0.9.17]** (2026-08-18) — Live model discovery already existed (`listProviderModels`/`discoverModels`), but only `jeo auth login openai` ever called it — logging into Anthropic or Antigravity left the account pinned to the maintained static catalog snapshot until the next unrelated live-discovery call happened to run.
 - **[0.9.16]** (2026-08-18) — Routing looked broken while it was actually working: the idle status bar and `/compact`/`/handoff` never reflected which model `routePrompt` actually routed to.
-- **[0.9.15]** (2026-08-18) — The 0.9.14 fix wired `promptInput` into the `$a $b …` one-shot skill-chain's `io.input`, but that chain runs before the interactive REPL's own `readline.Interface` exists — so a bundled workflow skill (`$deep-interview`, with or without `--tmux`) invoked directly from the command line still froze forever on its first question.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 <!-- CHANGELOG:END -->

@@ -12,6 +12,14 @@ async function printStatus(): Promise<void> {
   }
   if (status.running) {
     console.log(`running (pid ${status.pid}, started ${new Date(status.startedAt!).toISOString()})`);
+    // Say so when the PID-reuse guard could not actually run. On a host with no `/proc`
+    // and no usable `ps` (distroless images, seccomp-hardened sandboxes) "running" is an
+    // existence-only guess: the pid is alive, but it may belong to an unrelated process
+    // that inherited it. Silently printing "running" there overstates what jeo checked.
+    if (status.ownerVerified === false) {
+      console.log("  note: this host cannot report process start times, so PID reuse could not be ruled out.");
+      console.log("        'jeo daemon stop' may therefore be signalling a different process than the daemon.");
+    }
   } else if (status.stale) {
     console.log("stale — a lock file exists but its pid is dead (previous daemon crashed without cleanup). 'jeo daemon start' will reclaim it.");
   } else {

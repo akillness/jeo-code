@@ -1,4 +1,5 @@
 import { readGlobalConfig } from "../agent/state";
+import { findRetiredPins } from "../ai/model-retirements";
 import { resolveCredential, snapshotProvider, type AuthProvider, type Credential } from "../auth";
 import { resolveProvider, describeProvider } from "../ai";
 
@@ -442,6 +443,19 @@ export async function runDoctorCommand(args: string[] = []): Promise<void> {
   if (oauthLines.length) {
     console.log("OAuth tokens:");
     for (const line of oauthLines) console.log(line);
+    console.log("");
+  }
+  // Retired-model pins: informational only, but the ONE diagnostic a user cannot get
+  // any other way. Alias expansion silently reroutes a sunset id to its successor, so a
+  // stale pin keeps working and the user is never told their config is out of date —
+  // until the alias is eventually dropped and every turn starts 404-ing. Name the exact
+  // config key so the fix is a one-line edit rather than a hunt through three places.
+  const retiredPins = findRetiredPins(config as Parameters<typeof findRetiredPins>[0]);
+  if (retiredPins.length) {
+    for (const pin of retiredPins) {
+      console.log(`${chalk.yellow("[model]")} ${pin.location} pins retired '${pin.retired}' — ${pin.note}`);
+      console.log(`         update it to '${pin.replacement}'.`);
+    }
     console.log("");
   }
   // Routing diagnostic: informational only — never affects ready/strict exit logic.

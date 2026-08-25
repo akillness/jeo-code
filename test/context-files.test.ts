@@ -11,13 +11,22 @@ import {
 } from "../src/agent/context-files";
 
 const savedHome = process.env.HOME;
-beforeEach(() => {
-  delete process.env.HOME;
+// An EMPTY temp HOME, not `delete process.env.HOME`. Deleting it does not isolate:
+// `resolveHomeDir()` intentionally falls back to `os.homedir()` (the OS user database),
+// because a missing $HOME must NOT make jeo walk past the home boundary or scan the CWD
+// as if it were the user's global config. So the real `~/.agents/rules` would still load
+// here and pollute these assertions. Pointing HOME at an empty directory is the honest
+// isolation and matches what the subagent fixtures already do.
+let fakeHome = "";
+beforeEach(async () => {
+  fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "jeo-context-home-"));
+  process.env.HOME = fakeHome;
 });
 
-afterEach(() => {
+afterEach(async () => {
   if (savedHome === undefined) delete process.env.HOME;
   else process.env.HOME = savedHome;
+  if (fakeHome) await fs.rm(fakeHome, { recursive: true, force: true });
 });
 
 async function createTempDir(): Promise<string> {

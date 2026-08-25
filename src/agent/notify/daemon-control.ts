@@ -42,13 +42,52 @@ export function parseEtimeToMs(raw: string): number | undefined {
   return ((days * 24 + h!) * 60 + m!) * 60 * 1000 + s! * 1000;
 }
 
-/** Best-effort actual OS process start time in epoch ms, via `ps -o etime=`
- *  (POSIX-portable across macOS/Linux `ps`; unsupported on Windows, where
- *  there is no equivalent zero-dependency lookup). Returns `undefined` when
- *  the lookup is unavailable or unparseable — callers MUST treat that as
- *  "cannot verify" and fall back to the existence-only check, not as "dead". */
+/**
+ * Read a process's start time from `/proc` — Linux only, no subprocess.
+ *
+ * Field 22 of `/proc/<pid>/stat` is the process start time in clock ticks since
+ * boot; `/proc/uptime` gives seconds since boot. Together they yield an epoch
+ * timestamp WITHOUT spawning anything. That matters because the `ps` path below is
+ * exactly what disappears in the environments a Telegram daemon actually runs in:
+ * distroless and scratch containers ship no `ps`, and hardened sandboxes/seccomp
+ * profiles routinely block the setuid `/bin/ps`. When the lookup dies there, the
+ * PID-reuse guard silently degrades to a bare `kill(pid, 0)` — see
+ * {@link isLockOwnerAlive} for why that is the dangerous case.
+ *
+ * The 22nd field is parsed from the LAST `)` rather than by splitting on spaces:
+ * field 2 is the executable name in parentheses and may itself contain spaces.
+ */
+function procStartTimeMs(pid: number): number | undefined {
+  if (process.platform !== "linux") return undefined;
+  try {
+    const stat = fsSync.readFileSync(`/proc/${pid}/stat`, "utf-8");
+    const afterComm = stat.slice(stat.lastIndexOf(")") + 2);
+    const fields = afterComm.split(" ");
+    // stat field 22 (1-based) == index 19 of the post-comm remainder (fields 3+).
+    const startTicks = Number(fields[19]);
+    if (!Number.isFinite(startTicks)) return undefined;
+    const uptimeSec = Number(fsSync.readFileSync("/proc/uptime", "utf-8").split(" ")[0]);
+    if (!Number.isFinite(uptimeSec)) return undefined;
+    // USER_HZ is 100 on every Linux ABI that matters; sysconf(_SC_CLK_TCK) is not
+    // reachable without a native addon, and jeo is zero-native-dependency by design.
+    const startSecSinceBoot = startTicks / 100;
+    const bootEpochMs = Date.now() - uptimeSec * 1000;
+    return bootEpochMs + startSecSinceBoot * 1000;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Best-effort actual OS process start time in epoch ms. Tries `/proc` first (Linux,
+ *  no subprocess, works in distroless/sandboxed containers), then `ps -o etime=`
+ *  (POSIX-portable across macOS/Linux; unsupported on Windows, where there is no
+ *  equivalent zero-dependency lookup). Returns `undefined` when the lookup is
+ *  unavailable or unparseable — callers MUST treat that as "cannot verify" and fall
+ *  back to the existence-only check, not as "dead". */
 export async function processStartTimeMs(pid: number): Promise<number | undefined> {
   if (process.platform === "win32") return undefined;
+  const viaProc = procStartTimeMs(pid);
+  if (viaProc !== undefined) return viaProc;
   const output = await new Promise<string | undefined>(resolve => {
     let child: ReturnType<typeof nodeSpawn>;
     try {
@@ -67,6 +106,13 @@ export async function processStartTimeMs(pid: number): Promise<number | undefine
   return ms === undefined ? undefined : Date.now() - ms;
 }
 
+/** True when this host can actually verify a process's start time. Exported so
+ *  status output (and tests) can distinguish "the guard says the owner is alive"
+ *  from "the guard could not check" instead of conflating the two. */
+export async function canVerifyProcessStartTime(): Promise<boolean> {
+  return (await processStartTimeMs(process.pid)) !== undefined;
+}
+
 /** `etime` is truncated to whole seconds and adds a little spawn/poll jitter;
  *  genuine PID reuse shows up as a gap of minutes/hours/days, never a few
  *  seconds, so a generous-but-tight tolerance loses no real detections. */
@@ -82,10 +128,23 @@ const START_TIME_TOLERANCE_MS = 10_000;
  *  unavailable (Windows, `ps` missing, permission denied) — never a
  *  regression versus the old behavior in that case. */
 export async function isLockOwnerAlive(lock: DaemonLockInfo): Promise<boolean> {
-  if (!isPidAlive(lock.pid)) return false;
+  return (await inspectLockOwner(lock)).alive;
+}
+
+/** Whether the recorded owner is alive, AND whether that answer was actually
+ *  verified against the OS start time or merely assumed from `kill(pid, 0)`. */
+export interface LockOwnerCheck {
+  alive: boolean;
+  /** False when the host could not report the process start time (no `/proc`,
+   *  no usable `ps`, Windows) — `alive` is then an existence-only guess. */
+  verified: boolean;
+}
+
+export async function inspectLockOwner(lock: DaemonLockInfo): Promise<LockOwnerCheck> {
+  if (!isPidAlive(lock.pid)) return { alive: false, verified: true };
   const real = await processStartTimeMs(lock.pid);
-  if (real === undefined) return true;
-  return Math.abs(real - lock.startedAt) <= START_TIME_TOLERANCE_MS;
+  if (real === undefined) return { alive: true, verified: false };
+  return { alive: Math.abs(real - lock.startedAt) <= START_TIME_TOLERANCE_MS, verified: true };
 }
 
 export async function readDaemonLock(): Promise<DaemonLockInfo | undefined> {
@@ -123,6 +182,10 @@ export interface DaemonStatus {
   stale: boolean;
   pid?: number;
   startedAt?: number;
+  /** False when this host cannot report a process start time (no `/proc`, no usable
+   *  `ps`, Windows), so `running` is an existence-only guess that cannot rule out PID
+   *  reuse. Present only when a lock file exists. */
+  ownerVerified?: boolean;
 }
 
 export async function isNotifyConfigured(): Promise<boolean> {
@@ -133,8 +196,10 @@ export async function isNotifyConfigured(): Promise<boolean> {
 export async function daemonStatus(): Promise<DaemonStatus> {
   const [lock, configured] = await Promise.all([readDaemonLock(), isNotifyConfigured()]);
   if (!lock) return { configured, running: false, stale: false };
-  const alive = await isLockOwnerAlive(lock);
-  return { configured, running: alive, stale: !alive, pid: lock.pid, startedAt: lock.startedAt };
+  const { alive, verified } = await inspectLockOwner(lock);
+  // Surface the degraded case instead of hiding it: on a host with no `/proc` and no
+  // usable `ps`, "running" is an existence-only guess that cannot rule out PID reuse.
+  return { configured, running: alive, stale: !alive, pid: lock.pid, startedAt: lock.startedAt, ownerVerified: verified };
 }
 
 /** Self-invocation argv for the daemon child (mirrors `memory.ts`'s
@@ -200,7 +265,8 @@ export async function startDaemon(spawnImpl: SpawnLike = defaultSpawn): Promise<
 
 export async function stopDaemon(): Promise<{ ok: boolean; message: string }> {
   const lock = await readDaemonLock();
-  if (!lock || !(await isLockOwnerAlive(lock))) {
+  const owner = lock ? await inspectLockOwner(lock) : undefined;
+  if (!lock || !owner?.alive) {
     await fs.unlink(notifyDaemonLockPath()).catch(() => {});
     return { ok: true, message: "daemon was not running" };
   }
@@ -212,7 +278,8 @@ export async function stopDaemon(): Promise<{ ok: boolean; message: string }> {
   const stopped = await waitFor(async () => !isPidAlive(lock.pid), 3_000);
   if (!stopped) return { ok: false, message: `daemon (pid ${lock.pid}) did not exit within 3s` };
   await fs.unlink(notifyDaemonLockPath()).catch(() => {});
-  return { ok: true, message: `daemon stopped (was pid ${lock.pid})` };
+  const caveat = owner.verified ? "" : " (start time unverifiable on this host — PID reuse could not be ruled out)";
+  return { ok: true, message: `daemon stopped (was pid ${lock.pid})${caveat}` };
 }
 
 export async function reloadDaemon(spawnImpl: SpawnLike = defaultSpawn): Promise<{ ok: boolean; message: string }> {

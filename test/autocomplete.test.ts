@@ -19,6 +19,8 @@ const ctx = (over: Partial<CompletionContext> = {}): CompletionContext => ({
   roleIds: ["executor", "planner", "architect", "critic"],
   thinkingLevels: ["low", "medium", "high", "xhigh"],
   modelsForProvider: p => (p === "openai" ? ["gpt-4o-live", "gpt-4o-mini-live"] : []),
+  providerPresets: [],
+  customProviders: [],
   mentionPaths: prefix => (prefix === "" ? ["src/", "README.md"] : prefix === "src/" ? ["src/commands/", "src/tui/"] : prefix === "src/c" ? ["src/commands/"] : []),
   ...over,
 });
@@ -81,14 +83,45 @@ test("/fast completes fast-mode subcommands", () => {
   expect(complete("/fast st", ctx()).completions).toEqual(["status"]);
 });
 
-test("/provider completes onboarding subcommands (login/add); switching moved to /model", () => {
-  expect(complete("/provider ", ctx()).completions).toEqual(["login", "add", "help"]);
+test("/provider completes onboarding + custom-registry subcommands; switching moved to /model", () => {
+  expect(complete("/provider ", ctx()).completions).toEqual([
+    "login",
+    "key",
+    "add",
+    "list",
+    "remove",
+    "presets",
+    "help",
+  ]);
   // `/provider login ` → OAuth-capable cloud providers
   expect(complete("/provider login ", ctx()).completions).toEqual(["anthropic", "openai", "gemini", "antigravity"]);
-  // `/provider add ` → endpoint flags (gjc style)
-  expect(complete("/provider add ", ctx()).completions).toEqual(["--base-url", "--model", "--compat", "clear"]);
+  // `/provider add ` → custom-provider flags (named registry + legacy `clear`)
+  expect(complete("/provider add ", ctx()).completions).toEqual([
+    "--id",
+    "--base-url",
+    "--compat",
+    "--api-key-env",
+    "--api-key",
+    "--model",
+    "--label",
+    "--preset",
+    "--force",
+    "clear",
+  ]);
   // A provider name is no longer a /provider subcommand — no model completion here.
   expect(complete("/provider openai ", ctx()).completions).toEqual([]);
+});
+
+test("/provider add --preset completes preset ids; /provider remove completes ONLY custom ids", () => {
+  const withCustom = ctx({ providerPresets: ["litellm", "vllm"], customProviders: ["my-proxy", "gpu-box"] });
+  expect(complete("/provider add --preset ", withCustom).completions).toEqual(["litellm", "vllm"]);
+  expect(complete("/provider add --preset li", withCustom).completions).toEqual(["litellm"]);
+
+  // Removal targets the custom registry, so built-ins must NOT be offered — the command
+  // refuses them, and offering them would be a dead end.
+  expect(complete("/provider remove ", withCustom).completions).toEqual(["my-proxy", "gpu-box"]);
+  expect(complete("/provider rm gpu", withCustom).completions).toEqual(["gpu-box"]);
+  expect(complete("/provider remove ", ctx()).completions).toEqual([]);
 });
 
 test("/logout completes cloud provider names", () => {

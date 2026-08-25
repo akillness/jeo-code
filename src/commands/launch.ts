@@ -67,6 +67,16 @@ import { isRateLimitError, isUsageLimitError, isConnectionError } from "../util/
 
 import { listAliases } from "../ai/model-registry";
 import { openaiCompatDef, SUBSCRIPTION_PROVIDER_NAMES } from "../ai/providers/openai-compatible-catalog";
+import {
+  applyCustomProviderPatch,
+  formatCustomProviderList,
+  formatPresetsCommand,
+  looksLikePreset,
+  parseProviderAddArgs,
+  planProviderAdd,
+  planProviderRemove,
+  providerAddUsage,
+} from "./launch/provider-slash";
 
 import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting, applyTargetChoices } from "../agent/subagents";
 import { SelectList, renderSelectList, type SelectItem } from "../tui/components/select-list";
@@ -4640,8 +4650,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           "  OAuth / subscription : /provider login [anthropic|openai|gemini|antigravity|<subscription>]   (alias: /login)",
           "                         subscriptions (token): alibaba-coding-plan, qwen-portal, xiaomi-token-plan-*, minimax-code*",
           "  API key (cloud)      : /provider key [provider] [key]   (groq, deepseek, mistral, openrouter, …)",
-          "  API-compatible       : /provider add --base-url <url> [--model <model>] [--compat openai]   (reads OPENAI_API_KEY)",
-          "                         show current / clear: /provider add   ·   /provider add clear",
+          "  API-compatible       : /provider add --id <id> --base-url <url> [--compat openai|anthropic] [--model a,b]",
+          "                         presets: /provider add --preset <id> [--base-url <url>]   ·   list: /provider presets",
+          "                         manage: /provider list   ·   /provider remove <id>",
+          "                         legacy (rebinds openai/): /provider add --base-url <url>   ·   clear: /provider add clear",
           "  Logout               : /logout <provider>",
           "  Headless OAuth        : paste the redirect URL or code when the login prompt asks.",
           "Switch the active model or provider with /model.",
@@ -4656,8 +4668,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           else if (action === "api-key") name = "key";
           else if (action === "api-add") {
             console.log("Add an API-compatible endpoint:");
-            console.log("  /provider add --base-url <url> [--model <model>] [--compat openai]");
-            console.log("  reads OPENAI_API_KEY · show current / clear: /provider add   ·   /provider add clear");
+            for (const line of providerAddUsage()) console.log(line);
             continue;
           }
           // action === undefined (cancelled) → fall through to the readiness panel.
@@ -4810,56 +4821,63 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           }
           continue;
         }
-        // `/provider add --base-url <url> [--model <m>] [--compat openai]` → register an
-        // OpenAI-compatible endpoint (sets openaiBaseUrl). gjc flag style; bare positional
-        // URL/model still accepted for leniency. `/provider add clear` removes it.
-        if (name === "add") {
-          const rest = tokens.slice(1);
-          if ((rest[0] ?? "").toLowerCase() === "clear") {
-            await saveConfigPatch(() => ({ openaiBaseUrl: undefined }));
+        // `/provider presets` → the preset catalog (fixed + parameterized gateways).
+        if (name === "presets" || name === "preset") {
+          logLines(formatPresetsCommand());
+          continue;
+        }
+        // `/provider list` → registered custom providers (built-ins stay in the panel).
+        if (name === "list" || name === "ls") {
+          logLines(formatCustomProviderList(await readGlobalConfig()));
+          continue;
+        }
+        // `/provider remove <id>` → unregister a custom provider.
+        if (name === "remove" || name === "rm" || name === "delete") {
+          const decision = planProviderRemove(tokens[1], await readGlobalConfig());
+          logLines(decision.lines);
+          if (decision.removeId) {
+            await saveConfigPatch(raw => ({
+              customProviders: applyCustomProviderPatch(raw.customProviders, { removeId: decision.removeId }),
+            }));
+            // Re-read so `withEnvOverlay` republishes the surviving set into the runtime
+            // registry (the listener in register-providers unregisters the dropped adapter).
+            await readGlobalConfig();
             await refreshLiveModelsCache();
-            console.log("OpenAI-compatible base URL cleared — saved to ~/.jeo/config.json.");
-            continue;
           }
-          let baseUrl: string | undefined;
-          let modelArg: string | undefined;
-          let compat: string | undefined;
-          for (let i = 0; i < rest.length; i++) {
-            const t = rest[i]!;
-            if (t === "--base-url" || t === "--url") baseUrl = rest[++i];
-            else if (t === "--model") modelArg = rest[++i];
-            else if (t === "--compat") compat = (rest[++i] ?? "").toLowerCase();
-            else if (t === "--api-key-env" || t === "--provider") { i++; /* gjc-only: jeo has no named-provider registry — ignored */ }
-            else if (!t.startsWith("--") && baseUrl === undefined) baseUrl = t; // positional url
-            else if (!t.startsWith("--") && modelArg === undefined) modelArg = t; // positional model
+          continue;
+        }
+        // `/provider add …` → register a NAMED custom provider (--id / --preset), or, in the
+        // legacy no-id spelling, rebind the built-in openai endpoint. All parsing/validation
+        // lives in provider-slash.ts so it is unit-testable without a TUI.
+        if (name === "add") {
+          const parsedAdd = parseProviderAddArgs(tokens.slice(1));
+          // `/provider add litellm --base-url …` — a bare preset name is accepted as --preset.
+          if (!parsedAdd.preset && looksLikePreset(tokens[1])) parsedAdd.preset = tokens[1];
+          const cfgNow = await readGlobalConfig();
+          const plan = planProviderAdd(parsedAdd, cfgNow);
+          logLines(plan.lines);
+          if (plan.noop) continue;
+          if (plan.legacyOpenaiBaseUrl !== undefined) {
+            const url = plan.legacyOpenaiBaseUrl;
+            await saveConfigPatch(() => ({ openaiBaseUrl: url ?? undefined }));
           }
-          if (compat && compat !== "openai") {
-            console.log(`Only --compat openai is supported (got '${compat}') — jeo registers a single OpenAI-compatible endpoint.`);
-            continue;
+          if (plan.id && plan.config) {
+            await saveConfigPatch(raw => ({
+              customProviders: applyCustomProviderPatch(raw.customProviders, { addId: plan.id, addConfig: plan.config }),
+            }));
+            // Republish into the runtime registry before discovery runs, so the very next
+            // /models probe already targets the new endpoint.
+            await readGlobalConfig();
           }
-          if (!baseUrl) {
-            const cur = (await readGlobalConfig()).openaiBaseUrl;
-            console.log(cur ? `OpenAI-compatible base URL: ${cur}` : "No OpenAI-compatible base URL set.");
-            console.log("Set one with: /provider add --base-url <url> [--model <model>]   ·   clear with: /provider add clear");
-            continue;
-          }
-          const url = normalizeBaseUrl(baseUrl, "");
-          if (!url) {
-            console.log("Provide a base URL, e.g. /provider add --base-url http://localhost:1234/v1");
-            continue;
-          }
-          await saveConfigPatch(() => ({ openaiBaseUrl: url }));
-          if (modelArg) {
-            const qualified = qualifyModelId(modelArg, "openai");
-            sessionModel = qualified;
-            await saveConfigPatch(raw => rememberModelPatch(raw, qualified));
+          if (plan.selectModel) {
+            sessionModel = plan.selectModel;
+            await saveConfigPatch(raw => rememberModelPatch(raw, plan.selectModel!));
             await persistSessionModel();
-            console.log(`OpenAI-compatible endpoint set: ${url} · default model ${qualified} — saved to ~/.jeo/config.json.`);
-          } else {
-            console.log(`OpenAI-compatible endpoint set: ${url} — saved to ~/.jeo/config.json.`);
+            console.log(`Active model → ${plan.selectModel}`);
           }
+          const probeProvider = plan.id ?? "openai";
           const live = await refreshLiveModelsCache();
-          const forProvider = live.filter(r => r.provider === "openai");
+          const forProvider = live.filter(r => r.provider === probeProvider);
           const pick = flattenModels(forProvider);
           if (pick.length) {
             lastPickIndex = pick;
@@ -4867,7 +4885,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             logLines(formatPickListWithCapabilities(pick, { cap: 12 }));
           } else {
             const failed = forProvider.find(r => !r.ok);
-            console.log(failed?.error ? `  could not list models: ${failed.error}` : "  no models discovered yet — the endpoint may need a key (set OPENAI_API_KEY).");
+            const envHint = plan.id
+              ? `set ${plan.config?.apiKeyEnv ?? `${plan.id.replace(/[.\-]/g, "_").toUpperCase()}_API_KEY`}`
+              : "set OPENAI_API_KEY";
+            console.log(failed?.error ? `  could not list models: ${failed.error}` : `  no models discovered yet — the endpoint may need a key (${envHint}).`);
           }
           continue;
         }

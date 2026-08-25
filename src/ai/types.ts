@@ -1,6 +1,15 @@
 import type { Credential } from "../auth";
 
-export type ProviderName = "anthropic" | "openai" | "gemini" | "antigravity" | "ollama" | "lmstudio" | "xai" | "kimi" | "groq" | "deepseek" | "mistral" | "openrouter" | "together" | "cerebras" | "fireworks" | "nvidia" | "alibaba-coding-plan" | "huggingface" | "nanogpt" | "qwen-portal" | "synthetic" | "venice" | "zenmux" | "qianfan" | "xiaomi" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-sgp" | "minimax-code" | "minimax-code-cn" | "zai" | "minimax" | "tencent" | "deepinfra" | "litellm";
+/** Providers compiled into jeo (built-ins + the OpenAI/Anthropic-compatible catalog). */
+export type BuiltinProviderName = "anthropic" | "openai" | "gemini" | "antigravity" | "ollama" | "lmstudio" | "xai" | "kimi" | "groq" | "deepseek" | "mistral" | "openrouter" | "together" | "cerebras" | "fireworks" | "nvidia" | "alibaba-coding-plan" | "huggingface" | "nanogpt" | "qwen-portal" | "synthetic" | "venice" | "zenmux" | "qianfan" | "xiaomi" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-sgp" | "minimax-code" | "minimax-code-cn" | "zai" | "minimax" | "tencent" | "deepinfra" | "litellm";
+
+/**
+ * A provider id at runtime: a compiled-in name, OR a user-registered custom provider id
+ * (`config.customProviders`). The `string & {}` arm keeps editor autocomplete on the
+ * literal union while allowing the open set custom providers require — without it,
+ * every registry/lookup/record call site would need a cast to accept a user id.
+ */
+export type ProviderName = BuiltinProviderName | (string & {});
 
 
 /** An image attached to a (user) message — base64 payload + IANA media type. */

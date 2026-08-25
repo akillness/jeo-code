@@ -15,6 +15,16 @@ class ProviderRegistry {
     return this.adapters.get(name);
   }
 
+  /** Drop an adapter. Used when a user removes a custom provider mid-session so the
+   *  next `/model` or routing pass cannot resolve a provider that no longer exists. */
+  unregister(name: ProviderName): boolean {
+    return this.adapters.delete(name);
+  }
+
+  has(name: ProviderName): boolean {
+    return this.adapters.has(name);
+  }
+
   listProviders(): ProviderName[] {
     return Array.from(this.adapters.keys());
   }

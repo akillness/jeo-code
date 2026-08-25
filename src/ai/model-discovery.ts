@@ -95,7 +95,11 @@ function authProviderFor(provider: ProviderName): AuthProvider | undefined {
   // Local providers (ollama/lmstudio) are keyless and do not resolve through the
   // auth core. API-key providers (incl. xai/kimi) DO — so discovery sends their key.
   if (provider === "ollama" || provider === "lmstudio") return undefined;
-  return provider;
+  // A user-registered custom provider id is not in the `AuthProvider` literal union,
+  // but `withEnvOverlay` publishes its key into the SAME `config.providers` map that
+  // `resolveCredential` reads — so the lookup is keyed identically. Same cast the
+  // model-manager's generic credential path already makes.
+  return provider as AuthProvider;
 }
 
 /** Build the discovery request (url + headers) for a provider/credential. */
@@ -468,7 +472,10 @@ export async function listProviderModels(
  *  service answers in single-digit ms, so this stays cheap on the turn hot path
  *  and still fails fast on a genuinely unreachable host. */
 export async function isLocalProviderReachable(
-  provider: "ollama" | "lmstudio",
+  // Accepts any ProviderName: `ProviderName` now includes user-registered custom ids,
+  // so a `provider === "ollama" || provider === "lmstudio"` guard no longer narrows to
+  // the two literals at call sites. The probe itself is protocol-generic.
+  provider: ProviderName,
   baseUrl: string | undefined,
   opts: Pick<DiscoveryOptions, "timeoutMs" | "fetchImpl"> = {},
 ): Promise<boolean> {

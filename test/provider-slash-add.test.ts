@@ -98,6 +98,7 @@ test("re-adding an existing id needs --force, and --force overwrites cleanly", (
   expect(blocked.noop).toBe(true);
   expect(blocked.lines.join()).toMatch(/already exists/);
   expect(blocked.lines.join()).toMatch(/--force/);
+  expect(blocked.lines.join()).not.toMatch(/\/provider remove/);
 
   const forced = planProviderAdd(args("--id acme --base-url https://new.acme.dev/v1 --force"), existing);
   expect(forced.noop).toBe(false);
@@ -188,7 +189,9 @@ test("remove reports the endpoint it dropped and refuses built-ins", () => {
   expect(planProviderRemove("groq", existing).lines.join()).toMatch(/built-in provider and cannot be removed/);
 
   expect(planProviderRemove("ghost", existing).removeId).toBeUndefined();
-  expect(planProviderRemove(undefined, existing).lines.join()).toMatch(/Usage: \/provider remove/);
+  // Wording is surface-neutral (no leading `/`): the same lines are printed by the REPL
+  // slash command AND by `jeo provider`, so neither prefix may be baked in.
+  expect(planProviderRemove(undefined, existing).lines.join()).toMatch(/Usage: provider remove/);
   expect(planProviderRemove(undefined, cfg()).lines.join()).toMatch(/No custom providers registered/);
 });
 

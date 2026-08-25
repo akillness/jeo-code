@@ -290,7 +290,9 @@ function checkCollision(id: string, existing: Record<string, CustomProviderConfi
   if (!existing[id] || force) return undefined;
   return [
     `Provider '${id}' already exists (${existing[id]!.baseUrl}).`,
-    `Re-run with --force to overwrite it, or remove it first: /provider remove ${id}`,
+    // Surface-neutral wording: this text is printed by BOTH `/provider` (REPL) and
+    // `jeo provider` (shell), so it must not name a prefix that is wrong in one of them.
+    `Re-run with --force to overwrite it, or remove it first: provider remove ${id}`,
   ];
 }
 
@@ -313,7 +315,7 @@ function describeRegistration(id: string, cfg: CustomProviderConfig, origin: str
   if (cfg.apiKey) lines.push(`  key      : ${redactSecret(cfg.apiKey)} (stored in config)`);
   lines.push(`  key env  : ${cfg.apiKeyEnv ?? `${id.replace(/[.\-]/g, "_").toUpperCase()}_API_KEY`}`);
   if (cfg.models?.length) lines.push(`  models   : ${cfg.models.map(m => `${id}/${m}`).join(", ")}`);
-  lines.push(`Use it with: /model ${selectableModel(id, cfg) ?? `${id}/<model>`}`);
+  lines.push(`Use it with: /model ${selectableModel(id, cfg) ?? `${id}/<model>`}   (or: jeo launch --model ${selectableModel(id, cfg) ?? `${id}/<model>`})`);
   return lines;
 }
 
@@ -336,8 +338,8 @@ export function planProviderRemove(
   if (!rawId) {
     return {
       lines: ids.length
-        ? ["Usage: /provider remove <id>", `Registered: ${ids.join(", ")}`]
-        : ["No custom providers registered. Add one with /provider add --id <id> --base-url <url>."],
+        ? ["Usage: provider remove <id>", `Registered: ${ids.join(", ")}`]
+        : ["No custom providers registered. Add one with 'provider add --id <id> --base-url <url>'."],
     };
   }
   const id = normalizeProviderId(rawId);
@@ -370,8 +372,8 @@ export function formatCustomProviderList(
   if (!entries.length) {
     return [
       "No custom providers registered.",
-      "Add one:  /provider add --id my-proxy --base-url https://api.example.com/v1",
-      "Or use a preset:  /provider add --preset litellm --base-url http://localhost:4000/v1",
+      "Add one:  provider add --id my-proxy --base-url https://api.example.com/v1",
+      "Or use a preset:  provider add --preset litellm --base-url http://localhost:4000/v1",
     ];
   }
   const lines = [`Custom providers (${entries.length}):`];
@@ -389,7 +391,7 @@ export function formatCustomProviderList(
 /** Rendered `/provider presets`. */
 export function formatPresetsCommand(): string[] {
   return [
-    "Provider presets (use with: /provider add --preset <id> [--base-url <url>]):",
+    "Provider presets (use with: provider add --preset <id> [--base-url <url>]):",
     ...formatProviderPresetList(),
   ];
 }

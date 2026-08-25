@@ -9,6 +9,30 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-25
+_jeo could only be pointed at ONE user-supplied endpoint (`config.openaiBaseUrl`), and doing so rebound the built-in `openai` provider: it stole the `openai/` routing prefix, collided with real OpenAI model ids, and could not speak the Anthropic Messages protocol at all. There was no way to run a company LiteLLM proxy and a self-hosted vLLM box at the same time, or to reach either from a script._
+
+### Added
+- **Named custom providers (`config.customProviders`)** (`src/ai/providers/custom-providers.ts`) — register any OpenAI- or Anthropic-compatible endpoint as a first-class provider with its own routing prefix, base URL, wire protocol, credential source (env var or literal key), model list and default model. Registered providers are published through the SAME `openaiCompatDef` lookup the compiled-in catalog uses, so routing, live `/models` discovery, `/model`, provider status, pickers and credential resolution pick them up with no new per-call-site branching. Validation is strict and actionable at registration time: provider ids must match `^[a-z0-9][a-z0-9._-]*$` (a `/` would collide with the `<provider>/<model>` separator), built-in ids are reserved, and base URLs must be absolute `http(s)` — so a typo fails with one clear message instead of an opaque fetch error at the first inference call. A single malformed row is skipped with its reason rather than failing the whole config.
+- **15 provider presets** (`src/ai/providers/provider-presets.ts`) — one-flag onboarding for known gateways: `litellm`, `vllm`, `sglang`, `llama-cpp`, `azure-openai`, `vercel-ai-gateway`, `cloudflare-ai-gateway`, `openai-compatible-proxy`, `anthropic-compatible-proxy`, `glm`, `alibaba-token-plan`, `cline-pass`, `commandcode-goat`, `ollama-cloud`, `github-copilot`. Parameterized presets (proxies the user runs) require `--base-url`; fixed presets pin theirs and reject one.
+- **`jeo provider` CLI** (`src/commands/provider.ts`) — `list` / `add` / `remove` / `presets` / `test`, sharing the exact planners the slash command uses so the two surfaces cannot drift. `jeo provider test <id>` probes the endpoint and reports credential source and endpoint health separately ("no key" and "wrong URL" need different fixes), exiting non-zero on failure so CI and provisioning scripts can gate on it. `add` runs the same probe automatically without refusing the write — registering an endpoint before its key exists is legitimate.
+- **`/provider list`, `/provider remove <id>`, `/provider presets`**, plus `/provider add --id/--preset/--compat/--api-key-env/--api-key/--model/--label/--force`, with autocomplete for preset ids and — on `remove` — only custom ids, since the command refuses built-ins.
+
+### Changed
+- **Provider ordering is now one shared ranking** (`src/ai/provider-ranking.ts`) used by the model picker: usable → broken-credential → curated famous list → the rest. The picker previously sorted by `PROVIDER_NAMES.indexOf`, which returns `-1` for a provider that is not compiled in — so a user's own custom provider sorted ABOVE the provider they were actually logged into. A stored-but-unusable login now also ranks above untouched providers, because it is the one that needs attention.
+- `ProviderName` accepts custom ids alongside the literal union, and `describeAllProviders()` / `allProviderNames()` include custom providers so they are never invisible in the UI meant to expose them.
+- `/provider add --base-url <url>` with no `--id` is unchanged (still rebinds the built-in `openai` endpoint), and now points at the named alternative. `/provider add clear` explicitly leaves custom providers alone.
+
+### Fixed
+- **`resolveProvider()` ignored custom routing prefixes** (`src/ai/model-manager.ts`) — it matched against the static `OPENAI_COMPAT_NAMES` snapshot, so `my-proxy/some-model` fell through every prefix check and hit the final `anthropic` fallthrough, silently routing a custom-provider request to Anthropic. Now matches against the live built-in + custom name list.
+- **Removing a custom provider whose id shadowed a built-in unregistered the BUILT-IN adapter** (`src/ai/register-providers.ts`) — a hand-edited row named e.g. `groq` would overwrite the shipped adapter on load and delete it on removal, leaving a compiled-in provider unreachable for the rest of the session. Shadowing rows are now inert at the adapter layer too, matching the lookup layer which already prefers built-ins.
+- `normalizeCustomBaseUrl("localhost:1234/v1")` reported "must use http or https (got 'localhost')" because `new URL()` happily parses that as a `localhost:` scheme; a missing authority marker is now detected first and reported as the missing-scheme error it actually is.
+
+### Verified
+- `bun run typecheck` clean; `bun test` shows no new failures against the 0.9.17 baseline.
+- 88 new tests across `test/custom-provider-registry.test.ts`, `test/provider-presets-ranking.test.ts`, `test/provider-slash-add.test.ts` and `test/autocomplete.test.ts`.
+- End-to-end against a live local OpenAI-compatible gateway: `jeo provider add --preset openai-compatible-proxy --id gw --base-url http://localhost:4599/v1` registered it and reported the missing credential (exit 1); with the key exported, `jeo provider test gw` discovered both served model ids and exited 0.
+
 ## [0.9.17] - 2026-08-18
 _Live model discovery already existed (`listProviderModels`/`discoverModels`), but only `jeo auth login openai` ever called it — logging into Anthropic or Antigravity left the account pinned to the maintained static catalog snapshot until the next unrelated live-discovery call happened to run._
 

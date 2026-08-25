@@ -49,7 +49,7 @@ export function createSubagentTool(registry: SubagentRegistry): ToolHandler {
     if (action === "list") {
       const rows = registry.list();
       if (rows.length === 0) {
-        return { success: true, output: "No detached subagents this turn. Launch one with task {detached:true}." };
+        return { success: true, output: "No detached subagents in this session. Launch one with task {detached:true}." };
       }
       const running = rows.filter(r => r.status === "running").length;
       return { success: true, output: `${rows.length} subagent(s), ${running} running:\n${rows.map(rowLine).join("\n")}` };
@@ -59,7 +59,7 @@ export function createSubagentTool(registry: SubagentRegistry): ToolHandler {
       const targets = (ids.length ? ids.map(id => registry.get(id)) : registry.list())
         .filter((r): r is SubagentRecord => r !== undefined);
       if (targets.length === 0) {
-        return { success: false, output: "", error: ids.length ? `No subagent matches ${ids.join(", ")}.` : "No detached subagents this turn." };
+        return { success: false, output: "", error: ids.length ? `No subagent matches ${ids.join(", ")}.` : "No detached subagents in this session." };
       }
       return { success: true, output: targets.map(detailBlock).join("\n\n") };
     }

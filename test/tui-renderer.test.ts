@@ -340,6 +340,88 @@ test("Renderer reserve mode: a resize down to a SHORTER frame never scrolls the 
   expect(settled).not.toContain("\n");
   expect(settled).toContain("row1-changed");
 });
+test("Renderer reserve mode: a viewport shrink below the old frame never walks past the bottom margin", () => {
+  const out: string[] = [];
+  const originalRows = process.stdout.rows;
+  const setRows = (rows: number | undefined): void => {
+    Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true, writable: true });
+  };
+  const r = new Renderer(s => out.push(s), () => 80, { reserve: true });
+  try {
+    setRows(30);
+    r.render(Array.from({ length: 20 }, (_, i) => `old-${i}`));
+
+    out.length = 0;
+    setRows(8);
+    r.render(Array.from({ length: 5 }, (_, i) => `new-${i}`));
+    const resized = out.join("");
+
+    // A shrink below the old frame must never emit a newline (scroll) or a cursor-up
+    // larger than the visible viewport; either one can move the repaint anchor out of sync.
+    expect(resized).not.toContain("\n");
+    const cursorUps = [...resized.matchAll(/\x1b\[(\d+)A/g)].map(m => Number(m[1]));
+    expect(Math.max(0, ...cursorUps)).toBeLessThanOrEqual(7);
+    expect(resized.split(clearLine()).length - 1).toBeGreaterThanOrEqual(3);
+
+    // Growing again must recover without carrying the clipped baseline into the new frame.
+    out.length = 0;
+    setRows(30);
+    r.render(Array.from({ length: 20 }, (_, i) => `grown-${i}`));
+    const grown = out.join("");
+    expect(grown).toContain("\n");
+    expect(grown).toContain("grown-19");
+  } finally {
+    setRows(originalRows);
+  }
+});
+test("Renderer reserve mode: insertAbove after a viewport shrink bounds the stale-row walk", () => {
+  const out: string[] = [];
+  const originalRows = process.stdout.rows;
+  const setRows = (rows: number | undefined): void => {
+    Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true, writable: true });
+  };
+  const r = new Renderer(s => out.push(s), () => 80, { reserve: true });
+  try {
+    setRows(30);
+    r.render(Array.from({ length: 20 }, (_, i) => `old-${i}`));
+    out.length = 0;
+
+    // Resize lands before an async ledger flush, so insertAbove() must use the
+    // current viewport rather than the previous render's stale frame height.
+    setRows(8);
+    r.insertAbove("ledger\n");
+    const flushed = out.join("");
+    const cursorUps = [...flushed.matchAll(/\x1b\[(\d+)A/g)].map(m => Number(m[1]));
+    expect(Math.max(0, ...cursorUps)).toBeLessThanOrEqual(7);
+    expect(flushed).toContain("ledger\n");
+    expect(flushed.split(clearLine()).length - 1).toBeGreaterThanOrEqual(8);
+  } finally {
+    setRows(originalRows);
+  }
+});
+
+test("Renderer reserve mode: clear after a viewport shrink bounds the stale-row walk", () => {
+  const out: string[] = [];
+  const originalRows = process.stdout.rows;
+  const setRows = (rows: number | undefined): void => {
+    Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true, writable: true });
+  };
+  const r = new Renderer(s => out.push(s), () => 80, { reserve: true });
+  try {
+    setRows(30);
+    r.render(Array.from({ length: 20 }, (_, i) => `old-${i}`));
+    out.length = 0;
+
+    setRows(8);
+    r.clear();
+    const cleared = out.join("");
+    const cursorUps = [...cleared.matchAll(/\x1b\[(\d+)A/g)].map(m => Number(m[1]));
+    expect(Math.max(0, ...cursorUps)).toBeLessThanOrEqual(7);
+    expect(cleared.split(clearLine()).length - 1).toBe(8);
+  } finally {
+    setRows(originalRows);
+  }
+});
 
 test("Renderer non-reserve mode still ED-clears on resize (unaffected by the reserve-mode fix)", () => {
   const out: string[] = [];

@@ -13,6 +13,8 @@ import type { Message } from "../../agent/loop";
 import { createSession, deleteSession, renameSession, loadSession, listSessions, sessionPath, resolveSessionRef } from "../../agent/session";
 import { SessionPicker, renderSessionPicker } from "../../tui/components/session-picker";
 import { formatTranscript } from "../../tui/components/transcript";
+import { importGjcSession, listGjcSessions, type GjcSessionLeaf } from "../../agent/gjc-session-import";
+import { SelectList, renderSelectList, type SelectItem } from "../../tui/components/select-list";
 
 export interface SessionSlashCtx {
   cwd: string;
@@ -52,6 +54,56 @@ export interface SessionSlashResult {
   draft?: string;
 
 
+}
+
+interface GjcResumeRequest {
+  sessionId?: string;
+  leafId?: string;
+  anyCwd: boolean;
+  error?: string;
+}
+
+function parseGjcResumeArgument(arg: string): GjcResumeRequest | undefined {
+  const tokens = arg.trim().split(/\s+/).filter(Boolean);
+  if (!tokens.some(token => token.toLowerCase().startsWith("gajae:"))) return undefined;
+
+  let refToken: string | undefined;
+  let anyCwd = false;
+  for (const token of tokens) {
+    if (token === "--any-cwd") {
+      anyCwd = true;
+      continue;
+    }
+    if (refToken !== undefined) {
+      return { anyCwd, error: `Unexpected argument '${token}'.` };
+    }
+    refToken = token;
+  }
+
+  if (!refToken || !refToken.toLowerCase().startsWith("gajae:")) {
+    return { anyCwd, error: "Use /resume gajae:<session-id>[#<leaf-entry-id>] [--any-cwd]." };
+  }
+
+  const reference = refToken.slice("gajae:".length);
+  if (!reference) return { anyCwd };
+  const pieces = reference.split("#");
+  if (pieces.length > 2 || !pieces[0]) {
+    return { anyCwd, error: "Malformed GJC reference. Use gajae:<session-id>[#<leaf-entry-id>]." };
+  }
+
+  return {
+    sessionId: pieces[0],
+    ...(pieces[1] ? { leafId: pieces[1] } : {}),
+    anyCwd,
+  };
+}
+
+function gjcResumeItems(pool: GjcSessionLeaf[]): SelectItem<GjcSessionLeaf>[] {
+  return pool.map(item => ({
+    value: item,
+    label: `${item.sessionId}#${item.leafId || "(no-leaf)"}`,
+    hint: item.selected ? "selected leaf" : item.cwd,
+  }));
 }
 
 /**
@@ -126,9 +178,13 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
   }
   if (sub === "resume") {
     const arg = tokens.slice(1).join(" ").trim();
-    const applyResume = async (rid: string): Promise<void> => {
+    const applyResume = async (
+      rid: string,
+      loaded?: Awaited<ReturnType<typeof loadSession>>,
+    ): Promise<void> => {
       try {
-        const { header, messages } = await loadSession(rid, cwd);
+        const loadedSession = loaded ?? await loadSession(rid, cwd);
+        const { header, messages } = loadedSession;
         history.length = 1;
         for (const m of messages) history.push(m);
         sessionId = rid;
@@ -181,6 +237,94 @@ export async function runSessionSlash(input: string, ctx: SessionSlashCtx): Prom
         console.log(`! ${(err as Error).message}`);
       }
     };
+    const gjcRequest = parseGjcResumeArgument(arg);
+    if (gjcRequest) {
+      if (gjcRequest.error) {
+        console.log(`! ${gjcRequest.error}`);
+        return result();
+      }
+
+      const importOne = async (source: GjcSessionLeaf | undefined): Promise<void> => {
+        if (!source) return;
+        try {
+          const imported = await importGjcSession({
+            sessionId: gjcRequest.sessionId ?? source.sessionId,
+            ...(gjcRequest.leafId || source.leafId ? { leafId: gjcRequest.leafId ?? source.leafId } : {}),
+            cwd,
+            anyCwd: gjcRequest.anyCwd,
+          });
+          console.log(
+            `(imported GJC v5 session ${imported.sourceSessionId}#${imported.sourceLeafId} as Jeo session ${imported.sessionId}${imported.reused ? " (reused)" : ""})`,
+          );
+          await applyResume(imported.sessionId);
+        } catch (err) {
+          console.log(`! GJC /resume failed: ${(err as Error).message}`);
+        }
+      };
+
+      if (gjcRequest.sessionId) {
+        await importOne({
+          rootPath: "",
+          sourcePath: "",
+          sessionId: gjcRequest.sessionId,
+          leafId: gjcRequest.leafId ?? "",
+          cwd,
+          selected: false,
+        });
+        return result();
+      }
+
+      let sourcePool: GjcSessionLeaf[];
+      try {
+        sourcePool = await listGjcSessions({ cwd, anyCwd: gjcRequest.anyCwd });
+      } catch (err) {
+        console.log(`! GJC /resume listing failed: ${(err as Error).message}`);
+        return result();
+      }
+      if (sourcePool.length === 0) {
+        console.log("(no GJC v5 sessions for this workspace)");
+        console.log("Usage: /resume gajae:<session-id>[#<leaf-entry-id>] [--any-cwd]");
+        return result();
+      }
+
+      if (process.stdin.isTTY && process.stdout.isTTY) {
+        const picker = new SelectList(gjcResumeItems(sourcePool));
+        let selected: SelectItem<GjcSessionLeaf> | undefined;
+        await runSelectPicker(
+          (cols, rows) => renderSelectList(picker, {
+            title: "Import a GJC v5 session",
+            cols,
+            rows: Math.max(8, rows),
+            unicode: true,
+            color: true,
+          }),
+          (ch, key) => {
+            if (key?.name === "up") { picker.up(); return false; }
+            if (key?.name === "down") { picker.down(); return false; }
+            if (key?.name === "pageup") { picker.page(-1); return false; }
+            if (key?.name === "pagedown") { picker.page(1); return false; }
+            if (key?.name === "backspace") { picker.backspace(); return false; }
+            if (key?.name === "escape" || (key?.ctrl && key.name === "c")) return true;
+            if (key?.name === "return" || key?.name === "enter") {
+              selected = picker.selected();
+              return true;
+            }
+            if (ch && ch >= " " && !key?.ctrl && !key?.meta) picker.typeChar(ch);
+            return false;
+          },
+        );
+        await importOne(selected?.value);
+        return result();
+      }
+
+      console.log("GJC v5 sessions — resume with /resume gajae:<session-id>[#<leaf-entry-id>]:");
+      for (const source of sourcePool.slice(0, 20)) {
+        const selected = source.selected ? " *" : "";
+        console.log(` ${source.sessionId}#${source.leafId || "(no-leaf)"}${selected}  ${source.cwd}`);
+      }
+      console.log("Add --any-cwd to include sessions from other workspaces.");
+      return result();
+    }
     if (arg) {
       // gjc-parity: resolve `arg` as a full id OR a short id prefix before resuming.
       const resolved = await resolveSessionRef(arg, cwd);

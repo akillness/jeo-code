@@ -24,6 +24,22 @@ const OAuthEntry = z.union([z.string(), StoredOAuthSchema]);
 // are validated/kept rather than stripped. Adding a provider = one catalog row.
 const compatKeySchema = Object.fromEntries(OPENAI_COMPAT_PROVIDERS.map(p => [p.name, z.string().optional()]));
 const compatOAuthSchema = Object.fromEntries(OPENAI_COMPAT_PROVIDERS.map(p => [p.name, OAuthEntry.optional()]));
+/** One user-registered provider (`/provider add`). Mirrors `CustomProviderConfig`.
+ *  Kept permissive on `baseUrl` (a plain string) because the real validation lives in
+ *  `toCustomProviderDef` — a bad URL must surface as ONE actionable provider error,
+ *  not a whole-config schema rejection that would strand every other setting. */
+const CustomProviderSchema = z.object({
+  label: z.string().optional(),
+  baseUrl: z.string().min(1),
+  protocol: z.enum(["openai", "anthropic"]).optional(),
+  apiKeyEnv: z.string().optional(),
+  apiKey: z.string().optional(),
+  models: z.array(z.string()).optional(),
+  defaultModel: z.string().optional(),
+  thinkingFormat: z.enum(["openai", "openrouter", "qwen", "zai"]).optional(),
+  preset: z.string().optional(),
+});
+
 const HookConfigSchema = z.object({
   enabled: z.boolean().optional(),
   hooks: z
@@ -67,6 +83,10 @@ export const ConfigSchema = z
         ...compatOAuthSchema,
       })
       .optional(),
+    /** User-registered OpenAI/Anthropic-compatible providers, keyed by routing id.
+     *  Unlike `openaiBaseUrl` (which rebinds the single built-in `openai` provider),
+     *  each entry here is its own provider with its own prefix, models and credential. */
+    customProviders: z.record(z.string(), CustomProviderSchema).optional(),
     ollamaBaseUrl: z.string().optional(),
     ollamaNumCtx: z.number().int().positive().optional(),
     openaiBaseUrl: z.string().optional(),
@@ -218,6 +238,17 @@ export const ConfigSchema = z
     computer: z
       .object({
         enabled: z.boolean().optional(),
+      })
+      .optional(),
+    /** Threaded through the existing compaction/summary settings (gjc `/handoff`
+     *  parity, jeo-native subset). `handoffFocus` is an operator-configured
+     *  default focus text for the interactive `/handoff [focus]` command —
+     *  used ONLY when the command is invoked with no CLI-typed focus argument,
+     *  and always appended as its own trailing section (never merged into or
+     *  replacing the generated handoff document's base sections). */
+    compaction: z
+      .object({
+        handoffFocus: z.string().optional(),
       })
       .optional(),
   })

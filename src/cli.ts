@@ -2,6 +2,7 @@
 import { dispatch } from "./cli/runner";
 import { restoreTerminalState } from "./util/terminal-restore";
 import { isBrokenPipeError, BROKEN_PIPE_EXIT_CODE } from "./util/broken-pipe";
+import { writeCrashLog } from "./util/crash-log";
 import pkg from "../package.json";
 
 const APP_NAME = "jeo";
@@ -28,9 +29,15 @@ process.title = APP_NAME;
 // socket peer) makes the NEXT stdout/stderr write throw EPIPE from an async tick
 // outside any user try/catch — that is NOT a real fatal, so it exits quietly
 // (matching the shell's own SIGPIPE exit code) instead of dumping the raw error.
+//
+// gjc PR #3051 parity: a genuine fatal also gets a best-effort, synchronous,
+// owner-only, bounded crash-log entry (secrets redacted) under jeo's config
+// dir BEFORE the clean stderr line — writeCrashLog() never throws, so it can
+// never mask the original error.
 const fatal = (err: unknown): never => {
   restoreTerminalState();
   if (isBrokenPipeError(err)) process.exit(BROKEN_PIPE_EXIT_CODE);
+  writeCrashLog(err);
   const msg = (err as Error)?.message ?? String(err);
   process.stderr.write(`error: ${msg}\n`);
   process.exit(1);

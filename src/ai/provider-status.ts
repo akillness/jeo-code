@@ -10,8 +10,19 @@ import { OAUTH_FLOW_REGISTRY } from "../auth/flows";
 import type { ProviderName } from "./types";
 
 import { OPENAI_COMPAT_NAMES, openaiCompatDef } from "./providers/openai-compatible-catalog";
+import { customProviderDef, customProviderNames, credentialSourceOf, resolveCustomApiKey } from "./providers/custom-providers";
 
+/** Compiled-in providers, in declaration order. Custom providers are NOT here — they
+ *  are discovered at runtime, so use {@link allProviderNames} for anything the user sees. */
 export const PROVIDER_NAMES: readonly ProviderName[] = ["anthropic", "openai", "gemini", "antigravity", "ollama", "lmstudio", "xai", "kimi", ...OPENAI_COMPAT_NAMES];
+
+/** Built-in providers PLUS the user's registered custom providers. Every user-facing
+ *  surface (pickers, `/provider`, autocomplete, doctor) should list from here so a
+ *  custom endpoint is never invisible in the UI that is supposed to expose it. */
+export function allProviderNames(): readonly ProviderName[] {
+  const custom = customProviderNames();
+  return custom.length ? [...PROVIDER_NAMES, ...custom] : PROVIDER_NAMES;
+}
 
 /** Cloud providers that authenticate via API key / OAuth. Ollama is keyless. */
 export const CLOUD_PROVIDERS: readonly AuthProvider[] = ["anthropic", "openai", "gemini", "antigravity"];
@@ -35,6 +46,8 @@ export interface ProviderStatus {
   oauthEmail?: string;
   /** Epoch ms expiry of the stored OAuth access token, when known. */
   oauthExpires?: number;
+  /** True for user-registered custom providers (`config.customProviders`). */
+  custom?: boolean;
 }
 
 /** The env var that supplies a provider's API key. Catalog providers carry their
@@ -44,6 +57,13 @@ export function providerEnvVar(name: ProviderName): string | undefined {
   const def = openaiCompatDef(name);
   if (def) return def.apiKeyEnv;
   return `${name.toUpperCase()}_API_KEY`;
+}
+
+/** The API key a custom provider will actually use, or undefined. Exported so setup /
+ *  doctor can probe a custom endpoint without re-deriving the env-vs-literal rule. */
+export function customProviderApiKey(name: ProviderName): string | undefined {
+  const def = customProviderDef(name);
+  return def ? resolveCustomApiKey(def) : undefined;
 }
 
 /** Human label for a credential kind. */
@@ -113,6 +133,25 @@ function effectiveCredential(provider: AuthProvider, cred: Credential, cfg: Conf
 /** Resolve the status of a single provider. */
 export async function describeProvider(name: ProviderName, config?: Config): Promise<ProviderStatus> {
   const cfg = config ?? (await readGlobalConfig());
+  // Custom providers resolve their credential from their OWN env var / stored literal,
+  // not from the fixed `providers` union — report that source verbatim so a user who
+  // set the wrong env var sees WHICH variable jeo is looking at.
+  const custom = customProviderDef(name);
+  if (custom) {
+    const source = credentialSourceOf(custom);
+    const ready = source !== "none";
+    return {
+      name,
+      kind: ready ? "api_key" : "none",
+      label: ready
+        ? `API key (${source === "env" ? custom.apiKeyEnv : "stored in config"}) · custom${custom.preset ? ` · preset ${custom.preset}` : ""}`
+        : `none (set ${custom.apiKeyEnv}, or 'jeo provider key ${name} <key>')`,
+      baseUrl: custom.baseUrl,
+      envVar: custom.apiKeyEnv,
+      ready,
+      custom: true,
+    };
+  }
   if (name === "ollama" || name === "lmstudio") {
     const baseUrl = name === "ollama"
       ? (cfg.ollamaBaseUrl ?? "http://localhost:11434")
@@ -183,8 +222,8 @@ export async function describeProvider(name: ProviderName, config?: Config): Pro
   };
 }
 
-/** Resolve the status of every provider (single config read). */
+/** Resolve the status of every provider (single config read), custom providers included. */
 export async function describeAllProviders(config?: Config): Promise<ProviderStatus[]> {
   const cfg = config ?? (await readGlobalConfig());
-  return Promise.all(PROVIDER_NAMES.map(name => describeProvider(name, cfg)));
+  return Promise.all(allProviderNames().map(name => describeProvider(name, cfg)));
 }

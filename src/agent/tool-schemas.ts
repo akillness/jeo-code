@@ -116,6 +116,23 @@ const SCHEMAS: Record<string, NativeToolSchema> = {
       required: ["calculations"],
     },
   },
+  monitor: {
+    name: "monitor",
+    description: "Start or control a session-scoped background monitor; output lines arrive asynchronously as notices.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["start", "list", "tail", "await", "cancel"] },
+        command: STRING,
+        cwd: STRING,
+        persistent: { type: "boolean" },
+        ids: { type: "array", items: STRING },
+        id: STRING,
+        timeoutMs: { type: "number" },
+      },
+      required: ["action"],
+    },
+  },
   done: {
     name: "done",
     description: "Call when the task is fully implemented AND verified. The reason is shown to the user as your message.",

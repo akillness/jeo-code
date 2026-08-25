@@ -33,6 +33,15 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: "provider",
+    summary: "Register and probe OpenAI/Anthropic-compatible providers (custom endpoints + presets).",
+    usage: "provider [list|add|remove|presets|test] [--id <id>] [--base-url <url>] [--preset <name>]",
+    loader: async () => {
+      const m = await import("../commands/provider");
+      return args => m.runProviderCommand(args);
+    },
+  },
+  {
     name: "export",
     summary: "Export a saved session transcript to Markdown (or --json).",
     usage: "export [id] [--json] [--system]",
@@ -217,7 +226,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "update",
     summary: "Update jeo-code to the latest npm release (bare = install; --check only checks).",
-    usage: "update [--check|--install] [--json] [--strict]",
+    usage: "update [--check|--install] [--json] [--strict] [--version <semver>]",
     loader: async () => {
       const m = await import("../commands/update");
       return args => m.runUpdateCommand(args);

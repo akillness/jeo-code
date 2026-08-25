@@ -1,4 +1,5 @@
 import type { ProviderName } from "../types";
+import { customProviderDef, customProviderDefs, customProviderNames } from "./custom-providers";
 
 /**
  * gjc-style data-driven provider catalog. Every entry here is an OpenAI-compatible
@@ -81,19 +82,44 @@ export const OPENAI_COMPAT_PROVIDERS: readonly OpenAICompatProviderDef[] = [
 
 const BY_NAME = new Map<string, OpenAICompatProviderDef>(OPENAI_COMPAT_PROVIDERS.map(p => [p.name, p]));
 
-/** All catalog provider names (for PROVIDER_NAMES / AuthProvider unions). */
+/** All BUILT-IN catalog provider names (for PROVIDER_NAMES / AuthProvider unions). */
 export const OPENAI_COMPAT_NAMES: readonly ProviderName[] = OPENAI_COMPAT_PROVIDERS.map(p => p.name);
+
+/** True when `name` is one of the compiled-in catalog rows (excludes custom providers). */
+export function isBuiltinCompatProvider(name: string): boolean {
+  return BY_NAME.has(name);
+}
+
+/** Built-in catalog rows PLUS the user's registered custom providers, in that order.
+ *  Every generic path (discovery, routing, status, pickers) reads this so a custom
+ *  provider behaves exactly like a compiled-in one. */
+export function allCompatProviders(): readonly OpenAICompatProviderDef[] {
+  const custom = customProviderDefs();
+  return custom.length ? [...OPENAI_COMPAT_PROVIDERS, ...custom] : OPENAI_COMPAT_PROVIDERS;
+}
+
+/** Built-in + custom compat provider names. */
+export function allCompatNames(): readonly ProviderName[] {
+  const custom = customProviderNames();
+  return custom.length ? [...OPENAI_COMPAT_NAMES, ...custom] : OPENAI_COMPAT_NAMES;
+}
 
 /** Subscription/plan-tier provider names (coding-plan, portal, token-plan, code) — surfaced
  *  under the `/provider` "OAuth / subscription" onboarding path rather than the generic API-key list. */
 export const SUBSCRIPTION_PROVIDER_NAMES: readonly ProviderName[] = OPENAI_COMPAT_PROVIDERS.filter(p => p.subscription).map(p => p.name);
 
-/** Catalog entry for a provider name, or undefined when it is not catalog-driven. */
+/**
+ * Catalog entry for a provider name, or undefined when it is not catalog-driven.
+ *
+ * Built-ins win over custom entries with the same id — `assertValidProviderId` already
+ * rejects reserved ids at registration, so this is defence-in-depth for a hand-edited
+ * config that predates the check: a stale user row can never shadow a shipped provider.
+ */
 export function openaiCompatDef(name: string): OpenAICompatProviderDef | undefined {
-  return BY_NAME.get(name);
+  return BY_NAME.get(name) ?? customProviderDef(name);
 }
 
-/** True when `name` is a catalog-driven OpenAI-compatible provider. */
+/** True when `name` is a catalog-driven OpenAI-compatible provider (built-in or custom). */
 export function isOpenAICompatProvider(name: string): boolean {
-  return BY_NAME.has(name);
+  return BY_NAME.has(name) || customProviderDef(name) !== undefined;
 }

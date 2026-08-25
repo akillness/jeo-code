@@ -11,8 +11,16 @@ import { readGlobalConfig, type Config } from "../agent/state";
 import { resolveCredential, type AuthProvider, type Credential } from "../auth";
 import type { ProviderName } from "./types";
 import { PROVIDER_NAMES } from "./provider-status";
-import { catalogByProvider, CODEX_MODELS, KIMI_CODE_MODELS, recordLiveCodexModels, recordLiveProviderModels } from "./model-catalog";
+import {
+  catalogByProvider,
+  CODEX_MODELS,
+  KIMI_CODE_MODELS,
+  recordLiveCodexModels,
+  recordLiveProviderModels,
+  setOpenAIOauthAccountScope,
+} from "./model-catalog";
 import { extractChatgptAccountId } from "./providers/openai-responses";
+import { getStoredOAuth } from "../auth/storage";
 import { openaiCompatDef } from "./providers/openai-compatible-catalog";
 
 export interface ProviderModelsResult {
@@ -22,6 +30,8 @@ export interface ProviderModelsResult {
   ok: boolean;
   /** How the request authenticated (for display). */
   source: "oauth" | "api_key" | "keyless" | "none";
+  /** Stable OpenAI OAuth account scope for account-specific cache rows. */
+  accountId?: string;
   /** Present on failure: a short, human-readable reason. */
   error?: string;
   /** True when the live endpoint was unusable and ids came from the static catalog. */
@@ -39,6 +49,15 @@ export interface DiscoveryOptions {
   limit?: number;
   /** Config snapshot used for provider base URLs. */
   config?: Config;
+  /**
+   * Narrowly scoped for the post-login report (`jeo auth login openai`): keep
+   * the just-stored OAuth credential even when an unrelated `providers.openai`
+   * API key is also configured, so the report reflects the account that was
+   * JUST logged in rather than silently swapping to the API key. Does not
+   * change any other discovery caller — the TUI/`discoverModels` default
+   * (API key preferred when configured) is untouched.
+   */
+  preferOAuth?: boolean;
 }
 
 const DEFAULT_TIMEOUT = 5000;
@@ -48,7 +67,7 @@ const DEFAULT_LIMIT = 100;
 // to receive the full current list (verified live 2026-06-12: 0.46→[], 0.99→gpt-5.4,
 // 1.0/2.0→full gpt-5.5 set). On drift the catalog fallback keeps Codex usable.
 const CODEX_CLIENT_VERSION = "2.0.0";
-const CODEX_MODELS_URL = `https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`;
+export const CODEX_MODELS_URL = `https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`;
 const ANTIGRAVITY_MODELS_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 const ANTIGRAVITY_MODEL_DENYLIST = new Set([
   "chat_20706",
@@ -76,7 +95,11 @@ function authProviderFor(provider: ProviderName): AuthProvider | undefined {
   // Local providers (ollama/lmstudio) are keyless and do not resolve through the
   // auth core. API-key providers (incl. xai/kimi) DO — so discovery sends their key.
   if (provider === "ollama" || provider === "lmstudio") return undefined;
-  return provider;
+  // A user-registered custom provider id is not in the `AuthProvider` literal union,
+  // but `withEnvOverlay` publishes its key into the SAME `config.providers` map that
+  // `resolveCredential` reads — so the lookup is keyed identically. Same cast the
+  // model-manager's generic credential path already makes.
+  return provider as AuthProvider;
 }
 
 /** Build the discovery request (url + headers) for a provider/credential. */
@@ -325,6 +348,7 @@ export async function listProviderModels(
   const limit = opts.limit ?? DEFAULT_LIMIT;
 
   let cred: Credential | undefined;
+  let oauthAccountId: string | undefined;
   let source: ProviderModelsResult["source"] = "keyless";
   if (provider === "xai") {
     // xAI (Grok) is API-key only and not an OAuth AuthProvider: resolve its key
@@ -360,10 +384,18 @@ export async function listProviderModels(
     const prov = authProvider!;
     // Antigravity's list endpoint accepts ONLY OAuth (the request builder sends
     // no api-key header), so never swap its credential to an api_key.
-    if (provider !== "antigravity" && cred.kind === "oauth" && config.providers?.[prov]) {
+    // `preferOAuth` (post-login report only) skips this swap so the report
+    // reflects the freshly stored OAuth credential, not an unrelated key.
+    if (provider !== "antigravity" && cred.kind === "oauth" && config.providers?.[prov] && !opts.preferOAuth) {
       // An API key is the broader, documented path — prefer it for live discovery.
       cred = { kind: "api_key", provider: prov, token: config.providers[prov]! };
       source = "api_key";
+    }
+    if (provider === "openai" && source === "oauth" && cred.kind === "oauth") {
+      const stored = await getStoredOAuth("openai").catch(() => undefined);
+      const jwtAccountId = extractChatgptAccountId(cred.token);
+      oauthAccountId = jwtAccountId || stored?.accountId;
+      setOpenAIOauthAccountScope(oauthAccountId);
     }
     // Gemini models are exposed ONLY under API-key auth: a gemini OAuth token can
     // still list models from generativelanguage.googleapis.com, but it can no
@@ -408,9 +440,19 @@ export async function listProviderModels(
     // Record live ids for routing supplements. For OpenAI OAuth, keep the
     // existing Codex allow-list widening separate: API-key/custom-base discovery
     // must not make OAuth Codex calls accept unrelated API models.
-    recordLiveProviderModels(provider, models, { source, baseUrl: opts.baseUrl });
-    if (provider === "openai" && source === "oauth") recordLiveCodexModels(models);
-    return { provider, models, ok: true, source };
+    recordLiveProviderModels(provider, models, {
+      source,
+      baseUrl: opts.baseUrl,
+      ...(provider === "openai" && source === "oauth" && oauthAccountId ? { accountId: oauthAccountId } : {}),
+    });
+    if (provider === "openai" && source === "oauth") recordLiveCodexModels(models, oauthAccountId);
+    return {
+      provider,
+      models,
+      ok: true,
+      source,
+      ...(oauthAccountId ? { accountId: oauthAccountId } : {}),
+    };
   } catch (err) {
     const msg = (err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError" ? "timeout" : "unreachable";
     return { provider, models: [], ok: false, source, error: msg };
@@ -430,7 +472,10 @@ export async function listProviderModels(
  *  service answers in single-digit ms, so this stays cheap on the turn hot path
  *  and still fails fast on a genuinely unreachable host. */
 export async function isLocalProviderReachable(
-  provider: "ollama" | "lmstudio",
+  // Accepts any ProviderName: `ProviderName` now includes user-registered custom ids,
+  // so a `provider === "ollama" || provider === "lmstudio"` guard no longer narrows to
+  // the two literals at call sites. The probe itself is protocol-generic.
+  provider: ProviderName,
   baseUrl: string | undefined,
   opts: Pick<DiscoveryOptions, "timeoutMs" | "fetchImpl"> = {},
 ): Promise<boolean> {

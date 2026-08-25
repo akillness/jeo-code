@@ -176,3 +176,35 @@ test("renderInputFrame: no scroll marker at all when every line fits within maxB
   expect(body.some(l => l.includes("⋯"))).toBe(false);
   expect(body.some(l => l.includes("…"))).toBe(false);
 });
+
+// ── Caret offsets are UTF-16 code units (rl.cursor's unit) ──────────────────────
+// Reported live: with an emoji in the draft the painted caret sat one column right of
+// the real insertion point (pressing ← after "…테스트😀😀" left the caret parked at the
+// end). readline counts UTF-16 units; the box used to count CODE POINTS, so every
+// surrogate pair before the caret shifted it.
+test("renderInputFrame: caret column follows readline's UTF-16 offset across surrogate pairs", () => {
+  const text = "ab😀cd"; // widths: a=1 b=1 😀=2 c=1 d=1
+  // Caret AFTER the emoji: readline reports 4 code units (a,b + the pair), not 3.
+  const afterEmoji = renderInputFrame(text, { cols: 40, cursor: 4, color: false, unicode: false });
+  expect(afterEmoji.cursorCol).toBe(4 + 4); // "> " prompt starts col 4; "ab😀" is 4 columns
+  // Caret BEFORE the emoji.
+  const beforeEmoji = renderInputFrame(text, { cols: 40, cursor: 2, color: false, unicode: false });
+  expect(beforeEmoji.cursorCol).toBe(4 + 2);
+  // End of the draft: 6 code units → all 6 display columns.
+  const atEnd = renderInputFrame(text, { cols: 40, cursor: text.length, color: false, unicode: false });
+  expect(atEnd.cursorCol).toBe(4 + 6);
+});
+
+test("renderInputFrame: caret column stays exact for wide CJK text (one code unit, two columns)", () => {
+  const text = "한글 test";
+  const frame = renderInputFrame(text, { cols: 40, cursor: 2, color: false, unicode: false });
+  expect(frame.cursorCol).toBe(4 + 4); // two CJK glyphs = 4 columns
+});
+
+test("renderInputFrame: an emoji before a wrap boundary does not desync the caret row", () => {
+  // textWidth = cols - 6 = 6 columns per row. "😀😀😀😀" = 8 columns → wraps after 3.
+  const text = "😀😀😀😀";
+  const frame = renderInputFrame(text, { cols: 12, cursor: text.length, color: false, unicode: false });
+  expect(frame.cursorRow).toBe(2); // top border + second body row
+  expect(frame.cursorCol).toBe(4 + 2); // the 4th emoji sits alone on row 2
+});

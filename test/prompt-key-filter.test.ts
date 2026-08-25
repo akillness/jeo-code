@@ -271,3 +271,53 @@ test("un-bracketed multi-line paste guard: does not fire INSIDE a real bracketed
   const res = filterPromptInputChunk(`${PASTE_START}one\ntwo\nthree${PASTE_END}`, null, baseEnv(), state);
   expect(res.out).toBe(`${PASTE_START}one${MULTILINE_SENTINEL}two${MULTILINE_SENTINEL}three${PASTE_END}`);
 });
+
+
+// ── Lone Esc must not swallow the next keystroke ────────────────────────────────
+// Reported live (jeo --tmux): press Esc to wipe the box, type "zebra" → the box shows
+// "ebra". A lone Esc is carried (it is a valid paste-marker prefix) and re-prepended to
+// the NEXT chunk; forwarded that way, readline's key decoder reads `ESC z` as meta-z and
+// eats the character. The filter now drops a CARRIED Esc that cannot start a sequence.
+test("carried lone Esc is dropped so the next typed character survives (Esc → 'zebra' stays 'zebra')", () => {
+  const state = freshState();
+  // Chunk 1: the Esc keypress alone — carried, nothing forwarded to readline.
+  const esc = filterPromptInputChunk("\u001b", null, baseEnv(), state);
+  expect(esc.out).toBe("");
+  expect(state.carry).toBe("\u001b");
+  // Chunk 2: the next keystrokes arrive; the stale Esc is dropped, the text is intact.
+  const typed = filterPromptInputChunk("zebra", null, baseEnv(), state);
+  expect(typed.out).toBe("zebra");
+  expect(state.carry).toBe("");
+});
+
+test("carried lone Esc followed by a real escape SEQUENCE keeps the sequence whole", () => {
+  const state = freshState();
+  expect(filterPromptInputChunk("\u001b", null, baseEnv(), state).out).toBe("");
+  // `ESC` + `[C` (Right arrow split across the read boundary) must still reach readline
+  // as one intact sequence — the drop only applies to bytes that cannot continue one.
+  const arrow = filterPromptInputChunk("[C", null, baseEnv(), state);
+  expect(arrow.out).toBe("\u001b[C");
+});
+
+test("carried lone Esc followed by a bracketed paste keeps the paste marker intact", () => {
+  const state = freshState();
+  expect(filterPromptInputChunk("\u001b", null, baseEnv(), state).out).toBe("");
+  const pasted = filterPromptInputChunk(`${PASTE_START}hello${PASTE_END}`, null, baseEnv(), state);
+  expect(pasted.out).toBe(`${PASTE_START}hello${PASTE_END}`);
+  expect(state.inPaste).toBe(false);
+});
+
+test("an Alt/Meta chord delivered in ONE chunk is NOT treated as a stale Esc", () => {
+  // Alt+b (backward-word) arrives as `ESC b` in a single read — readline must still see
+  // both bytes, or the chord would degrade into typing a literal "b".
+  const res = filterPromptInputChunk("\u001bb", null, baseEnv(), freshState());
+  expect(res.out).toBe("\u001bb");
+});
+
+test("double Esc leaves nothing pending for readline to merge with later input", () => {
+  const state = freshState();
+  filterPromptInputChunk("\u001b", null, baseEnv(), state);
+  const second = filterPromptInputChunk("\u001b", null, baseEnv(), state);
+  expect(second.out).toBe("");
+  expect(filterPromptInputChunk("q", null, baseEnv(), state).out).toBe("q");
+});

@@ -9,6 +9,7 @@
  */
 import type { OAuthController, OAuthCredentials } from "./types";
 import { generateState } from "./pkce";
+import { closeAuthTab } from "./browser-tab";
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 // Loopback callback host. `localhost` (not the 127.0.0.1 IP literal) is the intentional
@@ -64,34 +65,58 @@ button:hover{background:#1b1c27}
 <img class="wordmark" alt="jeo" src="${JEO_WORDMARK_DATA_URI}">
 <h1 class="__STATUS__">__TITLE__</h1>
 <p>__MSG__</p>
-<button id="jeo-close" type="button">Close</button>
-<p class="hint">Closing automatically in <span id="jeo-countdown">__SECONDS__</span>s…</p>
-<p class="hint closed" id="jeo-closed-msg">Window closed. You can close this tab.</p>
+<button id="jeo-close" type="button">Close this tab</button>
+<p class="hint" id="jeo-countdown-msg">Closing automatically in <span id="jeo-countdown">__SECONDS__</span>s…</p>
+<p class="hint closed" id="jeo-closed-msg">This browser refuses to close a tab it opened itself — press \u2318W (Ctrl+W) to close it.</p>
 </div>
 <script>__SCRIPT__</script>
 </body></html>`;
 
-// Seconds before the tab auto-closes — applies to BOTH the success and the
-// failure page now (previously only success auto-closed). Pressing "Close"
-// closes immediately without waiting out the countdown. `window.close()` only
-// succeeds on tabs the script itself opened; browsers may ignore it for
-// OS-launched OAuth tabs, so the button remains as the reliable fallback.
-const AUTO_CLOSE_SECONDS = 5;
+// Seconds before the tab tries to close itself — applies to BOTH the success and
+// the failure page (each is a final page that should not linger). Pressing
+// "Close this tab" runs the same attempt immediately, without waiting out the
+// countdown, and stays clickable afterwards.
+const AUTO_CLOSE_SECONDS = 3;
 
 function renderHtml(ok: boolean, msg: string): string {
+  // Closing contract, in order of what actually works:
+  //  1. `window.open("","_self")` before `window.close()` — the legacy self-adopt
+  //     trick that still lets Firefox (and older engines) close an OS-opened tab.
+  //  2. `window.close()` — succeeds only where the tab counts as script-opened.
+  //  3. If the tab is still here a moment later, the browser refused: tell the
+  //     user how to close it and KEEP the button working.
+  //
+  // The old code branched on `window.close()`'s return value — that call returns
+  // `undefined` ALWAYS, so the failure branch fired unconditionally and hid the
+  // Close button on the first tick. That left the tab open with its only manual
+  // control gone (the "인증 브라우저가 종료되지 않는다" report). Success is now
+  // detected by observing that the document is actually going away
+  // (`document.hidden` / the `pagehide` unload path), never by a return value.
+  //
+  // The CLI side additionally closes the tab through the OS on macOS once the
+  // callback lands (`closeAuthTab` in ./browser-tab.ts), which is the only path
+  // that works when the browser refuses the scripted close outright.
   const script = `(function(){
-    var n=${AUTO_CLOSE_SECONDS},el=document.getElementById("jeo-countdown"),btn=document.getElementById("jeo-close"),closedMsg=document.getElementById("jeo-closed-msg"),t;
-    function closeNow(){
-      clearInterval(t);
-      var closed=window.close();
-      if(!closed){
-        btn.style.display="none";
-        el.parentElement.style.display="none";
-        closedMsg.classList.remove("closed");
-      }
+    var n=${AUTO_CLOSE_SECONDS},
+        el=document.getElementById("jeo-countdown"),
+        countdownMsg=document.getElementById("jeo-countdown-msg"),
+        btn=document.getElementById("jeo-close"),
+        closedMsg=document.getElementById("jeo-closed-msg"),
+        t,gone=false;
+    window.addEventListener("pagehide",function(){gone=true;});
+    function showManual(){
+      if(gone||document.hidden)return;
+      if(countdownMsg)countdownMsg.style.display="none";
+      if(closedMsg)closedMsg.classList.remove("closed");
     }
-    t=setInterval(function(){n-=1;if(el)el.textContent=String(Math.max(n,0));if(n<=0)closeNow();},1000);
-    if(btn)btn.addEventListener("click",closeNow);
+    function attemptClose(){
+      if(t){clearInterval(t);t=null;}
+      try{window.open("","_self");}catch(e){}
+      try{window.close();}catch(e){}
+      setTimeout(showManual,250);
+    }
+    t=setInterval(function(){n-=1;if(el)el.textContent=String(Math.max(n,0));if(n<=0)attemptClose();},1000);
+    if(btn)btn.addEventListener("click",attemptClose);
   })();`;
   return PAGE_HTML
     .replace("__STATUS__", ok ? "ok" : "fail")
@@ -110,6 +135,9 @@ export abstract class OAuthCallbackFlow {
   protected fixedRedirectUri?: string;
   #resolve?: (r: CallbackResult) => void;
   #reject?: (e: Error) => void;
+  /** Set for the duration of one `login()`; fired the moment the callback PAGE is
+   *  served, which is the only proof a browser tab of ours exists to close. */
+  #onPageServed?: () => void;
 
   constructor(ctrl: OAuthController, opts: number | OAuthCallbackFlowOptions, callbackPath = DEFAULT_CALLBACK_PATH) {
     this.ctrl = ctrl;
@@ -131,6 +159,11 @@ export abstract class OAuthCallbackFlow {
   async login(): Promise<OAuthCredentials> {
     const state = generateState();
     const { server, redirectUri } = this.#startServer(state);
+    // Whether the browser actually reached the callback page. A manual paste (or a
+    // cancelled/timed-out flow) never rendered a tab of ours, so there is nothing to
+    // close and no reason to pay for an osascript spawn.
+    let servedCallbackPage = false;
+    this.#onPageServed = () => { servedCallbackPage = true; };
     try {
       const { url, instructions } = await this.generateAuthUrl(state, redirectUri);
       this.ctrl.onAuth?.({ url, instructions });
@@ -140,7 +173,21 @@ export abstract class OAuthCallbackFlow {
       return await this.exchangeToken(code, returnedState || state, redirectUri);
     } finally {
       server.stop();
+      this.#onPageServed = undefined;
+      // Close the leftover callback tab from the OUTSIDE (macOS only; see
+      // ./browser-tab.ts). Awaited — a one-shot `jeo auth login` exits as soon as
+      // this returns, so a fire-and-forget spawn would be killed before it ran —
+      // but hard-capped, silent, and never able to fail the login it follows.
+      if (servedCallbackPage) {
+        try { await this.closeBrowserTab(redirectUri); } catch { /* best effort only */ }
+      }
     }
+  }
+
+  /** OS-level close of the callback tab (see ./browser-tab.ts). Overridable so tests
+   *  can observe the attempt without driving a real browser. */
+  protected closeBrowserTab(redirectUri: string): Promise<boolean> {
+    return closeAuthTab(redirectUri);
   }
 
   #startServer(expectedState: string): { server: Bun.Server<unknown>; redirectUri: string } {
@@ -186,6 +233,7 @@ export abstract class OAuthCallbackFlow {
       message = "Authentication succeeded. Return to the terminal — jeo is ready.";
     }
 
+    this.#onPageServed?.(); // a real browser tab now holds this page — it can be closed
     const resolve = this.#resolve;
     const reject = this.#reject;
     queueMicrotask(() => {

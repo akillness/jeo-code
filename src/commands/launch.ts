@@ -19,6 +19,8 @@ import { parseInThreadConfigCommand } from "../agent/notify/config-commands";
 
 import { createTodoTool, TODO_TOOL_PROTOCOL_LINE } from "../agent/todo-tool";
 import { createJobTool, JOB_TOOL_PROTOCOL_LINE } from "../agent/job-tool";
+import { createMonitorTool, MONITOR_TOOL_PROTOCOL_LINE } from "../agent/monitor-tool";
+import { MonitorRegistry } from "../agent/monitor-registry";
 import { JobRegistry } from "../agent/job-registry";
 import { createIrcTool, IRC_TOOL_PROTOCOL_LINE } from "../agent/irc-tool";
 import { createGoalTool, GOAL_TOOL_PROTOCOL_LINE } from "../agent/goal-tool";
@@ -44,6 +46,7 @@ import { renderWelcome, playWelcomeSweep } from "../tui/components/welcome";
 import { jeoEnv } from "../util/env";
 import { renderUpdateBox } from "../tui/components/update-box";
 import { consumeLaunchWhatsNew } from "../util/whats-new";
+import { runWhatsNewCommand } from "./whats-new";
 import { maybeBell } from "../util/notify";
 import { supportsUnicode } from "../tui/components/capability";
 import pkg from "../../package.json";
@@ -53,6 +56,7 @@ import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/state";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
 import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
+import { rehydrateLiveModels, writeModelCache } from "../ai/model-cache";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal, applyEvidenceGate } from "../agent/goal-verifier";
 import { routePrompt, deriveCacheSessionKey, warnOnce, tierModelPool, selectFromPool, PROMPT_TIERS, withRoutingTierSetting, inferTierForModel, credentialScopeFor, resolveVerifierModel, type PromptTier, type RouteDecision, type RoutingConfig } from "../agent/prompt-router";
@@ -63,6 +67,16 @@ import { isRateLimitError, isUsageLimitError, isConnectionError } from "../util/
 
 import { listAliases } from "../ai/model-registry";
 import { openaiCompatDef, SUBSCRIPTION_PROVIDER_NAMES } from "../ai/providers/openai-compatible-catalog";
+import {
+  applyCustomProviderPatch,
+  formatCustomProviderList,
+  formatPresetsCommand,
+  looksLikePreset,
+  parseProviderAddArgs,
+  planProviderAdd,
+  planProviderRemove,
+  providerAddUsage,
+} from "./launch/provider-slash";
 
 import { allSubagentRoles, getSubagentRole, resolveSubagentModel, resolveSubagentMaxSteps, resolveSubagentThinking, parseMaxSteps, withSubagentSetting, clearSubagentSetting, applyTargetChoices } from "../agent/subagents";
 import { SelectList, renderSelectList, type SelectItem } from "../tui/components/select-list";
@@ -101,7 +115,7 @@ import { formatDuration, formatUsage } from "../tui/components/duration";
 import { bashTool } from "../agent/tools";
 
 import { loadProjectContext, withProjectContext } from "../agent/context-files";
-import { maybeCompact, historyTokens } from "../agent/compaction";
+import { maybeCompact, historyTokens, buildHandoffDocument } from "../agent/compaction";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { listThemes, resolveTheme, themeGradient, accentPaint, accentShadowPaint } from "../tui/components/themes";
@@ -201,6 +215,8 @@ import {
   hotkeysLines,
   contextUsageLines,
   historyViewLines,
+  parseHandoffCommand,
+  handoffLines,
 } from "./launch/slash-views";
 import { formatTranscript } from "../tui/components/transcript";
 
@@ -220,6 +236,7 @@ import {
 } from "./launch/code-slash";
 import { handleUndoSlash } from "./launch/git-slash";
 import { runSessionSlash } from "./launch/session-slash";
+import { runJobsSlash } from "./launch/jobs-slash";
 import { runModelSlash } from "./launch/model-slash";
 import { runRouteSlash } from "./launch/route-slash";
 import { runComputerSlash } from "./launch/computer-slash";
@@ -486,13 +503,15 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             : `Starting new independent tmux session: ${sessionName} (another live jeo session already owns ${sessionBase}; reattach later with: tmux attach -t ${sessionName})`,
         );
 
-        // Re-assert the caller dimensions right before attach (best-effort): profile
-        // commands or a slow first frame can land while the window is still detached.
-        if (termSize) {
-          try {
-            Bun.spawnSync([tmuxBin, "resize-window", "-t", `=${sessionName}`, "-x", String(termSize.columns), "-y", String(termSize.rows)]);
-          } catch { /* best-effort — old tmux without resize-window is fine */ }
-        }
+        // NOTE: never `tmux resize-window` here. tmux flips the window's `window-size`
+        // option to `manual` as a side effect of that command, which permanently
+        // detaches the window from the attached client's geometry — the terminal is
+        // resized, tmux keeps the window frozen at its old size, and the pane is shown
+        // letterboxed/cut with jeo never receiving SIGWINCH (the "TUI is stuck at the
+        // launch size and the screen is cut" report). `new-session -x/-y` already
+        // creates the detached window at the caller's size, and `window-size latest`
+        // (asserted in tmuxProfileCommands) makes the attach and every later terminal
+        // resize track the client automatically.
 
         const attach = Bun.spawn([tmuxBin, "attach-session", "-t", `=${sessionName}`], {
           stdin: "inherit",
@@ -560,7 +579,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // pi-style: load project context (JEO.md / AGENTS.md / .jeo/context.md / CLAUDE.md) into the prompt.
   const contextFiles = await loadProjectContext(cwd);
 
-  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "eval", "todo", "subagent", "job", "irc", "goal", "approve", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug", "browser"]);
+  const KNOWN_TOOLS = new Set(["read", "write", "edit", "bash", "find", "search", "ls", "task", "eval", "todo", "subagent", "job", "monitor", "irc", "goal", "approve", "ast_grep", "ast_edit", "computer", "lsp", "lsp_rename", "debug", "browser"]);
   let allowedTools = new Set(KNOWN_TOOLS);
 
   if (flags.noTools) {
@@ -633,6 +652,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     (allowedTools.has("subagent") ? "\n\nDetached subagents: " + SUBAGENT_TOOL_PROTOCOL_LINE +
     " Launch background work with task {\"detached\": true, \"role\": <role>, \"task\": <assignment>}; it returns a subagent id immediately so you can keep working and collect the result later." : "") +
     (allowedTools.has("job") ? "\n\nBackground jobs: " + JOB_TOOL_PROTOCOL_LINE : "") +
+    (allowedTools.has("monitor") ? "\n\nBackground monitors: " + MONITOR_TOOL_PROTOCOL_LINE : "") +
     (allowedTools.has("irc") ? "\n\nPeer messaging: " + IRC_TOOL_PROTOCOL_LINE : "") +
     (allowedTools.has("goal") ? "\n\nGoal tracking: " + GOAL_TOOL_PROTOCOL_LINE : "") +
     (allowedTools.has("approve") ? "\n\nPlan approval: " + APPROVE_TOOL_PROTOCOL_LINE : "") +
@@ -677,6 +697,19 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let sessionThinking: "low" | "medium" | "high" | "xhigh" | undefined = flags.thinking ?? cfg.thinkingLevel;
   // PromptRouter session override: undefined = follow config.routing.enabled, true/false = /route on|off wins this session.
   let sessionRouteOverride: boolean | undefined;
+  // Last model that actually served a completed turn (routed or pinned) — the idle
+  // status bar (`statusBarLine`) and `/compact`/`/handoff` read THIS instead of
+  // recomputing `sessionModel || defaultModel`, which ignored routing entirely and
+  // kept showing the pre-routing default even while routing was actively picking a
+  // different model turn-to-turn (e.g. "/route on" routing every prompt to
+  // claude-sonnet-5 while the footer kept showing claude-opus-5 — looked exactly
+  // like routing "wasn't working" even though it was). `undefined` until the first
+  // turn completes, so the initial idle render still falls back to `sessionModel ||
+  // defaultModel` unchanged.
+  let lastActiveModel: string | undefined;
+
+
+
   // Last routing decision (or the reason none applied) — /route why reads this.
   let lastRouteDecision: RouteDecision | { note: string } | null = null;
   // Bounded FIFO of this session's routing decisions — /route history reads this.
@@ -687,10 +720,13 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   let sessionComputerOverride: boolean | undefined;
 
   // Cache of live, credential-validated models per provider (refreshed by live pickers).
+  // Every successful discovery is also persisted (`writeModelCache`), so the NEXT launch
+  // starts from the account's real model set instead of the maintained static snapshot.
   let liveModelsCache: ProviderModelsResult[] | null = null;
   const getLiveModels = async (force = false): Promise<ProviderModelsResult[]> => {
     if (force || !liveModelsCache) {
       liveModelsCache = await discoverModels({ timeoutMs: 4000 });
+      void writeModelCache(liveModelsCache);
     }
     return liveModelsCache;
   };
@@ -906,6 +942,33 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   if (sessionNotifyEndpoint) {
     sessionNotifyEndpoint.sendIdentity({ repo: cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd, branch, cwd });
   }
+
+  // Session-scoped registries for DETACHED subagents, background jobs, and monitors (gjc parity).
+  // Created ONCE for the whole launch session lifetime (not per-turn) so detached
+  // runs persist across turns and remain controllable/inspectable.
+  const subagentRegistry = new SubagentRegistry();
+  const jobRegistry = new JobRegistry();
+  let activeTui: LaunchTui | null = null;
+  const monitorRegistry = new MonitorRegistry({
+    onLine: (record, line) => {
+      const notice = `[monitor ${record.id}] ${line}`;
+      if (activeTui) activeTui.events().onNotice?.(notice);
+      else console.log(notice);
+    },
+  });
+  sessionNotifyEndpoint?.attachRegistry(subagentRegistry);
+
+  let cleanedUp = false;
+  const cleanupSession = async (): Promise<void> => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    subagentRegistry.cancelAll();
+    jobRegistry.cancelAll();
+    monitorRegistry.cancelAll();
+    sessionNotifyEndpoint?.detachRegistry();
+    await sessionNotifyEndpoint?.stop();
+    await stopSessionNotifyEndpoint(subagentRegistry);
+  };
 
   // Persist the active per-session model into the session header so `/resume` restores
   // it (each session can carry its own model independent of the global default).
@@ -1212,6 +1275,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     const { provider: activeProvider } = await describeModel(activeModel, turnConfig);
     const turnDirtyCount = branch ? gitDirtyCount(cwd) : undefined;
     const tui = useTui ? new LaunchTui({ model: activeModel, provider: activeProvider, sessionId, maxSteps: initialStepLimit, cwd, branch, dirtyCount: turnDirtyCount, thinking: activeThinking, routedTier: routed?.tier }) : null;
+    activeTui = tui;
     if (routeCredentialNotice) {
       if (tui) tui.events().onNotice?.(routeCredentialNotice);
       else console.log(routeCredentialNotice);
@@ -1269,7 +1333,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         },
         onHardExit: () => {
           if (tui) tui.finish("Cancelled.", { ok: false });
-          process.exit(130);
+          forceExitFromCtrlC();
         },
       });
       let compRes: Awaited<ReturnType<typeof maybeCompact>>;
@@ -1357,7 +1421,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             !chunk.includes(PASTE_END);
           const captured = queueBusyInput?.(chunk) ?? false;
           if (typedEnter) {
-            const line = (queueBusySnapshot?.().text ?? "").trim();
+            // Expand the sentinel here too: a mid-turn paste keeps its line breaks in the
+            // draft, and the steering inbox / command dispatcher both take REAL text — a
+            // raw private-use sentinel would otherwise reach the model verbatim.
+            const line = expandSentinel(queueBusySnapshot?.().text ?? "").trim();
             if (line) {
               // A mid-turn /command or $skill is NOT a query for the model — steering it
               // would send the literal "/model" / "$skill" text to the LLM. Recognize it
@@ -1399,7 +1466,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           // inbox and surfaces as a `user` card (above). JEO_NO_LIVE_DRAFT=1 opts out.
           if (captured && jeoEnv("NO_LIVE_DRAFT") !== "1") {
             const draft = queueBusySnapshot?.().text ?? "";
-            tui.setLivePromptInput(draft);
+            // The live box renders REAL text: expand the sentinel (as the idle box and the
+            // highlight pass below already do) so a mid-turn pasted block shows as separate
+            // rows instead of a run of unprintable private-use glyphs.
+            tui.setLivePromptInput(expandSentinel(draft));
             // Mid-turn command preview: as you type a /command or $skill DURING a turn,
             // show its matches above the input box so command input visibly reacts
             // (idle-prompt parity). Cleared the moment the draft stops being command-shaped.
@@ -1415,15 +1485,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         },
         onHardExit: () => {
           if (tui) tui.finish("Cancelled.", { ok: false });
-          process.exit(130);
+          forceExitFromCtrlC();
         },
       });
       const ac = harness.controller;
-      // #9: per-turn registry for DETACHED subagents (task{detached:true}); the
-      // `subagent` tool controls them and cancelAll() in finally prevents orphans.
-      const subagentRegistry = new SubagentRegistry();
-      const jobRegistry = new JobRegistry();
-      sessionNotifyEndpoint?.attachRegistry(subagentRegistry);
       currentTurnSteer = { push: line => steerInbox.push(line), flushCard: line => tui?.flushSteerCard(line) };
       if (sessionNotifyEndpoint && !notifyRedact) {
         const preview = userInput.length > 200 ? `${userInput.slice(0, 200)}…` : userInput;
@@ -1510,6 +1575,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           todo: createTodoTool({ onChange: items => { turnTodos = items; tui?.setTodos(items); } }),
           subagent: createSubagentTool(subagentRegistry),
           job: createJobTool(jobRegistry),
+          monitor: createMonitorTool(monitorRegistry),
           irc: createIrcTool(subagentRegistry),
           goal: createGoalTool(),
           approve: createApproveTool(),
@@ -1772,11 +1838,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         await opik.endTurn({ done: result.done, steps: result.steps, output: result.doneReason });
       } finally {
         harness.dispose();
-        subagentRegistry.cancelAll(); // #9: no detached run leaks past the turn
-        sessionNotifyEndpoint?.detachRegistry(); // this turn's registry is gone — subagent frames stop applying to it
+        activeTui = null;
         currentTurnSteer = undefined; // a remote message after this point queues instead of steering a dead turn
-        await stopSessionNotifyEndpoint(subagentRegistry); // tear down the FALLBACK lazy endpoint, if one was started (no-op when sessionNotifyEndpoint owns the registry)
-        jobRegistry.cancelAll(); // background jobs are turn-scoped too — no orphaned processes
 
         // Steering typed but never drained (e.g. entered just after the final step)
         // must not be lost — fold it into the next prompt draft so it runs next.
@@ -1889,7 +1952,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       }
     }
 
+    lastActiveModel = activeModel;
     return { done: result.done, steps: result.steps, reply, rendered: !!tui, usage };
+
   };
 
 
@@ -1972,6 +2037,18 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         if (result && "lines" in result) for (const line of result.lines) console.log(line);
         return;
       }
+      if (cmd === "/handoff" || cmd.startsWith("/handoff ")) {
+        const parsed = parseHandoffCommand(cmd) ?? {};
+        const cfg = await readGlobalConfig();
+        const activeModel = sessionModel || defaultModel;
+        // `Config` (state.ts) predates config-schema.ts's `compaction` field and is
+        // out of this change's scope — read the passthrough-preserved value via a
+        // narrow structural cast instead of widening the shared interface.
+        const focus = parsed.focus ?? (cfg as { compaction?: { handoffFocus?: string } }).compaction?.handoffFocus;
+        const res = await buildHandoffDocument(history, { model: activeModel, focus });
+        for (const line of handoffLines(res, process.stdout.columns)) console.log(line);
+        return;
+      }
       if (cmd === "/theme" || cmd.startsWith("/theme ")) {
         const decision = decideThemeSlash(cmd, listThemes(), resolveTheme().name);
         for (const line of decision.lines) console.log(line);
@@ -2030,7 +2107,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         const harness = createInFlightAbortHarness({
           captureEsc: false,
           onAbortNotice: msg => console.log(msg),
-          onHardExit: () => process.exit(130),
+          onHardExit: () => forceExitFromCtrlC(),
         });
         const ac = harness.controller;
 
@@ -2041,9 +2118,27 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           io: {
             output: (line: string) => {
               console.log(line);
-            }
+            },
+            // This `$a $b …` one-shot chain runs BEFORE the interactive REPL's
+            // `promptInput`/`rl` exist (this whole dispatch is reached and returns
+            // long before the `const promptInput = …` further down the function
+            // executes) — referencing `promptInput` here throws a TDZ
+            // ReferenceError ("Cannot access 'promptInput' before initialization")
+            // the instant the workflow engine asks its first question. That error
+            // is caught and stashed into session history (never printed to the
+            // terminal), so the visible symptom is just a frozen prompt forever
+            // (the "jeo --tmux $deep-interview hangs" / "$deep-interview hangs"
+            // report). Omitting `input` here is safe and correct: no other
+            // readline exists yet at this point, so deep-interview.ts's own
+            // fallback `createInterface({input: process.stdin, ...})` (used
+            // whenever `opts.io?.input` is absent) has nothing to fight over raw
+            // mode with. The INTERACTIVE `runSkillInvocation` sibling path below
+            // runs AFTER `promptInput` is declared and correctly wires it — do not
+            // "fix" this block by copying that wiring here again.
           },
+
           args: inv.skill.name === "deep-interview" ? (inv.intent ? inv.intent.split(/\s+/) : []) : undefined
+
         };
 
         let ok = false;
@@ -2243,7 +2338,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       const harness = createInFlightAbortHarness({
         captureEsc: false,
         onAbortNotice: msg => console.log(msg),
-        onHardExit: () => process.exit(130),
+        onHardExit: () => forceExitFromCtrlC(),
       });
       const ac = harness.controller;
 
@@ -2314,7 +2409,14 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // Tab autocomplete: alias names snapshotted once; live models come from the
   // background-warmed cache (logged-in/OAuth accounts). The completer is sync, so
   // it never blocks on the network — it reads whatever the cache currently holds.
+  //
+  // Disk rehydration runs FIRST and synchronously-awaited: it costs one small file
+  // read but makes the account's real model set (including ids newer than the
+  // maintained static snapshot) available to the picker, autocomplete, routing, and
+  // the OAuth Codex gate from the first keystroke, instead of only after the network
+  // discovery below happens to land.
   const aliasNames = Object.keys(await listAliases());
+  const cachedModels = await rehydrateLiveModels().catch(() => null);
   void getLiveModels()
     .then(r => {
       liveModelsCache ??= r;
@@ -2323,13 +2425,20 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   const mentionPaths = (prefix: string): string[] => mentionPathsIn(cwd, prefix);
   const completionContext = (): CompletionContext => {
     const base = staticCompletionContext();
+    // Until this launch's own discovery lands, completion falls back to the models
+    // the account reported on a PREVIOUS run. Without the fallback a cold start
+    // offered only the static catalog, so freshly released ids the user already has
+    // access to were un-completable for the first seconds of every session.
+    const liveFromDiscovery = liveModelsCache ? flattenModels(liveModelsCache).map(e => e.model) : null;
+    const cachedFor = (p: string): string[] =>
+      cachedModels?.providers.filter(entry => entry.provider === p).flatMap(entry => entry.models) ?? [];
     return {
       ...base,
       slashCommands: [...base.slashCommands, ...skillSlashDetails.map(d => d.command)],
-      liveModels: liveModelsCache ? flattenModels(liveModelsCache).map(e => e.model) : [],
+      liveModels: liveFromDiscovery ?? (cachedModels?.providers.flatMap(entry => entry.models) ?? []),
       aliases: aliasNames,
       skillNames: resolvedSkillTokens,
-      modelsForProvider: p => liveModelsCache?.find(r => r.provider === p)?.models ?? [],
+      modelsForProvider: p => liveModelsCache?.find(r => r.provider === p)?.models ?? cachedFor(p),
       mentionPaths,
     };
   };
@@ -2358,7 +2467,11 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // protocol nor xterm modifyOtherKeys. JEO_NO_MULTILINE=1 fully disables the
   // filter (reads stdin directly).
   const multilineInput = !!process.stdin.isTTY && jeoEnv("NO_MULTILINE") !== "1";
-  const loneLfShiftEnter = jeoEnv("MULTILINE") !== "0";
+  // tmux-owned panes can translate the plain Enter key to LF after the launcher's
+  // keyboard modes are enabled. In that mode LF must remain readline's submit key;
+  // explicit Shift+Enter escape sequences still become MULTILINE_SENTINEL below.
+  const loneLfShiftEnter =
+    jeoEnv("MULTILINE") !== "0" && jeoEnv("TMUX_LAUNCHED") !== "1";
   const expandSentinel = (s: string): string => (multilineInput ? s.split(SENTINEL).join("\n") : s);
   // Prompt-scoped process listeners (stdin data/keypress, stdout resize). Registered
   // once per launch but previously anonymous and never removed — benign for a single
@@ -2493,7 +2606,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // (the user explicitly invoked them — no second Enter).
   const pendingMidTurnCommands: string[] = [];
   const queuedPromptInput: PromptInputQueue = { pendingLines: pendingStdinLines, partial: startupDraft ?? "", pastedLines: [], inPaste: false };
-  queueBusyInput = (chunk: string) => captureLivePromptInputChunk(queuedPromptInput, chunk);
+  // `multilineInput` gates the SENTINEL contract end to end: a mid-turn paste keeps its
+  // line breaks only when the submit path expands them again (it always does unless
+  // JEO_NO_MULTILINE=1, which degrades the same paste to space-joined text).
+  queueBusyInput = (chunk: string) => captureLivePromptInputChunk(queuedPromptInput, chunk, { multiline: multilineInput });
   queueBusyPasteActive = () => queuedPromptInput.inPaste;
   queueBusySnapshot = () => ({
     text: queuedPromptInput.partial,
@@ -2926,7 +3042,8 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // The gjc-layout status bar pinned directly ABOVE the input box: bg-gradient
   // identity block (model · thinking / branch / cwd) left, live ctx% right.
   const statusBarLine = (cols: number): string => {
-    const activeModel = sessionModel || defaultModel;
+    const activeModel = lastActiveModel ?? (sessionModel || defaultModel);
+
     const meta = catalogMetadata(activeModel);
     const used = historyTokens(history);
     const theme = uiTheme;
@@ -3141,8 +3258,12 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     } catch {
       // Best-effort terminal restore; process exit is the contract.
     }
-    // Fire-and-forget — see the identical rationale at the main hard-exit path.
+    subagentRegistry.cancelAll();
+    jobRegistry.cancelAll();
+    monitorRegistry.cancelAll();
+    sessionNotifyEndpoint?.detachRegistry();
     void sessionNotifyEndpoint?.stop();
+    void stopSessionNotifyEndpoint(subagentRegistry);
     process.exit(130);
   };
   // Prompt Ctrl+C: a single press clears a non-empty box; on an empty box it exits.
@@ -4226,10 +4347,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         continue;
       }
       if (input === "/compact") {
+
         // Session-start default snapshot (not the live global default) — keeps a
         // concurrent session's `/model` write from changing this session's context budget.
-        const activeModel = sessionModel || defaultModel;
+        // Compaction budget should reflect the model that actually served the last
+        // turn (routing may have picked something other than sessionModel/defaultModel),
+        // not the pre-routing session-start snapshot — otherwise a routed session could
+        // compact against the wrong context window.
+        const activeModel = lastActiveModel ?? (sessionModel || defaultModel);
         const contextTokens = catalogMetadata(activeModel)?.contextTokens;
+
         const res = await maybeCompact(history, { model: activeModel, force: true, contextTokens });
         if (res.error) {
           console.error(chalk.red(res.error));
@@ -4243,6 +4370,33 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
         } else {
           console.log("(nothing to compact)");
         }
+        continue;
+      }
+      if (input === "/handoff" || input.startsWith("/handoff ")) {
+        // jeo-native subset of gjc `/handoff` parity: bounded, read-only handoff
+        // document (like /compact's summary, framed for a session handoff) — jeo
+        // has no ACP/SDK-broker managed-session boundary to hand off INTO, so this
+        // NEVER mutates history (see buildHandoffDocument's doc comment).
+        const parsed = parseHandoffCommand(input) ?? {};
+        const activeModel = lastActiveModel ?? (sessionModel || defaultModel);
+
+        const cfg = await readGlobalConfig();
+        // `Config` (state.ts) predates config-schema.ts's `compaction` field and is
+        // out of this change's scope — read the passthrough-preserved value via a
+        // narrow structural cast instead of widening the shared interface.
+        const focus = parsed.focus ?? (cfg as { compaction?: { handoffFocus?: string } }).compaction?.handoffFocus;
+        const res = await buildHandoffDocument(history, { model: activeModel, focus });
+        logLines(handoffLines(res, process.stdout.columns));
+        continue;
+      }
+      if (input === "/changelog" || input.startsWith("/changelog ")) {
+        const args = input.slice("/changelog".length).trim().split(/\s+/).filter(Boolean)
+          .map(arg => arg === "--full" ? "--all" : arg);
+        await runWhatsNewCommand(args);
+        continue;
+      }
+      if (input === "/jobs" || input.startsWith("/jobs ")) {
+        await runJobsSlash(input, jobRegistry, cwd, lines => logLines(lines));
         continue;
       }
       if (input === "/session" || input.startsWith("/session ")) {
@@ -4496,8 +4650,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           "  OAuth / subscription : /provider login [anthropic|openai|gemini|antigravity|<subscription>]   (alias: /login)",
           "                         subscriptions (token): alibaba-coding-plan, qwen-portal, xiaomi-token-plan-*, minimax-code*",
           "  API key (cloud)      : /provider key [provider] [key]   (groq, deepseek, mistral, openrouter, …)",
-          "  API-compatible       : /provider add --base-url <url> [--model <model>] [--compat openai]   (reads OPENAI_API_KEY)",
-          "                         show current / clear: /provider add   ·   /provider add clear",
+          "  API-compatible       : /provider add --id <id> --base-url <url> [--compat openai|anthropic] [--model a,b]",
+          "                         presets: /provider add --preset <id> [--base-url <url>]   ·   list: /provider presets",
+          "                         manage: /provider list   ·   /provider remove <id>",
+          "                         legacy (rebinds openai/): /provider add --base-url <url>   ·   clear: /provider add clear",
           "  Logout               : /logout <provider>",
           "  Headless OAuth        : paste the redirect URL or code when the login prompt asks.",
           "Switch the active model or provider with /model.",
@@ -4512,8 +4668,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           else if (action === "api-key") name = "key";
           else if (action === "api-add") {
             console.log("Add an API-compatible endpoint:");
-            console.log("  /provider add --base-url <url> [--model <model>] [--compat openai]");
-            console.log("  reads OPENAI_API_KEY · show current / clear: /provider add   ·   /provider add clear");
+            for (const line of providerAddUsage()) console.log(line);
             continue;
           }
           // action === undefined (cancelled) → fall through to the readiness panel.
@@ -4666,56 +4821,63 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
           }
           continue;
         }
-        // `/provider add --base-url <url> [--model <m>] [--compat openai]` → register an
-        // OpenAI-compatible endpoint (sets openaiBaseUrl). gjc flag style; bare positional
-        // URL/model still accepted for leniency. `/provider add clear` removes it.
-        if (name === "add") {
-          const rest = tokens.slice(1);
-          if ((rest[0] ?? "").toLowerCase() === "clear") {
-            await saveConfigPatch(() => ({ openaiBaseUrl: undefined }));
+        // `/provider presets` → the preset catalog (fixed + parameterized gateways).
+        if (name === "presets" || name === "preset") {
+          logLines(formatPresetsCommand());
+          continue;
+        }
+        // `/provider list` → registered custom providers (built-ins stay in the panel).
+        if (name === "list" || name === "ls") {
+          logLines(formatCustomProviderList(await readGlobalConfig()));
+          continue;
+        }
+        // `/provider remove <id>` → unregister a custom provider.
+        if (name === "remove" || name === "rm" || name === "delete") {
+          const decision = planProviderRemove(tokens[1], await readGlobalConfig());
+          logLines(decision.lines);
+          if (decision.removeId) {
+            await saveConfigPatch(raw => ({
+              customProviders: applyCustomProviderPatch(raw.customProviders, { removeId: decision.removeId }),
+            }));
+            // Re-read so `withEnvOverlay` republishes the surviving set into the runtime
+            // registry (the listener in register-providers unregisters the dropped adapter).
+            await readGlobalConfig();
             await refreshLiveModelsCache();
-            console.log("OpenAI-compatible base URL cleared — saved to ~/.jeo/config.json.");
-            continue;
           }
-          let baseUrl: string | undefined;
-          let modelArg: string | undefined;
-          let compat: string | undefined;
-          for (let i = 0; i < rest.length; i++) {
-            const t = rest[i]!;
-            if (t === "--base-url" || t === "--url") baseUrl = rest[++i];
-            else if (t === "--model") modelArg = rest[++i];
-            else if (t === "--compat") compat = (rest[++i] ?? "").toLowerCase();
-            else if (t === "--api-key-env" || t === "--provider") { i++; /* gjc-only: jeo has no named-provider registry — ignored */ }
-            else if (!t.startsWith("--") && baseUrl === undefined) baseUrl = t; // positional url
-            else if (!t.startsWith("--") && modelArg === undefined) modelArg = t; // positional model
+          continue;
+        }
+        // `/provider add …` → register a NAMED custom provider (--id / --preset), or, in the
+        // legacy no-id spelling, rebind the built-in openai endpoint. All parsing/validation
+        // lives in provider-slash.ts so it is unit-testable without a TUI.
+        if (name === "add") {
+          const parsedAdd = parseProviderAddArgs(tokens.slice(1));
+          // `/provider add litellm --base-url …` — a bare preset name is accepted as --preset.
+          if (!parsedAdd.preset && looksLikePreset(tokens[1])) parsedAdd.preset = tokens[1];
+          const cfgNow = await readGlobalConfig();
+          const plan = planProviderAdd(parsedAdd, cfgNow);
+          logLines(plan.lines);
+          if (plan.noop) continue;
+          if (plan.legacyOpenaiBaseUrl !== undefined) {
+            const url = plan.legacyOpenaiBaseUrl;
+            await saveConfigPatch(() => ({ openaiBaseUrl: url ?? undefined }));
           }
-          if (compat && compat !== "openai") {
-            console.log(`Only --compat openai is supported (got '${compat}') — jeo registers a single OpenAI-compatible endpoint.`);
-            continue;
+          if (plan.id && plan.config) {
+            await saveConfigPatch(raw => ({
+              customProviders: applyCustomProviderPatch(raw.customProviders, { addId: plan.id, addConfig: plan.config }),
+            }));
+            // Republish into the runtime registry before discovery runs, so the very next
+            // /models probe already targets the new endpoint.
+            await readGlobalConfig();
           }
-          if (!baseUrl) {
-            const cur = (await readGlobalConfig()).openaiBaseUrl;
-            console.log(cur ? `OpenAI-compatible base URL: ${cur}` : "No OpenAI-compatible base URL set.");
-            console.log("Set one with: /provider add --base-url <url> [--model <model>]   ·   clear with: /provider add clear");
-            continue;
-          }
-          const url = normalizeBaseUrl(baseUrl, "");
-          if (!url) {
-            console.log("Provide a base URL, e.g. /provider add --base-url http://localhost:1234/v1");
-            continue;
-          }
-          await saveConfigPatch(() => ({ openaiBaseUrl: url }));
-          if (modelArg) {
-            const qualified = qualifyModelId(modelArg, "openai");
-            sessionModel = qualified;
-            await saveConfigPatch(raw => rememberModelPatch(raw, qualified));
+          if (plan.selectModel) {
+            sessionModel = plan.selectModel;
+            await saveConfigPatch(raw => rememberModelPatch(raw, plan.selectModel!));
             await persistSessionModel();
-            console.log(`OpenAI-compatible endpoint set: ${url} · default model ${qualified} — saved to ~/.jeo/config.json.`);
-          } else {
-            console.log(`OpenAI-compatible endpoint set: ${url} — saved to ~/.jeo/config.json.`);
+            console.log(`Active model → ${plan.selectModel}`);
           }
+          const probeProvider = plan.id ?? "openai";
           const live = await refreshLiveModelsCache();
-          const forProvider = live.filter(r => r.provider === "openai");
+          const forProvider = live.filter(r => r.provider === probeProvider);
           const pick = flattenModels(forProvider);
           if (pick.length) {
             lastPickIndex = pick;
@@ -4723,7 +4885,10 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
             logLines(formatPickListWithCapabilities(pick, { cap: 12 }));
           } else {
             const failed = forProvider.find(r => !r.ok);
-            console.log(failed?.error ? `  could not list models: ${failed.error}` : "  no models discovered yet — the endpoint may need a key (set OPENAI_API_KEY).");
+            const envHint = plan.id
+              ? `set ${plan.config?.apiKeyEnv ?? `${plan.id.replace(/[.\-]/g, "_").toUpperCase()}_API_KEY`}`
+              : "set OPENAI_API_KEY";
+            console.log(failed?.error ? `  could not list models: ${failed.error}` : `  no models discovered yet — the endpoint may need a key (${envHint}).`);
           }
           continue;
         }
@@ -4964,11 +5129,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
       disarmPreview();
       out.write("\x1b[?25h\n");
     } catch { /* best effort */ }
-    // Fire-and-forget: process.exit() below does not wait for this, but the OS
-    // tears down the socket on process death regardless, and a leaked discovery
-    // file is self-healing (the daemon's scanSessions() reaps dead-pid entries
-    // on its next 3s poll — see notify-telegram-daemon.test.ts).
-    void sessionNotifyEndpoint?.stop();
+    await cleanupSession();
     process.removeListener("SIGINT", handleCtrlC);
     process.stdin.off("data", handleCtrlCByte);
     drainPromptListeners();
@@ -4985,7 +5146,7 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // gjc-parity resume pointer (logs/gjc-tui-study analysis Gap C): leave the exact
   // resume command in scrollback on exit, mirroring the --list handler's convention.
   if (sessionId && !flags.noSession) console.log(formatResumeHint(sessionId));
-  await sessionNotifyEndpoint?.stop();
+  await cleanupSession();
   process.removeListener("SIGINT", handleCtrlC);
   process.stdin.off("data", handleCtrlCByte);
   drainPromptListeners();

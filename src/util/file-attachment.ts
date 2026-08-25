@@ -13,6 +13,8 @@
  * Only paths with a known image extension are considered, so ordinary prose is
  * never mistaken for a file. Non-image / unreadable paths are left untouched.
  */
+import * as os from "node:os";
+import * as path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import type { ImageAttachment } from "../ai/types";
 
@@ -108,13 +110,16 @@ export function attachmentFromImageBytes(bytes: Uint8Array): ImageAttachment | n
  * Decode one drag-and-drop path token into a usable filesystem path:
  *  - strips matching single/double quotes,
  *  - unescapes backslash-escaped characters (macOS escapes spaces as `\ `),
- *  - resolves a `file://` URI (with percent-decoding).
+ *  - resolves a `file://` URI (with percent-decoding),
+ *  - expands a leading `~` / `~/` to the home directory (gjc parity: a TYPED or
+ *    shell-copied `~/Downloads/shot.png` is a real, attachable path — without this it
+ *    silently failed to resolve and the raw text was sent to the model instead).
  * Returns the cleaned path.
  */
-export function decodeDroppedPath(token: string): string {
+export function decodeDroppedPath(token: string, home: string = os.homedir()): string {
   let s = token.trim();
   if ((s.startsWith("'") && s.endsWith("'")) || (s.startsWith('"') && s.endsWith('"'))) {
-    return s.slice(1, -1);
+    return expandHomePath(s.slice(1, -1), home);
   }
   if (s.startsWith("file://")) {
     let rest = s.slice("file://".length);
@@ -123,7 +128,15 @@ export function decodeDroppedPath(token: string): string {
     try { return decodeURIComponent(rest); } catch { return rest; }
   }
   // Bare token: unescape `\<char>` (shell-style drag escaping).
-  return s.replace(/\\(.)/g, "$1");
+  return expandHomePath(s.replace(/\\(.)/g, "$1"), home);
+}
+
+/** `~` / `~/rest` → the home directory. A bare `~user` form is left alone (jeo cannot
+ *  resolve another account's home portably). */
+function expandHomePath(p: string, home: string): string {
+  if (p === "~") return home;
+  if (p.startsWith("~/")) return path.join(home, p.slice(2));
+  return p;
 }
 
 export interface PathToken {
@@ -222,7 +235,14 @@ export async function attachImagePaths(
   out += text.slice(cursor);
   if (images.length === 0) return { text: out, images, cursor: out.length };
   // Collapse the spacing terminals add around a dropped path so the swapped-in tag
-  // (and the caret parked after it) is not pushed several columns to the right.
-  const normalized = normalizeImageTags(out);
+  // (and the caret parked after it) is not pushed several columns to the right, then
+  // guarantee EXACTLY ONE trailing space when the last tag ends the draft — identical
+  // to `insertImageTag`'s Ctrl+V contract. Without it `normalizeImageTags`'s trim left
+  // the caret hard against `]` and the next typed word glued onto the tag
+  // ("[image #1]please"); with it, both attach paths behave the same.
+  let normalized = normalizeImageTags(out);
+  const lastTag = `[image #${n - 1}]`;
+  const lastIdx = normalized.indexOf(lastTag);
+  if (lastIdx >= 0 && lastIdx + lastTag.length >= normalized.length) normalized += " ";
   return { text: normalized, images, cursor: caretAfterTag(normalized, n - 1) };
 }

@@ -7,7 +7,8 @@
 import { SelectList, renderSelectList, type SelectItem, type RenderSelectOptions } from "./select-list";
 import { catalogForProvider, type ModelCatalogEntry } from "../../ai/model-catalog-compat";
 import { companyLabel } from "../../ai/model-catalog";
-import { PROVIDER_NAMES, type ProviderStatus } from "../../ai/provider-status";
+import { PROVIDER_NAMES, allProviderNames, type ProviderStatus } from "../../ai/provider-status";
+import { authStateFor, sortRankedProviders } from "../../ai/provider-ranking";
 import type { ProviderName } from "../../ai/types";
 
 /** Human context-window size: 200000 → "200k", 1000000 → "1M", 0 → "". */
@@ -46,14 +47,23 @@ export function buildModelChoices(statuses: ProviderStatus[], opts: ModelPickerO
   const unicode = opts.unicode !== false;
   const includeUnready = opts.includeUnready !== false;
   const readyOf = new Map<ProviderName, boolean>(statuses.map(s => [s.name, s.ready]));
+  const statusOf = new Map<ProviderName, ProviderStatus>(statuses.map(s => [s.name, s]));
 
-  // Provider order: ready first, then the canonical order.
-  const providers = [...PROVIDER_NAMES].sort((a, b) => {
-    const ra = readyOf.get(a) ? 0 : 1;
-    const rb = readyOf.get(b) ? 0 : 1;
-    if (ra !== rb) return ra - rb;
-    return PROVIDER_NAMES.indexOf(a) - PROVIDER_NAMES.indexOf(b);
-  });
+  // Provider order comes from the SHARED ranking (usable → broken → famous → rest), not
+  // this component's own list-index sort. That old sort ranked by `PROVIDER_NAMES.indexOf`,
+  // which returns -1 for a user-registered custom provider — floating it above the
+  // provider the user is actually logged into.
+  const providers = sortRankedProviders(
+    [...allProviderNames()].map(name => {
+      const status = statusOf.get(name);
+      return {
+        id: name,
+        label: companyLabel(name),
+        authState: status ? authStateFor(status) : ("none" as const),
+        custom: status?.custom,
+      };
+    }),
+  ).map(p => p.id as ProviderName);
 
   const items: SelectItem<string>[] = [];
   for (const provider of providers) {

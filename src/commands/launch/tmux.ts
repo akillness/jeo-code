@@ -193,6 +193,17 @@ export function tmuxProfileCommands(
 ): TmuxProfileCommand[] {
   const t = `=${target}:`;
   const commands: TmuxProfileCommand[] = [];
+  // Follow the attached client's geometry, always. tmux's default is already
+  // `latest`, but ANY `resize-window` (jeo's own, a user keybinding, a wrapper
+  // script) silently flips the window to `manual`, and a user's tmux.conf may set
+  // `manual` globally. A manual window never resizes with the terminal: jeo's pane
+  // stays frozen at its launch size, gets shown letterboxed/cut, and jeo never sees
+  // SIGWINCH so it cannot reflow either. Asserting `latest` per jeo session makes
+  // the live TUI track every terminal resize.
+  commands.push({
+    description: "track the attached client's size (never freeze the window)",
+    args: ["set-window-option", "-t", t, "window-size", "latest"],
+  });
   if (env.JEO_TMUX_MOUSE !== "0") {
     commands.push({
       description: "enable tmux mouse scrolling (wheel-up → copy-mode over real history)",

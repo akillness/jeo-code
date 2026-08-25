@@ -282,11 +282,11 @@ export class LaunchTui {
   // the executor and read-only roles — now run several workers at once; a single
   // shared string clobbered on every event made concurrent subagents look sequential
   // and, worse, cleared the whole `(sub)` marker the instant ANY one worker finished).
-  // Keyed by the event's fan-out `index` (1-based); a single/detached run with no
-  // index shares the fixed key 0. `subagentLiveOrder` tracks touch order so the
-  // status row can show the MOST RECENTLY active slot plus a "+N more" count.
-  private readonly subagentLiveSlots = new Map<number, string>();
-  private readonly subagentLiveOrder: number[] = [];
+  // Keyed by stable `detachedId` when present, else fan-out `index` (1-based),
+  // else fixed key 0 for single foreground runs. `subagentLiveOrder` tracks touch order
+  // so the status row can show the MOST RECENTLY active slot plus a "+N more" count.
+  private readonly subagentLiveSlots = new Map<number | string, string>();
+  private readonly subagentLiveOrder: (number | string)[] = [];
   // Bounded activity-history ring: one plain-text entry per ledger append, with a
   // turn-relative timestamp. Powers Ctrl+O's "recent activity" tail so the detail
   // view ALWAYS answers "what has been happening", even before the first reply.
@@ -1062,7 +1062,11 @@ export class LaunchTui {
     if (this.finished) return;
     const color = this.theme.color;
     const role = e.role || "subagent";
-    const roleLabel = e.index && e.total ? `${role.toUpperCase()}[${e.index}/${e.total}]` : role.toUpperCase();
+    const roleLabel = e.detachedId
+      ? `${role.toUpperCase()}[${e.detachedId}]`
+      : e.index && e.total
+      ? `${role.toUpperCase()}[${e.index}/${e.total}]`
+      : role.toUpperCase();
     const badge = categoryBadge("subagent", { color });
     const ok = this.unicode ? "✓" : "v";
     const bad = this.unicode ? "✗" : "x";
@@ -1070,10 +1074,10 @@ export class LaunchTui {
     const last = this.unicode ? "└─" : "`-";
     const detail = (e.detail ?? "").split("\n").find(l => l.trim().length > 0)?.trim().slice(0, 140) ?? "";
     const summary = e.summary ? ` — ${e.summary}` : "";
-    // Fan-out slot key: the event's 1-based `index` when present (concurrent batch
-    // worker), else the fixed key 0 (single-task/detached run — matches the prior
-    // single-string behavior for the non-batch case).
-    const slot = e.index ?? 0;
+    // Slot key: stable `detachedId` when present (detached background task),
+    // else fan-out 1-based `index` (concurrent batch worker),
+    // else fixed key 0 (single foreground run).
+    const slot: number | string = e.detachedId ?? e.index ?? 0;
     const touchSlot = (line: string) => {
       this.subagentLiveSlots.set(slot, line);
       const at = this.subagentLiveOrder.indexOf(slot);
@@ -1894,7 +1898,7 @@ export class LaunchTui {
     // TTY only: keep the same query input box visible above the footer while the
     // turn is running; typed text edits the next-prompt draft, not a side queue.
     if (fit) {
-      bottom.push(formatHintBar(undefined, { unicode: this.unicode, color: this.theme.color, cols: innerWidth }));
+      bottom.push(formatHintBar(undefined, { unicode: this.unicode, color: this.theme.color, cols: innerWidth, platform: process.platform }));
       bottom.push(...this.renderLiveInputBox(innerWidth));
     }
     // Live animated step strip appended to the footer when the turn has steps.

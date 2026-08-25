@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { TelegramApi, maskToken } from "../src/agent/notify/telegram-api";
+import { TelegramApi, maskToken, MAX_TELEGRAM_DOWNLOAD_BYTES, TELEGRAM_COOLDOWN_MIN_SECONDS, TELEGRAM_COOLDOWN_MAX_SECONDS, TELEGRAM_COOLDOWN_FALLBACK_SECONDS, TELEGRAM_COOLDOWN_SUPPRESSED_DESCRIPTION } from "../src/agent/notify/telegram-api";
 
 function fakeFetch(responses: Record<string, unknown>): { calls: { url: string; init?: RequestInit }[]; fetch: typeof fetch } {
   const calls: { url: string; init?: RequestInit }[] = [];
@@ -261,4 +261,191 @@ test("downloadFile returns undefined (not a throw) on a non-ok response", async 
   const api = new TelegramApi("TOKEN123", fetch);
   const result = await api.downloadFile("photos/file.jpg");
   expect(result).toBeUndefined();
+});
+
+// ── Bounded download size (jeo-native subset of GJC #2714) ──────────────────────
+
+test("downloadFile rejects a response whose body exceeds an injected maxBytes cap, without ever returning the oversized bytes", async () => {
+  const bytes = new Uint8Array(2048).fill(7);
+  const { fetch } = fakeBytesFetch(bytes);
+  const api = new TelegramApi("TOKEN123", fetch);
+  const result = await api.downloadFile("photos/file.jpg", 1024);
+  expect(result).toBeUndefined();
+});
+
+test("downloadFile returns the full bytes for a normal image within an injected maxBytes cap", async () => {
+  const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+  const { fetch } = fakeBytesFetch(bytes);
+  const api = new TelegramApi("TOKEN123", fetch);
+  const result = await api.downloadFile("photos/file.jpg", 1024);
+  expect(result).toBeInstanceOf(Uint8Array);
+  expect(Array.from(result!)).toEqual([1, 2, 3, 4, 5]);
+});
+
+// Real filesystem/bytes analogue of test/file-attachment.test.ts's oversized-source
+// check, but bounding the NETWORK download instead of a local `stat`+`readFile` — a
+// remote server can't lie its way past this by omitting/understating `content-length`
+// since the cap is enforced while streaming, not from the header alone.
+test("downloadFile rejects a response over the default MAX_TELEGRAM_DOWNLOAD_BYTES cap when no maxBytes is given", async () => {
+  const bytes = new Uint8Array(MAX_TELEGRAM_DOWNLOAD_BYTES + 1024).fill(9);
+  const { fetch } = fakeBytesFetch(bytes);
+  const api = new TelegramApi("TOKEN123", fetch);
+  const result = await api.downloadFile("photos/huge.jpg");
+  expect(result).toBeUndefined();
+});
+
+// ── Bot-wide 429 cooldown, injectable clock (jeo-native subset of GJC v0.11.10 PR #3048) ──
+
+/** Scripted fetch: returns `script[i]` for the i-th call (clamped to the last
+ *  entry once exhausted), so a 429 can be scripted first and a normal 200
+ *  after it, while every call is recorded for assertions on call COUNT
+ *  (whether a later call ever reached fetch at all). */
+function fakeStatusFetch(script: { status: number; body: unknown }[]): { calls: string[]; fetch: typeof fetch } {
+  const calls: string[] = [];
+  let i = 0;
+  const fetchImpl = (async (input: string | URL | Request) => {
+    calls.push(String(input));
+    const entry = script[Math.min(i, script.length - 1)]!;
+    i++;
+    return new Response(JSON.stringify(entry.body), { status: entry.status });
+  }) as typeof fetch;
+  return { calls, fetch: fetchImpl };
+}
+
+/** Injectable, manually-advanced clock for deterministic cooldown-expiry tests. */
+function fakeClock(startMs = 0): { now: () => number; advance: (ms: number) => void } {
+  let t = startMs;
+  return { now: () => t, advance: (ms: number) => { t += ms; } };
+}
+
+test("a 429 response arms a bot-wide cooldown from parameters.retry_after that suppresses the NEXT non-polling call without ever reaching fetch", async () => {
+  const { calls, fetch } = fakeStatusFetch([
+    { status: 429, body: { ok: false, error_code: 429, description: "Too Many Requests", parameters: { retry_after: 45 } } },
+  ]);
+  const clock = fakeClock(0);
+  const api = new TelegramApi("TOKEN123", fetch, clock.now);
+  const first = await api.sendMessage("999", "hi");
+  expect(first.ok).toBe(false);
+  expect(calls.length).toBe(1);
+  expect(api.isCoolingDown()).toBe(true);
+
+  clock.advance(44_000); // still inside the armed 45s window
+  const second = await api.sendMessage("999", "hi again");
+  expect(second.ok).toBe(false);
+  expect(second.description).toBe(TELEGRAM_COOLDOWN_SUPPRESSED_DESCRIPTION);
+  expect(calls.length).toBe(1); // NEVER reached fetch a second time
+});
+
+test("retry_after above the 3600s ceiling clamps down instead of arming an unbounded cooldown", async () => {
+  const { fetch } = fakeStatusFetch([
+    { status: 429, body: { ok: false, parameters: { retry_after: 999_999 } } },
+  ]);
+  const clock = fakeClock(0);
+  const api = new TelegramApi("TOKEN123", fetch, clock.now);
+  await api.sendMessage("999", "hi");
+  clock.advance(TELEGRAM_COOLDOWN_MAX_SECONDS * 1000 - 1);
+  expect(api.isCoolingDown()).toBe(true);
+  clock.advance(2);
+  expect(api.isCoolingDown()).toBe(false);
+});
+
+test("retry_after below the 1s floor clamps up rather than arming a near-0s cooldown", async () => {
+  const { fetch } = fakeStatusFetch([
+    { status: 429, body: { ok: false, parameters: { retry_after: 0.2 } } },
+  ]);
+  const clock = fakeClock(0);
+  const api = new TelegramApi("TOKEN123", fetch, clock.now);
+  await api.sendMessage("999", "hi");
+  clock.advance(TELEGRAM_COOLDOWN_MIN_SECONDS * 1000 - 1);
+  expect(api.isCoolingDown()).toBe(true);
+  clock.advance(2);
+  expect(api.isCoolingDown()).toBe(false);
+});
+
+test("a malformed retry_after (missing, non-numeric, zero, or negative) falls back to a fixed safe cooldown instead of 0s or unbounded", async () => {
+  const malformedParameters = [undefined, { retry_after: "soon" }, { retry_after: -5 }, { retry_after: 0 }, {}];
+  for (const parameters of malformedParameters) {
+    const { fetch } = fakeStatusFetch([{ status: 429, body: { ok: false, parameters } }]);
+    const clock = fakeClock(0);
+    const api = new TelegramApi("TOKEN123", fetch, clock.now);
+    await api.sendMessage("999", "hi");
+    clock.advance(TELEGRAM_COOLDOWN_FALLBACK_SECONDS * 1000 - 1);
+    expect(api.isCoolingDown()).toBe(true);
+    clock.advance(2);
+    expect(api.isCoolingDown()).toBe(false);
+  }
+});
+
+test("an active cooldown suppresses EVERY non-polling method (getMe, sendPhoto, answerCallbackQuery, getFile, getChat, setMessageReaction, downloadFile) without any of them reaching fetch", async () => {
+  const { calls, fetch } = fakeStatusFetch([
+    { status: 429, body: { ok: false, parameters: { retry_after: 60 } } },
+  ]);
+  const api = new TelegramApi("TOKEN123", fetch);
+  await api.sendMessage("999", "hi"); // arms the cooldown
+  expect(calls.length).toBe(1);
+
+  const me = await api.getMe();
+  const photo = await api.sendPhoto("999", "https://example.com/x.png");
+  const ack = await api.answerCallbackQuery("cbq-1");
+  const file = await api.getFile("file-id-1");
+  const chat = await api.getChat("999");
+  const reaction = await api.setMessageReaction("999", 1, "👀");
+  const downloaded = await api.downloadFile("photos/file.jpg");
+
+  expect(me.ok).toBe(false);
+  expect(photo.ok).toBe(false);
+  expect(ack.ok).toBe(false);
+  expect(file.ok).toBe(false);
+  expect(chat.ok).toBe(false);
+  expect(reaction.ok).toBe(false);
+  expect(downloaded).toBeUndefined();
+  expect(calls.length).toBe(1); // still just the original 429 call — nothing else reached fetch
+});
+
+test("the cooldown expires after the armed duration elapses (per the injected clock), and the next call reaches fetch again", async () => {
+  const { calls, fetch } = fakeStatusFetch([
+    { status: 429, body: { ok: false, parameters: { retry_after: 5 } } },
+    { status: 200, body: { ok: true } },
+  ]);
+  const clock = fakeClock(0);
+  const api = new TelegramApi("TOKEN123", fetch, clock.now);
+  await api.sendMessage("999", "hi");
+  expect(api.isCoolingDown()).toBe(true);
+
+  clock.advance(5_000);
+  expect(api.isCoolingDown()).toBe(false);
+
+  const res = await api.sendMessage("999", "hi again");
+  expect(res.ok).toBe(true);
+  expect(calls.length).toBe(2);
+});
+
+test("getUpdates is EXEMPT from cooldown suppression and keeps reaching fetch so long-poll recovery still works", async () => {
+  const { calls, fetch } = fakeStatusFetch([
+    { status: 429, body: { ok: false, parameters: { retry_after: 60 } } },
+    { status: 200, body: { ok: true, result: [] } },
+  ]);
+  const api = new TelegramApi("TOKEN123", fetch);
+  await api.sendMessage("999", "hi"); // arms a 60s cooldown
+  expect(api.isCoolingDown()).toBe(true);
+
+  const res = await api.getUpdates();
+  expect(calls.length).toBe(2); // getUpdates STILL reached fetch despite the active cooldown
+  expect(res.result).toEqual([]);
+});
+
+test("a non-429 error response never arms a cooldown — non-429 behavior is unchanged", async () => {
+  const { calls, fetch } = fakeStatusFetch([
+    { status: 400, body: { ok: false, description: "Bad Request" } },
+    { status: 200, body: { ok: true } },
+  ]);
+  const api = new TelegramApi("TOKEN123", fetch);
+  const first = await api.sendMessage("999", "hi");
+  expect(first.ok).toBe(false);
+  expect(first.description).toBe("Bad Request");
+  expect(api.isCoolingDown()).toBe(false);
+
+  const second = await api.sendMessage("999", "hi again");
+  expect(second.ok).toBe(true);
+  expect(calls.length).toBe(2); // second call was NOT suppressed
 });

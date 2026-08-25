@@ -3,6 +3,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ToolResult } from "../src/agent/tools";
+import { MAX_DETACHED_RESULT_BYTES, SubagentRegistry } from "../src/agent/subagent-registry";
+import { createSubagentTool } from "../src/agent/subagent-tool";
 
 afterEach(() => {
   mock.restore();
@@ -125,6 +127,70 @@ test("subagent tool: cancel all running detached runs", async () => {
   const res = await tool({ action: "cancel" }, await tmpDir());
   expect(res.output).toContain("Cancelled");
   expect(reg.get("planner-1")!.status).toBe("cancelled");
+});
+
+test("subagent tool: truncates oversized settled output and preserves it across tool instances", async () => {
+  const reg = new SubagentRegistry();
+  const firstTool = createSubagentTool(reg);
+  const secondTool = createSubagentTool(reg);
+  const cwd = await tmpDir();
+  const payload = `HEAD-${"a".repeat(4_096)}${"x".repeat(110 * 1024)}TAIL-${"z".repeat(4_096)}`;
+  const originalBytes = Buffer.byteLength(payload, "utf8");
+  expect(originalBytes).toBeGreaterThan(MAX_DETACHED_RESULT_BYTES);
+  const rec = reg.launch("executor", "produce a large report", async () => ({ success: true, output: payload }));
+
+  try {
+    const awaited = await firstTool({ action: "await", ids: [rec.id] }, cwd);
+    const inspected = await secondTool({ action: "inspect", id: rec.id }, cwd);
+    const marker = /\[…output truncated \(\d+ bytes omitted; original size: \d+ bytes\)…\]/;
+
+    expect(awaited.success).toBe(true);
+    expect(awaited.output).toMatch(marker);
+    expect(inspected.output).toMatch(marker);
+    expect(awaited.output).toContain(`original size: ${originalBytes} bytes`);
+    expect(inspected.output).toContain(`original size: ${originalBytes} bytes`);
+    expect(awaited.output).toContain("HEAD-");
+    expect(awaited.output).toContain("TAIL-");
+    expect(inspected.output).toContain("HEAD-");
+    expect(inspected.output).toContain("TAIL-");
+    expect(Buffer.byteLength(awaited.output, "utf8")).toBeLessThanOrEqual(MAX_DETACHED_RESULT_BYTES + 512);
+    expect(Buffer.byteLength(inspected.output, "utf8")).toBeLessThanOrEqual(MAX_DETACHED_RESULT_BYTES + 512);
+  } finally {
+    reg.cancelAll();
+    await reg.awaitIds([rec.id]);
+  }
+});
+
+test("subagent tool: explicit cancel persists across tool instances", async () => {
+  const reg = new SubagentRegistry();
+  const launchTool = createSubagentTool(reg);
+  const cancelTool = createSubagentTool(reg);
+  const inspectTool = createSubagentTool(reg);
+  const cwd = await tmpDir();
+  let abortSeen = false;
+  const rec = reg.launch("planner", "wait for cancellation", signal =>
+    new Promise<ToolResult>(resolve => {
+      signal.addEventListener("abort", () => {
+        abortSeen = true;
+        resolve({ success: true, output: "late result must not replace cancellation" });
+      });
+    }),
+  );
+
+  try {
+    const listed = await launchTool({ action: "list" }, cwd);
+    expect(listed.output).toContain(rec.id);
+    const cancelled = await cancelTool({ action: "cancel", id: rec.id }, cwd);
+    expect(cancelled.success).toBe(true);
+    expect(cancelled.output).toContain("Cancelled 1 subagent(s):");
+    const inspected = await inspectTool({ action: "inspect", id: rec.id }, cwd);
+    expect(abortSeen).toBe(true);
+    expect(inspected.output).toContain("CANCELLED");
+    expect(inspected.output).not.toContain("late result must not replace cancellation");
+  } finally {
+    reg.cancelAll();
+    await reg.awaitIds([rec.id]);
+  }
 });
 
 // ── task tool: detached launch ────────────────────────────────────────────────

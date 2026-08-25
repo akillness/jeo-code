@@ -77,12 +77,15 @@ export class Renderer {
     this.prevRows = currentRows;
 
     const next = lines.map(line => truncate(line, currentCols));
-    // Rows physically occupied by the prior frame — or recorded by reset() when the
-    // baseline was dropped WITHOUT clearing the screen. The diff below EL-clears any
-    // of these that the new (possibly shorter) frame does not cover, and the reserve
-    // block below uses it so a post-reset repaint does not spuriously re-scroll.
-    const occupied = Math.max(this.prev.length, this.coverRows);
-    const maxLen = Math.max(this.prev.length, next.length, this.coverRows);
+    // A terminal can shrink below the number of rows occupied by the prior frame.
+    // Rows beyond the new viewport are not addressable: cursor-down stops at the
+    // bottom margin and a later cursor-up would then underflow the anchor, leaving
+    // every following diff one or more rows out of phase. Limit both the physical
+    // occupancy and diff walk to visible rows; the next resize/grow repaints from
+    // the bounded baseline at the restored geometry.
+    const viewportRows = Math.max(1, currentRows);
+    const occupied = Math.min(Math.max(this.prev.length, this.coverRows), viewportRows);
+    const maxLen = Math.min(Math.max(this.prev.length, next.length, this.coverRows), viewportRows);
     this.coverRows = 0;
     let cursorRow = 0;
     let out = "";
@@ -161,10 +164,12 @@ export class Renderer {
       .join("\n");
     let out = BEGIN_SYNC + body;
     // EL-clear the old frame rows the inserted block did NOT cover, then hop back to the
-    // row right below the insert (where the next render() anchors). occupied = max(prev,
-    // coverRows) matches the reserve block so a reset()->insertAbove() ordering still
-    // clears the old frame's lower rows (the off-by-one that duplicated the model bar).
-    const occupied = Math.max(this.prev.length, this.coverRows);
+    // row right below the insert (where the next render() anchors). The terminal may have
+    // shrunk since the last render, so never walk farther than its currently visible rows:
+    // cursor-down clamps at the bottom margin and an uncapped cursor-up would desync the
+    // physical anchor used by every subsequent diff.
+    const viewportRows = Math.max(1, size().rows);
+    const occupied = Math.min(Math.max(this.prev.length, this.coverRows), viewportRows);
     const stale = occupied - written;
     if (stale > 0) {
       for (let i = 0; i < stale; i++) {
@@ -184,7 +189,8 @@ export class Renderer {
   clear(): void {
     let out: string;
     if (this.reserve) {
-      const rows = Math.max(this.prev.length, this.coverRows);
+      const viewportRows = Math.max(1, size().rows);
+      const rows = Math.min(Math.max(this.prev.length, this.coverRows), viewportRows);
       out = toColumn(1);
       for (let i = 0; i < rows; i++) {
         out += (i > 0 ? cursorDown(1) : "") + toColumn(1) + clearLine();

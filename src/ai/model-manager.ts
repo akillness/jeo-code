@@ -8,7 +8,7 @@ import { expandAlias, resolveModelId, effectiveAliasesFor, BUILTIN_ALIASES } fro
 import { findCatalogEntry, type ModelCatalogEntry } from "./model-catalog-compat";
 import { toProviderModel, CODEX_MODELS, KIMI_CODE_MODELS, findCatalogModel, isCodexModel, findLiveCatalogModel } from "./model-catalog";
 import { xaiCredential } from "./providers/xai";
-import { OPENAI_COMPAT_NAMES, isOpenAICompatProvider } from "./providers/openai-compatible-catalog";
+import { allCompatNames, isOpenAICompatProvider } from "./providers/openai-compatible-catalog";
 import { withRetry, defaultRetryable, withConnectionContext, isConnectionError, ConnectionContextError, type RetryOptions } from "../util/retry";
 import { jeoEnv } from "../util/env";
 import type { Config } from "../agent/state";
@@ -39,7 +39,10 @@ export function resolveProvider(model: string): ProviderName {
   if (m.startsWith("antigravity/")) return "antigravity";
   if (m.startsWith("xai/")) return "xai";
   if (m.startsWith("kimi/")) return "kimi";
-  for (const p of OPENAI_COMPAT_NAMES) if (m.startsWith(`${p}/`)) return p;
+  // Built-ins FIRST, then user-registered custom providers: a custom id can never be a
+  // built-in name (`assertValidProviderId` reserves them), but ordering keeps routing
+  // deterministic even for a hand-edited config that predates that check.
+  for (const p of allCompatNames()) if (m.startsWith(`${p}/`)) return p;
   if (m.startsWith("openai/")) return "openai";
   if (m.startsWith("google/")) return "gemini";
   // Loose substring heuristics for BARE (unprefixed) ids only.

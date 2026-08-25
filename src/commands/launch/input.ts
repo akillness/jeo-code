@@ -384,17 +384,35 @@ function feedLivePromptSegment(state: PromptInputQueue, segment: string): boolea
   return accepted;
 }
 
-function feedLivePromptPasteBody(state: PromptInputQueue, body: string): boolean {
+/** Pasted body captured while a TURN is running: pure DATA appended verbatim to the
+ *  draft the box will show when the turn ends.
+ *
+ *  Line breaks fold to {@link MULTILINE_SENTINEL} — the SAME contract the idle key
+ *  filter uses — so a pasted code block / stack trace keeps its structure (and its
+ *  indentation) instead of being flattened into one space-joined line. `multiline:
+ *  false` (JEO_NO_MULTILINE=1, no sentinel expansion on submit) degrades to a single
+ *  space so the sentinel can never leak into the model's input.
+ *
+ *  Nothing is trimmed and no separator is inserted between chunks: a large paste is
+ *  delivered over SEVERAL stdin reads, and the old per-chunk `trim()` + `join(" ")`
+ *  both dropped leading indentation and spliced a stray space into whatever word the
+ *  read boundary happened to split ("hello wo" + "rld" → "hello wo rld"). */
+function feedLivePromptPasteBody(state: PromptInputQueue, body: string, multiline: boolean): boolean {
   if (!body) return false;
   const normalized = stripPasteEscapes(body).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const flattened = normalized.split("\n").map(part => part.trim()).filter(Boolean).join(" ");
-  if (!flattened) return false;
-  state.partial = state.partial ? `${state.partial} ${flattened}` : flattened;
+  const folded = normalized.split("\n").join(multiline ? MULTILINE_SENTINEL : " ");
+  if (!folded) return false;
+  state.partial += folded;
   return true;
 }
 
-export function captureLivePromptInputChunk(state: PromptInputQueue, chunk: string): boolean {
+export function captureLivePromptInputChunk(
+  state: PromptInputQueue,
+  chunk: string,
+  opts: { multiline?: boolean } = {},
+): boolean {
   if (!chunk) return false;
+  const multiline = opts.multiline !== false;
   let accepted = false;
   let rest = chunk;
   while (rest.length > 0) {
@@ -403,7 +421,7 @@ export function captureLivePromptInputChunk(state: PromptInputQueue, chunk: stri
       const body = end === -1 ? rest : rest.slice(0, end);
       if (end !== -1) state.inPaste = false;
       rest = end === -1 ? "" : rest.slice(end + PASTE_END.length);
-      if (feedLivePromptPasteBody(state, body)) accepted = true;
+      if (feedLivePromptPasteBody(state, body, multiline)) accepted = true;
     } else {
       const start = rest.indexOf(PASTE_START);
       const plain = start === -1 ? rest : rest.slice(0, start);
@@ -863,6 +881,7 @@ export function filterPromptInputChunk(
   // or a `\r\n` straddling this read boundary — is never half-interpreted. Carrying is
   // safe: the concatenation is re-parsed next call, so a tail that turns out NOT to be a
   // marker is simply emitted one chunk later.
+  const carriedEsc = state.carry === "\u001b";
   data = (state.carry ?? "") + data;
   state.carry = "";
   const markerTail = pasteMarkerTailLength(data);
@@ -890,6 +909,19 @@ export function filterPromptInputChunk(
   let out = "";
   let i = 0;
   while (i < data.length) {
+    // A lone Esc keystroke that the PREVIOUS chunk carried, now followed by bytes that
+    // cannot continue an escape sequence (`ESC [` / `ESC O`): drop the ESC instead of
+    // forwarding it. readline's key decoder otherwise holds a dangling ESC as a pending
+    // META prefix and merges it with the NEXT keystroke (Esc, then "z" → meta-z), which
+    // SWALLOWS that character — the "Esc 로 지운 뒤 첫 글자가 안 먹힘" bug (a pasted
+    // block's first character disappeared the same way). jeo owns Esc itself on the raw
+    // process.stdin keypress listener (clearTypedInput), so readline never needs the byte.
+    // Only a CARRIED Esc is dropped: an `ESC x` pair that arrived in ONE chunk is a real
+    // Alt/Meta chord (Alt+b, Alt+f, …) and still reaches readline untouched.
+    if (carriedEsc && i === 0 && data[0] === "\u001b" && (data.length === 1 || (data[1] !== "[" && data[1] !== "O"))) {
+      i += 1;
+      continue;
+    }
     if (!state.inPaste && data.startsWith(PASTE_START, i)) { state.inPaste = true; out += PASTE_START; i += PASTE_START.length; continue; }
     if (state.inPaste && data.startsWith(PASTE_END, i)) { state.inPaste = false; out += PASTE_END; i += PASTE_END.length; continue; }
     if (state.inPaste) {

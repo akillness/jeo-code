@@ -486,3 +486,87 @@ export async function maybeCompact(
     touchedFiles: touched.length ? touched : undefined,
   };
 }
+export interface HandoffOptions {
+  model?: string;
+  /** Cap the summarizer prompt/output so a handoff document itself cannot balloon context. */
+  maxSummaryInputTokens?: number;
+  /** Optional focus text — CLI-typed `/handoff <focus>` argument, or the
+   *  configured `compaction.handoffFocus` default when no argument is given.
+   *  APPEND-ONLY: rendered as its own trailing section, never merged into or
+   *  replacing the base handoff sections above it. */
+  focus?: string;
+  signal?: AbortSignal;
+}
+
+export interface HandoffResult {
+  ok: boolean;
+  document?: string;
+  error?: string;
+  touchedFiles?: string[];
+}
+
+/** Below this many non-system messages there is nothing meaningful to hand off. */
+const MIN_HANDOFF_MESSAGES = 2;
+
+/**
+ * Generate a bounded, read-only handoff document from the CURRENT history —
+ * jeo-native subset of gjc `/handoff` parity. Unlike `maybeCompact`, this
+ * NEVER mutates `history`: jeo has no ACP/SDK-broker managed-session boundary
+ * to hand off INTO, so this is a display/export operation (like
+ * `exportSession`), not a session-transition primitive. It reuses the same
+ * LLM summarizer and touched-file extraction as compaction so the base shape
+ * (state/decisions/files/open TODOs) matches what `/compact` already
+ * produces, then appends the optional focus text as its OWN trailing
+ * section — append-only, it never edits the base sections.
+ */
+export async function buildHandoffDocument(
+  history: Message[],
+  opts: HandoffOptions = {},
+): Promise<HandoffResult> {
+  const hasSystem = history.length > 0 && history[0].role === "system";
+  const body = history.slice(hasSystem ? 1 : 0);
+  if (body.length < MIN_HANDOFF_MESSAGES) {
+    return {
+      ok: false,
+      error: `Nothing to hand off yet — need at least ${MIN_HANDOFF_MESSAGES} conversation messages (have ${body.length}).`,
+    };
+  }
+
+  const maxSummaryInputTokens = opts.maxSummaryInputTokens ?? DEFAULT_SUMMARY_INPUT_TOKENS;
+  const formatted = formatMessagesForSummaryByTokens(body, maxSummaryInputTokens);
+  const touched = extractTouchedFiles(body);
+  const touchedNote = touched.length
+    ? `\nFiles touched in this session (PRESERVE this list verbatim): ${touched.join(", ")}`
+    : "";
+
+  const systemPrompt =
+    "Write a concise handoff document for the next person/agent continuing this coding session. " +
+    "Capture: current goal/state, key decisions, files touched, open TODOs, and approaches already tried " +
+    "and failed (with cause) so they are not repeated. Be concise." +
+    touchedNote;
+
+  let summary: string;
+  try {
+    summary = await callLlm(
+      [{ role: "user", content: formatted }],
+      { model: opts.model, systemPrompt, reasoningEffort: "none", signal: opts.signal },
+    );
+  } catch (err) {
+    if (opts.signal?.aborted) {
+      return { ok: false, error: "Handoff cancelled." };
+    }
+    return {
+      ok: false,
+      error: `Handoff summary failed: ${(err as Error)?.message ?? "error"}. History was left untouched — retry, or use /export for a raw transcript.`,
+    };
+  }
+
+  const bounded = truncateRecentContentByTokens(summary, maxSummaryInputTokens);
+  const filesHeader = touched.length ? `Files touched: ${touched.join(", ")}\n` : "";
+
+  const sections = ["# Session Handoff", "", `${filesHeader}${bounded}`.trim()];
+  const focus = opts.focus?.trim();
+  if (focus) sections.push("", "## Focus", "", focus);
+
+  return { ok: true, document: sections.join("\n"), touchedFiles: touched.length ? touched : undefined };
+}

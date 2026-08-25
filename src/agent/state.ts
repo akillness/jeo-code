@@ -4,6 +4,7 @@ import * as os from "node:os";
 import { parseConfig } from "./config-schema";
 import type { AuthProvider } from "../auth/storage";
 import { OPENAI_COMPAT_PROVIDERS } from "../ai/providers/openai-compatible-catalog";
+import { resolveCustomApiKey, setCustomProviders, type CustomProviderConfig } from "../ai/providers/custom-providers";
 import { jeoEnv } from "../util/env";
 
 /** Persisted OAuth credential set (access + refresh + expiry) for a provider. */
@@ -28,8 +29,13 @@ export interface HookConfig {
 }
 
 export interface Config {
-  /** Per-provider API keys, keyed by AuthProvider (cloud keys + catalog OpenAI-compatible). */
+  /** Per-provider API keys, keyed by AuthProvider (cloud keys + catalog OpenAI-compatible).
+   *  User-registered custom provider ids are published into this same map by
+   *  `withEnvOverlay` so credential resolution needs no second lookup path. */
   providers: Partial<Record<AuthProvider, string>>;
+  /** User-registered OpenAI/Anthropic-compatible providers (`/provider add`), keyed by
+   *  routing id. Each is a full provider: own prefix, base URL, models and credential. */
+  customProviders?: Record<string, CustomProviderConfig>;
   /**
    * OAuth credentials. `resolveCredential()` returns these before API keys so refresh
    * metadata is not lost, but provider execution/status applies the GJC parity rule:
@@ -291,6 +297,18 @@ function withEnvOverlay(cfg: Config): Config {
   for (const def of OPENAI_COMPAT_PROVIDERS) {
     const key = def.name as AuthProvider; // every catalog name is an AuthProvider
     if (!providers[key] && process.env[def.apiKeyEnv]) providers[key] = process.env[def.apiKeyEnv];
+  }
+  // User-registered custom providers. Publishing them here is what makes every generic
+  // path (routing, discovery, /model, status, credential resolution) treat a custom
+  // endpoint exactly like a compiled-in catalog row: `setCustomProviders` refreshes the
+  // lookup `openaiCompatDef` reads, and the key lands in the SAME `providers` map
+  // `resolveCredential` already consults. Env wins over a literal key stored on disk so
+  // a rotated shell secret takes effect without editing config.json.
+  const { defs: customDefs } = setCustomProviders(cfg.customProviders);
+  const providerKeys = providers as Record<string, string | undefined>;
+  for (const def of customDefs) {
+    const resolved = resolveCustomApiKey(def);
+    if (!providerKeys[def.name] && resolved) providerKeys[def.name] = resolved;
   }
   return {
     ...cfg,

@@ -11,7 +11,8 @@ export interface InputBoxOptions {
   attachmentLabel?: string;
   placeholder?: string;
   maxBodyRows?: number;
-  /** Caret offset in CHARACTERS into `line` (readline's rl.cursor). Defaults to end. */
+  /** Caret offset into `line` in UTF-16 CODE UNITS — exactly `rl.cursor`'s unit, so an
+   *  emoji/astral character before the caret no longer shifts it. Defaults to end. */
   cursor?: number;
   /** Accent painter for the border + `>` prompt mark (theme accent); default red/blue. */
   accent?: (s: string) => string;
@@ -47,6 +48,13 @@ export interface InputFrame {
  * caret's character offset to its (row, columnWidth) cell in the same pass — so the
  * box prompt can place the real terminal cursor exactly where the next glyph lands,
  * and arrow-key movement (readline updates rl.cursor) repositions it visibly.
+ *
+ * `cursor` is a UTF-16 CODE-UNIT offset — the same unit `rl.cursor` uses. Iteration is
+ * per CODE POINT (so an astral char/emoji is one glyph of its own display width), and
+ * the caret is matched against a parallel code-unit counter: without that, every
+ * surrogate pair BEFORE the caret shifted the painted caret one column right of the
+ * real insertion point (the "이모지가 있으면 입력 포인트가 밀려 보임" bug).
+ * `highlights` ranges stay CODE-POINT indexed (see `triggerHighlight` in launch.ts).
  */
 function wrapWithCursor(
   text: string,
@@ -59,8 +67,11 @@ function wrapWithCursor(
   let curW = 0;
   let row = 0;
   let col = 0;
-  const chars = Array.from(text.replace(/\r/g, ""));
-  const pos = Math.max(0, Math.min(cursor, chars.length));
+  const src = text.replace(/\r/g, "");
+  const chars = Array.from(src);
+  const pos = Math.max(0, Math.min(cursor, src.length));
+  let unit = 0; // UTF-16 offset of chars[i], matching `pos`
+  let placed = false;
   for (let i = 0; i <= chars.length; i++) {
     const ch = i < chars.length ? chars[i]! : "";
     const rendered = ch === "\t" ? "  " : ch;
@@ -71,7 +82,10 @@ function wrapWithCursor(
       cur = "";
       curW = 0;
     }
-    if (i === pos) {
+    // `>=` (not `===`) so a caret offset that lands INSIDE a surrogate pair — readline
+    // never parks there, but a resized/derived offset can — still resolves to a cell.
+    if (!placed && unit >= pos) {
+      placed = true;
       row = rows.length;
       col = curW;
     }
@@ -79,13 +93,19 @@ function wrapWithCursor(
       rows.push(cur);
       cur = "";
       curW = 0;
+      unit += 1;
       continue;
     }
     if (ch !== "") {
       const hl = highlights?.find(r => i >= r.start && i < r.end);
       cur += hl ? hl.paint(rendered) : rendered;
       curW += w;
+      unit += ch.length;
     }
+  }
+  if (!placed) {
+    row = rows.length;
+    col = curW;
   }
   rows.push(cur);
   return { rows, row, col };
@@ -202,9 +222,12 @@ export function renderInputBox(line: string, opts: InputBoxOptions = {}): string
   return renderInputFrame(line, opts).lines;
 }
 /** Visual (row, display-col) of every caret position 0..N of `text` wrapped at `width`,
- *  using the SAME wrapping rule as the input box (`wrapWithCursor`). Index i is the caret
- *  sitting BEFORE char i (N = end of text); `cursor` offsets are code points, matching how
- *  `renderInputFrame` clamps `opts.cursor` against `Array.from(text)`. */
+ *  using the SAME wrapping rule as the input box (`wrapWithCursor`). Indexing is by
+ *  UTF-16 CODE UNIT — the unit `rl.cursor` uses — so `cells[rl.cursor]` is always the
+ *  cell readline's caret actually sits on, even in text containing astral characters
+ *  (emoji). A surrogate PAIR contributes two entries with the SAME cell: the pair's
+ *  start, plus the (never-parked-on) mid-pair offset, so every later index stays aligned
+ *  with the string's own offsets. */
 export interface CaretCell {
   row: number;
   col: number;
@@ -221,16 +244,29 @@ export function caretCells(text: string, width: number): CaretCell[] {
     // exact order wrapWithCursor uses, so cell rows match the rendered box rows.
     if (w > 0 && curW + w > width && curW > 0) { row += 1; curW = 0; }
     cells.push({ row, col: curW });
+    // Keep one entry PER CODE UNIT: the extra entry for a surrogate pair's low half
+    // repeats the pair's own cell, so it can never render (or return) a half-character
+    // caret position while keeping `cells[i]` addressable by a raw string offset.
+    for (let extra = 1; extra < ch.length; extra++) cells.push({ row, col: curW });
     if (ch === "\n") { row += 1; curW = 0; continue; }
     if (ch !== "") curW += w;
   }
   return cells;
 }
 
+/** Snap a derived caret offset off the low half of a surrogate pair (a full character is
+ *  the smallest unit the caret may sit on) — `caretCells` deliberately keeps those
+ *  offsets addressable, so every offset RETURNED to readline passes through here. */
+function snapToCharBoundary(text: string, offset: number): number {
+  const code = text.charCodeAt(offset);
+  return offset > 0 && code >= 0xdc00 && code <= 0xdfff ? offset - 1 : offset;
+}
+
 /** New caret offset after an Up/Down move within the wrapped input box, keeping the
  *  display column (textarea convention: snap to the nearest column ≤ the current one on the
  *  target row). Returns null when already on the top row (Up) or bottom row (Down), so the
- *  caller can fall through to readline's input-history recall. */
+ *  caller can fall through to readline's input-history recall. `cursor` and the returned
+ *  offset are UTF-16 code units (`rl.cursor`'s unit), never split a surrogate pair. */
 export function verticalCursorOffset(
   text: string,
   cursor: number,
@@ -255,7 +291,8 @@ export function verticalCursorOffset(
     // Largest column not past the current one — the standard column-preserving snap.
     if (c <= curCol && c > bestCol) { best = p; bestCol = c; }
   }
-  return best !== -1 ? best : firstOnRow;
+  const target = best !== -1 ? best : firstOnRow;
+  return snapToCharBoundary(text, target);
 }
 /** Caret offset at the START or END of the VISUAL ROW containing `cursor`, using the
  *  SAME wrapping rule as the input box (`caretCells`/`wrapWithCursor`). This is the
@@ -282,5 +319,5 @@ export function rowBoundaryOffset(
     if (p < start) start = p;
     if (p > end) end = p;
   }
-  return edge === "start" ? start : end;
+  return snapToCharBoundary(text, edge === "start" ? start : end);
 }

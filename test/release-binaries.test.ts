@@ -102,3 +102,37 @@ test("release workflow builds every target (incl. Windows) and uploads them", ()
   // Uploading release assets needs contents: write permission.
   expect(releaseWorkflow).toContain("contents: write");
 });
+
+test("package-content check runs the shared pack:check gate and fails the job on a non-zero exit", () => {
+  expect(releaseWorkflow).toContain("run: bun run pack:check");
+  // No `|| true` / continue-on-error escape hatch undermining the guard.
+  expect(releaseWorkflow).not.toMatch(/bun run pack:check\s*(\|\|\s*true|;\s*true)/);
+  expect(releaseWorkflow).not.toContain("continue-on-error");
+});
+
+test("release pipeline BOOTS the packed tarball, not just its file list", () => {
+  // Releases 0.9.3-0.9.6 shipped a tarball whose `jeo` crashed instantly because
+  // tracked source imported never-committed modules. A file-list check alone
+  // cannot catch that; the artifact has to be executed.
+  expect(releaseWorkflow).toContain("name: Smoke-test the packed tarball");
+  expect(releaseWorkflow).toContain("npm pack --silent");
+  expect(releaseWorkflow).toContain("/src/commands/launch.ts");
+  const packCheckIdx = releaseWorkflow.indexOf("name: Check package contents");
+  const smokeIdx = releaseWorkflow.indexOf("name: Smoke-test the packed tarball");
+  const publishIdx = releaseWorkflow.indexOf("name: Publish to npm");
+  expect(packCheckIdx).toBeLessThan(smokeIdx);
+  expect(smokeIdx).toBeLessThan(publishIdx);
+});
+
+test("Check package contents keeps its place between Test and Verify npm token, preserving typecheck/test/publish order", () => {
+  const typecheckIdx = releaseWorkflow.indexOf("run: bun run typecheck");
+  const testIdx = releaseWorkflow.indexOf("run: bun test");
+  const packCheckIdx = releaseWorkflow.indexOf("name: Check package contents");
+  const verifyTokenIdx = releaseWorkflow.indexOf("name: Verify npm token");
+  const publishIdx = releaseWorkflow.indexOf("name: Publish to npm");
+  expect(typecheckIdx).toBeGreaterThan(-1);
+  expect(typecheckIdx).toBeLessThan(testIdx);
+  expect(testIdx).toBeLessThan(packCheckIdx);
+  expect(packCheckIdx).toBeLessThan(verifyTokenIdx);
+  expect(verifyTokenIdx).toBeLessThan(publishIdx);
+});

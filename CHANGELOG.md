@@ -1,10 +1,261 @@
 # Changelog
 
 All notable changes to **jeo-code** are documented here.
+
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 The README mirrors the latest 5 entries — regenerate with `bun run changelog:sync`.
+
+## [Unreleased]
+
+## [0.10.0] - 2026-08-25
+_jeo could only be pointed at ONE user-supplied endpoint (`config.openaiBaseUrl`), and doing so rebound the built-in `openai` provider: it stole the `openai/` routing prefix, collided with real OpenAI model ids, and could not speak the Anthropic Messages protocol at all. There was no way to run a company LiteLLM proxy and a self-hosted vLLM box at the same time, or to reach either from a script._
+
+### Added
+- **Named custom providers (`config.customProviders`)** (`src/ai/providers/custom-providers.ts`) — register any OpenAI- or Anthropic-compatible endpoint as a first-class provider with its own routing prefix, base URL, wire protocol, credential source (env var or literal key), model list and default model. Registered providers are published through the SAME `openaiCompatDef` lookup the compiled-in catalog uses, so routing, live `/models` discovery, `/model`, provider status, pickers and credential resolution pick them up with no new per-call-site branching. Validation is strict and actionable at registration time: provider ids must match `^[a-z0-9][a-z0-9._-]*$` (a `/` would collide with the `<provider>/<model>` separator), built-in ids are reserved, and base URLs must be absolute `http(s)` — so a typo fails with one clear message instead of an opaque fetch error at the first inference call. A single malformed row is skipped with its reason rather than failing the whole config.
+- **15 provider presets** (`src/ai/providers/provider-presets.ts`) — one-flag onboarding for known gateways: `litellm`, `vllm`, `sglang`, `llama-cpp`, `azure-openai`, `vercel-ai-gateway`, `cloudflare-ai-gateway`, `openai-compatible-proxy`, `anthropic-compatible-proxy`, `glm`, `alibaba-token-plan`, `cline-pass`, `commandcode-goat`, `ollama-cloud`, `github-copilot`. Parameterized presets (proxies the user runs) require `--base-url`; fixed presets pin theirs and reject one.
+- **`jeo provider` CLI** (`src/commands/provider.ts`) — `list` / `add` / `remove` / `presets` / `test`, sharing the exact planners the slash command uses so the two surfaces cannot drift. `jeo provider test <id>` probes the endpoint and reports credential source and endpoint health separately ("no key" and "wrong URL" need different fixes), exiting non-zero on failure so CI and provisioning scripts can gate on it. `add` runs the same probe automatically without refusing the write — registering an endpoint before its key exists is legitimate.
+- **`/provider list`, `/provider remove <id>`, `/provider presets`**, plus `/provider add --id/--preset/--compat/--api-key-env/--api-key/--model/--label/--force`, with autocomplete for preset ids and — on `remove` — only custom ids, since the command refuses built-ins.
+
+### Changed
+- **Provider ordering is now one shared ranking** (`src/ai/provider-ranking.ts`) used by the model picker: usable → broken-credential → curated famous list → the rest. The picker previously sorted by `PROVIDER_NAMES.indexOf`, which returns `-1` for a provider that is not compiled in — so a user's own custom provider sorted ABOVE the provider they were actually logged into. A stored-but-unusable login now also ranks above untouched providers, because it is the one that needs attention.
+- `ProviderName` accepts custom ids alongside the literal union, and `describeAllProviders()` / `allProviderNames()` include custom providers so they are never invisible in the UI meant to expose them.
+- `/provider add --base-url <url>` with no `--id` is unchanged (still rebinds the built-in `openai` endpoint), and now points at the named alternative. `/provider add clear` explicitly leaves custom providers alone.
+
+### Fixed
+- **`resolveProvider()` ignored custom routing prefixes** (`src/ai/model-manager.ts`) — it matched against the static `OPENAI_COMPAT_NAMES` snapshot, so `my-proxy/some-model` fell through every prefix check and hit the final `anthropic` fallthrough, silently routing a custom-provider request to Anthropic. Now matches against the live built-in + custom name list.
+- **Removing a custom provider whose id shadowed a built-in unregistered the BUILT-IN adapter** (`src/ai/register-providers.ts`) — a hand-edited row named e.g. `groq` would overwrite the shipped adapter on load and delete it on removal, leaving a compiled-in provider unreachable for the rest of the session. Shadowing rows are now inert at the adapter layer too, matching the lookup layer which already prefers built-ins.
+- `normalizeCustomBaseUrl("localhost:1234/v1")` reported "must use http or https (got 'localhost')" because `new URL()` happily parses that as a `localhost:` scheme; a missing authority marker is now detected first and reported as the missing-scheme error it actually is.
+
+### Verified
+- `bun run typecheck` clean; `bun test` shows no new failures against the 0.9.17 baseline.
+- 88 new tests across `test/custom-provider-registry.test.ts`, `test/provider-presets-ranking.test.ts`, `test/provider-slash-add.test.ts` and `test/autocomplete.test.ts`.
+- End-to-end against a live local OpenAI-compatible gateway: `jeo provider add --preset openai-compatible-proxy --id gw --base-url http://localhost:4599/v1` registered it and reported the missing credential (exit 1); with the key exported, `jeo provider test gw` discovered both served model ids and exited 0.
+
+## [0.9.17] - 2026-08-18
+_Live model discovery already existed (`listProviderModels`/`discoverModels`), but only `jeo auth login openai` ever called it — logging into Anthropic or Antigravity left the account pinned to the maintained static catalog snapshot until the next unrelated live-discovery call happened to run._
+
+### Added
+- **`jeo auth login anthropic` / `jeo auth login antigravity` now fetch and cache the account's live model list immediately after login**, matching the existing OpenAI/Codex behavior (`src/commands/auth.ts`) — the prior `reportOpenAiCodexModels` helper was generalized into `reportLiveModels(provider)` (driven by a `LIVE_MODEL_REPORT_PROVIDERS` set covering `openai`/`anthropic`/`antigravity`) so a freshly logged-in Anthropic or Antigravity account immediately shows its real, current model ids (e.g. newly released Claude/Gemini models not yet in the bundled static catalog) instead of waiting for the next launch's background discovery. The result is persisted via the existing `writeModelCache` so the very next `jeo` launch rehydrates it before any network call. Verified live: `listProviderModels("anthropic", …)` and `listProviderModels("antigravity", …)` both returned real, larger-than-catalog model sets (10 and 11 ids respectively) against live logged-in accounts, and the merged cache file reflected all three providers correctly.
+
+
+## [0.9.16] - 2026-08-18
+_Routing looked broken while it was actually working: the idle status bar and `/compact`/`/handoff` never reflected which model `routePrompt` actually routed to._
+
+### Fixed
+- **`/route on`'s footer/status bar and `/compact`/`/handoff` model budget kept showing the pre-routing default model instead of what was actually routed** (`src/commands/launch.ts`) — the idle status bar (`statusBarLine`) and `/compact`'s/`/handoff`'s `activeModel` all recomputed `sessionModel || defaultModel` from scratch every render, which has no idea what `routePrompt` actually picked for the last turn. With routing on, a turn would genuinely route to (and reply from) e.g. `claude-sonnet-5`, but the footer kept showing `claude-opus-5` (the unrouted default) the whole time — indistinguishable from routing silently doing nothing. Fixed by tracking `lastActiveModel` (the model that actually served the most recently completed turn) and reading it first everywhere the idle/compaction UI previously assumed `sessionModel || defaultModel` was the truth.
+
+
+## [0.9.15] - 2026-08-18
+_The 0.9.14 fix wired `promptInput` into the `$a $b …` one-shot skill-chain's `io.input`, but that chain runs before the interactive REPL's own `readline.Interface` exists — so a bundled workflow skill (`$deep-interview`, with or without `--tmux`) invoked directly from the command line still froze forever on its first question._
+
+### Fixed
+- **One-shot `$skill` workflow invocations (`jeo launch "$deep-interview …"`, incl. under `--tmux`) still hung on the first question** (`src/commands/launch.ts`) — `runOneSkillShot`'s pre-REPL dispatch (used for `jeo launch "$a $b … [intent]"` at startup, BEFORE the interactive REPL's `promptInput`/`readline.Interface` are constructed) referenced `promptInput` inside its `io.input` closure. The instant the workflow engine asked its first question, that reference threw a TDZ `ReferenceError: Cannot access 'promptInput' before initialization` — caught internally and stashed into session history (never printed to the terminal), so the visible symptom was a frozen prompt with no error, indistinguishable from the 0.9.14 hang. Fixed by omitting `input` from this pre-REPL `io` block entirely: no other `readline.Interface` exists yet at this point, so `deep-interview.ts`'s own fallback `createInterface({input: process.stdin, ...})` (used whenever `opts.io?.input` is absent) has nothing to fight over raw mode with — the same fallback the interactive `runSkillInvocation` sibling path never needed to touch, since it always ran after `promptInput` was already declared.
+
+
+## [0.9.14] - 2026-08-04
+_A `$a $b … [intent]` skill-chain invocation of a bundled workflow skill (deep-interview/ralplan/team/ultragoal) hung forever with no error and no prompt._
+
+### Fixed
+- **`$a $b …` skill-chain workflow invocations hung silently** (`src/commands/launch.ts`) — the chain path (`runOneSkillShot`) wired `io.output` to a bundled workflow engine but omitted `io.input`. `runDeepInterviewEngine` (and the other workflow engines) only spin up their own `readline.Interface` on `process.stdin` when `opts.io?.input` is absent; the interactive REPL already owns a `readline.Interface` on the same stdin via `promptInput`, so the two interfaces silently fought over raw mode — no prompt was ever drawn and no input was ever delivered, so the workflow just hung forever. The sibling single-invocation path (`runSkillInvocation`) already wired `promptInput` through `io.input`; the chain path now does the same (including the preview-arm/disarm dance around the prompt).
+
+### Verified
+- `bun run typecheck` clean.
+- `test/deep-interview-noninteractive.test.ts`, `test/launch-flags.test.ts` pass.
+- `test/launch-repl-eof.test.ts`'s 2 failures are pre-existing (reproduce identically on the unmodified branch).
+
+
+## [0.9.13] - 2026-08-03
+_The provider-login browser tab now actually goes away — by itself on macOS, by a working button everywhere else._
+
+### Fixed
+- **The OAuth login tab stayed open after "Login complete"** (`src/auth/callback-server.ts`, new `src/auth/browser-tab.ts`) — two separate defects:
+  - The page decided whether the close worked from `window.close()`'s return value, which is `undefined` on EVERY browser. The failure branch therefore always ran and hid the "Close" button on the first countdown tick, so the tab was left open with its only manual control gone. Success is now inferred from the document actually going away (`pagehide` / `document.hidden`); the button stays visible and re-attempts on every press, and the countdown hint is replaced by an explicit "press ⌘W / Ctrl+W" instruction only when the browser refuses.
+  - `window.close()` cannot close a tab the page's own script did not open, and jeo hands the auth URL to the OS (`open` / `xdg-open` / `start`), so the request was always ignored. jeo now closes the tab from the OUTSIDE on macOS: after the callback page is served, it lists running processes (no Automation permission needed), builds an AppleScript naming ONLY the browsers that are actually running, and closes just the tabs whose URL contains this login's `localhost:<port>/callback`. `window.open("","_self")` is also tried first for the engines that still honor the legacy self-adopt, and the countdown is 3s instead of 5s.
+- **A single missing browser silently disabled the whole close script** — AppleScript resolves app terminology at COMPILE time, which `try` cannot guard, so one static `tell application "Arc"` block on a machine without Arc made the entire script fail to compile and close nothing (`osacompile`: "Expected class name but found property"). The script is now generated only for browsers found in the live process list.
+
+### Added
+- `JEO_AUTH_TAB_CLOSE=0` opts out of the OS-level tab close entirely; the attempt is hard-capped at 2s, never surfaces an error, and is skipped when the login finished through a manual code paste (no tab of ours was ever rendered).
+
+### Verified
+- Real Chromium (Playwright) against the actual served page: the scripted close is refused exactly as it is for a real OAuth tab, and the page survives intact — URL unchanged (`window.open("","_self")` does not blank it), "Login complete ✓" still rendered, countdown hint swapped for the manual instruction, Close button still visible; `window.close()` is invoked once by the countdown and again on every button press (the old build stopped after the first).
+- `osacompile` on the generated AppleScript: fails on the full browser list (reproducing the compile bug) and compiles cleanly for the running-process-derived list.
+- `closeAuthTab` against a live loopback callback URL returns in ~2s without hanging when macOS withholds Automation permission, so a login can never stall behind it.
+- Suites: oauth, browser-tab, openai-oauth, antigravity-login, kimi-oauth, oauth-lock, auth-matrix, doctor — 53 pass / 0 fail. `bun run typecheck` clean, `bun run pack:check` 283 files.
+
+## [0.9.12] - 2026-08-02
+_Fixes the boxed prompt's stolen keystrokes, drifting caret, and paste/attachment spacing under `jeo --tmux`._
+
+### Fixed
+- **A lone `Esc` swallowed the next keystroke — including the first character of a command or a paste** (`src/commands/launch/input.ts`) — a standalone `Esc` byte is a valid bracketed-paste-marker prefix, so the prompt filter carried it and re-prepended it to the NEXT stdin chunk. Forwarded that way, readline's key decoder read `ESC` + `z` as meta-z and consumed the character: after clearing the box with Esc, typing `zebra` produced `ebra`, and typing `/route off` produced `route off` — no longer a slash command, so it was sent to the model as a prompt and routing stayed on (the "`jeo --tmux` 에서 `/route off` 가 안 먹힌다" report). A carried `Esc` that cannot begin an escape sequence is now dropped before readline sees it (jeo already owns Esc on its own raw-stdin keypress listener); an `ESC x` pair delivered in ONE chunk is still a real Alt/Meta chord and passes through untouched.
+- **The painted caret drifted right of the real insertion point in any draft containing emoji** (`src/tui/components/input-box.ts`) — the box mapped `rl.cursor` (UTF-16 code units) onto a CODE-POINT index, so every surrogate pair before the caret shifted it one column and `←` after an emoji appeared not to move at all. `wrapWithCursor`/`caretCells` now index by code unit (a surrogate pair keeps both offsets addressable), and every offset returned to readline by the Up/Down and row-Home/End helpers snaps to a whole character.
+- **A drag-and-dropped image left the next typed word glued to its tag** (`src/util/file-attachment.ts`) — `attachImagePaths` trimmed the tag's trailing space, so `[image #1]` + typing became `[image #1]please`, while the Ctrl+V path (`insertImageTag`) kept one space. Both attach paths now leave exactly one trailing space at end-of-draft with the caret parked after it. Dropped/typed `~/…` paths are also expanded to the home directory (gjc parity), so `~/Downloads/shot.png` attaches instead of being sent to the model as literal text.
+- **A paste made WHILE a turn was running lost its line structure** (`src/commands/launch/input.ts`, `src/commands/launch.ts`) — the live-turn capture trimmed every pasted line and space-joined them, so a pasted code block/stack trace arrived at the next prompt as one flattened line with its indentation gone, and a large paste split across stdin reads gained a stray space wherever the read boundary fell (`hello wo` + `rld` → `hello wo rld`). Mid-turn pastes now fold line breaks to the same `MULTILINE_SENTINEL` the idle path uses and append verbatim; the live box and the mid-turn steering/command paths expand that sentinel, so the model never sees the private-use character. `JEO_NO_MULTILINE=1` degrades to the old space join, which is the only mode where the sentinel is not expanded on submit.
+
+### Verified
+- Live in tmux (`jeo --tmux` inner process, real PTY, caret cell read back with `tmux display-message -p '#{cursor_x},#{cursor_y}'`): Esc → `zebra` stays `zebra`; Esc → `/route off` prints `routing: off (this session)`; `←` after `안녕하세요 테스트😀😀` steps 24 → 22 → 20 columns; a dropped `assets/icon.png` renders `look at [image #1] please` with the caret exactly at column 28; `~/…` and backslash-escaped paths attach.
+- Suites: input-box, vertical-cursor, box-vertical-nav, prompt-key-filter, row-home-end-filter, extended-key-decode, mouse/terminal-report filters, file-attachment, image-attachments, input-history, new-input-first, launch-flags, slash, tmux — 215 pass / 0 fail. `bun run typecheck` clean. (`test/team-subagent.test.ts` timeouts are pre-existing and reproduce with these changes stashed.)
+- Mid-turn paste: a bracketed paste delivered WHILE a turn runs kept its line breaks and indentation in the live box (`def run():` / `    return 1`), and a paste split across stdin reads no longer gains a stray space at the boundary.
+
+## [0.9.11] - 2026-07-30
+_Imports GJC v5 sessions safely, exposes bounded slash controls, and gates the release artifact before publication._
+
+### Added
+- **Read-only GJC v5 session continuation** (`/resume gajae:<session-id>[#<leaf-entry-id>]`) — imports only exact version 5 JSONL sessions into a fresh Jeo v1 session, preserves SHA-256 and source session/leaf provenance, supports deterministic branch/tool/image/patch errors, and never writes the GJC format.
+- **Slash command parity** — `/changelog [--full]` uses the existing release-notes renderer, `/jobs` controls the existing session `JobRegistry`, and `/resume gajae:` provides a TTY picker with a non-TTY list-only fallback.
+- **Account-scoped OpenAI Codex discovery** — live/cache model rows are scoped to the authenticated OAuth account; `gpt-5.3-codex-spark` is accepted only from that account's Codex Responses model list with `supported_in_api !== false`.
+
+### Changed
+- **Release verification** — Chromium rendering/screenshot checks, exact-SHA check-only CI, and packed-artifact smoke gates are now required before a 0.9.11 release.
+- **Upstream parity baseline** — the gajae-code review is pinned to commit `5224493208ab11549fa3d48cc699f21114eed518`; only evidence-backed deltas are carried into Jeo.
+- **Provider catalog safety** — no unverified static provider rows were added; API-key discovery cannot widen the OAuth Codex allow-list.
+
+### Verified
+- Verification results are recorded only after the complete release gate has run.
+
+## [0.9.10] - 2026-07-27
+_`jeo update` now verifies the binary you actually run, and recovers from bun's stale registry cache._
+
+### Fixed
+- **`jeo update` claimed success while the machine still ran the old build** (`src/commands/update.ts`) — a package manager's zero exit was treated as proof of an update. In practice bun can fail to resolve a just-published version (`No version matching "x.y.z" ... (but package exists)`) from a stale manifest, jeo then fell back to npm, npm installed into a prefix the user's PATH does not resolve, and the command printed `Successfully installed` while `jeo --version` still reported the previous release. The install now retries bun with `--force` (which re-resolves against the registry) before falling back to npm, stops only once the binary on PATH reports the requested version, and reports a stale active binary as a failure (exit 1, `installed: false` in `--json`) with the exact recovery commands.
+
+### Verified
+- Update suite: 33 pass / 0 fail, including the new stale-active-binary failure, its `--json` shape, and the bun `--force` retry ordering.
+- Reproduced live: `bun install -g jeo-code@0.9.9` resolved nothing from cache while `--force` installed it correctly.
+
+## [0.9.9] - 2026-07-27
+_Root-causes the frozen `jeo --tmux` TUI: the window was pinned to its launch size, so resizing the terminal only cut the view._
+
+### Fixed
+- **`jeo --tmux` no longer freezes the window at its launch geometry** (`src/commands/launch.ts`, `src/commands/launch/tmux.ts`) — the pre-attach `tmux resize-window` flipped the window's `window-size` option to `manual` as a documented side effect, permanently detaching it from the attached client. Resizing the terminal then left the tmux window frozen: the pane was shown cut/letterboxed and jeo never received SIGWINCH, so no amount of in-app reflow could help. The redundant `resize-window` is gone (`new-session -x/-y` already sizes the detached window), and every jeo-owned session now explicitly asserts `window-size latest`, which also protects users whose `tmux.conf` sets `manual` globally.
+
+### Verified
+- Live tmux 3.6a: attached client 100x30 → window 100x29, 140x40 → 140x39, 72x20 → 72x19, with the TUI reflowing at each step.
+- Control run reproducing the old behaviour: with `window-size manual` the window stayed 80x24 under a 120x36 client (the reported truncation); restoring `latest` recovered instantly.
+- tmux suite: 18 pass / 0 fail, including new assertions that the launch flow never issues `resize-window` and always sets `window-size latest`.
+
+## [0.9.8] - 2026-07-27
+_The provider model list now persists and rehydrates, so an account's live models survive across launches (gjc parity)._
+
+### Added
+- **Persistent live model catalog** (`src/ai/model-cache.ts`) — every successful discovery is written to `~/.jeo/model-catalog-cache.json` and rehydrated at the next launch, before any network call. `jeo auth login openai` persists the account's Codex list immediately.
+
+### Fixed
+- **Newly released OpenAI models were rejected at cold start** (`src/ai/model-cache.ts`, `src/commands/launch.ts`) — the OAuth Codex gate only knew the maintained static snapshot until this launch's own discovery landed, so an account that already serves `gpt-5.6-luna`/`-sol`/`-terra` could not select them for the first seconds of a session. Rehydration seeds the gate, routing, and the pickers from the account's own last-reported list.
+- **Cold-start model completion fell back to the static catalog** (`src/commands/launch.ts`) — tab completion and `modelsForProvider` now use the persisted per-provider lists until live discovery replaces them.
+
+### Verified
+- Model cache suite: 11 pass / 0 fail (round-trip, gate rehydration, api_key vs oauth scoping, offline/merge safety, corrupt-file degradation, test-write hermeticity).
+- Model/provider suite: 169 pass / 0 fail across discovery, catalog, routing, pickers, `/model`, OpenAI OAuth, and autocomplete.
+- Live account check: discovery persisted 4 providers; a fresh process turned `gpt-5.6-luna` from rejected into servable purely from disk.
+
+## [0.9.7] - 2026-07-27
+_Fixes the broken 0.9.3-0.9.6 npm releases: `jeo` and `jeo --tmux` crashed at startup right after `jeo update`._
+
+### Fixed
+- **Published package no longer crashes on launch** (`src/agent/monitor-tool.ts`, `src/agent/monitor-registry.ts`) — the `monitor` tool modules that `src/commands/launch.ts` and `src/commands/launch/slash-handlers.ts` import were never committed, so releases 0.9.3-0.9.6 shipped without them and every `jeo` / `jeo --tmux` run died with `Cannot find module '../agent/monitor-tool'`. Both modules (and their tests) are now part of the repository.
+
+### Changed
+- **Release gate verifies the artifact, not just its file list** (`scripts/check-package.ts`, `.github/workflows/npm-publish.yml`) — `bun run pack:check` now resolves every relative import inside the packed files against the packed set, asserts the required entrypoints, rejects untracked or test/CI paths, and CI additionally unpacks the real tarball and imports the launch module graph before publishing.
+
+### Verified
+- Ran the new gate against the v0.9.6 tag: it reports the three missing-module imports that broke that release.
+- Packed-tarball boot smoke: `src/cli/runner.ts` + `src/commands/launch.ts` import cleanly from the unpacked artifact.
+- Live `jeo --tmux` from the published install renders the TUI instead of exiting with a module error.
+
+## [0.9.6] - 2026-07-27
+_Resize-safe ledger flush and terminal clear handling after viewport shrink._
+
+### Fixed
+- **TUI ledger/clear cursor anchoring** (`src/tui/renderer.ts`) — clamps `insertAbove()` and reserve-mode `clear()` to the current visible row count, preventing asynchronous ledger flushes or finish-time cleanup from overshooting a newly shrunken terminal bottom margin.
+
+### Verified
+- Renderer resize suite: 25 pass / 0 fail, including shrink-before-ledger and shrink-before-clear paths.
+- LaunchTui integration: real ledger flush remains cursor-bounded when a 40-row viewport shrinks to 6 rows before repaint.
+- `bun run typecheck`: clean.
+
+## [0.9.5] - 2026-07-27
+_Resize-safe live TUI rendering for terminal viewport shrink/grow transitions._
+
+### Fixed
+- **TUI viewport shrink anchoring** (`src/tui/renderer.ts`) — bounds differential row walks and cursor movement to the visible terminal height, preventing clipped frames from moving the repaint anchor past the bottom margin and corrupting subsequent footer/input rendering.
+
+### Verified
+- Renderer resize suite: 24 pass / 0 fail, including a viewport shrink below the previous frame and recovery after growth.
+- LaunchTui resize integration: real renderer output remains scroll-free and cursor-bounded during a live 30-row → 6-row transition.
+- `bun run typecheck`: clean.
+
+## [0.9.4] - 2026-07-27
+_Real OpenAI/Codex model discovery after login, npm package-content hardening, and pinned self-update support._
+
+### Added
+- **Live OpenAI/Codex models after login** (`src/commands/auth.ts`, `src/ai/model-discovery.ts`) — immediately probes the authenticated account's Codex models endpoint after manual or interactive OpenAI login, prefers that OAuth credential for the report, and keeps login successful when discovery is unavailable.
+- **Pinned self-update targets** (`src/commands/update.ts`) — `jeo update --version <semver>` resolves and installs an exact published release without falling back to npm `latest`.
+
+### Fixed
+- **npm package-content CI guard** (`.github/workflows/npm-publish.yml`) — asserts `npm pack --dry-run --json` against git-tracked files, required release files, and forbidden test/runtime artifacts before publishing.
+
+### Verified
+- Release-focused suite: 148 pass / 0 fail across model discovery, update, package workflow, Codex responses, model manager, and catalog tests.
+- `bun run typecheck`: clean.
+- Clean-worktree package manifest excludes the previously leaked monitor/playwriter files.
+
+## [0.9.3] - 2026-07-26
+_Released Telegram integration reliability improvements adapted from GJC v0.11.10, with safe jeo-native behavior and live verification._
+
+### Fixed
+- **Telegram Bot API flood-control cooldown** (`src/agent/notify/telegram-api.ts`) — honors HTTP 429 `retry_after` responses with a bot-wide, bounded cooldown; non-polling calls suppress safely while `getUpdates` remains available for recovery.
+- **Telegram daemon polling backoff** (`src/agent/notify/telegram-daemon.ts`) — backs off repeated failed/409 long-polls from 1s to a 10s ceiling and resets after a successful poll, avoiding retry storms.
+
+### Verified
+- Telegram-focused suite: 256 pass / 0 fail across 11 notification test files.
+- `bun run typecheck`: clean.
+- Isolated no-credential CLI smoke: `notify status` exits cleanly and `daemon start` refuses with the setup guidance.
+## [0.9.2] - 2026-07-26
+_Released the jeo-native GJC v0.11.6–v0.11.9 parity improvements after a complete cross-audit and live verification pass._
+
+### Added
+- **Bounded, non-destructive `/handoff [focus]` summaries** (`src/agent/compaction.ts`, `src/commands/launch.ts`) — generates a session handoff document without mutating history, preserves touched-file references, supports an optional configured focus, and exposes the command through help/autocomplete.
+- **Bounded inbound Telegram attachment downloads** (`src/agent/notify/telegram-api.ts`) — rejects oversized bodies before/while buffering and keeps caption delivery text-only when an attachment is rejected.
+- **Platform-native TUI modifier hints** (`src/tui/components/hints.ts`, `src/tui/app.ts`) — renders macOS `⌃` labels or portable `Ctrl+` labels with an ASCII fallback.
+
+### Fixed
+- **Durable fatal crash breadcrumbs** (`src/util/crash-log.ts`) — writes owner-only, UTF-8-bounded, secret-redacted crash records before fatal stderr handling, resetting at the file ceiling and never masking the original exception.
+
+### Verified
+- Focused parity suite: 191 pass / 0 fail across handoff, crash-log, Telegram attachment, TUI hint, slash registry, and autocomplete tests.
+- `bun run typecheck`: clean.
+- Live piped `jeo --no-tui` `/handoff` scenario: short history is rejected non-destructively with an explicit message.
+- Full `bun test` was attempted for 300 seconds but remained affected by pre-existing host-load timeouts/failures in write-parallel, team-parallel, engine-multitool, team-subagent, and daemon timing tests; no focused parity test failed.
+
+## [0.9.1] - 2026-07-24
+_User request (paraphrased, Korean): "make the TUI resize responsively like gjc's TUI when terminal width/height changes, without breaking the layout — also borrow forge's layout and table components." Investigated the existing resize infrastructure first (already extensive: throttled live-frame resize repaint, a poll-based SIGWINCH safety net, resize-aware interactive pickers) before assuming a gap. Found one concrete un-responsive panel — `jeo doctor`'s Provider connectivity table — and, while rebuilding it on forge's own box-drawn table renderer, also found and fixed a real, previously-unknown overflow bug in `formatForgeBox` itself, shared by every tool card across the whole live TUI._
+
+### Fixed
+- **`jeo doctor`'s Provider connectivity table no longer breaks on a narrow terminal** (`src/commands/doctor.ts`) — replaced the fixed 75-column separator and fixed-width `padEnd` columns (never resized, hard-wrapped under ~80 cols) with jeo's own forge/markdown-table box-drawn table (`renderMarkdownTables`), sized off the LIVE terminal width every run. The free-text Detail column absorbs whatever budget the other short, fixed-shape columns leave, and the grid falls back to a stacked per-provider list when even that can't fit. The header block (Bun runtime/model/config/terminal size) now renders as a forge-style bordered card (`formatForgeBox` + `scaleForgeWidth`) that scales with the terminal too, with a plain-text fallback below the card's own ~26-column floor.
+- **`formatForgeBox`'s "N more lines ⟦Ctrl+O for more⟧" clip-hint row could overflow a narrow card's declared width** (`src/tui/components/forge.ts`) — the hint text is appended AFTER the normal wrap-to-width step, so on a narrow box it could poke past the right border; every forge card in the live TUI (tool-execution cards, skill-invocation cards, etc.) was exposed to this whenever content was long enough to clip on a narrow terminal. Added a defense-in-depth truncation in `contentRow` so no content path — wrapped or not — can widen a box past its declared width.
+
+### Verified
+- Pure-function width sweep (20-200 columns) confirmed zero overflow for both the provider table and the header card, including the fallback thresholds.
+- `bun run typecheck` clean.
+- `test/doctor.test.ts` + `test/forge-status.test.ts` + `test/forge-mark-anim.test.ts` — 54 pass; `test/tui-components.test.ts` + `test/tui-frame-width.test.ts` + `test/tui-frame-wrap-tail.test.ts` + `test/tui-app.test.ts` + `test/tui-renderer.test.ts` + `test/todo-card.test.ts` — 96 pass; 0 fail across both targeted runs.
+- Full `bun test` — 3134 pass / 23 fail across 308 files; every failure (team-parallel, engine-multitool ×3 timeouts, notify-daemon-control timing, team-subagent timeout) reproduces identically on a clean `git stash` of this pass's changes — confirmed pre-existing, unrelated flakiness, not caused by this pass.
+
+## [0.9.0] - 2026-07-22
+_Session-scoped async execution, detached subagent control, background monitors, and parallel TUI activity are now documented and shipped for the gjc-parity release line._
+
+### Added
+- **Session-scoped async execution** — fan out independent work through the `task` tool's real `tasks` array without blocking the parent turn; detached subagents, background jobs, and line monitors remain controllable from later turns with `subagent`/`job`/`monitor` actions.
+- **Parallel TUI activity tracking** — each concurrent worker keeps a stable live-activity slot, sibling completion no longer clears other workers, and session teardown cancels all session-owned registries.
+
+### Changed
+- **Bounded detached results and terminal cancellation** — detached output is capped before storage, while cancellation wins over late runner resolution.
+
+### Verified
+- Focused parity tests passed, including detached lifecycle, job/monitor control, and parallel TUI activity coverage.
+- `bun run typecheck` passed.
+- Full `bun test` reported 3156 passes and one unrelated timing-sensitive `notify-daemon-control` failure; that file passed independently with 26 tests.
 
 ## [0.8.42] - 2026-07-21
 _Request (paraphrased): "adopt gjc's subagent execution model and TUI parallel-processing monitoring — all the async/parallel parts — into jeo-code, with real operational verification." Investigated live before assuming a gap: jeo already has a mature, gjc-parity concurrent fan-out worker pool (`MAX_FANOUT`-bounded `Promise.all`, broadcast steering hub, detached/subagent/job/irc tools, a live TUI panel for concurrent subagents). Booted real `jeo --tmux` sessions with real credentials and repeatedly drove a genuine 3-file concurrent executor fan-out to verify this stack end to end — not to re-implement what already works, but to find what's actually broken in it. Found and fixed three real, live-reproduced bugs across the fan-out call path, none of them "missing gjc parity" — all pre-existing defects in jeo's own already-built implementation._
@@ -2129,7 +2380,8 @@ _Initial release._
 ### Added
 - Initial jeo-code agent and CLI.
 
-[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/akillness/jeo-code/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/akillness/jeo-code/releases/tag/v0.9.0
 [0.4.5]: https://github.com/akillness/jeo-code/releases/tag/v0.4.5
 [0.4.4]: https://github.com/akillness/jeo-code/releases/tag/v0.4.4
 [0.4.3]: https://github.com/akillness/jeo-code/releases/tag/v0.4.3

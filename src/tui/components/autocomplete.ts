@@ -15,7 +15,9 @@
  */
 import { SLASH_COMMANDS, SLASH_COMMAND_DESCRIPTIONS } from "./slash";
 import { catalogIds } from "../../ai/model-catalog-compat";
-import { PROVIDER_NAMES } from "../../ai/provider-status";
+import { PROVIDER_NAMES, allProviderNames } from "../../ai/provider-status";
+import { PROVIDER_PRESET_IDS } from "../../ai/providers/provider-presets";
+import { customProviderNames } from "../../ai/providers/custom-providers";
 import { SUBAGENT_ROLES } from "../../agent/subagents";
 import { skillNames } from "../../skills/catalog";
 import { listThemes } from "./themes";
@@ -35,6 +37,10 @@ export interface CompletionContext {
   skillNames?: string[];
   /** Live model ids for a given provider (for `/provider <p> <model>`). */
   modelsForProvider: (provider: string) => string[];
+  /** Preset ids offered after `/provider add --preset`. */
+  providerPresets: string[];
+  /** Ids of the user's registered custom providers (for `/provider remove <id>`). */
+  customProviders: string[];
   /** Sync path suggestions for free-text `@path` mentions (relative to cwd). */
   mentionPaths?: (prefix: string) => string[];
 }
@@ -66,9 +72,13 @@ export function staticCompletionContext(): Omit<CompletionContext, "liveModels" 
   return {
     slashCommands: [...SLASH_COMMANDS],
     catalogModels: catalogIds(),
-    providers: [...PROVIDER_NAMES],
+    // Custom providers are runtime state, so list from `allProviderNames()` — a user's
+    // own endpoint must be completable the same as a shipped one.
+    providers: [...allProviderNames()],
     roleIds: SUBAGENT_ROLES.map(r => r.id),
     thinkingLevels: [...THINKING_LEVELS],
+    providerPresets: [...PROVIDER_PRESET_IDS],
+    customProviders: [...customProviderNames()],
   };
 }
 
@@ -271,13 +281,25 @@ export function complete(line: string, ctx: CompletionContext): CompletionResult
     case "/fast":
       return argIndex === 0 ? finish(["on", "off", "status"], "subcommand") : { completions: [], token, kind: "none" };
     case "/provider": {
-      // /provider is onboarding-only (gjc parity): login + add. Model/provider
-      // switching completes under /model, not here.
+      // /provider is onboarding-only (gjc parity): login, key, and the custom-provider
+      // registry (add/list/remove/presets). Model switching completes under /model.
       const cloud = ["anthropic", "openai", "gemini", "antigravity"];
-      if (argIndex === 0) return finish(["login", "add", "help"], "subcommand");
+      if (argIndex === 0) return finish(["login", "key", "add", "list", "remove", "presets", "help"], "subcommand");
       const sub = tokens[1]?.toLowerCase();
       if (sub === "login" || sub === "auth") return argIndex === 1 ? finish(cloud, "provider") : { completions: [], token, kind: "none" };
-      if (sub === "add") return finish(["--base-url", "--model", "--compat", "clear"], "subcommand");
+      // Removal only ever targets a CUSTOM provider, so completing built-ins here would
+      // just offer choices the command refuses.
+      if (sub === "remove" || sub === "rm" || sub === "delete") {
+        return argIndex === 1 ? finish([...ctx.customProviders], "provider") : { completions: [], token, kind: "none" };
+      }
+      if (sub === "add") {
+        // Right after `--preset`, offer preset ids; otherwise the flag set.
+        if (tokens[argIndex]?.toLowerCase() === "--preset") return finish([...ctx.providerPresets], "subcommand");
+        return finish(
+          ["--id", "--base-url", "--compat", "--api-key-env", "--api-key", "--model", "--label", "--preset", "--force", "clear"],
+          "subcommand",
+        );
+      }
       return { completions: [], token, kind: "none" };
     }
     case "/logout":

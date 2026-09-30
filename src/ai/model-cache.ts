@@ -11,7 +11,7 @@
  * Persisting the discovered lists (gjc parity) closes both gaps: the next launch
  * rehydrates the account's REAL model set from disk before any network call, and a
  * background refresh keeps it current. The cache is an optimization — a missing,
- * corrupt, or stale file only means "fall back to live discovery + static catalog",
+ * corrupt, or stale file only means live discovery must refresh the catalog,
  * never an error.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -37,15 +37,16 @@ export interface CachedProviderModels {
 }
 
 export interface ModelCacheFile {
-  version: 2;
+  version: 3;
   updatedAt: number;
   providers: CachedProviderModels[];
 }
 
-const CACHE_VERSION = 2;
+// Earlier snapshots could persist hidden or fabricated OpenAI entries.
+const CACHE_VERSION = 3;
 /** Refresh in the background once the cache is older than this (6h). */
 export const MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-/** Bound a single provider's persisted list so a pathological aggregator cannot bloat the file. */
+/** Bound other providers' cache rows; preserve complete authoritative OpenAI lists. */
 const MAX_MODELS_PER_PROVIDER = 500;
 
 function cacheDir(): string {
@@ -62,9 +63,9 @@ export function normalizeCacheEntries(raw: unknown): CachedProviderModels[] {
   for (const entry of raw) {
     const row = entry as Partial<CachedProviderModels>;
     if (!row || typeof row.provider !== "string" || !Array.isArray(row.models)) continue;
-    const models = row.models.filter((m): m is string => typeof m === "string" && m.trim().length > 0).slice(0, MAX_MODELS_PER_PROVIDER);
-    if (models.length === 0) continue;
     const provider = row.provider as ProviderName;
+    const models = row.models.filter((m): m is string => typeof m === "string" && m.trim().length > 0).slice(0, provider === "openai" ? undefined : MAX_MODELS_PER_PROVIDER);
+    if (models.length === 0 && (provider !== "openai" || row.models.length !== 0)) continue;
     const source: ModelCacheSource =
       row.source === "oauth" || row.source === "api_key" || row.source === "keyless" || row.source === "none" ? row.source : "none";
     const baseUrl = typeof row.baseUrl === "string" ? row.baseUrl.replace(/\/+$/, "") : undefined;
@@ -111,26 +112,26 @@ export function isModelCacheStale(cache: ModelCacheFile | null, now = Date.now()
  */
 export function mergeCacheEntries(
   previous: readonly CachedProviderModels[],
-  results: readonly { provider: ProviderName; models: readonly string[]; ok: boolean; source?: ModelCacheSource; baseUrl?: string; accountId?: string }[],
+  results: readonly { provider: ProviderName; models: readonly string[]; ok: boolean; source?: ModelCacheSource; baseUrl?: string; accountId?: string; fallback?: boolean }[],
 ): CachedProviderModels[] {
   const byKey = new Map<string, CachedProviderModels>();
-  const keyOf = (provider: string, baseUrl?: string, accountId?: string) =>
-    `${provider}\u0000${baseUrl ?? ""}\u0000${accountId ?? ""}`;
+  const keyOf = (provider: string, baseUrl?: string, accountId?: string, source?: ModelCacheSource) =>
+    `${provider}\u0000${baseUrl?.replace(/\/+$/, "") ?? ""}\u0000${accountId ?? ""}\u0000${provider === "openai" ? source ?? "none" : ""}`;
   for (const entry of previous) {
     const isOpenAIOAuth = entry.provider === "openai" && entry.source === "oauth";
     if (isOpenAIOAuth && !entry.accountId) continue;
-    byKey.set(keyOf(entry.provider, entry.baseUrl, isOpenAIOAuth ? entry.accountId : undefined), entry);
+    byKey.set(keyOf(entry.provider, entry.baseUrl, isOpenAIOAuth ? entry.accountId : undefined, entry.source), entry);
   }
   for (const result of results) {
-    if (!result.ok || result.models.length === 0) continue;
+    if (!result.ok || result.fallback || (result.models.length === 0 && result.provider !== "openai")) continue;
     const source: ModelCacheSource = result.source ?? "none";
     const isOpenAIOAuth = result.provider === "openai" && source === "oauth";
     const baseUrl = typeof result.baseUrl === "string" ? result.baseUrl.replace(/\/+$/, "") : undefined;
     const accountId = typeof result.accountId === "string" ? result.accountId.trim() : "";
     if (isOpenAIOAuth && !accountId) continue;
-    byKey.set(keyOf(result.provider, baseUrl, isOpenAIOAuth ? accountId : undefined), {
+    byKey.set(keyOf(result.provider, baseUrl, isOpenAIOAuth ? accountId : undefined, source), {
       provider: result.provider,
-      models: [...result.models].slice(0, MAX_MODELS_PER_PROVIDER),
+      models: [...result.models].slice(0, result.provider === "openai" ? undefined : MAX_MODELS_PER_PROVIDER),
       source,
       ...(baseUrl ? { baseUrl } : {}),
       ...(isOpenAIOAuth ? { accountId } : {}),
@@ -141,11 +142,16 @@ export function mergeCacheEntries(
 
 /** Persist discovery results (best-effort; never throws, never blocks a turn). */
 export async function writeModelCache(
-  results: readonly { provider: ProviderName; models: readonly string[]; ok: boolean; source?: ModelCacheSource; baseUrl?: string; accountId?: string }[],
+  results: readonly { provider: ProviderName; models: readonly string[]; ok: boolean; source?: ModelCacheSource; baseUrl?: string; accountId?: string; fallback?: boolean }[],
 ): Promise<void> {
   // Same hermeticity rule as saveGlobalConfig: a test run may only write into an
   // explicitly sandboxed JEO_CONFIG_DIR, never the developer's real ~/.jeo.
   if (process.env.NODE_ENV === "test" && !jeoEnv("CONFIG_DIR")) return;
+  // A failed/fallback-only refresh must not make an old snapshot appear fresh.
+  const hasFreshResult = results.some(result => result.ok && !result.fallback
+    && (result.models.length > 0 || result.provider === "openai")
+    && !(result.provider === "openai" && result.source === "oauth" && !result.accountId?.trim()));
+  if (!hasFreshResult) return;
   try {
     const existing = await readModelCache();
     const providers = mergeCacheEntries(existing?.providers ?? [], results);
@@ -173,9 +179,10 @@ export function applyCachedModels(cache: ModelCacheFile | null, openAIOauthAccou
     recordLiveProviderModels(entry.provider, entry.models, {
       source: entry.source,
       baseUrl: entry.baseUrl,
+      replace: entry.provider === "openai",
       ...(isOpenAIOAuth && entry.accountId ? { accountId: entry.accountId } : {}),
     });
-    if (isOpenAIOAuth && entry.accountId) {
+    if (isOpenAIOAuth && entry.accountId && !entry.baseUrl) {
       recordLiveCodexModels(entry.models, entry.accountId);
     }
     applied += entry.models.length;

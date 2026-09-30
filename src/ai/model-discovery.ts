@@ -13,7 +13,6 @@ import type { ProviderName } from "./types";
 import { PROVIDER_NAMES } from "./provider-status";
 import {
   catalogByProvider,
-  CODEX_MODELS,
   KIMI_CODE_MODELS,
   recordLiveCodexModels,
   recordLiveProviderModels,
@@ -32,6 +31,8 @@ export interface ProviderModelsResult {
   source: "oauth" | "api_key" | "keyless" | "none";
   /** Stable OpenAI OAuth account scope for account-specific cache rows. */
   accountId?: string;
+  /** Actual custom endpoint queried, for endpoint-scoped persistent caches. */
+  baseUrl?: string;
   /** Present on failure: a short, human-readable reason. */
   error?: string;
   /** True when the live endpoint was unusable and ids came from the static catalog. */
@@ -45,7 +46,7 @@ export interface DiscoveryOptions {
   /** Per-request timeout; default 5000ms. */
   timeoutMs?: number;
   signal?: AbortSignal;
-  /** Cap the number of returned ids per provider; default 100. */
+  /** Cap returned ids; OpenAI defaults to the full list, other providers to 100. */
   limit?: number;
   /** Config snapshot used for provider base URLs. */
   config?: Config;
@@ -54,8 +55,8 @@ export interface DiscoveryOptions {
    * the just-stored OAuth credential even when an unrelated `providers.openai`
    * API key is also configured, so the report reflects the account that was
    * JUST logged in rather than silently swapping to the API key. Does not
-   * change any other discovery caller — the TUI/`discoverModels` default
-   * (API key preferred when configured) is untouched.
+   * change single-provider discovery's API-key preference. `discoverModels`
+   * queries both OpenAI catalogs when both credentials are configured.
    */
   preferOAuth?: boolean;
 }
@@ -107,6 +108,7 @@ export function discoveryRequest(
   provider: ProviderName,
   cred: Credential | undefined,
   baseUrl?: string,
+  oauthAccountId?: string,
 ): { url: string; headers: Record<string, string>; method?: "GET" | "POST"; body?: string } {
   // Catalog-driven compat providers: OpenAI `${base}/models` (Bearer) or Anthropic
   // `${base}/v1/models` (x-api-key). Both return { data: [{ id }] }.
@@ -125,7 +127,7 @@ export function discoveryRequest(
     case "openai": {
       const token = cred?.kind === "oauth" || cred?.kind === "api_key" ? cred.token : "";
       if (cred?.kind === "oauth" && !baseUrl && !process.env.OPENAI_BASE_URL) {
-        const accountId = extractChatgptAccountId(token);
+        const accountId = extractChatgptAccountId(token) || oauthAccountId;
         const headers: Record<string, string> = {
           Authorization: `Bearer ${token}`,
           "OpenAI-Beta": "responses=experimental",
@@ -180,11 +182,12 @@ export function discoveryRequest(
 
 /**
  * OpenAI `/v1/models` lists every model family — embeddings, audio/tts, image, moderation,
- * realtime — but jeo only calls chat/completions. Drop the families that can never serve a
+ * realtime — jeo uses chat/completions and Responses. Drop the families that cannot serve a
  * chat turn so pickers never offer a model that fails at call time.
  */
 function isOpenAiChatModel(id: string): boolean {
-  return !/(^|[-/])(text-embedding|embedding|tts|whisper|dall-e|moderation|omni-moderation|davinci|babbage|computer-use|realtime|audio|image|sora|transcribe|instruct|codex)([-/]|$)/i.test(id);
+  return !/(^|[-/])(text-embedding|embedding|tts|whisper|dall-e|moderation|omni-moderation|davinci|babbage|computer-use|realtime|audio|image|sora|transcribe|instruct)([-/]|$)/i.test(id)
+    && !/^codex([-/]|$)/i.test(id);
 }
 
 /**
@@ -195,11 +198,11 @@ function isGeminiChatModel(id: string): boolean {
   return !/(^|[-/])(embedding|aqa|tts|image|imagen|veo|lyria|nano-banana|deep-research|computer-use|antigravity)([-/]|$)/i.test(id);
 }
 
-type CodexModelRow = { slug?: string; id?: string; supported_in_api?: boolean; priority?: number };
+type CodexModelRow = { slug?: string; id?: string; visibility?: string; supported_in_api?: boolean; priority?: number };
 type AntigravityModelRow = { slug?: string; id?: string; name?: string; isInternal?: boolean; model?: string };
 
 /** Parse a provider's models response body into normalized, chat-capable model ids. */
-export function parseModelsBody(provider: ProviderName, body: unknown): string[] {
+export function parseModelsBody(provider: ProviderName, body: unknown, opts: { openaiCompatible?: boolean } = {}): string[] {
   const data = body as {
     data?: { id?: string }[];
     models?: ({ name?: string; supportedGenerationMethods?: string[] } & CodexModelRow)[];
@@ -285,14 +288,16 @@ export function parseModelsBody(provider: ProviderName, body: unknown): string[]
   }
   if (provider === "openai" && data.models?.some(m => m.slug || m.id)) {
     return data.models
-      .filter(m => m.supported_in_api !== false)
+      // supported_in_api describes API-key availability, not ChatGPT entitlement.
+      // Codex's ChatGPT picker uses visibility, including subscription-only rows.
+      .filter(m => m.visibility === undefined || m.visibility === "list")
       .map(m => m.slug ?? m.id ?? "")
       // Review-only entries (e.g. codex-auto-review) are not chat-turn models.
       .filter(id => id && !/(^|[-/])auto-review([-/]|$)/i.test(id));
   }
   // anthropic / openai: { data: [{ id }] }
   const ids = (data.data ?? []).map(m => m.id ?? "").filter(Boolean);
-  return provider === "openai" ? ids.filter(isOpenAiChatModel) : ids;
+  return provider === "openai" && !opts.openaiCompatible ? ids.filter(isOpenAiChatModel) : ids;
 }
 
 /**
@@ -305,23 +310,23 @@ export function parseModelsBody(provider: ProviderName, body: unknown): string[]
  */
 export function catalogOr(result: ProviderModelsResult): ProviderModelsResult {
   if (result.ok && result.models.length > 0) return result;
+  // OpenAI has live list endpoints for both auth modes. Neither a failed request
+  // nor an authoritative empty list establishes access to the static snapshot.
+  if (result.provider === "openai") return result;
   // Antigravity's available models depend on the Cloud Code Assist agent backend
   // and must never be faked from a hard-coded catalog.
   if (result.provider === "antigravity") return result;
   // No catalog-fallback for oauth-sourced gemini failures: OAuth can LIST but
   // not SERVE gemini models (see listProviderModels' gemini gate).
   if (result.provider === "gemini" && result.source === "oauth") return result;
-  // OAuth: OpenAI/Codex legitimately rejects the standard /models endpoint while
-  // the fixed Codex ids still work; other OAuth providers fall back to their full
-  // static catalog too. API-key providers only fall back when the provider has NO
+  // Other OAuth providers fall back to their static catalog. API-key providers
+  // only fall back when the provider has NO
   // models-list endpoint at all (HTTP 404 / not found) — never for an auth
   // rejection, so a wrong key stays a failure instead of fabricating catalog rows.
   const eligible = result.source === "oauth"
     || (result.source === "api_key" && isMissingModelsEndpoint(result.error));
   if (!eligible) return result;
-  const ids = result.provider === "openai" && result.source === "oauth"
-    ? [...CODEX_MODELS]
-    : result.provider === "kimi" && result.source === "oauth"
+  const ids = result.provider === "kimi" && result.source === "oauth"
       // Kimi OAuth (Kimi Code subscription) serves ONLY the Kimi Code catalog —
       // moonshot API-platform ids would 404 against api.kimi.com/coding.
       ? KIMI_CODE_MODELS.map(id => `kimi/${id}`)
@@ -345,7 +350,8 @@ export async function listProviderModels(
   opts: DiscoveryOptions = {},
 ): Promise<ProviderModelsResult> {
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const limit = opts.limit ?? DEFAULT_LIMIT;
+  const limit = opts.limit ?? (provider === "openai" ? Number.POSITIVE_INFINITY : DEFAULT_LIMIT);
+  let baseUrl = opts.baseUrl;
 
   let cred: Credential | undefined;
   let oauthAccountId: string | undefined;
@@ -363,6 +369,7 @@ export async function listProviderModels(
     cred = raw;
     source = cred.kind === "oauth" ? "oauth" : cred.kind === "api_key" ? "api_key" : "none";
     const config = opts.config ?? (await readGlobalConfig());
+    if (provider === "openai") baseUrl = (baseUrl ?? config.openaiBaseUrl ?? process.env.OPENAI_BASE_URL)?.replace(/\/+$/, "");
 
     if (provider === "antigravity") {
       // Antigravity lists models from the LIVE Cloud Code Assist endpoint
@@ -391,6 +398,12 @@ export async function listProviderModels(
       cred = { kind: "api_key", provider: prov, token: config.providers[prov]! };
       source = "api_key";
     }
+    if (provider === "openai" && baseUrl && cred.kind === "oauth") {
+      // Subscription credentials belong to ChatGPT, not a configured proxy.
+      const key = config.providers?.openai;
+      cred = key ? { kind: "api_key", provider: "openai", token: key } : { kind: "none", provider: "openai" };
+      source = key ? "api_key" : "keyless";
+    }
     if (provider === "openai" && source === "oauth" && cred.kind === "oauth") {
       const stored = await getStoredOAuth("openai").catch(() => undefined);
       const jwtAccountId = extractChatgptAccountId(cred.token);
@@ -406,23 +419,32 @@ export async function listProviderModels(
     if (provider === "gemini" && cred.kind === "oauth") {
       return { provider, models: [], ok: false, source, error: "OAuth cannot serve gemini models — set GEMINI_API_KEY, or use antigravity/* (Cloud Code Assist)" };
     }
-    const isLocalOpenAi = provider === "openai" && !!(opts.baseUrl ?? process.env.OPENAI_BASE_URL);
+    const isLocalOpenAi = provider === "openai" && !!baseUrl;
     if (source === "none" && !isLocalOpenAi) {
       return { provider, models: [], ok: false, source, error: "not logged in" };
     }
   }
 
-  const { url, headers, method, body: requestBody } = discoveryRequest(provider, cred, opts.baseUrl);
+  const { url, headers, method, body: requestBody } = discoveryRequest(provider, cred, baseUrl, oauthAccountId);
+  const scope = { ...(oauthAccountId ? { accountId: oauthAccountId } : {}), ...(baseUrl ? { baseUrl } : {}) };
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT;
   const signal = opts.signal ?? AbortSignal.timeout(timeout);
   try {
     const res = await fetchImpl(url, { method: method ?? "GET", headers, body: requestBody, signal });
     if (!res.ok) {
       const reason = res.status === 401 || res.status === 403 ? "auth rejected" : `HTTP ${res.status}`;
-      return { provider, models: [], ok: false, source, error: reason };
+      return { provider, models: [], ok: false, source, error: reason, ...scope };
     }
     const body = await res.json();
-    let ids = parseModelsBody(provider, body);
+    if (provider === "openai") {
+      const payload = body as { models?: unknown; data?: unknown } | null;
+      const rows = Array.isArray(payload?.models) ? payload.models : payload?.data;
+      if (!Array.isArray(rows) || rows.some(row => !row || typeof row !== "object"
+        || ![row.slug, row.id].some(id => typeof id === "string" && id.trim().length > 0))) {
+        return { provider, models: [], ok: false, source, error: "invalid models response", ...scope };
+      }
+    }
+    let ids = parseModelsBody(provider, body, { openaiCompatible: provider === "openai" && !!baseUrl });
     // Gemini paginates: follow nextPageToken (bounded) so the available list is
     // COMPLETE — page 1 alone silently dropped the newest models (round-15).
     if (provider === "gemini") {
@@ -436,26 +458,28 @@ export async function listProviderModels(
         pageToken = pageBody.nextPageToken;
       }
     }
-    const models = [...new Set(ids)].sort().slice(0, limit);
+    const allModels = [...new Set(ids)].sort();
+    const models = allModels.slice(0, limit);
     // Record live ids for routing supplements. For OpenAI OAuth, keep the
     // existing Codex allow-list widening separate: API-key/custom-base discovery
     // must not make OAuth Codex calls accept unrelated API models.
-    recordLiveProviderModels(provider, models, {
+    recordLiveProviderModels(provider, allModels, {
       source,
-      baseUrl: opts.baseUrl,
+      baseUrl,
+      replace: provider === "openai",
       ...(provider === "openai" && source === "oauth" && oauthAccountId ? { accountId: oauthAccountId } : {}),
     });
-    if (provider === "openai" && source === "oauth") recordLiveCodexModels(models, oauthAccountId);
+    if (provider === "openai" && source === "oauth" && !baseUrl) recordLiveCodexModels(allModels, oauthAccountId);
     return {
       provider,
       models,
       ok: true,
       source,
-      ...(oauthAccountId ? { accountId: oauthAccountId } : {}),
+      ...scope,
     };
   } catch (err) {
     const msg = (err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError" ? "timeout" : "unreachable";
-    return { provider, models: [], ok: false, source, error: msg };
+    return { provider, models: [], ok: false, source, error: msg, ...scope };
   }
 }
 
@@ -495,13 +519,24 @@ export async function discoverModels(
   const providers = opts.providers ?? [...PROVIDER_NAMES];
   const useFallback = opts.catalogFallback !== false;
   const results = await Promise.all(
-    providers.map(p =>
-      listProviderModels(p, {
+    providers.map(async p => {
+      const discoveryOpts = {
         ...opts,
         config: cfg,
         baseUrl: p === "ollama" ? (cfg.ollamaBaseUrl ?? opts.baseUrl) : p === "lmstudio" ? (cfg.lmstudioBaseUrl ?? opts.baseUrl) : p === "openai" ? (cfg.openaiBaseUrl ?? opts.baseUrl) : opts.baseUrl,
-      }),
-    ),
+      };
+      const primary = await listProviderModels(p, discoveryOpts);
+      // Both credentials can coexist. API discovery alone omits subscription-only
+      // models and never teaches the Codex call gate what this account can serve.
+      if (p === "openai" && primary.source === "api_key" && !discoveryOpts.baseUrl && !process.env.OPENAI_BASE_URL) {
+        const credential = await resolveCredential("openai");
+        if (credential.kind === "oauth") {
+          return [primary, await listProviderModels(p, { ...discoveryOpts, preferOAuth: true })];
+        }
+      }
+      return [primary];
+    }),
   );
-  return useFallback ? results.map(catalogOr) : results;
+  const flat = results.flat();
+  return useFallback ? flat.map(catalogOr) : flat;
 }

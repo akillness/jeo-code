@@ -9,6 +9,17 @@ The README mirrors the latest 5 entries — regenerate with `bun run changelog:s
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-09-30
+_OpenAI model pickers now follow the authenticated API and Codex catalogs, including subscription-only models, without hidden or stale entries._
+
+### Fixed
+- Use Codex `visibility` for ChatGPT model discovery; retain visible subscription-only models even when `supported_in_api` is false. Keep modern GPT Codex models in API-key discovery and fetch both catalogs when both credentials are configured.
+- Preserve the full OpenAI model list by default, de-duplicate picker rows, and keep empty or failed live results honest instead of fabricating availability from a static snapshot.
+- Replace account-scoped OpenAI model observations on refresh, migrate old caches, and separate authentication sources and custom endpoints. Use stored account identity for opaque OAuth credentials and the proxy's own API key for custom endpoints.
+
+### Validation
+- Regression coverage for visibility, dual credentials, complete lists, account headers, proxy scoping, cache replacement, and authoritative empty catalogs.
+
 ## [0.11.1] - 2026-08-25
 _Every non-interactive `jeo` run hung forever once Telegram notifications were configured — `echo "..." | jeo`, `jeo -p "..."` in CI, any scripted use. The work completed and the command returned; the process just never exited._
 

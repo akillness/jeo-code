@@ -200,7 +200,7 @@ test("listProviderModels: preferOAuth (post-login report) skips the API-key swap
   const fetchSpy = (async (url: string | URL | Request, init?: RequestInit) => {
     capturedUrl = String(url);
     capturedAuth = String((init?.headers as Record<string, string>)?.Authorization ?? "");
-    return new Response(JSON.stringify({ models: [{ slug: "gpt-5.5", supported_in_api: true }, { slug: "hidden", supported_in_api: false }] }), { status: 200 });
+    return new Response(JSON.stringify({ models: [{ slug: "gpt-5.5", supported_in_api: true }, { slug: "hidden", visibility: "hide", supported_in_api: false }] }), { status: 200 });
   }) as typeof fetch;
   const r = await listProviderModels("openai", { fetchImpl: fetchSpy, preferOAuth: true });
   expect(capturedUrl).toBe(CODEX_MODELS_URL);
@@ -266,7 +266,7 @@ test("listProviderModels: OAuth-only discovery still probes the provider list", 
     const headers = init?.headers as Record<string, string>;
     expect(String(_url)).toBe("https://chatgpt.com/backend-api/codex/models?client_version=2.0.0");
     expect(headers.Authorization).toContain("Bearer ");
-    return new Response(JSON.stringify({ models: [{ slug: "gpt-5.5", supported_in_api: true }, { slug: "hidden", supported_in_api: false }] }), { status: 200 });
+    return new Response(JSON.stringify({ models: [{ slug: "gpt-5.5", supported_in_api: true }, { slug: "hidden", visibility: "hide", supported_in_api: false }] }), { status: 200 });
   }) as typeof fetch;
   const r = await listProviderModels("openai", { fetchImpl: fetchSpy });
   expect(r.ok).toBe(true);
@@ -292,7 +292,7 @@ test("listProviderModels: an OAuth-source OpenAI success widens isCodexModel wit
       { slug: "gpt-5.5", supported_in_api: true },
       { slug: "gpt-5.3-codex-spark", supported_in_api: true },
       { slug: "gpt-9-hypothetical", supported_in_api: true },
-      { slug: "hidden", supported_in_api: false },
+      { slug: "hidden", visibility: "hide", supported_in_api: false },
     ] }), { status: 200 })
   ) as typeof fetch;
   const r = await listProviderModels("openai", { fetchImpl: fetchSpy });
@@ -451,13 +451,11 @@ test("parseModelsBody: Antigravity model rows are provider-qualified", () => {
     .toEqual(["antigravity/gemini-3-pro-low", "antigravity/claude-sonnet-4-5"]);
 });
 
-test("catalogOr: OpenAI OAuth (Codex) falls back to the Codex-served model set, not the full catalog", () => {
-  // Simulates ChatGPT/Codex OAuth: /v1/models returns 401, but the user IS logged in.
+test("catalogOr: an OpenAI OAuth rejection remains a failure without fabricated models", () => {
   const r = catalogOr({ provider: "openai", models: [], ok: false, source: "oauth", error: "auth rejected" });
-  expect(r.ok).toBe(true);
-  expect(r.fallback).toBe(true);
-  expect(r.models).toContain("gpt-5.5"); // Codex actually serves this
-  expect(r.models).not.toContain("gpt-4o"); // Codex rejects standard API ids
+  expect(r.ok).toBe(false);
+  expect(r.fallback).toBeUndefined();
+  expect(r.models).toEqual([]);
 });
 
 test("catalogOr: non-OpenAI OAuth provider falls back to its full static catalog", () => {
@@ -501,8 +499,12 @@ test("parseModelsBody: openai drops non-chat families (embeddings/tts/image/mode
   expect(ids).not.toContain("gpt-4o-audio-preview");
 });
 
-test("parseModelsBody: openai parses Codex model endpoint shape and skips unsupported rows", () => {
-  expect(parseModelsBody("openai", { models: [{ slug: "gpt-5.5" }, { id: "gpt-5.4" }, { slug: "hidden", supported_in_api: false }] })).toEqual(["gpt-5.5", "gpt-5.4"]);
+test("parseModelsBody: Codex visibility, not API-key support, controls subscription models", () => {
+  expect(parseModelsBody("openai", { models: [
+    { slug: "gpt-6-luna", visibility: "list", supported_in_api: false },
+    { id: "gpt-5.4" },
+    { slug: "gpt-reserve", visibility: "hide", supported_in_api: true },
+  ] })).toEqual(["gpt-6-luna", "gpt-5.4"]);
 });
 
 test("parseModelsBody: gemini keeps only generateContent-capable models", () => {

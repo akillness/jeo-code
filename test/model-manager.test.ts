@@ -137,22 +137,15 @@ test("isCodexModel / oauthServesModel self-heal: a model OpenAI's live Codex end
   resetLiveCodexModels();
 });
 
-test("recordLiveCodexModels: additive ACROSS separate discovery calls — a later call with a different id list never forgets an earlier-observed id", () => {
-  // Guards against a REPLACE implementation (e.g. clearing the Set before adding
-  // the new batch) — a transient discovery response missing a previously-confirmed
-  // id must never un-widen the gate for that id (see recordLiveCodexModels' own
-  // "additive only" doc comment).
+test("recordLiveCodexModels: a refreshed account catalog revokes models absent from the new list", () => {
   resetLiveCodexModels();
   const oauthOnly = { providers: {}, oauth: { openai: "tok" } };
   recordLiveCodexModels(["gpt-6-codex"]);
   expect(modelServableWithConfig("openai", "gpt-6-codex", oauthOnly)).toBe(true);
-  // A second, later discovery call returns a DIFFERENT list that does not include
-  // the first id (e.g. paginated/partial response, or the account's list simply
-  // changed order/content this time).
+  // Codex returns a complete account catalog; a failed response is never recorded.
   recordLiveCodexModels(["gpt-7-other"]);
   expect(modelServableWithConfig("openai", "gpt-7-other", oauthOnly)).toBe(true);
-  // The earlier id must STILL be servable — recording is additive, never a reset.
-  expect(modelServableWithConfig("openai", "gpt-6-codex", oauthOnly)).toBe(true);
+  expect(modelServableWithConfig("openai", "gpt-6-codex", oauthOnly)).toBe(false);
   resetLiveCodexModels();
 });
 

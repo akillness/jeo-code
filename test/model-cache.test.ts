@@ -43,7 +43,7 @@ test("discovered models round-trip through the cache file", async () => {
     { provider: "anthropic", models: ["claude-sonnet-5"], ok: true, source: "api_key" },
   ]);
   const cache = await readModelCache();
-  expect(cache?.version).toBe(2);
+  expect(cache?.version).toBe(3);
   expect(cache?.providers.find(p => p.provider === "openai")?.models).toEqual(["gpt-5.5", "gpt-5.6-luna"]);
   expect(cache?.providers.find(p => p.provider === "anthropic")?.source).toBe("api_key");
   expect(cache!.updatedAt).toBeGreaterThan(0);
@@ -78,7 +78,7 @@ test("an API-key-sourced OpenAI list feeds routing but never widens the OAuth Co
   expect(isCodexModel("gpt-4.1-custom")).toBe(false);
 });
 
-test("failed or empty discovery results never overwrite a known-good cached list", () => {
+test("failed discovery and other providers' empty results preserve a known-good cached list", () => {
   const previous = [{ provider: "openai" as const, models: ["gpt-5.5"], source: "oauth" as const, accountId: "acct-1" }];
   const merged = mergeCacheEntries(previous, [
     { provider: "openai", models: [], ok: false, source: "oauth", accountId: "acct-1" },
@@ -122,6 +122,33 @@ test("a corrupt, empty, or version-mismatched cache degrades to null instead of 
 
   await fs.writeFile(file, JSON.stringify({ version: 1, updatedAt: Date.now(), providers: [] }), "utf-8");
   expect(await readModelCache()).toBeNull();
+
+  await fs.writeFile(file, JSON.stringify({ version: 2, updatedAt: Date.now(), providers: [{
+    provider: "openai", source: "oauth", accountId: "acct-1", models: ["gpt-reserve"],
+  }] }), "utf-8");
+  expect(await readModelCache()).toBeNull();
+});
+
+test("fallback and failed refreshes preserve the cache contents and freshness timestamp", async () => {
+  const dir = await sandbox();
+  await writeModelCache([{ provider: "openai", models: ["gpt-real"], source: "oauth", accountId: "acct-1", ok: true }]);
+  const file = path.join(dir, "model-catalog-cache.json");
+  const before = await fs.readFile(file, "utf-8");
+  await writeModelCache([{ provider: "openai", models: ["gpt-fake"], source: "oauth", accountId: "acct-1", ok: true, fallback: true }]);
+  expect(await fs.readFile(file, "utf-8")).toBe(before);
+  await writeModelCache([{ provider: "openai", models: [], source: "oauth", accountId: "acct-1", ok: false }]);
+  expect(await fs.readFile(file, "utf-8")).toBe(before);
+});
+
+test("a successful empty account list persists and rehydrates an empty Codex gate", async () => {
+  await sandbox();
+  await setOauthCredentialNoLock("openai", { access: accountToken });
+  await writeModelCache([{ provider: "openai", models: ["gpt-old"], source: "oauth", accountId: "acct-1", ok: true }]);
+  await writeModelCache([{ provider: "openai", models: [], source: "oauth", accountId: "acct-1", ok: true }]);
+  expect((await readModelCache())?.providers[0]?.models).toEqual([]);
+  await rehydrateLiveModels();
+  expect(isCodexModel("gpt-old")).toBe(false);
+  expect(isCodexModel("gpt-5.5")).toBe(false);
 });
 
 test("normalizeCacheEntries drops malformed rows and blank ids", () => {
@@ -139,15 +166,15 @@ test("normalizeCacheEntries drops malformed rows and blank ids", () => {
 test("staleness drives the background refresh decision", () => {
   const now = Date.now();
   expect(isModelCacheStale(null, now)).toBe(true);
-  expect(isModelCacheStale({ version: 2, updatedAt: now, providers: [] }, now)).toBe(false);
-  expect(isModelCacheStale({ version: 2, updatedAt: now - MODEL_CACHE_TTL_MS - 1, providers: [] }, now)).toBe(true);
+  expect(isModelCacheStale({ version: 3, updatedAt: now, providers: [] }, now)).toBe(false);
+  expect(isModelCacheStale({ version: 3, updatedAt: now - MODEL_CACHE_TTL_MS - 1, providers: [] }, now)).toBe(true);
 });
 
 test("applyCachedModels reports how many ids it seeded and tolerates a null cache", () => {
   expect(applyCachedModels(null)).toBe(0);
   expect(
     applyCachedModels({
-      version: 2,
+      version: 3,
       updatedAt: Date.now(),
       providers: [{ provider: "openai", models: ["gpt-5.5", "gpt-5.6-sol"], source: "oauth", accountId: "acct-1" }],
     }, "acct-1"),

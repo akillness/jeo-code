@@ -13,19 +13,13 @@ test("providerPickEntries returns live ids when the provider has live models", (
   expect(entries.every(e => e.provider === "anthropic")).toBe(true);
 });
 
-test("providerPickEntries falls back to the static catalog when live discovery is empty", () => {
-  // The reported bug: a provider that is not logged in (source: none) yields no
-  // live models, so the per-role provider picker showed an EMPTY list. The
-  // catalog fallback must surface that provider's known models instead.
+test("providerPickEntries does not fabricate OpenAI availability when discovery is empty", () => {
+  // Public capability metadata does not establish this account's model access.
   const live: ProviderModelsResult[] = [
     { provider: "openai", models: [], ok: false, source: "none", error: "not logged in" },
   ];
   const entries = providerPickEntries(live, "openai");
-  expect(entries.length).toBe(catalogByProvider("openai").length);
-  expect(entries.length).toBeGreaterThan(0);
-  // Every entry is openai-qualified and 1-based indexed.
-  expect(entries.every(e => e.provider === "openai")).toBe(true);
-  expect(entries[0]!.index).toBe(1);
+  expect(entries).toEqual([]);
 });
 
 test("providerPickEntries falls back when a DIFFERENT provider is the only live one", () => {

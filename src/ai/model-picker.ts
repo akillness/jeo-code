@@ -16,9 +16,13 @@ export interface PickEntry {
 /** Flatten successful discovery results into an ordered, 1-based pick list. */
 export function flattenModels(results: ProviderModelsResult[]): PickEntry[] {
   const out: PickEntry[] = [];
+  const seen = new Set<string>();
   for (const r of results) {
     if (!r.ok) continue;
     for (const model of r.models) {
+      const key = `${r.provider}\u0000${model}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       out.push({ index: out.length + 1, provider: r.provider, model });
     }
   }

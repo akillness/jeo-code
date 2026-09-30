@@ -179,9 +179,8 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
 
 /**
  * OpenAI models the ChatGPT/Codex subscription backend (`codex/responses`) actually
- * serves. The Codex backend rejects standard API ids (gpt-4o, o3, …) and exposes no
- * usable list endpoint, so an OAuth-only OpenAI login surfaces exactly these instead
- * of the full chat-completions catalog. Verified live against a ChatGPT account.
+ * serves in the bundled offline snapshot. A confirmed account-specific model list
+ * replaces this snapshot for OAuth eligibility, including a successful empty list.
  */
 export const CODEX_MODELS: readonly string[] = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
 
@@ -236,7 +235,7 @@ export function recordLiveCodexModels(ids: readonly string[], accountId?: string
   const explicitScope = normalizeOpenAIOauthScope(accountId);
   if (explicitScope) setOpenAIOauthAccountScope(explicitScope);
   const scope = explicitScope || EPHEMERAL_OPENAI_OAUTH_SCOPE;
-  const bucket = liveCodexModels.get(scope) ?? new Set<string>();
+  const bucket = new Set<string>();
   for (const id of ids) {
     const trimmed = id.trim();
     if (trimmed) bucket.add(trimmed);
@@ -244,10 +243,11 @@ export function recordLiveCodexModels(ids: readonly string[], accountId?: string
   liveCodexModels.set(scope, bucket);
 }
 
-/** True for the static Codex snapshot or a live id confirmed for the active scope. */
+/** A confirmed account catalog is authoritative; use the snapshot before discovery. */
 export function isCodexModel(model: string): boolean {
   const wire = model.startsWith("openai/") ? model.slice(7) : model;
-  return CODEX_MODELS.includes(wire) || (liveCodexModels.get(activeOpenAIOauthScope)?.has(wire) ?? false);
+  const confirmed = liveCodexModels.get(activeOpenAIOauthScope);
+  return confirmed ? confirmed.has(wire) : CODEX_MODELS.includes(wire);
 }
 
 /** Test-only reset for live Codex observations and the active account scope. */
@@ -330,9 +330,10 @@ function liveModelRecordKey(
   canonical: string,
   baseUrl: string | undefined,
   accountId?: string,
+  source?: LiveProviderModelSource,
 ): string {
   const normalizedAccountId = provider === "openai" ? normalizeOpenAIOauthScope(accountId) : "";
-  return `${provider}\u0000${normalizeBaseUrl(baseUrl) ?? ""}\u0000${normalizedAccountId}\u0000${canonical}`;
+  return `${provider}\u0000${normalizeBaseUrl(baseUrl) ?? ""}\u0000${normalizedAccountId}\u0000${provider === "openai" ? source ?? "none" : ""}\u0000${canonical}`;
 }
 
 function liveModelFallbackRow(provider: ProviderName, canonical: string, providerModel: string): CatalogModel {
@@ -351,12 +352,12 @@ function liveModelFallbackRow(provider: ProviderName, canonical: string, provide
   };
 }
 
-/** Record live ids returned by a provider's own model-list endpoint. Additive only:
- *  transient partial responses must not evict an id observed earlier this session. */
+/** Record live ids. Complete OpenAI refreshes may replace their matching scope;
+ *  partial observations and other providers remain additive. */
 export function recordLiveProviderModels(
   provider: ProviderName,
   ids: readonly string[],
-  opts: { source?: LiveProviderModelSource; baseUrl?: string; accountId?: string } = {},
+  opts: { source?: LiveProviderModelSource; baseUrl?: string; accountId?: string; replace?: boolean } = {},
 ): void {
   const source = opts.source ?? "none";
   const baseUrl = normalizeBaseUrl(opts.baseUrl);
@@ -366,6 +367,14 @@ export function recordLiveProviderModels(
   if (provider === "openai" && source === "oauth" && scopedAccountId) {
     setOpenAIOauthAccountScope(scopedAccountId);
   }
+  if (provider === "openai" && opts.replace) {
+    for (const [key, record] of liveProviderModels) {
+      if (record.row.provider === provider && record.source === source && record.baseUrl === baseUrl
+        && oauthScope(record.accountId) === oauthScope(scopedAccountId)) {
+        removeLiveProviderRecord(key, record);
+      }
+    }
+  }
   for (const id of ids) {
     const canonical = liveCanonicalId(provider, id);
     if (!canonical) continue;
@@ -374,7 +383,7 @@ export function recordLiveProviderModels(
     const row = known
       ? { ...known, canonical, provider, providerModel }
       : liveModelFallbackRow(provider, canonical, providerModel);
-    const recordKey = liveModelRecordKey(provider, canonical, baseUrl, scopedAccountId);
+    const recordKey = liveModelRecordKey(provider, canonical, baseUrl, scopedAccountId, source);
     liveProviderModels.set(recordKey, {
       row,
       source,

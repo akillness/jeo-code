@@ -55,7 +55,7 @@ import { callLlm, type Message } from "../agent/loop";
 import { friendlyProviderError } from "../util/provider-error";
 import { readGlobalConfig, saveConfigPatch, resolveWikiRoot } from "../agent/state";
 import { rememberModelPatch, recentModelsForDisplay } from "../agent/model-recency";
-import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
+import { describeModel, describeAllProviders, describeProvider, resolveProvider, thinkingMaxTokens, resolveMaxOutputTokens, thinkingToReasoningEffort, discoverModels, flattenModels, resolveSelection, catalogMetadata, catalogByProvider, liveProviderCatalogModels, resolveRoleModel, CODEX_MODELS, qualifyModelId, modelServableWithConfig, isLocalProviderReachable } from "../ai";
 import { rehydrateLiveModels, writeModelCache } from "../ai/model-cache";
 import type { ProviderModelsResult, PickEntry, ProviderName, ModelRole, ThinkLevel } from "../ai";
 import { readGoalState, writeGoalState, clearGoalState, verifyGoal, applyEvidenceGate } from "../agent/goal-verifier";
@@ -335,8 +335,8 @@ function providerDefaultModel(p: ProviderName): string {
 }
 
 /**
- * Pick-list entries for ONE provider, with static fallbacks so the list is never
- * empty.
+ * Pick-list entries for ONE provider. OpenAI availability comes only from live
+ * results; other providers retain their offline catalog fallbacks.
  *
  * Live discovery yields ids only for a logged-in, reachable provider, and
  * `catalogOr` backfills the static catalog for OAuth sources and for API-key
@@ -348,6 +348,9 @@ function providerDefaultModel(p: ProviderName): string {
 export function providerPickEntries(live: ProviderModelsResult[], want: ProviderName): PickEntry[] {
   const fromLive = flattenModels(live.filter(r => r.provider === want));
   if (fromLive.length) return fromLive;
+  // An OpenAI empty/error response is authoritative for this picker. Offering
+  // the static capability catalog here would fabricate account availability.
+  if (want === "openai") return [];
   const catalog = catalogByProvider(want);
   if (catalog.length) {
     return catalog.map((m, i) => ({ index: i + 1, provider: want, model: qualifyModelId(m.providerModel, want) }));
@@ -2427,7 +2430,9 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
   // the OAuth Codex gate from the first keystroke, instead of only after the network
   // discovery below happens to land.
   const aliasNames = Object.keys(await listAliases());
-  const cachedModels = await rehydrateLiveModels().catch(() => null);
+  await rehydrateLiveModels().catch(() => null);
+  const completionConfig = await readGlobalConfig();
+  const cachedCompletionModels = liveProviderCatalogModels({ openaiBaseUrl: completionConfig.openaiBaseUrl ?? process.env.OPENAI_BASE_URL });
   void getLiveModels()
     .then(r => {
       liveModelsCache ??= r;
@@ -2442,14 +2447,16 @@ export async function runLaunchCommand(args: string[]): Promise<void> {
     // access to were un-completable for the first seconds of every session.
     const liveFromDiscovery = liveModelsCache ? flattenModels(liveModelsCache).map(e => e.model) : null;
     const cachedFor = (p: string): string[] =>
-      cachedModels?.providers.filter(entry => entry.provider === p).flatMap(entry => entry.models) ?? [];
+      cachedCompletionModels.filter(entry => entry.provider === p).map(entry => entry.canonical);
     return {
       ...base,
       slashCommands: [...base.slashCommands, ...skillSlashDetails.map(d => d.command)],
-      liveModels: liveFromDiscovery ?? (cachedModels?.providers.flatMap(entry => entry.models) ?? []),
+      liveModels: liveFromDiscovery ?? cachedCompletionModels.map(entry => entry.canonical),
       aliases: aliasNames,
       skillNames: resolvedSkillTokens,
-      modelsForProvider: p => liveModelsCache?.find(r => r.provider === p)?.models ?? cachedFor(p),
+      modelsForProvider: p => liveModelsCache
+        ? flattenModels(liveModelsCache.filter(r => r.provider === p)).map(entry => entry.model)
+        : cachedFor(p),
       mentionPaths,
     };
   };
